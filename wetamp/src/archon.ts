@@ -96,8 +96,8 @@ export type RecoverResult = { ok: true; resumed: Json } | { ok: false; reason: s
 const LOCK_TTL_MS = 10 * 60_000;
 
 /**
- * O_EXCL 锁文件，内容 {pid,host,at}；拿不到返回 null。持有者是本机已死进程，或文件超过 TTL（recover、tick
- * 都是秒级操作）才夺取一次。返回的 release 只删除仍是自己写的锁。
+ * O_EXCL 锁文件，内容 {pid,host,at}；拿不到返回 null。持有者是本机已死进程（kill(pid,0) 报 ESRCH），或内容
+ * 不可解析且超过 TTL，才夺取一次。返回的 release 只删除仍是自己写的锁。
  */
 export function lock(path: string): (() => void) | null {
   const me = JSON.stringify({ pid: process.pid, host: hostname(), at: new Date().toISOString() });
@@ -117,13 +117,19 @@ export function lock(path: string): (() => void) | null {
 }
 
 function lockStale(path: string): boolean {
+  let o: { pid: number; host: string };
   try {
-    if (Date.now() - statSync(path).mtimeMs > LOCK_TTL_MS) return true;
-    const o = JSON.parse(readFileSync(path, 'utf8')) as { pid: number; host: string };
-    return o.host === hostname() && !pidAlive(o.pid);
+    o = JSON.parse(readFileSync(path, 'utf8')) as { pid: number; host: string };
   } catch {
-    return false; // 刚被释放或正在写入：本次不夺取，调用方按“被占用”处理
+    // 读不到或内容不完整：刚释放、正在写入，或持有者写入前就崩溃——只有后者会超龄，超龄才夺取
+    try {
+      return Date.now() - statSync(path).mtimeMs > LOCK_TTL_MS;
+    } catch {
+      return false;
+    }
   }
+  // 年龄不代表持有者已死：只夺取本机已死进程的锁；别的主机无法核实，按“被占用”处理
+  return o.host === hostname() && !pidAlive(o.pid);
 }
 
 /**

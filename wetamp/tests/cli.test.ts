@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -163,6 +164,7 @@ echo '{"ok":true}'
     SA_ARCHON_BIN: bin,
     SUPERAGENT_HOME: home,
     ARCHON_HOME: join(home, 'archon'),
+    AGENT_SUPERVISOR_STATE: join(root, 'sv-state'),
   });
   const ledger: Ledger = {
     run_id: 'sa1',
@@ -657,7 +659,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(tick()).toEqual([
       { run_id: 'sa1', event: 'sa.human.m2', action: 'ask', ok: true, ask: 'ask-1' },
     ]);
-    expect(sup()[0]).toMatch(/^ask --question superagent sa1 m2 红线签收.* --ttl-hours 72$/);
+    expect(sup()[0]).toMatch(/^ask --question superagent sa1:m2:0 红线签收.* --ttl-hours 72$/);
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
     expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
     expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
@@ -687,7 +689,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     const asks = JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')) as object;
     expect(Object.keys(asks)).toEqual(['sa1:m2:0']);
   });
-  test('the ledger holds a pending entry before supervisor ask runs; an id-less entry is never re-asked', () => {
+  test('the ledger holds an unknown entry before supervisor ask runs; an id-less entry with no supervisor record is re-asked', () => {
     const s = stub([humanWait()]);
     const py = join(s.root, 'sup-snap.py');
     writeFileSync(
@@ -697,26 +699,30 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     process.env.SA_SUPERVISOR = py;
     tick();
     expect(JSON.parse(readFileSync(join(s.root, 'at-ask.json'), 'utf8'))).toEqual({
-      'sa1:m2:0': { status: 'pending' },
+      'sa1:m2:0': { status: 'unknown' },
     });
-    // 模拟上次 tick 在 ask 期间死掉：只有 pending、没有 id → 不重投，交给人
-    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:m2:0":{"status":"pending"}}');
+    // 模拟上次 tick 在 ask 期间死掉且 supervisor 没有落下记录：重投
+    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:m2:0":{"status":"unknown"}}');
     rmSync(join(s.root, 'at-ask.json'));
-    const { code, out } = captured(() => main(['supervise-tick']));
-    expect(code).toBe(1);
-    expect((JSON.parse(out) as Record<string, unknown>[])[0]).toMatchObject({
-      action: 'none',
-      ok: false,
-    });
-    expect(existsSync(join(s.root, 'at-ask.json'))).toBe(false);
+    expect(tick()[0]).toMatchObject({ action: 'ask', ok: true, ask: 'ask-1' });
+    expect(existsSync(join(s.root, 'at-ask.json'))).toBe(true);
   });
-  test('a failed ask drops its pending entry so the next tick retries', () => {
+  test('an ask that saved its record then exited non-zero stays unknown; the next tick reconciles via ask-status instead of asking again', () => {
     const s = stub([humanWait()]);
-    const py = join(s.root, 'sup-fail.py');
-    writeFileSync(py, 'import sys\nsys.exit(2)\n');
-    process.env.SA_SUPERVISOR = py;
+    const sup = supervisor(s.root, 'pending');
+    const state = join(s.root, 'sv-state', 'asks');
+    // 桩 ask：像 supervisor create() 一样先落记录，再在投递阶段失败
+    writeFileSync(
+      join(s.root, 'supervisor.py'),
+      `import json, os, sys\nd = os.path.dirname(os.path.abspath(__file__))\nopen(os.path.join(d, 'sup-calls'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nif sys.argv[1] == 'ask':\n    os.makedirs('${state}', exist_ok=True)\n    json.dump({'id': 'abc', 'question': sys.argv[3], 'status': 'pending'}, open('${state}/abc.json', 'w'))\n    sys.exit(3)\nprint(open(os.path.join(d, 'answer')).read().strip())\n`
+    );
     expect(captured(() => main(['supervise-tick'])).code).toBe(1);
-    expect(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8').trim()).toBe('{}');
+    const asks = (): unknown => JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'));
+    expect(asks()).toEqual({ 'sa1:m2:0': { status: 'unknown' } });
+    expect(tick()[0]).toMatchObject({ action: 'none', ok: true, ask: 'pending' });
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+    expect(sup().at(-1)).toBe('ask-status abc');
+    expect(asks()).toEqual({ 'sa1:m2:0': { id: 'abc', status: 'pending' } });
   });
   test('a live supervise.lock makes a concurrent tick skip with exit 0 and touch nothing', () => {
     const s = stub([humanWait()]);
@@ -728,6 +734,21 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(JSON.parse(out)).toEqual({ skipped: 'locked' });
     expect(s.calls()).toEqual([]);
     rmSync(lockFile);
+    tick();
+    expect(existsSync(lockFile)).toBe(false);
+  });
+  test('an aged lock whose holder is alive is never taken; an aged unreadable lock is', () => {
+    const s = stub([humanWait()]);
+    supervisor(s.root, 'pending');
+    const lockFile = join(s.root, 'home', 'supervise.lock');
+    const live = JSON.stringify({ pid: process.pid, host: hostname(), at: '2000-01-01T00:00:00Z' });
+    writeFileSync(lockFile, live);
+    utimesSync(lockFile, new Date(0), new Date(0));
+    expect(JSON.parse(captured(() => main(['supervise-tick'])).out)).toEqual({ skipped: 'locked' });
+    expect(readFileSync(lockFile, 'utf8')).toBe(live);
+    expect(s.calls()).toEqual([]);
+    writeFileSync(lockFile, '');
+    utimesSync(lockFile, new Date(0), new Date(0));
     tick();
     expect(existsSync(lockFile)).toBe(false);
   });

@@ -424,8 +424,8 @@ function acceptRun(l: Ledger, pkg: string | undefined): number {
 // 把红线签收投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答 signal 或 cancel。
 const ANSWERS = ['pending', 'yes', 'no', 'expired'];
 interface Ask {
-  id?: string; // 先落 pending 再调 ask：缺 id = 上次 ask 结果未知，不重投
-  status: string; // ANSWERS 之一，或执行后的 approved | rejected
+  id?: string; // 先落 unknown 再调 ask；ask 中途崩溃或非零退出都保留 unknown，下一 tick 对账
+  status: string; // ANSWERS 之一、unknown，或执行后的 approved | rejected
 }
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 
@@ -454,6 +454,22 @@ function supervisor(args: string[]): string {
   return p.stdout.toString().trim();
 }
 
+/** supervisor 的 ask 记录（SKILL 约定位置 `$AGENT_SUPERVISOR_STATE/asks/<id>.json`），只取 id 与问题文本。 */
+function askRecords(): { id: string; question: string }[] {
+  const dir = join(
+    process.env.AGENT_SUPERVISOR_STATE ?? join(homedir(), '.local', 'state', 'agent-supervisor'),
+    'asks'
+  );
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter(f => f.endsWith('.json'))
+    .map(f => readJson(join(dir, f)) as { id?: unknown; question?: unknown })
+    .filter(
+      (r): r is { id: string; question: string } =>
+        typeof r.id === 'string' && typeof r.question === 'string'
+    );
+}
+
 function human(l: Ledger, run: RunView, asks: Asks): Action {
   const w = run.metadata?.wait;
   if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
@@ -461,35 +477,34 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   const round = gatesOf(artifactsOf(run)).filter(f => f.startsWith(`gate-${m}-r`)).length;
   const key = `${l.run_id}:${m}:${String(round)}`;
   const base = { run_id: l.run_id, event: w.event };
-  const a = asks[key];
+  // 问题以 key 开头：ask 结果未知时据此在 supervisor 的 ask 记录里找回 id
+  const q = `superagent ${key} 红线签收：批准合入 ${basename(l.repo)}？`.slice(0, 120);
+  let a = asks[key];
+  if (a?.id === undefined && a !== undefined) {
+    // supervisor 的 create() 先落盘再投递：非零退出或 tick 崩溃时提问可能已存在，重投会多出一条提醒
+    const found = askRecords().filter(r => r.question.startsWith(`superagent ${key} `));
+    if (found.length > 1)
+      return {
+        ...base,
+        action: 'none',
+        ok: false,
+        reason: `ask ${key}: ${String(found.length)} supervisor asks match; decide approve|reject`,
+      };
+    a = asks[key] = found.length ? { id: found[0].id, status: 'pending' } : undefined;
+  }
   if (!a) {
     const hours = Math.min(
       MAX_TTL_H,
       Math.max(1, Math.ceil((Date.parse(w.resumeAt) - Date.now()) / 3600e3))
     );
-    const q = `superagent ${l.run_id} ${m} 红线签收：批准合入 ${basename(l.repo)}？`;
-    asks[key] = { status: 'pending' };
+    asks[key] = { status: 'unknown' };
     saveAsks(asks);
-    let id: string;
-    try {
-      id = supervisor(['ask', '--question', q.slice(0, 120), '--ttl-hours', String(hours)]);
-    } catch (e) {
-      asks[key] = undefined; // ask 明确失败（非零退出）：下一次 tick 重投（JSON 序列化丢弃 undefined）
-      saveAsks(asks);
-      throw e;
-    }
+    const id = supervisor(['ask', '--question', q, '--ttl-hours', String(hours)]);
     asks[key] = { id, status: 'pending' };
     saveAsks(asks);
     return { ...base, action: 'ask', ok: true, ask: id };
   }
-  if (a.id === undefined)
-    return {
-      ...base,
-      action: 'none',
-      ok: false,
-      reason: `ask ${key} outcome unknown (tick died mid-ask): check the SUPERAGENT list, then decide approve|reject`,
-    };
-  if (a.status === 'pending') {
+  if (a.status === 'pending' && a.id) {
     const st = supervisor(['ask-status', a.id]);
     if (!ANSWERS.includes(st))
       throw new Error(`supervisor ask-status: unexpected ${st.slice(0, 40)}`);
