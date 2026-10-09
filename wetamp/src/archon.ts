@@ -25,7 +25,9 @@ export interface RunView {
 }
 
 export function archon(args: string[], cwd?: string): Exec {
-  const bin = process.env.SA_ARCHON_BIN ?? join(WETAMP, 'bin', 'archon'); // SA_ARCHON_BIN：测试桩
+  // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）
+  const stub = process.env.SA_ARCHON_BIN;
+  const bin = stub !== undefined && stub !== '' ? stub : join(WETAMP, 'bin', 'archon');
   const p = Bun.spawnSync([bin, ...args], {
     cwd,
     stdout: 'pipe',

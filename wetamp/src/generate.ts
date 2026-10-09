@@ -184,7 +184,10 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
   }
   writeFileSync(
     join(wfDir, `${workflow}.yaml`),
-    YAML.stringify(buildWorkflow(plan, ms, run, dir, fake), { lineWidth: 0, aliasDuplicateObjects: false })
+    YAML.stringify(buildWorkflow(plan, ms, run, dir, fake), {
+      lineWidth: 0,
+      aliasDuplicateObjects: false,
+    })
   );
   writeFileSync(join(dir, '.gitignore'), 'hints/\n');
   git(dir, 'init', '-q');
