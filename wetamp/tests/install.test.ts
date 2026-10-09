@@ -1,0 +1,94 @@
+import { afterAll, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  assertAuthorNotReviewer,
+  loadTiers,
+  mergeConfig,
+  providerOf,
+  renderAliases,
+} from '../src/config';
+
+const roots: string[] = [];
+afterAll(() => {
+  for (const r of roots) rmSync(r, { recursive: true, force: true });
+});
+const tmp = (): string => {
+  const d = mkdtempSync(join(tmpdir(), 'sa-test-'));
+  roots.push(d);
+  return d;
+};
+
+function runInstall(home: string): string {
+  const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
+    env: {
+      ...process.env,
+      SUPERAGENT_HOME: home,
+      ARCHON_HOME: join(home, 'archon'),
+      SA_SKIP_DOCTOR: '1',
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(p.exitCode).toBe(0);
+  return p.stdout.toString();
+}
+
+describe('install.sh', () => {
+  test('idempotent: second run changes nothing and keeps unrelated keys', () => {
+    const home = tmp();
+    mkdirSync(join(home, 'archon'), { recursive: true });
+    writeFileSync(join(home, 'archon', '.env'), 'FOO=bar');
+    writeFileSync(
+      join(home, 'archon', 'config.yaml'),
+      'defaultAssistant: claude\naliases:\n  "@mine": { provider: claude, model: opus }\nconcurrency:\n  maxConversations: 4\n'
+    );
+    expect(runInstall(home)).toContain('config.yaml');
+    const env1 = readFileSync(join(home, 'archon', '.env'), 'utf8');
+    const cfg1 = readFileSync(join(home, 'archon', 'config.yaml'), 'utf8');
+    expect(env1).toBe('FOO=bar\nARCHON_TELEMETRY_DISABLED=1\nDO_NOT_TRACK=1\n');
+    const cfg = Bun.YAML.parse(cfg1) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(cfg.defaultAssistant).toBe('claude');
+    expect(cfg.aliases['@mine'].model).toBe('opus');
+    expect(cfg.aliases['@sa-coder'].provider).toBe('codex');
+    expect(cfg.concurrency).toEqual({ maxConversations: 4, providers: { codex: 5, claude: 1 } });
+    expect(cfg.workflows.autoResumeOnQuotaReset).toBe(true);
+    const backups = readdirSync(join(home, 'archon')).filter(f => f.startsWith('config.yaml.bak-'));
+    expect(backups.length).toBe(1);
+
+    expect(runInstall(home).trim()).toBe('');
+    expect(readFileSync(join(home, 'archon', '.env'), 'utf8')).toBe(env1);
+    expect(readFileSync(join(home, 'archon', 'config.yaml'), 'utf8')).toBe(cfg1);
+    expect(
+      readdirSync(join(home, 'archon')).filter(f => f.startsWith('config.yaml.bak-')).length
+    ).toBe(1);
+    for (const d of ['gen', 'runs']) expect(readdirSync(home)).toContain(d);
+  });
+});
+
+describe('aliases', () => {
+  test('rendered from tiers.json with cross-vendor alt and per-console reviewer', () => {
+    const a = renderAliases(loadTiers());
+    expect(a['@sa-coder']).toEqual({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' });
+    expect(a['@sa-reviewer']).toEqual({ provider: 'codex', model: 'gpt-6-astra', effort: 'high' });
+    expect(a['@sa-reviewer-alt'].provider).toBe('claude');
+    expect(a['@sa-reviewer-codex'].provider).toBe('claude');
+    expect(a['@sa-reviewer-alt-codex'].provider).toBe('codex');
+  });
+
+  test('author == reviewer is rejected', () => {
+    const a = renderAliases(loadTiers());
+    expect(() => assertAuthorNotReviewer({ ...a, '@sa-reviewer': a['@sa-coder'] })).toThrow(
+      'equals @sa-coder'
+    );
+    const t = loadTiers();
+    t.routing.reviewer.by_console.claude = [t.routing.coder.models[0]];
+    expect(() => mergeConfig(null, t)).toThrow('no reviewer differs');
+  });
+
+  test('unknown vendor fails instead of guessing', () => {
+    expect(providerOf('claude-opus-5')).toBe('claude');
+    expect(() => providerOf('llama-4')).toThrow('unknown vendor');
+  });
+});

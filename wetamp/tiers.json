@@ -1,0 +1,190 @@
+{
+  "schema_version": 2,
+  "policy": {
+    "budget_floor": { "S": 200000, "M": 600000, "L": 1500000 },
+    "effort": {
+      "G0": "medium",
+      "coder": { "first": "high", "repair": "medium" },
+      "reviewer": { "R1": "high", "R2": "medium", "R3": "medium" },
+      "G2_reviewer": { "R1": "xhigh", "R2": "high", "R3": "high" }
+    },
+    "stop_gate": "off",
+    "context": {
+      "autocompact_tokens": { "commander": 160000, "general": 240000, "strategist": 360000 }
+    },
+    "cache": { "worker_ttl": "5m" },
+    "sandbox": {
+      "version": 1,
+      "network": true,
+      "web": true,
+      "caches": true,
+      "mcp": ["searxng", "context7", "codegraph", "github", "serena"]
+    },
+    "exec_profiles": {
+      "reviewer": {
+        "disable_mcp": false,
+        "codex": { "features.multi_agent": false },
+        "claude": { "exclude_user_instructions": true }
+      },
+      "coder": {
+        "disable_mcp": false,
+        "codex": { "features.multi_agent": false },
+        "claude": { "exclude_user_instructions": true }
+      }
+    },
+    "dispatch_context": {
+      "max_prompt_chars": 12000,
+      "allow_limited_history": false,
+      "max_history_turns": 3
+    },
+    "micro_edit": {
+      "max_lines": 30,
+      "max_files": 2,
+      "allow_new_code_files": false
+    },
+    "risk_paths": [
+      "**/auth/**",
+      "**/authentication/**",
+      "**/authorization/**",
+      "**/*secret*",
+      "**/*credential*",
+      "**/*password*",
+      "**/*token*",
+      "**/*billing*",
+      "**/*payment*",
+      "**/migrations/**",
+      "**/migration/**",
+      "**/deploy/**",
+      "**/deployment/**",
+      "**/release/**",
+      "**/infra/**",
+      ".github/workflows/**",
+      ".gitlab-ci*",
+      "Jenkinsfile",
+      "Dockerfile*",
+      "docker-compose*.yml",
+      "docker-compose*.yaml",
+      "**/*.sql",
+      "**/.env*",
+      "**/*.pem",
+      "**/*.key",
+      "**/*.p12",
+      "**/*.pfx",
+      "**/id_rsa*",
+      "**/id_ed25519*",
+      "**/*delete*",
+      "**/*purge*"
+    ],
+    "code_extensions": [
+      ".py",
+      ".js",
+      ".jsx",
+      ".ts",
+      ".tsx",
+      ".mjs",
+      ".cjs",
+      ".java",
+      ".go",
+      ".rs",
+      ".c",
+      ".h",
+      ".cpp",
+      ".cs",
+      ".rb",
+      ".php",
+      ".swift",
+      ".kt",
+      ".kts",
+      ".sh",
+      ".bash",
+      ".zsh",
+      ".sql",
+      ".vue",
+      ".svelte",
+      ".html",
+      ".css",
+      ".scss",
+      ".ipynb"
+    ],
+    "exempt_paths": ["*.md", "**/.context/**"]
+  },
+  "tiers": {
+    "commander": {
+      "name": "元帅",
+      "purpose": "主控：设计、架构、拍板验收；使用用户启动客户端的第一档。",
+      "pools": {
+        "claude": ["claude-opus-5-5", "claude-fable-5-1"],
+        "chatgpt": ["gpt-6-astra"]
+      }
+    },
+    "strategist": {
+      "name": "军师",
+      "purpose": "评审：优先异厂商且不同于作者模型；池内按序降级，最后一项为兜底。",
+      "pools": {
+        "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"],
+        "chatgpt": ["gpt-6.1-sol", "gpt-6-astra"]
+      }
+    },
+    "general": {
+      "name": "将军",
+      "purpose": "编码：ChatGPT 池为主力，Claude 池为候选；实现、验收、修复一次性闭环。",
+      "pools": {
+        "chatgpt": ["gpt-6.1-sol", "gpt-6-sol"],
+        "claude": ["claude-opus-5", "claude-opus-4-8"]
+      }
+    }
+  },
+  "routing": {
+    "coder": {
+      "models": ["gpt-6.1-sol", "gpt-6-sol", "claude-opus-5", "claude-opus-4-8"]
+    },
+    "reviewer": {
+      "by_risk": {
+        "G0": ["gpt-6-sol", "gpt-6-astra", "claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"]
+      },
+      "by_console": {
+        "claude": ["gpt-6-astra", "claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"],
+        "codex": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5", "gpt-6-astra"]
+      },
+      "exclude_author": true
+    }
+  },
+  "model_aliases": {},
+  "pricing": {
+    "gpt-6.1-sol": null,
+    "gpt-6-sol": null,
+    "gpt-6-astra": null,
+    "claude-opus-5": null,
+    "claude-opus-4-8": null,
+    "claude-opus-5-5": null,
+    "claude-fable-5-1": null
+  },
+  "health": {
+    "cooldown_s": {
+      "rate_limit": 300,
+      "overloaded": 120,
+      "network": 60,
+      "quota": 3600,
+      "auth": 21600,
+      "model_not_found": 86400
+    },
+    "scope": {
+      "auth": "vendor",
+      "quota": "vendor",
+      "model_not_found": "model"
+    },
+    "vendor_concurrency": {
+      "chatgpt": 5,
+      "claude": 1
+    }
+  },
+  "vendors": {
+    "claude": {
+      "auth": "subscription",
+      "coder_eligible": true
+    },
+    "chatgpt": {
+      "auth": "subscription"
+    }
+  }
+}

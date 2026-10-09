@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Archon 源码运行 shim：状态统一在 $SUPERAGENT_HOME（ARCHON_HOME 位于其下）。保留调用方 cwd。
+set -euo pipefail
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"; [[ $src == /* ]] || src="$dir/$src"
+done
+REPO="$(cd -P "$(dirname "$src")/../.." && pwd)"
+export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
+export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
+exec bun "$REPO/packages/cli/src/cli.ts" "$@"

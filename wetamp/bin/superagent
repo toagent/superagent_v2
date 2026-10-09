@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# superagent 兼容 CLI（bun + TypeScript，无构建步骤）。
+set -euo pipefail
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"; [[ $src == /* ]] || src="$dir/$src"
+done
+WETAMP="$(cd -P "$(dirname "$src")/.." && pwd)"
+export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
+export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
+exec bun "$WETAMP/src/cli.ts" "$@"

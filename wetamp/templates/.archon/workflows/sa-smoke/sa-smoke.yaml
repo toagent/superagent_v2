@@ -1,0 +1,24 @@
+name: sa-smoke
+description: superagent selftest - detach, kill -9, recover, durable event gate, signal
+nodes:
+  - id: start
+    bash: |
+      echo "start $(date +%s)" >> "$ARTIFACTS_DIR/trace.txt"
+      printf '{"ts":"%s"}\n' "$(date +%s)"
+    output_format: { type: object, properties: { ts: { type: string } }, required: [ts] }
+  - id: think
+    prompt: 'Reply only with the JSON object {"answer": "pong"}. Do not run tools or modify files.'
+    model: '@sa-coder'
+    output_format: { type: object, properties: { answer: { type: string } }, required: [answer] }
+    depends_on: [start]
+  - id: gate
+    wait: { event: sa.human.smoke, deadline_ms: 900000 }
+    depends_on: [think]
+  - id: finish
+    bash: |
+      ts=$start.output.ts
+      ev=$gate.output.event
+      echo "finish prev_ts=$ts event=$ev" >> "$ARTIFACTS_DIR/trace.txt"
+      echo done
+    when: "$gate.output.status == 'satisfied'"
+    depends_on: [gate]
