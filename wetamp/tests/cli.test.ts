@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import * as archonMod from '../src/archon';
 import type { RunView } from '../src/archon';
 import {
   classify,
@@ -333,6 +334,40 @@ describe('waitRun (archon stub)', () => {
     // decide retry 是元帅的显式决定：清零重计，恢复一次
     expect(main(['decide', 'sa1', 'retry'])).toBe(0);
     expect(loadLedger('sa1')).toMatchObject({ stalled: 1 });
+    db.close();
+  });
+  test('interleaved recovers at stalled=2: the count is on disk before the lock is released, so only one resumes', () => {
+    const lost = run('running', {
+      metadata: { execution_owner: LOST },
+      nodes: [{ nodeId: 'a', state: 'completed' }],
+    });
+    const s = stub([lost]);
+    const db = runsDb(LOST);
+    const ledgerFile = join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'sa1.json');
+    expect(main(['resume', 'sa1'])).toBe(0);
+    const fp = loadLedger('sa1').progress_fp;
+    writeFileSync(ledgerFile, JSON.stringify({ ...s.ledger, progress_fp: fp, stalled: 2 }));
+    db.run("update remote_agent_workflow_runs set status='running'");
+    // 第二次 recover 恰在第一次释放锁之后、返回调用方之前进入
+    const real = archonMod.recover;
+    let second: unknown;
+    const spy = spyOn(archonMod, 'recover').mockImplementation((...args) => {
+      const r = real(...args);
+      if (second === undefined) {
+        second = null;
+        db.run("update remote_agent_workflow_runs set status='running'");
+        second = captured(() => main(['resume', 'sa1']));
+      }
+      return r;
+    });
+    try {
+      expect(main(['resume', 'sa1'])).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(second).toMatchObject({ code: 1, out: expect.stringContaining('recover_no_progress') });
+    expect(loadLedger('sa1')).toMatchObject({ stalled: 3 });
+    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(2);
     db.close();
   });
   test('progress between recoveries resets the stall count', () => {

@@ -130,12 +130,14 @@ function lockStale(path: string): boolean {
  * PoC #8–#11：upstream 的 resume 只接受 failed/paused。把可证实 owner-lost 的 run 由 running 回拨为 failed，
  * 再 resume --detach；已完成节点走缓存。upstream 支持后删除回拨。
  * 同一 run 的 recover 经 `$SUPERAGENT_HOME/runs/<id>.lock` 串行；回拨 SQL 绑定观察到的 owner，期间被别的进程
- * 接手（owner 变了）就不动。guard 在锁内拿到最新 run，返回非空字符串即拒绝（停滞检查用）。
+ * 接手（owner 变了）就不动。guard 在锁内拿到最新 run，返回非空字符串即拒绝（停滞检查用）；resume 成功后
+ * done 也在锁内执行，让恢复计数在下一个 recover 拿到锁之前落盘。
  */
 export function recover(
   id: string,
   cwd?: string,
-  guard?: (run: RunView) => string | undefined
+  guard?: (run: RunView) => string | undefined,
+  done?: () => void
 ): RecoverResult {
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
   const release = lock(join(home().sa, 'runs', `${id}.lock`));
@@ -163,9 +165,9 @@ export function recover(
       return { ok: false, reason: `status ${run.status} is not resumable` };
     }
     const resumed = archonJson(['workflow', 'resume', run.id, '--detach'], cwd);
-    return resumed.ok === false
-      ? { ok: false, reason: tail(JSON.stringify(resumed)) }
-      : { ok: true, resumed };
+    if (resumed.ok === false) return { ok: false, reason: tail(JSON.stringify(resumed)) };
+    done?.();
+    return { ok: true, resumed };
   } finally {
     release();
   }

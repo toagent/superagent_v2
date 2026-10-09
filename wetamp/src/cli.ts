@@ -189,22 +189,26 @@ function classifyRun(l: Ledger, run: RunView): Classified {
 /**
  * 所有恢复（wait、resume、decide retry、supervise-tick）的唯一入口。锁内重读 ledger 与 run：完成节点集合
  * 与上次相同且已连续 recover 3 次即拒绝（recover_no_progress）；fresh=true（decide retry）是元帅的显式决定，清零重计。
+ * 计数、指纹、恢复时间同样在锁内写回 ledger：释放锁后才落盘会让交错的第二次 recover 读到旧计数。
  */
 function recoverRun(l: Ledger, fresh = false): RecoverResult {
   let fp = '';
-  const r = recover(l.archon_run_id, l.repo, run => {
-    Object.assign(l, loadLedger(l.run_id));
-    if (fresh) l.stalled = 0;
-    fp = progressOf(run);
-    return stalledOut(l, run) ? 'recover_no_progress' : undefined;
-  });
-  if (r.ok) {
-    l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
-    l.progress_fp = fp;
-    l.recoveries.push(new Date().toISOString());
-    saveLedger(l);
-  }
-  return r;
+  return recover(
+    l.archon_run_id,
+    l.repo,
+    run => {
+      Object.assign(l, loadLedger(l.run_id));
+      if (fresh) l.stalled = 0;
+      fp = progressOf(run);
+      return stalledOut(l, run) ? 'recover_no_progress' : undefined;
+    },
+    () => {
+      l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
+      l.progress_fp = fp;
+      l.recoveries.push(new Date().toISOString());
+      saveLedger(l);
+    }
+  );
 }
 
 /** 分片等待：事件门不会唤醒 archon wait，所以每片 ≤30s 后重新 get；可证实 owner-lost 时自动 recover。 */
