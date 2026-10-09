@@ -20,12 +20,16 @@ const tmp = (): string => {
   return d;
 };
 
-function runInstall(home: string, launchd = join(home, 'LaunchAgents')): string {
+function runInstall(
+  home: string,
+  launchd = join(home, 'LaunchAgents'),
+  archonHome = join(home, 'archon')
+): string {
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
       ...process.env,
       SUPERAGENT_HOME: home,
-      ARCHON_HOME: join(home, 'archon'),
+      ARCHON_HOME: archonHome,
       SA_LAUNCHD_DIR: launchd,
       SA_SKIP_DOCTOR: '1',
     },
@@ -90,6 +94,19 @@ describe('install.sh', () => {
     expect(readFileSync(plist, 'utf8')).toBe(xml);
     const baks = readdirSync(la).filter(f => f.includes('.plist.bak-'));
     expect(baks.map(f => readFileSync(join(la, f), 'utf8'))).toEqual(['stale']);
+  });
+
+  test('launchd plist: ARCHON_HOME is rendered only when set explicitly at install', () => {
+    const home = tmp();
+    const plist = (la: string): string =>
+      readFileSync(join(la, 'com.wetamp.superagent.supervise-tick.plist'), 'utf8');
+    runInstall(home, join(home, 'LA1'), join(home, 'custom-archon'));
+    expect(plist(join(home, 'LA1'))).toContain(
+      `<key>ARCHON_HOME</key>\n    <string>${join(home, 'custom-archon')}</string>`
+    );
+    runInstall(home, join(home, 'LA2'), ''); // 空值 = 未设置（子进程里删键会被 .env 补回）
+    expect(plist(join(home, 'LA2'))).not.toContain('ARCHON_HOME');
+    expect(plist(join(home, 'LA2'))).not.toContain('__');
   });
 });
 

@@ -5,15 +5,18 @@
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
 export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
+# 安装时显式给出的 ARCHON_HOME 才写进 plist；未给出则省略，tick 与这里取同一默认值
+SA_ARCHON="${ARCHON_HOME:-}"
 export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
 bun -e "import { install } from '$WETAMP/src/config.ts'; for (const f of install()) console.log('updated ' + f.replace(process.env.HOME, '~'))"
 label=com.wetamp.superagent.supervise-tick dir="${SA_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
 plist="$dir/$label.plist"
 # PATH 取安装时的 PATH 并把 bun 放最前：tick 触发的 resume 要找到 bun、git 与各家 CLI；路径按 XML 转义后代入
-new="$(SA_REPO="${WETAMP%/wetamp}" SA_PATH="$(dirname "$(command -v bun)"):$PATH" bun -e '
+new="$(SA_ARCHON="$SA_ARCHON" SA_REPO="${WETAMP%/wetamp}" SA_PATH="$(dirname "$(command -v bun)"):$PATH" bun -e '
 const x = (s: string) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const e = process.env as Record<string, string>;
-const t = await Bun.file(process.argv[1]).text();
+let t = await Bun.file(process.argv[1]).text();
+t = e.SA_ARCHON ? t.replaceAll("__ARCHON_HOME__", x(e.SA_ARCHON)) : t.replace(/ *<key>ARCHON_HOME<\/key>\n *<string>__ARCHON_HOME__<\/string>\n/, "");
 console.log(t.replaceAll("__HOME__", x(e.SUPERAGENT_HOME)).replaceAll("__REPO__", x(e.SA_REPO)).replaceAll("__PATH__", x(e.SA_PATH)).trimEnd());
 ' "$WETAMP/launchd/$label.plist.tmpl")"
 if ! { [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ]; }; then
