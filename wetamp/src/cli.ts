@@ -74,6 +74,9 @@ export interface Ledger {
   /** 最近一次 recover 时已完成节点集合的指纹，及在该指纹上连续 recover 的次数（旧 ledger 无这两项）。 */
   progress_fp?: string;
   stalled?: number;
+  /** supervise-tick 因 plan 截止已过取消 held:human 的 run 时写入。 */
+  state?: 'failed';
+  reason?: 'deadline';
 }
 
 const ledgerPath = (run: string): string => join(home().sa, 'runs', `${run}.json`);
@@ -158,6 +161,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
       : {}),
     evidence: art,
     recoveries: l.recoveries.length,
+    ...(l.reason ? { reason: l.reason } : {}),
   };
 }
 
@@ -325,7 +329,7 @@ function cancelRun(l: Ledger): boolean {
 const planOf = (l: Ledger): Plan =>
   JSON.parse(readFileSync(join(l.gen_dir, 'plan.json'), 'utf8')) as Plan;
 
-/** 过了 plan 的绝对 deadline，签收节点与 land 都会拒绝；approve 在此提前拒绝，不发无效 signal。 */
+/** 过了 plan 的绝对 deadline，签收节点与 land 都会拒绝、supervise-tick 会取消 run；approve 在此提前拒绝，不发无效 signal。 */
 const pastDeadline = (l: Ledger): boolean => Date.now() > Date.parse(planOf(l).deadline);
 const PAST_DEADLINE =
   'plan deadline passed: decide reject, or start a new run with a later deadline';
@@ -382,6 +386,7 @@ function brief(l: Ledger): number {
   }
   for (const [k, v] of Object.entries(asksOf(l.run_id)))
     lines.push(`ask ${k}: ${v?.status ?? '?'}`);
+  if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
   if (Array.isArray(s.land)) lines.push(...(s.land as string[]));
   lines.push(`evidence: ${art}`, `recoveries: ${String(l.recoveries.length)}`);
@@ -477,6 +482,13 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   const round = gatesOf(artifactsOf(run)).filter(f => f.startsWith(`gate-${m}-r`)).length;
   const key = `${l.run_id}:${m}:${String(round)}`;
   const base = { run_id: l.run_id, event: w.event };
+  // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
+  if (pastDeadline(l)) {
+    if (!cancelRun(l)) return { ...base, action: 'cancel', ok: false, reason: 'deadline' };
+    asks[key] = { ...asks[key], status: 'expired' };
+    saveLedger({ ...loadLedger(l.run_id), state: 'failed', reason: 'deadline' });
+    return { ...base, action: 'cancel', ok: true, reason: 'deadline' };
+  }
   // 问题以 key 开头：ask 结果未知时据此在 supervisor 的 ask 记录里找回 id
   const q = `superagent ${key} 红线签收：批准合入 ${basename(l.repo)}？`.slice(0, 120);
   let a = asks[key];
@@ -512,7 +524,6 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   }
   // yes/no 的执行失败保留原状态，下一次 tick 重试
   if (a.status === 'yes') {
-    if (pastDeadline(l)) return { ...base, action: 'none', ok: true, reason: PAST_DEADLINE };
     const r = signalHuman(
       run,
       { decision: 'approve', ask: a.id },

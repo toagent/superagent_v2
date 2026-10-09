@@ -191,7 +191,8 @@ export function buildWorkflow(
         ...gates,
       });
       // wait 到期也算完成（status: expired）；签收失败必须让 run 停下，而不是条件跳过后照常 land。
-      // deadline_ms 是相对生成时刻的时长（recover/resume 后会重新计时），所以另按 plan 的绝对 deadline 核验
+      // deadline_ms 只是上限：引擎从进入等待（含 recover/resume 后重新等待）起计时，生成时无法折算成 plan 的绝对
+      // deadline。真正的截止由两处执行：supervise-tick 取消过期的 held:human run，signoff 节点按绝对时刻再核验一次
       const until = Math.floor(Date.parse(plan.deadline) / 1000);
       nodes.push({
         id: `signoff-${m.id}`,

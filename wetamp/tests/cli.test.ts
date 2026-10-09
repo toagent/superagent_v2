@@ -792,6 +792,41 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     l.release();
     expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
   });
+  test('held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so', () => {
+    const s = stub([humanWait(), run('cancelled')]);
+    supervisor(s.root, 'yes');
+    writeFileSync(
+      join(s.root, 'gen', 'plan.json'),
+      JSON.stringify({ deadline: '2020-01-01T00:00:00Z', packages: [{ id: 'core' }] })
+    );
+    writeFileSync(
+      join(s.root, 'home', 'asks.json'),
+      JSON.stringify({ 'sa1:m2:0': { id: 'ask-1', status: 'pending' } })
+    );
+    expect(tick()).toEqual([
+      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
+    ]);
+    expect(s.calls()).toContain('workflow cancel r --json');
+    expect(existsSync(join(s.root, 'sup-calls'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'))).toEqual({
+      'sa1:m2:0': { id: 'ask-1', status: 'expired' },
+    });
+    expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
+    const lines = captured(() => main(['brief', 'sa1'])).out.split('\n');
+    expect(lines).toContain('plan 截止已过，已取消');
+    expect(lines).toContain('ask sa1:m2:0: expired');
+  });
+  test('held:human before the plan deadline still asks; nothing is cancelled', () => {
+    const s = stub([humanWait()]);
+    supervisor(s.root, 'pending');
+    writeFileSync(
+      join(s.root, 'gen', 'plan.json'),
+      JSON.stringify({ deadline: '2099-01-01T00:00:00Z', packages: [{ id: 'core' }] })
+    );
+    expect(tick()[0]).toMatchObject({ action: 'ask', ok: true });
+    expect(s.calls().some(c => c.startsWith('workflow cancel'))).toBe(false);
+    expect(loadLedger('sa1').reason).toBeUndefined();
+  });
   test('owner_lost run is recovered and recorded', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost, run('failed')]);
