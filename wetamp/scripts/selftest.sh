@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 契约自检：sa-smoke detach → think 节点运行中 kill -9 → wait=owner_lost → superagent recover → 暂停在事件门 → signal → completed。
+# 契约自检：sa-smoke detach → think 节点运行中 kill -9 → wait=owner_lost → superagent recover → 暂停在事件门 → signal → completed；
+# sa-abandon 暂停在事件门 → superagent cancel（引擎只 cancel running 的 run，paused 须走 abandon）→ cancelled。
 # 在临时 SUPERAGENT_HOME 里跑；通过后写调用方的 $SUPERAGENT_HOME/selftest.json。用法：selftest.sh [--repo <path>] [--timeout <s>] [--fake]
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
@@ -12,13 +13,16 @@ TMPH="$(mktemp -d "${TMPDIR:-/tmp}/sa-selftest.XXXXXX")"
 export SUPERAGENT_HOME="$TMPH" ARCHON_HOME="$TMPH/archon"
 A="$WETAMP/bin/archon"
 # 清理不加 --force、不用 branch -D：删不掉说明里面有东西，保留并报路径，整个临时目录也一起留下（worktree 在 $TMPH/archon 下）。
-cleanup() {
-  local keep=0
-  if [ -n "${ID:-}" ]; then "$A" workflow abandon "$ID" --json >/dev/null 2>&1 || true; fi
-  if [ -n "${BR:-}" ] && [ "$OWN_REPO" = 0 ]; then
-    if [ -n "${WT:-}" ] && [ -d "$WT" ] && ! git -C "$REPO" worktree remove "$WT" >&2; then keep=1; echo "selftest: kept worktree $WT" >&2; fi
-    if git -C "$REPO" show-ref -q --verify "refs/heads/$BR" && ! git -C "$REPO" branch -d "$BR" >/dev/null; then keep=1; echo "selftest: kept branch $BR in $REPO" >&2; fi
+keep=0
+drop() { # <branch> <worktree>
+  if [ -n "$1" ] && [ "$OWN_REPO" = 0 ]; then
+    if [ -n "$2" ] && [ -d "$2" ] && ! git -C "$REPO" worktree remove "$2" >&2; then keep=1; echo "selftest: kept worktree $2" >&2; fi
+    if git -C "$REPO" show-ref -q --verify "refs/heads/$1" && ! git -C "$REPO" branch -d "$1" >/dev/null; then keep=1; echo "selftest: kept branch $1 in $REPO" >&2; fi
   fi
+}
+cleanup() {
+  if [ -n "${ID:-}" ]; then "$A" workflow abandon "$ID" --json >/dev/null 2>&1 || true; fi
+  drop "${BR:-}" "${WT:-}"; drop "${BR2:-}" "${WT2:-}"
   if [ "$keep" = 1 ]; then echo "selftest: kept $TMPH" >&2; else rm -rf "$TMPH"; fi
 }
 trap cleanup EXIT
@@ -66,7 +70,24 @@ YAML
   git -C "$GEN" add -A; git -C "$GEN" -c user.name=sa -c user.email=sa@localhost commit -qm "${2}"
   "$A" validate workflows sa-smoke --cwd "$GEN" >/dev/null 2>&1 || fail "validate workflows (${2})"
 }
+# 等 run 停在事件门 $1，EVENT=<event> <resumeAt>
+await_gate() {
+  EVENT="" deadline=$((SECONDS + TIMEOUT))
+  while [ $SECONDS -lt $deadline ]; do
+    EVENT="$(get | field "d?.status === 'paused' ? d.metadata?.wait?.event + ' ' + d.metadata.wait.resumeAt : (d?.status === 'running' || d?.status === 'pending' ? '' : 'BAD:' + d?.status)")"
+    case "$EVENT" in "$1 "*) return;; BAD:*) fail "run left running: $EVENT";; esac
+    sleep 1
+  done
+  fail "never paused at $1"
+}
 git -C "$GEN" init -q
+cat > "$WF/sa-abandon.yaml" <<'YAML'
+name: sa-abandon
+description: superagent selftest - a run paused at an event gate is ended by superagent cancel (abandon)
+nodes:
+  - id: gate
+    wait: { event: sa.human.abandon, deadline_ms: 900000 }
+YAML
 smoke "    prompt: 'Reply only with the JSON object {\"answer\": \"pong\"}. Do not run tools or modify files.'
     model: '@sa-coder'" real
 [ "$FAKE" = 1 ] && smoke "    bash: sleep 20; echo '{\"answer\":\"pong\"}'" fake
@@ -91,13 +112,7 @@ R="$("$A" workflow wait "$ID" --json --timeout 30 2>/dev/null || true)"
 "$WETAMP/bin/superagent" recover "$ID" >/dev/null || fail "recover"
 RECOVER_MS=$(( $(ms) - T0 ))
 
-EVENT="" deadline=$((SECONDS + TIMEOUT))
-while [ $SECONDS -lt $deadline ]; do
-  EVENT="$(get | field "d?.status === 'paused' ? d.metadata?.wait?.event + ' ' + d.metadata.wait.resumeAt : (d?.status === 'running' ? '' : 'BAD:' + d?.status)")"
-  case "$EVENT" in sa.human.smoke*) break;; BAD:*) fail "run left running: $EVENT";; esac
-  sleep 1
-done
-[ "${EVENT%% *}" = sa.human.smoke ] || fail "never paused at gate"
+await_gate sa.human.smoke
 T1="$(ms)"
 "$A" workflow signal "$ID" --event sa.human.smoke --resume-at "${EVENT##* }" --data '{"decision":"yes"}' --json >/dev/null 2>&1 || fail "signal"
 R="$("$A" workflow wait "$ID" --json --timeout 120 2>/dev/null || true)"
@@ -108,7 +123,19 @@ TRACE="$(get | field 'd?.output_root')/artifacts/runs/$ID/trace.txt"
 grep -q 'event=sa.human.smoke' "$TRACE" || fail "finish node missing"
 ID=""
 
+BR2="sa/selftest-abandon-$(date +%s)"
+"$A" validate workflows sa-abandon --cwd "$GEN" >/dev/null 2>&1 || fail "validate workflows (abandon)"
+ACK="$("$A" workflow run sa-abandon --workflow-source "$GEN" --cwd "$REPO" --branch "$BR2" --from "$BASE" --detach --json 2>/dev/null)"
+ID="$(echo "$ACK" | field 'd?.runId')"; [ -n "$ID" ] || fail "abandon run ack: $ACK"
+await_gate sa.human.abandon
+WT2="$(get | field 'd?.working_path')"
+T2="$(ms)"
+"$WETAMP/bin/superagent" cancel "$ID" >/dev/null || fail "superagent cancel of a paused run"
+ABANDON_MS=$(( $(ms) - T2 ))
+[ "$(get | field 'd?.status')" = cancelled ] || fail "paused run not cancelled: $(get | field 'd?.status')"
+ID=""
+
 mkdir -p "$REAL_HOME"
-printf '{"ok":true,"at":"%s","fake":%s,"rss_kb":%s,"recover_ms":%s,"signal_ms":%s,"upstream":"%s"}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAKE" = 1 ] && echo true || echo false)" "$RSS_KB" "$RECOVER_MS" "$SIGNAL_MS" \
+printf '{"ok":true,"at":"%s","fake":%s,"rss_kb":%s,"recover_ms":%s,"signal_ms":%s,"abandon_ms":%s,"upstream":"%s"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAKE" = 1 ] && echo true || echo false)" "$RSS_KB" "$RECOVER_MS" "$SIGNAL_MS" "$ABANDON_MS" \
   "$(head -1 "$WETAMP/UPSTREAM")" | tee "$REAL_HOME/selftest.json"

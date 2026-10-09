@@ -322,8 +322,18 @@ function resumeRun(l: Ledger, fresh = false): number {
   return res.ok ? 0 : 1;
 }
 
-function cancelRun(l: Ledger): boolean {
-  return archonJson(['workflow', 'cancel', l.archon_run_id], l.repo).ok !== false;
+/**
+ * 终止 run 的唯一入口（cancel、decide reject、supervise-tick 的截止与“否”）。引擎的 cancel 只停 running 的 run，
+ * paused/failed 须 abandon（同样记 cancelled 并释放 worktree 与 slot）。cancel 被拒时不解析拒绝文本：重读状态，
+ * 期间已离开 running（如刚停在事件门）就改走 abandon。
+ */
+function cancelRun(id: string, status: RunView['status'], cwd?: string): boolean {
+  const end = (s: RunView['status']): boolean =>
+    archonJson(['workflow', s === 'running' ? 'cancel' : 'abandon', id], cwd).ok === true;
+  if (end(status)) return true;
+  if (status !== 'running') return false;
+  const now = getRun(id, cwd).status;
+  return now !== 'running' && end(now);
 }
 
 const planOf = (l: Ledger): Plan =>
@@ -334,7 +344,7 @@ const pastDeadline = (l: Ledger): boolean => Date.now() > Date.parse(planOf(l).d
 const PAST_DEADLINE =
   'plan deadline passed: decide reject, or start a new run with a later deadline';
 
-/** approve：放行 sa.human.* 签收门；reject：取消 run；retry：可选写 hint 后 resume 失败节点。 */
+/** approve：放行 sa.human.* 签收门；reject：终止 run（cancelRun）；retry：可选写 hint 后 resume 失败节点。 */
 function decide(l: Ledger, a: Args): number {
   const action = need(a._[2], 'decide <run> approve|reject|retry [--pkg id --hint text]');
   const run = getRun(l.archon_run_id, l.repo);
@@ -350,7 +360,7 @@ function decide(l: Ledger, a: Args): number {
     return r.ok ? 0 : 1;
   }
   if (action === 'reject') {
-    const ok = cancelRun(l);
+    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
     print({ run_id: l.run_id, decision: 'reject', ok });
     return ok ? 0 : 1;
   }
@@ -426,7 +436,7 @@ function acceptRun(l: Ledger, pkg: string | undefined): number {
 }
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost、
-// 把红线签收投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答 signal 或 cancel。
+// 把红线签收投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答 signal 或终止 run。
 const ANSWERS = ['pending', 'yes', 'no', 'expired'];
 interface Ask {
   id?: string; // 先落 unknown 再调 ask；ask 中途崩溃或非零退出都保留 unknown，下一 tick 对账
@@ -495,7 +505,8 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   };
   // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
   if (pastDeadline(l)) {
-    if (!cancelRun(l)) return { ...base, action: 'cancel', ok: false, reason: 'deadline' };
+    if (!cancelRun(l.archon_run_id, run.status, l.repo))
+      return { ...base, action: 'cancel', ok: false, reason: 'deadline' };
     asks[key] = { ...asks[key], status: 'expired' };
     saveLedger({ ...loadLedger(l.run_id), state: 'failed', reason: 'deadline' });
     return { ...base, action: 'cancel', ok: true, reason: 'deadline' };
@@ -547,7 +558,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     return { ...base, action: 'approve', ...r };
   }
   if (a.status === 'no') {
-    const ok = cancelRun(l);
+    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
     if (ok) a.status = 'rejected';
     return { ...base, action: 'reject', ok };
   }
@@ -676,9 +687,12 @@ export function main(argv: string[]): number {
       return resumeRun(loadLedger(id));
     }
     case 'cancel': {
-      const l = ledger();
-      const ok = cancelRun(l);
-      print({ run_id: l.run_id, ok });
+      const id = need(target, `${verb} <run>`);
+      // 未登记：按 archon run id 处理（selftest 用）
+      const l = existsSync(ledgerPath(id)) ? loadLedger(id) : undefined;
+      const rid = l?.archon_run_id ?? id;
+      const ok = cancelRun(rid, getRun(rid, l?.repo).status, l?.repo);
+      print({ run_id: id, ok });
       return ok ? 0 : 1;
     }
     case 'decide':

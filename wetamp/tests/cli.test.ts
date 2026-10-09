@@ -128,7 +128,9 @@ describe('classify', () => {
 
 /**
  * archon 桩：get 依次返回 stub/get-<n>.json（最后一份重复）；run 回 runId=r；其余调用回 {"ok":true}；
- * 全部调用记入 calls。ledger 的 gen_dir 含 plan.json（core、api 两包）与 hints/。
+ * 全部调用记入 calls。cancel/abandon 按引擎契约对桩内当前状态（下一次 get 返回的那份）执行：cancel 只接受
+ * running，abandon 拒绝 completed/cancelled，拒绝时与真 CLI 一样回 {"ok":false,"error":<文本>}。
+ * ledger 的 gen_dir 含 plan.json（core、api 两包）与 hints/。
  */
 function stub(responses: RunView[]): {
   dir: string;
@@ -153,6 +155,13 @@ if [ "$1 $2" = "workflow get" ]; then
   exit 0
 fi
 [ "$1 $2" = "workflow run" ] && { echo '{"ok":true,"runId":"r"}'; exit 0; }
+cur=$(ls "${dir}"/get-*.json 2>/dev/null | head -1)
+st=$([ -n "$cur" ] && grep -o '"status":"[a-z]*"' "$cur" | head -1 | cut -d'"' -f4)
+case "$1 $2:$st" in
+  "workflow cancel:running") ;;
+  "workflow cancel:"*) echo "{\\"ok\\":false,\\"action\\":\\"cancel\\",\\"error\\":\\"Cannot cancel run with status '$st'. Only a running run has live work to stop; abandon a paused or failed run instead.\\"}"; exit 0;;
+  "workflow abandon:completed"|"workflow abandon:cancelled") echo "{\\"ok\\":false,\\"action\\":\\"abandon\\",\\"error\\":\\"Cannot abandon run with status '$st'.\\"}"; exit 0;;
+esac
 echo '{"ok":true}'
 `
   );
@@ -401,10 +410,34 @@ describe('verbs (archon stub)', () => {
     ]);
     expect(main(['status', 'sa1'])).toBe(EXIT.held);
   });
-  test('cancel calls archon workflow cancel with the archon run id', () => {
+  test('cancel: a running run goes through archon workflow cancel with the archon run id', () => {
     const s = stub([run('running')]);
-    expect(main(['cancel', 'sa1'])).toBe(0);
+    expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
     expect(s.calls()).toContain('workflow cancel r --json');
+    expect(s.calls().some(c => c.startsWith('workflow abandon'))).toBe(false);
+  });
+  test('cancel: a paused or failed run is abandoned (the engine refuses cancel for them)', () => {
+    for (const r of [humanWait(), run('failed')]) {
+      const s = stub([r]);
+      expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
+      expect(s.calls()).toContain('workflow abandon r --json');
+      expect(s.calls().some(c => c.startsWith('workflow cancel'))).toBe(false);
+    }
+  });
+  test('cancel: a run that paused between get and cancel is re-read and abandoned', () => {
+    const s = stub([run('running'), humanWait()]);
+    expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
+    expect(s.calls().filter(c => /^workflow (cancel|abandon)/.test(c))).toEqual([
+      'workflow cancel r --json',
+      'workflow abandon r --json',
+    ]);
+  });
+  test('cancel: a completed run is refused by abandon and exits 1', () => {
+    const s = stub([run('completed')]);
+    const { code, out } = captured(() => main(['cancel', 'sa1']));
+    expect(code).toBe(1);
+    expect(JSON.parse(out)).toEqual({ run_id: 'sa1', ok: false });
+    expect(s.calls()).toContain('workflow abandon r --json');
   });
   test('resume refuses a run whose owner may be alive', () => {
     stub([run('running', { metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } })]);
@@ -504,10 +537,10 @@ describe('decide (archon stub)', () => {
     expect(out).toContain('deadline');
     expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
   });
-  test('reject cancels the run', () => {
+  test('reject ends the paused run through abandon', () => {
     const s = stub([humanWait()]);
     expect(captured(() => main(['decide', 'sa1', 'reject'])).code).toBe(0);
-    expect(s.calls()).toContain('workflow cancel r --json');
+    expect(s.calls()).toContain('workflow abandon r --json');
   });
   test('retry --hint writes the package hint, then resumes', () => {
     const failed = run('failed', { nodes: [{ nodeId: 'code-core', state: 'failed' }] });
@@ -665,14 +698,14 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
     expect(sup()).toEqual([expect.stringMatching(/^ask /), 'ask-status ask-1']);
   });
-  test('pending keeps waiting; no cancels the run', () => {
+  test('pending keeps waiting; no abandons the paused run', () => {
     const s = stub([humanWait()]);
     supervisor(s.root, 'pending');
     tick();
     expect(tick()[0]).toMatchObject({ action: 'none', ask: 'pending' });
     writeFileSync(join(s.root, 'answer'), 'no');
     expect(tick()[0]).toMatchObject({ action: 'reject', ok: true });
-    expect(s.calls()).toContain('workflow cancel r --json');
+    expect(s.calls()).toContain('workflow abandon r --json');
   });
   test('ttl follows the wait deadline (≥1h)', () => {
     const s = stub([humanWait(new Date(Date.now() + 5 * 3600e3).toISOString())]);
@@ -851,7 +884,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     ]);
   });
   test('held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so', () => {
-    const s = stub([humanWait(), run('cancelled')]);
+    const s = stub([humanWait()]);
     supervisor(s.root, 'yes');
     writeFileSync(
       join(s.root, 'gen', 'plan.json'),
@@ -864,7 +897,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(tick()).toEqual([
       { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
     ]);
-    expect(s.calls()).toContain('workflow cancel r --json');
+    expect(s.calls()).toContain('workflow abandon r --json');
     expect(existsSync(join(s.root, 'sup-calls'))).toBe(false);
     expect(JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'))).toEqual({
       'sa1:m2:0': { id: 'ask-1', status: 'expired' },
@@ -882,7 +915,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       JSON.stringify({ deadline: '2099-01-01T00:00:00Z', packages: [{ id: 'core' }] })
     );
     expect(tick()[0]).toMatchObject({ action: 'ask', ok: true });
-    expect(s.calls().some(c => c.startsWith('workflow cancel'))).toBe(false);
+    expect(s.calls().some(c => /^workflow (cancel|abandon)/.test(c))).toBe(false);
     expect(loadLedger('sa1').reason).toBeUndefined();
   });
   test('a null or malformed supervisor ask record is skipped and counted; the valid one is still reconciled', () => {
