@@ -28,7 +28,7 @@
 
 | 旧状态                                                  | 本方案                                                                                                                                                                          |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `held:review_missing`                                   | 评审节点由 Archon `retry` + `workflows.autoResumeOnQuotaReset` 自动重试；仍失败 → run failed，`brief` 标"评审缺席"，元帅 `resume --model @sa-reviewer=<另一厂商>` 切换          |
+| `held:review_missing`                                   | 评审节点由 Archon `retry` + `workflows.autoResumeOnQuotaReset` 自动重试；仍失败 → run failed；模型由 `run-config.yaml` 钉死，`resume` 不换，换厂商 = 改 `tiers.json` 后新开 run |
 | `held:awaiting_signoff`                                 | 暂停在 `human-<M>` 事件门（§5）                                                                                                                                                 |
 | `held:needs_decision`                                   | `vote-<M>` 平票或 `gate-<M>` escalate → run failed，`brief` 标红给用户                                                                                                          |
 | `held:needs_diagnosis`（E3）                            | `verify-<pkg>` 失败后 `probe-<pkg>` bash 节点在 `base_ref` 临时工作树跑同一验收命令，输出 `{base_pass, candidate_pass}`；fixer 提示里带这份证据，基线预存失败不再被当成本包问题 |

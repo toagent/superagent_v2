@@ -239,11 +239,12 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - H3：R2/R3 的阻塞集合以上一轮遗留的 ID 集合为基线：基线 ID 只有在本轮以同一 ID、`carry_over:true`、`status:closed` 且带非空 `evidence` 出现时才关闭，漏报、改名、无证据关闭都按仍未关闭；新发现只有 blocker 阻塞。
   - H4：gate 先判 `plan.deadline` 过期再判 PASS（`escalate deadline`）；`signoff-<M>` bash 节点与 `land` 也检查绝对截止时间；`decide approve` 过期拒绝，`supervise-tick` 不再替过期的“是”发 signal。
   - M2：`diff-<M>-rN`（N>1）以上一轮 `diff_hash` 为 `prev` 输出 `same`；`review-<M>-rN` 带 `when: same != 'true'`；gate 依赖 diff 与 review 并以 `none_failed_min_one_success` 汇合，`same` 时直接 `escalate no_change`，不再为未变化的 diff 付评审费。
-  - M7：G1 评审的 `debt[]` 为空时，债务由非阻塞的未关闭发现派生（`<id> <severity> <file>:<line>`）；`land` 输出与 `land.json` 带各里程碑末轮 gate 的 `debt`。
+  - M7（R2 定稿）：G1 债务 = 末轮评审 `debt[]` ∪ 各轮未关闭的非阻塞发现（`<id> <severity> <file>:<line>`，按 ID 去重；前轮发现在后轮漏报仍算债，带证据 carry-over 关闭才清）；`land` 输出与 `land.json` 带各里程碑末轮 gate 的 `debt`。
   - H2：run 启动时把 `@sa-coder`、`@sa-reviewer`、`@sa-reviewer-alt` 的具体 provider/model/effort（按控制台选评审池）写进 `gen/<run>/run-config.yaml`，经 `workflow run --config` 成为 Archon 的 run 层（优先级最高，detach 子进程与 resume 继承密封快照）；不用 `--model`，因为字面 `provider/model` spec 丢 effort。启动前断言全局与目标 repo `config.yaml` 中已定义的 `@sa-*` 别名等于 tiers 渲染值，否则退出码 5（`health --cwd` 同检查）。
   - M6：所有动词接受 `--json`（no-op）；未知参数退出 64 并打印用法。
   - M3：`sa-check` probe 与 `selftest.sh` 清理不再 `--force`、不用 `branch -D`：`worktree remove` / `branch -d` 失败即保留并把路径打到 stderr（selftest 此时连整个临时目录一起保留，Archon worktree 在其下 `archon/`）；selftest 的临时 repo 在 `mktemp -d` 目录里整体 `rm -rf`。
-  - M4：签收提问以 `run:里程碑:已过 gate 文件数` 为键幂等；先写无 id 的 `pending` 账目再调 `ask`，成功回写 id，抛错则删账目；有账目无 id（崩在 ask 与回写之间）不重问，报错交人核对。`supervise-tick` 取 `$SUPERAGENT_HOME/supervise.lock`（与 recover 同一把 O_EXCL 锁实现），被占则打印 `{"skipped":"locked"}` 退出 0。
+  - M4：签收提问以 `run:里程碑:已过 gate 文件数` 为键幂等；先写无 id 的 `pending` 账目再调 `ask`，成功回写 id。R2 定稿（M4b）：调用前账目记 `unknown`，ask 非零退出或 tick 崩溃都保留；下一 tick 在 supervisor 的 `asks/*.json` 里按问题前缀 `superagent <键> ` 找回 id → `ask-status` 跟踪，找不到才重问，多于一条报错交人。锁文件 `{pid,host,at}`，超龄也只在同机 pid 已死（或锁不可读）时接管（M4a）。`supervise-tick` 取 `$SUPERAGENT_HOME/supervise.lock`（与 recover 同一把 O_EXCL 锁实现），被占则打印 `{"skipped":"locked"}` 退出 0。
   - M5：引擎事实以机器可读行登记在 `UPSTREAM` 第 2 行起（`table <file> <table> <col>...`、`fact <file> <text>`）；dry-run 逐行 `git show upstream/dev:<file>`，列须在该表 `CREATE TABLE` 块内以列名开头，没有事实行即失败；`--apply` 只改写第 1 行。
   - launchd：`launchd/com.wetamp.superagent.supervise-tick.plist.tmpl`（`__HOME__`、`__REPO__`、`__PATH__`，XML 转义后代入；PATH = bun 目录 + 安装时 PATH，tick 触发的 resume 要找到各家 CLI）；`install.sh` 渲染到 `SA_LAUNCHD_DIR`（默认 `~/Library/LaunchAgents`），相同不动、不同先备份再覆盖，只打印 `launchctl bootstrap/bootout`；selftest 与测试把目录指到临时目录。
-  - 预算（硬规则 7）由 1500/300/25 调为 TS 1800 行、shell 400 行、文件 28 个。
+  - 预算（硬规则 7）由 1500/300/25 调为 TS 1800 行、shell 400 行、文件 28 个（R2 TS 调为 2000）。
+  - N1（R2）：同一份评审出现重复 finding ID 即 `escalate invalid_review`；关闭判定中同 ID 的 open 优先于 closed。

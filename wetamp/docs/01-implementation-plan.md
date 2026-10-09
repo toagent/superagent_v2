@@ -10,7 +10,7 @@
 4. 不派生/委派 AI、不调用评审子命令、不用 superagent 跑自己。自检只靠 `cd wetamp && bun test`、`wetamp/scripts/selftest.sh`、`wetamp/bin/archon validate workflows --cwd <gen>`。
 5. 不触碰 `_private`、iCloud、钥匙串、凭据；日志与错误文本一律脱敏；不打印任何 secret。
 6. 根 `AGENTS.md` 对 `wetamp/` 同样生效：never `bun test` from root；artifacts 不进仓库；配置文件幂等修改不覆盖。
-7. 预算：TypeScript ≤ 1800 行（不含测试）、shell ≤ 400 行、文件 ≤ 28 个（修复轮 R1 由 1500/300/25 上调）。超预算先删功能不加抽象。
+7. 预算：TypeScript ≤ 2000 行（不含测试）、shell ≤ 400 行、文件 ≤ 28 个（修复轮 R1 由 1500/300/25 上调，R2 TS 再调为 2000）。超预算先删功能不加抽象。
 8. 每条规则、每个节点生成分支、每个 CLI 动词至少一个命名测试；黄金文件（golden YAML）放 `wetamp/tests/golden/`。
 9. 每阶段提交后在 `wetamp/docs/PROGRESS.md` 追加一行 `<ISO时间> | <阶段> | <commit> | <pass/total> | <备注>`；被中断先写状态再停。
 10. 设计与现实冲突：以 Archon 实际行为（`packages/docs-web/src/content/docs/`、`archon --help`）为准，最小偏离，并写进 `00-architecture.md` 末尾「实现记录」。
