@@ -8,7 +8,6 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -295,32 +294,32 @@ describe('waitRun (archon stub)', () => {
     expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
     db.close();
   });
-  test('a live recover lock serializes: second recover is refused without touching the run', () => {
+  test('a held recover lock serializes: second recover is refused without touching the run', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     stub([lost]);
     const db = runsDb(LOST);
-    const lockFile = join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock');
-    const held = JSON.stringify({
-      pid: process.pid,
-      host: hostname(),
-      at: new Date().toISOString(),
-    });
-    writeFileSync(lockFile, held);
-    expect(main(['resume', 'sa1'])).toBe(1);
+    const held = archonMod.lock(join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock'));
+    if (!held.ok) throw new Error('lock not taken');
+    try {
+      const { code, out } = captured(() => main(['resume', 'sa1']));
+      expect(code).toBe(1);
+      expect(JSON.parse(out)).toMatchObject({ ok: false, reason: 'recover_locked' });
+    } finally {
+      held.release();
+    }
     expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
       status: 'running',
     });
-    expect(readFileSync(lockFile, 'utf8')).toBe(held);
     db.close();
   });
-  test('a lock left by a dead local process is taken over and released', () => {
+  test('a leftover lock file nobody holds (empty, junk, or a dead pid) does not block recover', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
-    const s = stub([lost, lost, run('completed')]);
-    runsDb(LOST).close();
-    const lockFile = join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock');
-    writeFileSync(lockFile, JSON.stringify({ pid: LOST.pid, host: hostname(), at: '' }));
-    expect(waitRun(s.ledger, 30)).toMatchObject({ state: 'completed', recoveries: 1 });
-    expect(existsSync(lockFile)).toBe(false);
+    for (const junk of ['', '{"pid":', JSON.stringify({ ...LOST, at: '' })]) {
+      const s = stub([lost, lost, run('completed')]);
+      runsDb(LOST).close();
+      writeFileSync(join(s.root, 'home', 'runs', 'r.lock'), junk);
+      expect(waitRun(s.ledger, 30)).toMatchObject({ state: 'completed', recoveries: 1 });
+    }
   });
   test('3 recoveries without new completed nodes → held:recover_no_progress, no 4th resume', () => {
     const lost = run('running', {
@@ -757,131 +756,17 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(sup().at(-1)).toBe('ask-status abc');
     expect(asks()).toEqual({ 'sa1:m2:0': { id: 'abc', status: 'pending' } });
   });
-  test('a live supervise.lock makes a concurrent tick skip with exit 0 and touch nothing', () => {
+  test('a held supervise.lock makes a concurrent tick skip with exit 0 and touch nothing', () => {
     const s = stub([humanWait()]);
     supervisor(s.root, 'pending');
-    const lockFile = join(s.root, 'home', 'supervise.lock');
-    writeFileSync(lockFile, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now() }));
+    const held = archonMod.lock(join(s.root, 'home', 'supervise.lock'));
+    if (!held.ok) throw new Error('lock not taken');
     const { code, out } = captured(() => main(['supervise-tick']));
+    held.release();
     expect(code).toBe(0);
     expect(JSON.parse(out)).toEqual({ skipped: 'locked' });
     expect(s.calls()).toEqual([]);
-    rmSync(lockFile);
-    tick();
-    expect(existsSync(lockFile)).toBe(false);
-  });
-  test('an aged lock whose holder is alive is never taken', () => {
-    const s = stub([humanWait()]);
-    supervisor(s.root, 'pending');
-    const lockFile = join(s.root, 'home', 'supervise.lock');
-    const live = JSON.stringify({ pid: process.pid, host: hostname(), at: '2000-01-01T00:00:00Z' });
-    writeFileSync(lockFile, live);
-    utimesSync(lockFile, new Date(0), new Date(0));
-    expect(JSON.parse(captured(() => main(['supervise-tick'])).out)).toEqual({ skipped: 'locked' });
-    expect(readFileSync(lockFile, 'utf8')).toBe(live);
-    expect(s.calls()).toEqual([]);
-  });
-  test('an aged unreadable lock is NOT taken: tick reports lock_unreadable with exit 1', () => {
-    const s = stub([humanWait()]);
-    supervisor(s.root, 'pending');
-    const lockFile = join(s.root, 'home', 'supervise.lock');
-    for (const junk of ['', '{"pid":', 'null', '{"pid":"x","host":1}']) {
-      writeFileSync(lockFile, junk);
-      utimesSync(lockFile, new Date(0), new Date(0));
-      const { code, out } = captured(() => main(['supervise-tick']));
-      expect(code).toBe(1);
-      expect(JSON.parse(out)).toEqual({ skipped: 'lock_unreadable', path: lockFile });
-      expect(readFileSync(lockFile, 'utf8')).toBe(junk);
-    }
-    expect(s.calls()).toEqual([]);
-    expect(readdirSync(join(s.root, 'home')).filter(f => f.includes('.tmp.'))).toEqual([]);
-  });
-  test('an unreadable recover lock refuses recover without touching the run', () => {
-    const lost = run('running', { metadata: { execution_owner: LOST } });
-    const s = stub([lost]);
-    const db = runsDb(LOST);
-    const lockFile = join(s.root, 'home', 'runs', 'r.lock');
-    writeFileSync(lockFile, '');
-    utimesSync(lockFile, new Date(0), new Date(0));
-    const { code, out } = captured(() => main(['resume', 'sa1']));
-    expect(code).toBe(1);
-    expect(JSON.parse(out)).toMatchObject({ ok: false, reason: `lock_unreadable ${lockFile}` });
-    expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
-      status: 'running',
-    });
-    expect(existsSync(lockFile)).toBe(true);
-    db.close();
-  });
-  test('the lock file appears with its full content and leaves no temp file behind', () => {
-    const s = stub([run('completed')]);
-    const path = join(s.root, 'home', 'x.lock');
-    const l = archonMod.lock(path);
-    if (!l.ok) throw new Error('lock not taken');
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
-      pid: process.pid,
-      host: hostname(),
-    });
-    expect(archonMod.lock(path)).toEqual({ ok: false, reason: 'locked' });
-    l.release();
-    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
-  });
-  test("a dead lock is seized by A; B, a separate process, then gets locked and leaves A's lock in place", () => {
-    const s = stub([run('completed')]);
-    const path = join(s.root, 'home', 'x.lock');
-    writeFileSync(path, JSON.stringify({ ...LOST, at: '2000-01-01T00:00:00Z' }));
-    const a = archonMod.lock(path);
-    if (!a.ok) throw new Error('dead lock not seized');
-    const mine = readFileSync(path, 'utf8');
-    const b = Bun.spawnSync(
-      [
-        'bun',
-        '-e',
-        `console.log(JSON.stringify((await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'archon.ts'))})).lock(${JSON.stringify(path)})))`,
-      ],
-      { stdout: 'pipe', stderr: 'pipe' }
-    );
-    expect(JSON.parse(b.stdout.toString())).toEqual({ ok: false, reason: 'locked' });
-    expect(readFileSync(path, 'utf8')).toBe(mine);
-    expect(JSON.parse(mine)).toMatchObject({ pid: process.pid });
-    a.release();
-    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
-  });
-  test('a dead lock seized by someone else between the check and the rename: locked, no throw, no .stale left', () => {
-    const s = stub([run('completed')]);
-    const path = join(s.root, 'home', 'x.lock');
-    writeFileSync(path, JSON.stringify({ ...LOST, at: '2000-01-01T00:00:00Z' }));
-    // 判定已死的那一刻，另一进程抢先把旧锁移走
-    const kill = spyOn(process, 'kill').mockImplementation(() => {
-      rmSync(path, { force: true });
-      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
-    });
-    try {
-      expect(archonMod.lock(path)).toEqual({ ok: false, reason: 'locked' });
-    } finally {
-      kill.mockRestore();
-    }
-    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
-  });
-  test('a dead lock replaced by a live one between the check and the rename: live lock put back, locked, no .stale left', () => {
-    const s = stub([run('completed')]);
-    const path = join(s.root, 'home', 'x.lock');
-    writeFileSync(path, JSON.stringify({ ...LOST, at: '2000-01-01T00:00:00Z' }));
-    const live = JSON.stringify({ pid: process.pid, host: hostname(), at: '2030-01-01T00:00:00Z' });
-    // 判定已死的那一刻，另一进程夺取旧锁并写入自己的活锁
-    const kill = spyOn(process, 'kill').mockImplementation(() => {
-      rmSync(path);
-      writeFileSync(path, live);
-      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
-    });
-    try {
-      expect(archonMod.lock(path)).toEqual({ ok: false, reason: 'locked' });
-    } finally {
-      kill.mockRestore();
-    }
-    expect(readFileSync(path, 'utf8')).toBe(live);
-    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([
-      'x.lock',
-    ]);
+    expect(tick()[0]).toMatchObject({ action: 'ask', ok: true });
   });
   test('held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so', () => {
     const s = stub([humanWait()]);
@@ -999,3 +884,80 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
   expect(existsSync(String(waited.out.evidence))).toBe(true);
 }, 240000);
+
+describe('lock (flock, real processes)', () => {
+  const SRC = JSON.stringify(join(import.meta.dir, '..', 'src', 'archon.ts'));
+  /** 子进程：取锁后打印 ok，再执行 body；readLine 读子进程 stdout 的下一行。 */
+  function child(path: string, body: string, pre = '') {
+    const p = Bun.spawn(
+      [
+        'bun',
+        '-e',
+        `const { lock } = await import(${SRC}); ${pre} const l = lock(${JSON.stringify(path)}); console.log(l.ok); ${body}`,
+      ],
+      { stdout: 'pipe', stderr: 'inherit' }
+    );
+    const reader = p.stdout.getReader();
+    let buf = '';
+    const readLine = async (): Promise<string> => {
+      while (!buf.includes('\n')) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`child exited before a line: ${buf}`);
+        buf += new TextDecoder().decode(value);
+      }
+      const line = buf.slice(0, buf.indexOf('\n'));
+      buf = buf.slice(line.length + 1);
+      return line;
+    };
+    return { p, readLine };
+  }
+  test('while a child process holds the lock, the parent gets locked', async () => {
+    const path = join(tmp(), 'x.lock');
+    const c = child(path, 'await Bun.sleep(60_000);');
+    try {
+      expect(await c.readLine()).toBe('true');
+      expect(archonMod.lock(path)).toEqual({ ok: false, reason: 'locked' });
+    } finally {
+      c.p.kill('SIGKILL');
+      await c.p.exited;
+    }
+  });
+  test('once the holder is SIGKILLed the parent gets the lock immediately', async () => {
+    const path = join(tmp(), 'x.lock');
+    const c = child(path, 'await Bun.sleep(60_000);');
+    expect(await c.readLine()).toBe('true');
+    c.p.kill('SIGKILL');
+    await c.p.exited;
+    const l = archonMod.lock(path);
+    expect(l.ok).toBe(true);
+    if (l.ok) l.release();
+  });
+  test('three concurrent processes each holding 300ms: exactly one gets the lock', async () => {
+    const root = tmp();
+    const path = join(root, 'x.lock');
+    const go = join(root, 'go');
+    // 三个子进程都就绪后同时放行，持锁 300ms 覆盖其余两个的尝试
+    const wait = `console.log('ready'); while (!(await Bun.file(${JSON.stringify(go)}).exists())) await Bun.sleep(5);`;
+    const cs = [0, 1, 2].map(() => child(path, 'await Bun.sleep(300);', wait));
+    for (const c of cs) expect(await c.readLine()).toBe('ready');
+    writeFileSync(go, '');
+    const got = await Promise.all(cs.map(c => c.readLine()));
+    await Promise.all(cs.map(c => c.p.exited));
+    expect(got.filter(x => x === 'true')).toHaveLength(1);
+    expect(got.filter(x => x === 'false')).toHaveLength(2);
+  });
+  test('after release (holder still alive) another process gets the lock', async () => {
+    const path = join(tmp(), 'x.lock');
+    const c = child(path, "l.release(); console.log('released'); await Bun.sleep(60_000);");
+    try {
+      expect(await c.readLine()).toBe('true');
+      expect(await c.readLine()).toBe('released');
+      const l = archonMod.lock(path);
+      expect(l.ok).toBe(true);
+      if (l.ok) l.release();
+    } finally {
+      c.p.kill('SIGKILL');
+      await c.p.exited;
+    }
+  });
+});

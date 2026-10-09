@@ -1,15 +1,8 @@
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
+import { dlopen, FFIType, read, type Pointer } from 'bun:ffi';
 import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import {
-  linkSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { closeSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
@@ -101,83 +94,48 @@ export function ownerLost(run: RunView): boolean {
 
 export type RecoverResult = { ok: true; resumed: Json } | { ok: false; reason: string };
 
-export type Lock =
-  | { ok: true; release: () => void }
-  | { ok: false; reason: 'locked' | 'lock_unreadable' };
+export type Lock = { ok: true; release: () => void } | { ok: false; reason: 'locked' };
+
+const DARWIN = process.platform === 'darwin';
+const ERRNO = DARWIN ? '__error' : '__errno_location';
+const libc = dlopen(DARWIN ? 'libSystem.B.dylib' : 'libc.so.6', {
+  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  [ERRNO]: { args: [], returns: FFIType.ptr },
+});
+const LOCK_EX = 2;
+const LOCK_NB = 4;
+const EWOULDBLOCK = DARWIN ? 35 : 11;
 
 /**
- * 锁文件内容 {pid,host,at}：先写 `<path>.tmp.<pid>` 再 link 到 path，link 成功即持锁，所以锁文件一出现就是完整内容。
- * 被占用时只夺取本机已死进程的锁（rename 移走旧锁，失败或移走的已不是判死的那份即让出）；读不出或解析不了的锁不可能由本函数写出，原样留给人工处理（lock_unreadable）。
- * release 只删除仍是自己写的锁。
+ * 内核 flock(LOCK_EX|LOCK_NB)：持锁进程死亡（含 SIGKILL）时内核随 fd 一起释放，无需判死或夺锁。
+ * 写入的 {pid,host,at} 仅供人工诊断，不参与判定。release 只关 fd、不删文件：删掉后别的进程可能
+ * 锁住一个已脱离路径的 inode，与新建同名文件的进程同时“持锁”。
  */
 export function lock(path: string): Lock {
-  const me = JSON.stringify({ pid: process.pid, host: hostname(), at: new Date().toISOString() });
-  const tmp = `${path}.tmp.${String(process.pid)}`;
-  writeFileSync(tmp, me);
-  try {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        linkSync(tmp, path);
-        return {
-          ok: true,
-          release: () => {
-            if (readFileSync(path, 'utf8') === me) rmSync(path);
-          },
-        };
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-        const h = holder(path);
-        if (h.held !== 'dead' || attempt > 0)
-          return { ok: false, reason: h.held === 'unreadable' ? 'lock_unreadable' : 'locked' };
-        // 夺取靠 rename 原子决出唯一赢家；ENOENT = 别人已夺取或持有者刚释放，按被占用处理
-        const stale = `${path}.stale.${String(process.pid)}.${String(Date.now())}`;
-        try {
-          renameSync(path, stale);
-        } catch (re) {
-          if ((re as NodeJS.ErrnoException).code === 'ENOENT')
-            return { ok: false, reason: 'locked' };
-          throw re;
-        }
-        // 判死与 rename 之间旧锁可能已被换成活锁：移走的不是判死的那份就 link 回原处后让出；
-        // EEXIST = 原处已有人重建，那把锁为准
-        if (!readFileSync(stale).equals(h.raw)) {
-          try {
-            linkSync(stale, path);
-          } catch (le) {
-            if ((le as NodeJS.ErrnoException).code !== 'EEXIST') throw le;
-          }
-          rmSync(stale, { force: true });
-          return { ok: false, reason: 'locked' };
-        }
-        rmSync(stale, { force: true });
-      }
-    }
-    return { ok: false, reason: 'locked' };
-  } finally {
-    rmSync(tmp, { force: true });
+  const fd = openSync(path, 'a');
+  if (libc.symbols.flock(fd, LOCK_EX | LOCK_NB) !== 0) {
+    const errno = read.i32(libc.symbols[ERRNO]() as Pointer);
+    closeSync(fd);
+    if (errno === EWOULDBLOCK) return { ok: false, reason: 'locked' };
+    throw new Error(`flock ${path}: errno ${String(errno)}`);
   }
-}
-
-/** 判死时连同读到的原始字节一起返回，夺取后据此核对移走的是不是同一把锁。 */
-function holder(path: string): { held: 'dead'; raw: Buffer } | { held: 'alive' | 'unreadable' } {
-  let raw: Buffer;
-  let o: { pid?: unknown; host?: unknown } | null;
-  try {
-    raw = readFileSync(path);
-    o = JSON.parse(raw.toString('utf8')) as { pid?: unknown; host?: unknown } | null;
-  } catch (e) {
-    // ENOENT：持有者刚释放，按被占用处理，下次再取
-    return { held: (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'alive' : 'unreadable' };
-  }
-  if (typeof o?.pid !== 'number' || typeof o.host !== 'string') return { held: 'unreadable' };
-  // 年龄不代表持有者已死：只夺取本机已死进程的锁；别的主机无法核实，按“被占用”处理
-  return o.host === hostname() && !pidAlive(o.pid) ? { held: 'dead', raw } : { held: 'alive' };
+  ftruncateSync(fd, 0);
+  writeSync(
+    fd,
+    JSON.stringify({ pid: process.pid, host: hostname(), at: new Date().toISOString() })
+  );
+  return {
+    ok: true,
+    release: () => {
+      closeSync(fd);
+    },
+  };
 }
 
 /**
  * PoC #8–#11：upstream 的 resume 只接受 failed/paused。把可证实 owner-lost 的 run 由 running 回拨为 failed，
  * 再 resume --detach；已完成节点走缓存。upstream 支持后删除回拨。
- * 同一 run 的 recover 经 `$SUPERAGENT_HOME/runs/<id>.lock` 串行；回拨 SQL 绑定观察到的 owner，期间被别的进程
+ * 同一 run 的 recover 经 `$SUPERAGENT_HOME/runs/<id>.lock`（lock()）串行；回拨 SQL 绑定观察到的 owner，期间被别的进程
  * 接手（owner 变了）就不动。guard 在锁内拿到最新 run，返回非空字符串即拒绝（停滞检查用）；resume 成功后
  * done 也在锁内执行，让恢复计数在下一个 recover 拿到锁之前落盘。
  */
@@ -190,11 +148,7 @@ export function recover(
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
   const path = join(home().sa, 'runs', `${id}.lock`);
   const l = lock(path);
-  if (!l.ok)
-    return {
-      ok: false,
-      reason: l.reason === 'locked' ? 'recover_locked' : `lock_unreadable ${path}`,
-    };
+  if (!l.ok) return { ok: false, reason: 'recover_locked' };
   try {
     const run = getRun(id, cwd);
     const veto = guard?.(run);
