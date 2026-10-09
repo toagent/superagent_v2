@@ -531,16 +531,20 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   return { ...base, action: 'none', ok: true, ask: a.status };
 }
 
-/** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。 */
-export function superviseTick(): Action[] | { skipped: 'locked' } {
+/** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复；锁文件不可读则跳过并报告（exit 1）。 */
+export function superviseTick():
+  | Action[]
+  | { skipped: 'locked' }
+  | { skipped: 'lock_unreadable'; path: string } {
   const { sa } = home();
   mkdirSync(sa, { recursive: true });
-  const release = lock(join(sa, 'supervise.lock'));
-  if (!release) return { skipped: 'locked' };
+  const path = join(sa, 'supervise.lock');
+  const l = lock(path);
+  if (!l.ok) return l.reason === 'locked' ? { skipped: 'locked' } : { skipped: l.reason, path };
   try {
     return tick(sa);
   } finally {
-    release();
+    l.release();
   }
 }
 
@@ -673,7 +677,8 @@ export function main(argv: string[]): number {
     case 'supervise-tick': {
       const actions = superviseTick();
       print(actions);
-      return Array.isArray(actions) && actions.some(x => !x.ok) ? 1 : 0;
+      if (!Array.isArray(actions)) return actions.skipped === 'locked' ? 0 : 1;
+      return actions.some(x => !x.ok) ? 1 : 0;
     }
     case 'report': {
       const r = report();

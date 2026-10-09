@@ -1,7 +1,7 @@
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
 import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
@@ -93,43 +93,54 @@ export function ownerLost(run: RunView): boolean {
 
 export type RecoverResult = { ok: true; resumed: Json } | { ok: false; reason: string };
 
-const LOCK_TTL_MS = 10 * 60_000;
+export type Lock =
+  | { ok: true; release: () => void }
+  | { ok: false; reason: 'locked' | 'lock_unreadable' };
 
 /**
- * O_EXCL 锁文件，内容 {pid,host,at}；拿不到返回 null。持有者是本机已死进程（kill(pid,0) 报 ESRCH），或内容
- * 不可解析且超过 TTL，才夺取一次。返回的 release 只删除仍是自己写的锁。
+ * 锁文件内容 {pid,host,at}：先写 `<path>.tmp.<pid>` 再 link 到 path，link 成功即持锁，所以锁文件一出现就是完整内容。
+ * 被占用时只夺取本机已死进程的锁；读不出或解析不了的锁不可能由本函数写出，原样留给人工处理（lock_unreadable）。
+ * release 只删除仍是自己写的锁。
  */
-export function lock(path: string): (() => void) | null {
+export function lock(path: string): Lock {
   const me = JSON.stringify({ pid: process.pid, host: hostname(), at: new Date().toISOString() });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(path, me, { flag: 'wx' });
-      return () => {
-        if (readFileSync(path, 'utf8') === me) rmSync(path);
-      };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      if (attempt > 0 || !lockStale(path)) return null;
-      rmSync(path, { force: true });
+  const tmp = `${path}.tmp.${String(process.pid)}`;
+  writeFileSync(tmp, me);
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        linkSync(tmp, path);
+        return {
+          ok: true,
+          release: () => {
+            if (readFileSync(path, 'utf8') === me) rmSync(path);
+          },
+        };
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        const held = holder(path);
+        if (held !== 'dead' || attempt > 0)
+          return { ok: false, reason: held === 'unreadable' ? 'lock_unreadable' : 'locked' };
+        rmSync(path, { force: true });
+      }
     }
+    return { ok: false, reason: 'locked' };
+  } finally {
+    rmSync(tmp, { force: true });
   }
-  return null;
 }
 
-function lockStale(path: string): boolean {
-  let o: { pid: number; host: string };
+function holder(path: string): 'dead' | 'alive' | 'unreadable' {
+  let o: { pid?: unknown; host?: unknown } | null;
   try {
-    o = JSON.parse(readFileSync(path, 'utf8')) as { pid: number; host: string };
-  } catch {
-    // 读不到或内容不完整：刚释放、正在写入，或持有者写入前就崩溃——只有后者会超龄，超龄才夺取
-    try {
-      return Date.now() - statSync(path).mtimeMs > LOCK_TTL_MS;
-    } catch {
-      return false;
-    }
+    o = JSON.parse(readFileSync(path, 'utf8')) as { pid?: unknown; host?: unknown } | null;
+  } catch (e) {
+    // ENOENT：持有者刚释放，按被占用处理，下次再取
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'alive' : 'unreadable';
   }
+  if (typeof o?.pid !== 'number' || typeof o.host !== 'string') return 'unreadable';
   // 年龄不代表持有者已死：只夺取本机已死进程的锁；别的主机无法核实，按“被占用”处理
-  return o.host === hostname() && !pidAlive(o.pid);
+  return o.host === hostname() && !pidAlive(o.pid) ? 'dead' : 'alive';
 }
 
 /**
@@ -146,8 +157,13 @@ export function recover(
   done?: () => void
 ): RecoverResult {
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
-  const release = lock(join(home().sa, 'runs', `${id}.lock`));
-  if (!release) return { ok: false, reason: 'recover_locked' };
+  const path = join(home().sa, 'runs', `${id}.lock`);
+  const l = lock(path);
+  if (!l.ok)
+    return {
+      ok: false,
+      reason: l.reason === 'locked' ? 'recover_locked' : `lock_unreadable ${path}`,
+    };
   try {
     const run = getRun(id, cwd);
     const veto = guard?.(run);
@@ -175,7 +191,7 @@ export function recover(
     done?.();
     return { ok: true, resumed };
   } finally {
-    release();
+    l.release();
   }
 }
 

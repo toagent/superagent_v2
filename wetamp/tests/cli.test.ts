@@ -737,7 +737,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     tick();
     expect(existsSync(lockFile)).toBe(false);
   });
-  test('an aged lock whose holder is alive is never taken; an aged unreadable lock is', () => {
+  test('an aged lock whose holder is alive is never taken', () => {
     const s = stub([humanWait()]);
     supervisor(s.root, 'pending');
     const lockFile = join(s.root, 'home', 'supervise.lock');
@@ -747,10 +747,50 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(JSON.parse(captured(() => main(['supervise-tick'])).out)).toEqual({ skipped: 'locked' });
     expect(readFileSync(lockFile, 'utf8')).toBe(live);
     expect(s.calls()).toEqual([]);
+  });
+  test('an aged unreadable lock is NOT taken: tick reports lock_unreadable with exit 1', () => {
+    const s = stub([humanWait()]);
+    supervisor(s.root, 'pending');
+    const lockFile = join(s.root, 'home', 'supervise.lock');
+    for (const junk of ['', '{"pid":', 'null', '{"pid":"x","host":1}']) {
+      writeFileSync(lockFile, junk);
+      utimesSync(lockFile, new Date(0), new Date(0));
+      const { code, out } = captured(() => main(['supervise-tick']));
+      expect(code).toBe(1);
+      expect(JSON.parse(out)).toEqual({ skipped: 'lock_unreadable', path: lockFile });
+      expect(readFileSync(lockFile, 'utf8')).toBe(junk);
+    }
+    expect(s.calls()).toEqual([]);
+    expect(readdirSync(join(s.root, 'home')).filter(f => f.includes('.tmp.'))).toEqual([]);
+  });
+  test('an unreadable recover lock refuses recover without touching the run', () => {
+    const lost = run('running', { metadata: { execution_owner: LOST } });
+    const s = stub([lost]);
+    const db = runsDb(LOST);
+    const lockFile = join(s.root, 'home', 'runs', 'r.lock');
     writeFileSync(lockFile, '');
     utimesSync(lockFile, new Date(0), new Date(0));
-    tick();
-    expect(existsSync(lockFile)).toBe(false);
+    const { code, out } = captured(() => main(['resume', 'sa1']));
+    expect(code).toBe(1);
+    expect(JSON.parse(out)).toMatchObject({ ok: false, reason: `lock_unreadable ${lockFile}` });
+    expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
+      status: 'running',
+    });
+    expect(existsSync(lockFile)).toBe(true);
+    db.close();
+  });
+  test('the lock file appears with its full content and leaves no temp file behind', () => {
+    const s = stub([run('completed')]);
+    const path = join(s.root, 'home', 'x.lock');
+    const l = archonMod.lock(path);
+    if (!l.ok) throw new Error('lock not taken');
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
+      pid: process.pid,
+      host: hostname(),
+    });
+    expect(archonMod.lock(path)).toEqual({ ok: false, reason: 'locked' });
+    l.release();
+    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
   });
   test('owner_lost run is recovered and recorded', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
