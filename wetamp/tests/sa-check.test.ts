@@ -96,6 +96,45 @@ describe('gate rules', () => {
     });
     expect(d).toMatchObject({ verdict: 'pass', debt: ['R1-1 medium b.ts:7', 'x-low low a.ts:1'] });
   });
+  test('G1: a reviewer listing one of two open mediums still yields both as debt', () => {
+    const d = decide({
+      reviews: [
+        R(
+          'PASS',
+          [f('medium', { id: 'R1-1' }), f('medium', { id: 'R1-2' })],
+          ['R1-1 medium a.ts:1']
+        ),
+      ],
+      rechecks: [C('a')],
+      risk: 'G1',
+    });
+    expect(d).toMatchObject({
+      verdict: 'pass',
+      debt: ['R1-1 medium a.ts:1', 'R1-2 medium a.ts:1'],
+    });
+  });
+  test('G1: an R1 medium omitted in R2 stays debt; closing it with evidence clears it', () => {
+    const r1 = R('FAIL', [f('high', { id: 'R1-1' }), f('medium', { id: 'R1-2' })]);
+    const pass = (r2: Rv): string[] =>
+      decide({ reviews: [r1, r2], rechecks: [C('a'), C('b')], risk: 'G1' }).debt;
+    expect(pass(R('PASS', [fixed('R1-1')]))).toEqual(['R1-2 medium a.ts:1']);
+    expect(pass(R('PASS', [fixed('R1-1'), fixed('R1-2', 'medium')]))).toEqual([]);
+  });
+  test('N1: a duplicate id (closed + open high) in one review escalates as invalid_review', () => {
+    const r1 = R('FAIL', [f('high', { id: 'H1' })]);
+    const r2 = R('PASS', [fixed('H1'), f('high', { id: 'H1', carry_over: true })]);
+    expect(decide({ reviews: [r1, r2], rechecks: [C('a'), C('b')], risk: 'G1' })).toEqual({
+      verdict: 'escalate',
+      rounds: 2,
+      reason: 'invalid_review',
+      debt: [],
+    });
+    expect(ids([r1, r2])).toEqual(['H1']);
+    const dupLow = R('PASS', [f('low', { id: 'L' }), f('low', { id: 'L' })]);
+    expect(decide({ reviews: [dupLow], rechecks: [C('a')], risk: 'G1' }).reason).toBe(
+      'invalid_review'
+    );
+  });
   test('r1 FAIL asks for a fix round', () => {
     expect(
       decide({ reviews: [R('FAIL', [f('high')])], rechecks: [C('a')], risk: 'G1' })

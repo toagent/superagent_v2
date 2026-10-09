@@ -139,20 +139,22 @@ function environment(): void {
 const severities = (risk: string): string[] =>
   risk === 'G2' ? ['blocker', 'high', 'medium'] : ['blocker', 'high'];
 
+/** 第 2/3 轮的有效关闭：原 id、carry_over:true、status:closed 且附 evidence；同轮同 id 另有 open 条目则 open 胜出。 */
+const closes = (r: Review, id: string): boolean =>
+  r.findings.some(
+    f => f.id === id && f.carry_over && f.status === 'closed' && f.evidence.trim() !== ''
+  ) && !r.findings.some(f => f.id === id && f.status === 'open');
+
 /**
  * 逐轮推进的 open 阻塞发现 ID 集合。第 1 轮：open 的 blocker/high（G2 含 medium）。第 2/3 轮以上一轮集合为基准：
- * 只有本轮用原 id、carry_over:true、status:closed 且附 evidence 的条目才关闭；缺失、改 id、carry_over:false 一律仍 open。
+ * 只有 closes() 成立的条目才关闭；缺失、改 id、carry_over:false 一律仍 open。
  * 不在基准里的条目：新发现仅 open 的 blocker 阻塞，声明 carry_over 的按本级别阻塞。
  */
 export function openBlocking(reviews: Review[], risk: string): Set<string> {
   const sev = severities(risk);
   let open = new Set<string>();
   reviews.forEach((r, i) => {
-    const closed = (id: string): boolean =>
-      r.findings.some(
-        f => f.id === id && f.carry_over && f.status === 'closed' && f.evidence.trim() !== ''
-      );
-    const next = new Set([...open].filter(id => !closed(id)));
+    const next = new Set([...open].filter(id => !closes(r, id)));
     for (const f of r.findings)
       if (
         f.status === 'open' &&
@@ -165,12 +167,20 @@ export function openBlocking(reviews: Review[], risk: string): Set<string> {
   return open;
 }
 
-/** 评审债：评审给了 debt[] 就用它；为空时由未阻塞的 open 发现派生（G1 的 medium/low 不能无声消失）。 */
-function debtOf(r: Review, open: Set<string>): string[] {
-  if (r.debt.length) return r.debt;
-  return r.findings
-    .filter(f => f.status === 'open' && !open.has(f.id))
-    .map(f => `${f.id} ${f.severity} ${f.file}:${String(f.line)}`);
+/**
+ * 评审债 = 末轮评审员 debt[] ∪ 各轮 open 且不阻塞的发现（后轮有效关闭才移除，遗漏不算关闭），按 ID 去重。
+ * 不信任评审员只登记部分条目：派生项始终并入。
+ */
+function debtOf(reviews: Review[], open: Set<string>): string[] {
+  const derived = new Map<string, string>();
+  for (const r of reviews) {
+    for (const id of [...derived.keys()]) if (closes(r, id)) derived.delete(id);
+    for (const f of r.findings)
+      if (f.status === 'open' && !open.has(f.id))
+        derived.set(f.id, `${f.id} ${f.severity} ${f.file}:${String(f.line)}`);
+  }
+  for (const id of open) derived.delete(id);
+  return [...new Set([...(reviews.at(-1)?.debt ?? []), ...derived.values()])];
 }
 
 export const MAX_ROUNDS = 3;
@@ -178,7 +188,7 @@ type Verdict = 'pass' | 'fix' | 'escalate';
 
 /**
  * reviews[i]/rechecks[i] 为第 i+1 轮评审与其前的验收复跑（rechecks[0] = 首轮 diff 节点）。
- * 先判到期，再判修复无变化（same:true 时评审节点已跳过，reviews 末项为 null），最后才看能否 PASS。
+ * 先判到期，再判修复无变化（same:true 时评审节点已跳过，reviews 末项为 null），再拒重复 id，最后才看能否 PASS。
  */
 export function decide(input: {
   reviews: (Review | null)[];
@@ -193,8 +203,11 @@ export function decide(input: {
   const reviews = input.reviews.filter((r): r is Review => r !== null);
   const last = reviews.at(-1);
   if (!last || reviews.length !== rounds) throw new Error('gate: no review');
+  // 同一份评审里 id 重复（含同 id 既 closed 又 open）：账本无法唯一解释，不放行也不降为债务
+  if (reviews.some(r => new Set(r.findings.map(f => f.id)).size !== r.findings.length))
+    return { verdict: 'escalate', rounds, reason: 'invalid_review', debt: [] };
   const open = openBlocking(reviews, input.risk);
-  const debt = debtOf(last, open);
+  const debt = debtOf(reviews, open);
   const acceptOk = rechecks.at(-1)?.ok ?? false;
   if (last.status === 'PASS' && open.size === 0 && acceptOk) {
     return { verdict: 'pass', rounds, reason: null, debt };
