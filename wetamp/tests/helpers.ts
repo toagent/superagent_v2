@@ -1,11 +1,12 @@
 import { afterAll } from 'bun:test';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTempTree } from '@archon/paths/test-utils';
 
 const roots: string[] = [];
-afterAll(() => {
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
+afterAll(async () => {
+  for (const r of roots.splice(0)) await removeTempTree(r);
 });
 export const tmp = (): string => {
   const d = realpathSync(mkdtempSync(join(tmpdir(), 'sa-test-')));
@@ -14,7 +15,12 @@ export const tmp = (): string => {
 };
 
 export const sh = (cmd: string, cwd: string, env: Record<string, string> = {}): string => {
-  const p = Bun.spawnSync(['bash', '-c', cmd], { cwd, env: { ...process.env, ...env }, stdout: 'pipe', stderr: 'pipe' });
+  const p = Bun.spawnSync(['bash', '-c', cmd], {
+    cwd,
+    env: { ...process.env, ...env },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
   if (p.exitCode !== 0) throw new Error(`${cmd}: ${p.stderr.toString()}`);
   return p.stdout.toString();
 };
@@ -29,8 +35,14 @@ export function gitRepo(root: string): string {
   return repo;
 }
 
-export function fixturePlan(root: string, repo: string, patch: (p: Record<string, unknown>) => void = () => undefined): string {
-  const plan = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')) as Record<string, unknown>;
+export function fixturePlan(
+  root: string,
+  repo: string,
+  patch: (p: Record<string, unknown>) => void = () => undefined
+): string {
+  const plan = JSON.parse(
+    readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')
+  ) as Record<string, unknown>;
   plan.repo = repo;
   patch(plan);
   const p = join(root, 'plan.json');

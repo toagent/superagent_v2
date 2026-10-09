@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { trackTempRoots } from '@archon/paths/test-utils';
 import {
   assertAuthorNotReviewer,
   loadTiers,
@@ -10,15 +11,8 @@ import {
   renderAliases,
 } from '../src/config';
 
-const roots: string[] = [];
-afterAll(() => {
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
-});
-const tmp = (): string => {
-  const d = mkdtempSync(join(tmpdir(), 'sa-test-'));
-  roots.push(d);
-  return d;
-};
+const trackTempRoot = trackTempRoots();
+const tmp = (): string => trackTempRoot(mkdtempSync(join(tmpdir(), 'sa-test-')));
 
 function runInstall(
   home: string,
