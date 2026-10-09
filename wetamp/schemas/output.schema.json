@@ -1,0 +1,66 @@
+{
+  "$comment": "AI node output_format. Codex strict mode: every key required, optional values as null unions, no length/range keywords. Field set is v2 coder/reviewer results flattened (anyOf → single branch) plus reviewer debt.",
+  "$defs": {
+    "coder": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["done", "blocked", "partial"] },
+        "changed_files": { "type": "array", "items": { "type": "string" } },
+        "quick_checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "cmd": { "type": "string" }, "exit": { "type": "integer" } },
+            "required": ["cmd", "exit"]
+          }
+        },
+        "notes": { "type": "string" },
+        "blockers": { "type": "array", "items": { "type": "string" } },
+        "error_class": {
+          "type": ["string", "null"],
+          "enum": ["scope_violation", "budget_exhausted", "plan_invalid", "sandbox_denied", "permission_denied", "vendor_unavailable_all", "task", "env", "timeout", null]
+        }
+      },
+      "required": ["status", "changed_files", "quick_checks", "notes", "blockers", "error_class"]
+    },
+    "reviewer": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+        "notes": { "type": "string" },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "severity": { "type": "string", "enum": ["blocker", "high", "medium", "low"] },
+              "file": { "type": "string" },
+              "line": { "type": "integer" },
+              "status": { "type": "string", "enum": ["open", "closed"] },
+              "evidence": { "type": "string" },
+              "carry_over": { "type": "boolean" }
+            },
+            "required": ["id", "severity", "file", "line", "status", "evidence", "carry_over"]
+          }
+        },
+        "fixture_confirmations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "purpose": { "type": "string" },
+              "isolated_fixture": { "type": "boolean" },
+              "no_data_operations": { "type": "boolean" },
+              "evidence": { "type": "string" }
+            },
+            "required": ["path", "purpose", "isolated_fixture", "no_data_operations", "evidence"]
+          }
+        },
+        "debt": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["status", "notes", "findings", "fixture_confirmations", "debt"]
+    }
+  }
+}

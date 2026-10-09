@@ -1,0 +1,229 @@
+name: sa-golden-0001
+description: "superagent run golden-0001: 2 package(s), 2 milestone(s)"
+nodes:
+  - id: environment
+    script: sa-check
+    runtime: bun
+    with:
+      kind: env
+      plan: /GEN/plan.json
+  - id: code-core
+    command: sa-code
+    model: "@sa-coder"
+    with:
+      pkg: core
+      brief: /GEN/briefs/core.md
+      hint: /GEN/hints/core.md
+    depends_on:
+      - environment
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          type:
+            - string
+            - "null"
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - null
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+  - id: verify-core
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - code-core
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: core
+      tag: verify-core
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - head
+  - id: gate-m1
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - verify-core
+    with:
+      kind: gate
+      milestone: m1
+      risk: G1
+      verify_0: $verify-core.output.ok
+  - id: code-api
+    command: sa-code
+    model: "@sa-coder"
+    with:
+      pkg: api
+      brief: /GEN/briefs/api.md
+      hint: /GEN/hints/api.md
+    depends_on:
+      - gate-m1
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          type:
+            - string
+            - "null"
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - null
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+  - id: verify-api
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - code-api
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: api
+      tag: verify-api
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - head
+  - id: gate-m2
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - verify-api
+    with:
+      kind: gate
+      milestone: m2
+      risk: G2
+      verify_0: $verify-api.output.ok
+  - id: land
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - gate-m2
+    with:
+      kind: land
+      base_ref: main

@@ -61,8 +61,9 @@ export function archonJson(args: string[], cwd?: string): Json {
 
 export const tail = (s: string, n = 400): string => s.trim().slice(-n);
 
-export function getRun(id: string): RunView {
-  const j = archonJson(['workflow', 'get', id, '--verbose']);
+/** Archon 要求 cwd 在 git 仓库内；传 run 的目标 repo，避免把别的仓库登记成 codebase。 */
+export function getRun(id: string, cwd?: string): RunView {
+  const j = archonJson(['workflow', 'get', id, '--verbose'], cwd);
   if (typeof j.id !== 'string' || typeof j.status !== 'string')
     throw new Error(`workflow get ${id}: ${JSON.stringify(j).slice(0, 300)}`);
   return j as unknown as RunView;
@@ -89,8 +90,8 @@ export type RecoverResult = { ok: true; resumed: Json } | { ok: false; reason: s
  * PoC #8–#11：upstream 的 resume 只接受 failed/paused。把可证实 owner-lost 的 run 由 running 回拨为 failed
  * （单行单列、带 where status='running'），再 resume --detach；已完成节点走缓存。upstream 支持后删除回拨。
  */
-export function recover(id: string): RecoverResult {
-  const run = getRun(id);
+export function recover(id: string, cwd?: string): RecoverResult {
+  const run = getRun(id, cwd);
   if (run.status === 'running') {
     if (!ownerLost(run)) return { ok: false, reason: 'owner alive or on another host' };
     const db = new Database(join(home().archon, 'archon.db'));
@@ -106,7 +107,7 @@ export function recover(id: string): RecoverResult {
   } else if (run.status !== 'failed' && run.status !== 'paused') {
     return { ok: false, reason: `status ${run.status} is not resumable` };
   }
-  const resumed = archonJson(['workflow', 'resume', run.id, '--detach']);
+  const resumed = archonJson(['workflow', 'resume', run.id, '--detach'], cwd);
   return resumed.ok === false
     ? { ok: false, reason: tail(JSON.stringify(resumed)) }
     : { ok: true, resumed };

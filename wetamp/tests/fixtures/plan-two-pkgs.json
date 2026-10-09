@@ -1,0 +1,29 @@
+{
+  "repo": "__REPO__",
+  "base_ref": "main",
+  "deadline": "2099-01-01T00:00:00Z",
+  "budget": { "weighted_tokens": 1000000 },
+  "packages": [
+    {
+      "id": "core",
+      "title": "Core module",
+      "goal": "Write core.txt; keep $HOME and $ARTIFACTS_DIR literal in prose.",
+      "scope": { "write": ["core.txt"], "read_hint": ["README.md"] },
+      "accept": [{ "cmd": "test -f core.txt", "timeout_s": 30 }],
+      "risk": "G1",
+      "size": "S"
+    },
+    {
+      "id": "api",
+      "title": "API layer",
+      "goal": "Write api.txt.",
+      "scope": { "write": ["api.txt"] },
+      "deps": ["core"],
+      "accept": [{ "cmd": "test -f api.txt", "timeout_s": 30 }],
+      "risk": "G2",
+      "size": "M",
+      "signoff": "human",
+      "milestone": "m2"
+    }
+  ]
+}

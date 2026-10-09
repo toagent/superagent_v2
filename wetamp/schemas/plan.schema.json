@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo",
+    "base_ref",
+    "deadline",
+    "budget",
+    "packages"
+  ],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "concurrency": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "deadline": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "weighted_tokens"
+      ],
+      "properties": {
+        "weighted_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Run budget must cover the sum of policy.budget_floor for all package sizes"
+        },
+        "cost": {
+          "type": "number",
+          "minimum": 0
+        },
+        "launches": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "mode": {
+      "type": "string",
+      "pattern": "^(auto|strict|single:(chatgpt|claude))$"
+    },
+    "environment": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/check"
+      },
+      "description": "R09 environment checks for every package, run in the acceptance sandbox before dispatch; a failure holds the package as held:environment"
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "goal",
+          "scope",
+          "accept",
+          "risk",
+          "size"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "write"
+            ],
+            "properties": {
+              "write": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "read_hint": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "artifact_paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "repo_role",
+                    "path",
+                    "purpose"
+                  ],
+                  "properties": {
+                    "repo_role": {
+                      "enum": [
+                        "target_main",
+                        "attempt",
+                        "engine",
+                        "temp"
+                      ]
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "purpose": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "deps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "accept": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/check"
+            }
+          },
+          "accept_quick": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/check"
+            }
+          },
+          "environment": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/$defs/check"
+            },
+            "description": "R09 package environment checks, appended to the plan-level checks"
+          },
+          "fixture_exemptions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "purpose"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "purpose": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              }
+            }
+          },
+          "risk": {
+            "enum": [
+              "G0",
+              "G1",
+              "G2"
+            ]
+          },
+          "size": {
+            "enum": [
+              "S",
+              "M",
+              "L"
+            ]
+          },
+          "signoff": {
+            "enum": [
+              "auto",
+              "human"
+            ],
+            "default": "auto",
+            "description": "G2 qualified PASS integrates automatically unless human signoff is requested"
+          },
+          "effort": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "description": "Legacy input accepted; dispatch follows policy.effort"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "milestone": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,31}$",
+            "description": "Review batch; packages sharing a milestone are reviewed together. Default m1"
+          }
+        }
+      }
+    },
+    "console": {
+      "enum": [
+        "claude",
+        "codex"
+      ],
+      "description": "Selects the reviewer pool (tiers.json routing.reviewer.by_console); default claude"
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cmd",
+        "timeout_s"
+      ],
+      "properties": {
+        "cmd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
