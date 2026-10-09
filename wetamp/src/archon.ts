@@ -107,7 +107,7 @@ export type Lock =
 
 /**
  * 锁文件内容 {pid,host,at}：先写 `<path>.tmp.<pid>` 再 link 到 path，link 成功即持锁，所以锁文件一出现就是完整内容。
- * 被占用时只夺取本机已死进程的锁（rename 移走旧锁，失败即让出）；读不出或解析不了的锁不可能由本函数写出，原样留给人工处理（lock_unreadable）。
+ * 被占用时只夺取本机已死进程的锁（rename 移走旧锁，失败或移走的已不是判死的那份即让出）；读不出或解析不了的锁不可能由本函数写出，原样留给人工处理（lock_unreadable）。
  * release 只删除仍是自己写的锁。
  */
 export function lock(path: string): Lock {
@@ -126,9 +126,9 @@ export function lock(path: string): Lock {
         };
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-        const held = holder(path);
-        if (held !== 'dead' || attempt > 0)
-          return { ok: false, reason: held === 'unreadable' ? 'lock_unreadable' : 'locked' };
+        const h = holder(path);
+        if (h.held !== 'dead' || attempt > 0)
+          return { ok: false, reason: h.held === 'unreadable' ? 'lock_unreadable' : 'locked' };
         // 夺取靠 rename 原子决出唯一赢家；ENOENT = 别人已夺取或持有者刚释放，按被占用处理
         const stale = `${path}.stale.${String(process.pid)}.${String(Date.now())}`;
         try {
@@ -137,6 +137,17 @@ export function lock(path: string): Lock {
           if ((re as NodeJS.ErrnoException).code === 'ENOENT')
             return { ok: false, reason: 'locked' };
           throw re;
+        }
+        // 判死与 rename 之间旧锁可能已被换成活锁：移走的不是判死的那份就 link 回原处后让出；
+        // EEXIST = 原处已有人重建，那把锁为准
+        if (!readFileSync(stale).equals(h.raw)) {
+          try {
+            linkSync(stale, path);
+          } catch (le) {
+            if ((le as NodeJS.ErrnoException).code !== 'EEXIST') throw le;
+          }
+          rmSync(stale, { force: true });
+          return { ok: false, reason: 'locked' };
         }
         rmSync(stale, { force: true });
       }
@@ -147,17 +158,20 @@ export function lock(path: string): Lock {
   }
 }
 
-function holder(path: string): 'dead' | 'alive' | 'unreadable' {
+/** 判死时连同读到的原始字节一起返回，夺取后据此核对移走的是不是同一把锁。 */
+function holder(path: string): { held: 'dead'; raw: Buffer } | { held: 'alive' | 'unreadable' } {
+  let raw: Buffer;
   let o: { pid?: unknown; host?: unknown } | null;
   try {
-    o = JSON.parse(readFileSync(path, 'utf8')) as { pid?: unknown; host?: unknown } | null;
+    raw = readFileSync(path);
+    o = JSON.parse(raw.toString('utf8')) as { pid?: unknown; host?: unknown } | null;
   } catch (e) {
     // ENOENT：持有者刚释放，按被占用处理，下次再取
-    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'alive' : 'unreadable';
+    return { held: (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'alive' : 'unreadable' };
   }
-  if (typeof o?.pid !== 'number' || typeof o.host !== 'string') return 'unreadable';
+  if (typeof o?.pid !== 'number' || typeof o.host !== 'string') return { held: 'unreadable' };
   // 年龄不代表持有者已死：只夺取本机已死进程的锁；别的主机无法核实，按“被占用”处理
-  return o.host === hostname() && !pidAlive(o.pid) ? 'dead' : 'alive';
+  return o.host === hostname() && !pidAlive(o.pid) ? { held: 'dead', raw } : { held: 'alive' };
 }
 
 /**

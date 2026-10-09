@@ -829,6 +829,27 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     }
     expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
   });
+  test('a dead lock replaced by a live one between the check and the rename: live lock put back, locked, no .stale left', () => {
+    const s = stub([run('completed')]);
+    const path = join(s.root, 'home', 'x.lock');
+    writeFileSync(path, JSON.stringify({ ...LOST, at: '2000-01-01T00:00:00Z' }));
+    const live = JSON.stringify({ pid: process.pid, host: hostname(), at: '2030-01-01T00:00:00Z' });
+    // 判定已死的那一刻，另一进程夺取旧锁并写入自己的活锁
+    const kill = spyOn(process, 'kill').mockImplementation(() => {
+      rmSync(path);
+      writeFileSync(path, live);
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    });
+    try {
+      expect(archonMod.lock(path)).toEqual({ ok: false, reason: 'locked' });
+    } finally {
+      kill.mockRestore();
+    }
+    expect(readFileSync(path, 'utf8')).toBe(live);
+    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([
+      'x.lock',
+    ]);
+  });
   test('held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so', () => {
     const s = stub([humanWait(), run('cancelled')]);
     supervisor(s.root, 'yes');
