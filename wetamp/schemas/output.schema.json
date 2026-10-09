@@ -1,24 +1,57 @@
 {
-  "$comment": "AI node output_format. Codex strict mode: every key required, optional values as null unions, no length/range keywords. Field set is v2 coder/reviewer results flattened (anyOf → single branch) plus reviewer debt.",
+  "$comment": "Node output_format (AI nodes; accept/head are deterministic sa-check/bash nodes). Codex strict mode: every key required, optional values as null unions, no length/range keywords. Field set is v2 coder/reviewer results flattened (anyOf → single branch) plus reviewer debt.",
   "$defs": {
     "coder": {
       "type": "object",
       "properties": {
-        "status": { "type": "string", "enum": ["done", "blocked", "partial"] },
-        "changed_files": { "type": "array", "items": { "type": "string" } },
+        "status": {
+          "type": "string",
+          "enum": ["done", "blocked", "partial"]
+        },
+        "changed_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "quick_checks": {
           "type": "array",
           "items": {
             "type": "object",
-            "properties": { "cmd": { "type": "string" }, "exit": { "type": "integer" } },
+            "properties": {
+              "cmd": {
+                "type": "string"
+              },
+              "exit": {
+                "type": "integer"
+              }
+            },
             "required": ["cmd", "exit"]
           }
         },
-        "notes": { "type": "string" },
-        "blockers": { "type": "array", "items": { "type": "string" } },
+        "notes": {
+          "type": "string"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "error_class": {
           "type": ["string", "null"],
-          "enum": ["scope_violation", "budget_exhausted", "plan_invalid", "sandbox_denied", "permission_denied", "vendor_unavailable_all", "task", "env", "timeout", null]
+          "enum": [
+            "scope_violation",
+            "budget_exhausted",
+            "plan_invalid",
+            "sandbox_denied",
+            "permission_denied",
+            "vendor_unavailable_all",
+            "task",
+            "env",
+            "timeout",
+            null
+          ]
         }
       },
       "required": ["status", "changed_files", "quick_checks", "notes", "blockers", "error_class"]
@@ -26,20 +59,41 @@
     "reviewer": {
       "type": "object",
       "properties": {
-        "status": { "type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"] },
-        "notes": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["PASS", "FAIL", "INCOMPLETE"]
+        },
+        "notes": {
+          "type": "string"
+        },
         "findings": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string" },
-              "severity": { "type": "string", "enum": ["blocker", "high", "medium", "low"] },
-              "file": { "type": "string" },
-              "line": { "type": "integer" },
-              "status": { "type": "string", "enum": ["open", "closed"] },
-              "evidence": { "type": "string" },
-              "carry_over": { "type": "boolean" }
+              "id": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string",
+                "enum": ["blocker", "high", "medium", "low"]
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["open", "closed"]
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "carry_over": {
+                "type": "boolean"
+              }
             },
             "required": ["id", "severity", "file", "line", "status", "evidence", "carry_over"]
           }
@@ -49,18 +103,72 @@
           "items": {
             "type": "object",
             "properties": {
-              "path": { "type": "string" },
-              "purpose": { "type": "string" },
-              "isolated_fixture": { "type": "boolean" },
-              "no_data_operations": { "type": "boolean" },
-              "evidence": { "type": "string" }
+              "path": {
+                "type": "string"
+              },
+              "purpose": {
+                "type": "string"
+              },
+              "isolated_fixture": {
+                "type": "boolean"
+              },
+              "no_data_operations": {
+                "type": "boolean"
+              },
+              "evidence": {
+                "type": "string"
+              }
             },
             "required": ["path", "purpose", "isolated_fixture", "no_data_operations", "evidence"]
           }
         },
-        "debt": { "type": "array", "items": { "type": "string" } }
+        "debt": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       },
       "required": ["status", "notes", "findings", "fixture_confirmations", "debt"]
+    },
+    "accept": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "log": {
+          "type": "string"
+        },
+        "patch": {
+          "type": "string"
+        },
+        "diff_hash": {
+          "type": "string"
+        },
+        "base_pass": {
+          "type": ["boolean", "null"]
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": ["ok", "failed", "log", "patch", "diff_hash", "base_pass", "head"]
+    },
+    "head": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": ["head"]
     }
   }
 }

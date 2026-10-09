@@ -3,6 +3,7 @@
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { archon, tail } from './archon';
 import { WETAMP, home } from './config';
 import { milestones, type Milestone, type Pkg, type Plan } from './plan';
@@ -17,25 +18,16 @@ export function newRunId(now = new Date()): string {
   return `${ts}-${crypto.getRandomValues(new Uint16Array(1))[0].toString(16).padStart(4, '0')}`;
 }
 
-const outputSchema = (kind: 'coder' | 'reviewer'): unknown =>
+const outputSchema = (kind: 'coder' | 'reviewer' | 'accept' | 'head'): unknown =>
   (
     JSON.parse(readFileSync(join(WETAMP, 'schemas', 'output.schema.json'), 'utf8')) as {
       $defs: Record<string, unknown>;
     }
   ).$defs[kind];
 
-const ACCEPT_OUT = {
-  type: 'object',
-  properties: {
-    ok: { type: 'boolean' },
-    failed: { type: 'array', items: { type: 'string' } },
-    log: { type: 'string' },
-    patch: { type: 'string' },
-    diff_hash: { type: 'string' },
-    head: { type: 'string' },
-  },
-  required: ['ok', 'failed', 'log', 'patch', 'diff_hash', 'head'],
-};
+const REVIEW_IDLE_MS = 15 * 60 * 1000;
+const HOUR_MS = 3600 * 1000;
+const MAX_WAIT_MS = 1000 * 365 * 24 * HOUR_MS; // Archon wait 上限 1000 年
 
 const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node => ({
   id,
@@ -46,30 +38,41 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
   ...extra,
 });
 
-/** 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果）。 */
-/** fake：编码节点换成 bash 桩（写 scope.write[0] 并提交），供测试与 selftest 免模型调用跑通整条 DAG。 */
+/**
+ * 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果；now 固定以得到确定的 deadline_ms）。
+ * 每个里程碑：start → 逐包 code/verify → 至多 3 轮 diff → review → gate（第 2、3 轮前有 when 守卫的 fix）；
+ * 未走到的轮次被条件跳过，下一里程碑以 none_failed_min_one_success 汇合三个 gate；escalate 即 gate 失败、run 停下。
+ * fake：AI 节点换成 bash 桩，零模型调用跑通整条 DAG——首轮评审 FAIL（一条 high），修复追加一行，第 2 轮 PASS。
+ */
 export function buildWorkflow(
   plan: Plan,
   ms: Milestone[],
   run: string,
   gen: string,
-  fake = false
+  fake = false,
+  now = Date.now()
 ): Node {
   const planPath = join(gen, 'plan.json');
+  const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
-  let prev = 'environment';
+  let after: Node = { depends_on: ['environment'] };
   for (const m of ms) {
+    const start = `start-${m.id}`;
+    const base = `$${start}.output.head`;
+    nodes.push({
+      id: start,
+      bash: `printf '{"head":"%s"}' "$(git rev-parse HEAD)"`,
+      ...after,
+      output_format: outputSchema('head'),
+    });
+    let prev = start;
     for (const p of m.packages) {
       const coder = fake
         ? { bash: fakeCoder(p) }
         : {
             command: 'sa-code',
             model: '@sa-coder',
-            with: {
-              pkg: p.id,
-              brief: join(gen, 'briefs', `${p.id}.md`),
-              hint: join(gen, 'hints', `${p.id}.md`),
-            },
+            with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
           };
       nodes.push({
         id: `code-${p.id}`,
@@ -81,21 +84,107 @@ export function buildWorkflow(
         check(
           `verify-${p.id}`,
           [`code-${p.id}`],
-          { kind: 'accept', plan: planPath, pkgs: p.id, tag: `verify-${p.id}` },
-          { output_format: ACCEPT_OUT }
+          { kind: 'accept', plan: planPath, pkgs: p.id, base, tag: `verify-${p.id}` },
+          { output_format: outputSchema('accept') }
         )
       );
       prev = `verify-${p.id}`;
     }
-    const verify = Object.fromEntries(
-      m.packages.map((p, i) => [`verify_${String(i)}`, `$verify-${p.id}.output.ok`])
-    );
-    nodes.push(
-      check(`gate-${m.id}`, [prev], { kind: 'gate', milestone: m.id, risk: m.risk, ...verify })
-    );
-    prev = `gate-${m.id}`;
+    const briefs = m.packages.map(brief).join(' ');
+    const rounds: Node = {};
+    for (let r = 1; r <= MAX_ROUNDS; r++) {
+      const t = `${m.id}-r${String(r)}`;
+      const last = `${m.id}-r${String(r - 1)}`;
+      if (r > 1) {
+        nodes.push({
+          id: `fix-${t}`,
+          ...(fake
+            ? { bash: fakeFix(m, r) }
+            : {
+                command: 'sa-fix',
+                model: '@sa-coder',
+                with: {
+                  milestone: m.id,
+                  round: r,
+                  review: `$gate-${last}.output.review_file`,
+                  accept_log: `$diff-${last}.output.log`,
+                  briefs,
+                  hints: join(gen, 'hints'),
+                },
+              }),
+          depends_on: [prev],
+          when: `$gate-${last}.output.verdict == 'fix'`,
+          output_format: outputSchema('coder'),
+        });
+        prev = `fix-${t}`;
+      }
+      const ids = m.packages.map(p => p.id).join(',');
+      nodes.push(
+        check(
+          `diff-${t}`,
+          [prev],
+          { kind: 'accept', plan: planPath, pkgs: ids, base, tag: `diff-${t}` },
+          { output_format: outputSchema('accept') }
+        )
+      );
+      nodes.push({
+        id: `review-${t}`,
+        ...(fake
+          ? { bash: fakeReview(r) }
+          : {
+              command: r === 1 ? 'sa-review' : 'sa-review-delta',
+              model: '@sa-reviewer',
+              idle_timeout: REVIEW_IDLE_MS,
+              with: {
+                milestone: m.id,
+                risk: m.risk,
+                round: r,
+                briefs,
+                diff: `$diff-${t}.output.patch`,
+                accept_log: `$diff-${t}.output.log`,
+                ...(r > 1 ? { prev: `$gate-${last}.output.review_file` } : {}),
+              },
+            }),
+        depends_on: [`diff-${t}`],
+        mutates_checkout: false,
+        output_format: outputSchema('reviewer'),
+      });
+      rounds[`R${String(r)}`] = `$review-${t}.output`;
+      rounds[`C${String(r)}`] = `$diff-${t}.output`;
+      nodes.push(
+        check(`gate-${t}`, [`review-${t}`], {
+          kind: 'gate',
+          round: r,
+          ...rounds,
+          risk: m.risk,
+          milestone: m.id,
+          plan: planPath,
+          tag: `gate-${t}`,
+        })
+      );
+      prev = `gate-${t}`;
+    }
+    const gates: Node = {
+      depends_on: Array.from({ length: MAX_ROUNDS }, (_, i) => `gate-${m.id}-r${String(i + 1)}`),
+      trigger_rule: 'none_failed_min_one_success',
+    };
+    if (m.human) {
+      const deadline = Math.min(Math.max(Date.parse(plan.deadline) - now, HOUR_MS), MAX_WAIT_MS);
+      nodes.push({
+        id: `human-${m.id}`,
+        wait: { event: `sa.human.${m.id}`, deadline_ms: deadline },
+        ...gates,
+      });
+      // wait 到期也算完成（status: expired）；签收失败必须让 run 停下，而不是条件跳过后照常 land
+      nodes.push({
+        id: `signoff-${m.id}`,
+        bash: `s=$human-${m.id}.output.status; [ "$s" = satisfied ] || { echo 'signoff ${m.id}: not approved before deadline' >&2; exit 1; }`,
+        depends_on: [`human-${m.id}`],
+      });
+      after = { depends_on: [`signoff-${m.id}`] };
+    } else after = gates;
   }
-  nodes.push(check('land', [prev], { kind: 'land', base_ref: plan.base_ref }));
+  nodes.push(check('land', [], { kind: 'land', base_ref: plan.base_ref }, after));
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
@@ -103,57 +192,61 @@ export function buildWorkflow(
   };
 }
 
+const commit = (f: string, msg: string): string =>
+  `git add '${f}' && git -c user.name=sa -c user.email=sa@localhost commit -qm '${msg}'`;
+const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');
+const fakeDone = (f: string): string =>
+  `echo '{"status":"done","changed_files":["${f}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'`;
+
 const fakeCoder = (p: Pkg): string => {
-  const f = p.scope.write[0].replace(/[^\w./-]/g, '_');
+  const f = safePath(p);
   return [
     `mkdir -p "$(dirname '${f}')" && echo '${p.id}' > '${f}'`,
-    `git add '${f}' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake ${p.id}'`,
-    `echo '{"status":"done","changed_files":["${f}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'`,
+    commit(f, `fake ${p.id}`),
+    fakeDone(f),
   ].join('\n');
 };
 
+const fakeFix = (m: Milestone, r: number): string => {
+  const f = safePath(m.packages[0]);
+  return [
+    `echo 'fix r${String(r)}' >> '${f}'`,
+    commit(f, `fake fix ${m.id} r${String(r)}`),
+    fakeDone(f),
+  ].join('\n');
+};
+
+const FAKE_HIGH = { id: 'R1-1', severity: 'high', file: 'fake', line: 1, status: 'open' };
+const fakeReview = (r: number): string => {
+  const findings = r === 1 ? [{ ...FAKE_HIGH, evidence: 'fake', carry_over: false }] : [];
+  const status = r === 1 ? 'FAIL' : 'PASS';
+  const out = { status, notes: 'fake', findings, fixture_confirmations: [], debt: [] };
+  return `echo '${JSON.stringify(out)}'`;
+};
+
+/** 单趟替换：计划文本里出现的 `{{x}}` 不会被再次展开。 */
 export function renderBrief(p: Pkg, hint: string): string {
   const list = (xs: string[] | undefined): string =>
     xs?.length ? xs.map(x => `- \`${x}\``).join('\n') : '- （无）';
-  return [
-    `# 工作包 ${p.id}：${p.title}`,
-    '',
-    `风险 ${p.risk}，规模 ${p.size}`,
-    '',
-    '## 目标',
-    '',
-    p.goal,
-    '',
-    '## 只允许写这些路径',
-    '',
-    list(p.scope.write),
-    '',
-    '## 建议先读',
-    '',
-    list(p.scope.read_hint),
-    '',
-    '## 验收命令（引擎在你结束后于 worktree 根目录执行，退出码即结果；工作区须已提交干净）',
-    '',
-    list(p.accept.map(c => c.cmd)),
-    '',
-    '## 备注',
-    '',
-    p.notes ?? '（无）',
-    '',
-    `若文件 \`${hint}\` 存在，必须先完整阅读：那是元帅对上一次失败给出的提示。`,
-    '',
-  ].join('\n');
+  const vars: Partial<Record<string, string>> = {
+    id: p.id,
+    title: p.title,
+    risk: p.risk,
+    size: p.size,
+    goal: p.goal,
+    write: list(p.scope.write),
+    read: list(p.scope.read_hint),
+    accept: list(p.accept.map(c => c.cmd)),
+    notes: p.notes ?? '（无）',
+    hint,
+  };
+  const tpl = readFileSync(join(WETAMP, 'templates', 'brief.md'), 'utf8');
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? '');
 }
 
 const git = (cwd: string, ...args: string[]): void => {
-  const p = Bun.spawnSync(
-    ['git', '-c', 'user.name=superagent', '-c', 'user.email=superagent@localhost', ...args],
-    {
-      cwd,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }
-  );
+  const id = ['-c', 'user.name=superagent', '-c', 'user.email=superagent@localhost'];
+  const p = Bun.spawnSync(['git', ...id, ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
   if (p.exitCode !== 0) throw new Error(`git ${args[0]} in ${cwd}: ${tail(p.stderr.toString())}`);
 };
 

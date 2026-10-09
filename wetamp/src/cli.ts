@@ -1,10 +1,29 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
-import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { archon, archonJson, getRun, ownerLost, recover, tail, type RunView } from './archon';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statfsSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
+import {
+  archon,
+  archonDetached,
+  archonJson,
+  getRun,
+  lastJson,
+  ownerLost,
+  recover,
+  signalHuman,
+  tail,
+  type RunView,
+} from './archon';
 import { WETAMP, home, loadTiers, renderAliases, assertAuthorNotReviewer } from './config';
 import { generate, newRunId } from './generate';
-import { loadPlan } from './plan';
+import { loadPlan, type Plan } from './plan';
 
 interface Args {
   _: string[];
@@ -175,23 +194,11 @@ function startRun(planPath: string, a: Args): number {
   const run = newRunId();
   const gen = generate(plan, run, a.flags.fake === true);
   const branch = `sa/${run}`;
-  const ack = archonJson(
-    [
-      'workflow',
-      'run',
-      gen.workflow,
-      '--workflow-source',
-      gen.dir,
-      '--cwd',
-      plan.repo,
-      '--branch',
-      branch,
-      '--from',
-      plan.base_ref,
-      '--detach',
-    ],
-    plan.repo
-  );
+  const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
+  args.push('--branch', branch, '--from', plan.base_ref, '--detach');
+  // 评审别名按控制台重绑：Codex 控制台用 Claude 军师池（config.renderAliases）
+  if (plan.console === 'codex') args.push('--model', '@sa-reviewer=@sa-reviewer-codex');
+  const ack = archonJson(args, plan.repo);
   if (ack.ok !== true || typeof ack.runId !== 'string')
     throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
   const l: Ledger = {
@@ -210,13 +217,7 @@ function startRun(planPath: string, a: Args): number {
   };
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
   saveLedger(l);
-  print({
-    run_id: run,
-    archon_run_id: l.archon_run_id,
-    branch,
-    gen_dir: gen.dir,
-    transcript: l.transcript,
-  });
+  print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir });
   return 0;
 }
 
@@ -239,8 +240,218 @@ function health(): number {
   return ok ? 0 : 1;
 }
 
+function resumeRun(l: Ledger): number {
+  const res = recover(l.archon_run_id, l.repo);
+  if (res.ok) {
+    l.recoveries.push(new Date().toISOString());
+    saveLedger(l);
+  }
+  print({ run_id: l.run_id, ...res });
+  return res.ok ? 0 : 1;
+}
+
+function cancelRun(l: Ledger): boolean {
+  return archonJson(['workflow', 'cancel', l.archon_run_id], l.repo).ok !== false;
+}
+
+const planOf = (l: Ledger): Plan =>
+  JSON.parse(readFileSync(join(l.gen_dir, 'plan.json'), 'utf8')) as Plan;
+
+/** approve：放行 sa.human.* 签收门；reject：取消 run；retry：可选写 hint 后 resume 失败节点。 */
+function decide(l: Ledger, a: Args): number {
+  const action = need(a._[2], 'decide <run> approve|reject|retry [--pkg id --hint text]');
+  const run = getRun(l.archon_run_id, l.repo);
+  const c = classify(run);
+  if (action === 'approve') {
+    const log = join(l.gen_dir, `signal-${c.node ?? 'none'}.log`);
+    const r = signalHuman(run, { decision: 'approve' }, log, l.repo);
+    print({ run_id: l.run_id, ...r });
+    return r.ok ? 0 : 1;
+  }
+  if (action === 'reject') {
+    const ok = cancelRun(l);
+    print({ run_id: l.run_id, decision: 'reject', ok });
+    return ok ? 0 : 1;
+  }
+  if (action !== 'retry') throw new Error(`decide: unknown action ${action}`);
+  // resume 只重跑失败的 gate 节点，输入不变、结论不变：escalate 需要人改分支或开新 run
+  if (c.state === 'held:gate')
+    throw new Error(
+      `decide retry: ${c.node ?? 'gate'} escalated; fix on ${l.branch} or start a new run`
+    );
+  const { hint, pkg } = a.flags;
+  if (typeof hint === 'string') {
+    if (typeof pkg !== 'string' || !planOf(l).packages.some(p => p.id === pkg))
+      throw new Error('decide retry --hint needs --pkg <package id from the plan>');
+    writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
+  }
+  return resumeRun(l);
+}
+
+/** ≤20 行纯文本：状态、各轮 gate 结论与评审债、签收提问状态、合入命令、证据路径。 */
+function brief(l: Ledger): number {
+  const run = getRun(l.archon_run_id, l.repo);
+  const c = classify(run);
+  const s = summary(l, run, c);
+  const art = artifactsOf(run);
+  const lines = [
+    `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${l.branch}`,
+  ];
+  const gates = existsSync(art) ? readdirSync(art).filter(f => /^gate-.+-r\d+\.json$/.test(f)) : [];
+  for (const f of gates.sort()) {
+    const g = readJson(join(art, f)) as { verdict: string; reason: string | null; debt: string[] };
+    lines.push(
+      `${f.slice(0, -5)}: ${g.verdict}${g.reason ? ` (${g.reason})` : ''} debt=${String(g.debt.length)}`
+    );
+  }
+  for (const [k, v] of Object.entries(asksOf(l.run_id)))
+    lines.push(`ask ${k}: ${v?.status ?? '?'}`);
+  if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
+  if (Array.isArray(s.land)) lines.push(...(s.land as string[]));
+  lines.push(`evidence: ${art}`, `recoveries: ${String(l.recoveries.length)}`);
+  console.log(lines.slice(0, 20).join('\n'));
+  return c.exit;
+}
+
+/** 在 run 的 worktree 里跑 plan 的验收命令（同 verify 节点脚本），退出码即结果。 */
+function acceptRun(l: Ledger, pkg: string | true | undefined): number {
+  const run = getRun(l.archon_run_id, l.repo);
+  if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
+  const ids = planOf(l)
+    .packages.map(p => p.id)
+    .filter(id => typeof pkg !== 'string' || id === pkg);
+  if (!ids.length) throw new Error(`accept: unknown package ${String(pkg)}`);
+  const art = join(home().sa, 'accept', l.run_id);
+  mkdirSync(art, { recursive: true });
+  const p = Bun.spawnSync(
+    [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
+    {
+      cwd: run.working_path,
+      env: {
+        ...process.env,
+        INPUTS_KIND: 'accept',
+        INPUTS_PLAN: join(l.gen_dir, 'plan.json'),
+        INPUTS_PKGS: ids.join(','),
+        INPUTS_TAG: 'accept',
+        ARTIFACTS_DIR: art,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }
+  );
+  const out = lastJson(p.stdout.toString());
+  print(out ?? { ok: false, error: tail(p.stderr.toString()) });
+  return out?.ok === true ? 0 : 1;
+}
+
+// supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost、
+// 把红线签收投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答 signal 或 cancel。
+const ANSWERS = ['pending', 'yes', 'no', 'expired'];
+interface Ask {
+  id: string;
+  status: string; // ANSWERS 之一，或执行后的 approved | rejected
+}
+type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
+
+const asksPath = (): string => join(home().sa, 'asks.json');
+type Asks = Partial<Record<string, Ask>>;
+const loadAsks = (): Asks => (readJson(asksPath()) as Asks | undefined) ?? {};
+
+/** 某个 run 的签收提问；键 `<run>:<event>:<resumeAt>` 唯一标识一次事件门暂停。 */
+const asksOf = (run: string): Asks =>
+  Object.fromEntries(Object.entries(loadAsks()).filter(([k]) => k.startsWith(`${run}:`)));
+
+const MAX_TTL_H = 72;
+const supervisorPy = (): string =>
+  process.env.SA_SUPERVISOR ??
+  join(homedir(), '.ai-agent-shared', 'skills', 'agent-supervisor', 'scripts', 'supervisor.py');
+
+function supervisor(args: string[]): string {
+  const p = Bun.spawnSync(['python3', supervisorPy(), ...args], { stdout: 'pipe', stderr: 'pipe' });
+  if (p.exitCode !== 0)
+    throw new Error(
+      `supervisor ${args[0]} exit ${String(p.exitCode)}: ${tail(p.stderr.toString(), 200)}`
+    );
+  return p.stdout.toString().trim();
+}
+
+function human(l: Ledger, run: RunView, asks: Asks): Action {
+  const w = run.metadata?.wait;
+  if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
+  const key = `${l.run_id}:${w.event}:${w.resumeAt}`;
+  const base = { run_id: l.run_id, event: w.event };
+  const a = asks[key];
+  if (!a) {
+    const hours = Math.min(
+      MAX_TTL_H,
+      Math.max(1, Math.ceil((Date.parse(w.resumeAt) - Date.now()) / 3600e3))
+    );
+    const q = `superagent ${l.run_id} ${w.event.slice('sa.human.'.length)} 红线签收：批准合入 ${basename(l.repo)}？`;
+    const id = supervisor(['ask', '--question', q.slice(0, 120), '--ttl-hours', String(hours)]);
+    asks[key] = { id, status: 'pending' };
+    return { ...base, action: 'ask', ok: true, ask: id };
+  }
+  if (a.status === 'pending') {
+    const st = supervisor(['ask-status', a.id]);
+    if (!ANSWERS.includes(st))
+      throw new Error(`supervisor ask-status: unexpected ${st.slice(0, 40)}`);
+    a.status = st;
+  }
+  // yes/no 的执行失败保留原状态，下一次 tick 重试
+  if (a.status === 'yes') {
+    const r = signalHuman(
+      run,
+      { decision: 'approve', ask: a.id },
+      join(l.gen_dir, `signal-${w.nodeId}.log`),
+      l.repo
+    );
+    if (r.ok) a.status = 'approved';
+    return { ...base, action: 'approve', ...r };
+  }
+  if (a.status === 'no') {
+    const ok = cancelRun(l);
+    if (ok) a.status = 'rejected';
+    return { ...base, action: 'reject', ok };
+  }
+  // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
+  return { ...base, action: 'none', ok: true, ask: a.status };
+}
+
+export function superviseTick(): Action[] {
+  const { sa } = home();
+  archonDetached(['workflow', 'wake', '--json'], join(sa, 'wake.log'));
+  const asks = loadAsks();
+  const out: Action[] = [];
+  const dir = join(sa, 'runs');
+  for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')) : []) {
+    const l = loadLedger(f.slice(0, -5));
+    try {
+      const run = getRun(l.archon_run_id, l.repo);
+      const c = classify(run);
+      if (c.state === 'held:human') out.push(human(l, run, asks));
+      else if (c.state === 'owner_lost') {
+        const r = recover(l.archon_run_id, l.repo);
+        if (r.ok) {
+          l.recoveries.push(new Date().toISOString());
+          saveLedger(l);
+        }
+        out.push({ run_id: l.run_id, action: 'recover', ...r });
+      }
+    } catch (e) {
+      out.push({
+        run_id: l.run_id,
+        action: 'error',
+        ok: false,
+        error: tail((e as Error).message, 200),
+      });
+    }
+  }
+  writeFileSync(asksPath(), JSON.stringify(asks, null, 2) + '\n');
+  return out;
+}
+
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|get|resume|cancel|recover <run>|health>';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|get|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|supervise-tick|health>';
 
 export function main(argv: string[]): number {
   const a = parseArgs(argv);
@@ -274,20 +485,35 @@ export function main(argv: string[]): number {
         print({ run_id: id, ...res });
         return res.ok ? 0 : 1;
       }
-      const l = loadLedger(id);
-      const res = recover(l.archon_run_id, l.repo);
-      if (res.ok) {
-        l.recoveries.push(new Date().toISOString());
-        saveLedger(l);
-      }
-      print({ run_id: l.run_id, ...res });
-      return res.ok ? 0 : 1;
+      return resumeRun(loadLedger(id));
     }
     case 'cancel': {
       const l = ledger();
-      const r = archonJson(['workflow', 'cancel', l.archon_run_id], l.repo);
-      print({ run_id: l.run_id, ok: r.ok !== false });
-      return r.ok === false ? 1 : 0;
+      const ok = cancelRun(l);
+      print({ run_id: l.run_id, ok });
+      return ok ? 0 : 1;
+    }
+    case 'decide':
+      return decide(ledger(), a);
+    case 'brief':
+      return brief(ledger());
+    case 'land': {
+      const l = ledger();
+      const run = getRun(l.archon_run_id, l.repo);
+      const land = readJson(join(artifactsOf(run), 'land.json'));
+      if (land === undefined) {
+        console.error(`land: no land.json yet (state ${classify(run).state})`);
+        return 1;
+      }
+      print(land);
+      return 0;
+    }
+    case 'accept':
+      return acceptRun(ledger(), a.flags.pkg);
+    case 'supervise-tick': {
+      const actions = superviseTick();
+      print(actions);
+      return actions.some(x => !x.ok) ? 1 : 0;
     }
     case 'health':
       return health();

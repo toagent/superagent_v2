@@ -1,12 +1,12 @@
 // superagent 生成工作流的确定性节点（script: sa-check, runtime: bun）。由 INPUTS_KIND 选择：
-//   env    plan 级与包级 environment 检查；失败即 exit 1（R09 held:environment）
-//   accept 执行 INPUTS_PKGS 的验收命令（退出码即结果）+ 工作区必须干净；INPUTS_BASE 非空时另存里程碑 diff
-//   gate   里程碑门禁：按最后一轮评审 + 验收结果判定，超 3 轮或不一致即 exit 1（升级给用户）
+//   env    plan 级与包级 environment 检查；失败即 exit 1（held:environment）
+//   accept 执行 INPUTS_PKGS 的验收命令（退出码即结果）+ 工作区必须干净；INPUTS_BASE 非空时另存 diff 并在失败时
+//          于 BASE 的临时工作树重跑失败命令（probe：base_pass=false 即基线本来就失败）
+//   gate   第 INPUTS_ROUND 轮评审后的判定：pass / fix（进入下一轮修复）/ escalate（exit 1，升级给用户）
 //   land   打印本地合入命令（永不 push）
-// 自包含：工作流源会被 Archon 快照，不能 import wetamp/src。验收命令从 INPUTS_PLAN 指向的 plan 副本读取，
-// 不经 YAML 文本，避免 `$` 被当作工作流变量替换。
 import { createHash } from 'node:crypto';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 interface Check {
@@ -36,7 +36,8 @@ interface Accept {
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
 const artifacts = process.env.ARTIFACTS_DIR ?? '';
-const json = (k: string): unknown => env(k) && env(k) !== 'null' ? (JSON.parse(env(k)) as unknown) : null;
+const json = (k: string): unknown =>
+  env(k) && env(k) !== 'null' ? (JSON.parse(env(k)) as unknown) : null;
 const git = (...args: string[]): string => {
   const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' });
   if (p.exitCode !== 0) throw new Error(`git ${args[0]}: ${p.stderr.toString().trim()}`);
@@ -49,13 +50,21 @@ const emit = (o: unknown): void => {
 };
 
 /** 逐条执行；超时由 spawnSync 杀进程。返回失败条目。 */
-function run(checks: Check[], log: string): string[] {
+function run(checks: Check[], log: string, cwd?: string): string[] {
   const failed: string[] = [];
   for (const c of checks) {
     const t0 = Date.now();
-    const p = Bun.spawnSync(['bash', '-c', c.cmd], { stdout: 'pipe', stderr: 'pipe', timeout: c.timeout_s * 1000 });
+    const p = Bun.spawnSync(['bash', '-c', c.cmd], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: c.timeout_s * 1000,
+    });
     const code = p.signalCode ? `signal ${p.signalCode}` : p.exitCode;
-    appendFileSync(log, `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`);
+    appendFileSync(
+      log,
+      `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
+    );
     if (code !== 0) failed.push(c.cmd);
   }
   return failed;
@@ -67,25 +76,57 @@ function accept(): void {
   writeFileSync(log, '');
   const ids = env('PKGS').split(',').filter(Boolean);
   const pkgs = plan().packages.filter(p => ids.includes(p.id));
-  const failed = run(pkgs.flatMap(p => p.accept), log);
+  const failed = run(
+    pkgs.flatMap(p => p.accept),
+    log
+  );
   const dirty = git('status', '--porcelain').trim();
-  if (dirty) appendFileSync(log, `# uncommitted changes (commit them; land only merges commits):\n${dirty}\n`);
-  let patch = '';
-  let diffHash = '';
-  if (env('BASE')) {
-    patch = join(artifacts, `${tag}.patch`);
-    const diff = git('diff', '--binary', env('BASE'), 'HEAD');
-    writeFileSync(patch, diff);
-    diffHash = createHash('sha256').update(diff).digest('hex').slice(0, 16);
+  if (dirty)
+    appendFileSync(
+      log,
+      `# uncommitted changes (commit them; land only merges commits):\n${dirty}\n`
+    );
+  const base = env('BASE');
+  const patch = base ? join(artifacts, `${tag}.patch`) : '';
+  const diff = base ? git('diff', '--binary', base, 'HEAD') : '';
+  if (base) writeFileSync(patch, diff);
+  emit({
+    ok: failed.length === 0 && !dirty,
+    failed,
+    log,
+    patch,
+    diff_hash: base ? createHash('sha256').update(diff).digest('hex').slice(0, 16) : '',
+    base_pass:
+      base && failed.length
+        ? probe(
+            base,
+            pkgs.flatMap(p => p.accept).filter(c => failed.includes(c.cmd)),
+            tag
+          )
+        : null,
+    head: git('rev-parse', 'HEAD').trim(),
+  });
+}
+
+/** 在 base 的临时 detached 工作树里重跑失败的验收命令：区分“本包引入”与“基线预存”失败。 */
+function probe(base: string, checks: Check[], tag: string): boolean {
+  const dir = mkdtempSync(join(tmpdir(), 'sa-probe-'));
+  git('worktree', 'add', '--detach', '-q', dir, base);
+  try {
+    return run(checks, join(artifacts, `${tag}.probe.log`), dir).length === 0;
+  } finally {
+    git('worktree', 'remove', '--force', dir);
   }
-  emit({ ok: failed.length === 0 && !dirty, failed, log, patch, diff_hash: diffHash, head: git('rev-parse', 'HEAD').trim() });
 }
 
 function environment(): void {
   const log = join(artifacts, 'environment.log');
   writeFileSync(log, '');
   const p = plan();
-  const failed = run([...(p.environment ?? []), ...p.packages.flatMap(k => k.environment ?? [])], log);
+  const failed = run(
+    [...(p.environment ?? []), ...p.packages.flatMap(k => k.environment ?? [])],
+    log
+  );
   emit({ ok: failed.length === 0, failed, log, head: git('rev-parse', 'HEAD').trim() });
   if (failed.length) process.exit(1);
 }
@@ -94,47 +135,77 @@ function environment(): void {
 export function blocking(r: Review, round: number, risk: string): Finding[] {
   const sev = risk === 'G2' ? ['blocker', 'high', 'medium'] : ['blocker', 'high'];
   return r.findings.filter(
-    f => f.status === 'open' && (round === 1 || f.carry_over ? sev.includes(f.severity) : f.severity === 'blocker')
+    f =>
+      f.status === 'open' &&
+      (round === 1 || f.carry_over ? sev.includes(f.severity) : f.severity === 'blocker')
   );
 }
 
+export const MAX_ROUNDS = 3;
+type Verdict = 'pass' | 'fix' | 'escalate';
+
+/** reviews[i]/rechecks[i] 为第 i+1 轮评审与其前的验收复跑（rechecks[0] = 首轮 diff 节点）。 */
 export function decide(input: {
-  reviews: (Review | null)[];
-  rechecks: (Accept | null)[];
-  verify: boolean[];
+  reviews: Review[];
+  rechecks: Accept[];
   risk: string;
-}): { verdict: 'pass' | 'escalate'; rounds: number; reason: string | null; debt: string[] } {
-  const reviews = input.reviews.filter((r): r is Review => r !== null);
-  const rechecks = input.rechecks.filter((r): r is Accept => r !== null);
-  const last = reviews.at(-1);
-  const acceptOk = rechecks.length ? (rechecks.at(-1)?.ok ?? false) : input.verify.every(Boolean);
+  expired?: boolean;
+}): { verdict: Verdict; rounds: number; reason: string | null; debt: string[] } {
+  const { reviews, rechecks } = input;
   const rounds = reviews.length;
-  if (!last) return acceptOk ? { verdict: 'pass', rounds, reason: null, debt: [] } : { verdict: 'escalate', rounds, reason: 'acceptance_failed', debt: [] };
-  const open = blocking(last, rounds, input.risk);
-  if (last.status === 'PASS' && open.length === 0 && acceptOk) return { verdict: 'pass', rounds, reason: null, debt: last.debt };
-  let reason = !acceptOk ? 'acceptance_failed' : last.status === 'PASS' ? 'review_inconsistent' : 'review_failed';
+  const last = reviews.at(-1);
+  if (!last) throw new Error('gate: no review');
+  const acceptOk = rechecks.at(-1)?.ok ?? false;
+  if (last.status === 'PASS' && blocking(last, rounds, input.risk).length === 0 && acceptOk) {
+    return { verdict: 'pass', rounds, reason: null, debt: last.debt };
+  }
+  const reason = !acceptOk
+    ? 'acceptance_failed'
+    : { PASS: 'review_inconsistent', FAIL: 'review_failed', INCOMPLETE: 'review_incomplete' }[
+        last.status
+      ];
   const n = rechecks.length;
-  if (n >= 2 && rechecks[n - 1].diff_hash === rechecks[n - 2].diff_hash) reason += '+no_change';
-  return { verdict: 'escalate', rounds, reason, debt: last.debt };
+  const stop = [
+    rounds >= MAX_ROUNDS ? 'review_limit' : '',
+    n >= 2 && rechecks[n - 1].diff_hash === rechecks[n - 2].diff_hash ? 'no_change' : '',
+    input.expired ? 'deadline' : '',
+  ].find(Boolean);
+  if (!stop && last.status !== 'INCOMPLETE')
+    return { verdict: 'fix', rounds, reason, debt: last.debt };
+  return {
+    verdict: 'escalate',
+    rounds,
+    reason: stop ? `${reason}+${stop}` : reason,
+    debt: last.debt,
+  };
 }
 
 function gate(): void {
-  const verify = Object.keys(process.env)
-    .filter(k => k.startsWith('INPUTS_VERIFY_'))
-    .map(k => process.env[k] === 'true');
+  const round = Number(env('ROUND'));
+  const pick = (k: string): unknown[] =>
+    Array.from({ length: round }, (_, i) => json(`${k}${String(i + 1)}`));
+  const reviews = pick('R') as Review[];
+  const tag = env('TAG');
+  const reviewFile = join(artifacts, `${tag}.review.json`);
+  writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
+  const deadline = (JSON.parse(readFileSync(env('PLAN'), 'utf8')) as { deadline: string }).deadline;
   const out = {
     ...decide({
-      reviews: [json('R1'), json('R2'), json('R3')].map(r => r as Review | null), rechecks: [json('C2'), json('C3')].map(r => r as Accept | null),
-      verify,
+      reviews,
+      rechecks: pick('C') as Accept[],
       risk: env('RISK'),
+      expired: Date.now() > Date.parse(deadline),
     }),
     milestone: env('MILESTONE'),
+    review_file: reviewFile,
     head: git('rev-parse', 'HEAD').trim(),
   };
-  writeFileSync(join(artifacts, `gate-${env('MILESTONE')}.json`), JSON.stringify(out, null, 2));
+  writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   emit(out);
-  if (out.verdict !== 'pass') {
-    console.error(`gate ${out.milestone}: escalate (${out.reason ?? ''}) after ${String(out.rounds)} review round(s)`);
+  if (out.verdict === 'escalate') {
+    console.error(
+      `${tag}: escalate (${out.reason ?? ''}) after ${String(out.rounds)} review round(s)`
+    );
     process.exit(1);
   }
 }
@@ -143,12 +214,17 @@ function land(): void {
   const repo = dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
   const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
   const target = env('BASE_REF').replace(/^origin\//, '');
-  const ff = Bun.spawnSync(['git', 'merge-base', '--is-ancestor', `refs/heads/${target}`, 'HEAD']).exitCode === 0;
+  const ff =
+    Bun.spawnSync(['git', 'merge-base', '--is-ancestor', `refs/heads/${target}`, 'HEAD'])
+      .exitCode === 0;
   const q = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
   const out = {
     branch,
     head: git('rev-parse', 'HEAD').trim(),
-    commands: [`git -C ${q(repo)} switch ${q(target)}`, `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(branch)}`],
+    commands: [
+      `git -C ${q(repo)} switch ${q(target)}`,
+      `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(branch)}`,
+    ],
   };
   writeFileSync(join(artifacts, 'land.json'), JSON.stringify(out, null, 2));
   emit(out);

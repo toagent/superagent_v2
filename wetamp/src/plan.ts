@@ -57,11 +57,10 @@ const Ajv2020 = createRequire(join(WETAMP, '..', 'packages', 'workflows', 'packa
 let validator: Validate | undefined;
 
 /** 允许的目标 repo 根；SUPERAGENT_WRITE_ROOTS（冒号分隔）可覆盖，测试据此指向临时目录。 */
-export const WRITE_ROOTS = (process.env.SUPERAGENT_WRITE_ROOTS ?? join(homedir(), 'work')).split(
-  ':'
-);
+export const writeRoots = (): string[] =>
+  (process.env.SUPERAGENT_WRITE_ROOTS ?? join(homedir(), 'work')).split(':');
 
-export function loadPlan(path: string, roots = WRITE_ROOTS): Plan {
+export function loadPlan(path: string, roots = writeRoots()): Plan {
   const data = JSON.parse(readFileSync(path, 'utf8')) as unknown;
   validator ??= new Ajv2020.default({ allErrors: true, validateFormats: false }).compile(
     JSON.parse(readFileSync(join(WETAMP, 'schemas', 'plan.schema.json'), 'utf8'))

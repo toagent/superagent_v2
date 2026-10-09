@@ -216,3 +216,11 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
 - `SUPERAGENT_WRITE_ROOTS`（冒号分隔）覆盖 repo 白名单根，测试/selftest 用临时目录。
 - 退出码：0 completed、1 failed、2 cancelled、3 held（human/paused/environment/gate）、4 running；用法错误 64。
 - `--fake`：编码/评审/修复节点换成 bash 桩，用于测试与 selftest，零模型调用。
+- 每个里程碑以 `start-<M>` bash 节点记录基线 HEAD，评审轮次展开为固定的 `fix/diff/review/gate-<M>-rN`（N≤3，第 2、3 轮的 fix 带 `when: verdict == 'fix'`）；未走到的轮次被条件跳过，下一步以 `none_failed_min_one_success` 汇合三个 gate（fake e2e 实测：跳过沿依赖链级联后汇合仍放行）。escalate = gate 节点 exit 1，run 停在 failed，`decide retry` 对它无效（须在分支上修或新开 run）。
+- 人工签收：`human-<M>` 是 `wait: {event: sa.human.<M>}` 事件门，其后 `signoff-<M>` bash 节点检查 `status = satisfied`（而不是用 `when`：wait 到期也算节点完成，`when` 跳过会让 land 照常执行）。
+- `workflow signal` 与 `workflow wake` 会在调用进程内执行剩余 DAG：CLI 以 detached 子进程执行并把输出写到 `gen/<run>/signal-<node>.log`、`$SUPERAGENT_HOME/wake.log`；signal 以“run 离开 paused 或 resumeAt 改变”为受理确认（30 s）。
+- 状态映射：paused 且等待 `sa.human.*` → held:human；其余 paused → held:paused；environment 节点失败 → held:environment；gate 节点失败 → held:gate。
+- 节点输出 schema 外置到 `schemas/output.schema.json` 的 `$defs`，brief 正文外置到 `templates/brief.md`（单趟 `{{key}}` 替换，计划文本中的 `{{x}}`/`$` 原样保留）。
+- Codex 控制台的评审别名重绑经 `workflow run --model @sa-reviewer=@sa-reviewer-codex` 实现，不改生成的 YAML。
+- `supervise-tick` 无并发锁，须由单个 cron/launchd 作业调用；其中的 owner-lost 恢复没有 stall 上限（`wait` 有）。
+- gc 不使用 `archon complete` / `isolation cleanup --merged`：二者会删除远端分支，属于对外动作。

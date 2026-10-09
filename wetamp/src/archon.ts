@@ -1,5 +1,7 @@
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
 import { Database } from 'bun:sqlite';
+import { spawn } from 'node:child_process';
+import { openSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
@@ -24,11 +26,14 @@ export interface RunView {
   nodes?: { nodeId: string; state: string; error?: string | null }[];
 }
 
-export function archon(args: string[], cwd?: string): Exec {
-  // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）
+// SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）
+const archonBin = (): string => {
   const stub = process.env.SA_ARCHON_BIN;
-  const bin = stub !== undefined && stub !== '' ? stub : join(WETAMP, 'bin', 'archon');
-  const p = Bun.spawnSync([bin, ...args], {
+  return stub !== undefined && stub !== '' ? stub : join(WETAMP, 'bin', 'archon');
+};
+
+export function archon(args: string[], cwd?: string): Exec {
+  const p = Bun.spawnSync([archonBin(), ...args], {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
@@ -113,4 +118,38 @@ export function recover(id: string, cwd?: string): RecoverResult {
   return resumed.ok === false
     ? { ok: false, reason: tail(JSON.stringify(resumed)) }
     : { ok: true, resumed };
+}
+
+/** 脱离本进程的 archon 子进程（signal/wake 会在调用进程内执行剩余 DAG）；输出追加到 log。 */
+export function archonDetached(args: string[], log: string, cwd?: string): number {
+  const fd = openSync(log, 'a');
+  const p = spawn(archonBin(), args, { cwd, detached: true, stdio: ['ignore', fd, fd] });
+  p.unref();
+  return p.pid ?? -1;
+}
+
+const SIGNAL_ACK_MS = 30_000;
+
+/** 对 sa.human.* 事件门发 signal；引擎清掉这次暂停（状态离开 paused 或换了 resumeAt）即视为接受。 */
+export function signalHuman(
+  run: RunView,
+  data: unknown,
+  log: string,
+  cwd: string
+): { ok: true; pid: number; log: string } | { ok: false; reason: string } {
+  const w = run.metadata?.wait;
+  if (run.status !== 'paused' || !w?.event?.startsWith('sa.human.'))
+    return { ok: false, reason: `run ${run.id} is not waiting for a human signoff` };
+  const args = ['workflow', 'signal', run.id, '--event', w.event, '--resume-at', w.resumeAt];
+  const pid = archonDetached([...args, '--data', JSON.stringify(data), '--json'], log, cwd);
+  for (const end = Date.now() + SIGNAL_ACK_MS; Date.now() < end; ) {
+    const now = getRun(run.id, cwd);
+    if (now.status !== 'paused' || now.metadata?.wait?.resumeAt !== w.resumeAt)
+      return { ok: true, pid, log };
+    Bun.sleepSync(500);
+  }
+  return {
+    ok: false,
+    reason: `signal not admitted within ${String(SIGNAL_ACK_MS / 1000)}s; see ${log}`,
+  };
 }

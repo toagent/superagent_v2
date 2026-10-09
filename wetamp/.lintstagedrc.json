@@ -1,6 +1,6 @@
 {
   "*.ts": [
-    "eslint -c wetamp/eslint.config.mjs --fix --max-warnings 0 --no-warn-ignored",
+    "eslint -c eslint.config.mjs --fix --max-warnings 0 --no-warn-ignored",
     "prettier --write"
   ],
   "*.{json,md,yaml,yml}": ["prettier --write"]

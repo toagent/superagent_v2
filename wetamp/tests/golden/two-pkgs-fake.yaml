@@ -1,5 +1,5 @@
 name: sa-golden-0001
-description: "superagent run golden-0001: 2 package(s), 2 milestone(s)"
+description: 'superagent run golden-0001: 2 package(s), 2 milestone(s)'
 nodes:
   - id: environment
     script: sa-check
@@ -7,13 +7,21 @@ nodes:
     with:
       kind: env
       plan: /GEN/plan.json
-  - id: code-core
-    bash: |-
-      mkdir -p "$(dirname 'core.txt')" && echo 'core' > 'core.txt'
-      git add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake core'
-      echo '{"status":"done","changed_files":["core.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'
+  - id: start-m1
+    bash: 'printf ''{"head":"%s"}'' "$(git rev-parse HEAD)"'
     depends_on:
       - environment
+    output_format:
+      type: object
+      properties:
+        head:
+          type: string
+      required:
+        - head
+  - id: code-core
+    bash: "mkdir -p \"$(dirname 'core.txt')\" && echo 'core' > 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake core'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    depends_on:
+      - start-m1
     output_format:
       type: object
       properties:
@@ -48,7 +56,7 @@ nodes:
         error_class:
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -76,6 +84,7 @@ nodes:
       kind: accept
       plan: /GEN/plan.json
       pkgs: core
+      base: $start-m1.output.head
       tag: verify-core
     output_format:
       type: object
@@ -92,6 +101,10 @@ nodes:
           type: string
         diff_hash:
           type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
         head:
           type: string
       required:
@@ -100,24 +113,149 @@ nodes:
         - log
         - patch
         - diff_hash
+        - base_pass
         - head
-  - id: gate-m1
+  - id: diff-m1-r1
     script: sa-check
     runtime: bun
     depends_on:
       - verify-core
     with:
-      kind: gate
-      milestone: m1
-      risk: G1
-      verify_0: $verify-core.output.ok
-  - id: code-api
-    bash: |-
-      mkdir -p "$(dirname 'api.txt')" && echo 'api' > 'api.txt'
-      git add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake api'
-      echo '{"status":"done","changed_files":["api.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: core
+      base: $start-m1.output.head
+      tag: diff-m1-r1
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - base_pass
+        - head
+  - id: review-m1-r1
+    bash: 'echo ''{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'''
     depends_on:
-      - gate-m1
+      - diff-m1-r1
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m1-r1
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - review-m1-r1
+    with:
+      kind: gate
+      round: 1
+      R1: $review-m1-r1.output
+      C1: $diff-m1-r1.output
+      risk: G1
+      milestone: m1
+      plan: /GEN/plan.json
+      tag: gate-m1-r1
+  - id: fix-m1-r2
+    bash: "echo 'fix r2' >> 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r2'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    depends_on:
+      - gate-m1-r1
+    when: "$gate-m1-r1.output.verdict == 'fix'"
     output_format:
       type: object
       properties:
@@ -152,7 +290,414 @@ nodes:
         error_class:
           type:
             - string
-            - "null"
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - null
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+  - id: diff-m1-r2
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m1-r2
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: core
+      base: $start-m1.output.head
+      tag: diff-m1-r2
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - base_pass
+        - head
+  - id: review-m1-r2
+    bash: 'echo ''{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'''
+    depends_on:
+      - diff-m1-r2
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m1-r2
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - review-m1-r2
+    with:
+      kind: gate
+      round: 2
+      R1: $review-m1-r1.output
+      C1: $diff-m1-r1.output
+      R2: $review-m1-r2.output
+      C2: $diff-m1-r2.output
+      risk: G1
+      milestone: m1
+      plan: /GEN/plan.json
+      tag: gate-m1-r2
+  - id: fix-m1-r3
+    bash: "echo 'fix r3' >> 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r3'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    depends_on:
+      - gate-m1-r2
+    when: "$gate-m1-r2.output.verdict == 'fix'"
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - null
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+  - id: diff-m1-r3
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m1-r3
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: core
+      base: $start-m1.output.head
+      tag: diff-m1-r3
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - base_pass
+        - head
+  - id: review-m1-r3
+    bash: 'echo ''{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'''
+    depends_on:
+      - diff-m1-r3
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m1-r3
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - review-m1-r3
+    with:
+      kind: gate
+      round: 3
+      R1: $review-m1-r1.output
+      C1: $diff-m1-r1.output
+      R2: $review-m1-r2.output
+      C2: $diff-m1-r2.output
+      R3: $review-m1-r3.output
+      C3: $diff-m1-r3.output
+      risk: G1
+      milestone: m1
+      plan: /GEN/plan.json
+      tag: gate-m1-r3
+  - id: start-m2
+    bash: 'printf ''{"head":"%s"}'' "$(git rev-parse HEAD)"'
+    depends_on:
+      - gate-m1-r1
+      - gate-m1-r2
+      - gate-m1-r3
+    trigger_rule: none_failed_min_one_success
+    output_format:
+      type: object
+      properties:
+        head:
+          type: string
+      required:
+        - head
+  - id: code-api
+    bash: "mkdir -p \"$(dirname 'api.txt')\" && echo 'api' > 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake api'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    depends_on:
+      - start-m2
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          type:
+            - string
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -180,6 +725,7 @@ nodes:
       kind: accept
       plan: /GEN/plan.json
       pkgs: api
+      base: $start-m2.output.head
       tag: verify-api
     output_format:
       type: object
@@ -196,6 +742,10 @@ nodes:
           type: string
         diff_hash:
           type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
         head:
           type: string
       required:
@@ -204,22 +754,556 @@ nodes:
         - log
         - patch
         - diff_hash
+        - base_pass
         - head
-  - id: gate-m2
+  - id: diff-m2-r1
     script: sa-check
     runtime: bun
     depends_on:
       - verify-api
     with:
-      kind: gate
-      milestone: m2
-      risk: G2
-      verify_0: $verify-api.output.ok
-  - id: land
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: api
+      base: $start-m2.output.head
+      tag: diff-m2-r1
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - base_pass
+        - head
+  - id: review-m2-r1
+    bash: 'echo ''{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'''
+    depends_on:
+      - diff-m2-r1
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m2-r1
     script: sa-check
     runtime: bun
     depends_on:
-      - gate-m2
+      - review-m2-r1
+    with:
+      kind: gate
+      round: 1
+      R1: $review-m2-r1.output
+      C1: $diff-m2-r1.output
+      risk: G2
+      milestone: m2
+      plan: /GEN/plan.json
+      tag: gate-m2-r1
+  - id: fix-m2-r2
+    bash: "echo 'fix r2' >> 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r2'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    depends_on:
+      - gate-m2-r1
+    when: "$gate-m2-r1.output.verdict == 'fix'"
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - null
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+  - id: diff-m2-r2
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m2-r2
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: api
+      base: $start-m2.output.head
+      tag: diff-m2-r2
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - base_pass
+        - head
+  - id: review-m2-r2
+    bash: 'echo ''{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'''
+    depends_on:
+      - diff-m2-r2
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m2-r2
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - review-m2-r2
+    with:
+      kind: gate
+      round: 2
+      R1: $review-m2-r1.output
+      C1: $diff-m2-r1.output
+      R2: $review-m2-r2.output
+      C2: $diff-m2-r2.output
+      risk: G2
+      milestone: m2
+      plan: /GEN/plan.json
+      tag: gate-m2-r2
+  - id: fix-m2-r3
+    bash: "echo 'fix r3' >> 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r3'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    depends_on:
+      - gate-m2-r2
+    when: "$gate-m2-r2.output.verdict == 'fix'"
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - null
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+  - id: diff-m2-r3
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m2-r3
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      pkgs: api
+      base: $start-m2.output.head
+      tag: diff-m2-r3
+    output_format:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - base_pass
+        - head
+  - id: review-m2-r3
+    bash: 'echo ''{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'''
+    depends_on:
+      - diff-m2-r3
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m2-r3
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - review-m2-r3
+    with:
+      kind: gate
+      round: 3
+      R1: $review-m2-r1.output
+      C1: $diff-m2-r1.output
+      R2: $review-m2-r2.output
+      C2: $diff-m2-r2.output
+      R3: $review-m2-r3.output
+      C3: $diff-m2-r3.output
+      risk: G2
+      milestone: m2
+      plan: /GEN/plan.json
+      tag: gate-m2-r3
+  - id: human-m2
+    wait:
+      event: sa.human.m2
+      deadline_ms: 2279404800000
+    depends_on:
+      - gate-m2-r1
+      - gate-m2-r2
+      - gate-m2-r3
+    trigger_rule: none_failed_min_one_success
+  - id: signoff-m2
+    bash: 's=$human-m2.output.status; [ "$s" = satisfied ] || { echo ''signoff m2: not approved before deadline'' >&2; exit 1; }'
+    depends_on:
+      - human-m2
+  - id: land
+    script: sa-check
+    runtime: bun
     with:
       kind: land
       base_ref: main
+    depends_on:
+      - signoff-m2
