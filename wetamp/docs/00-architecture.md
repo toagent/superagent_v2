@@ -234,17 +234,19 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - `upgrade-upstream.sh`：dry-run 也 `git fetch upstream dev`（只更新远端跟踪引用，不动分支与工作区）；列核对用 `pragma_table_info` 而非 `.schema` 文本（`ALTER TABLE ADD COLUMN` 会把列写在同一行）；`execution_owner` 是 `metadata` JSON 的键而非列，故核对 `status`、`metadata` 两列。`--apply` 让 merge 自动提交（不触发 pre-commit，避免 lint-staged 改写上游文件），`UPSTREAM` 只改写不提交，由人验证后提交。
   - 文件预算按 `wetamp/` 下除 `tests/`、`docs/`、`README.md` 外的文件计（25 个）。
 - 修复轮 R1 实现记录：
-  - H1：`recover` 先取 `runs/<id>.lock`（O_EXCL 写 `{pid,host,at}`；同机 pid 已死或超过 10 min 才接管，`release` 只删自己的锁），锁内重读 run 与 ledger；置 failed 的 UPDATE 以 `status='running'` 与 `metadata.execution_owner.pid/host` 等于刚判定丢失的 owner 为条件，影响行数≠1 即 `owner_changed`、不 resume。
+  - H1：`recover` 先取 `runs/<id>.lock`（`{pid,host,at}` 锁文件，同机 pid 已死才接管，`release` 只删自己的锁；R3 见下 M4a），锁内重读 run 与 ledger；置 failed 的 UPDATE 以 `status='running'` 与 `metadata.execution_owner.pid/host` 等于刚判定丢失的 owner 为条件，影响行数≠1 即 `owner_changed`、不 resume。
   - M1：`wait`、`resume`、`supervise-tick` 共用 `recoverRun`：ledger 持久化 `progress_fp`（已完成节点集合的 sha256 前 16 位）与 `stalled`；同一指纹连续恢复 3 次后拒绝并呈现 `held:recover_no_progress`（退出码 3），`decide retry` 是操作者显式重置。
   - H3：R2/R3 的阻塞集合以上一轮遗留的 ID 集合为基线：基线 ID 只有在本轮以同一 ID、`carry_over:true`、`status:closed` 且带非空 `evidence` 出现时才关闭，漏报、改名、无证据关闭都按仍未关闭；新发现只有 blocker 阻塞。
-  - H4：gate 先判 `plan.deadline` 过期再判 PASS（`escalate deadline`）；`signoff-<M>` bash 节点与 `land` 也检查绝对截止时间；`decide approve` 过期拒绝，`supervise-tick` 不再替过期的“是”发 signal。
+  - H4：gate 先判 `plan.deadline` 过期再判 PASS（`escalate deadline`）；`signoff-<M>` bash 节点与 `land` 也检查绝对截止时间；`decide approve` 过期拒绝；R3 起 `supervise-tick` 取消过期 run（见下）。
   - M2：`diff-<M>-rN`（N>1）以上一轮 `diff_hash` 为 `prev` 输出 `same`；`review-<M>-rN` 带 `when: same != 'true'`；gate 依赖 diff 与 review 并以 `none_failed_min_one_success` 汇合，`same` 时直接 `escalate no_change`，不再为未变化的 diff 付评审费。
   - M7（R2 定稿）：G1 债务 = 末轮评审 `debt[]` ∪ 各轮未关闭的非阻塞发现（`<id> <severity> <file>:<line>`，按 ID 去重；前轮发现在后轮漏报仍算债，带证据 carry-over 关闭才清）；`land` 输出与 `land.json` 带各里程碑末轮 gate 的 `debt`。
   - H2：run 启动时把 `@sa-coder`、`@sa-reviewer`、`@sa-reviewer-alt` 的具体 provider/model/effort（按控制台选评审池）写进 `gen/<run>/run-config.yaml`，经 `workflow run --config` 成为 Archon 的 run 层（优先级最高，detach 子进程与 resume 继承密封快照）；不用 `--model`，因为字面 `provider/model` spec 丢 effort。启动前断言全局与目标 repo `config.yaml` 中已定义的 `@sa-*` 别名等于 tiers 渲染值，否则退出码 5（`health --cwd` 同检查）。
   - M6：所有动词接受 `--json`（no-op）；未知参数退出 64 并打印用法。
   - M3：`sa-check` probe 与 `selftest.sh` 清理不再 `--force`、不用 `branch -D`：`worktree remove` / `branch -d` 失败即保留并把路径打到 stderr（selftest 此时连整个临时目录一起保留，Archon worktree 在其下 `archon/`）；selftest 的临时 repo 在 `mktemp -d` 目录里整体 `rm -rf`。
-  - M4：签收提问以 `run:里程碑:已过 gate 文件数` 为键幂等；先写无 id 的 `pending` 账目再调 `ask`，成功回写 id。R2 定稿（M4b）：调用前账目记 `unknown`，ask 非零退出或 tick 崩溃都保留；下一 tick 在 supervisor 的 `asks/*.json` 里按问题前缀 `superagent <键> ` 找回 id → `ask-status` 跟踪，找不到才重问，多于一条报错交人。锁文件 `{pid,host,at}`，超龄也只在同机 pid 已死（或锁不可读）时接管（M4a）。`supervise-tick` 取 `$SUPERAGENT_HOME/supervise.lock`（与 recover 同一把 O_EXCL 锁实现），被占则打印 `{"skipped":"locked"}` 退出 0。
+  - M4：签收提问以 `run:里程碑:已过 gate 文件数` 为键幂等；先写无 id 的 `pending` 账目再调 `ask`，成功回写 id。R2 定稿（M4b）：调用前账目记 `unknown`，ask 非零退出或 tick 崩溃都保留；下一 tick 在 supervisor 的 `asks/*.json` 里按问题前缀 `superagent <键> ` 找回 id → `ask-status` 跟踪，找不到才重问，多于一条报错交人。锁文件 `{pid,host,at}`，只在同机 pid 已死时接管（M4a，R3 定稿见下）。`supervise-tick` 取 `$SUPERAGENT_HOME/supervise.lock`（与 recover 同一把锁实现），被占则打印 `{"skipped":"locked"}` 退出 0。
   - M5：引擎事实以机器可读行登记在 `UPSTREAM` 第 2 行起（`table <file> <table> <col>...`、`fact <file> <text>`）；dry-run 逐行 `git show upstream/dev:<file>`，列须在该表 `CREATE TABLE` 块内以列名开头，没有事实行即失败；`--apply` 只改写第 1 行。
   - launchd：`launchd/com.wetamp.superagent.supervise-tick.plist.tmpl`（`__HOME__`、`__REPO__`、`__PATH__`，XML 转义后代入；PATH = bun 目录 + 安装时 PATH，tick 触发的 resume 要找到各家 CLI）；`install.sh` 渲染到 `SA_LAUNCHD_DIR`（默认 `~/Library/LaunchAgents`），相同不动、不同先备份再覆盖，只打印 `launchctl bootstrap/bootout`；selftest 与测试把目录指到临时目录。
   - 预算（硬规则 7）由 1500/300/25 调为 TS 1800 行、shell 400 行、文件 28 个（R2 TS 调为 2000）。
   - N1（R2）：同一份评审出现重复 finding ID 即 `escalate invalid_review`；关闭判定中同 ID 的 open 优先于 closed。
+  - H4（R3 定稿）：引擎 `wait.deadline_ms` 从进入等待起计时，生成值只是上限；`supervise-tick` 遇到已过 plan 绝对 deadline 的 held:human run 直接 `workflow cancel`，ledger 记 `state:failed, reason:deadline`，签收账目标 `expired`（不调 ask、不碰提醒事项），`brief` 显示“plan 截止已过，已取消”；`signoff-<M>` 节点仍按绝对时刻再核验。
+  - M4a（R3 定稿）：锁先写 `<path>.tmp.<pid>` 再 `link` 到锁路径，link 成功即持锁，锁文件不存在“内容不完整”的中间态；读不出或缺字段的锁一律不夺取，`supervise-tick` 打印 `{"skipped":"lock_unreadable","path":…}` 退出 1、recover 返回 `lock_unreadable <path>`，交人工处理；无 TTL 夺锁。
