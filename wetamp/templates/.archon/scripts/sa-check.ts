@@ -5,7 +5,7 @@
 //   gate   第 INPUTS_ROUND 轮评审后的判定：pass / fix（进入下一轮修复）/ escalate（exit 1，升级给用户）
 //   land   打印本地合入命令（永不 push）
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
@@ -14,7 +14,10 @@ import type { Check, Plan } from '../../../src/plan';
 interface Finding {
   id: string;
   severity: 'blocker' | 'high' | 'medium' | 'low';
+  file: string;
+  line: number;
   status: 'open' | 'closed';
+  evidence: string;
   carry_over: boolean;
 }
 interface Review {
@@ -25,6 +28,7 @@ interface Review {
 interface Accept {
   ok: boolean;
   diff_hash: string;
+  same: boolean;
 }
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
@@ -82,12 +86,15 @@ function accept(): void {
   const patch = base ? join(artifacts, `${tag}.patch`) : '';
   const diff = base ? git('diff', '--binary', base, 'HEAD') : '';
   if (base) writeFileSync(patch, diff);
+  const hash = base ? createHash('sha256').update(diff).digest('hex').slice(0, 16) : '';
   emit({
     ok: failed.length === 0 && !dirty,
     failed,
     log,
     patch,
-    diff_hash: base ? createHash('sha256').update(diff).digest('hex').slice(0, 16) : '',
+    diff_hash: hash,
+    // 修复轮的 diff 与上一轮相同：修复没有改任何东西，评审节点据此跳过、gate 直接 escalate
+    same: env('PREV') !== '' && hash === env('PREV'),
     base_pass:
       base && failed.length
         ? probe(
@@ -107,7 +114,7 @@ function probe(base: string, checks: Check[], tag: string): boolean {
   try {
     return run(checks, join(artifacts, `${tag}.probe.log`), dir).length === 0;
   } finally {
-    git('worktree', 'remove', '--force', dir);
+    git('worktree', 'remove', dir);
   }
 }
 
@@ -123,60 +130,91 @@ function environment(): void {
   if (failed.length) process.exit(1);
 }
 
-/** 第 1 轮全量：open 的 blocker/high（G2 含 medium）阻塞；第 2/3 轮增量：遗留项同上，新发现仅 blocker 阻塞。 */
-export function blocking(r: Review, round: number, risk: string): Finding[] {
-  const sev = risk === 'G2' ? ['blocker', 'high', 'medium'] : ['blocker', 'high'];
-  return r.findings.filter(
-    f =>
-      f.status === 'open' &&
-      (round === 1 || f.carry_over ? sev.includes(f.severity) : f.severity === 'blocker')
-  );
+const severities = (risk: string): string[] =>
+  risk === 'G2' ? ['blocker', 'high', 'medium'] : ['blocker', 'high'];
+
+/**
+ * 逐轮推进的 open 阻塞发现 ID 集合。第 1 轮：open 的 blocker/high（G2 含 medium）。第 2/3 轮以上一轮集合为基准：
+ * 只有本轮用原 id、carry_over:true、status:closed 且附 evidence 的条目才关闭；缺失、改 id、carry_over:false 一律仍 open。
+ * 不在基准里的条目：新发现仅 open 的 blocker 阻塞，声明 carry_over 的按本级别阻塞。
+ */
+export function openBlocking(reviews: Review[], risk: string): Set<string> {
+  const sev = severities(risk);
+  let open = new Set<string>();
+  reviews.forEach((r, i) => {
+    const closed = (id: string): boolean =>
+      r.findings.some(
+        f => f.id === id && f.carry_over && f.status === 'closed' && f.evidence.trim() !== ''
+      );
+    const next = new Set([...open].filter(id => !closed(id)));
+    for (const f of r.findings)
+      if (
+        f.status === 'open' &&
+        !open.has(f.id) &&
+        (i === 0 || f.carry_over ? sev.includes(f.severity) : f.severity === 'blocker')
+      )
+        next.add(f.id);
+    open = next;
+  });
+  return open;
+}
+
+/** 评审债：评审给了 debt[] 就用它；为空时由未阻塞的 open 发现派生（G1 的 medium/low 不能无声消失）。 */
+function debtOf(r: Review, open: Set<string>): string[] {
+  if (r.debt.length) return r.debt;
+  return r.findings
+    .filter(f => f.status === 'open' && !open.has(f.id))
+    .map(f => `${f.id} ${f.severity} ${f.file}:${String(f.line)}`);
 }
 
 export const MAX_ROUNDS = 3;
 type Verdict = 'pass' | 'fix' | 'escalate';
 
-/** reviews[i]/rechecks[i] 为第 i+1 轮评审与其前的验收复跑（rechecks[0] = 首轮 diff 节点）。 */
+/**
+ * reviews[i]/rechecks[i] 为第 i+1 轮评审与其前的验收复跑（rechecks[0] = 首轮 diff 节点）。
+ * 先判到期，再判修复无变化（same:true 时评审节点已跳过，reviews 末项为 null），最后才看能否 PASS。
+ */
 export function decide(input: {
-  reviews: Review[];
+  reviews: (Review | null)[];
   rechecks: Accept[];
   risk: string;
   expired?: boolean;
 }): { verdict: Verdict; rounds: number; reason: string | null; debt: string[] } {
-  const { reviews, rechecks } = input;
-  const rounds = reviews.length;
+  const { rechecks } = input;
+  const rounds = input.reviews.length;
+  if (input.expired) return { verdict: 'escalate', rounds, reason: 'deadline', debt: [] };
+  if (rechecks.at(-1)?.same) return { verdict: 'escalate', rounds, reason: 'no_change', debt: [] };
+  const reviews = input.reviews.filter((r): r is Review => r !== null);
   const last = reviews.at(-1);
-  if (!last) throw new Error('gate: no review');
+  if (!last || reviews.length !== rounds) throw new Error('gate: no review');
+  const open = openBlocking(reviews, input.risk);
+  const debt = debtOf(last, open);
   const acceptOk = rechecks.at(-1)?.ok ?? false;
-  if (last.status === 'PASS' && blocking(last, rounds, input.risk).length === 0 && acceptOk) {
-    return { verdict: 'pass', rounds, reason: null, debt: last.debt };
+  if (last.status === 'PASS' && open.size === 0 && acceptOk) {
+    return { verdict: 'pass', rounds, reason: null, debt };
   }
   const reason = !acceptOk
     ? 'acceptance_failed'
     : { PASS: 'review_inconsistent', FAIL: 'review_failed', INCOMPLETE: 'review_incomplete' }[
         last.status
       ];
-  const n = rechecks.length;
-  const stop = [
-    rounds >= MAX_ROUNDS ? 'review_limit' : '',
-    n >= 2 && rechecks[n - 1].diff_hash === rechecks[n - 2].diff_hash ? 'no_change' : '',
-    input.expired ? 'deadline' : '',
-  ].find(Boolean);
-  if (!stop && last.status !== 'INCOMPLETE')
-    return { verdict: 'fix', rounds, reason, debt: last.debt };
+  if (rounds < MAX_ROUNDS && last.status !== 'INCOMPLETE')
+    return { verdict: 'fix', rounds, reason, debt };
   return {
     verdict: 'escalate',
     rounds,
-    reason: stop ? `${reason}+${stop}` : reason,
-    debt: last.debt,
+    reason: rounds >= MAX_ROUNDS ? `${reason}+review_limit` : reason,
+    debt,
   };
 }
+
+const expired = (): boolean => Date.now() > Date.parse(plan().deadline);
 
 function gate(): void {
   const round = Number(env('ROUND'));
   const pick = (k: string): unknown[] =>
     Array.from({ length: round }, (_, i) => json(`${k}${String(i + 1)}`));
-  const reviews = pick('R') as Review[];
+  const reviews = pick('R') as (Review | null)[];
   const tag = env('TAG');
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
@@ -185,7 +223,7 @@ function gate(): void {
       reviews,
       rechecks: pick('C') as Accept[],
       risk: env('RISK'),
-      expired: Date.now() > Date.parse(plan().deadline),
+      expired: expired(),
     }),
     milestone: env('MILESTONE'),
     review_file: reviewFile,
@@ -201,7 +239,12 @@ function gate(): void {
   }
 }
 
+/** 打印合入命令与各里程碑末轮 gate 的评审债；plan deadline 已过则拒绝（exit 1），不给出合入命令。 */
 function land(): void {
+  if (expired()) {
+    console.error(`land: plan deadline ${plan().deadline} passed; not producing merge commands`);
+    process.exit(1);
+  }
   const repo = dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
   const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
   const target = env('BASE_REF').replace(/^origin\//, '');
@@ -209,6 +252,14 @@ function land(): void {
     Bun.spawnSync(['git', 'merge-base', '--is-ancestor', `refs/heads/${target}`, 'HEAD'])
       .exitCode === 0;
   const q = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+  // 轮次 ≤ 3：文件名字典序即轮次序，同一里程碑后写的覆盖先写的
+  const last = new Map<string, string[]>();
+  for (const f of readdirSync(artifacts)
+    .filter(x => /^gate-.+-r\d+\.json$/.test(x))
+    .sort()) {
+    const g = JSON.parse(readFileSync(join(artifacts, f), 'utf8')) as { debt: string[] };
+    last.set(f.replace(/-r\d+\.json$/, ''), g.debt);
+  }
   const out = {
     branch,
     head: git('rev-parse', 'HEAD').trim(),
@@ -216,6 +267,7 @@ function land(): void {
       `git -C ${q(repo)} switch ${q(target)}`,
       `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(branch)}`,
     ],
+    debt: [...last.values()].flat(),
   };
   writeFileSync(join(artifacts, 'land.json'), JSON.stringify(out, null, 2));
   emit(out);

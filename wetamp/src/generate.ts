@@ -42,7 +42,7 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
  * 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果；now 固定以得到确定的 deadline_ms）。
  * 每个里程碑：start → 逐包 code/verify → 至多 3 轮 diff → review → gate（第 2、3 轮前有 when 守卫的 fix）；
  * 未走到的轮次被条件跳过，下一里程碑以 none_failed_min_one_success 汇合三个 gate；escalate 即 gate 失败、run 停下。
- * fake：AI 节点换成 bash 桩，零模型调用跑通整条 DAG——首轮评审 FAIL（一条 high），修复追加一行，第 2 轮 PASS。
+ * fake：AI 节点换成 bash 桩，零模型调用跑通整条 DAG——首轮评审 FAIL（一条 high），修复追加一行，第 2 轮关闭它并 PASS。
  */
 export function buildWorkflow(
   plan: Plan,
@@ -123,12 +123,20 @@ export function buildWorkflow(
         check(
           `diff-${t}`,
           [prev],
-          { kind: 'accept', plan: planPath, pkgs: ids, base, tag: `diff-${t}` },
+          {
+            kind: 'accept',
+            plan: planPath,
+            pkgs: ids,
+            base,
+            tag: `diff-${t}`,
+            ...(r > 1 ? { prev: `$diff-${last}.output.diff_hash` } : {}),
+          },
           { output_format: outputSchema('accept') }
         )
       );
       nodes.push({
         id: `review-${t}`,
+        ...(r > 1 ? { when: `$diff-${t}.output.same != 'true'` } : {}),
         ...(fake
           ? { bash: fakeReview(r) }
           : {
@@ -151,16 +159,22 @@ export function buildWorkflow(
       });
       rounds[`R${String(r)}`] = `$review-${t}.output`;
       rounds[`C${String(r)}`] = `$diff-${t}.output`;
+      // 评审因修复无变化被跳过时 gate 仍要运行（读 diff 的 same 直接 escalate）；diff 也被跳过则本轮整体不走
       nodes.push(
-        check(`gate-${t}`, [`review-${t}`], {
-          kind: 'gate',
-          round: r,
-          ...rounds,
-          risk: m.risk,
-          milestone: m.id,
-          plan: planPath,
-          tag: `gate-${t}`,
-        })
+        check(
+          `gate-${t}`,
+          [`diff-${t}`, `review-${t}`],
+          {
+            kind: 'gate',
+            round: r,
+            ...rounds,
+            risk: m.risk,
+            milestone: m.id,
+            plan: planPath,
+            tag: `gate-${t}`,
+          },
+          r > 1 ? { trigger_rule: 'none_failed_min_one_success' } : {}
+        )
       );
       prev = `gate-${t}`;
     }
@@ -175,16 +189,21 @@ export function buildWorkflow(
         wait: { event: `sa.human.${m.id}`, deadline_ms: deadline },
         ...gates,
       });
-      // wait 到期也算完成（status: expired）；签收失败必须让 run 停下，而不是条件跳过后照常 land
+      // wait 到期也算完成（status: expired）；签收失败必须让 run 停下，而不是条件跳过后照常 land。
+      // deadline_ms 是相对生成时刻的时长（recover/resume 后会重新计时），所以另按 plan 的绝对 deadline 核验
+      const until = Math.floor(Date.parse(plan.deadline) / 1000);
       nodes.push({
         id: `signoff-${m.id}`,
-        bash: `s=$human-${m.id}.output.status; [ "$s" = satisfied ] || { echo 'signoff ${m.id}: not approved before deadline' >&2; exit 1; }`,
+        bash: [
+          `s=$human-${m.id}.output.status; [ "$s" = satisfied ] || { echo 'signoff ${m.id}: not approved' >&2; exit 1; }`,
+          `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${plan.deadline} passed' >&2; exit 1; }`,
+        ].join('\n'),
         depends_on: [`human-${m.id}`],
       });
       after = { depends_on: [`signoff-${m.id}`] };
     } else after = gates;
   }
-  nodes.push(check('land', [], { kind: 'land', base_ref: plan.base_ref }, after));
+  nodes.push(check('land', [], { kind: 'land', base_ref: plan.base_ref, plan: planPath }, after));
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
@@ -201,9 +220,14 @@ const fakeEdit = (p: Pkg, line: string): string =>
     `echo '{"status":"done","changed_files":["${safePath(p)}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'`,
   ].join('\n');
 
-const FAKE_HIGH = { id: 'R1-1', severity: 'high', file: 'fake', line: 1, status: 'open' };
+const FAKE_HIGH = { id: 'R1-1', severity: 'high', file: 'fake', line: 1 };
+/** 桩评审：第 1 轮 open 一条 high；之后按原 id 关闭并附证据（gate 只认这种关闭）。 */
 const fakeReview = (r: number): string => {
-  const findings = r === 1 ? [{ ...FAKE_HIGH, evidence: 'fake', carry_over: false }] : [];
+  const findings = [
+    r === 1
+      ? { ...FAKE_HIGH, status: 'open', evidence: 'fake', carry_over: false }
+      : { ...FAKE_HIGH, status: 'closed', evidence: 'fake fix verified', carry_over: true },
+  ];
   const status = r === 1 ? 'FAIL' : 'PASS';
   const out = { status, notes: 'fake', findings, fixture_confirmations: [], debt: [] };
   return `echo '${JSON.stringify(out)}'`;

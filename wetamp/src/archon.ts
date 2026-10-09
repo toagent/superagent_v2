@@ -1,7 +1,7 @@
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
 import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import { openSync } from 'node:fs';
+import { mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
@@ -93,31 +93,82 @@ export function ownerLost(run: RunView): boolean {
 
 export type RecoverResult = { ok: true; resumed: Json } | { ok: false; reason: string };
 
+const LOCK_TTL_MS = 10 * 60_000;
+
 /**
- * PoC #8–#11：upstream 的 resume 只接受 failed/paused。把可证实 owner-lost 的 run 由 running 回拨为 failed
- * （单行单列、带 where status='running'），再 resume --detach；已完成节点走缓存。upstream 支持后删除回拨。
+ * O_EXCL 锁文件，内容 {pid,host,at}；拿不到返回 null。持有者是本机已死进程，或文件超过 TTL（recover、tick
+ * 都是秒级操作）才夺取一次。返回的 release 只删除仍是自己写的锁。
  */
-export function recover(id: string, cwd?: string): RecoverResult {
-  const run = getRun(id, cwd);
-  if (run.status === 'running') {
-    if (!ownerLost(run)) return { ok: false, reason: 'owner alive or on another host' };
-    const db = new Database(join(home().archon, 'archon.db'));
+export function lock(path: string): (() => void) | null {
+  const me = JSON.stringify({ pid: process.pid, host: hostname(), at: new Date().toISOString() });
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = db.run(
-        "update remote_agent_workflow_runs set status='failed' where id=? and status='running'",
-        [run.id]
-      );
-      if (r.changes !== 1) return { ok: false, reason: 'status changed concurrently' };
-    } finally {
-      db.close();
+      writeFileSync(path, me, { flag: 'wx' });
+      return () => {
+        if (readFileSync(path, 'utf8') === me) rmSync(path);
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      if (attempt > 0 || !lockStale(path)) return null;
+      rmSync(path, { force: true });
     }
-  } else if (run.status !== 'failed' && run.status !== 'paused') {
-    return { ok: false, reason: `status ${run.status} is not resumable` };
   }
-  const resumed = archonJson(['workflow', 'resume', run.id, '--detach'], cwd);
-  return resumed.ok === false
-    ? { ok: false, reason: tail(JSON.stringify(resumed)) }
-    : { ok: true, resumed };
+  return null;
+}
+
+function lockStale(path: string): boolean {
+  try {
+    if (Date.now() - statSync(path).mtimeMs > LOCK_TTL_MS) return true;
+    const o = JSON.parse(readFileSync(path, 'utf8')) as { pid: number; host: string };
+    return o.host === hostname() && !pidAlive(o.pid);
+  } catch {
+    return false; // 刚被释放或正在写入：本次不夺取，调用方按“被占用”处理
+  }
+}
+
+/**
+ * PoC #8–#11：upstream 的 resume 只接受 failed/paused。把可证实 owner-lost 的 run 由 running 回拨为 failed，
+ * 再 resume --detach；已完成节点走缓存。upstream 支持后删除回拨。
+ * 同一 run 的 recover 经 `$SUPERAGENT_HOME/runs/<id>.lock` 串行；回拨 SQL 绑定观察到的 owner，期间被别的进程
+ * 接手（owner 变了）就不动。guard 在锁内拿到最新 run，返回非空字符串即拒绝（停滞检查用）。
+ */
+export function recover(
+  id: string,
+  cwd?: string,
+  guard?: (run: RunView) => string | undefined
+): RecoverResult {
+  mkdirSync(join(home().sa, 'runs'), { recursive: true });
+  const release = lock(join(home().sa, 'runs', `${id}.lock`));
+  if (!release) return { ok: false, reason: 'recover_locked' };
+  try {
+    const run = getRun(id, cwd);
+    const veto = guard?.(run);
+    if (veto) return { ok: false, reason: veto };
+    if (run.status === 'running') {
+      const o = run.metadata?.execution_owner;
+      if (!o || !ownerLost(run)) return { ok: false, reason: 'owner alive or on another host' };
+      const db = new Database(join(home().archon, 'archon.db'));
+      try {
+        const r = db.run(
+          `update remote_agent_workflow_runs set status='failed' where id=? and status='running'
+             and json_extract(metadata,'$.execution_owner.pid')=?
+             and json_extract(metadata,'$.execution_owner.host')=?`,
+          [run.id, o.pid, o.host]
+        );
+        if (r.changes !== 1) return { ok: false, reason: 'owner_changed' };
+      } finally {
+        db.close();
+      }
+    } else if (run.status !== 'failed' && run.status !== 'paused') {
+      return { ok: false, reason: `status ${run.status} is not resumable` };
+    }
+    const resumed = archonJson(['workflow', 'resume', run.id, '--detach'], cwd);
+    return resumed.ok === false
+      ? { ok: false, reason: tail(JSON.stringify(resumed)) }
+      : { ok: true, resumed };
+  } finally {
+    release();
+  }
 }
 
 /** 脱离本进程的 archon 子进程（signal/wake 会在调用进程内执行剩余 DAG）；输出追加到 log。 */

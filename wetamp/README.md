@@ -34,13 +34,14 @@ superagent land <run>                    # 打印本地合入命令（switch + m
 
 `wait`/`status` 返回 held 时按 `state` 处理：
 
-| state              | 含义                                                    | 动作                                                                                    |
-| ------------------ | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `held:human`       | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = cancel）                        |
-| `held:environment` | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                              |
-| `held:gate`        | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | 在 run 分支上手工修，或改 plan 新开 run；`retry` 无效                                   |
-| `held:paused`      | 其它暂停                                                | `superagent resume <run>`                                                               |
-| `failed`           | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief） |
+| state                      | 含义                                                    | 动作                                                                                    |
+| -------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `held:human`               | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = cancel）                        |
+| `held:environment`         | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                              |
+| `held:gate`                | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | 在 run 分支上手工修，或改 plan 新开 run；`retry` 无效                                   |
+| `held:paused`              | 其它暂停                                                | `superagent resume <run>`                                                               |
+| `held:recover_no_progress` | owner 丢失后连续 3 次恢复都没有新完成的节点             | 查 `brief` 的证据后 `superagent decide <run> retry`（显式重置计数）或 `cancel`          |
+| `failed`                   | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief） |
 
 其它动词：`status <run>`、`cancel <run>`、`recover <run>`（只恢复本机 pid 已死的 run）、`accept <run> [--pkg id]`
 （在 run 的 worktree 里重跑验收命令）、`report`（全部 run 的状态、评审轮次、一次通过率、失败分类、节点耗时、评审债、恢复次数）、

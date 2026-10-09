@@ -106,6 +106,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -118,6 +120,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: diff-m1-r1
@@ -146,6 +149,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -158,6 +163,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: review-m1-r1
@@ -255,6 +261,7 @@ nodes:
     script: sa-check
     runtime: bun
     depends_on:
+      - diff-m1-r1
       - review-m1-r1
     with:
       kind: gate
@@ -342,6 +349,7 @@ nodes:
       pkgs: core
       base: $start-m1.output.head
       tag: diff-m1-r2
+      prev: $diff-m1-r1.output.diff_hash
     output_format:
       type: object
       properties:
@@ -357,6 +365,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -369,9 +379,11 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: review-m1-r2
+    when: "$diff-m1-r2.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
     idle_timeout: 900000
@@ -467,6 +479,7 @@ nodes:
     script: sa-check
     runtime: bun
     depends_on:
+      - diff-m1-r2
       - review-m1-r2
     with:
       kind: gate
@@ -479,6 +492,7 @@ nodes:
       milestone: m1
       plan: /GEN/plan.json
       tag: gate-m1-r2
+    trigger_rule: none_failed_min_one_success
   - id: fix-m1-r3
     command: sa-fix
     model: '@sa-coder'
@@ -556,6 +570,7 @@ nodes:
       pkgs: core
       base: $start-m1.output.head
       tag: diff-m1-r3
+      prev: $diff-m1-r2.output.diff_hash
     output_format:
       type: object
       properties:
@@ -571,6 +586,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -583,9 +600,11 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: review-m1-r3
+    when: "$diff-m1-r3.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
     idle_timeout: 900000
@@ -681,6 +700,7 @@ nodes:
     script: sa-check
     runtime: bun
     depends_on:
+      - diff-m1-r3
       - review-m1-r3
     with:
       kind: gate
@@ -695,6 +715,7 @@ nodes:
       milestone: m1
       plan: /GEN/plan.json
       tag: gate-m1-r3
+    trigger_rule: none_failed_min_one_success
   - id: start-m2
     bash: 'printf ''{"head":"%s"}'' "$(git rev-parse HEAD)"'
     depends_on:
@@ -797,6 +818,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -809,6 +832,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: diff-m2-r1
@@ -837,6 +861,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -849,6 +875,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: review-m2-r1
@@ -946,6 +973,7 @@ nodes:
     script: sa-check
     runtime: bun
     depends_on:
+      - diff-m2-r1
       - review-m2-r1
     with:
       kind: gate
@@ -1033,6 +1061,7 @@ nodes:
       pkgs: api
       base: $start-m2.output.head
       tag: diff-m2-r2
+      prev: $diff-m2-r1.output.diff_hash
     output_format:
       type: object
       properties:
@@ -1048,6 +1077,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -1060,9 +1091,11 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: review-m2-r2
+    when: "$diff-m2-r2.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
     idle_timeout: 900000
@@ -1158,6 +1191,7 @@ nodes:
     script: sa-check
     runtime: bun
     depends_on:
+      - diff-m2-r2
       - review-m2-r2
     with:
       kind: gate
@@ -1170,6 +1204,7 @@ nodes:
       milestone: m2
       plan: /GEN/plan.json
       tag: gate-m2-r2
+    trigger_rule: none_failed_min_one_success
   - id: fix-m2-r3
     command: sa-fix
     model: '@sa-coder'
@@ -1247,6 +1282,7 @@ nodes:
       pkgs: api
       base: $start-m2.output.head
       tag: diff-m2-r3
+      prev: $diff-m2-r2.output.diff_hash
     output_format:
       type: object
       properties:
@@ -1262,6 +1298,8 @@ nodes:
           type: string
         diff_hash:
           type: string
+        same:
+          type: boolean
         base_pass:
           type:
             - boolean
@@ -1274,9 +1312,11 @@ nodes:
         - log
         - patch
         - diff_hash
+        - same
         - base_pass
         - head
   - id: review-m2-r3
+    when: "$diff-m2-r3.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
     idle_timeout: 900000
@@ -1372,6 +1412,7 @@ nodes:
     script: sa-check
     runtime: bun
     depends_on:
+      - diff-m2-r3
       - review-m2-r3
     with:
       kind: gate
@@ -1386,6 +1427,7 @@ nodes:
       milestone: m2
       plan: /GEN/plan.json
       tag: gate-m2-r3
+    trigger_rule: none_failed_min_one_success
   - id: human-m2
     wait:
       event: sa.human.m2
@@ -1396,7 +1438,7 @@ nodes:
       - gate-m2-r3
     trigger_rule: none_failed_min_one_success
   - id: signoff-m2
-    bash: 's=$human-m2.output.status; [ "$s" = satisfied ] || { echo ''signoff m2: not approved before deadline'' >&2; exit 1; }'
+    bash: "s=$human-m2.output.status; [ \"$s\" = satisfied ] || { echo 'signoff m2: not approved' >&2; exit 1; }\n[ \"$(date +%s)\" -le 4070908800 ] || { echo 'signoff m2: plan deadline 2099-01-01T00:00:00Z passed' >&2; exit 1; }"
     depends_on:
       - human-m2
   - id: land
@@ -1405,5 +1447,6 @@ nodes:
     with:
       kind: land
       base_ref: main
+      plan: /GEN/plan.json
     depends_on:
       - signoff-m2

@@ -70,6 +70,27 @@ describe('buildWorkflow', () => {
       mutates_checkout: false,
     });
   });
+  test('unchanged fix diff: diff-rN compares with the previous hash, review is skipped, gate still runs', () => {
+    const nodes = nodesOf(build(false));
+    const n = (id: string): N | undefined => nodes.find(x => x.id === id);
+    expect(n('diff-m1-r1')?.with?.prev).toBeUndefined();
+    expect(n('diff-m1-r2')?.with?.prev).toBe('$diff-m1-r1.output.diff_hash');
+    expect(n('review-m1-r1')?.when).toBeUndefined();
+    expect(n('review-m1-r2')?.when).toBe("$diff-m1-r2.output.same != 'true'");
+    expect(n('gate-m1-r2')).toMatchObject({
+      depends_on: ['diff-m1-r2', 'review-m1-r2'],
+      trigger_rule: 'none_failed_min_one_success',
+    });
+  });
+  test('signoff and land check the absolute plan deadline, not only the relative wait', () => {
+    const nodes = nodesOf(build(false, { ...fixture, deadline: '2026-10-10T00:00:00Z' }));
+    const signoff = nodes.find(x => x.id === 'signoff-m2') as N & { bash: string };
+    expect(signoff.bash).toContain(`-le ${String(Date.parse('2026-10-10T00:00:00Z') / 1000)} ]`);
+    expect(nodes.find(x => x.id === 'land')?.with).toMatchObject({
+      kind: 'land',
+      plan: '/GEN/plan.json',
+    });
+  });
   test('without human signoff the next step joins the gates directly', () => {
     const plan = {
       ...fixture,

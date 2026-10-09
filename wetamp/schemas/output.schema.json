@@ -152,6 +152,9 @@
         "diff_hash": {
           "type": "string"
         },
+        "same": {
+          "type": "boolean"
+        },
         "base_pass": {
           "type": ["boolean", "null"]
         },
@@ -159,7 +162,7 @@
           "type": "string"
         }
       },
-      "required": ["ok", "failed", "log", "patch", "diff_hash", "base_pass", "head"]
+      "required": ["ok", "failed", "log", "patch", "diff_hash", "same", "base_pass", "head"]
     },
     "head": {
       "type": "object",

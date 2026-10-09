@@ -173,6 +173,17 @@ const humanWait = (resumeAt = '2099-01-01T00:00:00.000Z'): RunView =>
     metadata: { wait: { nodeId: 'human-m2', kind: 'event', event: 'sa.human.m2', resumeAt } },
   });
 
+const LOST = { host: hostname(), pid: 2 ** 22 + 1 };
+/** archon.db 的 runs 表（只含 recover 读写的列），行 r 处于 running、metadata 记着 owner。 */
+function runsDb(owner: { host: string; pid: number }): Database {
+  const db = new Database(join(process.env.ARCHON_HOME ?? '', 'archon.db'));
+  db.run('create table remote_agent_workflow_runs (id text, status text, metadata text)');
+  db.run("insert into remote_agent_workflow_runs values ('r', 'running', ?)", [
+    JSON.stringify({ execution_owner: owner }),
+  ]);
+  return db;
+}
+
 /** 后台子进程（signal/wake）异步写 calls：轮询到出现为止。 */
 async function eventually(calls: () => string[], prefix: string): Promise<string | undefined> {
   for (let i = 0; i < 40; i++) {
@@ -226,13 +237,9 @@ describe('waitRun (archon stub)', () => {
     });
   });
   test('owner_lost: flips row to failed, resumes, records recovery, then completes', () => {
-    const lost = run('running', {
-      metadata: { execution_owner: { host: hostname(), pid: 2 ** 22 + 1 } },
-    });
+    const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost, lost, run('completed')]);
-    const db = new Database(join(process.env.ARCHON_HOME ?? '', 'archon.db'));
-    db.run('create table remote_agent_workflow_runs (id text, status text)');
-    db.run("insert into remote_agent_workflow_runs values ('r', 'running')");
+    const db = runsDb(LOST);
     const out = waitRun(s.ledger, 30);
     expect(out).toMatchObject({ state: 'completed', recoveries: 1 });
     expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
@@ -240,6 +247,86 @@ describe('waitRun (archon stub)', () => {
     });
     expect(s.calls()).toContain('workflow resume r --detach --json');
     expect(loadLedger('sa1').recoveries).toHaveLength(1);
+    expect(loadLedger('sa1').stalled).toBe(1);
+    db.close();
+  });
+  test('owner taken over between get and flip → owner_changed, row untouched, no resume', () => {
+    const lost = run('running', { metadata: { execution_owner: LOST } });
+    const s = stub([lost]);
+    const db = runsDb({ host: hostname(), pid: process.pid });
+    expect(waitRun(s.ledger, 5)).toMatchObject({ reason: 'owner_changed', exit: EXIT.failed });
+    expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
+      status: 'running',
+    });
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
+    db.close();
+  });
+  test('a live recover lock serializes: second recover is refused without touching the run', () => {
+    const lost = run('running', { metadata: { execution_owner: LOST } });
+    stub([lost]);
+    const db = runsDb(LOST);
+    const lockFile = join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock');
+    const held = JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      at: new Date().toISOString(),
+    });
+    writeFileSync(lockFile, held);
+    expect(main(['resume', 'sa1'])).toBe(1);
+    expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
+      status: 'running',
+    });
+    expect(readFileSync(lockFile, 'utf8')).toBe(held);
+    db.close();
+  });
+  test('a lock left by a dead local process is taken over and released', () => {
+    const lost = run('running', { metadata: { execution_owner: LOST } });
+    const s = stub([lost, lost, run('completed')]);
+    runsDb(LOST).close();
+    const lockFile = join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock');
+    writeFileSync(lockFile, JSON.stringify({ pid: LOST.pid, host: hostname(), at: '' }));
+    expect(waitRun(s.ledger, 30)).toMatchObject({ state: 'completed', recoveries: 1 });
+    expect(existsSync(lockFile)).toBe(false);
+  });
+  test('3 recoveries without new completed nodes → held:recover_no_progress, no 4th resume', () => {
+    const lost = run('running', {
+      metadata: { execution_owner: LOST },
+      nodes: [{ nodeId: 'a', state: 'completed' }],
+    });
+    // 每次 recover 后桩 DB 的行复位为 running，模拟恢复出的进程又死在同一位置
+    const s = stub([lost]);
+    const db = runsDb(LOST);
+    const again = (): void => {
+      db.run("update remote_agent_workflow_runs set status='running'");
+    };
+    for (let i = 0; i < 3; i++) {
+      expect(main(['resume', 'sa1'])).toBe(0);
+      again();
+    }
+    expect(loadLedger('sa1')).toMatchObject({ stalled: 3 });
+    const out = waitRun(loadLedger('sa1'), 5);
+    expect(out).toMatchObject({ state: 'held:recover_no_progress', exit: EXIT.held });
+    expect(main(['resume', 'sa1'])).toBe(1);
+    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(3);
+    // decide retry 是元帅的显式决定：清零重计，恢复一次
+    expect(main(['decide', 'sa1', 'retry'])).toBe(0);
+    expect(loadLedger('sa1')).toMatchObject({ stalled: 1 });
+    db.close();
+  });
+  test('progress between recoveries resets the stall count', () => {
+    const at = (done: string[]): RunView =>
+      run('running', {
+        metadata: { execution_owner: LOST },
+        nodes: done.map(nodeId => ({ nodeId, state: 'completed' })),
+      });
+    const s = stub([at(['a'])]);
+    const db = runsDb(LOST);
+    writeFileSync(
+      join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'sa1.json'),
+      JSON.stringify({ ...s.ledger, progress_fp: 'older', stalled: 3 })
+    );
+    expect(main(['resume', 'sa1'])).toBe(0);
+    expect(loadLedger('sa1')).toMatchObject({ stalled: 1 });
     db.close();
   });
 });
@@ -301,6 +388,17 @@ describe('decide (archon stub)', () => {
   test('approve refuses a run that is not at a signoff gate', () => {
     const s = stub([run('running')]);
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(1);
+    expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
+  });
+  test('approve past the plan deadline is refused without signalling', () => {
+    const s = stub([humanWait(), run('running')]);
+    writeFileSync(
+      join(s.root, 'gen', 'plan.json'),
+      JSON.stringify({ deadline: '2020-01-01T00:00:00Z', packages: [{ id: 'core' }] })
+    );
+    const { code, out } = captured(() => main(['decide', 'sa1', 'approve']));
+    expect(code).toBe(1);
+    expect(out).toContain('deadline');
     expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
   });
   test('reject cancels the run', () => {
@@ -480,15 +578,10 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(sup()[0]).toEndWith('--ttl-hours 5');
   });
   test('owner_lost run is recovered and recorded', () => {
-    const lost = run('running', {
-      metadata: { execution_owner: { host: hostname(), pid: 2 ** 22 + 1 } },
-    });
+    const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost, run('failed')]);
     supervisor(s.root, 'pending');
-    const db = new Database(join(process.env.ARCHON_HOME ?? '', 'archon.db'));
-    db.run('create table remote_agent_workflow_runs (id text, status text)');
-    db.run("insert into remote_agent_workflow_runs values ('r', 'running')");
-    db.close();
+    runsDb(LOST).close();
     expect(tick()[0]).toMatchObject({ action: 'recover', ok: true });
     expect(loadLedger('sa1').recoveries).toHaveLength(1);
   });
@@ -540,7 +633,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect((waited.out.land as string[])[1]).toContain(`merge --ff-only 'sa/${id}'`);
   expect(readdirSync(join(root, 'home', 'runs'))).toEqual([`${id}.json`]);
   expect(sa('status', id).code).toBe(0);
-  expect(sa('land', id).out).toMatchObject({ branch: `sa/${id}` });
+  expect(sa('land', id).out).toMatchObject({ branch: `sa/${id}`, debt: [] });
   expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
   expect(existsSync(String(waited.out.evidence))).toBe(true);
 }, 240000);

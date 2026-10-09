@@ -1,48 +1,84 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { blocking, decide } from '../templates/.archon/scripts/sa-check';
+import { decide, openBlocking } from '../templates/.archon/scripts/sa-check';
 import { gitRepo, sh, tmp } from './helpers';
 
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
-type F = Parameters<typeof blocking>[0]['findings'][number];
+type Rv = NonNullable<Parameters<typeof decide>[0]['reviews'][number]>;
+type F = Rv['findings'][number];
 const f = (severity: F['severity'], extra: Partial<F> = {}): F => ({
-  id: 'x',
+  id: `x-${severity}`,
   severity,
+  file: 'a.ts',
+  line: 1,
   status: 'open',
+  evidence: '',
   carry_over: false,
   ...extra,
 });
-const review = (
-  status: 'PASS' | 'FAIL',
-  findings: F[] = [],
-  debt: string[] = []
-): { status: 'PASS' | 'FAIL'; findings: F[]; debt: string[] } => ({ status, findings, debt });
+/** 第 2/3 轮用原 id 关闭并附证据：gate 唯一承认的关闭方式。 */
+const fixed = (id: string, severity: F['severity'] = 'high'): F =>
+  f(severity, { id, status: 'closed', carry_over: true, evidence: 'diff L3 removes it' });
+const review = (status: Rv['status'], findings: F[] = [], debt: string[] = []): Rv => ({
+  status,
+  findings,
+  debt,
+});
 
 const R = review;
-const C = (diff_hash: string, ok = true): { ok: boolean; diff_hash: string } => ({ ok, diff_hash });
+const C = (
+  diff_hash: string,
+  ok = true,
+  same = false
+): { ok: boolean; diff_hash: string; same: boolean } => ({
+  ok,
+  diff_hash,
+  same,
+});
+const ids = (reviews: Rv[], risk = 'G1'): string[] => [...openBlocking(reviews, risk)].sort();
 
 describe('gate rules', () => {
   test('R1: open high blocks G1; medium does not', () => {
-    expect(
-      blocking(review('FAIL', [f('high'), f('medium')]), 1, 'G1').map(x => x.severity)
-    ).toEqual(['high']);
+    expect(ids([R('FAIL', [f('high'), f('medium')])])).toEqual(['x-high']);
   });
   test('R1: G2 also blocks on medium', () => {
-    expect(blocking(review('FAIL', [f('medium'), f('low')]), 1, 'G2').map(x => x.severity)).toEqual(
-      ['medium']
-    );
+    expect(ids([R('FAIL', [f('medium'), f('low')])], 'G2')).toEqual(['x-medium']);
   });
-  test('R2+: new non-blocker findings do not block; carry-over high does', () => {
-    const r = review('FAIL', [
-      f('high'),
-      f('high', { carry_over: true, id: 'R1-1' }),
-      f('blocker'),
-    ]);
-    expect(blocking(r, 2, 'G1').map(x => x.severity)).toEqual(['high', 'blocker']);
+  test('R2+: new non-blocker findings do not block; new blocker does', () => {
+    const r2 = R('FAIL', [f('high', { id: 'R2-1' }), f('blocker', { id: 'R2-2' })]);
+    expect(ids([R('PASS'), r2])).toEqual(['R2-2']);
   });
   test('closed findings never block', () => {
-    expect(blocking(review('PASS', [f('blocker', { status: 'closed' })]), 1, 'G1')).toEqual([]);
+    expect(ids([R('PASS', [f('blocker', { status: 'closed' })])])).toEqual([]);
+  });
+  test('R2: a previous high only closes by original id, carry_over and evidence', () => {
+    const r1 = R('FAIL', [f('high', { id: 'R1-1' })]);
+    expect(ids([r1, R('PASS', [fixed('R1-1')])])).toEqual([]);
+  });
+  test('R2: omitting a previous high keeps it open (PASS with omission is not success)', () => {
+    const d = decide({
+      reviews: [R('FAIL', [f('high', { id: 'R1-1' })]), R('PASS')],
+      rechecks: [C('a'), C('b')],
+      risk: 'G1',
+    });
+    expect(d).toMatchObject({ verdict: 'fix', reason: 'review_inconsistent' });
+  });
+  test('R2: renamed id, carry_over:false or closed without evidence all stay open', () => {
+    const r1 = R('FAIL', [f('high', { id: 'R1-1' })]);
+    expect(ids([r1, R('PASS', [fixed('R1-1b')])])).toEqual(['R1-1']);
+    expect(ids([r1, R('PASS', [{ ...fixed('R1-1'), carry_over: false }])])).toEqual(['R1-1']);
+    expect(ids([r1, R('PASS', [{ ...fixed('R1-1'), evidence: ' ' }])])).toEqual(['R1-1']);
+  });
+  test('R3 baseline is what R2 left open, not only what R2 reported', () => {
+    const r1 = R('FAIL', [f('high', { id: 'R1-1' }), f('high', { id: 'R1-2' })]);
+    const r2 = R('FAIL', [fixed('R1-1')]);
+    expect(ids([r1, r2, R('PASS', [])])).toEqual(['R1-2']);
+  });
+  test('G2: a previous medium also needs explicit closure', () => {
+    const r1 = R('FAIL', [f('medium', { id: 'R1-1' })]);
+    expect(ids([r1, R('PASS')], 'G2')).toEqual(['R1-1']);
+    expect(ids([r1, R('PASS', [fixed('R1-1', 'medium')])], 'G2')).toEqual([]);
   });
   test('r1 PASS with green acceptance passes, carrying debt', () => {
     expect(decide({ reviews: [R('PASS', [], ['tidy'])], rechecks: [C('a')], risk: 'G1' })).toEqual({
@@ -52,15 +88,23 @@ describe('gate rules', () => {
       debt: ['tidy'],
     });
   });
+  test('G1: open non-blocking findings become debt when the reviewer left debt empty', () => {
+    const d = decide({
+      reviews: [R('PASS', [f('medium', { id: 'R1-1', file: 'b.ts', line: 7 }), f('low')])],
+      rechecks: [C('a')],
+      risk: 'G1',
+    });
+    expect(d).toMatchObject({ verdict: 'pass', debt: ['R1-1 medium b.ts:7', 'x-low low a.ts:1'] });
+  });
   test('r1 FAIL asks for a fix round', () => {
     expect(
       decide({ reviews: [R('FAIL', [f('high')])], rechecks: [C('a')], risk: 'G1' })
     ).toMatchObject({ verdict: 'fix', reason: 'review_failed' });
   });
-  test('r2 PASS after a changed fix diff passes', () => {
+  test('r2 PASS that closes the r1 high with evidence passes', () => {
     expect(
       decide({
-        reviews: [R('FAIL', [f('high')]), R('PASS')],
+        reviews: [R('FAIL', [f('high', { id: 'R1-1' })]), R('PASS', [fixed('R1-1')])],
         rechecks: [C('a'), C('b')],
         risk: 'G1',
       })
@@ -89,27 +133,25 @@ describe('gate rules', () => {
       reason: 'review_failed+review_limit',
     });
   });
-  test('a fix round that changed nothing escalates as no_change', () => {
+  test('a fix round whose diff is unchanged (same:true, review skipped) escalates as no_change', () => {
     expect(
-      decide({ reviews: [R('FAIL'), R('FAIL')], rechecks: [C('h'), C('h')], risk: 'G1' })
-    ).toMatchObject({ verdict: 'escalate', reason: 'review_failed+no_change' });
+      decide({ reviews: [R('FAIL'), null], rechecks: [C('h'), C('h', true, true)], risk: 'G1' })
+    ).toMatchObject({ verdict: 'escalate', reason: 'no_change' });
   });
-  test('past the plan deadline a failing gate escalates instead of fixing', () => {
+  test('past the plan deadline even a PASS escalates (deadline is checked first)', () => {
     expect(
-      decide({ reviews: [R('FAIL')], rechecks: [C('a')], risk: 'G1', expired: true })
-    ).toMatchObject({ verdict: 'escalate', reason: 'review_failed+deadline' });
+      decide({ reviews: [R('PASS')], rechecks: [C('a')], risk: 'G1', expired: true })
+    ).toMatchObject({ verdict: 'escalate', reason: 'deadline' });
   });
   test('INCOMPLETE review escalates immediately', () => {
-    expect(
-      decide({
-        reviews: [{ status: 'INCOMPLETE', findings: [], debt: [] }],
-        rechecks: [C('a')],
-        risk: 'G1',
-      })
-    ).toMatchObject({ verdict: 'escalate', reason: 'review_incomplete' });
+    expect(decide({ reviews: [R('INCOMPLETE')], rechecks: [C('a')], risk: 'G1' })).toMatchObject({
+      verdict: 'escalate',
+      reason: 'review_incomplete',
+    });
   });
   test('no review is a wiring error', () => {
     expect(() => decide({ reviews: [], rechecks: [], risk: 'G1' })).toThrow(/no review/);
+    expect(() => decide({ reviews: [null], rechecks: [C('a')], risk: 'G1' })).toThrow(/no review/);
   });
 });
 
@@ -201,7 +243,16 @@ describe('sa-check script', () => {
     const out = r.out as { patch: string; diff_hash: string };
     expect(readFileSync(out.patch, 'utf8')).toContain('+y');
     expect(out.diff_hash).toMatch(/^[0-9a-f]{16}$/);
-    expect(r.out).toMatchObject({ ok: true, base_pass: null });
+    expect(r.out).toMatchObject({ ok: true, base_pass: null, same: false });
+    const again = runScript(repo, {
+      kind: 'accept',
+      plan: planFile(root, 'true'),
+      pkgs: 'a',
+      tag: 'diff-m1-r2',
+      base,
+      prev: out.diff_hash,
+    });
+    expect(again.out).toMatchObject({ diff_hash: out.diff_hash, same: true });
   });
   test('gate: fix verdict writes review file and gate json; deadline passed escalates with exit 1', () => {
     const root = tmp();
@@ -229,7 +280,7 @@ describe('sa-check script', () => {
     expect(late.code).toBe(1);
     expect(JSON.parse(readFileSync(join(late.art, 'gate-m1-r1.json'), 'utf8'))).toMatchObject({
       verdict: 'escalate',
-      reason: 'review_failed+deadline',
+      reason: 'deadline',
     });
   });
   test('accept with base: failing command is probed at base (pre-existing vs introduced)', () => {
@@ -263,7 +314,9 @@ describe('sa-check script', () => {
       'git switch -qc sa/x && echo z > z.txt && git add z.txt && git -c user.name=t -c user.email=t@l commit -qm z',
       repo
     );
-    const ff = runScript(repo, { kind: 'land', base_ref: 'origin/main' }).out as {
+    const plan = join(root, 'plan.json');
+    writeFileSync(plan, JSON.stringify({ deadline: '2099-01-01T00:00:00Z', packages: [] }));
+    const ff = runScript(repo, { kind: 'land', base_ref: 'origin/main', plan }).out as {
       commands: string[];
     };
     expect(ff.commands[1]).toContain("merge --ff-only 'sa/x'");
@@ -273,9 +326,42 @@ describe('sa-check script', () => {
       repo
     );
     expect(
-      (runScript(repo, { kind: 'land', base_ref: 'main' }).out as { commands: string[] })
+      (runScript(repo, { kind: 'land', base_ref: 'main', plan }).out as { commands: string[] })
         .commands[1]
     ).toContain('--no-ff');
+  });
+  test('land: carries the last gate debt per milestone; refuses past the plan deadline', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const art = join(root, 'art');
+    mkdirSync(art, { recursive: true });
+    const gate = (name: string, debt: string[]): void => {
+      writeFileSync(join(art, `${name}.json`), JSON.stringify({ verdict: 'pass', debt }));
+    };
+    gate('gate-m1-r1', ['stale']);
+    gate('gate-m1-r2', ['m1 debt']);
+    gate('gate-m2-r1', ['m2 debt']);
+    const plan = (deadline: string): string => {
+      const p = join(root, `plan-${deadline.slice(0, 4)}.json`);
+      writeFileSync(p, JSON.stringify({ deadline, packages: [] }));
+      return p;
+    };
+    const ok = runScript(repo, {
+      kind: 'land',
+      base_ref: 'main',
+      plan: plan('2099-01-01T00:00:00Z'),
+    });
+    expect(ok.out).toMatchObject({ debt: ['m1 debt', 'm2 debt'] });
+    const late = runScript(repo, {
+      kind: 'land',
+      base_ref: 'main',
+      plan: plan('2000-01-01T00:00:00Z'),
+    });
+    expect(late.code).toBe(1);
+    expect(late.err).toContain('deadline');
+    expect(JSON.parse(readFileSync(join(art, 'land.json'), 'utf8'))).toMatchObject({
+      debt: ['m1 debt', 'm2 debt'],
+    });
   });
   test('unknown kind fails loudly', () => {
     const root = tmp();

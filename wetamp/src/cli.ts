@@ -65,6 +65,9 @@ export interface Ledger {
   transcript: string;
   log: string;
   recoveries: string[];
+  /** 最近一次 recover 时已完成节点集合的指纹，及在该指纹上连续 recover 的次数（旧 ledger 无这两项）。 */
+  progress_fp?: string;
+  stalled?: number;
 }
 
 const ledgerPath = (run: string): string => join(home().sa, 'runs', `${run}.json`);
@@ -154,10 +157,44 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
 
 const MAX_STALLED_RECOVERIES = 3;
 
-/** recover 成功即记入 ledger（brief/report 的恢复次数、waitRun 的停滞判断都读它）。 */
-function recoverRun(l: Ledger): RecoverResult {
-  const r = recover(l.archon_run_id, l.repo);
+const progressOf = (run: RunView): string =>
+  new Bun.CryptoHasher('sha256')
+    .update(
+      (run.nodes ?? [])
+        .filter(n => n.state === 'completed')
+        .map(n => n.nodeId)
+        .sort()
+        .join('\n')
+    )
+    .digest('hex')
+    .slice(0, 16);
+
+const stalledOut = (l: Ledger, run: RunView): boolean =>
+  l.progress_fp === progressOf(run) && (l.stalled ?? 0) >= MAX_STALLED_RECOVERIES;
+
+/** classify + ledger：同一完成节点集合上已 recover 满 3 次的 owner-lost run 不再自动恢复，等元帅。 */
+function classifyRun(l: Ledger, run: RunView): Classified {
+  const c = classify(run);
+  return c.state === 'owner_lost' && stalledOut(l, run)
+    ? { state: 'held:recover_no_progress', exit: EXIT.held }
+    : c;
+}
+
+/**
+ * 所有恢复（wait、resume、decide retry、supervise-tick）的唯一入口。锁内重读 ledger 与 run：完成节点集合
+ * 与上次相同且已连续 recover 3 次即拒绝（recover_no_progress）；fresh=true（decide retry）是元帅的显式决定，清零重计。
+ */
+function recoverRun(l: Ledger, fresh = false): RecoverResult {
+  let fp = '';
+  const r = recover(l.archon_run_id, l.repo, run => {
+    Object.assign(l, loadLedger(l.run_id));
+    if (fresh) l.stalled = 0;
+    fp = progressOf(run);
+    return stalledOut(l, run) ? 'recover_no_progress' : undefined;
+  });
   if (r.ok) {
+    l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
+    l.progress_fp = fp;
     l.recoveries.push(new Date().toISOString());
     saveLedger(l);
   }
@@ -167,20 +204,23 @@ function recoverRun(l: Ledger): RecoverResult {
 /** 分片等待：事件门不会唤醒 archon wait，所以每片 ≤30s 后重新 get；可证实 owner-lost 时自动 recover。 */
 export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
   const deadline = Date.now() + timeoutS * 1000;
-  let stalled = 0;
-  let lastDone = -1;
   for (;;) {
     const run = getRun(l.archon_run_id, l.repo);
-    const c = classify(run);
+    const c = classifyRun(l, run);
     if (c.state === 'owner_lost') {
-      const done = (run.nodes ?? []).filter(n => n.state === 'completed').length;
-      stalled = done === lastDone ? stalled + 1 : 1;
-      lastDone = done;
-      if (stalled > MAX_STALLED_RECOVERIES)
-        return { ...summary(l, run, { ...c, exit: EXIT.failed }), reason: 'recover_no_progress' };
       const r = recoverRun(l);
-      if (!r.ok) return { ...summary(l, run, { ...c, exit: EXIT.failed }), reason: r.reason };
-      continue;
+      if (r.ok) continue;
+      const held = r.reason === 'recover_no_progress';
+      return {
+        ...summary(
+          l,
+          run,
+          held
+            ? { state: 'held:recover_no_progress', exit: EXIT.held }
+            : { ...c, exit: EXIT.failed }
+        ),
+        reason: r.reason,
+      };
     }
     const left = Math.ceil((deadline - Date.now()) / 1000);
     if (c.exit !== EXIT.running || left <= 0) return summary(l, run, c);
@@ -258,8 +298,8 @@ function health(): number {
   return ok ? 0 : 1;
 }
 
-function resumeRun(l: Ledger): number {
-  const res = recoverRun(l);
+function resumeRun(l: Ledger, fresh = false): number {
+  const res = recoverRun(l, fresh);
   print({ run_id: l.run_id, ...res });
   return res.ok ? 0 : 1;
 }
@@ -271,12 +311,21 @@ function cancelRun(l: Ledger): boolean {
 const planOf = (l: Ledger): Plan =>
   JSON.parse(readFileSync(join(l.gen_dir, 'plan.json'), 'utf8')) as Plan;
 
+/** 过了 plan 的绝对 deadline，签收节点与 land 都会拒绝；approve 在此提前拒绝，不发无效 signal。 */
+const pastDeadline = (l: Ledger): boolean => Date.now() > Date.parse(planOf(l).deadline);
+const PAST_DEADLINE =
+  'plan deadline passed: decide reject, or start a new run with a later deadline';
+
 /** approve：放行 sa.human.* 签收门；reject：取消 run；retry：可选写 hint 后 resume 失败节点。 */
 function decide(l: Ledger, a: Args): number {
   const action = need(a._[2], 'decide <run> approve|reject|retry [--pkg id --hint text]');
   const run = getRun(l.archon_run_id, l.repo);
-  const c = classify(run);
+  const c = classifyRun(l, run);
   if (action === 'approve') {
+    if (pastDeadline(l)) {
+      print({ run_id: l.run_id, ok: false, reason: PAST_DEADLINE });
+      return 1;
+    }
     const log = join(l.gen_dir, `signal-${c.node ?? 'none'}.log`);
     const r = signalHuman(run, { decision: 'approve' }, log, l.repo);
     print({ run_id: l.run_id, ...r });
@@ -299,13 +348,13 @@ function decide(l: Ledger, a: Args): number {
       throw new Error('decide retry --hint needs --pkg <package id from the plan>');
     writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
   }
-  return resumeRun(l);
+  return resumeRun(l, true);
 }
 
 /** ≤20 行纯文本：状态、各轮 gate 结论与评审债、签收提问状态、合入命令、证据路径。 */
 function brief(l: Ledger): number {
   const run = getRun(l.archon_run_id, l.repo);
-  const c = classify(run);
+  const c = classifyRun(l, run);
   const s = summary(l, run, c);
   const art = artifactsOf(run);
   const lines = [
@@ -412,6 +461,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   }
   // yes/no 的执行失败保留原状态，下一次 tick 重试
   if (a.status === 'yes') {
+    if (pastDeadline(l)) return { ...base, action: 'none', ok: true, reason: PAST_DEADLINE };
     const r = signalHuman(
       run,
       { decision: 'approve', ask: a.id },
@@ -438,10 +488,12 @@ export function superviseTick(): Action[] {
   for (const l of ledgers()) {
     try {
       const run = getRun(l.archon_run_id, l.repo);
-      const c = classify(run);
+      const c = classifyRun(l, run);
       if (c.state === 'held:human') out.push(human(l, run, asks));
       else if (c.state === 'owner_lost')
         out.push({ run_id: l.run_id, action: 'recover', ...recoverRun(l) });
+      else if (c.state === 'held:recover_no_progress')
+        out.push({ run_id: l.run_id, action: 'none', ok: true, state: c.state });
     } catch (e) {
       out.push({
         run_id: l.run_id,
@@ -470,7 +522,7 @@ export function report(): Record<string, unknown> {
     bump(n, 'recoveries', l.recoveries.length);
     try {
       const run = getRun(l.archon_run_id, l.repo);
-      const c = classify(run);
+      const c = classifyRun(l, run);
       bump(n, `state:${c.state}`);
       for (const x of run.nodes ?? [])
         bump(n, `node_s:${x.nodeId.split('-')[0]}`, Math.round((x.durationMs ?? 0) / 1e3));
@@ -512,7 +564,7 @@ export function main(argv: string[]): number {
     case 'status': {
       const l = ledger();
       const run = getRun(l.archon_run_id, l.repo);
-      const c = classify(run);
+      const c = classifyRun(l, run);
       print(summary(l, run, c));
       return c.exit;
     }

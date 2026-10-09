@@ -233,3 +233,10 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - `gc.sh`（shell，TS 预算已满）：只处理 `superagent status` 为 completed/cancelled 且分支是本地目标分支祖先的 run；worktree 须在 `$ARCHON_HOME` 下，`git worktree remove` 不加 `--force`、`branch -d`；Archon 的 run 记录与环境行留给 `archon workflow cleanup` / `archon isolation cleanup`（后者对已不存在的路径做对账）。
   - `upgrade-upstream.sh`：dry-run 也 `git fetch upstream dev`（只更新远端跟踪引用，不动分支与工作区）；列核对用 `pragma_table_info` 而非 `.schema` 文本（`ALTER TABLE ADD COLUMN` 会把列写在同一行）；`execution_owner` 是 `metadata` JSON 的键而非列，故核对 `status`、`metadata` 两列。`--apply` 让 merge 自动提交（不触发 pre-commit，避免 lint-staged 改写上游文件），`UPSTREAM` 只改写不提交，由人验证后提交。
   - 文件预算按 `wetamp/` 下除 `tests/`、`docs/`、`README.md` 外的文件计（25 个）。
+- 修复轮 R1 实现记录：
+  - H1：`recover` 先取 `runs/<id>.lock`（O_EXCL 写 `{pid,host,at}`；同机 pid 已死或超过 10 min 才接管，`release` 只删自己的锁），锁内重读 run 与 ledger；置 failed 的 UPDATE 以 `status='running'` 与 `metadata.execution_owner.pid/host` 等于刚判定丢失的 owner 为条件，影响行数≠1 即 `owner_changed`、不 resume。
+  - M1：`wait`、`resume`、`supervise-tick` 共用 `recoverRun`：ledger 持久化 `progress_fp`（已完成节点集合的 sha256 前 16 位）与 `stalled`；同一指纹连续恢复 3 次后拒绝并呈现 `held:recover_no_progress`（退出码 3），`decide retry` 是操作者显式重置。
+  - H3：R2/R3 的阻塞集合以上一轮遗留的 ID 集合为基线：基线 ID 只有在本轮以同一 ID、`carry_over:true`、`status:closed` 且带非空 `evidence` 出现时才关闭，漏报、改名、无证据关闭都按仍未关闭；新发现只有 blocker 阻塞。
+  - H4：gate 先判 `plan.deadline` 过期再判 PASS（`escalate deadline`）；`signoff-<M>` bash 节点与 `land` 也检查绝对截止时间；`decide approve` 过期拒绝，`supervise-tick` 不再替过期的“是”发 signal。
+  - M2：`diff-<M>-rN`（N>1）以上一轮 `diff_hash` 为 `prev` 输出 `same`；`review-<M>-rN` 带 `when: same != 'true'`；gate 依赖 diff 与 review 并以 `none_failed_min_one_success` 汇合，`same` 时直接 `escalate no_change`，不再为未变化的 diff 付评审费。
+  - M7：G1 评审的 `debt[]` 为空时，债务由非阻塞的未关闭发现派生（`<id> <severity> <file>:<line>`）；`land` 输出与 `land.json` 带各里程碑末轮 gate 的 `debt`。
