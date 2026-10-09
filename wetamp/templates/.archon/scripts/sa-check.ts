@@ -114,7 +114,13 @@ function probe(base: string, checks: Check[], tag: string): boolean {
   try {
     return run(checks, join(artifacts, `${tag}.probe.log`), dir).length === 0;
   } finally {
-    git('worktree', 'remove', dir);
+    // 不加 --force：验收命令在工作树里留下的文件不替人丢弃；删不掉就保留并报路径
+    const rm = Bun.spawnSync(['git', 'worktree', 'remove', dir], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    if (rm.exitCode !== 0)
+      console.error(`probe: kept worktree ${dir}: ${rm.stderr.toString().trim()}`);
   }
 }
 

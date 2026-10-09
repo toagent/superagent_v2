@@ -11,20 +11,22 @@ done
 TMPH="$(mktemp -d "${TMPDIR:-/tmp}/sa-selftest.XXXXXX")"
 export SUPERAGENT_HOME="$TMPH" ARCHON_HOME="$TMPH/archon"
 A="$WETAMP/bin/archon"
+# 清理不加 --force、不用 branch -D：删不掉说明里面有东西，保留并报路径，整个临时目录也一起留下（worktree 在 $TMPH/archon 下）。
 cleanup() {
+  local keep=0
   if [ -n "${ID:-}" ]; then "$A" workflow abandon "$ID" --json >/dev/null 2>&1 || true; fi
   if [ -n "${BR:-}" ] && [ "$OWN_REPO" = 0 ]; then
-    [ -n "${WT:-}" ] && git -C "$REPO" worktree remove --force "$WT" 2>/dev/null || true
-    git -C "$REPO" branch -D "$BR" >/dev/null 2>&1 || true
+    if [ -n "${WT:-}" ] && [ -d "$WT" ] && ! git -C "$REPO" worktree remove "$WT" >&2; then keep=1; echo "selftest: kept worktree $WT" >&2; fi
+    if git -C "$REPO" show-ref -q --verify "refs/heads/$BR" && ! git -C "$REPO" branch -d "$BR" >/dev/null; then keep=1; echo "selftest: kept branch $BR in $REPO" >&2; fi
   fi
-  rm -rf "$TMPH"
+  if [ "$keep" = 1 ]; then echo "selftest: kept $TMPH" >&2; else rm -rf "$TMPH"; fi
 }
 trap cleanup EXIT
 fail() { echo "selftest FAIL: $*" >&2; exit 1; }
 field() { bun -e "import { lastJson } from '$WETAMP/src/archon.ts'; const d = lastJson(await Bun.stdin.text()); const v = ($1); console.log(v ?? '')"; }
 ms() { bun -e 'console.log(Date.now())'; }
 
-SA_SKIP_DOCTOR=1 "$WETAMP/scripts/install.sh" >/dev/null
+SA_LAUNCHD_DIR="$TMPH/LaunchAgents" SA_SKIP_DOCTOR=1 "$WETAMP/scripts/install.sh" >/dev/null
 if [ -z "$REPO" ]; then
   OWN_REPO=1; REPO="$TMPH/repo"
   git init -q -b main "$REPO"; echo selftest > "$REPO/README.md"
@@ -109,4 +111,4 @@ ID=""
 mkdir -p "$REAL_HOME"
 printf '{"ok":true,"at":"%s","fake":%s,"rss_kb":%s,"recover_ms":%s,"signal_ms":%s,"upstream":"%s"}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAKE" = 1 ] && echo true || echo false)" "$RSS_KB" "$RECOVER_MS" "$SIGNAL_MS" \
-  "$(cat "$WETAMP/UPSTREAM")" | tee "$REAL_HOME/selftest.json"
+  "$(head -1 "$WETAMP/UPSTREAM")" | tee "$REAL_HOME/selftest.json"

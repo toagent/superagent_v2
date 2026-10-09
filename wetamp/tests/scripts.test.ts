@@ -87,21 +87,47 @@ describe('gc.sh', () => {
 });
 
 describe('upgrade-upstream.sh', () => {
-  /** up：带三个引擎事实的上游（dev）；fork：clone -o upstream 后在 wetamp 分支放入脚本；上游再前进一个提交。 */
+  const DB_TS = 'packages/core/src/db.ts';
+  const COLUMNS = [
+    'id TEXT PRIMARY KEY,',
+    "status TEXT NOT NULL DEFAULT 'pending',",
+    "metadata TEXT DEFAULT '{}'",
+  ];
+  const createTable = (cols: string[]): string =>
+    [
+      'db.exec(`',
+      '  CREATE TABLE IF NOT EXISTS other (status TEXT, metadata TEXT);',
+      '  CREATE TABLE IF NOT EXISTS remote_agent_workflow_runs (',
+      ...cols.map(c => `    ${c}`),
+      '  );',
+      '`);',
+      "const key = 'execution_owner'; // case 'owner_lost':",
+      '',
+    ].join('\n');
+  const RECORDED = [
+    'commit=old',
+    `table ${DB_TS} remote_agent_workflow_runs status metadata`,
+    `fact ${DB_TS} case 'owner_lost':`,
+    '',
+  ].join('\n');
+  /** up：建表语句带真实列定义的上游（dev）；fork：clone -o upstream 后在 wetamp 分支放入脚本与 UPSTREAM 事实行；上游再前进一个提交。 */
   function setup(): { root: string; up: string; fork: string; env: Record<string, string> } {
     const root = tmp();
     const up = join(root, 'up');
+    mkdirSync(join(up, 'packages', 'core', 'src'), { recursive: true });
+    writeFileSync(join(up, DB_TS), createTable(COLUMNS));
+    writeFileSync(join(up, 'package.json'), '{\n  "version": "9.9.9"\n}\n');
     sh(
-      `git init -q -b dev up && mkdir -p up/packages/core/src && echo 'remote_agent_workflow_runs execution_owner owner_lost' > up/packages/core/src/db.ts && printf '{\\n  "version": "9.9.9"\\n}\\n' > up/package.json && git -C up add . && ${GIT} -C up commit -qm base && git clone -q -o upstream up fork`,
+      `git init -q -b dev up && git -C up add . && ${GIT} -C up commit -qm base && git clone -q -o upstream up fork`,
       root
     );
     const fork = join(root, 'fork');
     mkdirSync(join(fork, 'wetamp', 'scripts'), { recursive: true });
     for (const f of ['upgrade-upstream.sh', 'check-upstream-clean.sh'])
       cpSync(join(SCRIPTS, f), join(fork, 'wetamp', 'scripts', f));
-    writeFileSync(join(fork, 'wetamp', 'UPSTREAM'), 'commit=old\n');
+    writeFileSync(join(fork, 'wetamp', 'UPSTREAM'), RECORDED);
     sh(`git switch -q -c wetamp && git add wetamp && ${GIT} commit -qm wetamp`, fork);
-    sh(`echo more >> packages/core/src/db.ts && ${GIT} commit -qam next`, up);
+    sh(`echo '// more' >> ${DB_TS} && ${GIT} commit -qam next`, up);
     return { root, up, fork, env: { ARCHON_HOME: join(root, 'ah') } };
   }
   const upgrade = (fork: string, env: Record<string, string>, ...args: string[]) =>
@@ -121,7 +147,8 @@ describe('upgrade-upstream.sh', () => {
     ])
       expect(r.out).toContain(s);
     expect(sh('git rev-parse HEAD', fork)).toBe(head);
-    expect(readFileSync(join(fork, 'wetamp', 'UPSTREAM'), 'utf8')).toBe('commit=old\n');
+    expect(r.out).toContain('engine facts: ok (2)');
+    expect(readFileSync(join(fork, 'wetamp', 'UPSTREAM'), 'utf8')).toBe(RECORDED);
   }, 60000);
 
   test('db schema: status and metadata columns are required', () => {
@@ -139,15 +166,28 @@ describe('upgrade-upstream.sh', () => {
     expect(upgrade(fork, env).out).toContain('db schema: ok');
   }, 60000);
 
-  test('upstream dropping an engine fact fails the dry-run', () => {
+  test('upstream dropping a column from the run table fails, even if another table still has it', () => {
     const { up, fork, env } = setup();
-    sh(
-      `echo remote_agent_workflow_runs execution_owner > packages/core/src/db.ts && ${GIT} commit -qam drop`,
-      up
+    writeFileSync(
+      join(up, DB_TS),
+      createTable(['id TEXT PRIMARY KEY,', "status TEXT NOT NULL DEFAULT 'pending'"])
     );
+    sh(`${GIT} commit -qam drop`, up);
     const r = upgrade(fork, env);
     expect(r.code).toBe(1);
-    expect(r.out).toContain('no longer mentions owner_lost');
+    expect(r.out).toContain(`upstream/dev:${DB_TS}: remote_agent_workflow_runs.metadata missing`);
+  }, 60000);
+
+  test('upstream dropping a registered fact, or an UPSTREAM without facts, fails the dry-run', () => {
+    const { up, fork, env } = setup();
+    writeFileSync(join(up, DB_TS), createTable(COLUMNS).replace("case 'owner_lost':", ''));
+    sh(`${GIT} commit -qam drop`, up);
+    expect(upgrade(fork, env).out).toContain("no longer has: case 'owner_lost':");
+    writeFileSync(join(fork, 'wetamp', 'UPSTREAM'), 'commit=old\n');
+    sh(`${GIT} commit -qam nofacts`, fork);
+    const r = upgrade(fork, env);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('registers no engine facts');
   }, 60000);
 
   test('--apply merges with --no-ff, rewrites UPSTREAM and never commits it', () => {
@@ -156,9 +196,9 @@ describe('upgrade-upstream.sh', () => {
     expect(r.code).toBe(0);
     expect(sh('git rev-list --parents -n1 HEAD', fork).trim().split(' ')).toHaveLength(3);
     const short = sh('git rev-parse --short=8 HEAD', up).trim();
-    expect(readFileSync(join(fork, 'wetamp', 'UPSTREAM'), 'utf8')).toStartWith(
-      `commit=${short} version=9.9.9 branch=dev`
-    );
+    const recorded = readFileSync(join(fork, 'wetamp', 'UPSTREAM'), 'utf8').split('\n');
+    expect(recorded[0]).toStartWith(`commit=${short} version=9.9.9 branch=dev`);
+    expect(recorded.slice(1).join('\n')).toBe(RECORDED.split('\n').slice(1).join('\n'));
     expect(sh('git status --porcelain', fork).trim()).toBe('M wetamp/UPSTREAM');
   }, 60000);
 

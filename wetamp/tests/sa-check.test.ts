@@ -307,6 +307,22 @@ describe('sa-check script', () => {
     expect(preexisting.out).toMatchObject({ ok: false, base_pass: false });
     expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
   });
+  test('probe never force-removes: a worktree the check dirtied is kept and its path reported', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const base = sh('git rev-parse HEAD', repo).trim();
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan: planFile(root, 'echo x > junk.txt; false'),
+      pkgs: 'a',
+      tag: 'v3',
+      base,
+    });
+    expect(r.out).toMatchObject({ ok: false, base_pass: false });
+    const kept = /probe: kept worktree (\S+):/.exec(r.err)?.[1] ?? '';
+    expect(readFileSync(join(kept, 'junk.txt'), 'utf8')).toBe('x\n');
+    expect(sh('git worktree list', repo)).toContain(kept);
+  });
   test('land: fast-forward when base is an ancestor, no-ff otherwise; never pushes', () => {
     const root = tmp();
     const repo = gitRepo(root);

@@ -1,1 +1,5 @@
 commit=7009a90a version=0.11.1 branch=dev date=2026-10-09
+table packages/core/src/db/adapters/sqlite.ts remote_agent_workflow_runs status metadata
+fact packages/workflows/src/schemas/workflow-run.ts export const EXECUTION_OWNER_METADATA_KEY = 'execution_owner';
+fact packages/workflows/src/executor.ts [EXECUTION_OWNER_METADATA_KEY]: executionOwner,
+fact packages/cli/src/commands/workflow.ts case 'owner_lost':

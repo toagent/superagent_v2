@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -642,6 +643,59 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     tick();
     expect(sup()[0]).toEndWith('--ttl-hours 5');
   });
+  test('ask key is run:milestone:round: a re-wait after recover (new resumeAt) does not ask again', () => {
+    const s = stub([humanWait('2099-01-01T00:00:00.000Z'), humanWait('2099-02-01T00:00:00.000Z')]);
+    const sup = supervisor(s.root, 'pending');
+    tick();
+    expect(tick()[0]).toMatchObject({ action: 'none', ask: 'pending' });
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+    const asks = JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')) as object;
+    expect(Object.keys(asks)).toEqual(['sa1:m2:0']);
+  });
+  test('the ledger holds a pending entry before supervisor ask runs; an id-less entry is never re-asked', () => {
+    const s = stub([humanWait()]);
+    const py = join(s.root, 'sup-snap.py');
+    writeFileSync(
+      py,
+      `import os, shutil, sys\nshutil.copy('${s.root}/home/asks.json', '${s.root}/at-ask.json')\nprint('ask-1')\n`
+    );
+    process.env.SA_SUPERVISOR = py;
+    tick();
+    expect(JSON.parse(readFileSync(join(s.root, 'at-ask.json'), 'utf8'))).toEqual({
+      'sa1:m2:0': { status: 'pending' },
+    });
+    // 模拟上次 tick 在 ask 期间死掉：只有 pending、没有 id → 不重投，交给人
+    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:m2:0":{"status":"pending"}}');
+    rmSync(join(s.root, 'at-ask.json'));
+    const { code, out } = captured(() => main(['supervise-tick']));
+    expect(code).toBe(1);
+    expect((JSON.parse(out) as Record<string, unknown>[])[0]).toMatchObject({
+      action: 'none',
+      ok: false,
+    });
+    expect(existsSync(join(s.root, 'at-ask.json'))).toBe(false);
+  });
+  test('a failed ask drops its pending entry so the next tick retries', () => {
+    const s = stub([humanWait()]);
+    const py = join(s.root, 'sup-fail.py');
+    writeFileSync(py, 'import sys\nsys.exit(2)\n');
+    process.env.SA_SUPERVISOR = py;
+    expect(captured(() => main(['supervise-tick'])).code).toBe(1);
+    expect(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8').trim()).toBe('{}');
+  });
+  test('a live supervise.lock makes a concurrent tick skip with exit 0 and touch nothing', () => {
+    const s = stub([humanWait()]);
+    supervisor(s.root, 'pending');
+    const lockFile = join(s.root, 'home', 'supervise.lock');
+    writeFileSync(lockFile, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now() }));
+    const { code, out } = captured(() => main(['supervise-tick']));
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual({ skipped: 'locked' });
+    expect(s.calls()).toEqual([]);
+    rmSync(lockFile);
+    tick();
+    expect(existsSync(lockFile)).toBe(false);
+  });
   test('owner_lost run is recovered and recorded', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost, run('failed')]);
@@ -662,6 +716,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
     ARCHON_HOME: join(root, 'home', 'archon'),
     SUPERAGENT_WRITE_ROOTS: root,
     SA_ARCHON_BIN: '',
+    SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
   };
   const sa = (
     ...args: string[]

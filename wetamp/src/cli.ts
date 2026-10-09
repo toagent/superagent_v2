@@ -16,6 +16,7 @@ import {
   archonJson,
   getRun,
   lastJson,
+  lock,
   ownerLost,
   recover,
   signalHuman,
@@ -419,7 +420,7 @@ function acceptRun(l: Ledger, pkg: string | undefined): number {
 // 把红线签收投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答 signal 或 cancel。
 const ANSWERS = ['pending', 'yes', 'no', 'expired'];
 interface Ask {
-  id: string;
+  id?: string; // 先落 pending 再调 ask：缺 id = 上次 ask 结果未知，不重投
   status: string; // ANSWERS 之一，或执行后的 approved | rejected
 }
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
@@ -427,8 +428,11 @@ type Action = Record<string, unknown> & { run_id: string; action: string; ok: bo
 const asksPath = (): string => join(home().sa, 'asks.json');
 type Asks = Partial<Record<string, Ask>>;
 const loadAsks = (): Asks => (readJson(asksPath()) as Asks | undefined) ?? {};
+const saveAsks = (asks: Asks): void => {
+  writeFileSync(asksPath(), JSON.stringify(asks, null, 2) + '\n');
+};
 
-/** 某个 run 的签收提问；键 `<run>:<event>:<resumeAt>` 唯一标识一次事件门暂停。 */
+/** 某个 run 的签收提问；键 `<run>:<里程碑>:<放行的 gate 轮次>`：recover/resume 后事件门重新等待（resumeAt 变）也不重投。 */
 const asksOf = (run: string): Asks =>
   Object.fromEntries(Object.entries(loadAsks()).filter(([k]) => k.startsWith(`${run}:`)));
 
@@ -449,7 +453,9 @@ function supervisor(args: string[]): string {
 function human(l: Ledger, run: RunView, asks: Asks): Action {
   const w = run.metadata?.wait;
   if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
-  const key = `${l.run_id}:${w.event}:${w.resumeAt}`;
+  const m = w.event.slice('sa.human.'.length);
+  const round = gatesOf(artifactsOf(run)).filter(f => f.startsWith(`gate-${m}-r`)).length;
+  const key = `${l.run_id}:${m}:${String(round)}`;
   const base = { run_id: l.run_id, event: w.event };
   const a = asks[key];
   if (!a) {
@@ -457,11 +463,28 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
       MAX_TTL_H,
       Math.max(1, Math.ceil((Date.parse(w.resumeAt) - Date.now()) / 3600e3))
     );
-    const q = `superagent ${l.run_id} ${w.event.slice('sa.human.'.length)} 红线签收：批准合入 ${basename(l.repo)}？`;
-    const id = supervisor(['ask', '--question', q.slice(0, 120), '--ttl-hours', String(hours)]);
+    const q = `superagent ${l.run_id} ${m} 红线签收：批准合入 ${basename(l.repo)}？`;
+    asks[key] = { status: 'pending' };
+    saveAsks(asks);
+    let id: string;
+    try {
+      id = supervisor(['ask', '--question', q.slice(0, 120), '--ttl-hours', String(hours)]);
+    } catch (e) {
+      asks[key] = undefined; // ask 明确失败（非零退出）：下一次 tick 重投（JSON 序列化丢弃 undefined）
+      saveAsks(asks);
+      throw e;
+    }
     asks[key] = { id, status: 'pending' };
+    saveAsks(asks);
     return { ...base, action: 'ask', ok: true, ask: id };
   }
+  if (a.id === undefined)
+    return {
+      ...base,
+      action: 'none',
+      ok: false,
+      reason: `ask ${key} outcome unknown (tick died mid-ask): check the SUPERAGENT list, then decide approve|reject`,
+    };
   if (a.status === 'pending') {
     const st = supervisor(['ask-status', a.id]);
     if (!ANSWERS.includes(st))
@@ -489,8 +512,20 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   return { ...base, action: 'none', ok: true, ask: a.status };
 }
 
-export function superviseTick(): Action[] {
+/** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。 */
+export function superviseTick(): Action[] | { skipped: 'locked' } {
   const { sa } = home();
+  mkdirSync(sa, { recursive: true });
+  const release = lock(join(sa, 'supervise.lock'));
+  if (!release) return { skipped: 'locked' };
+  try {
+    return tick(sa);
+  } finally {
+    release();
+  }
+}
+
+function tick(sa: string): Action[] {
   archonDetached(['workflow', 'wake', '--json'], join(sa, 'wake.log'));
   const asks = loadAsks();
   const out: Action[] = [];
@@ -512,7 +547,7 @@ export function superviseTick(): Action[] {
       });
     }
   }
-  writeFileSync(asksPath(), JSON.stringify(asks, null, 2) + '\n');
+  saveAsks(asks);
   return out;
 }
 
@@ -619,7 +654,7 @@ export function main(argv: string[]): number {
     case 'supervise-tick': {
       const actions = superviseTick();
       print(actions);
-      return actions.some(x => !x.ok) ? 1 : 0;
+      return Array.isArray(actions) && actions.some(x => !x.ok) ? 1 : 0;
     }
     case 'report': {
       const r = report();
