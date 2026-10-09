@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   assertAuthorNotReviewer,
   loadTiers,
@@ -20,12 +20,13 @@ const tmp = (): string => {
   return d;
 };
 
-function runInstall(home: string): string {
+function runInstall(home: string, launchd = join(home, 'LaunchAgents')): string {
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
       ...process.env,
       SUPERAGENT_HOME: home,
       ARCHON_HOME: join(home, 'archon'),
+      SA_LAUNCHD_DIR: launchd,
       SA_SKIP_DOCTOR: '1',
     },
     stdout: 'pipe',
@@ -64,6 +65,31 @@ describe('install.sh', () => {
       readdirSync(join(home, 'archon')).filter(f => f.startsWith('config.yaml.bak-')).length
     ).toBe(1);
     for (const d of ['gen', 'runs']) expect(readdirSync(home)).toContain(d);
+  });
+
+  test('launchd plist: rendered with escaped paths, left alone when identical, backed up when different', () => {
+    const home = join(tmp(), 'a&b');
+    const la = join(home, '..', 'LA');
+    const plist = join(la, 'com.wetamp.superagent.supervise-tick.plist');
+    const first = runInstall(home, la);
+    expect(first).toContain('launchctl bootstrap gui/');
+    const xml = readFileSync(plist, 'utf8');
+    for (const s of [
+      '<integer>60</integer>',
+      '<string>Background</string>',
+      `<string>${home.replace('&', '&amp;')}</string>`,
+      `<string>${home.replace('&', '&amp;')}/supervise-tick.log</string>`,
+      `<string>${dirname(Bun.which('bun') ?? '')}:`,
+      '/wetamp/bin/superagent</string>',
+    ])
+      expect(xml).toContain(s);
+    expect(xml).not.toContain('__');
+    expect(runInstall(home, la).trim()).toBe('');
+    writeFileSync(plist, 'stale');
+    expect(runInstall(home, la)).toContain('launchctl bootstrap');
+    expect(readFileSync(plist, 'utf8')).toBe(xml);
+    const baks = readdirSync(la).filter(f => f.includes('.plist.bak-'));
+    expect(baks.map(f => readFileSync(join(la, f), 'utf8'))).toEqual(['stale']);
   });
 });
 

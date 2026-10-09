@@ -9,10 +9,12 @@ Archon 之上的 superagent 胶水层：把 `plan.json` 编译成 Archon 工作�
 前提：`bun`、`git`、`jq`、`sqlite3`，以及在仓库根执行过 `bun install`（wetamp 不另装依赖）。
 
 ```bash
-wetamp/scripts/install.sh          # 幂等：写 $ARCHON_HOME/.env 与 config.yaml 的别名段（先备份），末尾跑 archon doctor
+wetamp/scripts/install.sh          # 幂等：写 $ARCHON_HOME/.env 与 config.yaml 的别名段（先备份），渲染 launchd plist，末尾跑 archon doctor
 ln -s "$PWD/wetamp/bin/superagent" ~/.local/bin/superagent   # PATH 接法，手动做一次
 wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要求 7 天内有通过记录
 ```
+
+`install.sh` 把 `launchd/com.wetamp.superagent.supervise-tick.plist.tmpl` 渲染到 `~/Library/LaunchAgents`（每 60 秒跑 `supervise-tick`，日志 `$SUPERAGENT_HOME/supervise-tick.log`；内容变了先备份再覆盖），只打印 `launchctl bootstrap/bootout` 命令，加载由人执行。
 
 状态目录 `SUPERAGENT_HOME`（默认 `~/.superagent`），Archon 状态在 `ARCHON_HOME=$SUPERAGENT_HOME/archon`。
 模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。`selftest.sh --fake` 不调用模型，只用于测试本层。

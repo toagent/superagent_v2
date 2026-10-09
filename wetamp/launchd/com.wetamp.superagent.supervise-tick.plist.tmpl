@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wetamp.superagent.supervise-tick</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/wetamp/bin/superagent</string>
+    <string>supervise-tick</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SUPERAGENT_HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/supervise-tick.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/supervise-tick.log</string>
+</dict>
+</plist>

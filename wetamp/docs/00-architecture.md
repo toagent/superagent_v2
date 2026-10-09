@@ -106,8 +106,8 @@ wetamp/scripts/selftest.sh                     # 见 §6
   wetamp 的 `recover`：校验 `execution_owner.host` 是本机且 pid 不存在 → 只把 `remote_agent_workflow_runs.status` 从 `running` 改为 `failed` → `resume --detach`；已完成节点走缓存不重跑（实测 step1 未重跑、被打断的 step2 重跑）。
   这是 wetamp 的**永久 overlay**（用户 2026-10-09 决定：不向 upstream 提 PR）：实现只落在 `wetamp/src/archon.ts` 的 `recover()`，不改引擎；
   它依赖的引擎事实（表 `remote_agent_workflow_runs` 的 `status` 列、`metadata` JSON 里的 `execution_owner`、`wait` 的 `owner_lost` 语义）：
-  `selftest.sh` 每次实测，`upgrade-upstream.sh` dry-run 在 `upstream/dev` 源码中核对三者仍在、并只读核对本机 archon.db 的列，漂移即报错而不是静默失效。
-- 唯一周期任务：已有的 agent-supervisor launchd tick（5 分钟）。tick 内做三件事：`archon workflow wake --json`（唤醒到期等待与 quota 恢复）、对 `owner_lost` 的 run 执行 `recover`、桥接红线事件（§5）。
+  `selftest.sh` 每次实测，`upgrade-upstream.sh` dry-run 按 `UPSTREAM` 登记的事实行在 `upstream/dev` 的具体文件中核对三者仍在、并只读核对本机 archon.db 的列，漂移即报错而不是静默失效。
+- 唯一周期任务：`install.sh` 渲染的 launchd 作业 `com.wetamp.superagent.supervise-tick`（60 秒，加载由人执行）。tick 内做三件事：`archon workflow wake --json`（唤醒到期等待与 quota 恢复）、对 `owner_lost` 的 run 执行 `recover`、桥接红线事件（§5）。
 - 状态只有一份：`~/.superagent/archon/archon.db`。`~/.superagent/` 其余只放生成的源目录、plan 副本、supervisor 的 ask 账本（小 JSON）。v2 的 `~/.local/state/superagent/v3.db` 只读保留做历史。
 - 资源：每个活跃/等待中的 run 一个 bun 子进程；无运行时为 0。红线等待可长达数小时，M3 评估「等待时让 worker 退出、靠 `wake` 续跑」。
 
@@ -189,7 +189,7 @@ Archon 约束要记住（PoC 实测）：`--detach` 拒绝含 `approval:` 的工
 | `decide <run> approve\|reject [--comment]` | approve → `workflow signal --event sa.human.<M> --resume-at <metadata.wait.resumeAt>`；reject → `workflow cancel`；comment 进 `--data`                                                |
 | `resume <run>` / `cancel <run>`            | 直通；`resume` 对 owner-lost 的 run 先 `recover`                                                                                                                                      |
 | `recover <run>`                            | §3 崩溃恢复（校验本机 + 死 pid → 状态回拨 → `resume --detach`）                                                                                                                       |
-| `supervise-tick`                           | 供 agent-supervisor launchd tick 调用：`wake` + `recover` 全部 owner-lost + 红线提问/桥接（§5）                                                                                       |
+| `supervise-tick`                           | 供 launchd 作业（60 秒）调用：`wake` + `recover` 全部 owner-lost + 红线提问/桥接（§5）；持锁，被占即跳过                                                                              |
 | `land <run>`                               | 打印 `land` 节点输出的合入命令（永不 push）                                                                                                                                           |
 | `report`                                   | 逐个 ledger `workflow get --verbose` 汇总状态/轮次/耗时（token 计量后置）                                                                                                             |
 | `health`                                   | `archon doctor` + 别名解析 + `check-upstream-clean`                                                                                                                                   |
@@ -222,7 +222,7 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
 - 状态映射：paused 且等待 `sa.human.*` → held:human；其余 paused → held:paused；environment 节点失败 → held:environment；gate 节点失败 → held:gate。
 - 节点输出 schema 外置到 `schemas/output.schema.json` 的 `$defs`，brief 正文外置到 `templates/brief.md`（单趟 `{{key}}` 替换，计划文本中的 `{{x}}`/`$` 原样保留）。
 - Codex 控制台的评审别名重绑：见修复轮 R1 的 H2（run-config 层），不改生成的 YAML。
-- `supervise-tick` 无并发锁，须由单个 cron/launchd 作业调用；其中的 owner-lost 恢复没有 stall 上限（`wait` 有）。
+- `supervise-tick` 由 `$SUPERAGENT_HOME/supervise.lock` 串行化，owner-lost 恢复与 `wait` 共用 stall 上限（见修复轮 R1 的 M1、M4）。
 - gc 不使用 `archon complete` / `isolation cleanup --merged`：二者会删除远端分支，属于对外动作。
 - M3 实现记录：
   - `sa-smoke` 不再是模板（生成器只复制 `commands/`、`scripts/`，留着即死文件），内联在 `selftest.sh`：先以真实 think 节点 `validate`，复测 `install.sh` 写入的 `config.yaml` 别名（§2.4 契约复测），`--fake` 再换成 bash 桩执行。
@@ -242,3 +242,8 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - M7：G1 评审的 `debt[]` 为空时，债务由非阻塞的未关闭发现派生（`<id> <severity> <file>:<line>`）；`land` 输出与 `land.json` 带各里程碑末轮 gate 的 `debt`。
   - H2：run 启动时把 `@sa-coder`、`@sa-reviewer`、`@sa-reviewer-alt` 的具体 provider/model/effort（按控制台选评审池）写进 `gen/<run>/run-config.yaml`，经 `workflow run --config` 成为 Archon 的 run 层（优先级最高，detach 子进程与 resume 继承密封快照）；不用 `--model`，因为字面 `provider/model` spec 丢 effort。启动前断言全局与目标 repo `config.yaml` 中已定义的 `@sa-*` 别名等于 tiers 渲染值，否则退出码 5（`health --cwd` 同检查）。
   - M6：所有动词接受 `--json`（no-op）；未知参数退出 64 并打印用法。
+  - M3：`sa-check` probe 与 `selftest.sh` 清理不再 `--force`、不用 `branch -D`：`worktree remove` / `branch -d` 失败即保留并把路径打到 stderr（selftest 此时连整个临时目录一起保留，Archon worktree 在其下 `archon/`）；selftest 的临时 repo 在 `mktemp -d` 目录里整体 `rm -rf`。
+  - M4：签收提问以 `run:里程碑:已过 gate 文件数` 为键幂等；先写无 id 的 `pending` 账目再调 `ask`，成功回写 id，抛错则删账目；有账目无 id（崩在 ask 与回写之间）不重问，报错交人核对。`supervise-tick` 取 `$SUPERAGENT_HOME/supervise.lock`（与 recover 同一把 O_EXCL 锁实现），被占则打印 `{"skipped":"locked"}` 退出 0。
+  - M5：引擎事实以机器可读行登记在 `UPSTREAM` 第 2 行起（`table <file> <table> <col>...`、`fact <file> <text>`）；dry-run 逐行 `git show upstream/dev:<file>`，列须在该表 `CREATE TABLE` 块内以列名开头，没有事实行即失败；`--apply` 只改写第 1 行。
+  - launchd：`launchd/com.wetamp.superagent.supervise-tick.plist.tmpl`（`__HOME__`、`__REPO__`、`__PATH__`，XML 转义后代入；PATH = bun 目录 + 安装时 PATH，tick 触发的 resume 要找到各家 CLI）；`install.sh` 渲染到 `SA_LAUNCHD_DIR`（默认 `~/Library/LaunchAgents`），相同不动、不同先备份再覆盖，只打印 `launchctl bootstrap/bootout`；selftest 与测试把目录指到临时目录。
+  - 预算（硬规则 7）由 1500/300/25 调为 TS 1800 行、shell 400 行、文件 28 个。

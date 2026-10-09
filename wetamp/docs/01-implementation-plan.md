@@ -10,7 +10,7 @@
 4. 不派生/委派 AI、不调用评审子命令、不用 superagent 跑自己。自检只靠 `cd wetamp && bun test`、`wetamp/scripts/selftest.sh`、`wetamp/bin/archon validate workflows --cwd <gen>`。
 5. 不触碰 `_private`、iCloud、钥匙串、凭据；日志与错误文本一律脱敏；不打印任何 secret。
 6. 根 `AGENTS.md` 对 `wetamp/` 同样生效：never `bun test` from root；artifacts 不进仓库；配置文件幂等修改不覆盖。
-7. 预算：TypeScript ≤ 1500 行（不含测试）、shell ≤ 300 行、文件 ≤ 25 个。超预算先删功能不加抽象。
+7. 预算：TypeScript ≤ 1800 行（不含测试）、shell ≤ 400 行、文件 ≤ 28 个（修复轮 R1 由 1500/300/25 上调）。超预算先删功能不加抽象。
 8. 每条规则、每个节点生成分支、每个 CLI 动词至少一个命名测试；黄金文件（golden YAML）放 `wetamp/tests/golden/`。
 9. 每阶段提交后在 `wetamp/docs/PROGRESS.md` 追加一行 `<ISO时间> | <阶段> | <commit> | <pass/total> | <备注>`；被中断先写状态再停。
 10. 设计与现实冲突：以 Archon 实际行为（`packages/docs-web/src/content/docs/`、`archon --help`）为准，最小偏离，并写进 `00-architecture.md` 末尾「实现记录」。
@@ -18,6 +18,7 @@
 ## M0 引导（目标：Archon 能被 wetamp 以可复现方式驱动）
 
 交付：
+
 - `wetamp/bin/archon`：源码运行 shim：解析自身真实路径 → `export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"`、`export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"` → `exec bun --cwd "$REPO/packages/cli" src/cli.ts "$@"`。`bin/superagent` 同样先导出这两个变量。全部状态只在 `~/.superagent/`（§2.2 不变量 6），代码里不得出现 `~/.archon` 或 `~/.local/state/superagent` 字面量。
 - `wetamp/UPSTREAM`：`commit=7009a90a version=0.11.1 branch=dev date=2026-10-09`。
 - `wetamp/scripts/check-upstream-clean.sh`：§2.2 不变量 1；无 `upstream` remote 时退化为与 `dev` 分支比较并警告。
@@ -38,6 +39,7 @@
 ## M1 生成器 + 兼容 CLI 核心
 
 交付：
+
 - `wetamp/schemas/plan.schema.json`：v2 复制 + `milestone`、`console` 两个可选字段。
 - `wetamp/src/plan.ts`：加载、JSON Schema 校验（仓库已有 ajv/zod 之一，查 `packages/*/package.json` 后复用）、`repo` 白名单根校验、deps 拓扑排序与环检测。
 - `wetamp/src/generate.ts`：plan → `$SUPERAGENT_HOME/gen/<run>/.archon/{workflows/sa-<slug>/sa-<slug>.yaml, commands/, scripts/}`（gen 目录 `git init` 并提交一次，否则 `validate`/`run` 拒绝；PoC #3），节点结构严格按 `00-architecture.md §4.2`（本阶段先不生成 `fix/review r2/r3`、`human`、`vote`，留占位）；生成后调用 `bin/archon validate workflows`。
@@ -49,6 +51,7 @@
 ## M2 里程碑评审 + 门禁 + supervisor 桥
 
 交付：
+
 - 生成器补全：`diff-<M>`、`review-<M>-r1/r2/r3`、`fix-<M>-r2/r3`（`when:` 链）、`gate-<M>`（script，输出 `{verdict, rounds, escalate}`）、`human-<M>`（`wait: {event: sa.human.<M>, deadline_ms}`，仅 `signoff: "human"`；下游 `when: $human-<M>.output.status == 'satisfied'`）、`land` 依赖全部 gate。
 - `wetamp/schemas/reviewer-result.schema.json`、`coder-result.schema.json`：从 v2 复制，字段只加不减；`output_format` 引用它们（内联进 YAML）。
 - `wetamp/src/supervisor-bridge.ts` + `bin/superagent supervise-tick`：先 `archon workflow wake --json`；对 `wait` 报 `owner_lost` 的 run 执行 `recover`；列出暂停在 `human-*` 事件门的 run（`get --json --verbose` 的 `metadata.wait`）→ 对未问过的 run+node 调 `~/.ai-agent-shared/skills/agent-supervisor/scripts/supervisor.py ask`（问题 ≤120 字：仓库、里程碑、评审结论摘要、证据路径）→ 账本 `$SUPERAGENT_HOME/asks.json`；对已问的查结果：是 → `signal --event sa.human.<M> --resume-at <metadata.wait.resumeAt> --json`；否 → `cancel --json`；过期 → 账本标 expired，`brief` 标红。本阶段只提供命令，不改 `~/.ai-agent-shared`（接线由元帅做）。
@@ -60,6 +63,7 @@
 ## M3 运维与收尾
 
 交付：
+
 - `report`（`runs --json --verbose` 汇总：run 数、各节点耗时、失败分类；token 后置）、`selftest` 并入 §2.4 契约复测。
 - `wetamp/scripts/upgrade-upstream.sh`（默认 dry-run，`--apply` 才动分支；永不 push）。
 - `wetamp/README.md`：安装（`install.sh`）、PATH 接法（`~/.local/bin/superagent → wetamp/bin/superagent`，由用户/元帅手动做）、日常命令、升级、故障排查。
