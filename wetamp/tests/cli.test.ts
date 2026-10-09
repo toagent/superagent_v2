@@ -792,6 +792,34 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(lines).toContain('plan 截止已过，已取消');
     expect(lines).toContain('ask sa1:m2:0: expired');
   });
+  test('a yes that arrives after the plan deadline passed is not signalled: the run is abandoned and the ask expired', () => {
+    const s = stub([humanWait()]);
+    const plan = join(s.root, 'gen', 'plan.json');
+    writeFileSync(
+      plan,
+      JSON.stringify({ deadline: '2099-01-01T00:00:00Z', packages: [{ id: 'core' }] })
+    );
+    writeFileSync(
+      join(s.root, 'home', 'asks.json'),
+      JSON.stringify({ 'sa1:m2:0': { id: 'ask-1', status: 'pending' } })
+    );
+    // 桩 ask-status：截止恰在用户答“是”的期间过去
+    const py = join(s.root, 'sup-late.py');
+    writeFileSync(
+      py,
+      `import json\njson.dump({'deadline': '2020-01-01T00:00:00Z', 'packages': [{'id': 'core'}]}, open('${plan}', 'w'))\nprint('yes')\n`
+    );
+    process.env.SA_SUPERVISOR = py;
+    expect(tick()).toEqual([
+      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
+    ]);
+    expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
+    expect(s.calls()).toContain('workflow abandon r --json');
+    expect(JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'))).toEqual({
+      'sa1:m2:0': { id: 'ask-1', status: 'expired' },
+    });
+    expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
+  });
   test('held:human before the plan deadline still asks; nothing is cancelled', () => {
     const s = stub([humanWait()]);
     supervisor(s.root, 'pending');

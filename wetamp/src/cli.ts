@@ -503,14 +503,15 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     run_id: l.run_id,
     event: w.event,
   };
-  // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
-  if (pastDeadline(l)) {
+  const expire = (): Action => {
     if (!cancelRun(l.archon_run_id, run.status, l.repo))
       return { ...base, action: 'cancel', ok: false, reason: 'deadline' };
     asks[key] = { ...asks[key], status: 'expired' };
     saveLedger({ ...loadLedger(l.run_id), state: 'failed', reason: 'deadline' });
     return { ...base, action: 'cancel', ok: true, reason: 'deadline' };
-  }
+  };
+  // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
+  if (pastDeadline(l)) return expire();
   // 问题以 key 开头：ask 结果未知时据此在 supervisor 的 ask 记录里找回 id
   const q = `superagent ${key} 红线签收：批准合入 ${basename(l.repo)}？`.slice(0, 120);
   let a = asks[key];
@@ -548,6 +549,8 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   }
   // yes/no 的执行失败保留原状态，下一次 tick 重试
   if (a.status === 'yes') {
+    // 等回答期间可能已过截止：过期的“是”不再批准
+    if (pastDeadline(l)) return expire();
     const r = signalHuman(
       run,
       { decision: 'approve', ask: a.id },
