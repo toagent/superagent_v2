@@ -827,6 +827,26 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(s.calls().some(c => c.startsWith('workflow cancel'))).toBe(false);
     expect(loadLedger('sa1').reason).toBeUndefined();
   });
+  test('a null or malformed supervisor ask record is skipped and counted; the valid one is still reconciled', () => {
+    const s = stub([humanWait()]);
+    const sup = supervisor(s.root, 'pending');
+    const state = join(s.root, 'sv-state', 'asks');
+    mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, 'a-null.json'), 'null');
+    writeFileSync(join(state, 'b-bad.json'), '{"id":');
+    writeFileSync(
+      join(state, 'c-ok.json'),
+      JSON.stringify({ id: 'abc', question: 'superagent sa1:m2:0 红线签收：批准合入 x？' })
+    );
+    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:m2:0":{"status":"unknown"}}');
+    expect(tick()[0]).toMatchObject({
+      action: 'none',
+      ok: true,
+      ask: 'pending',
+      reason: '2 anomalous ask records',
+    });
+    expect(sup()).toEqual(['ask-status abc']);
+  });
   test('owner_lost run is recovered and recorded', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost, run('failed')]);

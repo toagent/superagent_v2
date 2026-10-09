@@ -459,20 +459,28 @@ function supervisor(args: string[]): string {
   return p.stdout.toString().trim();
 }
 
-/** supervisor 的 ask 记录（SKILL 约定位置 `$AGENT_SUPERVISOR_STATE/asks/<id>.json`），只取 id 与问题文本。 */
-function askRecords(): { id: string; question: string }[] {
+/**
+ * supervisor 的 ask 记录（SKILL 约定位置 `$AGENT_SUPERVISOR_STATE/asks/<id>.json`），只取 id 与问题文本。
+ * 读不出或缺字段的记录逐个跳过并计数，不拖垮其他提问的对账。
+ */
+function askRecords(): { records: { id: string; question: string }[]; anomalous: number } {
   const dir = join(
     process.env.AGENT_SUPERVISOR_STATE ?? join(homedir(), '.local', 'state', 'agent-supervisor'),
     'asks'
   );
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter(f => f.endsWith('.json'))
-    .map(f => readJson(join(dir, f)) as { id?: unknown; question?: unknown })
-    .filter(
-      (r): r is { id: string; question: string } =>
-        typeof r.id === 'string' && typeof r.question === 'string'
-    );
+  const records: { id: string; question: string }[] = [];
+  let anomalous = 0;
+  for (const f of existsSync(dir) ? readdirSync(dir).filter(x => x.endsWith('.json')) : []) {
+    try {
+      const r = readJson(join(dir, f)) as { id?: unknown; question?: unknown } | null;
+      if (typeof r?.id === 'string' && typeof r.question === 'string')
+        records.push({ id: r.id, question: r.question });
+      else anomalous++;
+    } catch {
+      anomalous++;
+    }
+  }
+  return { records, anomalous };
 }
 
 function human(l: Ledger, run: RunView, asks: Asks): Action {
@@ -481,7 +489,10 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   const m = w.event.slice('sa.human.'.length);
   const round = gatesOf(artifactsOf(run)).filter(f => f.startsWith(`gate-${m}-r`)).length;
   const key = `${l.run_id}:${m}:${String(round)}`;
-  const base = { run_id: l.run_id, event: w.event };
+  const base: { run_id: string; event: string; reason?: string } = {
+    run_id: l.run_id,
+    event: w.event,
+  };
   // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
   if (pastDeadline(l)) {
     if (!cancelRun(l)) return { ...base, action: 'cancel', ok: false, reason: 'deadline' };
@@ -494,13 +505,15 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   let a = asks[key];
   if (a?.id === undefined && a !== undefined) {
     // supervisor 的 create() 先落盘再投递：非零退出或 tick 崩溃时提问可能已存在，重投会多出一条提醒
-    const found = askRecords().filter(r => r.question.startsWith(`superagent ${key} `));
+    const { records, anomalous } = askRecords();
+    if (anomalous) base.reason = `${String(anomalous)} anomalous ask records`;
+    const found = records.filter(r => r.question.startsWith(`superagent ${key} `));
     if (found.length > 1)
       return {
         ...base,
         action: 'none',
         ok: false,
-        reason: `ask ${key}: ${String(found.length)} supervisor asks match; decide approve|reject`,
+        reason: `ask ${key}: ${String(found.length)} supervisor asks match; decide approve|reject${base.reason ? `; ${base.reason}` : ''}`,
       };
     a = asks[key] = found.length ? { id: found[0].id, status: 'pending' } : undefined;
   }
