@@ -1,7 +1,15 @@
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
 import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import { linkSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
@@ -99,7 +107,7 @@ export type Lock =
 
 /**
  * 锁文件内容 {pid,host,at}：先写 `<path>.tmp.<pid>` 再 link 到 path，link 成功即持锁，所以锁文件一出现就是完整内容。
- * 被占用时只夺取本机已死进程的锁；读不出或解析不了的锁不可能由本函数写出，原样留给人工处理（lock_unreadable）。
+ * 被占用时只夺取本机已死进程的锁（rename 移走旧锁，失败即让出）；读不出或解析不了的锁不可能由本函数写出，原样留给人工处理（lock_unreadable）。
  * release 只删除仍是自己写的锁。
  */
 export function lock(path: string): Lock {
@@ -121,7 +129,16 @@ export function lock(path: string): Lock {
         const held = holder(path);
         if (held !== 'dead' || attempt > 0)
           return { ok: false, reason: held === 'unreadable' ? 'lock_unreadable' : 'locked' };
-        rmSync(path, { force: true });
+        // 夺取靠 rename 原子决出唯一赢家；ENOENT = 别人已夺取或持有者刚释放，按被占用处理
+        const stale = `${path}.stale.${String(process.pid)}.${String(Date.now())}`;
+        try {
+          renameSync(path, stale);
+        } catch (re) {
+          if ((re as NodeJS.ErrnoException).code === 'ENOENT')
+            return { ok: false, reason: 'locked' };
+          throw re;
+        }
+        rmSync(stale, { force: true });
       }
     }
     return { ok: false, reason: 'locked' };

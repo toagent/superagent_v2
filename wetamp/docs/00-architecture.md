@@ -250,3 +250,4 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - N1（R2）：同一份评审出现重复 finding ID 即 `escalate invalid_review`；关闭判定中同 ID 的 open 优先于 closed。
   - H4（R3 定稿）：引擎 `wait.deadline_ms` 从进入等待起计时，生成值只是上限；`supervise-tick` 遇到已过 plan 绝对 deadline 的 held:human run 直接 `workflow cancel`，ledger 记 `state:failed, reason:deadline`，签收账目标 `expired`（不调 ask、不碰提醒事项），`brief` 显示“plan 截止已过，已取消”；`signoff-<M>` 节点仍按绝对时刻再核验。
   - M4a（R3 定稿）：锁先写 `<path>.tmp.<pid>` 再 `link` 到锁路径，link 成功即持锁，锁文件不存在“内容不完整”的中间态；读不出或缺字段的锁一律不夺取，`supervise-tick` 打印 `{"skipped":"lock_unreadable","path":…}` 退出 1、recover 返回 `lock_unreadable <path>`，交人工处理；无 TTL 夺锁。
+  - M4a 夺取（R3b，已关闭“两进程同时判死互删对方新锁”的边界）：判定持有者已死后 `rename` 旧锁到 `<path>.stale.<pid>.<ms>`，成功者删掉改名文件再 link 一次；rename 遇 ENOENT 即按被占用返回、不抛错。残留窗口：判死与 rename 之间若旧锁已被换成活锁，rename 会移走活锁（ABA），未处理。

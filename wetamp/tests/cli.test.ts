@@ -792,6 +792,43 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     l.release();
     expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
   });
+  test("a dead lock is seized by A; B, a separate process, then gets locked and leaves A's lock in place", () => {
+    const s = stub([run('completed')]);
+    const path = join(s.root, 'home', 'x.lock');
+    writeFileSync(path, JSON.stringify({ ...LOST, at: '2000-01-01T00:00:00Z' }));
+    const a = archonMod.lock(path);
+    if (!a.ok) throw new Error('dead lock not seized');
+    const mine = readFileSync(path, 'utf8');
+    const b = Bun.spawnSync(
+      [
+        'bun',
+        '-e',
+        `console.log(JSON.stringify((await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'archon.ts'))})).lock(${JSON.stringify(path)})))`,
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    expect(JSON.parse(b.stdout.toString())).toEqual({ ok: false, reason: 'locked' });
+    expect(readFileSync(path, 'utf8')).toBe(mine);
+    expect(JSON.parse(mine)).toMatchObject({ pid: process.pid });
+    a.release();
+    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
+  });
+  test('a dead lock seized by someone else between the check and the rename: locked, no throw, no .stale left', () => {
+    const s = stub([run('completed')]);
+    const path = join(s.root, 'home', 'x.lock');
+    writeFileSync(path, JSON.stringify({ ...LOST, at: '2000-01-01T00:00:00Z' }));
+    // 判定已死的那一刻，另一进程抢先把旧锁移走
+    const kill = spyOn(process, 'kill').mockImplementation(() => {
+      rmSync(path, { force: true });
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    });
+    try {
+      expect(archonMod.lock(path)).toEqual({ ok: false, reason: 'locked' });
+    } finally {
+      kill.mockRestore();
+    }
+    expect(readdirSync(join(s.root, 'home')).filter(f => f.startsWith('x.lock'))).toEqual([]);
+  });
   test('held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so', () => {
     const s = stub([humanWait(), run('cancelled')]);
     supervisor(s.root, 'yes');
