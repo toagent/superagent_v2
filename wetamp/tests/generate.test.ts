@@ -104,12 +104,16 @@ describe('buildWorkflow', () => {
       'gate-m2-r3',
     ]);
   });
-  test('human wait deadline follows the plan deadline, at least one hour', () => {
+  test('human wait deadline is the time left to the plan deadline, no floor; a passed deadline fails generation', () => {
     const wait = (deadline: string): number | undefined =>
       nodesOf(build(false, { ...fixture, deadline })).find(x => x.id === 'human-m2')?.wait
         ?.deadline_ms;
     expect(wait('2026-10-10T00:00:00Z')).toBe(24 * 3600 * 1000);
-    expect(wait('2026-10-08T00:00:00Z')).toBe(3600 * 1000);
+    expect(wait('2026-10-09T00:05:00Z')).toBe(5 * 60 * 1000);
+    expect(() => wait('2026-10-09T00:00:00Z')).toThrow(
+      /plan invalid: \/deadline .* already passed/
+    );
+    expect(() => wait('2026-10-08T00:00:00Z')).toThrow(/already passed/);
   });
   test('plan prose never enters the workflow text (no $ substitution hazard)', () => {
     expect(JSON.stringify(build(false))).not.toContain('$HOME');

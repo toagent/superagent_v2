@@ -26,8 +26,7 @@ const outputSchema = (kind: 'coder' | 'reviewer' | 'accept' | 'head'): unknown =
   ).$defs[kind];
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
-const HOUR_MS = 3600 * 1000;
-const MAX_WAIT_MS = 1000 * 365 * 24 * HOUR_MS; // Archon wait 上限 1000 年
+const MAX_WAIT_MS = 1000 * 365 * 24 * 3600 * 1000; // Archon wait 上限 1000 年
 
 const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node => ({
   id,
@@ -52,6 +51,9 @@ export function buildWorkflow(
   fake = false,
   now = Date.now()
 ): Node {
+  // 人工等待按“剩余时长”生成，不设下限；已过 deadline 的 plan 生成即失败，不起一个注定 escalate 的 run
+  const left = Date.parse(plan.deadline) - now;
+  if (left <= 0) throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
   const planPath = join(gen, 'plan.json');
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
@@ -183,10 +185,9 @@ export function buildWorkflow(
       trigger_rule: 'none_failed_min_one_success',
     };
     if (m.human) {
-      const deadline = Math.min(Math.max(Date.parse(plan.deadline) - now, HOUR_MS), MAX_WAIT_MS);
       nodes.push({
         id: `human-${m.id}`,
-        wait: { event: `sa.human.${m.id}`, deadline_ms: deadline },
+        wait: { event: `sa.human.${m.id}`, deadline_ms: Math.min(left, MAX_WAIT_MS) },
         ...gates,
       });
       // wait 到期也算完成（status: expired）；签收失败必须让 run 停下，而不是条件跳过后照常 land。
