@@ -104,9 +104,9 @@ wetamp/scripts/selftest.sh                     # 见 §6
   输出可能是多段 JSON，取最后一个对象。
 - **崩溃恢复**（PoC #8–#11）：worker 被 `kill -9` 后 run 行停在 `running`，`wait` 返回 `owner_lost`。upstream 只给 `abandon` + `run --adopt`（新 run，节点缓存全丢）。
   wetamp 的 `recover`：校验 `execution_owner.host` 是本机且 pid 不存在 → 只把 `remote_agent_workflow_runs.status` 从 `running` 改为 `failed` → `resume --detach`；已完成节点走缓存不重跑（实测 step1 未重跑、被打断的 step2 重跑）。
-  这是 wetamp 的**永久 overlay**（用户 2026-10-09 决定：不向 upstream 提 PR）：实现只落在 `wetamp/src/recover.ts`，不改引擎；
-  它依赖的引擎事实（表 `remote_agent_workflow_runs`、列 `status`/`execution_owner`、`wait` 的 `owner_lost` 语义）登记在 `wetamp/UPSTREAM`，
-  `selftest.sh` 每次复测，`upgrade-upstream.sh` dry-run 用 `sqlite3 .schema` 核对列存在，升级后 schema 漂移即报错而不是静默失效。
+  这是 wetamp 的**永久 overlay**（用户 2026-10-09 决定：不向 upstream 提 PR）：实现只落在 `wetamp/src/archon.ts` 的 `recover()`，不改引擎；
+  它依赖的引擎事实（表 `remote_agent_workflow_runs` 的 `status` 列、`metadata` JSON 里的 `execution_owner`、`wait` 的 `owner_lost` 语义）：
+  `selftest.sh` 每次实测，`upgrade-upstream.sh` dry-run 在 `upstream/dev` 源码中核对三者仍在、并只读核对本机 archon.db 的列，漂移即报错而不是静默失效。
 - 唯一周期任务：已有的 agent-supervisor launchd tick（5 分钟）。tick 内做三件事：`archon workflow wake --json`（唤醒到期等待与 quota 恢复）、对 `owner_lost` 的 run 执行 `recover`、桥接红线事件（§5）。
 - 状态只有一份：`~/.superagent/archon/archon.db`。`~/.superagent/` 其余只放生成的源目录、plan 副本、supervisor 的 ask 账本（小 JSON）。v2 的 `~/.local/state/superagent/v3.db` 只读保留做历史。
 - 资源：每个活跃/等待中的 run 一个 bun 子进程；无运行时为 0。红线等待可长达数小时，M3 评估「等待时让 worker 退出、靠 `wake` 续跑」。
@@ -191,7 +191,7 @@ Archon 约束要记住（PoC 实测）：`--detach` 拒绝含 `approval:` 的工
 | `recover <run>`                            | §3 崩溃恢复（校验本机 + 死 pid → 状态回拨 → `resume --detach`）                                                                                                                       |
 | `supervise-tick`                           | 供 agent-supervisor launchd tick 调用：`wake` + `recover` 全部 owner-lost + 红线提问/桥接（§5）                                                                                       |
 | `land <run>`                               | 打印 `land` 节点输出的合入命令（永不 push）                                                                                                                                           |
-| `report`                                   | `workflow runs --json --verbose` 汇总用量/耗时（token 计量后置）                                                                                                                      |
+| `report`                                   | 逐个 ledger `workflow get --verbose` 汇总状态/轮次/耗时（token 计量后置）                                                                                                             |
 | `health`                                   | `archon doctor` + 别名解析 + `check-upstream-clean`                                                                                                                                   |
 | `selftest`                                 | §2.4 契约复测 + 一条真实小工作流 detach → `kill -9` → resume                                                                                                                          |
 
@@ -224,3 +224,12 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
 - Codex 控制台的评审别名重绑经 `workflow run --model @sa-reviewer=@sa-reviewer-codex` 实现，不改生成的 YAML。
 - `supervise-tick` 无并发锁，须由单个 cron/launchd 作业调用；其中的 owner-lost 恢复没有 stall 上限（`wait` 有）。
 - gc 不使用 `archon complete` / `isolation cleanup --merged`：二者会删除远端分支，属于对外动作。
+- M3 实现记录：
+  - `sa-smoke` 不再是模板（生成器只复制 `commands/`、`scripts/`，留着即死文件），内联在 `selftest.sh`：先以真实 think 节点 `validate`，复测 `install.sh` 写入的 `config.yaml` 别名（§2.4 契约复测），`--fake` 再换成 bash 桩执行。
+  - `report` 对每个 ledger 调 `workflow get --verbose`（`workflow runs --all` 在 repo 外返回空），输出扁平计数：`runs`、`state:*`、`rounds:N`（各里程碑末轮）、`first_pass`、`failed:<节点前缀>`、`escalate:<reason>`、`node_s:<节点前缀>`（累计秒）、`debt`、`recoveries`；读不到的 run 列入 `unreadable` 且退出码 1。token 统计后置。
+  - `recover` 成功即写入 ledger 的 `recoveries`（`wait`、`resume`、`supervise-tick` 共用），`brief`/`report` 读它。
+  - 去掉 `get` 动词（`status`/`brief` 已覆盖）；参数解析改用 `node:util` `parseArgs` 严格模式，未知参数报错而不是静默忽略。
+  - 消除手工同步的类型：`sa-check.ts` 以 `import type` 引用 `src/plan.ts`（Bun 擦除类型导入，复制到 gen 目录后仍可运行），CLI 的 gate 结论类型取自 `sa-check` 的 `decide` 返回类型。
+  - `gc.sh`（shell，TS 预算已满）：只处理 `superagent status` 为 completed/cancelled 且分支是本地目标分支祖先的 run；worktree 须在 `$ARCHON_HOME` 下，`git worktree remove` 不加 `--force`、`branch -d`；Archon 的 run 记录与环境行留给 `archon workflow cleanup` / `archon isolation cleanup`（后者对已不存在的路径做对账）。
+  - `upgrade-upstream.sh`：dry-run 也 `git fetch upstream dev`（只更新远端跟踪引用，不动分支与工作区）；列核对用 `pragma_table_info` 而非 `.schema` 文本（`ALTER TABLE ADD COLUMN` 会把列写在同一行）；`execution_owner` 是 `metadata` JSON 的键而非列，故核对 `status`、`metadata` 两列。`--apply` 让 merge 自动提交（不触发 pre-commit，避免 lint-staged 改写上游文件），`UPSTREAM` 只改写不提交，由人验证后提交。
+  - 文件预算按 `wetamp/` 下除 `tests/`、`docs/`、`README.md` 外的文件计（25 个）。

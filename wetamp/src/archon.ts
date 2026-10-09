@@ -23,7 +23,7 @@ export interface RunView {
     execution_owner?: { host: string; pid: number };
     wait?: { nodeId: string; kind: string; event?: string; resumeAt: string };
   } | null;
-  nodes?: { nodeId: string; state: string; error?: string | null }[];
+  nodes?: { nodeId: string; state: string; error?: string | null; durationMs?: number }[];
 }
 
 // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）

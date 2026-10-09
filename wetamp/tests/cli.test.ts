@@ -23,11 +23,14 @@ const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView =
 });
 
 describe('parseArgs', () => {
-  test('positionals, --k v, --k=v and bare flags', () => {
-    expect(parseArgs(['wait', 'x', '--timeout', '5', '--a=b', '--fake'])).toEqual({
+  test('positionals, --k v, --k=v and boolean flags', () => {
+    expect(parseArgs(['wait', 'x', '--timeout', '5', '--pkg=core', '--fake'])).toEqual({
       _: ['wait', 'x'],
-      flags: { timeout: '5', a: 'b', fake: true },
+      flags: { timeout: '5', pkg: 'core', fake: true },
     });
+  });
+  test('unknown flags fail instead of being ignored', () => {
+    expect(() => parseArgs(['run', 'p.json', '--skip-selftests'])).toThrow(/Unknown option/);
   });
 });
 
@@ -257,10 +260,6 @@ describe('verbs (archon stub)', () => {
     expect(main(['cancel', 'sa1'])).toBe(0);
     expect(s.calls()).toContain('workflow cancel r --json');
   });
-  test('get returns ledger and archon view', () => {
-    stub([run('completed')]);
-    expect(main(['get', 'sa1'])).toBe(0);
-  });
   test('resume refuses a run whose owner may be alive', () => {
     stub([run('running', { metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } })]);
     expect(main(['resume', 'sa1'])).toBe(1);
@@ -356,6 +355,51 @@ describe('brief / land (archon stub)', () => {
     expect(lines).toContain('git merge --ff-only sa/sa1');
     expect(lines).toContain(`evidence: ${art}`);
     expect(lines.length).toBeLessThanOrEqual(20);
+  });
+  test('report: states, review rounds, first pass, escalations, node seconds, debt, recoveries', () => {
+    const art = withArtifacts('failed', {
+      'gate-m1-r1.json': { verdict: 'pass', reason: null, debt: ['d1', 'd2'] },
+      'gate-m2-r1.json': { verdict: 'fix', reason: 'review_failed', debt: [] },
+      'gate-m2-r2.json': { verdict: 'fix', reason: 'review_failed', debt: [] },
+      'gate-m2-r3.json': { verdict: 'escalate', reason: 'review_failed+review_limit', debt: [] },
+    });
+    const nodes = [
+      { nodeId: 'code-core', state: 'completed', durationMs: 61_400 },
+      { nodeId: 'review-m1-r1', state: 'completed', durationMs: 30_000 },
+      { nodeId: 'gate-m2-r3', state: 'failed', durationMs: 100 },
+    ];
+    const root = join(art, '..', '..', '..', '..');
+    writeFileSync(
+      join(root, 'stub', 'get-000.json'),
+      JSON.stringify(run('failed', { output_root: join(root, 'out'), nodes }))
+    );
+    const home = process.env.SUPERAGENT_HOME ?? '';
+    const l = JSON.parse(readFileSync(join(home, 'runs', 'sa1.json'), 'utf8')) as Ledger;
+    writeFileSync(join(home, 'runs', 'sa1.json'), JSON.stringify({ ...l, recoveries: ['t'] }));
+    const { code, out } = captured(() => main(['report']));
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual({
+      runs: 1,
+      debt: 2,
+      'escalate:review_failed+review_limit': 1,
+      first_pass: 1,
+      'node_s:code': 61,
+      'node_s:gate': 0,
+      'node_s:review': 30,
+      recoveries: 1,
+      'rounds:1': 1,
+      'rounds:3': 1,
+      'state:held:gate': 1,
+      unreadable: [],
+    });
+    // 读不到的 run 单列并以 1 退出，不吞错
+    writeFileSync(
+      join(home, 'runs', 'gone.json'),
+      JSON.stringify({ ...l, run_id: 'gone', repo: join(root, 'nope') })
+    );
+    const bad = captured(() => main(['report']));
+    expect(bad.code).toBe(1);
+    expect((JSON.parse(bad.out) as { unreadable: string[] }).unreadable[0]).toStartWith('gone: ');
   });
   test('land prints land.json; exits 1 before the land node ran', () => {
     withArtifacts('completed', { 'land.json': { commands: ['c'] } });

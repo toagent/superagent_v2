@@ -8,16 +8,9 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+// 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
+import type { Check, Plan } from '../../../src/plan';
 
-interface Check {
-  cmd: string;
-  timeout_s: number;
-}
-interface Pkg {
-  id: string;
-  accept: Check[];
-  environment?: Check[];
-}
 interface Finding {
   id: string;
   severity: 'blocker' | 'high' | 'medium' | 'low';
@@ -43,8 +36,7 @@ const git = (...args: string[]): string => {
   if (p.exitCode !== 0) throw new Error(`git ${args[0]}: ${p.stderr.toString().trim()}`);
   return p.stdout.toString();
 };
-const plan = (): { environment?: Check[]; packages: Pkg[] } =>
-  JSON.parse(readFileSync(env('PLAN'), 'utf8')) as { environment?: Check[]; packages: Pkg[] };
+const plan = (): Plan => JSON.parse(readFileSync(env('PLAN'), 'utf8')) as Plan;
 const emit = (o: unknown): void => {
   console.log(JSON.stringify(o));
 };
@@ -188,13 +180,12 @@ function gate(): void {
   const tag = env('TAG');
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
-  const deadline = (JSON.parse(readFileSync(env('PLAN'), 'utf8')) as { deadline: string }).deadline;
   const out = {
     ...decide({
       reviews,
       rechecks: pick('C') as Accept[],
       risk: env('RISK'),
-      expired: Date.now() > Date.parse(deadline),
+      expired: Date.now() > Date.parse(plan().deadline),
     }),
     milestone: env('MILESTONE'),
     review_file: reviewFile,

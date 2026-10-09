@@ -19,7 +19,7 @@ nodes:
       required:
         - head
   - id: code-core
-    bash: "mkdir -p \"$(dirname 'core.txt')\" && echo 'core' > 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake core'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    bash: "mkdir -p \"$(dirname 'core.txt')\" && echo 'core' >> 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake core'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
     depends_on:
       - start-m1
     output_format:
@@ -252,7 +252,7 @@ nodes:
       plan: /GEN/plan.json
       tag: gate-m1-r1
   - id: fix-m1-r2
-    bash: "echo 'fix r2' >> 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r2'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    bash: "mkdir -p \"$(dirname 'core.txt')\" && echo 'fix m1 r2' >> 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r2'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
     depends_on:
       - gate-m1-r1
     when: "$gate-m1-r1.output.verdict == 'fix'"
@@ -448,7 +448,7 @@ nodes:
       plan: /GEN/plan.json
       tag: gate-m1-r2
   - id: fix-m1-r3
-    bash: "echo 'fix r3' >> 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r3'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    bash: "mkdir -p \"$(dirname 'core.txt')\" && echo 'fix m1 r3' >> 'core.txt'\ngit add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r3'\necho '{\"status\":\"done\",\"changed_files\":[\"core.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
     depends_on:
       - gate-m1-r2
     when: "$gate-m1-r2.output.verdict == 'fix'"
@@ -660,7 +660,7 @@ nodes:
       required:
         - head
   - id: code-api
-    bash: "mkdir -p \"$(dirname 'api.txt')\" && echo 'api' > 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake api'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    bash: "mkdir -p \"$(dirname 'api.txt')\" && echo 'api' >> 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake api'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
     depends_on:
       - start-m2
     output_format:
@@ -893,7 +893,7 @@ nodes:
       plan: /GEN/plan.json
       tag: gate-m2-r1
   - id: fix-m2-r2
-    bash: "echo 'fix r2' >> 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r2'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    bash: "mkdir -p \"$(dirname 'api.txt')\" && echo 'fix m2 r2' >> 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r2'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
     depends_on:
       - gate-m2-r1
     when: "$gate-m2-r1.output.verdict == 'fix'"
@@ -1089,7 +1089,7 @@ nodes:
       plan: /GEN/plan.json
       tag: gate-m2-r2
   - id: fix-m2-r3
-    bash: "echo 'fix r3' >> 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r3'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
+    bash: "mkdir -p \"$(dirname 'api.txt')\" && echo 'fix m2 r3' >> 'api.txt'\ngit add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r3'\necho '{\"status\":\"done\",\"changed_files\":[\"api.txt\"],\"quick_checks\":[],\"notes\":\"fake\",\"blockers\":[],\"error_class\":null}'"
     depends_on:
       - gate-m2-r2
     when: "$gate-m2-r2.output.verdict == 'fix'"

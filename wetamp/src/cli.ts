@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { parseArgs as parse } from 'node:util';
 import {
   archon,
   archonDetached,
@@ -19,33 +20,29 @@ import {
   recover,
   signalHuman,
   tail,
+  type RecoverResult,
   type RunView,
 } from './archon';
+import type { decide as decideGate } from '../templates/.archon/scripts/sa-check';
 import { WETAMP, home, loadTiers, renderAliases, assertAuthorNotReviewer } from './config';
 import { generate, newRunId } from './generate';
 import { loadPlan, type Plan } from './plan';
 
+const OPTIONS = {
+  timeout: { type: 'string' },
+  pkg: { type: 'string' },
+  hint: { type: 'string' },
+  fake: { type: 'boolean' },
+  'skip-selftest': { type: 'boolean' },
+} as const;
 interface Args {
   _: string[];
-  flags: Partial<Record<string, string | true>>;
+  flags: ReturnType<typeof parse<{ options: typeof OPTIONS; allowPositionals: true }>>['values'];
 }
+/** 严格模式：未知参数直接报错，不静默忽略。 */
 export function parseArgs(argv: string[]): Args {
-  const a: Args = { _: [], flags: {} };
-  for (let i = 0; i < argv.length; i++) {
-    const s = argv[i];
-    if (!s.startsWith('--')) {
-      a._.push(s);
-      continue;
-    }
-    const eq = s.indexOf('=');
-    const next = argv.at(i + 1);
-    if (eq > 0) a.flags[s.slice(2, eq)] = s.slice(eq + 1);
-    else if (next !== undefined && !next.startsWith('--')) {
-      a.flags[s.slice(2)] = next;
-      i++;
-    } else a.flags[s.slice(2)] = true;
-  }
-  return a;
+  const { values, positionals } = parse({ args: argv, options: OPTIONS, allowPositionals: true });
+  return { _: positionals, flags: values };
 }
 
 const print = (o: unknown): void => {
@@ -116,6 +113,19 @@ const artifactsOf = (run: RunView): string =>
   join(run.output_root ?? '', 'artifacts', 'runs', run.id);
 const readJson = (p: string): unknown =>
   existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as unknown) : undefined;
+type Gate = ReturnType<typeof decideGate>;
+/** 各轮 gate 结论文件，按里程碑、轮次排序（轮次 ≤ 3，字典序即轮次序）。 */
+const gatesOf = (art: string): string[] =>
+  existsSync(art)
+    ? readdirSync(art)
+        .filter(f => /^gate-.+-r\d+\.json$/.test(f))
+        .sort()
+    : [];
+const ledgers = (): Ledger[] => {
+  const dir = join(home().sa, 'runs');
+  const ids = existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')) : [];
+  return ids.map(f => loadLedger(f.slice(0, -5)));
+};
 
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
@@ -144,6 +154,16 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
 
 const MAX_STALLED_RECOVERIES = 3;
 
+/** recover 成功即记入 ledger（brief/report 的恢复次数、waitRun 的停滞判断都读它）。 */
+function recoverRun(l: Ledger): RecoverResult {
+  const r = recover(l.archon_run_id, l.repo);
+  if (r.ok) {
+    l.recoveries.push(new Date().toISOString());
+    saveLedger(l);
+  }
+  return r;
+}
+
 /** 分片等待：事件门不会唤醒 archon wait，所以每片 ≤30s 后重新 get；可证实 owner-lost 时自动 recover。 */
 export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
   const deadline = Date.now() + timeoutS * 1000;
@@ -158,10 +178,8 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
       lastDone = done;
       if (stalled > MAX_STALLED_RECOVERIES)
         return { ...summary(l, run, { ...c, exit: EXIT.failed }), reason: 'recover_no_progress' };
-      const r = recover(l.archon_run_id, l.repo);
+      const r = recoverRun(l);
       if (!r.ok) return { ...summary(l, run, { ...c, exit: EXIT.failed }), reason: r.reason };
-      l.recoveries.push(new Date().toISOString());
-      saveLedger(l);
       continue;
     }
     const left = Math.ceil((deadline - Date.now()) / 1000);
@@ -189,10 +207,10 @@ function preflight(skipSelftest: boolean): void {
 }
 
 function startRun(planPath: string, a: Args): number {
-  preflight(a.flags['skip-selftest'] === true);
+  preflight(a.flags['skip-selftest'] ?? false);
   const plan = loadPlan(planPath);
   const run = newRunId();
-  const gen = generate(plan, run, a.flags.fake === true);
+  const gen = generate(plan, run, a.flags.fake ?? false);
   const branch = `sa/${run}`;
   const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
   args.push('--branch', branch, '--from', plan.base_ref, '--detach');
@@ -241,11 +259,7 @@ function health(): number {
 }
 
 function resumeRun(l: Ledger): number {
-  const res = recover(l.archon_run_id, l.repo);
-  if (res.ok) {
-    l.recoveries.push(new Date().toISOString());
-    saveLedger(l);
-  }
+  const res = recoverRun(l);
   print({ run_id: l.run_id, ...res });
   return res.ok ? 0 : 1;
 }
@@ -280,8 +294,8 @@ function decide(l: Ledger, a: Args): number {
       `decide retry: ${c.node ?? 'gate'} escalated; fix on ${l.branch} or start a new run`
     );
   const { hint, pkg } = a.flags;
-  if (typeof hint === 'string') {
-    if (typeof pkg !== 'string' || !planOf(l).packages.some(p => p.id === pkg))
+  if (hint !== undefined) {
+    if (pkg === undefined || !planOf(l).packages.some(p => p.id === pkg))
       throw new Error('decide retry --hint needs --pkg <package id from the plan>');
     writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
   }
@@ -297,9 +311,8 @@ function brief(l: Ledger): number {
   const lines = [
     `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${l.branch}`,
   ];
-  const gates = existsSync(art) ? readdirSync(art).filter(f => /^gate-.+-r\d+\.json$/.test(f)) : [];
-  for (const f of gates.sort()) {
-    const g = readJson(join(art, f)) as { verdict: string; reason: string | null; debt: string[] };
+  for (const f of gatesOf(art)) {
+    const g = readJson(join(art, f)) as Gate;
     lines.push(
       `${f.slice(0, -5)}: ${g.verdict}${g.reason ? ` (${g.reason})` : ''} debt=${String(g.debt.length)}`
     );
@@ -314,12 +327,12 @@ function brief(l: Ledger): number {
 }
 
 /** 在 run 的 worktree 里跑 plan 的验收命令（同 verify 节点脚本），退出码即结果。 */
-function acceptRun(l: Ledger, pkg: string | true | undefined): number {
+function acceptRun(l: Ledger, pkg: string | undefined): number {
   const run = getRun(l.archon_run_id, l.repo);
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
   const ids = planOf(l)
     .packages.map(p => p.id)
-    .filter(id => typeof pkg !== 'string' || id === pkg);
+    .filter(id => pkg === undefined || id === pkg);
   if (!ids.length) throw new Error(`accept: unknown package ${String(pkg)}`);
   const art = join(home().sa, 'accept', l.run_id);
   mkdirSync(art, { recursive: true });
@@ -422,21 +435,13 @@ export function superviseTick(): Action[] {
   archonDetached(['workflow', 'wake', '--json'], join(sa, 'wake.log'));
   const asks = loadAsks();
   const out: Action[] = [];
-  const dir = join(sa, 'runs');
-  for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')) : []) {
-    const l = loadLedger(f.slice(0, -5));
+  for (const l of ledgers()) {
     try {
       const run = getRun(l.archon_run_id, l.repo);
       const c = classify(run);
       if (c.state === 'held:human') out.push(human(l, run, asks));
-      else if (c.state === 'owner_lost') {
-        const r = recover(l.archon_run_id, l.repo);
-        if (r.ok) {
-          l.recoveries.push(new Date().toISOString());
-          saveLedger(l);
-        }
-        out.push({ run_id: l.run_id, action: 'recover', ...r });
-      }
+      else if (c.state === 'owner_lost')
+        out.push({ run_id: l.run_id, action: 'recover', ...recoverRun(l) });
     } catch (e) {
       out.push({
         run_id: l.run_id,
@@ -450,8 +455,47 @@ export function superviseTick(): Action[] {
   return out;
 }
 
+type Count = Partial<Record<string, number>>;
+const bump = (o: Count, k: string, n = 1): void => {
+  o[k] = (o[k] ?? 0) + n;
+};
+
+/** 全部登记 run 的计数（token 用量后置）：state:*、各里程碑末轮 rounds:*、first_pass（首轮即 pass 的里程碑）、
+ *  failed:<节点 id 前缀>、escalate:<原因>、node_s:<前缀>（累计秒）、debt（末轮评审债条数）、recoveries。读不到的 run 单列，不吞错。 */
+export function report(): Record<string, unknown> {
+  const n: Count = {};
+  const unreadable: string[] = [];
+  const all = ledgers();
+  for (const l of all) {
+    bump(n, 'recoveries', l.recoveries.length);
+    try {
+      const run = getRun(l.archon_run_id, l.repo);
+      const c = classify(run);
+      bump(n, `state:${c.state}`);
+      for (const x of run.nodes ?? [])
+        bump(n, `node_s:${x.nodeId.split('-')[0]}`, Math.round((x.durationMs ?? 0) / 1e3));
+      if (run.status === 'failed' && !c.node?.startsWith('gate-'))
+        bump(n, `failed:${c.node?.split('-')[0] ?? '?'}`);
+      const last = new Map<string, Gate & { round: string }>();
+      for (const f of gatesOf(artifactsOf(run))) {
+        const [, m, round] = /^gate-(.+)-r(\d+)\.json$/.exec(f) ?? [];
+        last.set(m, { ...(readJson(join(artifactsOf(run), f)) as Gate), round });
+        if (round === '1' && last.get(m)?.verdict === 'pass') bump(n, 'first_pass');
+      }
+      for (const g of last.values()) {
+        bump(n, `rounds:${g.round}`);
+        bump(n, 'debt', g.debt.length);
+        if (g.verdict === 'escalate') bump(n, `escalate:${g.reason ?? '?'}`);
+      }
+    } catch (e) {
+      unreadable.push(`${l.run_id}: ${tail((e as Error).message, 200)}`);
+    }
+  }
+  return { runs: all.length, ...Object.fromEntries(Object.entries(n).sort()), unreadable };
+}
+
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|get|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|supervise-tick|health>';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health>';
 
 export function main(argv: string[]): number {
   const a = parseArgs(argv);
@@ -471,11 +515,6 @@ export function main(argv: string[]): number {
       const c = classify(run);
       print(summary(l, run, c));
       return c.exit;
-    }
-    case 'get': {
-      const l = ledger();
-      print({ ledger: l, archon: getRun(l.archon_run_id, l.repo) });
-      return 0;
     }
     case 'resume':
     case 'recover': {
@@ -514,6 +553,11 @@ export function main(argv: string[]): number {
       const actions = superviseTick();
       print(actions);
       return actions.some(x => !x.ok) ? 1 : 0;
+    }
+    case 'report': {
+      const r = report();
+      print(r);
+      return (r.unreadable as string[]).length ? 1 : 0;
     }
     case 'health':
       return health();

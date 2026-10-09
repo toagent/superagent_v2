@@ -68,7 +68,7 @@ export function buildWorkflow(
     let prev = start;
     for (const p of m.packages) {
       const coder = fake
-        ? { bash: fakeCoder(p) }
+        ? { bash: fakeEdit(p, p.id) }
         : {
             command: 'sa-code',
             model: '@sa-coder',
@@ -99,7 +99,7 @@ export function buildWorkflow(
         nodes.push({
           id: `fix-${t}`,
           ...(fake
-            ? { bash: fakeFix(m, r) }
+            ? { bash: fakeEdit(m.packages[0], `fix ${m.id} r${String(r)}`) }
             : {
                 command: 'sa-fix',
                 model: '@sa-coder',
@@ -192,29 +192,14 @@ export function buildWorkflow(
   };
 }
 
-const commit = (f: string, msg: string): string =>
-  `git add '${f}' && git -c user.name=sa -c user.email=sa@localhost commit -qm '${msg}'`;
 const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');
-const fakeDone = (f: string): string =>
-  `echo '{"status":"done","changed_files":["${f}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'`;
-
-const fakeCoder = (p: Pkg): string => {
-  const f = safePath(p);
-  return [
-    `mkdir -p "$(dirname '${f}')" && echo '${p.id}' > '${f}'`,
-    commit(f, `fake ${p.id}`),
-    fakeDone(f),
+/** 桩编码：向包的首个写入路径追加一行并提交，输出 coder 结构。 */
+const fakeEdit = (p: Pkg, line: string): string =>
+  [
+    `mkdir -p "$(dirname '${safePath(p)}')" && echo '${line}' >> '${safePath(p)}'`,
+    `git add '${safePath(p)}' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake ${line}'`,
+    `echo '{"status":"done","changed_files":["${safePath(p)}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'`,
   ].join('\n');
-};
-
-const fakeFix = (m: Milestone, r: number): string => {
-  const f = safePath(m.packages[0]);
-  return [
-    `echo 'fix r${String(r)}' >> '${f}'`,
-    commit(f, `fake fix ${m.id} r${String(r)}`),
-    fakeDone(f),
-  ].join('\n');
-};
 
 const FAKE_HIGH = { id: 'R1-1', severity: 'high', file: 'fake', line: 1, status: 'open' };
 const fakeReview = (r: number): string => {

@@ -32,13 +32,42 @@ if [ -z "$REPO" ]; then
   git clone -q --bare "$REPO" "$TMPH/origin.git"; git -C "$REPO" remote add origin "$TMPH/origin.git"; git -C "$REPO" fetch -q origin
 fi
 BASE="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
-GEN="$TMPH/gen/selftest"; mkdir -p "$GEN"; cp -R "$WETAMP/templates/.archon" "$GEN/.archon"
-if [ "$FAKE" = 1 ]; then
-  sed -i.orig -e "s|^    prompt: .*|    bash: sleep 20; echo '{\"answer\":\"pong\"}'|" -e "/^    model: '@sa-coder'/d" "$GEN/.archon/workflows/sa-smoke/sa-smoke.yaml"
-  rm "$GEN/.archon/workflows/sa-smoke/sa-smoke.yaml.orig"
-fi
-git -C "$GEN" init -q; git -C "$GEN" add -A; git -C "$GEN" -c user.name=sa -c user.email=sa@localhost commit -qm gen
-"$A" validate workflows --cwd "$GEN" >/dev/null 2>&1 || fail "validate workflows"
+# 工作流内联在此（不进 templates/：生成器只复制 commands/ 与 scripts/）。先以真实 think 节点 validate：
+# 复测 install.sh 写入的 config.yaml aliases 键（§2.4）；--fake 再换成 bash 桩。
+GEN="$TMPH/gen/selftest" WF="$TMPH/gen/selftest/.archon/workflows/sa-smoke"; mkdir -p "$WF"
+smoke() {
+  cat > "$WF/sa-smoke.yaml" <<YAML
+name: sa-smoke
+description: superagent selftest - detach, kill -9, recover, durable event gate, signal
+nodes:
+  - id: start
+    bash: |
+      echo "start \$(date +%s)" >> "\$ARTIFACTS_DIR/trace.txt"
+      printf '{"ts":"%s"}\n' "\$(date +%s)"
+    output_format: { type: object, properties: { ts: { type: string } }, required: [ts] }
+  - id: think
+$1
+    output_format: { type: object, properties: { answer: { type: string } }, required: [answer] }
+    depends_on: [start]
+  - id: gate
+    wait: { event: sa.human.smoke, deadline_ms: 900000 }
+    depends_on: [think]
+  - id: finish
+    bash: |
+      ts=\$start.output.ts
+      ev=\$gate.output.event
+      echo "finish prev_ts=\$ts event=\$ev" >> "\$ARTIFACTS_DIR/trace.txt"
+      echo done
+    when: "\$gate.output.status == 'satisfied'"
+    depends_on: [gate]
+YAML
+  git -C "$GEN" add -A; git -C "$GEN" -c user.name=sa -c user.email=sa@localhost commit -qm "${2}"
+  "$A" validate workflows sa-smoke --cwd "$GEN" >/dev/null 2>&1 || fail "validate workflows (${2})"
+}
+git -C "$GEN" init -q
+smoke "    prompt: 'Reply only with the JSON object {\"answer\": \"pong\"}. Do not run tools or modify files.'
+    model: '@sa-coder'" real
+[ "$FAKE" = 1 ] && smoke "    bash: sleep 20; echo '{\"answer\":\"pong\"}'" fake
 
 BR="sa/selftest-$(date +%s)"
 ACK="$("$A" workflow run sa-smoke --workflow-source "$GEN" --cwd "$REPO" --branch "$BR" --from "$BASE" --detach --json 2>/dev/null)"
