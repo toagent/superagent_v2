@@ -221,7 +221,7 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
 - `workflow signal` 与 `workflow wake` 会在调用进程内执行剩余 DAG：CLI 以 detached 子进程执行并把输出写到 `gen/<run>/signal-<node>.log`、`$SUPERAGENT_HOME/wake.log`；signal 以“run 离开 paused 或 resumeAt 改变”为受理确认（30 s）。
 - 状态映射：paused 且等待 `sa.human.*` → held:human；其余 paused → held:paused；environment 节点失败 → held:environment；gate 节点失败 → held:gate。
 - 节点输出 schema 外置到 `schemas/output.schema.json` 的 `$defs`，brief 正文外置到 `templates/brief.md`（单趟 `{{key}}` 替换，计划文本中的 `{{x}}`/`$` 原样保留）。
-- Codex 控制台的评审别名重绑经 `workflow run --model @sa-reviewer=@sa-reviewer-codex` 实现，不改生成的 YAML。
+- Codex 控制台的评审别名重绑：见修复轮 R1 的 H2（run-config 层），不改生成的 YAML。
 - `supervise-tick` 无并发锁，须由单个 cron/launchd 作业调用；其中的 owner-lost 恢复没有 stall 上限（`wait` 有）。
 - gc 不使用 `archon complete` / `isolation cleanup --merged`：二者会删除远端分支，属于对外动作。
 - M3 实现记录：
@@ -240,3 +240,5 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - H4：gate 先判 `plan.deadline` 过期再判 PASS（`escalate deadline`）；`signoff-<M>` bash 节点与 `land` 也检查绝对截止时间；`decide approve` 过期拒绝，`supervise-tick` 不再替过期的“是”发 signal。
   - M2：`diff-<M>-rN`（N>1）以上一轮 `diff_hash` 为 `prev` 输出 `same`；`review-<M>-rN` 带 `when: same != 'true'`；gate 依赖 diff 与 review 并以 `none_failed_min_one_success` 汇合，`same` 时直接 `escalate no_change`，不再为未变化的 diff 付评审费。
   - M7：G1 评审的 `debt[]` 为空时，债务由非阻塞的未关闭发现派生（`<id> <severity> <file>:<line>`）；`land` 输出与 `land.json` 带各里程碑末轮 gate 的 `debt`。
+  - H2：run 启动时把 `@sa-coder`、`@sa-reviewer`、`@sa-reviewer-alt` 的具体 provider/model/effort（按控制台选评审池）写进 `gen/<run>/run-config.yaml`，经 `workflow run --config` 成为 Archon 的 run 层（优先级最高，detach 子进程与 resume 继承密封快照）；不用 `--model`，因为字面 `provider/model` spec 丢 effort。启动前断言全局与目标 repo `config.yaml` 中已定义的 `@sa-*` 别名等于 tiers 渲染值，否则退出码 5（`health --cwd` 同检查）。
+  - M6：所有动词接受 `--json`（no-op）；未知参数退出 64 并打印用法。

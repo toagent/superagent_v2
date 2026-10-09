@@ -30,7 +30,10 @@ superagent brief <run>                   # ≤20 行接手摘要：状态、各�
 superagent land <run>                    # 打印本地合入命令（switch + merge）；由人执行，从不 push
 ```
 
-所有命令输出 JSON。退出码：0 completed、1 failed、2 cancelled、3 held（待决策）、4 running、64 用法错误。
+所有命令输出 JSON（`--json` 可加可不加）。退出码：0 completed、1 failed、2 cancelled、3 held（待决策）、4 running、
+5 别名漂移（`$ARCHON_HOME/config.yaml` 或目标 repo `.archon/config.yaml` 的 `@sa-*` 别名与 `tiers.json` 不一致，run 拒绝启动，
+`health --cwd <repo>` 同一检查；重跑 `install.sh` 或删掉 repo 里的 `@sa-*` 覆盖）、64 用法错误（含未知参数）。
+run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` 并经 `workflow run --config` 钉进 run，之后改配置不影响已启动的 run。
 
 `wait`/`status` 返回 held 时按 `state` 处理：
 
@@ -73,7 +76,7 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 - `preflight: no passing selftest within 7 days`：跑 `wetamp/scripts/selftest.sh`（或临时 `run --skip-selftest`）。
 - `plan invalid: repo … outside allowed roots`：把 repo 放到 `~/work` 下，或设置 `SUPERAGENT_WRITE_ROOTS`。
 - `generated workflow invalid`：`install.sh` 未跑或 `config.yaml` 缺 `@sa-coder`/`@sa-reviewer` 别名；重跑 `install.sh`。
-- `wait` 返回 `reason: recover_no_progress`：worker 反复被杀且节点无进展；看 `$SUPERAGENT_HOME/runs/<run>.json` 的 `log` 指向的 detach 日志，排除原因后 `superagent recover <run>`。
+- `held:recover_no_progress`：worker 反复被杀且节点无进展；看 `$SUPERAGENT_HOME/runs/<run>.json` 的 `log` 指向的 detach 日志，排除原因后 `superagent decide <run> retry`（`recover`/`resume` 不重置计数）。
 - run 停在 running 但进程在别的机器：`recover` 拒绝（`owner alive or on another host`），到那台机器处理。
 - `superagent health` 的 `upstream_clean` 不是 `true`：仓库 `wetamp/` 之外有改动，用 `git checkout -- <file>` 还原。
 - 节点日志：`brief` 输出的 `evidence:` 目录；对话转录：ledger 的 `transcript`。

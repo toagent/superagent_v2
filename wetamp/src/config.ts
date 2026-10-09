@@ -35,7 +35,7 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
 
 const mk = (model: string): Alias => ({ provider: providerOf(model), model, effort: 'high' });
 
-/** 渲染全部别名；console=codex 的评审池用 -codex 后缀别名，run 时经 --model @sa-reviewer=@sa-reviewer-codex 重绑。 */
+/** 渲染全部别名；console=codex 的评审池用 -codex 后缀别名，run 时由 runAliases 钉成 @sa-reviewer。 */
 export function renderAliases(t: Tiers): Record<string, Alias> {
   const coder = mk(t.routing.coder.models[0]);
   const out: Record<string, Alias> = { '@sa-coder': coder };
@@ -63,6 +63,40 @@ export function assertAuthorNotReviewer(a: Record<string, Alias>): void {
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : {};
+
+/**
+ * 钉进 run 的别名（Archon run-config 层，优先级高于全局/repo/用户层，resume 继承快照）：
+ * 运行中改 config.yaml 或 tiers.json 不影响已启动的 run。不用 `--model`：字面 spec 不带 effort。
+ */
+export function runAliases(c: Console, t = loadTiers()): Record<string, Alias> {
+  const a = renderAliases(t);
+  assertAuthorNotReviewer(a);
+  const sfx = c === 'codex' ? '-codex' : '';
+  return {
+    '@sa-coder': a['@sa-coder'],
+    '@sa-reviewer': a[`@sa-reviewer${sfx}`],
+    '@sa-reviewer-alt': a[`@sa-reviewer-alt${sfx}`],
+  };
+}
+
+/** 全局与目标 repo 的 config.yaml 里定义的 @sa-* 别名须等于 tiers 渲染值；返回不一致项（run/health 拒绝）。 */
+export function aliasDrift(repo?: string, t = loadTiers()): string[] {
+  const want = renderAliases(t);
+  const files = [join(home().archon, 'config.yaml')];
+  if (repo) files.push(join(repo, '.archon', 'config.yaml'));
+  const drift: string[] = [];
+  for (const f of files.filter(x => existsSync(x))) {
+    const have = obj(obj(Bun.YAML.parse(readFileSync(f, 'utf8'))).aliases);
+    for (const [k, v] of Object.entries(have)) {
+      if (!k.startsWith('@sa-')) continue;
+      const got = obj(v);
+      const exp = want[k] as Alias | undefined;
+      if (!exp || (['provider', 'model', 'effort'] as const).some(x => got[x] !== exp[x]))
+        drift.push(`${f}: ${k}`);
+    }
+  }
+  return drift;
+}
 
 export function mergeConfig(current: unknown, t: Tiers): Obj {
   const aliases = renderAliases(t);

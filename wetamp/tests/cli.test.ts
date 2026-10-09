@@ -12,7 +12,18 @@ import {
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import type { RunView } from '../src/archon';
-import { classify, EXIT, loadLedger, main, parseArgs, waitRun, type Ledger } from '../src/cli';
+import {
+  classify,
+  EXIT,
+  EXIT_ALIAS_DRIFT,
+  EXIT_USAGE,
+  loadLedger,
+  main,
+  parseArgs,
+  waitRun,
+  type Ledger,
+} from '../src/cli';
+import { renderAliases, loadTiers } from '../src/config';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
@@ -31,6 +42,16 @@ describe('parseArgs', () => {
   });
   test('unknown flags fail instead of being ignored', () => {
     expect(() => parseArgs(['run', 'p.json', '--skip-selftests'])).toThrow(/Unknown option/);
+  });
+  test('main: unknown flag exits 64 with usage; --json is an accepted no-op on any verb', () => {
+    const err = spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(main(['status', 'x', '--frob'])).toBe(EXIT_USAGE);
+      expect(String(err.mock.calls[0]?.[0])).toContain('usage: superagent');
+    } finally {
+      err.mockRestore();
+    }
+    expect(parseArgs(['report', '--json']).flags).toEqual({ json: true });
   });
 });
 
@@ -369,12 +390,56 @@ describe('run (archon stub)', () => {
     expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
-  test('console=codex rebinds @sa-reviewer to the codex-console pool', () => {
-    expect(start('codex')[0]).toEndWith('--model @sa-reviewer=@sa-reviewer-codex --json');
+  /** workflow run 的 --config 文件里钉住的别名。 */
+  const pinned = (call: string): Record<string, unknown> => {
+    const m = /--config (\S+)/.exec(call);
+    expect(m).not.toBeNull();
+    return (
+      Bun.YAML.parse(readFileSync(m?.[1] ?? '', 'utf8')) as { aliases: Record<string, unknown> }
+    ).aliases;
+  };
+  const want = renderAliases(loadTiers());
+  test('console=codex pins @sa-reviewer to the codex-console pool via the run config layer', () => {
+    const call = start('codex')[0];
+    expect(call).not.toContain('--model');
+    expect(pinned(call)).toEqual({
+      '@sa-coder': want['@sa-coder'],
+      '@sa-reviewer': want['@sa-reviewer-codex'],
+      '@sa-reviewer-alt': want['@sa-reviewer-alt-codex'],
+    });
   });
-  test('console=claude keeps the default reviewer alias', () => {
-    expect(start()[0]).not.toContain('--model');
+  test('console=claude pins the concrete claude-console models, effort included', () => {
+    const a = pinned(start()[0]);
+    expect(a['@sa-reviewer']).toEqual(want['@sa-reviewer']);
+    expect(a['@sa-coder']).toMatchObject({ effort: 'high' });
   });
+  const drifted = (where: 'global' | 'repo'): { code: number; out: string; calls: string[] } => {
+    const s = stub([]);
+    const repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    const dir = where === 'global' ? join(s.root, 'home', 'archon') : join(repo, '.archon');
+    mkdirSync(dir, { recursive: true });
+    const alias = { ...want['@sa-reviewer'], model: 'other-model' };
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      Bun.YAML.stringify({ aliases: { '@sa-reviewer': alias } })
+    );
+    const r = captured(() => main(['run', fixturePlan(s.root, repo), '--skip-selftest']));
+    return { ...r, calls: s.calls() };
+  };
+  test('a target repo @sa-* alias that differs from tiers refuses to start with exit 5', () => {
+    const r = drifted('repo');
+    expect(r.code).toBe(EXIT_ALIAS_DRIFT);
+    expect(JSON.parse(r.out)).toMatchObject({ ok: false, reason: 'alias_drift' });
+    expect(r.calls.some(c => c.startsWith('workflow run'))).toBe(false);
+  });
+  test('a drifted global alias also refuses; health --cwd runs the same check', () => {
+    expect(drifted('global').code).toBe(EXIT_ALIAS_DRIFT);
+    const repo = join(process.env.SUPERAGENT_HOME ?? '', '..', 'repo');
+    const h = captured(() => main(['health', '--cwd', repo]));
+    expect(h.code).toBe(EXIT_ALIAS_DRIFT);
+    expect((JSON.parse(h.out) as { alias_drift: string[] }).alias_drift).toHaveLength(1);
+  }, 30000);
 });
 
 describe('decide (archon stub)', () => {

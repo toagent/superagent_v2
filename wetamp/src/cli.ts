@@ -24,7 +24,7 @@ import {
   type RunView,
 } from './archon';
 import type { decide as decideGate } from '../templates/.archon/scripts/sa-check';
-import { WETAMP, home, loadTiers, renderAliases, assertAuthorNotReviewer } from './config';
+import { WETAMP, aliasDrift, home, runAliases } from './config';
 import { generate, newRunId } from './generate';
 import { loadPlan, type Plan } from './plan';
 
@@ -34,6 +34,8 @@ const OPTIONS = {
   hint: { type: 'string' },
   fake: { type: 'boolean' },
   'skip-selftest': { type: 'boolean' },
+  cwd: { type: 'string' },
+  json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
 } as const;
 interface Args {
   _: string[];
@@ -51,6 +53,9 @@ const print = (o: unknown): void => {
 
 /** 0 completed；1 failed；2 cancelled；3 held（等元帅/用户决策）；4 仍在运行（wait 超时或 status 查询）。 */
 export const EXIT = { completed: 0, failed: 1, cancelled: 2, held: 3, running: 4 } as const;
+/** 别名漂移：全局或目标 repo 的 @sa-* 别名与 tiers.json 渲染值不一致，run 拒绝启动。 */
+export const EXIT_ALIAS_DRIFT = 5;
+export const EXIT_USAGE = 64;
 
 export interface Ledger {
   run_id: string;
@@ -249,13 +254,16 @@ function preflight(skipSelftest: boolean): void {
 function startRun(planPath: string, a: Args): number {
   preflight(a.flags['skip-selftest'] ?? false);
   const plan = loadPlan(planPath);
+  const drift = aliasDrift(plan.repo);
+  if (drift.length) {
+    print({ ok: false, reason: 'alias_drift', drift, fix: 'wetamp/scripts/install.sh' });
+    return EXIT_ALIAS_DRIFT;
+  }
   const run = newRunId();
   const gen = generate(plan, run, a.flags.fake ?? false);
   const branch = `sa/${run}`;
   const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
-  args.push('--branch', branch, '--from', plan.base_ref, '--detach');
-  // 评审别名按控制台重绑：Codex 控制台用 Claude 军师池（config.renderAliases）
-  if (plan.console === 'codex') args.push('--model', '@sa-reviewer=@sa-reviewer-codex');
+  args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
   const ack = archonJson(args, plan.repo);
   if (ack.ok !== true || typeof ack.runId !== 'string')
     throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
@@ -279,23 +287,24 @@ function startRun(planPath: string, a: Args): number {
   return 0;
 }
 
-function health(): number {
-  const aliases = renderAliases(loadTiers());
-  assertAuthorNotReviewer(aliases);
+function health(cwd?: string): number {
+  const aliases = runAliases('claude');
+  const drift = aliasDrift(cwd);
   const doctor = archon(['doctor']);
   const clean = Bun.spawnSync([join(WETAMP, 'scripts', 'check-upstream-clean.sh')], {
     stdout: 'pipe',
     stderr: 'pipe',
   });
   const upstreamDiff = clean.stdout.toString().trim();
-  const ok = doctor.code === 0 && clean.exitCode === 0 && upstreamDiff === '';
+  const ok = doctor.code === 0 && clean.exitCode === 0 && upstreamDiff === '' && !drift.length;
   print({
     ok,
     doctor: doctor.code === 0 ? 'ok' : tail(doctor.out),
     aliases,
+    alias_drift: drift,
     upstream_clean: upstreamDiff === '' ? true : upstreamDiff,
   });
-  return ok ? 0 : 1;
+  return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
 }
 
 function resumeRun(l: Ledger, fresh = false): number {
@@ -547,10 +556,16 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health>';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]> (every verb accepts --json)';
 
 export function main(argv: string[]): number {
-  const a = parseArgs(argv);
+  let a: Args;
+  try {
+    a = parseArgs(argv);
+  } catch (e) {
+    console.error(`${(e as Error).message}\n${USAGE}`);
+    return EXIT_USAGE;
+  }
   const [verb, target] = a._;
   const ledger = (): Ledger => loadLedger(need(target, `${verb} <run>`));
   switch (verb) {
@@ -612,10 +627,10 @@ export function main(argv: string[]): number {
       return (r.unreadable as string[]).length ? 1 : 0;
     }
     case 'health':
-      return health();
+      return health(a.flags.cwd);
     default:
       console.error(USAGE);
-      return 64;
+      return EXIT_USAGE;
   }
 }
 

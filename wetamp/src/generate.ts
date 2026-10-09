@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { archon, tail } from './archon';
-import { WETAMP, home } from './config';
+import { WETAMP, home, runAliases } from './config';
 import { milestones, type Milestone, type Pkg, type Plan } from './plan';
 
 const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.json'))('yaml') as {
@@ -262,6 +262,8 @@ const git = (cwd: string, ...args: string[]): void => {
 export interface Gen {
   dir: string;
   workflow: string;
+  /** run-config 层（钉住的别名），经 `workflow run --config` 传入。 */
+  config: string;
 }
 
 /** 写 gen 目录、提交一次、`archon validate workflows`；校验失败抛错。 */
@@ -292,10 +294,12 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     })
   );
   writeFileSync(join(dir, '.gitignore'), 'hints/\n');
+  const config = join(dir, 'run-config.yaml');
+  writeFileSync(config, YAML.stringify({ aliases: runAliases(plan.console ?? 'claude') }, {}));
   git(dir, 'init', '-q');
-  git(dir, 'add', '.archon', 'plan.json', 'briefs', '.gitignore');
+  git(dir, 'add', '.archon', 'plan.json', 'briefs', '.gitignore', 'run-config.yaml');
   git(dir, 'commit', '-qm', `superagent ${run}`);
   const v = archon(['validate', 'workflows', workflow, '--cwd', dir]);
   if (v.code !== 0) throw new Error(`generated workflow invalid: ${tail(v.out + v.err)}`);
-  return { dir, workflow };
+  return { dir, workflow, config };
 }
