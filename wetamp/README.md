@@ -41,7 +41,7 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 
 | state                      | 含义                                                    | 动作                                                                                    |
 | -------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `held:human`               | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = cancel）                        |
+| `held:human`               | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                      |
 | `held:environment`         | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                              |
 | `held:gate`                | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | 在 run 分支上手工修，或改 plan 新开 run；`retry` 无效                                   |
 | `held:paused`              | 其它暂停                                                | `superagent resume <run>`                                                               |
