@@ -4,7 +4,7 @@
 // 派生写目标含动态展开时拒绝；间接执行的残余风险见 docs/04。
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const {spawnSync} = require('node:child_process');
-const {parse, tokens, modeled} = require('./shell.cjs');
+const {parse, tokens} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 
 // child is parent itself or below it.
@@ -173,7 +173,7 @@ const READ_TOOLS = {Read: ['file_path'], NotebookRead: ['notebook_path'], Grep: 
  * 红线拒绝理由或 null。shell 为解析后的 shell 文本（非 shell 工具为 undefined）；
  * derived 为真时另查写入落点。root 为 cwd 所在 git 根。
  */
-function reason({client, name, input, cwd, root, shell, derived, env = process.env}) {
+function reason({client, name, input, cwd, root, shell, derived, modelShell = derived, env = process.env, onCommand}) {
   const edit = microEdit.isEdit(client, name);
   let targets = [];
   if (edit) {
@@ -191,6 +191,19 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
   }
   if (shell === undefined) return null;
   const roots = writableRoots(cwd, root, env);
+  if (modelShell) return require('./shell-ast.cjs').analyze(shell, cwd, env, (parsed, dir, names, assignment) => {
+    onCommand?.(parsed);
+    for (const argv of parsed.argvs) {
+      for (const word of argv) { const kind = wordKind(word, dir, env); if (kind) return `禁止读取${kind}`; }
+      const why = commandReason(argv, names, dir); if (why) return why;
+    }
+    for (const file of parsed.reads) { const kind = wordKind(file, dir, env); if (kind) return `禁止读取${kind}（输入重定向）`; }
+    if (!derived) return null; // Reviewer has a separate read-only write gate.
+    const writes = shellWrites(parsed);
+    if (assignment && writes.some(t => /^(?:~|\$\{?HOME\}?)/.test(t))) return '无法确认 shell 写入目标（赋值影响 HOME 展开）';
+    if (writes.some(t => !t || /[$`*?\[\]{}]/.test(expand(t, env)))) return '无法确认 shell 写入目标（动态路径）';
+    return outsideReason(writes, dir, roots, env);
+  }, word => expand(word, env));
   let allNames = [];
   try { allNames = parse(stripHeredocs(shell)).argvs.map(a => path.posix.basename(a[0])); }
   catch {
@@ -202,10 +215,6 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
   // directories unless its success is required by &&; every possible write must be safe.
   function walk(text, dirs, depth = 0) {
     if (depth > 8) return '无法确认 shell 写入目标（嵌套过深）';
-    if (derived) {
-      try { if (!modeled(text, env.CDPATH !== undefined)) return '无法确认 shell 所属作用域或写入目录（超出可建模子集；请用绝对路径或拆成独立命令）'; }
-      catch { return '无法确认 shell 写入目标（解析失败）'; }
-    }
     let part = '', quote = '', nesting = 0;
     const pieces = [];
     for (let i = 0; i < text.length; i++) {
@@ -268,4 +277,5 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
   return walk(stripHeredocs(shell), [cwd]);
 }
 
-module.exports = {reason, resolvePath, within, secretKind, stripHeredocs};
+const init = () => require('./shell-ast.cjs').init();
+module.exports = {init, reason, resolvePath, within, secretKind, stripHeredocs};

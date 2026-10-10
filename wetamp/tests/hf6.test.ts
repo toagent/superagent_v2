@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+await (createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }).init();
 
 const { reason } = createRequire(import.meta.url)('../hooks/redline.cjs') as {
   reason: (args: object) => string | null;
@@ -30,6 +31,8 @@ const check = (shell: string, derived = true, env: object = {}) =>
   });
 
 const denied = [
+  'echo "$(echo ok)"',
+  'time echo ok',
   'pushd /Users/Shared && touch m2-fixture',
   "bash <<< 'cd /Users/Shared && touch m2-fixture'",
   'f() { cd /Users/Shared; }; f; touch m2-fixture',
@@ -83,9 +86,7 @@ const allowed = [
   'xargs sh -c "echo ok"',
   'nohup sh -c "echo ok"',
   'echo "source eval pushd cd"',
-  'echo "$(echo ok)"',
   '(cd /Users/Shared); touch local',
-  'time echo ok',
   '{ echo ok; }; echo done',
 ];
 test.each(allowed)('HF6 preserves modeled commands and ordinary data: %s', shell => {
@@ -95,7 +96,7 @@ test('HF6 accounts for inherited CDPATH but permits an absolute cd', () => {
   expect(check('cd wetamp && touch f', true, { CDPATH: '/Users' })).not.toBeNull();
   expect(check('cd ROOT && touch f', true, { CDPATH: '/Users' })).toBeNull();
 });
-test.each(denied.slice(0, 14))('HF6 leaves commander decisions unchanged: %s', shell => {
+test.each(denied.slice(2, 16))('HF6 leaves commander decisions unchanged: %s', shell => {
   expect(check(shell, false)).toBeNull();
 });
 test('HF6 replay extracts exec commands rather than transcript prose or outputs', () => {
@@ -118,7 +119,7 @@ test('HF6 commander results match the frozen baseline for every new fixture', ()
   const result = replay(commands, before, { reason });
   expect(result.commander_changed).toBe(0);
   expect(result.current_rejected).toBeGreaterThan(result.baseline_rejected);
-  for (const shell of denied.slice(0, 3)) {
+  for (const shell of denied.slice(2, 5)) {
     expect(
       before.reason({
         client: 'claude',

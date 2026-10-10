@@ -3,7 +3,7 @@
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {createRequire} = require('node:module'), vm = require('node:vm');
-const {tokens, parse} = require('../hooks/shell.cjs');
+const {tokens} = require('../hooks/shell.cjs');
 const current = require('../hooks/redline.cjs');
 
 function extract(text) {
@@ -45,17 +45,16 @@ function replay(commands, before, after) {
     const oldReason = before.reason(args), newReason = after.reason(args);
     oldDenied += oldReason !== null; newDenied += newReason !== null;
     if (oldReason === null && newReason !== null) {
-      let heads;
-      try { heads = parse(current.stripHeredocs(command.shell)).argvs.map(a => /^[\w./-]+$/.test(a[0]) ? path.basename(a[0]) : '[dynamic]').join(' | '); }
-      catch { heads = '[unparsed]'; }
-      added.push({sha256: crypto.createHash('sha256').update(command.shell).digest('hex'), command: `${heads} [arguments and bodies redacted]`, reason: newReason});
+      const category = /超出可建模子集：([^）]+)/.exec(newReason)?.[1] || (newReason.includes('动态路径') ? 'dynamic_write_target' : 'redline_policy');
+      added.push({sha256: crypto.createHash('sha256').update(command.shell).digest('hex'), category});
     }
     if (before.reason({...args, derived: false}) !== after.reason({...args, derived: false})) changedCommander.push(crypto.createHash('sha256').update(command.shell).digest('hex'));
   }
-  return {total: commands.length, baseline_rejected: oldDenied, current_rejected: newDenied, added_rejected: added.length, added_rate: commands.length ? added.length / commands.length : 0, commander_changed: changedCommander.length, added};
+  return {total: commands.length, baseline_rejected: oldDenied, current_rejected: newDenied, added_rejected: added.length, added_rate: commands.length ? added.length / commands.length : 0, commander_changed: changedCommander.length, reasons: added.reduce((counts, r) => { counts[r.category] = (counts[r.category] || 0) + 1; return counts; }, {}), added};
 }
 module.exports = {extract, baseline, replay};
-if (require.main === module) {
+if (require.main === module) (async () => {
+  await current.init();
   const [logs, output, corpus] = process.argv.slice(2);
   if (!logs || !output || !corpus) throw new Error('Usage: hf6-replay.cjs <logs-dir> <report.json> <command-only-corpus.json>');
   const commands = fs.existsSync(corpus) ? JSON.parse(fs.readFileSync(corpus, 'utf8')) : fs.readdirSync(logs).filter(f => f.endsWith('-sol.log')).flatMap(f => extract(fs.readFileSync(path.join(logs, f), 'utf8')));
@@ -64,4 +63,4 @@ if (require.main === module) {
   fs.writeFileSync(output, JSON.stringify(result, null, 2) + '\n');
   console.log(JSON.stringify({...result, added: undefined}));
   for (const added of result.added) console.log(JSON.stringify(added));
-}
+})().catch(error => { console.error(error.message); process.exitCode = 1; });

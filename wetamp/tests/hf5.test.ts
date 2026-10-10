@@ -9,6 +9,7 @@ import { cockpit } from '../src/board/cockpit';
 import { handler } from '../src/web/server';
 import type { RunView } from '../src/archon';
 import { gitRepo, sh, tmp } from './helpers';
+await (createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }).init();
 const env = { ...process.env };
 afterEach(() => { for (const k of ['SUPERAGENT_HOME', 'ARCHON_HOME']) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; } });
 const wetamp = join(import.meta.dir, '..');

@@ -142,43 +142,6 @@ function unwrap(argv) {
   }
   return {argv: argv.slice(i), lines, writes, heads};
 }
-// The derived-session cwd model is deliberately smaller than shell syntax. Keep
-// executable heads before unwrap discards wrappers; quoted arguments are not heads.
-const UNMODELED = new Set(['pushd','popd','eval','source','.','exec','builtin','command','alias','function','coproc']);
-function modeled(command, cdpath, depth = 0) {
-  if (depth > 8) return false;
-  const {flat, bodies} = lift(command, true), groups = [[]];
-  for (const word of tokens(flat)) {
-    if (word.operator && SEPARATORS.has(word.value)) groups.push([]); else groups.at(-1).push(word);
-  }
-  let compound = false, cd = false;
-  cdpath ||= groups.some(g => g.some((w, i) => /^CDPATH=/.test(w.value) && (g.slice(0, i).every(t => ASSIGN.test(t.value)) || ['export','declare','typeset'].includes(g[0]?.value))));
-  for (const group of groups) {
-    const words = group.filter((w, i) => !w.operator && !group[i - 1]?.operator && !(/^\d+$/.test(w.value) && group[i + 1]?.operator));
-    const values = words.map(w => w.value), {argv, heads, lines} = unwrap(values);
-    if (values.length === 1 && values[0] === '__sa_sub__' && !bodies.includes('')) continue;
-    for (const i of heads) {
-      const h = words[i], name = path.posix.basename(h.value);
-      if (h.dynamic || h.value.includes('__sa_sub__') || words[i + 1]?.value === '__sa_sub__' && bodies.includes('') ||
-          UNMODELED.has(name) || lines.length) return false;
-      compound ||= ['if','then','elif','else','fi','for','while','until','do','done','case','esac','select','{','}','!','time'].includes(name);
-      if (name === 'cd') {
-        cd = true;
-        const target = argv[1] || '';
-        if (i !== 0 || target === '-' || /^~[^/]/.test(target) || cdpath && target && !/^(?:\/|~\/)/.test(target)) return false;
-      }
-    }
-    if (SHELLS.has(path.posix.basename(argv[0] || ''))) {
-      const i = argv.findIndex((v, k) => k > 0 && /^-[a-z]*c[a-z]*$/.test(v));
-      const offset = values.length - argv.length;
-      const file = argv.findIndex((v, k) => k > 0 && !v.startsWith('-'));
-      if (i > 0 ? !words[offset + i + 1] || words[offset + i + 1].dynamic : file < 0 || words[offset + file].dynamic || argv.slice(1, file).some(v => v !== '--' && (!/^-[a-zA-Z]+$/.test(v) || /[scoO]/.test(v.slice(1))))) return false;
-      if (i < 0 && /^\/(?:dev|proc)\//.test(path.posix.normalize(argv[file]))) return false;
-      if (i > 0 && !modeled(argv[i + 1], cdpath, depth + 1)) return false;
-    }
-  }
-  return !(compound && (cd || groups.flat().some(w => w.value === 'cd' || UNMODELED.has(w.value)))) && bodies.every(body => modeled(body, cdpath, depth + 1));
-}
 // Every simple command a shell line would start: argv with wrappers, assignments and
 // redirections stripped, including `bash -c`/`eval`/`find -exec` bodies and every command
 // substitution; `writes` lists output-redirection targets, files `tee` writes and wrapper side
@@ -231,10 +194,10 @@ function parse(command, depth = 0) {
 const commands = command => parse(command).argvs;
 // Parse only a complete, literal deletion command. Operators, expansion,
 // wrappers and multiple targets stay uncertain; never evaluate shell text.
-function deletionTarget(command,cwd) {
+function deletionTarget(command,cwd, normalized) {
   // An unparsable or non-string command is "not a literal deletion", never an error.
   if (typeof command !== 'string') return null;
-  let words; try { words = tokens(command); } catch { return null; }
+  let words; try { words = normalized ? normalized.map(value => ({value})) : tokens(command); } catch { return null; }
   if (!words.length || words.some(word => word.operator || word.dynamic || word.nested || /[()*?{}\[\]~]/.test(word.value))) return null;
   const args = words.map(word => word.value);
   let target;
@@ -256,4 +219,4 @@ function deletionTarget(command,cwd) {
   }
   return target ? path.resolve(cwd,target) : null;
 }
-module.exports = {tokens, commands, parse, deletionTarget, modeled};
+module.exports = {tokens, commands, parse, deletionTarget, unwrap};

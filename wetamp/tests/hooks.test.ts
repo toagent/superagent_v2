@@ -4,6 +4,7 @@ import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { gitRepo, tmp } from './helpers';
+await (createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }).init();
 
 const HOOKS = join(import.meta.dir, '..', 'hooks');
 // 子进程 env 只保留与判定无关的键，判定相关的由每个用例显式给出。
@@ -219,17 +220,17 @@ describe('guard.cjs', () => {
       'env -u FOO claude -p x',
       'env X=1 codex exec x',
       'nohup claude -p x &',
-      'time -p claude -p x',
       'sudo -u root opencode run',
       'nice -n 5 claude -p x',
       'caffeinate -i claude -p x',
       'timeout 5 sol-run x',
-      'echo "$(claude -p x)"',
       'find . -name a -exec codex exec {} \\;',
     ])
       expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('N-1');
     // HF6 rejects these unmodeled heads before reaching the nested-agent gate.
     for (const cmd of [
+      'time -p claude -p x',
+      'echo "$(claude -p x)"',
       'command claude -p x',
       'exec -a name codex exec x',
       'env -S "claude -p x"',
@@ -268,10 +269,11 @@ describe('guard.cjs', () => {
       'git -c core.pager=sh log',
       'sort -o a.ts a.ts',
       'find . -delete',
-      '$(echo rm) a.ts',
       'python3 -c "open(1)"',
     ])
       expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('reviewer 只读');
+    expect(reason(guard('claude', bash('$(echo rm) a.ts'), reviewer))).toContain('node:command_substitution');
+    expect(reason(guard('claude', bash('echo ~[x]'), reviewer))).toContain('zsh_word_expansion');
     expect(
       reason(
         guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'touch x' } }, reviewer)
@@ -283,15 +285,13 @@ describe('guard.cjs', () => {
     const { guard } = setup();
     const reviewer = { SUPERAGENT_ROLE: 'reviewer' };
     for (const [cmd, target] of [
-      ['time -o out.txt cat a.ts', 'out.txt'],
-      ['/usr/bin/time --output=t.log git status', 't.log'],
       ['nohup cat a.ts', 'nohup.out'],
       ['script s.log cat a.ts', 's.log'],
       ['cat a.ts | tee -a b.ts', 'b.ts'],
-      ['env -C /tmp/elsewhere cat a.ts', 'elsewhere'],
-      ['env --chdir=/w git status', 'w'],
     ])
       expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain(`禁止写入 ${target}`);
+    for (const cmd of ['time -o out.txt cat a.ts', '/usr/bin/time --output=t.log git status', 'env -C /tmp/elsewhere cat a.ts', 'env --chdir=/w git status'])
+      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('超出可建模子集');
     // script 也是包装器：其后的 claude 仍被 N-1 认出
     expect(
       reason(
