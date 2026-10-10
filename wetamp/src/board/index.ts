@@ -6,6 +6,8 @@ import { EXIT_USAGE, parseArgs } from '../cli';
 import { WETAMP, home } from '../config';
 import { createLoader, readLedger, type BoardRow, type Snapshot } from './data';
 import { detailOf, type Detail } from './detail';
+import { startWeb, webUrl } from '../web/server';
+import { requestUsageRefresh } from '../usage';
 
 const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval s] [--limit n]';
 
@@ -38,7 +40,11 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     target = a._[1];
     interval = positive(a.flags.interval, 5, 'interval');
     limit = Math.floor(positive(a.flags.limit, 50, 'limit'));
-    load = createLoader(signal);
+    const base = createLoader(signal);
+    let url: string | undefined;
+    load = async n => ({ ...await base(n), web_url: url });
+    if (!a.flags.json && process.env.NODE_ENV !== 'test') { try { url = webUrl(await startWeb()); } catch (e) { console.error(`web: ${(e as Error).message}`); } }
+    if (process.env.NODE_ENV !== 'test') requestUsageRefresh();
   } catch (e) {
     console.error(`${(e as Error).message}\n${USAGE}`);
     return EXIT_USAGE;

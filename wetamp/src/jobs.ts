@@ -13,12 +13,12 @@ import { basename, join, resolve } from 'node:path';
 import { EXIT_USAGE, parseArgs } from './cli';
 import { home } from './config';
 import { newRunId } from './generate';
+import { jobSession } from './usage';
+import { isTier, type Tier } from './roles';
+export { TIERS, isTier, type Tier } from './roles';
 
 export type Kind = 'claude' | 'codex' | 'opencode' | 'other';
 /** tiers.json 的档位键（元帅/将军/军师）；中文只在展示层。 */
-export const TIERS = ['commander', 'general', 'strategist'] as const;
-export type Tier = (typeof TIERS)[number];
-export const isTier = (v: unknown): v is Tier => TIERS.includes(v as Tier);
 export interface Job {
   id: string;
   title: string;
@@ -29,6 +29,7 @@ export interface Job {
   model: string | null;
   launcher?: Launcher;
   role?: Tier | null; // 旧记录没有
+  session_id?: string | null;
   wrapper_pid: number;
   pid: number;
   started_at: string;
@@ -159,11 +160,14 @@ async function exec(
     child.kill('SIGTERM'); // 登记不了就不让它成为看板看不见的作业
     throw e;
   }
+  const identity = setInterval(() => { if (!job.session_id) { job.session_id = jobSession(job); if (job.session_id) save(job); } }, 5000);
   const code = await child.exited;
+  clearInterval(identity);
   for (const off of forward) off();
   const sig = child.signalCode;
   save({
     ...job,
+    session_id: job.session_id ?? jobSession(job),
     state: code === 0 ? 'done' : 'failed',
     ended_at: new Date().toISOString(),
     ...(sig ? { signal: sig } : { exit_code: code }),

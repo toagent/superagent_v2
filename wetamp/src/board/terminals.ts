@@ -6,6 +6,8 @@ import * as fs from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { alive, isTier, type Kind, type Tier } from '../jobs';
+import { sessionModel } from '../models';
+import { logSessionId } from '../usage';
 
 export interface PsRow {
   ppid: number;
@@ -17,6 +19,8 @@ export interface PsRow {
 export type Rows = ReadonlyMap<number, PsRow>;
 /** live.cjs 写的心跳（只取看板要用的键）。 */
 export interface Live {
+  model?: string | null;
+  session_id?: string | null;
   pid: number | null;
   cwd: string | null;
   transcript_path: string | null;
@@ -27,6 +31,8 @@ export interface Live {
   role: Tier | null; // guard 的 sessionRole；旧心跳只有 derived 布尔
 }
 export interface Term {
+  model?: string | null;
+  session_id?: string | null;
   kind: Kind;
   tier: Tier;
   pid: number;
@@ -115,6 +121,8 @@ export function readLive(dir: string, now: number, readonly = false): Live[] {
         continue;
       }
       out.push({
+        model: str(o.model),
+        session_id: str(o.session_id),
         pid,
         cwd: str(o.cwd),
         transcript_path: str(o.transcript_path),
@@ -300,7 +308,7 @@ export function settle(
         : null);
     const c = classify(live, () => (file ? readTail(file, s.kind) : null), s.cpu, now);
     const tier = live?.role ?? 'commander'; // 没有心跳的交互顶层会话按元帅
-    terms.push({ kind: s.kind, tier, pid: s.pids[0], tty: s.tty, cwd: dir, ...c });
+    terms.push({ kind: s.kind, tier, pid: s.pids[0], tty: s.tty, cwd: dir, model: live?.model ?? sessionModel(file, s.kind), session_id: live?.session_id ?? logSessionId(file, s.kind), ...c });
   }
   // 执行中 → 活跃?（CPU 粗判）→ 其余
   const rank = (t: Term): number => (t.state !== 'busy' ? 2 : t.bound ? 0 : 1);

@@ -4,6 +4,7 @@ import { basename, join, sep } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { loadActivity, type Activity } from './activity';
+import { readUsage, type UsageCache } from '../usage';
 import {
   EXIT,
   artifactsOf,
@@ -17,6 +18,7 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  model?: string | null;
   run_id: string;
   state: string;
   exit: number | null;
@@ -42,6 +44,8 @@ export interface BoardRow {
 }
 
 export interface Snapshot {
+  usage?: UsageCache;
+  web_url?: string;
   summary: Record<string, unknown>;
   rows: BoardRow[];
   at: string;
@@ -149,6 +153,7 @@ export function rowOf(
       ? { started_ms: startedMs, ended_ms: end }
       : null;
   return {
+    model: (() => { const m = nodes.find(n => n.nodeId === current)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
     run_id: l.run_id,
     state: c.state,
     exit: c.exit,
@@ -279,7 +284,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     s.runs = results.length;
     s.unreadable = [...bad, ...(s.unreadable as string[])];
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
-    return { summary: s, rows, at: new Date(now).toISOString(), activity: await activity };
+    return { summary: s, rows, at: new Date(now).toISOString(), activity: await activity, usage: readUsage() };
   };
 }
 

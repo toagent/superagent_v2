@@ -51,6 +51,7 @@ import { generate, newRunId } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport } from './report';
+import { readUsage, usageSummary, usageCli } from './usage';
 
 const OPTIONS = {
   timeout: { type: 'string' },
@@ -69,6 +70,9 @@ const OPTIONS = {
   log: { type: 'string' },
   role: { type: 'string' },
   all: { type: 'boolean' },
+  since: { type: 'string' },
+  refresh: { type: 'boolean' },
+  open: { type: 'boolean' },
 } as const;
 interface Args {
   _: string[];
@@ -1433,7 +1437,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|web serve|start|stop|status|url [--open]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 export function main(argv: string[]): number {
   let a: Args;
@@ -1513,7 +1517,8 @@ export function main(argv: string[]): number {
     }
     case 'report': {
       const r = report();
-      print(r);
+      const full = readUsage();
+      print({ ...r, full_usage: { label: '全量（ccusage）', ...usageSummary(full) } });
       const usage = r.usage as { unreadable: string[] };
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
@@ -1548,6 +1553,8 @@ if (import.meta.main) {
       }
     })();
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
+    if (verb === 'usage') process.exit(await usageCli(argv));
+    if (verb === 'web') process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs')
       process.exit(await (await import('./jobs')).jobCli(argv));
     process.exit(main(argv));
