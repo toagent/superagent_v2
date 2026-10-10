@@ -19,6 +19,7 @@ import type { RunView } from '../src/archon';
 import {
   classify,
   classifyRun,
+  decisionQuestion,
   EXIT,
   EXIT_ALIAS_DRIFT,
   EXIT_USAGE,
@@ -1035,7 +1036,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(tick()).toEqual([
       { run_id: 'sa1', event: 'sa.human.m2', action: 'ask', ok: true, ask: 'ask-1' },
     ]);
-    expect(sup()[0]).toMatch(/^ask --question superagent sa1:signoff:39d592de14436296 红线签收.* --ttl-hours 72$/);
+    expect(sup()[0]).toMatch(/^ask --question .*human-m2.*等待人工签收.*是=批准签收门.*否=终止整个run.* --ttl-hours 72$/);
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
     expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
     expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
@@ -1049,6 +1050,15 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     writeFileSync(join(s.root, 'answer'), 'no');
     expect(tick()[0]).toMatchObject({ action: 'reject', ok: true });
     expect(s.calls()).toContain('workflow abandon r --json');
+  });
+  for (const answer of ['yes', 'no']) test(`HF9 old unknown signoff reconciles ${answer} without creating a reminder`, async () => {
+    const s = stub(answer === 'yes' ? [humanWait(), run('running')] : [humanWait()]), sup = supervisor(s.root, answer), key = 'sa1:signoff:39d592de14436296';
+    const state = join(s.root, 'sv-state', 'asks'); mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, 'old.json'), JSON.stringify({ id: 'old-signoff', question: `superagent ${key} 红线签收：批准合入 x？` }));
+    writeFileSync(join(s.root, 'home', 'asks.json'), JSON.stringify({ [key]: { status: 'unknown' } }));
+    expect(tick()[0]).toMatchObject({ action: answer === 'yes' ? 'approve' : 'reject', ok: true });
+    expect(sup()).toEqual(['ask-status old-signoff']);
+    expect(await eventually(s.calls, answer === 'yes' ? 'workflow signal r --event sa.human.m2' : 'workflow abandon r --json')).toBeDefined();
   });
   test('ttl follows the wait deadline (≥1h)', () => {
     const s = stub([humanWait(new Date(Date.now() + 5 * 3600e3).toISOString())]);
@@ -1693,7 +1703,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       });
       continue;
     }
-    test(`HOLD_POLICY ${hold} → ask once (≤120 chars); yes runs ${p.yes}, no ends the run`, () => {
+    test(`HOLD_POLICY ${hold} → ask once (≤200 chars); yes runs ${p.yes}, no ends the run`, () => {
       const { s, done } = scenes[hold]();
       const sup = supervisor(s.root, 'pending');
       expect(tick()[0]).toMatchObject({
@@ -1704,15 +1714,22 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         ask: 'ask-1',
       });
       const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
-      expect(q).toStartWith(`superagent sa1:${hold}:`);
-      expect(q.length).toBeLessThanOrEqual(120);
+      expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
+      expect(Array.from(q).length).toBeLessThanOrEqual(200);
       expect(q).toContain('是=');
       expect(tick()[0]).toMatchObject({ action: 'none', reason: hold, ask: 'pending' });
       expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+      // 旧版本已投递但本地只落 unknown：仍按原 key 找回，不能重复投递。
+      const oldKey = Object.keys(JSON.parse(readFileSync(asksFile(), 'utf8')))[0];
+      const records = join(s.root, 'sv-state', 'asks'); mkdirSync(records, { recursive: true });
+      writeFileSync(join(records, 'old.json'), JSON.stringify({ id: 'old-pending', question: `superagent ${oldKey} 旧模板` }));
+      writeFileSync(asksFile(), JSON.stringify({ [oldKey]: { status: 'unknown' } }));
       writeFileSync(join(s.root, 'answer'), 'yes');
       const before = s.calls().length;
       expect(tick()[0]).toMatchObject({ action: p.yes, reason: hold, ok: true });
       expect(s.calls().slice(before)).toContain(yesCall[p.yes]);
+      expect(sup().at(-1)).toBe('ask-status old-pending');
+      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
       expect(loadLedger('sa1').dispositions?.map(d => `${d.reason}/${d.action}`)).toEqual([
         `${hold}/ask`,
         `${hold}/${p.yes}`,
@@ -1721,6 +1738,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       const n = scenes[hold]();
       supervisor(n.s.root, 'no');
       tick();
+      const noKey = Object.keys(JSON.parse(readFileSync(asksFile(), 'utf8')))[0];
+      const noRecords = join(n.s.root, 'sv-state', 'asks'); mkdirSync(noRecords, { recursive: true });
+      writeFileSync(join(noRecords, 'old.json'), JSON.stringify({ id: 'old-no', question: `superagent ${noKey} 旧模板` }));
+      writeFileSync(asksFile(), JSON.stringify({ [noKey]: { status: 'unknown' } }));
       expect(tick()[0]).toMatchObject({ action: 'reject', reason: hold, ok: true });
       expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(true);
       n.done?.();
@@ -2057,6 +2078,88 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
   expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', 'm1'), 'utf8')).toBe('1');
   expect(sa('decide', id, 'reject').code).toBe(0);
 }, 180000);
+
+describe('HF9 decision titles', () => {
+  const setup = () => {
+    const s = stub([]), repo = join(s.root, 'BestIFA'); mkdirSync(repo);
+    cpSync(join(s.root, 'gen'), join(repo, 'gen'), { recursive: true });
+    Object.assign(s.ledger, { repo, gen_dir: join(repo, 'gen'), stalled: 3 });
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const plan = { deadline: '2099-01-01T00:00:00Z', budget: { launches: 1, weighted_tokens: 100 }, packages: [{ id: 'W4', title: 'W4验收', milestone: 'm1', accept: [{ cmd: 'synthetic-check', timeout_s: 1 }] }] };
+    writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+    const wf = join(s.ledger.gen_dir, '.archon/workflows/sa-sa1'); mkdirSync(wf, { recursive: true });
+    writeFileSync(join(wf, 'sa-sa1.yaml'), 'nodes:\n  - id: attempt-m1\n' + Array.from({ length: 61 }, (_, i) => `  - id: n${i}\n`).join(''));
+    const r = run('failed', { output_root: join(repo, 'out'), nodes: [...Array.from({ length: 13 }, (_, i) => ({ nodeId: `n${i}`, state: 'completed' })), { nodeId: 'verify-W4', state: 'failed' }] });
+    const art = join(repo, 'out/artifacts/runs/r'); mkdirSync(art, { recursive: true });
+    const put = (file: string, data: unknown): void => writeFileSync(join(art, file), JSON.stringify(data));
+    put('verify-W4.json', { reason: 'acceptance_failed', failed: ['synthetic-check'] });
+    put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: ['只读检索命令被拒：无法确认shell写入目标（解析失败）'], needs: [{ cap: 'network', why: '依赖', minimal_ask: '请补齐依赖下载能力' }] });
+    put('gate-m1-r3.json', { verdict: 'pass', rounds: 3, reason: 'review_not_independent:same_model' });
+    put('gate-m1-r3.ledger.json', { blocking: [{ id: 'R1-1' }] });
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [{ event_type: 'node_started', step_name: 'code-W4' }] }));
+    return { s, r, put, art };
+  };
+  const details: Record<string, string> = { redline: '解析失败', needs: '请补齐依赖下载能力', coder_blocked: '只读检索命令被拒', budget: '已用/上限1/1', review_limit: '轮次3，未决1', review_not_independent: 'same_model', recover_no_progress: '已恢复3次', approval: 'merge_review', signoff: '验收/评审pass' };
+  for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
+    if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
+    test(`HF9 ${hold}: project, node, evidence, truthful actions and ≤200 characters`, () => {
+      const { s, r } = setup();
+      const node = hold.startsWith('review') ? 'gate-m1-r3' : hold === 'signoff' ? 'human-m1' : 'verify-W4';
+      r.metadata = { approval: { nodeId: node, type: 'merge_review' } };
+      const q = decisionQuestion(s.ledger, r, { state: node.startsWith('gate-') ? 'held:gate' : 'failed', exit: 1, node }, hold);
+      expect(q).toContain('BestIFA/'); expect(q).toContain(node); expect(q).toContain('已完成13/62节点');
+      expect(q).toContain(details[hold] ?? '验收失败');
+      if (hold === 'auto_retry_exhausted') expect(q).toContain('W4验收#1');
+      expect(q).toContain('是='); expect(q).toContain('否=终止整个run（保留证据）');
+      expect(q).not.toContain('放行'); expect(q).not.toContain('synthetic-check'); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+      if (policy.do === 'ask' && policy.yes === 'retry') expect(q).toContain('重派m1里程碑编码→验收→评审一次');
+    });
+  }
+  test('HF9 missing/corrupt display evidence does not prevent delivery', () => {
+    const { s, r, art } = setup();
+    writeFileSync(join(art, 'verify-W4.json'), '{"reason":"coder_redline"}');
+    rmSync(join(art, 'verify-W4.coder.json'));
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+    const sup = supervisor(s.root, 'pending');
+    expect(captured(() => main(['supervise-tick'])).code).toBe(0); expect(sup()[0]).toContain('证据缺失');
+    writeFileSync(join(art, 'verify-W4.coder.json'), '{');
+    expect(decisionQuestion(s.ledger, r, classify(r), 'redline')).toContain('证据缺失');
+  });
+  test('HF9 sanitizes credentials, assignments, commands and controls before truncation; actions survive long evidence', () => {
+    const { s, r, put } = setup();
+    const dirty = '只读检索被拒\n\u0000 token=synthetic-secret sk-syntheticSecret123 ghp_synthetic123 PATH=/private/example `rg --files private` eyJabc.def.sig \nbun test /private/command\n';
+    put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: [dirty + '长摘要'.repeat(300)] });
+    const q = decisionQuestion(s.ledger, r, classify(r), 'redline');
+    for (const secret of ['synthetic-secret', 'syntheticSecret123', 'synthetic123', '/private/example', 'rg --files', 'bun test', '/private/command', 'eyJabc.def.sig', '\n', '\u0000']) expect(q).not.toContain(secret);
+    expect(q).toContain('红线不变'); expect(q).toContain('否=终止整个run'); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+  });
+  test('HF9 long names and prose cannot truncate yes/no or correlation marker', () => {
+    const { s, r, put } = setup();
+    put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: ['摘要'.repeat(400)] });
+    const node = 'verify-' + '长节点'.repeat(100);
+    const q = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node }, 'redline');
+    expect(q).toContain('是='); expect(q).toContain('否=终止整个run'); expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+  });
+  test('HF9 supervisor stub captures redline, needs, budget and signoff titles', () => {
+    const samples: Record<string, string> = {};
+    for (const hold of ['redline', 'needs', 'budget', 'signoff'] as const) {
+      const { s, r, put, art } = setup();
+      if (hold === 'signoff') {
+        r.status = 'paused'; r.metadata = { wait: { nodeId: 'human-m1', kind: 'event', event: 'sa.human.m1', resumeAt: '2099-01-01T00:00:00Z' } };
+      } else {
+        put('verify-W4.json', { reason: hold === 'redline' ? 'coder_redline' : hold === 'needs' ? 'coder_needs' : 'budget_launches_exceeded' });
+        if (hold === 'redline') put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: ['只读检索命令被拒：无法确认shell写入目标（解析失败）'], needs: [] });
+        if (hold === 'budget') rmSync(join(art, 'verify-W4.coder.json'));
+      }
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [{ event_type: 'node_started', step_name: 'code-W4' }] }));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      samples[hold] = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      expect(samples[hold]).toContain('BestIFA'); expect(samples[hold]).toContain('是='); expect(Array.from(samples[hold]).length).toBeLessThanOrEqual(200);
+    }
+    if (process.env.HF9_SAMPLES_OUT) writeFileSync(process.env.HF9_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
+  });
+});
 
 test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land', () => {
   const root = tmp();

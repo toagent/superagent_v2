@@ -1,10 +1,10 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
-import { confined } from './board/workflow';
+import { confined, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
-import { HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
+import { askQuestion, askText, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
 import {
@@ -256,6 +256,7 @@ interface CoderOut {
   tag: string;
   milestone?: string;
   error_class?: string | null;
+  blockers?: string[];
   needs?: { cap: string; why: string; minimal_ask: string }[];
 }
 const codersOf = (art: string, m?: string, l?: Ledger): CoderOut[] =>
@@ -962,10 +963,11 @@ function askRecords(): { records: { id: string; question: string }[]; anomalous:
 }
 
 /**
- * 一条提醒的投递与对账（签收与挂起共用）。问题以 `superagent <key> ` 开头、≤120 字。先落 unknown 再调 ask；
- * supervisor 的 create() 先落盘再投递，非零退出或 tick 崩溃时提问可能已存在：unknown 先按前缀找回 id，找不到才重投。
- * 返回本次投递的 id（asked）或当前回答；多条记录同前缀时不猜，交给人。
+ * 一条提醒的投递与对账（签收与挂起共用）。≤200字的标题末尾是 key 的128位摘要，旧前缀仍可找回。
+ * 先落 unknown 再调 ask；supervisor 先落盘再投递，失败或崩溃时先对账，找不到才重投；多条匹配不猜。
  */
+const askMarker = (key: string): string => `[sa:${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}]`;
+const matchesAsk = (question: string, key: string): boolean => question.endsWith(`；${askMarker(key)}`) || question.startsWith(`superagent ${key} `);
 function pollAsk(
   key: string,
   text: string,
@@ -977,7 +979,7 @@ function pollAsk(
   if (a !== undefined && a.id === undefined) {
     const { records, anomalous } = askRecords();
     if (anomalous) note = `${String(anomalous)} anomalous ask records`;
-    const found = records.filter(r => r.question.startsWith(`superagent ${key} `) || (a?.legacy_key && r.question.startsWith(`superagent ${a.legacy_key} `)));
+    const found = records.filter(r => matchesAsk(r.question, key) || (a?.legacy_key && matchesAsk(r.question, a.legacy_key)));
     if (found.length > 1)
       return {
         conflict: `ask ${key}: ${String(found.length)} supervisor asks match${note ? `; ${note}` : ''}`,
@@ -987,8 +989,7 @@ function pollAsk(
   if (!a) {
     asks[key] = { status: 'unknown' };
     saveAsks(asks);
-    const q = `superagent ${key} ${text}`.slice(0, 120);
-    const id = supervisor(['ask', '--question', q, '--ttl-hours', String(hours)]);
+    const id = supervisor(['ask', '--question', text, '--ttl-hours', String(hours)]);
     asks[key] = { id, status: 'pending' };
     saveAsks(asks);
     return { a: asks[key], asked: id, note };
@@ -1023,7 +1024,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   const base = { run_id: l.run_id, event: w.event };
   // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
-  const text = `红线签收：批准合入 ${basename(l.repo)}？`;
+  const text = decisionQuestion(l, run, classifyRun(l, run), 'signoff');
   const p = pollAsk(key, text, ttlHours(Date.parse(w.resumeAt)), asks);
   if ('conflict' in p)
     return { ...base, action: 'none', ok: false, reason: `${p.conflict}; decide approve|reject` };
@@ -1070,7 +1071,7 @@ function askHold(
 ): Action {
   const key = askKey(l.run_id, hold, holdEpisode(l, run, c));
   const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
-  const r = pollAsk(key, p.text, ttlHours(Date.parse(planOf(l).deadline)), asks);
+  const r = pollAsk(key, decisionQuestion(l, run, c, hold, extra), ttlHours(Date.parse(planOf(l).deadline)), asks);
   if ('conflict' in r)
     return { ...base, action: 'none', ok: false, error: `${r.conflict}; decide retry|reject` };
   const b = { ...base, ...(r.note ? { note: r.note } : {}) };
@@ -1154,7 +1155,7 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
     for (const [key, a] of Object.entries(asks)) {
       if (a?.status !== 'superseded' || a.stale_answer) continue;
       if (!a.id) {
-        const records = askRecords().records.filter(r => r.question.startsWith(`superagent ${key} `));
+        const records = askRecords().records.filter(r => matchesAsk(r.question, key));
         if (records.length === 1) a.id = records[0].id;
       }
       if (!a.id || Object.values(asks).some(live => live && live.id === a.id && live.status !== 'superseded')) continue;
@@ -1229,6 +1230,38 @@ function grantBudget(l: Ledger, node: string, key: string): void {
 /** Entry timestamp is stable across polls; node distinguishes milestone signoffs. */
 function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
   return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? run.started_at ?? l.started_at}`;
+}
+/** 只读取摘要证据；缺失/损坏不阻断提问，绝不转述日志、转录或命令原文。 */
+export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: Hold, extra: Record<string, unknown> = {}): string {
+  const plan = planOf(l), node = c.node ?? run.metadata?.approval?.nodeId ?? '恢复节点', m = hold === 'signoff' ? node.replace(/^human-/, '') : milestoneOf(l, node);
+  const read = (f: string): Record<string, unknown> => { try { return (evidenceJson(l, artifactsOf(run), f) as Record<string, unknown> | null) ?? {}; } catch { return {}; } };
+  const out = read(`${node}.json`), pkg = plan.packages.find(p => p.id === node.replace(/^(verify|settle|code|repair)-/, ''));
+  const reason = typeof out.reason === 'string' ? reasonOf(out.reason)?.description ?? '未注册原因（证据缺失）' : '证据缺失';
+  const context = `${askText(basename(l.repo), 24)}/${askText(pkg?.title ?? m, 24)}/${askText(node, 28)} 已完成${String((run.nodes ?? []).filter(n => n.state === 'completed').length)}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
+  let detail = '';
+  if (['redline', 'coder_blocked', 'needs'].includes(hold)) {
+    let coders: CoderOut[] = []; try { coders = codersOf(artifactsOf(run), m, l); } catch { /* 展示证据缺失 */ }
+    const coder = coders.find(x => x.tag === node) ?? coders.find(x => hold === 'redline' ? x.error_class === 'redline' : hold === 'needs' ? x.needs?.length : x.error_class);
+    try { detail = hold === 'needs' ? askText(coder?.needs?.map(n => n.minimal_ask).join('；')) : askText(coder?.blockers?.join('；')); if (detail && hold !== 'needs') detail = `${askText(coder?.error_class, 24)}：${detail}`; } catch { detail = ''; }
+  } else if (hold === 'budget') {
+    try {
+      const ack = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as { events?: Parameters<typeof budgetUsage>[0] };
+      if (Array.isArray(ack.events)) { const u = budgetUsage(ack.events, loadTiers().policy.budget_floor.S), limits = (readJson(join(l.gen_dir, 'budget-extra')) as { limits?: Plan['budget'] } | null)?.limits ?? plan.budget; detail = `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`; }
+    } catch { /* 展示证据缺失 */ }
+  } else if (hold === 'review_limit' || hold === 'review_not_independent') {
+    const ledger = read(`${node}.ledger.json`);
+    detail = `轮次${typeof out.rounds === 'number' ? String(out.rounds) : '证据缺失'}，未决${Array.isArray(ledger.blocking) ? String(ledger.blocking.length) : '证据缺失'}；${reason}`;
+  } else if (hold === 'approval') detail = askText(run.metadata?.approval?.type);
+  else if (hold === 'signoff') { let files: string[] = []; try { files = evidenceGates(l, artifactsOf(run)); } catch { /* 展示证据缺失 */ } const gate = read(files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json'); detail = `验收/评审${askText(gate.verdict) || '证据缺失'}`; }
+  else {
+    detail = reason;
+    const check = Array.isArray(out.failed) ? out : read(`diff-${m}-r${String(typeof out.rounds === 'number' ? out.rounds : 1)}.json`);
+    if (Array.isArray(check.failed) && check.failed.length) detail += `；失败检查${plan.packages.flatMap(p => p.accept.flatMap((a, i) => (check.failed as unknown[]).includes(a.cmd) ? [`${askText(p.id, 12)}验收#${String(i + 1)}`] : [])).join('、') || '证据缺失'}`;
+    if (hold === 'auto_retry_exhausted') detail += `；已重试${String(typeof extra.auto_retries === 'number' ? extra.auto_retries : l.auto_retries?.length ?? 0)}次`;
+    if (hold === 'recover_no_progress') detail = `已恢复${String(l.stalled ?? 0)}次，完成节点集合未变化`;
+  }
+  const target = hold === 'review_not_independent' ? `review-${(c.node ?? '').slice(5)}` : c.state === 'held:gate' || /^(verify|settle)-/.test(node) ? `${m}里程碑编码→验收→评审` : `${node}节点`;
+  return askQuestion(hold, context, detail, target, askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c))));
 }
 /** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
 function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action | undefined {
