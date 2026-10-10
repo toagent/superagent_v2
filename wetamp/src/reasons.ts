@@ -20,49 +20,49 @@ export const HOLD_POLICY = {
   auto_retry_exhausted: {
     do: 'ask',
     yes: 'retry',
-    text: '自动重试已用尽', yesText: '重派{target}一次',
+    text: '自动重试已用尽', yesText: '{target}一次',
   },
   no_change: {
     do: 'ask',
     yes: 'retry',
-    text: '连续两轮修复无变化', yesText: '重派{target}一次',
+    text: '连续两轮修复无变化', yesText: '{target}一次',
   },
   no_attempt_node: {
     do: 'ask',
     yes: 'resume',
-    text: '旧工作流无法重跑里程碑', yesText: '清零恢复计数并原样续跑一次',
+    text: '旧工作流无法重跑里程碑', yesText: '清零恢复计数并{target}一次',
   },
   recover_no_progress: {
     do: 'ask',
     yes: 'resume',
-    text: '恢复3次无进展', yesText: '清零恢复计数并续跑一次',
+    text: '恢复3次无进展', yesText: '清零恢复计数并{target}一次',
   },
   needs: {
     do: 'ask',
     yes: 'retry',
-    text: '将军需要补能力', yesText: '确认已补齐后重派{target}一次',
+    text: '将军需要补能力', yesText: '确认已补齐后{target}一次',
   },
-  redline: { do: 'ask', yes: 'retry', text: '将军命中红线', yesText: '重派{target}一次（红线不变）' },
+  redline: { do: 'ask', yes: 'retry', text: '将军命中红线', yesText: '{target}一次（红线不变）' },
   coder_blocked: {
     do: 'ask',
     yes: 'retry',
-    text: '将军受执行约束阻断', yesText: '确认已处理后重派{target}一次',
+    text: '将军受执行约束阻断', yesText: '确认已处理后{target}一次',
   },
   budget: {
     do: 'ask',
     yes: 'retry',
-    text: '预算已用尽', yesText: '按台账追加本里程碑额度并重派{target}一次',
+    text: '预算已用尽', yesText: '按台账追加本里程碑额度并{target}一次',
   },
-  review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽', yesText: '重派{target}一次' },
+  review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽', yesText: '{target}一次' },
   review_not_independent: {
     do: 'ask',
     yes: 'review',
-    text: '评审身份不独立', yesText: '确认已处理后重跑{target}本轮评审',
+    text: '评审身份不独立', yesText: '确认已处理后{target}一次',
   },
   engine_suspect: {
     do: 'ask',
     yes: 'resume',
-    text: '引擎判定与验收矛盾或原因未注册', yesText: '确认已修复引擎后清零恢复计数并续跑一次',
+    text: '引擎判定与验收矛盾或原因未注册', yesText: '确认已修复引擎后清零恢复计数并{target}一次',
   },
   approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
 } as const satisfies Record<string, Policy>;
@@ -75,10 +75,10 @@ export const askText = (v: unknown, limit = 60): string => typeof v !== 'string'
   .replace(/\b[\w-]+\s*=\s*(?:"[^"\n]*"?|'[^'\n]*'?|[^\s,;]+)/g, '[赋值省略]')
   .replace(/\b(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-)[\w-]+|\beyJ[\w-]+\.[\w-]+(?:\.[\w-]+)?/g, '[凭据省略]')
   .replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, limit).join('');
-export function askQuestion(hold: Hold, context: string, detail: string, target: string, marker: string): string {
+export function askQuestion(hold: Hold, context: string, detail: string, target: string, marker: string, consequence = ''): string {
   const p = HOLD_POLICY[hold];
   if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not an ask policy: ${hold}`);
-  const actions = `；是=${p.yesText.replace('{target}', askText(target, 40))}；否=终止整个run（保留证据）；${marker}`;
+  const actions = `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）；${marker}`;
   return Array.from(`${context}：${p.text}；${detail || '证据缺失'}`).slice(0, 200 - Array.from(actions).length).join('') + actions;
 }
 

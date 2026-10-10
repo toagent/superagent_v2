@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import * as fs from 'node:fs';
 import * as archonMod from '../src/archon';
 import type { RunView } from '../src/archon';
 import {
@@ -2112,7 +2113,7 @@ describe('HF9 decision titles', () => {
       if (hold === 'auto_retry_exhausted') expect(q).toContain('W4验收#1');
       expect(q).toContain('是='); expect(q).toContain('否=终止整个run（保留证据）');
       expect(q).not.toContain('放行'); expect(q).not.toContain('synthetic-check'); expect(Array.from(q).length).toBeLessThanOrEqual(200);
-      if (policy.do === 'ask' && policy.yes === 'retry') expect(q).toContain('重派m1里程碑编码→验收→评审一次');
+      if (policy.do === 'ask' && policy.yes === 'retry') expect(q).toContain('重跑m1全部1包（无已完成包）一次');
     });
   }
   test('HF9 missing/corrupt display evidence does not prevent delivery', () => {
@@ -2140,10 +2141,63 @@ describe('HF9 decision titles', () => {
     const q = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node }, 'redline');
     expect(q).toContain('是='); expect(q).toContain('否=终止整个run'); expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
   });
-  test('HF9 supervisor stub captures redline, needs, budget and signoff titles', () => {
-    const samples: Record<string, string> = {};
-    for (const hold of ['redline', 'needs', 'budget', 'signoff'] as const) {
+  const bestIFA = () => {
+    const f = setup(), plan = JSON.parse(readFileSync(join(f.s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
+    plan.packages = Array.from({ length: 11 }, (_, i) => ({ ...plan.packages[0], id: `W${i + 1}`, title: `W${i + 1}验收` }));
+    writeFileSync(join(f.s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+    f.r.nodes = [...['W1', 'W2', 'W3'].flatMap(id => ['code', 'verify', 'repair', 'settle'].map(kind => ({ nodeId: `${kind}-${id}`, state: 'completed' }))),
+      { nodeId: 'start-m1', state: 'completed' }, { nodeId: 'verify-W4', state: 'failed' }];
+    return f;
+  };
+  test('HF9 R2 retryGate repeats all eleven packages including completed W1-W3; resume names its node', () => {
+    const { s, r } = bestIFA();
+    const q = decisionQuestion(s.ledger, r, classify(r), 'redline');
+    expect(q).toContain('m1全部11包（含已完成W1、W2、W3）');
+    expect(q).not.toContain('redline：');
+    const resumed = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node: 'code-W4' }, 'auto_retry_exhausted');
+    expect(resumed).toContain('从code-W4续跑一次');
+    expect(resumed).not.toContain('全部11包');
+    const resume = decisionQuestion(s.ledger, r, classify(r), 'no_attempt_node');
+    expect(resume).toContain('从verify-W4续跑一次');
+  });
+  for (const status of ['failed', 'cancelled', 'paused', 'running', 'completed'] as const)
+    for (const stale of [true, false]) test(`HF9 R2 adopt warning shares recovery predicate: ${status}/${stale}`, () => {
+      const { s, r } = bestIFA(); r.status = status;
+      if (stale) s.ledger.engine_hash = 'old-engine';
+      const q = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node: 'verify-W4' }, 'redline');
+      expect(q.includes('引擎已升级，将新开run从首个节点重跑')).toBe(stale && ['failed', 'cancelled'].includes(status));
+      expect(q).toContain('含已完成W1、W2、W3'); expect(q).toContain('是='); expect(q).toContain('否=终止整个run');
+      expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+    });
+  for (const hold of ['redline', 'budget', 'signoff'] as const)
+    for (const answer of ['pending', 'yes', 'no'] as const) test(`HF9 R2 existing ${hold}/${answer} skips title evidence and events query`, () => {
       const { s, r, put, art } = setup();
+      if (hold === 'signoff') {
+        r.status = 'paused'; r.metadata = { wait: { nodeId: 'human-m1', kind: 'event', event: 'sa.human.m1', resumeAt: '2099-01-01T00:00:00Z' } };
+      } else put('verify-W4.json', { reason: hold === 'redline' ? 'coder_redline' : 'budget_launches_exceeded' });
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const before = s.calls().filter(c => c.includes('--events')).length;
+      writeFileSync(join(s.root, 'answer'), answer);
+      // Suppress the answer's recovery/signal action; count only question-related I/O.
+      const recovery = spyOn(archonMod, 'recover').mockReturnValue({ ok: false, reason: 'test busy', busy: true });
+      const signal = spyOn(archonMod, 'signalHuman').mockReturnValue({ ok: true, pid: 0, log: '' });
+      const read = spyOn(fs, 'readFileSync');
+      try {
+        expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+        expect(read.mock.calls.filter(([path]) => String(path) === join(art, 'verify-W4.coder.json') ||
+          String(path) === join(art, 'gate-m1-r3.json') || String(path).endsWith('/budget-extra'))).toHaveLength(0);
+        expect(s.calls().filter(c => c.includes('--events')).length).toBe(before);
+        expect(sup().filter(c => c.startsWith('ask --question'))).toHaveLength(1);
+      } finally { read.mockRestore(); signal.mockRestore(); recovery.mockRestore(); }
+    });
+  test('HF9 supervisor stub captures five R2 titles', () => {
+    const samples: Record<string, string> = {};
+    for (const sample of ['redline', 'redline-adopt', 'needs', 'budget', 'signoff'] as const) {
+      const hold = sample === 'redline-adopt' ? 'redline' : sample;
+      const { s, r, put, art } = bestIFA();
+      if (sample === 'redline-adopt') { s.ledger.engine_hash = 'old-engine'; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); }
       if (hold === 'signoff') {
         r.status = 'paused'; r.metadata = { wait: { nodeId: 'human-m1', kind: 'event', event: 'sa.human.m1', resumeAt: '2099-01-01T00:00:00Z' } };
       } else {
@@ -2154,8 +2208,8 @@ describe('HF9 decision titles', () => {
       writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [{ event_type: 'node_started', step_name: 'code-W4' }] }));
       const sup = supervisor(s.root, 'pending');
       expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-      samples[hold] = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
-      expect(samples[hold]).toContain('BestIFA'); expect(samples[hold]).toContain('是='); expect(Array.from(samples[hold]).length).toBeLessThanOrEqual(200);
+      samples[sample] = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      expect(samples[sample]).toContain('BestIFA'); expect(samples[sample]).toContain('是='); expect(Array.from(samples[sample]).length).toBeLessThanOrEqual(200);
     }
     if (process.env.HF9_SAMPLES_OUT) writeFileSync(process.env.HF9_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
   });
