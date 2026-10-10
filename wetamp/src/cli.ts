@@ -41,6 +41,8 @@ import {
   openBlocking,
   budgetUsage,
   effectiveBudget,
+  readAttempt,
+  attemptPath,
   type Review,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
@@ -736,10 +738,11 @@ const retryScope = (l: Ledger, node: string): string => {
 };
 /** always_run reads this scope count; only dependent nodes lose their resume cache. */
 function bumpAttempt(l: Ledger, m: string): number {
-  const dir = join(l.gen_dir, 'attempts');
-  mkdirSync(dirname(join(dir, m)), { recursive: true });
-  const n = Number(readJson(join(dir, m)) ?? 0) + 1;
-  writeAtomic(join(dir, m), String(n));
+  const path = attemptPath(l.gen_dir, m);
+  const n = readAttempt(path) + 1;
+  if (!Number.isSafeInteger(n)) throw new Error(`attempt counter exhausted: ${path}`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeAtomic(path, String(n));
   return n;
 }
 const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
@@ -1220,8 +1223,7 @@ function grantBudget(l: Ledger, node: string, key: string): void {
   const usage = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
   const launches = 2 * plan.packages.filter(p => (p.milestone ?? 'm1') === m).length + 5;
   const weighted_tokens = Math.max(plan.budget.weighted_tokens, launches * usage.reserve);
-  const attempt = Number(readJson(join(l.gen_dir, 'attempts', m)));
-  writeAtomic(join(l.gen_dir, 'attempts', m), String(attempt));
+  const attempt = readAttempt(join(l.gen_dir, 'attempts', m));
   const grant = { at: new Date().toISOString(), milestone: m, attempt, launches, weighted_tokens };
   writeAtomic(
     join(l.gen_dir, 'budget-extra'),
@@ -1289,7 +1291,7 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
         const u = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
         const limits = effectiveBudget(plan.budget,
           (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<typeof effectiveBudget>[1], m,
-          existsSync(join(l.gen_dir, 'attempts', m)) ? Number(readFileSync(join(l.gen_dir, 'attempts', m), 'utf8')) : null);
+          readAttempt(join(l.gen_dir, 'attempts', m)));
         detail = `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
           `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`;
         compact = out.reason === 'budget_tokens_exceeded'

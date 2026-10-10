@@ -14,7 +14,7 @@ import {
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { REASONS } from './reasons';
-import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
+import { MAX_ROUNDS, attemptPath } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
 import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
@@ -46,7 +46,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
   return hash.digest('hex');
 }
 
-/** Workflow source/runtime identity: resident UI changes must never invalidate a run. */
+/** Hash generation-time snapshots; execution-time reads through WETAMP do not require adopt. */
 export const engineHash = (root = WETAMP): string => hashInputs(root, [
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
@@ -147,6 +147,10 @@ export function buildWorkflow(
     fake ? {} : { effort: effortFor(tiers, role, risk, r) };
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
+  const attemptCommand = (path: string): string => {
+    const code = `import { readAttempt } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({attempt: String(readAttempt(${JSON.stringify(path)}))}));`;
+    return `bun -e '${code.replaceAll("'", "'\\''")}'`;
+  };
   let after: Node = { depends_on: ['environment'] };
   for (const m of ms) {
     const covered = ms.slice(0, ms.indexOf(m) + 1).flatMap(k => k.packages);
@@ -165,7 +169,7 @@ export function buildWorkflow(
     const attempt = `attempt-${m.id}`;
     nodes.push({
       id: attempt,
-      bash: `printf '{"attempt":"%s"}' "$(cat '${join(gen, 'attempts', m.id)}' 2>/dev/null || echo 0)"`,
+      bash: attemptCommand(attemptPath(gen, m.id)),
       depends_on: [start],
       always_run: true,
       output_format: outputSchema('attempt'),
@@ -176,7 +180,7 @@ export function buildWorkflow(
       const pkgAttempt = `package-attempt-${p.id}`;
       nodes.push({
         id: pkgAttempt,
-        bash: `printf '{"attempt":"%s"}' "$(cat '${join(gen, 'attempts', 'pkg', p.id)}' 2>/dev/null || echo 0)"`,
+        bash: attemptCommand(attemptPath(gen, `pkg/${p.id}`)),
         depends_on: [start], always_run: true, output_format: outputSchema('attempt'),
       });
       const coder = fake

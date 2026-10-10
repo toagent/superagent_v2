@@ -42,7 +42,7 @@ const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
 
 test('HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
   const root = tmp();
-  for (const path of ['templates', 'src', 'schemas'])
+  for (const path of ['templates', 'src', 'schemas', 'bin', 'scripts'])
     fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
   fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
   const hash = engineHash(root);
@@ -58,8 +58,16 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
     expect(engineHash(root)).toBe(hash);
     expect(residentHash(root)).not.toBe(resident);
   }
-  fs.appendFileSync(join(root, 'src/generate.ts'), '\n// changed generation\n');
-  expect(engineHash(root)).not.toBe(hash);
+  for (const path of ['bin/codex-worker', 'bin/codex-readonly-proxy.cjs', 'scripts/codex-trust.cjs', 'src/archon.ts']) {
+    fs.appendFileSync(join(root, path), '\n// execution-time change\n');
+    expect(engineHash(root)).toBe(hash);
+  }
+  for (const path of ['src/generate.ts', 'src/config.ts', 'src/plan.ts', 'src/reasons.ts']) {
+    fs.appendFileSync(join(root, path), '\n// frozen generation input\n');
+    expect(engineHash(root)).not.toBe(hash);
+    fs.copyFileSync(join(WETAMP, path), join(root, path));
+    expect(engineHash(root)).toBe(hash);
+  }
 });
 
 describe('buildWorkflow', () => {

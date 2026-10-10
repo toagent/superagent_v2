@@ -37,10 +37,10 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { configHash, gitHead, renderAliases, loadTiers } from '../src/config';
+import { configHash, gitHead, renderAliases, loadTiers, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
-import { engineHash, generate } from '../src/generate';
-import type { Plan } from '../src/plan';
+import { buildWorkflow, engineHash, generate } from '../src/generate';
+import { milestones, type Plan } from '../src/plan';
 import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -2094,7 +2094,7 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
       .split('\n')
       .filter(l => l === 'fake core')
   ).toHaveLength(2);
-  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', 'pkg', 'core'), 'utf8')).toBe('1');
+  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', '.packages', 'core'), 'utf8')).toBe('1');
   expect(existsSync(join(root, 'home', 'gen', id, 'attempts', 'm1'))).toBe(false);
   expect(sa('decide', id, 'reject').code).toBe(0);
 }, 180000);
@@ -2324,9 +2324,97 @@ describe('HF9 decision titles', () => {
     writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
-    expect(readFileSync(join(s.ledger.gen_dir, 'attempts/pkg/W4'), 'utf8')).toBe('1');
+    expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
     expect(existsSync(join(s.ledger.gen_dir, 'attempts/m1'))).toBe(false);
     expect(s.calls()).toContain('workflow resume r --detach --json');
+  });
+  test.each(['NaN', 'null', '-1', '1.5', '9007199254740991'])('HF10 invalid or exhausted package counter %s fails without writing', raw => {
+    const { s, r, put } = bestIFA();
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put('verify-W4.json', { reason: 'coder_redline' });
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+    const path = join(s.ledger.gen_dir, 'attempts/.packages/W4');
+    mkdirSync(join(s.ledger.gen_dir, 'attempts/.packages'), { recursive: true });
+    writeFileSync(path, raw);
+    expect(() => captured(() => main(['decide', 'sa1', 'retry']))).toThrow(/attempt counter/);
+    expect(readFileSync(path, 'utf8')).toBe(raw);
+    expect(existsSync(join(s.ledger.gen_dir, 'attempts/m1'))).toBe(false);
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
+  });
+  for (const order of [['package', 'gate'], ['gate', 'package']])
+    test(`HF10 milestone pkg does not collide: ${order.join(' then ')}`, () => {
+      const { s, r, put } = bestIFA();
+      const planPath = join(s.ledger.gen_dir, 'plan.json');
+      const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+      plan.packages.forEach(p => { p.milestone = 'pkg'; });
+      writeFileSync(planPath, JSON.stringify(plan));
+      s.ledger.workflow_hash = engineHash();
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
+        '  - id: package-attempt-W4\n  - id: attempt-pkg\n');
+      for (const scope of order) {
+        const node = scope === 'package' ? 'verify-W4' : 'gate-pkg-r3';
+        put(`${node}.json`, scope === 'package' ? { reason: 'coder_redline' } :
+          { verdict: 'escalate', reason: 'review_failed+review_limit', rounds: 3 });
+        r.nodes = [{ nodeId: node, state: 'failed' }];
+        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+        expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+      }
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/pkg'), 'utf8')).toBe('1');
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
+      expect(s.calls().filter(c => c === 'workflow resume r --detach --json')).toHaveLength(2);
+    });
+  test('HF10 first and second package budget yes keep milestone zero and grant usable allowances', () => {
+    const { s, r, put, art } = bestIFA();
+    const tick = () => JSON.parse(captured(() => main(['supervise-tick'])).out).actions as Record<string, unknown>[];
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put('verify-W4.json', { reason: 'budget_launches_exceeded' });
+    const planPath = join(s.ledger.gen_dir, 'plan.json');
+    const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+    plan.budget.launches = 1;
+    plan.packages.forEach(p => { p.accept = [{ cmd: 'true', timeout_s: 5 }]; });
+    writeFileSync(planPath, JSON.stringify(plan));
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const events = [{ event_type: 'node_started', step_name: 'code-W4' }];
+    const updateRun = (completed_at: string) => writeFileSync(join(s.dir, 'get-000.json'),
+      JSON.stringify({ ...r, completed_at, events }));
+    updateRun('2026-10-10T00:00:00Z');
+    writeFileSync(join(s.root, 'policy.json'), JSON.stringify({ budget_floor: { S: loadTiers().policy.budget_floor.S } }));
+    const counter = join(s.ledger.gen_dir, 'attempts/m1');
+    const wfPlan = JSON.parse(readFileSync(fixturePlan(tmp(), s.ledger.repo), 'utf8')) as Plan;
+    const node = buildWorkflow(wfPlan, milestones(wfPlan), 'sa1', s.ledger.gen_dir, true).nodes as { id: string; bash?: string }[];
+    // The generated bash reads its copied sa-check implementation, as a real run does.
+    mkdirSync(join(s.ledger.gen_dir, '.archon/scripts'), { recursive: true });
+    cpSync(join(WETAMP, 'templates/.archon/scripts'), join(s.ledger.gen_dir, '.archon/scripts'), { recursive: true });
+    const attemptOutput = () => sh(node.find(n => n.id === 'attempt-m1')!.bash!, s.ledger.gen_dir).trim();
+    expect(attemptOutput()).toBe('{"attempt":"0"}');
+    for (const attempt of [1, 2]) {
+      supervisor(s.root, 'yes');
+      expect(tick()[0].action).toBe('ask');
+      expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
+      const grant = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'budget-extra'), 'utf8'));
+      expect(grant.attempt).toBe(0);
+      expect(Number.isSafeInteger(grant.attempt)).toBe(true);
+      expect(existsSync(counter)).toBe(false);
+      expect(attemptOutput()).toBe('{"attempt":"0"}');
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe(String(attempt));
+      const check = Bun.spawnSync(['bun', join(WETAMP, 'templates/.archon/scripts/sa-check.ts')], {
+        cwd: gitRepo(tmp()), stdout: 'pipe', stderr: 'pipe', env: { ...process.env,
+          WORKFLOW_ID: 'r', ARTIFACTS_DIR: art, INPUTS_KIND: 'accept', INPUTS_PLAN: planPath,
+          INPUTS_PKGS: 'W4', INPUTS_TAG: 'verify-W4', INPUTS_MILESTONE: 'm1',
+          INPUTS_ARCHON: join(s.dir, 'archon'), INPUTS_POLICY: join(s.root, 'policy.json') },
+      });
+      expect(check.exitCode).toBe(0);
+      expect(JSON.parse(check.stdout.toString())).toMatchObject({ disposition: 'advance' });
+      console.error(`HF10 budget retry ${attempt}: grant=${JSON.stringify(grant)} package=${attempt} milestone=absent(0)`);
+      // New completion evidence distinguishes the next budget hold from a replayed answer.
+      updateRun('2026-10-10T00:00:01Z');
+      put('verify-W4.json', { reason: 'budget_launches_exceeded' });
+    }
+    expect(loadLedger('sa1').budget_grants).toHaveLength(2);
   });
   test('HF10 supervisor receives package, milestone, adopt and legacy scope titles', () => {
     const samples: Record<string, string> = {};

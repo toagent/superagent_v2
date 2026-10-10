@@ -19,7 +19,7 @@ nodes:
       required:
         - head
   - id: attempt-m1
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/m1' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/m1"))}));'''
     depends_on:
       - start-m1
     always_run: true
@@ -31,7 +31,7 @@ nodes:
       required:
         - attempt
   - id: package-attempt-core
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/pkg/core' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/.packages/core"))}));'''
     depends_on:
       - start-m1
     always_run: true
@@ -1198,7 +1198,7 @@ nodes:
       required:
         - head
   - id: attempt-m2
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/m2' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/m2"))}));'''
     depends_on:
       - start-m2
     always_run: true
@@ -1210,7 +1210,7 @@ nodes:
       required:
         - attempt
   - id: package-attempt-api
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/pkg/api' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/.packages/api"))}));'''
     depends_on:
       - start-m2
     always_run: true

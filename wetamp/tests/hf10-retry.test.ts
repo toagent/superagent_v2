@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lastJson } from '../src/archon';
 import { generate } from '../src/generate';
@@ -7,13 +7,14 @@ import { WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
-for (const scope of ['package', 'milestone'] as const) test(`HF10 fake retry preserves ${scope} scope`, () => {
+for (const scope of ['package', 'milestone', 'budget'] as const) test(`HF10 fake retry preserves ${scope} scope`, () => {
   const root = tmp(), repo = gitRepo(root), ready = join(root, 'ready'), trace = join(root, 'code.trace');
   const plan = JSON.parse(readFileSync(fixturePlan(root, repo), 'utf8')) as Plan;
   plan.packages = Array.from({ length: 4 }, (_, i) => ({
     ...plan.packages[0], id: `W${i + 1}`, milestone: 'm1',
     scope: { write: [`W${i + 1}.txt`] }, accept: [{ cmd: `test -f W${i + 1}.txt`, timeout_s: 5 }],
   }));
+  if (scope === 'budget') plan.budget.launches = 3;
   const py = join(root, 'supervisor.py');
   writeFileSync(py, `import sys\nfrom pathlib import Path\np = Path(__file__).parent\nwith (p / 'questions').open('a') as f: f.write(' '.join(sys.argv[1:]) + '\\n')\nprint('ask-1' if sys.argv[1] == 'ask' else (p / 'answer').read_text())\n`);
   writeFileSync(join(root, 'answer'), 'pending');
@@ -28,8 +29,9 @@ for (const scope of ['package', 'milestone'] as const) test(`HF10 fake retry pre
     gen = generate(plan, `hf10-${scope}`, true);
   } finally { process.env = before; }
   const yaml = join(gen.dir, `.archon/workflows/${gen.workflow}/${gen.workflow}.yaml`);
-  const wf = Bun.YAML.parse(readFileSync(yaml, 'utf8')) as { nodes: { id: string; bash?: string }[] };
+  const wf = Bun.YAML.parse(readFileSync(yaml, 'utf8')) as { nodes: { id: string; bash?: string; with?: Record<string, unknown> }[] };
   for (const node of wf.nodes) {
+    if (scope === 'budget' && node.id === 'verify-W3') node.with!.archon = join(WETAMP, 'bin/archon');
     if (node.id.startsWith('code-')) {
       if (scope === 'package' && node.id === 'code-W3') {
         const blocked = { status: 'blocked', changed_files: [], quick_checks: [], notes: 'fixture', blockers: [], error_class: 'redline', deviations: [], needs: [] };
@@ -61,18 +63,25 @@ for (const scope of ['package', 'milestone'] as const) test(`HF10 fake retry pre
     plan: join(gen.dir, 'plan.json'), gen_dir: gen.dir, repo, branch, workflow: gen.workflow,
     console: 'claude', started_at: new Date().toISOString(), transcript: '', log: '', recoveries: [],
   }));
-  expect(sa('wait', id, '--timeout', '120').out).toMatchObject({ state: scope === 'package' ? 'failed' : 'held:gate', node: scope === 'package' ? 'verify-W3' : 'gate-m1-r3' });
+  expect(sa('wait', id, '--timeout', '120').out).toMatchObject({ state: scope !== 'milestone' ? 'failed' : 'held:gate', node: scope !== 'milestone' ? 'verify-W3' : 'gate-m1-r3' });
   const counts = () => Object.fromEntries(plan.packages.map(p => [`code-${p.id}`, readFileSync(trace, 'utf8').split('\n').filter(n => n === `code-${p.id}`).length]));
-  expect(counts()).toEqual(scope === 'package' ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 0 } : { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 1 });
+  expect(counts()).toEqual(scope !== 'milestone' ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 0 } : { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 1 });
   expect(sa('supervise-tick').code).toBe(0);
   const question = readFileSync(join(root, 'questions'), 'utf8');
-  expect(question).toContain(scope === 'package' ? '重派W3编码→验收一次' : '重跑m1全部4包');
+  expect(question).toContain(scope !== 'milestone' ? '重派W3编码→验收一次' : '重跑m1全部4包');
   writeFileSync(ready, 'ready');
   writeFileSync(join(root, 'answer'), 'yes');
   expect(sa('supervise-tick').code).toBe(0);
+  if (scope === 'budget') {
+    const grant = JSON.parse(readFileSync(join(gen.dir, 'budget-extra'), 'utf8'));
+    expect(grant.attempt).toBe(0);
+    expect(Number.isSafeInteger(grant.attempt)).toBe(true);
+    expect(existsSync(join(gen.dir, 'attempts/m1'))).toBe(false);
+    console.error(`HF10 budget E2E grant: ${JSON.stringify(grant)}`);
+  }
   const finished = sa('wait', id, '--timeout', '120');
   expect(finished.out).toMatchObject({ state: 'completed' });
-  const expected = scope === 'package' ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 2, 'code-W4': 1 } : { 'code-W1': 2, 'code-W2': 2, 'code-W3': 2, 'code-W4': 2 };
+  const expected = scope !== 'milestone' ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 2, 'code-W4': 1 } : { 'code-W1': 2, 'code-W2': 2, 'code-W3': 2, 'code-W4': 2 };
   expect(counts()).toEqual(expected);
   const ledger = JSON.parse(readFileSync(join(env.SUPERAGENT_HOME, `runs/${id}.json`), 'utf8'));
   expect(ledger.archon_run_id).toBe(ack.runId);
