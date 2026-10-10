@@ -37,7 +37,15 @@ export function providerOf(model: string): Alias['provider'] {
 export interface Tiers {
   routing: { coder: { models: string[] }; reviewer: { by_console: Record<Console, string[]> } };
   health: { vendor_concurrency: Record<string, number> };
-  policy: { exec_profiles: Record<'coder' | 'reviewer', { claude: { denied_tools: string[] } }> };
+  policy: {
+    exec_profiles: {
+      coder: { claude: { denied_tools: string[] } };
+      reviewer: {
+        codex_readonly_marker: string;
+        claude: { denied_tools: string[]; sandbox: Record<string, unknown> };
+      };
+    };
+  };
 }
 
 export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {

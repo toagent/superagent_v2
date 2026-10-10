@@ -169,6 +169,7 @@ nodes:
   - id: review-m1-r1
     command: sa-review
     model: '@sa-reviewer'
+    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -386,6 +387,7 @@ nodes:
     when: "$diff-m1-r2.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
+    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -607,6 +609,7 @@ nodes:
     when: "$diff-m1-r3.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
+    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -881,6 +884,7 @@ nodes:
   - id: review-m2-r1
     command: sa-review
     model: '@sa-reviewer'
+    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
@@ -1098,6 +1102,7 @@ nodes:
     when: "$diff-m2-r2.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
+    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
@@ -1319,6 +1324,7 @@ nodes:
     when: "$diff-m2-r3.output.same != 'true'"
     command: sa-review-delta
     model: '@sa-reviewer'
+    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
