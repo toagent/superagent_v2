@@ -22,9 +22,11 @@ import {
   readLedger,
   rowOf,
   workflowRoles,
+  type BoardRow,
 } from '../src/board/data';
 import { detailOf, detailLines, redact } from '../src/board/detail';
-import { Frame, layout } from '../src/board/App';
+import { Frame, layout, shortId, type FrameProps } from '../src/board/App';
+import type { Activity } from '../src/board/activity';
 import { tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
@@ -33,6 +35,8 @@ const ENV_KEYS = [
   'SUPERAGENT_HOME',
   'ARCHON_HOME',
   'SA_BOARD_QUERY_TIMEOUT_MS',
+  'TWIN_AGENT_QUEUE_CLIENT',
+  'COLUMNS',
 ] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
 // 同一进程里后跑的测试文件不能继承这里的桩与临时 home
@@ -70,6 +74,8 @@ cat "${stubDir}/get-$3.json"
     SA_BOARD_QUERY_TIMEOUT_MS: '10000',
     SUPERAGENT_HOME: join(root, 'home'),
     ARCHON_HOME: join(root, 'home', 'archon'),
+    TWIN_AGENT_QUEUE_CLIENT: join(root, 'no-twin'), // 不去连真实远端队列
+    COLUMNS: '', // --once 管道输出按宽屏（160）出帧
   });
 });
 
@@ -553,7 +559,12 @@ describe('detail', () => {
 });
 
 describe('table layout', () => {
-  const frame = (width: number, rows: Parameters<typeof rowOf>[]): string[] =>
+  // chips 会按宽度换行：从列名行起取（列名行、数据行…）
+  const frame = (width: number, rows: Parameters<typeof rowOf>[]): string[] => {
+    const lines = render(width, rows);
+    return lines.slice(lines.findIndex(l => l.startsWith('id ')));
+  };
+  const render = (width: number, rows: Parameters<typeof rowOf>[]): string[] =>
     renderToString(
       createElement(Frame, {
         snap: { summary: {}, rows: rows.map(args => rowOf(...args)), at: new Date().toISOString() },
@@ -585,7 +596,7 @@ describe('table layout', () => {
   };
 
   test('columns are separated by a space: exit reason and rec stay distinct tokens', () => {
-    const [header, row] = frame(160, [failedRow()]).slice(2);
+    const [header, row] = frame(160, [failedRow()]);
     expect(row).toMatch(/ exit 1 @review-m1-r1 +0 /);
     expect(header).toMatch(/ exit\/held +rec +console +repo@branch/);
     const [l, run, o] = failedRow();
@@ -605,12 +616,173 @@ describe('table layout', () => {
         Object.values(lay.w).reduce((a, b) => a + b, 0) + lay.current + (lay.wide ? 20 : 0)
       ).toBeLessThanOrEqual(width);
     }
-    const [header, row] = frame(80, [failedRow()]).slice(2);
+    const [header, row] = frame(80, [failedRow()]);
     expect(header).toMatch(/ elapsed +exit\/held +rec\s*$/);
     expect(row).toMatch(/ 4\/5 /);
     expect(row).not.toContain('█');
     expect(row).toMatch(/ 1h02m +exit 1 @review-\S* 0\s*$/);
     for (const line of [header, row]) expect(line.length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('responsive frame', () => {
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10).replaceAll('-', '');
+  const row = (id: string, run: Omit<RunView, 'id'>): BoardRow =>
+    rowOf(
+      ledger(id, run, { started_at: run.started_at ?? now.toISOString() }),
+      { id: `a-${id}`, ...run },
+      { now: now.getTime() }
+    );
+  const rows = (): BoardRow[] => [
+    row(`${day}-041949-87a7`, {
+      status: 'running',
+      started_at: new Date(now.getTime() - 65_000).toISOString(),
+      nodes: [
+        { nodeId: 'code-a', state: 'completed' },
+        { nodeId: 'code-system-vad-captions-with-a-long-name', state: 'running' },
+      ],
+    }),
+    row('20261001-004139-c439', {
+      status: 'failed',
+      started_at: '2026-10-01T00:00:00.000Z',
+      completed_at: '2026-10-01T01:02:03.000Z',
+      nodes: [{ nodeId: 'review-m1-r1', state: 'failed' }],
+    }),
+    row(`${day}-010101-aaaa`, {
+      status: 'paused',
+      metadata: {
+        wait: { nodeId: 'human-m1', kind: 'event', event: 'sa.human.m1', resumeAt: 't' },
+      },
+      nodes: [{ nodeId: 'human-m1', state: 'running' }],
+    }),
+  ];
+  const activity = (): Activity => ({
+    jobs: [
+      {
+        id: '20261010-000000-0001',
+        title: '一个很长很长的中文作业标题，用来逼出宽字符截断'.repeat(3),
+        card: null,
+        log: null,
+        cwd: '/',
+        kind: 'claude',
+        model: 'claude-opus-5-5',
+        wrapper_pid: 1,
+        pid: 2,
+        started_at: new Date(now.getTime() - 30_000).toISOString(),
+        state: 'running',
+      },
+      {
+        id: '20261010-000000-0002',
+        title: 'three',
+        card: null,
+        log: null,
+        cwd: '/',
+        kind: 'other',
+        model: null,
+        wrapper_pid: 1,
+        pid: 3,
+        started_at: new Date(now.getTime() - 20_000).toISOString(),
+        ended_at: new Date(now.getTime() - 10_000).toISOString(),
+        state: 'failed',
+        exit_code: 3,
+      },
+    ],
+    procs: [
+      {
+        pid: 37191,
+        kind: 'codex',
+        model: 'gpt-6.1-sol',
+        cwd: `/Users/y/${'deep/'.repeat(20)}wt-caps`,
+        started_ms: now.getTime() - 3_600_000,
+      },
+    ],
+    remote: [{ id: 'job-abcdef1234567890', state: 'running', host: 'dev', agent: 'codex' }],
+    notes: [`procs: ${'x'.repeat(200)}`],
+  });
+  const render = (width: number, extra: Partial<FrameProps> = {}): string[] =>
+    renderToString(
+      createElement(Frame, {
+        snap: {
+          summary: { debt: 12, first_pass: 3, load_error: 'e'.repeat(150) },
+          rows: rows(),
+          at: now.toISOString(),
+          activity: activity(),
+        },
+        home: '/Users/someone/.superagent',
+        width,
+        height: 40,
+        interval: 5,
+        sel: 1,
+        activeOnly: true,
+        detail: null,
+        now,
+        footer: true,
+        ...extra,
+      }),
+      { columns: width }
+    ).split('\n');
+
+  test('no line is wider than the terminal at 40/59/79/100/120 columns', () => {
+    for (const width of [40, 59, 79, 100, 120])
+      for (const help of [false, true]) {
+        const lines = render(width, { help, activeOnly: false });
+        expect(lines.length).toBeGreaterThan(10);
+        expect(lines.filter(l => Bun.stringWidth(l) > width)).toEqual([]);
+      }
+  });
+
+  test('compact: short ids and states, n/m progress, cur line for running/selected rows, short footer', () => {
+    const t = render(59, { activeOnly: false }).join('\n');
+    expect(t).toContain('[jobs 2]'); // 1 个 running 登记作业 + 1 个未登记进程
+    expect(t).toContain('[remote 1]');
+    expect(t).toMatch(/\n041949-87a7 +▶run +1\/2 +1m0\ds /); // 有非当天 id 时列宽放宽，当天的仍短
+    expect(t).toMatch(/\n1001-004139-c439 +✗fail +0\/1 +1h02m +exit 1/);
+    expect(t).toMatch(/\n010101-aaaa +⏸held/);
+    expect(t).toContain('  cur: code-system-vad');
+    expect(t).toContain('  cur: review-m1-r1'); // 选中行
+    expect(t).not.toContain('cur: human-m1'); // 非 running、非选中
+    expect(t).toContain('▶ job 30s claude claude-opus-5-5 · 一个');
+    expect(t).toContain('✗ job 10s exit 3 other · three');
+    expect(t).toContain('▶ proc 1h00m codex gpt-6.1-sol · wt-caps pid 37191');
+    expect(t).toContain('◆ remote dev codex job-abcd running');
+    expect(t.trimEnd().split('\n').at(-1)).toBe('q r j/k ⏎ a ?');
+    expect(t).not.toContain('current(role)');
+    expect(render(100).join('\n')).toContain('current(role)');
+    expect(shortId('20261001-004139-c439', now.getTime())).toBe('1001-004139-c439');
+    expect(shortId('sa1', now.getTime())).toBe('sa1');
+  });
+
+  test('idle line only when nothing runs anywhere; `?` lists every key', () => {
+    const idle = (a: Partial<Activity>, r: BoardRow[] = []): boolean =>
+      renderToString(
+        createElement(Frame, {
+          snap: {
+            summary: {},
+            rows: r,
+            at: now.toISOString(),
+            activity: { jobs: [], procs: [], remote: [], notes: [], ...a },
+          },
+          home: '/h',
+          width: 59,
+          height: 20,
+          interval: 5,
+          sel: -1,
+          activeOnly: false,
+          detail: null,
+          now,
+          footer: false,
+        }),
+        { columns: 59 }
+      ).includes('空闲 · 无运行中的 run/作业 · 刷新 ');
+    expect(idle({})).toBe(true);
+    expect(idle({ procs: activity().procs })).toBe(false);
+    expect(idle({ remote: activity().remote })).toBe(false);
+    expect(idle({}, rows().slice(1, 2))).toBe(true); // 只有已失败的 run
+    expect(idle({}, rows().slice(0, 1))).toBe(false);
+    const help = render(59, { help: true }).join('\n');
+    for (const k of ['q 退出', 'r 立即刷新', 'j/k', 'Enter', 'a 只看活动', '? 打开/关闭'])
+      expect(help).toContain(k);
   });
 });
 

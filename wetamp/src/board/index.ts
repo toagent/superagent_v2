@@ -59,7 +59,12 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     const selected = pick ? detailFor(pick) : undefined;
     console.log(
       JSON.stringify(
-        { summary: first.summary, rows: first.rows, ...(pick ? { selected } : {}) },
+        {
+          summary: first.summary,
+          rows: first.rows,
+          ...first.activity,
+          ...(pick ? { selected } : {}),
+        },
         null,
         2
       )
@@ -74,7 +79,8 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
   ]);
 
   if (a.flags.once || !process.stdout.isTTY) {
-    const width = process.stdout.columns || 160; // 管道里没有终端宽度：按宽屏出全列
+    // 管道里没有终端宽度：认 COLUMNS（与 shell 一致），再没有就按宽屏出全列
+    const width = process.stdout.columns || Number(process.env.COLUMNS) || 160;
     const frame = createElement(Frame, {
       snap: first,
       home: home().sa,
