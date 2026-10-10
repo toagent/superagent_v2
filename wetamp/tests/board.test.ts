@@ -604,7 +604,7 @@ describe('table layout', () => {
       { milestone: 'm1', at: 't', reason: 'gate' },
       { milestone: 'm1', at: 't', reason: 'gate' },
     ];
-    expect(frame(160, [[l, run, o]])[3]).toMatch(/ exit 1 @review-m1-r1 +0\+2 /);
+    expect(frame(160, [[l, run, o]])[1]).toMatch(/ exit 1 @review-m1-r1 +0\+2 /);
   });
 
   test('at 80 columns elapsed, exit/held and rec are not cut off; nodes keep only n/m', () => {
