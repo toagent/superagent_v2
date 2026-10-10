@@ -302,6 +302,36 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(readdirSync(join(home, 'work', 'github'))).toEqual(['superagent']);
   });
 
+  test('worker stub: after --remote-hooks the superagent entry refuses control-plane verbs without bun', () => {
+    const { home, sh } = sandbox();
+    const entry = join(home, '.local', 'bin', 'superagent');
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(entry, 'old v1 entry');
+    const sa = (...args: string[]): { code: number; out: string } => {
+      // PATH 不含 bun：桩分支必须在 exec bun 之前
+      const p = Bun.spawnSync([entry, ...args], {
+        env: { HOME: home, PATH: '/usr/bin:/bin', XDG_STATE_HOME: '' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      return { code: p.exitCode, out: p.stdout.toString() + p.stderr.toString() };
+    };
+    expect(sh('--remote-hooks').code).toBe(0);
+    expect(readdirSync(dirname(entry)).filter(f => f.startsWith('superagent.bak-'))).toHaveLength(1);
+    expect(sh('--remote-hooks').out).not.toContain('linked');
+    for (const verb of ['run', 'wait', 'supervise-tick', 'decide', 'land', 'recover', 'brief', 'status']) {
+      const r = sa(verb, 'x');
+      expect(r.code).toBe(69);
+      expect(r.out).toContain('仅本机运行（本机为控制面）');
+    }
+    expect(sa('--version')).toMatchObject({ code: 0, out: expect.stringContaining('(worker,') });
+    expect(sa('--help')).toMatchObject({ code: 0, out: expect.stringContaining('worker 桩') });
+    // install.json 指向别的 checkout：本入口不是那台 worker 的桩，照常走控制面
+    const state = join(home, '.local', 'state', 'superagent', 'install.json');
+    writeFileSync(state, readFileSync(state, 'utf8').replace(`"wetamp": "${WETAMP}"`, '"wetamp": "/elsewhere"'));
+    expect(sa('--version').out).toContain('(controller,');
+  });
+
   test('--remote-hooks checks hooks with node and writes the install.json ledger; flags are exclusive', () => {
     const { home, sh } = sandbox();
     const r = sh('--remote-hooks');
@@ -315,6 +345,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       wetamp: WETAMP,
     });
     expect(ledger.hooks).toContain('guard.cjs');
+    expect(ledger.role).toBe('worker');
     expect(sh('--hooks', '--remote-hooks').code).toBe(64);
     expect(sh('--dry-run').code).toBe(64);
   });

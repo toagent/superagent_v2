@@ -6,7 +6,8 @@
 # 单独步骤（互斥，不走上面的默认安装）：
 #   --hooks [--dry-run]     三端 hook 条目改指 wetamp/hooks/（src/install-hooks.ts）；--dry-run 只打印统一 diff
 #   --purge-v1 [--dry-run]  清 V1 hook 条目并把 V1 残留移到 $SUPERAGENT_HOME/backups/v1-<UTC>/（不删除）
-#   --remote-hooks          dev/mini 用：只要 node，校验 hooks 与 tiers.json，写 twin-toolkit 读取的 install.json 台账
+#   --remote-hooks          dev/mini 用：只要 node，校验 hooks 与 tiers.json，写 twin-toolkit 读取的 install.json 台账（role=worker），
+#                           并把 ~/.local/bin/superagent 指向本仓库 bin/superagent（worker 上即桩；原为普通文件时先备份）
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
 mode="" dry=""
@@ -33,11 +34,14 @@ if [ "$mode" = --remote-hooks ]; then
 const fs = require("node:fs"), [state, wetamp, commit] = process.argv.slice(1), file = state + "/install.json";
 // V1 台账（同一位置）先留副本：V1 卸载器仍要读它
 if (fs.existsSync(file) && !fs.readFileSync(file, "utf8").includes("\"superagent_v2\"")) fs.copyFileSync(file, file + ".v1-" + Date.now());
-fs.writeFileSync(file + ".tmp", JSON.stringify({installer: "superagent_v2", mode: "remote-hooks", wetamp, commit,
+fs.writeFileSync(file + ".tmp", JSON.stringify({installer: "superagent_v2", mode: "remote-hooks", role: "worker", wetamp, commit,
   hooks: fs.readdirSync(wetamp + "/hooks").filter(f => f.endsWith(".cjs")).sort(), installed_at: new Date().toISOString()}, null, 2) + "\n");
 fs.renameSync(file + ".tmp", file);
 console.log("updated " + file);
 ' "$state" "$WETAMP" "$(git -C "$WETAMP" rev-parse HEAD 2>/dev/null || echo unknown)"
+  entry="$HOME/.local/bin/superagent"; mkdir -p "$HOME/.local/bin"
+  if [ -e "$entry" ] && [ ! -L "$entry" ]; then mv "$entry" "$entry.bak-$(date +%Y%m%d%H%M%S)"; fi
+  [ "$(readlink "$entry" 2>/dev/null)" = "$WETAMP/bin/superagent" ] || { ln -sfn "$WETAMP/bin/superagent" "$entry"; echo "linked $entry -> $WETAMP/bin/superagent"; }
   exit 0
 fi
 export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"

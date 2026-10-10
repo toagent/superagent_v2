@@ -1,11 +1,33 @@
 #!/usr/bin/env bash
 # superagent 兼容 CLI（bun + TypeScript，无构建步骤）。
+# worker（dev/mini，install.sh --remote-hooks 在 install.json 记 role=worker 且 wetamp 指向本仓库）上是桩：
+# 只答 --version / --help，其余动词一律"仅本机运行"退出 69 —— 控制面只有一个，worker 不得推进另一套 run 状态。
+# 桩分支在 exec bun 之前，纯 bash + grep，不依赖 bun 与 node_modules。
 set -euo pipefail
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
   dir="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"; [[ $src == /* ]] || src="$dir/$src"
 done
 WETAMP="$(cd -P "$(dirname "$src")/.." && pwd)"
+role=controller
+state="${XDG_STATE_HOME:-$HOME/.local/state}/superagent/install.json"
+if [ -f "$state" ] && grep -q '"role": "worker"' "$state" && grep -qF "\"wetamp\": \"$WETAMP\"" "$state"; then role=worker; fi
+case "${1:-}" in
+  --version|-V)
+    echo "superagent $(git -C "$WETAMP" rev-parse --short=12 HEAD 2>/dev/null || echo unknown) ($role, $WETAMP)"
+    exit 0;;
+esac
+if [ "$role" = worker ]; then
+  case "${1:-}" in
+    --help|-h|help|"")
+      echo "superagent（worker 桩）：本机只装 hooks 与 tiers.json；run/wait/tick/decide/land/recover/brief 等仅在控制面 Mac 上运行。"
+      echo "可用：superagent --version | --help；安装台账 $state"
+      exit 0;;
+    *)
+      echo "superagent: 仅本机运行（本机为控制面）—— 这台是 worker（$state role=worker），'$1' 请在控制面 Mac 上执行" >&2
+      exit 69;;
+  esac
+fi
 export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
 exec bun "$WETAMP/src/cli.ts" "$@"

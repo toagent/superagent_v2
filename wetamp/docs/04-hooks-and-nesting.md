@@ -92,7 +92,8 @@ bash wetamp/scripts/install.sh --remote-hooks        # 远端：只要 node；no
 
 - 去重保留 matcher 不同的同一 handler；V1 清单都不带 matcher，补齐时只认"全部"分组（未设置/空/`*`）。`context-budget.cjs` 尾部的 `claude` 参数去掉后归一为一条。目标文件不存在时按空文件补齐并创建（dry-run 打印与空文件的 diff，不写）。
 - 只动 superagent 自己的 handler（V1 checkout/release 路径或本 `wetamp/hooks/`），其他 hooks 原样保留；只有命令串改写时原地替换，保留文件排版。
-- `--remote-hooks` 写 `${XDG_STATE_HOME:-~/.local/state}/superagent/install.json`（`installer:"superagent_v2"`、`wetamp`、`commit`、`hooks`）；已有 V1 台账先存 `.v1-<毫秒时间戳>` 副本。twin-toolkit 回执 schema 2 按此校验。
+- `--remote-hooks` 写 `${XDG_STATE_HOME:-~/.local/state}/superagent/install.json`（`installer:"superagent_v2"`、`role:"worker"`、`wetamp`、`commit`、`hooks`）；已有 V1 台账先存 `.v1-<毫秒时间戳>` 副本。twin-toolkit 回执 schema 2 按此校验。
+- worker 桩：`--remote-hooks` 把 `~/.local/bin/superagent` 指向本仓库 `bin/superagent`（原为普通文件先存 `.bak-<时间>`）。`bin/superagent` 读到 `role:"worker"` 且 `wetamp` 是自己时，在 `exec bun` 之前处理：`--version`/`--help` 照答，其余动词打印“仅本机运行（本机为控制面）”退出 69；不需要 bun 与 node_modules。twin-toolkit 回执 `checks` 记 `role`/`entry`。
 - 默认安装（不带参数）不碰 hooks。
 
 ## 风险与口径
