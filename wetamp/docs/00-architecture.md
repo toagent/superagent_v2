@@ -67,7 +67,7 @@ wetamp/
 5. **引擎改动只走 upstream PR**（按根 `AGENTS.md`：从 `dev` 开分支、`bun run validate`、additive schema）。
    不保留本地 patch。靠引擎内部事实（sqlite 表/列、CLI JSON 字段）实现的 overlay（目前只有 `recover`）必须：
    只读引擎源码、只写明确的一列一行、把依赖的事实登记进 `UPSTREAM`，并由 selftest 与 `upgrade-upstream.sh` dry-run 复测。
-6. **不新增依赖**：只用仓库现有 `bun.lock` 里的包与 bun 内置能力；需要新包先在 upstream 看是否已有等价物。
+6. **依赖隔离**：wetamp 自有依赖只允许在 `wetamp/package.json` 声明；只有 `board` 子命令通过动态 `import()` 使用它们，其余 verbs 与 hooks 保持零依赖（只用仓库现有 `bun.lock` 里的包与 bun 内置能力）。
 
 ### 2.3 分支策略
 
