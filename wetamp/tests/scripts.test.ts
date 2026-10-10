@@ -39,7 +39,14 @@ describe('gc.sh', () => {
       const wt = join(wtRoot, 'worktrees', id);
       sh(`git worktree add -q -b sa/${id} "${wt}" main`, repo);
       if (!merged) sh(`echo x > f && git add f && ${GIT} commit -qm ${id}`, wt);
-      const ledger = { run_id: id, archon_run_id: id, repo, branch: `sa/${id}`, gen_dir: gen, workflow: `sa-${id}` };
+      const ledger = {
+        run_id: id,
+        archon_run_id: id,
+        repo,
+        branch: `sa/${id}`,
+        gen_dir: gen,
+        workflow: `sa-${id}`,
+      };
       writeFileSync(
         join(home, 'runs', `${id}.json`),
         JSON.stringify({ ...ledger, recoveries: [] })
@@ -66,7 +73,7 @@ describe('gc.sh', () => {
     expect(sh('git branch --list sa/done', repo)).toContain('sa/done');
   }, 60000);
 
-  test('--apply removes only terminal, merged runs and their asks', () => {
+  test('--apply removes only terminal, merged runs and leaves asks.json to supervise-tick', () => {
     const { repo, home, env } = setup();
     const r = exec([join(SCRIPTS, 'gc.sh'), '--apply', 'done', 'open', 'busy'], env);
     expect(r.code).toBe(0);
@@ -76,9 +83,22 @@ describe('gc.sh', () => {
     expect(existsSync(join(home, 'runs', 'done.json'))).toBe(false);
     expect(
       Object.keys(JSON.parse(readFileSync(join(home, 'asks.json'), 'utf8')) as object)
-    ).toEqual(['open:sa.human.m1:t']);
+    ).toEqual(['done:sa.human.m1:t', 'open:sa.human.m1:t']);
     for (const id of ['open', 'busy'])
       expect(existsSync(join(home, 'runs', `${id}.json`))).toBe(true);
+  }, 60000);
+
+  test('a gen_dir other than $SUPERAGENT_HOME/gen/<run> is refused before anything is removed', () => {
+    const { repo, home, env } = setup();
+    const L = join(home, 'runs', 'done.json');
+    const l = JSON.parse(readFileSync(L, 'utf8')) as Record<string, unknown>;
+    writeFileSync(L, JSON.stringify({ ...l, gen_dir: join(home, 'gen', 'done', '..', 'open') }));
+    const r = exec([join(SCRIPTS, 'gc.sh'), '--apply', 'done'], env);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('refuse done: gen_dir');
+    expect(sh('git branch --list sa/done', repo)).toContain('sa/done');
+    expect(existsSync(join(home, 'gen', 'open'))).toBe(true);
+    expect(existsSync(L)).toBe(true);
   }, 60000);
 
   test('flags other than --apply are rejected', () => {

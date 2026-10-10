@@ -852,6 +852,14 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     const asks = JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')) as object;
     expect(Object.keys(asks)).toEqual(['sa1:m2:0']);
   });
+  test('asks of runs without a ledger (gc.sh removed it) are dropped on write-back', () => {
+    const s = stub([humanWait()]);
+    supervisor(s.root, 'pending');
+    const p = join(s.root, 'home', 'asks.json');
+    writeFileSync(p, JSON.stringify({ 'gone:m1:0': { id: 'x', status: 'pending' } }));
+    tick();
+    expect(Object.keys(JSON.parse(readFileSync(p, 'utf8')) as object)).toEqual(['sa1:m2:0']);
+  });
   test('the ledger holds an unknown entry before supervisor ask runs; an id-less entry with no supervisor record is re-asked', () => {
     const s = stub([humanWait()]);
     const py = join(s.root, 'sup-snap.py');

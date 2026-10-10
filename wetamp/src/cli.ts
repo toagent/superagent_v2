@@ -993,7 +993,8 @@ export function superviseTick(): Action[] | { skipped: 'locked' } {
   }
 }
 
-/** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。 */
+/** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
+ *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
 function tick(sa: string): Action[] {
   archonDetached(['workflow', 'wake', '--json'], join(sa, 'wake.log'));
   let asks: Asks | Error;
@@ -1003,7 +1004,9 @@ function tick(sa: string): Action[] {
     asks = e as Error;
   }
   const out: Action[] = reconcileIntents();
+  const live = new Set<string>();
   for (const l of ledgers()) {
+    live.add(l.run_id);
     try {
       if ('error' in l) throw new Error(l.error);
       const x = dispose(l, asks);
@@ -1017,7 +1020,11 @@ function tick(sa: string): Action[] {
       });
     }
   }
-  if (!(asks instanceof Error)) saveAsks(asks);
+  if (!(asks instanceof Error)) {
+    // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者
+    for (const k of Object.keys(asks)) if (!live.has(k.split(':')[0])) delete asks[k];
+    saveAsks(asks);
+  }
   return out;
 }
 
