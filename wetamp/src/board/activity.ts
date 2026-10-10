@@ -39,6 +39,7 @@ export interface Ownership {
   inferred: boolean;
 }
 export interface Activity {
+  jobHistory?: Job[];
   runs?: (RunRef & Ownership)[];
   jobs: (Job & Owned)[];
   procs: (Proc & Owned)[];
@@ -303,9 +304,10 @@ export async function loadActivity(now: number, signal?: AbortSignal, runs: RunR
   const note = (src: string, e: unknown): void => {
     notes.push(`${src}: ${tail((e as Error).message, 120)}`);
   };
-  let jobs: Job[] = [];
+  let jobs: Job[] = [], jobHistory: Job[] = [];
   try {
     const r = readJobs(now, true);
+    jobHistory = r.jobs;
     jobs = r.jobs.filter(j => j.state === 'running' || visible(j.ended_at, now)); // 运行中的都保留：scan 从这里认 wrapper
     for (const b of r.bad) note('jobs', new Error(b));
   } catch (e) {
@@ -327,5 +329,5 @@ export async function loadActivity(now: number, signal?: AbortSignal, runs: RunR
     }),
     remoteOf(signal).catch(() => []), // 远端不可达不是看板的问题：静默省略
   ]);
-  return { ...act, remote, notes };
+  return { ...act, remote, notes, jobHistory };
 }

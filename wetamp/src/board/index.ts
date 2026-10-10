@@ -1,15 +1,16 @@
-// `superagent board [run] [--once] [--json] [--interval s] [--limit n] [--view cockpit|terminals] [--all]`：run 看板。
+// `superagent board [run] [--once] [--json] [--interval s] [--limit n]`：run 看板。
 // ink/react 只在这里动态 import（wetamp/package.json 自有依赖）；--json 不渲染，不需要它们。
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXIT_USAGE, parseArgs } from '../cli';
-import { WETAMP, home } from '../config';
+import { WETAMP } from '../config';
 import { createLoader, readLedger, type BoardRow, type Snapshot } from './data';
 import { detailOf, type Detail } from './detail';
 import { startWeb, webUrl } from '../web/server';
 import { requestUsageRefresh } from '../usage';
+import { engineHash } from '../generate';
 
-const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval s] [--limit n] [--view cockpit|terminals] [--all]';
+const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval s] [--limit n]';
 
 const positive = (v: string | undefined, dflt: number, name: string): number => {
   const n = v === undefined ? dflt : Number(v);
@@ -34,12 +35,9 @@ export async function board(argv: string[]): Promise<number> {
 
 async function run(argv: string[], signal: AbortSignal): Promise<number> {
   let interval: number, limit: number, target: string | undefined, a: ReturnType<typeof parseArgs>;
-  let view: 'cockpit' | 'terminals' = 'cockpit';
   let load: ReturnType<typeof createLoader>;
   try {
-    const args = [...argv], i = args.indexOf('--view');
-    if (i !== -1) { const requested = args[i + 1]; args.splice(i, 2); if (requested !== 'cockpit' && requested !== 'terminals') throw new Error('--view must be cockpit or terminals'); view = requested; }
-    a = parseArgs(args);
+    a = parseArgs(argv);
     target = a._[1];
     interval = positive(a.flags.interval, 5, 'interval');
     limit = Math.floor(positive(a.flags.limit, Number.MAX_SAFE_INTEGER, 'limit'));
@@ -87,32 +85,25 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     import('./App'),
   ]);
 
+  const fingerprint = engineHash();
   if (a.flags.once || !process.stdout.isTTY) {
     // 管道里没有终端宽度：认 COLUMNS（与 shell 一致），再没有就按宽屏出全列
     const width = process.stdout.columns || Number(process.env.COLUMNS) || 160;
     const frame = createElement(Frame, {
       snap: first,
-      view,
-      all: !!a.flags.all,
-      home: home().sa,
       width,
       height: Number.MAX_SAFE_INTEGER, // 一帧文本不滚动：全部行都打出来
-      interval,
-      sel: pick ? first.rows.indexOf(pick) : -1,
-      activeOnly: false,
-      detail: pick ? detailFor(pick) : null,
       now: new Date(),
-      footer: false,
     });
     console.log(ink.renderToString(frame, { columns: width }));
     return 0;
   }
 
   const app = ink.render(
-    createElement(App, { load: () => load(limit), detailFor, first, home: home().sa, interval, view })
+    createElement(App, { load: () => load(limit), first, interval, fingerprint })
   );
   await app.waitUntilExit();
-  return 0;
+  return typeof process.exitCode === 'number' ? process.exitCode : 0;
 }
 
 if (import.meta.main) {

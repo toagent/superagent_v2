@@ -39,6 +39,9 @@ export function engineHash(root = WETAMP): string {
     }
   };
   walk('templates/.archon');
+  // Resident surfaces must restart when their implementation changes too.
+  walk('src/board');
+  walk('src/web');
   for (const path of [
     'src/generate.ts',
     'src/reasons.ts',

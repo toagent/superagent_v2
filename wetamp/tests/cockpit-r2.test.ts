@@ -62,18 +62,18 @@ test('real claims/jobs/live identities recover roles, enrich null-role jobs and 
   expect(sessions.at(-1)?.owner?.role).toBeNull();
   expect(evidence.claims.some(c => c.owner.kind === 'run' && c.owner.role === 'strategist')).toBe(true);
 });
-test('completed real runs with pending asks stay in results; stale asks do not hide running work; 62/120 render numeric progress', () => {
+test('asks alone govern needs; pending asks do not hide running work; 62/120 render numeric progress', () => {
   setup(); const evidence = usageEvidence(); refreshEta(evidence.eta, now);
   const eta = JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'usage/eta.json'), 'utf8')).runs;
   const snap: Snapshot = { at: fixture.captured_at, summary: {}, asks: fixture.asks, eta, rows: evidence.eta.map(x => rowOf(x.ledger, x.run, { now, roles: new Map(fixture.inputs.find(f => f.ledger.run_id === x.ledger.run_id)!.roles as [string, 'coder' | 'reviewer' | 'script'][]) })) };
-  expect(cockpit(snap, now).needs).toEqual([]);
-  snap.asks = { ...snap.asks, 'run-0:budget:1': { status: 'pending' } };
+  expect(cockpit(snap, now).needs).toHaveLength(Object.values(fixture.asks).filter(a => ['pending', 'unknown'].includes(a.status)).length);
+  snap.asks = { 'run-0:budget:1': { status: 'pending' } };
   expect(cockpit(snap, now).active).toHaveLength(1);
   const failed = { ...snap.rows[0], state: 'failed', nodes: { ...snap.rows[0].nodes, current: 'code-package-1' } };
   expect(cockpit({ ...snap, rows: [failed] }, now).needs).toHaveLength(1);
-  expect(cockpit({ ...snap, rows: [{ ...failed, nodes: { ...failed.nodes, current: 'land' } }] }, now).needs).toEqual([]);
+  expect(cockpit({ ...snap, rows: [{ ...failed, nodes: { ...failed.nodes, current: 'land' } }] }, now).needs).toHaveLength(1);
   for (const width of [62, 120]) {
-    const out = renderToString(createElement(Frame, { snap, width, height: 100, home: '/fixture', interval: 5, sel: -1, activeOnly: false, detail: null, now: new Date(now), footer: false }), { columns: width });
+    const out = renderToString(createElement(Frame, { snap, width, height: 100, now: new Date(now) }), { columns: width });
     expect(out).toMatch(/\d+% (剩~|超~)/); expect(out).not.toContain('?%'); expect(out).not.toContain('需要你');
     expect(out.split('\n').every(l => Bun.stringWidth(l) <= width)).toBe(true);
   }

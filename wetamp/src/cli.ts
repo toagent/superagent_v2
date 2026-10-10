@@ -1485,7 +1485,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|web serve|start|stop|status|url [--open]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 export function main(argv: string[]): number {
   let a: Args;
@@ -1602,7 +1602,8 @@ if (import.meta.main) {
     })();
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
-    if (verb === 'web') process.exit(await (await import('./web/server')).webCli(argv));
+    if (verb === 'supervise-tick') await (await import('./web/server')).refreshConsole();
+    if (verb === 'console' || verb === 'web') process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs')
       process.exit(await (await import('./jobs')).jobCli(argv));
     process.exit(main(argv));
