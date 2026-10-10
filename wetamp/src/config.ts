@@ -48,7 +48,38 @@ export interface Tiers {
         claude: { denied_tools: string[]; sandbox: Record<string, unknown> };
       };
     };
+    /** 按角色、风险与轮次的推理深度；generate 写到每个 AI 节点的 effort:，覆盖别名的 high（F-17）。 */
+    effort: {
+      G0: string;
+      coder: { first: string; repair: string };
+      reviewer: Record<string, string>;
+      G2_reviewer: Record<string, string>;
+    };
+    /** 以下四项写入 <gen>/policy.json，供 sa-check 推断交付风险（F-13）与预留未知用量（F-16）。 */
+    risk_paths: string[];
+    code_extensions: string[];
+    exempt_paths: string[];
+    budget_floor: Record<'S' | 'M' | 'L', number>;
   };
+}
+
+/**
+ * 节点 effort：G0 一律 policy.effort.G0；将军首轮 coder.first、包内修复与里程碑修复 coder.repair；
+ * 评审 R<n> 按 G2_reviewer / reviewer。按生成时的声明风险取值（运行时推断升级不改 effort）。
+ */
+export function effortFor(
+  t: Tiers,
+  role: 'code' | 'repair' | 'review',
+  risk: string,
+  round = 1
+): string {
+  const e = t.policy.effort;
+  if (risk === 'G0') return e.G0;
+  if (role === 'code') return e.coder.first;
+  if (role === 'repair') return e.coder.repair;
+  const v = (risk === 'G2' ? e.G2_reviewer : e.reviewer)[`R${String(round)}`];
+  if (!v) throw new Error(`tiers.policy.effort: no reviewer effort for ${risk} R${String(round)}`);
+  return v;
 }
 
 export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {

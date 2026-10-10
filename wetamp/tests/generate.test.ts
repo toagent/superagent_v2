@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildWorkflow, capsDenied, generate, newRunId, renderBrief } from '../src/generate';
 import { install } from '../src/config';
@@ -34,6 +34,21 @@ describe('buildWorkflow', () => {
   });
   test('golden: fake mode swaps coder nodes for bash stubs only', () => {
     expect(build(true)).toEqual(golden('two-pkgs-fake'));
+  });
+  test('every $INPUTS.<name> a command template reads is bound by its node', () => {
+    const nodes = nodesOf(build(false)) as (N & { command?: string })[];
+    for (const x of nodes.filter(k => k.command)) {
+      const md = readFileSync(
+        join(import.meta.dir, '..', 'templates', '.archon', 'commands', `${x.command ?? ''}.md`),
+        'utf8'
+      );
+      // Archon 的变量名可含 '-'：`$INPUTS.round-1` 会被当成名为 round-1 的输入
+      const used = [...md.matchAll(/\$INPUTS\.([A-Za-z0-9_-]+)/g)].map(m => m[1]);
+      expect({ node: x.id, missing: used.filter(u => !(u in (x.with ?? {}))) }).toEqual({
+        node: x.id,
+        missing: [],
+      });
+    }
   });
   test('packages run serially; milestones join their three gates; signed-off milestone waits for a human; land is last', () => {
     const nodes = nodesOf(build(false));
@@ -76,8 +91,10 @@ describe('buildWorkflow', () => {
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('diff-m1-r1')?.with?.prev).toBeUndefined();
     expect(n('diff-m1-r2')?.with?.prev).toBe('$diff-m1-r1.output.diff_hash');
-    expect(n('review-m1-r1')?.when).toBeUndefined();
-    expect(n('review-m1-r2')?.when).toBe("$diff-m1-r2.output.same != 'true'");
+    expect(n('review-m1-r1')?.when).toBe("$diff-m1-r1.output.disposition == 'advance'");
+    expect(n('review-m1-r2')?.when).toBe(
+      "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'"
+    );
     expect(n('gate-m1-r2')).toMatchObject({
       depends_on: ['diff-m1-r2', 'review-m1-r2'],
       trigger_rule: 'none_failed_min_one_success',
@@ -252,4 +269,14 @@ test('generate writes a committed gen repo that archon validates', () => {
     [root]
   );
   expect(generate(codex, 'gen-0002').workflow).toBe('sa-gen-0002');
+  expect(readlinkSync(join(g.dir, 'archon'))).toEndWith('/bin/archon');
+  expect(JSON.parse(readFileSync(join(g.dir, 'policy.json'), 'utf8')).budget_floor).toMatchObject({
+    S: 200000,
+  });
+  // F-16：预算低于各包 size 的 budget_floor 之和（S+M）时在生成期拒绝，不等到运行中途挂起
+  const thin = loadPlan(
+    fixturePlan(root, plan.repo, p => (p.budget = { weighted_tokens: 700000 })),
+    [root]
+  );
+  expect(() => generate(thin, 'gen-0003')).toThrow(/budget_floor sum 800000/);
 }, 60000);

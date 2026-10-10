@@ -20,7 +20,8 @@
     },
     "concurrency": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "description": "Only 1 is supported: packages share one worktree and run serially"
     },
     "deadline": {
       "type": "string",
@@ -50,7 +51,8 @@
     },
     "mode": {
       "type": "string",
-      "pattern": "^(auto|strict|single:(chatgpt|claude))$"
+      "pattern": "^(auto|strict|single:(chatgpt|claude))$",
+      "description": "single:* is rejected by loadPlan until single-vendor routing reaches node routing"
     },
     "environment": {
       "type": "array",
@@ -268,6 +270,11 @@
         "timeout_s": {
           "type": "integer",
           "minimum": 1
+        },
+        "cache": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reuse a pass from the same tree, command and environment within the run (F-21); only for commands that write nothing external and do not depend on time or randomness"
         }
       }
     },

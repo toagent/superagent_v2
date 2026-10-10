@@ -54,6 +54,23 @@ describe('loadPlan', () => {
     const { path, root } = setup(p => (pkgs(p)[1].deps = ['ghost']));
     expect(() => loadPlan(path, [root])).toThrow(/unknown ghost/);
   });
+  test('rejects schema fields the engine does not honour, naming the field', () => {
+    const cases: [(p: Record<string, unknown>) => void, RegExp][] = [
+      [p => (p.mode = 'single:claude'), /plan unsupported: \/mode single:claude/],
+      [p => (p.concurrency = 2), /plan unsupported: \/concurrency/],
+      [p => (pkgs(p)[0].accept_quick = []), /plan unsupported: \/packages\/core\/accept_quick/],
+      [
+        p => ((pkgs(p)[0].scope as Record<string, unknown>).artifact_paths = []),
+        /plan unsupported: \/packages\/core\/scope\/artifact_paths/,
+      ],
+    ];
+    for (const [patch, err] of cases) {
+      const { path, root } = setup(patch);
+      expect(() => loadPlan(path, [root])).toThrow(err);
+    }
+    const ok = setup(p => ((p.concurrency = 1), (p.mode = 'strict')));
+    expect(loadPlan(ok.path, [ok.root]).concurrency).toBe(1);
+  });
   test('rejects duplicate package id', () => {
     const { path, root } = setup(p => (pkgs(p)[1].id = 'core'));
     expect(() => loadPlan(path, [root])).toThrow(/duplicate package id core/);

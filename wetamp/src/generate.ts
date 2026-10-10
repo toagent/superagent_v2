@@ -1,11 +1,11 @@
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
 // 计划文本只进 brief 文件、经绝对路径传给节点：with:/command 正文是模板，`$` 无法转义。
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { archon, tail } from './archon';
-import { WETAMP, home, loadTiers, runAliases } from './config';
+import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
 import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
 
 const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.json'))('yaml') as {
@@ -36,6 +36,15 @@ const readOnlyMcp = (marker: string): string =>
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const MAX_WAIT_MS = 1000 * 365 * 24 * 3600 * 1000; // Archon wait 上限 1000 年
 
+/** sa-check 读取的 tiers.policy 子集：生成时快照一次，整 run 共用（运行中改 tiers.json 不影响已起的 run）。 */
+const policyOf = (t: Tiers): Node => ({
+  risk_paths: t.policy.risk_paths,
+  code_extensions: t.policy.code_extensions,
+  exempt_paths: t.policy.exempt_paths,
+  budget_floor: t.policy.budget_floor,
+});
+const skippable = (from: string): Node => ({ from, if_skipped: null });
+
 const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node => ({
   id,
   script: 'sa-check',
@@ -47,8 +56,10 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
 
 /**
  * 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果；now 固定以得到确定的 deadline_ms）。
- * 每个里程碑：start → 逐包 code/verify → 至多 3 轮 diff → review → gate（第 2、3 轮前有 when 守卫的 fix）；
- * 未走到的轮次被条件跳过，下一里程碑以 none_failed_min_one_success 汇合三个 gate；escalate 即 gate 失败、run 停下。
+ * 每个里程碑：start → 逐包 code/verify/[repair]/settle → 至多 3 轮 diff → review → gate（第 2、3 轮前有 when 守卫的
+ * fix）。verify 不 advance 时包内修复一次（repair），settle 复验；挂起（suspend）即该节点失败、run 停下，后续包与
+ * 评审都不启动。验收未 advance 的轮次跳过评审，gate 按验收原因直接进入修复。未走到的轮次被条件跳过，下一里程碑以
+ * none_failed_min_one_success 汇合三个 gate；escalate 即 gate 失败、run 停下。
  * fake：AI 节点换成 bash 桩，零模型调用跑通整条 DAG——首轮评审 FAIL（一条 high），修复追加一行，第 2 轮关闭它并 PASS。
  */
 export function buildWorkflow(
@@ -88,6 +99,11 @@ export function buildWorkflow(
       ? { sandbox: tiers.policy.exec_profiles.reviewer.claude.sandbox }
       : { mcp: join(gen, READONLY_MCP) };
   const planPath = join(gen, 'plan.json');
+  const policyPath = join(gen, 'policy.json');
+  // fake 不查执行层台账：身份记 fake、预算不检查（桩节点没有 spend/binding）
+  const ledger = fake ? {} : { archon: join(gen, 'archon') };
+  const effort = (role: 'code' | 'repair' | 'review', risk: string, r = 1): Node =>
+    fake ? {} : { effort: effortFor(tiers, role, risk, r) };
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
   let after: Node = { depends_on: ['environment'] };
@@ -111,12 +127,14 @@ export function buildWorkflow(
       output_format: outputSchema('attempt'),
     });
     let prev = start;
+    const last = ms.at(-1) === m;
     for (const p of m.packages) {
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
         : {
             command: 'sa-code',
             model: '@sa-coder',
+            ...effort('code', p.risk),
             ...noNesting('@sa-coder', 'coder', [p]),
             with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
           };
@@ -126,29 +144,67 @@ export function buildWorkflow(
         depends_on: [prev, attempt],
         output_format: outputSchema('coder'),
       });
+      const accept = {
+        kind: 'accept',
+        plan: planPath,
+        policy: policyPath,
+        pkgs: p.id,
+        base,
+        risk: p.risk,
+        milestone: m.id,
+        ...ledger,
+      };
+      const verify = `verify-${p.id}`;
       nodes.push(
         check(
-          `verify-${p.id}`,
+          verify,
           [`code-${p.id}`, attempt],
-          {
-            kind: 'accept',
-            plan: planPath,
-            pkgs: p.id,
-            base,
-            tag: `verify-${p.id}`,
-            coder: `$code-${p.id}.output`,
-            milestone: m.id,
-          },
+          { ...accept, tag: verify, coder: `$code-${p.id}.output` },
           { output_format: outputSchema('accept') }
         )
       );
-      prev = `verify-${p.id}`;
+      nodes.push({
+        id: `repair-${p.id}`,
+        ...(fake
+          ? { bash: fakeEdit(p, `repair ${p.id}`) }
+          : {
+              command: 'sa-repair',
+              model: '@sa-coder',
+              ...effort('repair', p.risk),
+              ...noNesting('@sa-coder', 'coder', [p]),
+              with: {
+                pkg: p.id,
+                brief: brief(p),
+                hint: join(gen, 'hints', `${p.id}.md`),
+                reason: `$${verify}.output.reason`,
+                accept_log: `$${verify}.output.log`,
+              },
+            }),
+        depends_on: [verify, attempt],
+        when: `$${verify}.output.disposition == 'repair'`,
+        output_format: outputSchema('coder'),
+      });
+      nodes.push(
+        check(
+          `settle-${p.id}`,
+          [verify, `repair-${p.id}`, attempt],
+          {
+            ...accept,
+            kind: 'settle',
+            tag: `settle-${p.id}`,
+            first: `$${verify}.output`,
+            repaired: skippable(`$repair-${p.id}.output`),
+          },
+          { trigger_rule: 'none_failed_min_one_success', output_format: outputSchema('accept') }
+        )
+      );
+      prev = `settle-${p.id}`;
     }
     const briefs = m.packages.map(brief).join(' ');
     const rounds: Node = {};
     for (let r = 1; r <= MAX_ROUNDS; r++) {
       const t = `${m.id}-r${String(r)}`;
-      const last = `${m.id}-r${String(r - 1)}`;
+      const before = `${m.id}-r${String(r - 1)}`;
       if (r > 1) {
         nodes.push({
           id: `fix-${t}`,
@@ -158,17 +214,18 @@ export function buildWorkflow(
                 command: 'sa-fix',
                 model: '@sa-coder',
                 ...noNesting('@sa-coder', 'coder', m.packages),
+                ...effort('repair', m.risk),
                 with: {
                   milestone: m.id,
                   round: r,
-                  review: `$gate-${last}.output.review_file`,
-                  accept_log: `$diff-${last}.output.log`,
+                  ledger: `$gate-${before}.output.ledger_file`,
+                  accept_log: `$diff-${before}.output.log`,
                   briefs,
                   hints: join(gen, 'hints'),
                 },
               }),
           depends_on: [prev, attempt],
-          when: `$gate-${last}.output.verdict == 'fix'`,
+          when: `$gate-${before}.output.verdict == 'fix'`,
           output_format: outputSchema('coder'),
         });
         prev = `fix-${t}`;
@@ -181,11 +238,19 @@ export function buildWorkflow(
           {
             kind: 'accept',
             plan: planPath,
+            policy: policyPath,
             pkgs: ids,
             base,
+            risk: m.risk,
+            milestone: m.id,
             tag: `diff-${t}`,
+            ...ledger,
             ...(r > 1
-              ? { prev: `$diff-${last}.output.diff_hash`, coder: `$fix-${t}.output`, milestone: m.id }
+              ? {
+                  prev: `$diff-${before}.output.diff_hash`,
+                  coder: `$fix-${t}.output`,
+                  delta_base: `$gate-${before}.output.reviewed_head`,
+                }
               : {}),
           },
           { output_format: outputSchema('accept') }
@@ -193,7 +258,10 @@ export function buildWorkflow(
       );
       nodes.push({
         id: `review-${t}`,
-        ...(r > 1 ? { when: `$diff-${t}.output.same != 'true'` } : {}),
+        // 验收未 advance 不烧评审调用；修复无变化（same）同样跳过，gate 直接 escalate
+        when:
+          `$diff-${t}.output.disposition == 'advance'` +
+          (r > 1 ? ` && $diff-${t}.output.same != 'true'` : ''),
         ...(fake
           ? { bash: fakeReview(r) }
           : {
@@ -201,24 +269,31 @@ export function buildWorkflow(
               model: '@sa-reviewer',
               ...noNesting('@sa-reviewer', 'reviewer'),
               ...readOnly,
+              ...effort('review', m.risk, r),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
-                risk: m.risk,
+                risk: `$diff-${t}.output.risk`,
                 round: r,
                 briefs,
-                diff: `$diff-${t}.output.patch`,
                 accept_log: `$diff-${t}.output.log`,
-                ...(r > 1 ? { prev: `$gate-${last}.output.review_file` } : {}),
+                // 第 2/3 轮只看上次评审以来的增量与累计台账；全量 diff 只给路径（F-20）
+                ...(r > 1
+                  ? {
+                      diff: `$diff-${t}.output.delta`,
+                      full_diff: `$diff-${t}.output.patch`,
+                      ledger: `$gate-${before}.output.ledger_file`,
+                    }
+                  : { diff: `$diff-${t}.output.patch` }),
               },
             }),
         depends_on: [`diff-${t}`],
         mutates_checkout: false,
         output_format: outputSchema('reviewer'),
       });
-      rounds[`R${String(r)}`] = `$review-${t}.output`;
+      rounds[`R${String(r)}`] = skippable(`$review-${t}.output`);
       rounds[`C${String(r)}`] = `$diff-${t}.output`;
-      // 评审因修复无变化被跳过时 gate 仍要运行（读 diff 的 same 直接 escalate）；diff 也被跳过则本轮整体不走
+      // 评审被跳过（验收未 advance 或修复无变化）时 gate 仍要运行；diff 也被跳过则本轮整体不走
       nodes.push(
         check(
           `gate-${t}`,
@@ -229,10 +304,15 @@ export function buildWorkflow(
             ...rounds,
             risk: m.risk,
             milestone: m.id,
+            pkgs: ids,
             plan: planPath,
+            policy: policyPath,
             tag: `gate-${t}`,
+            ...ledger,
+            // 非末里程碑 PASS 后还会启动下一里程碑的模型调用：先过预算
+            ...(last ? {} : { next: '1' }),
           },
-          r > 1 ? { trigger_rule: 'none_failed_min_one_success' } : {}
+          { trigger_rule: 'none_failed_min_one_success' }
         )
       );
       prev = `gate-${t}`;
@@ -385,7 +465,16 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     });
   }
   writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
-  const mcp = loadTiers().policy.sandbox.mcp;
+  const tiers = loadTiers();
+  const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
+  if (plan.budget.weighted_tokens < floor)
+    throw new Error(
+      `plan invalid: /budget/weighted_tokens ${String(plan.budget.weighted_tokens)} < policy.budget_floor sum ${String(floor)}`
+    );
+  writeFileSync(join(dir, 'policy.json'), JSON.stringify(policyOf(tiers), null, 2) + '\n');
+  // sa-check 经它查本 run 的 spend/binding（F-14/F-16）；gen 目录可脱离 wetamp 安装位置被引用
+  if (!fake) symlinkSync(join(WETAMP, 'bin', 'archon'), join(dir, 'archon'));
+  const mcp = tiers.policy.sandbox.mcp;
   for (const p of plan.packages) {
     writeFileSync(
       join(dir, 'briefs', `${p.id}.md`),
@@ -407,7 +496,8 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
   const config = join(dir, 'run-config.yaml');
   writeFileSync(config, YAML.stringify({ aliases: runAliases(plan.console ?? 'claude') }, {}));
   git(dir, 'init', '-q');
-  git(dir, 'add', '.archon', 'plan.json', 'briefs', '.gitignore', 'run-config.yaml', READONLY_MCP);
+  const files = ['.archon', 'plan.json', 'policy.json', 'briefs', '.gitignore', 'run-config.yaml'];
+  git(dir, 'add', ...files, READONLY_MCP, ...(fake ? [] : ['archon']));
   git(dir, 'commit', '-qm', `superagent ${run}`);
   const v = archon(['validate', 'workflows', workflow, '--cwd', dir]);
   if (v.code !== 0) throw new Error(`generated workflow invalid: ${tail(v.out + v.err)}`);

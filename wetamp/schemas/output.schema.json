@@ -203,9 +203,41 @@
         },
         "head": {
           "type": "string"
+        },
+        "disposition": {
+          "enum": ["advance", "repair", "suspend"]
+        },
+        "reason": {
+          "type": ["string", "null"]
+        },
+        "delta": {
+          "type": "string"
+        },
+        "risk": {
+          "type": ["string", "null"]
+        },
+        "out_of_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
-      "required": ["ok", "failed", "log", "patch", "diff_hash", "same", "base_pass", "head"]
+      "required": [
+        "ok",
+        "failed",
+        "log",
+        "patch",
+        "diff_hash",
+        "same",
+        "base_pass",
+        "head",
+        "disposition",
+        "reason",
+        "delta",
+        "risk",
+        "out_of_scope"
+      ]
     },
     "head": {
       "type": "object",

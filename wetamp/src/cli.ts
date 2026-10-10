@@ -33,6 +33,7 @@ import {
 import { WETAMP, aliasDrift, codexWorkerProblem, home, loadTiers, runAliases } from './config';
 import { generate, newRunId } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
+import { buildReport } from './report';
 
 const OPTIONS = {
   timeout: { type: 'string' },
@@ -835,17 +836,9 @@ export function summarize(pairs: Pair[]): Record<string, unknown> {
   return { runs: pairs.length, ...Object.fromEntries(Object.entries(n).sort()), unreadable };
 }
 
-/** 全部登记 run 的 summarize。 */
+/** 全部登记 run 的计数摘要与用量台账（F-22，见 report.ts）。 */
 export function report(): Record<string, unknown> {
-  return summarize(
-    ledgers().map(l => {
-      try {
-        return { ledger: l, run: getRun(l.archon_run_id, l.repo) };
-      } catch (e) {
-        return { ledger: l, run: e as Error };
-      }
-    })
-  );
+  return buildReport(ledgers());
 }
 
 const USAGE =
@@ -925,7 +918,8 @@ export function main(argv: string[]): number {
     case 'report': {
       const r = report();
       print(r);
-      return (r.unreadable as string[]).length ? 1 : 0;
+      const usage = r.usage as { unreadable: string[] };
+      return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
     case 'health':
       return health(a.flags.cwd);
