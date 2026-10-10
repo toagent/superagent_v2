@@ -98,6 +98,8 @@ export const CODER_CLASSES = [
   'redline',
 ] as const;
 const base: Reason[] = [
+  deterministic('base_branch_missing', 'engine_suspect', 'engine', '起跑缺少可检测的 base branch'),
+  entry('cancelled_source', 'paused', 'transient', 'env', '有结构化取消来源'),
   deterministic('signoff', 'signoff', 'human', '等待人工签收'),
   deterministic('deadline', 'deadline', 'human', '计划截止已过'),
   entry('gate', 'gate', 'transient', 'engine', '评审节点执行失败'),

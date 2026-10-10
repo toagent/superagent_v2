@@ -82,6 +82,7 @@ const OPTIONS = {
   all: { type: 'boolean' },
   since: { type: 'string' },
   refresh: { type: 'boolean' },
+  'dry-run': { type: 'boolean' },
   open: { type: 'boolean' },
 } as const;
 interface Args {
@@ -1597,7 +1598,7 @@ export function main(argv: string[]): number {
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
     case 'memory':
-      print(memoryData());
+      print(a.flags['dry-run'] ? memoryTick(loadAsks(), Date.now(), false, true) : memoryData());
       return 0;
     case 'health':
       return health(a.flags.cwd);

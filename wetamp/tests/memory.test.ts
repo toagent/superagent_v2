@@ -1,7 +1,8 @@
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { foldEpisode, injectMemory, lessonText, lintPlan, maintainLessons, memoryData, memoryState, memoryTick, memoryWrite, priorKey, privateProject, saveEpisode, selectLessons, taskTag, triage, triggered, type Episode, type Lesson } from '../src/memory';
+import { diagnosis, foldEpisode, injectMemory, lessonText, lintPlan, maintainLessons, memoryData, memoryState, memoryTick, memoryWrite, priorKey, privateProject, saveEpisode, selectLessons, taskTag, triage, triggered, type Episode, type Lesson } from '../src/memory';
 import { curate, reflectOne, reflectionInput, reflectionUsage } from '../src/memory-reflect';
 import { artifactsOf, main, type Ledger } from '../src/cli';
 import { lock, type RunView } from '../src/archon';
@@ -14,6 +15,7 @@ import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import e1 from './incidents/e1-settle.json';
 import e2 from './incidents/e2-asks.json';
 import replay from './incidents/ev1-memory.json';
+import realData from './incidents/ev1b-real-data.json';
 
 const NOW = Date.parse('2026-10-10T12:00:00Z');
 const zeros = { engine_suspect: 0, dup_ask: 0, orphan_hold: 0, stale_answer: 0 };
@@ -46,7 +48,7 @@ describe('EV1 incident replay', () => {
       writeFileSync(join(artifactsOf(raw), `${sample.node}.json`), JSON.stringify(sample.settle));
       writeFileSync(join(artifactsOf(raw), `${sample.node}.coder.json`), JSON.stringify({ ...sample.coder, prompt: 'SECRET-PROMPT', transcript: 'SECRET-TRANSCRIPT' }));
       const e = episode({ id: `e1-${i}` }); expect(e.category).toBe('engine'); expect(saveEpisode(e)).toBe(true); expect(saveEpisode(e)).toBe(false);
-      expect(existsSync(join(sa, 'memory/mechanize', `e1-${i}.json`))).toBe(true);
+      expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
     }
     expect(await reflectOne(NOW)).toBe(false); expect(existsSync(process.env.FAKE_MEMORY_STARTED!)).toBe(false);
   });
@@ -56,13 +58,13 @@ describe('EV1 incident replay', () => {
     expect(signals.dup_ask).toBeGreaterThan(0);
     expect(triage({ reasons: ['auto_retry_exhausted'], signals })).toBe('engine');
     const e = episode({ id: 'e2', reasons: ['auto_retry_exhausted'], signals, category: triage({ reasons: ['auto_retry_exhausted'], signals }) });
-    saveEpisode(e); expect(existsSync(join(sa, 'memory/mechanize/e2.json'))).toBe(true);
+    saveEpisode(e); expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
   });
   test('M2-01 and xiaopan 57e6 become mechanisms', async () => {
     fake();
     for (const key of ['M2-01', 'xiaopan-57e6'] as const) {
-      const sample = replay[key], e = episode({ id: key, status: sample.status, reasons: [sample.reason] }); e.category = triage(e);
-      expect(String(e.category)).toBe(sample.classification); saveEpisode(e); expect(existsSync(join(sa, 'memory/mechanize', `${key}.json`))).toBe(true);
+      const sample = replay[key], e = episode({ id: key, status: sample.status, reasons: [sample.reason] }); Object.assign(e, diagnosis(e));
+      expect(String(e.category)).toBe(sample.classification); saveEpisode(e); expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
     }
     expect(await reflectOne(NOW)).toBe(false);
   });
@@ -87,7 +89,7 @@ describe('EV1 incident replay', () => {
     maintainLessons({ id: 'next', reasons: ['acceptance_failed'], failed: true, ids: [learned.id] }, NOW);
     expect(memoryState().lessons[0].harmful).toBe(1);
     maintainLessons({ id: 'third', reasons: ['acceptance_failed'], failed: true, ids: [learned.id] }, NOW);
-    expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'retired' }); expect(existsSync(join(sa, 'memory/mechanize', `${learned.id}.json`))).toBe(true);
+    expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'retired' }); expect(existsSync(join(sa, 'memory/mechanize', `lesson_${learned.id}.json`))).toBe(true);
     expect(selectLessons(root, 'ts-cli')).toHaveLength(0);
   });
 });
@@ -170,7 +172,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     const base = episode({ status: 'running', reasons: [], category: 'project', signals: zeros }); expect(triggered(base, undefined, undefined, NOW)).toBe(false);
     for (const e of [episode({ status: 'cancelled' }), episode({ status: 'completed', asks: [{ hold: 'signoff', status: 'approved' }] }), episode({ p50_ratio: 2.1 }), episode({ findings: ['| f | high | src/cli.ts:1 | open | proof |'] }), episode({ signals: { ...zeros, engine_suspect: 1 } })]) expect(triggered(e, undefined, undefined, NOW)).toBe(true);
     expect(triggered(base, new Date(NOW - 1800001).toISOString(), undefined, NOW)).toBe(true); expect(triggered(base, undefined, 30000, NOW)).toBe(true);
-    expect(triage({ reasons: ['budget_tokens_exceeded'], signals: zeros })).toBe('plan'); expect(triage({ reasons: ['review_failed'], signals: zeros })).toBe('role'); expect(triage({ reasons: ['coder_output_invalid'], signals: zeros })).toBe('role'); expect(triage({ reasons: ['coder_error:env'], signals: zeros })).toBe('transient'); expect(triage({ reasons: ['acceptance_failed'], signals: zeros })).toBe('project');
+    expect(triage({ reasons: ['budget_tokens_exceeded'], signals: zeros })).toBe('plan'); expect(triage({ reasons: ['review_failed'], signals: zeros })).toBe('role'); expect(triage({ reasons: ['coder_output_invalid'], signals: zeros })).toBe('role'); expect(triage({ reasons: ['coder_error:env'], signals: zeros })).toBe('engine'); expect(triage({ reasons: ['environment'], signals: zeros })).toBe('transient'); expect(triage({ reasons: ['acceptance_failed'], signals: zeros })).toBe('project');
     expect(taskTag(['docs/a.md', 'src/b.ts', 'a.vue', 'c.ts'])).toBe('docs+ts-cli');
   });
   test('outcomes promote, expire and cap scope deterministically', () => {
@@ -230,8 +232,77 @@ describe('EV1 lifecycle, privacy and priors', () => {
     const priors = JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8')); expect(priors[priorKey(root, plan.packages[0], model)]).toMatchObject({ n: 1, duration: { p50: 60000 }, tokens: { n: 1, p50: 110 } });
     const unknownEvents = events.map(e => ({ ...e, data: { ...e.data, spend: { ...e.data.spend, tokens: unavailable } } })); writeFileSync(file, JSON.stringify({ ...eventRun, events: unknownEvents })); memoryTick({}, NOW + 10000, false);
     expect(readFileSync(episodePath, 'utf8')).toBe(original);
-    const unknownPriors = JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8')); expect(unknownPriors[priorKey(root, plan.packages[0], model)].tokens.n).toBe(0);
+    const unknownPriors = JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8')); expect(unknownPriors[priorKey(root, plan.packages[0], model)].tokens.n).toBe(1);
+    // Only a changed ledger invalidates a terminal cache; changing native history alone does not query it.
+    writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify({ ...ledger, intervened: true })); memoryTick({}, NOW + 15000, false);
+    expect(JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8'))[priorKey(root, plan.packages[0], model)].tokens.n).toBe(0);
     expect(foldEpisode(ledger, plan, eventRun, unknownEvents, {}, NOW).tokens[0].total).toBeNull();
     delete process.env.FAKE_EV1_RUN;
+  });
+});
+
+
+describe('EV1b production-shaped replay and incremental isolation', () => {
+  test('sampled sinan, suspect, launch failure and sourced cancellation classify from evidence', () => {
+    for (const sample of realData.runs) {
+      const l = { ...ledger, run_id: sample.id, dispositions: sample.dispositions }, run: RunView = { ...raw, id: sample.id, status: sample.status as RunView['status'], nodes: sample.nodes, started_at: sample.started_at, completed_at: sample.completed_at, metadata: { error: sample.failure } };
+      const ids = [...new Set(Object.keys(sample.artifacts).filter(f => /^(verify|settle)-/.test(f) && !f.endsWith('.coder.json')).map(f => f.replace(/^(verify|settle)-/, '').replace(/\.json$/, '')))];
+      const p = { ...plan, packages: (ids.length ? ids : ['core']).map(id => ({ ...plan.packages[0], id })) };
+      mkdirSync(artifactsOf(run), { recursive: true }); for (const [file, row] of Object.entries(sample.artifacts)) writeFileSync(join(artifactsOf(run), file), JSON.stringify(row));
+      if (sample.incident) mkdirSync(join(sa, 'incidents', sample.id), { recursive: true });
+      const e = foldEpisode(l, p, run, sample.cancellations, {}, NOW), cancellation = sample.cancellations.length > 0 && !sample.incident;
+      expect(e.category).toBe(cancellation ? 'transient' : 'engine');
+      expect(e.signature).toBe(sample.incident ? 'engine_suspect' : sample.failure === 'base_branch_missing' ? 'base_branch_missing' : cancellation ? 'cancelled_source' : 'auto_retry');
+      saveEpisode(e);
+      if (cancellation) { const missing = foldEpisode(l, p, run, [], {}, NOW); expect(missing.category).toBe('engine'); expect(missing.signature).toBe('evidence_missing'); saveEpisode({ ...missing, id: sample.id + '-missing' }); }
+    }
+    const missing = JSON.parse(readFileSync(join(sa, 'memory/mechanize/evidence_missing.json'), 'utf8'));
+    expect(missing.episodes).toHaveLength(4); expect(readdirSync(join(sa, 'memory/mechanize')).filter(f => f === 'evidence_missing.json')).toHaveLength(1);
+    const retries = JSON.parse(readFileSync(join(sa, 'memory/mechanize/auto_retry.json'), 'utf8')); expect(retries.episodes).toHaveLength(2);
+  });
+  test('HF5 episode hashes separate new holds, count historical duplicate reminder identities', () => {
+    raw.status = 'completed';
+    const a = foldEpisode(ledger, plan, raw, [], { 'incident:budget:aaaaaaaaaaaaaaaa': { status: 'approved', id: 'a' }, 'incident:budget:bbbbbbbbbbbbbbbb': { status: 'pending', id: 'b' } }, NOW); expect(a.signals.dup_ask).toBe(0);
+    const b = foldEpisode(ledger, plan, raw, [], { 'incident:budget:1': { status: 'superseded', id: 'a' }, 'incident:budget:2': { status: 'superseded', id: 'b' }, 'incident:budget:aaaaaaaaaaaaaaaa': { status: 'approved', id: 'a', legacy_key: 'incident:budget:1' } }, NOW); expect(b.signals.dup_ask).toBe(1); expect(b.category).toBe('engine');
+  });
+  test('one escaped artifact only records an error; terminal runs including nontriggers stop querying', () => {
+    const outside = tmp(), bad: RunView = { ...raw, id: 'bad-native', output_root: outside };
+    mkdirSync(artifactsOf(bad), { recursive: true }); writeFileSync(join(artifactsOf(bad), 'verify-core.json'), '{}');
+    const good = { ...raw, id: 'good-native', events: [] }, quiet = { ...raw, id: 'quiet-native', status: 'completed', events: [] };
+    const queries = join(root, 'queries'), responses = join(root, 'responses'); mkdirSync(responses); mkdirSync(join(sa, 'runs'));
+    for (const [id, run] of [['bad', { ...bad, events: [] }], ['good', good], ['quiet', quiet]] as const) { writeFileSync(join(responses, run.id + '.json'), JSON.stringify(run)); writeFileSync(join(sa, 'runs', id + '.json'), JSON.stringify({ ...ledger, run_id: id, archon_run_id: run.id })); }
+    mkdirSync(artifactsOf(good), { recursive: true }); writeFileSync(join(artifactsOf(good), 'verify-core.json'), JSON.stringify({ reason: 'acceptance_failed', ok: false }));
+    const stub = join(root, 'incremental'); writeFileSync(stub, `#!/bin/sh\necho "$3" >> '${queries}'\ncat "$FAKE_EV1_RUN/$3.json"\n`, { mode: 0o755 }); process.env.SA_ARCHON_BIN = stub; process.env.FAKE_EV1_RUN = responses;
+    const dry = memoryTick({}, NOW, true, true); expect(dry.errors).toEqual([{ id: 'bad', reason: 'path_outside' }]); expect(existsSync(join(sa, 'memory'))).toBe(false);
+    memoryTick({}, NOW, false); expect(existsSync(join(sa, 'memory/episodes/good.json'))).toBe(true); expect(existsSync(join(sa, 'memory/episodes/quiet.json'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(sa, 'memory/errors.jsonl'), 'utf8').trim())).toEqual({ id: 'bad', reason: 'path_outside' });
+    const priorsAt = statSync(join(sa, 'memory/priors.json')).mtimeMs; writeFileSync(queries, ''); memoryTick({}, NOW + 60000, false);
+    expect(readFileSync(queries, 'utf8').trim()).toBe('bad-native'); expect(statSync(join(sa, 'memory/priors.json')).mtimeMs).toBe(priorsAt);
+    memoryTick({}, NOW + 86400000, false); expect(statSync(join(sa, 'memory/priors.json')).mtimeMs).toBeGreaterThanOrEqual(priorsAt);
+  });
+  test('native revision invalidates live cache while clock-only holds still trigger without queries', () => {
+    const nativeHome = join(sa, 'archon'); mkdirSync(nativeHome);
+    const db = new Database(join(nativeHome, 'archon.db'));
+    db.exec('CREATE TABLE remote_agent_workflow_runs (id TEXT PRIMARY KEY, status TEXT, last_activity_at TEXT, completed_at TEXT, metadata TEXT); CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT)');
+    db.query('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, NULL, ?)').run(raw.id, 'paused', new Date(NOW).toISOString(), '{}');
+    const activeRun = { ...raw, status: 'paused', started_at: new Date(NOW).toISOString(), completed_at: null, nodes: [], last_activity_at: new Date(NOW).toISOString(), metadata: { wait: { nodeId: 'gate', kind: 'event', event: 'sa.human', resumeAt: new Date(NOW + 3600000).toISOString(), waitingSince: new Date(NOW).toISOString() } }, events: [] };
+    const file = join(root, 'active.json'), queries = join(root, 'live-queries'), stub = join(root, 'active-query'); writeFileSync(file, JSON.stringify(activeRun)); writeFileSync(stub, `#!/bin/sh\necho query >> '${queries}'\ncat "$FAKE_EV1_RUN"\n`, { mode: 0o755 }); process.env.SA_ARCHON_BIN = stub; process.env.FAKE_EV1_RUN = file;
+    mkdirSync(join(sa, 'runs')); writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
+    try {
+      memoryTick({}, NOW, false); const aged = memoryTick({}, NOW + 610000, false); expect(aged.episodes[0]).toMatchObject({ category: 'engine', signature: 'orphan_hold' }); expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(1);
+      db.query('INSERT INTO remote_agent_workflow_events VALUES (?)').run(raw.id); writeFileSync(file, JSON.stringify({ ...raw, events: [] })); memoryTick({}, NOW + 620000, false);
+      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(2); memoryTick({}, NOW + 630000, false); expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(2);
+    } finally { db.close(); }
+  });
+  test('a completed run still detects coder error from structured self-report without persisting its body', () => {
+    raw.status = 'completed'; writeFileSync(join(artifactsOf(raw), 'verify-core.coder.json'), JSON.stringify({ error_class: 'task', prompt: 'FORBIDDEN', transcript: 'FORBIDDEN' }));
+    const e = foldEpisode(ledger, plan, raw, [], {}, NOW); expect(e.category).toBe('engine'); expect(e.signature).toBe('evidence_conflict'); expect(triggered(e, undefined, undefined, NOW)).toBe(true); expect(JSON.stringify(e)).not.toContain('FORBIDDEN');
+  });
+  test('real strategist job roles and cards replace other tag; done overrun is plan', () => {
+    mkdirSync(join(sa, 'jobs'));
+    for (const j of realData.jobs) writeFileSync(join(sa, 'jobs', j.id + '.json'), JSON.stringify({ ...j, cwd: root, card: j.card ? join(root, j.card) : null, kind: 'codex', model: 'fixture', title: 'review', pid: 0, wrapper_pid: 0 }));
+    const d = memoryTick({}, NOW, false, true); expect(existsSync(join(sa, 'memory'))).toBe(false);
+    expect(d.episodes.length).toBeGreaterThan(0); for (const e of d.episodes) { expect(e.tag).toStartWith('strategist:'); expect(e.category).toBe(e.status === 'done' ? 'plan' : 'role'); }
+    expect(d.errors).toEqual([]);
   });
 });

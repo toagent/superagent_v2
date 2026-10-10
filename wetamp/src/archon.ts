@@ -2,7 +2,7 @@
 import { dlopen, FFIType, read, type Pointer } from 'bun:ffi';
 import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import { closeSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
@@ -118,6 +118,20 @@ const jsonOf = (args: string[], r: Exec): Json => {
 
 export function archonJson(args: string[], cwd?: string): Json {
   return jsonOf(args, archon([...args, '--json'], cwd));
+}
+
+/** Cheap change detector only; CLI still owns the run/event projection. No DB is created.
+ * PostgreSQL and test stubs without a registry use the existing CLI query path. */
+export function runRevision(id: string): string | null {
+  const path = join(home().archon, 'archon.db');
+  if (process.env.DATABASE_URL || !existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
+  try {
+    const row = db.query(`SELECT status, last_activity_at, completed_at, metadata,
+      (SELECT COUNT(*) FROM remote_agent_workflow_events WHERE workflow_run_id = r.id) AS events
+      FROM remote_agent_workflow_runs r WHERE id = ?`).get(id);
+    return row ? new Bun.CryptoHasher('sha256').update(JSON.stringify(row)).digest('hex') : null;
+  } finally { db.close(); }
 }
 
 export const tail = (s: string, n = 400): string => s.trim().slice(-n);

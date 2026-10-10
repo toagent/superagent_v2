@@ -590,3 +590,24 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **I1/I6**：E1绿验收与自报错误、E2重复提问/同指纹确定性重复重试、M2-01、xiaopan 57e6均走engine机制通道，不由反思改写判定；E5继续复用原生base preflight。project端口夹具经过fake反思、同项目同类型brief注入、跨项目隔离、两次复发退役并写机制需求。另覆盖日预算/次日恢复、单调用锁、注入上限、总开关/指纹、隐私、schema和输出上限、未知用量、挂起归档后终态计分及真实CLI lint台账。
 - **交付边界**：仅本包编码与隔离fake自检；没有真实反思、独立评审、生产写入、发布或主控验收。EV1+EV2 astra里程碑评审与集成后实测交元帅。
 - **验证证据**：`cd wetamp && bunx tsc --noEmit && timeout 600 bun test` 在隔离 home、`NODE_ENV=test SUPERAGENT_MEMORY=on` 下 exit 0（628 pass/0 fail/3 snapshots，185.10s，`/tmp/ev1-all-on-final.log`）；off 全套同样628 pass/0 fail（`/tmp/ev1-all-final.log`）。最终定向24 pass/0 fail（`/tmp/ev1-memory-final.log`），`bunx tsc --noEmit`、`bunx eslint src`及根 lint wrapper均exit 0（`/tmp/ev1-{tsc,eslint,wrapper}-final.log`）。`scripts/selftest.sh --fake` exit 0、ok=true（`/tmp/ev1-selftest-final.log`）；提交绑定 `scripts/verify-local.sh --commit HEAD` 使用同一调用方临时 home（路径保存在 `/tmp/ev1-accept-home-path`），回执以该 home 的 `verify.json` 为准。src净增246行（≤350）；hooks/packages受跟踪文件零改动；预建node_modules软链不暂存；`git diff --check`通过。
+
+
+### EV1b 返修
+
+被真机证据推翻的假设是「没有原因码就属于 project」：终态与正向原因证据必须一起分诊，不能以缺证据生成项目经验。`memory --dry-run --json` 读 ledger、Archon 和 asks，只计算摘要与分类；不创建 memory、不计分、不排反思，逐项错误只在返回值中报告。
+
+| 证据（按优先级） | 分类 / 签名 |
+|---|---|
+| 起跑失败闭集映射、incident/engine_suspect、同 episode 重复提问、auto_retry 处置 | engine / base_branch_missing、engine_suspect、dup_ask、auto_retry |
+| 结构化 operator/approval_rejected/conversation_reset/fan_out 取消来源，且没有上述引擎证据 | transient / cancelled_source；历史 coder 自报不覆盖已记录的取消来源 |
+| failed/cancelled/lost 无任何原因；未注册失败文本或原因 | engine / evidence_missing；engine / unregistered_reason |
+| 验收全绿但非成功终态、coder 自报 error、self_report_conflict | engine / evidence_conflict |
+| 注册码 review_failed/coder_output_invalid；全为 transient 码 | role / 对应原因；transient / 原因集合 |
+| 注册码 owner=human 或实测长耗时；注册码 owner=coder | plan / 对应原因或 duration_overrun；project / 对应原因集合 |
+
+- **I1/I2/I5**：原因合并 artifacts、ledger dispositions/hold 和 Archon 错误；失败文本只做闭集诊断映射，未知文本只存 unregistered_reason，不保存错误正文、不参与 retry 决策。tag 由作业 role 与 card 文件名构成，done 作业只因超时长触发时归 plan。HF5 hash 区分挂起 episode；旧 attempt 键作为历史 episode，并按提醒身份去重，保留已关闭提问的事故证据。机制需求改为 `mechanize/<signature>.json`，同签名追加去重 episode 证据数组。
+- **I6/隔离**：从生产只读取样的 8 个 run 与 4 个 strategist 作业形状存 `tests/incidents/ev1b-real-data.json`，只保留状态、原因、JSON 判定字段及时间；所有运行路径由临时根提供。四个取消 run 的 workflow_cancelled 事件实测均有 operator 来源，另回放删除来源的变体，四条变体只生成一条 evidence_missing 需求。artifacts 越界逐 run 记 `{id,reason}` 到 errors.jsonl，不含错误正文，其余 run 继续折叠。
+- **增量**：fold-index 保存终态 ledger/native-id 标记与统计样本，已折叠或不触发的终态都不再查 Archon；ledger 改动使其失效。priors 仅按日或新增/变化终态样本重算。在途 run 用 readonly SQLite 的状态/metadata/活动时间/event-count 哈希识别变化，未变化时复用纯 episode 投影，仍按当前时钟重算 orphan_hold、耗时与触发；变化后仍由原生 CLI 生成 run/event 投影。没有 SQLite 注册表或使用 PostgreSQL 时保留 CLI 路径，不创建数据库。
+- **生产 dry-run**：`SUPERAGENT_HOME=$HOME/.superagent ARCHON_HOME=$HOME/.superagent/archon wetamp/bin/superagent memory --dry-run --json`，前后 `test ! -e ~/.superagent/memory` 均成立；24 episodes，engine=14、plan=5、project=0、role=1、transient=4，errors=[]（`/tmp/ev1b-dryrun.json`）。aa74/6a28=engine/dup_ask，57e6=engine/engine_suspect，c439=engine/base_branch_missing；87e4/3bc3/6eb5/9e81=transient/cancelled_source；ab51/8133/cc67 done 作业=plan/duration_overrun，8715 failed strategist=role/strategist_job_failed。
+- **性能证据**：恢复后重新复制 24 个 ledger 到临时 home，保留真实 Archon readonly 查询，关闭反思；连续两轮 10822.58ms、2.58ms，分别 24 次和 0 次 CLI 查询，errors=[]，稳态第二轮达到 ≤300ms（`/tmp/ev1b-perf.json`）。此前在途 run 变化时测得第二轮 530.6ms（1 次查询），不作为稳态成功；发生变化的轮次仍受原生 CLI 启动与投影耗时影响。
+- **自检与交接**：恢复后最终代码执行 `cd wetamp && bunx tsc --noEmit && timeout 600 bun test` exit 0（684 pass/0 fail/3 snapshots，199.88s，`/tmp/ev1b-all.log`），`bunx eslint src`、根 `bun run lint` 和 fake selftest 均 exit 0（`/tmp/ev1b-root-lint.log`、`/tmp/ev1b-selftest.log`，selftest ok=true）；30 项 memory 定向测试此前通过。src 净增 75 行，hooks/packages 受跟踪文件零改动。提交绑定 verify-local 的回执以同一临时 home 的 verify.json 为准（home 路径在 `/tmp/ev1b-accept-home-path`）。只做编码端交付，没有真实反思、生产写入、独立评审、合并或发布；EV1+EV2 里程碑评审及主控真机验收仍交元帅。
