@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
+import * as saCheck from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
 import { Database } from 'bun:sqlite';
 import {
@@ -2182,6 +2183,74 @@ describe('HF9 decision titles', () => {
       { nodeId: 'start-m1', state: 'completed' }, { nodeId: 'verify-W4', state: 'failed' }];
     return f;
   };
+  const maximumTitle = (hold: Hold, value = Number.MAX_SAFE_INTEGER) => {
+    const f = setup(), { s, r } = f;
+    const repo = join(s.root, 'R'.repeat(255)); mkdirSync(repo);
+    cpSync(s.ledger.gen_dir, join(repo, 'gen'), { recursive: true });
+    cpSync(join(s.ledger.repo, 'out'), join(repo, 'out'), { recursive: true });
+    r.output_root = join(repo, 'out');
+    const put = (file: string, data: unknown): void => writeFileSync(join(repo, 'out/artifacts/runs/r', file), JSON.stringify(data));
+    Object.assign(s.ledger, { repo, gen_dir: join(repo, 'gen'), engine_hash: 'old-engine', stalled: value });
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
+    const m = 'M'.repeat(32);
+    plan.budget = { launches: value, weighted_tokens: value };
+    plan.packages = Array.from({ length: 4 }, (_, i) => ({ ...plan.packages[0],
+      id: `W${String(i)}`.padEnd(64, 'x'), milestone: m, title: '长标题'.repeat(1000) }));
+    writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+    const review = hold === 'review_limit' || hold === 'review_not_independent';
+    const node = hold === 'signoff' ? `human-${m}` : review ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`;
+    writeFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
+      `nodes:\n  - id: attempt-${m}\n  - id: attempt-review-${m}-r3\n`);
+    r.nodes = [...plan.packages.slice(0, 3).map(p => ({ nodeId: `settle-${p.id}`, state: 'completed' })),
+      { nodeId: node, state: 'failed' }];
+    put(`${node}.json`, { reason: hold === 'budget' ? 'budget_tokens_exceeded' : 'coder_redline', rounds: value });
+    put(`${node}.ledger.json`, { blocking: [{ id: 'R1' }] });
+    put(`${node}.coder.json`, { milestone: m, needs: [{ cap: 'network', why: '', minimal_ask: '' }] });
+    if (hold === 'signoff') {
+      r.status = 'paused'; r.metadata = { wait: { nodeId: node, kind: 'event', event: `sa.human.${m}`, resumeAt: '2099-01-01T00:00:00Z' } };
+    } else if (hold === 'approval') r.metadata = { approval: { nodeId: node, type: 'merge_review' } };
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
+    return { ...f, node, value };
+  };
+  const assertBoundedTitle = (q: string, hold: Hold) => {
+    const policy = HOLD_POLICY[hold];
+    if (policy.do !== 'ask' && policy.do !== 'signoff') throw new Error('not an ask');
+    expect(q).toContain(policy.text); expect(q).toContain('是=');
+    expect(q).toContain('否=终止整个run（保留证据）');
+    expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
+    expect(Array.from(q).length).toBeLessThanOrEqual(200);
+  };
+  test('HF9 R4 R2-02: 16-digit budget with four maximum-name packages and adopt reaches supervisor', () => {
+    const { s, value } = maximumTitle('budget');
+    const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({ launches: value, weighted_tokens: value, reserve: value });
+    try {
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      assertBoundedTitle(q, 'budget');
+      expect(q).toContain('全部4包（含已完成3包）一次');
+      expect(q).toContain('引擎已升级，将新开run从首个节点重跑');
+      expect(q).toContain(`已用/上限${String(value)}/${String(value)}`);
+      if (process.env.HF9_R4_SAMPLE_OUT) writeFileSync(process.env.HF9_R4_SAMPLE_OUT, q + '\n');
+    } finally { usage.mockRestore(); }
+  });
+  for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
+    if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
+    for (const value of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE])
+      test(`HF9 R4 all HOLD_POLICY titles remain deliverable at numeric maximum: ${hold}/${String(value)}`, () => {
+        const { s, r, node } = maximumTitle(hold, value);
+        const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({ launches: value, weighted_tokens: value, reserve: value });
+        try {
+          const q = decisionQuestion(s.ledger, r, { state: 'held:gate', exit: 1, node }, hold, { auto_retries: value });
+          assertBoundedTitle(q, hold);
+          if (policy.do === 'ask' && policy.yes !== 'approve') {
+            expect(q).toContain('引擎已升级，将新开run从首个节点重跑');
+            expect(q).toContain(policy.yesText.replace('{target}', '').split('一次')[0]);
+          } else expect(q).toContain(policy.yesText);
+        } finally { usage.mockRestore(); }
+      });
+  }
   test('HF9 R3 maximum identifiers and unbounded schema names preserve reasons, facts, actions and marker', () => {
     // schema: id ≤64, milestone ≤32; repo basename ≤255 on disk, title has no maximum.
     for (const hold of ['redline', 'needs', 'budget', 'review_limit', 'engine_suspect', 'signoff'] as const) {

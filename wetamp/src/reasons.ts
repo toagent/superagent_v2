@@ -70,16 +70,18 @@ export type Hold = keyof typeof HOLD_POLICY;
 // 仅用于引擎标识与 plan 名称；自由文本证据不进入提醒标题。
 export const askName = (v: string, limit: number): string =>
   Array.from(v.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, limit).join('');
-export function askQuestion(hold: Hold, names: string[], detail: string,
-  recovery: (limit: number) => [string, string], marker: string): string {
+export function askQuestion(hold: Hold, names: string[], details: [string, string],
+  recovery: (limit: number, stage: number) => [string, string], marker: string): string {
   const p = HOLD_POLICY[hold];
   if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not an ask policy: ${hold}`);
-  // 按段缩短名称，原因、数字事实、动作与对账 marker 不从头截断。
-  for (let limit = 24; limit >= 1; limit--) {
-    const [target, consequence] = recovery(limit);
-    const q = `${names.map(n => askName(n, limit)).join('/')}：${p.text}；${detail || '证据缺失'}` +
+  // 依次缩名称、完成包名单、数字事实、固定文案；原因与完整动作/marker 始终保留。
+  for (let stage = 0; stage <= 3; stage++) for (let limit = 24; limit >= 1; limit--) {
+    const [target, consequence] = recovery(limit, stage);
+    const detail = stage < 2 ? details[0] : details[1];
+    const q = `${names.map(n => askName(n, limit)).join('/')}：${p.text}` +
+      (stage < 3 ? `；${detail || '证据缺失'}` : '') +
       `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）` +
-      `；详情superagent brief <run>；${marker}`;
+      (stage < 3 ? '；详情superagent brief <run>' : '') + `；${marker}`;
     if (Array.from(q).length <= 200) return q;
   }
   throw new Error('ask title: structured facts exceed 200 characters');

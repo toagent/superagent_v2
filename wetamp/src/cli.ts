@@ -1232,7 +1232,7 @@ function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
   return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? run.started_at ?? l.started_at}`;
 }
 /** 展示与实际 retryGate/resume 分支一致；settle 是包的最终验收节点。 */
-function decisionRecovery(l: Ledger, run: RunView, c: Classified, hold: Hold, limit: number): [string, string] {
+function decisionRecovery(l: Ledger, run: RunView, c: Classified, hold: Hold, limit: number, stage: number): [string, string] {
   const p = HOLD_POLICY[hold], node = c.node ?? run.metadata?.wait?.nodeId ?? '恢复节点';
   if (p.do !== 'ask' || p.yes === 'approve') return ['', ''];
   const gate = p.yes === 'review' || (p.yes === 'retry' && (c.state === 'held:gate' || /^(verify|settle)-/.test(node)));
@@ -1244,7 +1244,7 @@ function decisionRecovery(l: Ledger, run: RunView, c: Classified, hold: Hold, li
     else {
       const pkgs = planOf(l).packages.filter(p => (p.milestone ?? 'm1') === m);
       const done = pkgs.filter(p => run.nodes?.some(n => n.nodeId === `settle-${p.id}` && n.state === 'completed'));
-      const names = done.length <= 3 && limit >= 8 ? done.map(p => askName(p.id, 8)).join('、') : `${String(done.length)}包`;
+      const names = done.length <= 3 && stage === 0 ? done.map(p => askName(p.id, Math.min(8, limit))).join('、') : `${String(done.length)}包`;
       target = `重跑${askName(m, limit)}全部${String(pkgs.length)}包（${done.length ? `含已完成${names}` : '无已完成包'}）`;
     }
   }
@@ -1262,7 +1262,7 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
   const reason = typeof out.reason === 'string' ? reasonOf(out.reason)?.description ?? '未注册原因（证据缺失）' : '证据缺失';
   const names = [basename(l.repo), pkg?.title ?? m, node];
   const progress = `已完成${String((run.nodes ?? []).filter(n => n.state === 'completed').length)}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
-  let detail = reason;
+  let detail = reason, compact = reason;
   if (hold === 'needs') {
     let coders: CoderOut[] = [];
     try { coders = codersOf(artifactsOf(run), m, l); } catch { /* 展示证据缺失 */ }
@@ -1279,6 +1279,9 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
           existsSync(join(l.gen_dir, 'attempts', m)) ? Number(readFileSync(join(l.gen_dir, 'attempts', m), 'utf8')) : null);
         detail = `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
           `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`;
+        compact = out.reason === 'budget_tokens_exceeded'
+          ? `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`
+          : `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}`;
       }
     } catch { /* 展示证据缺失 */ }
   } else if (hold === 'review_limit' || hold === 'review_not_independent') {
@@ -1301,8 +1304,8 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
     if (hold === 'auto_retry_exhausted') detail += `；已重试${String(typeof extra.auto_retries === 'number' ? extra.auto_retries : l.auto_retries?.length ?? 0)}次`;
     if (hold === 'recover_no_progress') detail = `已恢复${String(l.stalled ?? 0)}次，完成节点集合未变化`;
   }
-  return askQuestion(hold, names, `${detail}；${progress}`,
-    limit => decisionRecovery(l, run, c, hold, limit),
+  return askQuestion(hold, names, [`${detail}；${progress}`, `${compact}；${progress}`],
+    (limit, stage) => decisionRecovery(l, run, c, hold, limit, stage),
     askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c))));
 }
 /** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
