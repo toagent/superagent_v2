@@ -13,6 +13,7 @@ import {
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { REASONS } from './reasons';
+import { injectMemory } from './memory';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
@@ -554,7 +555,6 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   }
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
-  writeFileSync(join(dir, 'engine.json'), JSON.stringify({ engine_hash, fake }) + '\n');
   const tiers = loadTiers();
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
   if (plan.budget.weighted_tokens < floor)
@@ -572,6 +572,8 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
       renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p, mcp))
     );
   }
+  const lessons = injectMemory(plan, dir, definition.nodes as { id: string; command?: unknown; model?: unknown; with?: Record<string, unknown> }[]);
+  writeFileSync(join(dir, 'engine.json'), JSON.stringify({ engine_hash, fake, lessons }) + '\n');
   writeFileSync(
     join(wfDir, `${workflow}.yaml`),
     YAML.stringify(definition, {

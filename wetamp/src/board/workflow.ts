@@ -23,6 +23,10 @@ export function confined(l: Ledger, p: string): string | null {
 
 export type Role = 'coder' | 'reviewer' | 'human' | 'script';
 
+/** Shared by BT9 display and EV1 generation: role belongs to the node definition. */
+export const nodeRole = (n: { model?: unknown; wait?: unknown }): Role =>
+  n.model === '@sa-coder' ? 'coder' : n.model === '@sa-reviewer' || n.model === '@sa-reviewer-alt' ? 'reviewer' : n.wait ? 'human' : 'script';
+
 /**
  * 生成的工作流里每个节点的角色（按节点定义：@sa-coder/@sa-reviewer 别名、wait 事件门，其余为脚本）；节点总数也取自这里，
  * 因为 run 的 nodes 只列已调度的节点。gen 目录缺失或解析失败返回 undefined：表格退回 run 的节点数、角色显示 `?`。
@@ -37,18 +41,7 @@ export function workflowRoles(l: Ledger): Map<string, Role> | undefined {
     const wf = Bun.YAML.parse(readFileSync(file, 'utf8')) as {
       nodes?: { id: string; model?: string; wait?: unknown }[];
     };
-    return new Map(
-      (wf.nodes ?? []).map(n => [
-        n.id,
-        n.model === '@sa-coder'
-          ? 'coder'
-          : n.model === '@sa-reviewer'
-            ? 'reviewer'
-            : n.wait
-              ? 'human'
-              : 'script',
-      ])
-    );
+    return new Map((wf.nodes ?? []).map(n => [n.id, nodeRole(n)]));
   } catch {
     return undefined;
   }
