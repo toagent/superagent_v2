@@ -97,6 +97,28 @@ test('invalid thresholds fail visibly without spawning or leaving queued work', 
 });
 
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const) {
+  test(`HF7-R1-01 real OS ${signal} during the probe never starts a child`, async () => {
+    const wetamp = join(import.meta.dir, '..');
+    const source = `
+      import { jobCli, readJobs } from ${JSON.stringify(join(wetamp, 'src/jobs.ts'))};
+      const code = await jobCli(${JSON.stringify(args())}, () => {
+        const queued = readJobs().jobs[0];
+        if (queued.state !== 'queued' || queued.pid !== 0) throw new Error('probe must run before spawn');
+        process.kill(process.pid, ${JSON.stringify(signal)});
+        return { pressure: 1, free: 90, source: 'sysctl' };
+      });
+      process.exit(code);
+    `;
+    const p = Bun.spawn(['bun', '--eval', source], {
+      cwd: wetamp, env: process.env, stdout: 'pipe', stderr: 'pipe',
+    });
+    try {
+      expect(await p.exited).toBe(code);
+      expect(only()).toMatchObject({ state: 'failed', exit_code: code, signal, pid: 0 });
+      expect(existsSync(join(root, 'spawned'))).toBe(false);
+      expect(await new Response(p.stderr).text()).toBe('');
+    } finally { if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; } }
+  });
   test(`queued ${signal} exits ${String(code)} without spawning and removes handlers`, async () => {
     const listeners = process.listenerCount(signal);
     expect(await jobCli(args(), () => sample(2), async (_ms, stop) => {

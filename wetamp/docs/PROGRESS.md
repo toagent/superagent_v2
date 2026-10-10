@@ -597,3 +597,4 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 - **I4、I8 / P2**：推翻“控制台刷新失败与巡检同生共死可接受”；refreshConsole 抛错仍执行 tick，stderr 单行 `supervise-tick: console refresh failed:` 与 JSON `console_error` 保留错误，退出码仍由巡检本体决定；注入失败与真实旧 PID 迁移拒绝回放覆盖该边界。
 - **I6 / P4**：推翻“子进程 exit 0 = 作业完成”；wrapper 首次收到 SIGINT/SIGTERM/SIGHUP 后，即使子进程 trap 并 exit 0，也登记 failed/原信号并返回 130/143/129，沿用 HF7 字段和等待期语义。TERM/HUP/INT 回归及 child-only 信号回归验证；负载用例改为有截止的回收轮询和 running 等待，不放宽断言。
+- **HF7-R1-01 / I4、I8**：真实 OS SIGINT/SIGTERM/SIGHUP 回放证实同步 probe 期间的待交付信号会越过 queued→spawn 边界；准入后用现有 timers/promises 让出事件循环，再复查取消状态。已取消保持 pid=0、failed/原信号/128+n，真实信号回归同时断言子进程未创建、命令标记未写，不新增状态或配置。

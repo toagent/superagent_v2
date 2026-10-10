@@ -11,7 +11,7 @@ import {
 import { launcher, type Launcher } from './launcher';
 import { basename, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as yieldEventLoop, setTimeout as delay } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
 import { home } from './config';
 import { newRunId } from './generate';
@@ -196,7 +196,9 @@ async function exec(
         await wait(Math.min(15000, Math.max(0, deadline - Date.now())), stop.signal).catch((e: unknown) => { if (!stop.signal.aborted) throw e; }); waited = true;
       }
     }
-    if (!code) {
+    // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
+    if (!code) await yieldEventLoop();
+    if (!code && !stop.signal.aborted) {
       child = Bun.spawn(cmd, { stdio: ['inherit', 'inherit', 'inherit'] });
       job.pid = child.pid; job.state = 'running'; delete job.reason; job.started_at = new Date().toISOString(); save(job);
       identity = setInterval(() => { if (!job.session_id) { job.session_id = jobSession(job); if (job.session_id) save(job); } }, 5000);
