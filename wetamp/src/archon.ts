@@ -35,7 +35,14 @@ export interface RunView {
     };
     /** Archon 审批门（approval / interactive_loop 等）暂停时的元数据。 */
     approval?: { nodeId: string; pauseId?: string; type?: string };
+    /** 引擎在节点之外失败时写的 run 级错误（executor 捕获、启动失败等）。 */
+    error?: string | null;
+    /** 停止原因类别（runExitReasonSchema 枚举，如 launch_failed、process_terminated），由 run 的 owner 写。 */
+    stop_reason?: { reason?: string; signal?: string } | null;
   } | null;
+  /** 终局记录（事件日志折叠而来）：error 同 metadata.error 的终局快照。resume 中的 run 没有。 */
+  terminal_record?: { error?: string | null } | null;
+  transcript_path?: string | null;
   nodes?: { nodeId: string; state: string; error?: string | null; durationMs?: number }[];
 }
 
@@ -184,7 +191,10 @@ export function ownerLost(run: RunView): boolean {
   return run.status === 'running' && !!o && o.host === hostname() && !pidAlive(o.pid);
 }
 
-export type RecoverResult = { ok: true; resumed: Json } | { ok: false; reason: string };
+/** busy：recover 锁被另一进程持有（它正在恢复同一 run）。不是业务失败：调用方重读状态再定，不计次、不记处置。 */
+export type RecoverResult =
+  | { ok: true; resumed: Json }
+  | { ok: false; reason: string; busy?: true };
 
 export type Lock = { ok: true; release: () => void } | { ok: false; reason: 'locked' };
 
@@ -240,7 +250,7 @@ export function recover(
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
   const path = join(home().sa, 'runs', `${id}.lock`);
   const l = lock(path);
-  if (!l.ok) return { ok: false, reason: 'recover_locked' };
+  if (!l.ok) return { ok: false, reason: 'recover_locked', busy: true };
   try {
     const run = getRun(id, cwd);
     const veto = guard?.(run);

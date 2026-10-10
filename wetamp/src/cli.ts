@@ -47,6 +47,7 @@ import {
 } from './config';
 import { generate, newRunId } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
+import { redact } from './redact';
 
 const OPTIONS = {
   timeout: { type: 'string' },
@@ -255,9 +256,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     ...(c.node ? { node: c.node } : {}),
     ...(c.event ? { event: c.event } : {}),
     ...(c.node?.startsWith('gate-') ? { gate: readJson(join(art, `${c.node}.json`)) } : {}),
-    ...(c.state === 'failed'
-      ? { error: tail(nodes.find(n => n.nodeId === c.node)?.error ?? '', 200) }
-      : {}),
+    ...(c.state === 'failed' ? failure(l, run, c.node) : {}),
     ...(c.state === 'completed'
       ? {
           land: (readJson(join(art, 'land.json')) as { commands?: string[] } | undefined)?.commands,
@@ -268,6 +267,29 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
     ...(l.reason ? { reason: l.reason } : {}),
+  };
+}
+
+/**
+ * failed 的原因：有失败节点取节点 error；没有（启动失败、executor 在节点外出错、进程被信号终止）则取引擎写的
+ * run 级 error（终局记录优先）与停止原因类别，并给出能看到全文的证据路径。错误文本先脱敏再截尾。
+ */
+function failure(l: Ledger, run: RunView, node: string | undefined): Record<string, unknown> {
+  const cut = (s: string): string => tail(redact(s), 200);
+  if (node) return { error: cut(run.nodes?.find(n => n.nodeId === node)?.error ?? '') };
+  const why = run.metadata?.stop_reason;
+  // 停止原因是引擎枚举值；不是枚举形状的就不当原因转述
+  const token = (v: unknown): string | undefined =>
+    typeof v === 'string' && /^[A-Za-z_]{1,40}$/.test(v) ? v : undefined;
+  const reason = token(why?.reason);
+  const signal = token(why?.signal);
+  const paths = [run.transcript_path, l.log, l.transcript].filter(
+    (p): p is string => typeof p === 'string' && p !== '' && existsSync(p)
+  );
+  return {
+    error: cut(run.terminal_record?.error ?? run.metadata?.error ?? ''),
+    ...(reason ? { stop_reason: signal ? `${reason}:${signal}` : reason } : {}),
+    evidence_paths: paths,
   };
 }
 
@@ -335,6 +357,12 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
     if (c.state === 'owner_lost') {
       const r = recoverRun(l);
       if (r.ok) continue;
+      // 另一进程正在恢复：稍候重读状态；到期仍是 owner_lost 则按运行中返回（exit 4），不报失败
+      if (r.busy) {
+        if (Date.now() >= deadline) return { ...summary(l, run, c), reason: r.reason };
+        Bun.sleepSync(1000);
+        continue;
+      }
       const held = r.reason === 'recover_no_progress';
       return {
         ...summary(
@@ -454,13 +482,21 @@ function reconcileIntents(): Action[] {
       } finally {
         db.close();
       }
-      if (rows.length > 1) throw new Error(`${String(rows.length)} archon runs named ${it.ledger.workflow}`);
+      if (rows.length > 1)
+        throw new Error(`${String(rows.length)} archon runs named ${it.ledger.workflow}`);
       if (rows.length === 1) {
-        saveLedger({ ...it.ledger, archon_run_id: rows[0].id, reconciled_at: new Date().toISOString() });
+        saveLedger({
+          ...it.ledger,
+          archon_run_id: rows[0].id,
+          reconciled_at: new Date().toISOString(),
+        });
         rmSync(join(dir, f), { force: true });
         out.push({ run_id: id, action: 'reconcile', ok: true, archon_run_id: rows[0].id });
       } else if (!it.no_run_at) {
-        writeAtomic(join(dir, f), JSON.stringify({ ...it, no_run_at: new Date().toISOString() }, null, 2) + '\n');
+        writeAtomic(
+          join(dir, f),
+          JSON.stringify({ ...it, no_run_at: new Date().toISOString() }, null, 2) + '\n'
+        );
         out.push({
           run_id: id,
           action: 'reconcile',
@@ -469,7 +505,12 @@ function reconcileIntents(): Action[] {
         });
       }
     } catch (e) {
-      out.push({ run_id: id, action: 'error', ok: false, error: tail(`intent: ${(e as Error).message}`, 200) });
+      out.push({
+        run_id: id,
+        action: 'error',
+        ok: false,
+        error: tail(`intent: ${(e as Error).message}`, 200),
+      });
     }
   }
   return out;
@@ -482,6 +523,7 @@ function health(cwd?: string): number {
   const clean = Bun.spawnSync([join(WETAMP, 'scripts', 'check-upstream-clean.sh')], {
     stdout: 'pipe',
     stderr: 'pipe',
+    timeout: QUERY_TIMEOUT_MS,
   });
   const upstreamDiff = clean.stdout.toString().trim();
   const worker = codexWorkerProblem();
@@ -500,8 +542,16 @@ function health(cwd?: string): number {
 
 function resumeRun(l: Ledger, fresh = false): number {
   const res = recoverRun(l, fresh);
+  if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
   return res.ok ? 0 : 1;
+}
+
+/** 手动 resume / decide retry 撞上 recover 锁：重读状态后按当前状态退出（多为运行中 4 或 held 3），不当业务失败 1。 */
+function busyExit(l: Ledger, res: RecoverResult): number {
+  const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
+  print({ run_id: l.run_id, ...res, state: c.state });
+  return c.exit;
 }
 
 /**
@@ -567,7 +617,7 @@ function retryAllHeld(): number {
     }
   });
   print(out);
-  return out.every(x => x.ok === true) ? 0 : 1;
+  return out.every(x => x.ok === true || x.busy === true) ? 0 : 1;
 }
 
 /** approve：放行 sa.human.* 签收门；reject：终止 run（cancelRun）；retry：可选写 hint 后 resume（held:gate 重跑整个里程碑）。 */
@@ -598,6 +648,7 @@ function decide(l: Ledger, a: Args): number {
     writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
   }
   const res = retry(l, c);
+  if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
   return res.ok ? 0 : 1;
 }
@@ -626,7 +677,8 @@ function brief(l: Ledger): number {
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
   if (Array.isArray(s.land)) lines.push(...(s.land as string[]));
-  for (const n of needsOf(art).slice(0, 3)) lines.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
+  for (const n of needsOf(art).slice(0, 3))
+    lines.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
   lines.push(
     `evidence: ${art}`,
     `recoveries: ${String(l.recoveries.length)} auto_retries: ${String(l.auto_retries?.length ?? 0)}`
@@ -711,7 +763,11 @@ export const HOLD_POLICY = {
     yes: 'resume',
     text: '恢复 3 次无进展。是=清零计数再恢复一次，否=终止 run',
   },
-  needs: { do: 'ask', yes: 'retry', text: '将军需要补能力(needs)。是=已补齐，再跑一轮，否=终止 run' },
+  needs: {
+    do: 'ask',
+    yes: 'retry',
+    text: '将军需要补能力(needs)。是=已补齐，再跑一轮，否=终止 run',
+  },
   redline: { do: 'ask', yes: 'retry', text: '将军命中红线。是=放行重试一次，否=终止 run' },
   approval: { do: 'ask', yes: 'approve', text: 'Archon 审批门。是=批准（approve），否=终止 run' },
 } as const satisfies Record<string, Policy>;
@@ -877,7 +933,9 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
 /** Archon 审批门（非 sa.human.*）的“是”：approve --detach 放行并续跑。 */
 function approveRun(l: Ledger): RecoverResult {
   const ack = archonJson(['workflow', 'approve', l.archon_run_id, '--detach'], l.repo);
-  return ack.ok === true ? { ok: true, resumed: ack } : { ok: false, reason: tail(JSON.stringify(ack)) };
+  return ack.ok === true
+    ? { ok: true, resumed: ack }
+    : { ok: false, reason: tail(JSON.stringify(ack)) };
 }
 
 /**
@@ -909,7 +967,10 @@ function askHold(
     const res =
       p.yes === 'approve' ? approveRun(l) : p.yes === 'resume' ? recoverRun(l, true) : retry(l, c);
     if (res.ok) r.a.status = 'approved';
-    return { ...b, action: p.yes, ...(res.ok ? { ok: true } : { ok: false, error: res.reason }) };
+    const out = res.ok
+      ? { ok: true }
+      : { ok: false, error: res.reason, ...(res.busy ? { busy: true } : {}) };
+    return { ...b, action: p.yes, ...out };
   }
   if (r.a.status === 'no') {
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
@@ -1017,9 +1078,12 @@ export interface Disposition {
 }
 const MAX_DISPOSITIONS = 20;
 
-/** 自动处置记入 ledger.dispositions（最近 20 条，board 详情可见）；action none 不是处置。记不下时动作照常返回并带 record_error。 */
+/**
+ * 自动处置记入 ledger.dispositions（最近 20 条，board 详情可见）；action none 与撞上 recover 锁（busy，下一轮重读状态）
+ * 都不是处置。记不下时动作照常返回并带 record_error。
+ */
 function record(l: Ledger, reason: string, x: Action): Action {
-  if (x.action === 'none') return x;
+  if (x.action === 'none' || x.busy === true) return x;
   const d: Disposition = {
     at: new Date().toISOString(),
     reason,
@@ -1048,7 +1112,14 @@ function pausedHold(l: Ledger, run: RunView, c: Classified): Action | Held | und
   if (tries >= MAX_PAUSE_RESUMES) return ['auto_retry_exhausted', { auto_retries: tries }];
   const auto = { milestone: 'paused', at: new Date().toISOString(), reason: 'paused' };
   const r = recoverRun(l, false, auto);
-  return { run_id: l.run_id, action: 'auto_retry', state: c.state, ...auto, attempt: tries + 1, ...r };
+  return {
+    run_id: l.run_id,
+    action: 'auto_retry',
+    state: c.state,
+    ...auto,
+    attempt: tries + 1,
+    ...r,
+  };
 }
 
 const BACKOFF_S = 120;
@@ -1096,7 +1167,14 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
     const wait = Math.min(MAX_BACKOFF_S, BACKOFF_S * 2 ** (tries.length - 1)) * 1000;
     const next = Date.parse(last.at) + wait;
     if (Date.now() < next)
-      return { run_id: l.run_id, action: 'none', ok: true, state: c.state, reason: 'backoff', next: new Date(next).toISOString() };
+      return {
+        run_id: l.run_id,
+        action: 'none',
+        ok: true,
+        state: c.state,
+        reason: 'backoff',
+        next: new Date(next).toISOString(),
+      };
   }
   const auto = { milestone: m, at: new Date().toISOString(), reason };
   let r: RecoverResult;
@@ -1106,7 +1184,14 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
       appendFileSync(join(l.gen_dir, 'hints', `${p.id}.md`), text);
     r = retryGate(l, node, false, auto);
   } else r = recoverRun(l, false, auto);
-  return { run_id: l.run_id, action: 'auto_retry', state: c.state, ...auto, attempt: tries.length + 1, ...r };
+  return {
+    run_id: l.run_id,
+    action: 'auto_retry',
+    state: c.state,
+    ...auto,
+    attempt: tries.length + 1,
+    ...r,
+  };
 }
 
 /** 追加到 hints/<包>.md 的提示：失败的验收命令与日志尾、基线预存说明、未关闭的阻塞发现、gate 原因。 */
@@ -1132,7 +1217,9 @@ function gateHint(plan: Plan, art: string, node: string, g: Gate | undefined, n:
   const last = new Map(rounds.flatMap(r => r.findings).map(f => [f.id, f]));
   const findings = [...open].flatMap(id => {
     const f = last.get(id);
-    return f ? [`- ${id} [${f.severity}] ${f.file}:${String(f.line)} ${tail(f.evidence, 200)}`] : [];
+    return f
+      ? [`- ${id} [${f.severity}] ${f.file}:${String(f.line)} ${tail(f.evidence, 200)}`]
+      : [];
   });
   if (findings.length) out.push('未关闭的阻塞发现：', ...findings, '');
   out.push(`gate reason：${g?.reason ?? '?'}`, '');
@@ -1217,7 +1304,12 @@ export function main(argv: string[]): number {
     case 'run':
       return startRun(need(target, 'run <plan.json>'), a);
     case 'wait': {
-      const s = waitRun(ledger(), Number(a.flags.timeout ?? 3000));
+      const t = Number(a.flags.timeout ?? 3000);
+      if (!Number.isFinite(t) || t <= 0) {
+        console.error(`--timeout must be a positive number of seconds\n${USAGE}`);
+        return EXIT_USAGE;
+      }
+      const s = waitRun(ledger(), t);
       print(s);
       return Number(s.exit);
     }
@@ -1272,7 +1364,7 @@ export function main(argv: string[]): number {
       const actions = superviseTick();
       print(actions);
       if (!Array.isArray(actions)) return 0;
-      return actions.some(x => !x.ok) ? 1 : 0;
+      return actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
     }
     case 'report': {
       const r = report();
