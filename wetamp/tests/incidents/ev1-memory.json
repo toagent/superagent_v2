@@ -1,0 +1,23 @@
+{
+  "M2-01": {
+    "status": "cancelled",
+    "reason": "cleanup_deleted_cancelled_worktree",
+    "classification": "engine"
+  },
+  "xiaopan-57e6": {
+    "status": "failed",
+    "reason": "engine_suspect",
+    "classification": "engine"
+  },
+  "project-port": {
+    "status": "failed",
+    "reason": "acceptance_failed",
+    "ok": false,
+    "failed": ["bun test --port 39890"],
+    "classification": "project"
+  },
+  "codex-usage": {
+    "type": "turn.completed",
+    "usage": { "input_tokens": 8192, "cached_input_tokens": 4096, "output_tokens": 1024 }
+  }
+}

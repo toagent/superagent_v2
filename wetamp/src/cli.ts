@@ -1,6 +1,8 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { confined } from './board/workflow';
 import { saveIncident } from './incidents';
+import { lintPlan, memoryData, memoryTick } from './memory';
+import { jobCli } from './jobs';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
@@ -67,6 +69,7 @@ const OPTIONS = {
   hint: { type: 'string' },
   fake: { type: 'boolean' },
   'skip-selftest': { type: 'boolean' },
+  'lint-override': { type: 'string' },
   cwd: { type: 'string' },
   once: { type: 'boolean' },
   interval: { type: 'string' },
@@ -103,6 +106,7 @@ export const EXIT_ALIAS_DRIFT = 5;
 export const EXIT_USAGE = 64;
 
 export interface Ledger {
+  plan_lint?: ReturnType<typeof lintPlan>;
   engine_hash?: string;
   adoptions?: {
     at: string;
@@ -524,10 +528,12 @@ function preflight(skipSelftest: boolean): void {
 
 function startRun(planPath: string, a: Args): number {
   const run = newRunId();
-  let phase: 'preflight' | 'engine' = 'preflight';
+  let phase: 'preflight' | 'engine' = 'preflight', plan_lint: ReturnType<typeof lintPlan> | undefined;
   try {
     preflight(a.flags['skip-selftest'] ?? false);
     const plan = loadPlan(planPath);
+    plan_lint = lintPlan(plan, a.flags['lint-override']);
+    if (plan_lint.rejected) throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
     const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
     if (checked.exitCode !== 0) {
       const reason = lastJson(checked.stdout.toString())?.reason;
@@ -547,6 +553,7 @@ function startRun(planPath: string, a: Args): number {
     const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
     args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
     const l: Ledger = {
+      plan_lint,
       run_id: run,
       engine_hash: gen.engine_hash,
       archon_run_id: '',
@@ -578,10 +585,10 @@ function startRun(planPath: string, a: Args): number {
     mkdirSync(join(home().sa, 'runs'), { recursive: true });
     saveLedger(l);
     rmSync(intentPath(run), { force: true });
-    print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir });
+    print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir, plan_lint });
     return 0;
   } catch (e) {
-    const failure = { run_id: run, ok: false, phase, reason: redact((e as Error).message) };
+    const failure = { run_id: run, ok: false, phase, plan_lint, reason: redact((e as Error).message) };
     mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
     writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
     print(failure);
@@ -1163,6 +1170,7 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
     }
     saveAsks(asks);
   }
+  memoryTick(asks instanceof Error ? {} : asks);
   return { actions: out, ...cockpitSignals(observed, asks instanceof Error ? {} : asks) };
 }
 
@@ -1502,7 +1510,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 export function main(argv: string[]): number {
   let a: Args;
@@ -1589,6 +1597,9 @@ export function main(argv: string[]): number {
       const usage = r.usage as { unreadable: string[] };
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
+    case 'memory':
+      print(memoryData());
+      return 0;
     case 'health':
       return health(a.flags.cwd);
     case 'board':
