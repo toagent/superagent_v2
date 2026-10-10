@@ -273,6 +273,27 @@ describe('guard.cjs', () => {
     ).toContain('reviewer 只读');
   });
 
+  test('reviewer：包装器自身的写入副作用按写入处理', () => {
+    const { guard } = setup();
+    const reviewer = { SUPERAGENT_ROLE: 'reviewer' };
+    for (const [cmd, target] of [
+      ['time -o out.txt cat a.ts', 'out.txt'],
+      ['/usr/bin/time --output=t.log git status', 't.log'],
+      ['nohup cat a.ts', 'nohup.out'],
+      ['script s.log cat a.ts', 's.log'],
+      ['cat a.ts | tee -a b.ts', 'b.ts'],
+      ['env -C /tmp/elsewhere cat a.ts', 'elsewhere'],
+      ['env --chdir=/w git status', 'w'],
+    ])
+      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain(`禁止写入 ${target}`);
+    // script 也是包装器：其后的 claude 仍被 N-1 认出
+    expect(
+      reason(
+        guard('claude', bash('script -q /dev/null claude -p x'), { SUPERAGENT_ROLE: 'worker' })
+      )
+    ).toContain('N-1');
+  });
+
   test('删除拒绝信息只回显 basename', () => {
     const { home, guard } = setup();
     const r = reason(guard('claude', bash(`rm -rf ${home}`))) ?? '';
