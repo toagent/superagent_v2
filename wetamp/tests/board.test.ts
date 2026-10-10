@@ -63,7 +63,8 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 echo "$*" >> "${stubDir}/calls"
 [ -f "${stubDir}/fail-$3" ] && { echo "archon down" >&2; exit 1; }
-[ -f "${stubDir}/hang-$3" ] && sleep 31.7
+[ -f "${stubDir}/cold-$3" ] && { rm "${stubDir}/cold-$3"; sleep 0.35; }
+[ -f "${stubDir}/hang-$3" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
 cat "${stubDir}/get-$3.json"
 `
   );
@@ -212,8 +213,15 @@ describe('data rows', () => {
 describe('loader robustness', () => {
   const live = (id: string): Ledger =>
     ledger(id, { status: 'running', metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } });
-  const orphans = (): string =>
-    Bun.spawnSync(['pgrep', '-f', 'sleep 31.7'], { stdout: 'pipe' }).stdout.toString().trim();
+  const orphans = (): string => {
+    // Concurrent suites also start sleeps: only this stub's children belong to this assertion.
+    const file = join(stubDir, 'children');
+    if (!existsSync(file)) return '';
+    return readFileSync(file, 'utf8').trim().split('\n').filter(pid => {
+      try { process.kill(Number(pid), 0); return true; }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; return false; }
+    }).join('\n');
+  };
   const waitForReap = async (): Promise<void> => {
     const deadline = Date.now() + 5000;
     while (orphans() !== '' && Date.now() < deadline) await Bun.sleep(50);
@@ -266,8 +274,17 @@ describe('loader robustness', () => {
   test('a hung query is killed at the timeout with its process group; the row goes stale', async () => {
     live('hang');
     process.env.SA_BOARD_QUERY_TIMEOUT_MS = '300';
+    writeFileSync(join(stubDir, 'cold-a-hang'), '');
     const load = createLoader();
-    expect((await load(50)).rows[0]?.stale).toBe(false);
+    // A cold query can time out under load: unreadable also has stale=false, but does not seed the cache.
+    let initial = (await load(50)).rows[0];
+    const deadline = Date.now() + 5000;
+    while ((initial?.state !== 'running' || initial.stale) && Date.now() < deadline) {
+      await Bun.sleep(50);
+      initial = (await load(50)).rows[0];
+    }
+    expect(initial?.state).toBe('running');
+    expect(initial?.stale).toBe(false);
     writeFileSync(join(stubDir, 'hang-a-hang'), '');
     const t0 = Date.now();
     const row = (await load(50)).rows[0];

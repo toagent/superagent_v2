@@ -203,9 +203,12 @@ async function exec(
       job.pid = child.pid; job.state = 'running'; delete job.reason; job.started_at = new Date().toISOString(); save(job);
       identity = setInterval(() => { if (!job.session_id) { job.session_id = jobSession(job); if (job.session_id) save(job); } }, 5000);
       code = await child.exited;
-      code = interrupted || code;
     }
-    save({ ...job, session_id: child ? job.session_id ?? jobSession(job) : null, state: code === 0 ? 'done' : 'failed', ended_at: new Date().toISOString(), ...(child?.signalCode ? { signal: job.signal ?? child.signalCode } : { exit_code: code }) });
+    const session_id = child ? job.session_id ?? jobSession(job) : null;
+    // Spawn/bookkeeping can outlast a short child; deliver pending OS signals before committing its terminal state.
+    await yieldEventLoop();
+    code = interrupted || code;
+    save({ ...job, session_id, state: code === 0 ? 'done' : 'failed', ended_at: new Date().toISOString(), ...(child?.signalCode ? { signal: job.signal ?? child.signalCode } : { exit_code: code }) });
     return code;
   } catch (e) {
     child?.kill('SIGTERM'); // 登记不了就不让它成为看板看不见的作业
