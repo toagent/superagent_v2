@@ -156,3 +156,9 @@
 - 预算：TS 2894/3200（.ts+.tsx）、shell 445/700、cjs 783/1400、文件 40/46。
 - R1 修复（astra R1 D01–D06）：脱敏整值、查询超时与取消、非对象 ledger、缓存方案②、路径边界、列分隔与 80 列布局；ink 检查前移。`tests/board.test.ts` 22 条（新增 10 条）。预算 TS 3018/3200、shell 445/700、cjs 783/1400、文件 40/46。
 - 已知限制：currentRole 取自生成目录里的工作流 YAML，gen 目录被清理后显示 `?`；节点总数在 YAML 不可读时退回 run 已调度的节点数；`--once` 在管道里按 160 列渲染；交互模式每 5s 对每个非终态 run 起一个 archon 子进程（约 0.3s/次）。
+
+## WP-BT board 时间
+
+- 开始时刻取 ledger `started_at`（提交时刻，resume 不变；不可解析才退回 Archon 的，后者每次 resume 重置），排序同口径；终态止于 `completed_at`，缺则 `last_activity_at`，都缺显示 `-`；running/held 止于 now。行带 `span{started_ms,ended_ms}`，界面用 1s 时钟经 `elapsedAt` 重算，`--json` 的 `elapsed_s` 为取数时刻值。
+- 所有界面时刻经 `fmtClock` 按进程本地时区（尊重 `TZ`）显示：当天 `HH:MM:SS`，否则 `MM-DD HH:MM`；header `last` 去掉 `Z`，detail 首行加 `开始 · 耗时`；`--json` 原始 ISO 不变。
+- 验收：`bun test` 200/200（board 27 条，新增 5 条）；真实 `~/.superagent` 只读 d01a 显示 23m26s（原 2m40s）。预算 TS 3100/3200、文件数不变。

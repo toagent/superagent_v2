@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { milestones, type Plan } from '../plan';
 import { asksOf, gatesOf, readJson, type Asks, type Gate, type Ledger } from '../cli';
 import { tail } from '../archon';
-import { confined, type BoardRow } from './data';
+import { confined, elapsedAt, fmtClock, fmtElapsed, type BoardRow } from './data';
 
 export interface Detail {
   run_id: string;
@@ -139,9 +139,12 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
   return d;
 }
 
-/** 详情面板与 --once 共用的纯文本行。 */
-export function detailLines(d: Detail): string[] {
-  const out = [`── ${d.run_id}  plan ${d.plan ?? '(missing)'}`];
+/** 详情面板与 --once 共用的纯文本行；时刻按本地时区，row 为该 run 当前的行（开始与耗时随 now 走）。 */
+export function detailLines(d: Detail, now: number, row?: BoardRow): string[] {
+  const clock = row
+    ? `  开始 ${fmtClock(row.started_at, now)} · 耗时 ${fmtElapsed(elapsedAt(row, now))}`
+    : '';
+  const out = [`── ${d.run_id}${clock}  plan ${d.plan ?? '(missing)'}`];
   if (d.milestones.length)
     out.push(
       `milestones ${d.milestones.map(m => `${m.id}:${m.risk}${m.human ? ':human' : ''}`).join(' ')}`
@@ -156,7 +159,7 @@ export function detailLines(d: Detail): string[] {
     );
   for (const e of d.events)
     out.push(
-      `${e.ts?.slice(11, 19) ?? '--:--:--'} ${e.type} ${e.node ?? ''}${e.out ? ` │ ${e.out.replace(/\s+/g, ' ')}` : ''}`
+      `${e.ts ? fmtClock(e.ts, now) : '--:--:--'} ${e.type} ${e.node ?? ''}${e.out ? ` │ ${e.out.replace(/\s+/g, ' ')}` : ''}`
     );
   for (const [k, a] of Object.entries(d.asks)) out.push(`ask ${k} ${a?.status ?? '?'}`);
   for (const n of d.next) out.push(`next: ${n}`);
