@@ -1,5 +1,5 @@
 // board 详情：选中 run 的 plan 包、gate 各轮结论、transcript 末尾事件、待决签收与下一步命令。只读，任何一项读不到只影响该项。
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { milestones, type Plan } from '../plan';
 import { asksOf, gatesOf, readJson, type Asks, type Gate, type Ledger } from '../cli';
@@ -20,6 +20,7 @@ export interface Detail {
   }[];
   events: { type: string; node: string | null; ts: string | null; out?: string }[];
   asks: Asks;
+  needs: { tag: string; cap: string; minimal_ask: string }[];
   next: string[];
   errors: string[];
 }
@@ -86,6 +87,7 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
     gates: [],
     events: [],
     asks: {},
+    needs: [],
     next: [],
     errors: [],
   };
@@ -127,6 +129,16 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
     const t = confined(l, l.transcript);
     if (t) d.events = events(t);
   });
+  part('needs', () => {
+    const art = confined(l, row.evidence);
+    for (const f of art ? readdirSync(art).filter(x => x.endsWith('.coder.json')) : []) {
+      const file = confined(l, join(art ?? '', f));
+      if (!file) continue;
+      const c = readJson(file) as { needs?: { cap: string; minimal_ask: string }[] };
+      const tag = f.slice(0, -'.coder.json'.length);
+      for (const n of c.needs ?? []) d.needs.push({ tag, cap: n.cap, minimal_ask: n.minimal_ask });
+    }
+  });
   part('asks', () => {
     d.asks = asksOf(l.run_id);
   });
@@ -159,6 +171,7 @@ export function detailLines(d: Detail): string[] {
       `${e.ts?.slice(11, 19) ?? '--:--:--'} ${e.type} ${e.node ?? ''}${e.out ? ` │ ${e.out.replace(/\s+/g, ' ')}` : ''}`
     );
   for (const [k, a] of Object.entries(d.asks)) out.push(`ask ${k} ${a?.status ?? '?'}`);
+  for (const n of d.needs) out.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
   for (const n of d.next) out.push(`next: ${n}`);
   for (const e of d.errors) out.push(`! ${e}`);
   return out;

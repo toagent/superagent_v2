@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan } from '../../../src/plan';
 
-interface Finding {
+export interface Finding {
   id: string;
   severity: 'blocker' | 'high' | 'medium' | 'low';
   file: string;
@@ -20,10 +20,15 @@ interface Finding {
   evidence: string;
   carry_over: boolean;
 }
-interface Review {
+export interface Review {
   status: 'PASS' | 'FAIL' | 'INCOMPLETE';
   findings: Finding[];
   debt: string[];
+}
+interface Coder {
+  status: 'done' | 'blocked' | 'partial';
+  error_class: string | null;
+  needs?: unknown[];
 }
 interface Accept {
   ok: boolean;
@@ -66,8 +71,30 @@ function run(checks: Check[], log: string, cwd?: string): string[] {
   return failed;
 }
 
+/**
+ * 存档将军输出供 supervise-tick 聚合 needs、评审核对 deviations。blocked 只在命中红线或 needs 非空时成立，
+ * 否则按 partial 记（照常进入修复循环）。输出不是 JSON 时原样存档，不让验收因此失败。
+ */
+function saveCoder(tag: string): void {
+  const raw = env('CODER');
+  if (!raw) return;
+  let out: Record<string, unknown>;
+  try {
+    const c = JSON.parse(raw) as Coder;
+    const legit = c.error_class === 'redline' || (c.needs?.length ?? 0) > 0;
+    out = { ...c, status: c.status === 'blocked' && !legit ? 'partial' : c.status };
+  } catch {
+    out = { raw };
+  }
+  writeFileSync(
+    join(artifacts, `${tag}.coder.json`),
+    JSON.stringify({ ...out, milestone: env('MILESTONE') }, null, 2)
+  );
+}
+
 function accept(): void {
   const tag = env('TAG');
+  saveCoder(tag);
   const log = join(artifacts, `${tag}.log`);
   writeFileSync(log, '');
   const ids = env('PKGS').split(',').filter(Boolean);
@@ -87,7 +114,8 @@ function accept(): void {
   const diff = base ? git('diff', '--binary', base, 'HEAD') : '';
   if (base) writeFileSync(patch, diff);
   const hash = base ? createHash('sha256').update(diff).digest('hex').slice(0, 16) : '';
-  emit({
+  // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
+  const out = {
     ok: failed.length === 0 && !dirty,
     failed,
     log,
@@ -104,7 +132,9 @@ function accept(): void {
           )
         : null,
     head: git('rev-parse', 'HEAD').trim(),
-  });
+  };
+  writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
+  emit(out);
 }
 
 /** 在 base 的临时 detached 工作树里重跑失败的验收命令：区分“本包引入”与“基线预存”失败。 */

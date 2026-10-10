@@ -1,5 +1,6 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -24,10 +25,14 @@ import {
   type RecoverResult,
   type RunView,
 } from './archon';
-import type { decide as decideGate } from '../templates/.archon/scripts/sa-check';
-import { WETAMP, aliasDrift, codexWorkerProblem, home, runAliases } from './config';
+import {
+  openBlocking,
+  type Review,
+  type decide as decideGate,
+} from '../templates/.archon/scripts/sa-check';
+import { WETAMP, aliasDrift, codexWorkerProblem, home, loadTiers, runAliases } from './config';
 import { generate, newRunId } from './generate';
-import { loadPlan, type Plan } from './plan';
+import { loadPlan, milestones, type Plan } from './plan';
 
 const OPTIONS = {
   timeout: { type: 'string' },
@@ -40,6 +45,7 @@ const OPTIONS = {
   interval: { type: 'string' },
   limit: { type: 'string' },
   json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
+  'all-held': { type: 'boolean' },
 } as const;
 interface Args {
   _: string[];
@@ -80,6 +86,13 @@ export interface Ledger {
   /** supervise-tick 因 plan 截止已过取消 held:human 的 run 时写入。 */
   state?: 'failed';
   reason?: 'deadline';
+  /** supervise-tick 的自动重试；reason 前缀即类别（gate:<gate reason> / environment / coder:<节点>）。与 stalled 互不影响。 */
+  auto_retries?: AutoRetry[];
+}
+export interface AutoRetry {
+  milestone: string;
+  at: string;
+  reason: string;
 }
 
 export const ledgerPath = (run: string): string => join(home().sa, 'runs', `${run}.json`);
@@ -136,6 +149,21 @@ export const gatesOf = (art: string): string[] =>
         .filter(f => /^gate-.+-r\d+\.json$/.test(f))
         .sort()
     : [];
+/** 将军输出存档（sa-check accept 写的 `<tag>.coder.json`），可按里程碑过滤。 */
+interface CoderOut {
+  tag: string;
+  milestone?: string;
+  error_class?: string | null;
+  needs?: { cap: string; why: string; minimal_ask: string }[];
+}
+const codersOf = (art: string, m?: string): CoderOut[] =>
+  (existsSync(art) ? readdirSync(art).filter(f => f.endsWith('.coder.json')) : [])
+    .map(f => ({ ...(readJson(join(art, f)) as CoderOut), tag: f.slice(0, -'.coder.json'.length) }))
+    .filter(c => m === undefined || c.milestone === m);
+/** 聚合 needs[]（每条带来源 tag）：status/brief/board 展示，自动重试据此保持 held。 */
+export const needsOf = (art: string, m?: string): Record<string, string>[] =>
+  codersOf(art, m).flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
+
 /** 登记过的 run id（runs/*.json 去掉扩展名）。 */
 export const ledgerIds = (): string[] => {
   const dir = join(home().sa, 'runs');
@@ -151,6 +179,7 @@ const ledgers = (): Ledger[] => ledgerIds().map(loadLedger);
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
   const nodes = run.nodes ?? [];
   const art = artifactsOf(run);
+  const needs = needsOf(art);
   return {
     run_id: l.run_id,
     state: c.state,
@@ -169,6 +198,8 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
       : {}),
     evidence: art,
     recoveries: l.recoveries.length,
+    auto_retries: l.auto_retries?.length ?? 0,
+    ...(needs.length ? { needs } : {}),
     ...(l.reason ? { reason: l.reason } : {}),
   };
 }
@@ -202,22 +233,27 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
  * 所有恢复（wait、resume、decide retry、supervise-tick）的唯一入口。锁内重读 ledger 与 run：完成节点集合
  * 与上次相同且已连续 recover 3 次即拒绝（recover_no_progress）；fresh=true（decide retry）是元帅的显式决定，清零重计。
  * 计数、指纹、恢复时间同样在锁内写回 ledger：释放锁后才落盘会让交错的第二次 recover 读到旧计数。
+ * auto（supervise-tick 自动重试）有自己的次数上限：不看也不改 stalled/recoveries，只追加 auto_retries。
  */
-function recoverRun(l: Ledger, fresh = false): RecoverResult {
+function recoverRun(l: Ledger, fresh = false, auto?: AutoRetry): RecoverResult {
   let fp = '';
   return recover(
     l.archon_run_id,
     l.repo,
     run => {
       Object.assign(l, loadLedger(l.run_id));
+      if (auto) return undefined;
       if (fresh) l.stalled = 0;
       fp = progressOf(run);
       return stalledOut(l, run) ? 'recover_no_progress' : undefined;
     },
     () => {
-      l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
-      l.progress_fp = fp;
-      l.recoveries.push(new Date().toISOString());
+      if (auto) (l.auto_retries ??= []).push(auto);
+      else {
+        l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
+        l.progress_fp = fp;
+        l.recoveries.push(new Date().toISOString());
+      }
       saveLedger(l);
     }
   );
@@ -355,7 +391,50 @@ const pastDeadline = (l: Ledger): boolean => Date.now() > Date.parse(planOf(l).d
 const PAST_DEADLINE =
   'plan deadline passed: decide reject, or start a new run with a later deadline';
 
-/** approve：放行 sa.human.* 签收门；reject：终止 run（cancelRun）；retry：可选写 hint 后 resume 失败节点。 */
+/** 生成时带 attempt-<m> 节点的工作流（本版起都有）才能让 resume 重跑该里程碑的编码与修复。 */
+const attemptable = (l: Ledger, m: string): boolean => {
+  const wf = join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`);
+  return existsSync(wf) && readFileSync(wf, 'utf8').includes(`id: attempt-${m}\n`);
+};
+/** attempt-<m>（always_run）读这个计数：数值变了，依赖它的 code/verify/fix/diff 节点在 resume 时重跑。 */
+function bumpAttempt(l: Ledger, m: string): number {
+  const dir = join(l.gen_dir, 'attempts');
+  mkdirSync(dir, { recursive: true });
+  const n = Number(readJson(join(dir, m)) ?? 0) + 1;
+  writeFileSync(join(dir, m), String(n));
+  return n;
+}
+const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
+
+/** held:gate 的恢复：里程碑计数加一后 resume，重跑本里程碑编码→验收→评审；旧工作流无 attempt 节点则拒绝。 */
+function retryGate(l: Ledger, node: string, fresh: boolean, auto?: AutoRetry): RecoverResult {
+  const m = gateMilestone(node);
+  if (!attemptable(l, m))
+    throw new Error(`decide retry: ${node} escalated; fix on ${l.branch} or start a new run`);
+  bumpAttempt(l, m);
+  return recoverRun(l, fresh, auto);
+}
+
+/** decide retry 的恢复部分：held:gate 走 retryGate，其余 resume 失败节点。 */
+const retry = (l: Ledger, c: Classified): RecoverResult =>
+  c.state === 'held:gate' ? retryGate(l, c.node ?? '', true) : recoverRun(l, true);
+
+/** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
+function retryAllHeld(): number {
+  const out = ledgers().flatMap((l): Record<string, unknown>[] => {
+    try {
+      const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
+      if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
+      return [{ run_id: l.run_id, state: c.state, ...retry(l, c) }];
+    } catch (e) {
+      return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
+    }
+  });
+  print(out);
+  return out.every(x => x.ok === true) ? 0 : 1;
+}
+
+/** approve：放行 sa.human.* 签收门；reject：终止 run（cancelRun）；retry：可选写 hint 后 resume（held:gate 重跑整个里程碑）。 */
 function decide(l: Ledger, a: Args): number {
   const action = need(a._[2], 'decide <run> approve|reject|retry [--pkg id --hint text]');
   const run = getRun(l.archon_run_id, l.repo);
@@ -376,18 +455,15 @@ function decide(l: Ledger, a: Args): number {
     return ok ? 0 : 1;
   }
   if (action !== 'retry') throw new Error(`decide: unknown action ${action}`);
-  // resume 只重跑失败的 gate 节点，输入不变、结论不变：escalate 需要人改分支或开新 run
-  if (c.state === 'held:gate')
-    throw new Error(
-      `decide retry: ${c.node ?? 'gate'} escalated; fix on ${l.branch} or start a new run`
-    );
   const { hint, pkg } = a.flags;
   if (hint !== undefined) {
     if (pkg === undefined || !planOf(l).packages.some(p => p.id === pkg))
       throw new Error('decide retry --hint needs --pkg <package id from the plan>');
     writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
   }
-  return resumeRun(l, true);
+  const res = retry(l, c);
+  print({ run_id: l.run_id, ...res });
+  return res.ok ? 0 : 1;
 }
 
 /** ≤20 行纯文本：状态、各轮 gate 结论与评审债、签收提问状态、合入命令、证据路径。 */
@@ -410,7 +486,11 @@ function brief(l: Ledger): number {
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
   if (Array.isArray(s.land)) lines.push(...(s.land as string[]));
-  lines.push(`evidence: ${art}`, `recoveries: ${String(l.recoveries.length)}`);
+  for (const n of needsOf(art).slice(0, 3)) lines.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
+  lines.push(
+    `evidence: ${art}`,
+    `recoveries: ${String(l.recoveries.length)} auto_retries: ${String(l.auto_retries?.length ?? 0)}`
+  );
   console.log(lines.slice(0, 20).join('\n'));
   return c.exit;
 }
@@ -606,6 +686,10 @@ function tick(sa: string): Action[] {
         out.push({ run_id: l.run_id, action: 'recover', ...recoverRun(l) });
       else if (c.state === 'held:recover_no_progress')
         out.push({ run_id: l.run_id, action: 'none', ok: true, state: c.state });
+      else if (c.exit === EXIT.held || c.state === 'failed') {
+        const x = autoRetry(l, run, c);
+        if (x) out.push(x);
+      }
     } catch (e) {
       out.push({
         run_id: l.run_id,
@@ -617,6 +701,90 @@ function tick(sa: string): Action[] {
   }
   saveAsks(asks);
   return out;
+}
+
+/**
+ * held:gate / held:environment / 编码节点失败的自动重试（docs/00「自动重试」）。只有次数用尽、有 needs、命中红线、
+ * 截止已过，或连续两次修复无变化时保持 held。gate 重试先给里程碑每个包追加提示，再走 decide retry 同一恢复入口。
+ */
+function autoRetry(l: Ledger, run: RunView, c: Classified): Action | undefined {
+  const node = c.node ?? '';
+  if (!['held:gate', 'held:environment', 'failed'].includes(c.state)) return undefined;
+  const plan = planOf(l);
+  const art = artifactsOf(run);
+  let kind: 'gate' | 'environment' | 'coder';
+  let m: string;
+  let reason: string;
+  let gate: (Gate & { milestone?: string }) | undefined;
+  if (c.state === 'held:gate') {
+    gate = readJson(join(art, `${node}.json`)) as typeof gate;
+    [kind, m, reason] = ['gate', gateMilestone(node), `gate:${gate?.reason ?? '?'}`];
+  } else if (c.state === 'held:environment') {
+    [kind, m, reason] = ['environment', 'environment', 'environment'];
+  } else if (c.state === 'failed' && /^(code|fix)-/.test(node)) {
+    const pkg = plan.packages.find(p => `code-${p.id}` === node);
+    m = node.startsWith('fix-') ? node.replace(/^fix-(.+)-r\d+$/, '$1') : (pkg?.milestone ?? 'm1');
+    [kind, reason] = ['coder', `coder:${node}`];
+  } else return undefined;
+  const tries = (l.auto_retries ?? []).filter(
+    r => r.milestone === m && r.reason.split(':')[0] === kind
+  );
+  const needs = needsOf(art, m);
+  const hold = (why: string): Action => ({
+    run_id: l.run_id,
+    action: 'none',
+    ok: true,
+    state: c.state,
+    reason: why,
+    auto_retries: tries.length,
+    ...(needs.length ? { needs } : {}),
+  });
+  if (needs.length) return hold('needs');
+  if (codersOf(art, m).some(x => x.error_class === 'redline')) return hold('redline');
+  if (reason.includes('deadline') || pastDeadline(l)) return hold('deadline');
+  if (tries.length >= loadTiers().policy.auto_retry[kind]) return hold('auto_retry_exhausted');
+  if (reason.includes('no_change') && tries.at(-1)?.reason.includes('no_change'))
+    return hold('no_change');
+  const auto = { milestone: m, at: new Date().toISOString(), reason };
+  let r: RecoverResult;
+  if (kind === 'gate') {
+    if (!attemptable(l, m)) return hold('no_attempt_node');
+    const text = gateHint(plan, art, node, gate, tries.length + 1);
+    for (const p of plan.packages.filter(x => (x.milestone ?? 'm1') === m))
+      appendFileSync(join(l.gen_dir, 'hints', `${p.id}.md`), text);
+    r = retryGate(l, node, false, auto);
+  } else r = recoverRun(l, false, auto);
+  return { run_id: l.run_id, action: 'auto_retry', state: c.state, ...auto, attempt: tries.length + 1, ...r };
+}
+
+/** 追加到 hints/<包>.md 的提示：失败的验收命令与日志尾、基线预存说明、未关闭的阻塞发现、gate 原因。 */
+function gateHint(plan: Plan, art: string, node: string, g: Gate | undefined, n: number): string {
+  const m = gateMilestone(node);
+  const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as
+    | { failed?: string[]; base_pass?: boolean | null; log?: string }
+    | undefined;
+  const out = [`\n## 自动重试 ${String(n)}：${node} escalate（${g?.reason ?? '?'}）\n`];
+  if (acc?.failed?.length) {
+    out.push('失败的验收命令：', ...acc.failed.map(x => `- \`${x}\``), '');
+    if (acc.base_pass === false)
+      out.push('此失败在基线已存在，不是你引入的，与本包无关就记 deviations 并继续。', '');
+    const log = acc.log && existsSync(acc.log) ? readFileSync(acc.log, 'utf8').trimEnd() : '';
+    if (log) out.push('验收日志尾：', '```', ...log.split('\n').slice(-60), '```', '');
+  }
+  const rounds = gatesOf(art)
+    .filter(f => gateMilestone(f.slice(0, -5)) === m && f.slice(0, -5) <= node)
+    .map(f => readJson(join(art, f.replace(/\.json$/, '.review.json'))) as Review | null)
+    .filter((r): r is Review => r !== null && r !== undefined);
+  const risk = milestones(plan).find(x => x.id === m)?.risk ?? 'G1';
+  const open = openBlocking(rounds, risk);
+  const last = new Map(rounds.flatMap(r => r.findings).map(f => [f.id, f]));
+  const findings = [...open].flatMap(id => {
+    const f = last.get(id);
+    return f ? [`- ${id} [${f.severity}] ${f.file}:${String(f.line)} ${tail(f.evidence, 200)}`] : [];
+  });
+  if (findings.length) out.push('未关闭的阻塞发现：', ...findings, '');
+  out.push(`gate reason：${g?.reason ?? '?'}`, '');
+  return out.join('\n');
 }
 
 type Count = Partial<Record<string, number>>;
@@ -677,7 +845,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]> (every verb accepts --json)';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]> (every verb accepts --json)';
 
 export function main(argv: string[]): number {
   let a: Args;
@@ -724,6 +892,10 @@ export function main(argv: string[]): number {
       return ok ? 0 : 1;
     }
     case 'decide':
+      if (a.flags['all-held']) {
+        if (target !== 'retry') throw new Error('usage: superagent decide --all-held retry');
+        return retryAllHeld();
+      }
       return decide(ledger(), a);
     case 'brief':
       return brief(ledger());

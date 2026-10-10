@@ -232,6 +232,10 @@
             "type": "string",
             "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,31}$",
             "description": "Review batch; packages sharing a milestone are reviewed together. Default m1"
+          },
+          "caps": {
+            "$ref": "#/$defs/caps",
+            "description": "Per-package override of the plan-level caps"
           }
         }
       }
@@ -242,6 +246,10 @@
         "codex"
       ],
       "description": "Selects the reviewer pool (tiers.json routing.reviewer.by_console); default claude"
+    },
+    "caps": {
+      "$ref": "#/$defs/caps",
+      "description": "Worker capabilities for every package; default all allowed (docs/00-architecture.md caps)"
     }
   },
   "$defs": {
@@ -260,6 +268,46 @@
         "timeout_s": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "caps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "type": "boolean"
+        },
+        "web": {
+          "type": "boolean"
+        },
+        "install": {
+          "type": "boolean"
+        },
+        "services": {
+          "type": "boolean"
+        },
+        "long_tests": {
+          "type": "boolean"
+        },
+        "read": {
+          "enum": [
+            "any",
+            "scope"
+          ]
+        },
+        "git": {
+          "enum": [
+            "branch",
+            "commit"
+          ]
+        },
+        "mcp": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     }

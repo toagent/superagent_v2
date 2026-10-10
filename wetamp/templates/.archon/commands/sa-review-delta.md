@@ -16,6 +16,7 @@ argument-hint: (inputs bound by the generated workflow)
 
 - 上一轮每条 open 发现都要原 `id` 回填，`carry_over: true`；已修复标 `closed` 并在 `evidence` 写明核验依据（diff 位置或验收日志行），未修复标 `open`。漏填、改 id 或没有 evidence 的 `closed`，引擎一律按仍 open 计。
 - 新发现 `id` 用 R$INPUTS.round-1 起、`carry_over: false`；新发现只有 blocker 才阻塞，其余写进 `debt`。
+- 本轮修复越出任务书预期范围又未在 `deviations[]`（`$ARTIFACTS_DIR/diff-*.coder.json`）登记的文件，记一条 `medium` 新发现。
 - `status`：存在 open 的遗留 blocker/high（G2 含 medium）或新的 blocker → `FAIL`；否则 `PASS`；无法完成 → `INCOMPLETE`。
 
 只输出符合 output_format 的 JSON。

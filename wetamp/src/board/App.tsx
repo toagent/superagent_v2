@@ -67,7 +67,7 @@ function Row({ r, sel, lay }: { r: BoardRow; sel: boolean; lay: Layout }): React
     cell(current, lay.current),
     cell(fmtElapsed(r.elapsed_s), w.elapsed),
     cell(reason(r), w.reason),
-    cell(String(r.recoveries), w.rec),
+    cell(r.auto_retries ? `${String(r.recoveries)}+${String(r.auto_retries)}` : String(r.recoveries), w.rec),
   ];
   return (
     <Box>

@@ -18,6 +18,18 @@ nodes:
           type: string
       required:
         - head
+  - id: attempt-m1
+    bash: 'printf ''{"attempt":"%s"}'' "$(cat ''/GEN/attempts/m1'' 2>/dev/null || echo 0)"'
+    depends_on:
+      - start-m1
+    always_run: true
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: code-core
     command: sa-code
     model: '@sa-coder'
@@ -27,6 +39,7 @@ nodes:
       hint: /GEN/hints/core.md
     depends_on:
       - start-m1
+      - attempt-m1
     output_format:
       type: object
       properties:
@@ -72,7 +85,35 @@ nodes:
             - task
             - env
             - timeout
+            - redline
             - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
       required:
         - status
         - changed_files
@@ -80,17 +121,22 @@ nodes:
         - notes
         - blockers
         - error_class
+        - deviations
+        - needs
   - id: verify-core
     script: sa-check
     runtime: bun
     depends_on:
       - code-core
+      - attempt-m1
     with:
       kind: accept
       plan: /GEN/plan.json
       pkgs: core
       base: $start-m1.output.head
       tag: verify-core
+      coder: $code-core.output
+      milestone: m1
     output_format:
       type: object
       properties:
@@ -128,6 +174,7 @@ nodes:
     runtime: bun
     depends_on:
       - verify-core
+      - attempt-m1
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -285,6 +332,7 @@ nodes:
       hints: /GEN/hints
     depends_on:
       - gate-m1-r1
+      - attempt-m1
     when: "$gate-m1-r1.output.verdict == 'fix'"
     output_format:
       type: object
@@ -331,7 +379,35 @@ nodes:
             - task
             - env
             - timeout
+            - redline
             - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
       required:
         - status
         - changed_files
@@ -339,11 +415,14 @@ nodes:
         - notes
         - blockers
         - error_class
+        - deviations
+        - needs
   - id: diff-m1-r2
     script: sa-check
     runtime: bun
     depends_on:
       - fix-m1-r2
+      - attempt-m1
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -351,6 +430,8 @@ nodes:
       base: $start-m1.output.head
       tag: diff-m1-r2
       prev: $diff-m1-r1.output.diff_hash
+      coder: $fix-m1-r2.output
+      milestone: m1
     output_format:
       type: object
       properties:
@@ -507,6 +588,7 @@ nodes:
       hints: /GEN/hints
     depends_on:
       - gate-m1-r2
+      - attempt-m1
     when: "$gate-m1-r2.output.verdict == 'fix'"
     output_format:
       type: object
@@ -553,7 +635,35 @@ nodes:
             - task
             - env
             - timeout
+            - redline
             - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
       required:
         - status
         - changed_files
@@ -561,11 +671,14 @@ nodes:
         - notes
         - blockers
         - error_class
+        - deviations
+        - needs
   - id: diff-m1-r3
     script: sa-check
     runtime: bun
     depends_on:
       - fix-m1-r3
+      - attempt-m1
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -573,6 +686,8 @@ nodes:
       base: $start-m1.output.head
       tag: diff-m1-r3
       prev: $diff-m1-r2.output.diff_hash
+      coder: $fix-m1-r3.output
+      milestone: m1
     output_format:
       type: object
       properties:
@@ -733,6 +848,18 @@ nodes:
           type: string
       required:
         - head
+  - id: attempt-m2
+    bash: 'printf ''{"attempt":"%s"}'' "$(cat ''/GEN/attempts/m2'' 2>/dev/null || echo 0)"'
+    depends_on:
+      - start-m2
+    always_run: true
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: code-api
     command: sa-code
     model: '@sa-coder'
@@ -742,6 +869,7 @@ nodes:
       hint: /GEN/hints/api.md
     depends_on:
       - start-m2
+      - attempt-m2
     output_format:
       type: object
       properties:
@@ -787,7 +915,35 @@ nodes:
             - task
             - env
             - timeout
+            - redline
             - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
       required:
         - status
         - changed_files
@@ -795,17 +951,22 @@ nodes:
         - notes
         - blockers
         - error_class
+        - deviations
+        - needs
   - id: verify-api
     script: sa-check
     runtime: bun
     depends_on:
       - code-api
+      - attempt-m2
     with:
       kind: accept
       plan: /GEN/plan.json
       pkgs: api
       base: $start-m2.output.head
       tag: verify-api
+      coder: $code-api.output
+      milestone: m2
     output_format:
       type: object
       properties:
@@ -843,6 +1004,7 @@ nodes:
     runtime: bun
     depends_on:
       - verify-api
+      - attempt-m2
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -1000,6 +1162,7 @@ nodes:
       hints: /GEN/hints
     depends_on:
       - gate-m2-r1
+      - attempt-m2
     when: "$gate-m2-r1.output.verdict == 'fix'"
     output_format:
       type: object
@@ -1046,7 +1209,35 @@ nodes:
             - task
             - env
             - timeout
+            - redline
             - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
       required:
         - status
         - changed_files
@@ -1054,11 +1245,14 @@ nodes:
         - notes
         - blockers
         - error_class
+        - deviations
+        - needs
   - id: diff-m2-r2
     script: sa-check
     runtime: bun
     depends_on:
       - fix-m2-r2
+      - attempt-m2
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -1066,6 +1260,8 @@ nodes:
       base: $start-m2.output.head
       tag: diff-m2-r2
       prev: $diff-m2-r1.output.diff_hash
+      coder: $fix-m2-r2.output
+      milestone: m2
     output_format:
       type: object
       properties:
@@ -1222,6 +1418,7 @@ nodes:
       hints: /GEN/hints
     depends_on:
       - gate-m2-r2
+      - attempt-m2
     when: "$gate-m2-r2.output.verdict == 'fix'"
     output_format:
       type: object
@@ -1268,7 +1465,35 @@ nodes:
             - task
             - env
             - timeout
+            - redline
             - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
       required:
         - status
         - changed_files
@@ -1276,11 +1501,14 @@ nodes:
         - notes
         - blockers
         - error_class
+        - deviations
+        - needs
   - id: diff-m2-r3
     script: sa-check
     runtime: bun
     depends_on:
       - fix-m2-r3
+      - attempt-m2
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -1288,6 +1516,8 @@ nodes:
       base: $start-m2.output.head
       tag: diff-m2-r3
       prev: $diff-m2-r2.output.diff_hash
+      coder: $fix-m2-r3.output
+      milestone: m2
     output_format:
       type: object
       properties:

@@ -50,11 +50,54 @@
             "task",
             "env",
             "timeout",
+            "redline",
             null
           ]
+        },
+        "deviations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": ["path", "why"]
+          }
+        },
+        "needs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cap": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              },
+              "minimal_ask": {
+                "type": "string"
+              }
+            },
+            "required": ["cap", "why", "minimal_ask"]
+          }
         }
       },
-      "required": ["status", "changed_files", "quick_checks", "notes", "blockers", "error_class"]
+      "required": [
+        "status",
+        "changed_files",
+        "quick_checks",
+        "notes",
+        "blockers",
+        "error_class",
+        "deviations",
+        "needs"
+      ]
     },
     "reviewer": {
       "type": "object",
@@ -172,6 +215,15 @@
         }
       },
       "required": ["head"]
+    },
+    "attempt": {
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "type": "string"
+        }
+      },
+      "required": ["attempt"]
     }
   }
 }

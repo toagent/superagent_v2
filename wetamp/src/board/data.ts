@@ -24,6 +24,8 @@ export interface BoardRow {
   elapsed_s: number | null;
   held: { node: string | null; event: string | null } | null;
   recoveries: number;
+  /** 引擎自动重试次数（ledger.auto_retries），与 recoveries 分开计。 */
+  auto_retries: number;
   console: string;
   repo: string;
   branch: string;
@@ -143,6 +145,7 @@ export function rowOf(
     elapsed_s: Number.isFinite(elapsed) ? Math.max(0, elapsed) : null,
     held: c.exit === EXIT.held ? { node: c.node ?? null, event: c.event ?? null } : null,
     recoveries: l.recoveries.length,
+    auto_retries: l.auto_retries?.length ?? 0,
     console: l.console,
     repo: basename(l.repo),
     branch: l.branch,
@@ -162,6 +165,7 @@ export function unreadableRow(id: string, error: string, l?: Ledger): BoardRow {
     elapsed_s: null,
     held: null,
     recoveries: l?.recoveries.length ?? 0,
+    auto_retries: l?.auto_retries?.length ?? 0,
     console: l?.console ?? '',
     repo: l ? basename(l.repo) : '',
     branch: l?.branch ?? '',

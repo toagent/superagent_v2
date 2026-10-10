@@ -22,6 +22,7 @@ export interface Pkg {
   signoff?: 'auto' | 'human';
   notes?: string;
   milestone?: string;
+  caps?: Partial<Caps>;
 }
 export interface Plan {
   repo: string;
@@ -31,8 +32,32 @@ export interface Plan {
   mode?: string;
   console?: Console;
   environment?: Check[];
+  caps?: Partial<Caps>;
   packages: Pkg[];
 }
+/** 将军能力（docs/00 caps）：默认全开；plan 级覆盖默认、包级覆盖 plan 级。 */
+export interface Caps {
+  network: boolean;
+  web: boolean;
+  install: boolean;
+  services: boolean;
+  long_tests: boolean;
+  read: 'any' | 'scope';
+  git: 'branch' | 'commit';
+  mcp: string[];
+}
+export const capsOf = (plan: Plan, p: Pkg, mcp: string[]): Caps => ({
+  network: true,
+  web: true,
+  install: true,
+  services: true,
+  long_tests: true,
+  read: 'any',
+  git: 'branch',
+  mcp,
+  ...plan.caps,
+  ...p.caps,
+});
 export interface Milestone {
   id: string;
   packages: Pkg[];

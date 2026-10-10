@@ -245,6 +245,37 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
+  test('accept: archives the result and the coder output; blocked without needs or redline counts as partial', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const coder = (c: Record<string, unknown>, tag: string): unknown => {
+      runScript(repo, {
+        kind: 'accept',
+        plan: planFile(root, 'true'),
+        pkgs: 'a',
+        tag,
+        milestone: 'm1',
+        coder: JSON.stringify({ error_class: null, needs: [], deviations: [], ...c }),
+      });
+      return JSON.parse(readFileSync(join(root, 'art', `${tag}.coder.json`), 'utf8'));
+    };
+    expect(coder({ status: 'blocked' }, 'verify-a')).toMatchObject({
+      status: 'partial',
+      milestone: 'm1',
+    });
+    expect(JSON.parse(readFileSync(join(root, 'art', 'verify-a.json'), 'utf8'))).toMatchObject({
+      ok: true,
+    });
+    const need = { cap: 'network', why: 'w', minimal_ask: 'm' };
+    expect(coder({ status: 'blocked', needs: [need] }, 'verify-b')).toMatchObject({
+      status: 'blocked',
+      needs: [need],
+    });
+    expect(coder({ status: 'blocked', error_class: 'redline' }, 'verify-c')).toMatchObject({
+      status: 'blocked',
+    });
+    expect(coder({ status: 'done' }, 'verify-d')).toMatchObject({ status: 'done' });
+  });
   test('accept: uncommitted change fails even when commands pass', () => {
     const root = tmp();
     const repo = gitRepo(root);

@@ -381,6 +381,10 @@ describe('detail', () => {
       join(art, 'gate-m1-r2.json'),
       JSON.stringify({ verdict: 'pass', reason: null, debt: ['d'] })
     );
+    writeFileSync(
+      join(art, 'a.coder.json'),
+      JSON.stringify({ needs: [{ cap: 'services', why: 'pg', minimal_ask: '起本机 postgres' }] })
+    );
     const ev = (i: number): string =>
       JSON.stringify({ type: 'node_start', step: `n${String(i)}`, ts: 't' });
     writeFileSync(
@@ -418,6 +422,7 @@ describe('detail', () => {
     expect(last?.out?.length).toBeLessThanOrEqual(120);
     expect(last?.out).toEndWith('secret: ***');
     expect(d.next[0]).toBe('superagent decide sa1 approve|reject|retry [--pkg id]');
+    expect(detailLines(d)).toContain('need services (a): 起本机 postgres');
     expect(d.errors).toEqual([]);
   });
 });
@@ -458,6 +463,12 @@ describe('table layout', () => {
     const [header, row] = frame(160, [failedRow()]).slice(2);
     expect(row).toMatch(/ exit 1 @review-m1-r1 +0 /);
     expect(header).toMatch(/ exit\/held +rec +console +repo@branch/);
+    const [l, run, o] = failedRow();
+    l.auto_retries = [
+      { milestone: 'm1', at: 't', reason: 'gate' },
+      { milestone: 'm1', at: 't', reason: 'gate' },
+    ];
+    expect(frame(160, [[l, run, o]])[3]).toMatch(/ exit 1 @review-m1-r1 +0\+2 /);
   });
 
   test('at 80 columns elapsed, exit/held and rec are not cut off; nodes keep only n/m', () => {

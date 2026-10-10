@@ -861,6 +861,180 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
   });
 });
 
+describe('auto retry (supervise-tick, archon stub)', () => {
+  /** 失败在 failedNode 的 run；gen 带 attempt-m1 节点；artifacts 按 files 写入。 */
+  const held = (failedNode: string, files: Record<string, unknown> = {}, attempt = true) => {
+    const s = stub([]);
+    const art = join(s.root, 'out', 'artifacts', 'runs', 'r');
+    mkdirSync(art, { recursive: true });
+    for (const [f, v] of Object.entries(files)) writeFileSync(join(art, f), JSON.stringify(v));
+    writeFileSync(
+      join(s.dir, 'get-000.json'),
+      JSON.stringify(
+        run('failed', {
+          output_root: join(s.root, 'out'),
+          nodes: [{ nodeId: failedNode, state: 'failed' }],
+        })
+      )
+    );
+    const pkg = { accept: [], risk: 'G1', milestone: 'm1' };
+    writeFileSync(
+      join(s.root, 'gen', 'plan.json'),
+      JSON.stringify({
+        deadline: '2099-01-01T00:00:00Z',
+        packages: [
+          { ...pkg, id: 'core' },
+          { ...pkg, id: 'api' },
+        ],
+      })
+    );
+    const wf = join(s.root, 'gen', '.archon', 'workflows', 'sa-sa1');
+    mkdirSync(wf, { recursive: true });
+    writeFileSync(
+      join(wf, 'sa-sa1.yaml'),
+      attempt ? 'nodes:\n  - id: attempt-m1\n' : 'nodes: []\n'
+    );
+    return { ...s, art };
+  };
+  const tick = (): Record<string, unknown>[] => {
+    const { code, out } = captured(() => main(['supervise-tick']));
+    expect(code).toBe(0);
+    return JSON.parse(out) as Record<string, unknown>[];
+  };
+  const resumes = (calls: string[]): number =>
+    calls.filter(c => c.startsWith('workflow resume')).length;
+  const gate = (reason: string) => ({ verdict: 'escalate', reason, milestone: 'm1', debt: [] });
+
+  test('held:gate: writes hints for every package of the milestone, bumps the attempt, resumes; stops after N', () => {
+    const log = join(tmp(), 'diff.log');
+    writeFileSync(log, Array.from({ length: 100 }, (_, i) => `line ${String(i + 1)}`).join('\n'));
+    const s = held('gate-m1-r3', {
+      'gate-m1-r3.json': gate('acceptance_failed+review_limit'),
+      'gate-m1-r3.review.json': {
+        status: 'FAIL',
+        findings: [
+          { id: 'R1-1', severity: 'high', file: 'a.ts', line: 3, status: 'open', evidence: 'boom' },
+        ],
+      },
+      'diff-m1-r3.json': { failed: ['bun test'], base_pass: false, log },
+    });
+    expect(tick()[0]).toMatchObject({
+      action: 'auto_retry',
+      ok: true,
+      state: 'held:gate',
+      milestone: 'm1',
+      reason: 'gate:acceptance_failed+review_limit',
+      attempt: 1,
+    });
+    const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
+    for (const x of [
+      '`bun test`',
+      '此失败在基线已存在',
+      '- R1-1 [high] a.ts:3 boom',
+      'line 100',
+      'gate reason：acceptance_failed+review_limit',
+    ])
+      expect(hint).toContain(x);
+    expect(hint).not.toContain('line 40\n');
+    expect(readFileSync(join(s.root, 'gen', 'hints', 'api.md'), 'utf8')).toBe(hint);
+    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
+    expect(resumes(s.calls())).toBe(1);
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 2 });
+    // 追加不覆盖
+    expect(
+      readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8').match(/## 自动重试/g)
+    ).toHaveLength(2);
+    expect(tick()[0]).toMatchObject({
+      action: 'none',
+      reason: 'auto_retry_exhausted',
+      auto_retries: 2,
+    });
+    expect(resumes(s.calls())).toBe(2);
+    const l = loadLedger('sa1');
+    expect(l.auto_retries?.map(r => r.reason)).toEqual([
+      'gate:acceptance_failed+review_limit',
+      'gate:acceptance_failed+review_limit',
+    ]);
+    // 自动重试与 recover 停滞计数互不影响
+    expect([l.recoveries.length, l.stalled ?? 0]).toEqual([0, 0]);
+    const { out } = captured(() => main(['status', 'sa1']));
+    expect(JSON.parse(out)).toMatchObject({ auto_retries: 2 });
+  });
+  test('two no_change gates in a row stop retrying', () => {
+    const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 1 });
+    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'no_change' });
+    expect(resumes(s.calls())).toBe(1);
+  });
+  test('needs[] or a red line keeps the run held and surfaces the needs', () => {
+    const need = { cap: 'network', why: 'registry', minimal_ask: 'allow npm registry' };
+    const s = held('gate-m1-r1', {
+      'gate-m1-r1.json': gate('acceptance_failed'),
+      'verify-core.coder.json': {
+        status: 'blocked',
+        error_class: 'env',
+        needs: [need],
+        milestone: 'm1',
+      },
+    });
+    expect(tick()[0]).toMatchObject({
+      action: 'none',
+      reason: 'needs',
+      needs: [{ tag: 'verify-core', ...need }],
+    });
+    const { out } = captured(() => main(['brief', 'sa1']));
+    expect(out).toContain('need network (verify-core): allow npm registry');
+    expect(resumes(s.calls())).toBe(0);
+    const r = held('gate-m1-r1', {
+      'gate-m1-r1.json': gate('acceptance_failed'),
+      'verify-core.coder.json': {
+        status: 'blocked',
+        error_class: 'redline',
+        needs: [],
+        milestone: 'm1',
+      },
+    });
+    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'redline' });
+    expect(resumes(r.calls())).toBe(0);
+  });
+  test('held:environment and a failed coder node are retried once without hints', () => {
+    const e = held('environment');
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'environment' });
+    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'auto_retry_exhausted' });
+    expect(resumes(e.calls())).toBe(1);
+    const c = held('code-api');
+    expect(tick()[0]).toMatchObject({
+      action: 'auto_retry',
+      milestone: 'm1',
+      reason: 'coder:code-api',
+    });
+    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'auto_retry_exhausted' });
+    expect(existsSync(join(c.root, 'gen', 'hints', 'api.md'))).toBe(false);
+    // 其他节点失败（验收脚本等）不自动重试
+    held('verify-core');
+    expect(tick()).toEqual([]);
+  });
+  test('a workflow generated before attempt nodes stays held; decide retry still refuses the gate', () => {
+    const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') }, false);
+    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'no_attempt_node' });
+    expect(() => main(['decide', 'sa1', 'retry'])).toThrow(/gate-m1-r3 escalated/);
+    expect(resumes(s.calls())).toBe(0);
+  });
+  test('decide retry on held:gate bumps the attempt and resumes; --all-held retries every held run', () => {
+    const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') });
+    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
+    const { code, out } = captured(() => main(['decide', '--all-held', 'retry']));
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual([
+      expect.objectContaining({ run_id: 'sa1', state: 'held:gate', ok: true }),
+    ]);
+    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('2');
+    expect(resumes(s.calls())).toBe(2);
+    expect(() => main(['decide', '--all-held', 'approve'])).toThrow(/--all-held retry/);
+  });
+});
+
 test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land', () => {
   const root = tmp();
   const repo = gitRepo(root);

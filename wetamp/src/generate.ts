@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { archon, tail } from './archon';
 import { WETAMP, home, loadTiers, runAliases } from './config';
-import { milestones, type Milestone, type Pkg, type Plan } from './plan';
+import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
 
 const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.json'))('yaml') as {
   stringify(v: unknown, opts: Record<string, unknown>): string;
@@ -18,7 +18,7 @@ export function newRunId(now = new Date()): string {
   return `${ts}-${crypto.getRandomValues(new Uint16Array(1))[0].toString(16).padStart(4, '0')}`;
 }
 
-const outputSchema = (kind: 'coder' | 'reviewer' | 'accept' | 'head'): unknown =>
+const outputSchema = (kind: 'coder' | 'reviewer' | 'accept' | 'head' | 'attempt'): unknown =>
   (
     JSON.parse(readFileSync(join(WETAMP, 'schemas', 'output.schema.json'), 'utf8')) as {
       $defs: Record<string, unknown>;
@@ -65,9 +65,21 @@ export function buildWorkflow(
   const tiers = loadTiers();
   const aliases = runAliases(plan.console ?? 'claude', tiers);
   // Claude 节点经 SDK disallowedTools 禁再派生；Codex 节点无此字段，由 bin/codex-worker 关 multi_agent 与 MCP
-  const noNesting = (alias: '@sa-coder' | '@sa-reviewer', role: 'coder' | 'reviewer'): Node =>
+  // caps 收紧项对 Claude 将军追加 denied_tools；修复节点覆盖整个里程碑，取各包限制的并集
+  const noNesting = (
+    alias: '@sa-coder' | '@sa-reviewer',
+    role: 'coder' | 'reviewer',
+    pkgs: Pkg[] = []
+  ): Node =>
     aliases[alias].provider === 'claude'
-      ? { denied_tools: tiers.policy.exec_profiles[role].claude.denied_tools }
+      ? {
+          denied_tools: [
+            ...new Set([
+              ...tiers.policy.exec_profiles[role].claude.denied_tools,
+              ...pkgs.flatMap(p => capsDenied(capsOf(plan, p, tiers.policy.sandbox.mcp))),
+            ]),
+          ],
+        }
       : {};
   // 评审只读落在执行层：Claude 节点由 SDK sandbox 拦 Bash 写入；Codex 节点挂哨兵 MCP（见 readOnlyMcp），
   // bin/codex-worker 的代理据此把线程与回合改成只读。
@@ -88,6 +100,16 @@ export function buildWorkflow(
       ...after,
       output_format: outputSchema('head'),
     });
+    // 自动重试与 decide retry 给 <gen>/attempts/<m> 加一：always_run 的输出一变，依赖它的编码、验收、修复节点在
+    // resume 时失去缓存，整个里程碑重跑（评审与 gate 随 diff 输出变化重跑）
+    const attempt = `attempt-${m.id}`;
+    nodes.push({
+      id: attempt,
+      bash: `printf '{"attempt":"%s"}' "$(cat '${join(gen, 'attempts', m.id)}' 2>/dev/null || echo 0)"`,
+      depends_on: [start],
+      always_run: true,
+      output_format: outputSchema('attempt'),
+    });
     let prev = start;
     for (const p of m.packages) {
       const coder = fake
@@ -95,20 +117,28 @@ export function buildWorkflow(
         : {
             command: 'sa-code',
             model: '@sa-coder',
-            ...noNesting('@sa-coder', 'coder'),
+            ...noNesting('@sa-coder', 'coder', [p]),
             with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
           };
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
-        depends_on: [prev],
+        depends_on: [prev, attempt],
         output_format: outputSchema('coder'),
       });
       nodes.push(
         check(
           `verify-${p.id}`,
-          [`code-${p.id}`],
-          { kind: 'accept', plan: planPath, pkgs: p.id, base, tag: `verify-${p.id}` },
+          [`code-${p.id}`, attempt],
+          {
+            kind: 'accept',
+            plan: planPath,
+            pkgs: p.id,
+            base,
+            tag: `verify-${p.id}`,
+            coder: `$code-${p.id}.output`,
+            milestone: m.id,
+          },
           { output_format: outputSchema('accept') }
         )
       );
@@ -127,7 +157,7 @@ export function buildWorkflow(
             : {
                 command: 'sa-fix',
                 model: '@sa-coder',
-                ...noNesting('@sa-coder', 'coder'),
+                ...noNesting('@sa-coder', 'coder', m.packages),
                 with: {
                   milestone: m.id,
                   round: r,
@@ -137,7 +167,7 @@ export function buildWorkflow(
                   hints: join(gen, 'hints'),
                 },
               }),
-          depends_on: [prev],
+          depends_on: [prev, attempt],
           when: `$gate-${last}.output.verdict == 'fix'`,
           output_format: outputSchema('coder'),
         });
@@ -147,14 +177,16 @@ export function buildWorkflow(
       nodes.push(
         check(
           `diff-${t}`,
-          [prev],
+          [prev, attempt],
           {
             kind: 'accept',
             plan: planPath,
             pkgs: ids,
             base,
             tag: `diff-${t}`,
-            ...(r > 1 ? { prev: `$diff-${last}.output.diff_hash` } : {}),
+            ...(r > 1
+              ? { prev: `$diff-${last}.output.diff_hash`, coder: `$fix-${t}.output`, milestone: m.id }
+              : {}),
           },
           { output_format: outputSchema('accept') }
         )
@@ -238,13 +270,58 @@ export function buildWorkflow(
   };
 }
 
+/**
+ * caps 收紧时能在执行层拦下的部分（Claude SDK disallowedTools，按命令前缀匹配）。
+ * long_tests、read:"scope"、包级 mcp 收窄以及 Codex 节点上的全部 caps 只是提示级：写进任务书，靠评审核对。
+ */
+export function capsDenied(c: Caps): string[] {
+  const bash = (...cmds: string[]): string[] => cmds.map(x => `Bash(${x})`);
+  return [
+    ...(c.network && c.web ? [] : ['WebFetch', 'WebSearch']),
+    ...(c.network ? [] : bash('curl *', 'wget *')),
+    ...(c.install
+      ? []
+      : bash(
+          'npm install *',
+          'npm i *',
+          'bun add *',
+          'pnpm add *',
+          'yarn add *',
+          'pip install *',
+          'pip3 install *',
+          'brew install *',
+          'cargo install *',
+          'go install *'
+        )),
+    ...(c.services ? [] : bash('docker *', 'docker-compose *', 'brew services *')),
+    ...(c.git === 'branch' ? [] : bash('git rebase*', 'git reset*', 'git commit --amend*')),
+  ];
+}
+
+const CAP_TEXT: Record<Exclude<keyof Caps, 'read' | 'git' | 'mcp'>, string> = {
+  network: '访问网络（curl/wget、包仓库）',
+  web: '联网搜索与抓取网页（WebSearch/WebFetch）',
+  install: '安装或新增依赖',
+  services: '启动本地服务与容器（docker 等）',
+  long_tests: '跑长时测试（全量、E2E）',
+};
+const renderCaps = (c: Caps): string =>
+  [
+    ...Object.entries(CAP_TEXT).map(
+      ([k, t]) => `- ${t}：${c[k as keyof typeof CAP_TEXT] ? '允许' : '禁止'}`
+    ),
+    `- 读取：${c.read === 'any' ? '整机任何非红线路径' : '只读本仓库内任务书列出的路径'}`,
+    `- git：${c.git === 'branch' ? '本分支内任意提交、rebase、reset' : '只追加提交，不 rebase/reset/amend'}`,
+    `- MCP：${c.mcp.length ? c.mcp.join('、') : '（无）'}`,
+  ].join('\n');
+
 const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');
 /** 桩编码：向包的首个写入路径追加一行并提交，输出 coder 结构。 */
 const fakeEdit = (p: Pkg, line: string): string =>
   [
     `mkdir -p "$(dirname '${safePath(p)}')" && echo '${line}' >> '${safePath(p)}'`,
     `git add '${safePath(p)}' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake ${line}'`,
-    `echo '{"status":"done","changed_files":["${safePath(p)}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null}'`,
+    `echo '{"status":"done","changed_files":["${safePath(p)}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'`,
   ].join('\n');
 
 const FAKE_HIGH = { id: 'R1-1', severity: 'high', file: 'fake', line: 1 };
@@ -261,7 +338,7 @@ const fakeReview = (r: number): string => {
 };
 
 /** 单趟替换：计划文本里出现的 `{{x}}` 不会被再次展开。 */
-export function renderBrief(p: Pkg, hint: string): string {
+export function renderBrief(p: Pkg, hint: string, caps: Caps): string {
   const list = (xs: string[] | undefined): string =>
     xs?.length ? xs.map(x => `- \`${x}\``).join('\n') : '- （无）';
   const vars: Partial<Record<string, string>> = {
@@ -274,6 +351,7 @@ export function renderBrief(p: Pkg, hint: string): string {
     read: list(p.scope.read_hint),
     accept: list(p.accept.map(c => c.cmd)),
     notes: p.notes ?? '（无）',
+    caps: renderCaps(caps),
     hint,
   };
   const tpl = readFileSync(join(WETAMP, 'templates', 'brief.md'), 'utf8');
@@ -307,10 +385,11 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     });
   }
   writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
+  const mcp = loadTiers().policy.sandbox.mcp;
   for (const p of plan.packages) {
     writeFileSync(
       join(dir, 'briefs', `${p.id}.md`),
-      renderBrief(p, join(dir, 'hints', `${p.id}.md`))
+      renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p, mcp))
     );
   }
   writeFileSync(
@@ -324,7 +403,7 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     join(dir, READONLY_MCP),
     readOnlyMcp(loadTiers().policy.exec_profiles.reviewer.codex_readonly_marker)
   );
-  writeFileSync(join(dir, '.gitignore'), 'hints/\n');
+  writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n');
   const config = join(dir, 'run-config.yaml');
   writeFileSync(config, YAML.stringify({ aliases: runAliases(plan.console ?? 'claude') }, {}));
   git(dir, 'init', '-q');

@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildWorkflow, generate, newRunId, renderBrief } from '../src/generate';
+import { buildWorkflow, capsDenied, generate, newRunId, renderBrief } from '../src/generate';
 import { install } from '../src/config';
-import { loadPlan, milestones, type Plan } from '../src/plan';
+import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const fixture = JSON.parse(
@@ -17,6 +17,7 @@ const build = (fake: boolean, plan = fixture): unknown =>
   JSON.parse(
     JSON.stringify(buildWorkflow(plan, milestones(plan), 'golden-0001', '/GEN', fake, NOW))
   );
+const capsOfAll = (c: Plan['caps']) => capsOf({ ...fixture, caps: c }, fixture.packages[0], []);
 type N = {
   id: string;
   depends_on?: string[];
@@ -38,7 +39,7 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('start-m1')?.depends_on).toEqual(['environment']);
-    expect(n('code-core')?.depends_on).toEqual(['start-m1']);
+    expect(n('code-core')?.depends_on).toEqual(['start-m1', 'attempt-m1']);
     expect(n('start-m2')).toMatchObject({
       depends_on: ['gate-m1-r1', 'gate-m1-r2', 'gate-m1-r3'],
       trigger_rule: 'none_failed_min_one_success',
@@ -56,10 +57,10 @@ describe('buildWorkflow', () => {
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('fix-m1-r1')).toBeUndefined();
     expect(n('fix-m1-r2')).toMatchObject({
-      depends_on: ['gate-m1-r1'],
+      depends_on: ['gate-m1-r1', 'attempt-m1'],
       when: "$gate-m1-r1.output.verdict == 'fix'",
     });
-    expect(n('diff-m1-r3')?.depends_on).toEqual(['fix-m1-r3']);
+    expect(n('diff-m1-r3')?.depends_on).toEqual(['fix-m1-r3', 'attempt-m1']);
     expect(
       Object.keys(n('gate-m1-r3')?.with ?? {})
         .filter(k => /^[RC]\d$/.test(k))
@@ -154,6 +155,30 @@ describe('buildWorkflow', () => {
       expect(node(c, 'code-core').mcp).toBeUndefined();
     }
   });
+  test('attempt-<m> always runs and gates the coder, accept and fix nodes, not review or gate', () => {
+    const nodes = nodesOf(build(false));
+    expect(nodes.find(x => x.id === 'attempt-m1')).toMatchObject({
+      depends_on: ['start-m1'],
+      always_run: true,
+    });
+    expect(JSON.stringify(nodes.find(x => x.id === 'attempt-m1'))).toContain('/GEN/attempts/m1');
+    const on = nodes.filter(x => x.depends_on?.includes('attempt-m1')).map(x => x.id);
+    expect(on).toEqual(
+      expect.arrayContaining(['code-core', 'verify-core', 'diff-m1-r1', 'fix-m1-r2'])
+    );
+    expect(on.some(id => /^(review|gate)-/.test(id))).toBe(false);
+  });
+  test('tightened caps map to Claude denied_tools; defaults deny nothing', () => {
+    // 默认 tiers 的 @sa-coder 是 codex（caps 提示级）；Claude 将军节点把 capsDenied 并入 denied_tools
+    expect(capsDenied(capsOfAll({ network: false, git: 'commit' }))).toEqual(
+      expect.arrayContaining(['WebFetch', 'WebSearch', 'Bash(curl *)', 'Bash(git rebase*)'])
+    );
+    expect(capsDenied(capsOfAll({}))).toEqual([]);
+    expect(capsDenied(capsOfAll({ web: false }))).toEqual(['WebFetch', 'WebSearch']);
+    expect(capsDenied(capsOfAll({ install: false, services: false }))).toEqual(
+      expect.arrayContaining(['Bash(npm install *)', 'Bash(bun add *)', 'Bash(docker *)'])
+    );
+  });
   test('plan prose never enters the workflow text (no $ substitution hazard)', () => {
     expect(JSON.stringify(build(false))).not.toContain('$HOME');
   });
@@ -161,7 +186,11 @@ describe('buildWorkflow', () => {
 
 describe('renderBrief', () => {
   test('carries goal, write scope, accept commands and hint path verbatim', () => {
-    const b = renderBrief(fixture.packages[0], '/H/core.md');
+    const b = renderBrief(
+      fixture.packages[0],
+      '/H/core.md',
+      capsOf(fixture, fixture.packages[0], [])
+    );
     for (const s of [
       '$HOME and $ARTIFACTS_DIR literal',
       '`core.txt`',
@@ -171,9 +200,24 @@ describe('renderBrief', () => {
     ])
       expect(b).toContain(s);
   });
+  test('lists the package permissions and the execution-layer red lines', () => {
+    const p = { ...fixture.packages[0], caps: { network: false, git: 'commit' as const } };
+    const b = renderBrief(p, '/H/core.md', capsOf(fixture, p, ['searxng']));
+    for (const s of [
+      '## 你的权限',
+      '包仓库）：禁止',
+      '只追加提交',
+      'searxng',
+      '## 红线（执行层强制）',
+      'deviations',
+    ])
+      expect(b).toContain(s);
+  });
   test('placeholders inside plan text are not expanded', () => {
     const p = { ...fixture.packages[0], goal: 'keep {{hint}} and $1 literal' };
-    expect(renderBrief(p, '/H/core.md')).toContain('keep {{hint}} and $1 literal');
+    expect(renderBrief(p, '/H/core.md', capsOf(fixture, p, []))).toContain(
+      'keep {{hint}} and $1 literal'
+    );
   });
 });
 

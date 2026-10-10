@@ -38,6 +38,9 @@ export interface Tiers {
   routing: { coder: { models: string[] }; reviewer: { by_console: Record<Console, string[]> } };
   health: { vendor_concurrency: Record<string, number> };
   policy: {
+    sandbox: { mcp: string[] };
+    /** held:gate / held:environment / coder 节点失败各自的自动重试上限（docs/00 自动重试）。 */
+    auto_retry: { gate: number; environment: number; coder: number };
     exec_profiles: {
       coder: { claude: { denied_tools: string[] } };
       reviewer: {

@@ -11,7 +11,9 @@ argument-hint: (inputs bound by the generated workflow)
 - 本里程碑 diff：`$INPUTS.diff`
 - 引擎复跑的验收日志：`$INPUTS.accept_log`
 
-逐项核对：目标是否实现、是否越出任务书允许的可写路径、正确性、安全（注入、XSS、LLM 信任边界、硬编码 secret）、测试是否真的覆盖所述行为。
+逐项核对：目标是否实现、改动范围、正确性、安全（注入、XSS、LLM 信任边界、硬编码 secret）、测试是否真的覆盖所述行为。
+
+改动范围：任务书的范围只是预期，将军越出时应在输出 `deviations[]` 登记 `{path, why}`（存于 `$ARTIFACTS_DIR/*.coder.json`）。diff 中越出预期范围又未登记的文件记一条 `medium`；已登记的核对理由是否成立。
 
 ## 输出
 
