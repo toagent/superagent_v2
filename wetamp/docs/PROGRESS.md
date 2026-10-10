@@ -579,6 +579,9 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **验收**：`cd wetamp && bunx tsc --noEmit && timeout 600 bun test` exit0（622 pass/0 fail/3 snapshots，177.30s，`tests-final.log`）；`bunx eslint src` exit0（无新增告警，`lint-final.log`）。`SUPERAGENT_HOME=/tmp/hf5-accept.4KtD0v ARCHON_HOME=/tmp/hf5-accept.4KtD0v/selftest-archon bash scripts/selftest.sh --fake` exit0，selftest-fake.json ok:true、原hooks与HF3检查通过。提交后同一调用方home执行 `bash scripts/verify-local.sh --commit HEAD`，以该目录verify.json的commit绑定结果为准，不修改回执或用fake成功冒充独立评审/生产验收。src净增65行（≤250）；hooks仅redline.cjs与codex-trust相关脚本，packages受跟踪文件零改动，node_modules软链不暂存。
 - **HF5b / M2-04 / I8、P1**：复用 shell.cjs 的 tokens 证明当前简单命令是字面顶层 cd，只有它更新父 cwd；sh/bash/zsh/dash/ksh -c 递归校验但不传播 cwd，括号子 shell 仍隔离；命令替换、反引号或包装器中的 cd 无法证明作用域时派生会话 fail-closed。仅调用 reason() 回放子作用域污染的 touch/重定向，保持原6个冒烟；拒绝原因沿用 guard 监测通道。
 - **HF5b / R2-D01 / I7、P4**：createLoader 与 snapshotOf 复用 safeRowOf 的逐行 catch/unreadableRow 处置，错误写入 summary.unreadable 且去重；目录外 land.json 软链夹具验证坏行隔离、其它行刷新和终态缓存重读均正常，不放宽 confined 读取边界。
+- **HF5c 旧记录迁移**：生产记录推翻“旧记录必带 uid”和“启动时间与 started_at 相差 <1s”两个假设；proxy 在记录写入前约5.9s启动，server 早约0.9s。
+  无 label 的记录改按当前 UID（记录有 uid 时一并核对）、精确 argv、lstart ≤ started_at+1s、存活父子 PPID 判定；拒绝错误明确字段，SIGTERM 后最多等15s，不升级 SIGKILL，退出后按 cleanup 归属清除旧记录。
+  可注入 ps 回放真实形状与六类拒绝反例；launchd 未加载但旧 PID 存活时 status 显示 legacy 和两个 PID 的存活标记。独立评审并入 HF6 astra R1，生产迁移实测留待元帅。
 
 
 ## HF7 内存准入

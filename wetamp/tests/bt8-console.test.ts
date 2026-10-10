@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { consoleEnv, handler, needsRestart, refreshConsole, stopWeb, type WebState } from '../src/web/server';
+import { consoleEnv, consoleStatus, handler, legacyPids, migrate, needsRestart, refreshConsole, stopWeb, type WebState } from '../src/web/server';
 import { WETAMP } from '../src/config';
 import { tmp } from './helpers';
 const saved = { ...process.env };
@@ -72,4 +72,98 @@ test('M2-07 previous PID state requires migration; incomplete owner identity is 
   const migrated: WebState = { ...legacy, server_pid: process.pid, internal_port: 1234, engine_hash: 'new', socket: join(root, 'console/archon.sock'), label: 'fixture' };
   expect(await refreshConsole(async () => { count++; return migrated; }, 'new')).toEqual(migrated);
   expect(count).toBe(1); await expect(stopWeb(legacy)).rejects.toThrow('owner ambiguous');
+});
+
+// Same keys as the production record: no uid, label or socket.
+function legacyFixture() {
+  const s = { port: 39890, pid: 40805, server_pid: 40912, internal_port: 35480, token: 'fixture', started_at: '2026-10-10T10:06:52.922Z', engine_hash: 'd6e1a68c' };
+  const rows = new Map([
+    [s.pid, { uid: String(process.getuid?.()), ppid: '1', lstart: new Date(Date.parse(s.started_at) - 5900).toISOString(), command: `${process.execPath} ${join(WETAMP, 'src/cli.ts')} console serve` }],
+    [s.server_pid, { uid: String(process.getuid?.()), ppid: String(s.pid), lstart: new Date(Date.parse(s.started_at) - 900).toISOString(), command: `${process.execPath} --no-env-file ${join(WETAMP, 'src/web/archon.ts')} ${String(s.internal_port)}` }],
+  ]);
+  const living = new Set(rows.keys());
+  const ps: NonNullable<Parameters<typeof legacyPids>[1]> = (pid, field) => {
+    const row = rows.get(pid); if (!row) throw new Error('unexpected ps read'); return row[field];
+  };
+  return { s, rows, living, ps, live: (pid: number) => living.has(pid) };
+}
+test('HF5c production-shaped record migrates only after both processes exit and clears its state', async () => {
+  const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, "archon");
+  const { s, living, ps, live } = legacyFixture(), signals: number[] = [];
+  writeFileSync(join(root, 'web.json'), JSON.stringify(s));
+  expect(legacyPids(s, ps, live)).toEqual([s.pid, s.server_pid]);
+  let waited = 0;
+  await migrate(s, ps, live, pid => { signals.push(pid); }, async () => {
+    expect(existsSync(join(root, 'web.json'))).toBe(true);
+    expect(signals).toEqual([s.pid, s.server_pid]);
+    if (++waited === 2) living.clear();
+  });
+  expect(waited).toBe(2); expect(existsSync(join(root, 'web.json'))).toBe(false);
+});
+for (const field of ['argv', 'uid', 'record uid', 'lstart', 'ppid', 'started_at']) {
+  test(`HF5c refuses ${field} mismatch before sending any signal`, async () => {
+    const { s, rows, ps, live } = legacyFixture();
+    const proxy = rows.get(s.pid)!, server = rows.get(s.server_pid)!;
+    if (field === 'argv') proxy.command += ' extra';
+    if (field === 'uid') proxy.uid = String(Number(proxy.uid) + 1);
+    if (field === 'lstart') proxy.lstart = new Date(Date.parse(s.started_at) + 3000).toUTCString();
+    if (field === 'ppid') server.ppid = '1';
+    if (field === 'started_at') s.started_at = 'invalid';
+    const record = field === 'record uid' ? { ...s, uid: Number(proxy.uid) + 1 } : s;
+    let signals = 0;
+    await expect(migrate(record, ps, live, () => { signals++; })).rejects.toThrow(field === 'record uid' ? 'uid' : field);
+    expect(signals).toBe(0);
+  });
+}
+test('HF5c accepts recorded UID and earlier web serve argv, but rejects server argv drift', () => {
+  const { s, rows, ps, live } = legacyFixture();
+  rows.get(s.pid)!.command = `${process.execPath} ${join(WETAMP, 'src/cli.ts')} web serve`;
+  expect(legacyPids({ ...s, uid: process.getuid?.() }, ps, live)).toEqual([s.pid, s.server_pid]);
+  rows.get(s.server_pid)!.command += ' extra';
+  expect(() => legacyPids(s, ps, live)).toThrow('argv');
+});
+test('HF5c skips dead PIDs and checks PPID only while both are alive; two dead PIDs are a no-op', async () => {
+  const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, "archon");
+  const { s, rows, living, ps, live } = legacyFixture();
+  living.delete(s.server_pid); rows.delete(s.server_pid);
+  expect(legacyPids(s, ps, live)).toEqual([s.pid]);
+  const onlyServer = legacyFixture(); onlyServer.living.delete(s.pid); onlyServer.rows.delete(s.pid);
+  onlyServer.rows.get(s.server_pid)!.ppid = '1';
+  expect(legacyPids(s, onlyServer.ps, onlyServer.live)).toEqual([s.server_pid]);
+  living.clear(); rows.clear(); s.started_at = 'invalid';
+  writeFileSync(join(root, 'web.json'), JSON.stringify(s));
+  await migrate(s, ps, live, () => { throw new Error('unexpected signal'); });
+  expect(existsSync(join(root, 'web.json'))).toBe(false);
+});
+test('HF5c times out after 15 seconds of polling without escalating SIGTERM or removing state', async () => {
+  const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, "archon");
+  const { s, ps, live } = legacyFixture(), signals: number[] = [];
+  writeFileSync(join(root, 'web.json'), JSON.stringify(s));
+  let elapsed = 0;
+  await expect(migrate(s, ps, live, pid => { signals.push(pid); }, async ms => { elapsed += Number(ms); })).rejects.toThrow('legacy console still stopping');
+  expect(elapsed).toBe(15000); expect(signals).toEqual([s.pid, s.server_pid]);
+  expect(existsSync(join(root, 'web.json'))).toBe(true);
+});
+test('HF5c rechecks identity before each signal and preserves a replacement state', async () => {
+  const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, "archon");
+  const { s, rows, living, ps, live } = legacyFixture();
+  let signals = 0, reads = 0;
+  await expect(migrate(s, (pid, field) => {
+    if (++reads === 8) rows.get(s.pid)!.command += ' changed';
+    return ps(pid, field);
+  }, live, () => { signals++; })).rejects.toThrow('argv');
+  expect(signals).toBe(0);
+  rows.get(s.pid)!.command = `${process.execPath} ${join(WETAMP, 'src/cli.ts')} console serve`;
+  const replacement: WebState = { ...s, label: 'fixture', socket: 'fixture' };
+  await migrate(s, ps, live, pid => { living.delete(pid); writeFileSync(join(root, 'web.json'), JSON.stringify(replacement)); });
+  expect(existsSync(join(root, 'web.json'))).toBe(true);
+});
+test('HF5c status exposes legacy ownership when launchd is absent, including orphaned server', () => {
+  const { s, living, live } = legacyFixture();
+  expect(consoleStatus(s, false, live)).toEqual({ state: 'legacy', pid_alive: true, server_pid_alive: true });
+  living.delete(s.pid);
+  expect(consoleStatus(s, false, live)).toEqual({ state: 'legacy', pid_alive: false, server_pid_alive: true });
+  living.clear(); expect(consoleStatus(s, false, live).state).toBe('stopped');
+  expect(consoleStatus(s, true, live).state).toBe('starting');
+  expect(consoleStatus(null, false, live).state).toBe('stopped');
 });

@@ -24,19 +24,36 @@ const job = (): string => `${domain()}/${label()}`;
 const launch = (...args: string[]): ReturnType<typeof spawnSync> => spawnSync('launchctl', args, { encoding: 'utf8' });
 const loaded = (): boolean => launch('print', job()).status === 0;
 export const needsRestart = (s: ConsoleState, current = engineHash()): boolean => !('engine_hash' in s) || s.engine_hash !== current;
-// Legacy migration alone uses PID identity; incomplete records fail closed.
-function migrate(s: ConsoleState): void {
+type PsReader = (pid: number, field: 'uid' | 'lstart' | 'command' | 'ppid') => string;
+const readPs: PsReader = (pid, field) => execFileSync('ps', ['-p', String(pid), '-o', `${field}=`], { encoding: 'utf8' }).trim();
+// The record is written after both processes start; it need not contain a UID.
+export function legacyPids(s: ConsoleState, ps: PsReader = readPs, live = alive, wetamp = WETAMP): number[] {
+  if ('label' in s) return [];
+  const pids = [...new Set([s.pid, s.server_pid].filter((p): p is number => p !== undefined && live(p)))];
+  const refuse = (field: string): never => { throw new Error(`console owner ambiguous; legacy PID migration refused: ${field}`); };
+  for (const pid of pids) {
+    const uid = Number(ps(pid, 'uid')), started = Date.parse(ps(pid, 'lstart')), argv = ps(pid, 'command'), recorded = Date.parse(s.started_at);
+    const expected = pid === s.pid ? [process.execPath, join(wetamp, 'src/cli.ts'), 'console', 'serve'].join(' ') : [process.execPath, '--no-env-file', join(wetamp, 'src/web/archon.ts'), String(s.internal_port)].join(' ');
+    if (uid !== process.getuid?.() || (s.uid !== undefined && s.uid !== uid)) refuse('uid');
+    if (argv !== expected && !(pid === s.pid && argv === [process.execPath, join(wetamp, 'src/cli.ts'), 'web', 'serve'].join(' '))) refuse('argv');
+    if (!Number.isFinite(recorded)) refuse('started_at');
+    if (!Number.isFinite(started) || started > recorded + 1000) refuse('lstart');
+    if (pid === s.server_pid && pids.includes(s.pid) && Number(ps(pid, 'ppid')) !== s.pid) refuse('ppid');
+  }
+  return pids;
+}
+export async function migrate(s: ConsoleState, ps: PsReader = readPs, live = alive, terminate = (pid: number): void => { process.kill(pid, 'SIGTERM'); }, sleep = Bun.sleep): Promise<void> {
   if ('label' in s) return;
-  const check = (pid: number): void => {
-    const uid = execFileSync('ps', ['-p', String(pid), '-o', 'uid='], { encoding: 'utf8' }).trim();
-    const started = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
-    const argv = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim();
-    const expected = pid === s.pid ? [process.execPath, join(WETAMP, 'src/cli.ts'), 'console', 'serve'].join(' ') : [process.execPath, '--no-env-file', join(WETAMP, 'src/web/archon.ts'), String(s.internal_port)].join(' ');
-    if (s.uid !== Number(uid) || Number(uid) !== process.getuid?.() || !Number.isFinite(Date.parse(s.started_at)) || !Number.isFinite(Date.parse(started)) || Math.abs(Date.parse(started) - Date.parse(s.started_at)) >= 1000 || argv !== expected) throw new Error('console owner ambiguous; legacy PID migration refused');
-  };
-  const pids = [...new Set([s.pid, s.server_pid].filter((p): p is number => p !== undefined && alive(p)))];
-  for (const pid of pids) check(pid);
-  for (const pid of pids) if (alive(pid)) { check(pid); process.kill(pid, 'SIGTERM'); }
+  const pids = legacyPids(s, ps, live);
+  for (const pid of pids) if (live(pid)) { legacyPids(s, ps, live); terminate(pid); }
+  for (let i = 0; i < 300 && pids.some(live); i++) await sleep(50);
+  if (pids.some(live)) throw new Error('legacy console still stopping');
+  const current = webState();
+  if (current && !('label' in current) && current.pid === s.pid && current.started_at === s.started_at) unlinkSync(stateFile());
+}
+export function consoleStatus(s: ConsoleState | null, launched: boolean, live = alive) {
+  const pid_alive = !!s && live(s.pid), server_pid_alive = !!s?.server_pid && live(s.server_pid);
+  return { state: launched ? pid_alive ? 'running' : 'starting' : s && !('label' in s) && (pid_alive || server_pid_alive) ? 'legacy' : 'stopped', pid_alive, server_pid_alive };
 }
 /** Detached console children receive no ambient credentials or adapter settings. */
 export function consoleEnv(): Record<string, string> {
@@ -128,7 +145,7 @@ async function serve(): Promise<void> {
   finally { if (timer) clearInterval(timer); if (server) await server.stop(true); cleanup(); held.release(); }
 }
 export async function stopWeb(s = webState()): Promise<void> {
-  if (s) migrate(s);
+  if (s) await migrate(s);
   if (loaded()) { const p = launch('bootout', job()); if (p.status !== 0) throw new Error(`console bootout failed: ${String(p.stderr)}`); }
   for (let i = 0; i < 300 && (existsSync(join(home().sa, 'console/archon.sock')) || (s && alive(s.pid))); i++) await Bun.sleep(50);
   if (existsSync(join(home().sa, 'console/archon.sock')) || (s && alive(s.pid))) throw new Error('console still stopping');
@@ -137,7 +154,7 @@ export async function startWeb(): Promise<WebState> {
   mkdirSync(home().sa, { recursive: true });
   const guard = lock(join(home().sa, 'web-start.lock')); if (!guard.ok) throw new Error('console startup already pending');
   try {
-    const old = webState(); if (old) migrate(old);
+    const old = webState(); if (old) await migrate(old);
     const xml = (s: string): string => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c] ?? c);
     const dir = process.env.SA_LAUNCHD_DIR ?? join(homedir(), 'Library/LaunchAgents'), file = join(dir, `${label()}.plist`);
     mkdirSync(dir, { recursive: true });
@@ -161,7 +178,7 @@ export async function webCli(argv: string[]): Promise<number> {
   if (sub === 'start') { const s = await startWeb(); console.log(JSON.stringify({ port: s.port, state: 'running' })); return 0; }
   if (sub === 'stop') { await stopWeb(); console.log('stopped'); return 0; }
   const s = webState();
-  if (sub === 'status') { const p = launch('print', job()), error = join(home().sa, 'console/error'); console.log(JSON.stringify({ state: p.status === 0 ? s && alive(s.pid) ? 'running' : 'starting' : 'stopped', port: s?.port, error: existsSync(error) ? readFileSync(error, 'utf8') : undefined, launchd: String(p.stdout).split('\n').filter(x => /state =|last exit code =/.test(x)).map(x => x.trim()) })); return 0; }
+  if (sub === 'status') { const p = launch('print', job()), error = join(home().sa, 'console/error'); console.log(JSON.stringify({ ...consoleStatus(s, p.status === 0), port: s?.port, error: existsSync(error) ? readFileSync(error, 'utf8') : undefined, launchd: String(p.stdout).split('\n').filter(x => /state =|last exit code =/.test(x)).map(x => x.trim()) })); return 0; }
   if (sub === 'url' && s && 'label' in s && loaded()) { const url = webUrl(s); if (a.flags.open) return await Bun.spawn(['open', url], { stdout: 'ignore', stderr: 'ignore' }).exited; console.log(url); return 0; }
   throw new Error('usage: superagent console start|stop|status|url [--open] (web is a compatibility alias)');
 }
