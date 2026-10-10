@@ -4,7 +4,8 @@
 # 末尾 doctor 摘要。可重复跑。plist 目录默认 ~/Library/LaunchAgents，SA_LAUNCHD_DIR 可改（测试与 selftest 用）。
 # config.yaml 另写 assistants.codex.codexBinaryPath=wetamp/bin/codex-worker（worker 禁嵌套，见 docs/04-hooks-and-nesting.md）。
 # 单独步骤（互斥，不走上面的默认安装）：
-#   --hooks [--dry-run]     三端 hook 条目改指 wetamp/hooks/（src/install-hooks.ts）；--dry-run 只打印统一 diff
+#   --hooks [--dry-run]     三端 hook 条目改指 wetamp/hooks/（src/install-hooks.ts），再写这些 Codex 条目的 trusted_hash
+#                           （scripts/codex-trust.cjs，只动自己的键、先备份、原子写）；--dry-run 只打印统一 diff
 #   --purge-v1 [--dry-run]  清 V1 hook 条目并把 V1 残留移到 $SUPERAGENT_HOME/backups/v1-<UTC>/（不删除）
 #   --remote-hooks          dev/mini 用：只要 node，校验 hooks 与 tiers.json，写 twin-toolkit 读取的 install.json 台账（role=worker），
 #                           并把 ~/.local/bin/superagent 指向本仓库 bin/superagent（worker 上即桩；原为普通文件时先备份）
@@ -21,6 +22,8 @@ while [ $# -gt 0 ]; do
 done
 case "$mode" in
   ""|--remote-hooks) [ -z "$dry" ] || { echo "install.sh: --dry-run only applies to --hooks/--purge-v1" >&2; exit 64; };;
+  # --hooks 之后为本 wetamp/hooks/ 的 Codex 条目写信任（scripts/codex-trust.cjs；--dry-run 按当前 hooks.json 估计条目数）
+  --hooks) bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"}; exec bun "$WETAMP/scripts/codex-trust.cjs" write ${dry:+"$dry"};;
   *) exec bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"};;
 esac
 if [ "$mode" = --remote-hooks ]; then
@@ -29,6 +32,8 @@ if [ "$mode" = --remote-hooks ]; then
   # 真跑一次 guard：require 链（../tiers.json 的键）断了会在这里而不是在用户会话里暴露
   err="$(printf '{"hook_event_name":"Stop"}' | node "$WETAMP/hooks/guard.cjs" claude 2>&1)"
   [ -z "$err" ] || { echo "install.sh --remote-hooks: guard.cjs: $err" >&2; exit 1; }
+  # 远端 hooks.json 由 agentcfg 维度下推；这里为其中指向本 wetamp/hooks/ 的条目写 Codex 信任
+  node "$WETAMP/scripts/codex-trust.cjs" write
   state="${XDG_STATE_HOME:-$HOME/.local/state}/superagent"; mkdir -p "$state"
   node -e '
 const fs = require("node:fs"), [state, wetamp, commit] = process.argv.slice(1), file = state + "/install.json";
