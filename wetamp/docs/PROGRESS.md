@@ -93,7 +93,7 @@
 - 验收：`check-upstream-clean.sh` 输出为空；`tsc --noEmit` rc=0；`bun test` 156/156；仓库根 `bun run lint` rc=0；临时 home 下 install ok，含 codexBinaryPath；`selftest.sh --fake` ok，含 `hooks:{g1_commander_31_lines:deny,n1_worker_agent:deny}`；codex-worker trace 含 `-c features.multi_agent=false` 和 6 个 `mcp_servers.*.enabled=false`。
 - dry-run（只读）：`--hooks --dry-run` diff 112 行；`--purge-v1 --dry-run` 输出 348 行，将移走 5 个 managed 子代理以及 V1 的 releases/state/checkout 三个目录。
 - agent-supervisor 测试：失败集合与改动前基线一致（28 failure / 2 error，均为既有问题：test_wp5 中 ai-toolkit/twin-toolkit 相关、TasksSh 的 hook_fn/patch_idempotent、wal_breaker 中 ordinary breaker 被其他测试污染，单独跑能通过）。
-- twin-dev：已 align（原记录「未 align」有误）。align-on-change 看门狗已于 2026-10-10 09:30:53 自动把 `25ac8df4` 投送到 dev/mini 并执行 `--remote-hooks`（证据 `~/.lan-dev-machine/logs/twin-align-watch.out.log:1771`）；之后的版本也会被自动投送，未评审版本的投送由元帅处理（M-06）。
+- twin-dev：已 align（原记录「未 align」有误）。align-on-change 看门狗已于 2026-10-10 09:30:53 自动把 `25ac8df4` 投送到 dev/mini 并执行 `--remote-hooks`（证据 `~/.lan-dev-machine/logs/twin-align-watch.out.log:1771`）；之后的版本也会被自动投送。注意 `--remote-hooks` 只校验远端 hooks 文件并写台账，不改远端 `settings.json`，所以 dev/mini 实际生效的 hooks 仍是 V1 路径。align 看门狗按「本机验证通过即投送」运行（用户 2026-10-10 决定；投送门的实现另卡处理，M-06）。
 - 预算：TS 2106/2600、shell 397/700、hooks cjs 499/1400、文件 33/40。
 - 未做项与风险：
   - 真实 `--hooks`/`--purge-v1` 写入、launchd 都留给元帅执行。
@@ -127,3 +127,19 @@
   - reviewer 白名单只对设了 `SUPERAGENT_ROLE=reviewer` 的会话生效。
   - Stop 门不跟踪 shell 写到其他仓库的改动；`claude -p` 方式的评审不算证据。
   - M-06（自动投送未评审版本）由元帅处理。
+
+## WP-B R2 修复摘要（评审 `wpB-astra-r2`，2026-10-10）
+
+- H-02a Codex reviewer：Archon 在 `thread/start` 固定传 `danger-full-access`，且不支持逐节点 env。改为 `generate` 给 Codex 评审节点写 `mcp: reviewer-readonly.mcp.json`，内含哨兵 server `codex_readonly_marker`（`required:true`，命令 `false`）。`codex-worker` 以 `app-server` 被调用时改经新文件 `bin/codex-readonly-proxy.cjs`：见到哨兵就删掉它，本连接 thread 改 `read-only`、turn 注入只读 `sandboxPolicy`。绕过代理时哨兵起不来，线程创建失败（已用 codex 0.162.1 实测）；不能解析的 reviewer 输入或哨兵出现在线程参数之外时，代理退出 1。
+- H-02b Claude reviewer：评审节点带 `sandbox:`（`tiers.json` `exec_profiles.reviewer.claude.sandbox`：`denyWrite:["/"]`、`failIfUnavailable`、`allowUnsandboxedCommands:false`）。
+- H-02c `hooks/shell.cjs`：`time -o/--output`、`env -C/--chdir`、`sudo -D`、`nohup`（`nohup.out`）、`script` 的记录文件与日志选项、`tee` 的文件参数都按写入计入；新增 `script -c` 剥离。
+- M-06：上文 twin-dev 一行补全 `--remote-hooks` 的实际作用和投送口径。`src/archon.ts` 注释与 `04-hooks-and-nesting.md` 改为以执行层沙箱为主边界，hooks 只是纵深防御。
+- 测试：generate 2 处（两种控制台的生成物、golden）、exec-profiles 3 条（代理改写与透传字节一致、`SUPERAGENT_ROLE=reviewer`、失败关闭）、hooks 1 条（7 例包装器副作用）。7 条在 HEAD b9a4ad3a 的实现上都失败。
+- 真实探针：
+  - Codex：经 Archon `CodexProvider` + `codex-worker` 各跑一次。reviewer 节点执行 `printf x > /tmp/sa-h02-probe-codex` 返回 `operation not permitted`，exit 1，文件不存在；无哨兵的节点写 `/tmp/sa-h02-probe-codex-coder` 成功，exit 0。
+  - Claude（haiku）：带上述 sandbox 设置执行 `printf x > /tmp/sa-h02-probe-claude` 返回 `operation not permitted`，文件不存在。
+- 预算：TS 2158/3200、shell 438/700、cjs 905/1400、文件 35/46。
+- 剩余风险：
+  - 代理依赖 Archon 的 JSON-RPC 方法名与 `config.mcp_servers` 透传；上游改协议时，哨兵会让线程起不来，暴露为失败而不是可写。
+  - 未调用的 `@sa-reviewer-alt` 没有生成只读设置。
+  - Claude sandbox 依赖 macOS Seatbelt，不可用时 `failIfUnavailable` 直接失败。

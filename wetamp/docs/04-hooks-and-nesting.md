@@ -38,15 +38,17 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 
 ## 包装器剥离规则（N-1 与 reviewer 判定共用 `hooks/shell.cjs`）
 
-shell 文本先按引号、`$(…)`/反引号/子 shell、管道与 `;`/`&&`/`||`/换行切成命令；单引号内的内容是字面量，不当作执行。每条命令依次去掉前导赋值与 `!`/`{`/`if`/`then`/`do` 等保留字，再按参数语义剥离包装器：`env`（含 `-u NAME`、`-S` 拆分后递归）、`sudo`/`doas`、`nice`、`nohup`、`builtin`、`command`（`-v/-V` 只是查找，不剥离）、`exec`、`caffeinate`、`time`、`xargs`、`timeout/gtimeout`、`stdbuf`、`watch`、`rtk proxy`；剥完后的第一个词才是命令头。`bash/sh/zsh -c`、`eval`、`find -exec` 的命令体递归解析，深度超过 4 层直接拒绝。紧贴重定向的 fd 数字不算参数；指向 `/dev/null`、`/dev/stdout`、`/dev/stderr` 与 `>&N` 的重定向不算写入。
+shell 文本先按引号、`$(…)`/反引号/子 shell、管道与 `;`/`&&`/`||`/换行切成命令；单引号内的内容是字面量，不当作执行。每条命令依次去掉前导赋值与 `!`/`{`/`if`/`then`/`do` 等保留字，再按参数语义剥离包装器：`env`（含 `-u NAME`、`-S` 拆分后递归）、`sudo`/`doas`、`nice`、`nohup`、`builtin`、`command`（`-v/-V` 只是查找，不剥离）、`exec`、`caffeinate`、`time`、`xargs`、`timeout/gtimeout`、`stdbuf`、`watch`、`script`（`-c` 命令体递归）、`rtk proxy`；剥完后的第一个词才是命令头。包装器自身的写入副作用（`time -o/--output`、`env -C/--chdir`、`sudo -D`、`nohup` 的 `nohup.out`、`script` 的记录文件与 `-T/-B/-I/-O` 等日志文件）和 `tee` 的文件参数都按写入计入。`bash/sh/zsh -c`、`eval`、`find -exec` 的命令体递归解析，深度超过 4 层直接拒绝。紧贴重定向的 fd 数字不算参数；指向 `/dev/null`、`/dev/stdout`、`/dev/stderr` 与 `>&N` 的重定向不算写入。
 
 ## reviewer 只读边界
 
 `SUPERAGENT_ROLE=reviewer` 的会话（`src/archon.ts` 保留继承的 `reviewer`/`general`，只把其他值改成 `worker`）：
 
-- hooks：拒绝一切编辑工具；Bash 只放行白名单读命令（`cat/head/tail/grep/rg/sed -n …p/find`（无 `-delete/-exec`）/`sort`（无 `-o`）/`git` 只读子命令等），任何写重定向（`>`、`>>`、`>|`、`&>`、`<>`）或解析失败一律拒绝。
-- Claude：`exec_profiles.reviewer.claude.denied_tools` 加 `Edit/Write/MultiEdit/NotebookEdit`。
-- Codex：`codex-worker` 在 reviewer 角色下追加 `-c sandbox_mode="read-only"`。但 Archon 的 Codex provider 在 `thread/start` 里显式传 `danger-full-access`，会覆盖这个值；生成的评审节点实际依赖 `mutates_checkout:false`（引擎检测工作树变化）。
+- hooks：拒绝一切编辑工具；Bash 只放行白名单读命令（`cat/head/tail/grep/rg/sed -n …p/find`（无 `-delete/-exec`）/`sort`（无 `-o`）/`git` 只读子命令等），任何写重定向（`>`、`>>`、`>|`、`&>`、`<>`）、包装器写入副作用、`tee` 文件或解析失败一律拒绝。
+- 主边界在执行层，由 `src/generate.ts` 按 `@sa-reviewer` 的 provider 逐节点生成，不依赖环境变量：
+  - Claude 评审节点：节点 `sandbox:` 取 `exec_profiles.reviewer.claude.sandbox`（`filesystem.denyWrite:["/"]`、`failIfUnavailable`、禁止 unsandboxed 命令），另有 `denied_tools` 去掉 `Edit/Write/MultiEdit/NotebookEdit`。
+  - Codex 评审节点：节点 `mcp:` 指向生成的 `reviewer-readonly.mcp.json`，内含哨兵 server `codex_readonly_marker`（`required:true`，命令必败）。`codex-worker` 以 `app-server` 被调用时经 `bin/codex-readonly-proxy.cjs` 转发：见到哨兵就删掉它，本连接的 `thread/start|resume|fork` 改 `sandbox:"read-only"`、`turn/start` 注入只读 `sandboxPolicy`。原因是 Archon 在 `thread/start` 固定传 `danger-full-access`，盖掉 `-c sandbox_mode`。绕过代理直连 codex 时哨兵起不来，线程创建失败（失败关闭）。整个 worker 以 reviewer 身份运行时代理从第一条线程起就只读。
+- hooks 白名单是纵深防御。
 - 边界：白名单只对设了该环境变量的会话生效；Stop 门不跟踪 shell 写到其他仓库的改动；`claude -p` 方式的评审不算评审证据（只认 `reviewer-N` 子代理）。
 
 ## install.sh 单独步骤（互斥）
