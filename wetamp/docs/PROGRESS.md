@@ -1,5 +1,15 @@
 # PROGRESS
 
+## BT9 /sa 与归属（2026-10-10，wetamp-bt9）
+
+- **未归属根因**：只读核对生产 usage 缓存与 Archon 会话元数据，发现 `ccusage@20.0.28 session --json` 默认汇总所有客户端，原采集器将它标成 Claude，再单独采 Codex，今日 201 个会话 id 跨客户端重叠，其中 200 对 total 完全相同，Claude 侧重复部分 235,672,830 tokens；这比单纯漏角色更直接地解释大量“未归属”。改为显式 `claude` / `codex` 子命令，并支持 Claude 专用接口实际返回的 `sessions`（旧 `session` 仍兼容）。生产缓存/数据库未写；显式刷新既有采集器会替换历史用量与今日分量，夹具证明历史重新计算的角色。
+- **归属修复与 P4**：复用 `usageEvidence`、生成工作流的 `workflowRoles`（`@sa-coder` → 将军、`@sa-reviewer` → 军师）、Archon `session_id` / provider / resolved model、已有 `jobSession` 的首行元数据读取和唯一匹配、`etaInput` 的引擎事件折叠。补读 ledger 的 `adoptions[].from` 保留旧 run 会话，单个旧 run 缺失不丢当前证据；无模型绑定的旧事件可复用原有 provider/model。在途节点尚无 session id 时，只对当前运行 run 的最新活跃启动，匹配精确 worktree 与启动后 60 秒内的唯一会话；终态及歧义不猜。不能用 `SUPERAGENT_ROLE=worker` 区分同一引擎进程里的编码和评审，也不按模型名称猜角色；不新增 hook、旁路采集或正文解析。无派发证据的交互会话/证据不足的会话明确保留未归属。
+- **界面复用与 I7**：Ink 原生 `alternateScreen: true` 只作用交互渲染；`--once`/管道沿用原路径。`/sa` 全部投影 `cockpit()` 和现有 usage，CSS 取 `packages/web/src/experiments/console/theme.css` 的深色变量（3 行内联样式，无 packages 修改），本地 HH:MM、15 秒重载、共享跑/等你/今日口径、未决 asks（superseded 隐藏）、四角色 × 模型用量表。今日 run 按本地日期过滤、排除未来开始、最新在前，中文状态、token 未知为 `—`、用时及 `/console/r/:runId` 链接；已结束展示编码主模型。已结束统计包含取消，与“达成/已结束”的文案一致。强化 I7 的成本不重复、未知不冒充零、需人处理的单一事实源和共用控制面口径。
+- **install 偶发失败**：fake e2e 的两处 install 调用未设 `SA_SKIP_DOCTOR=1`，但安装末尾默认执行真实 `archon doctor` 并在任一探测失败时 exit 1；doctor 依赖供应商 CLI、认证、gh 与外部连通性/超时，超出了 fake 验收契约。复用 selftest/install 测试已有的跳过开关隔离这些非确定依赖，生产安装仍严格执行 doctor。改前目标用例单次 36.7s 通过，未复现 BT8 那次失败，无法唯一确认当次具体 doctor 子项；不声称已证明历史失败的精确触发项。
+- **测试与验收**：归属、显式采集命令、历史刷新、在途唯一/歧义、已结束主模型、今日边界、中文状态及 2 run + 1 job + pending/superseded + 四角色的 HTML 快照均有回归断言。32 项定向检查全绿；临时控制台 HTTP 200/结构、stop 后两 PID 消失与双端口可重绑；PTY 连续两次原生进入/恢复 alternate screen，`q` exit 0，once/pipe exit 0 且不进入全屏。完整验收证据在 `/tmp/bt9-accept.fpkks_82/`，全量、CLI 三连、selftest 和提交绑定 verify-local 的最终结果见本包交付。
+- **角色边界**：只做本包编码与自检，无派生 AI、push、合并、cmux 操作或真实提醒投递；astra 独立里程碑评审、真实像素和主控集成实测仍由主控完成。可复用经验候选：固定 vendor 版本仍需验证子命令默认客户端范围和 JSON 形状；fake 测试不得隐含依赖在线 doctor。候选未晋升为共享经验。
+- **最终自检**：`cd wetamp && bunx tsc --noEmit && timeout 600 bun test` exit 0（604 pass / 0 fail，175.66s）；`bunx eslint src` exit 0；`bun test tests/cli.test.ts` 连续三次 exit 0（各 154 pass / 0 fail，127.73s / 130.03s / 132.87s）；`SUPERAGENT_HOME=/tmp/bt9-accept.fpkks_82 ARCHON_HOME=/tmp/bt9-accept.fpkks_82/archon bash scripts/selftest.sh --fake` exit 0。src TS 净增 35 行（≤150），packages/hooks 零改动，`git diff --check` exit 0；11 个明确文件提交后，以同一调用方 SUPERAGENT_HOME 运行 `bash scripts/verify-local.sh --commit HEAD`，提交绑定结果保存在该目录 `verify.json`，不写生产台账。旧面板用例的快照时间绑定 run 夹具，避免今日过滤依赖运行测试的真实日期。
+
 格式：`<ISO时间> | <阶段> | <commit> | <pass/total> | <备注>`
 
 2026-10-09T13:39:01Z | M0 | e2476bb1 | 4/4 | selftest --fake: rss=194960KB recover=1104ms signal=636ms；提交与 push 非本会话所为（疑为操作者经 IDE，说明无 wetamp(M0) 前缀），内容与本会话工作树一致，未改写历史

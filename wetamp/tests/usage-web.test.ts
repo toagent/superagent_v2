@@ -80,7 +80,7 @@ describe('WP-BT6 accounting', () => {
 test('supplementary panel preserves role/model/token and excludes terminal details', () => {
   setup(); const row: BoardRow = { run_id: 'r', model: 'gpt-6.1-sol', state: 'running', exit: null, nodes: { done: 1, total: 3, current: 'code-a', currentRole: 'coder' }, started_at: '2026-10-10T00:00:00Z', span: null, elapsed_s: null, held: null, recoveries: 0, auto_retries: 0, console: 'codex', repo: 'repo', branch: 'branch', evidence: '', plan: '', stale: false };
   const sessions = parseUsage(codex, 'codex'); attribute(sessions, [{ id: uuid, owner: { ...owner('run'), run_id: row.run_id } }]);
-  const snap: Snapshot = { summary: { prompt: 'SECRET' }, at: new Date().toISOString(), rows: [row], usage: { at: 'now', status: 'ok', sources: {}, sessions, daily: [] } };
+  const snap: Snapshot = { summary: { prompt: 'SECRET' }, at: row.started_at, rows: [row], usage: { at: 'now', status: 'ok', sources: {}, sessions, daily: [] } };
   expect(overview(snap).runs).toMatchObject([{ role: '将军·sol6.1', tokens: '40' }]);
   expect(JSON.stringify(overview(snap))).not.toMatch(/SECRET|argv|prompt/);
 });

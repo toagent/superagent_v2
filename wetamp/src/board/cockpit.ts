@@ -25,11 +25,13 @@ export function stages(r: BoardRow): string {
   return ({ repair: '修复', fix: '修复', verify: '验收', settle: '验收', diff: '评审准备', gate: '门禁', human: '签收', land: '合入' })[kind] ?? '准备';
 }
 export interface CockpitRun {
+  url?: string;
   progress: Progress; progressText: string;
   id: string; project: string; title: string; state: string; elapsed: string; tokens: string;
   stage: string; role: string; round: string; reason: string; question: string; waiting: string;
 }
 export interface Cockpit {
+  tokenRows: { role: string; total: number; models: Record<string, number> }[] | null;
   metrics: { completed: number; decided: number; firstPass: number; asks: number; debt: number };
   tokens: string; roleTokens: string[]; needs: CockpitRun[]; active: CockpitRun[]; runs: CockpitRun[];
 }
@@ -42,9 +44,13 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
   const known = c?.status === 'ok' && daily.length > 0;
   // A day-scoped result from the existing usage collector proves role/day attribution. Older caches stay unknown.
   const byRole = new Map<string, number>();
+  const tokenRows = ['元帅', '军师', '将军', '未归属'].map(role => ({ role, total: 0, models: {} as Record<string, number> }));
   const todaySessions = c?.today?.day === day && c.today.status === 'ok' ? c.today.sessions : c?.since === day.replaceAll('-', '') ? c.sessions : null;
   if (known && todaySessions) for (const x of todaySessions) for (const p of x.parts?.length ? x.parts : [x]) {
     const tag = roleTag(x.owner?.role, p.model); byRole.set(tag, (byRole.get(tag) ?? 0) + p.total);
+    const row = tokenRows.find(r => r.role === roleTag(x.owner?.role)); if (!row) continue;
+    const model = shortModel(p.model) || '—';
+    row.total += p.total; row.models[model] = (row.models[model] ?? 0) + p.total;
   }
   const runTokens = (id: string, field: 'run_id' | 'job_id' = 'run_id'): string => {
     const xs = c?.sessions.filter(x => x.owner?.[field] === id) ?? [];
@@ -55,7 +61,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const policy = (HOLD_POLICY as Partial<Record<string, typeof HOLD_POLICY[keyof typeof HOLD_POLICY]>>)[key];
     const question = policy && 'yes' in policy ? `${reasonText(key)} 是=${({ retry: key === 'budget' ? '放宽预算再跑' : '再跑', resume: '恢复', approve: '批准', review: '重评' })[policy.yes]} 否=终止` : key === 'signoff' || r.state === 'held:human' ? '等待签收 是=批准 否=终止' : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
-    return { progress, progressText: progressLabel(progress), id: r.run_id, project: r.repo, title: r.engine?.title ?? '任务标题未知', state: r.state, elapsed: fmtElapsed(elapsedAt(r, now)), tokens: runTokens(r.run_id), stage: stages(r), role: roleTag(r.nodes.currentRole, r.model), round: r.engine?.round ? String(r.engine.round) : /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-', reason: reasonText(r.engine?.reason ?? ''), question, waiting: fmtElapsed(d?.action === 'ask' ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000)) : elapsedAt(r, now)) };
+    return { progress, progressText: progressLabel(progress), id: r.run_id, url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined, project: r.repo, title: r.engine?.title ?? '任务标题未知', state: r.state, elapsed: fmtElapsed(elapsedAt(r, now)), tokens: runTokens(r.run_id), stage: stages(r), role: ['completed', 'failed', 'cancelled'].includes(r.state) ? roleTag('coder', r.coderModel ?? c?.sessions.find(x => x.owner?.run_id === r.run_id && x.owner.role === 'general')?.model) : roleTag(r.nodes.currentRole, r.model), round: r.engine?.round ? String(r.engine.round) : /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-', reason: reasonText(r.engine?.reason ?? ''), question, waiting: fmtElapsed(d?.action === 'ask' ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000)) : elapsedAt(r, now)) };
   };
   const started = s.rows.filter(r => today(Date.parse(r.started_at))), completed = started.filter(r => r.state === 'completed').length;
   const active = s.rows.filter(r => ['running', 'owner_lost'].includes(r.state)).map(r => project(r));
@@ -75,7 +81,8 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     return [{ ...r, waiting: asked ? fmtElapsed(Math.max(0, Math.floor((now - Date.parse(asked.at)) / 1000))) : r.waiting }];
   });
   return {
-    metrics: { completed, decided: completed + started.filter(r => r.state === 'failed').length, firstPass: started.filter(r => r.engine?.firstPass && r.state === 'completed').length, asks: s.rows.reduce((n, r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(Date.parse(d.at))).length ?? 0), 0), debt: typeof s.summary.debt === 'number' ? s.summary.debt : 0 },
+    tokenRows: known && todaySessions ? tokenRows.sort((a, b) => b.total - a.total) : null,
+    metrics: { completed, decided: completed + started.filter(r => ['failed', 'cancelled'].includes(r.state)).length, firstPass: started.filter(r => r.engine?.firstPass && r.state === 'completed').length, asks: s.rows.reduce((n, r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(Date.parse(d.at))).length ?? 0), 0), debt: typeof s.summary.debt === 'number' ? s.summary.debt : 0 },
     tokens: known ? fmtTokens(daily.reduce((n, d) => n + d.total, 0)) : '未知', roleTokens: byRole.size ? [...byRole].sort(([a], [b]) => Number(a.startsWith('未归属')) - Number(b.startsWith('未归属'))).map(([k, v]) => `${k} ${fmtTokens(v)}`) : ['角色今日用量未知'],
     needs,
     active,
