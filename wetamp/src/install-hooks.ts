@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { WETAMP } from './config';
 
 interface Handler {
@@ -62,7 +62,17 @@ const paths = (): Record<Client, string> => ({
 const ours = (h: Handler): boolean =>
   typeof h.command === 'string' && (isV1(h.command) || h.command.includes(V2_HOOKS));
 
-/** V1 路径改写为本 wetamp/hooks/、每个事件内去重、按 V1 清单补齐缺失项；purge 时只删 V1 条目。 */
+// context-budget 不读 client 参数：V1 尾部带不带 claude 都是同一个 handler
+const canonical = (c: string): string =>
+  c.replace(V1_HOOKS, V2_HOOKS).replace(/(context-budget\.cjs'?)\s+claude\s*$/, '$1');
+// 组级执行条件（matcher 等 hooks 以外的键）；未设置、空串与 '*' 都是"全部"
+const condition = (g: Group): string => {
+  const all = g.matcher === undefined || g.matcher === '' || g.matcher === '*';
+  return JSON.stringify({ ...g, hooks: undefined, matcher: all ? '*' : g.matcher });
+};
+const ALL = condition({});
+
+/** V1 路径改写为本 wetamp/hooks/、按（事件 × 执行条件 × command）去重、按 V1 清单补齐；purge 时只删 V1 条目。 */
 export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
   const out: Hooks = {};
   for (const [event, groups] of Object.entries(hooks)) {
@@ -73,9 +83,10 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
         if (!ours(h)) return [h];
         const c = h.command as string;
         if (purge) return isV1(c) ? [] : [h];
-        const next = c.replace(V1_HOOKS, V2_HOOKS);
-        if (seen.has(next)) return [];
-        seen.add(next);
+        const next = canonical(c);
+        const key = `${condition(g)}\0${next}`;
+        if (seen.has(key)) return [];
+        seen.add(key);
         return [{ ...h, command: next }];
       });
       return kept.length || !g.hooks.length ? [{ ...g, hooks: kept }] : [];
@@ -84,9 +95,10 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
   // purge 掉最后一个条目的事件整体移除；原本就为空的事件保留
   if (purge)
     return Object.fromEntries(Object.entries(out).filter(([e, g]) => g.length || !hooks[e].length));
+  // V1 清单的条目都不带 matcher：只挂在 matcher=Edit 之类分组里的同一 command 不算已注册
   for (const [event, command] of wanted(client)) {
     const list = (out[event] ??= []);
-    if (!list.some(g => g.hooks?.some(h => h.command === command)))
+    if (!list.some(g => condition(g) === ALL && g.hooks?.some(h => h.command === command)))
       list.push({ hooks: [{ type: 'command', command, timeout: 30 }] });
   }
   return out;
@@ -94,10 +106,10 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
 
 /** 新文本：只有命令串改写时原地替换字符串字面量（保留文件排版），结构变化才整体重排。 */
 function render(raw: string, client: Client, purge: boolean): string {
-  const doc = JSON.parse(raw) as { hooks?: Hooks };
+  const doc = JSON.parse(raw || '{}') as { hooks?: Hooks };
   const next = mergeHooks(doc.hooks ?? {}, client, purge);
   if (JSON.stringify(next) === JSON.stringify(doc.hooks ?? {})) return raw;
-  let text = raw;
+  let text = raw || '{}';
   for (const m of new Set(raw.match(V1_HOOKS) ?? [])) text = text.replaceAll(m, V2_HOOKS);
   // 原地替换只在结果与结构化合并完全一致（含 hooks 以外的键未被波及）时采用
   const same =
@@ -109,7 +121,9 @@ function render(raw: string, client: Client, purge: boolean): string {
     JSON.stringify((JSON.parse(text) as { hooks?: Hooks }).hooks) === JSON.stringify(next)
   )
     return text;
-  return JSON.stringify({ ...doc, hooks: next }, null, 2) + (raw.endsWith('\n') ? '\n' : '');
+  return (
+    JSON.stringify({ ...doc, hooks: next }, null, 2) + (!raw || raw.endsWith('\n') ? '\n' : '')
+  );
 }
 
 const utc = (): string => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
@@ -136,20 +150,23 @@ function diff(file: string, before: string, after: string): string {
   }
 }
 
-/** 返回 diff 文本（dry-run 不写）；写入前把原文件复制到 backups/hooks-<UTC>/。 */
+/** 返回 diff 文本（dry-run 不写）；写入前把原文件复制到 backups/hooks-<UTC>/。目标不存在时按空文件补齐并创建。 */
 export function installHooks(dryRun: boolean, purge = false): string {
   let out = '';
   const stamp = utc();
   for (const [client, file] of Object.entries(paths()) as [Client, string][]) {
-    if (!existsSync(file)) continue;
-    const raw = readFileSync(file, 'utf8');
+    const exists = existsSync(file);
+    if (!exists && purge) continue;
+    const raw = exists ? readFileSync(file, 'utf8') : '';
     const next = render(raw, client, purge);
     if (next === raw) continue;
     out += diff(file, raw, next);
     if (dryRun) continue;
-    const dir = join(backups(), `${purge ? 'v1' : 'hooks'}-${stamp}`, client);
-    mkdirSync(dir, { recursive: true });
-    cpSync(file, join(dir, basename(file)));
+    if (exists) {
+      const dir = join(backups(), `${purge ? 'v1' : 'hooks'}-${stamp}`, client);
+      mkdirSync(dir, { recursive: true });
+      cpSync(file, join(dir, basename(file)));
+    } else mkdirSync(dirname(file), { recursive: true });
     writeFileSync(`${file}.sa-tmp`, next);
     renameSync(`${file}.sa-tmp`, file);
   }

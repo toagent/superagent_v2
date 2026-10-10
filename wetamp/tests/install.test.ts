@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
@@ -210,6 +217,72 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     ]);
     expect(JSON.stringify(after)).not.toContain('/work/github/superagent/');
     expect(readdirSync(join(home, '.superagent', 'backups'))[0]).toMatch(/^hooks-\d{8}T\d{6}Z$/);
+    expect(sh('--hooks').out.trim()).toBe('hooks: no changes');
+  });
+
+  test('--hooks keeps matcher-scoped copies and folds V1 context-budget with or without the claude arg', () => {
+    const { home, sh } = sandbox();
+    const settings = join(home, '.claude', 'settings.json');
+    mkdirSync(dirname(settings), { recursive: true });
+    const g = (c: string, matcher?: string): unknown => ({
+      ...(matcher ? { matcher } : {}),
+      hooks: [{ type: 'command', command: c, timeout: 30 }],
+    });
+    const guard = `${V1(home, 'guard.cjs')} claude`;
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            g(guard, 'Edit'),
+            g(guard, 'Bash'),
+            g(`${V1(home, 'context-budget.cjs')} claude`),
+            g(V1(home, 'context-budget.cjs')),
+          ],
+          UserPromptSubmit: [g(`${V1(home, 'context-budget.cjs')} claude`)],
+        },
+      })
+    );
+    expect(sh('--hooks').code).toBe(0);
+    const pre = (
+      JSON.parse(readFileSync(settings, 'utf8')) as {
+        hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
+      }
+    ).hooks;
+    const at = (e: string): [string | undefined, string][] =>
+      pre[e].flatMap(x => x.hooks.map((h): [string | undefined, string] => [x.matcher, h.command]));
+    expect(at('PreToolUse')).toEqual([
+      ['Edit', `${V2('guard.cjs')} claude`],
+      ['Bash', `${V2('guard.cjs')} claude`],
+      [undefined, V2('context-budget.cjs')],
+      [undefined, `${V2('guard.cjs')} claude`],
+    ]);
+    expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-budget.cjs')]]);
+    expect(sh('--hooks').out.trim()).toBe('hooks: no changes');
+  });
+
+  test('--hooks creates a missing settings.json/hooks.json with every event; --dry-run diffs against empty and writes nothing', () => {
+    const { home, sh } = sandbox();
+    const settings = join(home, '.claude', 'settings.json');
+    const codex = join(home, '.codex', 'hooks.json');
+    const dry = sh('--hooks', '--dry-run');
+    expect(dry.code).toBe(0);
+    expect(dry.out).toContain(`+++ ${settings}`);
+    expect(dry.out).toContain(`+++ ${codex}`);
+    expect(dry.out).toContain('@@ -0,0 +1,');
+    expect(existsSync(join(home, '.claude'))).toBe(false);
+    expect(existsSync(codex)).toBe(false);
+    expect(sh('--hooks').code).toBe(0);
+    expect(cmds(settings).map(([e, ...c]) => [e, c.length])).toEqual([
+      ['SessionStart', 1],
+      ['PreToolUse', 2],
+      ['PostToolUse', 1],
+      ['SubagentStop', 1],
+      ['Stop', 1],
+      ['UserPromptSubmit', 1],
+    ]);
+    expect(cmds(codex).flat()).toContain(`${V2('guard.cjs')} codex`);
+    expect(existsSync(join(home, '.superagent', 'backups'))).toBe(false);
     expect(sh('--hooks').out.trim()).toBe('hooks: no changes');
   });
 
