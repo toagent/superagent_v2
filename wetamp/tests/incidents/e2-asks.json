@@ -1,0 +1,21 @@
+{
+  "hold": "auto_retry_exhausted",
+  "attempts": [
+    2,
+    3
+  ],
+  "dispositions": [
+    {
+      "at": "2026-10-10T07:01:23.035Z",
+      "reason": "auto_retry_exhausted",
+      "action": "ask",
+      "ok": true
+    },
+    {
+      "at": "2026-10-10T07:07:10.244Z",
+      "reason": "auto_retry_exhausted",
+      "action": "ask",
+      "ok": true
+    }
+  ]
+}

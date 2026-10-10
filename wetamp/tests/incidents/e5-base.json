@@ -1,0 +1,6 @@
+{
+  "branch": "feature/fixture",
+  "remote": false,
+  "expected_phase": "preflight",
+  "fix": "worktree.baseBranch"
+}

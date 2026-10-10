@@ -267,7 +267,7 @@ describe('loader robustness', () => {
     const load = createLoader();
     const states = async (): Promise<string[]> =>
       (await load(50)).rows.map(r => `${r.run_id}:${r.state}`).sort();
-    expect(await states()).toEqual(['f:failed', 'g:held:gate']);
+    expect(await states()).toEqual(['f:held:engine_suspect', 'g:held:gate']);
     // cancel/reject 只改 archon，不写 ledger（mtime 不变）
     for (const id of ['f', 'g'])
       writeFileSync(
@@ -319,7 +319,7 @@ describe('time', () => {
     const base: RunView = {
       id: 'a-t',
       status: 'failed',
-      nodes: [{ nodeId: 'verify-a', state: 'failed' }],
+      nodes: [{ nodeId: 'land', state: 'failed' }],
     };
     for (const now of [at('2026-10-10T01:00:00Z'), at('2026-10-11T01:00:00Z')]) {
       expect(

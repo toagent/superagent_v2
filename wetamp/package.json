@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "@types/react": "^19.3.0"
+  },
+  "scripts": {
+    "generate:reasons": "bun scripts/generate-reasons.ts"
   }
 }

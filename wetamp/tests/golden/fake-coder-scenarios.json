@@ -1,0 +1,38 @@
+{
+  "done_with_error_class": {
+    "status": "done",
+    "error_class": "task",
+    "decision": {
+      "disposition": "advance",
+      "reason": null,
+      "self_report_conflict": true,
+      "error_class_ignored": true
+    }
+  },
+  "partial_green": {
+    "status": "partial",
+    "error_class": "env",
+    "decision": {
+      "disposition": "advance",
+      "reason": null,
+      "self_report_conflict": true,
+      "error_class_ignored": true,
+      "coder_partial": true
+    }
+  },
+  "blocked_needs": {
+    "status": "blocked",
+    "error_class": "env",
+    "decision": {
+      "disposition": "suspend",
+      "reason": "coder_needs"
+    }
+  },
+  "invalid_json": {
+    "raw": "{invalid",
+    "decision": {
+      "disposition": "suspend",
+      "reason": "coder_output_invalid"
+    }
+  }
+}

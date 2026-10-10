@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { REASONS } from './reasons';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
@@ -40,6 +41,7 @@ export function engineHash(root = WETAMP): string {
   walk('templates/.archon');
   for (const path of [
     'src/generate.ts',
+    'src/reasons.ts',
     'src/config.ts',
     'schemas/output.schema.json',
     'templates/brief.md',
@@ -446,12 +448,17 @@ const renderCaps = (c: Caps): string =>
 
 const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');
 /** 桩编码：向包的首个写入路径追加一行并提交，输出 coder 结构。 */
-const fakeEdit = (p: Pkg, line: string): string =>
-  [
+const fakeEdit = (p: Pkg, line: string): string => {
+  const scenario = process.env.FAKE_CODER_SCENARIO ?? "";
+  const classes: Record<string, string> = { done_with_error_class: "task", partial_green: "env", blocked_needs: "env" };
+  if (scenario && ![...Object.keys(classes), "invalid_json"].includes(scenario)) throw new Error(`unknown FAKE_CODER_SCENARIO: ${scenario}`);
+  const output = { status: scenario === "partial_green" ? "partial" : scenario === "blocked_needs" ? "blocked" : "done", changed_files: [safePath(p)], quick_checks: [], notes: "fake", blockers: [], error_class: classes[scenario] ?? null, deviations: [], needs: scenario === "blocked_needs" ? [{ cap: "network", why: "fixture", minimal_ask: "fixture" }] : [] };
+  return [
     `mkdir -p "$(dirname '${safePath(p)}')" && echo '${line}' >> '${safePath(p)}'`,
     `git add '${safePath(p)}' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake ${line}'`,
-    `echo '{"status":"done","changed_files":["${safePath(p)}"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'`,
+    `echo '${scenario === "invalid_json" ? "{invalid" : JSON.stringify(output)}'`,
   ].join('\n');
+};
 
 const FAKE_HIGH = { id: 'R1-1', severity: 'high', file: 'fake', line: 1 };
 /** 桩评审：第 1 轮 open 一条 high；之后按原 id 关闭并附证据（gate 只认这种关闭）。 */
@@ -533,6 +540,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
       recursive: true,
     });
   }
+  writeFileSync(join(dir, '.archon/scripts/reasons.json'), JSON.stringify(REASONS, null, 2) + '\n');
   // Archon loads command Markdown verbatim; include: composes workflows, not prompt text.
   const commands = new Set(
     (definition.nodes as Node[]).flatMap(n => (typeof n.command === 'string' ? [n.command] : []))
