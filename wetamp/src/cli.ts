@@ -4,7 +4,7 @@ import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
-import { askQuestion, askText, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
+import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
 import {
@@ -40,6 +40,7 @@ import {
 import {
   openBlocking,
   budgetUsage,
+  effectiveBudget,
   type Review,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
@@ -256,7 +257,6 @@ interface CoderOut {
   tag: string;
   milestone?: string;
   error_class?: string | null;
-  blockers?: string[];
   needs?: { cap: string; why: string; minimal_ask: string }[];
 }
 const codersOf = (art: string, m?: string, l?: Ledger): CoderOut[] =>
@@ -1232,25 +1232,25 @@ function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
   return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? run.started_at ?? l.started_at}`;
 }
 /** 展示与实际 retryGate/resume 分支一致；settle 是包的最终验收节点。 */
-function decisionRecovery(l: Ledger, run: RunView, c: Classified, hold: Hold): [string, string] {
+function decisionRecovery(l: Ledger, run: RunView, c: Classified, hold: Hold, limit: number): [string, string] {
   const p = HOLD_POLICY[hold], node = c.node ?? run.metadata?.wait?.nodeId ?? '恢复节点';
   if (p.do !== 'ask' || p.yes === 'approve') return ['', ''];
   const gate = p.yes === 'review' || (p.yes === 'retry' && (c.state === 'held:gate' || /^(verify|settle)-/.test(node)));
-  let target = `从${askText(node, 28)}续跑`;
+  let target = `从${askName(node, limit)}续跑`;
   if (gate) {
     const m = milestoneOf(l, p.yes === 'review' ? `review-${(c.node ?? '').slice(5)}` : node);
-    if (!attemptable(l, m)) return [`重试${askText(m, 20)}（缺少attempt节点，无法重跑）`, ''];
-    if (p.yes === 'review') target = `重跑${askText(m, 28)}本轮评审`;
+    if (!attemptable(l, m)) return [`重试${askName(m, limit)}（缺少attempt节点，无法重跑）`, ''];
+    if (p.yes === 'review') target = `重跑${askName(m, limit)}本轮评审`;
     else {
       const pkgs = planOf(l).packages.filter(p => (p.milestone ?? 'm1') === m);
       const done = pkgs.filter(p => run.nodes?.some(n => n.nodeId === `settle-${p.id}` && n.state === 'completed'));
-      const names = done.length <= 3 ? done.map(p => askText(p.id, 8)).join('、') : `${String(done.length)}包`;
-      target = `重跑${askText(m, 20)}全部${String(pkgs.length)}包（${done.length ? `含已完成${names}` : '无已完成包'}）`;
+      const names = done.length <= 3 && limit >= 8 ? done.map(p => askName(p.id, 8)).join('、') : `${String(done.length)}包`;
+      target = `重跑${askName(m, limit)}全部${String(pkgs.length)}包（${done.length ? `含已完成${names}` : '无已完成包'}）`;
     }
   }
   return [target, adoptsRun(l, run) ? '（引擎已升级，将新开run从首个节点重跑）' : ''];
 }
-/** 只读取摘要证据；缺失/损坏不阻断提问，绝不转述日志、转录或命令原文。 */
+/** 只展示注册原因、闭集枚举与数字；将军/评审自由文本只在 brief 中读取。 */
 export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: Hold, extra: Record<string, unknown> = {}): string {
   const plan = planOf(l), node = c.node ?? run.metadata?.approval?.nodeId ?? '恢复节点';
   const m = hold === 'signoff' ? node.replace(/^human-/, '') : milestoneOf(l, node);
@@ -1260,22 +1260,23 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
   };
   const out = read(`${node}.json`), pkg = plan.packages.find(p => p.id === node.replace(/^(verify|settle|code|repair)-/, ''));
   const reason = typeof out.reason === 'string' ? reasonOf(out.reason)?.description ?? '未注册原因（证据缺失）' : '证据缺失';
-  const context = `${askText(basename(l.repo), 24)}/${askText(pkg?.title ?? m, 24)}/${askText(node, 28)}` +
-    ` 已完成${String((run.nodes ?? []).filter(n => n.state === 'completed').length)}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
-  let detail = '';
-  if (['redline', 'coder_blocked', 'needs'].includes(hold)) {
+  const names = [basename(l.repo), pkg?.title ?? m, node];
+  const progress = `已完成${String((run.nodes ?? []).filter(n => n.state === 'completed').length)}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
+  let detail = reason;
+  if (hold === 'needs') {
     let coders: CoderOut[] = [];
     try { coders = codersOf(artifactsOf(run), m, l); } catch { /* 展示证据缺失 */ }
-    const coder = coders.find(x => x.tag === node) ?? coders.find(x =>
-      hold === 'redline' ? x.error_class === 'redline' : hold === 'needs' ? x.needs?.length : x.error_class);
-    try { detail = askText(hold === 'needs' ? coder?.needs?.map(n => n.minimal_ask).join('；') : coder?.blockers?.join('；')); }
-    catch { detail = ''; }
+    const needs = coders.find(x => x.tag === node)?.needs;
+    detail = Array.isArray(needs) ? `能力请求${String(needs.length)}项` : '证据缺失';
   } else if (hold === 'budget') {
+    detail = '证据缺失';
     try {
       const ack = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as { events?: Parameters<typeof budgetUsage>[0] };
       if (Array.isArray(ack.events)) {
         const u = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
-        const limits = (readJson(join(l.gen_dir, 'budget-extra')) as { limits?: Plan['budget'] } | null)?.limits ?? plan.budget;
+        const limits = effectiveBudget(plan.budget,
+          (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<typeof effectiveBudget>[1], m,
+          existsSync(join(l.gen_dir, 'attempts', m)) ? Number(readFileSync(join(l.gen_dir, 'attempts', m), 'utf8')) : null);
         detail = `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
           `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`;
       }
@@ -1284,24 +1285,25 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
     const ledger = read(`${node}.ledger.json`);
     detail = `轮次${typeof out.rounds === 'number' ? String(out.rounds) : '证据缺失'}，` +
       `未决${Array.isArray(ledger.blocking) ? String(ledger.blocking.length) : '证据缺失'}；${reason}`;
-  } else if (hold === 'approval') detail = askText(run.metadata?.approval?.type);
+  } else if (hold === 'approval') detail = '等待批准';
   else if (hold === 'signoff') {
     let files: string[] = [];
     try { files = evidenceGates(l, artifactsOf(run)); } catch { /* 展示证据缺失 */ }
-    detail = `验收/评审${askText(read(files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json').verdict) || '证据缺失'}`;
-  } else {
-    detail = reason;
+    const verdict = read(files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json').verdict;
+    detail = `验收/评审${verdict === 'pass' ? '通过' : verdict === 'fix' ? '需修复' : verdict === 'escalate' ? '需升级处理' : '证据缺失'}`;
+  } else if (hold !== 'redline' && hold !== 'coder_blocked') {
     const check = Array.isArray(out.failed) ? out : read(`diff-${m}-r${String(typeof out.rounds === 'number' ? out.rounds : 1)}.json`);
     if (Array.isArray(check.failed) && check.failed.length) {
       const failed = check.failed;
       detail += `；失败检查${plan.packages.flatMap(p => p.accept.flatMap((a, i) =>
-        failed.includes(a.cmd) ? [`${askText(p.id, 12)}验收#${String(i + 1)}`] : [])).join('、') || '证据缺失'}`;
+        failed.includes(a.cmd) ? [`${askName(p.id, 4)}验收#${String(i + 1)}`] : [])).slice(0, 3).join('、') || '证据缺失'}`;
     }
     if (hold === 'auto_retry_exhausted') detail += `；已重试${String(typeof extra.auto_retries === 'number' ? extra.auto_retries : l.auto_retries?.length ?? 0)}次`;
     if (hold === 'recover_no_progress') detail = `已恢复${String(l.stalled ?? 0)}次，完成节点集合未变化`;
   }
-  const [target, consequence] = decisionRecovery(l, run, c, hold);
-  return askQuestion(hold, context, detail, target, askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c))), consequence);
+  return askQuestion(hold, names, `${detail}；${progress}`,
+    limit => decisionRecovery(l, run, c, hold, limit),
+    askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c))));
 }
 /** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
 function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action | undefined {

@@ -1,5 +1,4 @@
 // 原因与处置的唯一注册表；generate 将 REASONS 写入冻结模板。
-import { redact } from './redact';
 export type Yes = 'retry' | 'resume' | 'approve' | 'review';
 export type Policy =
   | { do: 'expire' | 'auto_retry' | 'backoff' | 'resume' }
@@ -68,18 +67,22 @@ export const HOLD_POLICY = {
 } as const satisfies Record<string, Policy>;
 export type Hold = keyof typeof HOLD_POLICY;
 
-// 仅清洗展示摘要；不以散文决定任何引擎动作。代码片段、赋值及凭据样式不进入 iCloud。
-export const askText = (v: unknown, limit = 60): string => typeof v !== 'string' ? '' : Array.from(redact(v)
-  .replace(/```[\s\S]*?(?:```|$)|`[^`]*(?:`|$)/g, '[代码省略]')
-  .replace(/\b(?:rg|grep|git|curl|wget|bash|zsh|sh|python3|node|bun|npm|cat|ls|sed|awk|find|rm|cp|mv)\s+(?=[A-Za-z0-9_./~$-])[^\n]*/g, '[命令省略]')
-  .replace(/\b[\w-]+\s*=\s*(?:"[^"\n]*"?|'[^'\n]*'?|[^\s,;]+)/g, '[赋值省略]')
-  .replace(/\b(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-)[\w-]+|\beyJ[\w-]+\.[\w-]+(?:\.[\w-]+)?/g, '[凭据省略]')
-  .replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, limit).join('');
-export function askQuestion(hold: Hold, context: string, detail: string, target: string, marker: string, consequence = ''): string {
+// 仅用于引擎标识与 plan 名称；自由文本证据不进入提醒标题。
+export const askName = (v: string, limit: number): string =>
+  Array.from(v.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, limit).join('');
+export function askQuestion(hold: Hold, names: string[], detail: string,
+  recovery: (limit: number) => [string, string], marker: string): string {
   const p = HOLD_POLICY[hold];
   if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not an ask policy: ${hold}`);
-  const actions = `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）；${marker}`;
-  return Array.from(`${context}：${p.text}；${detail || '证据缺失'}`).slice(0, 200 - Array.from(actions).length).join('') + actions;
+  // 按段缩短名称，原因、数字事实、动作与对账 marker 不从头截断。
+  for (let limit = 24; limit >= 1; limit--) {
+    const [target, consequence] = recovery(limit);
+    const q = `${names.map(n => askName(n, limit)).join('/')}：${p.text}；${detail || '证据缺失'}` +
+      `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）` +
+      `；详情superagent brief <run>；${marker}`;
+    if (Array.from(q).length <= 200) return q;
+  }
+  throw new Error('ask title: structured facts exceed 200 characters');
 }
 
 export interface Reason {

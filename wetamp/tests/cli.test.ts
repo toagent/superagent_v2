@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test';
+import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
 import { Database } from 'bun:sqlite';
 import {
@@ -2100,7 +2101,7 @@ describe('HF9 decision titles', () => {
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [{ event_type: 'node_started', step_name: 'code-W4' }] }));
     return { s, r, put, art };
   };
-  const details: Record<string, string> = { redline: '解析失败', needs: '请补齐依赖下载能力', coder_blocked: '只读检索命令被拒', budget: '已用/上限1/1', review_limit: '轮次3，未决1', review_not_independent: 'same_model', recover_no_progress: '已恢复3次', approval: 'merge_review', signoff: '验收/评审pass' };
+  const details: Record<string, string> = { redline: '将军命中红线', needs: '能力请求1项', coder_blocked: '将军受执行约束阻断', budget: '已用/上限1/1', review_limit: '轮次3，未决1', review_not_independent: 'same_model', recover_no_progress: '已恢复3次', approval: '等待批准', signoff: '验收/评审通过' };
   for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
     if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
     test(`HF9 ${hold}: project, node, evidence, truthful actions and ≤200 characters`, () => {
@@ -2122,25 +2123,57 @@ describe('HF9 decision titles', () => {
     rmSync(join(art, 'verify-W4.coder.json'));
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
     const sup = supervisor(s.root, 'pending');
-    expect(captured(() => main(['supervise-tick'])).code).toBe(0); expect(sup()[0]).toContain('证据缺失');
+    expect(captured(() => main(['supervise-tick'])).code).toBe(0); expect(sup()[0]).toContain('将军命中红线');
     writeFileSync(join(art, 'verify-W4.coder.json'), '{');
-    expect(decisionQuestion(s.ledger, r, classify(r), 'redline')).toContain('证据缺失');
+    expect(decisionQuestion(s.ledger, r, classify(r), 'needs')).toContain('证据缺失');
   });
-  test('HF9 sanitizes credentials, assignments, commands and controls before truncation; actions survive long evidence', () => {
-    const { s, r, put } = setup();
-    const dirty = '只读检索被拒\n\u0000 token=synthetic-secret sk-syntheticSecret123 ghp_synthetic123 PATH=/private/example `rg --files private` eyJabc.def.sig \nbun test /private/command\n';
-    put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: [dirty + '长摘要'.repeat(300)] });
-    const q = decisionQuestion(s.ledger, r, classify(r), 'redline');
-    for (const secret of ['synthetic-secret', 'syntheticSecret123', 'synthetic123', '/private/example', 'rg --files', 'bun test', '/private/command', 'eyJabc.def.sig', '\n', '\u0000']) expect(q).not.toContain(secret);
-    expect(q).toContain('红线不变'); expect(q).toContain('否=终止整个run'); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+  test('HF9 R3 free text never reaches the supervisor title, even for unknown reasons and enums', () => {
+    const dirty = 'rg "synthetic-needle" src/a.ts; echo synthetic-value; DB_URL: postgres://demo:synthetic-pass@host.invalid/db';
+    for (const hold of ['redline', 'needs', 'signoff', 'approval', 'review_limit'] as const) {
+      const { s, r, put } = setup();
+      const node = hold === 'signoff' ? 'human-m1' : hold === 'review_limit' ? 'gate-m1-r3' : 'verify-W4';
+      put(`${node}.json`, { reason: dirty, summary: dirty, rounds: 3, failed: [dirty] });
+      put('verify-W4.coder.json', { milestone: 'm1', error_class: dirty, blockers: [dirty],
+        summary: dirty, needs: [{ cap: dirty, why: dirty, minimal_ask: dirty }] });
+      put('gate-m1-r3.json', { reason: dirty, verdict: dirty, summary: dirty, rounds: 3 });
+      put('gate-m1-r3.ledger.json', { blocking: [{ id: dirty, evidence: dirty }] });
+      if (hold === 'signoff') {
+        r.status = 'paused'; r.metadata = { wait: { nodeId: node, kind: 'event', event: 'sa.human.m1', resumeAt: '2099-01-01T00:00:00Z' } };
+      } else if (hold === 'approval') {
+        r.status = 'paused'; r.metadata = { approval: { nodeId: node, type: dirty } };
+      } else {
+        // Drive a registered hold; all supplementary free text remains deliberately hostile.
+        put('verify-W4.json', { reason: hold === 'needs' ? 'coder_needs' : 'coder_redline', summary: dirty });
+        if (hold === 'review_limit') { r.nodes = [{ nodeId: node, state: 'failed' }]; put(`${node}.json`, { verdict: 'escalate', reason: 'coder_redline+review_limit', rounds: 3, summary: dirty }); }
+      }
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const q = sup()[0];
+      for (const fragment of ['rg', 'synthetic-needle', 'src/a.ts', 'echo', 'synthetic-value', 'DB_URL',
+        'postgres', 'demo', 'synthetic-pass', 'host.invalid', '/db']) expect(q).not.toContain(fragment);
+      expect(q).toContain('详情superagent brief <run>');
+      expect(q).toContain('是='); expect(q).toContain('否=终止整个run');
+      const unregistered = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node }, hold);
+      expect(unregistered).not.toContain(dirty);
+    }
   });
-  test('HF9 long names and prose cannot truncate yes/no or correlation marker', () => {
-    const { s, r, put } = setup();
-    put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: ['摘要'.repeat(400)] });
-    const node = 'verify-' + '长节点'.repeat(100);
-    const q = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node }, 'redline');
-    expect(q).toContain('是='); expect(q).toContain('否=终止整个run'); expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
-  });
+  for (const [milestone, attempt, launches] of [['m2', 1, 1], ['m1', 2, 1], ['m1', 1, 100]] as const)
+    test(`HF9 R3 budget title uses execution limits for ${milestone}/attempt${attempt}`, () => {
+      const { s, r } = setup();
+      const path = join(s.ledger.gen_dir, 'plan.json');
+      const plan = JSON.parse(readFileSync(path, 'utf8')) as Plan;
+      plan.packages[0].milestone = milestone; writeFileSync(path, JSON.stringify(plan));
+      const grant = { milestone: 'm1', attempt: 1, limits: { launches: 100, weighted_tokens: 10000 } };
+      writeFileSync(join(s.ledger.gen_dir, 'budget-extra'), JSON.stringify(grant));
+      mkdirSync(join(s.ledger.gen_dir, 'attempts'), { recursive: true });
+      writeFileSync(join(s.ledger.gen_dir, 'attempts', milestone), String(attempt));
+      const actual = effectiveBudget(plan.budget, grant, milestone, attempt);
+      expect(actual.launches).toBe(launches);
+      const q = decisionQuestion(s.ledger, r, classify(r), 'budget');
+      expect(q).toContain(`调用已用/上限1/${String(actual.launches)}`);
+      expect(q).toContain(`加权token已用/上限0/${String(actual.weighted_tokens)}`);
+    });
   const bestIFA = () => {
     const f = setup(), plan = JSON.parse(readFileSync(join(f.s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
     plan.packages = Array.from({ length: 11 }, (_, i) => ({ ...plan.packages[0], id: `W${i + 1}`, title: `W${i + 1}验收` }));
@@ -2149,6 +2182,32 @@ describe('HF9 decision titles', () => {
       { nodeId: 'start-m1', state: 'completed' }, { nodeId: 'verify-W4', state: 'failed' }];
     return f;
   };
+  test('HF9 R3 maximum identifiers and unbounded schema names preserve reasons, facts, actions and marker', () => {
+    // schema: id ≤64, milestone ≤32; repo basename ≤255 on disk, title has no maximum.
+    for (const hold of ['redline', 'needs', 'budget', 'review_limit', 'engine_suspect', 'signoff'] as const) {
+      const { s, r, put } = bestIFA();
+      const oldRepo = s.ledger.repo, repo = join(s.root, 'R'.repeat(255)); mkdirSync(repo);
+      cpSync(s.ledger.gen_dir, join(repo, 'gen'), { recursive: true });
+      Object.assign(s.ledger, { repo, gen_dir: join(repo, 'gen'), engine_hash: 'old-engine' });
+      r.output_root = join(oldRepo, 'out');
+      const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
+      const m = 'M'.repeat(32);
+      plan.packages = plan.packages.slice(0, 4).map((p, i) => ({ ...p, id: `W${String(i)}`.padEnd(64, 'x'), milestone: m, title: '长标题'.repeat(1000) }));
+      writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+      const wf = join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml');
+      writeFileSync(wf, `nodes:\n  - id: attempt-${m}\n`);
+      const node = hold === 'signoff' ? `human-${m}` : hold === 'review_limit' ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`;
+      r.nodes = [...plan.packages.slice(0, 3).map(p => ({ nodeId: `settle-${p.id}`, state: 'completed' })), { nodeId: node, state: 'failed' }];
+      if (hold === 'review_limit') { put(`${node}.json`, { rounds: 3, reason: 'coder_redline+review_limit' }); put(`${node}.ledger.json`, { blocking: [{ id: 'R1' }] }); }
+      const q = decisionQuestion(s.ledger, r, { state: 'held:gate', exit: 1, node }, hold);
+      const policy = HOLD_POLICY[hold]; expect(policy.do === 'ask' || policy.do === 'signoff').toBe(true);
+      if (policy.do === 'ask' || policy.do === 'signoff') expect(q).toContain(policy.text);
+      expect(q).toContain('已完成3/1节点');
+      if (hold !== 'signoff') expect(q).toContain('引擎已升级，将新开run从首个节点重跑');
+      expect(q).toContain('是='); expect(q).toContain('否=终止整个run（保留证据）');
+      expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+    }
+  });
   test('HF9 R2 retryGate repeats all eleven packages including completed W1-W3; resume names its node', () => {
     const { s, r } = bestIFA();
     const q = decisionQuestion(s.ledger, r, classify(r), 'redline');
@@ -2192,7 +2251,7 @@ describe('HF9 decision titles', () => {
         expect(sup().filter(c => c.startsWith('ask --question'))).toHaveLength(1);
       } finally { read.mockRestore(); signal.mockRestore(); recovery.mockRestore(); }
     });
-  test('HF9 supervisor stub captures five R2 titles', () => {
+  test('HF9 supervisor stub captures five R3 titles', () => {
     const samples: Record<string, string> = {};
     for (const sample of ['redline', 'redline-adopt', 'needs', 'budget', 'signoff'] as const) {
       const hold = sample === 'redline-adopt' ? 'redline' : sample;
