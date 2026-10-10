@@ -95,13 +95,13 @@ describe('WP-BT6 HTTP and board boundary', () => {
   });
   test('wide and compact show mapped models and today header without overflow', () => {
     setup(); const s: Snapshot = { summary: {}, rows: [], at: new Date().toISOString(), usage: { at: 'now', status: 'ok', sources: {}, sessions: [], daily: [] }, activity: { terms: [{ kind: 'codex', tier: 'general', model: 'gpt-6.1-sol', pid: 1, state: 'busy', tty: 'tty1', cwd: '/repo', tool: null, since_ms: null, bound: true }], jobs: [], procs: [], remote: [], notes: [] } };
-    for (const width of [59, 140]) { const out = renderToString(createElement(Frame, { snap: s, home: '/sa', width, height: 100, interval: 5, sel: -1, activeOnly: false, detail: null, now: new Date(), footer: false }), { columns: width }); expect(out).toContain(width < 80 ? '将军·sol ' : '将军·sol6.1 '); expect(out).toContain('tok 今日'); for (const line of out.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width); }
+    for (const width of [59, 140]) { const out = renderToString(createElement(Frame, { snap: s, home: '/sa', width, height: 100, interval: 5, sel: -1, activeOnly: false, detail: null, now: new Date(), footer: false }), { columns: width }); expect(out).toContain('角色今日用量未知'); expect(out).toContain('tok 今日'); for (const line of out.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width); }
   });
   test('run token column preserves full role/model at 120 and 140 columns', () => {
     setup(); const row: BoardRow = { run_id: '20261010-000000-abcd', model: 'gpt-6.1-sol', state: 'running', exit: null, nodes: { done: 1, total: 3, current: 'code-long-node-name', currentRole: 'coder' }, started_at: '2026-10-10T00:00:00Z', span: null, elapsed_s: null, held: null, recoveries: 0, auto_retries: 0, console: 'codex', repo: 'repo', branch: 'branch', evidence: '', plan: '', stale: false };
     const sessions = parseUsage(codex, 'codex'); attribute(sessions, [{ id: uuid, owner: { ...owner('run'), run_id: row.run_id } }]);
     const snap: Snapshot = { summary: {}, at: 'now', rows: [row], usage: { at: 'now', status: 'ok', sources: {}, sessions, daily: [] } };
     expect(overview({ ...snap, rows: [{ ...row, nodes: { ...row.nodes, current: 'review-m1-r2' }, recoveries: 3 }] }).runs).toMatchObject([{ rounds: 2, recoveries: 3 }]);
-    for (const width of [100, 120, 140]) { const out = renderToString(createElement(Frame, { snap, home: '/sa', width, height: 100, interval: 5, sel: -1, activeOnly: false, detail: null, now: new Date(), footer: false }), { columns: width }); expect(out).toContain('将军·sol6.1'); if (width >= 120) expect(out).toContain('tok 40'); for (const line of out.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width); }
+    for (const width of [100, 120, 140]) { const out = renderToString(createElement(Frame, { snap, home: '/sa', width, height: 100, interval: 5, sel: -1, activeOnly: false, detail: null, now: new Date(), footer: false }), { columns: width }); expect(out).toContain('将军·sol6.1'); if (width >= 120) expect(out).toContain(' 40'); for (const line of out.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width); }
   });
 });

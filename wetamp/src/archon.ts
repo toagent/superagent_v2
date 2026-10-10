@@ -44,7 +44,7 @@ export interface RunView {
   /** 终局记录（事件日志折叠而来）：error 同 metadata.error 的终局快照。resume 中的 run 没有。 */
   terminal_record?: { error?: string | null } | null;
   transcript_path?: string | null;
-  nodes?: { nodeId: string; state: string; error?: string | null; durationMs?: number; execution?: NodeExecutionMetadata }[];
+  nodes?: { nodeId: string; state: string; startedAt?: string; error?: string | null; durationMs?: number; execution?: NodeExecutionMetadata }[];
 }
 
 // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）

@@ -3,34 +3,26 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>superagent 大看板</title>
 <style>
-:root{font:15px system-ui,sans-serif;color:#dce6f1;background:#101820;color-scheme:dark}body{max-width:1500px;margin:auto;padding:24px}h1{font-size:25px}h2{font-size:18px;color:#93d4cf;margin-top:28px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px}.card{background:#1b2835;border:1px solid #344555;border-radius:8px;padding:14px}.muted,small{color:#9aabbc}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:9px;border-bottom:1px solid #344555;white-space:nowrap}th{color:#93d4cf}.bad{color:#ffbc80}button{padding:8px 12px;background:#26485a;color:inherit;border:1px solid #446575;border-radius:5px}#status{white-space:pre-wrap}a{color:#93d4cf}
+:root{font:15px system-ui,sans-serif;color:#dce6f1;background:#101820;color-scheme:dark}body{max-width:1500px;margin:auto;padding:24px}h1{font-size:25px}h2{font-size:18px;color:#93d4cf;margin-top:28px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px}.card{background:#1b2835;border:1px solid #344555;border-radius:8px;padding:14px} #active p{white-space:pre-line}.muted,small{color:#9aabbc}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:9px;border-bottom:1px solid #344555;white-space:nowrap}th{color:#93d4cf}.bad{color:#ffbc80}button{padding:8px 12px;background:#26485a;color:inherit;border:1px solid #446575;border-radius:5px}#status{white-space:pre-wrap}a{color:#93d4cf}
+.progress{position:relative;background:#303030;height:24px;min-width:200px;margin:8px 0}.progress .fill{height:100%;background:#93d4cf}.progress .label{position:absolute;inset:0;text-align:center;line-height:24px;color:white;mix-blend-mode:difference}
 </style>
 <h1>superagent · 本机任务大看板</h1>
 <p class="muted">只读 · 每 5 秒刷新 · 仅本机日志；开发机 / mini 不含</p>
 <p id="status">正在载入…</p><button id="refresh">刷新显示</button>
-<h2>终端会话</h2><div class="cards" id="terminals"></div>
-<h2>待决提醒</h2><div id="pending"></div>
-<h2>作业</h2><div class="scroll" id="jobs"></div>
-<h2>Run</h2><div class="scroll" id="runs"></div>
-<h2>Token · 角色 × 模型</h2><div class="scroll" id="roles"></div>
-<h2>Token · 来源</h2><div class="scroll" id="kinds"></div>
-<h2>Top 会话</h2><div class="scroll" id="top"></div>
-<h2>按天</h2><div class="scroll" id="daily"></div>
-<p><small id="estimate"></small></p>
+<p id="metrics"></p><div id="total-progress"></div><p id="tokens"></p>
+<section id="needs-section"><h2>需要你</h2><div id="needs"></div></section>
+<h2>进行中</h2><div class="cards" id="active"></div><p id="jobs-line"></p>
+<h2>今日结果</h2><div id="results"></div><button id="all">展开全部结果</button>
+<details><summary id="terminal-summary">终端</summary><div id="terminals"></div></details>
 <script>
 history.replaceState(null,'',location.pathname);
 const roles={commander:'元帅',general:'将军',strategist:'军师',coder:'将军',reviewer:'军师',script:'引擎',human:'人工'};
 const tag=x=>(roles[x.role]||'?')+(x.short_model?'·'+x.short_model:'');
-const fmt=n=>typeof n==='number'?n.toLocaleString():'未知';
-function table(id,heads,rows){const t=document.createElement('table'),h=t.createTHead().insertRow();for(const x of heads){const c=document.createElement('th');c.textContent=x;h.append(c)}for(const xs of rows){const r=t.insertRow();for(const x of xs){const c=r.insertCell();c.textContent=x??'—'}}document.getElementById(id).replaceChildren(t)}
-const tokenHeads=['input','output','reasoning','cacheRead','cacheWrite','合计','会话数'];
-const tokenRow=x=>['input','output','reasoning','cacheRead','cacheWrite','total','sessions'].map(k=>fmt(x[k]));
-let busy=false;
-async function refresh(){if(busy)return;busy=true;try{const response=await fetch('/api/overview',{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);const d=await response.json();document.getElementById('status').textContent='快照 '+d.at+' · 用量缓存 '+(d.usage.at||'无')+' · '+d.usage.status+'\n来源成功时间 '+JSON.stringify(d.usage.source_at||{})+'\n'+d.usage.coverage;
-document.getElementById('terminals').replaceChildren(...d.terminals.map(t=>{const c=document.createElement('div');c.className='card';const title=document.createElement('strong');title.textContent=tag(t)+' · '+t.client;const detail=document.createElement('p');detail.textContent=t.state+' · '+(t.cwd||'?');c.append(title,detail);for(const j of t.jobs){const p=document.createElement('p');p.textContent='↳ '+tag(j)+' '+j.id+' '+j.state;c.append(p)}return c}));
-table('pending',['Run','等待','处置'],d.pending.map(r=>[r.id,r.held.event||r.held.node,r.action]));table('jobs',['作业','状态','角色·模型','目录'],d.jobs.map(j=>[j.id,j.state,tag(j),j.cwd]));table('runs',['Run','状态','节点','当前节点','角色·模型','当前轮次 / 恢复 / 重试','目录'],d.runs.map(r=>[r.id,r.state,r.nodes.done+'/'+r.nodes.total,r.nodes.current,tag(r),r.rounds+' / '+r.recoveries+' / '+r.retries,r.cwd]));
-table('roles',['角色·模型',...tokenHeads],Object.entries(d.usage.by_role_model).map(([k,v])=>[k,...tokenRow(v)]));table('kinds',['来源',...tokenHeads],Object.entries(d.usage.by_kind).map(([k,v])=>[k,...tokenRow(v)]));table('top',['会话','客户端','角色·模型','来源',...tokenHeads],d.usage.top.map(s=>[s.id,s.client,tag({...s.owner,short_model:s.short_model}),s.owner.kind,...tokenRow(s)]));table('daily',['日期','客户端',...tokenHeads],d.usage.daily.map(s=>[s.day,s.client,...tokenRow(s)]));document.getElementById('estimate').textContent=typeof d.estimate.dollars==='number'?'≈$'+d.estimate.dollars.toFixed(2)+'（'+d.estimate.label+'）':'金额未知（'+d.estimate.label+'）';
-}catch(e){document.getElementById('status').textContent='数据未更新：'+e.message}finally{busy=false}}
-document.getElementById('refresh').addEventListener('click',refresh);refresh();setInterval(refresh,5000);
+let busy=false,showAll=false,last;
+function rows(id,xs,render){document.getElementById(id).replaceChildren(...xs.map(x=>{const p=document.createElement('p');p.textContent=render(x);return p}))}
+function bar(p,label){const box=document.createElement('div');box.className='progress';const fill=document.createElement('div');fill.className='fill';fill.style.width=(p.pct??0)+'%';const text=document.createElement('span');text.className='label';text.textContent=label;box.append(fill,text);return box}
+function display(c){last=c;const m=c.metrics;document.getElementById('metrics').textContent=`今日 达成 ${m.completed}/${m.decided} · 一次通过 ${m.firstPass} · 人工介入 ${m.asks} · 评审债 ${m.debt}`;document.getElementById('tokens').textContent='tok 今日 '+c.tokens+'  '+c.roleTokens.join('  ');document.getElementById('needs-section').hidden=!c.needs.length;rows('needs',c.needs,r=>`${r.project} ${r.title} · ${r.question} · ${r.waiting}`);document.getElementById('total-progress').replaceChildren(...(c.total?[bar(c.total,c.totalText)]:[]));document.getElementById('active').replaceChildren(...c.active.map(r=>{const card=document.createElement('div');card.className='card';const title=document.createElement('p');title.textContent=`${r.project} ${r.title} · ${r.elapsed} ${r.tokens}`;const stage=document.createElement('p');stage.textContent=r.stage+' '+r.role;card.append(title,stage,bar(r.progress,r.progressText));return card}));document.getElementById('jobs-line').textContent=c.jobs;rows('results',showAll?c.results:c.results.slice(0,5),r=>`${({completed:'✓',failed:'✗',cancelled:'⊘'})[r.state]||'?'} ${r.project} ${r.title} · ${r.elapsed} R${r.round} ${r.tokens} ${r.reason}`);document.getElementById('all').hidden=c.results.length<=5;document.getElementById('terminal-summary').textContent=c.terminals}
+async function refresh(){if(busy)return;busy=true;try{const response=await fetch('/api/overview',{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);const d=await response.json();document.getElementById('status').textContent='快照 '+d.at+' · 心跳 '+d.cockpit.heartbeat;display(d.cockpit);rows('terminals',d.terminals,t=>tag(t)+' · '+t.client+' · '+t.state+' · '+(t.cwd||'?'))}catch(e){document.getElementById('status').textContent='数据未更新：'+e.message}finally{busy=false}}
+document.getElementById('all').addEventListener('click',()=>{showAll=!showAll;if(last)display(last)});document.getElementById('refresh').addEventListener('click',refresh);refresh();setInterval(refresh,5000);
 </script>
 </html>

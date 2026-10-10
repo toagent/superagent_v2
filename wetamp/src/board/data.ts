@@ -1,10 +1,13 @@
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, join, sep } from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { loadActivity, type Activity } from './activity';
+import { milestones, type Plan } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
+import { readEta, type Estimate } from './eta';
+import { confined, workflowRoles, type Role } from './workflow';
 import {
   EXIT,
   artifactsOf,
@@ -18,6 +21,7 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  engine?: { title: string; milestones: string[]; currentMilestone: string | null; states: { id: string; state: string }[]; firstPass: boolean; round?: number; reason: string; dispositions: NonNullable<Ledger['dispositions']> };
   model?: string | null;
   run_id: string;
   state: string;
@@ -44,6 +48,9 @@ export interface BoardRow {
 }
 
 export interface Snapshot {
+  eta?: Record<string, Estimate>;
+  heartbeat_ms?: number;
+  asks?: Record<string, { status: string }>;
   usage?: UsageCache;
   web_url?: string;
   summary: Record<string, unknown>;
@@ -80,56 +87,7 @@ export function readLedger(id: string): Ledger | string {
   }
 }
 
-export const OUTSIDE = '（路径越界，已跳过）';
-
-/**
- * ledger 里的路径（plan、gen_dir、transcript、evidence 及其下文件）解析 realpath 后只允许落在 ledger.repo 或
- * $SUPERAGENT_HOME 之内：ledger 是本地可写文件，不能让它把看板引去读任意文件。不存在返回 null；越界抛错，调用方只丢该项。
- */
-export function confined(l: Ledger, p: string): string | null {
-  if (!existsSync(p)) return null;
-  const real = realpathSync(p);
-  const inside = [l.repo, home().sa].some(r => {
-    if (!existsSync(r)) return false;
-    const root = realpathSync(r);
-    return real === root || real.startsWith(root + sep);
-  });
-  if (!inside) throw new Error(`${p}${OUTSIDE}`);
-  return real;
-}
-
-export type Role = 'coder' | 'reviewer' | 'human' | 'script';
-
-/**
- * 生成的工作流里每个节点的角色（按节点定义：@sa-coder/@sa-reviewer 别名、wait 事件门，其余为脚本）；节点总数也取自这里，
- * 因为 run 的 nodes 只列已调度的节点。gen 目录缺失或解析失败返回 undefined：表格退回 run 的节点数、角色显示 `?`。
- */
-export function workflowRoles(l: Ledger): Map<string, Role> | undefined {
-  try {
-    const file = confined(
-      l,
-      join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`)
-    );
-    if (!file) return undefined;
-    const wf = Bun.YAML.parse(readFileSync(file, 'utf8')) as {
-      nodes?: { id: string; model?: string; wait?: unknown }[];
-    };
-    return new Map(
-      (wf.nodes ?? []).map(n => [
-        n.id,
-        n.model === '@sa-coder'
-          ? 'coder'
-          : n.model === '@sa-reviewer'
-            ? 'reviewer'
-            : n.wait
-              ? 'human'
-              : 'script',
-      ])
-    );
-  } catch {
-    return undefined;
-  }
-}
+export { OUTSIDE, confined, workflowRoles, type Role } from './workflow';
 
 export function rowOf(
   l: Ledger,
@@ -152,7 +110,21 @@ export function rowOf(
     Number.isFinite(startedMs) && (end === null || Number.isFinite(end))
       ? { started_ms: startedMs, ended_ms: end }
       : null;
+  let plan: Plan | undefined;
+  try { const file = confined(l, resolve(l.repo, l.plan)) ?? confined(l, join(l.gen_dir, 'plan.json')); if (file) { const value = JSON.parse(readFileSync(file, 'utf8')) as Plan; if (Array.isArray(value.packages) && value.packages.every(p => p && typeof p.id === 'string' && typeof p.title === 'string' && (p.milestone === undefined || typeof p.milestone === 'string'))) plan = value; } } catch { /* Unavailable plan stays explicit. */ }
+  let ms: string[] = [];
+  try { if (plan) ms = milestones(plan).map(m => m.id); } catch { plan = undefined; }
+  const pkg = plan?.packages.find(p => ['code', 'verify', 'repair', 'settle'].some(k => current === `${k}-${p.id}`));
+  const currentMs = pkg ? pkg.milestone ?? 'm1' : ms.find(m => ['diff', 'review', 'fix', 'gate', 'human', 'attempt', 'start'].some(k => current === `${k}-${m}` || current?.startsWith(`${k}-${m}-`))) ?? (current === 'land' ? ms.at(-1) : null);
+  const stats = summarize([{ ledger: l, run }]);
+  let nodeReason = '';
+  try { const file = current ? confined(l, join(artifactsOf(run), current + '.json')) : null; const value: unknown = file ? JSON.parse(readFileSync(file, 'utf8')) : null; if (value && typeof value === 'object' && 'reason' in value && typeof value.reason === 'string') nodeReason = value.reason; } catch { /* Missing outcome provides no reason. */ }
   return {
+    engine: { title: plan?.packages[0]?.title ? `${plan.packages[0].title}${plan.packages.length > 1 ? ` +${String(plan.packages.length - 1)}` : ''}` : '任务标题未知', milestones: ms, currentMilestone: currentMs ?? null,
+      states: nodes.filter(n => !plan || !currentMs || !['code', 'verify', 'repair', 'settle'].some(k => n.nodeId.startsWith(k + '-')) || plan.packages.some(p => (p.milestone ?? 'm1') === currentMs && ['code', 'verify', 'repair', 'settle'].some(k => n.nodeId === `${k}-${p.id}`))).filter(n => !['diff', 'review', 'fix', 'gate', 'human'].some(k => n.nodeId.startsWith(k + '-')) || !currentMs || n.nodeId.startsWith(`${n.nodeId.split('-')[0]}-${currentMs}-`) || n.nodeId === `human-${currentMs}`).map(n => ({ id: n.nodeId, state: n.state })),
+      firstPass: c.state === 'completed' && ms.length > 0 && stats.first_pass === ms.length && !l.auto_retries?.length && !nodes.some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped'),
+      round: Math.max(0, ...Object.keys(stats).filter(k => k.startsWith('rounds:')).map(k => Number(k.slice(7))), ...nodes.filter(n => n.state !== 'skipped').map(n => Number(/-r(\d+)$/.exec(n.nodeId)?.[1] ?? 0))),
+      reason: l.reason ?? (nodeReason || undefined) ?? l.dispositions?.at(-1)?.reason ?? run.metadata?.stop_reason?.reason ?? '', dispositions: l.dispositions ?? [] },
     model: (() => { const m = nodes.find(n => n.nodeId === current)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
     run_id: l.run_id,
     state: c.state,
@@ -284,7 +256,9 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     s.runs = results.length;
     s.unreadable = [...bad, ...(s.unreadable as string[])];
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
-    return { summary: s, rows, at: new Date(now).toISOString(), activity: await activity, usage: readUsage() };
+    let asks: Snapshot['asks'];
+    try { asks = JSON.parse(readFileSync(join(home().sa, 'asks.json'), 'utf8')) as Snapshot['asks']; } catch { /* Missing asks is not proof of a decision. */ }
+    return { heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })?.mtimeMs, asks, summary: s, rows, at: new Date(now).toISOString(), activity: await activity, usage: readUsage(), eta: readEta() };
   };
 }
 

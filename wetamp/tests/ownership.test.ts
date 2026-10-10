@@ -193,7 +193,7 @@ test('job exec persists launcher metadata from matching heartbeat; no prompt/arg
   expect(record.state).toBe('done');
 });
 
-test('run under each terminal, directory groups, chips, retirement and compact Chinese widths', () => {
+test('terminal view retains run ownership, directory groups, retirement and compact Chinese widths', () => {
   const running = {
     ...unreadableRow(id, ''),
     state: 'running',
@@ -260,6 +260,7 @@ test('run under each terminal, directory groups, chips, retirement and compact C
         detail: null,
         now: new Date(now),
         footer: false,
+        view: 'terminals',
       }),
       { columns: width }
     );
@@ -268,7 +269,7 @@ test('run under each terminal, directory groups, chips, retirement and compact C
       /xiaopan-translator · s002\n  └ ▶ run 120001-abce ~▶run 1\/4 review\(军师\)/
     );
     expect(text).toContain('superagent_v2\n  └ ▶ run 120002-abca');
-    expect(text).toContain('[将军 1] [军师 1]');
+    expect(text).toContain('━ 终端');
     expect(text).toContain('(将军)');
     expect(text).not.toContain('└ ▶ run 110000-abcf');
     expect(text).not.toContain('old-job');

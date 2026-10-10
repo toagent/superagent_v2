@@ -1,4 +1,4 @@
-// `superagent board [run] [--once] [--json] [--interval s] [--limit n]`：run 看板。
+// `superagent board [run] [--once] [--json] [--interval s] [--limit n] [--view cockpit|terminals] [--all]`：run 看板。
 // ink/react 只在这里动态 import（wetamp/package.json 自有依赖）；--json 不渲染，不需要它们。
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import { detailOf, type Detail } from './detail';
 import { startWeb, webUrl } from '../web/server';
 import { requestUsageRefresh } from '../usage';
 
-const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval s] [--limit n]';
+const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval s] [--limit n] [--view cockpit|terminals] [--all]';
 
 const positive = (v: string | undefined, dflt: number, name: string): number => {
   const n = v === undefined ? dflt : Number(v);
@@ -34,12 +34,15 @@ export async function board(argv: string[]): Promise<number> {
 
 async function run(argv: string[], signal: AbortSignal): Promise<number> {
   let interval: number, limit: number, target: string | undefined, a: ReturnType<typeof parseArgs>;
+  let view: 'cockpit' | 'terminals' = 'cockpit';
   let load: ReturnType<typeof createLoader>;
   try {
-    a = parseArgs(argv);
+    const args = [...argv], i = args.indexOf('--view');
+    if (i !== -1) { view = args[i + 1] as typeof view; args.splice(i, 2); if (view !== 'cockpit' && view !== 'terminals') throw new Error('--view must be cockpit or terminals'); }
+    a = parseArgs(args);
     target = a._[1];
     interval = positive(a.flags.interval, 5, 'interval');
-    limit = Math.floor(positive(a.flags.limit, 50, 'limit'));
+    limit = Math.floor(positive(a.flags.limit, Number.MAX_SAFE_INTEGER, 'limit'));
     const base = createLoader(signal);
     let url: string | undefined;
     load = async n => ({ ...await base(n), web_url: url });
@@ -89,6 +92,8 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     const width = process.stdout.columns || Number(process.env.COLUMNS) || 160;
     const frame = createElement(Frame, {
       snap: first,
+      view,
+      all: !!a.flags.all,
       home: home().sa,
       width,
       height: Number.MAX_SAFE_INTEGER, // 一帧文本不滚动：全部行都打出来
@@ -104,8 +109,13 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
   }
 
   const app = ink.render(
-    createElement(App, { load: () => load(limit), detailFor, first, home: home().sa, interval })
+    createElement(App, { load: () => load(limit), detailFor, first, home: home().sa, interval, view })
   );
   await app.waitUntilExit();
   return 0;
+}
+
+if (import.meta.main) {
+  try { process.exit(await board(process.argv.slice(2))); }
+  catch (e) { console.error(`superagent: ${(e as Error).message}`); process.exit(1); }
 }
