@@ -8,6 +8,8 @@ import { WETAMP, type Console } from './config';
 export interface Check {
   cmd: string;
   timeout_s: number;
+  /** 同一 tree/命令/环境下复用本 run 已通过的结果；只给不外写、不依赖时间或随机性的命令开（F-21）。 */
+  cache?: boolean;
 }
 export interface Pkg {
   id: string;
@@ -30,6 +32,7 @@ export interface Plan {
   base_ref: string;
   deadline: string;
   mode?: string;
+  concurrency?: number;
   console?: Console;
   environment?: Check[];
   caps?: Partial<Caps>;
@@ -104,8 +107,28 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
   }
   if (!existsSync(join(repo, '.git')))
     throw new Error(`plan invalid: repo ${repo} is not a git checkout`);
+  const gap = unsupported(data as Record<string, unknown> & Plan);
+  if (gap) throw new Error(`plan unsupported: ${gap}`);
   milestones({ ...plan, repo });
   return { ...plan, repo };
+}
+
+/**
+ * schema 接受但执行层兑现不了的字段：明确拒绝并说明能力，不静默忽略（F-17、A-05）。
+ * 字段保留在 schema 里，是为了让旧 plan 得到这条说明而不是笼统的 additionalProperties 报错。
+ */
+function unsupported(plan: Record<string, unknown> & Plan): string | null {
+  if (plan.mode?.startsWith('single:'))
+    return `/mode ${plan.mode}: single-vendor routing is not wired into node routing; use auto or strict`;
+  if ((plan.concurrency ?? 1) > 1)
+    return '/concurrency > 1: packages share one worktree and run serially in one DAG';
+  for (const p of plan.packages as (Pkg & Record<string, unknown>)[]) {
+    const field = ['accept_quick', 'fixture_exemptions'].find(k => k in p);
+    if (field) return `/packages/${p.id}/${field}: not consumed by the engine; remove it`;
+    if ('artifact_paths' in p.scope)
+      return `/packages/${p.id}/scope/artifact_paths: not consumed by the engine; remove it`;
+  }
+  return null;
 }
 
 /** 稳定 Kahn 排序：同层按 plan 中出现顺序。 */

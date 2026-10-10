@@ -76,8 +76,10 @@ describe('buildWorkflow', () => {
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('diff-m1-r1')?.with?.prev).toBeUndefined();
     expect(n('diff-m1-r2')?.with?.prev).toBe('$diff-m1-r1.output.diff_hash');
-    expect(n('review-m1-r1')?.when).toBeUndefined();
-    expect(n('review-m1-r2')?.when).toBe("$diff-m1-r2.output.same != 'true'");
+    expect(n('review-m1-r1')?.when).toBe("$diff-m1-r1.output.disposition == 'advance'");
+    expect(n('review-m1-r2')?.when).toBe(
+      "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'"
+    );
     expect(n('gate-m1-r2')).toMatchObject({
       depends_on: ['diff-m1-r2', 'review-m1-r2'],
       trigger_rule: 'none_failed_min_one_success',
