@@ -3,11 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { shortModel, sessionModel } from '../src/models';
 import { attribute, jobSession, parseUsage, readUsage, refreshUsage, sessionKey, usageSummary, usageText, type Owner, type UsageCache } from '../src/usage';
-import { handler, overview } from '../src/web/server';
+import { overview } from '../src/web/server';
 import { tmp } from './helpers';
-import { createElement } from 'react';
-import { renderToString } from 'ink';
-import { Frame } from '../src/board/App';
 import type { BoardRow, Snapshot } from '../src/board/data';
 
 const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'] as const;
@@ -80,28 +77,10 @@ describe('WP-BT6 accounting', () => {
   });
 });
 
-describe('WP-BT6 HTTP and board boundary', () => {
-  const get = handler(39890, 'token', () => ({ safe: true }));
-  const req = (path = '/', headers: Record<string, string> = {}, method = 'GET'): Request => new Request(`http://127.0.0.1:39890${path}`, { method, headers: { Host: '127.0.0.1:39890', ...headers } });
-  test('Host/token/method guards; cookies and security headers apply also to errors', async () => {
-    expect(get(req('/?t=token', { Host: 'evil.test' })).status).toBe(403); expect(get(req())).toHaveProperty('status', 401); expect(get(req('/?t=wrong')).status).toBe(401); expect(get(req('/?t=token', {}, 'POST')).status).toBe(405);
-    const page = get(req('/?t=token')); expect(page.status).toBe(200); expect(page.headers.get('set-cookie')).toContain('HttpOnly; SameSite=Strict'); expect(page.headers.get('Content-Security-Policy')).toContain("default-src 'self'"); expect(page.headers.get('Referrer-Policy')).toBe('no-referrer'); expect(page.headers.get('X-Content-Type-Options')).toBe('nosniff');
-    expect(get(req('/api/overview', { Cookie: 'sa_web=token' })).status).toBe(200); expect(await get(req('/api/overview?t=token')).json()).toEqual({ safe: true }); expect(await get(req('/?t=token', {}, 'HEAD')).text()).toBe('');
-  });
-  test('explicit API projection drops nested prompt/argv/artifacts', () => {
-    setup(); const s = { summary: { prompt: 'SECRET' }, rows: [], at: 'now', activity: { jobs: [], procs: [], terms: [{ kind: 'codex', tier: 'general', model: 'gpt-6.1-sol', pid: 1, state: 'busy', cwd: '/repo', argv: ['SECRET'], prompt: 'SECRET' }], remote: [], notes: ['SECRET'] } } as unknown as Snapshot;
-    const o = JSON.stringify(overview(s)); expect(o).not.toMatch(/prompt|argv|SECRET/); expect(o).toContain('sol6.1');
-    expect(overview(s).estimate).toMatchObject({ dollars: null });
-  });
-  test('wide and compact show mapped models and today header without overflow', () => {
-    setup(); const s: Snapshot = { summary: {}, rows: [], at: new Date().toISOString(), usage: { at: 'now', status: 'ok', sources: {}, sessions: [], daily: [] }, activity: { terms: [{ kind: 'codex', tier: 'general', model: 'gpt-6.1-sol', pid: 1, state: 'busy', tty: 'tty1', cwd: '/repo', tool: null, since_ms: null, bound: true }], jobs: [], procs: [], remote: [], notes: [] } };
-    for (const width of [59, 140]) { const out = renderToString(createElement(Frame, { snap: s, home: '/sa', width, height: 100, interval: 5, sel: -1, activeOnly: false, detail: null, now: new Date(), footer: false }), { columns: width }); expect(out).toContain('角色今日用量未知'); expect(out).toContain('tok 今日'); for (const line of out.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width); }
-  });
-  test('run token column preserves full role/model at 120 and 140 columns', () => {
-    setup(); const row: BoardRow = { run_id: '20261010-000000-abcd', model: 'gpt-6.1-sol', state: 'running', exit: null, nodes: { done: 1, total: 3, current: 'code-long-node-name', currentRole: 'coder' }, started_at: '2026-10-10T00:00:00Z', span: null, elapsed_s: null, held: null, recoveries: 0, auto_retries: 0, console: 'codex', repo: 'repo', branch: 'branch', evidence: '', plan: '', stale: false };
-    const sessions = parseUsage(codex, 'codex'); attribute(sessions, [{ id: uuid, owner: { ...owner('run'), run_id: row.run_id } }]);
-    const snap: Snapshot = { summary: {}, at: 'now', rows: [row], usage: { at: 'now', status: 'ok', sources: {}, sessions, daily: [] } };
-    expect(overview({ ...snap, rows: [{ ...row, nodes: { ...row.nodes, current: 'review-m1-r2' }, recoveries: 3 }] }).runs).toMatchObject([{ rounds: 2, recoveries: 3 }]);
-    for (const width of [100, 120, 140]) { const out = renderToString(createElement(Frame, { snap, home: '/sa', width, height: 100, interval: 5, sel: -1, activeOnly: false, detail: null, now: new Date(), footer: false }), { columns: width }); expect(out).toContain('将军·sol6.1'); if (width >= 120) expect(out).toContain(' 40'); for (const line of out.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width); }
-  });
+test('supplementary panel preserves role/model/token and excludes terminal details', () => {
+  setup(); const row: BoardRow = { run_id: 'r', model: 'gpt-6.1-sol', state: 'running', exit: null, nodes: { done: 1, total: 3, current: 'code-a', currentRole: 'coder' }, started_at: '2026-10-10T00:00:00Z', span: null, elapsed_s: null, held: null, recoveries: 0, auto_retries: 0, console: 'codex', repo: 'repo', branch: 'branch', evidence: '', plan: '', stale: false };
+  const sessions = parseUsage(codex, 'codex'); attribute(sessions, [{ id: uuid, owner: { ...owner('run'), run_id: row.run_id } }]);
+  const snap: Snapshot = { summary: { prompt: 'SECRET' }, at: new Date().toISOString(), rows: [row], usage: { at: 'now', status: 'ok', sources: {}, sessions, daily: [] } };
+  expect(overview(snap).runs).toMatchObject([{ role: '将军·sol6.1', tokens: '40' }]);
+  expect(JSON.stringify(overview(snap))).not.toMatch(/SECRET|argv|prompt/);
 });

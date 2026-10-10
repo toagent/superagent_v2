@@ -4,6 +4,7 @@ import type { RunView } from '../archon';
 import type { Ledger } from '../cli';
 import { home, writeAtomic } from '../config';
 import { workflowRoles } from './workflow';
+import type { Job } from '../jobs';
 import { buildRunNodeStates, type TerminalRecordEvent } from '../../../packages/workflows/src/terminal-record';
 import { readNodeRecordEvent } from '../../../packages/workflows/src/node-record-reader';
 
@@ -30,6 +31,15 @@ export function etaInput(ledger: Ledger, run: RunView, events: (TerminalRecordEv
 }
 const kind = (id: string): string => /^(code|verify|repair|settle|diff|review|fix|gate|land)(?:-|$)/.exec(id)?.[1] ?? 'other';
 const median = (xs: number[]): number => { const sorted = [...xs].sort((a, b) => a - b), i = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[i] : (sorted[i - 1] + sorted[i]) / 2; };
+export function jobProgress(job: Job, history: Job[], now: number): Progress {
+  if (!job.role) return unknownProgress();
+  const samples = history.filter(j => j.role === job.role && ['done', 'failed'].includes(j.state))
+    .map(j => (Date.parse(j.ended_at ?? '') - Date.parse(j.started_at)) / 1000).filter(s => Number.isFinite(s) && s > 0);
+  const spent = (now - Date.parse(job.started_at)) / 1000;
+  if (!samples.length || !Number.isFinite(spent)) return unknownProgress();
+  const expected = median(samples), elapsed = Math.max(0, spent);
+  return { pct: Math.min(100, Math.round(elapsed / expected * 100)), eta_s: Math.ceil(Math.max(0, expected - elapsed)), overrun_s: Math.ceil(Math.max(0, elapsed - expected)), basis: 'history' };
+}
 /** Time weights are measured durations, never node counts. Sparse classes use observed run throughput. */
 export function estimate(nodes: Nodes, samples: EtaInput['samples'], elapsed: number, now: number): Estimate {
   const history = new Map<string, number[]>();
@@ -55,11 +65,6 @@ export function estimate(nodes: Nodes, samples: EtaInput['samples'], elapsed: nu
     overrun = Math.max(overrun, spent - expected);
   });
   return { weight: total * scale, progress: { pct: Number.isFinite(remaining) ? Math.round(100 * worked / (total * scale)) : null, eta_s: Number.isFinite(remaining) ? Math.ceil(remaining - 1e-9) : null, overrun_s: Math.max(0, Math.ceil(overrun)), basis: Number.isFinite(remaining) ? linear ? 'linear' : 'history' : 'unknown' } };
-}
-export function totalProgress(xs: Estimate[]): Progress {
-  if (!xs.length || xs.some(x => x.progress.pct === null || x.progress.eta_s === null || x.weight <= 0)) return unknownProgress();
-  const weight = xs.reduce((n, x) => n + x.weight, 0);
-  return { pct: Math.round(xs.reduce((n, x) => n + (x.progress.pct ?? 0) * x.weight, 0) / weight), eta_s: Math.max(...xs.map(x => x.progress.eta_s ?? 0)), overrun_s: Math.max(...xs.map(x => x.progress.overrun_s)), basis: xs.some(x => x.progress.basis === 'linear') ? 'linear' : 'history' };
 }
 export function refreshEta(inputs: EtaInput[], now = Date.now()): void {
   const samples = inputs.filter(x => ['completed', 'failed', 'cancelled'].includes(x.run.status)).flatMap(x => x.samples), runs: Record<string, Estimate> = {};

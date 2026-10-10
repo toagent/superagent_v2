@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
-import { estimate, progressLabel, readEta, refreshEta, totalProgress, unknownProgress } from '../src/board/eta';
+import { estimate, progressLabel, readEta, refreshEta, unknownProgress } from '../src/board/eta';
 import { ProgressBar } from '../src/board/ProgressBar';
 import { tmp } from './helpers';
 import type { Ledger } from '../src/cli';
@@ -27,11 +27,6 @@ test('sparse samples extrapolate observed throughput; no observations or missing
   expect(estimate([{ nodeId: 'code-a', state: 'running' }], [], 10, now).progress).toEqual(unknownProgress());
   expect(progressLabel(unknownProgress())).toBe('?% 剩?');
   expect(estimate([{ nodeId: 'code-a', state: 'running' }], samples, 10, now).progress.basis).toBe('unknown');
-});
-test('total progress uses expected-time weights and parallel maximum ETA, unknown run remains visible', () => {
-  const a = { weight: 600, progress: { pct: 50, eta_s: 300, overrun_s: 0, basis: 'history' as const } }, b = { weight: 60, progress: { pct: 100, eta_s: 0, overrun_s: 0, basis: 'linear' as const } };
-  expect(totalProgress([a, b])).toEqual({ pct: 55, eta_s: 300, overrun_s: 0, basis: 'linear' });
-  expect(totalProgress([a, { weight: 0, progress: unknownProgress() }])).toEqual(unknownProgress());
 });
 test('overlaid Ink bar fills exact columns, text remains whole at 62/120 and narrow space falls back', () => {
   const progress = { pct: 47, eta_s: 720, overrun_s: 0, basis: 'history' as const };

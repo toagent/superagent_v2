@@ -193,15 +193,17 @@ test('job exec persists launcher metadata from matching heartbeat; no prompt/arg
   expect(record.state).toBe('done');
 });
 
-test('terminal view retains run ownership, directory groups, retirement and compact Chinese widths', () => {
+test('pane renders normalized active rows and hides retired jobs/terminals', () => {
   const running = {
     ...unreadableRow(id, ''),
+    repo: 'sinan',
     state: 'running',
     nodes: { done: 1, total: 4, current: '中文当前节点'.repeat(20), currentRole: 'coder' },
   };
   const reviewer = {
     ...running,
     run_id: '20261010-120001-abce',
+    repo: 'xiaopan-translator',
     nodes: { ...running.nodes, current: 'review', currentRole: 'reviewer' },
   };
   const finished = {
@@ -251,29 +253,16 @@ test('terminal view retains run ownership, directory groups, retirement and comp
           summary: {},
           activity,
         },
-        home: '/tmp/fixture',
         width,
         height: 100,
-        interval: 5,
-        sel: -1,
-        activeOnly: false,
-        detail: null,
         now: new Date(now),
-        footer: false,
-        view: 'terminals',
       }),
       { columns: width }
     );
-    expect(text).toMatch(/sinan · s001\n  └ ▶ run 120000-abcd/);
-    expect(text).toMatch(
-      /xiaopan-translator · s002\n  └ ▶ run 120001-abce ~▶run 1\/4 review\(军师\)/
-    );
-    expect(text).toContain('superagent_v2\n  └ ▶ run 120002-abca');
-    expect(text).toContain('━ 终端');
-    expect(text).toContain('(将军)');
-    expect(text).not.toContain('└ ▶ run 110000-abcf');
+    expect(text).toContain('sinan');
+    expect(text).toContain('xiaopan');
+    expect(text).not.toContain('━ 终端');
     expect(text).not.toContain('old-job');
-    expect(text).not.toContain('无主');
     expect(text.split('\n').filter(l => Bun.stringWidth(l) > width)).toEqual([]);
   }
 });

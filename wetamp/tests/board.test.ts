@@ -331,7 +331,7 @@ describe('time', () => {
     }
   });
 
-  test('running and held rows tick with the injected now; the frame re-renders elapsed from it', () => {
+  test('running and held rows tick with the injected now; the frame clock follows it', () => {
     const l = ledger('live', { status: 'running' });
     const run: RunView = {
       id: 'a-live',
@@ -348,20 +348,13 @@ describe('time', () => {
       renderToString(
         createElement(Frame, {
           snap: { summary: {}, rows: [row], at: '2026-10-10T00:00:45.000Z' },
-          home: '/h',
           width: 160,
           height: 20,
-          interval: 5,
-          sel: -1,
-          activeOnly: false,
-          detail: null,
           now: new Date(now),
-          footer: false,
         }),
         { columns: 160 }
       );
-    expect(text('2026-10-10T00:00:50Z')).toMatch(/ 50s /);
-    expect(text('2026-10-10T00:02:05Z')).toMatch(/ 2m05s /);
+    for (const instant of ['2026-10-10T00:00:50Z', '2026-10-10T00:02:05Z']) expect(text(instant)).toStartWith(`superagent ${fmtClock(at(instant), new Date(instant)).slice(0, 5)} · `);
   });
 
   test('fmtClock uses the process time zone: HH:MM:SS today, MM-DD HH:MM otherwise', () => {
@@ -574,7 +567,7 @@ describe('end to end', () => {
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
     expect(r.out).toContain('superagent');
-    expect(r.out).toContain('今日结果');
+    expect(r.out).toContain('无进行中任务');
     expect(r.out).not.toContain('remote');
   });
 
@@ -591,12 +584,6 @@ describe('end to end', () => {
     expect(j.rows.map(x => x.run_id)).toEqual(['sa1']);
     expect(j.selected.run_id).toBe('sa1');
     expect(cli(['--interval', '0']).code).toBe(64);
-  });
-
-  test('bin entry routes board --view without expanding the shared CLI parser', () => {
-    const run = (view: string): number => Bun.spawnSync(['bash', 'bin/superagent', 'board', '--view', view, '--once'], { cwd: WETAMP, env: { ...process.env }, stdout: 'ignore', stderr: 'ignore' }).exitCode;
-    expect(run('terminals')).toBe(0);
-    expect(run('invalid')).toBe(64);
   });
 });
 

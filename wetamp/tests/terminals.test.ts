@@ -13,7 +13,6 @@ import { join } from 'node:path';
 import { attach, psRows, rankOf } from '../src/board/activity';
 import { loadTiers } from '../src/config';
 import type { Job } from '../src/jobs';
-import { shortRemoteId } from '../src/board/App';
 import {
   bindLive,
   classify,
@@ -209,7 +208,7 @@ describe('interactive sessions from ps', () => {
     expect(t('/w/none')).toMatchObject({ state: 'unknown', bound: false });
   });
 
-  test('lsof rollout parsing and remote id shortening', () => {
+  test('lsof rollout parsing', () => {
     const out = [
       'p111',
       'fcwd',
@@ -223,8 +222,6 @@ describe('interactive sessions from ps', () => {
     expect(parseRollouts(out)).toEqual(
       new Map([[111, '/Users/u/.codex/sessions/2026/10/10/rollout-2026-10-10T12-00-00-abc.jsonl']])
     );
-    expect(shortRemoteId('20261010125744-a1b2c3')).toBe('125744-a1b2c3');
-    expect(shortRemoteId('job-abcdef1234567890')).toBe('job-abcdef123');
   });
 });
 

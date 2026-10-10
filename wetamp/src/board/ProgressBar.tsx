@@ -14,5 +14,5 @@ export function ProgressBar({ progress, width, prefix = '' }: { progress: Progre
   while (column < left) put(column < full ? '█' : '░');
   for (const ch of label) put(ch);
   while (column < inner) put(column < full ? '█' : '░');
-  return <Text>▕{cells.map((c, i) => <Text key={i} backgroundColor={c.full ? 'cyan' : '#303030'} color={c.full ? 'black' : 'white'}>{c.text}</Text>)}▏</Text>;
+  return <Text>▕{cells.map((c, i) => <Text key={i} color={c.full ? 'cyan' : undefined}>{c.text}</Text>)}▏</Text>;
 }
