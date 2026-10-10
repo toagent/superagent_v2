@@ -35,6 +35,7 @@ export function providerOf(model: string): Alias['provider'] {
 }
 
 export interface Tiers {
+  tiers: Record<string, { pools: Record<string, string[]> }>;
   routing: { coder: { models: string[] }; reviewer: { by_console: Record<Console, string[]> } };
   health: { vendor_concurrency: Record<string, number> };
   policy: {

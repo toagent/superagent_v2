@@ -14,6 +14,10 @@ import { home } from './config';
 import { newRunId } from './generate';
 
 export type Kind = 'claude' | 'codex' | 'opencode' | 'other';
+/** tiers.json 的档位键（元帅/将军/军师）；中文只在展示层。 */
+export const TIERS = ['commander', 'general', 'strategist'] as const;
+export type Tier = (typeof TIERS)[number];
+export const isTier = (v: unknown): v is Tier => TIERS.includes(v as Tier);
 export interface Job {
   id: string;
   title: string;
@@ -22,6 +26,7 @@ export interface Job {
   cwd: string;
   kind: Kind;
   model: string | null;
+  role?: Tier | null; // 旧记录没有
   wrapper_pid: number;
   pid: number;
   started_at: string;
@@ -32,7 +37,7 @@ export interface Job {
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--card <path>] [--log <path>] -- <cmd...> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--card <path>] [--log <path>] [--role commander|general|strategist] -- <cmd...> | jobs [--json] [--all]';
 const DAY_MS = 86_400_000;
 export const RECENT_MS = 3_600_000;
 
@@ -49,6 +54,11 @@ export function modelOf(argv: string[]): string | null {
   }
   return null;
 }
+
+const ENV_TIER: Partial<Record<string, Tier>> = { general: 'general', reviewer: 'strategist' };
+/** --role 缺省按派发环境：SUPERAGENT_ROLE=general 为将军、reviewer 为军师，其余不记。 */
+export const roleOf = (flag: Tier | undefined, env = process.env): Tier | null =>
+  flag ?? ENV_TIER[env.SUPERAGENT_ROLE ?? ''] ?? null;
 
 const dir = (): string => join(home().sa, 'jobs');
 
@@ -114,7 +124,7 @@ export const recent = (j: Job, now: number): boolean =>
  */
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; log?: string }
+  f: { title: string; card?: string; log?: string; role: Tier | null }
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
   const child = Bun.spawn(cmd, { stdio: ['inherit', 'inherit', 'inherit'] });
@@ -126,6 +136,7 @@ async function exec(
     cwd: process.cwd(),
     kind: kindOf(cmd[0]),
     model: modelOf(cmd.slice(1)),
+    role: f.role,
     wrapper_pid: process.pid,
     pid: child.pid,
     started_at: new Date().toISOString(),
@@ -174,14 +185,16 @@ export async function jobCli(argv: string[]): Promise<number> {
     else
       for (const j of shown)
         console.log(
-          `${j.id} ${j.state}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.title}`
+          `${j.id} ${j.state}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.role ?? '-'} ${j.title}`
         );
     for (const b of bad) console.error(`jobs: unreadable ${b}`);
     return bad.length ? 1 : 0;
   }
-  if (a._[1] !== 'exec' || a._.length !== 2 || !a.flags.title || !cmd.length) {
+  const { title, card, log, role } = a.flags;
+  const badRole = role !== undefined && !isTier(role);
+  if (a._[1] !== 'exec' || a._.length !== 2 || !title || !cmd.length || badRole) {
     console.error(USAGE);
     return EXIT_USAGE;
   }
-  return exec(cmd, { title: a.flags.title, card: a.flags.card, log: a.flags.log });
+  return exec(cmd, { title, card, log, role: roleOf(role) });
 }

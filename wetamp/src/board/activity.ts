@@ -4,8 +4,8 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { tail } from '../archon';
-import { home } from '../config';
-import { modelOf, readJobs, recent, type Job, type Kind } from '../jobs';
+import { home, loadTiers, type Tiers } from '../config';
+import { modelOf, readJobs, recent, type Job, type Kind, type Tier } from '../jobs';
 import * as term from './terminals';
 
 export interface Proc {
@@ -21,9 +21,14 @@ export interface Remote {
   host: string;
   agent: string;
 }
+export interface Owned {
+  tier: Tier | null;
+  guess: boolean; // tier 是按模型池推断的
+  owner: number | null; // 祖先终端会话的 pid（Term.pid）
+}
 export interface Activity {
-  jobs: Job[];
-  procs: Proc[];
+  jobs: (Job & Owned)[];
+  procs: (Proc & Owned)[];
   terms: term.Term[];
   remote: Remote[];
   notes: string[];
@@ -162,15 +167,56 @@ export function parseQueue(out: string): Remote[] {
     });
 }
 
-type Procs = Pick<Activity, 'procs' | 'terms'>;
-async function procsOf(now: number, wrappers: Set<number>, signal?: AbortSignal): Promise<Procs> {
+type Pools = Tiers['tiers'] | null;
+type Rank = Pick<Owned, 'tier' | 'guess'>;
+/** 显式角色原样用；否则模型只落在将军/军师之一的池里时推断为该档，两边都有或都没有为 null。 */
+export function rankOf(role: Tier | null | undefined, model: string | null, pools: Pools): Rank {
+  if (role) return { tier: role, guess: false };
+  const hit = (['general', 'strategist'] as const).filter(t =>
+    Object.values(pools?.[t]?.pools ?? {}).some(ms => model !== null && ms.includes(model))
+  );
+  return hit.length === 1 ? { tier: hit[0], guess: true } : { tier: null, guess: false };
+}
+
+// 心跳先归到最近的锚点（会话/作业/进程）：派生会话的心跳归它的作业或进程，不会顶替祖先元帅会话的心跳。
+// 作业角色取 --role，其次心跳 role，最后按模型池推断；owner 从 wrapper（已退出则作业 pid）沿 ppid 找会话。
+export function attach(
+  rows: term.Rows,
+  sessions: term.Session[],
+  jobs: Job[],
+  procs: Proc[],
+  lives: term.Live[],
+  pools: Pools
+): Pick<Activity, 'jobs' | 'procs'> & { bound: Map<object, term.Live> } {
+  const leaders = new Map(sessions.flatMap(s => s.pids.map(p => [p, s.pids[0]] as const)));
+  const anchors = new Map<number, object>([
+    ...sessions.flatMap(s => s.pids.map(p => [p, s] as const)),
+    ...jobs.flatMap(j => [[j.wrapper_pid, j] as const, [j.pid, j] as const]),
+    ...procs.map(p => [p.pid, p] as const),
+  ]);
+  const bound = term.bindLive(anchors, lives, rows);
+  const own = (x: Job | Proc, role: Tier | null | undefined, ...pids: number[]): Owned => ({
+    ...rankOf(role ?? bound.get(x)?.role, x.model, pools),
+    owner: pids.map(p => term.up(leaders, p, rows)).find(o => o !== undefined) ?? null,
+  });
+  return {
+    bound,
+    jobs: jobs.map(j => ({ ...j, ...own(j, j.role, j.wrapper_pid, j.pid) })),
+    procs: procs.map(p => ({ ...p, ...own(p, null, p.pid) })),
+  };
+}
+
+type Procs = Pick<Activity, 'jobs' | 'procs' | 'terms'>;
+async function scan(now: number, jobs: Job[], pools: Pools, signal?: AbortSignal): Promise<Procs> {
   const t0 = Date.now();
   const ps = await capture(['ps', '-axo', PS_FIELDS], SOURCE_TIMEOUT_MS, signal);
   if (ps.code !== 0) throw new Error(`ps exited ${String(ps.code)}`);
   const rows = psRows(ps.out);
+  const wrappers = new Set(jobs.filter(j => j.state === 'running').map(j => j.wrapper_pid));
   const procs = parsePs(rows, now, wrappers);
   const sessions = term.findSessions(rows);
-  const bound = term.bindLive(sessions, term.readLive(join(home().sa, 'live'), now), rows);
+  const lives = term.readLive(join(home().sa, 'live'), now);
+  const own = attach(rows, sessions, jobs, procs, lives, pools);
   // 一次 lsof 取全部 fd：cwd，以及 codex 握着的 rollout（只在回合中写入时打开）。
   // 已退出的 pid 让 lsof 返回 1，其余照常输出：只看输出；与 ps 共用 3s 额度
   const pids = [...procs.map(p => p.pid), ...sessions.flatMap(s => s.pids)].slice(0, CWD_MAX);
@@ -180,8 +226,9 @@ async function procsOf(now: number, wrappers: Set<number>, signal?: AbortSignal)
     : '';
   const cwd = parseLsof(out);
   return {
-    procs: procs.map(p => ({ ...p, cwd: cwd.get(p.pid) ?? null })),
-    terms: term.settle(sessions, bound, cwd, term.parseRollouts(out), now),
+    jobs: own.jobs,
+    procs: own.procs.map(p => ({ ...p, cwd: cwd.get(p.pid) ?? null })),
+    terms: term.settle(sessions, own.bound, cwd, term.parseRollouts(out), now),
   };
 }
 
@@ -200,21 +247,25 @@ export async function loadActivity(now: number, signal?: AbortSignal): Promise<A
     notes.push(`${src}: ${tail((e as Error).message, 120)}`);
   };
   let jobs: Job[] = [];
-  const wrappers = new Set<number>();
   try {
     const r = readJobs(now);
-    jobs = r.jobs.filter(j => recent(j, now));
-    for (const j of r.jobs) if (j.state === 'running') wrappers.add(j.wrapper_pid);
+    jobs = r.jobs.filter(j => recent(j, now)); // 运行中的都算 recent：scan 从这里认 wrapper
     for (const b of r.bad) note('jobs', new Error(b));
   } catch (e) {
     note('jobs', e);
   }
-  const [{ procs, terms }, remote] = await Promise.all([
-    procsOf(now, wrappers, signal).catch((e: unknown) => {
+  let pools: Pools = null;
+  try {
+    pools = loadTiers().tiers;
+  } catch (e) {
+    note('tiers', e); // 只影响角色推断：显式角色照常
+  }
+  const [act, remote] = await Promise.all([
+    scan(now, jobs, pools, signal).catch((e: unknown): Procs => {
       note('procs', e);
-      return { procs: [], terms: [] };
+      return { jobs: attach(new Map(), [], jobs, [], [], pools).jobs, procs: [], terms: [] };
     }),
     remoteOf(signal).catch(() => []), // 远端不可达不是看板的问题：静默省略
   ]);
-  return { jobs, procs, terms, remote, notes };
+  return { ...act, remote, notes };
 }

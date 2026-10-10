@@ -2,7 +2,8 @@
 import { basename } from 'node:path';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import type { Activity } from './activity';
+import { TIERS, type Tier } from '../jobs';
+import type { Activity, Owned } from './activity';
 import type { Term } from './terminals';
 import { bar, elapsedAt, fmtClock, fmtElapsed, type BoardRow, type Snapshot } from './data';
 import { detailLines, type Detail } from './detail';
@@ -17,9 +18,21 @@ const COLOR: Record<string, string> = {
 };
 const colorOf = (s: string): string => (s.startsWith('held:') ? 'yellow' : (COLOR[s] ?? 'white'));
 const ACTIVE = (r: BoardRow): boolean => r.state === 'running' || r.state.startsWith('held:');
-const pad = (s: string, n: number): string =>
-  s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n);
+/** 按显示宽度截断/补齐到 n 列（中文等宽字符算 2 列）。 */
+function pad(s: string, n: number): string {
+  const w = Bun.stringWidth;
+  let out = s;
+  const chars = Array.from(s);
+  for (let k = chars.length; w(out) > n && k > 0; k--) out = `${chars.slice(0, k - 1).join('')}…`;
+  return out + ' '.repeat(Math.max(0, n - w(out)));
+}
 const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
+// 四档的英文键只在这里译成中文；run 节点按工作流角色：确定性节点归引擎，wait 门归人工
+const TIER_ZH: Record<Tier, string> = { commander: '元帅', general: '将军', strategist: '军师' };
+const NODE_ZH: Partial<Record<string, string>> = { coder: '将军', reviewer: '军师', script: '引擎', human: '人工' };
+const tierTag = (o: Pick<Owned, 'tier' | 'guess'>): string =>
+  o.tier ? `${TIER_ZH[o.tier]}${o.guess ? '?' : ''}` : '?';
+const nodeRole = (r: BoardRow): string => NODE_ZH[r.nodes.currentRole ?? ''] ?? '?';
 
 function reason(r: BoardRow): string {
   if (r.state === 'unreadable') return r.error ?? '';
@@ -107,7 +120,7 @@ function CompactRow({
       </Text>
       {r.nodes.current && (sel || r.state === 'running') ? (
         <Text dimColor wrap="truncate">
-          {`  cur: ${r.nodes.current} · ${r.nodes.currentRole ?? '?'}`}
+          {`  cur: ${r.nodes.current} · ${nodeRole(r)}`}
         </Text>
       ) : null}
     </Box>
@@ -139,39 +152,54 @@ function termText(t: Term, now: number): string {
         ? `${t.since_ms !== null && now - t.since_ms > IDLE_MS ? '空闲' : '等待输入'}${dur}`
         : '未知?';
   const dir = t.cwd ? pad(basename(t.cwd), 20).trimEnd() : '?';
-  return `${t.state === 'busy' ? '●' : '○'} ${t.kind} ${state} · ${dir} · ${t.tty.replace(/^tty/, '')}`;
+  return `${t.state === 'busy' ? '●' : '○'} ${TIER_ZH[t.tier]} ${t.kind} ${state} · ${dir} · ${t.tty.replace(/^tty/, '')}`;
 }
 
-/** 活动区：终端会话、登记作业、未登记的无头 AI 进程、远端队列各一行；不含 prompt/argv（来源本就没有）。 */
-function activityLines(a: Activity, now: number): { text: string; color?: string }[] {
+interface Line {
+  text: string;
+  color?: string;
+}
+/**
+ * 活动区：每个终端会话下缩进挂它 ppid 链上的作业与无头进程；挂不上的（父会话已退出、run 节点之外的后台进程）
+ * 与远端队列归“无主”组。不含 prompt/argv（来源本就没有）；紧凑布局省掉模型名。
+ */
+function activityLines(a: Activity, now: number, compact: boolean): Line[] {
   const since = (ms: number, end = now): string =>
     fmtElapsed(Math.max(0, Math.floor((end - ms) / 1000)));
-  const model = (m: string | null): string => (m ? ` ${m}` : '');
-  return [
-    ...a.terms.map(t => ({
-      text: termText(t, now),
-      color: t.state === 'busy' ? 'green' : t.state === 'idle' ? 'white' : 'gray',
-    })),
-    ...a.jobs.map(j => {
-      const [mark, color] = JOB_MARK[j.state];
-      const end = j.ended_at ? Date.parse(j.ended_at) : now;
-      const how =
-        j.state === 'running' || j.state === 'lost'
-          ? ''
-          : ` ${j.signal ?? `exit ${String(j.exit_code)}`}`;
-      return {
-        text: `${mark} job ${since(Date.parse(j.started_at), end)}${how} ${j.kind}${model(j.model)} · ${j.title}`,
-        color,
-      };
-    }),
-    ...a.procs.map(p => ({
-      text: `▶ proc ${since(p.started_ms)} ${p.kind}${model(p.model)} · ${p.cwd ? basename(p.cwd) : '?'} pid ${String(p.pid)}`,
-      color: 'blue',
-    })),
+  const model = (m: string | null): string => (m && !compact ? ` ${m}` : '');
+  const job = (j: Activity['jobs'][number]): Line => {
+    const [mark, color] = JOB_MARK[j.state];
+    const end = j.ended_at ? Date.parse(j.ended_at) : now;
+    const how =
+      j.state === 'running' || j.state === 'lost' ? '' : ` ${j.signal ?? `exit ${String(j.exit_code)}`}`;
+    return {
+      text: `${mark} ${tierTag(j)} job ${since(Date.parse(j.started_at), end)}${how} ${j.kind}${model(j.model)} · ${j.title}`,
+      color,
+    };
+  };
+  const proc = (p: Activity['procs'][number]): Line => ({
+    text: `▶ ${tierTag(p)} proc ${since(p.started_ms)} ${p.kind}${model(p.model)} · ${p.cwd ? basename(p.cwd) : '?'} pid ${String(p.pid)}`,
+    color: 'blue',
+  });
+  const under = (owner: number | null): Line[] => [
+    ...a.jobs.filter(j => j.owner === owner).map(job),
+    ...a.procs.filter(p => p.owner === owner).map(proc),
+  ];
+  const sub = (l: Line): Line => ({ ...l, text: `  └ ${l.text}` });
+  // owner 只会是某个终端的 pid（同一次 ps 的会话）：挂不上的就是 null
+  const orphans = [
+    ...under(null),
     ...a.remote.map(r => ({
       text: `◆ remote ${r.host} ${r.agent} ${shortRemoteId(r.id)} ${r.state}`,
       color: 'magenta',
     })),
+  ];
+  return [
+    ...a.terms.flatMap(t => [
+      { text: termText(t, now), color: t.state === 'busy' ? 'green' : t.state === 'idle' ? 'white' : 'gray' },
+      ...under(t.pid).map(sub),
+    ]),
+    ...(orphans.length ? [{ text: '无主' }, ...orphans.map(sub)] : []),
     ...a.notes.map(n => ({ text: `! ${n}` })),
   ];
 }
@@ -211,7 +239,9 @@ function Row({
   now: number;
 }): ReactElement {
   const { w } = lay;
-  const current = r.nodes.current ? `${r.nodes.current}(${r.nodes.currentRole ?? '?'})` : '-';
+  const role = `(${nodeRole(r)})`; // 角色后缀总要留下：只截节点名（cell 自身另占 1 格分隔）
+  const room = Math.max(1, lay.current - 1 - Bun.stringWidth(role));
+  const current = r.nodes.current ? `${pad(r.nodes.current, room).trimEnd()}${role}` : '-';
   const nodes = !r.nodes.total
     ? '-'
     : lay.wide
@@ -272,12 +302,13 @@ export function Frame(p: FrameProps): ReactElement {
     [`[cancelled ${String(count(r => r.state === 'cancelled'))}]`, 'gray'],
   ];
   const s = p.snap.summary;
-  const busyJobs = act ? act.jobs.filter(j => j.state === 'running').length + act.procs.length : 0;
-  const busyTerms = act ? act.terms.filter(t => t.state === 'busy').length : 0;
+  // 各档运行中的数目：执行中的终端 + 运行中的作业 + 无头进程（推断的也算）
+  const busy = act
+    ? [...act.terms.filter(t => t.state === 'busy'), ...act.jobs.filter(j => j.state === 'running'), ...act.procs]
+    : [];
   if (act)
     chips.push(
-      [`[active ${String(busyTerms)}/${String(act.terms.length)}]`, 'green'],
-      [`[jobs ${String(busyJobs)}]`, 'cyan'],
+      ...TIERS.map((k): [string, string] => [`[${TIER_ZH[k]} ${String(busy.filter(x => x.tier === k).length)}]`, 'green']),
       [`[remote ${String(act.remote.length)}]`, 'magenta']
     );
   chips.push(
@@ -287,8 +318,8 @@ export function Frame(p: FrameProps): ReactElement {
     [`· last ${fmtClock(p.snap.at, now)}`, '']
   );
   if (p.activeOnly) chips.push(['· active only', '']);
-  const alines = act ? activityLines(act, now) : [];
-  if (act && !busyJobs && !busyTerms && !act.remote.length && !p.snap.rows.some(ACTIVE))
+  const alines = act ? activityLines(act, now, lay.compact) : [];
+  if (act && !busy.length && !act.remote.length && !p.snap.rows.some(ACTIVE))
     alines.push({ text: `空闲 · 无运行中的 run/作业 · 刷新 ${fmtClock(p.snap.at, now)}` });
   const d = p.detail;
   const dlines = d
