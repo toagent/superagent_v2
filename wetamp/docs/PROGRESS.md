@@ -79,3 +79,29 @@
 - 验收：`check-upstream-clean.sh` 输出为空；`bun test` 140/140；`tsc --noEmit` 无错误；仓库根 `bun run lint` rc=0（该脚本不覆盖 wetamp/）；`selftest.sh --fake` ok；零真实模型调用。
 - 预算：TS 1851/2000（−33）、shell 304/400（+27，selftest.sh）、文件 26/28。src+scripts 合计 +112/−118；含测试与文档共 +314/−295。
 - 未做项：01/03 规划与对照矩阵文档未改；flock 只在 darwin 实测，linux 路径（libc.so.6、`__errno_location`、EWOULDBLOCK=11）未实测；hook 的“请军师评审”提示按卡片要求忽略。
+
+## WP-B 摘要
+
+- 提交（分支 `wetamp`，未 push）：hooks 44394798；exec_profiles 449d57b5；install 5d05d4dd；docs 为本摘要所在提交（`wetamp(cutover): docs`）。
+- §1 hooks：`wetamp/hooks/{guard,context-budget,dispatch-context,micro-edit,shell}.cjs`，策略读 `tiers.json` 的 `policy`；派生判定 4 条（`SUPERAGENT_ROLE`、`AI_DISPATCH_ROLE/TWIN_AGENT_REMOTE`、`archon/workspaces` 下的 cwd、Codex 将军池模型）。
+- §2 exec_profiles：`bin/codex-worker`（`-c features.multi_agent=false` + 关闭沙箱清单外 MCP，只读 config.toml 表头）；`tiers.json` 的 `policy.exec_profiles`；`src/generate.ts` 给 claude 别名的 prompt 节点写 `denied_tools`；`src/archon.ts` 给 detached run/resume 注入 `SUPERAGENT_ROLE=worker`；`src/config.ts`、`src/cli.ts` 随之调整。
+- §3 install：`src/install-hooks.ts`；`scripts/install.sh` 增 `--hooks`/`--purge-v1`（带 `--dry-run`）/`--remote-hooks`，写 `assistants.codex.codexBinaryPath`；`scripts/selftest.sh` 增 hooks 段。
+- §4 agent-supervisor（非 git 仓库，只改文件）：删 `scripts/sv_superagent.py`、`tests/test_superagent_signoff.py`；改 `supervisor.py`、`sv_ask.py`、`sv_notify.py`、`SKILL.md`、`tests/test_wal_breaker.py`、`tests/test_decisions.py`（新增 `test_legacy_v1_signoff_state_is_ignored`）。备份：`~/.superagent/backups/agent-supervisor-20261010T010741Z`。
+- §5 twin-toolkit（非 git）：superagent 维度改指 `superagent_v2`，安装命令改为 `install.sh --remote-hooks`，回执 schema 2 校验 `install.json`（`installer:"superagent_v2"`、wetamp realpath、commit、guard/context-budget 存在、tiers 含 policy）。备份：`~/.lan-dev-machine/backups/twin-toolkit.20261010T011559Z`。
+- §6 文档：`00-architecture.md` 实现记录、`03-parity-matrix.md` A 表 4 行、新建 `04-hooks-and-nesting.md`（61 行）。
+- 测试（新增）：`tests/hooks.test.ts` 10 条（G-1 31/29 行与 ALLOW、会话累计、N-1 三种派生、Codex 模型判定、元帅 Agent 放行与 G-2、git push/reset --hard、删除拦截与 reviewer 只读、stop_gate=off、三档阈值、第 16 次调用提醒）；`tests/exec-profiles.test.ts` 2 条（codex-worker 参数、detached 进程带 worker 角色）；`generate.test.ts`「claude nodes deny nested agents…」；`install.test.ts` 的 `--hooks`、`--purge-v1 --dry-run`、`--remote-hooks` 三条。
+- 验收：`check-upstream-clean.sh` 输出为空；`tsc --noEmit` rc=0；`bun test` 156/156；仓库根 `bun run lint` rc=0；临时 home 下 install ok，含 codexBinaryPath；`selftest.sh --fake` ok，含 `hooks:{g1_commander_31_lines:deny,n1_worker_agent:deny}`；codex-worker trace 含 `-c features.multi_agent=false` 和 6 个 `mcp_servers.*.enabled=false`。
+- dry-run（只读）：`--hooks --dry-run` diff 112 行；`--purge-v1 --dry-run` 输出 348 行，将移走 5 个 managed 子代理以及 V1 的 releases/state/checkout 三个目录。
+- agent-supervisor 测试：失败集合与改动前基线一致（28 failure / 2 error，均为既有问题：test_wp5 中 ai-toolkit/twin-toolkit 相关、TasksSh 的 hook_fn/patch_idempotent、wal_breaker 中 ordinary breaker 被其他测试污染，单独跑能通过）。
+- twin-dev 只读探测：superagent 维度 kind=missing，V1 回执 commit 为 8334446e；未 align。
+- 预算：TS 2106/2600、shell 397/700、hooks cjs 499/1400、文件 33/40。
+- 未做项与风险：
+  - 真实 `--hooks`/`--purge-v1` 写入、twin-dev align、launchd 都留给元帅执行。
+  - 第一段验收时默认 install 没设 `SA_LAUNCHD_DIR`，改写了真实的 `~/Library/LaunchAgents/com.wetamp.superagent.supervise-tick.plist`。已用 install 生成的 `.bak-20261010090540` 还原，未执行 launchctl。
+  - codex 从 0.160.0 漂移到 0.162.1，`features.multi_agent` 键若改名不会报错。
+  - 删除拦截只认字面路径。
+  - G-1 不计 shell 写文件和 `*.md`。
+  - Archon 评审节点也用 240K 阈值。
+  - `exclude_user_instructions` 在 Archon 中没有对应字段。
+  - `install.json` 与 V1 台账同位置。
+  - 额外试跑 `selftest.sh --repo <只有空提交的临时仓库> --fake` 失败：archon detached 子进程启动时退出 1；selftest 被 `set -e` 截断，没打印 fail 信息。未深究，卡片要求的 `--fake` 默认用法已通过。
