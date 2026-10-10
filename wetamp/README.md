@@ -6,7 +6,7 @@ Archon 之上的 superagent 胶水层：把 `plan.json` 编译成 Archon 工作�
 
 ## 安装
 
-前提：`bun`、`git`、`jq`、`sqlite3`，以及在仓库根执行过 `bun install`（wetamp 不另装依赖）。
+前提：`bun`、`git`、`jq`、`sqlite3`，以及在仓库根执行过 `bun install`。`install.sh` 另在 `wetamp/` 里按 `wetamp/bun.lock` 装 board 用的 ink/react（失败只警告，其余动词不依赖它们）。
 
 ```bash
 wetamp/scripts/install.sh          # 幂等：写 $ARCHON_HOME/.env 与 config.yaml 的别名段（先备份），渲染 launchd plist，末尾跑 archon doctor
@@ -30,6 +30,7 @@ superagent run plan.json                 # 立即返回 {run_id, archon_run_id, 
 superagent wait <run> --timeout 3000     # 阻塞到终态或需要处理；owner 丢失会自动 recover 后续等
 superagent brief <run>                   # ≤20 行接手摘要：状态、各轮 gate 结论、评审债、恢复次数
 superagent land <run>                    # 打印本地合入命令（switch + merge）；由人执行，从不 push
+superagent board                         # 终端看板（Ink）：全部 run 的状态/进度/held 原因，Enter 看详情；--once 打一帧，--json 出数据
 ```
 
 所有命令输出 JSON（`--json` 可加可不加）。退出码：0 completed、1 failed、2 cancelled、3 held（待决策）、4 running、

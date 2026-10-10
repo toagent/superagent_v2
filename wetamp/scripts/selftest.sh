@@ -132,6 +132,13 @@ SIGNAL_MS=$(( $(ms) - T1 ))
 TRACE="$(get | field 'd?.output_root')/artifacts/runs/$ID/trace.txt"
 [ "$(grep -c '^start' "$TRACE")" = 1 ] || fail "start node re-ran after recover"
 grep -q 'event=sa.human.smoke' "$TRACE" || fail "finish node missing"
+# board：smoke run 由 archon 直接拉起、没有 ledger，补一个最小 ledger 后 board --json 必须列出它且判为 completed
+printf '{"run_id":"selftest-smoke","archon_run_id":"%s","plan":"plan.json","gen_dir":"%s","repo":"%s","branch":"%s","workflow":"sa-smoke","console":"claude","started_at":"%s","transcript":"","log":"","recoveries":[]}\n' \
+  "$ID" "$GEN" "$REPO" "$BR" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$TMPH/runs/selftest-smoke.json"
+B="$("$WETAMP/bin/superagent" board --once --json 2>&1)" || fail "board --once --json: $B"
+BOARD_ROWS="$(echo "$B" | field 'd?.rows?.length')"
+[ "${BOARD_ROWS:-0}" -ge 1 ] || fail "board: no rows: $B"
+[ "$(echo "$B" | field "d?.rows?.find((r) => r.run_id === 'selftest-smoke')?.state")" = completed ] || fail "board: smoke run missing: $B"
 ID=""
 
 BR2="sa/selftest-abandon-$(date +%s)"
@@ -147,6 +154,6 @@ ABANDON_MS=$(( $(ms) - T2 ))
 ID=""
 
 mkdir -p "$REAL_HOME"
-printf '{"ok":true,"at":"%s","fake":%s,"rss_kb":%s,"recover_ms":%s,"signal_ms":%s,"abandon_ms":%s,"hooks":{"g1_commander_31_lines":"deny","n1_worker_agent":"deny"},"upstream":"%s"}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAKE" = 1 ] && echo true || echo false)" "$RSS_KB" "$RECOVER_MS" "$SIGNAL_MS" "$ABANDON_MS" \
+printf '{"ok":true,"at":"%s","fake":%s,"rss_kb":%s,"recover_ms":%s,"signal_ms":%s,"abandon_ms":%s,"board":{"rows":%s,"run_id":"selftest-smoke"},"hooks":{"g1_commander_31_lines":"deny","n1_worker_agent":"deny"},"upstream":"%s"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([ "$FAKE" = 1 ] && echo true || echo false)" "$RSS_KB" "$RECOVER_MS" "$SIGNAL_MS" "$ABANDON_MS" "$BOARD_ROWS" \
   "$(head -1 "$WETAMP/UPSTREAM")" | tee "$REAL_HOME/selftest.json"
