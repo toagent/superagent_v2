@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
-import { archon, tail } from './archon';
+import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
 import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
 
@@ -256,6 +256,14 @@ export function buildWorkflow(
           { output_format: outputSchema('accept') }
         )
       );
+      const reviewAttempt = `attempt-review-${t}`;
+      nodes.push({
+        id: reviewAttempt,
+        always_run: true,
+        depends_on: [`diff-${t}`],
+        bash: `printf '{"attempt":"%s"}' "$(cat '${join(gen, 'attempts', `review-${t}`)}' 2>/dev/null || echo 0)"`,
+        output_format: outputSchema('attempt'),
+      });
       nodes.push({
         id: `review-${t}`,
         // 验收未 advance 不烧评审调用；修复无变化（same）同样跳过，gate 直接 escalate
@@ -287,7 +295,7 @@ export function buildWorkflow(
                   : { diff: `$diff-${t}.output.patch` }),
               },
             }),
-        depends_on: [`diff-${t}`],
+        depends_on: [`diff-${t}`, reviewAttempt],
         mutates_checkout: false,
         output_format: outputSchema('reviewer'),
       });
@@ -440,7 +448,12 @@ export function renderBrief(p: Pkg, hint: string, caps: Caps): string {
 
 const git = (cwd: string, ...args: string[]): void => {
   const id = ['-c', 'user.name=superagent', '-c', 'user.email=superagent@localhost'];
-  const p = Bun.spawnSync(['git', ...id, ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const p = Bun.spawnSync(['git', ...id, ...args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: QUERY_TIMEOUT_MS,
+  });
   if (p.exitCode !== 0) throw new Error(`git ${args[0]} in ${cwd}: ${tail(p.stderr.toString())}`);
 };
 
@@ -492,7 +505,7 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     join(dir, READONLY_MCP),
     readOnlyMcp(loadTiers().policy.exec_profiles.reviewer.codex_readonly_marker)
   );
-  writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n');
+  writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\nbudget-extra\n');
   const config = join(dir, 'run-config.yaml');
   writeFileSync(config, YAML.stringify({ aliases: runAliases(plan.console ?? 'claude') }, {}));
   git(dir, 'init', '-q');

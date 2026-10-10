@@ -433,11 +433,24 @@ nodes:
         - delta
         - risk
         - out_of_scope
+  - id: attempt-review-m1-r1
+    always_run: true
+    depends_on:
+      - diff-m1-r1
+    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m1-r1' 2>/dev/null || echo 0)"
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: review-m1-r1
     when: $diff-m1-r1.output.disposition == 'advance'
     bash: echo '{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r1
+      - attempt-review-m1-r1
     mutates_checkout: false
     output_format:
       type: object
@@ -703,11 +716,24 @@ nodes:
         - delta
         - risk
         - out_of_scope
+  - id: attempt-review-m1-r2
+    always_run: true
+    depends_on:
+      - diff-m1-r2
+    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m1-r2' 2>/dev/null || echo 0)"
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: review-m1-r2
     when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r2
+      - attempt-review-m1-r2
     mutates_checkout: false
     output_format:
       type: object
@@ -977,11 +1003,24 @@ nodes:
         - delta
         - risk
         - out_of_scope
+  - id: attempt-review-m1-r3
+    always_run: true
+    depends_on:
+      - diff-m1-r3
+    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m1-r3' 2>/dev/null || echo 0)"
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: review-m1-r3
     when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r3
+      - attempt-review-m1-r3
     mutates_checkout: false
     output_format:
       type: object
@@ -1518,11 +1557,24 @@ nodes:
         - delta
         - risk
         - out_of_scope
+  - id: attempt-review-m2-r1
+    always_run: true
+    depends_on:
+      - diff-m2-r1
+    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m2-r1' 2>/dev/null || echo 0)"
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: review-m2-r1
     when: $diff-m2-r1.output.disposition == 'advance'
     bash: echo '{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r1
+      - attempt-review-m2-r1
     mutates_checkout: false
     output_format:
       type: object
@@ -1787,11 +1839,24 @@ nodes:
         - delta
         - risk
         - out_of_scope
+  - id: attempt-review-m2-r2
+    always_run: true
+    depends_on:
+      - diff-m2-r2
+    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m2-r2' 2>/dev/null || echo 0)"
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: review-m2-r2
     when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r2
+      - attempt-review-m2-r2
     mutates_checkout: false
     output_format:
       type: object
@@ -2060,11 +2125,24 @@ nodes:
         - delta
         - risk
         - out_of_scope
+  - id: attempt-review-m2-r3
+    always_run: true
+    depends_on:
+      - diff-m2-r3
+    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m2-r3' 2>/dev/null || echo 0)"
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
   - id: review-m2-r3
     when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r3
+      - attempt-review-m2-r3
     mutates_checkout: false
     output_format:
       type: object

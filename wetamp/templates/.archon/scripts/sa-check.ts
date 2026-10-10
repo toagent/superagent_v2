@@ -301,7 +301,8 @@ function settle(): void {
   if (!repaired || repaired === 'null') {
     if (first.disposition !== 'advance')
       throw new Error(`${tag}: repair skipped but verify did not advance`);
-    return finish(tag, first);
+    finish(tag, first);
+    return;
   }
   const out = acceptOnce(tag, repaired);
   if (out.disposition === 'repair')
@@ -379,6 +380,7 @@ export function ledgerOf(reviews: (Review | null)[], risk: string): Ledger {
       if (closes(r, id)) {
         open.delete(id);
         const { blocks: _, ...entry } = e;
+        void _;
         const ev = r.findings.find(f => f.id === id)?.evidence ?? '';
         closed.push({ ...entry, evidence: ev, closed_round: i + 1 });
       }
@@ -399,7 +401,12 @@ export function ledgerOf(reviews: (Review | null)[], risk: string): Ledger {
     base = false;
   });
   const strip = (b: boolean): Entry[] =>
-    [...open.values()].filter(e => e.blocks === b).map(({ blocks: _, ...e }) => e);
+    [...open.values()]
+      .filter(e => e.blocks === b)
+      .map(({ blocks: _, ...e }) => {
+        void _;
+        return e;
+      });
   return { blocking: strip(true), debt: strip(false), closed };
 }
 
@@ -476,7 +483,9 @@ interface RunEvent {
   step_name?: string;
   data?: {
     binding?: Binding;
-    spend?: { tokens?: { source: string; value?: Record<string, number> } };
+    spend?: {
+      tokens?: { source: string; value?: { input: number; output: number; cacheRead?: number } };
+    };
   };
 }
 let events: RunEvent[] | undefined;
@@ -516,15 +525,11 @@ const AI_NODE = /^(code|repair|fix|review)-/;
  * 已知用量（input − cacheRead + output，cacheRead 未报按 0 记，取上界）。缺回执的调用不当 0：
  * 每个按本 run 已知单次最大值（无已知时按 budget_floor.S）预留。超限返回稳定 reason。
  */
-function budget(): string | null {
-  if (!env('ARCHON')) return null;
-  const b = plan().budget;
-  const ev = runEvents().filter(e => AI_NODE.test(e.step_name ?? ''));
-  if (
-    b.launches !== undefined &&
-    ev.filter(e => e.event_type === 'node_started').length >= b.launches
-  )
-    return 'budget_launches_exceeded';
+export function budgetUsage(
+  events: RunEvent[],
+  floor: number
+): { launches: number; weighted_tokens: number; reserve: number } {
+  const ev = events.filter(e => AI_NODE.test(e.step_name ?? ''));
   const used = ev
     .filter(e => e.event_type === 'node_completed' || e.event_type === 'node_failed')
     .map(e => e.data?.spend?.tokens)
@@ -534,12 +539,52 @@ function budget(): string | null {
         : null
     );
   const known = used.filter((n): n is number => n !== null);
-  const reserve = Math.max(0, ...known) || policy().budget_floor.S;
+  const reserve = Math.max(0, ...known) || floor;
   const total = known.reduce((a, n) => a + n, 0) + (used.length - known.length) * reserve;
-  return total > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
+  return {
+    launches: ev.filter(e => e.event_type === 'node_started').length,
+    weighted_tokens: total,
+    reserve,
+  };
+}
+function budget(): string | null {
+  if (!env('ARCHON')) return null;
+  let b = plan().budget;
+  const dir = dirname(env('PLAN')),
+    m = env('MILESTONE');
+  const extra = join(dir, 'budget-extra');
+  if (existsSync(extra)) {
+    const g = JSON.parse(readFileSync(extra, 'utf8')) as {
+      milestone: string;
+      attempt: number;
+      limits?: Plan['budget'];
+    };
+    const attempt = join(dir, 'attempts', m);
+    if (
+      g.milestone === m &&
+      existsSync(attempt) &&
+      Number(readFileSync(attempt, 'utf8')) === g.attempt
+    ) {
+      if (
+        !g.limits ||
+        !Number.isSafeInteger(g.limits.launches) ||
+        (g.limits.launches ?? 0) <= 0 ||
+        !Number.isFinite(g.limits.weighted_tokens) ||
+        g.limits.weighted_tokens <= 0
+      )
+        throw new Error('budget-extra: invalid limits');
+      b = g.limits;
+    }
+  }
+  const u = budgetUsage(runEvents(), policy().budget_floor.S);
+  if (b.launches !== undefined && u.launches >= b.launches) return 'budget_launches_exceeded';
+  return u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
 }
 
-type Ident = { model: string | null; strength: 'provider' | 'pinned' | 'unknown' | 'fake' };
+interface Ident {
+  model: string | null;
+  strength: 'provider' | 'pinned' | 'unknown' | 'fake';
+}
 /**
  * 执行层记录的实际模型。provider 回执最强；Codex 不回报实际模型（resolved: unsupported），以钉死的请求模型
  * 记为 pinned（较弱证据，gate 输出里可见）；其余为 unknown。
@@ -610,6 +655,7 @@ function gate(): void {
   const over = d.verdict === 'fix' || (d.verdict === 'pass' && env('NEXT')) ? budget() : null;
   if (over) Object.assign(d, { verdict: 'escalate', reason: over });
   const { ledger: _, ...rest } = d;
+  void _;
   const out = {
     ...rest,
     grade: d.verdict === 'pass' ? grade : null,

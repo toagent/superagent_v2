@@ -11,6 +11,7 @@ import {
   copyFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { QUERY_TIMEOUT_MS } from './archon';
 
 export type Console = 'claude' | 'codex';
 export interface Alias {
@@ -35,7 +36,10 @@ export function home(): { sa: string; archon: string } {
  * 进程中途死掉也不会留下截断的 JSON；失败时删掉临时文件并抛错。
  */
 export function writeAtomic(path: string, text: string): void {
-  const tmp = join(dirname(path), `.${basename(path)}.${String(process.pid)}.${crypto.randomUUID()}.tmp`);
+  const tmp = join(
+    dirname(path),
+    `.${basename(path)}.${String(process.pid)}.${crypto.randomUUID()}.tmp`
+  );
   try {
     writeFileSync(tmp, text, { flag: 'wx' });
     renameSync(tmp, path);
@@ -60,7 +64,11 @@ export interface Receipt {
 }
 /** wetamp 所在检出的 HEAD；不是 git 检出时为空串（回执无法绑定，preflight 视为漂移）。 */
 export function gitHead(): string {
-  const p = Bun.spawnSync(['git', '-C', WETAMP, 'rev-parse', 'HEAD'], { stdout: 'pipe', stderr: 'pipe' });
+  const p = Bun.spawnSync(['git', '-C', WETAMP, 'rev-parse', 'HEAD'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: QUERY_TIMEOUT_MS,
+  });
   return p.exitCode === 0 ? p.stdout.toString().trim() : '';
 }
 /** 回执绑定的配置：tiers.json 与调用方 $ARCHON_HOME/config.yaml 的内容（任一改动都要重跑 selftest）。 */
@@ -77,8 +85,10 @@ export function receiptProblem(r: Partial<Receipt> | undefined, now = Date.now()
   const exp = Date.parse(r.expires_at ?? '');
   if (!(exp > now)) return `expired (expires_at ${r.expires_at ?? '?'})`;
   const head = gitHead();
-  if (r.head !== head) return `HEAD drift (receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`;
-  if (r.config_hash !== configHash()) return 'config drift (tiers.json or $ARCHON_HOME/config.yaml changed)';
+  if (r.head !== head)
+    return `HEAD drift (receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`;
+  if (r.config_hash !== configHash())
+    return 'config drift (tiers.json or $ARCHON_HOME/config.yaml changed)';
   return null;
 }
 

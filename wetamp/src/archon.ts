@@ -80,8 +80,9 @@ export function archon(args: string[], cwd?: string): Exec {
     env: launches ? workerEnv() : process.env,
     timeout: QUERY_TIMEOUT_MS,
   });
-  const err = p.exitCode === null ? `timed out after ${String(QUERY_TIMEOUT_MS / 1000)}s` : '';
-  return { code: p.exitCode ?? -1, out: p.stdout.toString(), err: err || p.stderr.toString() };
+  const code = Number.isInteger(p.exitCode) ? p.exitCode : -1;
+  const err = code === -1 ? `timed out after ${String(QUERY_TIMEOUT_MS / 1000)}s` : '';
+  return { code, out: p.stdout.toString(), err: err || p.stderr.toString() };
 }
 
 /** `--json` 可能输出多段 JSON（PoC #16）：取最后一个从行首开始的完整对象。 */
@@ -245,7 +246,8 @@ export function recover(
   id: string,
   cwd?: string,
   guard?: (run: RunView) => string | undefined,
-  done?: () => void
+  done?: () => void,
+  prepare?: () => void
 ): RecoverResult {
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
   const path = join(home().sa, 'runs', `${id}.lock`);
@@ -273,6 +275,7 @@ export function recover(
     } else if (run.status !== 'failed' && run.status !== 'paused') {
       return { ok: false, reason: `status ${run.status} is not resumable` };
     }
+    prepare?.(); // 已持锁且确认可恢复；attempt/预算不得在锁忙或 owner 存活时变化
     const resumed = archonJson(['workflow', 'resume', run.id, '--detach'], cwd);
     if (resumed.ok === false) return { ok: false, reason: tail(JSON.stringify(resumed)) };
     done?.();
