@@ -1,0 +1,12 @@
+{
+  "name": "@wetamp/superagent",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ink": "^8.0.0",
+    "react": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0"
+  }
+}

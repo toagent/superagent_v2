@@ -11,7 +11,7 @@ export default [
   ...upstream,
   { ignores: [at('tests/**')] },
   {
-    files: [at('**/*.ts')],
+    files: [at('**/*.ts'), at('**/*.tsx')],
     languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } },
   },
 ];

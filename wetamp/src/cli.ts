@@ -36,6 +36,9 @@ const OPTIONS = {
   fake: { type: 'boolean' },
   'skip-selftest': { type: 'boolean' },
   cwd: { type: 'string' },
+  once: { type: 'boolean' },
+  interval: { type: 'string' },
+  limit: { type: 'string' },
   json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
 } as const;
 interface Args {
@@ -79,7 +82,7 @@ export interface Ledger {
   reason?: 'deadline';
 }
 
-const ledgerPath = (run: string): string => join(home().sa, 'runs', `${run}.json`);
+export const ledgerPath = (run: string): string => join(home().sa, 'runs', `${run}.json`);
 const saveLedger = (l: Ledger): void => {
   writeFileSync(ledgerPath(l.run_id), JSON.stringify(l, null, 2) + '\n');
 };
@@ -121,23 +124,28 @@ export function classify(run: RunView): Classified {
   }
 }
 
-const artifactsOf = (run: RunView): string =>
+export const artifactsOf = (run: RunView): string =>
   join(run.output_root ?? '', 'artifacts', 'runs', run.id);
-const readJson = (p: string): unknown =>
+export const readJson = (p: string): unknown =>
   existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as unknown) : undefined;
-type Gate = ReturnType<typeof decideGate>;
+export type Gate = ReturnType<typeof decideGate>;
 /** 各轮 gate 结论文件，按里程碑、轮次排序（轮次 ≤ 3，字典序即轮次序）。 */
-const gatesOf = (art: string): string[] =>
+export const gatesOf = (art: string): string[] =>
   existsSync(art)
     ? readdirSync(art)
         .filter(f => /^gate-.+-r\d+\.json$/.test(f))
         .sort()
     : [];
-const ledgers = (): Ledger[] => {
+/** 登记过的 run id（runs/*.json 去掉扩展名）。 */
+export const ledgerIds = (): string[] => {
   const dir = join(home().sa, 'runs');
-  const ids = existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')) : [];
-  return ids.map(f => loadLedger(f.slice(0, -5)));
+  return existsSync(dir)
+    ? readdirSync(dir)
+        .filter(f => f.endsWith('.json'))
+        .map(f => f.slice(0, -5))
+    : [];
 };
+const ledgers = (): Ledger[] => ledgerIds().map(loadLedger);
 
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
@@ -183,7 +191,7 @@ const stalledOut = (l: Ledger, run: RunView): boolean =>
   l.progress_fp === progressOf(run) && (l.stalled ?? 0) >= MAX_STALLED_RECOVERIES;
 
 /** classify + ledger：同一完成节点集合上已 recover 满 3 次的 owner-lost run 不再自动恢复，等元帅。 */
-function classifyRun(l: Ledger, run: RunView): Classified {
+export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   return c.state === 'owner_lost' && stalledOut(l, run)
     ? { state: 'held:recover_no_progress', exit: EXIT.held }
@@ -448,14 +456,14 @@ interface Ask {
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 
 const asksPath = (): string => join(home().sa, 'asks.json');
-type Asks = Partial<Record<string, Ask>>;
+export type Asks = Partial<Record<string, Ask>>;
 const loadAsks = (): Asks => (readJson(asksPath()) as Asks | undefined) ?? {};
 const saveAsks = (asks: Asks): void => {
   writeFileSync(asksPath(), JSON.stringify(asks, null, 2) + '\n');
 };
 
 /** 某个 run 的签收提问；键 `<run>:<里程碑>:<放行的 gate 轮次>`：recover/resume 后事件门重新等待（resumeAt 变）也不重投。 */
-const asksOf = (run: string): Asks =>
+export const asksOf = (run: string): Asks =>
   Object.fromEntries(Object.entries(loadAsks()).filter(([k]) => k.startsWith(`${run}:`)));
 
 const MAX_TTL_H = 72;
@@ -616,16 +624,21 @@ const bump = (o: Count, k: string, n = 1): void => {
   o[k] = (o[k] ?? 0) + n;
 };
 
-/** 全部登记 run 的计数（token 用量后置）：state:*、各里程碑末轮 rounds:*、first_pass（首轮即 pass 的里程碑）、
- *  failed:<节点 id 前缀>、escalate:<原因>、node_s:<前缀>（累计秒）、debt（末轮评审债条数）、recoveries。读不到的 run 单列，不吞错。 */
-export function report(): Record<string, unknown> {
+/** 一个 run 的 ledger 与 `workflow get` 结果；查询失败时 run 是那次的错误。 */
+export interface Pair {
+  ledger: Ledger;
+  run: RunView | Error;
+}
+
+/** 计数（token 用量后置）：state:*、各里程碑末轮 rounds:*、first_pass（首轮即 pass 的里程碑）、failed:<节点 id 前缀>、
+ *  escalate:<原因>、node_s:<前缀>（累计秒）、debt（末轮评审债条数）、recoveries。读不到的 run 单列，不吞错。report 与 board 共用。 */
+export function summarize(pairs: Pair[]): Record<string, unknown> {
   const n: Count = {};
   const unreadable: string[] = [];
-  const all = ledgers();
-  for (const l of all) {
+  for (const { ledger: l, run } of pairs) {
     bump(n, 'recoveries', l.recoveries.length);
     try {
-      const run = getRun(l.archon_run_id, l.repo);
+      if (run instanceof Error) throw run;
       const c = classifyRun(l, run);
       bump(n, `state:${c.state}`);
       for (const x of run.nodes ?? [])
@@ -647,11 +660,24 @@ export function report(): Record<string, unknown> {
       unreadable.push(`${l.run_id}: ${tail((e as Error).message, 200)}`);
     }
   }
-  return { runs: all.length, ...Object.fromEntries(Object.entries(n).sort()), unreadable };
+  return { runs: pairs.length, ...Object.fromEntries(Object.entries(n).sort()), unreadable };
+}
+
+/** 全部登记 run 的 summarize。 */
+export function report(): Record<string, unknown> {
+  return summarize(
+    ledgers().map(l => {
+      try {
+        return { ledger: l, run: getRun(l.archon_run_id, l.repo) };
+      } catch (e) {
+        return { ledger: l, run: e as Error };
+      }
+    })
+  );
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]> (every verb accepts --json)';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]> (every verb accepts --json)';
 
 export function main(argv: string[]): number {
   let a: Args;
@@ -727,6 +753,9 @@ export function main(argv: string[]): number {
     }
     case 'health':
       return health(a.flags.cwd);
+    case 'board':
+      console.error('board is async: run it through bin/superagent (src/board/index.ts)');
+      return EXIT_USAGE;
     default:
       console.error(USAGE);
       return EXIT_USAGE;
@@ -740,7 +769,18 @@ function need<T>(v: T | undefined, usage: string): T {
 
 if (import.meta.main) {
   try {
-    process.exit(main(process.argv.slice(2)));
+    const argv = process.argv.slice(2);
+    // board 是唯一异步、带依赖（ink/react）的动词：在这里分流，其余动词启动时不加载 React。
+    // 参数非法时 verb 取不到，交给 main 报用法
+    const verb = ((): string | undefined => {
+      try {
+        return parseArgs(argv)._[0];
+      } catch {
+        return undefined;
+      }
+    })();
+    if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
+    process.exit(main(argv));
   } catch (e) {
     console.error(`superagent: ${(e as Error).message}`);
     process.exit(1);

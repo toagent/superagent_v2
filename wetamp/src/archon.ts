@@ -20,6 +20,8 @@ export interface RunView {
   status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
   working_path?: string | null;
   output_root?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
   metadata?: {
     execution_owner?: { host: string; pid: number };
     wait?: { nodeId: string; kind: string; event?: string; resumeAt: string };
@@ -73,24 +75,42 @@ export function lastJson(text: string): Json | null {
   return null;
 }
 
-export function archonJson(args: string[], cwd?: string): Json {
-  const r = archon([...args, '--json'], cwd);
+const jsonOf = (args: string[], r: Exec): Json => {
   const j = lastJson(r.out);
   if (!j)
     throw new Error(
       `archon ${args.slice(0, 2).join(' ')} exit ${String(r.code)}: ${tail(r.err || r.out)}`
     );
   return j;
+};
+
+export function archonJson(args: string[], cwd?: string): Json {
+  return jsonOf(args, archon([...args, '--json'], cwd));
 }
 
 export const tail = (s: string, n = 400): string => s.trim().slice(-n);
 
 /** Archon 要求 cwd 在 git 仓库内；传 run 的目标 repo，避免把别的仓库登记成 codebase。 */
 export function getRun(id: string, cwd?: string): RunView {
-  const j = archonJson(['workflow', 'get', id, '--verbose'], cwd);
+  return runOf(id, archonJson(['workflow', 'get', id, '--verbose'], cwd));
+}
+
+function runOf(id: string, j: Json): RunView {
   if (typeof j.id !== 'string' || typeof j.status !== 'string')
     throw new Error(`workflow get ${id}: ${JSON.stringify(j).slice(0, 300)}`);
   return j as unknown as RunView;
+}
+
+/** getRun 的异步版（board 并行查询用）：同一子命令、同一解析。 */
+export async function getRunAsync(id: string, cwd?: string): Promise<RunView> {
+  const args = ['workflow', 'get', id, '--verbose', '--json'];
+  const p = Bun.spawn([archonBin(), ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const [out, err, code] = await Promise.all([
+    new Response(p.stdout).text(),
+    new Response(p.stderr).text(),
+    p.exited,
+  ]);
+  return runOf(id, jsonOf(args, { code, out, err }));
 }
 
 export function pidAlive(pid: number): boolean {
