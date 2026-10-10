@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 幂等安装：$ARCHON_HOME/.env 两行、config.yaml 只写 aliases/workflows/concurrency.providers（先备份）、建 gen/runs；
-# 断言 @sa-coder ≠ @sa-reviewer；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份；只打印 bootstrap 命令，不执行）；
+# 断言 @sa-coder ≠ @sa-reviewer；装 board 的自有依赖（wetamp/package.json，按 wetamp/bun.lock 冻结，失败只警告）；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份；只打印 bootstrap 命令，不执行）；
 # 末尾 doctor 摘要。可重复跑。plist 目录默认 ~/Library/LaunchAgents，SA_LAUNCHD_DIR 可改（测试与 selftest 用）。
 # config.yaml 另写 assistants.codex.codexBinaryPath=wetamp/bin/codex-worker（worker 禁嵌套，见 docs/04-hooks-and-nesting.md）。
 # 单独步骤（互斥，不走上面的默认安装）：
@@ -45,6 +45,8 @@ export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 SA_ARCHON="${ARCHON_HOME:-}"
 export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
 bun -e "import { install } from '$WETAMP/src/config.ts'; for (const f of install()) console.log('updated ' + f.replace(process.env.HOME, '~'))"
+# board（Ink 看板）是唯一用 wetamp 自有依赖的动词；装不上只影响 board，其余动词零依赖，不阻塞安装
+(cd "$WETAMP" && bun install --frozen-lockfile >/dev/null 2>&1) || echo "install.sh: wetamp bun install --frozen-lockfile failed; board 不可用 (others unaffected)" >&2
 label=com.wetamp.superagent.supervise-tick dir="${SA_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
 plist="$dir/$label.plist"
 # PATH 取安装时的 PATH 并把 bun 放最前：tick 触发的 resume 要找到 bun、git 与各家 CLI；路径按 XML 转义后代入
