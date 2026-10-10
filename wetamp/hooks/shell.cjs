@@ -219,4 +219,4 @@ function deletionTarget(command,cwd, normalized) {
   }
   return target ? path.resolve(cwd,target) : null;
 }
-module.exports = {tokens, commands, parse, deletionTarget, unwrap};
+module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS};

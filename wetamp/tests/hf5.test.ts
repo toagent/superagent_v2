@@ -40,7 +40,8 @@ const shellCases: [string, boolean][] = [
   ['cd /Users/Shared; touch m2-fixture; cd ROOT', true],
   ['cd /Users/Shared; echo x > m2-fixture; cd ROOT', true],
   ['cd /Users/Shared && touch m2-fixture && cd ROOT', true],
-  ['cd /Users/Shared || touch m2-fixture; cd ROOT', true],
+  // The write runs only after cd fails, so it retains the incoming worktree cwd.
+  ['cd /Users/Shared || touch m2-fixture; cd ROOT', false],
   ['(cd /Users/Shared; touch m2-fixture); cd ROOT', true],
   ['(cd /Users/Shared); touch local; echo x > local 2>&1', false],
 ];

@@ -1,7 +1,6 @@
 'use strict';
 const path = require('node:path');
-const {unwrap} = require('./shell.cjs');
-const SHELLS = new Set(['bash','sh','zsh','dash','ksh']);
+const {unwrap, SHELLS} = require('./shell.cjs');
 const SAFE = new Set(['cd','echo','printf','pwd','true','false','test','[',':','exit','break','continue','return']);
 const NODES = new Set(['program','list','pipeline','command','command_name','word','string','string_content','raw_string','number','concatenation',
   'redirected_statement','file_redirect','file_descriptor','heredoc_redirect','heredoc_start','heredoc_body','heredoc_end',
@@ -38,7 +37,11 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       for (const dir of state.dirs) { const why = inspect(parsed, dir, ctx.names, ctx.assignment); if (why) throw new Error(why); }
     };
     const word = (value, dynamic = false) => ({value, dynamic});
-    function execute(words, state, compound, success, depth) {
+    const union = (...dirs) => [...new Set(dirs.flat())];
+    const outcome = (state, ok, fail) => { state.ok = ok; state.fail = fail; state.dirs = union(ok, fail); };
+    const fork = dirs => ({dirs: [...dirs], ok: [...dirs], fail: [...dirs]});
+    function execute(words, state, compound, depth) {
+      const incoming = [...state.dirs];
       const values = words.map(w => w.value), unwrapped = unwrap(values);
       if (unwrapped.lines.length) reject('executable_wrapper_argument');
       for (const index of unwrapped.heads) {
@@ -73,7 +76,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         const end = argv.findIndex((w, j) => j > i && (w === ';' || w === '+'));
         if (end < 0) reject('find_exec_unterminated');
         if (v.endsWith('dir')) reject('find_execdir_cwd');
-        execute(words.slice(offset + i + 1, offset + end), {dirs: [...state.dirs]}, true, false, depth);
+        execute(words.slice(offset + i + 1, offset + end), fork(state.dirs), true, depth);
       });
       if (name === 'cd') {
         ctx.cd = true;
@@ -82,10 +85,10 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (argv.length > 2 || target === '-' || /[$`*?\[\]{}]/.test(expand(target)) ||
             env.CDPATH !== undefined && !/^(?:\/|~\/)/.test(target)) reject('cd_target_or_CDPATH');
         const next = state.dirs.map(dir => path.resolve(dir, expand(target)));
-        state.dirs = success ? next : [...new Set([...state.dirs, ...next])];
-      }
+        outcome(state, next, incoming);
+      } else outcome(state, incoming, incoming); // Unknown command status may take either short-circuit edge.
     }
-    function visit(n, state, compound, success, depth) {
+    function visit(n, state, compound, depth) {
       if (n.isMissing || n.type === 'ERROR') reject('parse_error');
       if (n.isNamed ? !NODES.has(n.type) : !TOKENS.has(n.type) && !['test_operator','unary_expression','binary_expression'].includes(n.parent?.type)) reject(`node:${n.type}`);
       if (!n.isNamed) return null;
@@ -109,16 +112,29 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         const delimiter = n.namedChildren.find(c => c.type === 'heredoc_start');
         const body = n.namedChildren.find(c => c.type === 'heredoc_body');
         if (!/[\\'"]/.test(delimiter?.text || '') && /[$`\\]/.test(body?.text || '')) reject('unquoted_heredoc_expansion');
-        for (const ch of n.children) { if (ch.type !== 'heredoc_body') visit(ch, state, compound, false, depth); }
+        for (const ch of n.children) { if (ch.type !== 'heredoc_body') visit(ch, state, compound, depth); }
         return null;
       }
-      if (n.type === 'subshell') state = {dirs: [...state.dirs]};
+      if (n.type === 'list') {
+        const operands = n.namedChildren.filter(c => c.type !== 'comment');
+        const op = n.children.find(c => c.type === '&&' || c.type === '||');
+        if (operands.length !== 2 || !op) reject('list_shape');
+        for (const ch of n.children) if (!ch.isNamed || ch.type === 'comment') visit(ch, state, compound, depth);
+        // A list's status belongs to the branch that executed, not its last textual command.
+        const left = fork(state.dirs);
+        visit(operands[0], left, compound, depth);
+        const right = fork(op.type === '&&' ? left.ok : left.fail);
+        visit(operands[1], right, compound, depth);
+        outcome(state, op.type === '&&' ? right.ok : union(left.ok, right.ok),
+          op.type === '&&' ? union(left.fail, right.fail) : right.fail);
+        return null;
+      }
+      if (n.type === 'subshell') { outcome(state, state.dirs, state.dirs); state = fork(state.dirs); }
       compound ||= COMPOUND.has(n.type);
       const children = new Map();
       // Redirections are opened in the incoming cwd, before the body can change it.
       const ordered = n.type === 'redirected_statement' ? [...n.children].sort((a,b) => (a.type === 'command' ? 1 : 0) - (b.type === 'command' ? 1 : 0)) : n.children;
-      const and = n.type === 'list' && n.children.some(c => c.type === '&&');
-      for (const ch of ordered) children.set(ch.id, visit(ch, state, compound, and && ch.id === n.namedChildren[0]?.id || success && ch.id === n.namedChildren.at(-1)?.id, depth));
+      for (const ch of ordered) children.set(ch.id, visit(ch, state, compound, depth));
       const get = ch => ch && children.get(ch.id);
       if (['command_name','concatenation','string'].includes(n.type)) {
         if (n.type === 'concatenation' && (/^=/.test(n.text) || /^~(?!\/|$)/.test(n.text))) reject('zsh_word_expansion');
@@ -132,13 +148,13 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         const fd = ['>&','<&'].includes(op) && /^(?:\d+|-)$/.test(target);
         check({argvs: [], reads: op === '<' ? [target] : [], writes: op !== '<' && !fd && !STREAM.test(target) ? [target] : []}, state);
       }
-      if (n.type === 'command') execute([get(n.childForFieldName('name')), ...n.childrenForFieldName('argument').map(get)], state, compound, success, depth);
+      if (n.type === 'command') execute([get(n.childForFieldName('name')), ...n.childrenForFieldName('argument').map(get)], state, compound, depth);
       return null;
     }
     function script(source, state, compound, depth) {
       if (depth > 8) reject('nested_shell_depth');
       const tree = parser.parse(source);
-      try { if (tree.rootNode.hasError) reject('parse_error'); visit(tree.rootNode, state, compound, false, depth); }
+      try { if (tree.rootNode.hasError) reject('parse_error'); visit(tree.rootNode, state, compound, depth); }
       finally { tree.delete(); }
     }
     try {
