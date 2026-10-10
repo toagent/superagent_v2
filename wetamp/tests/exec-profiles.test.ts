@@ -7,7 +7,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { archon, archonDetached } from '../src/archon';
 import { tmp } from './helpers';
 
@@ -126,12 +126,29 @@ describe('bin/codex-worker', () => {
     const identity = { event_name: 'pre_tool_use', hooks: [{ async: false, command, timeout, type: 'command' }] };
     return `sha256:${new Bun.CryptoHasher('sha256').update(JSON.stringify(identity)).digest('hex')}`;
   };
-  test('hook hash reproduces a trusted_hash written by Codex /hooks', () => {
+  const TRUST = join(import.meta.dir, '..', 'scripts', 'codex-trust.cjs');
+  const verify = (env: Record<string, string>): { trusted: number; match: number } =>
+    JSON.parse(Bun.spawnSync(['bun', TRUST, 'verify'], { env: { ...process.env, ...env } }).stdout.toString());
+  test('scripts/codex-trust.cjs reproduces trusted_hash values written by Codex /hooks', () => {
     // 本机 ~/.codex/config.toml 里 Codex 为 git-guardrail（timeout 10）记下的值（2026-10-10 实测）。
-    expect(hookHash('bash /Users/yong/.wetamp/bin/git-guardrail.sh', 10)).toBe(
-      'sha256:4e71123e2967f6c83d07b6b042e8c7b6f17948d33d904874c64a8e1c6600f109'
-    );
+    const command = 'bash /Users/yong/.wetamp/bin/git-guardrail.sh';
+    const want = 'sha256:4e71123e2967f6c83d07b6b042e8c7b6f17948d33d904874c64a8e1c6600f109';
+    expect(hookHash(command, 10)).toBe(want);
+    const codexHome = tmp();
+    writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command, timeout: 10 }] }] } }));
+    writeFileSync(join(codexHome, 'config.toml'), `[hooks.state."${join(codexHome, 'hooks.json')}:pre_tool_use:0:0"]\ntrusted_hash = "${want}"\n`);
+    expect(verify({ CODEX_HOME: codexHome })).toEqual({ trusted: 1, match: 1 });
   });
+  // 只读核对本机真实 ~/.codex：只取两个计数。条目改过而未重新信任时 match 会少于 trusted（Codex 也会跳过它们），
+  // 故只要求至少一条吻合。
+  const real = join(process.env.HOME ?? '', '.codex');
+  test.skipIf(!existsSync(join(real, 'hooks.json')) || !existsSync(join(real, 'config.toml')))(
+    'hash matches entries Codex trusted on this machine (read-only, counts only)',
+    () => {
+      const r = verify({ CODEX_HOME: real });
+      if (r.trusted) expect(r.match).toBeGreaterThan(0);
+    }
+  );
 
   test('fails closed unless the guard PreToolUse hook is trusted and enabled', () => {
     const guard = "node '/x/wetamp/hooks/guard.cjs' codex";
@@ -165,6 +182,13 @@ describe('bin/codex-worker', () => {
     // archon doctor 只探测版本：不跑模型，不受信任闸约束；带其它参数的 --version 仍要过闸。
     expect(run(null, '', {}, ['--version'])).toMatchObject({ code: 0, out: 'ran\n', err: '' });
     expect(run(null, '', {}, ['--version', 'exec']).code).toBe(3);
+    // python3 没有 tomllib（mini 的 3.9）不影响判定；bun 不在 PATH 时无法判定 → 失败关闭
+    const bin = tmp();
+    stub(bin, 'python3', '#!/bin/sh\nexit 1\n');
+    const node = dirname(Bun.which('node') ?? '');
+    const bun = dirname(Bun.which('bun') ?? '');
+    expect(run(hookHash(guard, 30), '', { PATH: `${bin}:${bun}:${node}:/usr/bin:/bin` })).toMatchObject({ code: 0, out: 'ran\n' });
+    if (node !== bun) expect(run(hookHash(guard, 30), '', { PATH: `${node}:/usr/bin:/bin` }).code).toBe(3);
   });
 
   test('reviewer role adds a read-only sandbox; TRACE prints policy and redacted caller argv only', () => {

@@ -59,7 +59,7 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 
 ## 禁嵌套：本机 Archon worker 三层
 
-1. 包装器 `bin/codex-worker`（`install.sh` 写入 `assistants.codex.codexBinaryPath`）：先确认 guard 的 Codex `PreToolUse` hook 受信任（见上节，否则 exit 3），再前置 `exec_profiles.*.codex` 的 `-c`（`features.multi_agent=false`），并把 `~/.codex/config.toml` 中已声明、不在 `policy.sandbox.mcp` 的 MCP server 设为 `enabled=false`。server 名由 `python3 -I` + `tomllib` 按 TOML 键解析（表头、引号键、点键、内联表），只取 `mcp_servers` 的键名、不输出值；名字不符合 `[A-Za-z0-9_-]+` 的跳过并在 stderr 记一行；python3 不可用时退回表头正则并在 stderr 记一行。`SA_CODEX_REAL` 指定真 codex；选定路径 realpath 后指向包装器自身、不存在或不可执行时 exit 2。`SA_CODEX_WORKER_TRACE=1` 在 stderr 打印 `{policy, argv}`：policy 为追加的 `-c` 列表，argv 为调用方参数的脱敏副本（token/key/secret/password/Authorization/Bearer 之类的值换成 `***`，超过 200 字符截断）。
+1. 包装器 `bin/codex-worker`（`install.sh` 写入 `assistants.codex.codexBinaryPath`）：先确认 guard 的 Codex `PreToolUse` hook 受信任（见上节，否则 exit 3），再前置 `exec_profiles.*.codex` 的 `-c`（`features.multi_agent=false`），并把 `~/.codex/config.toml` 中已声明、不在 `policy.sandbox.mcp` 的 MCP server 设为 `enabled=false`。server 名由 `Bun.TOML` 按 TOML 键解析（表头、引号键、点键、内联表），只取 `mcp_servers` 的键名、不输出值；名字不符合 `[A-Za-z0-9_-]+` 的跳过并在 stderr 记一行；解析失败时退回表头正则并在 stderr 记一行。信任核验与写入是同一份实现 `scripts/codex-trust.cjs`（`check` 用 `Bun.TOML`，不依赖 python3 tomllib；bun 不可用即无法判定 → exit 3）。`SA_CODEX_REAL` 指定真 codex；选定路径 realpath 后指向包装器自身、不存在或不可执行时 exit 2。`SA_CODEX_WORKER_TRACE=1` 在 stderr 打印 `{policy, argv}`：policy 为追加的 `-c` 列表，argv 为调用方参数的脱敏副本（token/key/secret/password/Authorization/Bearer 之类的值换成 `***`，超过 200 字符截断）。
 2. `exec_profiles.*.claude.denied_tools` → 生成的 prompt 节点 `denied_tools`（Archon `disallowedTools`）：`Agent`、`Task`、`Bash(claude *)`、`Bash(codex *)`、`Bash(opencode *)`、`Bash(sol-run *)`、`Bash(twin-agent*)`。只对 provider 为 claude 的别名生成。
 3. hooks 的 N-1（用户三端配置里挂了 guard 时生效，依赖上面的派生判定 1/3；Codex 侧要求该 hook 受信任，由第 1 层把关）。
 
@@ -92,7 +92,9 @@ bash wetamp/scripts/install.sh --remote-hooks        # 远端：只要 node；no
 
 - 去重保留 matcher 不同的同一 handler；V1 清单都不带 matcher，补齐时只认"全部"分组（未设置/空/`*`）。`context-budget.cjs` 尾部的 `claude` 参数去掉后归一为一条。目标文件不存在时按空文件补齐并创建（dry-run 打印与空文件的 diff，不写）。
 - 只动 superagent 自己的 handler（V1 checkout/release 路径或本 `wetamp/hooks/`），其他 hooks 原样保留；只有命令串改写时原地替换，保留文件排版。
-- `--remote-hooks` 写 `${XDG_STATE_HOME:-~/.local/state}/superagent/install.json`（`installer:"superagent_v2"`、`wetamp`、`commit`、`hooks`）；已有 V1 台账先存 `.v1-<毫秒时间戳>` 副本。twin-toolkit 回执 schema 2 按此校验。
+- `--remote-hooks` 写 `${XDG_STATE_HOME:-~/.local/state}/superagent/install.json`（`installer:"superagent_v2"`、`role:"worker"`、`wetamp`、`commit`、`hooks`）；已有 V1 台账先存 `.v1-<毫秒时间戳>` 副本。twin-toolkit 回执 schema 2 按此校验。
+- Codex 信任：`install.sh --hooks` 与 `--remote-hooks` 之后跑 `scripts/codex-trust.cjs write`，为 `hooks.json` 里命令指向本 `wetamp/hooks/` 的条目写 `[hooks.state."<hooks.json>:<event_snake>:<gi>:<hi>"] trusted_hash`（键排序紧凑 JSON 的 sha256，与 Codex 一致）。文本级改写：只替换/补自己键的 `trusted_hash`，其余内容与注释原样；同一键以内联表等其他写法出现时拒绝并提示 `/hooks`；改动前备份到 `$SUPERAGENT_HOME/backups/codex-trust-<UTC>/`，同目录临时文件 rename，保留文件权限。远端 `hooks.json` 由 agentcfg 维度在 superagent 维度之后下推，信任按 install 当时远端已有的条目写；agentcfg 之后改了这些条目时，要到下次投送新提交（必重跑 install）或手动再跑 `install.sh --remote-hooks` 才补齐。
+- worker 桩：`--remote-hooks` 把 `~/.local/bin/superagent` 指向本仓库 `bin/superagent`（原为普通文件先存 `.bak-<时间>`）。`bin/superagent` 读到 `role:"worker"` 且 `wetamp` 是自己时，在 `exec bun` 之前处理：`--version`/`--help` 照答，其余动词打印“仅本机运行（本机为控制面）”退出 69；不需要 bun 与 node_modules。twin-toolkit 回执 `checks` 记 `role`/`entry`。
 - 默认安装（不带参数）不碰 hooks。
 
 ## 风险与口径

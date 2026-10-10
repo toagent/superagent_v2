@@ -5,6 +5,8 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -217,7 +219,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     ]);
     expect(JSON.stringify(after)).not.toContain('/work/github/superagent/');
     expect(readdirSync(join(home, '.superagent', 'backups'))[0]).toMatch(/^hooks-\d{8}T\d{6}Z$/);
-    expect(sh('--hooks').out.trim()).toBe('hooks: no changes');
+    expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
   });
 
   test('--hooks keeps matcher-scoped copies and folds V1 context-budget with or without the claude arg', () => {
@@ -258,7 +260,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       [undefined, `${V2('guard.cjs')} claude`],
     ]);
     expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-budget.cjs')]]);
-    expect(sh('--hooks').out.trim()).toBe('hooks: no changes');
+    expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
   });
 
   test('--hooks creates a missing settings.json/hooks.json with every event; --dry-run diffs against empty and writes nothing', () => {
@@ -283,7 +285,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     ]);
     expect(cmds(codex).flat()).toContain(`${V2('guard.cjs')} codex`);
     expect(existsSync(join(home, '.superagent', 'backups'))).toBe(false);
-    expect(sh('--hooks').out.trim()).toBe('hooks: no changes');
+    expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
   });
 
   test('--purge-v1 --dry-run lists managed agents and V1 dirs only; moves nothing', () => {
@@ -302,6 +304,89 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(readdirSync(join(home, 'work', 'github'))).toEqual(['superagent']);
   });
 
+  test('--hooks trusts its own Codex entries: idempotent, other keys and comments kept, backup first, codex-worker passes', () => {
+    const { home, sh } = sandbox();
+    const codex = join(home, '.codex');
+    mkdirSync(codex, { recursive: true });
+    const hooks = join(codex, 'hooks.json');
+    writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'rtk hook codex', timeout: 10 }] }] } }));
+    const config = join(codex, 'config.toml');
+    const user = `# my comment\nmodel = "x"\n\n[hooks.state."${hooks}:pre_tool_use:0:0"]\ntrusted_hash = "sha256:user"\n`;
+    writeFileSync(config, user, { mode: 0o600 });
+    expect(sh('--hooks').code).toBe(0);
+    const once = readFileSync(config, 'utf8');
+    expect(once.startsWith(user)).toBe(true); // 用户的键、注释原样；自己的表追加在后
+    expect(statSync(config).mode & 0o777).toBe(0o600);
+    expect(readdirSync(join(home, '.superagent', 'backups')).filter(d => d.startsWith('codex-trust-'))).toHaveLength(1);
+    const state = (Bun.TOML.parse(once) as { hooks: { state: Record<string, { trusted_hash: string }> } }).hooks.state;
+    // guard 五个事件各一组，追加在用户 PreToolUse 组之后
+    expect(Object.keys(state).sort()).toEqual(
+      [...['post_tool_use', 'session_start', 'stop', 'subagent_stop'].map(e => `${hooks}:${e}:0:0`), `${hooks}:pre_tool_use:0:0`, `${hooks}:pre_tool_use:1:0`].sort()
+    );
+    expect(state[`${hooks}:pre_tool_use:0:0`].trusted_hash).toBe('sha256:user');
+    expect(sh('--hooks').out).toContain('already trusted');
+    expect(readFileSync(config, 'utf8')).toBe(once);
+    // codex-worker 的信任闸认这些值（--version 带参数也要过闸）
+    const w = Bun.spawnSync([join(WETAMP, 'bin', 'codex-worker'), '--version', 'exec'], {
+      env: { ...process.env, HOME: home, CODEX_HOME: '', SA_CODEX_HOOK_TRUST: '', SA_CODEX_REAL: '/bin/echo' },
+    });
+    expect(w.exitCode).toBe(0);
+    // 定义改了（timeout）→ 重写自己的 trusted_hash，不碰用户的
+    writeFileSync(hooks, readFileSync(hooks, 'utf8').replace(/"timeout": ?30/, '"timeout": 31'));
+    expect(sh('--hooks').code).toBe(0);
+    const again = readFileSync(config, 'utf8');
+    expect(again).not.toBe(once);
+    expect(again.startsWith(user)).toBe(true);
+  });
+
+  test('codex trust refuses a key written in a form it does not edit; --remote-hooks trusts with node only', () => {
+    const { home, sh } = sandbox();
+    const codex = join(home, '.codex');
+    mkdirSync(codex, { recursive: true });
+    const hooks = join(codex, 'hooks.json');
+    const guard = (gi: number) => `${hooks}:pre_tool_use:${gi}:0`;
+    writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: `${V2('guard.cjs')} codex`, timeout: 30 }] }] } }));
+    const inline = `[hooks.state]\n"${guard(0)}" = { trusted_hash = "sha256:old" }\n`;
+    writeFileSync(join(codex, 'config.toml'), inline);
+    const r = sh('--remote-hooks');
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain('/hooks');
+    expect(readFileSync(join(codex, 'config.toml'), 'utf8')).toBe(inline);
+    rmSync(join(codex, 'config.toml'));
+    expect(sh('--remote-hooks').code).toBe(0);
+    expect(readFileSync(join(codex, 'config.toml'), 'utf8')).toMatch(/^\[hooks\.state\."[^"]+:pre_tool_use:0:0"\]\ntrusted_hash = "sha256:[0-9a-f]{64}"\n$/);
+  });
+
+  test('worker stub: after --remote-hooks the superagent entry refuses control-plane verbs without bun', () => {
+    const { home, sh } = sandbox();
+    const entry = join(home, '.local', 'bin', 'superagent');
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(entry, 'old v1 entry');
+    const sa = (...args: string[]): { code: number; out: string } => {
+      // PATH 不含 bun：桩分支必须在 exec bun 之前
+      const p = Bun.spawnSync([entry, ...args], {
+        env: { HOME: home, PATH: '/usr/bin:/bin', XDG_STATE_HOME: '' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      return { code: p.exitCode, out: p.stdout.toString() + p.stderr.toString() };
+    };
+    expect(sh('--remote-hooks').code).toBe(0);
+    expect(readdirSync(dirname(entry)).filter(f => f.startsWith('superagent.bak-'))).toHaveLength(1);
+    expect(sh('--remote-hooks').out).not.toContain('linked');
+    for (const verb of ['run', 'wait', 'supervise-tick', 'decide', 'land', 'recover', 'brief', 'status']) {
+      const r = sa(verb, 'x');
+      expect(r.code).toBe(69);
+      expect(r.out).toContain('仅本机运行（本机为控制面）');
+    }
+    expect(sa('--version')).toMatchObject({ code: 0, out: expect.stringContaining('(worker,') });
+    expect(sa('--help')).toMatchObject({ code: 0, out: expect.stringContaining('worker 桩') });
+    // install.json 指向别的 checkout：本入口不是那台 worker 的桩，照常走控制面
+    const state = join(home, '.local', 'state', 'superagent', 'install.json');
+    writeFileSync(state, readFileSync(state, 'utf8').replace(`"wetamp": "${WETAMP}"`, '"wetamp": "/elsewhere"'));
+    expect(sa('--version').out).toContain('(controller,');
+  });
+
   test('--remote-hooks checks hooks with node and writes the install.json ledger; flags are exclusive', () => {
     const { home, sh } = sandbox();
     const r = sh('--remote-hooks');
@@ -315,6 +400,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       wetamp: WETAMP,
     });
     expect(ledger.hooks).toContain('guard.cjs');
+    expect(ledger.role).toBe('worker');
     expect(sh('--hooks', '--remote-hooks').code).toBe(64);
     expect(sh('--dry-run').code).toBe(64);
   });

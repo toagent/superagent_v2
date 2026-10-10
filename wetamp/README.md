@@ -11,7 +11,7 @@ Archon 之上的 superagent 胶水层：把 `plan.json` 编译成 Archon 工作�
 ```bash
 wetamp/scripts/install.sh          # 幂等：写 $ARCHON_HOME/.env 与 config.yaml 的别名段（先备份），渲染 launchd plist，末尾跑 archon doctor
 ln -s "$PWD/wetamp/bin/superagent" ~/.local/bin/superagent   # PATH 接法，手动做一次
-wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要求 7 天内有通过记录
+wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要求有效回执（非 fake、7 天内、HEAD 与配置未变）
 ```
 
 `install.sh` 把 `launchd/com.wetamp.superagent.supervise-tick.plist.tmpl` 渲染到 `~/Library/LaunchAgents`（每 60 秒跑 `supervise-tick`，日志 `$SUPERAGENT_HOME/supervise-tick.log`；内容变了先备份再覆盖），只打印 `launchctl bootstrap/bootout` 命令，加载由人执行。
@@ -89,7 +89,7 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 
 ## 故障排查
 
-- `preflight: no passing selftest within 7 days`：跑 `wetamp/scripts/selftest.sh`（或临时 `run --skip-selftest`）。
+- `preflight: no valid selftest receipt: <原因>`（无回执 / fake / 过期 / HEAD 漂移 / 配置漂移）：跑 `wetamp/scripts/selftest.sh`（不带 `--fake`；或临时 `run --skip-selftest`）。`--fake` 只写 `selftest-fake.json`，不算回执。
 - `plan invalid: repo … outside allowed roots`：把 repo 放到 `~/work` 下，或设置 `SUPERAGENT_WRITE_ROOTS`。
 - `generated workflow invalid`：`install.sh` 未跑或 `config.yaml` 缺 `@sa-coder`/`@sa-reviewer` 别名；重跑 `install.sh`。
 - `held:recover_no_progress`：worker 反复被杀且节点无进展；看 `$SUPERAGENT_HOME/runs/<run>.json` 的 `log` 指向的 detach 日志，排除原因后 `superagent decide <run> retry`（`recover`/`resume` 不重置计数）。

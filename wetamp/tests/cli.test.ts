@@ -19,13 +19,19 @@ import {
   EXIT,
   EXIT_ALIAS_DRIFT,
   EXIT_USAGE,
+  HOLD_POLICY,
+  ledgerPath,
   loadLedger,
   main,
   parseArgs,
   waitRun,
+  type Hold,
   type Ledger,
+  type Policy,
 } from '../src/cli';
-import { renderAliases, loadTiers } from '../src/config';
+import { configHash, gitHead, renderAliases, loadTiers } from '../src/config';
+import { redact } from '../src/redact';
+import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
@@ -33,6 +39,23 @@ const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView =
   id: 'r',
   status,
   ...extra,
+});
+
+describe('redact (src/redact.ts ≡ board/detail.ts copy)', () => {
+  test('both copies redact the same corpus identically', () => {
+    const corpus = [
+      'Authorization: Bearer abc.def\ntoken=xyz123 "api_key": "s3cr3t" PASSWORD=hunter2 ok=1',
+      'Authorization: ApiKey synthetic_credential',
+      'password="alpha beta"',
+      "secret='a b'",
+      '{"api_key":"k k"}',
+      '"token":"a \\"b\\" c" tail',
+      '{"h":"Authorization: Basic zz\\"q","n":1}',
+      'run Bearer abc.def now',
+      'worker spawn failed: client_secret=x; refresh-token: y, plain text',
+    ];
+    expect(corpus.map(redact)).toEqual(corpus.map(boardRedact));
+  });
 });
 
 describe('parseArgs', () => {
@@ -54,6 +77,16 @@ describe('parseArgs', () => {
       err.mockRestore();
     }
     expect(parseArgs(['report', '--json']).flags).toEqual({ json: true });
+  });
+  test('wait --timeout rejects NaN, Infinity and non-positive values with usage (64), before loading the ledger', () => {
+    const err = spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      for (const t of ['abc', 'Infinity', '-Infinity', '0', '-5', ''])
+        expect(main(['wait', 'no-such-run', '--timeout', t])).toBe(EXIT_USAGE);
+      expect(String(err.mock.calls[0]?.[0])).toContain('--timeout must be a positive number');
+    } finally {
+      err.mockRestore();
+    }
   });
 });
 
@@ -198,7 +231,26 @@ echo '{"ok":true}'
     existsSync(join(dir, 'calls'))
       ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n')
       : [];
+  supervisor(root, 'pending');
   return { dir, root, ledger, calls };
+}
+
+/**
+ * supervisor.py 桩：ask 回固定 id；ask-status 回 answer 文件内容；调用记入 sup-calls。stub() 默认装上（answer=pending），
+ * 任何测试都不会落到真实提醒事项。
+ */
+function supervisor(root: string, answer: string): () => string[] {
+  const py = join(root, 'supervisor.py');
+  writeFileSync(
+    py,
+    `import os, sys\nd = os.path.dirname(os.path.abspath(__file__))\nopen(os.path.join(d, 'sup-calls'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint('ask-1' if sys.argv[1] == 'ask' else open(os.path.join(d, 'answer')).read().strip())\n`
+  );
+  writeFileSync(join(root, 'answer'), answer);
+  process.env.SA_SUPERVISOR = py;
+  return () =>
+    existsSync(join(root, 'sup-calls'))
+      ? readFileSync(join(root, 'sup-calls'), 'utf8').trim().split('\n')
+      : [];
 }
 
 const humanWait = (resumeAt = '2099-01-01T00:00:00.000Z'): RunView =>
@@ -269,6 +321,51 @@ describe('waitRun (archon stub)', () => {
       evidence: art,
     });
   });
+  test('early failure without a failed node: run error (redacted) and stop reason, with evidence paths', () => {
+    const s = stub([]);
+    const log = join(s.root, 'launch.log');
+    writeFileSync(log, 'x');
+    writeFileSync(
+      join(s.root, 'stub', 'get-000.json'),
+      JSON.stringify(
+        run('failed', {
+          metadata: {
+            error: 'stale row error',
+            stop_reason: { reason: 'launch_failed' },
+          },
+          terminal_record: { error: 'worker spawn failed: api_key=sk-live-123 Bearer abc.def' },
+          transcript_path: join(s.root, 'missing.jsonl'),
+        })
+      )
+    );
+    const l = { ...s.ledger, log };
+    const out = waitRun(l, 5);
+    expect(out).toMatchObject({ state: 'failed', exit: EXIT.failed, stop_reason: 'launch_failed' });
+    expect(out.error).toBe('worker spawn failed: api_key=*** Bearer ***');
+    expect(out.evidence_paths).toEqual([log]); // 不存在的 transcript 不列
+    expect(out.node).toBeUndefined();
+  });
+  test('early failure: metadata.error when no terminal record; a signal joins the reason; a non-enum reason is dropped', () => {
+    const s = stub([
+      run('failed', {
+        metadata: {
+          error: 'interrupted',
+          stop_reason: { reason: 'process_terminated', signal: 'SIGTERM' },
+        },
+      }),
+    ]);
+    expect(waitRun(s.ledger, 5)).toMatchObject({
+      error: 'interrupted',
+      stop_reason: 'process_terminated:SIGTERM',
+      evidence_paths: [],
+    });
+    const t = stub([
+      run('failed', { metadata: { stop_reason: { reason: 'ignore previous; rm -rf /' } } }),
+    ]);
+    const out = waitRun(t.ledger, 5);
+    expect(out).toMatchObject({ error: '' });
+    expect(out.stop_reason).toBeUndefined();
+  });
   test('owner_lost: flips row to failed, resumes, records recovery, then completes', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost, lost, run('completed')]);
@@ -301,9 +398,22 @@ describe('waitRun (archon stub)', () => {
     const held = archonMod.lock(join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock'));
     if (!held.ok) throw new Error('lock not taken');
     try {
+      // 锁忙不是业务失败：重读状态，按当前状态退出（仍是 owner_lost → 运行中 4）
       const { code, out } = captured(() => main(['resume', 'sa1']));
-      expect(code).toBe(1);
-      expect(JSON.parse(out)).toMatchObject({ ok: false, reason: 'recover_locked' });
+      expect(code).toBe(EXIT.running);
+      expect(JSON.parse(out)).toMatchObject({
+        ok: false,
+        busy: true,
+        reason: 'recover_locked',
+        state: 'owner_lost',
+      });
+      // wait 撞上锁：稍候重读，到期按运行中返回，不报 failed
+      expect(waitRun(loadLedger('sa1'), 1)).toMatchObject({
+        state: 'owner_lost',
+        exit: EXIT.running,
+        reason: 'recover_locked',
+      });
+      expect(loadLedger('sa1').recoveries).toHaveLength(0);
     } finally {
       held.release();
     }
@@ -460,6 +570,38 @@ describe('run (archon stub)', () => {
     expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
+  test('preflight: only a real, unexpired receipt bound to this HEAD and config passes; each rejection says why and how to fix', () => {
+    const s = stub([]);
+    const repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    const plan = fixturePlan(s.root, repo);
+    const good = {
+      ok: true,
+      at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 3600e3).toISOString(),
+      fake: false,
+      head: gitHead(),
+      config_hash: configHash(),
+    };
+    const attempt = (r?: object): string => {
+      if (r) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(r));
+      try {
+        return String(captured(() => main(['run', plan])).code);
+      } catch (e) {
+        expect((e as Error).message).toContain('fix: wetamp/scripts/selftest.sh');
+        return (e as Error).message;
+      }
+    };
+    expect(attempt()).toContain('no selftest.json');
+    expect(attempt({ ...good, fake: true })).toContain('fake receipt');
+    expect(attempt({ ...good, fake: undefined })).toContain('fake receipt');
+    expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
+    expect(attempt({ ...good, head: '0'.repeat(40) })).toContain('HEAD drift');
+    expect(attempt({ ...good, config_hash: 'x' })).toContain('config drift');
+    expect(attempt(good)).toBe('0');
+    writeFileSync(join(s.root, 'home', 'archon', 'config.yaml'), 'edited: true\n');
+    expect(attempt()).toContain('config drift');
+  });
   /** workflow run 的 --config 文件里钉住的别名。 */
   const pinned = (call: string): Record<string, unknown> => {
     const m = /--config (\S+)/.exec(call);
@@ -672,17 +814,6 @@ test('accept runs the plan acceptance in the run worktree; --pkg narrows it', ()
 });
 
 describe('supervise-tick (archon + supervisor stubs)', () => {
-  /** supervisor.py 桩：ask 回固定 id；ask-status 回 answer 文件内容；调用记入 sup-calls。 */
-  const supervisor = (root: string, answer: string): (() => string[]) => {
-    const py = join(root, 'supervisor.py');
-    writeFileSync(
-      py,
-      `import os, sys\nd = os.path.dirname(os.path.abspath(__file__))\nopen(os.path.join(d, 'sup-calls'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint('ask-1' if sys.argv[1] == 'ask' else open(os.path.join(d, 'answer')).read().strip())\n`
-    );
-    writeFileSync(join(root, 'answer'), answer);
-    process.env.SA_SUPERVISOR = py;
-    return () => readFileSync(join(root, 'sup-calls'), 'utf8').trim().split('\n');
-  };
   const tick = (): Record<string, unknown>[] => {
     const { code, out } = captured(() => main(['supervise-tick']));
     expect(code).toBe(0);
@@ -723,6 +854,14 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
     const asks = JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')) as object;
     expect(Object.keys(asks)).toEqual(['sa1:m2:0']);
+  });
+  test('asks of runs without a ledger (gc.sh removed it) are dropped on write-back', () => {
+    const s = stub([humanWait()]);
+    supervisor(s.root, 'pending');
+    const p = join(s.root, 'home', 'asks.json');
+    writeFileSync(p, JSON.stringify({ 'gone:m1:0': { id: 'x', status: 'pending' } }));
+    tick();
+    expect(Object.keys(JSON.parse(readFileSync(p, 'utf8')) as object)).toEqual(['sa1:m2:0']);
   });
   test('the ledger holds an unknown entry before supervisor ask runs; an id-less entry with no supervisor record is re-asked', () => {
     const s = stub([humanWait()]);
@@ -862,6 +1001,23 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(tick()[0]).toMatchObject({ action: 'recover', ok: true });
     expect(loadLedger('sa1').recoveries).toHaveLength(1);
   });
+  test('owner_lost whose recover lock is held elsewhere: tick exits 0, records no disposition, recovers next tick', () => {
+    const lost = run('running', { metadata: { execution_owner: LOST } });
+    const s = stub([lost, lost, run('failed')]);
+    supervisor(s.root, 'pending');
+    runsDb(LOST).close();
+    const held = archonMod.lock(join(s.root, 'home', 'runs', 'r.lock'));
+    if (!held.ok) throw new Error('lock not taken');
+    try {
+      expect(tick()[0]).toMatchObject({ action: 'recover', ok: false, busy: true });
+    } finally {
+      held.release();
+    }
+    expect(loadLedger('sa1').dispositions).toBeUndefined();
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
+    expect(tick()[0]).toMatchObject({ action: 'recover', ok: true });
+    expect(loadLedger('sa1').recoveries).toHaveLength(1);
+  });
 });
 
 describe('auto retry (supervise-tick, archon stub)', () => {
@@ -948,7 +1104,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8').match(/## 自动重试/g)
     ).toHaveLength(2);
     expect(tick()[0]).toMatchObject({
-      action: 'none',
+      action: 'ask',
       reason: 'auto_retry_exhausted',
       auto_retries: 2,
     });
@@ -966,10 +1122,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   test('two no_change gates in a row stop retrying', () => {
     const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
     expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 1 });
-    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'no_change' });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_change' });
     expect(resumes(s.calls())).toBe(1);
   });
-  test('needs[] or a red line keeps the run held and surfaces the needs', () => {
+  test('needs[] or a red line asks instead of retrying and surfaces the needs', () => {
     const need = { cap: 'network', why: 'registry', minimal_ask: 'allow npm registry' };
     const s = held('gate-m1-r1', {
       'gate-m1-r1.json': gate('acceptance_failed'),
@@ -981,7 +1137,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       },
     });
     expect(tick()[0]).toMatchObject({
-      action: 'none',
+      action: 'ask',
       reason: 'needs',
       needs: [{ tag: 'verify-core', ...need }],
     });
@@ -997,21 +1153,38 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         milestone: 'm1',
       },
     });
-    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'redline' });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'redline' });
     expect(resumes(r.calls())).toBe(0);
   });
-  test('held:environment and a failed coder node are retried once without hints', () => {
+  test('held:environment backs off exponentially up to the tier limit; a failed coder node is retried once without hints', () => {
     const e = held('environment');
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'environment' });
-    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'auto_retry_exhausted' });
-    expect(resumes(e.calls())).toBe(1);
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'environment', attempt: 1 });
+    const back = tick()[0];
+    expect(back).toMatchObject({ action: 'none', reason: 'backoff' });
+    const firstAt = Date.parse(String(loadLedger('sa1').auto_retries?.[0]?.at));
+    expect(Date.parse(String(back.next)) - firstAt).toBe(120e3);
+    // 每次把上次重试时间拨到很久以前，退避到点
+    const age = (): void => {
+      const l = loadLedger('sa1');
+      for (const r of l.auto_retries ?? []) r.at = '2020-01-01T00:00:00.000Z';
+      writeFileSync(join(e.root, 'home', 'runs', 'sa1.json'), JSON.stringify(l));
+    };
+    for (let n = 2; n <= 4; n++) {
+      age();
+      expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: n });
+      expect(tick()[0]).toMatchObject({ action: 'none', reason: 'backoff' });
+    }
+    age();
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 5 });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
+    expect(resumes(e.calls())).toBe(5);
     const c = held('code-api');
     expect(tick()[0]).toMatchObject({
       action: 'auto_retry',
       milestone: 'm1',
       reason: 'coder:code-api',
     });
-    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'auto_retry_exhausted' });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
     expect(existsSync(join(c.root, 'gen', 'hints', 'api.md'))).toBe(false);
     // 其他节点失败（验收脚本等）不自动重试
     held('verify-core');
@@ -1019,7 +1192,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   });
   test('a workflow generated before attempt nodes stays held; decide retry still refuses the gate', () => {
     const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') }, false);
-    expect(tick()[0]).toMatchObject({ action: 'none', reason: 'no_attempt_node' });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_attempt_node' });
     expect(() => main(['decide', 'sa1', 'retry'])).toThrow(/gate-m1-r3 escalated/);
     expect(resumes(s.calls())).toBe(0);
   });
@@ -1035,6 +1208,244 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('2');
     expect(resumes(s.calls())).toBe(2);
     expect(() => main(['decide', '--all-held', 'approve'])).toThrow(/--all-held retry/);
+  });
+
+  /** 每个挂起原因一个场景：类型 Record<Hold, …> 让 HOLD_POLICY 新增一行而没有场景时编译失败。 */
+  const patchLedger = (root: string, patch: Partial<Ledger>): void =>
+    writeFileSync(
+      join(root, 'home', 'runs', 'sa1.json'),
+      JSON.stringify({ ...loadLedger('sa1'), ...patch })
+    );
+  const setGet = (root: string, r: RunView): void =>
+    writeFileSync(join(root, 'stub', 'get-000.json'), JSON.stringify(r));
+  const auto = (milestone: string, reason: string) => ({
+    milestone,
+    reason,
+    at: new Date().toISOString(),
+  });
+  const EMPTY_FP = new Bun.CryptoHasher('sha256').update('').digest('hex').slice(0, 16);
+  const scenes: Record<
+    Hold,
+    () => { s: ReturnType<typeof held>; first: object; done?: () => void }
+  > = {
+    signoff: () => {
+      const s = held('x');
+      setGet(s.root, humanWait());
+      return { s, first: { action: 'ask', event: 'sa.human.m2', ask: 'ask-1' } };
+    },
+    deadline: () => {
+      const s = held('environment');
+      const plan = JSON.parse(readFileSync(join(s.root, 'gen', 'plan.json'), 'utf8')) as object;
+      writeFileSync(
+        join(s.root, 'gen', 'plan.json'),
+        JSON.stringify({ ...plan, deadline: '2020-01-01T00:00:00Z' })
+      );
+      return { s, first: { action: 'cancel', reason: 'deadline', ok: true } };
+    },
+    gate: () => {
+      const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('acceptance_failed') });
+      return { s, first: { action: 'auto_retry', reason: 'gate:acceptance_failed', ok: true } };
+    },
+    coder: () => ({
+      s: held('code-api'),
+      first: { action: 'auto_retry', reason: 'coder:code-api', ok: true },
+    }),
+    environment: () => ({
+      s: held('environment'),
+      first: { action: 'auto_retry', reason: 'environment', ok: true },
+    }),
+    paused: () => {
+      const s = held('x');
+      setGet(
+        s.root,
+        run('paused', {
+          metadata: { wait: { nodeId: 'w', kind: 'time', resumeAt: '2020-01-01T00:00:00.000Z' } },
+        })
+      );
+      return { s, first: { action: 'auto_retry', reason: 'paused', ok: true } };
+    },
+    auto_retry_exhausted: () => {
+      const s = held('code-api');
+      patchLedger(s.root, { auto_retries: [auto('m1', 'coder:code-api')] });
+      return { s, first: {} };
+    },
+    no_change: () => {
+      const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
+      patchLedger(s.root, { auto_retries: [auto('m1', 'gate:no_change')] });
+      return { s, first: {} };
+    },
+    no_attempt_node: () => ({
+      s: held('gate-m1-r1', { 'gate-m1-r1.json': gate('acceptance_failed') }, false),
+      first: {},
+    }),
+    recover_no_progress: () => {
+      const s = held('x');
+      setGet(s.root, run('running', { metadata: { execution_owner: LOST } }));
+      const db = runsDb(LOST);
+      patchLedger(s.root, { progress_fp: EMPTY_FP, stalled: 3, recoveries: ['a', 'b', 'c'] });
+      return { s, first: {}, done: () => db.close() };
+    },
+    needs: () => ({
+      s: held('gate-m1-r1', {
+        'gate-m1-r1.json': gate('acceptance_failed'),
+        'verify-core.coder.json': {
+          status: 'blocked',
+          error_class: 'env',
+          needs: [{ cap: 'net', why: 'w', minimal_ask: 'm' }],
+          milestone: 'm1',
+        },
+      }),
+      first: {},
+    }),
+    redline: () => ({
+      s: held('code-api', {
+        'code-api.coder.json': {
+          status: 'blocked',
+          error_class: 'redline',
+          needs: [],
+          milestone: 'm1',
+        },
+      }),
+      first: {},
+    }),
+    approval: () => {
+      const s = held('x');
+      setGet(
+        s.root,
+        run('paused', { metadata: { approval: { nodeId: 'review', pauseId: 'p1' } } })
+      );
+      return { s, first: {} };
+    },
+  };
+  const yesCall: Record<string, string> = {
+    retry: 'workflow resume r --detach --json',
+    resume: 'workflow resume r --detach --json',
+    approve: 'workflow approve r --detach --json',
+  };
+
+  for (const [hold, p] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
+    if (p.do !== 'ask') {
+      test(`HOLD_POLICY ${hold} → ${p.do}, no reminder`, () => {
+        const { s, first, done } = scenes[hold]();
+        const sup = supervisor(s.root, 'pending');
+        const x = tick()[0];
+        expect(x).toMatchObject({ run_id: 'sa1', ...first });
+        // 签收门本身就是提问；其余自动处置不投提醒
+        if (hold !== 'signoff') expect(sup()).toEqual([]);
+        expect(loadLedger('sa1').dispositions?.at(-1)).toMatchObject({
+          reason: hold,
+          action: x.action,
+          ok: true,
+        });
+        if (hold === 'deadline') {
+          expect(s.calls()).toContain('workflow abandon r --json');
+          expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
+        }
+        done?.();
+      });
+      continue;
+    }
+    test(`HOLD_POLICY ${hold} → ask once (≤120 chars); yes runs ${p.yes}, no ends the run`, () => {
+      const { s, done } = scenes[hold]();
+      const sup = supervisor(s.root, 'pending');
+      expect(tick()[0]).toMatchObject({
+        run_id: 'sa1',
+        action: 'ask',
+        reason: hold,
+        ok: true,
+        ask: 'ask-1',
+      });
+      const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      expect(q).toStartWith(`superagent sa1:${hold}:`);
+      expect(q.length).toBeLessThanOrEqual(120);
+      expect(q).toContain('是=');
+      expect(tick()[0]).toMatchObject({ action: 'none', reason: hold, ask: 'pending' });
+      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+      writeFileSync(join(s.root, 'answer'), 'yes');
+      const before = s.calls().length;
+      expect(tick()[0]).toMatchObject({ action: p.yes, reason: hold, ok: true });
+      expect(s.calls().slice(before)).toContain(yesCall[p.yes]);
+      expect(loadLedger('sa1').dispositions?.map(d => `${d.reason}/${d.action}`)).toEqual([
+        `${hold}/ask`,
+        `${hold}/${p.yes}`,
+      ]);
+      done?.();
+      const n = scenes[hold]();
+      supervisor(n.s.root, 'no');
+      tick();
+      expect(tick()[0]).toMatchObject({ action: 'reject', reason: hold, ok: true });
+      expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(true);
+      n.done?.();
+    });
+  }
+
+  test('paused (not approval, not signoff) waits for its due time + grace, resumes at most twice, then asks', () => {
+    const { s } = scenes.paused();
+    supervisor(s.root, 'pending');
+    const wait = (resumeAt: string): RunView =>
+      run('paused', { metadata: { wait: { nodeId: 'w', kind: 'time', resumeAt } } });
+    setGet(s.root, wait(new Date(Date.now() - 60e3).toISOString()));
+    expect(tick()).toEqual([]);
+    setGet(s.root, wait('2020-01-01T00:00:00.000Z'));
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 1 });
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 2 });
+    expect(tick()[0]).toMatchObject({
+      action: 'ask',
+      reason: 'auto_retry_exhausted',
+      auto_retries: 2,
+    });
+  });
+
+  test('a corrupt ledger reports action:error; the other run is still handled and report counts it unreadable', () => {
+    const s = held('environment');
+    writeFileSync(join(s.root, 'home', 'runs', 'bad.json'), '{"run_id": "bad", trunc');
+    writeFileSync(join(s.root, 'home', 'runs', 'odd.json'), JSON.stringify({ run_id: 'other' }));
+    const { code, out: text } = captured(() => main(['supervise-tick']));
+    expect(code).toBe(1);
+    const out = JSON.parse(text) as Record<string, unknown>[];
+    expect(out.find(x => x.run_id === 'sa1')).toMatchObject({ action: 'auto_retry', ok: true });
+    expect(out.find(x => x.run_id === 'bad')).toMatchObject({ action: 'error', ok: false });
+    expect(out.find(x => x.run_id === 'odd')).toMatchObject({ action: 'error', ok: false });
+    expect(readFileSync(join(s.root, 'home', 'runs', 'bad.json'), 'utf8')).toBe(
+      '{"run_id": "bad", trunc'
+    );
+    const rep = captured(() => main(['report']));
+    expect(rep.code).toBe(1);
+    expect(JSON.parse(rep.out)).toMatchObject({
+      runs: 3,
+      unreadable: [
+        expect.stringMatching(/^bad: ledger .*JSON Parse error/),
+        expect.stringMatching(/^odd: .*run_id/),
+      ],
+    });
+  });
+
+  test('a truncated asks.json is never replaced: runs needing a reminder error, auto retries go on', () => {
+    const bad = '{"sa1:needs:0": {"id": "x", "sta';
+    const asksFile = (): string => join(process.env.SUPERAGENT_HOME ?? '', 'asks.json');
+    held('environment');
+    writeFileSync(asksFile(), bad);
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
+    expect(readFileSync(asksFile(), 'utf8')).toBe(bad);
+    const r = held('code-api', {
+      'code-api.coder.json': {
+        status: 'blocked',
+        error_class: 'redline',
+        needs: [],
+        milestone: 'm1',
+      },
+    });
+    const sup = supervisor(r.root, 'pending');
+    writeFileSync(asksFile(), bad);
+    const { code, out } = captured(() => main(['supervise-tick']));
+    expect(code).toBe(1);
+    expect((JSON.parse(out) as object[])[0]).toMatchObject({
+      action: 'error',
+      ok: false,
+      error: expect.stringContaining('asks'),
+    });
+    expect(readFileSync(asksFile(), 'utf8')).toBe(bad);
+    expect(sup()).toEqual([]);
   });
 });
 
@@ -1066,7 +1477,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(
     Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env }).exitCode
   ).toBe(0);
-  expect(sa('run', plan).err).toContain('no passing selftest'); // 无 selftest.json：preflight 拒绝
+  expect(sa('run', plan).err).toContain('no valid selftest receipt: no selftest.json'); // preflight 拒绝
   const started = sa('run', plan, '--fake', '--skip-selftest');
   expect(started.err).toBe('');
   expect(started.code).toBe(0);
@@ -1089,6 +1500,100 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
   expect(existsSync(String(waited.out.evidence))).toBe(true);
 }, 240000);
+
+describe('launch intents (run + supervise-tick reconcile)', () => {
+  const tickOut = (): Record<string, unknown>[] =>
+    JSON.parse(captured(() => main(['supervise-tick'])).out) as Record<string, unknown>[];
+  /** 意图 sa2（工作流 sa-sa2），启动进程 pid、started_at 可调；archon.db 的 runs 表按 rows 建。 */
+  const intent = (pid: number, rows: string[], startedAt = '2020-01-01T00:00:00.000Z') => {
+    const s = stub([run('completed')]);
+    const ledger = {
+      ...s.ledger,
+      run_id: 'sa2',
+      archon_run_id: '',
+      workflow: 'sa-sa2',
+      started_at: startedAt,
+    };
+    mkdirSync(join(s.root, 'home', 'intents'), { recursive: true });
+    const file = join(s.root, 'home', 'intents', 'sa2.json');
+    writeFileSync(file, JSON.stringify({ ledger, host: hostname(), pid }));
+    const db = new Database(join(s.root, 'home', 'archon', 'archon.db'));
+    db.run(
+      'create table remote_agent_workflow_runs (id text, workflow_name text, status text, metadata text)'
+    );
+    for (const id of rows)
+      db.run("insert into remote_agent_workflow_runs values (?, 'sa-sa2', 'running', '{}')", [id]);
+    db.close();
+    return { ...s, file };
+  };
+  test('run writes the intent before starting and removes it once the ledger is saved', () => {
+    const s = stub([]);
+    const repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    const plan = fixturePlan(s.root, repo);
+    const dir = join(s.root, 'home', 'intents');
+    // archon 桩在被调用时把意图目录拍下来
+    const bin = String(process.env.SA_ARCHON_BIN);
+    writeFileSync(
+      bin,
+      readFileSync(bin, 'utf8').replace(
+        'echo "$*" >>',
+        `ls "${dir}" > "${s.root}/at-run"; echo "$*" >>`
+      )
+    );
+    expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
+    expect(readFileSync(join(s.root, 'at-run'), 'utf8').trim()).toMatch(
+      /^\d{8}-\d{6}-[0-9a-f]{4}\.json$/
+    );
+    expect(readdirSync(dir)).toEqual([]);
+  });
+  test('a dead launcher whose archon run exists gets its ledger written; the intent goes away', () => {
+    const s = intent(LOST.pid, ['r2']);
+    expect(tickOut()[0]).toEqual({
+      run_id: 'sa2',
+      action: 'reconcile',
+      ok: true,
+      archon_run_id: 'r2',
+    });
+    expect(loadLedger('sa2')).toMatchObject({
+      archon_run_id: 'r2',
+      workflow: 'sa-sa2',
+      reconciled_at: expect.any(String),
+    });
+    expect(existsSync(s.file)).toBe(false);
+    expect(s.calls().filter(c => c.startsWith('workflow run'))).toEqual([]);
+  });
+  test('no archon run: concluded once on the intent, never restarted; a live or recent launcher is left alone', () => {
+    const s = intent(LOST.pid, []);
+    expect(tickOut()[0]).toMatchObject({
+      run_id: 'sa2',
+      action: 'reconcile',
+      ok: false,
+      reason: expect.stringContaining('superagent run'),
+    });
+    expect(JSON.parse(readFileSync(s.file, 'utf8'))).toMatchObject({
+      no_run_at: expect.any(String),
+    });
+    expect(tickOut().filter(x => x.run_id === 'sa2')).toEqual([]);
+    expect(existsSync(ledgerPath('sa2'))).toBe(false);
+    expect(s.calls().filter(c => c.startsWith('workflow run'))).toEqual([]);
+    const live = intent(process.pid, ['r2']);
+    expect(tickOut().filter(x => x.run_id === 'sa2')).toEqual([]);
+    expect(existsSync(live.file)).toBe(true);
+    const recent = intent(LOST.pid, ['r2'], new Date().toISOString());
+    expect(tickOut().filter(x => x.run_id === 'sa2')).toEqual([]);
+    expect(existsSync(recent.file)).toBe(true);
+  });
+  test('two archon runs with the same workflow name are not guessed: error, intent kept', () => {
+    const s = intent(LOST.pid, ['r2', 'r3']);
+    expect(tickOut()[0]).toMatchObject({
+      run_id: 'sa2',
+      action: 'error',
+      error: expect.stringContaining('2 archon runs'),
+    });
+    expect(existsSync(s.file)).toBe(true);
+  });
+});
 
 describe('lock (flock, real processes)', () => {
   const SRC = JSON.stringify(join(import.meta.dir, '..', 'src', 'archon.ts'));
