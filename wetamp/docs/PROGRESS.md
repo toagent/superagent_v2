@@ -93,10 +93,10 @@
 - 验收：`check-upstream-clean.sh` 输出为空；`tsc --noEmit` rc=0；`bun test` 156/156；仓库根 `bun run lint` rc=0；临时 home 下 install ok，含 codexBinaryPath；`selftest.sh --fake` ok，含 `hooks:{g1_commander_31_lines:deny,n1_worker_agent:deny}`；codex-worker trace 含 `-c features.multi_agent=false` 和 6 个 `mcp_servers.*.enabled=false`。
 - dry-run（只读）：`--hooks --dry-run` diff 112 行；`--purge-v1 --dry-run` 输出 348 行，将移走 5 个 managed 子代理以及 V1 的 releases/state/checkout 三个目录。
 - agent-supervisor 测试：失败集合与改动前基线一致（28 failure / 2 error，均为既有问题：test_wp5 中 ai-toolkit/twin-toolkit 相关、TasksSh 的 hook_fn/patch_idempotent、wal_breaker 中 ordinary breaker 被其他测试污染，单独跑能通过）。
-- twin-dev 只读探测：superagent 维度 kind=missing，V1 回执 commit 为 8334446e；未 align。
+- twin-dev：已 align（原记录「未 align」有误）。align-on-change 看门狗已于 2026-10-10 09:30:53 自动把 `25ac8df4` 投送到 dev/mini 并执行 `--remote-hooks`（证据 `~/.lan-dev-machine/logs/twin-align-watch.out.log:1771`）；之后的版本也会被自动投送，未评审版本的投送由元帅处理（M-06）。
 - 预算：TS 2106/2600、shell 397/700、hooks cjs 499/1400、文件 33/40。
 - 未做项与风险：
-  - 真实 `--hooks`/`--purge-v1` 写入、twin-dev align、launchd 都留给元帅执行。
+  - 真实 `--hooks`/`--purge-v1` 写入、launchd 都留给元帅执行。
   - 第一段验收时默认 install 没设 `SA_LAUNCHD_DIR`，改写了真实的 `~/Library/LaunchAgents/com.wetamp.superagent.supervise-tick.plist`。已用 install 生成的 `.bak-20261010090540` 还原，未执行 launchctl。
   - codex 从 0.160.0 漂移到 0.162.1，`features.multi_agent` 键若改名不会报错。
   - 删除拦截只认字面路径。
@@ -105,3 +105,25 @@
   - `exclude_user_instructions` 在 Archon 中没有对应字段。
   - `install.json` 与 V1 台账同位置。
   - 额外试跑 `selftest.sh --repo <只有空提交的临时仓库> --fake` 失败：archon detached 子进程启动时退出 1；selftest 被 `set -e` 截断，没打印 fail 信息。未深究，卡片要求的 `--fake` 默认用法已通过。
+
+## WP-B R1 修复摘要（评审 `wpB-astra-r1`，2026-10-10）
+
+- H-01 N-1 绕过：`hooks/shell.cjs` 的 `lift/unwrap/parse` 按参数语义剥离 env/sudo/xargs/timeout/nice/time/command/exec/rtk proxy 等包装器，递归 `$(…)`、反引号、`bash -c`、`eval`、`find -exec`、`env -S`；单引号内是字面量。
+- H-02 reviewer 只读：`src/archon.ts` 保留继承的 reviewer/general；`tiers.json` reviewer `denied_tools` 加 Edit/Write/MultiEdit/NotebookEdit；`codex-worker` reviewer 下加 `sandbox_mode="read-only"`；`guard.cjs` `reviewerShell` 白名单 + 写重定向检查。
+- H-03 去重丢 matcher：`src/install-hooks.ts` 去重键为（事件 × 组级条件 × 规范 command），补齐只认"全部" matcher 分组。
+- H-04 MCP 名：`codex-worker` 用 `python3 -I` + `tomllib` 取 `mcp_servers` 键，不安全名字跳过并记 stderr；不可用时退回表头正则。
+- M-01 Stop 门：新建 `hooks/stop-gate.cjs`，恢复 advisory/cycle/change、评审指纹、unknown；`change` 真阻断，同令牌第二次放行防死循环。
+- M-02 递归：`codex-worker` 对选定路径 realpath，指向自身、不存在或不可执行时 exit 2。
+- M-03 TRACE：只打 `{policy, argv}`，敏感值换成 `***`，超过 200 字符截断。
+- M-04 context-budget：尾部 `claude` 参数归一去掉，只留一条。
+- M-05 缺失配置：settings.json/hooks.json 不存在时按空文件补齐并创建；dry-run 打印与空文件的 diff，不写。
+- 顺手：micro-edit 累计放进 `stopGate.withState` 锁内（`wx` 锁文件），拿不到锁拒绝；删除拒绝信息只回显 basename。
+- 文档：`04-hooks-and-nesting.md` 补包装器剥离规则、reviewer 只读边界，并修正 Stop 门/计量/包装器的过时描述；本文 twin-dev 一行改为事实（已 align）。
+- 测试（新增 12 条，均在 HEAD 25ac8df4 旧代码上失败）：hooks 6、exec-profiles 4、generate 断言 1 处、install 2。
+- 验收：upstream-clean 空；`tsc --noEmit` rc=0；`bun test` 168/168；根 `bun run lint` rc=0；临时 home + `SA_LAUNCHD_DIR` install ok、`selftest.sh --fake` ok；真实 `--hooks --dry-run` 只改 12 条路径、无重复；smoke-guard 13/14（第 2 条按规则拒绝）。
+- 预算：TS 2129/2600、shell 436/700、cjs 783/1400、文件 34/40。
+- 剩余风险：
+  - Codex reviewer 节点的 `-c sandbox_mode` 被 Archon `thread/start` 的 `danger-full-access` 覆盖，实际边界是 `mutates_checkout:false`。
+  - reviewer 白名单只对设了 `SUPERAGENT_ROLE=reviewer` 的会话生效。
+  - Stop 门不跟踪 shell 写到其他仓库的改动；`claude -p` 方式的评审不算证据。
+  - M-06（自动投送未评审版本）由元帅处理。
