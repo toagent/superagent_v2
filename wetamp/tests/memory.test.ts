@@ -41,6 +41,17 @@ const seed = (...lessons: Lesson[]): void => memoryWrite(() => ({ lessons }));
 const fake = (): void => { process.env.SUPERAGENT_REFLECT_CMD = JSON.stringify([process.execPath, join(import.meta.dir, 'fixtures/fake-memory-reflector.ts')]); process.env.FAKE_MEMORY_STARTED = join(root, 'started'); };
 
 describe('EV1 incident replay', () => {
+  test('EV2 confined memory reads preserve repository-owned artifact evidence outside the memory home', () => {
+    raw.output_root = join(root, 'project-output');
+    mkdirSync(artifactsOf(raw), { recursive: true });
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: false, reason: 'acceptance_failed' }));
+    writeFileSync(join(artifactsOf(raw), 'verify-core.coder.json'), JSON.stringify({ error_class: 'task' }));
+    expect(episode()).toMatchObject({ reasons: ['acceptance_failed'], category: 'engine', signature: 'evidence_conflict' });
+    raw.output_root = tmp();
+    mkdirSync(artifactsOf(raw), { recursive: true });
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), '{}');
+    expect(() => episode()).toThrow('路径越界');
+  });
   test('E1 actual settle evidence wins over task self-report, mechanizes without reflection', async () => {
     fake();
     for (const [i, sample] of e1.entries()) {

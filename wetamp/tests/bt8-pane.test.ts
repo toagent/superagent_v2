@@ -13,7 +13,7 @@ afterEach(() => { if (savedTZ === undefined) delete process.env.TZ; else process
 const now = new Date('2026-10-10T16:58:00+08:00');
 const iso = (seconds: number): string => new Date(now.getTime() + seconds * 1000).toISOString();
 function row(id: string, repo: string, title: string, current: string, model: string): BoardRow {
-  return { run_id: id, repo, model, state: 'running', exit: null, nodes: { done: 4, total: 10, current, currentRole: current.startsWith('review') ? 'reviewer' : 'coder' }, started_at: iso(-3600), span: { started_ms: now.getTime() - 3600000, ended_ms: null }, elapsed_s: 3600, held: null, recoveries: 0, auto_retries: 0, console: 'codex', branch: 'b', evidence: '', plan: '', stale: false,
+  return { lastEvent: iso(0), activeNodes: [{ id: current, role: current.startsWith('review') ? 'reviewer' : 'coder', model }], run_id: id, repo, model, state: 'running', exit: null, nodes: { done: 4, total: 10, current, currentRole: current.startsWith('review') ? 'reviewer' : 'coder' }, started_at: iso(-3600), span: { started_ms: now.getTime() - 3600000, ended_ms: null }, elapsed_s: 3600, held: null, recoveries: 0, auto_retries: 0, console: 'codex', branch: 'b', evidence: '', plan: '', stale: false,
     engine: { title, milestones: ['m1', 'm2', 'm3'], currentMilestone: 'm2', states: [], firstPass: false, reason: '', dispositions: [] } };
 }
 const job: Job = { id: 'job', title: '启动配置烘焙', cwd: '/repo/xiaopan', kind: 'codex', model: 'gpt-6.1-sol', role: 'general', card: null, log: null, wrapper_pid: 1, pid: 2, started_at: iso(-600), state: 'running' };
@@ -22,16 +22,16 @@ const snap: Snapshot = {
   at: now.toISOString(), summary: {}, rows: [row('sinan-run', 'sinan', 'IIQE 题目清单报告', 'code-a', 'gpt-6.1-sol'), row('xiaopan-run', 'xiaopan', '启动配置烘焙', 'review-m2-r1', 'gpt-6-astra')],
   eta: { 'sinan-run': { weight: 1000, progress: { pct: 62, eta_s: 840, overrun_s: 0, basis: 'history' } }, 'xiaopan-run': { weight: 2000, progress: { pct: 31, eta_s: 2400, overrun_s: 0, basis: 'history' } } },
   asks: { 'xiaopan-run:auto_retry_exhausted': { status: 'pending' }, 'sinan-run:budget': { status: 'superseded' } },
-  activity: { jobs: [{ ...job, tier: 'general', owner: null, guess: false }], jobHistory: history, terms: [], procs: [], remote: [], notes: [] },
+  activity: { jobs: [{ ...job, pidAlive: true, heartbeatAt: iso(0), tier: 'general', owner: null, guess: false }], jobHistory: history, terms: [], procs: [], remote: [], notes: [] },
 };
 snap.rows[1].engine!.dispositions = [{ at: iso(-3720), reason: 'auto_retry_exhausted', action: 'ask', ok: true }];
 for (const width of [62, 46]) test(`${String(width)} columns: 2 runs + job + pending/superseded ask snapshot`, () => {
   const frame = renderToString(createElement(Frame, { snap, width, height: 100, now }), { columns: width });
   expect(frame).toMatchSnapshot();
-  expect(frame.split('\n')).toHaveLength(13);
-  expect(frame).toContain('跑 3 · 等你 1'); expect(frame).toContain('将军·sol6.1  编码 m2/3');
-  expect(frame).toContain('军师·astra  评审 r1'); expect(frame).toContain('? xiaopan 重试已用尽 是=再跑 否=终止 1h02m');
-  expect(frame).not.toMatch(/心跳|token|tok |今日结果|终端|预算|q退出/);
+  expect(frame.split('\n')).toHaveLength(9);
+  expect(frame).toContain('跑3 等你1'); if (width >= 60) expect(frame).toContain('将军·sol6.1');
+  if (width >= 60) expect(frame).toContain('军师·astra'); expect(frame).toContain('? xiaopan 重试已用尽 是=再跑 否=终止 1h02m');
+  expect(frame).not.toMatch(/心跳|tok |今日结果|终端|预算|q退出/);
   for (const line of frame.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
 });
 test('registered jobs use same-role median and expose history basis; missing/other-role history stays unknown', () => {

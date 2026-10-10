@@ -74,7 +74,7 @@ test('asks alone govern needs; pending asks do not hide running work; 62/120 ren
   expect(cockpit({ ...snap, rows: [{ ...failed, nodes: { ...failed.nodes, current: 'land' } }] }, now).needs).toHaveLength(1);
   for (const width of [62, 120]) {
     const out = renderToString(createElement(Frame, { snap, width, height: 100, now: new Date(now) }), { columns: width });
-    expect(out).toMatch(/\d+% (剩~|超~)/); expect(out).not.toContain('?%'); expect(out).not.toContain('需要你');
+    expect(out).toMatch(/\d+% (剩~|超~)/); expect(out).not.toContain('?%'); expect(out).toContain('需要你');
     expect(out.split('\n').every(l => Bun.stringWidth(l) <= width)).toBe(true);
   }
 });

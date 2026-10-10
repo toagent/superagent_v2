@@ -24,6 +24,8 @@ export interface Remote {
   agent: string;
 }
 export interface Owned {
+  pidAlive?: boolean;
+  heartbeatAt?: string | null;
   tier: Tier | null;
   inferred?: boolean; // owner inferred from unique cwd
   guess: boolean; // tier 是按模型池推断的
@@ -215,7 +217,7 @@ export function attach(
   });
   return {
     bound,
-    jobs: jobs.map(j => ({ ...j, model: j.model ?? bound.get(j)?.model ?? sessionModel(bound.get(j)?.transcript_path ?? null, j.kind), ...own(j, j.role, j.wrapper_pid, j.pid) })),
+    jobs: jobs.map(j => ({ ...j, pidAlive: rows.has(j.pid), heartbeatAt: bound.get(j)?.at ?? null, model: j.model ?? bound.get(j)?.model ?? sessionModel(bound.get(j)?.transcript_path ?? null, j.kind), ...own(j, j.role, j.wrapper_pid, j.pid) })),
     procs: procs.map(p => ({ ...p, model: p.model ?? bound.get(p)?.model ?? sessionModel(bound.get(p)?.transcript_path ?? null, p.kind), ...own(p, null, p.pid) })),
   };
 }

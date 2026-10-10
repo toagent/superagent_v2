@@ -18,7 +18,7 @@ const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
 beforeEach(() => { process.env.TZ = 'Asia/Taipei'; });
 afterEach(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
 const row = (id: string, state = 'running', current = 'review-m1-r2'): BoardRow => ({
-  landed: state === 'completed', run_id: id, repo: 'sinan', state, exit: null, model: 'gpt-6-astra', nodes: { done: 3, total: 5, current, currentRole: 'reviewer' },
+  lastEvent: iso(), landed: state === 'completed', run_id: id, repo: 'sinan', state, exit: null, model: 'gpt-6-astra', nodes: { done: 3, total: 5, current, currentRole: 'reviewer' },
   started_at: iso(-600000), span: { started_ms: now - 600000, ended_ms: state === 'running' ? null : now - 60000 }, elapsed_s: 600, held: state.startsWith('held:') ? { node: current, event: null } : null,
   recoveries: 0, auto_retries: 0, console: 'codex', branch: 'branch', evidence: '', plan: '', stale: false,
   engine: { title: '题目清单报告：补修订前版本和节分布排序', milestones: ['m1'], currentMilestone: 'm1', states: [{ id: 'code-a', state: 'completed' }, { id: 'verify-a', state: 'completed' }, { id: 'review-m1-r1', state: 'failed' }, { id: current, state: state === 'running' ? 'running' : 'completed' }, { id: 'review-m1-r3', state: 'skipped' }], firstPass: false, reason: '', dispositions: [] },
@@ -48,13 +48,12 @@ test('compact stage labels follow the current engine node', () => {
   expect(stages(row('r'))).toBe('评审 r2');
   for (const [node, label] of [['code-a', '编码 m1/1'], ['land', '合入'], ['verify-a', '验收'], ['repair-a', '修复'], ['fix-m1-r2', '修复'], ['environment', '准备']]) expect(stages(row(node, 'running', node))).toBe(label);
 });
-test('queued jobs are active, render 等内存 in Ink and retain an unknown progress', () => {
+test('queued jobs without a live child stay outside the alive-only tree', () => {
   const s = snapshot();
   s.activity!.jobs = [{ id: 'queued', title: 'memory wait', card: null, log: null, cwd: '/repo', kind: 'codex', model: 'gpt-6.1-sol', role: 'general', tier: 'general', guess: false, owner: null, wrapper_pid: process.pid, pid: 0, started_at: iso(-7200000), state: 'queued', reason: 'memory', memory: { pressure: 2, free: 80, source: 'sysctl' } }];
   const c = cockpit(s, now);
-  expect(c.active).toHaveLength(1); expect(c.needs).toHaveLength(0);
-  expect(c.active[0]).toMatchObject({ state: 'queued', stage: '等内存', reason: 'memory', waiting: '等内存', progress: { pct: null } });
-  expect(render(s)).toContain('等内存'); expect(render(s)).toContain('跑 1');
+  expect(c.active).toHaveLength(0); expect(c.needs).toHaveLength(0);
+  expect(c.tree).toEqual([]); expect(render(s)).toContain('跑0');
 });
 test('every S3 reason translates, unknown reason survives unchanged, needs comes from held and asks', () => {
   expect(Object.keys(REASONS).sort()).toEqual(Object.keys(HOLD_POLICY).sort());

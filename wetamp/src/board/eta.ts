@@ -9,7 +9,7 @@ import { buildRunNodeStates, type TerminalRecordEvent } from '../../../packages/
 import { readNodeRecordEvent } from '../../../packages/workflows/src/node-record-reader';
 
 export interface Progress { pct: number | null; eta_s: number | null; overrun_s: number; basis: 'history' | 'linear' | 'unknown' }
-export interface Estimate { progress: Progress; weight: number }
+export interface Estimate { nodes?: Record<string, Progress>; progress: Progress; weight: number }
 export const unknownProgress = (): Progress => ({ pct: null, eta_s: null, overrun_s: 0, basis: 'unknown' });
 type Nodes = NonNullable<RunView['nodes']>;
 export interface EtaInput { ledger: Ledger; run: RunView; samples: { id: string; seconds: number }[] }
@@ -27,7 +27,8 @@ export function etaInput(ledger: Ledger, run: RunView, events: (TerminalRecordEv
     if (record.eventType === 'node_completed' && typeof ms === 'number' && Number.isFinite(ms) && ms > 0) samples.push({ id, seconds: ms / 1000 });
   }
   const nodes = run.nodes ?? buildRunNodeStates({ id: run.id, metadata: {} }, events).map(n => ({ nodeId: n.node_id, state: n.state, ...timing.get(n.node_id) }));
-  return { ledger, run: { ...run, nodes }, samples };
+  const last = events.map(e => e.created_at).filter((at): at is string => !!at && Number.isFinite(Date.parse(at))).sort().at(-1);
+  return { ledger, run: { ...run, last_activity_at: run.last_activity_at ?? last, nodes }, samples };
 }
 const kind = (id: string): string => /^(code|verify|repair|settle|diff|review|fix|gate|land)(?:-|$)/.exec(id)?.[1] ?? 'other';
 const median = (xs: number[]): number => { const sorted = [...xs].sort((a, b) => a - b), i = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[i] : (sorted[i - 1] + sorted[i]) / 2; };
@@ -72,6 +73,7 @@ export function refreshEta(inputs: EtaInput[], now = Date.now()): void {
     if (run.status !== 'running') continue;
     const ids = workflowRoles(ledger);
     runs[ledger.run_id] = ids ? estimate([...ids.keys()].map(id => run.nodes?.find(n => n.nodeId === id) ?? { nodeId: id, state: 'pending' }), samples, Math.max(0, (now - Date.parse(ledger.started_at)) / 1000), now) : { progress: unknownProgress(), weight: 0 };
+    runs[ledger.run_id].nodes = Object.fromEntries((run.nodes ?? []).filter(n => n.state === 'running').map(n => [n.nodeId, estimate([n], samples, Math.max(0, (now - Date.parse(n.startedAt ?? '')) / 1000), now).progress]));
   }
   writeAtomic(join(home().sa, 'usage', 'eta.json'), JSON.stringify({ at: new Date(now).toISOString(), runs }));
 }
@@ -81,4 +83,4 @@ export function readEta(): Record<string, Estimate> {
     return Date.now() - Date.parse(c.at) < 600000 ? Object.fromEntries(Object.entries(c.runs).filter(([, x]) => x && typeof x.weight === 'number' && Number.isFinite(x.weight) && x.weight >= 0 && x.progress && ['history', 'linear', 'unknown'].includes(x.progress.basis) && (x.progress.pct === null || Number.isFinite(x.progress.pct) && x.progress.pct >= 0 && x.progress.pct <= 100) && (x.progress.eta_s === null || Number.isFinite(x.progress.eta_s) && x.progress.eta_s >= 0) && Number.isFinite(x.progress.overrun_s) && x.progress.overrun_s >= 0)) as Record<string, Estimate> : {};
   } catch { return {}; }
 }
-export const progressLabel = (p: Progress): string => `${p.pct === null ? '?' : String(p.pct)}% ${p.overrun_s > 0 ? `超~${String(Math.ceil(p.overrun_s / 60))}m` : p.eta_s === null ? '剩?' : `剩~${p.basis === 'linear' ? '?' : ''}${String(Math.ceil(p.eta_s / 60))}m`}`;
+export const progressLabel = (p: Progress): string => `${p.pct === null ? '—' : String(p.pct) + '%'} ${p.overrun_s > 0 ? `超~${String(Math.ceil(p.overrun_s / 60))}m` : p.eta_s === null ? '剩—' : `剩~${p.basis === 'linear' ? '?' : ''}${String(Math.ceil(p.eta_s / 60))}m`}`;

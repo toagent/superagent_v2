@@ -381,7 +381,7 @@ describe('time', () => {
         }),
         { columns: 160 }
       );
-    for (const instant of ['2026-10-10T00:00:50Z', '2026-10-10T00:02:05Z']) expect(text(instant)).toStartWith(`superagent ${fmtClock(at(instant), new Date(instant)).slice(0, 5)} · `);
+    for (const instant of ['2026-10-10T00:00:50Z', '2026-10-10T00:02:05Z']) expect(text(instant).split('\n')[0]).toEndWith(fmtClock(at(instant), new Date(instant)).slice(0, 5));
   });
 
   test('fmtClock uses the process time zone: HH:MM:SS today, MM-DD HH:MM otherwise', () => {
@@ -593,7 +593,7 @@ describe('end to end', () => {
     const r = cli(['--once']);
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
-    expect(r.out).toContain('superagent');
+    expect(r.out).toContain('跑');
     expect(r.out).toContain('无进行中任务');
     expect(r.out).not.toContain('remote');
   });

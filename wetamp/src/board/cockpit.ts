@@ -25,12 +25,14 @@ export function stages(r: BoardRow): string {
   return ({ repair: '修复', fix: '修复', verify: '验收', settle: '验收', diff: '评审准备', gate: '门禁', human: '签收', land: '合入' })[kind] ?? '准备';
 }
 export interface CockpitRun {
-  url?: string;
+  url?: string; firstPass?: boolean; interventions?: number;
   progress: Progress; progressText: string;
   id: string; project: string; title: string; state: string; elapsed: string; tokens: string;
   stage: string; role: string; round: string; reason: string; question: string; waiting: string;
 }
 export interface Cockpit {
+  tree: (CockpitRun & { children: { id: string; role: string; progress: Progress }[] })[];
+  zombies: number; reflection: Snapshot['reflection'];
   tokenRows: { role: string; total: number; models: Record<string, number> }[] | null;
   metrics: { completed: number; decided: number; firstPass: number; asks: number; debt: number };
   tokens: string; roleTokens: string[]; needs: CockpitRun[]; active: CockpitRun[]; runs: CockpitRun[];
@@ -61,22 +63,33 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const policy = (HOLD_POLICY as Partial<Record<string, typeof HOLD_POLICY[keyof typeof HOLD_POLICY]>>)[key];
     const question = policy && 'yes' in policy ? `${reasonText(key)} 是=${({ retry: key === 'budget' ? '放宽预算再跑' : '再跑', resume: '恢复', approve: '批准', review: '重评' })[policy.yes]} 否=终止` : key === 'signoff' || r.state === 'held:human' ? '等待签收 是=批准 否=终止' : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
-    return { progress, progressText: progressLabel(progress), id: r.run_id, url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined, project: r.repo, title: r.engine?.title ?? '任务标题未知', state: r.state, elapsed: fmtElapsed(elapsedAt(r, now)), tokens: runTokens(r.run_id), stage: stages(r), role: ['completed', 'failed', 'cancelled'].includes(r.state) ? roleTag('coder', r.coderModel ?? c?.sessions.find(x => x.owner?.run_id === r.run_id && x.owner.role === 'general')?.model) : roleTag(r.nodes.currentRole, r.model), round: r.engine?.round ? String(r.engine.round) : /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-', reason: reasonText(r.engine?.reason ?? ''), question, waiting: fmtElapsed(d?.action === 'ask' ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000)) : elapsedAt(r, now)) };
+    return { interventions: Math.max(r.intervened ? 1 : 0, r.engine?.dispositions.filter(d => ['ask', 'approve', 'reject', 'retry'].includes(d.action)).length ?? 0), firstPass: r.engine?.firstPass, progress, progressText: progressLabel(progress), id: r.run_id, url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined, project: r.repo, title: r.engine?.title ?? '任务标题未知', state: r.state, elapsed: fmtElapsed(elapsedAt(r, now)), tokens: runTokens(r.run_id), stage: stages(r), role: ['completed', 'failed', 'cancelled'].includes(r.state) ? roleTag('coder', r.coderModel ?? c?.sessions.find(x => x.owner?.run_id === r.run_id && x.owner.role === 'general')?.model) : roleTag(r.nodes.currentRole, r.model), round: r.engine?.round ? String(r.engine.round) : /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-', reason: reasonText(r.engine?.reason ?? ''), question, waiting: fmtElapsed(d?.action === 'ask' ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000)) : elapsedAt(r, now)) };
   };
   const ended = s.rows.filter(r => ['completed', 'failed', 'cancelled'].includes(r.state) && today(r.span?.ended_ms ?? NaN));
   const achieved = ended.filter(r => r.state === 'completed' && r.landed && !r.intervened && !r.engine?.dispositions.some(d => ['ask', 'approve', 'reject'].includes(d.action)));
-  const active = s.rows.filter(r => ['running', 'owner_lost'].includes(r.state)).map(r => project(r));
-  for (const j of s.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ?? []) {
+  const fresh = (at: string | null | undefined): boolean => { const age = now - Date.parse(at ?? ''); return age >= 0 && age < 600000; };
+  const liveRows = s.rows.filter(r => (r.nativeState ?? r.state) === 'running' && fresh(r.lastEvent));
+  const liveJobs = s.activity?.jobs.filter(j => j.state === 'running' && j.pidAlive && fresh(j.heartbeatAt)) ?? [];
+  const zombies = s.rows.filter(r => (r.nativeState === 'running' || ['running', 'owner_lost'].includes(r.state)) && !liveRows.includes(r)).length + (s.activity?.jobs.filter(j => j.state === 'running' && !liveJobs.includes(j)).length ?? 0);
+  const active = liveRows.map(r => project(r));
+  const tree: Cockpit['tree'] = liveRows.map(r => ({ ...project(r), children: (r.activeNodes ?? []).map(n => ({ id: n.id, role: roleTag(n.role, n.model), progress: s.eta?.[r.run_id]?.nodes?.[n.id] ?? unknownProgress() })) }));
+  for (const j of liveJobs) {
     const progress = j.state === 'queued' ? unknownProgress() : jobProgress({ ...j, role: j.tier }, s.activity?.jobHistory ?? [], now);
     active.push({ progress, progressText: progressLabel(progress), id: j.id, project: basename(j.cwd), title: j.title,
       state: j.state, elapsed: fmtElapsed(Math.max(0, Math.floor((now - Date.parse(j.started_at)) / 1000))),
       tokens: runTokens(j.id, 'job_id'), stage: j.state === 'queued' ? '等内存' : j.tier === 'strategist' ? '评审' : j.tier === 'general' ? '编码' : '执行',
       role: roleTag(j.tier, j.model), round: '-', reason: j.reason ?? '', question: '', waiting: j.state === 'queued' ? '等内存' : '' });
   }
+  for (const cwd of new Set(liveJobs.map(j => j.cwd))) {
+    const children = active.filter(r => liveJobs.some(j => j.cwd === cwd && j.id === r.id));
+    const measured = children.filter(r => r.progress.pct !== null);
+    const progress: Progress = measured.length === children.length ? { pct: Math.round(measured.reduce((n, r) => n + (r.progress.pct ?? 0), 0) / measured.length), eta_s: measured.every(r => r.progress.eta_s !== null) ? Math.max(...measured.map(r => r.progress.eta_s ?? 0)) : null, overrun_s: Math.max(...measured.map(r => r.progress.overrun_s)), basis: 'history' } : unknownProgress();
+    tree.push({ ...children[0], id: cwd, project: basename(cwd), progress, children: children.map(r => ({ id: r.id, role: r.role, progress: r.progress })) });
+  }
   const needs = Object.entries(s.asks ?? {}).flatMap(([key, ask]) => {
     if (!['pending', 'unknown'].includes(ask.status)) return [];
     const [id, reason] = key.split(':'), row = s.rows.find(r => r.run_id === id);
-    if (!row) return [{ progress: unknownProgress(), progressText: '?%', id, project: id, title: '', state: 'unknown', elapsed: '-', tokens: '未知', stage: '', role: '', round: '-', reason: reasonText(reason), question: `${reasonText(reason)} 是=? 否=?`, waiting: '?' }];
+    if (!row) return [{ progress: unknownProgress(), progressText: '—', id, project: id, title: '', state: 'unknown', elapsed: '-', tokens: '未知', stage: '', role: '', round: '-', reason: reasonText(reason), question: `${reasonText(reason)} 是=? 否=?`, waiting: '?' }];
     const r = project(row, reason);
     const asked = [...(row.engine?.dispositions ?? [])].reverse().find(d => d.action === 'ask' && d.reason === reason);
     return [{ ...r, waiting: asked ? fmtElapsed(Math.max(0, Math.floor((now - Date.parse(asked.at)) / 1000))) : r.waiting }];
@@ -85,7 +98,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     tokenRows: known && todaySessions ? tokenRows.sort((a, b) => b.total - a.total) : null,
     metrics: { completed: achieved.length, decided: ended.length, firstPass: achieved.filter(r => r.engine?.firstPass).length, asks: s.rows.reduce((n, r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(Date.parse(d.at))).length ?? 0), 0), debt: typeof s.summary.debt === 'number' ? s.summary.debt : 0 },
     tokens: known ? fmtTokens(daily.reduce((n, d) => n + d.total, 0)) : '未知', roleTokens: byRole.size ? [...byRole].sort(([a], [b]) => Number(a.startsWith('未归属')) - Number(b.startsWith('未归属'))).map(([k, v]) => `${k} ${fmtTokens(v)}`) : ['角色今日用量未知'],
-    needs,
+    tree, zombies, reflection: s.reflection, needs,
     active,
     runs: s.rows.map(r => project(r)),
   };

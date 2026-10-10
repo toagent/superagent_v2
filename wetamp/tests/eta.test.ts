@@ -25,7 +25,7 @@ test('sparse samples extrapolate observed throughput; no observations or missing
   const x = estimate([{ nodeId: 'code-a', state: 'completed', durationMs: 600000 }, { nodeId: 'verify-a', state: 'running', startedAt: iso(20) }], samples.slice(0, 2), 620, now);
   expect(x.progress.basis).toBe('linear'); expect(x.progress.eta_s).toBe(600); expect(progressLabel(x.progress)).toContain('剩~?10m');
   expect(estimate([{ nodeId: 'code-a', state: 'running' }], [], 10, now).progress).toEqual(unknownProgress());
-  expect(progressLabel(unknownProgress())).toBe('?% 剩?');
+  expect(progressLabel(unknownProgress())).toBe('— 剩—');
   expect(estimate([{ nodeId: 'code-a', state: 'running' }], samples, 10, now).progress.basis).toBe('unknown');
 });
 test('overlaid Ink bar fills exact columns, text remains whole at 62/120 and narrow space falls back', () => {

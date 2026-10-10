@@ -31,17 +31,19 @@ export interface Episode {
 const field = z.string().max(240);
 export const lessonSchema = z.object({ tier: z.enum(['project', 'type', 'role']), scope: field.min(1), when: field.min(1), do: field.min(1), dont: field, why: field, evidence: z.array(field).min(1).max(5), mechanizable: z.boolean() }).strict();
 export type Lesson = Infer<typeof lessonSchema> & { id: string; tag: string; category: Category; reasons: string[]; status: 'trial' | 'stable' | 'retired' | 'mechanized'; helpful: number; harmful: number; votes?: number; created_at: string; last_hit: string };
-interface Entry { lessons: Lesson[]; scored?: string; reflected?: string; result?: string; day?: string; tokens?: number }
+interface Entry { lessons: Lesson[]; hit_ids?: string[]; scored?: string; reflected?: string; result?: string; day?: string; tokens?: number }
 export interface Prior { n: number; duration: { p50: number; p90: number }; tokens: { n: number; p50: number; p90: number } }
 const root = (): string => join(home().sa, 'memory');
 export const memoryOn = (): boolean => process.env.SUPERAGENT_MEMORY !== 'off';
 export const privateProject = (p: string): boolean => p.includes('_private') || p.includes('Mobile Documents');
 export const memoryLog = (why: string): void => { console.error(`memory: ${why}`); };
-export function memoryJson<T>(path: string, fallback: T): T { return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) as T : fallback; }
+export const memoryPath = (path: string): string | null => confined({ repo: home().sa } as Ledger, path);
+// Collection may read repository evidence; Web memory reads have no Ledger scope.
+export function memoryJson<T>(path: string, fallback: T, owner?: Ledger): T { const file = owner ? confined(owner, path) : memoryPath(path); return file ? JSON.parse(readFileSync(file, 'utf8')) as T : fallback; }
 const files = (dir: string): string[] => existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')).sort() : [];
 export const episodes = (): Episode[] => files(join(root(), 'episodes')).map(f => memoryJson<Episode>(join(root(), 'episodes', f), {} as Episode));
 export function memoryState(): { lessons: Lesson[]; entries: Entry[] } {
-  const file = join(root(), 'lessons.jsonl'), entries = existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(s => JSON.parse(s) as Entry) : [];
+  const file = memoryPath(join(root(), 'lessons.jsonl')), entries = file ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(s => JSON.parse(s) as Entry) : [];
   return { entries, lessons: [...new Map(entries.flatMap(e => e.lessons).map(l => [l.id, l])).values()] };
 }
 export function memoryWrite(fn: (state: ReturnType<typeof memoryState>) => Entry): void {
@@ -93,7 +95,7 @@ export function saveEpisode(e: Episode): boolean {
 const quantiles = (xs: number[]): { p50: number; p90: number } => { const s = [...xs].sort((a, b) => a - b); return { p50: s[Math.floor((s.length - 1) / 2)] ?? 0, p90: s[Math.ceil((s.length - 1) * .9)] ?? 0 }; };
 export const priorKey = (project: string, p: Pick<Pkg, 'size' | 'risk' | 'scope'>, model: string | null): string => JSON.stringify([project, taskTag(p.scope.write), p.size, p.risk, model]);
 function evidenceRows(l: Ledger, run: RunView): { file: string; data: Record<string, unknown> }[] {
-  const art = confined(l, artifactsOf(run)); if (!art) return []; return files(art).filter(f => /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)).map(f => ({ file: f, data: memoryJson<Record<string, unknown>>(confined(l, join(art, f)) ?? '', {}) }));
+  const art = confined(l, artifactsOf(run)); if (!art) return []; return files(art).filter(f => /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)).map(f => ({ file: f, data: memoryJson<Record<string, unknown>>(join(art, f), {}, l) }));
 }
 // Closed mapping is diagnostic only: unknown vendor prose is never a retry decision.
 export const failureReason = (text: string): string => reasonOf(text)?.code ?? (text.includes('No base branch could be detected') ? 'base_branch_missing' : 'unregistered_reason');
@@ -119,8 +121,8 @@ export function foldEpisode(l: Ledger, plan: Plan, raw: RunView, events: Paramet
   const findings = rows.flatMap(r => Array.isArray(r.data.findings) ? (r.data.findings as { id: string; severity: string; file: string; line: number; status: string; evidence: string }[]).map(f => redact(`| ${f.id} | ${f.severity} | ${f.file}:${String(f.line)} | ${f.status} | ${f.evidence} |`).slice(0, 800)) : []);
   let diff: Episode['diff'] = null;
   if (run.working_path && !privateProject(plan.repo)) { const d = Bun.spawnSync(['git', '-C', run.working_path, 'diff', '--numstat', plan.base_ref, 'HEAD'], { stdout: 'pipe', stderr: 'ignore', timeout: 5000 }); if (d.exitCode === 0) { const stats = d.stdout.toString().trim().split('\n').filter(Boolean).map(s => s.split('\t')); diff = { files: stats.length, added: stats.reduce((n, s) => n + (Number(s[0]) || 0), 0), removed: stats.reduce((n, s) => n + (Number(s[1]) || 0), 0) }; } }
-  const decision = diagnosis({ reasons, signals, status: run.status, acceptance, dispositions: l.dispositions, p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null, coder_error: rows.some(r => !!r.data.error_class || r.data.self_report_conflict === true) || files(artifactsOf(run)).filter(f => f.endsWith('.coder.json')).some(f => !!memoryJson<{ error_class?: string | null }>(confined(l, join(artifactsOf(run), f)) ?? '', {}).error_class) }, repeated);
-  return { ...decision, signals, id: l.run_id, at: new Date(now).toISOString(), source: 'run', status: run.status, packages: plan.packages.map(p => ({ id: p.id, tag: taskTag(p.scope.write), risk: p.risk, size: p.size })), project: plan.repo, tag: taskTag(plan.packages.flatMap(p => p.scope.write)), risk: [...plan.packages].sort((a, b) => b.risk.localeCompare(a.risk))[0].risk, size: plan.packages.length === 1 ? plan.packages[0].size : 'L', model, fake: memoryJson<{ fake?: boolean }>(join(l.gen_dir, 'engine.json'), {}).fake === true, duration_ms, p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null, reasons, fingerprint: l.engine_hash ?? null, incidents: existsSync(join(home().sa, 'incidents', l.run_id)) ? [`incidents/${l.run_id}/sample.json`] : [], timeline: (run.nodes ?? []).map(n => ({ node: n.nodeId, state: n.state, started_at: n.startedAt ?? null, duration_ms: n.durationMs ?? null })), acceptance, findings, diff, tokens, asks: Object.entries(ownAsks).flatMap(([k, a]) => a ? [{ hold: k.split(':')[1], status: a.status }] : []), dispositions: [...(l.dispositions ?? []), ...l.recoveries.map(at => ({ at, reason: 'recover', action: 'recover', ok: true })), ...(l.adoptions ?? []).map(a => ({ at: a.at, reason: 'adopt', action: 'adopt', ok: true }))].map(d => ({ at: d.at, reason: reasonOf(d.reason)?.code ?? d.reason.slice(0, 80), action: d.action, ok: d.ok })) };
+  const decision = diagnosis({ reasons, signals, status: run.status, acceptance, dispositions: l.dispositions, p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null, coder_error: rows.some(r => !!r.data.error_class || r.data.self_report_conflict === true) || files(artifactsOf(run)).filter(f => f.endsWith('.coder.json')).some(f => !!memoryJson<{ error_class?: string | null }>(join(artifactsOf(run), f), {}, l).error_class) }, repeated);
+  return { ...decision, signals, id: l.run_id, at: new Date(now).toISOString(), source: 'run', status: run.status, packages: plan.packages.map(p => ({ id: p.id, tag: taskTag(p.scope.write), risk: p.risk, size: p.size })), project: plan.repo, tag: taskTag(plan.packages.flatMap(p => p.scope.write)), risk: [...plan.packages].sort((a, b) => b.risk.localeCompare(a.risk))[0].risk, size: plan.packages.length === 1 ? plan.packages[0].size : 'L', model, fake: memoryJson<{ fake?: boolean }>(join(l.gen_dir, 'engine.json'), {}, l).fake === true, duration_ms, p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null, reasons, fingerprint: l.engine_hash ?? null, incidents: existsSync(join(home().sa, 'incidents', l.run_id)) ? [`incidents/${l.run_id}/sample.json`] : [], timeline: (run.nodes ?? []).map(n => ({ node: n.nodeId, state: n.state, started_at: n.startedAt ?? null, duration_ms: n.durationMs ?? null })), acceptance, findings, diff, tokens, asks: Object.entries(ownAsks).flatMap(([k, a]) => a ? [{ hold: k.split(':')[1], status: a.status }] : []), dispositions: [...(l.dispositions ?? []), ...l.recoveries.map(at => ({ at, reason: 'recover', action: 'recover', ok: true })), ...(l.adoptions ?? []).map(a => ({ at: a.at, reason: 'adopt', action: 'adopt', ok: true }))].map(d => ({ at: d.at, reason: reasonOf(d.reason)?.code ?? d.reason.slice(0, 80), action: d.action, ok: d.ok })) };
 }
 export function triggered(e: Episode, heldSince: string | undefined, etaMs: number | undefined, now: number): boolean {
   return e.category === 'engine' && e.signature !== 'evidence_missing' || ['failed', 'cancelled', 'lost'].includes(e.status) || e.status === 'completed' && (e.asks.length > 0 || e.dispositions.some(d => ['ask', 'approve', 'retry', 'recover', 'adopt'].includes(d.action))) || !!heldSince && now - Date.parse(heldSince) > 1800000 || (e.p50_ratio ?? 0) > 2 || !!etaMs && e.duration_ms > etaMs * 1.5 || e.findings.some(f => /\| (high|blocker) \|/.test(f)) || !!(e.signals.engine_suspect + e.signals.dup_ask + e.signals.orphan_hold);
@@ -158,7 +160,7 @@ export function maintainLessons(run?: { id: string; reasons: string[]; failed: b
     if (run && s.entries.some(e => e.scored === run.id)) return { lessons: [] };
     const lessons = s.lessons.map(l => { const used = run?.ids.includes(l.id), harmful = used && run?.failed && l.reasons.some(r => run.reasons.includes(r)); const next = { ...l, helpful: l.helpful + (used && !harmful ? 1 : 0), harmful: l.harmful + (harmful ? 1 : 0) }; if (active(next)) { if (next.harmful >= 2 || now - Date.parse(next.last_hit) >= 30 * 86400000) next.status = 'retired'; else if (next.helpful >= 2 && next.harmful === 0) next.status = 'stable'; } if (next.harmful >= 2 || next.mechanizable) mechanize('lesson_' + next.id, next.reasons, next.id); return next; });
     for (const scope of new Set(lessons.map(l => `${l.tier}:${l.scope}`))) lessons.filter(l => active(l) && `${l.tier}:${l.scope}` === scope).sort((a, b) => rank(b) - rank(a) || b.last_hit.localeCompare(a.last_hit)).slice(30).forEach(l => { l.status = 'retired'; });
-    return { lessons: lessons.filter(l => JSON.stringify(l) !== JSON.stringify(s.lessons.find(old => old.id === l.id))), ...(run ? { scored: run.id } : {}) };
+    return { lessons: lessons.filter(l => JSON.stringify(l) !== JSON.stringify(s.lessons.find(old => old.id === l.id))), ...(run ? { scored: run.id, hit_ids: [...new Set(run.ids)] } : {}) };
   });
 }
 export function lintPlan(plan: Plan, override?: string, now = Date.now()): { warnings: string[]; rejected: boolean; override?: string } {
@@ -170,11 +172,23 @@ export function lintPlan(plan: Plan, override?: string, now = Date.now()): { war
   return { warnings, rejected: rejected && !override?.trim(), ...(override?.trim() ? { override: redact(override).slice(0, 240) } : {}) };
 }
 export const reflectionLimit = (): number => z.number().int().nonnegative().parse(memoryJson<{ daily_tokens?: number }>(join(root(), 'config.json'), {}).daily_tokens ?? 5000000);
-export function memoryData(now = Date.now()): { states: Record<Lesson['status'], number>; categories: Record<Category, number>; reflection: { day: string; tokens: number; limit: number; yellow: boolean }; queued: number; recent: (Episode & { result: string })[] } {
+export function memoryData(now = Date.now()): { lessons: Lesson[]; all: (Episode & { result: string })[]; hits: Record<string, number>; scored: number; hitRuns: number; states: Record<Lesson['status'], number>; categories: Record<Category, number>; reflection: { day: string; tokens: number; limit: number; yellow: boolean }; queued: number; recent: (Episode & { result: string })[] } {
   const s = memoryState(), all = episodes(), day = new Date(now).toLocaleDateString('sv-SE'), tokens = s.entries.filter(e => e.day === day).reduce((n, e) => n + (e.tokens ?? 0), 0), done = new Map(s.entries.filter(e => e.reflected).map(e => [e.reflected, e.result ?? '未提炼']));
   const queue = all.filter(e => !done.has(e.id) && !['engine', 'transient'].includes(e.category) && !privateProject(e.project) && (!e.fake || !!process.env.SUPERAGENT_REFLECT_CMD));
   const categories: Record<Category, number> = { engine: 0, plan: 0, project: 0, role: 0, transient: 0 }; for (const e of all) categories[e.category]++;
-  return { categories, states: Object.fromEntries(['trial', 'stable', 'retired', 'mechanized'].map(status => [status, s.lessons.filter(l => l.status === status).length])) as Record<Lesson['status'], number>, reflection: { day, tokens, limit: reflectionLimit(), yellow: queue.length > 0 && tokens + 9216 > reflectionLimit() }, queued: queue.length, recent: all.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10).map(e => ({ ...e, result: done.get(e.id) ?? (privateProject(e.project) ? '仅分诊：私有项目' : e.category === 'engine' ? '机制化需求' : e.category === 'transient' ? '仅计数' : '排队') })) };
+  const history = all.sort((a, b) => b.at.localeCompare(a.at)).map(e => ({ ...e, result: done.get(e.id) ?? (privateProject(e.project) ? '仅分诊：私有项目' : e.category === 'engine' ? '机制化需求' : e.category === 'transient' ? '仅计数' : '排队') }));
+  const seen = new Map<string, Lesson>(), hits: Record<string, number> = {}; let scored = 0, hitRuns = 0;
+  for (const entry of s.entries) {
+    let hit = (entry.hit_ids?.length ?? 0) > 0;
+    for (const l of entry.lessons) {
+      const old = seen.get(l.id);
+      if (l.last_hit !== l.created_at && l.last_hit !== old?.last_hit) hits[l.id] = (hits[l.id] ?? 0) + 1;
+      if (entry.scored && old && l.helpful + l.harmful > old.helpful + old.harmful) hit = true;
+      seen.set(l.id, l);
+    }
+    if (entry.scored) { scored++; if (hit) hitRuns++; }
+  }
+  return { lessons: s.lessons, all: history, hits, scored, hitRuns, categories, states: Object.fromEntries(['trial', 'stable', 'retired', 'mechanized'].map(status => [status, s.lessons.filter(l => l.status === status).length])) as Record<Lesson['status'], number>, reflection: { day, tokens, limit: reflectionLimit(), yellow: tokens >= reflectionLimit() || queue.length > 0 && tokens + 9216 > reflectionLimit() }, queued: queue.length, recent: history.slice(0, 10) };
 }
 interface LiveFold { stamp: string; episode: Episode; hold?: string; since: string; prior_ms: number }
 interface FoldIndex { live?: Partial<Record<string, LiveFold>>; day: string; terminal: Record<string, string>; samples: Record<string, { key: string; duration: number; tokens: number | null }[]> }
@@ -193,7 +207,7 @@ export function memoryTick(asks: Asks, now = Date.now(), kick = true, dryRun = f
       if (index.terminal[id] === stamp) continue;
       const native = dryRun ? null : runRevision(l.archon_run_id), revision = native ? stamp + ':' + native + ':' + new Bun.CryptoHasher('sha256').update(JSON.stringify(Object.entries(asks).filter(([k]) => k.startsWith(id + ':')))).digest('hex') : null;
       const cached = live[id]; if (revision && cached?.stamp === revision) { reused.push({ l, cache: cached }); continue; }
-      const snapshot = memoryJson<unknown>(confined(l, join(l.gen_dir, 'plan.json')) ?? '', null);
+      const snapshot = memoryJson<unknown>(join(l.gen_dir, 'plan.json'), null, l);
       if (!z.object({ repo: z.string(), packages: z.array(z.object({ id: z.string(), risk: z.string(), size: z.string(), scope: z.object({ write: z.array(z.string()) }) })).min(1) }).safeParse(snapshot).success) continue;
       const plan = snapshot as Plan, raw = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as unknown as RunView & { events: Parameters<typeof etaInput>[2] };
       if (!Array.isArray(raw.events)) throw new Error('events missing');
@@ -217,7 +231,7 @@ export function memoryTick(asks: Asks, now = Date.now(), kick = true, dryRun = f
       const heldSince = raw.status === 'paused' ? raw.metadata?.wait?.waitingSince ?? raw.last_activity_at ?? l.started_at : undefined;
       if (triggered(e, heldSince, etaMs, now)) { if (e.category === 'engine' && e.signature === 'evidence_missing' && etaMs > 0 && e.duration_ms > etaMs * 1.5) Object.assign(e, diagnosis({ ...e, overrun: true })); emit(e); }
       if (['completed', 'failed', 'cancelled'].includes(raw.status)) {
-        if (!dryRun) maintainLessons({ id: l.run_id, reasons: e.reasons, failed: raw.status === 'failed', ids: Object.values(memoryJson<{ lessons?: Record<string, string[]> }>(join(l.gen_dir, 'engine.json'), {}).lessons ?? {}).flat() }, now);
+        if (!dryRun) maintainLessons({ id: l.run_id, reasons: e.reasons, failed: raw.status === 'failed', ids: Object.values(memoryJson<{ lessons?: Record<string, string[]> }>(join(l.gen_dir, 'engine.json'), {}, l).lessons ?? {}).flat() }, now);
         index.terminal[l.run_id] = stamp; live[l.run_id] = undefined;
       } else if (revision) {
         const c = classifyRun(l, raw); live[l.run_id] = { stamp: revision, episode: e, hold: c.state.startsWith('held:') ? c.state.slice(5) : undefined, since: raw.metadata?.wait?.waitingSince ?? raw.last_activity_at ?? l.started_at, prior_ms: prior.duration.p50 };
