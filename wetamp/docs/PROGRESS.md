@@ -486,3 +486,32 @@ tok 今日 未知  角色今日用量未知
 - adopt 空增量结论：旧 `start-*` 用当前 HEAD 导致 BASE 也随 adopt 前移，确会漏审已有提交；现改为 `git merge-base base_ref HEAD`（`src/generate.ts:154`），所有 verify/diff 的全量 patch、范围和 hash 都来自该共同祖先…HEAD（`templates/.archon/scripts/sa-check.ts:253`），不再来自本次 coder 增量。scope_pkgs 与 brief 由生成器按实际里程碑拓扑累计，前序已交付范围不会误报越界。R1 用全量 patch，且没有 same 守卫（`src/generate.ts:312,336`）；R2/R3 仍用上次实际评审候选以来的 delta 并保留 full_diff，same 只比较全量 patch hash（`sa-check.ts:284`），避免无修复重复评审。基线 ref 前移到包含交付后共同祖先会前移，这是 git 的真实集成状态；本包不改 ref。
 - 回归：已提交代码 + 本次零增量仍生成含既有交付的全量 patch，首轮 same=false；生成器验证全量接线、累计 brief/scope、乱序 plan 的拓扑以及带单引号 ref 的 shell 引用。隔离真实 Archon fake selftest 在 HF3 adopt 后额外断言全量 diff 包含旧失败 attempt 的 `core`/`repair core` 交付；不用单元 fixture 冒充生产恢复。src/模板 TS 净增 18 行（≤60），hooks 与 packages 无改动，无新增依赖。
 - 验收证据：`/tmp/hf4-evidence.jv8Qy0/`。`cd wetamp && bunx tsc --noEmit && bun test` 最终 exit 0（563 pass / 0 fail，`acceptance-final.log`）；定向 generate/sa-check exit 0（253 pass / 0 fail，`targeted-final.log`）。初轮 `acceptance-1.log` 的单个失败是测试将带引号基线分支创建在交付 HEAD，却期望交付前祖先，已固定该分支起点。`bun run lint --config wetamp/eslint.config.mjs wetamp/src/generate.ts wetamp/templates/.archon/scripts/sa-check.ts wetamp/scripts/hf3-adoption-selftest.ts` exit 0（`lint.log`）；`SUPERAGENT_HOME=/tmp/hf4-evidence.jv8Qy0 bash scripts/selftest.sh --fake` exit 0（`selftest.log`、`selftest-fake.json`）。提交后用同一 home 执行 `bash scripts/verify-local.sh --commit HEAD`，提交绑定结果写入 `verify.json`；旧基线反例见 `e7-before.log`。G2 astra 里程碑独立评审及元帅最终实测由主控安排，派生会话不发起评审、不晋升共享经验。
+### WP-BT7 R2：真实形状回放
+
+- 先只读复现：2026-10-10 16:06 的真实 ETA 缓存中运行中 run 为 `basis=unknown, weight=0`；实际 `archon workflow get --verbose --events --json` 返回 events，**以 events 替代 nodes**。上一轮把该响应直接当带 nodes 的 RunView，理想化夹具没有覆盖这一差异。真实事件耗时在 `data.timing.startedAt/durationMs` 或 `data.duration_ms`，工作流节点 id 可以对齐。现在复用上游 `buildRunNodeStates` 折叠生命周期，`readNodeRecordEvent` 读取耗时，保持 reset/cache-success 语义；没有重写引擎状态机、增加查询或渲染采集。
+- 历史来源覆盖全部登记 ledger：实测 19 个，其中 18 个 completed/failed/cancelled，成功节点耗时组成历史样本，运行中 run 的观测只用于稀疏类别线性外推。真实副本重算结果 `pct=84, eta_s=453, overrun_s=483, basis=linear, weight=2743.776`，不再为零权重未知。
+- 角色三路：run claims 按工作流定义区分 coder/reviewer；旧 live 只有 `derived`，沿用既有终端规则 true→将军、false→元帅；高优先级 job 的 null role 允许同客户端同 session 的 live 补全，同时保留 job/run 身份。已知角色不被空角色覆盖。真实今日会话归属前/后：将军 53→60、军师 13→13、元帅 5→14、未归属 324→308。剩余会话无可核对 claims/jobs/live 身份，旧源字段缺失；存在 Claude/Codex 同 UUID，归属键始终含客户端，不能凭模型或另一客户端身份猜测。展示名称改为“未归属”，已归属组优先显示。
+- 旧 pending asks 的两个真实 run 已 classified completed；展示口径改为 held:*，或 S3 接管策略内 failed（code/fix/verify/settle）且有未决 ask。completed/cancelled 旧 asks 不进“需要你”，running/owner_lost 也不被旧 asks 隐藏；没有关闭或改写源提问，S4 仍负责源头收尾。
+- 回放夹具 `tests/fixtures/cockpit-r2.json` 保留五个真实 CLI envelope 的事件结构、时间关系、缺 nodes、claims/jobs/legacy live、同 UUID 不同客户端和 completed 旧 asks；替换 repo/run/session/attempt/package 标识，删除 checkout/sessionPreview/正文。新增四项回放测试同时检查数字 ETA、一次查询、采集无缓存写入、归属补全与不误归属、62/120 不溢出、reset 与缓存成功耗时。
+- 真实验收只读真源；`usageEvidence()` 不写缓存，真实元数据和重算缓存仅落 `/tmp/wpbt7-r2-real-home`。worktree 入口使用该真实副本与真实只读 ARCHON_HOME，`NODE_ENV=test` 禁止 Web 启动/后台刷新，两种宽度均 exit 0；真实 `~/.superagent` 未写入、pane 未重启。副本未复制心跳日志，故心跳未知仅是隔离副本缺该文件。真实缓存待主控上线后的正常后台刷新更新。
+- 自检：`cd wetamp && bunx tsc --noEmit` exit 0；全量 `bun test` 400 pass/0 fail/2 snapshots（167.66s）；最后源编辑后定向 20 pass/0 fail。`bunx eslint src` 全部 24 文件 0 errors/0 warnings，指定五文件清零；真实 lint wrapper scoped 检查 exit 0。隔离 home 的 `selftest.sh --fake` exit 0、ok=true，G1/N1 deny、HF3 5/5 completed；属于 fake 契约自检，不冒充真实 AI 执行。证据 `/tmp/wpbt7-r2-tests.log`、`/tmp/wpbt7-r2-eslint-final.json`、`/tmp/wpbt7-r2-selftest.log`；提交绑定 verify 回执将写 `/tmp/wpbt7-r2-verify-home/verify.json`，由主控按最终 commit 核对。src TS/TSX 基线 c88f2e71 为 5749 行，修复后 5776，净增 27；hooks 及 HF3 三文件无改动。独立复审、集成与上线验收交还元帅。
+
+62 列真实副本入口摘录（2026-10-10 16:17，省略需要你与结果段；完整 `/tmp/wpbt7-r2-real-62.txt`）：
+```text
+今日 达成 12/14 · 一次通过 10 · 人工介入 6 · 评审债 25
+总 ▕████████████████████1 run · 84% 超~9m███████████░░░░░░░░░▏
+tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra…
+━ 进行中 1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ xiaopan-translator 移植 P1–P5 到 e890971（快进… 38m56s 5.6M
+  M1/1 编✓ 验✓ 评R2◐ 门· 合· ▕█████84% 超~9m██░░░▏ 将军·sol6.1
+```
+
+120 列同一真实副本入口摘录（完整 `/tmp/wpbt7-r2-real-120.txt`）：
+```text
+今日 达成 12/14 · 一次通过 10 · 人工介入 6 · 评审债 25
+总 ▕█████1 run · 84% 超~9m██░░░░▏
+tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  将军·astra 441.7K  元帅·opus 448.6M  元帅·fable 45.…
+━ 进行中 1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ xiaopan-translator 移植 P1–P5 到 e890971（快进到已验收的 d28b532） +1 38m57s R2 5.6M 073817-06da
+  M1/1 编✓ 验✓ 评R2◐ 门· 合· ▕█████████84% 超~9m██████░░░░▏ 将军·sol6.1
+```

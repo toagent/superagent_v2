@@ -45,7 +45,7 @@ test('ETA cache derives complete node set from existing workflow and atomically 
   const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, 'archon'); mkdirSync(join(root, 'usage')); const wf = join(root, '.archon/workflows/w'); mkdirSync(wf, { recursive: true });
   writeFileSync(join(wf, 'w.yaml'), 'nodes:\n  - id: code-a\n  - id: verify-a\n');
   const ledger: Ledger = { run_id: 's', archon_run_id: 'a', repo: root, gen_dir: root, plan: 'plan.json', branch: 'b', workflow: 'w', console: 'codex', started_at: iso(600), transcript: '', log: '', recoveries: [] };
-  refreshEta([{ ledger, run: { id: 'a', status: 'running', nodes: [{ nodeId: 'code-a', state: 'completed', durationMs: 600000 }] }, samples }], now);
+  refreshEta([{ ledger, run: { id: 'a', status: 'running', nodes: [{ nodeId: 'code-a', state: 'completed', durationMs: 600000 }] }, samples: [] }, { ledger, run: { id: 'past', status: 'completed' }, samples }], now);
   expect(readEta().s.progress).toMatchObject({ pct: 91, eta_s: 60, basis: 'history' });
   expect(JSON.parse(readFileSync(join(root, 'usage/eta.json'), 'utf8')).runs.s.weight).toBe(660);
   refreshEta([], now - 600001); expect(readEta()).toEqual({});
@@ -56,8 +56,8 @@ test('existing background usage query feeds ETA once, even events without sessio
   mkdirSync(join(root, 'runs')); const wf = join(root, '.archon/workflows/w'); mkdirSync(wf, { recursive: true }); writeFileSync(join(wf, 'w.yaml'), 'nodes:\n  - id: code-a\n  - id: verify-a\n');
   const ledger: Ledger = { run_id: 's', archon_run_id: 'a', repo: root, gen_dir: root, plan: 'plan.json', branch: 'b', workflow: 'w', console: 'codex', started_at: iso(630), transcript: '', log: '', recoveries: [] };
   writeFileSync(join(root, 'runs/s.json'), JSON.stringify(ledger));
-  writeFileSync(join(root, 'run.json'), JSON.stringify({ id: 'a', status: 'running', nodes: [{ nodeId: 'code-a', state: 'completed', durationMs: 600000 }, { nodeId: 'verify-a', state: 'running', startedAt: iso(30) }], events: samples.map(s => ({ event_type: 'node_completed', step_name: s.id, data: { timing: { durationMs: s.seconds * 1000 } } })) }));
+  writeFileSync(join(root, 'run.json'), JSON.stringify({ id: 'a', status: 'running', nodes: [{ nodeId: 'code-a', state: 'completed', durationMs: 600000 }, { nodeId: 'verify-a', state: 'running', startedAt: iso(30) }], events: [] }));
   const bin = join(root, 'archon'); writeFileSync(bin, `#!/bin/sh\necho query >> '${root}/calls'\ncat '${root}/run.json'\n`); chmodSync(bin, 0o755); process.env.SA_ARCHON_BIN = bin;
   await refreshUsage(undefined, (client, mode) => Promise.resolve(mode === 'daily' ? { daily: [] } : { [client === 'claude' ? 'session' : 'sessions']: [] }));
-  expect(readEta().s.progress).toMatchObject({ pct: 95, basis: 'history' }); expect(readFileSync(join(root, 'calls'), 'utf8').trim().split('\n')).toHaveLength(1);
+  expect(readEta().s.progress).toMatchObject({ pct: 52, basis: 'linear' }); expect(readFileSync(join(root, 'calls'), 'utf8').trim().split('\n')).toHaveLength(1);
 });

@@ -38,7 +38,7 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
   let load: ReturnType<typeof createLoader>;
   try {
     const args = [...argv], i = args.indexOf('--view');
-    if (i !== -1) { view = args[i + 1] as typeof view; args.splice(i, 2); if (view !== 'cockpit' && view !== 'terminals') throw new Error('--view must be cockpit or terminals'); }
+    if (i !== -1) { const requested = args[i + 1]; args.splice(i, 2); if (requested !== 'cockpit' && requested !== 'terminals') throw new Error('--view must be cockpit or terminals'); view = requested; }
     a = parseArgs(args);
     target = a._[1];
     interval = positive(a.flags.interval, 5, 'interval');

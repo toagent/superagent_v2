@@ -10,8 +10,10 @@ import { isTier, type Tier } from './roles';
 import { shortModel } from './models';
 import { sessionModel } from './models';
 import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
-import { refreshEta, type EtaInput } from './board/eta';
+import { etaInput, refreshEta, type EtaInput } from './board/eta';
 import type { RunView } from './archon';
+import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/workflow-event';
+import { workflowRoles } from './board/workflow';
 
 export type Client = 'claude' | 'codex';
 export interface Counts { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number; sessions: number }
@@ -47,7 +49,8 @@ export function attribute(sessions: UsageSession[], claims: { id: string; owner:
   const index = { ...prior };
   for (const { id, owner } of claims) {
     const k = key(owner.client, id), old = index[k];
-    if (!old || priority[owner.kind] >= priority[old.kind]) index[k] = owner;
+    if (!old || priority[owner.kind] >= priority[old.kind]) index[k] = { ...owner, role: owner.role ?? old?.role ?? null };
+    else if (!old.role && owner.role) index[k] = { ...old, role: owner.role };
   }
   for (const s of sessions) { const k = key(s.client, s.id); s.owner = index[k] ??= { client: s.client, role: null, model: s.model, cwd: null, kind: 'unknown' }; }
   return index;
@@ -73,24 +76,28 @@ export function jobSession(job: Pick<Job, 'kind' | 'cwd' | 'started_at'>): strin
   }
   return hits.size === 1 ? [...hits][0] : null;
 }
-function claimsOf(): { id: string; owner: Owner }[] {
+/** Read-only evidence collection; cache writes belong to refreshUsage. */
+export function usageEvidence(): { claims: { id: string; owner: Owner }[]; eta: EtaInput[] } {
   const claims: { id: string; owner: Owner }[] = [];
   const eta: EtaInput[] = [];
   for (const id of ledgerIds()) {
     try {
       const l = loadLedger(id), j = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo);
-      eta.push({ ledger: l, run: j as unknown as RunView, samples: arr(j.events).flatMap(raw => { const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, ms = d.timing?.durationMs ?? d.duration_ms; return e.event_type === 'node_completed' && typeof e.step_name === 'string' && typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? [{ id: e.step_name, seconds: ms / 1000 }] : []; }) });
+      // --events replaces nodes in the CLI response. Reuse its canonical fold, including retry resets and cached success.
+      const events = arr(j.events) as WorkflowEventRow[];
+      eta.push(etaInput(l, j as unknown as RunView, events));
+      const roles = workflowRoles(l);
       for (const raw of arr(j.events)) {
         const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
         if (!d.session_id || !m) continue;
         const client = d.binding?.provider ?? d.provider;
         if (client !== 'codex' && client !== 'claude') continue;
-        claims.push({ id: d.session_id, owner: { client, role: String(e.step_name).startsWith('review-') ? 'strategist' : 'general', model: m.resolved.source === 'provider' ? m.resolved.value : m.requested ?? null, cwd: l.repo, kind: 'run', run_id: id } });
+        const role = roles?.get(String(e.step_name));
+        claims.push({ id: d.session_id, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m.resolved.source === 'provider' ? m.resolved.value : m.requested ?? null, cwd: l.repo, kind: 'run', run_id: id } });
       }
     } catch { /* A missing run provides no ownership proof; existing index survives. */ }
   }
   const jobs: Job[] = files(join(home().sa, 'jobs')).flatMap(f => { const j = obj(json(f)); return typeof j.cwd === 'string' && typeof j.started_at === 'string' ? [j as unknown as Job] : []; });
-  refreshEta(eta);
   for (const j of jobs) {
     const id = j.session_id ?? jobSession(j);
     if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'job', job_id: j.id } });
@@ -99,9 +106,10 @@ function claimsOf(): { id: string; owner: Owner }[] {
     const l = obj(json(f)), client = l.client, id = str(l.session_id);
     if (!id || (client !== 'claude' && client !== 'codex')) continue;
     const hits = jobs.filter(j => j.cwd === l.cwd && j.kind === client && Math.abs(Date.parse(String(l.turn_at ?? l.at)) - Date.parse(j.started_at)) <= 60000);
-    claims.push({ id, owner: hits.length === 1 ? { client, role: hits[0].role ?? null, model: hits[0].model, cwd: hits[0].cwd, kind: 'inferred', job_id: hits[0].id } : { client, role: isTier(l.role) ? l.role : null, model: str(l.model) ?? sessionModel(str(l.transcript_path), client), cwd: str(l.cwd), kind: 'interactive' } });
+    const role = isTier(l.role) ? l.role : l.derived === true ? 'general' : l.derived === false ? 'commander' : null;
+    claims.push({ id, owner: hits.length === 1 ? { client, role: hits[0].role ?? role, model: hits[0].model, cwd: hits[0].cwd, kind: 'inferred', job_id: hits[0].id } : { client, role, model: str(l.model) ?? sessionModel(str(l.transcript_path), client), cwd: str(l.cwd), kind: 'interactive' } });
   }
-  return claims;
+  return { claims, eta };
 }
 export function readUsage(): UsageCache {
   const c = obj(json(join(root(), 'cache.json')));
@@ -146,7 +154,8 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
       catch { today.status = 'unavailable'; }
     }));
     if (Object.values(cache.sources).some(s => s !== 'ok')) cache.status = `用量未知（ccusage 不可用：${Object.entries(cache.sources).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}:${v}`).join(', ')}）；保留旧缓存`;
-    const index = attribute(cache.sessions, claimsOf(), obj(json(join(root(), 'sessions.json'))) as Record<string, Owner>);
+    const evidence = usageEvidence(); refreshEta(evidence.eta);
+    const index = attribute(cache.sessions, evidence.claims, obj(json(join(root(), 'sessions.json'))) as Record<string, Owner>);
     attribute(today.sessions, [], index);
     writeAtomic(join(root(), 'sessions.json'), JSON.stringify(index));
     writeAtomic(join(root(), 'cache.json'), JSON.stringify(cache));

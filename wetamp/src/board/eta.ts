@@ -4,19 +4,37 @@ import type { RunView } from '../archon';
 import type { Ledger } from '../cli';
 import { home, writeAtomic } from '../config';
 import { workflowRoles } from './workflow';
+import { buildRunNodeStates, type TerminalRecordEvent } from '../../../packages/workflows/src/terminal-record';
+import { readNodeRecordEvent } from '../../../packages/workflows/src/node-record-reader';
 
 export interface Progress { pct: number | null; eta_s: number | null; overrun_s: number; basis: 'history' | 'linear' | 'unknown' }
 export interface Estimate { progress: Progress; weight: number }
 export const unknownProgress = (): Progress => ({ pct: null, eta_s: null, overrun_s: 0, basis: 'unknown' });
 type Nodes = NonNullable<RunView['nodes']>;
 export interface EtaInput { ledger: Ledger; run: RunView; samples: { id: string; seconds: number }[] }
+/** Raw-event CLI mode omits nodes. Engine folding owns lifecycle; project only measured timing here. */
+export function etaInput(ledger: Ledger, run: RunView, events: (TerminalRecordEvent & { created_at?: string })[]): EtaInput {
+  const timing = new Map<string, { startedAt?: string; durationMs?: number }>(), samples: EtaInput['samples'] = [];
+  for (const e of events) {
+    const record = readNodeRecordEvent({ ...e, workflow_run_id: run.id });
+    if (!record) continue;
+    const id = record.path, d = record.data;
+    if (['node_always_run_reset', 'node_prior_cache_invalidated'].includes(record.eventType)) timing.delete(id);
+    else if (record.eventType === 'node_started') timing.set(id, { startedAt: d.timing?.startedAt ?? e.created_at });
+    else if (record.eventType !== 'node_skipped_prior_success') timing.set(id, { startedAt: d.timing?.startedAt ?? timing.get(id)?.startedAt, durationMs: d.timing?.durationMs ?? d.duration_ms });
+    const ms = d.timing?.durationMs ?? d.duration_ms;
+    if (record.eventType === 'node_completed' && typeof ms === 'number' && Number.isFinite(ms) && ms > 0) samples.push({ id, seconds: ms / 1000 });
+  }
+  const nodes = run.nodes ?? buildRunNodeStates({ id: run.id, metadata: {} }, events).map(n => ({ nodeId: n.node_id, state: n.state, ...timing.get(n.node_id) }));
+  return { ledger, run: { ...run, nodes }, samples };
+}
 const kind = (id: string): string => /^(code|verify|repair|settle|diff|review|fix|gate|land)(?:-|$)/.exec(id)?.[1] ?? 'other';
 const median = (xs: number[]): number => { const sorted = [...xs].sort((a, b) => a - b), i = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[i] : (sorted[i - 1] + sorted[i]) / 2; };
 /** Time weights are measured durations, never node counts. Sparse classes use observed run throughput. */
 export function estimate(nodes: Nodes, samples: EtaInput['samples'], elapsed: number, now: number): Estimate {
   const history = new Map<string, number[]>();
   for (const s of samples) if (Number.isFinite(s.seconds) && s.seconds > 0) history.set(kind(s.id), [...(history.get(kind(s.id)) ?? []), s.seconds]);
-  const observed = nodes.filter(n => n.state === 'completed' && (n.durationMs ?? 0) > 0).map(n => n.durationMs! / 1000);
+  const observed = nodes.flatMap(n => n.state === 'completed' && (n.durationMs ?? 0) > 0 ? [(n.durationMs ?? 0) / 1000] : []);
   const fallback = observed.length ? median(observed) : null;
   const active = nodes.filter(n => n.state !== 'skipped');
   const weights = active.map(n => { const xs = history.get(kind(n.nodeId)) ?? []; return xs.length >= 3 ? median(xs) : fallback; });
@@ -44,7 +62,7 @@ export function totalProgress(xs: Estimate[]): Progress {
   return { pct: Math.round(xs.reduce((n, x) => n + (x.progress.pct ?? 0) * x.weight, 0) / weight), eta_s: Math.max(...xs.map(x => x.progress.eta_s ?? 0)), overrun_s: Math.max(...xs.map(x => x.progress.overrun_s)), basis: xs.some(x => x.progress.basis === 'linear') ? 'linear' : 'history' };
 }
 export function refreshEta(inputs: EtaInput[], now = Date.now()): void {
-  const samples = inputs.flatMap(x => x.samples), runs: Record<string, Estimate> = {};
+  const samples = inputs.filter(x => ['completed', 'failed', 'cancelled'].includes(x.run.status)).flatMap(x => x.samples), runs: Record<string, Estimate> = {};
   for (const { ledger, run } of inputs) {
     if (run.status !== 'running') continue;
     const ids = workflowRoles(ledger);
@@ -54,8 +72,8 @@ export function refreshEta(inputs: EtaInput[], now = Date.now()): void {
 }
 export function readEta(): Record<string, Estimate> {
   try {
-    const c = JSON.parse(readFileSync(join(home().sa, 'usage', 'eta.json'), 'utf8')) as { at: string; runs: Record<string, Estimate> };
-    return Date.now() - Date.parse(c.at) < 600000 ? Object.fromEntries(Object.entries(c.runs).filter(([, x]) => x && Number.isFinite(x.weight) && x.weight >= 0 && x.progress && ['history', 'linear', 'unknown'].includes(x.progress.basis) && (x.progress.pct === null || Number.isFinite(x.progress.pct) && x.progress.pct >= 0 && x.progress.pct <= 100) && (x.progress.eta_s === null || Number.isFinite(x.progress.eta_s) && x.progress.eta_s >= 0) && Number.isFinite(x.progress.overrun_s) && x.progress.overrun_s >= 0)) : {};
+    const c = JSON.parse(readFileSync(join(home().sa, 'usage', 'eta.json'), 'utf8')) as { at: string; runs: Record<string, Partial<Estimate> | null> };
+    return Date.now() - Date.parse(c.at) < 600000 ? Object.fromEntries(Object.entries(c.runs).filter(([, x]) => x && typeof x.weight === 'number' && Number.isFinite(x.weight) && x.weight >= 0 && x.progress && ['history', 'linear', 'unknown'].includes(x.progress.basis) && (x.progress.pct === null || Number.isFinite(x.progress.pct) && x.progress.pct >= 0 && x.progress.pct <= 100) && (x.progress.eta_s === null || Number.isFinite(x.progress.eta_s) && x.progress.eta_s >= 0) && Number.isFinite(x.progress.overrun_s) && x.progress.overrun_s >= 0)) as Record<string, Estimate> : {};
   } catch { return {}; }
 }
 export const progressLabel = (p: Progress): string => `${p.pct === null ? '?' : String(p.pct)}% ${p.overrun_s > 0 ? `超~${String(Math.ceil(p.overrun_s / 60))}m` : p.eta_s === null ? '剩?' : `剩~${p.basis === 'linear' ? '?' : ''}${String(Math.ceil(p.eta_s / 60))}m`}`;

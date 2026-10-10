@@ -61,7 +61,7 @@ test('every S3 reason translates, unknown reason survives unchanged, needs comes
   expect(Object.keys(REASONS).sort()).toEqual(Object.keys(HOLD_POLICY).sort());
   for (const k of Object.keys(HOLD_POLICY)) expect(reasonText(k)).not.toBe(k);
   expect(reasonText('coder_error:task')).toBe('coder_error:task');
-  const r = row('pending'); r.engine!.dispositions = [{ at: iso(-180000), reason: 'auto_retry_exhausted', action: 'ask', ok: true }];
+  const r = row('pending', 'failed', 'code-a'); r.engine!.dispositions = [{ at: iso(-180000), reason: 'auto_retry_exhausted', action: 'ask', ok: true }];
   const c = cockpit({ ...snapshot([r, row('held', 'held:human')]), asks: { 'pending:reason:1': { status: 'pending' } } }, now);
   expect(c.needs).toHaveLength(2); expect(c.active).toHaveLength(0); expect(c.needs[0].question).toBe('重试已用尽：是=再跑 否=终止'); expect(c.needs[0].waiting).toBe('3m00s');
   expect(render(snapshot())).not.toContain('需要你');

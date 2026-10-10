@@ -1,0 +1,1095 @@
+{
+  "captured_at": "2026-10-10T08:16:00.000Z",
+  "inputs": [
+    {
+      "ledger": {
+        "run_id": "run-0",
+        "archon_run_id": "00000000-0000-4000-8000-000000000001",
+        "started_at": "2026-10-10T07:38:18.721Z",
+        "repo": "/fixture/repo",
+        "gen_dir": "/fixture/gen",
+        "workflow": "w-0",
+        "plan": "plan.json",
+        "branch": "fixture",
+        "console": "claude",
+        "transcript": "",
+        "log": "",
+        "recoveries": []
+      },
+      "roles": [
+        [
+          "environment",
+          "script"
+        ],
+        [
+          "start-m1",
+          "script"
+        ],
+        [
+          "attempt-m1",
+          "script"
+        ],
+        [
+          "code-package-1",
+          "coder"
+        ],
+        [
+          "verify-package-1",
+          "script"
+        ],
+        [
+          "repair-package-1",
+          "coder"
+        ],
+        [
+          "settle-package-1",
+          "script"
+        ],
+        [
+          "code-package-2",
+          "coder"
+        ],
+        [
+          "verify-package-2",
+          "script"
+        ],
+        [
+          "repair-package-2",
+          "coder"
+        ],
+        [
+          "settle-package-2",
+          "script"
+        ],
+        [
+          "diff-m1-r1",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r1",
+          "script"
+        ],
+        [
+          "review-m1-r1",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r1",
+          "script"
+        ],
+        [
+          "fix-m1-r2",
+          "coder"
+        ],
+        [
+          "diff-m1-r2",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r2",
+          "script"
+        ],
+        [
+          "review-m1-r2",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r2",
+          "script"
+        ],
+        [
+          "fix-m1-r3",
+          "coder"
+        ],
+        [
+          "diff-m1-r3",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r3",
+          "script"
+        ],
+        [
+          "review-m1-r3",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r3",
+          "script"
+        ],
+        [
+          "land",
+          "script"
+        ]
+      ],
+      "run": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "status": "running",
+        "started_at": "2026-10-10T07:38:19.000Z",
+        "completed_at": null,
+        "events": [
+          {"id":"00000000-0000-4000-8000-000000000002","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4278,"event_type":"node_started","step_index":null,"step_name":"environment","created_at":"2026-10-10T07:38:21.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000003","startedAt":"2026-10-10T07:38:21.393Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000004","startedAt":"2026-10-10T07:38:21.405Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:38:21.405Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000005","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4279,"event_type":"node_completed","step_index":null,"step_name":"environment","created_at":"2026-10-10T07:38:21.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000003","startedAt":"2026-10-10T07:38:21.393Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000004","startedAt":"2026-10-10T07:38:21.405Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:38:21.405Z","durationMs":36},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":36}},
+          {"id":"00000000-0000-4000-8000-000000000006","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4280,"event_type":"node_started","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T07:38:21.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000007","startedAt":"2026-10-10T07:38:21.430Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000008","startedAt":"2026-10-10T07:38:21.440Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:38:21.440Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000009","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4281,"event_type":"node_completed","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T07:38:21.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000007","startedAt":"2026-10-10T07:38:21.430Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000008","startedAt":"2026-10-10T07:38:21.440Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:38:21.440Z","durationMs":19},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":19}},
+          {"id":"00000000-0000-4000-8000-000000000010","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4282,"event_type":"node_started","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:38:21.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000011","startedAt":"2026-10-10T07:38:21.450Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000012","startedAt":"2026-10-10T07:38:21.459Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:38:21.459Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000013","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4283,"event_type":"node_completed","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:38:21.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000011","startedAt":"2026-10-10T07:38:21.450Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000012","startedAt":"2026-10-10T07:38:21.459Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:38:21.459Z","durationMs":15},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":15}},
+          {"id":"00000000-0000-4000-8000-000000000014","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4284,"event_type":"node_started","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:38:21.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000015","startedAt":"2026-10-10T07:38:21.466Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000016","startedAt":"2026-10-10T07:38:21.477Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:38:21.477Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000017","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4323,"event_type":"node_completed","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:41:03.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000015","startedAt":"2026-10-10T07:38:21.466Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000016","startedAt":"2026-10-10T07:38:21.477Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:38:21.477Z","durationMs":162409},"spend":{"tokens":{"source":"provider","value":{"input":426772,"output":4295,"cacheRead":384640,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":162409,"session_id":"00000000-0000-4000-8000-000000000018","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000019","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4324,"event_type":"node_started","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:41:03.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000020","startedAt":"2026-10-10T07:41:03.878Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000021","startedAt":"2026-10-10T07:41:03.890Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:41:03.890Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000022","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4325,"event_type":"node_completed","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:41:25.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000020","startedAt":"2026-10-10T07:41:03.878Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000021","startedAt":"2026-10-10T07:41:03.890Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:41:03.890Z","durationMs":21740},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":21740}},
+          {"id":"00000000-0000-4000-8000-000000000023","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4326,"event_type":"node_skipped","step_index":null,"step_name":"repair-package-1","created_at":"2026-10-10T07:41:25.000Z","data":{"node":{"id":"repair-package-1","kind":"agent","source":{"kind":"command","name":"sa-repair"}},"invocation":{"id":"00000000-0000-4000-8000-000000000024","startedAt":"2026-10-10T07:41:25.620Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000025","startedAt":"2026-10-10T07:41:25.620Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:41:25.620Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$verify-package-1.output.disposition == 'repair'"}}},
+          {"id":"00000000-0000-4000-8000-000000000026","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4327,"event_type":"node_started","step_index":null,"step_name":"settle-package-1","created_at":"2026-10-10T07:41:25.000Z","data":{"node":{"id":"settle-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000027","startedAt":"2026-10-10T07:41:25.621Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000028","startedAt":"2026-10-10T07:41:25.635Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:41:25.635Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000029","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4328,"event_type":"node_completed","step_index":null,"step_name":"settle-package-1","created_at":"2026-10-10T07:41:25.000Z","data":{"node":{"id":"settle-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000027","startedAt":"2026-10-10T07:41:25.621Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000028","startedAt":"2026-10-10T07:41:25.635Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:41:25.635Z","durationMs":296},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":296}},
+          {"id":"00000000-0000-4000-8000-000000000030","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4329,"event_type":"node_started","step_index":null,"step_name":"code-package-2","created_at":"2026-10-10T07:41:25.000Z","data":{"node":{"id":"code-package-2","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000031","startedAt":"2026-10-10T07:41:25.918Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000032","startedAt":"2026-10-10T07:41:25.931Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T07:41:25.931Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000033","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4716,"event_type":"node_completed","step_index":null,"step_name":"code-package-2","created_at":"2026-10-10T07:59:38.000Z","data":{"node":{"id":"code-package-2","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000031","startedAt":"2026-10-10T07:41:25.918Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000032","startedAt":"2026-10-10T07:41:25.931Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T07:41:25.931Z","durationMs":1092408},"spend":{"tokens":{"source":"provider","value":{"input":3417818,"output":35492,"cacheRead":3058304,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":1092408,"session_id":"00000000-0000-4000-8000-000000000034","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000035","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4717,"event_type":"node_started","step_index":null,"step_name":"verify-package-2","created_at":"2026-10-10T07:59:38.000Z","data":{"node":{"id":"verify-package-2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000036","startedAt":"2026-10-10T07:59:38.328Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000037","startedAt":"2026-10-10T07:59:38.340Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:59:38.340Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000038","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4718,"event_type":"node_completed","step_index":null,"step_name":"verify-package-2","created_at":"2026-10-10T07:59:48.000Z","data":{"node":{"id":"verify-package-2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000036","startedAt":"2026-10-10T07:59:38.328Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000037","startedAt":"2026-10-10T07:59:38.340Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:59:38.340Z","durationMs":9697},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":9697}},
+          {"id":"00000000-0000-4000-8000-000000000039","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4719,"event_type":"node_skipped","step_index":null,"step_name":"repair-package-2","created_at":"2026-10-10T07:59:48.000Z","data":{"node":{"id":"repair-package-2","kind":"agent","source":{"kind":"command","name":"sa-repair"}},"invocation":{"id":"00000000-0000-4000-8000-000000000040","startedAt":"2026-10-10T07:59:48.026Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000041","startedAt":"2026-10-10T07:59:48.026Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:59:48.026Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$verify-package-2.output.disposition == 'repair'"}}},
+          {"id":"00000000-0000-4000-8000-000000000042","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4720,"event_type":"node_started","step_index":null,"step_name":"settle-package-2","created_at":"2026-10-10T07:59:48.000Z","data":{"node":{"id":"settle-package-2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000043","startedAt":"2026-10-10T07:59:48.027Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000044","startedAt":"2026-10-10T07:59:48.038Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:59:48.038Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000045","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4721,"event_type":"node_completed","step_index":null,"step_name":"settle-package-2","created_at":"2026-10-10T07:59:48.000Z","data":{"node":{"id":"settle-package-2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000043","startedAt":"2026-10-10T07:59:48.027Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000044","startedAt":"2026-10-10T07:59:48.038Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:59:48.038Z","durationMs":226},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":226}},
+          {"id":"00000000-0000-4000-8000-000000000046","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4722,"event_type":"node_started","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T07:59:48.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000047","startedAt":"2026-10-10T07:59:48.254Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000048","startedAt":"2026-10-10T07:59:48.265Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:59:48.265Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000049","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4723,"event_type":"node_completed","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T08:00:22.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000047","startedAt":"2026-10-10T07:59:48.254Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000048","startedAt":"2026-10-10T07:59:48.265Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:59:48.265Z","durationMs":34400},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":34400}},
+          {"id":"00000000-0000-4000-8000-000000000050","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4724,"event_type":"node_started","step_index":null,"step_name":"attempt-review-m1-r1","created_at":"2026-10-10T08:00:22.000Z","data":{"node":{"id":"attempt-review-m1-r1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000051","startedAt":"2026-10-10T08:00:22.655Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000052","startedAt":"2026-10-10T08:00:22.667Z"},"binding":{},"timing":{"startedAt":"2026-10-10T08:00:22.667Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000053","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4725,"event_type":"node_completed","step_index":null,"step_name":"attempt-review-m1-r1","created_at":"2026-10-10T08:00:22.000Z","data":{"node":{"id":"attempt-review-m1-r1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000051","startedAt":"2026-10-10T08:00:22.655Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000052","startedAt":"2026-10-10T08:00:22.667Z"},"binding":{},"timing":{"startedAt":"2026-10-10T08:00:22.667Z","durationMs":19},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":19}},
+          {"id":"00000000-0000-4000-8000-000000000054","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4726,"event_type":"node_started","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T08:00:22.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000055","startedAt":"2026-10-10T08:00:22.675Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000056","startedAt":"2026-10-10T08:00:22.692Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"xhigh","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T08:00:22.692Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000057","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4859,"event_type":"node_completed","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T08:08:26.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000055","startedAt":"2026-10-10T08:00:22.675Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000056","startedAt":"2026-10-10T08:00:22.692Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"xhigh","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T08:00:22.692Z","durationMs":483775},"spend":{"tokens":{"source":"provider","value":{"input":1722617,"output":14866,"cacheRead":1340800,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":483775,"session_id":"00000000-0000-4000-8000-000000000058","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000059","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4860,"event_type":"node_started","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T08:08:26.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000060","startedAt":"2026-10-10T08:08:26.465Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000061","startedAt":"2026-10-10T08:08:26.477Z"},"binding":{},"timing":{"startedAt":"2026-10-10T08:08:26.477Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000062","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4861,"event_type":"node_completed","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T08:08:26.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000060","startedAt":"2026-10-10T08:08:26.465Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000061","startedAt":"2026-10-10T08:08:26.477Z"},"binding":{},"timing":{"startedAt":"2026-10-10T08:08:26.477Z","durationMs":245},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":245}},
+          {"id":"00000000-0000-4000-8000-000000000063","workflow_run_id":"00000000-0000-4000-8000-000000000001","event_order":4862,"event_type":"node_started","step_index":null,"step_name":"fix-m1-r2","created_at":"2026-10-10T08:08:26.000Z","data":{"node":{"id":"fix-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000064","startedAt":"2026-10-10T08:08:26.714Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000065","startedAt":"2026-10-10T08:08:26.727Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T08:08:26.727Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}}
+        ]
+      }
+    },
+    {
+      "ledger": {
+        "run_id": "run-1",
+        "archon_run_id": "00000000-0000-4000-8000-000000000066",
+        "started_at": "2026-10-10T00:52:53.770Z",
+        "repo": "/fixture/repo",
+        "gen_dir": "/fixture/gen",
+        "workflow": "w-1",
+        "plan": "plan.json",
+        "branch": "fixture",
+        "console": "claude",
+        "transcript": "",
+        "log": "",
+        "recoveries": []
+      },
+      "roles": [
+        [
+          "environment",
+          "script"
+        ],
+        [
+          "start-m1",
+          "script"
+        ],
+        [
+          "code-package-1",
+          "coder"
+        ],
+        [
+          "verify-package-1",
+          "script"
+        ],
+        [
+          "diff-m1-r1",
+          "script"
+        ],
+        [
+          "review-m1-r1",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r1",
+          "script"
+        ],
+        [
+          "fix-m1-r2",
+          "coder"
+        ],
+        [
+          "diff-m1-r2",
+          "script"
+        ],
+        [
+          "review-m1-r2",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r2",
+          "script"
+        ],
+        [
+          "fix-m1-r3",
+          "coder"
+        ],
+        [
+          "diff-m1-r3",
+          "script"
+        ],
+        [
+          "review-m1-r3",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r3",
+          "script"
+        ],
+        [
+          "land",
+          "script"
+        ]
+      ],
+      "run": {
+        "id": "00000000-0000-4000-8000-000000000066",
+        "status": "completed",
+        "started_at": "2026-10-10T00:52:53.000Z",
+        "completed_at": "2026-10-10T01:11:24.000Z",
+        "events": [
+          {"id":"00000000-0000-4000-8000-000000000067","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":20,"event_type":"node_started","step_index":null,"step_name":"environment","created_at":"2026-10-10T00:52:55.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000068","startedAt":"2026-10-10T00:52:55.456Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000069","startedAt":"2026-10-10T00:52:55.467Z"},"binding":{},"timing":{"startedAt":"2026-10-10T00:52:55.467Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000070","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":21,"event_type":"node_completed","step_index":null,"step_name":"environment","created_at":"2026-10-10T00:52:55.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000068","startedAt":"2026-10-10T00:52:55.456Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000069","startedAt":"2026-10-10T00:52:55.467Z"},"binding":{},"timing":{"startedAt":"2026-10-10T00:52:55.467Z","durationMs":34},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":34}},
+          {"id":"00000000-0000-4000-8000-000000000071","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":22,"event_type":"node_started","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T00:52:55.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000072","startedAt":"2026-10-10T00:52:55.491Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000073","startedAt":"2026-10-10T00:52:55.503Z"},"binding":{},"timing":{"startedAt":"2026-10-10T00:52:55.503Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000074","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":23,"event_type":"node_completed","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T00:52:55.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000072","startedAt":"2026-10-10T00:52:55.491Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000073","startedAt":"2026-10-10T00:52:55.503Z"},"binding":{},"timing":{"startedAt":"2026-10-10T00:52:55.503Z","durationMs":23},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":23}},
+          {"id":"00000000-0000-4000-8000-000000000075","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":24,"event_type":"node_started","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T00:52:55.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000076","startedAt":"2026-10-10T00:52:55.516Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000077","startedAt":"2026-10-10T00:52:55.531Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T00:52:55.531Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000078","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":73,"event_type":"node_completed","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T01:10:13.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000076","startedAt":"2026-10-10T00:52:55.516Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000077","startedAt":"2026-10-10T00:52:55.531Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T00:52:55.531Z","durationMs":1037684},"spend":{"tokens":{"source":"provider","value":{"input":488186,"output":5347,"cacheRead":430720,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":1037684,"session_id":"00000000-0000-4000-8000-000000000079","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000080","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":74,"event_type":"node_started","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T01:10:13.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000081","startedAt":"2026-10-10T01:10:13.202Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000082","startedAt":"2026-10-10T01:10:13.214Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:10:13.214Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000083","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":75,"event_type":"node_completed","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T01:10:15.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000081","startedAt":"2026-10-10T01:10:13.202Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000082","startedAt":"2026-10-10T01:10:13.214Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:10:13.214Z","durationMs":2380},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":2380}},
+          {"id":"00000000-0000-4000-8000-000000000084","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":76,"event_type":"node_started","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T01:10:15.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000085","startedAt":"2026-10-10T01:10:15.582Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000086","startedAt":"2026-10-10T01:10:15.592Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:10:15.592Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000087","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":77,"event_type":"node_completed","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T01:10:17.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000085","startedAt":"2026-10-10T01:10:15.582Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000086","startedAt":"2026-10-10T01:10:15.592Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:10:15.592Z","durationMs":1493},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":1493}},
+          {"id":"00000000-0000-4000-8000-000000000088","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":78,"event_type":"node_started","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T01:10:17.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000089","startedAt":"2026-10-10T01:10:17.076Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000090","startedAt":"2026-10-10T01:10:17.091Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T01:10:17.091Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000091","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":99,"event_type":"node_completed","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000089","startedAt":"2026-10-10T01:10:17.076Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000090","startedAt":"2026-10-10T01:10:17.091Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T01:10:17.091Z","durationMs":67227},"spend":{"tokens":{"source":"provider","value":{"input":285150,"output":2536,"cacheRead":204032,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":67227,"session_id":"00000000-0000-4000-8000-000000000092","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000093","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":100,"event_type":"node_started","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000094","startedAt":"2026-10-10T01:11:24.315Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000095","startedAt":"2026-10-10T01:11:24.325Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.325Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000096","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":101,"event_type":"node_completed","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000094","startedAt":"2026-10-10T01:11:24.315Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000095","startedAt":"2026-10-10T01:11:24.325Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.325Z","durationMs":31},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":31}},
+          {"id":"00000000-0000-4000-8000-000000000097","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":102,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r2","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"fix-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000098","startedAt":"2026-10-10T01:11:24.346Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000099","startedAt":"2026-10-10T01:11:24.346Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.346Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$gate-m1-r1.output.verdict == 'fix'"}}},
+          {"id":"00000000-0000-4000-8000-000000000100","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":103,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r2","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"diff-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000101","startedAt":"2026-10-10T01:11:24.347Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000102","startedAt":"2026-10-10T01:11:24.347Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.347Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000103","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":104,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r2","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"review-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000104","startedAt":"2026-10-10T01:11:24.347Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000105","startedAt":"2026-10-10T01:11:24.347Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.347Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000106","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":105,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r2","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"gate-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000107","startedAt":"2026-10-10T01:11:24.348Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000108","startedAt":"2026-10-10T01:11:24.348Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.348Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000109","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":106,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r3","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"fix-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000110","startedAt":"2026-10-10T01:11:24.348Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000111","startedAt":"2026-10-10T01:11:24.348Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.348Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000112","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":107,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r3","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"diff-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000113","startedAt":"2026-10-10T01:11:24.348Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000114","startedAt":"2026-10-10T01:11:24.348Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.348Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000115","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":108,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r3","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"review-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000116","startedAt":"2026-10-10T01:11:24.348Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000117","startedAt":"2026-10-10T01:11:24.348Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.348Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000118","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":109,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r3","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"gate-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000119","startedAt":"2026-10-10T01:11:24.349Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000120","startedAt":"2026-10-10T01:11:24.349Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.349Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000121","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":110,"event_type":"node_started","step_index":null,"step_name":"land","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000122","startedAt":"2026-10-10T01:11:24.349Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000123","startedAt":"2026-10-10T01:11:24.359Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.359Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000124","workflow_run_id":"00000000-0000-4000-8000-000000000066","event_order":111,"event_type":"node_completed","step_index":null,"step_name":"land","created_at":"2026-10-10T01:11:24.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000122","startedAt":"2026-10-10T01:11:24.349Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000123","startedAt":"2026-10-10T01:11:24.359Z"},"binding":{},"timing":{"startedAt":"2026-10-10T01:11:24.359Z","durationMs":39},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":39}}
+        ]
+      }
+    },
+    {
+      "ledger": {
+        "run_id": "run-2",
+        "archon_run_id": "00000000-0000-4000-8000-000000000125",
+        "started_at": "2026-10-10T02:39:48.818Z",
+        "repo": "/fixture/repo",
+        "gen_dir": "/fixture/gen",
+        "workflow": "w-2",
+        "plan": "plan.json",
+        "branch": "fixture",
+        "console": "claude",
+        "transcript": "",
+        "log": "",
+        "recoveries": []
+      },
+      "roles": [
+        [
+          "environment",
+          "script"
+        ],
+        [
+          "start-m1",
+          "script"
+        ],
+        [
+          "code-package-1",
+          "coder"
+        ],
+        [
+          "verify-package-1",
+          "script"
+        ],
+        [
+          "diff-m1-r1",
+          "script"
+        ],
+        [
+          "review-m1-r1",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r1",
+          "script"
+        ],
+        [
+          "fix-m1-r2",
+          "coder"
+        ],
+        [
+          "diff-m1-r2",
+          "script"
+        ],
+        [
+          "review-m1-r2",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r2",
+          "script"
+        ],
+        [
+          "fix-m1-r3",
+          "coder"
+        ],
+        [
+          "diff-m1-r3",
+          "script"
+        ],
+        [
+          "review-m1-r3",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r3",
+          "script"
+        ],
+        [
+          "land",
+          "script"
+        ]
+      ],
+      "run": {
+        "id": "00000000-0000-4000-8000-000000000125",
+        "status": "completed",
+        "started_at": "2026-10-10T02:39:48.000Z",
+        "completed_at": "2026-10-10T02:43:33.000Z",
+        "events": [
+          {"id":"00000000-0000-4000-8000-000000000126","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":428,"event_type":"node_started","step_index":null,"step_name":"environment","created_at":"2026-10-10T02:39:49.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000127","startedAt":"2026-10-10T02:39:49.102Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000128","startedAt":"2026-10-10T02:39:49.113Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:39:49.113Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000129","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":429,"event_type":"node_completed","step_index":null,"step_name":"environment","created_at":"2026-10-10T02:39:49.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000127","startedAt":"2026-10-10T02:39:49.102Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000128","startedAt":"2026-10-10T02:39:49.113Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:39:49.113Z","durationMs":34},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":34}},
+          {"id":"00000000-0000-4000-8000-000000000130","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":430,"event_type":"node_started","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T02:39:49.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000131","startedAt":"2026-10-10T02:39:49.138Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000132","startedAt":"2026-10-10T02:39:49.148Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:39:49.148Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000133","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":431,"event_type":"node_completed","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T02:39:49.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000131","startedAt":"2026-10-10T02:39:49.138Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000132","startedAt":"2026-10-10T02:39:49.148Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:39:49.148Z","durationMs":18},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":18}},
+          {"id":"00000000-0000-4000-8000-000000000134","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":432,"event_type":"node_started","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T02:39:49.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000135","startedAt":"2026-10-10T02:39:49.157Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000136","startedAt":"2026-10-10T02:39:49.167Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T02:39:49.167Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000137","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":488,"event_type":"node_completed","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T02:42:51.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000135","startedAt":"2026-10-10T02:39:49.157Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000136","startedAt":"2026-10-10T02:39:49.167Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T02:39:49.167Z","durationMs":182647},"spend":{"tokens":{"source":"provider","value":{"input":475911,"output":6033,"cacheRead":423168,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":182647,"session_id":"00000000-0000-4000-8000-000000000138","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000139","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":489,"event_type":"node_started","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T02:42:51.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000140","startedAt":"2026-10-10T02:42:51.807Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000141","startedAt":"2026-10-10T02:42:51.820Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:42:51.820Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000142","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":490,"event_type":"node_completed","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T02:42:54.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000140","startedAt":"2026-10-10T02:42:51.807Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000141","startedAt":"2026-10-10T02:42:51.820Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:42:51.820Z","durationMs":2548},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":2548}},
+          {"id":"00000000-0000-4000-8000-000000000143","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":491,"event_type":"node_started","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T02:42:54.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000144","startedAt":"2026-10-10T02:42:54.356Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000145","startedAt":"2026-10-10T02:42:54.368Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:42:54.368Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000146","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":492,"event_type":"node_completed","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T02:42:56.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000144","startedAt":"2026-10-10T02:42:54.356Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000145","startedAt":"2026-10-10T02:42:54.368Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:42:54.368Z","durationMs":1658},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":1658}},
+          {"id":"00000000-0000-4000-8000-000000000147","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":493,"event_type":"node_started","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T02:42:56.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000148","startedAt":"2026-10-10T02:42:56.015Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000149","startedAt":"2026-10-10T02:42:56.032Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T02:42:56.032Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000150","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":508,"event_type":"node_completed","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000148","startedAt":"2026-10-10T02:42:56.015Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000149","startedAt":"2026-10-10T02:42:56.032Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"high","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T02:42:56.032Z","durationMs":37858},"spend":{"tokens":{"source":"provider","value":{"input":184932,"output":1137,"cacheRead":116736,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":37858,"session_id":"00000000-0000-4000-8000-000000000151","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000152","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":509,"event_type":"node_started","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000153","startedAt":"2026-10-10T02:43:33.887Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000154","startedAt":"2026-10-10T02:43:33.897Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.897Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000155","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":510,"event_type":"node_completed","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000153","startedAt":"2026-10-10T02:43:33.887Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000154","startedAt":"2026-10-10T02:43:33.897Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.897Z","durationMs":31},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":31}},
+          {"id":"00000000-0000-4000-8000-000000000156","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":511,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r2","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"fix-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000157","startedAt":"2026-10-10T02:43:33.918Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000158","startedAt":"2026-10-10T02:43:33.919Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.919Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$gate-m1-r1.output.verdict == 'fix'"}}},
+          {"id":"00000000-0000-4000-8000-000000000159","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":512,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r2","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"diff-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000160","startedAt":"2026-10-10T02:43:33.919Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000161","startedAt":"2026-10-10T02:43:33.919Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.919Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000162","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":513,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r2","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"review-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000163","startedAt":"2026-10-10T02:43:33.920Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000164","startedAt":"2026-10-10T02:43:33.920Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.920Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000165","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":514,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r2","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"gate-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000166","startedAt":"2026-10-10T02:43:33.920Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000167","startedAt":"2026-10-10T02:43:33.920Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.920Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000168","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":515,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r3","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"fix-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000169","startedAt":"2026-10-10T02:43:33.920Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000170","startedAt":"2026-10-10T02:43:33.920Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.920Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000171","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":516,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r3","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"diff-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000172","startedAt":"2026-10-10T02:43:33.921Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000173","startedAt":"2026-10-10T02:43:33.921Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.921Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000174","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":517,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r3","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"review-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000175","startedAt":"2026-10-10T02:43:33.921Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000176","startedAt":"2026-10-10T02:43:33.921Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.921Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000177","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":518,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r3","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"gate-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000178","startedAt":"2026-10-10T02:43:33.921Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000179","startedAt":"2026-10-10T02:43:33.921Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.921Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000180","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":519,"event_type":"node_started","step_index":null,"step_name":"land","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000181","startedAt":"2026-10-10T02:43:33.921Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000182","startedAt":"2026-10-10T02:43:33.931Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.931Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000183","workflow_run_id":"00000000-0000-4000-8000-000000000125","event_order":520,"event_type":"node_completed","step_index":null,"step_name":"land","created_at":"2026-10-10T02:43:33.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000181","startedAt":"2026-10-10T02:43:33.921Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000182","startedAt":"2026-10-10T02:43:33.931Z"},"binding":{},"timing":{"startedAt":"2026-10-10T02:43:33.931Z","durationMs":40},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":40}}
+        ]
+      }
+    },
+    {
+      "ledger": {
+        "run_id": "run-3",
+        "archon_run_id": "00000000-0000-4000-8000-000000000184",
+        "started_at": "2026-10-10T06:20:43.487Z",
+        "repo": "/fixture/repo",
+        "gen_dir": "/fixture/gen",
+        "workflow": "w-3",
+        "plan": "plan.json",
+        "branch": "fixture",
+        "console": "claude",
+        "transcript": "",
+        "log": "",
+        "recoveries": [],
+        "dispositions": [
+          {
+            "at": "2026-10-10T06:57:44.796Z",
+            "reason": "coder",
+            "action": "auto_retry",
+            "ok": true
+          },
+          {
+            "at": "2026-10-10T07:01:23.035Z",
+            "reason": "auto_retry_exhausted",
+            "action": "ask",
+            "ok": true
+          },
+          {
+            "at": "2026-10-10T07:07:10.244Z",
+            "reason": "auto_retry_exhausted",
+            "action": "ask",
+            "ok": true
+          }
+        ]
+      },
+      "roles": [
+        [
+          "environment",
+          "script"
+        ],
+        [
+          "start-m1",
+          "script"
+        ],
+        [
+          "attempt-m1",
+          "script"
+        ],
+        [
+          "code-package-1",
+          "coder"
+        ],
+        [
+          "verify-package-1",
+          "script"
+        ],
+        [
+          "repair-package-1",
+          "coder"
+        ],
+        [
+          "settle-package-1",
+          "script"
+        ],
+        [
+          "diff-m1-r1",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r1",
+          "script"
+        ],
+        [
+          "review-m1-r1",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r1",
+          "script"
+        ],
+        [
+          "fix-m1-r2",
+          "coder"
+        ],
+        [
+          "diff-m1-r2",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r2",
+          "script"
+        ],
+        [
+          "review-m1-r2",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r2",
+          "script"
+        ],
+        [
+          "fix-m1-r3",
+          "coder"
+        ],
+        [
+          "diff-m1-r3",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r3",
+          "script"
+        ],
+        [
+          "review-m1-r3",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r3",
+          "script"
+        ],
+        [
+          "land",
+          "script"
+        ]
+      ],
+      "run": {
+        "id": "00000000-0000-4000-8000-000000000184",
+        "status": "completed",
+        "started_at": "2026-10-10T07:46:08.000Z",
+        "completed_at": "2026-10-10T07:48:56.000Z",
+        "events": [
+          {"id":"00000000-0000-4000-8000-000000000185","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4412,"event_type":"node_started","step_index":null,"step_name":"environment","created_at":"2026-10-10T07:46:10.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000186","startedAt":"2026-10-10T07:46:10.310Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000187","startedAt":"2026-10-10T07:46:10.343Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:10.343Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000188","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4413,"event_type":"node_completed","step_index":null,"step_name":"environment","created_at":"2026-10-10T07:46:10.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000186","startedAt":"2026-10-10T07:46:10.310Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000187","startedAt":"2026-10-10T07:46:10.343Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:10.343Z","durationMs":59},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":59}},
+          {"id":"00000000-0000-4000-8000-000000000189","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4414,"event_type":"node_started","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T07:46:10.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000190","startedAt":"2026-10-10T07:46:10.372Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000191","startedAt":"2026-10-10T07:46:10.407Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:10.407Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000192","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4415,"event_type":"node_completed","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T07:46:10.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000190","startedAt":"2026-10-10T07:46:10.372Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000191","startedAt":"2026-10-10T07:46:10.407Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:10.407Z","durationMs":49},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":49}},
+          {"id":"00000000-0000-4000-8000-000000000193","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4416,"event_type":"node_started","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:46:10.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000194","startedAt":"2026-10-10T07:46:10.422Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000195","startedAt":"2026-10-10T07:46:10.453Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:10.453Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000196","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4417,"event_type":"node_completed","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:46:10.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000194","startedAt":"2026-10-10T07:46:10.422Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000195","startedAt":"2026-10-10T07:46:10.453Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:10.453Z","durationMs":39},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":39}},
+          {"id":"00000000-0000-4000-8000-000000000197","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4418,"event_type":"node_started","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:46:10.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000198","startedAt":"2026-10-10T07:46:10.462Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000199","startedAt":"2026-10-10T07:46:10.501Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:46:10.501Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000200","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4506,"event_type":"node_completed","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:47:41.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000198","startedAt":"2026-10-10T07:46:10.462Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000199","startedAt":"2026-10-10T07:46:10.501Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:46:10.501Z","durationMs":91323},"spend":{"tokens":{"source":"provider","value":{"input":295004,"output":2482,"cacheRead":241664,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":91323,"session_id":"00000000-0000-4000-8000-000000000201","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000202","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4507,"event_type":"node_started","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:47:41.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000203","startedAt":"2026-10-10T07:47:41.789Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000204","startedAt":"2026-10-10T07:47:41.823Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:41.823Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000205","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4511,"event_type":"node_completed","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:47:44.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000203","startedAt":"2026-10-10T07:47:41.789Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000204","startedAt":"2026-10-10T07:47:41.823Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:41.823Z","durationMs":2824},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":2824}},
+          {"id":"00000000-0000-4000-8000-000000000206","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4512,"event_type":"node_skipped","step_index":null,"step_name":"repair-package-1","created_at":"2026-10-10T07:47:44.000Z","data":{"node":{"id":"repair-package-1","kind":"agent","source":{"kind":"command","name":"sa-repair"}},"invocation":{"id":"00000000-0000-4000-8000-000000000207","startedAt":"2026-10-10T07:47:44.615Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000208","startedAt":"2026-10-10T07:47:44.615Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:44.615Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$verify-package-1.output.disposition == 'repair'"}}},
+          {"id":"00000000-0000-4000-8000-000000000209","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4513,"event_type":"node_started","step_index":null,"step_name":"settle-package-1","created_at":"2026-10-10T07:47:44.000Z","data":{"node":{"id":"settle-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000210","startedAt":"2026-10-10T07:47:44.616Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000211","startedAt":"2026-10-10T07:47:44.646Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:44.646Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000212","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4514,"event_type":"node_completed","step_index":null,"step_name":"settle-package-1","created_at":"2026-10-10T07:47:44.000Z","data":{"node":{"id":"settle-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000210","startedAt":"2026-10-10T07:47:44.616Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000211","startedAt":"2026-10-10T07:47:44.646Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:44.646Z","durationMs":240},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":240}},
+          {"id":"00000000-0000-4000-8000-000000000213","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4515,"event_type":"node_started","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T07:47:44.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000214","startedAt":"2026-10-10T07:47:44.857Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000215","startedAt":"2026-10-10T07:47:44.885Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:44.885Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000216","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4517,"event_type":"node_completed","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T07:47:47.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000214","startedAt":"2026-10-10T07:47:44.857Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000215","startedAt":"2026-10-10T07:47:44.885Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:44.885Z","durationMs":2804},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":2804}},
+          {"id":"00000000-0000-4000-8000-000000000217","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4518,"event_type":"node_started","step_index":null,"step_name":"attempt-review-m1-r1","created_at":"2026-10-10T07:47:47.000Z","data":{"node":{"id":"attempt-review-m1-r1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000218","startedAt":"2026-10-10T07:47:47.663Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000219","startedAt":"2026-10-10T07:47:47.693Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:47.693Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000220","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4519,"event_type":"node_completed","step_index":null,"step_name":"attempt-review-m1-r1","created_at":"2026-10-10T07:47:47.000Z","data":{"node":{"id":"attempt-review-m1-r1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000218","startedAt":"2026-10-10T07:47:47.663Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000219","startedAt":"2026-10-10T07:47:47.693Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:47.693Z","durationMs":36},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":36}},
+          {"id":"00000000-0000-4000-8000-000000000221","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4520,"event_type":"node_started","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T07:47:47.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000222","startedAt":"2026-10-10T07:47:47.700Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000223","startedAt":"2026-10-10T07:47:47.748Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T07:47:47.748Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000224","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4566,"event_type":"node_completed","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000222","startedAt":"2026-10-10T07:47:47.700Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000223","startedAt":"2026-10-10T07:47:47.748Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T07:47:47.748Z","durationMs":68314},"spend":{"tokens":{"source":"provider","value":{"input":417913,"output":1764,"cacheRead":338432,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":68314,"session_id":"00000000-0000-4000-8000-000000000225","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000226","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4567,"event_type":"node_started","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000227","startedAt":"2026-10-10T07:48:56.067Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000228","startedAt":"2026-10-10T07:48:56.098Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.098Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000229","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4568,"event_type":"node_completed","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000227","startedAt":"2026-10-10T07:48:56.067Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000228","startedAt":"2026-10-10T07:48:56.098Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.098Z","durationMs":249},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":249}},
+          {"id":"00000000-0000-4000-8000-000000000230","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4569,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r2","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"fix-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000231","startedAt":"2026-10-10T07:48:56.318Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000232","startedAt":"2026-10-10T07:48:56.318Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.318Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$gate-m1-r1.output.verdict == 'fix'"}}},
+          {"id":"00000000-0000-4000-8000-000000000233","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4570,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r2","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"diff-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000234","startedAt":"2026-10-10T07:48:56.318Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000235","startedAt":"2026-10-10T07:48:56.318Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.318Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000236","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4571,"event_type":"node_skipped","step_index":null,"step_name":"attempt-review-m1-r2","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"attempt-review-m1-r2","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000237","startedAt":"2026-10-10T07:48:56.319Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000238","startedAt":"2026-10-10T07:48:56.319Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.319Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000239","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4572,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r2","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"review-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000240","startedAt":"2026-10-10T07:48:56.319Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000241","startedAt":"2026-10-10T07:48:56.319Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.319Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000242","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4573,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r2","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"gate-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000243","startedAt":"2026-10-10T07:48:56.320Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000244","startedAt":"2026-10-10T07:48:56.320Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.320Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000245","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4574,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r3","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"fix-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000246","startedAt":"2026-10-10T07:48:56.320Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000247","startedAt":"2026-10-10T07:48:56.320Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.320Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000248","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4575,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r3","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"diff-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000249","startedAt":"2026-10-10T07:48:56.320Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000250","startedAt":"2026-10-10T07:48:56.320Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.320Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000251","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4576,"event_type":"node_skipped","step_index":null,"step_name":"attempt-review-m1-r3","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"attempt-review-m1-r3","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000252","startedAt":"2026-10-10T07:48:56.321Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000253","startedAt":"2026-10-10T07:48:56.321Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.321Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000254","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4577,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r3","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"review-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000255","startedAt":"2026-10-10T07:48:56.321Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000256","startedAt":"2026-10-10T07:48:56.321Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.321Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000257","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4578,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r3","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"gate-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000258","startedAt":"2026-10-10T07:48:56.321Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000259","startedAt":"2026-10-10T07:48:56.321Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.321Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000260","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4579,"event_type":"node_started","step_index":null,"step_name":"land","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000261","startedAt":"2026-10-10T07:48:56.322Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000262","startedAt":"2026-10-10T07:48:56.346Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.346Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000263","workflow_run_id":"00000000-0000-4000-8000-000000000184","event_order":4580,"event_type":"node_completed","step_index":null,"step_name":"land","created_at":"2026-10-10T07:48:56.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000261","startedAt":"2026-10-10T07:48:56.322Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000262","startedAt":"2026-10-10T07:48:56.346Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:56.346Z","durationMs":56},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":56}}
+        ]
+      }
+    },
+    {
+      "ledger": {
+        "run_id": "run-4",
+        "archon_run_id": "00000000-0000-4000-8000-000000000264",
+        "started_at": "2026-10-10T06:35:14.490Z",
+        "repo": "/fixture/repo",
+        "gen_dir": "/fixture/gen",
+        "workflow": "w-4",
+        "plan": "plan.json",
+        "branch": "fixture",
+        "console": "claude",
+        "transcript": "",
+        "log": "",
+        "recoveries": [],
+        "dispositions": [
+          {
+            "at": "2026-10-10T06:57:48.651Z",
+            "reason": "coder",
+            "action": "auto_retry",
+            "ok": true
+          },
+          {
+            "at": "2026-10-10T07:01:25.032Z",
+            "reason": "auto_retry_exhausted",
+            "action": "ask",
+            "ok": true
+          },
+          {
+            "at": "2026-10-10T07:08:21.395Z",
+            "reason": "auto_retry_exhausted",
+            "action": "ask",
+            "ok": true
+          },
+          {
+            "at": "2026-10-10T07:47:07.984Z",
+            "reason": "environment",
+            "action": "auto_retry",
+            "ok": true
+          }
+        ]
+      },
+      "roles": [
+        [
+          "environment",
+          "script"
+        ],
+        [
+          "start-m1",
+          "script"
+        ],
+        [
+          "attempt-m1",
+          "script"
+        ],
+        [
+          "code-package-1",
+          "coder"
+        ],
+        [
+          "verify-package-1",
+          "script"
+        ],
+        [
+          "repair-package-1",
+          "coder"
+        ],
+        [
+          "settle-package-1",
+          "script"
+        ],
+        [
+          "diff-m1-r1",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r1",
+          "script"
+        ],
+        [
+          "review-m1-r1",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r1",
+          "script"
+        ],
+        [
+          "fix-m1-r2",
+          "coder"
+        ],
+        [
+          "diff-m1-r2",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r2",
+          "script"
+        ],
+        [
+          "review-m1-r2",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r2",
+          "script"
+        ],
+        [
+          "fix-m1-r3",
+          "coder"
+        ],
+        [
+          "diff-m1-r3",
+          "script"
+        ],
+        [
+          "attempt-review-m1-r3",
+          "script"
+        ],
+        [
+          "review-m1-r3",
+          "reviewer"
+        ],
+        [
+          "gate-m1-r3",
+          "script"
+        ],
+        [
+          "land",
+          "script"
+        ]
+      ],
+      "run": {
+        "id": "00000000-0000-4000-8000-000000000264",
+        "status": "completed",
+        "started_at": "2026-10-10T07:47:07.000Z",
+        "completed_at": "2026-10-10T07:49:43.000Z",
+        "events": [
+          {"id":"00000000-0000-4000-8000-000000000265","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4386,"event_type":"node_started","step_index":null,"step_name":"environment","created_at":"2026-10-10T07:45:39.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000266","startedAt":"2026-10-10T07:45:39.018Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000267","startedAt":"2026-10-10T07:45:39.049Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:45:39.049Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000268","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4387,"event_type":"node_completed","step_index":null,"step_name":"environment","created_at":"2026-10-10T07:45:39.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000266","startedAt":"2026-10-10T07:45:39.018Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000267","startedAt":"2026-10-10T07:45:39.049Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:45:39.049Z","durationMs":55},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":55}},
+          {"id":"00000000-0000-4000-8000-000000000269","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4388,"event_type":"node_started","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T07:45:39.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000270","startedAt":"2026-10-10T07:45:39.075Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000271","startedAt":"2026-10-10T07:45:39.101Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:45:39.101Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000272","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4389,"event_type":"node_completed","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T07:45:39.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000270","startedAt":"2026-10-10T07:45:39.075Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000271","startedAt":"2026-10-10T07:45:39.101Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:45:39.101Z","durationMs":36},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":36}},
+          {"id":"00000000-0000-4000-8000-000000000273","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4390,"event_type":"node_started","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:45:39.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000274","startedAt":"2026-10-10T07:45:39.120Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000275","startedAt":"2026-10-10T07:45:39.146Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:45:39.146Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000276","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4391,"event_type":"node_completed","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:45:39.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000274","startedAt":"2026-10-10T07:45:39.120Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000275","startedAt":"2026-10-10T07:45:39.146Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:45:39.146Z","durationMs":33},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":33}},
+          {"id":"00000000-0000-4000-8000-000000000277","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4392,"event_type":"node_started","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:45:39.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000278","startedAt":"2026-10-10T07:45:39.154Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000279","startedAt":"2026-10-10T07:45:39.181Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:45:39.181Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000280","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4442,"event_type":"node_completed","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:46:46.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000278","startedAt":"2026-10-10T07:45:39.154Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000279","startedAt":"2026-10-10T07:45:39.181Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:45:39.181Z","durationMs":67313},"spend":{"tokens":{"source":"provider","value":{"input":232190,"output":1808,"cacheRead":183808,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":67313,"session_id":"00000000-0000-4000-8000-000000000281","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000282","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4443,"event_type":"node_started","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:46:46.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000283","startedAt":"2026-10-10T07:46:46.469Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000284","startedAt":"2026-10-10T07:46:46.499Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:46.499Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000285","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4445,"event_type":"node_failed","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000283","startedAt":"2026-10-10T07:46:46.469Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000284","startedAt":"2026-10-10T07:46:46.499Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:46.499Z","durationMs":2654},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":2654,"error":"fixture failure"}},
+          {"id":"00000000-0000-4000-8000-000000000286","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4446,"event_type":"node_skipped","step_index":null,"step_name":"repair-package-1","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"repair-package-1","kind":"agent","source":{"kind":"command","name":"sa-repair"}},"invocation":{"id":"00000000-0000-4000-8000-000000000287","startedAt":"2026-10-10T07:46:49.155Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000288","startedAt":"2026-10-10T07:46:49.155Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.155Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000289","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4447,"event_type":"node_skipped","step_index":null,"step_name":"settle-package-1","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"settle-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000290","startedAt":"2026-10-10T07:46:49.155Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000291","startedAt":"2026-10-10T07:46:49.155Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.155Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000292","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4448,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000293","startedAt":"2026-10-10T07:46:49.156Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000294","startedAt":"2026-10-10T07:46:49.156Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.156Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000295","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4449,"event_type":"node_skipped","step_index":null,"step_name":"attempt-review-m1-r1","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"attempt-review-m1-r1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000296","startedAt":"2026-10-10T07:46:49.156Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000297","startedAt":"2026-10-10T07:46:49.156Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.156Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000298","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4450,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000299","startedAt":"2026-10-10T07:46:49.157Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000300","startedAt":"2026-10-10T07:46:49.157Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.157Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000301","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4451,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000302","startedAt":"2026-10-10T07:46:49.157Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000303","startedAt":"2026-10-10T07:46:49.157Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.157Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000304","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4452,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r2","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"fix-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000305","startedAt":"2026-10-10T07:46:49.158Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000306","startedAt":"2026-10-10T07:46:49.158Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.158Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000307","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4453,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r2","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"diff-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000308","startedAt":"2026-10-10T07:46:49.158Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000309","startedAt":"2026-10-10T07:46:49.158Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.158Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000310","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4454,"event_type":"node_skipped","step_index":null,"step_name":"attempt-review-m1-r2","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"attempt-review-m1-r2","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000311","startedAt":"2026-10-10T07:46:49.158Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000312","startedAt":"2026-10-10T07:46:49.158Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.158Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000313","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4455,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r2","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"review-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000314","startedAt":"2026-10-10T07:46:49.159Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000315","startedAt":"2026-10-10T07:46:49.159Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.159Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000316","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4456,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r2","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"gate-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000317","startedAt":"2026-10-10T07:46:49.159Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000318","startedAt":"2026-10-10T07:46:49.159Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.159Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000319","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4457,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r3","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"fix-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000320","startedAt":"2026-10-10T07:46:49.159Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000321","startedAt":"2026-10-10T07:46:49.159Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.159Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000322","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4458,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r3","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"diff-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000323","startedAt":"2026-10-10T07:46:49.160Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000324","startedAt":"2026-10-10T07:46:49.160Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.160Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000325","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4459,"event_type":"node_skipped","step_index":null,"step_name":"attempt-review-m1-r3","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"attempt-review-m1-r3","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000326","startedAt":"2026-10-10T07:46:49.160Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000327","startedAt":"2026-10-10T07:46:49.160Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.160Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000328","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4460,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r3","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"review-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000329","startedAt":"2026-10-10T07:46:49.160Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000330","startedAt":"2026-10-10T07:46:49.160Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.160Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000331","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4461,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r3","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"gate-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000332","startedAt":"2026-10-10T07:46:49.161Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000333","startedAt":"2026-10-10T07:46:49.161Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.161Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000334","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4462,"event_type":"node_skipped","step_index":null,"step_name":"land","created_at":"2026-10-10T07:46:49.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000335","startedAt":"2026-10-10T07:46:49.161Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000336","startedAt":"2026-10-10T07:46:49.161Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:46:49.161Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_failed","origin":"verify-package-1"}}},
+          {"id":"00000000-0000-4000-8000-000000000337","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4473,"event_type":"node_skipped_prior_success","step_index":null,"step_name":"environment","created_at":"2026-10-10T07:47:09.000Z","data":{"node":{"id":"environment","kind":"exec","runtime":"bun"},"reason":"prior_success"}},
+          {"id":"00000000-0000-4000-8000-000000000338","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4474,"event_type":"node_skipped_prior_success","step_index":null,"step_name":"start-m1","created_at":"2026-10-10T07:47:09.000Z","data":{"node":{"id":"start-m1","kind":"exec","runtime":"sh"},"reason":"prior_success"}},
+          {"id":"00000000-0000-4000-8000-000000000339","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4475,"event_type":"node_always_run_reset","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:47:09.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"}}},
+          {"id":"00000000-0000-4000-8000-000000000340","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4476,"event_type":"node_started","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:47:09.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000341","startedAt":"2026-10-10T07:47:09.063Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000342","startedAt":"2026-10-10T07:47:09.192Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:09.192Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000343","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4477,"event_type":"node_completed","step_index":null,"step_name":"attempt-m1","created_at":"2026-10-10T07:47:09.000Z","data":{"node":{"id":"attempt-m1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000341","startedAt":"2026-10-10T07:47:09.063Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000342","startedAt":"2026-10-10T07:47:09.192Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:47:09.192Z","durationMs":162},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":162}},
+          {"id":"00000000-0000-4000-8000-000000000344","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4478,"event_type":"node_prior_cache_invalidated","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:47:09.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"reason":"stale_dependency"}},
+          {"id":"00000000-0000-4000-8000-000000000345","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4479,"event_type":"node_started","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:47:09.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000346","startedAt":"2026-10-10T07:47:09.231Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000347","startedAt":"2026-10-10T07:47:09.334Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:47:09.334Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000348","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4544,"event_type":"node_completed","step_index":null,"step_name":"code-package-1","created_at":"2026-10-10T07:48:30.000Z","data":{"node":{"id":"code-package-1","kind":"agent","source":{"kind":"command","name":"sa-code"}},"invocation":{"id":"00000000-0000-4000-8000-000000000346","startedAt":"2026-10-10T07:47:09.231Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000347","startedAt":"2026-10-10T07:47:09.334Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6.1-sol","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"fresh"},"timing":{"startedAt":"2026-10-10T07:47:09.334Z","durationMs":81493},"spend":{"tokens":{"source":"provider","value":{"input":192167,"output":2129,"cacheRead":144000,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":81493,"session_id":"00000000-0000-4000-8000-000000000349","provider":"codex","model":"gpt-6.1-sol"}},
+          {"id":"00000000-0000-4000-8000-000000000350","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4546,"event_type":"node_started","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:48:30.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000283","startedAt":"2026-10-10T07:46:46.469Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000351","startedAt":"2026-10-10T07:48:30.841Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:30.841Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000352","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4549,"event_type":"node_completed","step_index":null,"step_name":"verify-package-1","created_at":"2026-10-10T07:48:40.000Z","data":{"node":{"id":"verify-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000283","startedAt":"2026-10-10T07:46:46.469Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000351","startedAt":"2026-10-10T07:48:30.841Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:30.841Z","durationMs":9812},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":9812}},
+          {"id":"00000000-0000-4000-8000-000000000353","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4550,"event_type":"node_skipped","step_index":null,"step_name":"repair-package-1","created_at":"2026-10-10T07:48:40.000Z","data":{"node":{"id":"repair-package-1","kind":"agent","source":{"kind":"command","name":"sa-repair"}},"invocation":{"id":"00000000-0000-4000-8000-000000000354","startedAt":"2026-10-10T07:48:40.549Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000355","startedAt":"2026-10-10T07:48:40.550Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:40.550Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$verify-package-1.output.disposition == 'repair'"}}},
+          {"id":"00000000-0000-4000-8000-000000000356","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4551,"event_type":"node_started","step_index":null,"step_name":"settle-package-1","created_at":"2026-10-10T07:48:40.000Z","data":{"node":{"id":"settle-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000357","startedAt":"2026-10-10T07:48:40.552Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000358","startedAt":"2026-10-10T07:48:40.659Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:40.659Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000359","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4553,"event_type":"node_completed","step_index":null,"step_name":"settle-package-1","created_at":"2026-10-10T07:48:41.000Z","data":{"node":{"id":"settle-package-1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000357","startedAt":"2026-10-10T07:48:40.552Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000358","startedAt":"2026-10-10T07:48:40.659Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:40.659Z","durationMs":788},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":788}},
+          {"id":"00000000-0000-4000-8000-000000000360","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4554,"event_type":"node_started","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T07:48:41.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000361","startedAt":"2026-10-10T07:48:41.346Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000362","startedAt":"2026-10-10T07:48:41.475Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:41.475Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000363","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4558,"event_type":"node_completed","step_index":null,"step_name":"diff-m1-r1","created_at":"2026-10-10T07:48:50.000Z","data":{"node":{"id":"diff-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000361","startedAt":"2026-10-10T07:48:41.346Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000362","startedAt":"2026-10-10T07:48:41.475Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:41.475Z","durationMs":9389},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":9389}},
+          {"id":"00000000-0000-4000-8000-000000000364","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4559,"event_type":"node_started","step_index":null,"step_name":"attempt-review-m1-r1","created_at":"2026-10-10T07:48:50.000Z","data":{"node":{"id":"attempt-review-m1-r1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000365","startedAt":"2026-10-10T07:48:50.739Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000366","startedAt":"2026-10-10T07:48:50.828Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:50.828Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000367","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4560,"event_type":"node_completed","step_index":null,"step_name":"attempt-review-m1-r1","created_at":"2026-10-10T07:48:50.000Z","data":{"node":{"id":"attempt-review-m1-r1","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000365","startedAt":"2026-10-10T07:48:50.739Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000366","startedAt":"2026-10-10T07:48:50.828Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:48:50.828Z","durationMs":109},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":109}},
+          {"id":"00000000-0000-4000-8000-000000000368","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4561,"event_type":"node_started","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T07:48:51.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000369","startedAt":"2026-10-10T07:48:50.852Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000370","startedAt":"2026-10-10T07:48:51.090Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T07:48:51.090Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_reported"},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000371","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4599,"event_type":"node_completed","step_index":null,"step_name":"review-m1-r1","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"review-m1-r1","kind":"agent","source":{"kind":"command","name":"sa-review"}},"invocation":{"id":"00000000-0000-4000-8000-000000000369","startedAt":"2026-10-10T07:48:50.852Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000370","startedAt":"2026-10-10T07:48:51.090Z"},"binding":{"provider":"codex","model":{"requested":"gpt-6-astra","resolved":{"source":"unavailable","reason":"unsupported"}},"effort":"medium","sessionOrigin":"resumed"},"timing":{"startedAt":"2026-10-10T07:48:51.090Z","durationMs":51138},"spend":{"tokens":{"source":"provider","value":{"input":239602,"output":1198,"cacheRead":174464,"cacheWrite":0}},"costUsd":{"source":"unavailable","reason":"unsupported"},"stopReason":{"source":"unavailable","reason":"unsupported"},"numTurns":{"source":"unavailable","reason":"unsupported"}},"accounting":"node","duration_ms":51138,"session_id":"00000000-0000-4000-8000-000000000372","provider":"codex","model":"gpt-6-astra"}},
+          {"id":"00000000-0000-4000-8000-000000000373","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4600,"event_type":"node_started","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000374","startedAt":"2026-10-10T07:49:42.194Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000375","startedAt":"2026-10-10T07:49:42.316Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.316Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000376","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4601,"event_type":"node_completed","step_index":null,"step_name":"gate-m1-r1","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"gate-m1-r1","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000374","startedAt":"2026-10-10T07:49:42.194Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000375","startedAt":"2026-10-10T07:49:42.316Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.316Z","durationMs":785},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":785}},
+          {"id":"00000000-0000-4000-8000-000000000377","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4602,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r2","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"fix-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000378","startedAt":"2026-10-10T07:49:42.982Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000379","startedAt":"2026-10-10T07:49:42.982Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.982Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"when_condition","cause":{"kind":"condition","expr":"$gate-m1-r1.output.verdict == 'fix'"}}},
+          {"id":"00000000-0000-4000-8000-000000000380","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4603,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r2","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"diff-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000381","startedAt":"2026-10-10T07:49:42.984Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000382","startedAt":"2026-10-10T07:49:42.985Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.985Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000383","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4604,"event_type":"node_skipped","step_index":null,"step_name":"attempt-review-m1-r2","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"attempt-review-m1-r2","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000384","startedAt":"2026-10-10T07:49:42.987Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000385","startedAt":"2026-10-10T07:49:42.987Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.987Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000386","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4605,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r2","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"review-m1-r2","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000387","startedAt":"2026-10-10T07:49:42.988Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000388","startedAt":"2026-10-10T07:49:42.988Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.988Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000389","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4606,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r2","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"gate-m1-r2","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000390","startedAt":"2026-10-10T07:49:42.989Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000391","startedAt":"2026-10-10T07:49:42.989Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.989Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000392","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4607,"event_type":"node_skipped","step_index":null,"step_name":"fix-m1-r3","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"fix-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-fix"}},"invocation":{"id":"00000000-0000-4000-8000-000000000393","startedAt":"2026-10-10T07:49:42.990Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000394","startedAt":"2026-10-10T07:49:42.990Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.990Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000395","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4608,"event_type":"node_skipped","step_index":null,"step_name":"diff-m1-r3","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"diff-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000396","startedAt":"2026-10-10T07:49:42.992Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000397","startedAt":"2026-10-10T07:49:42.992Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.992Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000398","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4609,"event_type":"node_skipped","step_index":null,"step_name":"attempt-review-m1-r3","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"attempt-review-m1-r3","kind":"exec","runtime":"sh"},"invocation":{"id":"00000000-0000-4000-8000-000000000399","startedAt":"2026-10-10T07:49:42.993Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000400","startedAt":"2026-10-10T07:49:42.993Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.993Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000401","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4610,"event_type":"node_skipped","step_index":null,"step_name":"review-m1-r3","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"review-m1-r3","kind":"agent","source":{"kind":"command","name":"sa-review-delta"}},"invocation":{"id":"00000000-0000-4000-8000-000000000402","startedAt":"2026-10-10T07:49:42.994Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000403","startedAt":"2026-10-10T07:49:42.994Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.994Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000404","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4611,"event_type":"node_skipped","step_index":null,"step_name":"gate-m1-r3","created_at":"2026-10-10T07:49:42.000Z","data":{"node":{"id":"gate-m1-r3","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000405","startedAt":"2026-10-10T07:49:42.995Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000406","startedAt":"2026-10-10T07:49:42.995Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:42.995Z","durationMs":0},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":0,"reason":"trigger_rule","cause":{"kind":"upstream_skipped","origin":"fix-m1-r2"}}},
+          {"id":"00000000-0000-4000-8000-000000000407","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4612,"event_type":"node_started","step_index":null,"step_name":"land","created_at":"2026-10-10T07:49:43.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000408","startedAt":"2026-10-10T07:49:42.996Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000409","startedAt":"2026-10-10T07:49:43.092Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:43.092Z"},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node"}},
+          {"id":"00000000-0000-4000-8000-000000000410","workflow_run_id":"00000000-0000-4000-8000-000000000264","event_order":4613,"event_type":"node_completed","step_index":null,"step_name":"land","created_at":"2026-10-10T07:49:43.000Z","data":{"node":{"id":"land","kind":"exec","runtime":"bun"},"invocation":{"id":"00000000-0000-4000-8000-000000000408","startedAt":"2026-10-10T07:49:42.996Z","loopPath":[]},"attempt":{"id":"00000000-0000-4000-8000-000000000409","startedAt":"2026-10-10T07:49:43.092Z"},"binding":{},"timing":{"startedAt":"2026-10-10T07:49:43.092Z","durationMs":260},"spend":{"tokens":{"source":"unavailable","reason":"not_applicable"},"costUsd":{"source":"unavailable","reason":"not_applicable"},"stopReason":{"source":"unavailable","reason":"not_applicable"},"numTurns":{"source":"unavailable","reason":"not_applicable"}},"accounting":"node","duration_ms":260}}
+        ]
+      }
+    }
+  ],
+  "job": {
+    "id": "00000000-0000-4000-8000-000000000411",
+    "cwd": "/fixture/repo",
+    "kind": "codex",
+    "role": "general",
+    "model": "gpt-6.1-sol",
+    "started_at": "2026-10-10T07:49:47.419Z",
+    "session_id": "00000000-0000-4000-8000-000000000412",
+    "state": "done"
+  },
+  "live": [
+    {
+      "session_id": "00000000-0000-4000-8000-000000000413",
+      "client": "codex",
+      "role": "general",
+      "cwd": "/fixture/repo",
+      "at": "2026-10-10T06:38:20.755Z",
+      "turn_at": "2026-10-10T06:38:02.518Z"
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000414",
+      "client": "claude",
+      "role": "commander",
+      "cwd": "/fixture/repo",
+      "at": "2026-10-10T07:39:34.302Z",
+      "turn_at": "2026-10-10T07:38:12.076Z"
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000415",
+      "client": "codex",
+      "derived": true,
+      "cwd": "/fixture/repo",
+      "at": "2026-10-10T06:09:13.049Z",
+      "turn_at": "2026-10-10T05:56:18.988Z"
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000416",
+      "client": "codex",
+      "derived": false,
+      "cwd": "/fixture/repo",
+      "at": "2026-10-10T05:21:57.083Z",
+      "turn_at": null
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000417",
+      "client": "claude",
+      "derived": true,
+      "cwd": "/fixture/repo",
+      "at": "2026-10-10T05:56:36.172Z",
+      "turn_at": "2026-10-10T05:43:51.602Z"
+    }
+  ],
+  "usage": [
+    {
+      "id": "00000000-0000-4000-8000-000000000416",
+      "client": "codex",
+      "model": "gpt-6-astra",
+      "total": 29829,
+      "input": 7871,
+      "output": 1094,
+      "reasoning": 1034,
+      "cacheRead": 20864,
+      "cacheWrite": 0,
+      "sessions": 1,
+      "at": "2026-10-10T05:22:31.340Z",
+      "cost": 0.154274,
+      "parts": [
+        {
+          "input": 7871,
+          "output": 1094,
+          "reasoning": 1034,
+          "cacheRead": 20864,
+          "cacheWrite": 0,
+          "total": 29829,
+          "sessions": 1,
+          "model": "gpt-6-astra"
+        }
+      ],
+      "owner": {
+        "client": "codex",
+        "role": null,
+        "model": "gpt-6-astra",
+        "cwd": "/fixture/repo",
+        "kind": "interactive"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000415",
+      "client": "codex",
+      "model": "gpt-6.1-sol",
+      "total": 3416769,
+      "input": 391756,
+      "output": 37877,
+      "reasoning": 7129,
+      "cacheRead": 2987136,
+      "cacheWrite": 0,
+      "sessions": 1,
+      "at": "2026-10-10T06:09:45.706Z",
+      "cost": 1.4609956,
+      "parts": [
+        {
+          "input": 391756,
+          "output": 37877,
+          "reasoning": 7129,
+          "cacheRead": 2987136,
+          "cacheWrite": 0,
+          "total": 3416769,
+          "sessions": 1,
+          "model": "gpt-6.1-sol"
+        }
+      ],
+      "owner": {
+        "client": "codex",
+        "role": "general",
+        "model": "gpt-6.1-sol",
+        "cwd": "/fixture/repo",
+        "kind": "run",
+        "run_id": "00000000-0000-4000-8000-000000000418"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000413",
+      "client": "codex",
+      "model": "gpt-6.1-sol",
+      "total": 181448,
+      "input": 62664,
+      "output": 1152,
+      "reasoning": 79,
+      "cacheRead": 117632,
+      "cacheWrite": 0,
+      "sessions": 1,
+      "at": "2026-10-10T06:38:29.915Z",
+      "cost": 0.1486112,
+      "parts": [
+        {
+          "input": 62664,
+          "output": 1152,
+          "reasoning": 79,
+          "cacheRead": 117632,
+          "cacheWrite": 0,
+          "total": 181448,
+          "sessions": 1,
+          "model": "gpt-6.1-sol"
+        }
+      ],
+      "owner": {
+        "client": "codex",
+        "role": "general",
+        "model": "gpt-6.1-sol",
+        "cwd": "/fixture/repo",
+        "kind": "run",
+        "run_id": "00000000-0000-4000-8000-000000000419"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000412",
+      "client": "codex",
+      "model": "gpt-6.1-sol",
+      "total": 8127721,
+      "input": 355570,
+      "output": 36343,
+      "reasoning": 13591,
+      "cacheRead": 7735808,
+      "cacheWrite": 0,
+      "sessions": 1,
+      "at": "2026-10-10T08:14:41.809Z",
+      "cost": 1.8481508,
+      "parts": [
+        {
+          "input": 355570,
+          "output": 36343,
+          "reasoning": 13591,
+          "cacheRead": 7735808,
+          "cacheWrite": 0,
+          "total": 8127721,
+          "sessions": 1,
+          "model": "gpt-6.1-sol"
+        }
+      ],
+      "owner": {
+        "client": "codex",
+        "role": "general",
+        "model": "gpt-6.1-sol",
+        "cwd": "/fixture/repo",
+        "kind": "job",
+        "job_id": "00000000-0000-4000-8000-000000000411"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000417",
+      "client": "claude",
+      "model": "claude-opus-5-5",
+      "total": 21908098,
+      "input": 524,
+      "output": 165071,
+      "reasoning": 0,
+      "cacheRead": 20999242,
+      "cacheWrite": 743261,
+      "sessions": 1,
+      "at": "2026-10-10T05:56:32.297Z",
+      "cost": 11.219669400000003,
+      "parts": [
+        {
+          "input": 524,
+          "output": 165071,
+          "reasoning": 0,
+          "cacheRead": 20999242,
+          "cacheWrite": 743261,
+          "total": 21908098,
+          "sessions": 1,
+          "model": "claude-opus-5-5"
+        }
+      ],
+      "owner": {
+        "client": "claude",
+        "role": null,
+        "model": "claude-opus-5-5",
+        "cwd": "/fixture/repo",
+        "kind": "job",
+        "job_id": "00000000-0000-4000-8000-000000000420"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000412",
+      "client": "claude",
+      "model": "gpt-6.1-sol",
+      "total": 8127721,
+      "input": 355570,
+      "output": 36343,
+      "reasoning": 0,
+      "cacheRead": 7735808,
+      "cacheWrite": 0,
+      "sessions": 1,
+      "at": "2026-10-10T08:14:41.809Z",
+      "cost": 1.8481508,
+      "parts": [
+        {
+          "input": 355570,
+          "output": 36343,
+          "reasoning": 0,
+          "cacheRead": 7735808,
+          "cacheWrite": 0,
+          "total": 8127721,
+          "sessions": 1,
+          "model": "gpt-6.1-sol"
+        }
+      ],
+      "owner": {
+        "client": "claude",
+        "role": null,
+        "model": "gpt-6.1-sol",
+        "cwd": null,
+        "kind": "unknown"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000414",
+      "client": "claude",
+      "model": "claude-opus-5-5",
+      "total": 3242845,
+      "input": 102,
+      "output": 21540,
+      "reasoning": 0,
+      "cacheRead": 3129021,
+      "cacheWrite": 92182,
+      "sessions": 1,
+      "at": "2026-10-10T07:39:34.221Z",
+      "cost": 1.5179222000000003,
+      "parts": [
+        {
+          "input": 102,
+          "output": 21540,
+          "reasoning": 0,
+          "cacheRead": 3129021,
+          "cacheWrite": 92182,
+          "total": 3242845,
+          "sessions": 1,
+          "model": "claude-opus-5-5"
+        }
+      ],
+      "owner": {
+        "client": "claude",
+        "role": "commander",
+        "model": "claude-opus-5-5",
+        "cwd": "/fixture/repo",
+        "kind": "interactive"
+      }
+    }
+  ],
+  "unknown_usage": {
+    "input": 233915,
+    "output": 22672,
+    "reasoning": 7583,
+    "cacheRead": 3918464,
+    "cacheWrite": 0,
+    "total": 4175051,
+    "sessions": 1,
+    "id": "00000000-0000-4000-8000-000000000421",
+    "client": "codex",
+    "model": "gpt-6.1-sol",
+    "at": "2026-10-09T18:02:01.899Z",
+    "cost": 1.0863964,
+    "parts": [
+      {
+        "input": 233915,
+        "output": 22672,
+        "reasoning": 7583,
+        "cacheRead": 3918464,
+        "cacheWrite": 0,
+        "total": 4175051,
+        "sessions": 1,
+        "model": "gpt-6.1-sol"
+      }
+    ],
+    "owner": {
+      "client": "codex",
+      "role": null,
+      "model": "gpt-6.1-sol",
+      "cwd": null,
+      "kind": "unknown"
+    }
+  },
+  "asks": {
+    "run-3:auto_retry_exhausted:2": {
+      "status": "pending"
+    },
+    "run-3:auto_retry_exhausted:3": {
+      "status": "pending"
+    },
+    "run-4:auto_retry_exhausted:1": {
+      "status": "pending"
+    },
+    "run-4:auto_retry_exhausted:2": {
+      "status": "pending"
+    }
+  }
+}
