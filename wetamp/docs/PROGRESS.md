@@ -640,3 +640,6 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - R4（HF9-R2-01–02 / I2、I4 / P4）：元帅裁决 `pkg.title` 是 plan 作者的计划元数据，与 plan 同一信任级别，允许进标题；派生会话产出的自由文本一律不进标题。新增不变量“标题在任何合法输入下都可投递”：依次缩名称、完成包名单转数量、压缩数字事实、压缩固定文案，始终保留原因、完整是/否后果及 marker；16 位预算四包三完成加 adopt 的最终投递与全部提问策略最大输入回归覆盖，监测继续归属 `orphan_hold`/`dup_ask`。
 
 - **ORCA1**：supervise-tick 处置后将 cockpit 的“跑 / 等你”汇总投影到 Orca superagent 看板；只是视图，不参与决策，拍板仍走 SUPERAGENT 提醒/decide。新待办标未读、全部解除标已读，其余变化保留用户读状态；同步失败不影响心跳退出码，SA_ORCA=0、orca-board 不存在、CLI 缺失或 Orca 未运行/不可达时跳过，绝不启动 Orca。
+- **ORCA1 R2 配置与缓存**：CLI 按 `SA_ORCA_BIN` → `/usr/local/bin/orca` → `/Applications/Orca.app/Contents/Resources/bin/orca` 顺序查找；探活、加载、比较与写入共用 `home().sa/orca-board.lock` 非阻塞锁，忙时跳过，退出时释放。坏 JSON 或结构不合法的缓存按无历史重建，有 needs 时标未读；读取和写入失败仍返回 error。
+- **ORCA1-R1-01（中，已知限制）**：快照加载含同步 git 调用，超时只在异步边界生效；git 卡住时单次 tick 可能超过 60 秒，launchd 只会漏周期不会并发。
+- **ORCA1-R1-02（中，已知限制）**：set 结果不确定（响应超时或本地状态保存失败）时，下轮可能重发一次 `--unread`，覆盖用户手动已读状态。

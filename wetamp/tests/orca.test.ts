@@ -32,13 +32,14 @@ function harness(s: Snapshot = frame()) {
   const h = {
     snapshot: s, saved: undefined as string | undefined,
     probe: { ok: true, result: { app: { running: true }, runtime: { reachable: true } } } as unknown,
-    result: { ok: true } as unknown, loads: 0,
+    result: { ok: true } as unknown, loads: 0, locks: [] as string[], releases: 0,
   };
   const deps: OrcaDeps = {
     env: { SA_ORCA_BIN: bin }, sa: () => sa,
     exists: path => [bin, join(sa, 'orca-board')].includes(path),
     read: path => { expect(path).toBe(join(sa, 'orca-board.json')); return h.saved; },
     write: (path, text) => { writes.push({ path, text }); h.saved = text; },
+    lock: path => { h.locks.push(path); return { ok: true, release: () => { h.releases++; } }; },
     load: async signal => { expect(signal).toBeInstanceOf(AbortSignal); h.loads++; return h.snapshot; },
     now: () => Date.parse('2026-10-11T00:00:00Z'),
     exec: async (path, args, signal) => {
@@ -84,7 +85,16 @@ describe('syncOrca (injected only)', () => {
       else s.deps.exists = path => mode === 'no-orca' && path.endsWith('/orca-board');
       expect(await syncOrca(s.deps)).toEqual({ skipped: mode });
       expect(s.calls).toHaveLength(0); expect(s.h.loads).toBe(0); expect(s.writes).toHaveLength(0);
+      expect(s.h.locks).toHaveLength(0);
     }
+  });
+  test('busy projection lock skips before probing or loading', async () => {
+    const s = harness();
+    s.deps.lock = path => { s.h.locks.push(path); return { ok: false, reason: 'locked' }; };
+    expect(await syncOrca(s.deps)).toEqual({ skipped: 'locked' });
+    expect(s.h.locks).toEqual(['/scratch-orca/orca-board.lock']);
+    expect(s.calls).toHaveLength(0); expect(s.h.loads).toBe(0); expect(s.writes).toHaveLength(0);
+    expect(s.h.releases).toBe(0);
   });
   test('binary resolution prefers override, then absolute installation locations', async () => {
     for (const bin of ['/test/orca', '/usr/local/bin/orca', '/Applications/Orca.app/Contents/Resources/bin/orca']) {
@@ -104,6 +114,7 @@ describe('syncOrca (injected only)', () => {
       expect(await syncOrca(s.deps)).toEqual({ skipped: 'unavailable' });
       expect(s.calls.map(c => c.args)).toEqual([['status', '--json']]);
       expect(s.h.loads).toBe(0); expect(s.writes).toHaveLength(0);
+      expect(s.h.releases).toBe(1);
     }
     const s = harness(); s.deps.exec = async () => { throw new Error('not reachable'); };
     expect(await syncOrca(s.deps)).toEqual({ skipped: 'unavailable' });
@@ -115,6 +126,8 @@ describe('syncOrca (injected only)', () => {
     expect(s.writes[0]?.path).toBe('/scratch-orca/orca-board.json');
     expect(await syncOrca(s.deps)).toEqual({ skipped: 'unchanged' });
     expect(s.sets()).toHaveLength(1); expect(s.writes).toHaveLength(1);
+    expect(s.h.locks).toEqual(Array(2).fill('/scratch-orca/orca-board.lock'));
+    expect(s.h.releases).toBe(2);
     s.h.snapshot = frame(['active'], ['held', 'new']); await syncOrca(s.deps);
     expect(s.sets().at(-1)?.args).toContain('--unread');
     s.h.snapshot = frame(['active']); await syncOrca(s.deps);
@@ -159,6 +172,7 @@ describe('syncOrca (injected only)', () => {
       const result = await syncOrca(s.deps);
       expect('error' in result).toBe(true); expect(child?.aborted).toBe(true);
       expect(s.writes).toHaveLength(0);
+      expect(s.h.releases).toBe(1);
     }
   });
   test('overall timeout aborts snapshot loading and never writes an incomplete view', async () => {
@@ -168,13 +182,31 @@ describe('syncOrca (injected only)', () => {
     expect('error' in await syncOrca(s.deps)).toBe(true);
     expect(loading?.aborted).toBe(true); expect(s.sets()).toHaveLength(0); expect(s.writes).toHaveLength(0);
   });
-  test('unrelated time/token changes do not rewrite; invalid state/write errors are visible', async () => {
+  test('bad JSON and invalid cache shapes rebuild as no history and mark needs unread', async () => {
+    for (const saved of ['{broken', '{}', 'null', '[]',
+      '{"status":"invalid","comment":"old","needs":[]}',
+      '{"status":"completed","comment":1,"needs":[]}',
+      '{"status":"completed","comment":"old","needs":[1]}']) {
+      const s = harness(frame([], ['held'])); s.h.saved = saved;
+      expect(await syncOrca(s.deps)).toEqual({ synced: true });
+      expect(s.sets()).toHaveLength(1); expect(s.sets()[0]?.args).toContain('--unread');
+      expect(s.writes).toHaveLength(1); expect(s.writes[0]?.path).toBe('/scratch-orca/orca-board.json');
+      expect(JSON.parse(s.h.saved ?? '')).toEqual(orcaView(cockpit(s.h.snapshot, s.deps.now())));
+      expect(s.h.releases).toBe(1);
+    }
+  });
+  test('unrelated time/token changes do not rewrite; read/write errors remain visible', async () => {
     const s = harness(frame(['active'])); await syncOrca(s.deps);
     s.deps.now = () => Date.parse('2026-10-11T01:00:00Z');
     expect(orcaView(cockpit(s.h.snapshot, s.deps.now())).comment).not.toContain('%');
     expect(await syncOrca(s.deps)).toEqual({ skipped: 'unchanged' });
-    s.h.saved = '{}'; expect(await syncOrca(s.deps)).toEqual({ error: 'invalid orca-board.json' });
-    s.h.saved = undefined; s.deps.write = () => { throw new Error('disk full'); };
+    const read = s.deps.read;
+    s.deps.read = () => { throw new Error('permission denied'); };
+    expect(await syncOrca(s.deps)).toEqual({ error: 'permission denied' });
+    expect(s.sets()).toHaveLength(1); expect(s.writes).toHaveLength(1);
+    s.deps.read = read; s.h.saved = '{}'; s.deps.write = () => { throw new Error('disk full'); };
     expect(await syncOrca(s.deps)).toEqual({ error: 'disk full' });
+    expect(s.writes).toHaveLength(1); expect(s.h.saved).toBe('{}');
+    expect(s.h.releases).toBe(4);
   });
 });

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { home, writeAtomic } from './config';
+import { lock } from './archon';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit, REASONS, type Cockpit } from './board/cockpit';
 
@@ -39,6 +40,7 @@ export interface OrcaDeps {
   exists: (path: string) => boolean;
   read: (path: string) => string | undefined;
   write: (path: string, text: string) => void;
+  lock: typeof lock;
   load: (signal: AbortSignal) => Promise<Snapshot>;
   now: () => number;
   exec: (bin: string, args: string[], signal: AbortSignal) => Promise<string>;
@@ -53,7 +55,7 @@ const abortError = (signal: AbortSignal): Error => {
 const defaults: OrcaDeps = {
   env: process.env, sa: () => home().sa, exists: existsSync,
   read: path => existsSync(path) ? readFileSync(path, 'utf8') : undefined,
-  write: writeAtomic, load: signal => createLoader(signal)(20), now: Date.now,
+  write: writeAtomic, lock, load: signal => createLoader(signal)(20), now: Date.now,
   exec: (bin, args, signal) => new Promise((resolve, reject) => {
     execFile(bin, args, { signal, killSignal: 'SIGKILL' }, (error, stdout) => {
       if (signal.aborted) reject(abortError(signal));
@@ -79,6 +81,7 @@ async function bounded<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T
 
 export async function syncOrca(overrides: Partial<OrcaDeps> = {}): Promise<{ synced: true } | { skipped: string } | { error: string }> {
   const d = { ...defaults, ...overrides };
+  let held: ReturnType<typeof lock> | undefined;
   try {
     if (d.env.SA_ORCA === '0') return { skipped: 'disabled' };
     const board = join(d.sa(), 'orca-board'), state = join(d.sa(), 'orca-board.json');
@@ -86,6 +89,8 @@ export async function syncOrca(overrides: Partial<OrcaDeps> = {}): Promise<{ syn
     const bin = [d.env.SA_ORCA_BIN, '/usr/local/bin/orca', '/Applications/Orca.app/Contents/Resources/bin/orca']
       .find((p): p is string => !!p && d.exists(p));
     if (!bin) return { skipped: 'no-orca' };
+    held = d.lock(join(d.sa(), 'orca-board.lock'));
+    if (!held.ok) return { skipped: 'locked' };
     const signal = AbortSignal.timeout(d.timeoutMs);
     const call = async (args: string[]): Promise<unknown> => {
       const child = AbortSignal.any([signal, AbortSignal.timeout(d.commandTimeoutMs)]);
@@ -105,11 +110,12 @@ export async function syncOrca(overrides: Partial<OrcaDeps> = {}): Promise<{ syn
     const saved = d.read(state);
     let previous: OrcaView | undefined;
     if (saved !== undefined) {
-      const p: unknown = JSON.parse(saved);
-      if (!record(p) || (p.status !== 'in-review' && p.status !== 'in-progress' && p.status !== 'completed') ||
-        typeof p.comment !== 'string' || !Array.isArray(p.needs) || !p.needs.every((s: unknown) => typeof s === 'string'))
-        throw new Error('invalid orca-board.json');
-      previous = { status: p.status, comment: p.comment, needs: p.needs };
+      let p: unknown;
+      try { p = JSON.parse(saved) as unknown; }
+      catch { /* A corrupt projection cache has no history; rebuild after a successful set. */ }
+      if (record(p) && (p.status === 'in-review' || p.status === 'in-progress' || p.status === 'completed') &&
+        typeof p.comment === 'string' && Array.isArray(p.needs) && p.needs.every((s: unknown) => typeof s === 'string'))
+        previous = { status: p.status, comment: p.comment, needs: p.needs };
     }
     if (previous?.status === next.status && previous.comment === next.comment &&
       JSON.stringify(previous.needs) === JSON.stringify(next.needs)) return { skipped: 'unchanged' };
@@ -125,4 +131,5 @@ export async function syncOrca(overrides: Partial<OrcaDeps> = {}): Promise<{ syn
     d.write(state, JSON.stringify(next) + '\n');
     return { synced: true };
   } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  finally { if (held?.ok) held.release(); }
 }
