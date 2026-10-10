@@ -39,6 +39,7 @@
           }
         },
         "error_class": {
+          "description": "仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null",
           "type": ["string", "null"],
           "enum": [
             "scope_violation",

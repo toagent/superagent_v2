@@ -288,3 +288,9 @@ COLUMNS=140
 - 验收：`cd wetamp && bunx tsc --noEmit && bun test` 通过（352/352，0 fail，14 文件）；根 `bun run lint --config wetamp/eslint.config.mjs 'wetamp/src/**/*.ts' 'wetamp/src/**/*.tsx' 'wetamp/templates/.archon/scripts/*.ts'` rc=0；隔离临时 `SUPERAGENT_HOME` 的 `bash scripts/selftest.sh --fake` 返回 `ok:true`；源码实测 5183/5200 行，hooks diff 为空。日志 `/tmp/s3-all-final.log`、`/tmp/s3-lint-final.log`、`/tmp/s3-selftest.log`。
 - 提交绑定复验：`SUPERAGENT_HOME=<同一临时目录> bash scripts/verify-local.sh --commit HEAD` 在 detached scratch worktree 执行；最终 HEAD、逐步退出码和日志路径由该临时目录的 `verify.json` 与交付回执记录。
 - 记债：旧工作流没有 `attempt-review-*` 时拒绝独立性评审重跑，需新 run；独立 G2 评审与主控验收由元帅安排，本派生会话不代签。
+
+## HF1 error_class
+
+- 根因：`done` 且验收全绿仍因 `error_class:task` 进入 repair，settle 再以 `repair_exhausted:coder_error:task` 挂起。
+- 改动：红线与 blocked needs 优先挂起；done 以验收证据判定，绿时忽略其他类别、保留原值并在 coder 存档标记 `error_class_ignored:true`；schema 与修复提示明确成功填 null，两份 golden 同步。
+- 测试：HF1 回归旧实现 3/3 失败、修复后 3/3 通过；`bunx tsc --noEmit && bun test` 通过（366/366，0 fail），隔离 `selftest.sh --fake` 与 lint 通过；提交绑定 `verify-local.sh --commit HEAD` 结果见同一临时目录 `/tmp/hf1-error-class.AmFqfG/verify.json`。

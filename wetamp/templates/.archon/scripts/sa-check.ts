@@ -116,7 +116,7 @@ function run(checks: Check[], log: string, cwd?: string, envKey = ''): string[] 
  * 存档将军输出供 supervise-tick 聚合 needs、评审核对 deviations。blocked 只在命中红线或 needs 非空时成立，
  * 否则按 partial 记（照常进入修复循环）。输出不是 JSON 时原样存档，不让验收因此失败。
  */
-function saveCoder(tag: string, raw: string): void {
+function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
   if (!raw) return;
   let out: Record<string, unknown>;
   try {
@@ -128,7 +128,15 @@ function saveCoder(tag: string, raw: string): void {
   }
   writeFileSync(
     join(artifacts, `${tag}.coder.json`),
-    JSON.stringify({ ...out, milestone: env('MILESTONE') }, null, 2)
+    JSON.stringify(
+      {
+        ...out,
+        ...(errorClassIgnored ? { error_class_ignored: true } : {}),
+        milestone: env('MILESTONE'),
+      },
+      null,
+      2
+    )
   );
 }
 
@@ -144,13 +152,13 @@ const SUSPEND_CLASSES = [
 ];
 
 /**
- * F-18：将军结果与验收共同决定流程。只有 done 且验收绿才 advance；红线、needs、环境/权限类错误挂起
- * （节点 exit 1，reason 为稳定字符串）；partial、无 needs 的 blocked、task/timeout 与红验收进入一次修复。
+ * F-18/HF1：红线与 blocked needs 优先挂起；done 以验收为准，成功时忽略其余 error_class 并留审计标记。
+ * 未完成时环境/权限类错误挂起；其余未完成与红验收进入一次修复。
  */
 export function disposition(
   raw: string,
   ok: boolean
-): { disposition: Disposition; reason: string | null } {
+): { disposition: Disposition; reason: string | null; error_class_ignored?: true } {
   const to = (d: Disposition, reason: string | null) => ({ disposition: d, reason });
   const green = ok ? to('advance', null) : to('repair', 'acceptance_failed');
   if (!raw || raw === 'null') return green;
@@ -162,11 +170,11 @@ export function disposition(
   }
   if (c.error_class === 'redline') return to('suspend', 'coder_redline');
   if (c.status === 'blocked' && (c.needs?.length ?? 0) > 0) return to('suspend', 'coder_needs');
+  if (c.status === 'done')
+    return ok && c.error_class ? { ...green, error_class_ignored: true } : green;
   if (c.error_class && SUSPEND_CLASSES.includes(c.error_class))
     return to('suspend', `coder_error:${c.error_class}`);
-  if (c.status !== 'done') return to('repair', 'coder_partial');
-  if (c.error_class) return to('repair', `coder_error:${c.error_class}`);
-  return green;
+  return to('repair', 'coder_partial');
 }
 
 const RISKS = ['G0', 'G1', 'G2'];
@@ -213,7 +221,6 @@ export function scopeRisk(
 
 /** 一次验收：coder 处置 + 命令 + 干净工作区；有 BASE 时另存全量 patch、相对 DELTA_BASE 的增量 patch 与交付范围。 */
 function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accept {
-  saveCoder(tag, coder);
   const log = join(artifacts, `${tag}.log`);
   writeFileSync(log, '');
   const ids = env('PKGS').split(',').filter(Boolean);
@@ -248,10 +255,12 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
+  const result = disposition(coder, ok);
+  saveCoder(tag, coder, result.error_class_ignored);
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
     ok,
-    ...disposition(coder, ok),
+    ...result,
     failed,
     log,
     patch,

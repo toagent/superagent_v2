@@ -1,5 +1,5 @@
 name: sa-golden-0001
-description: "superagent run golden-0001: 2 package(s), 2 milestone(s)"
+description: 'superagent run golden-0001: 2 package(s), 2 milestone(s)'
 nodes:
   - id: environment
     script: sa-check
@@ -32,7 +32,7 @@ nodes:
         - attempt
   - id: code-core
     command: sa-code
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: high
     with:
       pkg: core
@@ -73,9 +73,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -161,7 +162,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -172,13 +173,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -199,7 +200,7 @@ nodes:
         - out_of_scope
   - id: repair-core
     command: sa-repair
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       pkg: core
@@ -243,9 +244,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -336,7 +338,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -347,13 +349,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -408,7 +410,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -419,13 +421,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -459,7 +461,7 @@ nodes:
   - id: review-m1-r1
     when: $diff-m1-r1.output.disposition == 'advance'
     command: sa-review
-    model: "@sa-reviewer"
+    model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: high
     idle_timeout: 900000
@@ -571,11 +573,11 @@ nodes:
       policy: /GEN/policy.json
       tag: gate-m1-r1
       archon: /GEN/archon
-      next: "1"
+      next: '1'
     trigger_rule: none_failed_min_one_success
   - id: fix-m1-r2
     command: sa-fix
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       milestone: m1
@@ -620,9 +622,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -710,7 +713,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -721,13 +724,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -761,7 +764,7 @@ nodes:
   - id: review-m1-r2
     when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
     command: sa-review-delta
-    model: "@sa-reviewer"
+    model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: medium
     idle_timeout: 900000
@@ -879,11 +882,11 @@ nodes:
       policy: /GEN/policy.json
       tag: gate-m1-r2
       archon: /GEN/archon
-      next: "1"
+      next: '1'
     trigger_rule: none_failed_min_one_success
   - id: fix-m1-r3
     command: sa-fix
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       milestone: m1
@@ -928,9 +931,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -1018,7 +1022,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1029,13 +1033,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1069,7 +1073,7 @@ nodes:
   - id: review-m1-r3
     when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
     command: sa-review-delta
-    model: "@sa-reviewer"
+    model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: medium
     idle_timeout: 900000
@@ -1191,7 +1195,7 @@ nodes:
       policy: /GEN/policy.json
       tag: gate-m1-r3
       archon: /GEN/archon
-      next: "1"
+      next: '1'
     trigger_rule: none_failed_min_one_success
   - id: start-m2
     bash: printf '{"head":"%s"}' "$(git rev-parse HEAD)"
@@ -1221,7 +1225,7 @@ nodes:
         - attempt
   - id: code-api
     command: sa-code
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: high
     with:
       pkg: api
@@ -1262,9 +1266,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -1350,7 +1355,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1361,13 +1366,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1388,7 +1393,7 @@ nodes:
         - out_of_scope
   - id: repair-api
     command: sa-repair
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       pkg: api
@@ -1432,9 +1437,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -1525,7 +1531,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1536,13 +1542,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1597,7 +1603,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1608,13 +1614,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1648,7 +1654,7 @@ nodes:
   - id: review-m2-r1
     when: $diff-m2-r1.output.disposition == 'advance'
     command: sa-review
-    model: "@sa-reviewer"
+    model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: xhigh
     idle_timeout: 900000
@@ -1763,7 +1769,7 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: fix-m2-r2
     command: sa-fix
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       milestone: m2
@@ -1808,9 +1814,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -1898,7 +1905,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1909,13 +1916,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1949,7 +1956,7 @@ nodes:
   - id: review-m2-r2
     when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
     command: sa-review-delta
-    model: "@sa-reviewer"
+    model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: high
     idle_timeout: 900000
@@ -2070,7 +2077,7 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: fix-m2-r3
     command: sa-fix
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       milestone: m2
@@ -2115,9 +2122,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -2205,7 +2213,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -2216,13 +2224,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -2256,7 +2264,7 @@ nodes:
   - id: review-m2-r3
     when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
     command: sa-review-delta
-    model: "@sa-reviewer"
+    model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: high
     idle_timeout: 900000

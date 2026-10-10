@@ -1,5 +1,5 @@
 name: sa-golden-0001
-description: "superagent run golden-0001: 2 package(s), 2 milestone(s)"
+description: 'superagent run golden-0001: 2 package(s), 2 milestone(s)'
 nodes:
   - id: environment
     script: sa-check
@@ -70,9 +70,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -157,7 +158,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -168,13 +169,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -234,9 +235,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -326,7 +328,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -337,13 +339,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -397,7 +399,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -408,13 +410,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -548,7 +550,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       tag: gate-m1-r1
-      next: "1"
+      next: '1'
     trigger_rule: none_failed_min_one_success
   - id: fix-m1-r2
     bash: |-
@@ -591,9 +593,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -680,7 +683,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -691,13 +694,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -835,7 +838,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       tag: gate-m1-r2
-      next: "1"
+      next: '1'
     trigger_rule: none_failed_min_one_success
   - id: fix-m1-r3
     bash: |-
@@ -878,9 +881,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -967,7 +971,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -978,13 +982,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1126,7 +1130,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       tag: gate-m1-r3
-      next: "1"
+      next: '1'
     trigger_rule: none_failed_min_one_success
   - id: start-m2
     bash: printf '{"head":"%s"}' "$(git rev-parse HEAD)"
@@ -1194,9 +1198,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -1281,7 +1286,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1292,13 +1297,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1358,9 +1363,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -1450,7 +1456,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1461,13 +1467,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1521,7 +1527,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1532,13 +1538,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -1714,9 +1720,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -1803,7 +1810,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -1814,13 +1821,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
@@ -2000,9 +2007,10 @@ nodes:
           items:
             type: string
         error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
           type:
             - string
-            - "null"
+            - 'null'
           enum:
             - scope_violation
             - budget_exhausted
@@ -2089,7 +2097,7 @@ nodes:
         base_pass:
           type:
             - boolean
-            - "null"
+            - 'null'
         head:
           type: string
         disposition:
@@ -2100,13 +2108,13 @@ nodes:
         reason:
           type:
             - string
-            - "null"
+            - 'null'
         delta:
           type: string
         risk:
           type:
             - string
-            - "null"
+            - 'null'
         out_of_scope:
           type: array
           items:
