@@ -144,11 +144,14 @@ export function buildWorkflow(
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
   let after: Node = { depends_on: ['environment'] };
   for (const m of ms) {
+    const covered = ms.slice(0, ms.indexOf(m) + 1).flatMap(k => k.packages);
+    const scope_pkgs = covered.map(p => p.id).join(',');
     const start = `start-${m.id}`;
     const base = `$${start}.output.head`;
     nodes.push({
       id: start,
-      bash: `printf '{"head":"%s"}' "$(git rev-parse HEAD)"`,
+      // adopt 从已有提交起跑；共同祖先保留此前交付，不能把当前 HEAD 当评审基线。
+      bash: `base=$(git merge-base '${plan.base_ref.replaceAll("'", "'\\''")}' HEAD) || exit $?; printf '{"head":"%s"}' "$base"`,
       ...after,
       output_format: outputSchema('head'),
     });
@@ -185,6 +188,7 @@ export function buildWorkflow(
         plan: planPath,
         policy: policyPath,
         pkgs: p.id,
+        scope_pkgs,
         base,
         risk: p.risk,
         milestone: m.id,
@@ -236,7 +240,7 @@ export function buildWorkflow(
       );
       prev = `settle-${p.id}`;
     }
-    const briefs = m.packages.map(brief).join(' ');
+    const briefs = covered.map(brief).join(' ');
     const rounds: Node = {};
     for (let r = 1; r <= MAX_ROUNDS; r++) {
       const t = `${m.id}-r${String(r)}`;
@@ -276,6 +280,7 @@ export function buildWorkflow(
             plan: planPath,
             policy: policyPath,
             pkgs: ids,
+            scope_pkgs,
             base,
             risk: m.risk,
             milestone: m.id,

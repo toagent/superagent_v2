@@ -62,6 +62,42 @@ describe('buildWorkflow', () => {
   test('golden: fake mode swaps coder nodes for bash stubs only', () => {
     expect(build(true)).toEqual(golden('two-pkgs-fake'));
   });
+  test('HF4: an adopted checkout still reviews pre-existing commits with zero coder delta', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const original = sh('git rev-parse HEAD', repo).trim();
+    sh('git switch -qc sa/adopted', repo);
+    sh(
+      'echo delivered > delivered.txt && git add delivered.txt && git -c user.name=t -c user.email=t@l commit -qm delivered',
+      repo
+    );
+    const nodes = nodesOf(build(false));
+    const n = (id: string): N => nodes.find(x => x.id === id)!;
+    for (const id of ['start-m1', 'start-m2']) {
+      const start = JSON.parse(sh(n(id).bash!, repo)) as { head: string };
+      expect(start.head).toBe(original);
+      expect(sh(`git diff --binary ${start.head} HEAD`, repo)).toContain('+delivered');
+      expect(sh('git diff HEAD HEAD', repo)).toBe('');
+    }
+    sh(`git branch "base'quoted" ${original}`, repo);
+    const quoted = nodesOf(build(false, { ...fixture, base_ref: "base'quoted" }));
+    const start = JSON.parse(sh(quoted.find(x => x.id === 'start-m1')!.bash!, repo)) as {
+      head: string;
+    };
+    expect(start.head).toBe(original);
+    expect(n('diff-m1-r1').with?.base).toBe('$start-m1.output.head');
+    expect(n('review-m1-r1').with?.diff).toBe('$diff-m1-r1.output.patch');
+    expect(n('review-m1-r1').when).not.toContain('same');
+    expect(n('review-m2-r1').with?.briefs).toBe('/GEN/briefs/core.md /GEN/briefs/api.md');
+    expect(n('verify-api').with?.scope_pkgs).toBe('core,api');
+    expect(n('diff-m2-r1').with?.scope_pkgs).toBe('core,api');
+    const reversed = nodesOf(
+      build(false, { ...fixture, packages: [...fixture.packages].reverse() })
+    );
+    expect(reversed.find(x => x.id === 'verify-api')?.with?.scope_pkgs).toBe('core,api');
+    expect(n('review-m1-r2').with?.full_diff).toBe('$diff-m1-r2.output.patch');
+    expect(n('review-m1-r2').with?.diff).toBe('$diff-m1-r2.output.delta');
+  });
   test('every $INPUTS.<name> a command template reads is bound by its node', () => {
     const nodes = nodesOf(build(false)) as (N & { command?: string })[];
     for (const x of nodes.filter(k => k.command)) {

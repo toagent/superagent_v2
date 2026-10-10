@@ -1,0 +1,35 @@
+{
+  "blockers": [],
+  "changed_files": [],
+  "deviations": [],
+  "error_class": "env",
+  "needs": [],
+  "notes": "",
+  "quick_checks": [
+    {
+      "cmd": "报告连续生成两次并 cmp（任务书验收命令 1）",
+      "exit": 0
+    },
+    {
+      "cmd": "检查 XLSX sheet/行数及 MD 题号、修订前版本与说明数量（任务书验收命令 2）",
+      "exit": 0
+    },
+    {
+      "cmd": "检查 MD 章节排序（任务书验收命令 3）",
+      "exit": 0
+    },
+    {
+      "cmd": "pytest --noconftest -p no:cacheprovider -q tests/scripts/test_qt_upgrade_report_question_list.py",
+      "exit": 0
+    },
+    {
+      "cmd": "ruff check --no-cache scripts/qt_upgrade/report_question_list.py tests/scripts/test_qt_upgrade_report_question_list.py",
+      "exit": 0
+    },
+    {
+      "cmd": "git diff --exit-code && git diff --cached --exit-code",
+      "exit": 0
+    }
+  ],
+  "status": "partial"
+}

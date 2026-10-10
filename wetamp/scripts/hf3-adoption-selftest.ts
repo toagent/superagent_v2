@@ -105,6 +105,15 @@ try {
   git('-C', failed.working_path, 'merge-base', '--is-ancestor', oldHead, 'HEAD');
   console.error('HF3 4/5 worktree=same old_commit=preserved');
   assert.equal(finished.status, 'completed');
+  assert(finished.output_root);
+  const diff = JSON.parse(
+    readFileSync(join(finished.output_root, 'artifacts/runs', current, 'diff-m1-r1.json'), 'utf8')
+  ) as { patch: string; same: boolean };
+  assert(
+    readFileSync(diff.patch, 'utf8').includes('+core\n+repair core\n'),
+    'adopt must review the pre-adoption delivery'
+  );
+  assert.equal(diff.same, false, 'first review must not be skipped for an empty coder increment');
   console.error(`HF3 5/5 status=${finished.status} engine=current`);
 } finally {
   // Every run here belongs to this selftest. Abandon only a nonterminal owned run.

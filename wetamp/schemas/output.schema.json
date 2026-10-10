@@ -179,6 +179,8 @@
       "type": "object",
       "properties": {
         "coder_partial": { "type": "boolean" },
+        "self_report_conflict": { "type": "boolean" },
+        "error_class_ignored": { "type": "boolean" },
         "ok": {
           "type": "boolean"
         },
