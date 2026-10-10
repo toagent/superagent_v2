@@ -2,7 +2,6 @@
 import { confined } from './board/workflow';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick } from './memory';
-import { jobCli } from './jobs';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
