@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // superagent V2 guard for Claude Code / Codex hooks: `node guard.cjs claude|codex`.
-// Own failures never deny: an internal error is reported on stderr and exits 0.
+// Parser failures deny derived shell calls; other internal failures are reported on stderr.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {tiers, policy} = require('../tiers.json');
@@ -52,14 +52,14 @@ function shellText(name, input) {
 }
 const aiCli = name => ['claude', 'codex', 'opencode', 'sol-run'].includes(name) || name.startsWith('twin-agent');
 // N-1: a derived session must not start another agent.
-function nestedReason(name, input) {
+function nestedReason(name, input, normalized) {
   if (['Agent', 'Task', 'spawn_agent', 'claude.Agent'].includes(name) || name.startsWith('mcp__claude__'))
     return `N-1: 派生会话禁止再派生（工具 ${name}）；在本会话内完成，或把需求回报元帅`;
   const text = shellText(name, input);
   if (text === undefined) return null;
   let heads;
   // Unparsable text: every word counts as a possible command head (conservative).
-  try { heads = commands(text).map(argv => argv[0]); } catch { heads = text.split(/[\s;&|()`$"'<>]+/); }
+  try { heads = (normalized?.argvs || commands(text)).map(argv => argv[0]); } catch { heads = text.split(/[\s;&|()`$"'<>]+/); }
   const hit = heads.map(head => path.posix.basename(head)).find(aiCli);
   return hit ? `N-1: 派生会话禁止调用 ${hit} 再派生 AI；在本会话内完成，或把需求回报元帅` : null;
 }
@@ -72,10 +72,10 @@ function gitReason(argv) {
   if (argv[i] === 'reset' && argv.includes('--hard')) return '禁止 AI 执行 git reset --hard：历史改写一律人工执行';
   return null;
 }
-function shellReason(text, cwd, env) {
-  let argvs; try { argvs = commands(text); } catch { return null; }
+function shellReason(text, cwd, env, normalized) {
+  let argvs; try { argvs = normalized?.argvs || commands(text); } catch { return null; }
   for (const argv of argvs) { const reason = gitReason(argv); if (reason) return reason; }
-  const target = deletionTarget(text, cwd);
+  const target = deletionTarget(text, cwd, normalized?.argvs.length === 1 ? normalized.argvs[0] : normalized ? [] : undefined);
   if (!target) return null;
   const resolved = resolvePath(target);
   const guarded = ['/', os.homedir(), saHome(env), gitRoot(cwd)].filter(Boolean).map(resolvePath);
@@ -123,8 +123,8 @@ function readOnly(argv) {
     default: return true;
   }
 }
-function reviewerShell(text) {
-  let parsed; try { parsed = parse(text); } catch (error) { return `命令无法解析（${error.message}）`; }
+function reviewerShell(text, normalized) {
+  let parsed; try { parsed = normalized || parse(text); } catch (error) { return `命令无法解析（${error.message}）`; }
   if (parsed.writes.length) return `禁止写入 ${path.basename(parsed.writes[0]) || parsed.writes[0]}`;
   const bad = parsed.argvs.find(argv => !readOnly(argv));
   return bad ? `${bad[0]} 不在只读白名单或带写入参数` : null;
@@ -180,20 +180,21 @@ function decide(payload, client, env = process.env) {
   const text = shellText(name, input);
   // reviewer 的写入由下方只读白名单整体拒绝，落点检查只给其余派生会话。
   const confine = Boolean(derived) && env.SUPERAGENT_ROLE !== 'reviewer';
-  const red = redline.reason({client, name, input, cwd, root: confine ? gitRoot(cwd) : null, shell: text, derived: confine, env});
+  const normalized = derived && text !== undefined ? {argvs: [], writes: [], reads: []} : undefined;
+  const red = redline.reason({client, name, input, cwd, root: confine ? gitRoot(cwd) : null, shell: text, derived: confine, modelShell: Boolean(derived), env, onCommand: normalized && (parsed => { for (const key of Object.keys(normalized)) normalized[key].push(...parsed[key]); })});
   if (red) return deny(`红线：${red}`);
   if (derived) {
-    const reason = nestedReason(name, input);
+    const reason = nestedReason(name, input, normalized);
     if (reason) return deny(`${reason}（判定：${derived}）`);
   }
   if (text !== undefined) {
-    const reason = shellReason(text, cwd, env);
+    const reason = shellReason(text, cwd, env, normalized);
     if (reason) return deny(reason);
   }
   const edit = microEdit.isEdit(client, name);
   if (env.SUPERAGENT_ROLE === 'reviewer') {
     if (edit) return deny('reviewer 只读：军师会话禁止编辑文件');
-    const reason = text !== undefined && reviewerShell(text);
+    const reason = text !== undefined && reviewerShell(text, normalized);
     if (reason) return deny(`reviewer 只读：${reason}`);
   }
   if (derived) return null;
@@ -207,14 +208,19 @@ function decide(payload, client, env = process.env) {
   return stopGate.gate(stateFile(payload, env), payload, client, roots, rootCall(payload));
 }
 
-if (require.main === module) {
+if (require.main === module) (async () => {
   try {
     const client = process.argv[2];
     if (!['claude', 'codex'].includes(client)) throw new Error('usage: guard.cjs claude|codex');
     const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
     try { require('./live.cjs').beat(client, payload, () => sessionRole(payload, client)); } catch {}
+    if (payload.hook_event_name === 'PreToolUse' && derivedBy(payload, client)
+        && shellText(String(payload.tool_name || ''), payload.tool_input || {}) !== undefined) {
+      const error = await redline.init();
+      if (error) { process.stdout.write(JSON.stringify(deny(`shell parser unavailable: ${error}`)) + '\n'); return; }
+    }
     const result = decide(payload, client);
     if (result) process.stdout.write(JSON.stringify(result) + '\n');
   } catch (error) { process.stderr.write(`superagent guard: ${error.message}\n`); }
-}
+})();
 module.exports = {decide, derivedBy, sessionRole};

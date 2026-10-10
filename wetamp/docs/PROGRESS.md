@@ -598,3 +598,32 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **I4、I8 / P2**：推翻“控制台刷新失败与巡检同生共死可接受”；refreshConsole 抛错仍执行 tick，stderr 单行 `supervise-tick: console refresh failed:` 与 JSON `console_error` 保留错误，退出码仍由巡检本体决定；注入失败与真实旧 PID 迁移拒绝回放覆盖该边界。
 - **I6 / P4**：推翻“子进程 exit 0 = 作业完成”；wrapper 首次收到 SIGINT/SIGTERM/SIGHUP 后，即使子进程 trap 并 exit 0，也登记 failed/原信号并返回 130/143/129，沿用 HF7 字段和等待期语义。TERM/HUP/INT 回归及 child-only 信号回归验证；负载用例改为有截止的回收轮询和 running 等待，不放宽断言。
 - **HF7-R1-01 / I4、I8**：真实 OS SIGINT/SIGTERM/SIGHUP 回放证实同步 probe 期间的待交付信号会越过 queued→spawn 边界；准入后用现有 timers/promises 让出事件循环，再复查取消状态。已取消保持 pid=0、failed/原信号/128+n，真实信号回归同时断言子进程未创建、命令标记未写，不新增状态或配置。
+
+### HF6 redline 可建模子集
+
+- **被推翻的假设 / I8、P1**：静态扫描 shell 文本并逐个补 cwd 变体不能证明完整 shell 语义。HF6 在现有顺序与子作用域判断前，先限定派生会话可建模子集；不支持的命令拒绝并提示绝对路径或独立命令。commander 不调用此检查，保持原判定。
+- **子集**：shell.cjs 保留包装器和保留字的命令头索引；动态命令头、函数定义、pushd/popd/eval/source/./exec/builtin/command/alias/function/coproc 拒绝。cd 必须是顶层简单命令头，拒绝 cd -、~user、CDPATH 下的相对 cd；复合命令中出现 cd 或未建模执行词则拒绝。普通复合命令、数据 heredoc 和字面 shell -c 递归校验；stdin/here-string/heredoc/管道执行代码拒绝，解释器文件模式排除 `/dev/`、`/proc/` 伪文件。仓库脚本文件（包括 bash -n/-ex script）沿用原策略。
+- **威胁模型与残留**：防派生会话意外写出 worktree，不是安全沙箱。python3 -c、node -e 等内联代码和 bash some.sh 等脚本文件的副作用不在模型内，不能据此宣称强隔离；OS 沙箱另议。复合结构中的执行词采取保守拒绝，可能把目录操作数 `.` 当作未建模词；解释器脚本选项只建模不带值的短选项及 `--`。
+- **真实语料 / I6**：hf6-replay.cjs 只提取 cards/logs/*-sol.log 的 Codex exec 命令头记录，不输出转录正文或工具输出；两版分别加载 25c107b0 的原 redline/shell 和本包版本，使用实际记录的 cwd、现存 git 根（已删除 checkout 保守用记录 cwd），env={}。冻结命令串语料共 **2321** 条；基线拒绝 **7**、本包拒绝 **9**、新增拒绝 **2**，两条均为只读探查，新增误拒率 **2/2321=0.0862%**（<3%）；commander 判定变化 **0**。不把原有拒绝认定为本包新增误拒。证据：`/tmp/hf6-accept.DefNrO/{command-corpus.json,replay.json}`；回放参数支持复用冻结命令语料，新增命令每条仅输出脱敏命令头、sha256 和拒绝理由。
+  - `e2e4d1fe…`：`sh | command | command | rg | rg | head | sed`（参数与正文省略）——只读 command 查询头不在子集内；改为独立的直接查询命令。
+  - `b316c3b5…`：`sh | for | test | echo | rg`（参数与正文省略）——复合结构中的目录操作数 `.` 触发保守执行词拒绝；可拆成独立命令。
+- **编码端证据**：hf6.test.ts 覆盖 R3 三个复现及本卡拒绝/放行集、CDPATH、解释器输入边界、冻结基线 commander 比对和真实命令抽取；只调用 reason()，从未执行越界写入。测试、selftest 和提交后的 verify-local 结果以该临时 home 的原始日志与回执为准，独立 R1 与主控验收仍由主控完成。
+- **本地验收**：在 wetamp/ 执行 `bunx tsc --noEmit && timeout 600 bun test` exit0（729 pass/0 fail/3 snapshots，198.85s，`tsc-final.log`、`tests-final.log`）；`bunx eslint src` exit0（`lint.log`）。同一临时 `SUPERAGENT_HOME=/tmp/hf6-accept.DefNrO`、`ARCHON_HOME=/tmp/hf6-accept.DefNrO/archon` 执行 `bash scripts/selftest.sh --fake` exit0（`selftest-final.log`、`selftest-fake.json` ok:true）。hooks 仅 redline.cjs、shell.cjs，净增42行（≤60）；src 与 packages 受跟踪文件零改动。提交后同一 home 执行 `bash scripts/verify-local.sh --commit HEAD`，最终结果以绑定该 commit 的 verify.json 为准。
+
+
+#### HF6 R2
+
+- **被推翻的假设 / HF6-R1-01/02/03**：手写 tokenizer 能复现 shell 词法、model 与 parse 两套遍历能保持一致。派生模式现在只走 shell-ast.cjs：一次 parse、同一 AST 遍历解码词并检查命令头、wrapper/find/shell -c 执行位置、重定向和 cwd；guard 的 N-1/git/删除判定消费该规范 argv，不再重解析。commander 保留原 redline 路径，不加载解析器。bash grammar 会把未引用续行误分为词边界，因此此边界保守拒绝；双引号续行按引用语义解码，单引号保持原字节。
+- **准入与拒绝**：沿 spike (b) 的显式节点/标点白名单保留普通赋值、参数引用、file_redirect、for/if/while、测试、compound/subshell、注释及数据 heredoc。hasError/missing、不支持节点、替换/函数/here-string/复杂展开、NULLCMD 重定向、非字面头、未引用前导 = 与非 ~/ 命名目录展开都拒绝。builtin/resword 联集从 shell 自身生成，只有卡片的小白名单可执行；always 块以 grammar 错误夹具拒绝。嵌套 shell 执行体走同一遍历；stdin 执行拒绝，显式脚本文件沿原卡豁免。复合结构 cd、cd -、CDPATH 相对 cd、任何赋值与 cd 共存拒绝；wrapper chdir/find-execdir 的未知 cwd 保守拒绝。heredoc 引用 delimiter 为纯数据；未引用正文含 $、反引号或反斜杠拒绝。显式 subshell 隔离 cwd。
+- **依赖 / 加载**：dependencies 精确固定 web-tree-sitter@0.27.1、tree-sitter-bash@0.25.1；只 require.resolve grammar 包定位随包 WASM，不加载 native binding、不加 trustedDependencies、不引入 npm 锁。Bun 阻止 grammar install 生命周期；新副本 frozen install 与派生 guard 已通过。加载器参数注入测试 dependency/WASM 缺失、WASM 损坏、Parser.init/Language.load 异常；初始化前 reason 及异常均 deny，含 shell parser unavailable。入口 await init，内部 parse 同步。
+- **安装链**：主安装依赖失败明确提示“派生会话 Bash 将全部被 redline 拒绝”。只读核对 ~/.lan-dev-machine/bin/twin-toolkit 的 align_superagent：投送 git bundle 后在登录环境运行 --remote-hooks，bundle 不携带 node_modules。因此最小变更在 install.sh 内：远端有 bun 时按 wetamp/bun.lock 冻结安装；无 bun 需预装依赖，实际 init + parse echo ok 失败就 exit 1。未运行远端安装、未修改 twin-toolkit 或三端配置。
+- **语料 / I6**：冻结 command-only corpus SHA256 ffc03a2f0bdcbd6048a710177e7b3cde0a332fcf842a72fcc3d6dfd3cbaf5e68，2321 条，env={}；25c107b0 / e09353df / R2 拒绝数为 7 / 9 / 35。相对 25c107b0 新增 28（1.2064%，<3%）；新增原因：command_substitution 22、declaration_command 5、builtin_or_reserved_head 1。commander 语料逐条变化 0，定向 R2 fixtures 也逐条与 e09353df 一致。此比例为未标注语料的新增拒绝率代理，不是逐条人工确认的 false-positive rate；只输出类别/hash，无正文。
+- **延迟**：Node v24.21.0，同 spike bench.py 的交错 fresh-process 墙钟口径、两版各 20 次、OS 缓存未清、p95 nearest rank。e09353df p50/p95=36.153/38.153 ms；R2=47.966/50.148 ms，p50 +11.813 ms（≤25 ms）。WASM 体积 210415+1358224 bytes；spike 的发布包逻辑安装体积 24.227 MiB（包括 native prebuild/debug，不等同于运行时 WASM）。正式安装用本 worktree 自有 node_modules，未修改生产软链目标。
+- **威胁模型 / 已知残留**：防派生会话意外写出 worktree，非 OS 沙箱。zsh native alias/function、zsh_directory_name 之外的模块与选项配置不能由 bash AST 全面保证；~[name] 已拒绝。AUTO_CD 需 SHIN_STDIN，本轮未证实生产目标开启。脚本文件与解释器内联代码（python -c/node -e）仍是原卡豁免；允许的 shell -c 是递归分析的例外。独立 R2 评审与主控最终验收仍待主控完成。
+- **编码端验证**：原卡与 R1/spike 全部拒绝/放行夹具、加载失败、生成物一致性、commander 对照均以纯判定验证，不执行样例。tsc/eslint exit 0，最终全量测试全绿；selftest --fake exit 0，fresh frozen install + 派生 guard exit 0。hooks 净增 132 行、install.sh 净增 5 行、生成脚本 33 行，packages 零改动。最终测试、selftest、fresh install、延迟、回放及提交后 verify-local 证据在 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/hf6-r2-fix-o9y4nzpx`。本节的局部/自检成功不代表独立评审、主控集成或部署。
+
+#### HF6 R3
+
+- **HF6-R2-01 / 被推翻的假设与修法**：“列表整体成功 ⇒ 最后一个命令执行且成功”对 `||` 不成立。单次 AST 遍历改为分别传递成功/失败 cwd 集合：`&&` 的右侧只接成功集合，`||` 只接失败集合，列表结果合并短路与执行分支，`;` 继续接全部可能 cwd；未知命令状态保守覆盖两条边。原 touch/重定向反例和 R2 额外拒绝项均拒绝，真实 guard 两版反例也 deny。旧 hf5 的 `cd X || touch f` 拒绝断言改为放行：写入仅在 cd 失败、仍处于原 worktree 时发生。HF6-R2-02 的解释器集合统一由无副作用 shell.cjs 导出，两模式共享所有者，commander 定向与冻结语料变化均为 0。
+- **差分证据**：hf6-r3.test.ts 独立穷举 cd 成败、true/false 与短路真值，逐个写入位置比较 analyzer 检查过的 cwd 超集；6 种原子、3 种运算符、长度 ≤4 的 37050 条列表，另有 !/管道/subshell/compound/if/while 252 条，共 37302 条，违例 0，拒绝 7694（20.6262%，枚举拒绝比例，并非误拒率）。只调用纯判定，不执行样例；R2 对照 witness 漏检外部 cwd，R3 同例覆盖全部 cwd。
+- **回放、延迟与范围**：冻结语料 2321 条，25c107b0 / R3 拒绝 7 / 35，新增 28（1.2064%，<3%；命令替换 22、声明命令 5、builtin/reserved head 1），仅作未标注语料的新增拒绝率代理。Node v24.21.0，两版交错 fresh-process 各 20 次，p95 nearest rank、未清 OS 缓存；e09353df p50/p95=34.770/43.880 ms，R3=46.144/55.986 ms，p50 +11.375 ms（≤25 ms）。hooks 相对 e09353df 净增 148 行（生成 JSON 不计），packages 零改动；编码端证据根 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/hf6-r3-fix-ps5ipun9`，独立 R3 评审与主控验收另行完成，威胁模型与 R2 已知残留继续有效。
