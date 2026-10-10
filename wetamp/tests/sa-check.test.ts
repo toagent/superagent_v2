@@ -8,6 +8,7 @@ import {
   independence,
   ledgerOf,
   scopeRisk,
+  SUSPEND_CLASSES,
 } from '../templates/.archon/scripts/sa-check';
 import { gitRepo, sh, tmp } from './helpers';
 
@@ -277,7 +278,7 @@ describe('gate rules', () => {
 describe('F-18 disposition', () => {
   const c = (o: Record<string, unknown>): string =>
     JSON.stringify({ status: 'done', error_class: null, needs: [], ...o });
-  test('advance only when the coder is done and acceptance is green', () => {
+  test('green acceptance advances unless a redline or blocked needs prevents it', () => {
     expect(disposition(c({}), true)).toEqual({ disposition: 'advance', reason: null });
     expect(disposition(c({}), false)).toEqual({
       disposition: 'repair',
@@ -294,12 +295,13 @@ describe('F-18 disposition', () => {
       disposition: 'advance',
       reason: null,
       coder_partial: true,
+      self_report_conflict: true,
     });
     expect(d({ status: 'partial' }, false)).toBe('repair:coder_partial');
-    expect(d({ status: 'blocked' })).toBe('repair:coder_partial');
+    expect(d({ status: 'blocked' })).toBe('advance:');
     expect(d({ status: 'blocked', needs: [{ cap: 'network' }] })).toBe('suspend:coder_needs');
     expect(d({ status: 'blocked', error_class: 'redline' })).toBe('suspend:coder_redline');
-    expect(d({ status: 'partial', error_class: 'env' })).toBe('suspend:coder_error:env');
+    expect(d({ status: 'partial', error_class: 'env' }, false)).toBe('suspend:coder_error:env');
     expect(d({ status: 'partial', error_class: 'timeout' }, false)).toBe('repair:coder_partial');
     expect(disposition('not json', true)).toEqual({
       disposition: 'suspend',
@@ -322,15 +324,99 @@ describe('F-18 disposition', () => {
         disposition: 'advance',
         reason: null,
         error_class_ignored: true,
+        self_report_conflict: true,
       });
       expect(disposition(c({ error_class }), false)).toEqual({
-        disposition: 'repair',
-        reason: 'acceptance_failed',
+        disposition: SUSPEND_CLASSES.includes(error_class) ? 'suspend' : 'repair',
+        reason: SUSPEND_CLASSES.includes(error_class)
+          ? `coder_error:${error_class}`
+          : 'acceptance_failed',
       });
     }
     expect(disposition(c({ error_class: 'redline' }), true)).toEqual({
       disposition: 'suspend',
       reason: 'coder_redline',
+    });
+  });
+});
+
+describe('HF4 I1 exhaustive disposition table', () => {
+  // 每行定义红验收的判定；绿验收只受 redline 和 blocked needs 的优先规则约束。
+  const rows: { error_class: string | null; red: ReturnType<typeof disposition> | null }[] = [
+    ...SUSPEND_CLASSES.map(error_class => ({
+      error_class,
+      red: { disposition: 'suspend' as const, reason: `coder_error:${error_class}` },
+    })),
+    { error_class: 'redline', red: { disposition: 'suspend', reason: 'coder_redline' } },
+    ...['task', null, 'unknown'].map(error_class => ({ error_class, red: null })),
+  ];
+  for (const status of ['done', 'partial', 'blocked', 'unknown'])
+    for (const { error_class, red } of rows)
+      for (const ok of [true, false])
+        for (const needs of [[], [{ cap: 'network' }]])
+          test(`${status}/${String(error_class)}/ok=${String(ok)}/needs=${String(needs.length)}`, () => {
+            const expected: ReturnType<typeof disposition> =
+              error_class === 'redline'
+                ? { disposition: 'suspend', reason: 'coder_redline' }
+                : status === 'blocked' && needs.length > 0
+                  ? { disposition: 'suspend', reason: 'coder_needs' }
+                  : ok
+                    ? {
+                        disposition: 'advance',
+                        reason: null,
+                        ...(status !== 'done' || error_class ? { self_report_conflict: true } : {}),
+                        ...(status === 'partial' ? { coder_partial: true } : {}),
+                        ...(error_class ? { error_class_ignored: true } : {}),
+                      }
+                    : (red ?? {
+                        disposition: 'repair',
+                        reason: status === 'done' ? 'acceptance_failed' : 'coder_partial',
+                      });
+            expect(disposition(JSON.stringify({ status, error_class, needs }), ok)).toEqual(
+              expected
+            );
+          });
+  test('invalid JSON suspends before green or red acceptance', () => {
+    for (const ok of [true, false])
+      expect(disposition('{', ok)).toEqual({
+        disposition: 'suspend',
+        reason: 'coder_output_invalid',
+      });
+  });
+  test('E7: partial + env + green checks advances with all audit markers', () => {
+    // 原始 node_completed 事件的 structured_output，仅将 notes 置空脱敏。
+    const coder: unknown = JSON.parse(
+      readFileSync(join(import.meta.dir, 'incidents/e7-coder.json'), 'utf8')
+    );
+    expect(disposition(JSON.stringify(coder), true)).toEqual({
+      disposition: 'advance',
+      reason: null,
+      self_report_conflict: true,
+      coder_partial: true,
+      error_class_ignored: true,
+    });
+    const root = tmp();
+    const r = runScript(gitRepo(root), {
+      kind: 'accept',
+      plan: planFile(root, 'true'),
+      pkgs: 'a',
+      tag: 'verify-e7',
+      coder: JSON.stringify(coder),
+    });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(readFileSync(join(r.art, 'verify-e7.json'), 'utf8'))).toMatchObject({
+      ok: true,
+      failed: [],
+      disposition: 'advance',
+      reason: null,
+      self_report_conflict: true,
+      coder_partial: true,
+      error_class_ignored: true,
+    });
+    expect(JSON.parse(readFileSync(join(r.art, 'verify-e7.coder.json'), 'utf8'))).toMatchObject({
+      status: 'partial',
+      error_class: 'env',
+      error_class_ignored: true,
     });
   });
 });
@@ -826,6 +912,44 @@ describe('sa-check script', () => {
     expect(readFileSync(r.delta, 'utf8')).not.toContain('src/a.ts');
     expect(readFileSync(r.patch, 'utf8')).toContain('src/a.ts');
     expect(r).toMatchObject({ risk: 'G1', out_of_scope: [] });
+    // adopt 重跑编码没有增量，仍用 baseline…HEAD 全量 patch/hash 推进首轮评审。
+    const head = sh('git rev-parse HEAD', repo).trim();
+    const adopted = runScript(repo, {
+      kind: 'accept',
+      plan: p,
+      pkgs: 'a',
+      tag: 'diff-adopt-r1',
+      base,
+      delta_base: head,
+      risk: 'G0',
+      policy: pol,
+    });
+    const full = adopted.out as { patch: string; delta: string; diff_hash: string };
+    expect(readFileSync(full.delta, 'utf8')).toBe('');
+    expect(readFileSync(full.patch, 'utf8')).toContain('src/a.ts');
+    expect(adopted.out).toMatchObject({ disposition: 'advance', same: false, risk: 'G1' });
+    writeFileSync(
+      p,
+      JSON.stringify({
+        packages: [
+          { id: 'later', scope: { write: ['other/'] }, accept: [{ cmd: 'true', timeout_s: 5 }] },
+          { id: 'a', scope: { write: ['src/'] }, accept: [{ cmd: 'false', timeout_s: 5 }] },
+        ],
+      })
+    );
+    expect(
+      runScript(repo, {
+        kind: 'accept',
+        plan: p,
+        pkgs: 'later',
+        scope_pkgs: 'a,later',
+        tag: 'verify-later',
+        base,
+        risk: 'G0',
+        policy: pol,
+      }).out
+    ).toMatchObject({ ok: true, risk: 'G1', out_of_scope: [] });
+    // 原包顺序不能决定累计范围；SCOPE_PKGS 由生成器按实际里程碑拓扑提供。
     write(['src/a.ts']);
     expect(go('G0')).toMatchObject({ risk: 'G2', out_of_scope: ['src/b.md'] });
     write(['src/']);

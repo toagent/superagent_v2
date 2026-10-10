@@ -141,7 +141,7 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
 }
 
 /** 将军自己也解决不了、修复轮只会再烧一次调用的错误类：直接挂起交给处置表。 */
-const SUSPEND_CLASSES = [
+export const SUSPEND_CLASSES = [
   'env',
   'sandbox_denied',
   'permission_denied',
@@ -152,13 +152,19 @@ const SUSPEND_CLASSES = [
 ];
 
 /**
- * F-18/HF1：红线与 blocked needs 优先挂起；done 以验收为准，成功时忽略其余 error_class 并留审计标记。
- * 未完成时环境/权限类错误挂起；partial 与绿验收进入评审并提示完整性核验，红验收进入一次修复。
+ * I1：非法输出、红线与 blocked needs 优先挂起；其余以验收证据为准，自报冲突交评审核实。
+ * 仅红验收按错误类挂起或修复；保持修复原因串，供 HOLD_POLICY 消费。
  */
 export function disposition(
   raw: string,
   ok: boolean
-): { disposition: Disposition; reason: string | null; error_class_ignored?: true; coder_partial?: true } {
+): {
+  disposition: Disposition;
+  reason: string | null;
+  error_class_ignored?: true;
+  coder_partial?: true;
+  self_report_conflict?: true;
+} {
   const to = (d: Disposition, reason: string | null) => ({ disposition: d, reason });
   const green = ok ? to('advance', null) : to('repair', 'acceptance_failed');
   if (!raw || raw === 'null') return green;
@@ -170,12 +176,16 @@ export function disposition(
   }
   if (c.error_class === 'redline') return to('suspend', 'coder_redline');
   if (c.status === 'blocked' && (c.needs?.length ?? 0) > 0) return to('suspend', 'coder_needs');
-  if (c.status === 'done')
-    return ok && c.error_class ? { ...green, error_class_ignored: true } : green;
+  if (ok)
+    return {
+      ...green,
+      ...(c.status !== 'done' || c.error_class ? { self_report_conflict: true } : {}),
+      ...(c.status === 'partial' ? { coder_partial: true } : {}),
+      ...(c.error_class ? { error_class_ignored: true } : {}),
+    };
   if (c.error_class && SUSPEND_CLASSES.includes(c.error_class))
     return to('suspend', `coder_error:${c.error_class}`);
-  if (c.status === 'partial' && ok) return { ...green, coder_partial: true };
-  return to('repair', 'coder_partial');
+  return to('repair', c.status === 'done' ? 'acceptance_failed' : 'coder_partial');
 }
 
 const RISKS = ['G0', 'G1', 'G2'];
@@ -227,6 +237,9 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   const ids = env('PKGS').split(',').filter(Boolean);
   const p = plan();
   const pkgs = p.packages.filter(k => ids.includes(k.id));
+  // 全量评审覆盖 base_ref 以来的累计交付，前序包的已批准写入范围仍有效。
+  const scopeIds = (env('SCOPE_PKGS') || env('PKGS')).split(',');
+  const covered = p.packages.filter(k => scopeIds.includes(k.id));
   const checks = pkgs.flatMap(k => k.accept);
   // 缓存目录在本 run 的 ARTIFACTS_DIR 下，进程环境由同一 engine 给出；键里只放 plan 声明的环境检查
   const envKey = sha(JSON.stringify([p.environment, pkgs.map(k => k.environment)]));
@@ -250,7 +263,7 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     base && env('RISK')
       ? scopeRisk(
           changes(base),
-          pkgs.flatMap(k => k.scope.write),
+          covered.flatMap(k => k.scope.write),
           policy(),
           env('RISK')
         )

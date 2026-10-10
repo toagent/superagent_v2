@@ -8,7 +8,7 @@ nodes:
       kind: env
       plan: /GEN/plan.json
   - id: start-m1
-    bash: printf '{"head":"%s"}' "$(git rev-parse HEAD)"
+    bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:
       - environment
     output_format:
@@ -136,6 +136,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: core
+      scope_pkgs: core
       base: $start-m1.output.head
       risk: G1
       milestone: m1
@@ -145,6 +146,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -165,8 +172,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -310,6 +315,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: core
+      scope_pkgs: core
       base: $start-m1.output.head
       risk: G1
       milestone: m1
@@ -323,6 +329,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -343,8 +355,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -389,6 +399,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: core
+      scope_pkgs: core
       base: $start-m1.output.head
       risk: G1
       milestone: m1
@@ -397,6 +408,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -417,8 +434,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -691,6 +706,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: core
+      scope_pkgs: core
       base: $start-m1.output.head
       risk: G1
       milestone: m1
@@ -702,6 +718,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -722,8 +744,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -1002,6 +1022,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: core
+      scope_pkgs: core
       base: $start-m1.output.head
       risk: G1
       milestone: m1
@@ -1013,6 +1034,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -1033,8 +1060,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -1208,7 +1233,7 @@ nodes:
       next: '1'
     trigger_rule: none_failed_min_one_success
   - id: start-m2
-    bash: printf '{"head":"%s"}' "$(git rev-parse HEAD)"
+    bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:
       - gate-m1-r1
       - gate-m1-r2
@@ -1339,6 +1364,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: api
+      scope_pkgs: core,api
       base: $start-m2.output.head
       risk: G2
       milestone: m2
@@ -1348,6 +1374,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -1368,8 +1400,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -1513,6 +1543,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: api
+      scope_pkgs: core,api
       base: $start-m2.output.head
       risk: G2
       milestone: m2
@@ -1526,6 +1557,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -1546,8 +1583,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -1592,6 +1627,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: api
+      scope_pkgs: core,api
       base: $start-m2.output.head
       risk: G2
       milestone: m2
@@ -1600,6 +1636,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -1620,8 +1662,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -1678,7 +1718,7 @@ nodes:
       milestone: m2
       risk: $diff-m2-r1.output.risk
       round: 1
-      briefs: /GEN/briefs/api.md
+      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
       accept_log: $diff-m2-r1.output.log
       diff: $diff-m2-r1.output.patch
     depends_on:
@@ -1792,7 +1832,7 @@ nodes:
       round: 2
       ledger: $gate-m2-r1.output.ledger_file
       accept_log: $diff-m2-r1.output.log
-      briefs: /GEN/briefs/api.md
+      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
       hints: /GEN/hints
     depends_on:
       - gate-m2-r1
@@ -1893,6 +1933,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: api
+      scope_pkgs: core,api
       base: $start-m2.output.head
       risk: G2
       milestone: m2
@@ -1904,6 +1945,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -1924,8 +1971,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -1982,7 +2027,7 @@ nodes:
       milestone: m2
       risk: $diff-m2-r2.output.risk
       round: 2
-      briefs: /GEN/briefs/api.md
+      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
       accept_log: $diff-m2-r2.output.log
       diff: $diff-m2-r2.output.delta
       full_diff: $diff-m2-r2.output.patch
@@ -2102,7 +2147,7 @@ nodes:
       round: 3
       ledger: $gate-m2-r2.output.ledger_file
       accept_log: $diff-m2-r2.output.log
-      briefs: /GEN/briefs/api.md
+      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
       hints: /GEN/hints
     depends_on:
       - gate-m2-r2
@@ -2203,6 +2248,7 @@ nodes:
       plan: /GEN/plan.json
       policy: /GEN/policy.json
       pkgs: api
+      scope_pkgs: core,api
       base: $start-m2.output.head
       risk: G2
       milestone: m2
@@ -2214,6 +2260,12 @@ nodes:
     output_format:
       type: object
       properties:
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
         ok:
           type: boolean
         failed:
@@ -2234,8 +2286,6 @@ nodes:
             - 'null'
         head:
           type: string
-        coder_partial:
-          type: boolean
         disposition:
           enum:
             - advance
@@ -2292,7 +2342,7 @@ nodes:
       milestone: m2
       risk: $diff-m2-r3.output.risk
       round: 3
-      briefs: /GEN/briefs/api.md
+      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
       accept_log: $diff-m2-r3.output.log
       diff: $diff-m2-r3.output.delta
       full_diff: $diff-m2-r3.output.patch
