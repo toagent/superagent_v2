@@ -466,9 +466,17 @@ export interface Gen {
 
 /** 写 gen 目录、提交一次、`archon validate workflows`；校验失败抛错。 */
 export function generate(plan: Plan, run: string, fake = false): Gen {
+  const principlesPath = join(WETAMP, 'templates', '.archon', 'principles.md');
+  let principles: string;
+  try {
+    principles = readFileSync(principlesPath, 'utf8');
+  } catch (cause) {
+    throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
+  }
   const dir = join(home().sa, 'gen', run);
   const workflow = `sa-${run}`;
   const ms = milestones(plan);
+  const definition = buildWorkflow(plan, ms, run, dir, fake);
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
@@ -476,6 +484,14 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     cpSync(join(WETAMP, 'templates', '.archon', sub), join(dir, '.archon', sub), {
       recursive: true,
     });
+  }
+  // Archon loads command Markdown verbatim; include: composes workflows, not prompt text.
+  const commands = new Set(
+    (definition.nodes as Node[]).flatMap(n => (typeof n.command === 'string' ? [n.command] : []))
+  );
+  for (const command of commands) {
+    const path = join(dir, '.archon', 'commands', `${command}.md`);
+    writeFileSync(path, principles + '\n' + readFileSync(path, 'utf8'));
   }
   writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
   const tiers = loadTiers();
@@ -496,7 +512,7 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
   }
   writeFileSync(
     join(wfDir, `${workflow}.yaml`),
-    YAML.stringify(buildWorkflow(plan, ms, run, dir, fake), {
+    YAML.stringify(definition, {
       lineWidth: 0,
       aliasDuplicateObjects: false,
     })

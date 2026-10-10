@@ -371,3 +371,9 @@ superagent board 15:01:27 · /Users/yong/.superagent
 - 根因：`done` 且验收全绿仍因 `error_class:task` 进入 repair，settle 再以 `repair_exhausted:coder_error:task` 挂起。
 - 改动：红线与 blocked needs 优先挂起；done 以验收证据判定，绿时忽略其他类别、保留原值并在 coder 存档标记 `error_class_ignored:true`；schema 与修复提示明确成功填 null，两份 golden 同步。
 - 测试：HF1 回归旧实现 3/3 失败、修复后 3/3 通过；`bunx tsc --noEmit && bun test` 通过（366/366，0 fail），隔离 `selftest.sh --fake` 与 lint 通过；提交绑定 `verify-local.sh --commit HEAD` 结果见同一临时目录 `/tmp/hf1-error-class.AmFqfG/verify.json`。
+
+## HF2 核心理念
+- 单一来源：`templates/.archon/principles.md`；README 只链接，不复制内容。
+- Archon 命令加载器直接读 Markdown，`include:` 只组合工作流；`src/generate.ts` 按实际 AI 节点引用的命令去重，统一原样前置理念文本，缺失即明确失败。
+- 每个 AI 节点增加约 350–500 token（按模型分词而异）；稳定前缀可随提示参与缓存，实际命中取决于供应商阈值和请求上下文。script/bash 与 fake 桩不注入。
+- 回归覆盖所有 AI 命令的首部/单次出现、确定性节点不变、缺失来源失败；工作流拓扑未变，golden 无需更新。独立评审与主控验收由元帅安排。
