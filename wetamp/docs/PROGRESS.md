@@ -227,3 +227,81 @@
 - 验收：tsc 0；`bun test` 255/255；wetamp eslint 仅余基线 cli.ts:782；12 组 hook 输出逐字节一致，中位数增量最差 +1.2ms；live 键集合等于白名单、role 取值合法、无 prompt；实机 `COLUMNS=59/140 board --once` 有元帅终端行，`job exec --role general -- sleep 60` 与本作业作为将军嵌套其下。
 - 预算：TS 4150/4150（wc -l，src 下 .ts/.tsx）、cjs 1198/1700（+4）、文件数不变。
 - 已知限制：已结束且 wrapper 已退出的作业（如 S1/S2）找不到祖先会话，归 `无主`；无 role、无心跳的旧作业按模型池推断，opus-5-5 只在军师池，故 claude 将军旧作业（如 WP-BT3）显示 `军师?`；已安装的 hooks 需重装后才写 role；App.tsx、cli.ts 沿基线未跑 prettier。
+
+
+## WP-BT6：模型标签、全量本机用量与 Web 大看板
+
+- 范围：`wetamp-board6`，基线 `e57bacab`；将军编码端，不委派、不 push、不合并。短模型命名由 `src/models.ts` 统一，显式绑定/作业记录优先，其次 live、最多 64KB 的会话尾部模型元数据；紧凑布局仅显示族名。角色类型从 `src/roles.ts` 导出，避免 usage/jobs/CLI 循环导入造成命令卡死。
+- 用量：固定 `ccusage@20.0.28`，Claude/Codex session+daily，nice、每子进程 120s、flock、5 分钟缓存和原子持久索引。run > job > interactive > inferred(?) > unknown；Codex thread UUID 后缀去重。作业只在 cwd/启动时间 ±60s 唯一匹配时登记 session_id；未知索引也持久保存。多模型分项、kind、Top、每日数值通过 usage --json/Web 提供；daily 无会话数则显示未知。采集失败 total=null，保留旧缓存并给出各来源成功时间；CLI/report 不输出金额，Web 的金额仅为公开价目估算，缺值显示未知。
+- 安全：服务只绑 127.0.0.1，端口 39890 起顺延；单实例锁，web.json 0600，随机 token 与 HttpOnly/SameSite=Strict cookie；Host 白名单、只允许 GET/HEAD；CSP default-src self + 内联 hash、nosniff、no-referrer、no-store。API 使用显式字段投影，不传 prompt、argv、transcript/rollout 正文；stop 校验记录 PID 的精确 argv 后仅停本服务。
+- 完成：模型四类行/头部 chip、今日 token/宽屏逐行 token、usage CLI、report.full_usage、本机 Web 命令、OSC8 链接；Web 复用 board loader，不另建采集器。
+
+### 验收 1–5
+
+1. `cd wetamp && bunx tsc --noEmit && bun test`：317 pass / 0 fail（15 文件）；最后两处纯命名/lint与轮次显示调整另跑 `bunx tsc --noEmit && bun test tests/usage-web.test.ts`：11 pass / 0 fail。证据 `/tmp/wpbt6-tests-final3.log`、`/tmp/wpbt6-usage-test-final2.log`。
+   `bun run lint --config wetamp/eslint.config.mjs wetamp/src`：没有新增错误，仍有 5 条基线（archon.ts 84/85，cli.ts 1031/1105/1227）。以 e57bacab 原文件在同配置下复测也有这 5 条，卡片所谓仅 cli:782 已过时；证据 `/tmp/wpbt6-lint-final4.log`、`/tmp/wpbt6-lint-baseline.log`。
+2. 新增 11 个 fixture/安全/布局测试：已覆盖模型映射和未知/紧凑、两家 JSON 与 UUID 去重、归属五级和持久优先级、多模型、失败未知/缓存、Host/token/method/cookie/CSP、API 无敏感键、100/120/140 列 run 模型与 token 不截断。测试没有调用真实 AI。
+3. 实机 `wetamp/bin/superagent usage --refresh` rc=0；`report --json` rc=0。run 35,357,847 / 35 会话，job 79,699,246 / 7，interactive 492,036,949 / 21，unknown 40,127,889,106 / 4636，未归属占 98.510%。只覆盖本机日志，开发机/mini 不含。
+   对账：9 个状态稳定、有完整 Archon spend 的 run 全部精确一致；示例 20261010-005251-7ce7 两端均 781,219。两条采集时仍运行的 run（20261010-062040-aa74、20261010-063513-6a28）分别出现 1,397,158 vs 1,304,202、1,094,375 vs 724,986；ccusage 日志快照与 Archon 完成事件/归属采集窗口不同，不能宣称当前全量实时一致。Archon input 已含 cacheRead/cacheWrite，归一化应 input+output，与 ccusage total 比较，不能再叠加缓存。证据 `/tmp/wpbt6-report-final.json`、`/tmp/wpbt6-usage-final.txt`。
+   `web start` → curl：带 token 200，缺/错 token 401，Host evil.test 403，POST 405；安全头均存在，web.json 0600，API forbidden_keys 为空。实测 PID25279 绑定39890，`web stop` rc=0、ps 确认退出。仅回收本会话启动的服务；证据 `/tmp/wpbt6-overview-final.json`。
+   `COLUMNS=59/140 wetamp/bin/superagent board --once` 均 rc=0、stderr 空，OSC8 链接、59列族名、140列版本名/逐行 token/今日总计已见。下方摘录中的 URL token 已脱敏。
+4. `git diff -- hooks wetamp/hooks` 无改动；本包不改变 hook 判定/退出码/stdout，无需运行 BT4 12组差分。`git diff --check` 通过。
+5. TS/TSX 总计 5381，基线5032，净增349 ≤450；index.html 36 ≤350。没有增加前端框架/CDN。
+
+### 实机摘录
+
+```text
+全量（ccusage） · 仅本机日志；开发机 / mini 不含
+ok · 缓存 2026-10-10T06:59:02.214Z
+kind input output reasoning cacheRead cacheWrite 合计 会话数
+unknown 2177336535 189363390 28150626 37592893836 167570180 40127889106 4636
+interactive 1671102 4693547 54503 469445413 16226887 492036949 21
+job 899605 675690 29215 75965392 2158559 79699246 7
+run 4268341 440234 88682 30483230 166042 35357847 35
+角色×模型
+?·sol5.6 1310974775 84711064 17198421 17492130792 0 18887816631 1209
+?·astra 323219211 30972559 4967371 4645724032 0 4999915802 1131
+?·glm-5.2 17654688 130925 0 8671168 0 26456781 4
+?·opus5.5 39576 17816502 0 5436041235 64715796 5518613109 161
+?·sonnet5.5 2988 1917946 0 280304015 9163329 291388278 20
+?·opus5 1776511 16408754 0 4186341226 57304036 4261830527 189
+commander·opus5.5 9078 3633406 0 406423161 13211485 423277130 3
+commander·fable5.1 13856 880475 0 41605420 2990356 45490107 2
+?·opus4.8 700 380771 0 35187272 1139302 36708045 18
+?·opus4.6 30614043 235550 0 1394946 21204 32265743 13
+?·sonnet4.6 15355590 119071 0 4396600 6742251 26613512 6
+?·opus4.7 17653381 235938 0 5819785 12962347 36671451 15
+```
+
+```text
+COLUMNS=59
+superagent board 15:00:47 · /Users/yong/.superagent
+]8;;http://127.0.0.1:39890/?t=<token>\大看板]8;;\
+[running 3] [held 0] [failed 1] [completed 10]
+[cancelled 3] [元帅 2·opus] [将军 2·sol] [军师 0]
+[remote 0] debt 22 · first_pass 10 · every 5s
+· last 15:00:45 tok 今日 614.6M
+● 元帅·opus claude 执行中 30s · xiaopan-translator · s005
+● 元帅·opus claude 执行中 Bash 4s · _mcp_workspace · s009
+  └ ▶ 将军·sol job 56s codex · HF1 error_class 误判热修
+  └ ▶ 将军·sol job 27m09s codex · BT6 模型名+全量用量+Web …
+
+COLUMNS=140
+superagent board 15:01:27 · /Users/yong/.superagent
+]8;;http://127.0.0.1:39890/?t=<token>\大看板]8;;\ http://127.0.0.1:39890/?t=<token>
+[running 1] [held 0] [failed 3] [completed 10] [cancelled 3] [元帅 2·opus] [将军 2·sol] [军师 0] [remote 0] debt 22 · first_pass 10
+· every 5s · last 15:01:25 tok 今日 614.6M
+● 元帅·opus5.5 claude 执行中 1m10s · xiaopan-translator · s005 tok 44.5M
+● 元帅·opus5.5 claude 执行中 44s · _mcp_workspace · s009 tok 364.8M
+  └ ▶ 将军·sol6.1 job 1m36s codex · HF1 error_class 误判热修
+  └ ▶ 将军·sol6.1 job 27m49s codex · BT6 模型名+全量用量+Web 看板 tok 5.8M
+○ 元帅 claude 未知? · _mcp_workspace · s002
+○ 元帅 codex 未知? · _mcp_workspace · s003
+```
+
+### 遗留与交还
+
+- 历史 98.51% 未归属：过去没有持久 session_id/角色证据，不猜历史归属；新会话结束后已知/未知索引均继续保存。活动 run 的会话归属依赖 Archon 事件，实时刷新存在窗口差异。
+- BT5 的 launcher/run→发起终端挂接尚未合入本 worktree；Web 当前可挂作业，run 表独立显示。元帅合并 BT5 后需验证终端下 run 挂接与共享文件冲突。
+- OpenCode 可选来源未接；默认浏览器 --open 已接入但没有打开操作者浏览器做视觉验收。HTML/CSP/cookie 和 HTTP 行为已实测。
+- G1 合格独立评审及元帅最终实测 pending；没有宣称上线/合并。派生会话按 agent-evolution 跳过自动学习晋升，交还主控；可复用证据是两家日期字段 period/date 与缓存 token 对账口径。

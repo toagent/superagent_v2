@@ -7,6 +7,7 @@ import { tail } from '../archon';
 import { home, loadTiers, type Tiers } from '../config';
 import { modelOf, readJobs, recent, type Job, type Kind, type Tier } from '../jobs';
 import * as term from './terminals';
+import { sessionModel } from '../models';
 
 export interface Proc {
   pid: number;
@@ -201,8 +202,8 @@ export function attach(
   });
   return {
     bound,
-    jobs: jobs.map(j => ({ ...j, ...own(j, j.role, j.wrapper_pid, j.pid) })),
-    procs: procs.map(p => ({ ...p, ...own(p, null, p.pid) })),
+    jobs: jobs.map(j => ({ ...j, model: j.model ?? bound.get(j)?.model ?? sessionModel(bound.get(j)?.transcript_path ?? null, j.kind), ...own(j, j.role, j.wrapper_pid, j.pid) })),
+    procs: procs.map(p => ({ ...p, model: p.model ?? bound.get(p)?.model ?? sessionModel(bound.get(p)?.transcript_path ?? null, p.kind), ...own(p, null, p.pid) })),
   };
 }
 

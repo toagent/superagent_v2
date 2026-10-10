@@ -6,6 +6,7 @@ import { closeSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:f
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
+import type { NodeExecutionMetadata } from '../../packages/workflows/src/schemas/node-execution';
 
 export interface Exec {
   code: number;
@@ -43,7 +44,7 @@ export interface RunView {
   /** 终局记录（事件日志折叠而来）：error 同 metadata.error 的终局快照。resume 中的 run 没有。 */
   terminal_record?: { error?: string | null } | null;
   transcript_path?: string | null;
-  nodes?: { nodeId: string; state: string; error?: string | null; durationMs?: number }[];
+  nodes?: { nodeId: string; state: string; error?: string | null; durationMs?: number; execution?: NodeExecutionMetadata }[];
 }
 
 // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）

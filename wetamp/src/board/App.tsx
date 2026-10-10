@@ -3,6 +3,8 @@ import { basename } from 'node:path';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { TIERS, type Tier } from '../jobs';
+import { shortModel } from '../models';
+import { fmtTokens, sessionKey, type UsageCache } from '../usage';
 import type { Activity, Owned } from './activity';
 import type { Term } from './terminals';
 import { bar, elapsedAt, fmtClock, fmtElapsed, type BoardRow, type Snapshot } from './data';
@@ -30,9 +32,11 @@ const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
 // 四档的英文键只在这里译成中文；run 节点按工作流角色：确定性节点归引擎，wait 门归人工
 const TIER_ZH: Record<Tier, string> = { commander: '元帅', general: '将军', strategist: '军师' };
 const NODE_ZH: Partial<Record<string, string>> = { coder: '将军', reviewer: '军师', script: '引擎', human: '人工' };
-const tierTag = (o: Pick<Owned, 'tier' | 'guess'>): string =>
-  o.tier ? `${TIER_ZH[o.tier]}${o.guess ? '?' : ''}` : '?';
-const nodeRole = (r: BoardRow): string => NODE_ZH[r.nodes.currentRole ?? ''] ?? '?';
+const modelTag = (m?: string | null, compact = false): string => shortModel(m, compact) ? `·${shortModel(m, compact)}` : '';
+const tierTag = (o: Pick<Owned, 'tier' | 'guess'> & { model?: string | null }, compact = false): string =>
+  o.tier ? `${TIER_ZH[o.tier]}${modelTag(o.model, compact)}${o.guess ? '?' : ''}` : `?${modelTag(o.model, compact)}`;
+const nodeRole = (r: BoardRow, compact = false): string => (NODE_ZH[r.nodes.currentRole ?? ''] ?? '?') + modelTag(r.model, compact);
+const totalFor = (c: UsageCache | undefined, field: 'id' | 'job_id' | 'run_id', id?: string | null): string => { const xs = c?.sessions.filter(s => field === 'id' ? id && s.id === sessionKey(id) : s.owner?.[field] === id) ?? []; return xs.length ? ` tok ${fmtTokens(xs.reduce((n, s) => n + s.total, 0))}` : ''; };
 
 function reason(r: BoardRow): string {
   if (r.state === 'unreadable') return r.error ?? '';
@@ -120,7 +124,7 @@ function CompactRow({
       </Text>
       {r.nodes.current && (sel || r.state === 'running') ? (
         <Text dimColor wrap="truncate">
-          {`  cur: ${r.nodes.current} · ${nodeRole(r)}`}
+          {`  cur: ${r.nodes.current} · ${nodeRole(r, true)}`}
         </Text>
       ) : null}
     </Box>
@@ -140,7 +144,7 @@ export const shortRemoteId = (id: string): string =>
 
 const IDLE_MS = 30 * 60_000;
 /** 终端会话：client、状态、tool_name、cwd basename、tty 短名、时长；`?` 标出没有心跳/transcript 为据的粗判。 */
-function termText(t: Term, now: number): string {
+function termText(t: Term, now: number, compact: boolean): string {
   const dur =
     t.since_ms === null ? '' : ` ${fmtElapsed(Math.max(0, Math.floor((now - t.since_ms) / 1000)))}`;
   const state =
@@ -152,7 +156,7 @@ function termText(t: Term, now: number): string {
         ? `${t.since_ms !== null && now - t.since_ms > IDLE_MS ? '空闲' : '等待输入'}${dur}`
         : '未知?';
   const dir = t.cwd ? pad(basename(t.cwd), 20).trimEnd() : '?';
-  return `${t.state === 'busy' ? '●' : '○'} ${TIER_ZH[t.tier]} ${t.kind} ${state} · ${dir} · ${t.tty.replace(/^tty/, '')}`;
+  return `${t.state === 'busy' ? '●' : '○'} ${TIER_ZH[t.tier]}${modelTag(t.model, compact)} ${t.kind} ${state} · ${dir} · ${t.tty.replace(/^tty/, '')}`;
 }
 
 interface Line {
@@ -161,24 +165,23 @@ interface Line {
 }
 /**
  * 活动区：每个终端会话下缩进挂它 ppid 链上的作业与无头进程；挂不上的（父会话已退出、run 节点之外的后台进程）
- * 与远端队列归“无主”组。不含 prompt/argv（来源本就没有）；紧凑布局省掉模型名。
+ * 与远端队列归“无主”组。不含 prompt/argv（来源本就没有）；紧凑布局仅显示模型族名。
  */
-function activityLines(a: Activity, now: number, compact: boolean): Line[] {
+function activityLines(a: Activity, now: number, compact: boolean, usage?: UsageCache, wide = false): Line[] {
   const since = (ms: number, end = now): string =>
     fmtElapsed(Math.max(0, Math.floor((end - ms) / 1000)));
-  const model = (m: string | null): string => (m && !compact ? ` ${m}` : '');
   const job = (j: Activity['jobs'][number]): Line => {
     const [mark, color] = JOB_MARK[j.state];
     const end = j.ended_at ? Date.parse(j.ended_at) : now;
     const how =
       j.state === 'running' || j.state === 'lost' ? '' : ` ${j.signal ?? `exit ${String(j.exit_code)}`}`;
     return {
-      text: `${mark} ${tierTag(j)} job ${since(Date.parse(j.started_at), end)}${how} ${j.kind}${model(j.model)} · ${j.title}`,
+      text: `${mark} ${tierTag(j, compact)} job ${since(Date.parse(j.started_at), end)}${how} ${j.kind} · ${j.title}${wide ? totalFor(usage, 'job_id', j.id) : ''}`,
       color,
     };
   };
   const proc = (p: Activity['procs'][number]): Line => ({
-    text: `▶ ${tierTag(p)} proc ${since(p.started_ms)} ${p.kind}${model(p.model)} · ${p.cwd ? basename(p.cwd) : '?'} pid ${String(p.pid)}`,
+    text: `▶ ${tierTag(p, compact)} proc ${since(p.started_ms)} ${p.kind} · ${p.cwd ? basename(p.cwd) : '?'} pid ${String(p.pid)}`,
     color: 'blue',
   });
   const under = (owner: number | null): Line[] => [
@@ -196,7 +199,7 @@ function activityLines(a: Activity, now: number, compact: boolean): Line[] {
   ];
   return [
     ...a.terms.flatMap(t => [
-      { text: termText(t, now), color: t.state === 'busy' ? 'green' : t.state === 'idle' ? 'white' : 'gray' },
+      { text: termText(t, now, compact) + (wide ? totalFor(usage, 'id', t.session_id) : ''), color: t.state === 'busy' ? 'green' : t.state === 'idle' ? 'white' : 'gray' },
       ...under(t.pid).map(sub),
     ]),
     ...(orphans.length ? [{ text: '无主' }, ...orphans.map(sub)] : []),
@@ -232,11 +235,13 @@ function Row({
   sel,
   lay,
   now,
+  tokens = '',
 }: {
   r: BoardRow;
   sel: boolean;
   lay: Layout;
   now: number;
+  tokens?: string;
 }): ReactElement {
   const { w } = lay;
   const role = `(${nodeRole(r)})`; // 角色后缀总要留下：只截节点名（cell 自身另占 1 格分隔）
@@ -255,15 +260,17 @@ function Row({
     cell(r.auto_retries ? `${String(r.recoveries)}+${String(r.auto_retries)}` : String(r.recoveries), w.rec),
   ];
   return (
-    <Box>
+    <Box flexDirection="column">
       <Text inverse={sel} wrap="truncate">
         {cell(r.run_id, w.id)}
         <Text color={colorOf(r.state)} dimColor={r.state === 'unreadable'}>
           {cell(`${r.stale ? '~' : ''}${r.state}`, w.state)}
         </Text>
         {rest.join('')}
-        {lay.wide ? `${cell(r.console, w.console)}${r.repo}@${r.branch}` : ''}
+        {lay.wide ? `${cell(r.console, w.console)}${pad(`${r.repo}@${r.branch}`, REPO_MIN)}` : ''}
+        {tokens}
       </Text>
+      {r.nodes.current && lay.current < Bun.stringWidth(role) + 3 ? <Text dimColor wrap="truncate">{`  cur: ${nodeRole(r)} · ${r.nodes.current}`}</Text> : null}
     </Box>
   );
 }
@@ -285,7 +292,10 @@ export interface FrameProps {
 
 export function Frame(p: FrameProps): ReactElement {
   const rows = p.activeOnly ? p.snap.rows.filter(ACTIVE) : p.snap.rows;
-  const lay = layout(p.width);
+  const reserved = p.width >= 120 ? Math.max(0, ...rows.map(r => Bun.stringWidth(totalFor(p.snap.usage, 'run_id', r.run_id)))) : 0;
+  let lay = layout(p.width - reserved);
+  if (reserved && lay.current < Math.max(0, ...rows.map(r => Bun.stringWidth(nodeRole(r)) + 7)))
+    lay = { compact: false, wide: false, w: WIDTHS.narrow, current: Math.min(30, p.width - reserved - sum(WIDTHS.narrow)) };
   const now = p.now.getTime();
   let { w } = lay;
   if (lay.compact) {
@@ -308,7 +318,7 @@ export function Frame(p: FrameProps): ReactElement {
     : [];
   if (act)
     chips.push(
-      ...TIERS.map((k): [string, string] => [`[${TIER_ZH[k]} ${String(busy.filter(x => x.tier === k).length)}]`, 'green']),
+      ...TIERS.map((k): [string, string] => { const models = busy.filter(x => x.tier === k).map(x => shortModel(x.model, true)).filter(Boolean); const ms = [...new Set(models)].sort((a, b) => models.filter(m => m === b).length - models.filter(m => m === a).length); return [`[${TIER_ZH[k]} ${String(busy.filter(x => x.tier === k).length)}${ms.length ? `·${ms[0]}${ms.length > 1 ? `+${String(ms.length - 1)}` : ''}` : ''}]`, 'green']; }),
       [`[remote ${String(act.remote.length)}]`, 'magenta']
     );
   chips.push(
@@ -318,7 +328,9 @@ export function Frame(p: FrameProps): ReactElement {
     [`· last ${fmtClock(p.snap.at, now)}`, '']
   );
   if (p.activeOnly) chips.push(['· active only', '']);
-  const alines = act ? activityLines(act, now, lay.compact) : [];
+  const usage = p.snap.usage, today = new Date(now).toLocaleDateString('sv-SE');
+  if (usage) chips.push([usage.status === 'ok' ? `tok 今日 ${fmtTokens(usage.daily.filter(d => d.day === today).reduce((n, d) => n + d.total, 0))}` : 'tok 用量未知', '']);
+  const alines = act ? activityLines(act, now, lay.compact, usage, p.width >= 120) : [];
   if (act && !busy.length && !act.remote.length && !p.snap.rows.some(ACTIVE))
     alines.push({ text: `空闲 · 无运行中的 run/作业 · 刷新 ${fmtClock(p.snap.at, now)}` });
   const d = p.detail;
@@ -356,6 +368,7 @@ export function Frame(p: FrameProps): ReactElement {
       <Text wrap="truncate">
         <Text bold>superagent board</Text> {fmtClock(now, now)} · {p.home}
       </Text>
+      {p.snap.web_url ? <Text>{`\x1b]8;;${p.snap.web_url}\x1b\\大看板\x1b]8;;\x1b\\${p.width >= 120 ? ` ${p.snap.web_url}` : ''}`}</Text> : null}
       {/* chips 超宽时整项换行，不截断 */}
       <Box flexWrap="wrap" columnGap={1}>
         {chips.map(([t, c]) => (
@@ -395,7 +408,7 @@ export function Frame(p: FrameProps): ReactElement {
           lay.compact ? (
             <CompactRow key={r.run_id} r={r} sel={top + i === p.sel} w={w} now={now} />
           ) : (
-            <Row key={r.run_id} r={r} sel={top + i === p.sel} lay={lay} now={now} />
+            <Row key={r.run_id} r={r} sel={top + i === p.sel} lay={lay} now={now} tokens={p.width >= 120 ? totalFor(usage, 'run_id', r.run_id) : ''} />
           )
         )}
       {dlines.map((l, i) => (

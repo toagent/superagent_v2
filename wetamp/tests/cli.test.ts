@@ -753,7 +753,8 @@ describe('brief / land (archon stub)', () => {
     writeFileSync(join(home, 'runs', 'sa1.json'), JSON.stringify({ ...l, recoveries: ['t'] }));
     const { code, out } = captured(() => main(['report']));
     expect(code).toBe(0);
-    const { usage, ...counts } = JSON.parse(out) as Record<string, unknown>;
+    const { usage, full_usage, ...counts } = JSON.parse(out) as Record<string, unknown>;
+    expect(full_usage).toMatchObject({ label: '全量（ccusage）', total: null });
     // 桩输出没有事件：没有调用，用量是 unknown 而不是 0（F-22 细节见 report.test.ts）
     expect(usage).toMatchObject({ total: { calls: 0, input: 'unknown' }, unreadable: [] });
     expect(counts).toEqual({
