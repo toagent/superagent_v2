@@ -8,6 +8,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { launcher, type Launcher } from './launcher';
 import { basename, join, resolve } from 'node:path';
 import { EXIT_USAGE, parseArgs } from './cli';
 import { home } from './config';
@@ -26,6 +27,7 @@ export interface Job {
   cwd: string;
   kind: Kind;
   model: string | null;
+  launcher?: Launcher;
   role?: Tier | null; // 旧记录没有
   wrapper_pid: number;
   pid: number;
@@ -80,9 +82,9 @@ export function alive(pid: number): boolean {
 
 /**
  * 全部登记作业（新的在前）。已结束超过 24h 的删除；running 但子进程与 wrapper 都不在了的改记 lost 并回写
- * （ended_at=发现时刻，24h 后同样回收）。wrapper 还在就不判：它会写终态。坏文件不抛错，单列在 bad。
+ * （ended_at=发现时刻，24h 后同样回收）。readonly 不回写/删除、不伪造 ended_at。wrapper 还在就不判；坏文件单列 bad。
  */
-export function readJobs(now = Date.now()): { jobs: Job[]; bad: string[] } {
+export function readJobs(now = Date.now(), readonly = false): { jobs: Job[]; bad: string[] } {
   const jobs: Job[] = [];
   const bad: string[] = [];
   let files: string[];
@@ -101,14 +103,14 @@ export function readJobs(now = Date.now()): { jobs: Job[]; bad: string[] } {
       if (typeof j.state !== 'string' || typeof j.started_at !== 'string')
         throw new Error('not a job record');
       if (j.state === 'running' && !alive(j.pid) && !alive(j.wrapper_pid)) {
-        j = { ...j, state: 'lost', ended_at: new Date(now).toISOString() };
-        if (load().state === 'running') save(j); // 重读一次：wrapper 可能刚写完终态才退出
+        j = { ...j, state: 'lost', ...(!readonly ? { ended_at: new Date(now).toISOString() } : {}) };
+        if (!readonly && load().state === 'running') save(j); // 重读一次：wrapper 可能刚写完终态才退出
       }
     } catch (e) {
       bad.push(`${f}: ${(e as Error).message}`);
       continue;
     }
-    if (j.ended_at && now - Date.parse(j.ended_at) > DAY_MS) unlinkSync(file);
+    if (!readonly && j.ended_at && now - Date.parse(j.ended_at) > DAY_MS) unlinkSync(file);
     else jobs.push(j);
   }
   return { jobs: jobs.sort((a, b) => b.started_at.localeCompare(a.started_at)), bad };
@@ -127,6 +129,7 @@ async function exec(
   f: { title: string; card?: string; log?: string; role: Tier | null }
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
+  const launched = launcher(home().sa);
   const child = Bun.spawn(cmd, { stdio: ['inherit', 'inherit', 'inherit'] });
   const job: Job = {
     id: newRunId(),
@@ -137,6 +140,7 @@ async function exec(
     kind: kindOf(cmd[0]),
     model: modelOf(cmd.slice(1)),
     role: f.role,
+    ...(launched ? { launcher: launched } : {}),
     wrapper_pid: process.pid,
     pid: child.pid,
     started_at: new Date().toISOString(),

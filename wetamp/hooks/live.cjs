@@ -20,17 +20,55 @@ function agentOf(command) {
   const name = a.length ? path.basename(a[0]) : '';
   return AGENTS.includes(name) ? name : null;
 }
+// Shared with the board and launcher recording; headless/service processes are not terminals.
+function cliOf(argv) {
+  const a = ['node', 'bun'].includes(path.basename(argv[0] || '')) ? argv.slice(1) : argv;
+  const [k, sub] = [a.length ? path.basename(a[0]) : '', a[1] || ''];
+  if (k === 'claude' && sub !== 'mcp') return {kind: k, headless: a.some(t => t === '-p' || t === '--print')};
+  if (k === 'codex' && !['app-server', 'mcp', 'mcp-server'].includes(sub)) return {kind: k, headless: sub === 'exec'};
+  if (k === 'opencode' && sub !== 'serve') return {kind: k, headless: sub === 'run'};
+  return null;
+}
 // Nearest agent CLI ancestor of this hook process. One `ps -p` per level: a full `ps -ax`
 // costs ~100ms on macOS, a level ~3ms, and hooks sit 1–3 levels below the agent.
-function owner() {
-  for (let pid = process.ppid, n = 0; pid > 1 && n < 16; n++) {
-    const r = spawnSync('ps', ['-o', 'ppid=,tty=,command=', '-p', String(pid)], {encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore']});
-    const m = r.status === 0 && /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(r.stdout.trim());
+function owner(interactive = false, inspect = inspectPid, parent = process.ppid) {
+  for (let pid = parent, n = 0; pid > 1 && n < 16; n++) {
+    const m = inspect(pid);
     if (!m) return null;
-    if (agentOf(m[3])) return {pid, tty: m[2] === '??' ? null : m[2]};
+    const cli = cliOf(m[3].trim().split(/\s+/));
+    if (interactive ? cli && !cli.headless && m[2] !== '??' : agentOf(m[3]))
+      return {pid, tty: m[2] === '??' ? null : m[2]};
     pid = Number(m[1]);
   }
   return null;
+}
+function inspectPid(pid) {
+  const r = spawnSync('ps', ['-o', 'ppid=,tty=,command=', '-p', String(pid)], {encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore']});
+  return r.status === 0 && /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(r.stdout.trim());
+}
+// Only identity metadata is returned; absent/ambiguous heartbeat identity stays absent.
+function launcher(home) {
+  try {
+    const who = owner(true);
+    if (!who) return undefined;
+    const cli = cliOf(inspectPid(who.pid)?.[3]?.trim().split(/\s+/) || []);
+    if (!cli || cli.headless) return undefined;
+    let beats = [];
+    try {
+      for (const name of fs.readdirSync(path.join(home, 'live')).filter(n => n.endsWith('.json'))) {
+        try {
+          const b = JSON.parse(fs.readFileSync(path.join(home, 'live', name), 'utf8'));
+          if (b.pid === who.pid && b.client === cli.kind) beats.push(b);
+        } catch {}
+      }
+    } catch {}
+    beats.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    const out = spawnSync('lsof', ['-a', '-p', String(who.pid), '-d', 'cwd', '-Fn'], {encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore']});
+    const cwd = out.stdout?.split('\n').find(l => l.startsWith('n'))?.slice(1) || str(beats[0]?.cwd);
+    if (!cwd) return undefined;
+    const session = new Set(beats.map(b => str(b.session_id)).filter(Boolean));
+    return {client: cli.kind, ...who, cwd, ...(session.size === 1 ? {session_id: [...session][0]} : {})};
+  } catch { return undefined; }
 }
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
@@ -73,4 +111,4 @@ function beat(client, input, roleOf = () => null, env = process.env) {
     catch { try { fs.unlinkSync(tmp); } catch {} }
   } catch {}
 }
-module.exports = {beat, agentOf, THROTTLE_MS};
+module.exports = {beat, agentOf, cliOf, owner, launcher, THROTTLE_MS};

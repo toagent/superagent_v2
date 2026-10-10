@@ -227,3 +227,34 @@
 - 验收：tsc 0；`bun test` 255/255；wetamp eslint 仅余基线 cli.ts:782；12 组 hook 输出逐字节一致，中位数增量最差 +1.2ms；live 键集合等于白名单、role 取值合法、无 prompt；实机 `COLUMNS=59/140 board --once` 有元帅终端行，`job exec --role general -- sleep 60` 与本作业作为将军嵌套其下。
 - 预算：TS 4150/4150（wc -l，src 下 .ts/.tsx）、cjs 1198/1700（+4）、文件数不变。
 - 已知限制：已结束且 wrapper 已退出的作业（如 S1/S2）找不到祖先会话，归 `无主`；无 role、无心跳的旧作业按模型池推断，opus-5-5 只在军师池，故 claude 将军旧作业（如 WP-BT3）显示 `军师?`；已安装的 hooks 需重装后才写 role；App.tsx、cli.ts 沿基线未跑 prettier。
+
+
+## WP-BT5 看板归属（2026-10-10，wetamp-board5，基线 e57bacab）
+
+- run 启动意图/ledger 与 job 新增可选 `launcher {client,pid,tty,cwd,session_id?}`；祖先解析复用 `hooks/live.cjs` 的 owner，交互 CLI 判定由心跳模块导出、board 复用。心跳 pid/client 唯一匹配时才填 session_id；查不到发起者就不写。hook 原判定、退出码和 stdout 不变。
+- 同一份 ps 快照挂接：仍在终端会话中的 launcher pid → wait/status/board 的 run id 与祖先链（job 兼容现有 wrapper/child 链）→ 无 launcher 的唯一 cwd 等于/子目录匹配（标 `~`）→ 按完整 cwd 分组、组头显示 basename。多会话或父目录重叠匹配不猜；每条只出现一次，run 表保留。
+- 会话下增加 `└ ▶ run HHMMSS-xxxx 状态 n/m 当前节点(将军|军师|引擎)`，节点名按中文显示宽度缩短并保留角色；挂接的 running run 当前角色加入将军/军师 chip。terminal 的已结束 run/job 只显示结束后 30 分钟；未知结束时刻不伪造，仍留原 run 表/jobs 查询。
+- board 的 readJobs/readLive 启用只读参数，避免真实记录回写/GC。传统 `superagent jobs` 保留原整理行为；无结束时间的旧 dead running job 在只读视图报告 lost、活动区省略，不每次刷新重新发明结束时刻。持久化或显示均不增加 prompt/argv/transcript 正文。
+- 新 fixture 覆盖 launcher 祖先解析、merged codex pid、四级挂接、launcher/watcher 优先级、watcher flags、cwd 唯一性/目录边界、30 分钟边界、read-only 无写入、job exec 发起者持久化、窄屏中文后缀与角色计数；更新旧“无主”布局断言。
+- 验证与原始证据：`/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/wpBT5-3phrabdh/evidence/`（临时、未入库）。`cd wetamp && bunx tsc --noEmit && bun test` 首轮 316/316；最终结果见 tests-final.log。`bun run lint --config wetamp/eslint.config.mjs wetamp/src` 与 e57bacab 对照均只报 5 条原有错误：archon.ts:83/84、cli.ts 基线 1027/1101/1223（本包 +3 行）；本包不新增错误，任务卡所述仅 cli.ts:782 已不对应实测基线。
+- hook 验证：guard claude/codex、context-budget × `ls /tmp`/`pkill -f node` × HOME 可写/只读，共 12 组，每组每版本 20 次，stdout/stderr/rc 与 e57bacab 逐字节一致；最差中位耗时增量 +1.41ms <15ms，见 hooks.json。payload 全用文件，危险命令只是输入数据。
+- 实机：worktree 入口 `COLUMNS=59 wetamp/bin/superagent board --once` 与 `COLUMNS=140 …` 均 rc=0，无“无主”，终端行不含 prompt。两段原始节选如下；初轮 sinan 旧 run 已 failed，cwd 同时命中 sinan 与多个父目录会话，按卡不猜、放 sinan 目录组。随后新 run 经 watcher 正确挂接。
+
+```text
+COLUMNS=59
+○ 元帅 claude 等待输入 11m52s · xiaopan-translator · s005
+  └ ▶ run 053353-9e81 ▶run 11/27 code-apple-translat…(将军)
+○ 元帅 claude 等待输入 37s · sinan · s006
+  └ ▶ run 063513-6a28 ▶run 3/19 code-iiqe-question-l…(将军)
+```
+
+```text
+COLUMNS=140
+○ 元帅 claude 等待输入 11m53s · xiaopan-translator · s005
+  └ ▶ run 053353-9e81 ▶run 11/27 code-apple-translation-engine(将军)
+○ 元帅 claude 等待输入 39s · sinan · s006
+  └ ▶ run 063513-6a28 ▶run 3/19 code-iiqe-question-list-polish(将军)
+```
+
+- TS 预算：src 下 .ts/.tsx 基线 5032，当前 5115，增量 +83 ≤150（包括新增 launcher.ts 13 行）。不触碰 S3 的 hold/retry、detail 脱敏、git 期限位置。
+- 独立评审/主控验收/合并：pending，由元帅安排；本将军未委派、未 push、未合并、未改真实 run/ledger/客户端配置或现有进程。学习收尾按派生角色跳过，交还主控。

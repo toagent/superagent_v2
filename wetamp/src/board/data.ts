@@ -228,7 +228,6 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
   const roles = new Map<string, Map<string, Role> | undefined>();
   return async limit => {
     const now = Date.now();
-    const activity = loadActivity(now, signal); // 与 ledger 查询并发；自身不抛错
     const ids = ledgerIds()
       // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
       .map(id => ({
@@ -237,8 +236,13 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, limit);
+    const ledgers = new Map(ids.map(({id}) => [id, readLedger(id)]));
+    const refs = [...ledgers.values()].flatMap(l => typeof l === 'string'
+      ? [] : [{ run_id: l.run_id, cwd: l.repo, launcher: l.launcher }]);
+    const activity = loadActivity(now, signal, refs);
     const results = await mapPool(ids, PARALLEL, async ({ id, mtimeMs }) => {
-      const l = readLedger(id);
+      const l = ledgers.get(id);
+      if (l === undefined) throw new Error(`ledger ${id}: missing from snapshot`);
       if (typeof l === 'string') return { row: unreadableRow(id, l) };
       const hit = cache.get(id);
       if (hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status))
