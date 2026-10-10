@@ -3,6 +3,7 @@
 Archon 之上的 superagent 胶水层：把 `plan.json` 编译成 Archon 工作流，用 `archon workflow run --detach` 执行，
 外加崩溃恢复、评审轮次门禁、人工签收与合入命令。只改 `wetamp/`；仓库其余部分与 upstream 保持零差异。
 设计见 [`docs/00-architecture.md`](docs/00-architecture.md)，与旧版命令的对照见 [`docs/03-parity-matrix.md`](docs/03-parity-matrix.md)。
+设计原则以 [`templates/.archon/principles.md`](templates/.archon/principles.md) 为单一来源，生成时统一前置到所有 AI 节点的命令提示。
 
 ## 安装
 

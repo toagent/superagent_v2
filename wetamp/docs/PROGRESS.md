@@ -288,3 +288,9 @@ COLUMNS=140
 - 验收：`cd wetamp && bunx tsc --noEmit && bun test` 通过（352/352，0 fail，14 文件）；根 `bun run lint --config wetamp/eslint.config.mjs 'wetamp/src/**/*.ts' 'wetamp/src/**/*.tsx' 'wetamp/templates/.archon/scripts/*.ts'` rc=0；隔离临时 `SUPERAGENT_HOME` 的 `bash scripts/selftest.sh --fake` 返回 `ok:true`；源码实测 5183/5200 行，hooks diff 为空。日志 `/tmp/s3-all-final.log`、`/tmp/s3-lint-final.log`、`/tmp/s3-selftest.log`。
 - 提交绑定复验：`SUPERAGENT_HOME=<同一临时目录> bash scripts/verify-local.sh --commit HEAD` 在 detached scratch worktree 执行；最终 HEAD、逐步退出码和日志路径由该临时目录的 `verify.json` 与交付回执记录。
 - 记债：旧工作流没有 `attempt-review-*` 时拒绝独立性评审重跑，需新 run；独立 G2 评审与主控验收由元帅安排，本派生会话不代签。
+
+## HF2 核心理念
+- 单一来源：`templates/.archon/principles.md`；README 只链接，不复制内容。
+- Archon 命令加载器直接读 Markdown，`include:` 只组合工作流；`src/generate.ts` 按实际 AI 节点引用的命令去重，统一原样前置理念文本，缺失即明确失败。
+- 每个 AI 节点增加约 350–500 token（按模型分词而异）；稳定前缀可随提示参与缓存，实际命中取决于供应商阈值和请求上下文。script/bash 与 fake 桩不注入。
+- 回归覆盖所有 AI 命令的首部/单次出现、确定性节点不变、缺失来源失败；工作流拓扑未变，golden 无需更新。独立评审与主控验收由元帅安排。

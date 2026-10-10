@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import * as fs from 'node:fs';
 import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildWorkflow, capsDenied, generate, newRunId, renderBrief } from '../src/generate';
-import { install } from '../src/config';
+import { install, WETAMP } from '../src/config';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -20,6 +21,9 @@ const build = (fake: boolean, plan = fixture): unknown =>
 const capsOfAll = (c: Plan['caps']) => capsOf({ ...fixture, caps: c }, fixture.packages[0], []);
 type N = {
   id: string;
+  command?: string;
+  script?: string;
+  bash?: string;
   depends_on?: string[];
   trigger_rule?: string;
   when?: string;
@@ -249,6 +253,32 @@ test('generate writes a committed gen repo that archon validates', () => {
   install();
   const plan = loadPlan(fixturePlan(root, gitRepo(root)), [root]);
   const g = generate(plan, 'gen-0001');
+  const principles = readFileSync(join(WETAMP, 'templates', '.archon', 'principles.md'), 'utf8');
+  const generated = Bun.YAML.parse(
+    readFileSync(join(g.dir, '.archon', 'workflows', g.workflow, `${g.workflow}.yaml`), 'utf8')
+  );
+  const ai = nodesOf(generated).filter(n => n.command);
+  expect([...new Set(ai.map(n => n.command))].sort()).toEqual([
+    'sa-code',
+    'sa-fix',
+    'sa-repair',
+    'sa-review',
+    'sa-review-delta',
+  ]);
+  for (const n of ai) {
+    const prompt = readFileSync(join(g.dir, '.archon', 'commands', `${n.command}.md`), 'utf8');
+    expect(prompt.startsWith(principles + '\n')).toBe(true);
+    expect(prompt.split(principles)).toHaveLength(2);
+  }
+  for (const n of nodesOf(generated).filter(n => n.script || n.bash)) {
+    expect(n.bash ?? '').not.toContain(principles);
+    if (n.script) {
+      const path = join('.archon', 'scripts', `${n.script}.ts`);
+      expect(readFileSync(join(g.dir, path), 'utf8')).toBe(
+        readFileSync(join(WETAMP, 'templates', path), 'utf8')
+      );
+    }
+  }
   expect(g.workflow).toBe('sa-gen-0001');
   for (const f of [
     '.archon/workflows/sa-gen-0001/sa-gen-0001.yaml',
@@ -279,4 +309,34 @@ test('generate writes a committed gen repo that archon validates', () => {
     [root]
   );
   expect(() => generate(thin, 'gen-0003')).toThrow(/budget_floor sum 800000/);
+  const fake = generate(plan, 'gen-fake', true);
+  for (const command of new Set(ai.map(n => n.command))) {
+    const path = join('.archon', 'commands', `${command}.md`);
+    expect(readFileSync(join(fake.dir, path), 'utf8')).toBe(
+      readFileSync(join(WETAMP, 'templates', path), 'utf8')
+    );
+  }
 }, 60000);
+
+test('generate fails clearly before writing gen when core principles are missing', () => {
+  const root = tmp();
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: join(root, 'archon') });
+  const read = fs.readFileSync;
+  const principlesPath = join(WETAMP, 'templates', '.archon', 'principles.md');
+  const spy = spyOn(fs, 'readFileSync').mockImplementation(
+    new Proxy(read, {
+      apply(target, thisArg, args) {
+        if (args[0] === principlesPath) args[0] = join(root, 'missing-principles.md');
+        return Reflect.apply(target, thisArg, args);
+      },
+    })
+  );
+  try {
+    expect(() => generate(fixture, 'missing-principles')).toThrow(
+      `cannot read required core principles: ${principlesPath}`
+    );
+    expect(existsSync(join(root, 'gen'))).toBe(false);
+  } finally {
+    spy.mockRestore();
+  }
+});
