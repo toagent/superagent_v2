@@ -1591,14 +1591,23 @@ function tickOutput(consoleError?: string): number {
 
 /** Console availability must not gate the unattended heartbeat. */
 export async function superviseTickCli(refresh = async (): Promise<unknown> =>
-  (await import('./web/server')).refreshConsole()): Promise<number> {
+  (await import('./web/server')).refreshConsole(), sync = async (): Promise<unknown> =>
+  (await import('./orca')).syncOrca()): Promise<number> {
   let error: string | undefined;
   try { await refresh(); }
   catch (e) {
     error = e instanceof Error ? e.message : String(e);
     console.error(`supervise-tick: console refresh failed: ${error.replace(/[\r\n]+/g, ' ')}`);
   }
-  return tickOutput(error);
+  const exit = tickOutput(error);
+  try {
+    const result = await sync();
+    if (result && typeof result === 'object' && 'error' in result) throw new Error(String(result.error));
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`supervise-tick: orca sync failed: ${reason.replace(/[\r\n]+/g, ' ')}`);
+  }
+  return exit;
 }
 
 export function main(argv: string[]): number {

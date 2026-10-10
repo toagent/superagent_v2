@@ -999,6 +999,29 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(code).toBe(0);
     return JSON.parse(out).actions as Record<string, unknown>[];
   };
+  test('ORCA1 sync runs after tick and its failure preserves both tick exit codes', async () => {
+    for (const failed of [false, true]) {
+      const s = stub([humanWait()]);
+      if (failed) writeFileSync(join(s.root, 'home', 'asks.json'), '{');
+      const out = spyOn(console, 'log').mockImplementation(() => undefined);
+      const err = spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const baseline = await superviseTickCli(async () => undefined, async () => undefined);
+        for (const returned of [false, true]) {
+          const printed = out.mock.calls.length;
+          const exit = await superviseTickCli(async () => undefined, async () => {
+            expect(out.mock.calls.length).toBe(printed + 1);
+            if (!failed) expect(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')).toContain('pending');
+            if (returned) return { error: 'injected\nreason' };
+            throw new Error('injected\nreason');
+          });
+          expect(exit).toBe(baseline); expect(exit).toBe(failed ? 1 : 0);
+          expect(String(err.mock.calls.at(-1)?.[0])).toBe('supervise-tick: orca sync failed: injected reason');
+        }
+        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+      } finally { out.mockRestore(); err.mockRestore(); }
+    }
+  });
   for (const failed of [false, true]) {
     test(`HF8 injected console failure preserves tick exit ${failed ? 1 : 0}`, async () => {
       const s = stub([humanWait()]);
