@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
 import { home } from '../config';
+import { loadActivity, type Activity } from './activity';
 import {
   EXIT,
   artifactsOf,
@@ -42,6 +43,8 @@ export interface Snapshot {
   summary: Record<string, unknown>;
   rows: BoardRow[];
   at: string;
+  /** 加载器总会带上；手工构造的帧（测试）可省略，此时不画活动区。 */
+  activity?: Activity;
 }
 
 const STRINGS = [
@@ -221,6 +224,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
   const roles = new Map<string, Map<string, Role> | undefined>();
   return async limit => {
     const now = Date.now();
+    const activity = loadActivity(now, signal); // 与 ledger 查询并发；自身不抛错
     const ids = ledgerIds()
       // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
       .map(id => ({
@@ -267,7 +271,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     s.runs = results.length;
     s.unreadable = [...bad, ...(s.unreadable as string[])];
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
-    return { summary: s, rows, at: new Date(now).toISOString() };
+    return { summary: s, rows, at: new Date(now).toISOString(), activity: await activity };
   };
 }
 

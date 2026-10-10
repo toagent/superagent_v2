@@ -31,6 +31,8 @@ superagent wait <run> --timeout 3000     # 阻塞到终态或需要处理；owne
 superagent brief <run>                   # ≤20 行接手摘要：状态、各轮 gate 结论、评审债、恢复次数
 superagent land <run>                    # 打印本地合入命令（switch + merge）；由人执行，从不 push
 superagent board                         # 终端看板（Ink）：全部 run 的状态/进度/held 原因，Enter 看详情；--once 打一帧，--json 出数据
+superagent job exec --title t -- cmd...  # 登记直接派出的后台作业，board 活动区可见；退出码透传、信号转发
+superagent jobs [--all]                  # 列出登记作业（默认 running 与 1h 内结束的）；结束超过 24h 的读取时回收
 ```
 
 所有命令输出 JSON（`--json` 可加可不加）。退出码：0 completed、1 failed、2 cancelled、3 held（待决策）、4 running、

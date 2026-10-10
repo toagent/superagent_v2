@@ -40,6 +40,10 @@ const OPTIONS = {
   interval: { type: 'string' },
   limit: { type: 'string' },
   json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
+  title: { type: 'string' },
+  card: { type: 'string' },
+  log: { type: 'string' },
+  all: { type: 'boolean' },
 } as const;
 interface Args {
   _: string[];
@@ -677,7 +681,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]> (every verb accepts --json)';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|accept <run> [--pkg id]|report|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 export function main(argv: string[]): number {
   let a: Args;
@@ -754,7 +758,9 @@ export function main(argv: string[]): number {
     case 'health':
       return health(a.flags.cwd);
     case 'board':
-      console.error('board is async: run it through bin/superagent (src/board/index.ts)');
+    case 'job':
+    case 'jobs':
+      console.error(`${verb} is async: run it through bin/superagent`);
       return EXIT_USAGE;
     default:
       console.error(USAGE);
@@ -770,7 +776,7 @@ function need<T>(v: T | undefined, usage: string): T {
 if (import.meta.main) {
   try {
     const argv = process.argv.slice(2);
-    // board 是唯一异步、带依赖（ink/react）的动词：在这里分流，其余动词启动时不加载 React。
+    // board（带 ink/react 依赖）与 job/jobs 是异步动词：在这里分流，其余动词启动时不加载 React。
     // 参数非法时 verb 取不到，交给 main 报用法
     const verb = ((): string | undefined => {
       try {
@@ -780,6 +786,8 @@ if (import.meta.main) {
       }
     })();
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
+    if (verb === 'job' || verb === 'jobs')
+      process.exit(await (await import('./jobs')).jobCli(argv));
     process.exit(main(argv));
   } catch (e) {
     console.error(`superagent: ${(e as Error).message}`);

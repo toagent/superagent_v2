@@ -162,3 +162,9 @@
 - 开始时刻取 ledger `started_at`（提交时刻，resume 不变；不可解析才退回 Archon 的，后者每次 resume 重置），排序同口径；终态止于 `completed_at`，缺则 `last_activity_at`，都缺显示 `-`；running/held 止于 now。行带 `span{started_ms,ended_ms}`，界面用 1s 时钟经 `elapsedAt` 重算，`--json` 的 `elapsed_s` 为取数时刻值。
 - 所有界面时刻经 `fmtClock` 按进程本地时区（尊重 `TZ`）显示：当天 `HH:MM:SS`，否则 `MM-DD HH:MM`；header `last` 去掉 `Z`，detail 首行加 `开始 · 耗时`；`--json` 原始 ISO 不变。
 - 验收：`bun test` 200/200（board 27 条，新增 5 条）；真实 `~/.superagent` 只读 d01a 显示 23m26s（原 2m40s）。预算 TS 3100/3200、文件数不变。
+
+## WP-BT2 看板实时作业+窄屏
+- 活动区（run 表上方）：`job exec` 登记作业（`$SUPERAGENT_HOME/jobs/<id>.json` 原子写，不记 argv/prompt；退出码透传、信号转发得 128+n；结束超 24h 回收，死进程记 lost）、未登记无头 AI 进程（一次 ps + ≤8 个 lsof 取 cwd，排除 archon 与已登记 wrapper 的后代）、twin-agent 远端非终态队列；三源并发各 ≤3s，失败降级为一行灰字；chips 增 `[jobs N]` `[remote N]`、空闲行；`--json` 增 jobs/procs/remote/notes。
+- 响应式：<80 紧凑（短 id、短 state、`n/m`；running 与选中行第二行 `cur:`；footer `q r j/k ⏎ a ?`，`?` 开完整按键说明）、80–120 中等、≥121 宽屏；chips 整项换行不截断；`--once` 在管道里认 `COLUMNS`。
+- 验收：`bun test` 210/210（新增 jobs 7 条、board 3 条）；真实 home `COLUMNS=59 board --once` 每行 ≤59 列（按 Bun.stringWidth 计）且列出无头 claude 将军进程；59 列 pty 交互 j/k/Enter/?/q 退出 0。
+- 预算：TS 3698/3200 超出（jobs.ts 187、activity.ts 205、App +188），待元帅裁定上调或删功能；shell/cjs 不变，文件 43/46。
