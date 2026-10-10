@@ -5,8 +5,9 @@
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {tiers, policy} = require('../tiers.json');
-const {commands, deletionTarget} = require('./shell.cjs');
+const {commands, parse, deletionTarget} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
+const stopGate = require('./stop-gate.cjs');
 const dispatch = require('./dispatch-context.cjs');
 
 const saHome = env => env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
@@ -88,9 +89,59 @@ function shellReason(text, cwd, env) {
   const resolved = resolvePath(target);
   const guarded = ['/', os.homedir(), saHome(env), gitRoot(cwd)].filter(Boolean).map(resolvePath);
   const hit = guarded.find(root => within(root, resolved));
-  return hit ? `禁止删除 ${target}：它是或包含受保护目录 ${hit}` : null;
+  return hit ? `禁止删除 ${path.basename(target) || target}：它是或包含受保护目录` : null;
 }
 
+// Reviewer shells run an allowlist of read-only commands; anything else, any output
+// redirection and any unparsable or dynamic command head is denied.
+const READ_ONLY = new Set(['cat','head','tail','wc','grep','egrep','fgrep','rg','ls','stat','file','diff','cmp','sort','uniq','cut','tr','nl','column','sed','jq','echo','printf','pwd','which','type','realpath','dirname','basename','readlink','date','true','false','test','[','[[',':','cd','sleep','tree','find','git']);
+const GIT_READ = new Set(['status','diff','log','show','rev-parse','ls-files','ls-tree','blame','grep','cat-file','describe','merge-base','rev-list','shortlog','show-ref','name-rev','for-each-ref']);
+const SED_PRINT = /^(?:\d+|\$)(?:,(?:\d+|\$))?p(?:;(?:\d+|\$)(?:,(?:\d+|\$))?p)*$/;
+function gitReadOnly(argv) {
+  let i = 1;
+  while (argv[i]?.startsWith('-')) {
+    // -c/--config-env/--exec-path can install a pager, diff driver or helper command.
+    if (['-c', '--config-env'].includes(argv[i]) || argv[i].startsWith('--exec-path')) return false;
+    i += GIT_VALUE_OPTIONS.includes(argv[i]) ? 2 : 1;
+  }
+  const [sub, ...rest] = argv.slice(i);
+  if (rest.some(arg => /^--output|^--open-files-in-pager|^-O/.test(arg))) return false;
+  if (GIT_READ.has(sub)) return true;
+  const only = (...allowed) => rest.every(arg => allowed.includes(arg));
+  if (sub === 'reflog') return !rest.length || rest[0] === 'show';
+  if (sub === 'branch') return only('-a', '-r', '-v', '-vv', '-l', '--list', '--all', '--remotes', '--verbose', '--show-current');
+  if (sub === 'tag') return ['-l', '--list'].includes(rest[0]) && rest.length <= 2;
+  if (sub === 'remote') return only('-v', '--verbose');
+  if (sub === 'config') return ['--get', '--get-all', '--get-regexp', '--list', '-l'].includes(rest[0]);
+  if (sub === 'worktree' || sub === 'stash') return rest[0] === 'list' || sub === 'stash' && rest[0] === 'show';
+  return false;
+}
+function readOnly(argv) {
+  const [name, ...args] = argv;
+  if (!READ_ONLY.has(name)) return false;
+  const options = args.filter(arg => arg.startsWith('-')), operands = args.filter(arg => !arg.startsWith('-'));
+  switch (name) {
+    case 'sort': return !options.some(arg => /^-[^-]*o|^--output/.test(arg));
+    case 'uniq': return operands.length <= 1;
+    case 'tree': return !options.some(arg => /^-[^-]*o/.test(arg));
+    case 'rg': return !options.some(arg => arg.startsWith('--pre'));
+    case 'find': return !args.some(arg => /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(arg));
+    case 'sed': return options.every(arg => ['-n', '-E', '-r'].includes(arg)) && options.includes('-n') && SED_PRINT.test(operands[0] ?? '');
+    case 'git': return gitReadOnly(argv);
+    default: return true;
+  }
+}
+function reviewerShell(text) {
+  let parsed; try { parsed = parse(text); } catch (error) { return `命令无法解析（${error.message}）`; }
+  if (parsed.writes.length) return `禁止输出重定向到 ${path.basename(parsed.writes[0]) || parsed.writes[0]}`;
+  const bad = parsed.argvs.find(argv => !readOnly(argv));
+  return bad ? `${bad[0]} 不在只读白名单或带写入参数` : null;
+}
+
+const stateFile = (payload, env) => {
+  const session = payload.session_id || payload.transcript_path;
+  return session ? path.join(saHome(env), 'hooks', `${crypto.createHash('sha256').update(String(session)).digest('hex')}.json`) : null;
+};
 // G-1: commander edits accumulate per session (never reset) against policy.micro_edit.
 function commanderWrite(payload, client, env) {
   if (env.SUPERAGENT_ALLOW_COMMANDER_WRITE === '1') return null;
@@ -101,49 +152,63 @@ function commanderWrite(payload, client, env) {
   catch (error) { return {systemMessage: `SUPERAGENT G-1: 无法计量本次写入（${error.message}），已放行；超过微改请走 superagent run。`}; }
   if (!edit.files.length) return null;
   const absolute = Object.fromEntries(['files', 'risk', 'newCode'].map(key => [key, edit[key].map(file => path.resolve(root, file))]));
-  const session = payload.session_id || payload.transcript_path;
-  const file = session ? path.join(saHome(env), 'hooks', `${crypto.createHash('sha256').update(String(session)).digest('hex')}.json`) : null;
-  let prior = {lines: 0, files: [], risk: [], newCode: []};
-  try { if (file) prior = JSON.parse(fs.readFileSync(file, 'utf8')).micro || prior; } catch {}
-  const next = microEdit.accumulate(prior, {...edit, ...absolute});
-  const reasons = microEdit.violations(next);
-  if (reasons.length) return deny(`G-1: ${reasons.join('；')}；超过微改，请写 plan 交 superagent run 由将军编码`);
-  if (file) {
-    fs.mkdirSync(path.dirname(file), {recursive: true});
-    fs.writeFileSync(`${file}.${process.pid}.tmp`, JSON.stringify({micro: next}));
-    fs.renameSync(`${file}.${process.pid}.tmp`, file);
-  }
-  return null;
+  const file = stateFile(payload, env);
+  const check = state => {
+    const next = microEdit.accumulate(state.micro || {lines: 0, files: [], risk: [], newCode: []}, {...edit, ...absolute});
+    const reasons = microEdit.violations(next);
+    if (reasons.length) return deny(`G-1: ${reasons.join('；')}；超过微改，请写 plan 交 superagent run 由将军编码`);
+    state.micro = next;
+    return null;
+  };
+  try { return file ? stopGate.withState(file, check) : check({}); }
+  catch (error) { return deny(`G-1: 无法计量本次写入（${error.message}），请稍后重试`); }
+}
+// Write targets of an edit tool, or the cwd for a shell; [] for read-only tools.
+function writeRoots(client, name, input, cwd) {
+  if (shellText(name, input) !== undefined) return [gitRoot(cwd)];
+  if (!microEdit.isEdit(client, name)) return [];
+  const files = client === 'codex' ? microEdit.patchEdits(input).map(edit => edit.file) : [input.file_path || input.notebook_path];
+  return files.filter(file => typeof file === 'string' && file).map(file => {
+    let parent = path.dirname(resolvePath(path.resolve(cwd, file)));
+    while (!fs.existsSync(parent)) parent = path.dirname(parent);
+    return gitRoot(parent);
+  });
 }
 
 function decide(payload, client, env = process.env) {
   const event = payload.hook_event_name;
-  if (event === 'Stop' || event === 'SubagentStop') {
-    const gate = policy.stop_gate ?? 'off';
-    // V2 has no tree fingerprints; any value other than off is a config error made visible.
-    return gate === 'off' ? null : {systemMessage: `SUPERAGENT: stop_gate=${gate} 在 V2 hooks 未实现（只支持 off），请修正 tiers.json。`};
-  }
-  if (event !== 'PreToolUse') return null;
   const name = String(payload.tool_name || '');
   const input = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
+  const cwd = typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
   const derived = derivedBy(payload, client, env);
+  if (event !== 'PreToolUse') {
+    if (derived || !['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event)) return null;
+    return stopGate.gate(stateFile(payload, env), payload, client, [gitRoot(cwd)], rootCall(payload));
+  }
   if (derived) {
     const reason = nestedReason(name, input);
     if (reason) return deny(`${reason}（判定：${derived}）`);
   }
   const text = shellText(name, input);
   if (text !== undefined) {
-    const reason = shellReason(text, typeof payload.cwd === 'string' ? payload.cwd : process.cwd(), env);
+    const reason = shellReason(text, cwd, env);
     if (reason) return deny(reason);
   }
   const edit = microEdit.isEdit(client, name);
-  if (edit && env.SUPERAGENT_ROLE === 'reviewer') return deny('reviewer 只读：军师会话禁止编辑文件');
+  if (env.SUPERAGENT_ROLE === 'reviewer') {
+    if (edit) return deny('reviewer 只读：军师会话禁止编辑文件');
+    const reason = text !== undefined && reviewerShell(text);
+    if (reason) return deny(`reviewer 只读：${reason}`);
+  }
   if (derived) return null;
   const context = dispatch.contextReason(client, name, input, dispatch.contextPolicy(policy.dispatch_context));
   if (context) return deny(context);
   if (client === 'codex' && name === 'spawn_agent' && input.model && ![...pool('general'), ...pool('strategist')].includes(input.model))
     return deny('G-2: spawn_agent 的显式 model 必须属于将军或军师池；缺省使用 default_subagent_model。');
-  return edit && rootCall(payload) ? commanderWrite(payload, client, env) : null;
+  const write = edit && rootCall(payload) ? commanderWrite(payload, client, env) : null;
+  if (write) return write;
+  let roots; try { roots = writeRoots(client, name, input, cwd); } catch { roots = [gitRoot(cwd)]; }
+  return stopGate.gate(stateFile(payload, env), payload, client, roots, rootCall(payload));
 }
 
 if (require.main === module) {

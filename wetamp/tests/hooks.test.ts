@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gitRepo, tmp } from './helpers';
 
@@ -27,8 +27,14 @@ type Out = {
   systemMessage?: string;
 } | null;
 
-function run(file: string, client: string, payload: object, env: Record<string, string>): Out {
-  const p = Bun.spawnSync(['node', join(HOOKS, file), client], {
+function run(
+  file: string,
+  client: string,
+  payload: object,
+  env: Record<string, string>,
+  hooks = HOOKS
+): Out {
+  const p = Bun.spawnSync(['node', join(hooks, file), client], {
     stdin: Buffer.from(JSON.stringify(payload)),
     env: { ...baseEnv, ...env },
     stdout: 'pipe',
@@ -44,7 +50,21 @@ const reason = (o: Out): string | undefined =>
     ? o.hookSpecificOutput.permissionDecisionReason
     : undefined;
 
-function setup(): {
+// A copy of hooks/ next to a tiers.json with the given policy overrides.
+function hooksWith(policy: Record<string, unknown>): string {
+  const root = tmp();
+  cpSync(HOOKS, join(root, 'hooks'), { recursive: true });
+  const tiers = JSON.parse(readFileSync(join(HOOKS, '..', 'tiers.json'), 'utf8')) as {
+    policy: Record<string, unknown>;
+  };
+  writeFileSync(
+    join(root, 'tiers.json'),
+    JSON.stringify({ ...tiers, policy: { ...tiers.policy, ...policy } })
+  );
+  return join(root, 'hooks');
+}
+
+function setup(hooks = HOOKS): {
   home: string;
   repo: string;
   guard: (client: string, p: object, env?: Record<string, string>) => Out;
@@ -62,7 +82,8 @@ function setup(): {
       {
         SUPERAGENT_HOME: home,
         ...env,
-      }
+      },
+      hooks
     );
   return { home, repo, guard };
 }
@@ -187,6 +208,143 @@ describe('guard.cjs', () => {
   test('Stop 在 stop_gate=off 时静默', () => {
     const { guard } = setup();
     expect(guard('claude', { hook_event_name: 'Stop' })).toBeNull();
+  });
+
+  test('N-1：包装器按参数语义剥离；单引号字面量不算执行', () => {
+    const { guard } = setup();
+    const worker = { SUPERAGENT_ROLE: 'worker' };
+    for (const cmd of [
+      'echo x | xargs -n1 claude -p',
+      'env -u FOO claude -p x',
+      'env X=1 codex exec x',
+      'nohup claude -p x &',
+      'time -p claude -p x',
+      'command claude -p x',
+      'exec -a name codex exec x',
+      'sudo -u root opencode run',
+      'nice -n 5 claude -p x',
+      'caffeinate -i claude -p x',
+      'env -S "claude -p x"',
+      'timeout 5 sol-run x',
+      'echo "$(claude -p x)"',
+      'find . -name a -exec codex exec {} \\;',
+    ])
+      expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('N-1');
+    for (const cmd of ["echo '$(claude -p x)'", 'command -v claude', 'grep -r claude .'])
+      expect(guard('claude', bash(cmd), worker), cmd).toBeNull();
+  });
+
+  test('reviewer：Bash 只放行只读白名单，重定向与写命令被拒', () => {
+    const { guard } = setup();
+    const reviewer = { SUPERAGENT_ROLE: 'reviewer' };
+    for (const cmd of [
+      'git diff HEAD~1 -- a.ts | head -50',
+      'rg -n foo src 2>/dev/null',
+      "sed -n '1,20p' a.ts",
+      'cat a.ts && git log --oneline -5 && ls -la',
+      'git branch -a',
+    ])
+      expect(guard('claude', bash(cmd), reviewer), cmd).toBeNull();
+    for (const cmd of [
+      'echo x > a.ts',
+      'echo x >> a.ts',
+      'cat a.ts | tee b.ts',
+      "sed -i 's/a/b/' a.ts",
+      'cp a.ts b.ts',
+      'mv a.ts b.ts',
+      'rm a.ts',
+      'mkdir d',
+      'touch b.ts',
+      'git commit -m x',
+      'git add a.ts',
+      'git checkout -- a.ts',
+      'git stash',
+      'git -c core.pager=sh log',
+      'sort -o a.ts a.ts',
+      'find . -delete',
+      '$(echo rm) a.ts',
+      'python3 -c "open(1)"',
+    ])
+      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('reviewer 只读');
+    expect(
+      reason(
+        guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'touch x' } }, reviewer)
+      )
+    ).toContain('reviewer 只读');
+  });
+
+  test('删除拒绝信息只回显 basename', () => {
+    const { home, guard } = setup();
+    const r = reason(guard('claude', bash(`rm -rf ${home}`))) ?? '';
+    expect(r).toContain('禁止删除 sa：');
+    expect(r).not.toContain(home);
+  });
+
+  test('G-1：并发写入在锁内累计，30 行上限下恰好放行 3 次', async () => {
+    const { home, repo } = setup();
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      session_id: 'race',
+      cwd: repo,
+      ...edit(repo, 10),
+    });
+    const outs = await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        const p = Bun.spawn(['node', join(HOOKS, 'guard.cjs'), 'claude'], {
+          stdin: Buffer.from(payload),
+          env: { ...baseEnv, SUPERAGENT_HOME: home },
+          stdout: 'pipe',
+        });
+        return (await new Response(p.stdout).text()).trim();
+      })
+    );
+    expect(outs.filter(o => o === '').length).toBe(3);
+  });
+
+  test('G-3：stop_gate=change 有未评审改动时 Stop 被拒；同一状态二次 Stop 放行；评审后通过', () => {
+    const { repo, guard } = setup(hooksWith({ stop_gate: 'change' }));
+    const s = (p: object): Out => guard('claude', { session_id: 'g', ...p });
+    expect(s({ hook_event_name: 'SessionStart' })).toBeNull();
+    expect(s({ hook_event_name: 'Stop' })).toBeNull();
+    expect(s(edit(repo, 1))).toBeNull();
+    writeFileSync(join(repo, 'a.ts'), 'changed\n');
+    const blocked = s({ hook_event_name: 'Stop' }) as { decision?: string; reason?: string };
+    expect(blocked.decision).toBe('block');
+    expect(blocked.reason).toContain('G-3');
+    expect(s({ hook_event_name: 'Stop' })?.systemMessage).toContain('UNREVIEWED');
+    writeFileSync(join(repo, 'a.ts'), 'changed again\n');
+    expect((s({ hook_event_name: 'Stop' }) as { decision?: string }).decision).toBe('block');
+    expect(s({ hook_event_name: 'Stop', stop_hook_active: true })?.systemMessage).toContain(
+      'UNREVIEWED'
+    );
+    s({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Agent',
+      tool_input: { subagent_type: 'reviewer-1', prompt: 'x' },
+      tool_response: {},
+    });
+    expect(s({ hook_event_name: 'Stop' })).toBeNull();
+    // 文档改动不计入；首个事件为 Stop 的会话是 unknown。
+    writeFileSync(join(repo, 'NOTES.md'), 'x\n');
+    expect(s({ hook_event_name: 'Stop' })).toBeNull();
+    const unknown = guard('claude', { session_id: 'late', hook_event_name: 'Stop' }) as {
+      decision?: string;
+      reason?: string;
+    };
+    expect(unknown.reason).toContain('unknown');
+  });
+
+  test('G-3：advisory 只提示；无效取值给出配置提示而不报错', () => {
+    const adv = setup(hooksWith({ stop_gate: 'advisory' }));
+    adv.guard('claude', { session_id: 'a', hook_event_name: 'SessionStart' });
+    writeFileSync(join(adv.repo, 'a.ts'), 'changed\n');
+    expect(
+      adv.guard('claude', { session_id: 'a', hook_event_name: 'Stop' })?.systemMessage
+    ).toContain('UNREVIEWED');
+    const bad = setup(hooksWith({ stop_gate: 'strict' }));
+    expect(bad.guard('claude', { hook_event_name: 'Stop' })?.systemMessage).toContain(
+      'stop_gate=strict 无效'
+    );
   });
 });
 
