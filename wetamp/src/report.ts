@@ -6,12 +6,8 @@ import { archonJson, getRun, tail } from './archon';
 import { summarize, type Ledger, type Pair } from './cli';
 import type { Plan } from './plan';
 
-interface Tokens {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-}
+const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
+type Tokens = Partial<Record<(typeof FIELDS)[number], number>>;
 interface Event {
   event_type: string;
   step_name?: string | null;
@@ -44,7 +40,6 @@ export interface Call {
   exec_ms: number | null;
 }
 
-const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 const AI_NODE = /^(code|repair|fix|review)-(.+)$/;
 
 /** 节点所属里程碑：code/repair-<pkg> 按 plan 快照的 milestone（缺省 m1）；fix/review-<m>-r<n> 取 <m>。 */
@@ -69,9 +64,8 @@ export function callsOf(runId: string, events: Event[], plan: Plan | null): Call
   const out: Call[] = [];
   for (const e of events) {
     if (e.event_type !== 'node_completed' && e.event_type !== 'node_failed') continue;
-    const [, role, rest] = AI_NODE.exec(e.step_name ?? '') ?? [];
-    if (!role || !e.data?.attempt?.id || !e.data.binding?.model) continue;
-    const node = e.step_name ?? '';
+    const [node, role, rest] = AI_NODE.exec(e.step_name ?? '') ?? [];
+    if (!node || !role || !e.data?.attempt?.id || !e.data.binding?.model) continue;
     const n = (seen.get(node) ?? 0) + 1;
     seen.set(node, n);
     const t = e.data.spend?.tokens;

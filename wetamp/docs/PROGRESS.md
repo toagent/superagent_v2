@@ -179,3 +179,21 @@
 - 响应式：<80 紧凑（短 id、短 state、`n/m`；running 与选中行第二行 `cur:`；footer `q r j/k ⏎ a ?`，`?` 开完整按键说明）、80–120 中等、≥121 宽屏；chips 整项换行不截断；`--once` 在管道里认 `COLUMNS`。
 - 验收：`bun test` 210/210（新增 jobs 7 条、board 3 条）；真实 home `COLUMNS=59 board --once` 每行 ≤59 列（按 Bun.stringWidth 计）且列出无头 claude 将军进程；59 列 pty 交互 j/k/Enter/?/q 退出 0。
 - 预算：本分支单独 TS 3698/3200；与 wpE 合并后 TS 3694/3800（wc -l，元帅 2026-10-10 核定在 wpE 上调后的预算内）；shell/cjs 不变，文件 43/46。
+
+## S2 流程与成本（WP-3 + WP-4，2026-10-10）
+
+- F-18 disposition：`sa-check settle` 消费 coder `status/blocked/partial/error_class` 与验收 `ok`，只有 done 且验收绿才推进；其余走 repair（当包 `repair` 节点）或挂起（verify/settle/diff 退出 1，reason 写进 gate/settle 产物）。
+- F-19 累计台账：`ledgerOf` 由全部历史 review 派生 blocking/debt/来源轮次/关闭证据；关闭须原 ID + 证据；未知 ID 自报 `carry_over:true` 不扩大阻塞集合。三例（R2 漏 R1 高危、新增伪装 carry-over、新 high 债与真 blocker 共存）在 `tests/sa-check.test.ts`。
+- F-20 增量：R2/R3 用 `sa-review-delta`（上轮候选→本轮候选的 delta + 台账，完整历史只给路径）；fix 只把台账 blocking 当阻塞，新发现非 blocker 记债。修掉基线即有的 `$INPUTS.round-1`（被解析成名为 `round-1` 的输入，dry-run 在 review-*-r2 失败）；新增测试：每个命令模板读到的 `$INPUTS.<name>` 必须由节点绑定。
+- F-17 effort：生成时按 `tiers.json policy.effort` 写每个 AI 节点（code high、repair/fix medium、review R1 high/R2+ medium、G2 review R1 xhigh/R2+ high）；Archon 事件 `binding.effort` 记录生效值，report 按它统计。不被引擎兑现的 plan 字段在校验时点名拒绝（F-15 清理部分 + A-05）：`mode: single:*`、`concurrency > 1`、包级 `accept_quick`/`fixture_exemptions`、`scope.artifact_paths`。
+- F-13 交付范围：`scopeRisk` 用 `git diff --raw -z -M` 的实际 candidate tree（新增/删除/重命名/mode/gitlink/symlink）对照 `scope.write`；越界、gitlink/symlink、命中 risk_paths 推断 G2，有效风险 = max(声明, 推断)。交付门禁，不是沙箱。
+- F-14 模型身份：gate 读执行层 `binding.model` 的实际作者/评审身份；同模型、身份未知、评审不完整不算合格独立评审；非 strict 且非 G2 显式 `DEGRADED_PASS`，strict/G2 escalate。
+- F-22 + F-16：`src/report.ts`，`superagent report` 增 `usage{total,by_run,by_milestone,by_role,by_attempt,unreadable}`；字段 calls/coverage/input/output/cacheRead/cacheWrite/models/efforts/failures/infra_retries/repair_rounds/queue_ms/exec_ms；未回执记 `unknown` 不当 0，不折算金额。预算门：gate 在 fix 或进下一里程碑前按 `plan.budget` 检查启动数与加权 token（未知单次按 `budget_floor` 预留）。
+- F-21 验收缓存：只缓存 plan 标 `cache: true` 的验收命令的通过结果（含外部写/时间/随机的命令不标），键 = HEAD 树 + 命令 + 超时 + plan 声明的环境检查，存本 run 的 ARTIFACTS_DIR；工作区脏不复用；land 前集成验收保留。环境键不再含 PATH（validator 对未声明 env 读告警）。
+- 稳定 reason（S1 的"挂起 → 处置"表对齐用）：
+  - 挂起：`coder_output_invalid`、`coder_redline`、`coder_needs`、`coder_error:<env|sandbox_denied|permission_denied|vendor_unavailable_all|budget_exhausted|plan_invalid|scope_violation>`、`repair_exhausted:<acceptance_failed|coder_partial|coder_error:*>`、`budget_launches_exceeded`、`budget_tokens_exceeded`。
+  - gate escalate：`deadline`、`no_change`、`invalid_review`、`*+review_limit`、`review_incomplete`、`review_not_independent:<reviewer_unknown|author_unknown|same_model>`、`budget_*`。
+  - 进 repair：`acceptance_failed`、`coder_partial`、`coder_error:<其余>`。
+- 验收：`bunx tsc --noEmit` 干净、`bun test` 258/258、根 `bun run lint` rc=0；`selftest.sh --fake` ok、`verify-local.sh --commit HEAD` ok（均用临时 `SUPERAGENT_HOME`）；two-pkgs dry-run 首轮全过 AI 调用 4 次 = N+M；真实 `~/.superagent` 只读 report rc=0（26 次调用，覆盖 25/26）。
+- 预算：TS 4696/4700（wc -l，S2 前 4024）；shell 452、cjs 1119 未动；文件 +1（`src/report.ts`）。
+- 债务：A-04（same-diff 复用条件）、A-12（`policy.json` 是部分快照、无 hash，worker/proxy 未消费）、F-15 剩余（模型池回退）、A-07/08/09、BestIFA 遗留（validate 联动 lint + 宽 glob 告警、`land --each`、accept 显式 `TMPDIR`）、A-06；effort 在生成时按声明风险定，运行时推断升 G2 不回调 effort；Codex 不回执实际模型，身份只到 `<请求名>(pinned)`；report 每个 run 查两次 Archon（`--events` 不带 nodes）；queue_ms 只是 invocation→attempt 间隔；`tests/board.test.ts` 因 report 输出增 usage 做了一行最小改动。
