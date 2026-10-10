@@ -211,7 +211,9 @@ if (require.main === module) {
   try {
     const client = process.argv[2];
     if (!['claude', 'codex'].includes(client)) throw new Error('usage: guard.cjs claude|codex');
-    const result = decide(JSON.parse(fs.readFileSync(0, 'utf8')), client);
+    const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+    try { require('./live.cjs').beat(client, payload, () => derivedBy(payload, client)); } catch {}
+    const result = decide(payload, client);
     if (result) process.stdout.write(JSON.stringify(result) + '\n');
   } catch (error) { process.stderr.write(`superagent guard: ${error.message}\n`); }
 }

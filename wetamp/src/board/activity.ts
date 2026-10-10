@@ -1,10 +1,12 @@
-// board 活动区：登记作业（jobs.ts）、未登记的无头 AI 进程（ps）、twin-agent 远端队列。三个来源并发、各自 ≤3s，
-// 互不拖累：失败只记一行 notes（远端队列不可用时静默省略）。进程只取 pid/kind/--model/cwd/耗时，绝不留 prompt 或其余 argv。
+// board 活动区：登记作业（jobs.ts）、未登记的无头 AI 进程与终端会话（ps，见 terminals.ts）、twin-agent 远端队列。三个来源
+// 并发、各自 ≤3s，互不拖累：失败只记一行 notes（远端队列不可用时静默省略）。进程绝不留 prompt 或 --model 外的 argv。
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { tail } from '../archon';
+import { home } from '../config';
 import { modelOf, readJobs, recent, type Job, type Kind } from '../jobs';
+import * as term from './terminals';
 
 export interface Proc {
   pid: number;
@@ -22,12 +24,13 @@ export interface Remote {
 export interface Activity {
   jobs: Job[];
   procs: Proc[];
+  terms: term.Term[];
   remote: Remote[];
   notes: string[];
 }
 
 export const SOURCE_TIMEOUT_MS = 3000;
-const CWD_MAX = 8;
+const CWD_MAX = 24;
 // twin-agent-remote 的 state_of：其余（finished/failed/cancelled/abandoned/unknown）不算活动
 const REMOTE_ACTIVE = new Set(['running', 'queued', 'preparing', 'cancelling']);
 
@@ -79,33 +82,36 @@ export function etimeS(s: string): number {
   return hms.split(':').reduce((a, x) => a * 60 + Number(x), 0) + Number(d) * 86400;
 }
 
-/** 无头 AI 调用：`claude -p/--print`、`codex exec`、`opencode run`（也认 `node …/codex exec` 这种经解释器启动的）。 */
-function aiKind(argv: string[]): Kind | null {
-  const a = ['node', 'bun'].includes(basename(argv[0])) ? argv.slice(1) : argv;
-  const k = a.length ? basename(a[0]) : '';
-  if (k === 'claude' && a.some(t => t === '-p' || t === '--print')) return 'claude';
-  if (k === 'codex' && a[1] === 'exec') return 'codex';
-  if (k === 'opencode' && a[1] === 'run') return 'opencode';
-  return null;
-}
 const isArchon = (argv: string[]): boolean =>
   argv.slice(0, 2).some(t => basename(t) === 'archon' || t.endsWith('/packages/cli/src/cli.ts'));
 
-/**
- * 解析 `ps -axo pid=,ppid=,etime=,command=`。祖先里有 archon（ledger run 的节点，表格已显示）、已登记作业的 wrapper
- * 或另一个命中的 AI 进程（codex 的 node 启动器 → 原生二进制）的不再单列。argv 按空白切分，只用来判种类与 --model。
- */
-export function parsePs(out: string, now: number, wrappers: ReadonlySet<number>): Proc[] {
-  const rows = new Map<number, { ppid: number; etime: number; argv: string[] }>();
+const PS_FIELDS = 'pid=,ppid=,tty=,%cpu=,etime=,command=';
+/** 解析 `ps -axo PS_FIELDS`。argv 按空白切分，只用来判种类、交互与否与 --model。 */
+export function psRows(out: string): Map<number, term.PsRow> {
+  const rows = new Map<number, term.PsRow>();
   for (const line of out.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line);
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+(\S+)\s+(.+)$/.exec(line);
     if (m)
-      rows.set(Number(m[1]), { ppid: Number(m[2]), etime: etimeS(m[3]), argv: m[4].split(/\s+/) });
+      rows.set(Number(m[1]), {
+        ppid: Number(m[2]),
+        tty: m[3],
+        cpu: Number(m[4]),
+        etime: etimeS(m[5]),
+        argv: m[6].split(/\s+/),
+      });
   }
+  return rows;
+}
+
+/**
+ * 无头 AI 进程。祖先里有 archon（ledger run 的节点，表格已显示）、已登记作业的 wrapper
+ * 或另一个命中的 AI 进程（codex 的 node 启动器 → 原生二进制）的不再单列。
+ */
+export function parsePs(rows: term.Rows, now: number, wrappers: ReadonlySet<number>): Proc[] {
   const kinds = new Map<number, Kind>();
   for (const [pid, r] of rows) {
-    const k = aiKind(r.argv);
-    if (k) kinds.set(pid, k);
+    const c = term.cliOf(r.argv);
+    if (c?.headless) kinds.set(pid, c.kind);
   }
   const owned = (ppid: number): boolean => {
     for (let p = ppid, n = 0; n < 64; n++) {
@@ -132,13 +138,14 @@ export function parsePs(out: string, now: number, wrappers: ReadonlySet<number>)
   return procs.sort((a, b) => b.started_ms - a.started_ms);
 }
 
-/** `lsof -Fn` 输出：`p<pid>` 后跟 `n<path>`。 */
+/** `lsof -Fn` 输出里的 cwd：`p<pid>`、`fcwd` 后跟 `n<path>`。 */
 export function parseLsof(out: string): Map<number, string> {
   const cwd = new Map<number, string>();
-  let pid = 0;
+  let [pid, fd] = [0, ''];
   for (const l of out.split('\n')) {
     if (l.startsWith('p')) pid = Number(l.slice(1));
-    else if (l.startsWith('n')) cwd.set(pid, l.slice(1));
+    else if (l.startsWith('f')) fd = l.slice(1);
+    else if (l.startsWith('n') && fd === 'cwd') cwd.set(pid, l.slice(1));
   }
   return cwd;
 }
@@ -155,19 +162,27 @@ export function parseQueue(out: string): Remote[] {
     });
 }
 
-async function procsOf(now: number, wrappers: Set<number>, signal?: AbortSignal): Promise<Proc[]> {
+type Procs = Pick<Activity, 'procs' | 'terms'>;
+async function procsOf(now: number, wrappers: Set<number>, signal?: AbortSignal): Promise<Procs> {
   const t0 = Date.now();
-  const ps = await capture(['ps', '-axo', 'pid=,ppid=,etime=,command='], SOURCE_TIMEOUT_MS, signal);
+  const ps = await capture(['ps', '-axo', PS_FIELDS], SOURCE_TIMEOUT_MS, signal);
   if (ps.code !== 0) throw new Error(`ps exited ${String(ps.code)}`);
-  const procs = parsePs(ps.out, now, wrappers);
-  const pids = procs.slice(0, CWD_MAX).map(p => p.pid);
-  if (!pids.length) return procs;
+  const rows = psRows(ps.out);
+  const procs = parsePs(rows, now, wrappers);
+  const sessions = term.findSessions(rows);
+  const bound = term.bindLive(sessions, term.readLive(join(home().sa, 'live'), now), rows);
+  // 一次 lsof 取全部 fd：cwd，以及 codex 握着的 rollout（只在回合中写入时打开）。
   // 已退出的 pid 让 lsof 返回 1，其余照常输出：只看输出；与 ps 共用 3s 额度
+  const pids = [...procs.map(p => p.pid), ...sessions.flatMap(s => s.pids)].slice(0, CWD_MAX);
   const left = Math.max(1, SOURCE_TIMEOUT_MS - (Date.now() - t0));
-  const cwd = parseLsof(
-    (await capture(['lsof', '-a', '-p', pids.join(','), '-d', 'cwd', '-Fn'], left, signal)).out
-  );
-  return procs.map(p => ({ ...p, cwd: cwd.get(p.pid) ?? null }));
+  const out = pids.length
+    ? (await capture(['lsof', '-p', pids.join(','), '-Fn'], left, signal)).out
+    : '';
+  const cwd = parseLsof(out);
+  return {
+    procs: procs.map(p => ({ ...p, cwd: cwd.get(p.pid) ?? null })),
+    terms: term.settle(sessions, bound, cwd, term.parseRollouts(out), now),
+  };
 }
 
 async function remoteOf(signal?: AbortSignal): Promise<Remote[]> {
@@ -194,12 +209,12 @@ export async function loadActivity(now: number, signal?: AbortSignal): Promise<A
   } catch (e) {
     note('jobs', e);
   }
-  const [procs, remote] = await Promise.all([
+  const [{ procs, terms }, remote] = await Promise.all([
     procsOf(now, wrappers, signal).catch((e: unknown) => {
       note('procs', e);
-      return [];
+      return { procs: [], terms: [] };
     }),
     remoteOf(signal).catch(() => []), // 远端不可达不是看板的问题：静默省略
   ]);
-  return { jobs, procs, remote, notes };
+  return { jobs, procs, terms, remote, notes };
 }

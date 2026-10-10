@@ -59,6 +59,7 @@ function advise(input, tokens, prior = {}, active = false, threshold = roleLimit
   return {state, messages};
 }
 function main(input, client = 'claude') {
+  try { require('./live.cjs').beat(client, input, () => require('./guard.cjs').derivedBy(input, client)); } catch {}
   if (!['UserPromptSubmit', 'PreToolUse'].includes(input?.hook_event_name)) return null;
   const tokens = recentUsage(input.transcript_path); if (tokens === null) return null;
   const home = process.env.SUPERAGENT_HOME || path.join(require('node:os').homedir(), '.superagent');

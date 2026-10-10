@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { etimeS, parseLsof, parsePs, parseQueue } from '../src/board/activity';
+import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
 import { modelOf, readJobs, type Job } from '../src/jobs';
 import { tmp } from './helpers';
 
@@ -28,24 +28,28 @@ const SECRET = 'PROMPT-SECRET-do-not-leak';
 
 describe('ps parsing', () => {
   const NOW = Date.parse('2026-10-10T12:00:00Z');
-  // pid ppid etime command
+  // pid ppid tty %cpu etime command
   const PS = [
-    '    1     0 10-02:00:00 /sbin/launchd',
-    '  100     1    01:00:00 -zsh',
-    `  200   100       05:00 claude -p --model claude-opus-5-5 ${SECRET}`,
-    '  300   100       02:00 bun /x/superagent_v2/packages/cli/src/cli.ts workflow run wf',
-    `  301   300       01:59 claude --print ${SECRET}`,
-    `  400   100       00:30 node /opt/bin/codex exec -m gpt-6.1-sol ${SECRET}`,
-    `  401   400       00:29 /opt/lib/codex/codex exec -m gpt-6.1-sol ${SECRET}`,
-    '  500   100       00:10 bun /w/wetamp/src/cli.ts job exec --title t -- claude -p x',
-    `  501   500       00:09 claude -p ${SECRET}`,
-    `  600   100       00:05 opencode run --model=qwen ${SECRET}`,
-    '  700   100       00:04 claude --model claude-opus-5-5', // 交互式，不算
-    '  800   100       00:03 codex -c x', // archon 的 codex 不带 exec
+    '    1     0 ??       0.0 10-02:00:00 /sbin/launchd',
+    '  100     1 ttys001  0.0    01:00:00 -zsh',
+    `  200   100 ttys001  0.0       05:00 claude -p --model claude-opus-5-5 ${SECRET}`,
+    '  300   100 ttys001  0.0       02:00 bun /x/superagent_v2/packages/cli/src/cli.ts workflow run wf',
+    `  301   300 ttys001  0.0       01:59 claude --print ${SECRET}`,
+    `  400   100 ttys001  0.0       00:30 node /opt/bin/codex exec -m gpt-6.1-sol ${SECRET}`,
+    `  401   400 ttys001  0.0       00:29 /opt/lib/codex/codex exec -m gpt-6.1-sol ${SECRET}`,
+    '  500   100 ttys001  0.0       00:10 bun /w/wetamp/src/cli.ts job exec --title t -- claude -p x',
+    `  501   500 ttys001  0.0       00:09 claude -p ${SECRET}`,
+    `  600   100 ttys001  0.0       00:05 opencode run --model=qwen ${SECRET}`,
+    '  700   100 ttys001  0.0       00:04 claude --model claude-opus-5-5', // 交互式，不算
+    '  800   100 ??       0.0       00:03 codex -c x', // archon 的 codex 不带 exec
+    'garbage line',
   ].join('\n');
 
   test('finds headless claude/codex/opencode; skips archon children, wrapper children and launcher dups', () => {
-    const procs = parsePs(PS, NOW, new Set([500]));
+    const rows = psRows(PS);
+    expect(rows.size).toBe(12);
+    expect(rows.get(400)).toMatchObject({ ppid: 100, tty: 'ttys001', cpu: 0, etime: 30 });
+    const procs = parsePs(rows, NOW, new Set([500]));
     expect(procs.map(p => [p.pid, p.kind, p.model])).toEqual([
       [600, 'opencode', 'qwen'],
       [400, 'codex', 'gpt-6.1-sol'],
@@ -60,7 +64,7 @@ describe('ps parsing', () => {
     expect(etimeS('01:02')).toBe(62);
     expect(etimeS('01:00:00')).toBe(3600);
     expect(etimeS('2-00:00:01')).toBe(172_801);
-    expect(parseLsof('p200\nfcwd\nn/Users/y/wt-caps\np400\nfcwd\nn/tmp\n')).toEqual(
+    expect(parseLsof('p200\nfcwd\nn/Users/y/wt-caps\nf3\nn/dev/null\np400\nfcwd\nn/tmp\n')).toEqual(
       new Map([
         [200, '/Users/y/wt-caps'],
         [400, '/tmp'],

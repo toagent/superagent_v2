@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { Activity } from './activity';
+import type { Term } from './terminals';
 import { bar, elapsedAt, fmtClock, fmtElapsed, type BoardRow, type Snapshot } from './data';
 import { detailLines, type Detail } from './detail';
 
@@ -120,12 +121,37 @@ const JOB_MARK = {
   lost: ['?', 'magenta'],
 } as const;
 
-/** 活动区：登记作业、未登记的无头 AI 进程、远端队列各一行；不含 prompt/argv（来源本就没有）。 */
+/** 远端队列的 job id `YYYYMMDDHHMMSS-xxxxxx` 只显示 `HHMMSS-xxxxxx`；其他形状截前 13 位。 */
+export const shortRemoteId = (id: string): string =>
+  /^\d{8}(\d{6}-\w+)$/.exec(id)?.[1] ?? id.slice(0, 13);
+
+const IDLE_MS = 30 * 60_000;
+/** 终端会话：client、状态、tool_name、cwd basename、tty 短名、时长；`?` 标出没有心跳/transcript 为据的粗判。 */
+function termText(t: Term, now: number): string {
+  const dur =
+    t.since_ms === null ? '' : ` ${fmtElapsed(Math.max(0, Math.floor((now - t.since_ms) / 1000)))}`;
+  const state =
+    t.state === 'busy'
+      ? t.bound
+        ? `执行中${t.tool ? ` ${t.tool}` : ''}${dur}`
+        : '活跃?'
+      : t.state === 'idle'
+        ? `${t.since_ms !== null && now - t.since_ms > IDLE_MS ? '空闲' : '等待输入'}${dur}`
+        : '未知?';
+  const dir = t.cwd ? pad(basename(t.cwd), 20).trimEnd() : '?';
+  return `${t.state === 'busy' ? '●' : '○'} ${t.kind} ${state} · ${dir} · ${t.tty.replace(/^tty/, '')}`;
+}
+
+/** 活动区：终端会话、登记作业、未登记的无头 AI 进程、远端队列各一行；不含 prompt/argv（来源本就没有）。 */
 function activityLines(a: Activity, now: number): { text: string; color?: string }[] {
   const since = (ms: number, end = now): string =>
     fmtElapsed(Math.max(0, Math.floor((end - ms) / 1000)));
   const model = (m: string | null): string => (m ? ` ${m}` : '');
   return [
+    ...a.terms.map(t => ({
+      text: termText(t, now),
+      color: t.state === 'busy' ? 'green' : t.state === 'idle' ? 'white' : 'gray',
+    })),
     ...a.jobs.map(j => {
       const [mark, color] = JOB_MARK[j.state];
       const end = j.ended_at ? Date.parse(j.ended_at) : now;
@@ -143,7 +169,7 @@ function activityLines(a: Activity, now: number): { text: string; color?: string
       color: 'blue',
     })),
     ...a.remote.map(r => ({
-      text: `◆ remote ${r.host} ${r.agent} ${r.id.slice(0, 8)} ${r.state}`,
+      text: `◆ remote ${r.host} ${r.agent} ${shortRemoteId(r.id)} ${r.state}`,
       color: 'magenta',
     })),
     ...a.notes.map(n => ({ text: `! ${n}` })),
@@ -247,8 +273,10 @@ export function Frame(p: FrameProps): ReactElement {
   ];
   const s = p.snap.summary;
   const busyJobs = act ? act.jobs.filter(j => j.state === 'running').length + act.procs.length : 0;
+  const busyTerms = act ? act.terms.filter(t => t.state === 'busy').length : 0;
   if (act)
     chips.push(
+      [`[active ${String(busyTerms)}/${String(act.terms.length)}]`, 'green'],
       [`[jobs ${String(busyJobs)}]`, 'cyan'],
       [`[remote ${String(act.remote.length)}]`, 'magenta']
     );
@@ -260,7 +288,7 @@ export function Frame(p: FrameProps): ReactElement {
   );
   if (p.activeOnly) chips.push(['· active only', '']);
   const alines = act ? activityLines(act, now) : [];
-  if (act && !busyJobs && !act.remote.length && !p.snap.rows.some(ACTIVE))
+  if (act && !busyJobs && !busyTerms && !act.remote.length && !p.snap.rows.some(ACTIVE))
     alines.push({ text: `空闲 · 无运行中的 run/作业 · 刷新 ${fmtClock(p.snap.at, now)}` });
   const d = p.detail;
   const dlines = d

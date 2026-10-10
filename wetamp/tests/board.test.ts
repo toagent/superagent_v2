@@ -697,7 +697,42 @@ describe('responsive frame', () => {
         started_ms: now.getTime() - 3_600_000,
       },
     ],
-    remote: [{ id: 'job-abcdef1234567890', state: 'running', host: 'dev', agent: 'codex' }],
+    remote: [
+      { id: 'job-abcdef1234567890', state: 'running', host: 'dev', agent: 'codex' },
+      { id: '20261010125744-a1b2c3', state: 'queued', host: 'dev', agent: 'claude' },
+    ],
+    terms: [
+      {
+        kind: 'claude',
+        pid: 11,
+        tty: 'ttys002',
+        cwd: `/Users/y/${'deep/'.repeat(20)}superagent_v2-with-a-long-name`,
+        state: 'busy',
+        tool: 'Bash',
+        since_ms: now.getTime() - 12_000,
+        bound: true,
+      },
+      {
+        kind: 'codex',
+        pid: 12,
+        tty: 'ttys005',
+        cwd: '/Users/y/proposal',
+        state: 'idle',
+        tool: null,
+        since_ms: now.getTime() - 45 * 60_000,
+        bound: true,
+      },
+      {
+        kind: 'opencode',
+        pid: 13,
+        tty: 'ttys009',
+        cwd: null,
+        state: 'unknown',
+        tool: null,
+        since_ms: null,
+        bound: false,
+      },
+    ],
     notes: [`procs: ${'x'.repeat(200)}`],
   });
   const render = (width: number, extra: Partial<FrameProps> = {}): string[] =>
@@ -735,7 +770,12 @@ describe('responsive frame', () => {
   test('compact: short ids and states, n/m progress, cur line for running/selected rows, short footer', () => {
     const t = render(59, { activeOnly: false }).join('\n');
     expect(t).toContain('[jobs 2]'); // 1 个 running 登记作业 + 1 个未登记进程
-    expect(t).toContain('[remote 1]');
+    expect(t).toContain('[remote 2]');
+    expect(t).toContain('[active 1/3]');
+    expect(t).toContain('● claude 执行中 Bash 12s · superagent_v2-with-… · s002');
+    expect(t).toContain('○ codex 空闲 45m00s · proposal · s005');
+    expect(t).toContain('○ opencode 未知? · ? · s009');
+    expect(t.indexOf('● claude')).toBeLessThan(t.indexOf('▶ job'));
     expect(t).toMatch(/\n041949-87a7 +▶run +1\/2 +1m0\ds /); // 有非当天 id 时列宽放宽，当天的仍短
     expect(t).toMatch(/\n1001-004139-c439 +✗fail +0\/1 +1h02m +exit 1/);
     expect(t).toMatch(/\n010101-aaaa +⏸held/);
@@ -745,7 +785,8 @@ describe('responsive frame', () => {
     expect(t).toContain('▶ job 30s claude claude-opus-5-5 · 一个');
     expect(t).toContain('✗ job 10s exit 3 other · three');
     expect(t).toContain('▶ proc 1h00m codex gpt-6.1-sol · wt-caps pid 37191');
-    expect(t).toContain('◆ remote dev codex job-abcd running');
+    expect(t).toContain('◆ remote dev codex job-abcdef123 running');
+    expect(t).toContain('◆ remote dev claude 125744-a1b2c3 queued');
     expect(t.trimEnd().split('\n').at(-1)).toBe('q r j/k ⏎ a ?');
     expect(t).not.toContain('current(role)');
     expect(render(100).join('\n')).toContain('current(role)');
@@ -761,7 +802,7 @@ describe('responsive frame', () => {
             summary: {},
             rows: r,
             at: now.toISOString(),
-            activity: { jobs: [], procs: [], remote: [], notes: [], ...a },
+            activity: { jobs: [], procs: [], remote: [], terms: [], notes: [], ...a },
           },
           home: '/h',
           width: 59,
@@ -778,6 +819,8 @@ describe('responsive frame', () => {
     expect(idle({})).toBe(true);
     expect(idle({ procs: activity().procs })).toBe(false);
     expect(idle({ remote: activity().remote })).toBe(false);
+    expect(idle({ terms: activity().terms })).toBe(false); // 有执行中的终端会话
+    expect(idle({ terms: activity().terms.slice(1) })).toBe(true); // 只有等待/未知的
     expect(idle({}, rows().slice(1, 2))).toBe(true); // 只有已失败的 run
     expect(idle({}, rows().slice(0, 1))).toBe(false);
     const help = render(59, { help: true }).join('\n');

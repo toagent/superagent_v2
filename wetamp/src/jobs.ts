@@ -59,7 +59,7 @@ function save(j: Job): void {
   renameSync(`${f}.${String(process.pid)}.tmp`, f);
 }
 
-function alive(pid: number): boolean {
+export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
