@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, chmodSync, readFileSync, unlinkSync, writeFileSy
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { home, WETAMP, writeAtomic } from '../config';
-import { engineHash } from '../generate';
+import { residentHash } from '../generate';
 import { lock } from '../archon';
 import { alive } from '../jobs';
 import { createLoader, type Snapshot } from '../board/data';
@@ -23,7 +23,7 @@ const domain = (): string => `gui/${String(process.getuid?.())}`;
 const job = (): string => `${domain()}/${label()}`;
 const launch = (...args: string[]): ReturnType<typeof spawnSync> => spawnSync('launchctl', args, { encoding: 'utf8' });
 const loaded = (): boolean => launch('print', job()).status === 0;
-export const needsRestart = (s: ConsoleState, current = engineHash()): boolean => !('engine_hash' in s) || s.engine_hash !== current;
+export const needsRestart = (s: ConsoleState, current = residentHash()): boolean => !('engine_hash' in s) || s.engine_hash !== current;
 type PsReader = (pid: number, field: 'uid' | 'lstart' | 'command' | 'ppid') => string;
 const readPs: PsReader = (pid, field) => execFileSync('ps', ['-p', String(pid), '-o', `${field}=`], { encoding: 'utf8' }).trim();
 // The record is written after both processes start; it need not contain a UID.
@@ -111,7 +111,7 @@ export function handler(port: number, token: string, get: () => Record<string, u
     } catch { return respond('Archon console unavailable', 502); }
   };
 }
-export async function ensureWebDist(hash = engineHash()): Promise<void> {
+export async function ensureWebDist(hash = residentHash()): Promise<void> {
   const { observerDist } = await import('./archon');
   const dist = observerDist(), stamp = join(dist, '.superagent-engine');
   if (existsSync(join(dist, 'index.html')) && existsSync(stamp) && readFileSync(stamp, 'utf8') === hash) return;
@@ -125,7 +125,7 @@ async function serve(): Promise<void> {
   const dir = join(home().sa, 'console'), socket = join(dir, 'archon.sock');
   mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700);
   let server: ReturnType<typeof Bun.serve> | undefined, timer: ReturnType<typeof setInterval> | undefined;
-  const token = randomBytes(32).toString('hex'), hash = engineHash(), load = createLoader();
+  const token = randomBytes(32).toString('hex'), hash = residentHash(), load = createLoader();
   let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() }, busy = false;
   const update = async (): Promise<void> => { if (busy) return; busy = true; try { snapshot = await load(Number.MAX_SAFE_INTEGER); requestUsageRefresh(); } finally { busy = false; } };
   const cleanup = (): void => { if (existsSync(socket)) unlinkSync(socket); if (webState()?.pid === process.pid) unlinkSync(stateFile()); };
@@ -169,7 +169,7 @@ export async function startWeb(): Promise<WebState> {
     throw new Error('console startup timeout; inspect console status and console.log');
   } finally { guard.release(); }
 }
-export async function refreshConsole(restart = startWeb, current = engineHash()): Promise<ConsoleState | null> {
+export async function refreshConsole(restart = startWeb, current = residentHash()): Promise<ConsoleState | null> {
   const s = webState(); return s && alive(s.pid) && needsRestart(s, current) ? await restart() : s;
 }
 export async function webCli(argv: string[]): Promise<number> {

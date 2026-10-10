@@ -6,6 +6,7 @@ import {
   buildWorkflow,
   capsDenied,
   engineHash,
+  residentHash,
   generate,
   newRunId,
   renderBrief,
@@ -51,6 +52,12 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
   expect(engineHash(root)).not.toBe(hash);
   fs.copyFileSync(join(WETAMP, 'templates/.archon/scripts/sa-check.ts'), script);
   expect(engineHash(root)).toBe(hash);
+  const resident = residentHash(root);
+  for (const path of ['src/board/App.tsx', 'src/web/server.ts']) {
+    fs.appendFileSync(join(root, path), '\n// UI-only change\n');
+    expect(engineHash(root)).toBe(hash);
+    expect(residentHash(root)).not.toBe(resident);
+  }
   fs.appendFileSync(join(root, 'src/generate.ts'), '\n// changed generation\n');
   expect(engineHash(root)).not.toBe(hash);
 });
@@ -117,7 +124,7 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('start-m1')?.depends_on).toEqual(['environment']);
-    expect(n('code-core')?.depends_on).toEqual(['start-m1', 'attempt-m1']);
+    expect(n('code-core')?.depends_on).toEqual(['start-m1', 'attempt-m1', 'package-attempt-core']);
     expect(n('start-m2')).toMatchObject({
       depends_on: ['gate-m1-r1', 'gate-m1-r2', 'gate-m1-r3'],
       trigger_rule: 'none_failed_min_one_success',
