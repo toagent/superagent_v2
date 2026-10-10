@@ -4,7 +4,7 @@
 // 派生写目标含动态展开时拒绝；间接执行的残余风险见 docs/04。
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const {spawnSync} = require('node:child_process');
-const {parse} = require('./shell.cjs');
+const {parse, tokens} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 
 // child is parent itself or below it.
@@ -208,7 +208,7 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
       const c = text[i];
       if (c === '\\') { part += text.slice(i, i + 2); i++; continue; }
       if (quote) { part += c; if (c === quote) quote = ''; continue; }
-      if (c === "'" || c === '"') { quote = c; part += c; continue; }
+      if (c === "'" || c === '"' || c === '`') { quote = c; part += c; continue; }
       if (c === '(') nesting++;
       if (c === ')') nesting--;
       if (!nesting && /[;&|\n]/.test(c) && !(text[i - 1] === '>' && /[&|]/.test(c))) {
@@ -224,9 +224,17 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
       if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
         const why = walk(trimmed.slice(1, -1), [...dirs], depth + 1); if (why) return why; continue;
       }
-      let parsed;
-      try { parsed = parse(trimmed); }
+      let parsed, head;
+      try { parsed = parse(trimmed); head = tokens(trimmed)[0]; }
       catch { return derived ? '无法确认 shell 写入目标（解析失败）' : null; }
+      // Flattened argv is useful for redlines, but cannot prove which scope owns cd.
+      // Only a literal simple cd owns the parent cwd; shell -c owns a separate scope.
+      const cds = parsed.argvs.filter(argv => argv[0] === 'cd');
+      const cd = head?.value === 'cd' && !head.dynamic && parsed.argvs.length === 1 ? cds[0] : undefined;
+      const childShell = !head?.dynamic && ['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(path.posix.basename(head?.value || ''))
+        && ['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(path.posix.basename(parsed.argvs[0]?.[0] || ''))
+        && parsed.argvs[0].some((v, k) => k > 0 && /^-[a-z]*c[a-z]*$/.test(v));
+      if (derived && cds.length && !cd && !childShell) return '无法确认 cd 所属作用域或写入目录';
       const writes = shellWrites(parsed);
       if (derived && writes.length && parsed.argvs.length > 1 && parsed.argvs.some(a => a[0] === 'cd')) return '无法确认嵌套 shell 的写入目录';
       if (derived && writes.some(t => !t || /[$`*?\[\]{}]/.test(expand(t, env)) || t.includes('__sa_sub__'))) return '无法确认 shell 写入目标（动态路径）';
@@ -244,7 +252,6 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
         for (const file of parsed.reads) { const kind = wordKind(file, dir, env); if (kind) return `禁止读取${kind}（输入重定向）`; }
         if (derived) { const why = outsideReason(writes, dir, roots, env); if (why) return why; }
       }
-      const cd = parsed.argvs.find(argv => argv[0] === 'cd');
       if (cd) {
         const target = cd[1] || homeOf(env);
         if (/[$`*?\[\]{}]/.test(expand(target, env)) || cd.length > 2) return derived ? '无法确认 cd 后的写入目录' : null;
