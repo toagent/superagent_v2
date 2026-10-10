@@ -598,6 +598,8 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **I4、I8 / P2**：推翻“控制台刷新失败与巡检同生共死可接受”；refreshConsole 抛错仍执行 tick，stderr 单行 `supervise-tick: console refresh failed:` 与 JSON `console_error` 保留错误，退出码仍由巡检本体决定；注入失败与真实旧 PID 迁移拒绝回放覆盖该边界。
 - **I6 / P4**：推翻“子进程 exit 0 = 作业完成”；wrapper 首次收到 SIGINT/SIGTERM/SIGHUP 后，即使子进程 trap 并 exit 0，也登记 failed/原信号并返回 130/143/129，沿用 HF7 字段和等待期语义。TERM/HUP/INT 回归及 child-only 信号回归验证；负载用例改为有截止的回收轮询和 running 等待，不放宽断言。
 - **HF7-R1-01 / I4、I8**：真实 OS SIGINT/SIGTERM/SIGHUP 回放证实同步 probe 期间的待交付信号会越过 queued→spawn 边界；准入后用现有 timers/promises 让出事件循环，再复查取消状态。已取消保持 pid=0、failed/原信号/128+n，真实信号回归同时断言子进程未创建、命令标记未写，不新增状态或配置。
+- **HF8b / HF8-R1-01 / I6、I8**：推翻“spawn 前交付一次挂起信号就够了”；短 child 退出与同步记账结束后、终态裁决前再次交付挂起 OS 信号，监听器保持至落盘完成，wrapper 首次中断优先登记 failed/原信号/128+n；落盘后的信号不改写记录。真实 TERM/HUP/INT 覆盖 spawn 返回与 child 退出两个窗口。
+- **HF8b / P2**：board 首次查询超时的 unreadable 行同样为 stale=false，不能证明缓存就绪；用有截止的轮询确认 running 且非 stale 后再触发挂起，并按桩记录的 child PID 等待回收，避免全局 pgrep 误认并发测试的 sleep。单次冷查询延迟回归保留原状态、超时与无 orphan 断言。
 
 ### HF6 redline 可建模子集
 

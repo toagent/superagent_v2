@@ -250,6 +250,78 @@ describe('job exec', () => {
     }
   });
 
+  for (const [signal, code] of [['SIGTERM', 143], ['SIGHUP', 129], ['SIGINT', 130]] as const) {
+    for (const window of ['spawn-return', 'child-exited'] as const) {
+      test(`HF8b short child: pending ${signal} during ${window} fails before terminal save`, async () => {
+        // A separate wrapper receives real OS signals while synchronous work prevents delivery.
+        const script = `
+          import { jobCli } from './src/jobs';
+          const spawn = Bun.spawn;
+          let delivered = false;
+          process.on('${signal}', () => { delivered = true; });
+          const interrupt = () => {
+            process.kill(process.pid, '${signal}');
+            const until = Date.now() + 80;
+            while (Date.now() < until) {}
+          };
+          Bun.spawn = (...args) => {
+            const child = spawn(...args);
+            if (args[0][0] !== '/bin/sleep') return child;
+            if ('${window}' === 'spawn-return') { interrupt(); return child; }
+            const exited = child.exited.then(code => { interrupt(); return code; });
+            return new Proxy(child, { get(target, key) {
+              if (key === 'exited') return exited;
+              const value = Reflect.get(target, key, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            }});
+          };
+          const code = await jobCli(['job', 'exec', '--title', 'short', '--', '/bin/sleep', '0.03']);
+          console.log(JSON.stringify({ delivered }));
+          process.exit(code);
+        `;
+        const p = Bun.spawn(['bun', '-e', script], {
+          cwd: WETAMP,
+          env: { ...process.env, SA_ADMIT: 'off' },
+          stdout: 'pipe', stderr: 'pipe',
+        });
+        try {
+          expect(await p.exited).toBe(code);
+          expect(JSON.parse(await new Response(p.stdout).text())).toEqual({ delivered: true });
+          expect(only()).toMatchObject({ state: 'failed', signal, exit_code: code });
+          expect(only().ended_at).toBeDefined();
+          expect(() => process.kill(only().pid, 0)).toThrow();
+        } finally {
+          if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+        }
+      });
+    }
+  }
+
+  test('HF8b signals delivered after terminal save leave done/0 unchanged', async () => {
+    const p = Bun.spawn(['bun', '-e', `
+      import { readFileSync, readdirSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { jobCli } from './src/jobs';
+      const code = await jobCli(['job', 'exec', '--title', 'normal', '--', '/bin/sleep', '0.03']);
+      const dir = join(process.env.SUPERAGENT_HOME, 'jobs');
+      const file = join(dir, readdirSync(dir)[0]);
+      const before = readFileSync(file, 'utf8');
+      const listeners = process.listenerCount('SIGTERM');
+      process.on('SIGTERM', () => {});
+      process.kill(process.pid, 'SIGTERM');
+      await Bun.sleep(25);
+      console.log(JSON.stringify({ code, listeners, unchanged: before === readFileSync(file, 'utf8') }));
+    `], { cwd: WETAMP, env: { ...process.env, SA_ADMIT: 'off' }, stdout: 'pipe', stderr: 'pipe' });
+    try {
+      expect(await p.exited).toBe(0);
+      expect(JSON.parse(await new Response(p.stdout).text())).toEqual({ code: 0, listeners: 0, unchanged: true });
+      expect(only()).toMatchObject({ state: 'done', exit_code: 0 });
+      expect(only().signal).toBeUndefined();
+    } finally {
+      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+    }
+  });
+
   test('role: --role wins, else SUPERAGENT_ROLE general/reviewer; shown in `jobs`; old records without it still list', async () => {
     expect(roleOf(undefined, { SUPERAGENT_ROLE: 'general' })).toBe('general');
     expect(roleOf(undefined, { SUPERAGENT_ROLE: 'reviewer' })).toBe('strategist');
