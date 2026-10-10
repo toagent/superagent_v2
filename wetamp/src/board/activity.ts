@@ -2,10 +2,11 @@
 // 并发、各自 ≤3s，互不拖累：失败只记一行 notes（远端队列不可用时静默省略）。进程绝不留 prompt 或 --model 外的 argv。
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { tail } from '../archon';
 import { home, loadTiers, type Tiers } from '../config';
-import { modelOf, readJobs, recent, type Job, type Kind, type Tier } from '../jobs';
+import { modelOf, readJobs, type Job, type Kind, type Tier } from '../jobs';
+import type { Launcher } from '../launcher';
 import * as term from './terminals';
 
 export interface Proc {
@@ -23,10 +24,21 @@ export interface Remote {
 }
 export interface Owned {
   tier: Tier | null;
+  inferred?: boolean; // owner inferred from unique cwd
   guess: boolean; // tier 是按模型池推断的
   owner: number | null; // 祖先终端会话的 pid（Term.pid）
 }
+export interface RunRef {
+  run_id: string;
+  cwd: string;
+  launcher?: Launcher;
+}
+export interface Ownership {
+  owner: number | null;
+  inferred: boolean;
+}
 export interface Activity {
+  runs?: (RunRef & Ownership)[];
   jobs: (Job & Owned)[];
   procs: (Proc & Owned)[];
   terms: term.Term[];
@@ -206,8 +218,46 @@ export function attach(
   };
 }
 
-type Procs = Pick<Activity, 'jobs' | 'procs' | 'terms'>;
-async function scan(now: number, jobs: Job[], pools: Pools, signal?: AbortSignal): Promise<Procs> {
+/** One snapshot, one owner: recorded launcher, watcher/parent chain, unique legacy cwd, directory. */
+export function ownership(
+  x: RunRef, rows: term.Rows, sessions: term.Session[], terms: term.Term[], pids: number[] = []
+): Ownership {
+  const leaders = new Map(sessions.flatMap(s => s.pids.map(p => [p, s.pids[0]] as const)));
+  const known = (pid: number): number | undefined => {
+    const leader = leaders.get(pid);
+    return terms.some(t => t.pid === leader) ? leader : undefined;
+  };
+  if (x.launcher && rows.has(x.launcher.pid)) {
+    const owner = known(x.launcher.pid);
+    const t = terms.find(t => t.pid === owner);
+    if (t?.kind === x.launcher.client && t.tty === x.launcher.tty) return { owner: t.pid, inferred: false };
+  }
+  const watchers = [...rows].filter(([, r]) => {
+    const a = ['bun', 'node'].includes(basename(r.argv[0])) ? r.argv.slice(1) : r.argv;
+    return (basename(a[0] ?? '') === 'superagent' || a[0]?.endsWith('/wetamp/src/cli.ts'))
+      && ['wait', 'status', 'board'].includes(a[1])
+      && a.slice(2).find(arg => /^\d{8}-\d{6}-[0-9a-f]{4}$/.test(arg)) === x.run_id;
+  }).map(([pid]) => pid);
+  const owners = [...new Set(
+    [...watchers, ...pids].map(p => term.up(leaders, p, rows))
+      .filter(p => p !== undefined && terms.some(t => t.pid === p))
+  )];
+  if (owners.length === 1) return { owner: owners[0] ?? null, inferred: false };
+  if (!x.launcher) {
+    const cwd = resolve(x.cwd);
+    const inside = (root: string): boolean => cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep);
+    const hits = terms.filter(t => t.cwd && inside(resolve(t.cwd)));
+    if (hits.length === 1) return { owner: hits[0].pid, inferred: true };
+  }
+  return { owner: null, inferred: false };
+}
+export const visible = (ended: string | number | null | undefined, now: number): boolean =>
+  ended === null || (ended !== undefined && now - (typeof ended === 'number' ? ended : Date.parse(ended)) <= 30 * 60_000);
+
+type Procs = Pick<Activity, 'jobs' | 'procs' | 'terms' | 'runs'>;
+async function scan(
+  now: number, jobs: Job[], pools: Pools, signal?: AbortSignal, runs: RunRef[] = []
+): Promise<Procs> {
   const t0 = Date.now();
   const ps = await capture(['ps', '-axo', PS_FIELDS], SOURCE_TIMEOUT_MS, signal);
   if (ps.code !== 0) throw new Error(`ps exited ${String(ps.code)}`);
@@ -215,7 +265,7 @@ async function scan(now: number, jobs: Job[], pools: Pools, signal?: AbortSignal
   const wrappers = new Set(jobs.filter(j => j.state === 'running').map(j => j.wrapper_pid));
   const procs = parsePs(rows, now, wrappers);
   const sessions = term.findSessions(rows);
-  const lives = term.readLive(join(home().sa, 'live'), now);
+  const lives = term.readLive(join(home().sa, 'live'), now, true);
   const own = attach(rows, sessions, jobs, procs, lives, pools);
   // 一次 lsof 取全部 fd：cwd，以及 codex 握着的 rollout（只在回合中写入时打开）。
   // 已退出的 pid 让 lsof 返回 1，其余照常输出：只看输出；与 ps 共用 3s 额度
@@ -225,10 +275,16 @@ async function scan(now: number, jobs: Job[], pools: Pools, signal?: AbortSignal
     ? (await capture(['lsof', '-p', pids.join(','), '-Fn'], left, signal)).out
     : '';
   const cwd = parseLsof(out);
+  const terms = term.settle(sessions, own.bound, cwd, term.parseRollouts(out), now);
   return {
-    jobs: own.jobs,
+    runs: runs.map(r => ({ run_id: r.run_id, cwd: r.cwd, ...ownership(r, rows, sessions, terms) })),
+    jobs: own.jobs.map(j => ({
+      ...j, ...ownership(
+        {run_id: j.id, cwd: j.cwd, launcher: j.launcher}, rows, sessions, terms, [j.wrapper_pid, j.pid]
+      ),
+    })),
     procs: own.procs.map(p => ({ ...p, cwd: cwd.get(p.pid) ?? null })),
-    terms: term.settle(sessions, own.bound, cwd, term.parseRollouts(out), now),
+    terms,
   };
 }
 
@@ -241,15 +297,15 @@ async function remoteOf(signal?: AbortSignal): Promise<Remote[]> {
   return r.code === 0 ? parseQueue(r.out) : [];
 }
 
-export async function loadActivity(now: number, signal?: AbortSignal): Promise<Activity> {
+export async function loadActivity(now: number, signal?: AbortSignal, runs: RunRef[] = []): Promise<Activity> {
   const notes: string[] = [];
   const note = (src: string, e: unknown): void => {
     notes.push(`${src}: ${tail((e as Error).message, 120)}`);
   };
   let jobs: Job[] = [];
   try {
-    const r = readJobs(now);
-    jobs = r.jobs.filter(j => recent(j, now)); // 运行中的都算 recent：scan 从这里认 wrapper
+    const r = readJobs(now, true);
+    jobs = r.jobs.filter(j => j.state === 'running' || visible(j.ended_at, now)); // 运行中的都保留：scan 从这里认 wrapper
     for (const b of r.bad) note('jobs', new Error(b));
   } catch (e) {
     note('jobs', e);
@@ -261,9 +317,12 @@ export async function loadActivity(now: number, signal?: AbortSignal): Promise<A
     note('tiers', e); // 只影响角色推断：显式角色照常
   }
   const [act, remote] = await Promise.all([
-    scan(now, jobs, pools, signal).catch((e: unknown): Procs => {
+    scan(now, jobs, pools, signal, runs).catch((e: unknown): Procs => {
       note('procs', e);
-      return { jobs: attach(new Map(), [], jobs, [], [], pools).jobs, procs: [], terms: [] };
+      return {
+        jobs: attach(new Map(), [], jobs, [], [], pools).jobs, procs: [], terms: [],
+        runs: runs.map(r => ({run_id: r.run_id, cwd: r.cwd, owner: null, inferred: false})),
+      };
     }),
     remoteOf(signal).catch(() => []), // 远端不可达不是看板的问题：静默省略
   ]);

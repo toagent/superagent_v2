@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { TIERS, type Tier } from '../jobs';
-import type { Activity, Owned } from './activity';
+import { visible, type Activity, type Owned } from './activity';
 import type { Term } from './terminals';
 import { bar, elapsedAt, fmtClock, fmtElapsed, type BoardRow, type Snapshot } from './data';
 import { detailLines, type Detail } from './detail';
@@ -159,11 +159,8 @@ interface Line {
   text: string;
   color?: string;
 }
-/**
- * 活动区：每个终端会话下缩进挂它 ppid 链上的作业与无头进程；挂不上的（父会话已退出、run 节点之外的后台进程）
- * 与远端队列归“无主”组。不含 prompt/argv（来源本就没有）；紧凑布局省掉模型名。
- */
-function activityLines(a: Activity, now: number, compact: boolean): Line[] {
+/** 活动按唯一会话归属挂接；其余按工作目录分组。只显示身份和状态元数据。 */
+function activityLines(a: Activity, now: number, compact: boolean, rows: BoardRow[], width: number): Line[] {
   const since = (ms: number, end = now): string =>
     fmtElapsed(Math.max(0, Math.floor((end - ms) / 1000)));
   const model = (m: string | null): string => (m && !compact ? ` ${m}` : '');
@@ -173,7 +170,7 @@ function activityLines(a: Activity, now: number, compact: boolean): Line[] {
     const how =
       j.state === 'running' || j.state === 'lost' ? '' : ` ${j.signal ?? `exit ${String(j.exit_code)}`}`;
     return {
-      text: `${mark} ${tierTag(j)} job ${since(Date.parse(j.started_at), end)}${how} ${j.kind}${model(j.model)} · ${j.title}`,
+      text: `${j.inferred ? '~' : ''}${mark} ${tierTag(j)} job ${since(Date.parse(j.started_at), end)}${how} ${j.kind}${model(j.model)} · ${j.title}`,
       color,
     };
   };
@@ -181,25 +178,33 @@ function activityLines(a: Activity, now: number, compact: boolean): Line[] {
     text: `▶ ${tierTag(p)} proc ${since(p.started_ms)} ${p.kind}${model(p.model)} · ${p.cwd ? basename(p.cwd) : '?'} pid ${String(p.pid)}`,
     color: 'blue',
   });
-  const under = (owner: number | null): Line[] => [
-    ...a.jobs.filter(j => j.owner === owner).map(job),
-    ...a.procs.filter(p => p.owner === owner).map(proc),
+  const runs = (a.runs ?? []).flatMap(ref => {
+    const r = rows.find(r => r.run_id === ref.run_id);
+    const ended = r && ['completed', 'failed', 'cancelled'].includes(r.state) ? r.span?.ended_ms ?? undefined : null;
+    if (!r || !visible(ended, now)) return [];
+    const role = `(${nodeRole(r)})`;
+    const prefix = `▶ run ${r.run_id.replace(/^\d{8}-/, '')} ${ref.inferred ? '~' : ''}${shortState(r.state)} ${String(r.nodes.done)}/${String(r.nodes.total)} `;
+    const node = pad(r.nodes.current ?? '-', Math.max(1, width - 4 - Bun.stringWidth(prefix + role))).trimEnd();
+    return [{...ref, line: {text: prefix + node + role, color: colorOf(r.state)}}];
+  });
+  const entries = [
+    ...a.jobs.filter(j => j.state === 'running' || visible(j.ended_at, now))
+      .map(j => ({owner: j.owner, cwd: j.cwd, line: job(j)})),
+    ...a.procs.map(p => ({owner: p.owner, cwd: p.cwd, line: proc(p)})), ...runs,
   ];
   const sub = (l: Line): Line => ({ ...l, text: `  └ ${l.text}` });
-  // owner 只会是某个终端的 pid（同一次 ps 的会话）：挂不上的就是 null
-  const orphans = [
-    ...under(null),
-    ...a.remote.map(r => ({
-      text: `◆ remote ${r.host} ${r.agent} ${shortRemoteId(r.id)} ${r.state}`,
-      color: 'magenta',
-    })),
-  ];
+  const groups = new Map<string, Line[]>();
+  for (const e of entries.filter(e => e.owner === null)) {
+    const key = e.cwd ?? '?';
+    groups.set(key, [...(groups.get(key) ?? []), e.line]);
+  }
   return [
     ...a.terms.flatMap(t => [
       { text: termText(t, now), color: t.state === 'busy' ? 'green' : t.state === 'idle' ? 'white' : 'gray' },
-      ...under(t.pid).map(sub),
+      ...entries.filter(e => e.owner === t.pid).map(e => sub(e.line)),
     ]),
-    ...(orphans.length ? [{ text: '无主' }, ...orphans.map(sub)] : []),
+    ...[...groups].flatMap(([cwd, lines]) => [{text: basename(cwd) || cwd}, ...lines.map(sub)]),
+    ...(a.remote.length ? [{text: 'remote'}, ...a.remote.map(r => sub({text: `◆ remote ${r.host} ${r.agent} ${shortRemoteId(r.id)} ${r.state}`, color: 'magenta'}))] : []),
     ...a.notes.map(n => ({ text: `! ${n}` })),
   ];
 }
@@ -302,9 +307,12 @@ export function Frame(p: FrameProps): ReactElement {
     [`[cancelled ${String(count(r => r.state === 'cancelled'))}]`, 'gray'],
   ];
   const s = p.snap.summary;
-  // 各档运行中的数目：执行中的终端 + 运行中的作业 + 无头进程（推断的也算）
+  // 各档运行中：执行中的终端 + running 作业 + 无头进程 + 挂接的 run 当前节点
   const busy = act
-    ? [...act.terms.filter(t => t.state === 'busy'), ...act.jobs.filter(j => j.state === 'running'), ...act.procs]
+    ? [...act.terms.filter(t => t.state === 'busy'), ...act.jobs.filter(j => j.state === 'running'), ...act.procs, ...(act.runs ?? []).flatMap(ref => {
+        const r = p.snap.rows.find(r => r.run_id === ref.run_id);
+        return ref.owner !== null && r?.state === 'running' ? [{tier: r.nodes.currentRole === 'coder' ? 'general' : r.nodes.currentRole === 'reviewer' ? 'strategist' : null}] : [];
+      })]
     : [];
   if (act)
     chips.push(
@@ -318,7 +326,7 @@ export function Frame(p: FrameProps): ReactElement {
     [`· last ${fmtClock(p.snap.at, now)}`, '']
   );
   if (p.activeOnly) chips.push(['· active only', '']);
-  const alines = act ? activityLines(act, now, lay.compact) : [];
+  const alines = act ? activityLines(act, now, lay.compact, p.snap.rows, p.width) : [];
   if (act && !busy.length && !act.remote.length && !p.snap.rows.some(ACTIVE))
     alines.push({ text: `空闲 · 无运行中的 run/作业 · 刷新 ${fmtClock(p.snap.at, now)}` });
   const d = p.detail;

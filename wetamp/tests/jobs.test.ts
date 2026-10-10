@@ -119,6 +119,15 @@ describe('job registry', () => {
   };
   const NOW = Date.parse('2026-10-10T12:00:00Z');
 
+  test('read-only reads expose lost state without rewriting or deleting records', () => {
+    const old = put({ id: 'old-readonly', state: 'done', ended_at: '2026-10-09T11:00:00Z' });
+    const lost = put({ id: 'lost-readonly', pid: 99999999, wrapper_pid: 99999999 });
+    const bytes = readFileSync(lost, 'utf8');
+    expect(readJobs(NOW, true).jobs.map(j => j.state).sort()).toEqual(['done', 'lost']);
+    expect(existsSync(old)).toBe(true);
+    expect(readFileSync(lost, 'utf8')).toBe(bytes);
+  });
+
   test('GC removes jobs ended over 24h ago; dead running jobs become lost; bad files are reported', async () => {
     expect(readJobs(NOW)).toEqual({ jobs: [], bad: [] }); // 目录还不存在
     const dead = await deadPid();

@@ -797,7 +797,7 @@ describe('responsive frame', () => {
     );
     expect(t).toContain('○ 元帅 codex 空闲 45m00s · proposal · s005');
     expect(t).toContain(
-      '○ 将军 opencode 未知? · ? · s009\n无主\n  └ ✗ ? job 10s exit 3 other · three'
+      '○ 将军 opencode 未知? · ? · s009\n/\n  └ ✗ ? job 10s exit 3 other · three'
     );
     expect(t).toMatch(/\n041949-87a7 +▶run +1\/3 +1m0\ds /); // 有非当天 id 时列宽放宽，当天的仍短
     expect(t).toMatch(/\n1001-004139-c439 +✗fail +0\/3 +1h02m +exit 1/);

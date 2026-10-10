@@ -1,9 +1,10 @@
 // board 的“终端”行：用户在终端里交互运行的 claude / codex / opencode 会话。进程来自活动区那次 ps；状态优先取
 // hooks/live.cjs 的心跳文件，过期时读 transcript / rollout 尾部（≤64KB，只看事件类型与 stop_reason），
 // 都没有就按 %CPU 粗判并标 `?`。只留 client/角色/状态/tool_name/cwd/tty/时长：不取 prompt、argv 或 transcript 正文。
+import { cliOf } from '../launcher';
 import * as fs from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { alive, isTier, type Kind, type Tier } from '../jobs';
 
 export interface PsRow {
@@ -63,16 +64,7 @@ const BUSY_CPU = 3;
  * argv 跑的 AI CLI（也认 `node …/codex` 这种经解释器启动的）：headless 为 `claude -p/--print`、`codex exec`、
  * `opencode run`；mcp / app-server / serve 这类服务进程两者都不是，为 null。
  */
-export function cliOf(argv: string[]): { kind: Kind; headless: boolean } | null {
-  const a = ['node', 'bun'].includes(basename(argv[0])) ? argv.slice(1) : argv;
-  const [k, sub] = [a.length ? basename(a[0]) : '', a[1] ?? ''];
-  if (k === 'claude' && sub !== 'mcp')
-    return { kind: k, headless: a.some(t => t === '-p' || t === '--print') };
-  if (k === 'codex' && !['app-server', 'mcp', 'mcp-server'].includes(sub))
-    return { kind: k, headless: sub === 'exec' };
-  if (k === 'opencode' && sub !== 'serve') return { kind: k, headless: sub === 'run' };
-  return null;
-}
+export { cliOf };
 export const interactiveKind = (argv: string[]): Kind | null => {
   const c = cliOf(argv);
   return c && !c.headless ? c.kind : null;
@@ -102,8 +94,8 @@ export function findSessions(rows: Rows): Session[] {
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
-/** 读心跳目录；坏文件跳过。顺手删 pid 已死且 24h 没更新的。目录不存在为空。 */
-export function readLive(dir: string, now: number): Live[] {
+/** 读心跳目录；坏文件跳过。跳过 pid 已死且 24h 没更新的；非 readonly 时清理。目录不存在为空。 */
+export function readLive(dir: string, now: number, readonly = false): Live[] {
   let names: string[];
   try {
     names = fs.readdirSync(dir).filter(n => n.endsWith('.json'));
@@ -119,7 +111,7 @@ export function readLive(dir: string, now: number): Live[] {
       if (!at || !event) continue;
       const pid = typeof o.pid === 'number' ? o.pid : null;
       if (now - Date.parse(at) > GC_MS && !(pid && alive(pid))) {
-        fs.unlinkSync(join(dir, n));
+        if (!readonly) fs.unlinkSync(join(dir, n));
         continue;
       }
       out.push({

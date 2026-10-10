@@ -1,4 +1,5 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
+import { launcher, type Launcher } from './launcher';
 import { Database } from 'bun:sqlite';
 import {
   appendFileSync,
@@ -89,6 +90,7 @@ export const EXIT_ALIAS_DRIFT = 5;
 export const EXIT_USAGE = 64;
 
 export interface Ledger {
+  launcher?: Launcher;
   run_id: string;
   archon_run_id: string;
   plan: string;
@@ -427,6 +429,7 @@ function startRun(planPath: string, a: Args): number {
     transcript: '',
     log: '',
     recoveries: [],
+    launcher: launcher(home().sa),
   };
   // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
   const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
