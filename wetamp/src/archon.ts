@@ -22,6 +22,7 @@ export interface RunView {
   output_root?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  last_activity_at?: string | null;
   metadata?: {
     execution_owner?: { host: string; pid: number };
     wait?: { nodeId: string; kind: string; event?: string; resumeAt: string };

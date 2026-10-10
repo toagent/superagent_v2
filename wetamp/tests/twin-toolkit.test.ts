@@ -139,7 +139,7 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
     expect(c.s).toMatchObject({ verified: null, last_ok: 'y' });
     const d = probe(head => ({ commit: head, ok: true, last_ok_commit: head }));
     expect(d.s).toMatchObject({ verified: d.head, last_ok: d.head });
-  });
+  }, 30000);
 
   /** 抽出比对段，给定本机/远端探针结果，返回输出行与漂移维度。 */
   function compare(L: object, R: object) {

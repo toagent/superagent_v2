@@ -69,6 +69,7 @@ exit 0
   return { root, repo, home, pass, fail, run, callCount, git };
 }
 
+// 每个用例建临时仓库并多次 git worktree add/remove，满载（如嵌在 verify-local 里跑）时超过 bun 默认 5s。
 describe('scripts/verify-local.sh', () => {
   test('a passing commit writes ok verify.json; a failing one is cached with last_ok_commit kept', () => {
     const f = fixture();
@@ -103,7 +104,7 @@ describe('scripts/verify-local.sh', () => {
     // 临时 worktree 与锁都已清理。
     expect(f.git('worktree list').split('\n').length).toBe(1);
     expect(existsSync(join(f.home, 'verify', 'lock'))).toBe(false);
-  });
+  }, 60000);
 
   test('frozen install failure falls back to the main checkout node_modules only when the lock matches', () => {
     const f = fixture();
@@ -129,5 +130,5 @@ describe('scripts/verify-local.sh', () => {
     const b = f.run(f.fail, { INSTALL_FAILS: '1' });
     expect(b.code).toBe(1);
     expect(b.v?.steps.map(s => [s.name, s.exit])).toEqual([['install', 1]]);
-  });
+  }, 60000);
 });

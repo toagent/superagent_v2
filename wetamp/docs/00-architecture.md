@@ -273,4 +273,4 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - 执行层红线集中在 `hooks/redline.cjs`，`guard.cjs` 对所有角色调用；`shell.cjs` 的解析同时给出写入与读取目标，供红线判路径。
   - `codex-worker` 启动前校验用户级 `hooks.json` 中 guard 的 trusted_hash，不一致即 exit 3（Codex 会静默跳过不受信任的 hook）；`SA_CODEX_HOOK_TRUST=unchecked` 临时放行并在 stderr 留痕。
   - 投送闸 `scripts/verify-local.sh`：临时 detached worktree 跑 install → tsc → test → selftest，结果写 `$SUPERAGENT_HOME/verify.json`（同一提交含失败都缓存，`last_ok_commit` 跨次保留）。
-  - 预算：TS 3372/3800、shell 588/850、cjs 1119/1700、文件 43（基线 40 +3：`bin/codex-readonly-proxy.cjs` 随 WP-B 合入，`hooks/redline.cjs`、`scripts/verify-local.sh`）。上调理由：红线需要独立模块（与 guard 的 N-1/G-1 策略分开维护），自动重试与 needs/deviations 落在 cli.ts，投送闸只能是 shell（twin-toolkit 在仓库外调用）。
+  - 预算（合入 WP-BT 后）：TS 3426/3800、shell 591/850、cjs 1119/1700、文件 43（基线 40 +3：`bin/codex-readonly-proxy.cjs` 随 WP-B 合入，`hooks/redline.cjs`、`scripts/verify-local.sh`）。上调理由：红线需要独立模块（与 guard 的 N-1/G-1 策略分开维护），自动重试与 needs/deviations 落在 cli.ts，投送闸只能是 shell（twin-toolkit 在仓库外调用）。

@@ -20,7 +20,11 @@ export interface BoardRow {
   state: string;
   exit: number | null;
   nodes: { done: number; total: number; current: string | null; currentRole: string | null };
+  /** ledger 的提交时刻（resume 不变），ledger 里不可解析才退回 Archon 的（每次 resume 重置）；排序同口径。 */
   started_at: string;
+  /** 耗时起止（ms）：ended_ms 为 null 表示非终态、随 now 增长；整体 null 表示算不出（显示 `-`）。 */
+  span: { started_ms: number; ended_ms: number | null } | null;
+  /** 取数时刻的 elapsedAt（--json 用）；界面按自己的 now 重算。 */
   elapsed_s: number | null;
   held: { node: string | null; event: string | null } | null;
   recoveries: number;
@@ -128,9 +132,19 @@ export function rowOf(
   const c = classifyRun(l, run);
   const nodes = run.nodes ?? [];
   const current = nodes.find(n => n.state === 'running')?.nodeId ?? c.node ?? null;
-  const started = run.started_at ?? l.started_at;
-  const end = run.completed_at ? Date.parse(run.completed_at) : opts.now;
-  const elapsed = Math.round((end - Date.parse(started)) / 1000);
+  const started = Number.isFinite(Date.parse(l.started_at))
+    ? l.started_at
+    : (run.started_at ?? l.started_at);
+  const startedMs = Date.parse(started);
+  // 终态缺 completed_at 时取最后活动时刻；都缺则不显示，不能随 now 无限增长
+  const end =
+    c.exit === EXIT.held || c.exit === EXIT.running
+      ? null
+      : Date.parse(run.completed_at ?? run.last_activity_at ?? '');
+  const span =
+    Number.isFinite(startedMs) && (end === null || Number.isFinite(end))
+      ? { started_ms: startedMs, ended_ms: end }
+      : null;
   return {
     run_id: l.run_id,
     state: c.state,
@@ -142,7 +156,8 @@ export function rowOf(
       currentRole: current === null ? null : (opts.roles?.get(current) ?? null),
     },
     started_at: started,
-    elapsed_s: Number.isFinite(elapsed) ? Math.max(0, elapsed) : null,
+    span,
+    elapsed_s: elapsedAt({ span }, opts.now),
     held: c.exit === EXIT.held ? { node: c.node ?? null, event: c.event ?? null } : null,
     recoveries: l.recoveries.length,
     auto_retries: l.auto_retries?.length ?? 0,
@@ -162,6 +177,7 @@ export function unreadableRow(id: string, error: string, l?: Ledger): BoardRow {
     exit: null,
     nodes: { done: 0, total: 0, current: null, currentRole: null },
     started_at: l?.started_at ?? '',
+    span: null,
     elapsed_s: null,
     held: null,
     recoveries: l?.recoveries.length ?? 0,
@@ -257,6 +273,23 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
     return { summary: s, rows, at: new Date(now).toISOString() };
   };
+}
+
+export function elapsedAt(r: Pick<BoardRow, 'span'>, now: number): number | null {
+  if (!r.span) return null;
+  return Math.max(0, Math.round(((r.span.ended_ms ?? now) - r.span.started_ms) / 1000));
+}
+
+/** 进程本地时区（尊重 TZ）的时刻：与 now 同一天 `HH:MM:SS`，否则 `MM-DD HH:MM`；不可解析为 `--:--:--`。 */
+export function fmtClock(t: string | number, now: Date | number): string {
+  const d = new Date(t);
+  if (!Number.isFinite(d.getTime())) return '--:--:--';
+  const n = new Date(now);
+  const p = (x: number): string => String(x).padStart(2, '0');
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return d.toDateString() === n.toDateString()
+    ? `${hm}:${p(d.getSeconds())}`
+    : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
 }
 
 /** 45s / 12m05s / 3h04m / 2d03h。 */

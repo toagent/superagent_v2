@@ -13,7 +13,16 @@ import { createElement } from 'react';
 import { renderToString } from 'ink';
 import type { RunView } from '../src/archon';
 import { report, summarize, type Ledger } from '../src/cli';
-import { bar, createLoader, fmtElapsed, readLedger, rowOf, workflowRoles } from '../src/board/data';
+import {
+  bar,
+  createLoader,
+  elapsedAt,
+  fmtClock,
+  fmtElapsed,
+  readLedger,
+  rowOf,
+  workflowRoles,
+} from '../src/board/data';
 import { detailOf, detailLines, redact } from '../src/board/detail';
 import { Frame, layout } from '../src/board/App';
 import { tmp } from './helpers';
@@ -273,6 +282,122 @@ describe('loader robustness', () => {
   });
 });
 
+describe('time', () => {
+  const at = (iso: string): number => Date.parse(iso);
+
+  test('resume: start and sort come from the ledger, not the reset Archon started_at', async () => {
+    // 实例 20261010-033000-d01a：03:50:49 resume 后 Archon 的 started_at 被重置
+    const l = ledger(
+      'resumed',
+      {
+        status: 'completed',
+        started_at: '2026-10-10T03:50:49.000Z',
+        completed_at: '2026-10-10T03:53:29.000Z',
+      },
+      { started_at: '2026-10-10T03:30:02.550Z' }
+    );
+    const row = rowOf(l, JSON.parse(readFileSync(join(stubDir, 'get-a-resumed.json'), 'utf8')), {
+      now: at('2026-10-10T05:00:00Z'),
+    });
+    expect(row.started_at).toBe('2026-10-10T03:30:02.550Z');
+    expect(fmtElapsed(row.elapsed_s)).toBe('23m26s');
+    // 后提交、未 resume 的 run 的 Archon started_at 早于上面那个被重置的值，排序仍按提交时刻
+    ledger(
+      'later',
+      { status: 'completed', started_at: '2026-10-10T03:40:00.000Z' },
+      { started_at: '2026-10-10T03:40:00.000Z' }
+    );
+    expect((await createLoader()(50)).rows.map(r => r.run_id)).toEqual(['later', 'resumed']);
+  });
+
+  test('a terminal run without completed_at ends at last_activity_at, else shows -, never growing with now', () => {
+    const l = ledger('t', { status: 'failed' });
+    const base: RunView = {
+      id: 'a-t',
+      status: 'failed',
+      nodes: [{ nodeId: 'verify-a', state: 'failed' }],
+    };
+    for (const now of [at('2026-10-10T01:00:00Z'), at('2026-10-11T01:00:00Z')]) {
+      expect(
+        rowOf(l, { ...base, last_activity_at: '2026-10-10T00:05:00.000Z' }, { now }).elapsed_s
+      ).toBe(300);
+      const bare = rowOf(l, base, { now });
+      expect(bare.elapsed_s).toBeNull();
+      expect(elapsedAt(bare, now + 60_000)).toBeNull();
+    }
+  });
+
+  test('running and held rows tick with the injected now; the frame re-renders elapsed from it', () => {
+    const l = ledger('live', { status: 'running' });
+    const run: RunView = {
+      id: 'a-live',
+      status: 'running',
+      started_at: '2026-10-10T00:09:00.000Z',
+    };
+    const row = rowOf(l, run, { now: at('2026-10-10T00:00:45Z') });
+    expect(row.elapsed_s).toBe(45);
+    expect(elapsedAt(row, at('2026-10-10T00:00:46Z'))).toBe(46);
+    const held = rowOf(l, { ...run, status: 'paused' }, { now: at('2026-10-10T00:01:00Z') });
+    expect(held.state).toStartWith('held:');
+    expect(elapsedAt(held, at('2026-10-10T00:02:00Z'))).toBe(120);
+    const text = (now: string): string =>
+      renderToString(
+        createElement(Frame, {
+          snap: { summary: {}, rows: [row], at: '2026-10-10T00:00:45.000Z' },
+          home: '/h',
+          width: 160,
+          height: 20,
+          interval: 5,
+          sel: -1,
+          activeOnly: false,
+          detail: null,
+          now: new Date(now),
+          footer: false,
+        }),
+        { columns: 160 }
+      );
+    expect(text('2026-10-10T00:00:50Z')).toMatch(/ 50s /);
+    expect(text('2026-10-10T00:02:05Z')).toMatch(/ 2m05s /);
+  });
+
+  test('fmtClock uses the process time zone: HH:MM:SS today, MM-DD HH:MM otherwise', () => {
+    const saved = process.env.TZ;
+    try {
+      const t = '2026-10-10T03:53:29.000Z';
+      process.env.TZ = 'Asia/Shanghai';
+      expect(fmtClock(t, at('2026-10-10T03:54:00Z'))).toBe('11:53:29');
+      expect(fmtClock(at(t), at('2026-10-10T17:00:00Z'))).toBe('10-10 11:53'); // 上海已是 10-11
+      expect(fmtClock('x', Date.now())).toBe('--:--:--');
+      process.env.TZ = 'UTC';
+      expect(fmtClock(t, at('2026-10-10T03:54:00Z'))).toBe('03:53:29');
+      expect(fmtClock(t, at('2026-10-10T17:00:00Z'))).toBe('03:53:29');
+      expect(fmtClock(t, at('2026-10-11T00:00:01Z'))).toBe('10-10 03:53');
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  });
+
+  test('detail shows local start and elapsed on its first line and local event times', () => {
+    const saved = process.env.TZ;
+    try {
+      process.env.TZ = 'Asia/Shanghai';
+      const l = ledger('d', { status: 'running' }, { started_at: '2026-10-10T03:30:02.550Z' });
+      writeFileSync(
+        l.transcript,
+        JSON.stringify({ type: 'node_start', step: 'code-a', ts: '2026-10-10T03:53:10.000Z' })
+      );
+      const row = rowOf(l, { id: 'a-d', status: 'running' }, { now: at('2026-10-10T03:54:00Z') });
+      const lines = detailLines(detailOf(l, row), at('2026-10-10T03:54:00Z'), row);
+      expect(lines[0]).toContain('开始 11:30:02 · 耗时 23m57s');
+      expect(lines).toContain('11:53:10 node_start code-a');
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  });
+});
+
 describe('format', () => {
   test('elapsed', () => {
     expect([
@@ -357,7 +482,7 @@ describe('detail', () => {
     expect(d.gates).toEqual([]);
     expect(d.errors).toHaveLength(3);
     for (const e of d.errors) expect(e).toContain('（路径越界，已跳过）');
-    expect(detailLines(d).join('\n')).not.toContain('leak');
+    expect(detailLines(d, Date.now()).join('\n')).not.toContain('leak');
   });
 
   test('plan packages, gate rounds, last events, held hints', () => {
@@ -422,7 +547,7 @@ describe('detail', () => {
     expect(last?.out?.length).toBeLessThanOrEqual(120);
     expect(last?.out).toEndWith('secret: ***');
     expect(d.next[0]).toBe('superagent decide sa1 approve|reject|retry [--pkg id]');
-    expect(detailLines(d)).toContain('need services (a): 起本机 postgres');
+    expect(detailLines(d, Date.now())).toContain('need services (a): 起本机 postgres');
     expect(d.errors).toEqual([]);
   });
 });
