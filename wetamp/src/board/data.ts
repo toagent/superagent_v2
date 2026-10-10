@@ -111,7 +111,7 @@ export function rowOf(
       ? { started_ms: startedMs, ended_ms: end }
       : null;
   let plan: Plan | undefined;
-  try { const file = confined(l, resolve(l.repo, l.plan)) ?? confined(l, join(l.gen_dir, 'plan.json')); if (file) { const value = JSON.parse(readFileSync(file, 'utf8')) as Plan; if (Array.isArray(value.packages) && value.packages.every(p => p && typeof p.id === 'string' && typeof p.title === 'string' && (p.milestone === undefined || typeof p.milestone === 'string'))) plan = value; } } catch { /* Unavailable plan stays explicit. */ }
+  try { const file = confined(l, resolve(l.repo, l.plan)) ?? confined(l, join(l.gen_dir, 'plan.json')); if (file) { const value = JSON.parse(readFileSync(file, 'utf8')) as { packages?: (Plan['packages'][number] | null)[] }; if (Array.isArray(value.packages) && value.packages.every(p => p && typeof p.id === 'string' && typeof p.title === 'string' && (p.milestone === undefined || typeof p.milestone === 'string'))) plan = value as Plan; } } catch { /* Unavailable plan stays explicit. */ }
   let ms: string[] = [];
   try { if (plan) ms = milestones(plan).map(m => m.id); } catch { plan = undefined; }
   const pkg = plan?.packages.find(p => ['code', 'verify', 'repair', 'settle'].some(k => current === `${k}-${p.id}`));

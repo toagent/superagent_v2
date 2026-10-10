@@ -140,7 +140,7 @@ export interface FrameProps {
 export function Frame(p: FrameProps): ReactElement {
   const now = p.now.getTime(), c = cockpit(p.snap, now), lines: { text: string; id?: string; content?: ReactElement }[] = [];
   const add = (text: string, id?: string): void => { lines.push({ text: fit(text, p.width), id }); };
-  const section = (title: string): void => add(`━ ${title} ${'━'.repeat(Math.max(0, p.width - Bun.stringWidth(title) - 4))}`);
+  const section = (title: string): void => { add(`━ ${title} ${'━'.repeat(Math.max(0, p.width - Bun.stringWidth(title) - 4))}`); };
   if (p.view === 'terminals') {
     section('终端');
     for (const l of p.snap.activity ? activityLines(p.snap.activity, now, p.width < 80, p.snap.rows, p.width, p.snap.usage, p.width >= 120) : []) add(l.text);
