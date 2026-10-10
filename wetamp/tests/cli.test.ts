@@ -20,6 +20,7 @@ import {
   EXIT_ALIAS_DRIFT,
   EXIT_USAGE,
   HOLD_POLICY,
+  ledgerPath,
   loadLedger,
   main,
   parseArgs,
@@ -28,7 +29,7 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { renderAliases, loadTiers } from '../src/config';
+import { configHash, gitHead, renderAliases, loadTiers } from '../src/config';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
@@ -482,6 +483,38 @@ describe('run (archon stub)', () => {
     expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
+  test('preflight: only a real, unexpired receipt bound to this HEAD and config passes; each rejection says why and how to fix', () => {
+    const s = stub([]);
+    const repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    const plan = fixturePlan(s.root, repo);
+    const good = {
+      ok: true,
+      at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 3600e3).toISOString(),
+      fake: false,
+      head: gitHead(),
+      config_hash: configHash(),
+    };
+    const attempt = (r?: object): string => {
+      if (r) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(r));
+      try {
+        return String(captured(() => main(['run', plan])).code);
+      } catch (e) {
+        expect((e as Error).message).toContain('fix: wetamp/scripts/selftest.sh');
+        return (e as Error).message;
+      }
+    };
+    expect(attempt()).toContain('no selftest.json');
+    expect(attempt({ ...good, fake: true })).toContain('fake receipt');
+    expect(attempt({ ...good, fake: undefined })).toContain('fake receipt');
+    expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
+    expect(attempt({ ...good, head: '0'.repeat(40) })).toContain('HEAD drift');
+    expect(attempt({ ...good, config_hash: 'x' })).toContain('config drift');
+    expect(attempt(good)).toBe('0');
+    writeFileSync(join(s.root, 'home', 'archon', 'config.yaml'), 'edited: true\n');
+    expect(attempt()).toContain('config drift');
+  });
   /** workflow run 的 --config 文件里钉住的别名。 */
   const pinned = (call: string): Record<string, unknown> => {
     const m = /--config (\S+)/.exec(call);
@@ -1274,7 +1307,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(
     Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env }).exitCode
   ).toBe(0);
-  expect(sa('run', plan).err).toContain('no passing selftest'); // 无 selftest.json：preflight 拒绝
+  expect(sa('run', plan).err).toContain('no valid selftest receipt: no selftest.json'); // preflight 拒绝
   const started = sa('run', plan, '--fake', '--skip-selftest');
   expect(started.err).toBe('');
   expect(started.code).toBe(0);
@@ -1297,6 +1330,63 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
   expect(existsSync(String(waited.out.evidence))).toBe(true);
 }, 240000);
+
+describe('launch intents (run + supervise-tick reconcile)', () => {
+  const tickOut = (): Record<string, unknown>[] =>
+    JSON.parse(captured(() => main(['supervise-tick'])).out) as Record<string, unknown>[];
+  /** 意图 sa2（工作流 sa-sa2），启动进程 pid、started_at 可调；archon.db 的 runs 表按 rows 建。 */
+  const intent = (pid: number, rows: string[], startedAt = '2020-01-01T00:00:00.000Z') => {
+    const s = stub([run('completed')]);
+    const ledger = { ...s.ledger, run_id: 'sa2', archon_run_id: '', workflow: 'sa-sa2', started_at: startedAt };
+    mkdirSync(join(s.root, 'home', 'intents'), { recursive: true });
+    const file = join(s.root, 'home', 'intents', 'sa2.json');
+    writeFileSync(file, JSON.stringify({ ledger, host: hostname(), pid }));
+    const db = new Database(join(s.root, 'home', 'archon', 'archon.db'));
+    db.run('create table remote_agent_workflow_runs (id text, workflow_name text, status text, metadata text)');
+    for (const id of rows) db.run("insert into remote_agent_workflow_runs values (?, 'sa-sa2', 'running', '{}')", [id]);
+    db.close();
+    return { ...s, file };
+  };
+  test('run writes the intent before starting and removes it once the ledger is saved', () => {
+    const s = stub([]);
+    const repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    const plan = fixturePlan(s.root, repo);
+    const dir = join(s.root, 'home', 'intents');
+    // archon 桩在被调用时把意图目录拍下来
+    const bin = String(process.env.SA_ARCHON_BIN);
+    writeFileSync(bin, readFileSync(bin, 'utf8').replace('echo "$*" >>', `ls "${dir}" > "${s.root}/at-run"; echo "$*" >>`));
+    expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
+    expect(readFileSync(join(s.root, 'at-run'), 'utf8').trim()).toMatch(/^\d{8}-\d{6}-[0-9a-f]{4}\.json$/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+  test('a dead launcher whose archon run exists gets its ledger written; the intent goes away', () => {
+    const s = intent(LOST.pid, ['r2']);
+    expect(tickOut()[0]).toEqual({ run_id: 'sa2', action: 'reconcile', ok: true, archon_run_id: 'r2' });
+    expect(loadLedger('sa2')).toMatchObject({ archon_run_id: 'r2', workflow: 'sa-sa2', reconciled_at: expect.any(String) });
+    expect(existsSync(s.file)).toBe(false);
+    expect(s.calls().filter(c => c.startsWith('workflow run'))).toEqual([]);
+  });
+  test('no archon run: concluded once on the intent, never restarted; a live or recent launcher is left alone', () => {
+    const s = intent(LOST.pid, []);
+    expect(tickOut()[0]).toMatchObject({ run_id: 'sa2', action: 'reconcile', ok: false, reason: expect.stringContaining('superagent run') });
+    expect(JSON.parse(readFileSync(s.file, 'utf8'))).toMatchObject({ no_run_at: expect.any(String) });
+    expect(tickOut().filter(x => x.run_id === 'sa2')).toEqual([]);
+    expect(existsSync(ledgerPath('sa2'))).toBe(false);
+    expect(s.calls().filter(c => c.startsWith('workflow run'))).toEqual([]);
+    const live = intent(process.pid, ['r2']);
+    expect(tickOut().filter(x => x.run_id === 'sa2')).toEqual([]);
+    expect(existsSync(live.file)).toBe(true);
+    const recent = intent(LOST.pid, ['r2'], new Date().toISOString());
+    expect(tickOut().filter(x => x.run_id === 'sa2')).toEqual([]);
+    expect(existsSync(recent.file)).toBe(true);
+  });
+  test('two archon runs with the same workflow name are not guessed: error, intent kept', () => {
+    const s = intent(LOST.pid, ['r2', 'r3']);
+    expect(tickOut()[0]).toMatchObject({ run_id: 'sa2', action: 'error', error: expect.stringContaining('2 archon runs') });
+    expect(existsSync(s.file)).toBe(true);
+  });
+});
 
 describe('lock (flock, real processes)', () => {
   const SRC = JSON.stringify(join(import.meta.dir, '..', 'src', 'archon.ts'));

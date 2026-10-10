@@ -45,6 +45,43 @@ export function writeAtomic(path: string, text: string): void {
   }
 }
 
+/**
+ * selftest 回执（$SUPERAGENT_HOME/selftest.json）：只由非 fake 的 selftest 写，绑定 wetamp 的 git HEAD、配置哈希与有效期；
+ * preflight 拒绝 fake、过期或漂移的回执。fake 只证明引擎契约，写 selftest-fake.json，不覆盖正式回执。
+ */
+export const SELFTEST_TTL_MS = 7 * 24 * 3600e3;
+export interface Receipt {
+  ok: boolean;
+  at: string;
+  expires_at: string;
+  fake: boolean;
+  head: string;
+  config_hash: string;
+}
+/** wetamp 所在检出的 HEAD；不是 git 检出时为空串（回执无法绑定，preflight 视为漂移）。 */
+export function gitHead(): string {
+  const p = Bun.spawnSync(['git', '-C', WETAMP, 'rev-parse', 'HEAD'], { stdout: 'pipe', stderr: 'pipe' });
+  return p.exitCode === 0 ? p.stdout.toString().trim() : '';
+}
+/** 回执绑定的配置：tiers.json 与调用方 $ARCHON_HOME/config.yaml 的内容（任一改动都要重跑 selftest）。 */
+export function configHash(): string {
+  const h = new Bun.CryptoHasher('sha256');
+  for (const p of [join(WETAMP, 'tiers.json'), join(home().archon, 'config.yaml')])
+    h.update(`${existsSync(p) ? readFileSync(p, 'utf8') : ''}\0`);
+  return h.digest('hex').slice(0, 16);
+}
+export function receiptProblem(r: Partial<Receipt> | undefined, now = Date.now()): string | null {
+  if (!r) return 'no selftest.json';
+  if (r.ok !== true) return 'receipt is not a pass';
+  if (r.fake !== false) return 'fake receipt (selftest --fake proves only the engine contract)';
+  const exp = Date.parse(r.expires_at ?? '');
+  if (!(exp > now)) return `expired (expires_at ${r.expires_at ?? '?'})`;
+  const head = gitHead();
+  if (r.head !== head) return `HEAD drift (receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`;
+  if (r.config_hash !== configHash()) return 'config drift (tiers.json or $ARCHON_HOME/config.yaml changed)';
+  return null;
+}
+
 export function providerOf(model: string): Alias['provider'] {
   if (model.startsWith('gpt-')) return 'codex';
   if (model.startsWith('claude-')) return 'claude';

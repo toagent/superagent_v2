@@ -1,14 +1,16 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
+import { Database } from 'bun:sqlite';
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statfsSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { basename, join } from 'node:path';
 import { parseArgs as parse } from 'node:util';
 import {
@@ -19,6 +21,7 @@ import {
   lastJson,
   lock,
   ownerLost,
+  pidAlive,
   QUERY_TIMEOUT_MS,
   recover,
   signalHuman,
@@ -37,8 +40,10 @@ import {
   codexWorkerProblem,
   home,
   loadTiers,
+  receiptProblem,
   runAliases,
   writeAtomic,
+  type Receipt,
 } from './config';
 import { generate, newRunId } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
@@ -103,6 +108,8 @@ export interface Ledger {
   auto_retries?: AutoRetry[];
   /** supervise-tick 的处置记录（最近 20 条）。 */
   dispositions?: Disposition[];
+  /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
+  reconciled_at?: string;
 }
 export interface AutoRetry {
   milestone: string;
@@ -350,7 +357,6 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 }
 
 const MIN_FREE_GB = 2;
-const SELFTEST_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 function preflight(skipSelftest: boolean): void {
   const { sa } = home();
@@ -358,10 +364,11 @@ function preflight(skipSelftest: boolean): void {
   if ((fs.bavail * fs.bsize) / 2 ** 30 < MIN_FREE_GB)
     throw new Error(`preflight: < ${String(MIN_FREE_GB)}GB free under ${sa}`);
   if (skipSelftest) return;
-  const st = readJson(join(sa, 'selftest.json')) as { ok?: boolean; at?: string } | undefined;
-  if (!st?.ok || !st.at || Date.now() - Date.parse(st.at) > SELFTEST_MAX_AGE_MS) {
-    throw new Error('preflight: no passing selftest within 7 days; run wetamp/scripts/selftest.sh');
-  }
+  const why = receiptProblem(readJson(join(sa, 'selftest.json')) as Partial<Receipt> | undefined);
+  if (why)
+    throw new Error(
+      `preflight: no valid selftest receipt: ${why}; fix: wetamp/scripts/selftest.sh (real, not --fake)`
+    );
 }
 
 function startRun(planPath: string, a: Args): number {
@@ -377,12 +384,9 @@ function startRun(planPath: string, a: Args): number {
   const branch = `sa/${run}`;
   const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
   args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
-  const ack = archonJson(args, plan.repo);
-  if (ack.ok !== true || typeof ack.runId !== 'string')
-    throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
   const l: Ledger = {
     run_id: run,
-    archon_run_id: ack.runId,
+    archon_run_id: '',
     plan: planPath,
     gen_dir: gen.dir,
     repo: plan.repo,
@@ -390,14 +394,85 @@ function startRun(planPath: string, a: Args): number {
     workflow: gen.workflow,
     console: plan.console ?? 'claude',
     started_at: new Date().toISOString(),
-    transcript: String(ack.transcriptPath),
-    log: String(ack.logPath),
+    transcript: '',
+    log: '',
     recoveries: [],
   };
+  // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
+  const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
+  mkdirSync(join(home().sa, 'intents'), { recursive: true });
+  writeAtomic(intentPath(run), JSON.stringify(intent, null, 2) + '\n');
+  const ack = archonJson(args, plan.repo);
+  if (ack.ok !== true || typeof ack.runId !== 'string')
+    throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
+  Object.assign(l, {
+    archon_run_id: ack.runId,
+    transcript: String(ack.transcriptPath),
+    log: String(ack.logPath),
+  });
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
   saveLedger(l);
+  rmSync(intentPath(run), { force: true });
   print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir });
   return 0;
+}
+
+/** 启动意图：ledger 草稿（archon_run_id 待定）+ 启动进程；结论 no_run 写回意图，run 出现前每个 tick 都再查。 */
+interface Intent {
+  ledger: Ledger;
+  host: string;
+  pid: number;
+  no_run_at?: string;
+}
+const intentPath = (run: string): string => join(home().sa, 'intents', `${run}.json`);
+const INTENT_GRACE_MS = 10 * 60e3;
+
+/**
+ * 对账没写成 ledger 的启动：已有 ledger → 删意图；启动进程还活着或未过 10 分钟 → 不动；archon.db 里按工作流名
+ * （sa-<run>，每个 run 唯一）找到一个 run → 补写 ledger 并删意图；找不到 → 意图记 no_run 并报一次，不重启；多于一个 → 报错交人。
+ */
+function reconcileIntents(): Action[] {
+  const dir = join(home().sa, 'intents');
+  if (!existsSync(dir)) return [];
+  const out: Action[] = [];
+  for (const f of readdirSync(dir).filter(x => x.endsWith('.json') && !x.startsWith('.'))) {
+    const id = f.slice(0, -5);
+    try {
+      const it = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Intent;
+      if (existsSync(ledgerPath(id))) {
+        rmSync(join(dir, f), { force: true });
+        continue;
+      }
+      const launching = it.host === hostname() && pidAlive(it.pid);
+      if (launching || Date.now() < Date.parse(it.ledger.started_at) + INTENT_GRACE_MS) continue;
+      const db = new Database(join(home().archon, 'archon.db'), { readonly: true });
+      let rows: { id: string }[];
+      try {
+        rows = db
+          .query('select id from remote_agent_workflow_runs where workflow_name = ?')
+          .all(it.ledger.workflow) as { id: string }[];
+      } finally {
+        db.close();
+      }
+      if (rows.length > 1) throw new Error(`${String(rows.length)} archon runs named ${it.ledger.workflow}`);
+      if (rows.length === 1) {
+        saveLedger({ ...it.ledger, archon_run_id: rows[0].id, reconciled_at: new Date().toISOString() });
+        rmSync(join(dir, f), { force: true });
+        out.push({ run_id: id, action: 'reconcile', ok: true, archon_run_id: rows[0].id });
+      } else if (!it.no_run_at) {
+        writeAtomic(join(dir, f), JSON.stringify({ ...it, no_run_at: new Date().toISOString() }, null, 2) + '\n');
+        out.push({
+          run_id: id,
+          action: 'reconcile',
+          ok: false,
+          reason: `launch intent without an archon run; start again with superagent run ${it.ledger.plan}`,
+        });
+      }
+    } catch (e) {
+      out.push({ run_id: id, action: 'error', ok: false, error: tail(`intent: ${(e as Error).message}`, 200) });
+    }
+  }
+  return out;
 }
 
 function health(cwd?: string): number {
@@ -866,7 +941,7 @@ function tick(sa: string): Action[] {
   } catch (e) {
     asks = e as Error;
   }
-  const out: Action[] = [];
+  const out: Action[] = reconcileIntents();
   for (const l of ledgers()) {
     try {
       if ('error' in l) throw new Error(l.error);
