@@ -33,7 +33,7 @@ const kind = (id: string): string => /^(code|verify|repair|settle|diff|review|fi
 const median = (xs: number[]): number => { const sorted = [...xs].sort((a, b) => a - b), i = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[i] : (sorted[i - 1] + sorted[i]) / 2; };
 export function jobProgress(job: Job, history: Job[], now: number): Progress {
   if (!job.role) return unknownProgress();
-  const samples = history.filter(j => j.role === job.role && ['done', 'failed'].includes(j.state))
+  const samples = history.filter(j => j.pid !== 0 && j.role === job.role && ['done', 'failed'].includes(j.state))
     .map(j => (Date.parse(j.ended_at ?? '') - Date.parse(j.started_at)) / 1000).filter(s => Number.isFinite(s) && s > 0);
   const spent = (now - Date.parse(job.started_at)) / 1000;
   if (!samples.length || !Number.isFinite(spent)) return unknownProgress();

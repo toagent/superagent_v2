@@ -264,7 +264,7 @@ async function scan(
   const ps = await capture(['ps', '-axo', PS_FIELDS], SOURCE_TIMEOUT_MS, signal);
   if (ps.code !== 0) throw new Error(`ps exited ${String(ps.code)}`);
   const rows = psRows(ps.out);
-  const wrappers = new Set(jobs.filter(j => j.state === 'running').map(j => j.wrapper_pid));
+  const wrappers = new Set(jobs.filter(j => ['queued', 'running'].includes(j.state)).map(j => j.wrapper_pid));
   const procs = parsePs(rows, now, wrappers);
   const sessions = term.findSessions(rows);
   const lives = term.readLive(join(home().sa, 'live'), now, true);
@@ -308,7 +308,7 @@ export async function loadActivity(now: number, signal?: AbortSignal, runs: RunR
   try {
     const r = readJobs(now, true);
     jobHistory = r.jobs;
-    jobs = r.jobs.filter(j => j.state === 'running' || visible(j.ended_at, now)); // 运行中的都保留：scan 从这里认 wrapper
+    jobs = r.jobs.filter(j => ['queued', 'running'].includes(j.state) || visible(j.ended_at, now)); // 活动作业都保留：scan 从这里认 wrapper
     for (const b of r.bad) note('jobs', new Error(b));
   } catch (e) {
     note('jobs', e);

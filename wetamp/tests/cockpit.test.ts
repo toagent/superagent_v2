@@ -48,6 +48,14 @@ test('compact stage labels follow the current engine node', () => {
   expect(stages(row('r'))).toBe('评审 r2');
   for (const [node, label] of [['code-a', '编码 m1/1'], ['land', '合入'], ['verify-a', '验收'], ['repair-a', '修复'], ['fix-m1-r2', '修复'], ['environment', '准备']]) expect(stages(row(node, 'running', node))).toBe(label);
 });
+test('queued jobs are active, render 等内存 in Ink and retain an unknown progress', () => {
+  const s = snapshot();
+  s.activity!.jobs = [{ id: 'queued', title: 'memory wait', card: null, log: null, cwd: '/repo', kind: 'codex', model: 'gpt-6.1-sol', role: 'general', tier: 'general', guess: false, owner: null, wrapper_pid: process.pid, pid: 0, started_at: iso(-7200000), state: 'queued', reason: 'memory', memory: { pressure: 2, free: 80, source: 'sysctl' } }];
+  const c = cockpit(s, now);
+  expect(c.active).toHaveLength(1); expect(c.needs).toHaveLength(0);
+  expect(c.active[0]).toMatchObject({ state: 'queued', stage: '等内存', reason: 'memory', waiting: '等内存', progress: { pct: null } });
+  expect(render(s)).toContain('等内存'); expect(render(s)).toContain('跑 1');
+});
 test('every S3 reason translates, unknown reason survives unchanged, needs comes from held and asks', () => {
   expect(Object.keys(REASONS).sort()).toEqual(Object.keys(HOLD_POLICY).sort());
   for (const k of Object.keys(HOLD_POLICY)) expect(reasonText(k)).not.toBe(k);

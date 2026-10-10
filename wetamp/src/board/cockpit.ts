@@ -66,12 +66,12 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
   const ended = s.rows.filter(r => ['completed', 'failed', 'cancelled'].includes(r.state) && today(r.span?.ended_ms ?? NaN));
   const achieved = ended.filter(r => r.state === 'completed' && r.landed && !r.intervened && !r.engine?.dispositions.some(d => ['ask', 'approve', 'reject'].includes(d.action)));
   const active = s.rows.filter(r => ['running', 'owner_lost'].includes(r.state)).map(r => project(r));
-  for (const j of s.activity?.jobs.filter(j => j.state === 'running') ?? []) {
-    const progress = jobProgress({ ...j, role: j.tier }, s.activity?.jobHistory ?? [], now);
+  for (const j of s.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ?? []) {
+    const progress = j.state === 'queued' ? unknownProgress() : jobProgress({ ...j, role: j.tier }, s.activity?.jobHistory ?? [], now);
     active.push({ progress, progressText: progressLabel(progress), id: j.id, project: basename(j.cwd), title: j.title,
       state: j.state, elapsed: fmtElapsed(Math.max(0, Math.floor((now - Date.parse(j.started_at)) / 1000))),
-      tokens: runTokens(j.id, 'job_id'), stage: j.tier === 'strategist' ? '评审' : j.tier === 'general' ? '编码' : '执行',
-      role: roleTag(j.tier, j.model), round: '-', reason: '', question: '', waiting: '' });
+      tokens: runTokens(j.id, 'job_id'), stage: j.state === 'queued' ? '等内存' : j.tier === 'strategist' ? '评审' : j.tier === 'general' ? '编码' : '执行',
+      role: roleTag(j.tier, j.model), round: '-', reason: j.reason ?? '', question: '', waiting: j.state === 'queued' ? '等内存' : '' });
   }
   const needs = Object.entries(s.asks ?? {}).flatMap(([key, ask]) => {
     if (!['pending', 'unknown'].includes(ask.status)) return [];

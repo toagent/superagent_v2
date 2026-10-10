@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
-import { modelOf, readJobs, roleOf, type Job } from '../src/jobs';
+import { modelOf, readJobs, recent, roleOf, type Job } from '../src/jobs';
 import { tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
@@ -145,13 +145,22 @@ describe('job registry', () => {
     expect(r.bad).toHaveLength(1);
     expect(r.bad[0]).toStartWith('d-bad.json');
   });
+
+  test('queued remains active while its wrapper lives; only a dead owner becomes lost', () => {
+    put({ id: 'queued', state: 'queued', pid: 0, reason: 'memory' });
+    put({ id: 'orphan', state: 'queued', pid: 0, wrapper_pid: 99999999 });
+    const jobs = readJobs(NOW).jobs;
+    expect(jobs.find(j => j.id === 'queued')?.state).toBe('queued');
+    expect(recent(jobs.find(j => j.id === 'queued')!, NOW)).toBe(true);
+    expect(jobs.find(j => j.id === 'orphan')?.state).toBe('lost');
+  });
 });
 
 describe('job exec', () => {
   const run = (args: string[], role = ''): ReturnType<typeof Bun.spawn> =>
     Bun.spawn(['bun', 'src/cli.ts', ...args], {
       cwd: WETAMP,
-      env: { ...process.env, SUPERAGENT_ROLE: role },
+      env: { ...process.env, SUPERAGENT_ROLE: role, SA_ADMIT: 'off' },
       stdout: 'pipe',
       stderr: 'pipe',
     });
