@@ -10,7 +10,7 @@ export const REASONS = {
   environment: '环境未就绪', paused: '等待恢复', auto_retry_exhausted: '重试已用尽',
   no_change: '修复无变化', no_attempt_node: '旧工作流无法重跑', recover_no_progress: '恢复无进展',
   needs: '需要补能力', redline: '命中红线', coder_blocked: '执行约束阻断', budget: '预算已用尽',
-  review_limit: '三轮评审用尽', review_not_independent: '评审不独立', unknown_reason: '原因未知', approval: '等待批准',
+  review_limit: '三轮评审用尽', review_not_independent: '评审不独立', engine_suspect: '引擎嫌疑', approval: '等待批准',
 } satisfies Record<keyof typeof HOLD_POLICY, string>;
 export const reasonText = (s: string): string => (REASONS as Partial<Record<string, string>>)[s] ?? s;
 export const roleTag = (role: string | null | undefined, model?: string | null, compact = false): string =>
