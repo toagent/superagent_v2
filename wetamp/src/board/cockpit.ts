@@ -63,7 +63,8 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
     return { progress, progressText: progressLabel(progress), id: r.run_id, url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined, project: r.repo, title: r.engine?.title ?? '任务标题未知', state: r.state, elapsed: fmtElapsed(elapsedAt(r, now)), tokens: runTokens(r.run_id), stage: stages(r), role: ['completed', 'failed', 'cancelled'].includes(r.state) ? roleTag('coder', r.coderModel ?? c?.sessions.find(x => x.owner?.run_id === r.run_id && x.owner.role === 'general')?.model) : roleTag(r.nodes.currentRole, r.model), round: r.engine?.round ? String(r.engine.round) : /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-', reason: reasonText(r.engine?.reason ?? ''), question, waiting: fmtElapsed(d?.action === 'ask' ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000)) : elapsedAt(r, now)) };
   };
-  const started = s.rows.filter(r => today(Date.parse(r.started_at))), completed = started.filter(r => r.state === 'completed').length;
+  const ended = s.rows.filter(r => ['completed', 'failed', 'cancelled'].includes(r.state) && today(r.span?.ended_ms ?? NaN));
+  const achieved = ended.filter(r => r.state === 'completed' && r.landed && !r.intervened && !r.engine?.dispositions.some(d => ['ask', 'approve', 'reject'].includes(d.action)));
   const active = s.rows.filter(r => ['running', 'owner_lost'].includes(r.state)).map(r => project(r));
   for (const j of s.activity?.jobs.filter(j => j.state === 'running') ?? []) {
     const progress = jobProgress({ ...j, role: j.tier }, s.activity?.jobHistory ?? [], now);
@@ -82,7 +83,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
   });
   return {
     tokenRows: known && todaySessions ? tokenRows.sort((a, b) => b.total - a.total) : null,
-    metrics: { completed, decided: completed + started.filter(r => ['failed', 'cancelled'].includes(r.state)).length, firstPass: started.filter(r => r.engine?.firstPass && r.state === 'completed').length, asks: s.rows.reduce((n, r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(Date.parse(d.at))).length ?? 0), 0), debt: typeof s.summary.debt === 'number' ? s.summary.debt : 0 },
+    metrics: { completed: achieved.length, decided: ended.length, firstPass: achieved.filter(r => r.engine?.firstPass).length, asks: s.rows.reduce((n, r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(Date.parse(d.at))).length ?? 0), 0), debt: typeof s.summary.debt === 'number' ? s.summary.debt : 0 },
     tokens: known ? fmtTokens(daily.reduce((n, d) => n + d.total, 0)) : '未知', roleTokens: byRole.size ? [...byRole].sort(([a], [b]) => Number(a.startsWith('未归属')) - Number(b.startsWith('未归属'))).map(([k, v]) => `${k} ${fmtTokens(v)}`) : ['角色今日用量未知'],
     needs,
     active,

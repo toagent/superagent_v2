@@ -1,4 +1,5 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
+import { confined } from './board/workflow';
 import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
@@ -57,6 +58,7 @@ import { engineHash, generate, newRunId } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport } from './report';
+import { jobCli } from './jobs';
 import { readUsage, usageSummary, usageCli } from './usage';
 
 const OPTIONS = {
@@ -133,6 +135,7 @@ export interface Ledger {
   auto_retries?: AutoRetry[];
   /** supervise-tick 的处置记录（最近 20 条）。 */
   dispositions?: Disposition[];
+  intervened?: boolean;
   budget_grants?: {
     at: string;
     milestone: string;
@@ -242,6 +245,12 @@ export const gatesOf = (art: string): string[] =>
         .filter(f => /^gate-.+-r\d+\.json$/.test(f))
         .sort()
     : [];
+export const evidenceJson = (l: Ledger, art: string, file: string): unknown => {
+  const path = confined(l, join(art, file)); return path ? readJson(path) : undefined;
+};
+export const evidenceGates = (l: Ledger, art: string): string[] => {
+  const path = confined(l, art); return path ? gatesOf(path).filter(f => confined(l, join(path, f))) : [];
+};
 /** 将军输出存档（sa-check accept 写的 `<tag>.coder.json`），可按里程碑过滤。 */
 interface CoderOut {
   tag: string;
@@ -249,13 +258,13 @@ interface CoderOut {
   error_class?: string | null;
   needs?: { cap: string; why: string; minimal_ask: string }[];
 }
-const codersOf = (art: string, m?: string): CoderOut[] =>
+const codersOf = (art: string, m?: string, l?: Ledger): CoderOut[] =>
   (existsSync(art) ? readdirSync(art).filter(f => f.endsWith('.coder.json')) : [])
-    .map(f => ({ ...(readJson(join(art, f)) as CoderOut), tag: f.slice(0, -'.coder.json'.length) }))
+    .map(f => ({ ...((l ? evidenceJson(l, art, f) : readJson(join(art, f))) as CoderOut), tag: f.slice(0, -'.coder.json'.length) }))
     .filter(c => m === undefined || c.milestone === m);
 /** 聚合 needs[]（每条带来源 tag）：status/brief/board 展示，自动重试据此保持 held。 */
-export const needsOf = (art: string, m?: string): Record<string, string>[] =>
-  codersOf(art, m).flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
+export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
+  codersOf(art, m, l).flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
 
 /** 登记过的 run id（runs/*.json 去掉扩展名）。 */
 export const ledgerIds = (): string[] => {
@@ -280,7 +289,8 @@ const ledgers = (): (Ledger | { run_id: string; error: string })[] =>
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
   const nodes = run.nodes ?? [];
   const art = artifactsOf(run);
-  const needs = needsOf(art);
+  confined(l, art);
+  const needs = needsOf(art, undefined, l);
   return {
     run_id: l.run_id,
     engine:
@@ -293,11 +303,11 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(nodes.length)} completed`,
     ...(c.node ? { node: c.node } : {}),
     ...(c.event ? { event: c.event } : {}),
-    ...(c.node?.startsWith('gate-') ? { gate: readJson(join(art, `${c.node}.json`)) } : {}),
+    ...(c.node?.startsWith('gate-') ? { gate: evidenceJson(l, art, `${c.node}.json`) } : {}),
     ...(c.state === 'failed' ? failure(l, run, c.node) : {}),
     ...(c.state === 'completed'
       ? {
-          land: (readJson(join(art, 'land.json')) as { commands?: string[] } | undefined)?.commands,
+          land: (evidenceJson(l, art, 'land.json') as { commands?: string[] } | undefined)?.commands,
         }
       : {}),
     evidence: art,
@@ -352,11 +362,11 @@ const stalledOut = (l: Ledger, run: RunView): boolean =>
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
-    const reason = nodeReason(run, c);
+    const reason = nodeReason(l, run, c);
     const pkg = c.node.replace(/^(verify|settle|code|repair)-/, '');
     // settle 是修复后的复验；其红证据不能被首次 verify 的旧绿证据覆盖。
     const evidence = join(artifactsOf(run), `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`);
-    const verify = readJson(evidence) as { ok?: boolean } | null;
+    const verify = evidenceJson(l, artifactsOf(run), `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`) as { ok?: boolean } | null;
     const started = run.nodes?.find(n => n.nodeId === c.node)?.startedAt;
     const current = !started || !/^(code|repair)-/.test(c.node) || (existsSync(evidence) && statSync(evidence).mtimeMs >= Date.parse(started));
     const deliberate = ['needs', 'redline', 'budget', 'coder_blocked'].includes(reasonHold(reason));
@@ -550,6 +560,7 @@ function startRun(planPath: string, a: Args): number {
       transcript: '',
       log: '',
       recoveries: [],
+      intervened: false,
       launcher: launcher(home().sa),
     };
     // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
@@ -780,6 +791,7 @@ function decide(l: Ledger, a: Args): number {
     print({ run_id: l.run_id, ok: false, reason: `decide refused: run ${run.status} is not currently held` });
     return 1;
   }
+  if (['approve', 'reject', 'retry'].includes(action)) updateLedger(l, cur => { cur.intervened = true; });
   if (action === 'approve') {
     if (pastDeadline(l)) {
       print({ run_id: l.run_id, ok: false, reason: PAST_DEADLINE });
@@ -819,8 +831,8 @@ function brief(l: Ledger): number {
   ];
   lines.push(`engine: ${String(s.engine)}`);
   if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
-  for (const f of gatesOf(art)) {
-    const g = readJson(join(art, f)) as Gate;
+  for (const f of evidenceGates(l, art)) {
+    const g = evidenceJson(l, art, f) as Gate;
     lines.push(
       `${f.slice(0, -5)}: ${g.verdict}${g.reason ? ` (${g.reason})` : ''} debt=${String(g.debt.length)}`
     );
@@ -1007,7 +1019,7 @@ function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): A
 function human(l: Ledger, run: RunView, asks: Asks): Action {
   const w = run.metadata?.wait;
   if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
-  const key = askKey(l.run_id, 'signoff');
+  const key = askKey(l.run_id, 'signoff', holdEpisode(l, run, classifyRun(l, run)));
   const base = { run_id: l.run_id, event: w.event };
   // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
@@ -1044,7 +1056,7 @@ function approveRun(l: Ledger): RecoverResult {
 }
 
 /**
- * HOLD_POLICY 的 ask 行：同一 (run, hold) 仅投递一次；attempt 不参与。
+ * HOLD_POLICY 的 ask 行：同一 (run, hold, episode) 仅投递一次；新挂起必须新问。
  * 执行失败保留回答，下一 tick 重试；pending/expired 不动。
  */
 function askHold(
@@ -1056,7 +1068,7 @@ function askHold(
   asks: Asks,
   extra: Record<string, unknown>
 ): Action {
-  const key = askKey(l.run_id, hold);
+  const key = askKey(l.run_id, hold, holdEpisode(l, run, c));
   const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
   const r = pollAsk(key, p.text, ttlHours(Date.parse(planOf(l).deadline)), asks);
   if ('conflict' in r)
@@ -1160,7 +1172,7 @@ function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
     c.state === 'held:gate'
-      ? reasonHold(nodeReason(run, c))
+      ? reasonHold(nodeReason(l, run, c))
       : c.state === 'held:environment'
         ? 'environment'
         : c.state === 'held:recover_no_progress'
@@ -1170,15 +1182,15 @@ function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
               ? 'approval'
               : 'paused'
             : c.state === 'failed' && /^(verify|settle)-/.test(c.node ?? '')
-              ? reasonHold(nodeReason(run, c))
-              : c.state === 'failed' && /^(code|fix)-/.test(c.node ?? '')
+              ? reasonHold(nodeReason(l, run, c))
+              : c.state === 'failed' && /^(code|fix|repair)-/.test(c.node ?? '')
                 ? 'coder'
                 : undefined;
   return h && pastDeadline(l) ? 'deadline' : h;
 }
 
-const nodeReason = (run: RunView, c: Classified): string => {
-  const out = readJson(join(artifactsOf(run), `${c.node ?? ''}.json`)) as {
+const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
+  const out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as {
     reason?: unknown;
   } | null;
   return typeof out?.reason === 'string' ? out.reason : '';
@@ -1214,6 +1226,10 @@ function grantBudget(l: Ledger, node: string, key: string): void {
   saveLedger(l);
 }
 
+/** Entry timestamp is stable across polls; node distinguishes milestone signoffs. */
+function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
+  return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? run.started_at ?? l.started_at}`;
+}
 /** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
 function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action | undefined {
   const run = getRun(l.archon_run_id, l.repo);
@@ -1231,7 +1247,7 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
     row.hold = hold;
     row.disposed = l.dispositions?.some(d => d.reason === hold && d.ok && Date.parse(d.at) >= Date.parse(row.since)) ?? false;
     const p: Policy = HOLD_POLICY[hold];
-    if (!(asks instanceof Error) && ['ask', 'signoff'].includes(p.do) && !(hold === 'signoff' && pastDeadline(l))) supersedeAsks(asks, l.run_id, hold);
+    if (!(asks instanceof Error) && ['ask', 'signoff'].includes(p.do) && !(hold === 'signoff' && pastDeadline(l))) supersedeAsks(asks, l.run_id, hold, holdEpisode(l, run, c));
     const x =
       p.do === 'signoff'
         ? human(l, run, need())
@@ -1280,6 +1296,7 @@ function record(l: Ledger, reason: string, x: Action): Action {
   };
   try {
     updateLedger(l, cur => {
+      if (['ask', 'approve', 'reject'].includes(d.action)) cur.intervened = true;
       cur.dispositions = [...(cur.dispositions ?? []), d].slice(-MAX_DISPOSITIONS);
     });
     return x;
@@ -1331,7 +1348,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
     [kind, m, reason] = ['environment', 'environment', 'environment'];
   } else {
     m = milestoneOf(l, node);
-    const why = nodeReason(run, c);
+    const why = nodeReason(l, run, c);
     kind = reasonHold(why) === 'environment' ? 'environment' : 'coder';
     reason = `${kind}:${why || node}`;
   }
@@ -1345,7 +1362,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   ];
   if (needs.length) return hold('needs');
   if (codersOf(art, m).some(x => x.error_class === 'redline')) return hold('redline');
-  const cause = reasonOf(c.state === 'held:engine_suspect' ? 'engine_suspect' : nodeReason(run, c) || kind);
+  const cause = reasonOf(c.state === 'held:engine_suspect' ? 'engine_suspect' : nodeReason(l, run, c) || kind);
   if (!cause) return hold('engine_suspect');
   if (cause.hold === 'deadline') return hold('deadline');
   if (cause.hold === 'no_change') return hold('no_change');
@@ -1458,9 +1475,9 @@ export function summarize(pairs: Pair[]): Record<string, unknown> {
       if (run.status === 'failed' && !c.node?.startsWith('gate-'))
         bump(n, `failed:${c.node?.split('-')[0] ?? '?'}`);
       const last = new Map<string, Gate & { round: string }>();
-      for (const f of gatesOf(artifactsOf(run))) {
+      for (const f of evidenceGates(l, artifactsOf(run))) {
         const [, m, round] = /^gate-(.+)-r(\d+)\.json$/.exec(f) ?? [];
-        last.set(m, { ...(readJson(join(artifactsOf(run), f)) as Gate), round });
+        last.set(m, { ...(evidenceJson(l, artifactsOf(run), f) as Gate), round });
         if (round === '1' && last.get(m)?.verdict === 'pass') bump(n, 'first_pass');
       }
       for (const g of last.values()) {
@@ -1525,7 +1542,9 @@ export function main(argv: string[]): number {
         print({ run_id: id, ...res });
         return res.ok ? 0 : 1;
       }
-      return resumeRun(loadLedger(id));
+      const l = loadLedger(id), code = resumeRun(l);
+      if (code === 0) updateLedger(l, cur => { cur.intervened = true; });
+      return code;
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);
@@ -1547,7 +1566,7 @@ export function main(argv: string[]): number {
     case 'land': {
       const l = ledger();
       const run = getRun(l.archon_run_id, l.repo);
-      const land = readJson(join(artifactsOf(run), 'land.json'));
+      const land = evidenceJson(l, artifactsOf(run), 'land.json');
       if (land === undefined) {
         console.error(`land: no land.json yet (state ${classify(run).state})`);
         return 1;
@@ -1605,7 +1624,7 @@ if (import.meta.main) {
     if (verb === 'supervise-tick') await (await import('./web/server')).refreshConsole();
     if (verb === 'console' || verb === 'web') process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs')
-      process.exit(await (await import('./jobs')).jobCli(argv));
+      process.exit(await jobCli(argv));
     process.exit(main(argv));
   } catch (e) {
     console.error(`superagent: ${(e as Error).message}`);

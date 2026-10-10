@@ -53,23 +53,23 @@ test('observer loader blocks native dotenv reload, including override:true in AR
   const out = await new Response(child.stdout).text();
   expect(await child.exited).toBe(0); expect(JSON.parse(out)).toEqual({ host: '127.0.0.1', dsn: false, adapter: false });
 });
-test('fingerprint drift restarts both resident processes through the existing lifecycle; current engine stays', async () => {
+test('M2-07 fingerprint drift restarts the launchd console; current engine stays', async () => {
   const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, 'archon');
-  const s: WebState = { pid: process.pid, server_pid: process.pid, port: 39890, internal_port: 1234, token: 'fixture', started_at: new Date().toISOString(), engine_hash: 'old' };
+  const s: WebState = { pid: process.pid, server_pid: process.pid, port: 39890, internal_port: 1234, token: 'fixture', started_at: new Date().toISOString(), engine_hash: 'old', socket: join(root, 'console/archon.sock'), label: 'fixture' };
   writeFileSync(join(root, 'web.json'), JSON.stringify(s)); let count = 0;
-  const restart = async (): Promise<WebState> => { count++; return { ...s, engine_hash: 'new' }; };
+  const restart = async (): Promise<WebState> => { count++; return { ...s, engine_hash: 'new', socket: join(root, 'console/archon.sock'), label: 'fixture' }; };
   expect(needsRestart(s, 'old')).toBe(false); expect(needsRestart(s, 'new')).toBe(true);
-  expect(await refreshConsole(restart, 'old')).toMatchObject({ engine_hash: 'old' }); expect(count).toBe(0);
+  expect(await refreshConsole(restart, 'old')).toMatchObject({ engine_hash: 'old', socket: join(root, 'console/archon.sock'), label: 'fixture' }); expect(count).toBe(0);
   expect(await refreshConsole(restart, 'new')).toMatchObject({ engine_hash: 'new' }); expect(count).toBe(1);
-  await expect(stopWeb(s)).rejects.toThrow('owner ambiguous'); // Never signal this unowned test process.
+
 });
-test('previous web state has no fingerprint and migrates; unknown owners are still refused', async () => {
+test('M2-07 previous PID state requires migration; incomplete owner identity is refused', async () => {
   const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, 'archon');
   const legacy = { pid: process.pid, port: 39890, token: 'fixture', started_at: new Date().toISOString() };
   writeFileSync(join(root, 'web.json'), JSON.stringify(legacy));
   expect(needsRestart(legacy, 'new')).toBe(true);
   let count = 0;
-  const migrated: WebState = { ...legacy, server_pid: process.pid, internal_port: 1234, engine_hash: 'new' };
+  const migrated: WebState = { ...legacy, server_pid: process.pid, internal_port: 1234, engine_hash: 'new', socket: join(root, 'console/archon.sock'), label: 'fixture' };
   expect(await refreshConsole(async () => { count++; return migrated; }, 'new')).toEqual(migrated);
   expect(count).toBe(1); await expect(stopWeb(legacy)).rejects.toThrow('owner ambiguous');
 });

@@ -3,7 +3,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonJson, getRun, tail } from './archon';
-import { summarize, type Ledger, type Pair } from './cli';
+import { type Ledger, type Pair } from './cli';
+import { snapshotOf } from './board/data';
+import { cockpit } from './board/cockpit';
 import type { Plan } from './plan';
 
 const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
@@ -163,8 +165,10 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       unreadable.push(`${l.run_id}: ${tail((e as Error).message, 200)}`);
     }
   }
+  const snapshot = snapshotOf(pairs);
   return {
-    ...summarize(pairs),
+    ...snapshot.summary,
+    metrics: cockpit(snapshot).metrics,
     usage: {
       total: rollup(calls),
       by_run: group(calls, c => c.run),

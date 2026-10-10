@@ -18,7 +18,7 @@ const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
 beforeEach(() => { process.env.TZ = 'Asia/Taipei'; });
 afterEach(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
 const row = (id: string, state = 'running', current = 'review-m1-r2'): BoardRow => ({
-  run_id: id, repo: 'sinan', state, exit: null, model: 'gpt-6-astra', nodes: { done: 3, total: 5, current, currentRole: 'reviewer' },
+  landed: state === 'completed', run_id: id, repo: 'sinan', state, exit: null, model: 'gpt-6-astra', nodes: { done: 3, total: 5, current, currentRole: 'reviewer' },
   started_at: iso(-600000), span: { started_ms: now - 600000, ended_ms: state === 'running' ? null : now - 60000 }, elapsed_s: 600, held: state.startsWith('held:') ? { node: current, event: null } : null,
   recoveries: 0, auto_retries: 0, console: 'codex', branch: 'branch', evidence: '', plan: '', stale: false,
   engine: { title: '题目清单报告：补修订前版本和节分布排序', milestones: ['m1'], currentMilestone: 'm1', states: [{ id: 'code-a', state: 'completed' }, { id: 'verify-a', state: 'completed' }, { id: 'review-m1-r1', state: 'failed' }, { id: current, state: state === 'running' ? 'running' : 'completed' }, { id: 'review-m1-r3', state: 'skipped' }], firstPass: false, reason: '', dispositions: [] },
@@ -33,13 +33,13 @@ test('local-day achievement, first-pass run count, ask actions across run days a
   const done = row('done', 'completed'); done.engine!.firstPass = true;
   const fail = row('fail', 'failed'), cancel = row('cancel', 'cancelled'), old = row('old', 'completed'); old.started_at = iso(-86400000);
   old.engine!.dispositions = [{ at: iso(-86400000), action: 'ask', reason: 'budget', ok: true }, { at: iso(-1000), action: 'ask', reason: 'budget', ok: true }, { at: iso(-1000), action: 'retry', reason: 'budget', ok: true }];
-  expect(cockpit(snapshot([done, fail, cancel, old]), now).metrics).toEqual({ completed: 1, decided: 3, firstPass: 1, asks: 1, debt: 22 });
+  expect(cockpit(snapshot([done, fail, cancel, old]), now).metrics).toEqual({ completed: 1, decided: 4, firstPass: 1, asks: 1, debt: 22 });
 });
 test('midnight is local, future starts and missing endings never enter today counts', () => {
   const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
   const before = row('before', 'completed'); before.started_at = new Date(midnight.getTime() - 1).toISOString(); before.span = null;
   const edge = row('edge', 'completed'); edge.started_at = midnight.toISOString();
-  const future = row('future', 'completed'); future.started_at = iso(1000);
+  const future = row('future', 'completed'); future.started_at = iso(1000); future.span!.ended_ms = now + 2000;
   expect(cockpit(snapshot([before, edge, future]), now).metrics.completed).toBe(1);
   const active = snapshot([row('a'), row('b')]); active.eta = { a: { weight: 600, progress: { pct: 50, eta_s: 20, overrun_s: 180, basis: 'history' } }, b: { weight: 1200, progress: { pct: 20, eta_s: 600, overrun_s: 0, basis: 'history' } } };
   expect(cockpit(active, now).active[0].progressText).toContain('超~3m');

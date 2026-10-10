@@ -6,7 +6,7 @@ import { EXIT_USAGE, parseArgs } from '../cli';
 import { WETAMP } from '../config';
 import { createLoader, readLedger, type BoardRow, type Snapshot } from './data';
 import { detailOf, type Detail } from './detail';
-import { startWeb, webUrl } from '../web/server';
+import { webState, webUrl } from '../web/server';
 import { requestUsageRefresh } from '../usage';
 import { engineHash } from '../generate';
 
@@ -44,7 +44,7 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     const base = createLoader(signal);
     let url: string | undefined;
     load = async n => ({ ...await base(n), web_url: url });
-    if (!a.flags.json && process.env.NODE_ENV !== 'test') { try { url = webUrl(await startWeb()); } catch (e) { console.error(`web: ${(e as Error).message}`); } }
+    const resident = webState(); if (resident) url = webUrl(resident);
     if (process.env.NODE_ENV !== 'test') requestUsageRefresh();
   } catch (e) {
     console.error(`${(e as Error).message}\n${USAGE}`);

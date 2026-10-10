@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -151,7 +152,7 @@ describe('bin/codex-worker', () => {
   );
 
   test('fails closed unless the guard PreToolUse hook is trusted and enabled', () => {
-    const guard = "node '/x/wetamp/hooks/guard.cjs' codex";
+    const guard = `node '${join(realpathSync(join(import.meta.dir, '..')), 'hooks/guard.cjs')}' codex`;
     const run = (trusted: string | null, extra = '', env: Record<string, string> = {}, args = ['exec', 'x']) => {
       const root = tmp();
       const codexHome = join(root, 'codex-home');

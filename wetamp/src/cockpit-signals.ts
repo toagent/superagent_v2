@@ -1,4 +1,5 @@
 // 纯函数：驾驶舱与 tick 共用监测口径，不读取运行时或提醒列表。
+import { createHash } from 'node:crypto';
 import { HOLD_POLICY } from './reasons';
 export interface Ask {
   legacy_key?: string;
@@ -13,7 +14,7 @@ export interface HoldSignal {
   since: string;
   disposed: boolean;
 }
-export const askKey = (run: string, hold: string): string => `${run}:${hold}`;
+export const askKey = (run: string, hold: string, episode?: string): string => `${run}:${hold}${episode ? ':' + createHash('sha256').update(episode).digest('hex').slice(0, 16) : ''}`;
 export const unresolved = (a: Ask): boolean =>
   ['pending', 'unknown', 'yes', 'no'].includes(a.status);
 export function cockpitSignals(
@@ -41,13 +42,13 @@ export function cockpitSignals(
   };
 }
 /** 保留旧键的历史；只迁移一个当前提问，其余作废，不创建新的提醒。 */
-export function supersedeAsks(asks: Asks, run: string, hold?: string): void {
-  const current = hold && askKey(run, hold);
+export function supersedeAsks(asks: Asks, run: string, hold?: string, episode?: string): void {
+  const current = hold && askKey(run, hold, episode);
   for (const [key, a] of Object.entries(asks)) {
     if (!key.startsWith(`${run}:`) || !a || !unresolved(a)) continue;
     const category = key.split(':')[1];
     if (
-      current &&
+      !episode && current &&
       key !== current &&
       (category === hold || (hold === 'signoff' && !(category in HOLD_POLICY))) &&
       !asks[current]
