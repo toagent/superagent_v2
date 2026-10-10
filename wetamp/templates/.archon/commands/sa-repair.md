@@ -18,4 +18,6 @@ argument-hint: (inputs bound by the generated workflow)
 3. 必须实跑任务书的全部验收命令，把命令与退出码写进 `quick_checks`。基线上就失败且与本包无关的命令，在 `deviations` 记下并继续。
 4. 这是本包唯一一次修复机会，复验仍不通过即挂起交给元帅。能自己解决的问题不得返回 `blocked` 或 `partial`；`blocked` 只在命中红线（`error_class` 填 `redline`）或缺外部资源且 `needs` 非空（每条 `{cap, why, minimal_ask}`）时合法。`deviations`/`needs` 没有就填空数组。
 
+正常完成时 `status` 填 `done`、`error_class` 填 null。
+
 只输出符合 output_format 的 JSON。

@@ -365,3 +365,9 @@ superagent board 15:01:27 · /Users/yong/.superagent
 - BT5 的 launcher/run→发起终端挂接尚未合入本 worktree；Web 当前可挂作业，run 表独立显示。元帅合并 BT5 后需验证终端下 run 挂接与共享文件冲突。
 - OpenCode 可选来源未接；默认浏览器 --open 已接入但没有打开操作者浏览器做视觉验收。HTML/CSP/cookie 和 HTTP 行为已实测。
 - G1 合格独立评审及元帅最终实测 pending；没有宣称上线/合并。派生会话按 agent-evolution 跳过自动学习晋升，交还主控；可复用证据是两家日期字段 period/date 与缓存 token 对账口径。
+
+## HF1 error_class
+
+- 根因：`done` 且验收全绿仍因 `error_class:task` 进入 repair，settle 再以 `repair_exhausted:coder_error:task` 挂起。
+- 改动：红线与 blocked needs 优先挂起；done 以验收证据判定，绿时忽略其他类别、保留原值并在 coder 存档标记 `error_class_ignored:true`；schema 与修复提示明确成功填 null，两份 golden 同步。
+- 测试：HF1 回归旧实现 3/3 失败、修复后 3/3 通过；`bunx tsc --noEmit && bun test` 通过（366/366，0 fail），隔离 `selftest.sh --fake` 与 lint 通过；提交绑定 `verify-local.sh --commit HEAD` 结果见同一临时目录 `/tmp/hf1-error-class.AmFqfG/verify.json`。

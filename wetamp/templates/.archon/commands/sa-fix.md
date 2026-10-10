@@ -19,4 +19,6 @@ argument-hint: (inputs bound by the generated workflow)
 3. 必须实跑各任务书的全部验收命令；失败就修，循环到全部通过，把命令与退出码写进 `quick_checks`。基线上就失败且与本里程碑无关的命令，在 `deviations` 记下并继续。
 4. 能自己解决的问题不得返回 `blocked` 或 `partial`。`blocked` 只在命中红线（`error_class` 填 `redline`）或缺外部资源且 `needs` 非空（每条 `{cap, why, minimal_ask}`）时合法；没有 `needs` 的 `blocked` 按 `partial` 处理。`deviations`/`needs` 没有就填空数组。
 
+正常完成时 `status` 填 `done`、`error_class` 填 null。
+
 只输出符合 output_format 的 JSON。

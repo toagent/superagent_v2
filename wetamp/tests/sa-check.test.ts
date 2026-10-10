@@ -294,12 +294,38 @@ describe('F-18 disposition', () => {
     expect(d({ status: 'blocked' })).toBe('repair:coder_partial');
     expect(d({ status: 'blocked', needs: [{ cap: 'network' }] })).toBe('suspend:coder_needs');
     expect(d({ status: 'blocked', error_class: 'redline' })).toBe('suspend:coder_redline');
-    expect(d({ status: 'done', error_class: 'env' })).toBe('suspend:coder_error:env');
+    expect(d({ status: 'partial', error_class: 'env' })).toBe('suspend:coder_error:env');
     expect(d({ status: 'partial', error_class: 'timeout' })).toBe('repair:coder_partial');
-    expect(d({ status: 'done', error_class: 'task' })).toBe('repair:coder_error:task');
     expect(disposition('not json', true)).toEqual({
       disposition: 'suspend',
       reason: 'coder_output_invalid',
+    });
+  });
+  test('HF1: done uses acceptance evidence while redline still suspends', () => {
+    for (const error_class of [
+      'task',
+      'env',
+      'timeout',
+      'sandbox_denied',
+      'permission_denied',
+      'vendor_unavailable_all',
+      'budget_exhausted',
+      'plan_invalid',
+      'scope_violation',
+    ]) {
+      expect(disposition(c({ error_class }), true)).toEqual({
+        disposition: 'advance',
+        reason: null,
+        error_class_ignored: true,
+      });
+      expect(disposition(c({ error_class }), false)).toEqual({
+        disposition: 'repair',
+        reason: 'acceptance_failed',
+      });
+    }
+    expect(disposition(c({ error_class: 'redline' }), true)).toEqual({
+      disposition: 'suspend',
+      reason: 'coder_redline',
     });
   });
 });
@@ -637,6 +663,47 @@ describe('sa-check script', () => {
     });
     expect(r.code).toBe(1);
     expect(r.out).toMatchObject({ ok: true, disposition: 'suspend', reason: 'coder_redline' });
+  });
+  test('HF1: accept preserves ignored error_class in the coder archive only on green', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    for (const [error_class, acceptance, disposition, reason, code] of [
+      ['task', 'true', 'advance', null, 0],
+      ['task', 'false', 'repair', 'acceptance_failed', 0],
+      ['redline', 'true', 'suspend', 'coder_redline', 1],
+    ] as const) {
+      const tag = `verify-${error_class}-${acceptance}`;
+      const r = runScript(repo, {
+        kind: 'accept',
+        plan: planFile(root, acceptance),
+        pkgs: 'a',
+        tag,
+        coder: JSON.stringify({ status: 'done', error_class, needs: [] }),
+      });
+      expect(r.code).toBe(code);
+      expect(r.out).toMatchObject({ ok: acceptance === 'true', disposition, reason });
+      const saved = JSON.parse(readFileSync(join(r.art, `${tag}.coder.json`), 'utf8'));
+      expect(saved).toMatchObject({ status: 'done', error_class });
+      expect(saved.error_class_ignored).toBe(disposition === 'advance' ? true : undefined);
+    }
+  });
+  test('HF1: settle advances a green done repair even when error_class is task', () => {
+    const root = tmp();
+    const r = runScript(gitRepo(root), {
+      kind: 'settle',
+      plan: planFile(root, 'true'),
+      pkgs: 'a',
+      tag: 'settle-a',
+      first: JSON.stringify({ ok: false, disposition: 'repair', reason: 'acceptance_failed' }),
+      repaired: JSON.stringify({ status: 'done', error_class: 'task', needs: [] }),
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toMatchObject({ ok: true, disposition: 'advance', reason: null });
+    expect(JSON.parse(readFileSync(join(r.art, 'settle-a.coder.json'), 'utf8'))).toMatchObject({
+      status: 'done',
+      error_class: 'task',
+      error_class_ignored: true,
+    });
   });
   test('F-18 settle: advance passes through; a repair that stays red suspends repair_exhausted', () => {
     const root = tmp();
