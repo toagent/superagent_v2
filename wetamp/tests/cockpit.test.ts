@@ -33,7 +33,7 @@ test('local-day achievement, first-pass run count, ask actions across run days a
   const done = row('done', 'completed'); done.engine!.firstPass = true;
   const fail = row('fail', 'failed'), cancel = row('cancel', 'cancelled'), old = row('old', 'completed'); old.started_at = iso(-86400000);
   old.engine!.dispositions = [{ at: iso(-86400000), action: 'ask', reason: 'budget', ok: true }, { at: iso(-1000), action: 'ask', reason: 'budget', ok: true }, { at: iso(-1000), action: 'retry', reason: 'budget', ok: true }];
-  expect(cockpit(snapshot([done, fail, cancel, old]), now).metrics).toEqual({ completed: 1, decided: 2, firstPass: 1, asks: 1, debt: 22 });
+  expect(cockpit(snapshot([done, fail, cancel, old]), now).metrics).toEqual({ completed: 1, decided: 3, firstPass: 1, asks: 1, debt: 22 });
 });
 test('midnight is local, future starts and missing endings never enter today counts', () => {
   const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);

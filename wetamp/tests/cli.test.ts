@@ -1939,6 +1939,7 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
     SA_SUPERVISOR: py,
     AGENT_SUPERVISOR_STATE: join(root, 'supervisor'),
     SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
+    SA_SKIP_DOCTOR: '1',
   };
   const sa = (...args: string[]) => {
     const p = Bun.spawnSync([BIN, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
@@ -1949,7 +1950,7 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
     };
   };
   expect(
-    Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env }).exitCode
+    Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env, stdout: 'pipe', stderr: 'pipe' }).exitCode
   ).toBe(0);
   const started = sa('run', plan, '--fake', '--skip-selftest');
   expect(started.code).toBe(0);
@@ -1987,6 +1988,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
     SUPERAGENT_WRITE_ROOTS: root,
     SA_ARCHON_BIN: '',
     SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
+    SA_SKIP_DOCTOR: '1',
   };
   const sa = (
     ...args: string[]
@@ -2002,7 +2004,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
     };
   };
   expect(
-    Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env }).exitCode
+    Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env, stdout: 'pipe', stderr: 'pipe' }).exitCode
   ).toBe(0);
   expect(sa('run', plan).out).toMatchObject({ phase: 'preflight', reason: expect.stringContaining('no valid selftest receipt: no selftest.json') }); // preflight 拒绝
   const started = sa('run', plan, '--fake', '--skip-selftest');

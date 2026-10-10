@@ -31,7 +31,7 @@ const key = (client: Client, id: string): string => `${client}:${sessionKey(id)}
 const empty = (): Counts => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, sessions: 0 });
 const counts = (r: ObjectValue): Counts => ({ input: n(r.inputTokens), output: n(r.outputTokens), reasoning: n(r.reasoningOutputTokens), cacheRead: n(r.cacheReadTokens), cacheWrite: n(r.cacheCreationTokens), total: n(r.totalTokens), sessions: 1 });
 export function parseUsage(value: unknown, client: Client): UsageSession[] {
-  const o = obj(value), rows = o[client === 'claude' ? 'session' : 'sessions'];
+  const o = obj(value), rows = o.sessions ?? (client === 'claude' ? o.session : undefined);
   if (!Array.isArray(rows)) throw new Error('invalid_json_shape');
   const seen = new Map<string, UsageSession>();
   for (const raw of rows) {
@@ -64,13 +64,14 @@ function first(file: string): ObjectValue {
   catch { return {}; } finally { if (fd !== undefined) closeSync(fd); }
 }
 export function logSessionId(file: string | null, client: string): string | null { const r = file ? first(file) : {}, p = client === 'codex' ? obj(r.payload) : r; return str(p.id ?? p.sessionId); }
-export function jobSession(job: Pick<Job, 'kind' | 'cwd' | 'started_at'>): string | null {
+export function jobSession(job: Pick<Job, 'kind' | 'cwd' | 'started_at'>, node = false): string | null {
   const start = Date.parse(job.started_at), hits = new Set<string>();
   if (!Number.isFinite(start)) return null;
   const dirs = job.kind === 'codex' ? [-60000, 0, 60000].map(d => join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions', ...new Date(start + d).toLocaleDateString('sv-SE').split('-'))) : job.kind === 'claude' ? [join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects', job.cwd.replace(/[^a-zA-Z0-9]/g, '-'))] : [];
   for (const dir of new Set(dirs)) for (const file of files(dir).filter(f => f.endsWith('.jsonl'))) {
     const r = first(file), p = job.kind === 'codex' ? obj(r.payload) : r;
-    if ((job.kind !== 'codex' || r.type === 'session_meta') && (job.kind !== 'codex' || p.cwd === job.cwd) && Math.abs(Date.parse(String(p.timestamp ?? r.timestamp ?? obj(r.snapshot).timestamp)) - start) <= 60000) {
+    const delta = Date.parse(String(p.timestamp ?? r.timestamp ?? obj(r.snapshot).timestamp)) - start;
+    if ((job.kind !== 'codex' || r.type === 'session_meta') && (job.kind !== 'codex' || p.cwd === job.cwd) && Math.abs(delta) <= 60000 && (!node || delta >= 0)) {
       const id = str(p.id ?? p.sessionId) ?? (/^[0-9a-f-]{36}\.jsonl$/i.test(basename(file)) ? basename(file, '.jsonl') : null); if (id) hits.add(id);
     }
   }
@@ -85,15 +86,20 @@ export function usageEvidence(): { claims: { id: string; owner: Owner }[]; eta: 
       const l = loadLedger(id), j = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo);
       // --events replaces nodes in the CLI response. Reuse its canonical fold, including retry resets and cached success.
       const events = arr(j.events) as WorkflowEventRow[];
-      eta.push(etaInput(l, j as unknown as RunView, events));
+      const input = etaInput(l, j as unknown as RunView, events); eta.push(input);
       const roles = workflowRoles(l);
-      for (const raw of arr(j.events)) {
+      const history = (l.adoptions ?? []).flatMap(a => { try { return [archonJson(['workflow', 'get', a.from, '--verbose', '--events'], l.repo)]; } catch { return []; } });
+      for (const run of [j, ...history]) for (const raw of arr(run.events)) {
         const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
-        if (!d.session_id || !m) continue;
         const client = d.binding?.provider ?? d.provider;
         if (client !== 'codex' && client !== 'claude') continue;
         const role = roles?.get(String(e.step_name));
-        claims.push({ id: d.session_id, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m.resolved.source === 'provider' ? m.resolved.value : m.requested ?? null, cwd: l.repo, kind: 'run', run_id: id } });
+        const cwd = str(run.working_path), started = d.invocation?.startedAt;
+        // Only the latest active launch may use bounded metadata matching; terminal/history nodes require a session id.
+        const active = run === j && input.run.status === 'running' && input.run.nodes?.some(n => n.nodeId === e.step_name && n.state === 'running') && arr(run.events).slice().reverse().find(v => obj(v).step_name === e.step_name && obj(v).event_type === 'node_started') === raw;
+        const session = d.session_id ?? (active && cwd && started ? jobSession({ kind: client, cwd, started_at: started }, true) : null);
+        if (!session) continue;
+        claims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: 'run', run_id: id } });
       }
     } catch { /* A missing run provides no ownership proof; existing index survives. */ }
   }
@@ -115,8 +121,9 @@ export function readUsage(): UsageCache {
   const c = obj(json(join(root(), 'cache.json')));
   return Array.isArray(c.sessions) && Array.isArray(c.daily) ? c as unknown as UsageCache : { at: null, status: '用量未知（ccusage 不可用：未刷新）', sources: {}, sessions: [], daily: [] };
 }
+export const usageCommand = (client: Client, mode: 'session' | 'daily', since?: string): string[] => ['nice', '-n', '10', 'bunx', 'ccusage@20.0.28', client, mode, '--json', ...(since ? ['--since', since] : [])];
 async function capture(client: Client, mode: 'session' | 'daily', since?: string): Promise<unknown> {
-  const cmd = ['nice', '-n', '10', 'bunx', 'ccusage@20.0.28', ...(client === 'codex' ? ['codex'] : []), mode, '--json', ...(since ? ['--since', since] : [])];
+  const cmd = usageCommand(client, mode, since);
   const p = Bun.spawn(cmd, { stdin: 'ignore', stdout: 'pipe', stderr: 'ignore', detached: true });
   const timeout = { expired: false };
   const timer = setTimeout(() => { timeout.expired = true; try { process.kill(-p.pid, 'SIGKILL'); } catch { /* Child already exited. */ } }, 120000);

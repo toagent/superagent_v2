@@ -100,7 +100,8 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
   }
 
   const app = ink.render(
-    createElement(App, { load: () => load(limit), first, interval, fingerprint })
+    createElement(App, { load: () => load(limit), first, interval, fingerprint }),
+    { alternateScreen: true }
   );
   await app.waitUntilExit();
   return typeof process.exitCode === 'number' ? process.exitCode : 0;

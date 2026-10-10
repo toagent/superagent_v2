@@ -21,6 +21,8 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  archon_id?: string;
+  coderModel?: string | null;
   engine?: { title: string; milestones: string[]; currentMilestone: string | null; states: { id: string; state: string }[]; firstPass: boolean; round?: number; reason: string; dispositions: NonNullable<Ledger['dispositions']> };
   model?: string | null;
   run_id: string;
@@ -125,6 +127,8 @@ export function rowOf(
       firstPass: c.state === 'completed' && ms.length > 0 && stats.first_pass === ms.length && !l.auto_retries?.length && !nodes.some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped'),
       round: Math.max(0, ...Object.keys(stats).filter(k => k.startsWith('rounds:')).map(k => Number(k.slice(7))), ...nodes.filter(n => n.state !== 'skipped').map(n => Number(/-r(\d+)$/.exec(n.nodeId)?.[1] ?? 0))),
       reason: l.reason ?? (nodeReason || undefined) ?? l.dispositions?.at(-1)?.reason ?? run.metadata?.stop_reason?.reason ?? '', dispositions: l.dispositions ?? [] },
+    archon_id: l.archon_run_id,
+    coderModel: (() => { const m = nodes.find(n => opts.roles?.get(n.nodeId) === 'coder' && n.execution?.binding.model)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
     model: (() => { const m = nodes.find(n => n.nodeId === current)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
     run_id: l.run_id,
     state: c.state,
