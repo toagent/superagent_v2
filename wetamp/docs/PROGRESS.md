@@ -131,10 +131,12 @@
 ## WP-D board
 
 - 为何 Ink：React 组件 + Yoga 布局，彩色表格、反色选中、滚动、按键与 SIGWINCH 重排都是现成能力；`renderToString` 让 `--once` 与交互模式出同一个 `Frame`。ink@8 + react@19 在 bun 1.4.2 下渲染正常，未退回 ink@6，未加 @inkjs/ui。
-- 依赖隔离：ink/react 只在 `wetamp/package.json`（`wetamp/bun.lock` 冻结）声明，根 `package.json`/`bun.lock` 不变；`cli.ts` 在 `import.meta.main` 处对 `board` 动态 `import('./board/index')`，其余动词与 hooks 启动时不加载 React；`--json` 不渲染、不需要 ink；ink 缺失时渲染模式提示 `cd <wetamp> && bun install` 并退出 64。`install.sh` 默认模式 `bun install --frozen-lockfile`，失败只警告「board 不可用」，`--remote-hooks` 不装。
+- 依赖隔离：ink/react 只在 `wetamp/package.json`（`wetamp/bun.lock` 冻结）声明，根 `package.json`/`bun.lock` 不变；`cli.ts` 在 `import.meta.main` 处对 `board` 动态 `import('./board/index')`，其余动词与 hooks 启动时不加载 React；只有 `--json` 不渲染、不需要 ink；`--once`（renderToString）与交互模式都需要 ink，缺失时在首轮加载**之前**提示 `cd <wetamp> && bun install` 并退出 64。`install.sh` 默认模式 `bun install --frozen-lockfile`，失败只警告「board 不可用」，`--remote-hooks` 不装。
 - 数据：复用 `cli.ts` 的 ledger/classifyRun/artifactsOf/gatesOf/asksOf；`report()` 拆出纯函数 `summarize(pairs)`，report JSON 不变，board 汇总与 report 同口径（测试断言相等）。
-- 缓存：每个 board 进程一个加载器，按 ledger mtime 取最新 `--limit`（默认 50）个；终态（completed/cancelled/failed）且 ledger mtime 未变的 run 不再查；非终态每轮 `workflow get` 一次（`Bun.spawn`，并行 ≤3，上一轮未回不叠加）；单次失败沿用上次结果并标 `~`（stale），从未查到过则为 unreadable 行；坏 JSON/缺字段的 ledger 也是 unreadable 行，不中断其余行。
-- 详情：plan 包与里程碑、各轮 gate 结论（verdict/reason/debt 数）、transcript 末 8 条事件（滤掉 provider_event/watchdog_reset 噪声；exec_output 先脱敏再取末 120 字符）、asks、held 时的 decide/accept/recover 提示。
+- 缓存：每个 board 进程一个加载器，按 ledger mtime 取最新 `--limit`（默认 50）个；只缓存不可逆终态（completed/cancelled）且 ledger mtime 未变的 run；failed 与 held:* 每轮重查，因为 cancel/reject/decide 只改 Archon、不写 ledger（R1 D04 选方案②，不改 cli.ts）；其余 run 每轮 `workflow get` 一次（`Bun.spawn`，并行 ≤3，上一轮未回不叠加）。单次查询默认 10s 超时（`SA_BOARD_QUERY_TIMEOUT_MS` 覆盖，非正数拒绝），超时或按 q/卸载取消时对子进程所在进程组发 SIGKILL（孙进程也握着 stdout 管道）；失败沿用上次结果并标 `~`（stale），从未查到过则为 unreadable 行；坏 JSON、非对象（null/数组/标量）、缺字段的 ledger 都是 unreadable 行，不中断其余行。
+- 路径边界：plan、gen_dir、transcript、evidence 与各 gate 文件先取 realpath，只读落在 `ledger.repo` 或 `$SUPERAGENT_HOME` 内的；越界（`../`、绝对路径、软链指出）显示 `（路径越界，已跳过）`，不读取。
+- 详情：plan 包与里程碑、各轮 gate 结论（verdict/reason/debt 数）、transcript 末 8 条事件（滤掉 provider_event/watchdog_reset 噪声；exec_output 先脱敏再取末 120 字符；Authorization 遮蔽整个值到行尾或收尾引号，token/key/secret/password 遮蔽整个值，带引号与转义的值整体遮蔽，裸 Bearer 凭据遮蔽）；表格各列固定 1 个空格分隔，表头同一套宽度，宽屏放不下全部列（<121 列）时 nodes 只显示 `n/m`、去掉 console 与 repo 列、asks、held 时的 decide/accept/recover 提示。
 - 验收：`bun test` 180/180（新增 `tests/board.test.ts` 12 条）；`tsc --noEmit` rc=0；wetamp eslint（嵌套配置）与根 `bun run lint` rc=0；临时 home install ok、`selftest.sh --fake` ok（`board:{rows:1}`）；真实 `~/.superagent` 只读 `board --once` 渲染 3 个 run、`--json | jq .summary` 可解析；`script` pty 交互 j/Enter/q 正常退出 0。
 - 预算：TS 2894/3200（.ts+.tsx）、shell 445/700、cjs 783/1400、文件 40/46。
+- R1 修复（astra R1 D01–D06）：脱敏整值、查询超时与取消、非对象 ledger、缓存方案②、路径边界、列分隔与 80 列布局；ink 检查前移。`tests/board.test.ts` 22 条（新增 10 条）。预算 TS 3018/3200、shell 445/700、cjs 783/1400、文件 40/46。
 - 已知限制：currentRole 取自生成目录里的工作流 YAML，gen 目录被清理后显示 `?`；节点总数在 YAML 不可读时退回 run 已调度的节点数；`--once` 在管道里按 160 列渲染；交互模式每 5s 对每个非终态 run 起一个 archon 子进程（约 0.3s/次）。
