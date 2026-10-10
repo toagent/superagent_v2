@@ -83,7 +83,10 @@ function run(checks: Check[], log: string, cwd?: string, envKey = ''): string[] 
   const failed: string[] = [];
   const tree = envKey && git('rev-parse', 'HEAD^{tree}').trim();
   for (const c of checks) {
-    const hit = tree && c.cache ? join(artifacts, 'accept-cache', sha(JSON.stringify([tree, c.cmd, c.timeout_s, envKey]))) : '';
+    const hit =
+      tree && c.cache
+        ? join(artifacts, 'accept-cache', sha(JSON.stringify([tree, c.cmd, c.timeout_s, envKey])))
+        : '';
     if (hit && existsSync(hit)) {
       appendFileSync(log, `$ ${c.cmd}\n# reused pass from ${readFileSync(hit, 'utf8')}\n\n`);
       continue;
@@ -201,7 +204,9 @@ export function scopeRisk(
     c.modes.some(m => m === '160000' || m === '120000') ||
     c.paths.some(p => pol.risk_paths.some(g => glob(g, p)))
       ? 'G2'
-      : c.paths.some(p => pol.code_extensions.some(e => p.endsWith(e))) ? 'G1' : 'G0'
+      : c.paths.some(p => pol.code_extensions.some(e => p.endsWith(e)))
+        ? 'G1'
+        : 'G0'
   );
   return { risk: maxRisk(declared, out_of_scope.length ? 'G2' : 'G0', ...inferred), out_of_scope };
 }
@@ -215,7 +220,8 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   const p = plan();
   const pkgs = p.packages.filter(k => ids.includes(k.id));
   const checks = pkgs.flatMap(k => k.accept);
-  const envKey = sha(JSON.stringify([p.environment, pkgs.map(k => k.environment), process.env.PATH]));
+  // 缓存目录在本 run 的 ARTIFACTS_DIR 下，进程环境由同一 engine 给出；键里只放 plan 声明的环境检查
+  const envKey = sha(JSON.stringify([p.environment, pkgs.map(k => k.environment)]));
   const dirty = git('status', '--porcelain').trim();
   const failed = run(checks, log, undefined, dirty ? '' : envKey);
   if (dirty)
@@ -234,7 +240,12 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   const hash = patch ? sha(readFileSync(patch, 'utf8')).slice(0, 16) : '';
   const scope =
     base && env('RISK')
-      ? scopeRisk(changes(base), pkgs.flatMap(k => k.scope.write), policy(), env('RISK'))
+      ? scopeRisk(
+          changes(base),
+          pkgs.flatMap(k => k.scope.write),
+          policy(),
+          env('RISK')
+        )
       : { risk: env('RISK') || null, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
@@ -288,7 +299,8 @@ function settle(): void {
   const first = json('FIRST') as Record<string, unknown> & Accept;
   const repaired = env('REPAIRED');
   if (!repaired || repaired === 'null') {
-    if (first.disposition !== 'advance') throw new Error(`${tag}: repair skipped but verify did not advance`);
+    if (first.disposition !== 'advance')
+      throw new Error(`${tag}: repair skipped but verify did not advance`);
     return finish(tag, first);
   }
   const out = acceptOnce(tag, repaired);
@@ -476,17 +488,21 @@ function runEvents(): RunEvent[] {
   if (events) return events;
   const id = process.env.WORKFLOW_ID;
   if (!id) throw new Error('sa-check: WORKFLOW_ID unset');
-  const p = Bun.spawnSync([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json'], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+  const p = Bun.spawnSync(
+    [env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json'],
+    {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }
+  );
   if (p.exitCode !== 0)
     throw new Error(`archon workflow get ${id}: ${p.stderr.toString().slice(-300)}`);
   const lines = p.stdout.toString().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].startsWith('{')) continue;
     try {
-      return (events = (JSON.parse(lines.slice(i).join('\n')) as { events?: RunEvent[] }).events ?? []);
+      return (events =
+        (JSON.parse(lines.slice(i).join('\n')) as { events?: RunEvent[] }).events ?? []);
     } catch {
       // 该行只是日志里的 `{`，继续向前找真正的 JSON 起点
     }
@@ -504,7 +520,10 @@ function budget(): string | null {
   if (!env('ARCHON')) return null;
   const b = plan().budget;
   const ev = runEvents().filter(e => AI_NODE.test(e.step_name ?? ''));
-  if (b.launches !== undefined && ev.filter(e => e.event_type === 'node_started').length >= b.launches)
+  if (
+    b.launches !== undefined &&
+    ev.filter(e => e.event_type === 'node_started').length >= b.launches
+  )
     return 'budget_launches_exceeded';
   const used = ev
     .filter(e => e.event_type === 'node_completed' || e.event_type === 'node_failed')
@@ -555,7 +574,10 @@ function gate(): void {
   const d = decide({ reviews, rechecks, risk, expired: expired() });
   const ledgerFile = join(artifacts, `${tag}.ledger.json`);
   writeFileSync(ledgerFile, JSON.stringify(d.ledger, null, 2));
-  const reviewed = reviews.map((r, i) => (r ? i : -1)).filter(i => i >= 0).at(-1);
+  const reviewed = reviews
+    .map((r, i) => (r ? i : -1))
+    .filter(i => i >= 0)
+    .at(-1);
   let grade: string | null = null;
   let identity: { authors: Ident[]; reviewer: Ident } | null = null;
   if (d.verdict === 'pass') {
@@ -577,9 +599,13 @@ function gate(): void {
     const why = independence(identity.authors, identity.reviewer);
     grade = why ? 'DEGRADED_PASS' : 'PASS';
     // strict 与 G2 不接受降级：等合格独立评审（escalate 给用户）；其余带原因显式降级放行
-    if (why) Object.assign(d, plan().mode === 'strict' || risk === 'G2'
-      ? { verdict: 'escalate', reason: `review_not_independent:${why}` }
-      : { reason: `review_not_independent:${why}` });
+    if (why)
+      Object.assign(
+        d,
+        plan().mode === 'strict' || risk === 'G2'
+          ? { verdict: 'escalate', reason: `review_not_independent:${why}` }
+          : { reason: `review_not_independent:${why}` }
+      );
   }
   const over = d.verdict === 'fix' || (d.verdict === 'pass' && env('NEXT')) ? budget() : null;
   if (over) Object.assign(d, { verdict: 'escalate', reason: over });

@@ -611,7 +611,10 @@ describe('brief / land (archon stub)', () => {
     writeFileSync(join(home, 'runs', 'sa1.json'), JSON.stringify({ ...l, recoveries: ['t'] }));
     const { code, out } = captured(() => main(['report']));
     expect(code).toBe(0);
-    expect(JSON.parse(out)).toEqual({
+    const { usage, ...counts } = JSON.parse(out) as Record<string, unknown>;
+    // 桩输出没有事件：没有调用，用量是 unknown 而不是 0（F-22 细节见 report.test.ts）
+    expect(usage).toMatchObject({ total: { calls: 0, input: 'unknown' }, unreadable: [] });
+    expect(counts).toEqual({
       runs: 1,
       debt: 2,
       'escalate:review_failed+review_limit': 1,

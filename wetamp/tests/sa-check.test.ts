@@ -203,13 +203,21 @@ describe('gate rules', () => {
   test('ledger: R2 漏掉 R1 高危——遗漏的 high 仍阻塞，PASS 判为不一致，R3 仍遗漏则到上限 escalate', () => {
     const r1 = R('FAIL', [f('high', { id: 'R1-1', file: 'k.ts', line: 9 })]);
     const l = ledgerOf([r1, R('PASS')], 'G1');
-    expect(l.blocking).toMatchObject([{ id: 'R1-1', severity: 'high', file: 'k.ts', line: 9, round: 1 }]);
-    expect(decide({ reviews: [r1, R('PASS')], rechecks: [C('a'), C('b')], risk: 'G1' })).toMatchObject({
+    expect(l.blocking).toMatchObject([
+      { id: 'R1-1', severity: 'high', file: 'k.ts', line: 9, round: 1 },
+    ]);
+    expect(
+      decide({ reviews: [r1, R('PASS')], rechecks: [C('a'), C('b')], risk: 'G1' })
+    ).toMatchObject({
       verdict: 'fix',
       reason: 'review_inconsistent',
     });
     expect(
-      decide({ reviews: [r1, R('PASS'), R('PASS')], rechecks: [C('a'), C('b'), C('c')], risk: 'G1' })
+      decide({
+        reviews: [r1, R('PASS'), R('PASS')],
+        rechecks: [C('a'), C('b'), C('c')],
+        risk: 'G1',
+      })
     ).toMatchObject({ verdict: 'escalate', reason: 'review_inconsistent+review_limit' });
   });
   test('ledger: 新增项伪装 carry-over——未知 id 不扩大阻塞集合，只按新发现记债', () => {
@@ -218,11 +226,13 @@ describe('gate rules', () => {
     const l = ledgerOf([r1, r2], 'G1');
     expect(l.blocking).toEqual([]);
     expect(l.debt.map(e => e.id)).toEqual(['R1-7']);
-    expect(l.closed).toMatchObject([{ id: 'R1-1', closed_round: 2, evidence: 'diff L3 removes it' }]);
-    // 伪装“已关闭”的未知 id 同样不进台账
-    expect(ledgerOf([r1, R('PASS', [fixed('R1-1'), fixed('R0-9')])], 'G1').closed.map(e => e.id)).toEqual([
-      'R1-1',
+    expect(l.closed).toMatchObject([
+      { id: 'R1-1', closed_round: 2, evidence: 'diff L3 removes it' },
     ]);
+    // 伪装“已关闭”的未知 id 同样不进台账
+    expect(
+      ledgerOf([r1, R('PASS', [fixed('R1-1'), fixed('R0-9')])], 'G1').closed.map(e => e.id)
+    ).toEqual(['R1-1']);
   });
   test('ledger: 新 high 债与真 blocker 共存——blocker 阻塞、high 记债，关闭 blocker 后带债 PASS', () => {
     const r1 = R('FAIL', [f('high', { id: 'R1-1' })]);
@@ -269,7 +279,10 @@ describe('F-18 disposition', () => {
     JSON.stringify({ status: 'done', error_class: null, needs: [], ...o });
   test('advance only when the coder is done and acceptance is green', () => {
     expect(disposition(c({}), true)).toEqual({ disposition: 'advance', reason: null });
-    expect(disposition(c({}), false)).toEqual({ disposition: 'repair', reason: 'acceptance_failed' });
+    expect(disposition(c({}), false)).toEqual({
+      disposition: 'repair',
+      reason: 'acceptance_failed',
+    });
     expect(disposition('', true).disposition).toBe('advance');
   });
   test('every coder failure kind has an explicit repair or suspend path', () => {
@@ -300,9 +313,15 @@ describe('F-13 delivery scope', () => {
   };
   const ch = (paths: string[], modes = ['100644', '100644']) => ({ modes, paths });
   test('in-scope code edits keep the declared risk; G0 touching code is inferred G1', () => {
-    expect(scopeRisk([ch(['src/a.ts'])], ['src/'], pol, 'G1')).toEqual({ risk: 'G1', out_of_scope: [] });
+    expect(scopeRisk([ch(['src/a.ts'])], ['src/'], pol, 'G1')).toEqual({
+      risk: 'G1',
+      out_of_scope: [],
+    });
     expect(scopeRisk([ch(['src/a.ts'])], ['src'], pol, 'G0').risk).toBe('G1');
-    expect(scopeRisk([ch(['README.md'])], ['src'], pol, 'G0')).toEqual({ risk: 'G0', out_of_scope: [] });
+    expect(scopeRisk([ch(['README.md'])], ['src'], pol, 'G0')).toEqual({
+      risk: 'G0',
+      out_of_scope: [],
+    });
   });
   test('out-of-scope (incl. rename source), risk paths, gitlinks and symlinks raise to G2', () => {
     expect(scopeRisk([ch(['lib/x.ts', 'src/x.ts'])], ['src/**'], pol, 'G1')).toEqual({
@@ -310,7 +329,9 @@ describe('F-13 delivery scope', () => {
       out_of_scope: ['lib/x.ts'],
     });
     expect(scopeRisk([ch(['src/auth/k.ts'])], ['src'], pol, 'G1').risk).toBe('G2');
-    expect(scopeRisk([ch(['src/vendor'], ['000000', '160000'])], ['src'], pol, 'G0').risk).toBe('G2');
+    expect(scopeRisk([ch(['src/vendor'], ['000000', '160000'])], ['src'], pol, 'G0').risk).toBe(
+      'G2'
+    );
     expect(scopeRisk([ch(['src/l'], ['100644', '120000'])], ['src'], pol, 'G0').risk).toBe('G2');
   });
 });
@@ -329,11 +350,16 @@ describe('F-14 model identity', () => {
       model: 'gpt-x',
       strength: 'pinned',
     });
-    expect(identityOf(b('a', { source: 'unavailable', reason: 'no_result' })).strength).toBe('unknown');
+    expect(identityOf(b('a', { source: 'unavailable', reason: 'no_result' })).strength).toBe(
+      'unknown'
+    );
     expect(identityOf(undefined).strength).toBe('unknown');
   });
   test('same actual model, unknown reviewer or unknown author is not a qualified review', () => {
-    const id = (model: string | null, strength: 'provider' | 'pinned' | 'unknown' = 'provider') => ({
+    const id = (
+      model: string | null,
+      strength: 'provider' | 'pinned' | 'unknown' = 'provider'
+    ) => ({
       model,
       strength,
     });
@@ -599,6 +625,132 @@ describe('sa-check script', () => {
     expect(JSON.parse(readFileSync(join(art, 'land.json'), 'utf8'))).toMatchObject({
       debt: ['m1 debt', 'm2 debt'],
     });
+  });
+  test('F-18: coder redline suspends with exit 1 and a stable reason', () => {
+    const root = tmp();
+    const r = runScript(gitRepo(root), {
+      kind: 'accept',
+      plan: planFile(root, 'true'),
+      pkgs: 'a',
+      tag: 'verify-a',
+      coder: JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [] }),
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toMatchObject({ ok: true, disposition: 'suspend', reason: 'coder_redline' });
+  });
+  test('F-18 settle: advance passes through; a repair that stays red suspends repair_exhausted', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const first = { ok: true, disposition: 'advance', reason: null, diff_hash: '', same: false };
+    const pass = runScript(repo, {
+      kind: 'settle',
+      plan: planFile(root, 'false'),
+      pkgs: 'a',
+      tag: 'settle-a',
+      first: JSON.stringify(first),
+      repaired: 'null',
+    });
+    expect(pass.code).toBe(0);
+    expect(pass.out).toMatchObject({ ok: true, disposition: 'advance' });
+    const red = runScript(repo, {
+      kind: 'settle',
+      plan: planFile(root, 'false'),
+      pkgs: 'a',
+      tag: 'settle-a',
+      first: JSON.stringify({ ...first, ok: false, disposition: 'repair' }),
+      repaired: JSON.stringify({ status: 'done', error_class: null, needs: [] }),
+    });
+    expect(red.code).toBe(1);
+    expect(red.out).toMatchObject({
+      disposition: 'suspend',
+      reason: 'repair_exhausted:acceptance_failed',
+    });
+  });
+  test('F-21: cache:true reuses a pass on the same tree; uncached commands always run', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const p = join(root, 'plan.json');
+    const counter = join(root, 'n');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        packages: [
+          {
+            id: 'a',
+            accept: [
+              { cmd: `echo c >> ${counter}`, timeout_s: 5, cache: true },
+              { cmd: `echo u >> ${counter}`, timeout_s: 5 },
+            ],
+          },
+        ],
+      })
+    );
+    const go = (tag: string) => runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag }).out;
+    expect(go('verify-a')).toMatchObject({ ok: true });
+    expect(go('diff-m1-r1')).toMatchObject({ ok: true });
+    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\n');
+    expect(readFileSync(join(root, 'art', 'diff-m1-r1.log'), 'utf8')).toContain(
+      'reused pass from verify-a'
+    );
+    sh(
+      'echo z > z.txt && git add z.txt && git -c user.name=t -c user.email=t@l commit -qm z',
+      repo
+    );
+    go('diff-m1-r2');
+    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\nc\nu\n');
+  });
+  test('F-20/F-13: delta patch against delta_base; out-of-scope and risk paths raise the risk', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const commit = (f: string) =>
+      sh(
+        `mkdir -p $(dirname ${f}) && echo ${f} > ${f} && git add ${f} && git -c user.name=t -c user.email=t@l commit -qm ${f}`,
+        repo
+      );
+    const base = sh('git rev-parse HEAD', repo).trim();
+    commit('src/a.ts');
+    const mid = sh('git rev-parse HEAD', repo).trim();
+    commit('src/b.md');
+    const p = join(root, 'plan.json');
+    const write = (w: string[]) =>
+      writeFileSync(
+        p,
+        JSON.stringify({
+          packages: [{ id: 'a', scope: { write: w }, accept: [{ cmd: 'true', timeout_s: 5 }] }],
+        })
+      );
+    const pol = join(root, 'policy.json');
+    writeFileSync(
+      pol,
+      JSON.stringify({
+        risk_paths: ['**/auth/**'],
+        code_extensions: ['.ts'],
+        exempt_paths: [],
+        budget_floor: {},
+      })
+    );
+    write(['src/']);
+    const go = (risk: string) =>
+      runScript(repo, {
+        kind: 'accept',
+        plan: p,
+        pkgs: 'a',
+        tag: 'diff-m1-r2',
+        base,
+        delta_base: mid,
+        risk,
+        policy: pol,
+      }).out as { patch: string; delta: string; risk: string; out_of_scope: string[] };
+    const r = go('G0');
+    expect(readFileSync(r.delta, 'utf8')).toContain('src/b.md');
+    expect(readFileSync(r.delta, 'utf8')).not.toContain('src/a.ts');
+    expect(readFileSync(r.patch, 'utf8')).toContain('src/a.ts');
+    expect(r).toMatchObject({ risk: 'G1', out_of_scope: [] });
+    write(['src/a.ts']);
+    expect(go('G0')).toMatchObject({ risk: 'G2', out_of_scope: ['src/b.md'] });
+    write(['src/']);
+    commit('src/auth/x.md');
+    expect(go('G1')).toMatchObject({ risk: 'G2', out_of_scope: [] });
   });
   test('unknown kind fails loudly', () => {
     const root = tmp();
