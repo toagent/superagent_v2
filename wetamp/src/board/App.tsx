@@ -1,7 +1,7 @@
 // board 的 Ink 界面。Frame 是纯渲染（--once 用 renderToString 出同一帧），App 只加刷新循环与按键。
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { bar, fmtElapsed, type BoardRow, type Snapshot } from './data';
+import { bar, elapsedAt, fmtClock, fmtElapsed, type BoardRow, type Snapshot } from './data';
 import { detailLines, type Detail } from './detail';
 
 const COLOR: Record<string, string> = {
@@ -17,7 +17,6 @@ const ACTIVE = (r: BoardRow): boolean => r.state === 'running' || r.state.starts
 const pad = (s: string, n: number): string =>
   s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n);
 const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
-const hhmmss = (d: Date): string => d.toTimeString().slice(0, 8);
 
 function reason(r: BoardRow): string {
   if (r.state === 'unreadable') return r.error ?? '';
@@ -54,7 +53,17 @@ export function layout(width: number): Layout {
   return { wide, w, current: Math.max(CURRENT_MIN, Math.min(30, width - fixed)) };
 }
 
-function Row({ r, sel, lay }: { r: BoardRow; sel: boolean; lay: Layout }): ReactElement {
+function Row({
+  r,
+  sel,
+  lay,
+  now,
+}: {
+  r: BoardRow;
+  sel: boolean;
+  lay: Layout;
+  now: number;
+}): ReactElement {
   const { w } = lay;
   const current = r.nodes.current ? `${r.nodes.current}(${r.nodes.currentRole ?? '?'})` : '-';
   const nodes = !r.nodes.total
@@ -65,7 +74,7 @@ function Row({ r, sel, lay }: { r: BoardRow; sel: boolean; lay: Layout }): React
   const rest = [
     cell(nodes, w.nodes),
     cell(current, lay.current),
-    cell(fmtElapsed(r.elapsed_s), w.elapsed),
+    cell(fmtElapsed(elapsedAt(r, now)), w.elapsed),
     cell(reason(r), w.reason),
     cell(String(r.recoveries), w.rec),
   ];
@@ -109,14 +118,22 @@ export function Frame(p: FrameProps): ReactElement {
     ['cancelled', count(r => r.state === 'cancelled'), 'gray'],
   ];
   const s = p.snap.summary;
-  const dlines = p.detail ? detailLines(p.detail) : [];
+  const now = p.now.getTime();
+  const d = p.detail;
+  const dlines = d
+    ? detailLines(
+        d,
+        now,
+        p.snap.rows.find(r => r.run_id === d.run_id)
+      )
+    : [];
   // 表头 2 行 + 列名 1 行 + footer 1 行；其余给表格与详情
   const room = Math.max(3, p.height - 4 - (p.footer ? 1 : 0) - dlines.length);
   const top = Math.min(Math.max(0, p.sel - room + 1), Math.max(0, rows.length - room));
   return (
     <Box flexDirection="column" width={p.width}>
       <Text wrap="truncate">
-        <Text bold>superagent board</Text> {hhmmss(p.now)} · {p.home}
+        <Text bold>superagent board</Text> {fmtClock(now, now)} · {p.home}
       </Text>
       <Text wrap="truncate">
         {chips.map(([k, n, c]) => (
@@ -124,7 +141,7 @@ export function Frame(p: FrameProps): ReactElement {
             {`[${k} ${String(n)}] `}
           </Text>
         ))}
-        {`debt ${String(num(s.debt))} · first_pass ${String(num(s.first_pass))} · every ${String(p.interval)}s · last ${p.snap.at.slice(11, 19)}Z`}
+        {`debt ${String(num(s.debt))} · first_pass ${String(num(s.first_pass))} · every ${String(p.interval)}s · last ${fmtClock(p.snap.at, now)}`}
         {p.activeOnly ? ' · active only' : ''}
         {typeof s.load_error === 'string' ? (
           <Text color="red">{` · load error: ${s.load_error}`}</Text>
@@ -142,7 +159,7 @@ export function Frame(p: FrameProps): ReactElement {
       </Text>
       {rows.length === 0 ? <Text dimColor>(no runs)</Text> : null}
       {rows.slice(top, top + room).map((r, i) => (
-        <Row key={r.run_id} r={r} sel={top + i === p.sel} lay={lay} />
+        <Row key={r.run_id} r={r} sel={top + i === p.sel} lay={lay} now={now} />
       ))}
       {dlines.map((l, i) => (
         <Text key={i} wrap="truncate" dimColor={i > 0}>
