@@ -4,7 +4,7 @@
 // 派生写目标含动态展开时拒绝；间接执行的残余风险见 docs/04。
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const {spawnSync} = require('node:child_process');
-const {parse, tokens} = require('./shell.cjs');
+const {parse, tokens, modeled} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 
 // child is parent itself or below it.
@@ -202,6 +202,10 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
   // directories unless its success is required by &&; every possible write must be safe.
   function walk(text, dirs, depth = 0) {
     if (depth > 8) return '无法确认 shell 写入目标（嵌套过深）';
+    if (derived) {
+      try { if (!modeled(text, env.CDPATH !== undefined)) return '无法确认 shell 所属作用域或写入目录（超出可建模子集；请用绝对路径或拆成独立命令）'; }
+      catch { return '无法确认 shell 写入目标（解析失败）'; }
+    }
     let part = '', quote = '', nesting = 0;
     const pieces = [];
     for (let i = 0; i < text.length; i++) {

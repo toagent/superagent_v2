@@ -88,7 +88,7 @@ function closing(text, i, close) {
 }
 // Replace every `$(…)`, `<(…)`, `(…)` and backtick body outside single quotes with one inert
 // word and return the bodies, each to be parsed as a command line of its own.
-function lift(text) {
+function lift(text, model = false) {
   const bodies = []; let flat = '', dq = false;
   for (let i = 0; i < text.length;) {
     const c = text[i];
@@ -97,7 +97,7 @@ function lift(text) {
     else if (c === '"') { dq = !dq; flat += c; i++; }
     else if (c === '`' || c === '(' && (!dq || text[i-1] === '$')) {
       const end = closing(text, i + 1, c === '`' ? '`' : ')');
-      bodies.push(text.slice(i + 1, end)); flat += '__sa_sub__'; i = end + 1;
+      bodies.push(text.slice(i + 1, end)); flat += model && c === '`' ? '$__sa_sub__' : '__sa_sub__'; i = end + 1;
     } else { flat += c; i++; }
   }
   if (dq) throw new Error('Unclosed shell quote');
@@ -107,9 +107,10 @@ function lift(text) {
 // returns the real argv, option values that are themselves command lines (`env -S`) and the
 // wrappers' own writes.
 function unwrap(argv) {
-  const lines = [], writes = []; let i = 0;
+  const lines = [], writes = [], heads = []; let i = 0;
   for (;;) {
-    while (i < argv.length && (RESERVED.has(argv[i]) || ASSIGN.test(argv[i]))) i++;
+    while (i < argv.length && (RESERVED.has(argv[i]) || ASSIGN.test(argv[i]))) { if (RESERVED.has(argv[i])) heads.push(i); i++; }
+    if (i < argv.length) heads.push(i);
     const spec = WRAPPERS[path.posix.basename(argv[i] ?? '')];
     if (!spec) break;
     const head = i++;
@@ -125,7 +126,7 @@ function unwrap(argv) {
         continue;
       }
       for (let j = 1; j < word.length; j++) {
-        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes};
+        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes, heads};
         if (spec.optional?.includes(word[j])) break;
         if (!spec.arg?.includes(word[j])) continue;
         const value = j + 1 < word.length ? word.slice(j + 1) : argv[i++];
@@ -139,7 +140,44 @@ function unwrap(argv) {
     i += spec.positional ?? 0;
     if (spec.skip && argv[i] === spec.skip) i++;
   }
-  return {argv: argv.slice(i), lines, writes};
+  return {argv: argv.slice(i), lines, writes, heads};
+}
+// The derived-session cwd model is deliberately smaller than shell syntax. Keep
+// executable heads before unwrap discards wrappers; quoted arguments are not heads.
+const UNMODELED = new Set(['pushd','popd','eval','source','.','exec','builtin','command','alias','function','coproc']);
+function modeled(command, cdpath, depth = 0) {
+  if (depth > 8) return false;
+  const {flat, bodies} = lift(command, true), groups = [[]];
+  for (const word of tokens(flat)) {
+    if (word.operator && SEPARATORS.has(word.value)) groups.push([]); else groups.at(-1).push(word);
+  }
+  let compound = false, cd = false;
+  cdpath ||= groups.some(g => g.some((w, i) => /^CDPATH=/.test(w.value) && (g.slice(0, i).every(t => ASSIGN.test(t.value)) || ['export','declare','typeset'].includes(g[0]?.value))));
+  for (const group of groups) {
+    const words = group.filter((w, i) => !w.operator && !group[i - 1]?.operator && !(/^\d+$/.test(w.value) && group[i + 1]?.operator));
+    const values = words.map(w => w.value), {argv, heads, lines} = unwrap(values);
+    if (values.length === 1 && values[0] === '__sa_sub__' && !bodies.includes('')) continue;
+    for (const i of heads) {
+      const h = words[i], name = path.posix.basename(h.value);
+      if (h.dynamic || h.value.includes('__sa_sub__') || words[i + 1]?.value === '__sa_sub__' && bodies.includes('') ||
+          UNMODELED.has(name) || lines.length) return false;
+      compound ||= ['if','then','elif','else','fi','for','while','until','do','done','case','esac','select','{','}','!','time'].includes(name);
+      if (name === 'cd') {
+        cd = true;
+        const target = argv[1] || '';
+        if (i !== 0 || target === '-' || /^~[^/]/.test(target) || cdpath && target && !/^(?:\/|~\/)/.test(target)) return false;
+      }
+    }
+    if (SHELLS.has(path.posix.basename(argv[0] || ''))) {
+      const i = argv.findIndex((v, k) => k > 0 && /^-[a-z]*c[a-z]*$/.test(v));
+      const offset = values.length - argv.length;
+      const file = argv.findIndex((v, k) => k > 0 && !v.startsWith('-'));
+      if (i > 0 ? !words[offset + i + 1] || words[offset + i + 1].dynamic : file < 0 || words[offset + file].dynamic || argv.slice(1, file).some(v => v !== '--' && (!/^-[a-zA-Z]+$/.test(v) || /[scoO]/.test(v.slice(1))))) return false;
+      if (i < 0 && /^\/(?:dev|proc)\//.test(path.posix.normalize(argv[file]))) return false;
+      if (i > 0 && !modeled(argv[i + 1], cdpath, depth + 1)) return false;
+    }
+  }
+  return !(compound && (cd || groups.flat().some(w => w.value === 'cd' || UNMODELED.has(w.value)))) && bodies.every(body => modeled(body, cdpath, depth + 1));
 }
 // Every simple command a shell line would start: argv with wrappers, assignments and
 // redirections stripped, including `bash -c`/`eval`/`find -exec` bodies and every command
@@ -218,4 +256,4 @@ function deletionTarget(command,cwd) {
   }
   return target ? path.resolve(cwd,target) : null;
 }
-module.exports = {tokens, commands, parse, deletionTarget};
+module.exports = {tokens, commands, parse, deletionTarget, modeled};
