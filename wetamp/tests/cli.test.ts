@@ -17,6 +17,7 @@ import * as archonMod from '../src/archon';
 import type { RunView } from '../src/archon';
 import {
   classify,
+  classifyRun,
   EXIT,
   EXIT_ALIAS_DRIFT,
   EXIT_USAGE,
@@ -303,8 +304,8 @@ describe('HF3 latest-engine recovery', () => {
       readdirSync(join(process.env.SUPERAGENT_HOME ?? '', 'runs')).some(f => f.endsWith('.tmp'))
     ).toBe(false);
   });
-  test('stale terminals adopt; stale paused owner keeps its snapshot', () => {
-    for (const status of ['cancelled', 'completed', 'paused'] as const) {
+  test('stale failed/cancelled adopt; stale paused owner keeps its snapshot', () => {
+    for (const status of ['cancelled', 'paused'] as const) {
       const s = setup('old');
       writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run(status)));
       expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
@@ -676,6 +677,28 @@ describe('verbs (archon stub)', () => {
 });
 
 describe('run (archon stub)', () => {
+  test('E5 run preflight refuses before engine launch and failure ledger records the phase', () => {
+    const s = stub([]);
+    const repo = join(s.root, 'repo'); mkdirSync(repo);
+    sh('git init -q -b feature/fixture', repo);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    const result = captured(() => main(['run', fixturePlan(s.root, repo), '--skip-selftest']));
+    expect(result.code).toBe(1);
+    const failure = JSON.parse(result.out);
+    expect(failure).toMatchObject({ phase: 'preflight', reason: expect.stringContaining('worktree.baseBranch') });
+    expect(JSON.parse(readFileSync(join(s.root, 'home/launch-failures', `${failure.run_id}.json`), 'utf8'))).toEqual(failure);
+    expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(false);
+  });
+  test('engine launch rejection is recorded separately from preflight', () => {
+    const s = stub([]), repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    writeFileSync(process.env.SA_ARCHON_BIN!, '#!/usr/bin/env bash\necho \'{"ok":false,"error":"fixture_launch_rejected"}\'\n');
+    const result = captured(() => main(['run', fixturePlan(s.root, repo), '--fake', '--skip-selftest']));
+    expect(result.code).toBe(1);
+    const failure = JSON.parse(result.out);
+    expect(failure).toMatchObject({ phase: 'engine', reason: expect.stringContaining('fixture_launch_rejected') });
+    expect(JSON.parse(readFileSync(join(s.root, 'home/launch-failures', `${failure.run_id}.json`), 'utf8'))).toEqual(failure);
+  });
   const start = (console?: string): string[] => {
     const s = stub([]);
     const repo = gitRepo(s.root);
@@ -700,7 +723,8 @@ describe('run (archon stub)', () => {
     const attempt = (r?: object): string => {
       if (r) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(r));
       try {
-        return String(captured(() => main(['run', plan])).code);
+        const result = captured(() => main(['run', plan]));
+        return result.code === 0 ? '0' : String(JSON.parse(result.out).reason);
       } catch (e) {
         expect((e as Error).message).toContain('fix: wetamp/scripts/selftest.sh');
         return (e as Error).message;
@@ -807,7 +831,7 @@ describe('decide (archon stub)', () => {
     expect(s.calls()).toContain('workflow resume r --detach --json');
   });
   test('retry --hint rejects a package outside the plan (no path from user text)', () => {
-    stub([run('failed')]);
+    stub([run('failed', { nodes: [{ nodeId: 'code-core', state: 'failed' }] })]);
     expect(() => main(['decide', 'sa1', 'retry', '--pkg', '../x', '--hint', 'h'])).toThrow(/--pkg/);
   });
   test('retry on an escalated gate fails clearly instead of re-running the same verdict', () => {
@@ -932,7 +956,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
   const tick = (): Record<string, unknown>[] => {
     const { code, out } = captured(() => main(['supervise-tick']));
     expect(code).toBe(0);
-    return JSON.parse(out) as Record<string, unknown>[];
+    return JSON.parse(out).actions as Record<string, unknown>[];
   };
   test('held:human: asks once, then approves on yes (signal) and wakes due waits', async () => {
     const s = stub([humanWait(), humanWait(), run('running')]);
@@ -940,7 +964,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(tick()).toEqual([
       { run_id: 'sa1', event: 'sa.human.m2', action: 'ask', ok: true, ask: 'ask-1' },
     ]);
-    expect(sup()[0]).toMatch(/^ask --question superagent sa1:m2:0 红线签收.* --ttl-hours 72$/);
+    expect(sup()[0]).toMatch(/^ask --question superagent sa1:signoff 红线签收.* --ttl-hours 72$/);
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
     expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
     expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
@@ -961,14 +985,14 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     tick();
     expect(sup()[0]).toEndWith('--ttl-hours 5');
   });
-  test('ask key is run:milestone:round: a re-wait after recover (new resumeAt) does not ask again', () => {
+  test('ask key is run:hold: a re-wait after recover (new resumeAt) does not ask again', () => {
     const s = stub([humanWait('2099-01-01T00:00:00.000Z'), humanWait('2099-02-01T00:00:00.000Z')]);
     const sup = supervisor(s.root, 'pending');
     tick();
     expect(tick()[0]).toMatchObject({ action: 'none', ask: 'pending' });
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
     const asks = JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')) as object;
-    expect(Object.keys(asks)).toEqual(['sa1:m2:0']);
+    expect(Object.keys(asks)).toEqual(['sa1:signoff']);
   });
   test('asks of runs without a ledger (gc.sh removed it) are dropped on write-back', () => {
     const s = stub([humanWait()]);
@@ -976,7 +1000,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     const p = join(s.root, 'home', 'asks.json');
     writeFileSync(p, JSON.stringify({ 'gone:m1:0': { id: 'x', status: 'pending' } }));
     tick();
-    expect(Object.keys(JSON.parse(readFileSync(p, 'utf8')) as object)).toEqual(['sa1:m2:0']);
+    expect(Object.keys(JSON.parse(readFileSync(p, 'utf8')) as object)).toEqual(['sa1:signoff']);
   });
   test('the ledger holds an unknown entry before supervisor ask runs; an id-less entry with no supervisor record is re-asked', () => {
     const s = stub([humanWait()]);
@@ -988,10 +1012,10 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     process.env.SA_SUPERVISOR = py;
     tick();
     expect(JSON.parse(readFileSync(join(s.root, 'at-ask.json'), 'utf8'))).toEqual({
-      'sa1:m2:0': { status: 'unknown' },
+      'sa1:signoff': { status: 'unknown' },
     });
     // 模拟上次 tick 在 ask 期间死掉且 supervisor 没有落下记录：重投
-    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:m2:0":{"status":"unknown"}}');
+    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:signoff":{"status":"unknown"}}');
     rmSync(join(s.root, 'at-ask.json'));
     expect(tick()[0]).toMatchObject({ action: 'ask', ok: true, ask: 'ask-1' });
     expect(existsSync(join(s.root, 'at-ask.json'))).toBe(true);
@@ -1007,11 +1031,11 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     );
     expect(captured(() => main(['supervise-tick'])).code).toBe(1);
     const asks = (): unknown => JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'));
-    expect(asks()).toEqual({ 'sa1:m2:0': { status: 'unknown' } });
+    expect(asks()).toEqual({ 'sa1:signoff': { status: 'unknown' } });
     expect(tick()[0]).toMatchObject({ action: 'none', ok: true, ask: 'pending' });
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
     expect(sup().at(-1)).toBe('ask-status abc');
-    expect(asks()).toEqual({ 'sa1:m2:0': { id: 'abc', status: 'pending' } });
+    expect(asks()).toEqual({ 'sa1:signoff': { id: 'abc', status: 'pending' } });
   });
   test('a held supervise.lock makes a concurrent tick skip with exit 0 and touch nothing', () => {
     const s = stub([humanWait()]);
@@ -1034,7 +1058,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     );
     writeFileSync(
       join(s.root, 'home', 'asks.json'),
-      JSON.stringify({ 'sa1:m2:0': { id: 'ask-1', status: 'pending' } })
+      JSON.stringify({ 'sa1:signoff': { id: 'ask-1', status: 'pending' } })
     );
     expect(tick()).toEqual([
       { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
@@ -1042,12 +1066,12 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(s.calls()).toContain('workflow abandon r --json');
     expect(existsSync(join(s.root, 'sup-calls'))).toBe(false);
     expect(JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'))).toEqual({
-      'sa1:m2:0': { id: 'ask-1', status: 'expired' },
+      'sa1:signoff': { id: 'ask-1', status: 'expired' },
     });
     expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
     const lines = captured(() => main(['brief', 'sa1'])).out.split('\n');
     expect(lines).toContain('plan 截止已过，已取消');
-    expect(lines).toContain('ask sa1:m2:0: expired');
+    expect(lines).toContain('ask sa1:signoff: expired');
   });
   test('a yes that arrives after the plan deadline passed is not signalled: the run is abandoned and the ask expired', () => {
     const s = stub([humanWait()]);
@@ -1058,7 +1082,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     );
     writeFileSync(
       join(s.root, 'home', 'asks.json'),
-      JSON.stringify({ 'sa1:m2:0': { id: 'ask-1', status: 'pending' } })
+      JSON.stringify({ 'sa1:signoff': { id: 'ask-1', status: 'pending' } })
     );
     // 桩 ask-status：截止恰在用户答“是”的期间过去
     const py = join(s.root, 'sup-late.py');
@@ -1073,7 +1097,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
     expect(s.calls()).toContain('workflow abandon r --json');
     expect(JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'))).toEqual({
-      'sa1:m2:0': { id: 'ask-1', status: 'expired' },
+      'sa1:signoff': { id: 'ask-1', status: 'expired' },
     });
     expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
   });
@@ -1097,9 +1121,9 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     writeFileSync(join(state, 'b-bad.json'), '{"id":');
     writeFileSync(
       join(state, 'c-ok.json'),
-      JSON.stringify({ id: 'abc', question: 'superagent sa1:m2:0 红线签收：批准合入 x？' })
+      JSON.stringify({ id: 'abc', question: 'superagent sa1:signoff 红线签收：批准合入 x？' })
     );
-    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:m2:0":{"status":"unknown"}}');
+    writeFileSync(join(s.root, 'home', 'asks.json'), '{"sa1:signoff":{"status":"unknown"}}');
     expect(tick()[0]).toMatchObject({
       action: 'none',
       ok: true,
@@ -1173,17 +1197,112 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   const tick = (expectedCode = 0): Record<string, unknown>[] => {
     const { code, out } = captured(() => main(['supervise-tick']));
     expect(code).toBe(expectedCode);
-    return JSON.parse(out) as Record<string, unknown>[];
+    return JSON.parse(out).actions as Record<string, unknown>[];
   };
   const resumes = (calls: string[]): number =>
     calls.filter(c => c.startsWith('workflow resume')).length;
   const gate = (reason: string) => ({ verdict: 'escalate', reason, milestone: 'm1', debt: [] });
 
+  const asksFile = (): string => join(process.env.SUPERAGENT_HOME ?? '', 'asks.json');
+  test('E1 real settle incidents become engine_suspect and save one sample, never coder failure', () => {
+    const fixtures = JSON.parse(readFileSync(join(import.meta.dir, 'incidents/e1-settle.json'), 'utf8')) as { node: string; verify: object; settle: object; coder: object }[];
+    for (const f of fixtures) {
+      const s = held(f.node, { 'verify-core.json': f.verify, 'settle-core.json': f.settle, 'settle-core.coder.json': f.coder });
+      const sup = supervisor(s.root, 'pending');
+      const r = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+      expect(classifyRun(s.ledger, r).state).toBe('held:engine_suspect');
+      expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'engine_suspect' });
+      expect(tick()[0]).toMatchObject({ action: 'none' });
+      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+      expect(resumes(s.calls())).toBe(0);
+      expect(existsSync(join(s.root, 'home/incidents/sa1/sample.json'))).toBe(true);
+    }
+  });
+  test('I5 latest settle red evidence does not inherit first verify green; unknown reasons are suspect', () => {
+    const s = held('settle-core', { 'verify-core.json': { ok: true }, 'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' } });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
+    expect(resumes(s.calls())).toBe(0);
+    const u = held('gate-m1-r1', { 'gate-m1-r1.json': { reason: 'new_failure' } });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'engine_suspect' });
+    expect(existsSync(join(u.root, 'home/incidents/sa1/sample.json'))).toBe(true);
+  });
+  test('E2 real attempt sequence asks once; legacy id-less unknown asks reconcile without reposting', () => {
+    const f = JSON.parse(readFileSync(join(import.meta.dir, 'incidents/e2-asks.json'), 'utf8')) as { attempts: number[]; hold: string };
+    const s = held('code-core');
+    const sup = supervisor(s.root, 'pending');
+    for (const attempt of f.attempts) {
+      const l = loadLedger('sa1');
+      l.auto_retries = [{ milestone: 'm1', reason: 'coder:code-core', at: '2020-01-01T00:00:00Z' }];
+      l.recoveries = Array.from({ length: attempt }, () => '2020-01-01T00:00:00Z');
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(l));
+      tick();
+    }
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+    const key = `sa1:${f.hold}`;
+    const a = JSON.parse(readFileSync(asksFile(), 'utf8'))[key];
+    const legacy = `${key}:2`;
+    writeFileSync(asksFile(), JSON.stringify({ [legacy]: { status: 'unknown' } }));
+    const records = join(s.root, 'sv-state/asks'); mkdirSync(records, { recursive: true });
+    writeFileSync(join(records, 'record.json'), JSON.stringify({ id: a.id, question: `superagent ${legacy} fixture` }));
+    expect(tick()[0]).toMatchObject({ action: 'none' });
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+    expect(JSON.parse(readFileSync(asksFile(), 'utf8'))[key]).toMatchObject({ id: a.id, status: 'pending', legacy_key: legacy });
+  });
+  test.each(['yes', 'no'])('I3 completed run refuses decide and resume/adopt; late %s is superseded and counted stale', answer => {
+    const s = held('settle-core', { 'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' } });
+    tick();
+    setGet(s.root, run('completed'));
+    supervisor(s.root, answer);
+    const before = readFileSync(ledgerPath('sa1'), 'utf8');
+    for (const action of ['retry', 'reject', 'approve']) {
+      const r = captured(() => main(['decide', 'sa1', action]));
+      expect(r.code).toBe(1); expect(JSON.parse(r.out).reason).toContain('completed');
+    }
+    patchLedger(s.root, { engine_hash: 'old' });
+    const stale = readFileSync(ledgerPath('sa1'), 'utf8');
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(1);
+    expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(stale);
+    expect(before).not.toBe(stale);
+    const result = captured(() => main(['supervise-tick']));
+    expect(JSON.parse(result.out)).toMatchObject({ actions: [], stale_answer: 1, orphan_hold: 0 });
+    expect(JSON.parse(readFileSync(asksFile(), 'utf8'))['sa1:auto_retry_exhausted'].status).toBe('superseded');
+    expect(s.calls().filter(c => /workflow (resume|run|cancel|abandon)/.test(c))).toEqual([]);
+  });
+  test('I5 changed fingerprint permits one deterministic adopt, then stops at the current engine', () => {
+    const s = held('settle-core', { 'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' } });
+    const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
+    plan.deadline = '2099-01-01T00:00:00Z';
+    const gen = generate(plan, 'sa1', true);
+    patchLedger(s.root, { engine_hash: 'old', gen_dir: gen.dir });
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true, deterministic: true });
+    const adopted = loadLedger('sa1');
+    expect(adopted).toMatchObject({ archon_run_id: 'r2', engine_hash: engineHash() });
+    const art = join(s.root, 'out/artifacts/runs/r2'); mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'settle-core.json'), '{"ok":false,"reason":"repair_exhausted:acceptance_failed"}');
+    setGet(s.root, { ...run('failed'), id: 'r2', output_root: join(s.root, 'out'), nodes: [{ nodeId: 'settle-core', state: 'failed' }] });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
+    expect(s.calls().filter(c => c.includes('--adopt'))).toHaveLength(1);
+    expect(loadLedger('sa1').auto_retries).toHaveLength(1);
+  });
+  test('I4 id-less superseded legacy answer is reconciled read-only and counted once', () => {
+    const s = held('code-core'); setGet(s.root, run('completed'));
+    const sup = supervisor(s.root, 'no');
+    const key = 'sa1:auto_retry_exhausted:2';
+    writeFileSync(asksFile(), JSON.stringify({ [key]: { status: 'unknown' } }));
+    const records = join(s.root, 'sv-state/asks'); mkdirSync(records, { recursive: true });
+    writeFileSync(join(records, 'late.json'), JSON.stringify({ id: 'late', question: `superagent ${key} fixture` }));
+    const result = JSON.parse(captured(() => main(['supervise-tick'])).out);
+    expect(result).toMatchObject({ actions: [], stale_answer: 1 });
+    expect(JSON.parse(readFileSync(asksFile(), 'utf8'))[key]).toMatchObject({ status: 'superseded', id: 'late', stale_answer: true });
+    expect(sup().filter(c => c.startsWith('ask '))).toEqual([]);
+    expect(resumes(s.calls())).toBe(0);
+  });
+
   test('held:gate: writes hints for every package of the milestone, bumps the attempt, resumes; stops after N', () => {
     const log = join(tmp(), 'diff.log');
     writeFileSync(log, Array.from({ length: 100 }, (_, i) => `line ${String(i + 1)}`).join('\n'));
     const s = held('gate-m1-r3', {
-      'gate-m1-r3.json': gate('acceptance_failed'),
+      'gate-m1-r3.json': gate('invalid_review'),
       'gate-m1-r3.review.json': {
         status: 'FAIL',
         findings: [
@@ -1197,7 +1316,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       ok: true,
       state: 'held:gate',
       milestone: 'm1',
-      reason: 'gate:acceptance_failed',
+      reason: 'gate:invalid_review',
       attempt: 1,
     });
     const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
@@ -1206,7 +1325,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       '此失败在基线已存在',
       '- R1-1 [high] a.ts:3 boom',
       'line 100',
-      'gate reason：acceptance_failed',
+      'gate reason：invalid_review',
     ])
       expect(hint).toContain(x);
     expect(hint).not.toContain('line 40\n');
@@ -1226,8 +1345,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(resumes(s.calls())).toBe(2);
     const l = loadLedger('sa1');
     expect(l.auto_retries?.map(r => r.reason)).toEqual([
-      'gate:acceptance_failed',
-      'gate:acceptance_failed',
+      'gate:invalid_review',
+      'gate:invalid_review',
     ]);
     // 自动重试与 recover 停滞计数互不影响
     expect([l.recoveries.length, l.stalled ?? 0]).toEqual([0, 0]);
@@ -1236,9 +1355,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   });
   test('two no_change gates in a row stop retrying', () => {
     const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 1 });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_change' });
-    expect(resumes(s.calls())).toBe(1);
+    expect(resumes(s.calls())).toBe(0);
   });
   test('needs[] or a red line asks instead of retrying and surfaces the needs', () => {
     const need = { cap: 'network', why: 'registry', minimal_ask: 'allow npm registry' };
@@ -1303,7 +1421,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(existsSync(join(c.root, 'gen', 'hints', 'api.md'))).toBe(false);
     // S3：包级失败无产物也有主，不自动猜原因。
     held('verify-core');
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'unknown_reason' });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'engine_suspect' });
   });
   test('a workflow generated before attempt nodes stays held; decide retry still refuses the gate', () => {
     const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('invalid_review') }, false);
@@ -1358,8 +1476,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       return { s, first: { action: 'cancel', reason: 'deadline', ok: true } };
     },
     gate: () => {
-      const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('acceptance_failed') });
-      return { s, first: { action: 'auto_retry', reason: 'gate:acceptance_failed', ok: true } };
+      const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('invalid_review') });
+      return { s, first: { action: 'auto_retry', reason: 'gate:invalid_review', ok: true } };
     },
     coder: () => ({
       s: held('code-api'),
@@ -1390,7 +1508,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       return { s, first: {} };
     },
     no_attempt_node: () => ({
-      s: held('gate-m1-r1', { 'gate-m1-r1.json': gate('acceptance_failed') }, false),
+      s: held('gate-m1-r1', { 'gate-m1-r1.json': gate('invalid_review') }, false),
       first: {},
     }),
     recover_no_progress: () => {
@@ -1455,7 +1573,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       );
       return { s, first: {} };
     },
-    unknown_reason: () => ({ s: held('settle-core'), first: {} }),
+    engine_suspect: () => ({ s: held('settle-core'), first: {} }),
     approval: () => {
       const s = held('x');
       setGet(
@@ -1505,7 +1623,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         ask: 'ask-1',
       });
       const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
-      expect(q).toStartWith(`superagent sa1:${hold}:`);
+      expect(q).toStartWith(`superagent sa1:${hold} `);
       expect(q.length).toBeLessThanOrEqual(120);
       expect(q).toContain('是=');
       expect(tick()[0]).toMatchObject({ action: 'none', reason: hold, ask: 'pending' });
@@ -1556,7 +1674,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
                 ? 'coder_blocked'
                 : reason.startsWith('budget_')
                   ? 'budget'
-                  : 'unknown_reason';
+                  : 'engine_suspect';
         expect(tick()[0]).toMatchObject({ action: 'ask', reason: expected });
         expect(resumes(s.calls())).toBe(0);
         expect(loadLedger('sa1').dispositions?.at(-1)?.reason).toBe(expected);
@@ -1566,7 +1684,6 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       'coder_error:env',
       'coder_error:vendor_unavailable_all',
       'coder_output_invalid',
-      'repair_exhausted:acceptance_failed',
     ]) {
       test(`${node} ${reason} reruns the milestone, preserves evidence and respects its cap`, () => {
         const log = join(tmp(), 'accept.log');
@@ -1756,7 +1873,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     writeFileSync(join(s.root, 'home', 'runs', 'odd.json'), JSON.stringify({ run_id: 'other' }));
     const { code, out: text } = captured(() => main(['supervise-tick']));
     expect(code).toBe(1);
-    const out = JSON.parse(text) as Record<string, unknown>[];
+    const out = JSON.parse(text).actions as Record<string, unknown>[];
     expect(out.find(x => x.run_id === 'sa1')).toMatchObject({ action: 'auto_retry', ok: true });
     expect(out.find(x => x.run_id === 'bad')).toMatchObject({ action: 'error', ok: false });
     expect(out.find(x => x.run_id === 'odd')).toMatchObject({ action: 'error', ok: false });
@@ -1793,7 +1910,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     writeFileSync(asksFile(), bad);
     const { code, out } = captured(() => main(['supervise-tick']));
     expect(code).toBe(1);
-    expect((JSON.parse(out) as object[])[0]).toMatchObject({
+    expect((JSON.parse(out) as { actions: object[] }).actions[0]).toMatchObject({
       action: 'error',
       ok: false,
       error: expect.stringContaining('asks'),
@@ -1847,13 +1964,8 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
       .filter(l => l === 'fake core')
   ).toHaveLength(1);
   writeFileSync(marker, 'ready');
-  const actions = Bun.spawnSync([BIN, 'supervise-tick'], { env, stdout: 'pipe', stderr: 'pipe' });
-  expect(actions.exitCode).toBe(0);
-  expect(JSON.parse(actions.stdout.toString())[0]).toMatchObject({
-    action: 'auto_retry',
-    milestone: 'm1',
-    ok: true,
-  });
+  // 确定性红验收的重新执行需要显式决定；自动 tick 不盲目重跑。
+  expect(sa('decide', id, 'retry').code).toBe(0);
   expect(sa('wait', id, '--timeout', '120').out).toMatchObject({ state: 'held:human' });
   expect(
     sh(`git log --format=%s sa/${id}`, repo)
@@ -1892,7 +2004,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(
     Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env }).exitCode
   ).toBe(0);
-  expect(sa('run', plan).err).toContain('no valid selftest receipt: no selftest.json'); // preflight 拒绝
+  expect(sa('run', plan).out).toMatchObject({ phase: 'preflight', reason: expect.stringContaining('no valid selftest receipt: no selftest.json') }); // preflight 拒绝
   const started = sa('run', plan, '--fake', '--skip-selftest');
   expect(started.err).toBe('');
   expect(started.code).toBe(0);
@@ -1918,7 +2030,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
 
 describe('launch intents (run + supervise-tick reconcile)', () => {
   const tickOut = (): Record<string, unknown>[] =>
-    JSON.parse(captured(() => main(['supervise-tick'])).out) as Record<string, unknown>[];
+    JSON.parse(captured(() => main(['supervise-tick'])).out).actions as Record<string, unknown>[];
   /** 意图 sa2（工作流 sa-sa2），启动进程 pid、started_at 可调；archon.db 的 runs 表按 rows 建。 */
   const intent = (pid: number, rows: string[], startedAt = '2020-01-01T00:00:00.000Z') => {
     const s = stub([run('completed')]);

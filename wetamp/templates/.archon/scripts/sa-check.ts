@@ -6,6 +6,7 @@
 //   settle 包级收尾：首次验收 advance 直接透传；repair 后复验，仍不 advance 即 suspend（repair_exhausted:*）
 //   gate   第 INPUTS_ROUND 轮评审后的判定：pass / fix（进入下一轮修复）/ escalate（exit 1，升级给用户）
 //   land   打印本地合入命令（永不 push）
+import reasons from './reasons.json';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
@@ -70,6 +71,9 @@ const git = (...args: string[]): string => {
 const plan = (): Plan => JSON.parse(readFileSync(env('PLAN'), 'utf8')) as Plan;
 const policy = (): Policy => JSON.parse(readFileSync(env('POLICY'), 'utf8')) as Policy;
 const emit = (o: unknown): void => {
+  const code = (o as { reason?: unknown }).reason;
+  if (typeof code === 'string' && !reasons.some(r => r.code === code))
+    throw new Error(`unregistered reason: ${code}`);
   console.log(JSON.stringify(o));
 };
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');

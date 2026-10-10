@@ -1,0 +1,36 @@
+[
+  {
+    "node": "settle-core",
+    "verify": {
+      "ok": true,
+      "reason": "coder_partial",
+      "disposition": "repair"
+    },
+    "settle": {
+      "ok": true,
+      "reason": "repair_exhausted:coder_partial",
+      "disposition": "suspend"
+    },
+    "coder": {
+      "status": "partial",
+      "error_class": "task"
+    }
+  },
+  {
+    "node": "settle-core",
+    "verify": {
+      "ok": true,
+      "reason": "coder_error:task",
+      "disposition": "repair"
+    },
+    "settle": {
+      "ok": true,
+      "reason": "repair_exhausted:coder_error:task",
+      "disposition": "suspend"
+    },
+    "coder": {
+      "status": "done",
+      "error_class": "task"
+    }
+  }
+]

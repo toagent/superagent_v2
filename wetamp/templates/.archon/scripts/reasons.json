@@ -1,0 +1,646 @@
+[
+  {
+    "code": "signoff",
+    "hold": "signoff",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "等待人工签收"
+  },
+  {
+    "code": "deadline",
+    "hold": "deadline",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "计划截止已过"
+  },
+  {
+    "code": "gate",
+    "hold": "gate",
+    "determinism": "transient",
+    "owner": "engine",
+    "description": "评审节点执行失败"
+  },
+  {
+    "code": "coder",
+    "hold": "coder",
+    "determinism": "transient",
+    "owner": "coder",
+    "description": "编码节点执行失败"
+  },
+  {
+    "code": "environment",
+    "hold": "environment",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "环境预检失败"
+  },
+  {
+    "code": "paused",
+    "hold": "paused",
+    "determinism": "transient",
+    "owner": "engine",
+    "description": "可恢复的暂停"
+  },
+  {
+    "code": "auto_retry_exhausted",
+    "hold": "auto_retry_exhausted",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "自动重试额度已用尽"
+  },
+  {
+    "code": "no_change",
+    "hold": "no_change",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "修复未改变交付"
+  },
+  {
+    "code": "no_attempt_node",
+    "hold": "no_attempt_node",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "旧工作流缺少 attempt 节点"
+  },
+  {
+    "code": "recover_no_progress",
+    "hold": "recover_no_progress",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "恢复未推进节点"
+  },
+  {
+    "code": "coder_needs",
+    "hold": "needs",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "编码端需要补充能力"
+  },
+  {
+    "code": "coder_redline",
+    "hold": "redline",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "编码端命中红线"
+  },
+  {
+    "code": "budget_launches_exceeded",
+    "hold": "budget",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "调用次数超过预算"
+  },
+  {
+    "code": "budget_tokens_exceeded",
+    "hold": "budget",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "用量超过预算"
+  },
+  {
+    "code": "approval",
+    "hold": "approval",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "等待 Archon 审批"
+  },
+  {
+    "code": "engine_suspect",
+    "hold": "engine_suspect",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "验收与状态矛盾或原因未注册"
+  },
+  {
+    "code": "coder_output_invalid",
+    "hold": "coder",
+    "determinism": "transient",
+    "owner": "coder",
+    "description": "编码输出不是合法 JSON"
+  },
+  {
+    "code": "coder_partial",
+    "hold": "coder",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码未完成且验收失败"
+  },
+  {
+    "code": "acceptance_failed",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "验收失败"
+  },
+  {
+    "code": "review_failed",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "评审未通过"
+  },
+  {
+    "code": "review_inconsistent",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审结论与发现矛盾"
+  },
+  {
+    "code": "invalid_review",
+    "hold": "gate",
+    "determinism": "transient",
+    "owner": "engine",
+    "description": "评审发现标识重复"
+  },
+  {
+    "code": "review_incomplete",
+    "hold": "gate",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "评审未完成"
+  },
+  {
+    "code": "coder_error:env",
+    "hold": "environment",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "编码端报告 env"
+  },
+  {
+    "code": "coder_error:sandbox_denied",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 sandbox_denied"
+  },
+  {
+    "code": "coder_error:permission_denied",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 permission_denied"
+  },
+  {
+    "code": "coder_error:vendor_unavailable_all",
+    "hold": "environment",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "编码端报告 vendor_unavailable_all"
+  },
+  {
+    "code": "coder_error:budget_exhausted",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 budget_exhausted"
+  },
+  {
+    "code": "coder_error:plan_invalid",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 plan_invalid"
+  },
+  {
+    "code": "coder_error:scope_violation",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 scope_violation"
+  },
+  {
+    "code": "coder_error:task",
+    "hold": "coder",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 task"
+  },
+  {
+    "code": "coder_error:redline",
+    "hold": "redline",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 redline"
+  },
+  {
+    "code": "review_not_independent:reviewer_unknown",
+    "hold": "review_not_independent",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审身份不独立 reviewer_unknown"
+  },
+  {
+    "code": "review_not_independent:author_unknown",
+    "hold": "review_not_independent",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审身份不独立 author_unknown"
+  },
+  {
+    "code": "review_not_independent:same_model",
+    "hold": "review_not_independent",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审身份不独立 same_model"
+  },
+  {
+    "code": "repair_exhausted:coder_partial",
+    "hold": "coder",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码未完成且验收失败"
+  },
+  {
+    "code": "repair_exhausted:acceptance_failed",
+    "hold": "coder",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "验收失败"
+  },
+  {
+    "code": "repair_exhausted:coder_error:env",
+    "hold": "environment",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "编码端报告 env"
+  },
+  {
+    "code": "repair_exhausted:coder_error:sandbox_denied",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 sandbox_denied"
+  },
+  {
+    "code": "repair_exhausted:coder_error:permission_denied",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 permission_denied"
+  },
+  {
+    "code": "repair_exhausted:coder_error:vendor_unavailable_all",
+    "hold": "environment",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "编码端报告 vendor_unavailable_all"
+  },
+  {
+    "code": "repair_exhausted:coder_error:budget_exhausted",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 budget_exhausted"
+  },
+  {
+    "code": "repair_exhausted:coder_error:plan_invalid",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 plan_invalid"
+  },
+  {
+    "code": "repair_exhausted:coder_error:scope_violation",
+    "hold": "coder_blocked",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 scope_violation"
+  },
+  {
+    "code": "repair_exhausted:coder_error:task",
+    "hold": "coder",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 task"
+  },
+  {
+    "code": "repair_exhausted:coder_error:redline",
+    "hold": "redline",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 redline"
+  },
+  {
+    "code": "signoff+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "等待人工签收"
+  },
+  {
+    "code": "deadline+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "计划截止已过"
+  },
+  {
+    "code": "gate+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审节点执行失败"
+  },
+  {
+    "code": "coder+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码节点执行失败"
+  },
+  {
+    "code": "environment+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "env",
+    "description": "环境预检失败"
+  },
+  {
+    "code": "paused+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "可恢复的暂停"
+  },
+  {
+    "code": "auto_retry_exhausted+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "自动重试额度已用尽"
+  },
+  {
+    "code": "no_change+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "修复未改变交付"
+  },
+  {
+    "code": "no_attempt_node+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "旧工作流缺少 attempt 节点"
+  },
+  {
+    "code": "recover_no_progress+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "恢复未推进节点"
+  },
+  {
+    "code": "coder_needs+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "编码端需要补充能力"
+  },
+  {
+    "code": "coder_redline+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "编码端命中红线"
+  },
+  {
+    "code": "budget_launches_exceeded+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "调用次数超过预算"
+  },
+  {
+    "code": "budget_tokens_exceeded+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "用量超过预算"
+  },
+  {
+    "code": "approval+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "等待 Archon 审批"
+  },
+  {
+    "code": "engine_suspect+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "验收与状态矛盾或原因未注册"
+  },
+  {
+    "code": "coder_output_invalid+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码输出不是合法 JSON"
+  },
+  {
+    "code": "coder_partial+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码未完成且验收失败"
+  },
+  {
+    "code": "acceptance_failed+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "验收失败"
+  },
+  {
+    "code": "review_failed+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "评审未通过"
+  },
+  {
+    "code": "review_inconsistent+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审结论与发现矛盾"
+  },
+  {
+    "code": "invalid_review+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审发现标识重复"
+  },
+  {
+    "code": "review_incomplete+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "env",
+    "description": "评审未完成"
+  },
+  {
+    "code": "coder_error:env+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "env",
+    "description": "编码端报告 env"
+  },
+  {
+    "code": "coder_error:sandbox_denied+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 sandbox_denied"
+  },
+  {
+    "code": "coder_error:permission_denied+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 permission_denied"
+  },
+  {
+    "code": "coder_error:vendor_unavailable_all+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "env",
+    "description": "编码端报告 vendor_unavailable_all"
+  },
+  {
+    "code": "coder_error:budget_exhausted+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 budget_exhausted"
+  },
+  {
+    "code": "coder_error:plan_invalid+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 plan_invalid"
+  },
+  {
+    "code": "coder_error:scope_violation+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 scope_violation"
+  },
+  {
+    "code": "coder_error:task+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 task"
+  },
+  {
+    "code": "coder_error:redline+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 redline"
+  },
+  {
+    "code": "review_not_independent:reviewer_unknown+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审身份不独立 reviewer_unknown"
+  },
+  {
+    "code": "review_not_independent:author_unknown+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审身份不独立 author_unknown"
+  },
+  {
+    "code": "review_not_independent:same_model+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "评审身份不独立 same_model"
+  },
+  {
+    "code": "repair_exhausted:coder_partial+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码未完成且验收失败"
+  },
+  {
+    "code": "repair_exhausted:acceptance_failed+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "验收失败"
+  },
+  {
+    "code": "repair_exhausted:coder_error:env+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "env",
+    "description": "编码端报告 env"
+  },
+  {
+    "code": "repair_exhausted:coder_error:sandbox_denied+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 sandbox_denied"
+  },
+  {
+    "code": "repair_exhausted:coder_error:permission_denied+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 permission_denied"
+  },
+  {
+    "code": "repair_exhausted:coder_error:vendor_unavailable_all+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "env",
+    "description": "编码端报告 vendor_unavailable_all"
+  },
+  {
+    "code": "repair_exhausted:coder_error:budget_exhausted+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 budget_exhausted"
+  },
+  {
+    "code": "repair_exhausted:coder_error:plan_invalid+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 plan_invalid"
+  },
+  {
+    "code": "repair_exhausted:coder_error:scope_violation+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 scope_violation"
+  },
+  {
+    "code": "repair_exhausted:coder_error:task+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 task"
+  },
+  {
+    "code": "repair_exhausted:coder_error:redline+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码端报告 redline"
+  }
+]

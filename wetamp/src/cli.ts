@@ -1,6 +1,10 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
+import { saveIncident } from './incidents';
+import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
+export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
-import { TERMINAL_WORKFLOW_STATUSES } from '../../packages/workflows/src/schemas/workflow-run';
+import { HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
+export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
 import {
   appendFileSync,
@@ -10,6 +14,7 @@ import {
   readdirSync,
   rmSync,
   statfsSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
@@ -139,6 +144,8 @@ export interface Ledger {
   reconciled_at?: string;
 }
 export interface AutoRetry {
+  deterministic?: true;
+  engine_hash?: string;
   milestone: string;
   at: string;
   reason: string;
@@ -344,6 +351,18 @@ const stalledOut = (l: Ledger, run: RunView): boolean =>
 /** classify + ledger：同一完成节点集合上已 recover 满 3 次的 owner-lost run 不再自动恢复，等元帅。 */
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
+  if ((run.status === 'failed' || run.status === 'paused') && c.node) {
+    const reason = nodeReason(run, c);
+    const pkg = c.node.replace(/^(verify|settle|code|repair)-/, '');
+    // settle 是修复后的复验；其红证据不能被首次 verify 的旧绿证据覆盖。
+    const evidence = join(artifactsOf(run), `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`);
+    const verify = readJson(evidence) as { ok?: boolean } | null;
+    const started = run.nodes?.find(n => n.nodeId === c.node)?.startedAt;
+    const current = !started || !/^(code|repair)-/.test(c.node) || (existsSync(evidence) && statSync(evidence).mtimeMs >= Date.parse(started));
+    const deliberate = ['needs', 'redline', 'budget', 'coder_blocked'].includes(reasonHold(reason));
+    if ((reason && !reasonOf(reason)) || (/^(verify|settle)-/.test(c.node) && !reason) || (/^(verify|settle|code|repair)-/.test(c.node) && current && verify?.ok === true && !deliberate))
+      return { ...c, state: 'held:engine_suspect', exit: EXIT.held };
+  }
   return c.state === 'owner_lost' && stalledOut(l, run)
     ? { state: 'held:recover_no_progress', exit: EXIT.held }
     : c;
@@ -368,6 +387,14 @@ function recoverRun(
     l.repo,
     run => {
       Object.assign(l, loadLedger(l.run_id));
+      if (run.status === 'completed') return 'status completed is not resumable';
+      if (auto?.deterministic) {
+        if (l.engine_hash === engineHash() || l.auto_retries?.some(r => r.engine_hash === auto.engine_hash)) return 'deterministic retry already used for this engine';
+        if (!['failed', 'cancelled'].includes(run.status)) return 'deterministic retry requires terminal adopt';
+        // 先记一次授权的尝试：启动失败也不重复烧同一指纹的调用。
+        (l.auto_retries ??= []).push(auto);
+        saveLedger(l);
+      }
       if (auto) return undefined;
       if (fresh) l.stalled = 0;
       fp = progressOf(run);
@@ -389,8 +416,9 @@ function recoverRun(
         l.transcript = typeof ack.transcriptPath === 'string' ? ack.transcriptPath : '';
         l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
       }
-      if (auto) (l.auto_retries ??= []).push(auto);
-      else {
+      if (auto) {
+        if (!l.auto_retries?.some(r => r.at === auto.at)) (l.auto_retries ??= []).push(auto);
+      } else {
         l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
         l.progress_fp = fp;
         l.recoveries.push(new Date().toISOString());
@@ -406,7 +434,7 @@ function recoverRun(
       },
       adopt: run => {
         // Live and paused owners retain their snapshot; terminal recovery may change source.
-        if (!TERMINAL_WORKFLOW_STATUSES.includes(run.status) || l.engine_hash === engineHash())
+        if (!['failed', 'cancelled'].includes(run.status) || l.engine_hash === engineHash())
           return undefined;
         const metadata = readJson(join(l.gen_dir, 'engine.json')) as { fake?: boolean } | null;
         const gen = generate(
@@ -485,51 +513,69 @@ function preflight(skipSelftest: boolean): void {
 }
 
 function startRun(planPath: string, a: Args): number {
-  preflight(a.flags['skip-selftest'] ?? false);
-  const plan = loadPlan(planPath);
-  const drift = aliasDrift(plan.repo);
-  if (drift.length) {
-    print({ ok: false, reason: 'alias_drift', drift, fix: 'wetamp/scripts/install.sh' });
-    return EXIT_ALIAS_DRIFT;
-  }
   const run = newRunId();
-  const gen = generate(plan, run, a.flags.fake ?? false);
-  const branch = `sa/${run}`;
-  const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
-  args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
-  const l: Ledger = {
-    run_id: run,
-    engine_hash: gen.engine_hash,
-    archon_run_id: '',
-    plan: planPath,
-    gen_dir: gen.dir,
-    repo: plan.repo,
-    branch,
-    workflow: gen.workflow,
-    console: plan.console ?? 'claude',
-    started_at: new Date().toISOString(),
-    transcript: '',
-    log: '',
-    recoveries: [],
-    launcher: launcher(home().sa),
-  };
-  // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
-  const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
-  mkdirSync(join(home().sa, 'intents'), { recursive: true });
-  writeAtomic(intentPath(run), JSON.stringify(intent, null, 2) + '\n');
-  const ack = archonJson(args, plan.repo);
-  if (ack.ok !== true || typeof ack.runId !== 'string')
-    throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
-  Object.assign(l, {
-    archon_run_id: ack.runId,
-    transcript: String(ack.transcriptPath),
-    log: String(ack.logPath),
-  });
-  mkdirSync(join(home().sa, 'runs'), { recursive: true });
-  saveLedger(l);
-  rmSync(intentPath(run), { force: true });
-  print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir });
-  return 0;
+  let phase: 'preflight' | 'engine' = 'preflight';
+  try {
+    preflight(a.flags['skip-selftest'] ?? false);
+    const plan = loadPlan(planPath);
+    const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+    if (checked.exitCode !== 0) {
+      const reason = lastJson(checked.stdout.toString())?.reason;
+      throw new Error(typeof reason === 'string' ? reason : 'preflight: base branch inspection failed');
+    }
+    const drift = aliasDrift(plan.repo);
+    if (drift.length) {
+      const failure = { run_id: run, ok: false, phase, reason: 'alias_drift', drift, fix: 'wetamp/scripts/install.sh' };
+      mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
+      writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
+      print(failure);
+      return EXIT_ALIAS_DRIFT;
+    }
+    phase = 'engine';
+    const gen = generate(plan, run, a.flags.fake ?? false);
+    const branch = `sa/${run}`;
+    const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
+    args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
+    const l: Ledger = {
+      run_id: run,
+      engine_hash: gen.engine_hash,
+      archon_run_id: '',
+      plan: planPath,
+      gen_dir: gen.dir,
+      repo: plan.repo,
+      branch,
+      workflow: gen.workflow,
+      console: plan.console ?? 'claude',
+      started_at: new Date().toISOString(),
+      transcript: '',
+      log: '',
+      recoveries: [],
+      launcher: launcher(home().sa),
+    };
+    // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
+    const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
+    mkdirSync(join(home().sa, 'intents'), { recursive: true });
+    writeAtomic(intentPath(run), JSON.stringify(intent, null, 2) + '\n');
+    const ack = archonJson(args, plan.repo);
+    if (ack.ok !== true || typeof ack.runId !== 'string')
+      throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
+    Object.assign(l, {
+      archon_run_id: ack.runId,
+      transcript: String(ack.transcriptPath),
+      log: String(ack.logPath),
+    });
+    mkdirSync(join(home().sa, 'runs'), { recursive: true });
+    saveLedger(l);
+    rmSync(intentPath(run), { force: true });
+    print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir });
+    return 0;
+  } catch (e) {
+    const failure = { run_id: run, ok: false, phase, reason: redact((e as Error).message) };
+    mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
+    writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
+    print(failure);
+    return 1;
+  }
 }
 
 /** 启动意图：ledger 草稿（archon_run_id 待定）+ 启动进程；结论 no_run 写回意图，run 出现前每个 tick 都再查。 */
@@ -730,6 +776,10 @@ function decide(l: Ledger, a: Args): number {
   const action = need(a._[2], 'decide <run> approve|reject|retry [--pkg id --hint text]');
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
+  if (!holdOf(l, run, c)) {
+    print({ run_id: l.run_id, ok: false, reason: `decide refused: run ${run.status} is not currently held` });
+    return 1;
+  }
   if (action === 'approve') {
     if (pastDeadline(l)) {
       print({ run_id: l.run_id, ok: false, reason: PAST_DEADLINE });
@@ -827,83 +877,12 @@ function acceptRun(l: Ledger, pkg: string | undefined): number {
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
 // 其余非终态按 HOLD_POLICY 处置；需要拍板的投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答执行。
-const ANSWERS = ['pending', 'yes', 'no', 'expired'];
-interface Ask {
-  id?: string; // 先落 unknown 再调 ask；ask 中途崩溃或非零退出都保留 unknown，下一 tick 对账
-  status: string; // ANSWERS 之一、unknown，或执行后的 approved | rejected
-}
+export const ANSWERS = ['pending', 'yes', 'no', 'expired', 'superseded'];
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 
-type Yes = 'retry' | 'resume' | 'approve' | 'review';
-export type Policy =
-  | { do: 'signoff' | 'expire' | 'auto_retry' | 'backoff' | 'resume' }
-  | { do: 'ask'; yes: Yes; text: string };
-/**
- * 挂起原因 → 处置：supervise-tick 对非终态 run 的唯一分派表（docs/00「挂起处置」），每行都有单测。
- * signoff 走 human()；expire 按 plan 截止终止、不提醒；auto_retry/backoff/resume 自动处置，有上限，用尽后转 ask 行；
- * ask 行投一条提醒（键 run:原因:轮次），“是”执行 yes，“否”终止 run 并保留证据，过期不替用户决定、等 plan 截止。
- */
-export const HOLD_POLICY = {
-  signoff: { do: 'signoff' },
-  deadline: { do: 'expire' },
-  gate: { do: 'auto_retry' },
-  coder: { do: 'auto_retry' },
-  environment: { do: 'backoff' },
-  paused: { do: 'resume' },
-  auto_retry_exhausted: {
-    do: 'ask',
-    yes: 'retry',
-    text: '自动重试已用尽。是=再给一轮修复（fresh retry），否=终止 run',
-  },
-  no_change: {
-    do: 'ask',
-    yes: 'retry',
-    text: '连续两轮修复无变化。是=再给一轮修复（fresh retry），否=终止 run',
-  },
-  no_attempt_node: {
-    do: 'ask',
-    yes: 'resume',
-    text: '旧工作流无法重跑里程碑。是=原样续跑（resume），否=终止 run',
-  },
-  recover_no_progress: {
-    do: 'ask',
-    yes: 'resume',
-    text: '恢复 3 次无进展。是=清零计数再恢复一次，否=终止 run',
-  },
-  needs: {
-    do: 'ask',
-    yes: 'retry',
-    text: '将军需要补能力(needs)。是=已补齐，再跑一轮，否=终止 run',
-  },
-  redline: { do: 'ask', yes: 'retry', text: '将军命中红线。是=放行重试一次，否=终止 run' },
-  coder_blocked: {
-    do: 'ask',
-    yes: 'retry',
-    text: '将军受执行约束阻断。是=已处理，再跑一轮，否=终止 run',
-  },
-  budget: {
-    do: 'ask',
-    yes: 'retry',
-    text: '预算已用尽。是=按台账额度放宽本里程碑一次，再跑一轮，否=终止 run',
-  },
-  review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽。是=再给一轮修复，否=终止 run' },
-  review_not_independent: {
-    do: 'ask',
-    yes: 'review',
-    text: '评审身份不独立。是=已处理，重跑本轮评审，否=终止 run',
-  },
-  unknown_reason: {
-    do: 'ask',
-    yes: 'retry',
-    text: '挂起产物缺失或原因未知。是=重跑本里程碑，否=终止 run',
-  },
-  approval: { do: 'ask', yes: 'approve', text: 'Archon 审批门。是=批准（approve），否=终止 run' },
-} as const satisfies Record<string, Policy>;
-export type Hold = keyof typeof HOLD_POLICY;
 type Held = [Hold, Record<string, unknown>];
 
 const asksPath = (): string => join(home().sa, 'asks.json');
-export type Asks = Partial<Record<string, Ask>>;
 /** 读不出就抛错：把截断或损坏的 asks.json 当空表，会让每个挂起再投一遍提醒。 */
 const loadAsks = (): Asks => {
   const p = asksPath();
@@ -920,7 +899,7 @@ const saveAsks = (asks: Asks): void => {
   writeAtomic(asksPath(), JSON.stringify(asks, null, 2) + '\n');
 };
 
-/** 某个 run 的提问；签收键 `<run>:<里程碑>:<放行的 gate 轮次>`，挂起键 `<run>:<原因>:<轮次>`：resumeAt 变了也不重投。 */
+/** 某个 run 的提问；键 `<run>:<挂起类别>`：resumeAt 变了也不重投。 */
 export const asksOf = (run: string): Asks =>
   Object.fromEntries(Object.entries(loadAsks()).filter(([k]) => k.startsWith(`${run}:`)));
 
@@ -986,12 +965,12 @@ function pollAsk(
   if (a !== undefined && a.id === undefined) {
     const { records, anomalous } = askRecords();
     if (anomalous) note = `${String(anomalous)} anomalous ask records`;
-    const found = records.filter(r => r.question.startsWith(`superagent ${key} `));
+    const found = records.filter(r => r.question.startsWith(`superagent ${key} `) || (a?.legacy_key && r.question.startsWith(`superagent ${a.legacy_key} `)));
     if (found.length > 1)
       return {
         conflict: `ask ${key}: ${String(found.length)} supervisor asks match${note ? `; ${note}` : ''}`,
       };
-    a = asks[key] = found.length ? { id: found[0].id, status: 'pending' } : undefined;
+    a = asks[key] = found.length ? { ...a, id: found[0].id, status: 'pending' } : undefined;
   }
   if (!a) {
     asks[key] = { status: 'unknown' };
@@ -1028,9 +1007,7 @@ function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): A
 function human(l: Ledger, run: RunView, asks: Asks): Action {
   const w = run.metadata?.wait;
   if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
-  const m = w.event.slice('sa.human.'.length);
-  const round = gatesOf(artifactsOf(run)).filter(f => f.startsWith(`gate-${m}-r`)).length;
-  const key = `${l.run_id}:${m}:${String(round)}`;
+  const key = askKey(l.run_id, 'signoff');
   const base = { run_id: l.run_id, event: w.event };
   // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
@@ -1067,7 +1044,7 @@ function approveRun(l: Ledger): RecoverResult {
 }
 
 /**
- * HOLD_POLICY 的 ask 行。轮次 = recover 次数 + 自动重试次数（“是”之后再挂起就是新一轮、新提醒）；审批门用 pauseId。
+ * HOLD_POLICY 的 ask 行：同一 (run, hold) 仅投递一次；attempt 不参与。
  * 执行失败保留回答，下一 tick 重试；pending/expired 不动。
  */
 function askHold(
@@ -1079,12 +1056,7 @@ function askHold(
   asks: Asks,
   extra: Record<string, unknown>
 ): Action {
-  const ap = run.metadata?.approval;
-  const round =
-    hold === 'approval'
-      ? (ap?.pauseId ?? ap?.nodeId ?? '?')
-      : String(l.recoveries.length + (l.auto_retries?.length ?? 0));
-  const key = `${l.run_id}:${hold}:${round}`;
+  const key = askKey(l.run_id, hold);
   const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
   const r = pollAsk(key, p.text, ttlHours(Date.parse(planOf(l).deadline)), asks);
   if ('conflict' in r)
@@ -1124,7 +1096,7 @@ function askHold(
 }
 
 /** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。asks.json 的唯一写者。 */
-export function superviseTick(): Action[] | { skipped: 'locked' } {
+export function superviseTick(): ReturnType<typeof tick> | { skipped: 'locked' } {
   const { sa } = home();
   mkdirSync(sa, { recursive: true });
   const l = lock(join(sa, 'supervise.lock'));
@@ -1138,7 +1110,7 @@ export function superviseTick(): Action[] | { skipped: 'locked' } {
 
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
-function tick(sa: string): Action[] {
+function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSignals> {
   archonDetached(['workflow', 'wake', '--json'], join(sa, 'wake.log'));
   let asks: Asks | Error;
   try {
@@ -1146,13 +1118,14 @@ function tick(sa: string): Action[] {
   } catch (e) {
     asks = e as Error;
   }
+  const observed: HoldSignal[] = [];
   const out: Action[] = reconcileIntents();
   const live = new Set<string>();
   for (const l of ledgers()) {
     live.add(l.run_id);
     try {
       if ('error' in l) throw new Error(l.error);
-      const x = dispose(l, asks);
+      const x = dispose(l, asks, observed);
       if (x) out.push(x);
     } catch (e) {
       out.push({
@@ -1166,17 +1139,28 @@ function tick(sa: string): Action[] {
   if (!(asks instanceof Error)) {
     // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者
     asks = Object.fromEntries(Object.entries(asks).filter(([k]) => live.has(k.split(':')[0])));
+    for (const [key, a] of Object.entries(asks)) {
+      if (a?.status !== 'superseded' || a.stale_answer) continue;
+      if (!a.id) {
+        const records = askRecords().records.filter(r => r.question.startsWith(`superagent ${key} `));
+        if (records.length === 1) a.id = records[0].id;
+      }
+      if (!a.id || Object.values(asks).some(live => live && live.id === a.id && live.status !== 'superseded')) continue;
+      try { a.stale_answer = ['yes', 'no'].includes(supervisor(['ask-status', a.id])); }
+      catch (e) { out.push({ run_id: 'asks', action: 'error', ok: false, error: tail((e as Error).message, 200) }); }
+    }
     saveAsks(asks);
   }
-  return out;
+  return { actions: out, ...cockpitSignals(observed, asks instanceof Error ? {} : asks) };
 }
 
 /** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
 function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
+  if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
     c.state === 'held:gate'
-      ? reasonHold(nodeReason(run, c), 'gate')
+      ? reasonHold(nodeReason(run, c))
       : c.state === 'held:environment'
         ? 'environment'
         : c.state === 'held:recover_no_progress'
@@ -1199,24 +1183,7 @@ const nodeReason = (run: RunView, c: Classified): string => {
   } | null;
   return typeof out?.reason === 'string' ? out.reason : '';
 };
-function reasonHold(reason: string, fallback: Hold = 'unknown_reason'): Hold {
-  if (reason.startsWith('budget_')) return 'budget';
-  if (reason.endsWith('+review_limit')) return 'review_limit';
-  if (reason.startsWith('review_not_independent:')) return 'review_not_independent';
-  if (reason === 'coder_redline') return 'redline';
-  if (reason === 'coder_needs') return 'needs';
-  if (['coder_error:env', 'coder_error:vendor_unavailable_all'].includes(reason))
-    return 'environment';
-  if (
-    /^coder_error:(sandbox_denied|permission_denied|plan_invalid|scope_violation|budget_exhausted)$/.test(
-      reason
-    )
-  )
-    return 'coder_blocked';
-  if (reason === 'coder_output_invalid' || reason.startsWith('repair_exhausted:')) return 'coder';
-  if (reason === 'deadline') return 'deadline';
-  return reason ? fallback : 'unknown_reason';
-}
+export const reasonHold = (reason: string): Hold => reasonOf(reason)?.hold ?? 'engine_suspect';
 
 /** 一次明确授权覆盖本里程碑 attempt；后续里程碑恢复原预算。额度基于实际台账，不折算金额。 */
 function grantBudget(l: Ledger, node: string, key: string): void {
@@ -1248,9 +1215,12 @@ function grantBudget(l: Ledger, node: string, key: string): void {
 }
 
 /** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
-function dispose(l: Ledger, asks: Asks | Error): Action | undefined {
+function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action | undefined {
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
+  const row: HoldSignal = { run_id: l.run_id, since: run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? l.started_at, disposed: false };
+  observed.push(row);
+  if (c.state === 'held:engine_suspect') saveIncident(l.run_id, artifactsOf(run), c.node ?? '', planOf(l), { run: l.engine_hash ?? null, current: engineHash() });
   if (c.state === 'owner_lost')
     return record(l, 'owner_lost', { run_id: l.run_id, action: 'recover', ...recoverRun(l) });
   const need = (): Asks => {
@@ -1258,7 +1228,10 @@ function dispose(l: Ledger, asks: Asks | Error): Action | undefined {
     return asks;
   };
   const act = (hold: Hold, extra: Record<string, unknown> = {}): Action | undefined => {
+    row.hold = hold;
+    row.disposed = l.dispositions?.some(d => d.reason === hold && d.ok && Date.parse(d.at) >= Date.parse(row.since)) ?? false;
     const p: Policy = HOLD_POLICY[hold];
+    if (!(asks instanceof Error) && ['ask', 'signoff'].includes(p.do) && !(hold === 'signoff' && pastDeadline(l))) supersedeAsks(asks, l.run_id, hold);
     const x =
       p.do === 'signoff'
         ? human(l, run, need())
@@ -1269,9 +1242,14 @@ function dispose(l: Ledger, asks: Asks | Error): Action | undefined {
             : p.do === 'ask'
               ? askHold(l, run, c, hold, p, need(), extra)
               : autoRetry(l, run, c);
-    return Array.isArray(x) ? act(...x) : x && record(l, hold, x);
+    if (Array.isArray(x)) return act(...x);
+    row.disposed ||= !!x && x.action !== 'none' && x.ok;
+    if (!(asks instanceof Error) && !['ask', 'signoff', 'expire'].includes(p.do)) supersedeAsks(asks, l.run_id);
+    return x && record(l, hold, x);
   };
   const hold = holdOf(l, run, c);
+  if (!hold && !(asks instanceof Error)) supersedeAsks(asks, l.run_id);
+  if (hold === 'engine_suspect' && l.engine_hash && l.engine_hash !== engineHash() && run.status === 'failed') return act('gate');
   return hold && act(hold);
 }
 
@@ -1367,10 +1345,14 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   ];
   if (needs.length) return hold('needs');
   if (codersOf(art, m).some(x => x.error_class === 'redline')) return hold('redline');
-  if (reason.includes('deadline')) return hold('deadline');
-  if (tries.length >= loadTiers().policy.auto_retry[kind]) return hold('auto_retry_exhausted');
-  if (reason.includes('no_change') && tries.at(-1)?.reason.includes('no_change'))
-    return hold('no_change');
+  const cause = reasonOf(c.state === 'held:engine_suspect' ? 'engine_suspect' : nodeReason(run, c) || kind);
+  if (!cause) return hold('engine_suspect');
+  if (cause.hold === 'deadline') return hold('deadline');
+  if (cause.hold === 'no_change') return hold('no_change');
+  if (cause.determinism === 'deterministic' && (!l.engine_hash || l.engine_hash === engineHash())) return hold('auto_retry_exhausted');
+  if (cause.determinism === 'deterministic' && l.auto_retries?.some(r => r.engine_hash === engineHash())) return hold('auto_retry_exhausted');
+  if (cause.determinism === 'deterministic' && !['failed', 'cancelled'].includes(run.status)) return hold('auto_retry_exhausted');
+  if (cause.determinism !== 'deterministic' && tries.length >= loadTiers().policy.auto_retry[kind]) return hold('auto_retry_exhausted');
   const pkgHold = /^(verify|settle)-/.test(node);
   if ((kind === 'gate' || pkgHold) && !attemptable(l, m)) return hold('no_attempt_node');
   const last = tries.at(-1);
@@ -1387,7 +1369,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
         next: new Date(next).toISOString(),
       };
   }
-  const auto = { milestone: m, at: new Date().toISOString(), reason };
+  const auto = { milestone: m, at: new Date().toISOString(), reason, engine_hash: engineHash(), ...(cause.determinism === 'deterministic' ? { deterministic: true as const } : {}) };
   let r: RecoverResult;
   if (kind === 'gate') {
     const text = gateHint(plan, art, node, gate, tries.length + 1);
@@ -1578,8 +1560,8 @@ export function main(argv: string[]): number {
     case 'supervise-tick': {
       const actions = superviseTick();
       print(actions);
-      if (!Array.isArray(actions)) return 0;
-      return actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
+      if (!('actions' in actions)) return 0;
+      return actions.actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
     }
     case 'report': {
       const r = report();

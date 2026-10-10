@@ -515,3 +515,26 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 ▶ xiaopan-translator 移植 P1–P5 到 e890971（快进到已验收的 d28b532） +1 38m57s R2 5.6M 073817-06da
   M1/1 编✓ 验✓ 评R2◐ 门· 合· ▕█████████84% 超~9m██████░░░░▏ 将军·sol6.1
 ```
+
+## S4 引擎正确性契约
+
+- 范围：派生将军在 `wetamp-s4`、HF4 基线 `1feb4909` 实现 I2/I4/I5/I6/I8，并保持 I1、补强 I3；不委派、不发布，不修改 packages、hooks、board/web/report 生产代码。独立 G2 评审与主控实测仍由元帅安排。RCA 原文落库为 `2026-10-10-systemic-rca.md`，仅修正旧代码行号、HF3/HF4 已上线状态、I1 穷举归属及 completed 不得迁移的事实。
+
+| 不变量 | 机制 | 测试 | 监测 | 记债 |
+|---|---|---|---|---|
+| I1 | 保留 HF4 的证据优先次序与三个冲突标记，不修改 disposition 规则 | HF4 176 格矩阵、E7 partial+env+绿、四场景 golden | verify/settle 保留 self_report_conflict、coder_partial、error_class_ignored | 主控生产验收不能由 fake 代替 |
+| I2 | `src/reasons.ts` 为唯一注册表，带 hold/determinism/owner/description；消费方精确查表，未注册即嫌疑 | producer 闭集覆盖、唯一 reason code、逐项 policy 映射、policy 无孤儿、镜像与生成快照一致 | sa-check emit 校验原因，未知原因经 I5 报警 | BT7 的旧文案表仍含 unknown_reason，须改为 engine_suspect |
+| I4 | 去重键为 run:hold；迁移一个旧 attempt 键并保留 alias，其余作废；终态或 hold 变化将未决项标 superseded，迟到回答不执行动作 | E2 原时间序列、id-less unknown 对账、terminal yes/no、id-less superseded 回答、纯计数函数 | tick 输出 `{actions, orphan_hold, dup_ask, engine_suspect, stale_answer}`，`cockpit-signals.ts` 导出同口径；孤儿阈值 10 分钟、处置记录参与判断 | BT7 尚未接入纯函数；不删除或改写真实 Mac 提醒 |
+| I5 | failed/paused 包级绿证据或未注册原因 => engine_suspect；settle 使用修复后的复验，code/repair 不使用早于节点开始的旧 verify；确定性同指纹不自动重试，换指纹仅一次 terminal adopt，尝试在恢复锁内记账 | E1 两份真实 settle、当前红复验不受首次绿覆盖、unknown reason、同指纹零调用、换指纹一次 adopt、样本白名单/原子写/去重 | tick 自动写 incidents/run/sample.json 并按 run 去重，投一次嫌疑提问 | 判定和恢复的独立评审仍待元帅 |
+| I6 | fake 支持 done_with_error_class/partial_green/blocked_needs/invalid_json；默认 golden 字节保持；事故夹具只含结构与判定字段 | 四场景执行实际生成的 fake body 后检查 disposition；E1/E2/E5/E7 回放 | 测试期证据，不替代线上指标 | E5 是重建仓库；E1/E2 为真实脱敏判定与处置，E7 原始样本沿用 HF4 |
+| I8 | 导入 Archon inspectProjectBaseBranch 与 loadRepoConfig；显式 worktree.baseBranch 由原生配置提供；同步 CLI 通过独立 bun 预检进程复用 async API，不复制分支检测 | E5 无 remote/default branch 被拒且提示 worktree.baseBranch；run 未启动 engine；preflight/engine 两类启动失败台账与 stdout | `launch-failures/run.json` 记录 phase；没有 Archon id 的失败不伪装 active run | 尚未覆盖 Archon 所有其他启动拒绝条件 |
+
+- E2 根因证据（只读生产 JSON）：`062040-aa74` 的 asks 键 `auto_retry_exhausted:2`、`:3` 均 pending，对应 dispositions ask 时间 `07:01:23.035Z`、`07:07:10.244Z`；`063513-6a28` 的 `:1`、`:2` 均 pending，对应 `07:01:25.032Z`、`07:08:21.395Z`。旧键使用 `recoveries.length + auto_retries.length`，恢复改变 key 后再次投问。本包复用现有 pollAsk、askRecords、supervise 单实例锁与 ledger 恢复锁；unknown 投递先持久化、legacy id-less 对账保留原 reminder，不再投新提醒。
+- 注册表选择生成 JSON：sa-check 在冻结快照内独立执行，不能依赖安装目录的 src；`generate` 直接序列化 REASONS，`generate:reasons` 维护模板镜像，单测证明镜像相等。engineHash 也包含注册表真源，避免只改原因策略却不更新引擎指纹。
+- 事故留样只取闭集 status/error_class/disposition/reason 和 boolean 判定标记，未知原因只留 unregistered_reason，坏 JSON 只留 invalid_json；verify/coder/settle/gate 输入输出按白名单投影，plan 只留 package id/milestone/risk 与新旧指纹。临时目录内 atomic JSON + rename 发布，按 run 去重，不复制 prompt、转录、argv、日志、命令或任意文本。
+- I3 补强：recoverRun 在锁内拒绝 completed，adopt 仅 failed/cancelled；decide 的 retry/reject/approve 先校验当前挂起。HF3「adopt 跳过已完成编码」继续记债，本包不实现。S3 真实 resume 测试改用显式 decide retry，确定性红验收不再由 tick 无条件重跑。
+- 当前边界阻塞：`src/board/cockpit.ts:13` 的独立 REASONS 文案表含 unknown_reason、缺 engine_suspect，导致 tsc TS2353 及 cockpit 的 policy 覆盖断言失败。本包按任务卡禁止改该路径，保留失败断言，交元帅与 BT7 对齐；不宽化类型或删测试掩盖契约缺口。
+- 验证证据：`/tmp/s4-contract-last.log`（16 pass/0 fail，含 E1/E2/E5）、`/tmp/s4-board-contract-final.log`（33 pass/0 fail）、`/tmp/s4-tsc-final.log`（exit 2，仅上述 board 映射）、`/tmp/s4-all-final.log`（exit 1，588 pass/1 fail/2 snapshots；唯一失败为上述 cockpit policy 文案表契约）；`bun run lint`、通过 wrapper 的 scoped lint 与 `git diff --check` 均通过。src TS 净增 338 行（≤350），hooks/packages/board/web/report 生产路径 diff 为零。
+- 临时 HOME 验收：`SUPERAGENT_HOME=/tmp/s4-acceptance.RetOuw bash scripts/selftest.sh --fake` exit 0；`SUPERAGENT_HOME=/tmp/s4-scenario.0QUv9r FAKE_CODER_SCENARIO=done_with_error_class bash scripts/selftest.sh --fake` exit 0，HF3 adopt 后 status=completed（经过评审、门禁与合入）；两份回执是候选源码的 fake 验证，不是生产恢复或部署证据。提交后同一 `/tmp/s4-acceptance.RetOuw` 执行 `bash scripts/verify-local.sh --commit HEAD`，绑定结果以其 verify.json 为准；上述 tsc 接线阻塞未解除前不宣称投送闸通过。
+
+- 本包改动文件（20）：`package.json`；`src/{cli,generate,reasons,cockpit-signals,incidents,preflight}.ts`；`scripts/generate-reasons.ts`；`templates/.archon/scripts/{sa-check.ts,reasons.json}`；`tests/{cli.test.ts,board.test.ts,s4-contract.test.ts}`；`tests/golden/fake-coder-scenarios.json`；`tests/incidents/{e1-settle,e2-asks,e5-base,e7-adopt}.json`；`docs/{PROGRESS.md,2026-10-10-systemic-rca.md}`。
