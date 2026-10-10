@@ -130,6 +130,30 @@ describe('buildWorkflow', () => {
     expect(denied('codex', 'code-core')).toBeUndefined();
     expect(denied('claude', 'review-m1-r1')).toBeUndefined();
   });
+  test('reviewer nodes are read-only at the execution layer in both consoles', () => {
+    const node = (console: 'claude' | 'codex', id: string): Record<string, unknown> =>
+      nodesOf(build(false, { ...fixture, console })).find(x => x.id === id) as Record<
+        string,
+        unknown
+      >;
+    // console=claude：@sa-reviewer 是 codex，挂哨兵 MCP 交给 codex-worker 的代理；console=codex：claude 走 SDK 沙箱
+    for (const id of ['review-m1-r1', 'review-m2-r3']) {
+      expect(node('claude', id)).toMatchObject({ mcp: '/GEN/reviewer-readonly.mcp.json' });
+      expect(node('claude', id).sandbox).toBeUndefined();
+      expect(node('codex', id).sandbox).toEqual({
+        enabled: true,
+        failIfUnavailable: true,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: false,
+        filesystem: { denyWrite: ['/'] },
+      });
+      expect(node('codex', id).mcp).toBeUndefined();
+    }
+    for (const c of ['claude', 'codex'] as const) {
+      expect(node(c, 'code-core').sandbox).toBeUndefined();
+      expect(node(c, 'code-core').mcp).toBeUndefined();
+    }
+  });
   test('plan prose never enters the workflow text (no $ substitution hazard)', () => {
     expect(JSON.stringify(build(false))).not.toContain('$HOME');
   });
@@ -174,4 +198,14 @@ test('generate writes a committed gen repo that archon validates', () => {
   ])
     expect(existsSync(join(g.dir, f))).toBe(true);
   expect(sh('git status --porcelain', g.dir)).toBe('');
+  // 哨兵 required 且命令必败：不经 codex-readonly-proxy 时 Codex 线程起不来
+  expect(JSON.parse(readFileSync(join(g.dir, 'reviewer-readonly.mcp.json'), 'utf8'))).toEqual({
+    'superagent-reviewer-readonly': { command: 'false', required: true },
+  });
+  // console=codex 的评审节点带 sandbox，Archon 校验同样通过
+  const codex = loadPlan(
+    fixturePlan(root, plan.repo, p => (p.console = 'codex')),
+    [root]
+  );
+  expect(generate(codex, 'gen-0002').workflow).toBe('sa-gen-0002');
 }, 60000);

@@ -25,6 +25,14 @@ const outputSchema = (kind: 'coder' | 'reviewer' | 'accept' | 'head'): unknown =
     }
   ).$defs[kind];
 
+const READONLY_MCP = 'reviewer-readonly.mcp.json';
+/**
+ * Codex 评审节点的 mcp: 文件：只有一个以 tiers 哨兵命名、required 且命令必败的 server。
+ * codex-readonly-proxy 认出后删掉它并收紧沙箱；不经代理时 Codex 因 required server 起不来，线程启动失败。
+ */
+const readOnlyMcp = (marker: string): string =>
+  JSON.stringify({ [marker]: { command: 'false', required: true } }, null, 2) + '\n';
+
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const MAX_WAIT_MS = 1000 * 365 * 24 * 3600 * 1000; // Archon wait 上限 1000 年
 
@@ -61,6 +69,12 @@ export function buildWorkflow(
     aliases[alias].provider === 'claude'
       ? { denied_tools: tiers.policy.exec_profiles[role].claude.denied_tools }
       : {};
+  // 评审只读落在执行层：Claude 节点由 SDK sandbox 拦 Bash 写入；Codex 节点挂哨兵 MCP（见 readOnlyMcp），
+  // bin/codex-worker 的代理据此把线程与回合改成只读。
+  const readOnly: Node =
+    aliases['@sa-reviewer'].provider === 'claude'
+      ? { sandbox: tiers.policy.exec_profiles.reviewer.claude.sandbox }
+      : { mcp: join(gen, READONLY_MCP) };
   const planPath = join(gen, 'plan.json');
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
@@ -154,6 +168,7 @@ export function buildWorkflow(
               command: r === 1 ? 'sa-review' : 'sa-review-delta',
               model: '@sa-reviewer',
               ...noNesting('@sa-reviewer', 'reviewer'),
+              ...readOnly,
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
@@ -305,11 +320,15 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
       aliasDuplicateObjects: false,
     })
   );
+  writeFileSync(
+    join(dir, READONLY_MCP),
+    readOnlyMcp(loadTiers().policy.exec_profiles.reviewer.codex_readonly_marker)
+  );
   writeFileSync(join(dir, '.gitignore'), 'hints/\n');
   const config = join(dir, 'run-config.yaml');
   writeFileSync(config, YAML.stringify({ aliases: runAliases(plan.console ?? 'claude') }, {}));
   git(dir, 'init', '-q');
-  git(dir, 'add', '.archon', 'plan.json', 'briefs', '.gitignore', 'run-config.yaml');
+  git(dir, 'add', '.archon', 'plan.json', 'briefs', '.gitignore', 'run-config.yaml', READONLY_MCP);
   git(dir, 'commit', '-qm', `superagent ${run}`);
   const v = archon(['validate', 'workflows', workflow, '--cwd', dir]);
   if (v.code !== 0) throw new Error(`generated workflow invalid: ${tail(v.out + v.err)}`);

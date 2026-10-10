@@ -38,8 +38,9 @@ const archonBin = (): string => {
 /**
  * 拉起 worker 的进程环境：Claude/Codex 子进程及其 hooks 据此判定为派生会话（N-1 禁再派生）。
  * Archon 不支持按节点注入 env，一个进程跑全部节点；调用方已是 general/reviewer 时保留该角色，
- * 不把 reviewer 降成可写的 worker。reviewer 节点的只读边界在执行层：Claude 节点 denied_tools，
- * 全部 reviewer 节点 mutates_checkout:false。
+ * 不把 reviewer 降成可写的 worker。reviewer 节点的只读边界在执行层（generate 逐节点生成）：
+ * Claude 节点 SDK sandbox（denyWrite "/"），Codex 节点 mcp: 哨兵经 codex-readonly-proxy 改成只读沙箱；
+ * hooks 白名单只是纵深防御。
  */
 const workerEnv = (): Record<string, string | undefined> => ({
   ...process.env,

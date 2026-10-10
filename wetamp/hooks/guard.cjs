@@ -93,7 +93,8 @@ function shellReason(text, cwd, env) {
 }
 
 // Reviewer shells run an allowlist of read-only commands; anything else, any output
-// redirection and any unparsable or dynamic command head is denied.
+// redirection or wrapper side effect (shell.cjs `writes`) and any unparsable or dynamic
+// command head is denied.
 const READ_ONLY = new Set(['cat','head','tail','wc','grep','egrep','fgrep','rg','ls','stat','file','diff','cmp','sort','uniq','cut','tr','nl','column','sed','jq','echo','printf','pwd','which','type','realpath','dirname','basename','readlink','date','true','false','test','[','[[',':','cd','sleep','tree','find','git']);
 const GIT_READ = new Set(['status','diff','log','show','rev-parse','ls-files','ls-tree','blame','grep','cat-file','describe','merge-base','rev-list','shortlog','show-ref','name-rev','for-each-ref']);
 const SED_PRINT = /^(?:\d+|\$)(?:,(?:\d+|\$))?p(?:;(?:\d+|\$)(?:,(?:\d+|\$))?p)*$/;
@@ -133,7 +134,7 @@ function readOnly(argv) {
 }
 function reviewerShell(text) {
   let parsed; try { parsed = parse(text); } catch (error) { return `命令无法解析（${error.message}）`; }
-  if (parsed.writes.length) return `禁止输出重定向到 ${path.basename(parsed.writes[0]) || parsed.writes[0]}`;
+  if (parsed.writes.length) return `禁止写入 ${path.basename(parsed.writes[0]) || parsed.writes[0]}`;
   const bad = parsed.argvs.find(argv => !readOnly(argv));
   return bad ? `${bad[0]} 不在只读白名单或带写入参数` : null;
 }
