@@ -33,6 +33,17 @@ superagent land <run>                    # 打印本地合入命令（switch + m
 superagent board                         # 终端看板（Ink）：全部 run 的状态/进度/held 原因，Enter 看详情；--once 打一帧，--json 出数据
 ```
 
+将军默认最大权限，只有执行层红线是硬边界；`caps` 用于收紧（plan 级，`packages[].caps` 覆盖），未写的项保持全开：
+
+```json
+{ "caps": { "network": false, "install": false, "git": "commit" },
+  "packages": [{ "id": "docs", "scope": { "write": ["docs/**"] }, "caps": { "read": "scope", "web": false } }] }
+```
+
+Claude 节点上 `network`/`web`/`install`/`services`/`git` 的收紧落成禁用工具，其余（含 Codex 节点）只写进任务书「你的权限」。
+held:gate、held:environment 与编码节点失败由 `supervise-tick` 按 `tiers.json` `policy.auto_retry` 自动重试；将军在输出里写
+`needs[]` 时保持 held 交人。`superagent decide --all-held retry` 一次重试所有 held（签收门除外）。
+
 所有命令输出 JSON（`--json` 可加可不加）。退出码：0 completed、1 failed、2 cancelled、3 held（待决策）、4 running、
 5 别名漂移（`$ARCHON_HOME/config.yaml` 或目标 repo `.archon/config.yaml` 的 `@sa-*` 别名与 `tiers.json` 不一致，run 拒绝启动，
 `health --cwd <repo>` 同一检查；重跑 `install.sh` 或删掉 repo 里的 `@sa-*` 覆盖）、64 用法错误（含未知参数）。
@@ -44,7 +55,7 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 | -------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `held:human`               | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                      |
 | `held:environment`         | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                              |
-| `held:gate`                | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | 在 run 分支上手工修，或改 plan 新开 run；`retry` 无效                                   |
+| `held:gate`                | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | `supervise-tick` 已自动重试过（带提示）；仍 held 时看 `needs`，`superagent decide <run> retry [--pkg <id> --hint "提示"]` 再来一轮，或手工修 |
 | `held:paused`              | 其它暂停                                                | `superagent resume <run>`                                                               |
 | `held:recover_no_progress` | owner 丢失后连续 3 次恢复都没有新完成的节点             | 查 `brief` 的证据后 `superagent decide <run> retry`（显式重置计数）或 `cancel`          |
 | `failed`                   | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief） |

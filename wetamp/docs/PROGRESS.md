@@ -156,3 +156,13 @@
   - 代理依赖 Archon 的 JSON-RPC 方法名与 `config.mcp_servers` 透传；上游改协议时，哨兵会让线程起不来，暴露为失败而不是可写。
   - 未调用的 `@sa-reviewer-alt` 没有生成只读设置。
   - Claude sandbox 依赖 macOS Seatbelt，不可用时 `failIfUnavailable` 直接失败。
+
+## wpE caps：最大权限 + 红线 + 自动重试（2026-10-10）
+
+- caps：plan 级与包级 `caps{network,web,install,services,long_tests,read,git,mcp}` 默认全开，只做收紧；Claude 节点落成 `denied_tools`，其余是任务书提示级（`docs/00` §5.1）。
+- 将军输出 `deviations[]`（越出 scope 的登记）与 `needs[]`（`{cap,why,minimal_ask}`）；`blocked` 只在红线或 needs 非空时合法。
+- 自动重试：`supervise-tick` 对 held:gate（≤2，先追加 `hints/<包>.md`）、held:environment（≤1）、编码节点失败（≤1）自动 retry；needs、红线、截止、次数用尽、连续 no_change、无可重试节点时保持 held。`decide <run> retry [--pkg --hint]`、`decide --all-held retry`。
+- 执行层红线：`hooks/redline.cjs`（凭据与隐私路径、发布合并、改写共享分支、按名杀进程、连非本机库、派生会话写出 worktree），每条有 allow/deny 测试；provider × 红线矩阵见 `04-hooks-and-nesting.md`。
+- hooks 实测：Claude 节点用户级与项目级 PreToolUse 都触发；Codex 节点只加载用户级 `hooks.json`，git-guardrail 触发，guard 因 trusted_hash 过期被跳过。`codex-worker` 现在失败关闭（exit 3），运维需在交互式 Codex 里 `/hooks` 重新信任 guard。
+- M-06（自动投送未验证版本）：`scripts/verify-local.sh` 是本机投送闸；twin-toolkit 的 superagent 维度只把 `verify.json` 中 ok 且等于 HEAD 的提交投送到 twin 机，未通过时打印「本机未通过 …，暂不投送；远端保持 …」，验证期间 HEAD 前移也不投送。
+- 已知限制：主工作区合入 `verify-local.sh` 之前，twin-toolkit align 的 superagent 维度报「无法验证」rc=1；OpenCode 与 Codex 侧 caps 只是提示级；远端 dry-run 未在本包执行。

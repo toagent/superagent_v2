@@ -22,6 +22,36 @@ resolved="$(realpath "$real" 2>/dev/null)" || { echo "codex-worker: $real does n
 [ "$resolved" != "$self" ] || { echo "codex-worker: $real resolves to codex-worker itself" >&2; exit 2; }
 [ -f "$resolved" ] && [ -x "$resolved" ] || { echo "codex-worker: $real is not an executable file" >&2; exit 2; }
 config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+# 执行层红线与 N-1 在 Codex 侧只靠用户级 hooks.json 的 guard.cjs PreToolUse；Codex 跳过定义改过但未重新
+# 信任的 hook（trusted_hash ≠ 当前定义的 hash，实测 2026-10-10），此时 worker 等于无护栏，故失败关闭。
+# hash 按 codex-rs hooks discovery 的 NormalizedHookIdentity：键排序紧凑 JSON 的 sha256。
+# Codex 改了 hash 算法导致误判时，运维可设 SA_CODEX_HOOK_TRUST=unchecked 临时放行（每次在 stderr 留痕）。
+# 只查版本/帮助（archon doctor 探测二进制）不跑模型，不受此闸约束。
+if [ $# = 1 ] && [[ $1 =~ ^(--version|-V|--help|-h)$ ]]; then
+  :
+elif [ "${SA_CODEX_HOOK_TRUST:-}" = unchecked ]; then
+  echo "codex-worker: SA_CODEX_HOOK_TRUST=unchecked — guard hook trust not verified" >&2
+elif ! python3 -I -c 'import sys, json, hashlib, os, tomllib
+home = sys.argv[1]; hooks = os.path.join(home, "hooks.json")
+try:
+    with open(os.path.join(home, "config.toml"), "rb") as f: state = tomllib.load(f).get("hooks", {}).get("state", {})
+    with open(hooks) as f: groups = json.load(f).get("hooks", {}).get("PreToolUse", [])
+except FileNotFoundError: sys.exit(1)
+for gi, g in enumerate(groups):
+    for hi, h in enumerate(g.get("hooks", [])):
+        if h.get("type") != "command" or "hooks/guard.cjs" not in h.get("command", ""): continue
+        s = state.get(f"{hooks}:pre_tool_use:{gi}:{hi}", {})
+        if s.get("enabled") is False: continue
+        hook = {"type": "command", "command": h["command"], "timeout": max(1, h.get("timeout", 600)), "async": bool(h.get("async", False))}
+        if h.get("statusMessage") is not None: hook["statusMessage"] = h["statusMessage"]
+        ident = {"event_name": "pre_tool_use", "hooks": [hook]}
+        if g.get("matcher") is not None: ident["matcher"] = g["matcher"]
+        text = json.dumps(ident, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        if s.get("trusted_hash") == "sha256:" + hashlib.sha256(text.encode()).hexdigest(): sys.exit(0)
+sys.exit(1)' "${CODEX_HOME:-$HOME/.codex}"; then
+  echo "codex-worker: ${CODEX_HOME:-$HOME/.codex}/hooks.json 没有受信任且启用的 guard.cjs PreToolUse hook，Codex 会跳过它（执行层红线与 N-1 失效）；在交互式 Codex 里用 /hooks 信任该条目后重试" >&2
+  exit 3
+fi
 # 已声明的 MCP server 名：python3 tomllib 按 TOML 语义取 mcp_servers 的键（不输出任何值）；
 # 不可用或解析失败时记一行 stderr，由下方 node 回退到只认表头的正则。
 declared=""

@@ -9,23 +9,14 @@ const {commands, parse, deletionTarget} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 const stopGate = require('./stop-gate.cjs');
 const dispatch = require('./dispatch-context.cjs');
+const redline = require('./redline.cjs');
+const {resolvePath, within} = redline;
 
 const saHome = env => env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
 const pool = tier => tiers[tier].pools.chatgpt;
 const deny = reason => ({hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason}});
 // Only two nonempty strings establish a child (subagent) call.
 const rootCall = payload => !(typeof payload.agent_type === 'string' && payload.agent_type.trim() && typeof payload.agent_id === 'string' && payload.agent_id.trim());
-// child is parent itself or below it.
-const within = (child, parent) => { const r = path.relative(parent, child); return !r.startsWith('..') && !path.isAbsolute(r); };
-function resolvePath(file) {
-  let cursor = file; const tail = [];
-  while (!fs.existsSync(cursor)) {
-    tail.unshift(path.basename(cursor)); const parent = path.dirname(cursor);
-    if (parent === cursor) return file;
-    cursor = parent;
-  }
-  return path.join(fs.realpathSync(cursor), ...tail);
-}
 function gitRoot(cwd) {
   const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {encoding: 'utf8', timeout: 3000, env: {...process.env, GIT_OPTIONAL_LOCKS: '0'}});
   return r.status === 0 ? r.stdout.trim() : null;
@@ -186,11 +177,15 @@ function decide(payload, client, env = process.env) {
     if (derived || !['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event)) return null;
     return stopGate.gate(stateFile(payload, env), payload, client, [gitRoot(cwd)], rootCall(payload));
   }
+  const text = shellText(name, input);
+  // reviewer 的写入由下方只读白名单整体拒绝，落点检查只给其余派生会话。
+  const confine = Boolean(derived) && env.SUPERAGENT_ROLE !== 'reviewer';
+  const red = redline.reason({client, name, input, cwd, root: confine ? gitRoot(cwd) : null, shell: text, derived: confine, env});
+  if (red) return deny(`红线：${red}`);
   if (derived) {
     const reason = nestedReason(name, input);
     if (reason) return deny(`${reason}（判定：${derived}）`);
   }
-  const text = shellText(name, input);
   if (text !== undefined) {
     const reason = shellReason(text, cwd, env);
     if (reason) return deny(reason);

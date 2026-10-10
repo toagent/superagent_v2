@@ -1,6 +1,6 @@
 # Hooks 与禁嵌套（WP-B）
 
-V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 `policy`。Archon worker 本身不挂 hooks；hooks 管的是用户在三端控制台里开的会话（元帅、手动派生的将军/军师、twin-agent 远端会话）。
+V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 `policy`。hooks 管用户在三端控制台里开的会话（元帅、手动派生的将军/军师、twin-agent 远端会话），也管 Archon worker 的 AI 节点：2026-10-10 实测 Claude 节点加载用户级与项目级 `PreToolUse`，Codex 节点只加载用户级 `~/.codex/hooks.json`（项目级 `.codex/hooks.json` 不加载）。
 
 ## 三端 hook 事件
 
@@ -28,11 +28,40 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 
 元帅会话：G-1 微改上限（`policy.micro_edit`：30 行、2 文件、不许新建代码文件；`*.md`、`**/.context/**` 豁免，风险路径优先于豁免）在 `PreToolUse` 按会话累计到 `$SUPERAGENT_HOME/hooks/<sha256(session)>.json`，被拒的那次不计入，不重置；累计在状态锁（`<state>.lock`，`openSync(…,'wx')`，等 5s、15s 视为陈旧）内读改写，并行 `PreToolUse` 不丢累计量，拿不到锁时拒绝并提示重试；补丁本身解析不了时放行并提示。G-2 检查派发上下文长度与 `spawn_agent` 的显式模型。所有会话都拦 `git push`、`git reset --hard`，以及字面路径为 `/`、`~`、`$SUPERAGENT_HOME`、git 根（或其上级）的删除；拒绝信息只回显目标 basename。
 
+## 执行层红线（所有角色，`hooks/redline.cjs`）
+
+`guard.cjs` 在 `PreToolUse` 先查红线再查其他规则，元帅、将军、军师一律适用。读类工具（`Read/Grep/Glob/LS/NotebookRead/view_image`）、编辑目标与 shell 词（含 `<` 输入重定向、`--opt=` 值、词内嵌的 `~`/`$HOME`/绝对路径，符号链接解析后再判）共用一套路径判定：
+
+| 红线 | 拒绝 | 放行 |
+| --- | --- | --- |
+| ssh 私钥 | `~/.ssh/` 下其他文件 | `*.pub`、`known_hosts`、`config` |
+| 钥匙串 | `~/Library/Keychains/**`；`security find-*-password`/`dump-keychain`/`export` | `security list-keychains` 等 |
+| 凭据文件 | `~/.aws/credentials`、`~/.netrc`、`~/.config/gh/hosts.yml`、直接读 `~/.npmrc`/`~/.pypirc` | 工具自己读取（`npm whoami`） |
+| 隐私 | 任一路径段 `_private`；`~/Library/Mobile Documents`；Chrome/Chromium/Arc/Edge/Firefox/Safari 资料与 `~/Library/Cookies` | `grep _private src`（不存在的相对词视为模式） |
+| 发布与合并 | `npm/pnpm/bun/yarn publish`、`docker push`/`--push`、`gh release create`、`gh pr merge`、`vercel --prod` | `npm pack`、`gh pr view` |
+| 共享分支 | 对 `main/master/develop/wetamp/release-*` 的 `git branch -f/-D/-d/-m`、`update-ref`（含当前分支受保护时的 `update-ref HEAD`）、`checkout -B`/`switch -C`、`rebase`（`--abort/--quit` 除外）；`git push`、`reset --hard` 原有规则照旧 | 对自己分支的同类操作 |
+| 杀进程 | `pkill`、`killall`、同一命令行里 `lsof/pgrep/pidof` 配 `kill` | `kill $!`、`kill %1`、`kill <记录的 PID>` |
+| 远端数据库 | `mysql/psql/mongosh/redis-cli` 的 `-h/--host/host=`/URI 指向非本机 | `localhost`、`127.*`、`::1`、unix socket |
+
+派生会话（reviewer 除外，它由只读白名单整体拒绝）的写入另限落点：Edit/Write/apply_patch 目标，以及 shell 的写重定向、`tee`、包装器副作用、`cp/mv/ln/install/rsync` 的末操作数、`touch/mkdir/rm/rmdir/truncate` 的操作数、`dd of=`，只能落在 cwd 的 git 根（无则 cwd）、`/tmp`、`/private/tmp`、`$TMPDIR`、`/var/folders`，以及 `~/.bun`、`~/.npm`、`~/.cache`、`~/Library/Caches`、`~/.m2`、`~/.gradle`、`~/.cargo`。
+
+### provider × 红线（只写实测，2026-10-10，真实 Archon 节点：Claude 1 次、Codex 3 次）
+
+| provider | 通道 | 实测 | 强制方式 |
+| --- | --- | --- | --- |
+| Claude（Archon worker 节点） | 用户级 `~/.claude/settings.json` 与项目级 `.claude/settings.json` 的 `PreToolUse` | 都触发；挂本分支 guard 时 `git branch -D release-1` 被拒（“红线：禁止对共享分支 release-1 …”），分支保留 | hook（不另加 `denied_tools`） |
+| Codex（Archon worker 节点，经 `codex-worker`） | 仅用户级 `~/.codex/hooks.json`；项目级不加载 | git-guardrail 触发并拦 `git push`；guard.cjs 未执行：其 `trusted_hash` 是改路径前的定义，Codex 把改过未重新信任的 hook 视为 Modified 并跳过 | hook + `codex-worker` 失败关闭：guard 的 `PreToolUse` 条目未受信任或被禁用时 exit 3，不启动 codex |
+| OpenCode | 无 hook 通道 | — | 提示级 |
+
+- `codex-worker` 的信任检查按 codex-rs hooks discovery 复算 hash（`{event_name,matcher?,hooks:[归一化 handler]}` 键排序紧凑 JSON 的 sha256，测试里用本机 Codex 写下的 git-guardrail 值锚定）。运维动作：改过 `hooks.json` 里 guard 的命令或 timeout 后，在交互式 Codex 里 `/hooks` 重新信任；Codex 改了 hash 算法造成误判时可设 `SA_CODEX_HOOK_TRUST=unchecked` 临时放行（每次 stderr 留痕）。
+- 红线随用户级 hooks 指向的 guard 生效：主工作区合入本分支前，worker 用的仍是主工作区旧 guard（无红线）。
+- 残余风险（提示级）：只做字面判定，变量（`$HOME` 除外）、通配、`eval "$x"`、脚本文件内部、解释器（`python -c`/`node -e`）里的读写与网络拦不住；`PGHOST` 等环境变量指定的 DB host 不识别；`grep -r ~` 这类对上级目录的递归读不判；元帅不受落点限制；Bash 外部写入只按上述命令表尽力识别。
+
 ## 禁嵌套：本机 Archon worker 三层
 
-1. 包装器 `bin/codex-worker`（`install.sh` 写入 `assistants.codex.codexBinaryPath`）：前置 `exec_profiles.*.codex` 的 `-c`（`features.multi_agent=false`），并把 `~/.codex/config.toml` 中已声明、不在 `policy.sandbox.mcp` 的 MCP server 设为 `enabled=false`。server 名由 `python3 -I` + `tomllib` 按 TOML 键解析（表头、引号键、点键、内联表），只取 `mcp_servers` 的键名、不输出值；名字不符合 `[A-Za-z0-9_-]+` 的跳过并在 stderr 记一行；python3 不可用时退回表头正则并在 stderr 记一行。`SA_CODEX_REAL` 指定真 codex；选定路径 realpath 后指向包装器自身、不存在或不可执行时 exit 2。`SA_CODEX_WORKER_TRACE=1` 在 stderr 打印 `{policy, argv}`：policy 为追加的 `-c` 列表，argv 为调用方参数的脱敏副本（token/key/secret/password/Authorization/Bearer 之类的值换成 `***`，超过 200 字符截断）。
+1. 包装器 `bin/codex-worker`（`install.sh` 写入 `assistants.codex.codexBinaryPath`）：先确认 guard 的 Codex `PreToolUse` hook 受信任（见上节，否则 exit 3），再前置 `exec_profiles.*.codex` 的 `-c`（`features.multi_agent=false`），并把 `~/.codex/config.toml` 中已声明、不在 `policy.sandbox.mcp` 的 MCP server 设为 `enabled=false`。server 名由 `python3 -I` + `tomllib` 按 TOML 键解析（表头、引号键、点键、内联表），只取 `mcp_servers` 的键名、不输出值；名字不符合 `[A-Za-z0-9_-]+` 的跳过并在 stderr 记一行；python3 不可用时退回表头正则并在 stderr 记一行。`SA_CODEX_REAL` 指定真 codex；选定路径 realpath 后指向包装器自身、不存在或不可执行时 exit 2。`SA_CODEX_WORKER_TRACE=1` 在 stderr 打印 `{policy, argv}`：policy 为追加的 `-c` 列表，argv 为调用方参数的脱敏副本（token/key/secret/password/Authorization/Bearer 之类的值换成 `***`，超过 200 字符截断）。
 2. `exec_profiles.*.claude.denied_tools` → 生成的 prompt 节点 `denied_tools`（Archon `disallowedTools`）：`Agent`、`Task`、`Bash(claude *)`、`Bash(codex *)`、`Bash(opencode *)`、`Bash(sol-run *)`、`Bash(twin-agent*)`。只对 provider 为 claude 的别名生成。
-3. hooks 的 N-1（用户三端配置里挂了 guard 时生效，依赖上面的派生判定 1/3）。
+3. hooks 的 N-1（用户三端配置里挂了 guard 时生效，依赖上面的派生判定 1/3；Codex 侧要求该 hook 受信任，由第 1 层把关）。
 
 远端（dev/mini）的禁嵌套由 twin-agent runner 负责；远端会话带 `TWIN_AGENT_REMOTE=1` 时 hooks 按判定 2 视为派生。`--remote-hooks` 只保证远端 hooks 文件可用并留下台账。
 

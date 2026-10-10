@@ -41,6 +41,7 @@ describe('bin/codex-worker', () => {
         CODEX_HOME: '',
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
+        SA_CODEX_HOOK_TRUST: 'unchecked',
       },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -76,6 +77,7 @@ describe('bin/codex-worker', () => {
         SUPERAGENT_ROLE: '',
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
+        SA_CODEX_HOOK_TRUST: 'unchecked',
         ...env,
       },
       stdout: 'pipe',
@@ -117,6 +119,52 @@ describe('bin/codex-worker', () => {
     expect(worker('', { SA_CODEX_REAL: WORKER }).err).toContain('codex-worker itself');
     writeFileSync(join(root, 'plain'), '');
     expect(worker('', { SA_CODEX_REAL: join(root, 'plain') }).code).toBe(2);
+  });
+
+  // codex-rs hooks discovery：NormalizedHookIdentity 的键排序紧凑 JSON 的 sha256。
+  const hookHash = (command: string, timeout: number): string => {
+    const identity = { event_name: 'pre_tool_use', hooks: [{ async: false, command, timeout, type: 'command' }] };
+    return `sha256:${new Bun.CryptoHasher('sha256').update(JSON.stringify(identity)).digest('hex')}`;
+  };
+  test('hook hash reproduces a trusted_hash written by Codex /hooks', () => {
+    // 本机 ~/.codex/config.toml 里 Codex 为 git-guardrail（timeout 10）记下的值（2026-10-10 实测）。
+    expect(hookHash('bash /Users/yong/.wetamp/bin/git-guardrail.sh', 10)).toBe(
+      'sha256:4e71123e2967f6c83d07b6b042e8c7b6f17948d33d904874c64a8e1c6600f109'
+    );
+  });
+
+  test('fails closed unless the guard PreToolUse hook is trusted and enabled', () => {
+    const guard = "node '/x/wetamp/hooks/guard.cjs' codex";
+    const run = (trusted: string | null, extra = '', env: Record<string, string> = {}, args = ['exec', 'x']) => {
+      const root = tmp();
+      const codexHome = join(root, 'codex-home');
+      mkdirSync(codexHome);
+      const hooks = join(codexHome, 'hooks.json');
+      const group = (command: string) => ({ hooks: [{ type: 'command', command, timeout: 30 }] });
+      writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [group('bash /x/other.sh'), group(guard)] } }));
+      const state = trusted === null ? '' : `[hooks.state."${hooks}:pre_tool_use:1:0"]\ntrusted_hash = "${trusted}"\n${extra}`;
+      writeFileSync(join(codexHome, 'config.toml'), state);
+      const real = stub(root, 'codex', '#!/usr/bin/env node\nconsole.log("ran");\n');
+      const p = Bun.spawnSync([WORKER, ...args], {
+        env: { ...process.env, CODEX_HOME: codexHome, SUPERAGENT_ROLE: '', SA_CODEX_REAL: real, SA_CODEX_HOOK_TRUST: '', ...env },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
+    };
+    expect(run(hookHash(guard, 30))).toMatchObject({ code: 0, out: 'ran\n' });
+    // 定义改过（hash 不符）、从未信任、被禁用：Codex 都不会执行它。
+    for (const r of [run(hookHash(guard, 10)), run(null), run(hookHash(guard, 30), 'enabled = false\n')]) {
+      expect(r.code).toBe(3);
+      expect(r.out).toBe('');
+      expect(r.err).toContain('/hooks');
+    }
+    const r = run(null, '', { SA_CODEX_HOOK_TRUST: 'unchecked' });
+    expect(r).toMatchObject({ code: 0, out: 'ran\n' });
+    expect(r.err).toContain('not verified');
+    // archon doctor 只探测版本：不跑模型，不受信任闸约束；带其它参数的 --version 仍要过闸。
+    expect(run(null, '', {}, ['--version'])).toMatchObject({ code: 0, out: 'ran\n', err: '' });
+    expect(run(null, '', {}, ['--version', 'exec']).code).toBe(3);
   });
 
   test('reviewer role adds a read-only sandbox; TRACE prints policy and redacted caller argv only', () => {
@@ -185,6 +233,7 @@ process.stdin.on('end', () => {
         SUPERAGENT_ROLE: '',
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
+        SA_CODEX_HOOK_TRUST: 'unchecked',
         ...env,
       },
       stdin: Buffer.from(input),

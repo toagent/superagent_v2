@@ -144,11 +144,11 @@ function unwrap(argv) {
 // Every simple command a shell line would start: argv with wrappers, assignments and
 // redirections stripped, including `bash -c`/`eval`/`find -exec` bodies and every command
 // substitution; `writes` lists output-redirection targets, files `tee` writes and wrapper side
-// effects. Throws on unparsable text.
+// effects; `reads` lists input-redirection sources. Throws on unparsable text.
 function parse(command, depth = 0) {
   if (depth > 4) throw new Error('shell nesting too deep');
-  const result = {argvs: [], writes: []};
-  const add = text => { const inner = parse(text, depth + 1); result.argvs.push(...inner.argvs); result.writes.push(...inner.writes); };
+  const result = {argvs: [], writes: [], reads: []};
+  const add = text => { const inner = parse(text, depth + 1); for (const k of Object.keys(result)) result[k].push(...inner[k]); };
   const {flat, bodies} = lift(command);
   bodies.forEach(add);
   let segment = [];
@@ -179,6 +179,7 @@ function parse(command, depth = 0) {
       const target = segment[++i]?.value ?? '';
       if (WRITES.has(word.value) && !STREAM.test(target) && !(word.value === '>&' && /^(?:\d+|-)$/.test(target)))
         result.writes.push(target);
+      else if (word.value === '<') result.reads.push(target);
     }
     run(words);
     segment = [];

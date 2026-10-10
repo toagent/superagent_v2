@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { gitRepo, tmp } from './helpers';
 
@@ -440,5 +441,151 @@ describe('context-budget.cjs', () => {
     for (let i = 0; i < 16; i++) expect(call(i === 0 ? 'superagent wait r1' : 'ls')).toBeNull();
     expect(call('ls')?.hookSpecificOutput?.additionalContext).toContain('超过 15 次');
     expect(call('ls')).toBeNull();
+  });
+});
+
+interface RedArgs {
+  client: string;
+  name: string;
+  input?: Record<string, unknown>;
+  cwd: string;
+  root: string | null;
+  shell?: string;
+  derived: boolean;
+  env: Record<string, string>;
+}
+const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as {
+  reason: (a: RedArgs) => string | null;
+};
+
+describe('redline.cjs（所有角色的执行层红线）', () => {
+  const box = (): {
+    home: string;
+    repo: string;
+    env: Record<string, string>;
+    sh: (cmd: string, derived?: boolean) => string | null;
+  } => {
+    const root = tmp();
+    const home = join(root, 'home');
+    const repo = gitRepo(root);
+    mkdirSync(join(home, '.ssh'), { recursive: true });
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), 'fake');
+    writeFileSync(join(home, '.netrc'), 'fake');
+    const env = { HOME: home, TMPDIR: join(root, 'tmpdir') };
+    return {
+      home,
+      repo,
+      env,
+      sh: (cmd, derived = false) =>
+        redline.reason({ client: 'claude', name: 'Bash', cwd: repo, root: repo, shell: cmd, derived, env }),
+    };
+  };
+
+  test('每条红线一对 deny/allow（Bash）', () => {
+    const { sh } = box();
+    const pairs: [string, string, string][] = [
+      ['cat ~/.ssh/id_ed25519', 'cat ~/.ssh/id_ed25519.pub', 'ssh 私钥'],
+      [`python3 -c "open('$HOME/.ssh/id_rsa')"`, 'ssh-keygen -F host -f ~/.ssh/known_hosts', 'ssh 私钥'],
+      ['ls ~/Library/Keychains/login.keychain-db', 'ls ~/Library/Caches', '钥匙串'],
+      ['security find-generic-password -s x -w', 'security list-keychains', 'security'],
+      ['security dump-keychain', 'security find-certificate -a', 'security'],
+      ['cat ~/.aws/credentials', 'cat ~/.aws/config', '凭据文件'],
+      ['head ${HOME}/.netrc', 'netstat -an', '凭据文件'],
+      ['cat ~/.config/gh/hosts.yml', 'gh auth status', '凭据文件'],
+      ['cat ~/.npmrc', 'npm install', '凭据文件'],
+      ['grep x < ~/.pypirc', 'grep x < README.md', '凭据文件'],
+      ['cat docs/_private/a.md', 'grep -rn _private src', '_private'],
+      ['ls "$HOME/Library/Mobile Documents/x"', 'ls ~/Library/Mobile', 'iCloud'],
+      [
+        'cp ~/Library/Application\\ Support/Google/Chrome/Default/Cookies /tmp/c',
+        'ls ~/Library/Application\\ Support/Code',
+        '浏览器资料',
+      ],
+      ['sqlite3 ~/Library/Cookies/Cookies.binarycookies', 'sqlite3 db.sqlite', '浏览器资料'],
+      ['npm publish', 'npm pack', 'publish'],
+      ['bun publish --dry-run', 'bun run build', 'publish'],
+      ['pnpm -r publish', 'pnpm -r build', 'publish'],
+      ['docker push img:1', 'docker build -t img:1 .', 'docker'],
+      ['gh release create v1', 'gh release view v1', 'gh'],
+      ['gh pr merge 12 --squash', 'gh pr view 12', 'gh'],
+      ['vercel --prod', 'vercel build', 'vercel'],
+      ['git branch -D release-1', 'git branch -D feature-x', 'release-1'],
+      ['git branch -f main HEAD~1', 'git branch -f topic HEAD~1', 'main'],
+      ['git update-ref refs/heads/wetamp HEAD', 'git update-ref refs/heads/topic HEAD', 'wetamp'],
+      ['git rebase main develop', 'git rebase main topic', 'develop'],
+      ['git -c x=y checkout -B master', 'git checkout -B topic', 'master'],
+      ['pkill -f node', 'kill $!', 'pkill'],
+      ['killall bun', 'kill %1', 'killall'],
+      ['lsof -ti :3000 | xargs kill', 'lsof -i :3000', 'kill'],
+      ['kill $(pgrep node)', 'kill 12345', 'kill'],
+      ['mysql -h db.prod.internal -u x', 'mysql -h 127.0.0.1 -u x', 'db.prod.internal'],
+      ['psql postgres://u@10.0.0.5/app', 'psql postgres://u@localhost/app', '10.0.0.5'],
+      ['mongosh mongodb://cluster.example.com/x', 'mongosh mongodb://localhost:27017/x', 'cluster.example.com'],
+      ['redis-cli -h cache.example.com', 'redis-cli -h localhost ping', 'cache.example.com'],
+    ];
+    for (const [deny, allow, hit] of pairs) {
+      expect(sh(deny), deny).toContain(hit);
+      expect(sh(allow), allow).toBeNull();
+    }
+  });
+
+  test('rebase 无分支参数时按当前分支判定', () => {
+    const { repo, sh } = box();
+    expect(sh('git rebase -i HEAD~2')).toContain('main'); // gitRepo 在 main 上
+    expect(sh(`git -C ${repo} rebase --abort`)).toBeNull();
+  });
+
+  test('cd 之后的相对路径、heredoc 正文、软链与大小写', () => {
+    const { home, repo, sh } = box();
+    expect(sh('cd ~/.ssh && cat id_ed25519')).toContain('ssh 私钥');
+    expect(sh('ls ~/.ssh')).toBeNull();
+    // heredoc 正文是数据；交给 bash 执行的不是
+    expect(sh("cat > notes.md <<'EOF'\npkill -f x\ngh pr merge 1\nEOF\necho ok")).toBeNull();
+    expect(sh('bash <<EOF\npkill -f x\nEOF')).toContain('pkill');
+    symlinkSync(join(home, '.netrc'), join(repo, 'n'));
+    expect(sh('cat n')).toContain('凭据文件');
+    expect(sh('cat ~/.SSH/ID_ED25519')).toContain('ssh 私钥');
+  });
+
+  test('Read/Grep/Edit 工具路径；派生会话的写入落点', () => {
+    const { home, repo, env, sh } = box();
+    const tool = (
+      name: string,
+      input: Record<string, unknown>,
+      derived = false,
+      client = 'claude'
+    ): string | null => redline.reason({ client, name, input, cwd: repo, root: repo, derived, env });
+    expect(tool('Read', { file_path: join(home, '.netrc') })).toContain('凭据文件');
+    expect(tool('Read', { file_path: join(repo, 'README.md') })).toBeNull();
+    expect(tool('Grep', { pattern: 'x', path: '~/.ssh' })).toBeNull();
+    expect(tool('Grep', { pattern: 'x', path: '~/.ssh/id_ed25519' })).toContain('ssh 私钥');
+    expect(tool('Write', { file_path: join(home, '.ssh', 'config') })).toBeNull();
+    expect(tool('Write', { file_path: join(home, '.ssh', 'authorized_keys') })).toContain('ssh 私钥');
+    // 元帅不限落点；派生会话只能写 worktree、临时目录与缓存（测试 home 本身在临时目录下，越界用 /etc）
+    const away = '/etc/sa-redline-test/x.ts';
+    expect(tool('Write', { file_path: away })).toBeNull();
+    expect(tool('Write', { file_path: away }, true)).toContain('范围外');
+    expect(tool('Write', { file_path: join(repo, 'src', 'new.ts') }, true)).toBeNull();
+    expect(tool('Write', { file_path: '/tmp/sa-x' }, true)).toBeNull();
+    expect(tool('Write', { file_path: join(home, '.cache', 'x') }, true)).toBeNull();
+    const patch = (f: string): Record<string, unknown> => ({
+      command: `*** Begin Patch\n*** Add File: ${f}\n+x\n*** End Patch`,
+    });
+    expect(tool('apply_patch', patch('a.ts'), true, 'codex')).toBeNull();
+    expect(tool('apply_patch', patch(away), true, 'codex')).toContain('范围外');
+    expect(sh(`echo x > ${away}`, true)).toContain('范围外');
+    expect(sh(`echo x > ${away}`, false)).toBeNull();
+    expect(sh('echo x > out.txt && cp out.txt /tmp/y && mkdir -p build', true)).toBeNull();
+    expect(sh(`cp out.txt ${away}`, true)).toContain('范围外');
+    expect(sh('echo x 2>/dev/null >> ~/.cache/log', true)).toBeNull();
+  });
+
+  test('guard 对所有角色先查红线（元帅、worker、reviewer 都拒）', () => {
+    const { guard } = setup();
+    for (const env of [{}, { SUPERAGENT_ROLE: 'worker' }, { SUPERAGENT_ROLE: 'reviewer' }] as Record<string, string>[])
+      expect(reason(guard('claude', bash('git branch -D release-1'), env))).toContain('红线');
+    expect(
+      reason(guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'npm publish' } }))
+    ).toContain('红线');
   });
 });
