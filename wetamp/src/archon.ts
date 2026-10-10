@@ -25,7 +25,16 @@ export interface RunView {
   last_activity_at?: string | null;
   metadata?: {
     execution_owner?: { host: string; pid: number };
-    wait?: { nodeId: string; kind: string; event?: string; resumeAt: string };
+    wait?: {
+      nodeId: string;
+      kind: string;
+      event?: string;
+      resumeAt: string;
+      /** attention 类等待只有这个，没有可用的 resumeAt。 */
+      waitingSince?: string;
+    };
+    /** Archon 审批门（approval / interactive_loop 等）暂停时的元数据。 */
+    approval?: { nodeId: string; pauseId?: string; type?: string };
   } | null;
   nodes?: { nodeId: string; state: string; error?: string | null; durationMs?: number }[];
 }
@@ -51,16 +60,21 @@ const workerEnv = (): Record<string, string | undefined> => ({
   SUPERAGENT_HOME: home().sa,
 });
 
+/** 同步子进程（archon 查询、--detach 启动、supervisor）的期限：挂死的子进程不能卡住 tick 或 wait。 */
+export const QUERY_TIMEOUT_MS = 120_000;
+
 export function archon(args: string[], cwd?: string): Exec {
-  // 只有 run/resume --detach 拉起 worker；status/get/doctor 等查询保持调用方环境
-  const launches = ['run', 'resume'].includes(args[1]) && args.includes('--detach');
+  // 只有 run/resume/approve --detach 拉起 worker；status/get/doctor 等查询保持调用方环境
+  const launches = ['run', 'resume', 'approve'].includes(args[1]) && args.includes('--detach');
   const p = Bun.spawnSync([archonBin(), ...args], {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
     env: launches ? workerEnv() : process.env,
+    timeout: QUERY_TIMEOUT_MS,
   });
-  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
+  const err = p.exitCode === null ? `timed out after ${String(QUERY_TIMEOUT_MS / 1000)}s` : '';
+  return { code: p.exitCode ?? -1, out: p.stdout.toString(), err: err || p.stderr.toString() };
 }
 
 /** `--json` 可能输出多段 JSON（PoC #16）：取最后一个从行首开始的完整对象。 */
@@ -267,6 +281,7 @@ export function archonDetached(args: string[], log: string, cwd?: string): numbe
     stdio: ['ignore', fd, fd],
     env: workerEnv(),
   });
+  closeSync(fd); // 子进程已继承 fd；不关的话 tick/wait 每次调用泄漏一个
   p.unref();
   return p.pid ?? -1;
 }

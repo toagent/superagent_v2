@@ -39,7 +39,7 @@ describe('gc.sh', () => {
       const wt = join(wtRoot, 'worktrees', id);
       sh(`git worktree add -q -b sa/${id} "${wt}" main`, repo);
       if (!merged) sh(`echo x > f && git add f && ${GIT} commit -qm ${id}`, wt);
-      const ledger = { run_id: id, archon_run_id: id, repo, branch: `sa/${id}`, gen_dir: gen };
+      const ledger = { run_id: id, archon_run_id: id, repo, branch: `sa/${id}`, gen_dir: gen, workflow: `sa-${id}` };
       writeFileSync(
         join(home, 'runs', `${id}.json`),
         JSON.stringify({ ...ledger, recoveries: [] })

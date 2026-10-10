@@ -5,10 +5,12 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
   copyFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 export type Console = 'claude' | 'codex';
 export interface Alias {
@@ -26,6 +28,21 @@ export function home(): { sa: string; archon: string } {
   if (!sa || !archon)
     throw new Error('SUPERAGENT_HOME/ARCHON_HOME unset: run through wetamp/bin/*');
   return { sa, archon };
+}
+
+/**
+ * 原子写：同目录唯一临时文件（pid + 随机后缀，并发写者互不覆盖临时文件）再 rename。读者只会看到旧内容或新内容，
+ * 进程中途死掉也不会留下截断的 JSON；失败时删掉临时文件并抛错。
+ */
+export function writeAtomic(path: string, text: string): void {
+  const tmp = join(dirname(path), `.${basename(path)}.${String(process.pid)}.${crypto.randomUUID()}.tmp`);
+  try {
+    writeFileSync(tmp, text, { flag: 'wx' });
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 export function providerOf(model: string): Alias['provider'] {
@@ -176,7 +193,7 @@ export function install(t = loadTiers()): string[] {
   if (JSON.stringify(before) !== JSON.stringify(next)) {
     if (raw)
       copyFileSync(cfgPath, `${cfgPath}.bak-${new Date().toISOString().replace(/[:.]/g, '')}`);
-    writeFileSync(cfgPath, Bun.YAML.stringify(next, null, 2) + '\n');
+    writeAtomic(cfgPath, Bun.YAML.stringify(next, null, 2) + '\n');
     changed.push(cfgPath);
   }
   return changed;

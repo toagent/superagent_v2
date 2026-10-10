@@ -2,7 +2,15 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { milestones, type Plan } from '../plan';
-import { asksOf, gatesOf, readJson, type Asks, type Gate, type Ledger } from '../cli';
+import {
+  asksOf,
+  gatesOf,
+  readJson,
+  type Asks,
+  type Disposition,
+  type Gate,
+  type Ledger,
+} from '../cli';
 import { tail } from '../archon';
 import { confined, elapsedAt, fmtClock, fmtElapsed, type BoardRow } from './data';
 
@@ -20,6 +28,8 @@ export interface Detail {
   }[];
   events: { type: string; node: string | null; ts: string | null; out?: string }[];
   asks: Asks;
+  /** supervise-tick 最近的自动处置（ledger.dispositions 末 5 条）。 */
+  dispositions: Disposition[];
   needs: { tag: string; cap: string; minimal_ask: string }[];
   next: string[];
   errors: string[];
@@ -87,6 +97,7 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
     gates: [],
     events: [],
     asks: {},
+    dispositions: [],
     needs: [],
     next: [],
     errors: [],
@@ -142,6 +153,9 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
   part('asks', () => {
     d.asks = asksOf(l.run_id);
   });
+  part('dispositions', () => {
+    d.dispositions = (l.dispositions ?? []).slice(-5);
+  });
   if (row.state.startsWith('held:'))
     d.next = [
       `superagent decide ${l.run_id} approve|reject|retry [--pkg id]`,
@@ -174,6 +188,10 @@ export function detailLines(d: Detail, now: number, row?: BoardRow): string[] {
       `${e.ts ? fmtClock(e.ts, now) : '--:--:--'} ${e.type} ${e.node ?? ''}${e.out ? ` │ ${e.out.replace(/\s+/g, ' ')}` : ''}`
     );
   for (const [k, a] of Object.entries(d.asks)) out.push(`ask ${k} ${a?.status ?? '?'}`);
+  for (const x of d.dispositions)
+    out.push(
+      `${fmtClock(x.at, now)} ${x.action} ${x.reason} ${x.ok ? 'ok' : `FAIL ${x.error ?? ''}`}`
+    );
   for (const n of d.needs) out.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
   for (const n of d.next) out.push(`next: ${n}`);
   for (const e of d.errors) out.push(`! ${e}`);

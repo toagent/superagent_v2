@@ -19,6 +19,7 @@ import {
   lastJson,
   lock,
   ownerLost,
+  QUERY_TIMEOUT_MS,
   recover,
   signalHuman,
   tail,
@@ -30,7 +31,15 @@ import {
   type Review,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
-import { WETAMP, aliasDrift, codexWorkerProblem, home, loadTiers, runAliases } from './config';
+import {
+  WETAMP,
+  aliasDrift,
+  codexWorkerProblem,
+  home,
+  loadTiers,
+  runAliases,
+  writeAtomic,
+} from './config';
 import { generate, newRunId } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 
@@ -87,11 +96,13 @@ export interface Ledger {
   /** 最近一次 recover 时已完成节点集合的指纹，及在该指纹上连续 recover 的次数（旧 ledger 无这两项）。 */
   progress_fp?: string;
   stalled?: number;
-  /** supervise-tick 因 plan 截止已过取消 held:human 的 run 时写入。 */
+  /** supervise-tick 因 plan 截止已过取消 run 时写入。 */
   state?: 'failed';
   reason?: 'deadline';
-  /** supervise-tick 的自动重试；reason 前缀即类别（gate:<gate reason> / environment / coder:<节点>）。与 stalled 互不影响。 */
+  /** supervise-tick 的自动重试；reason 前缀即类别（gate:<gate reason> / environment / coder:<节点> / paused）。与 stalled 互不影响。 */
   auto_retries?: AutoRetry[];
+  /** supervise-tick 的处置记录（最近 20 条）。 */
+  dispositions?: Disposition[];
 }
 export interface AutoRetry {
   milestone: string;
@@ -101,13 +112,50 @@ export interface AutoRetry {
 
 export const ledgerPath = (run: string): string => join(home().sa, 'runs', `${run}.json`);
 const saveLedger = (l: Ledger): void => {
-  writeFileSync(ledgerPath(l.run_id), JSON.stringify(l, null, 2) + '\n');
+  writeAtomic(ledgerPath(l.run_id), JSON.stringify(l, null, 2) + '\n');
 };
 
+const LEDGER_STRINGS = ['run_id', 'archon_run_id', 'gen_dir', 'repo', 'branch', 'workflow'];
+/** 读并校验 ledger；坏文件抛带路径的错误，不当成空对象。 */
 export function loadLedger(run: string): Ledger {
   const p = ledgerPath(run);
   if (!existsSync(p)) throw new Error(`unknown run ${run} (no ${p})`);
-  return JSON.parse(readFileSync(p, 'utf8')) as Ledger;
+  let o: Partial<Record<string, unknown>> | null;
+  try {
+    o = JSON.parse(readFileSync(p, 'utf8')) as typeof o;
+  } catch (e) {
+    throw new Error(`ledger ${p}: ${(e as Error).message}`);
+  }
+  if (o === null || typeof o !== 'object' || Array.isArray(o))
+    throw new Error(
+      `ledger ${p}: not a JSON object (${o === null ? 'null' : Array.isArray(o) ? 'array' : typeof o})`
+    );
+  const bad = LEDGER_STRINGS.filter(k => typeof o[k] !== 'string');
+  if (!Array.isArray(o.recoveries)) bad.push('recoveries');
+  if (o.run_id !== run) bad.push('run_id≠file');
+  if (bad.length) throw new Error(`ledger ${p}: bad ${bad.join(',')}`);
+  return o as unknown as Ledger;
+}
+
+/** ledger 的读改写与 recover 同锁（runs/<archon id>.lock），锁忙最多等 10 秒；改完同步回调用方的副本。 */
+function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
+  const path = join(home().sa, 'runs', `${l.archon_run_id}.lock`);
+  for (let i = 0; ; i++) {
+    const k = lock(path);
+    if (k.ok) {
+      try {
+        const cur = loadLedger(l.run_id);
+        f(cur);
+        saveLedger(cur);
+        Object.assign(l, cur);
+        return;
+      } finally {
+        k.release();
+      }
+    }
+    if (i >= 100) throw new Error(`ledger ${l.run_id}: ${path} busy`);
+    Bun.sleepSync(100);
+  }
 }
 
 export interface Classified {
@@ -177,7 +225,15 @@ export const ledgerIds = (): string[] => {
         .map(f => f.slice(0, -5))
     : [];
 };
-const ledgers = (): Ledger[] => ledgerIds().map(loadLedger);
+/** 逐条读取：坏 ledger 变成 {run_id, error}，不拖垮其他 run。 */
+const ledgers = (): (Ledger | { run_id: string; error: string })[] =>
+  ledgerIds().map(id => {
+    try {
+      return loadLedger(id);
+    } catch (e) {
+      return { run_id: id, error: tail((e as Error).message, 200) };
+    }
+  });
 
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
@@ -405,7 +461,7 @@ function bumpAttempt(l: Ledger, m: string): number {
   const dir = join(l.gen_dir, 'attempts');
   mkdirSync(dir, { recursive: true });
   const n = Number(readJson(join(dir, m)) ?? 0) + 1;
-  writeFileSync(join(dir, m), String(n));
+  writeAtomic(join(dir, m), String(n));
   return n;
 }
 const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
@@ -427,6 +483,7 @@ const retry = (l: Ledger, c: Classified): RecoverResult =>
 function retryAllHeld(): number {
   const out = ledgers().flatMap((l): Record<string, unknown>[] => {
     try {
+      if ('error' in l) throw new Error(l.error);
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       return [{ run_id: l.run_id, state: c.state, ...retry(l, c) }];
@@ -485,8 +542,12 @@ function brief(l: Ledger): number {
       `${f.slice(0, -5)}: ${g.verdict}${g.reason ? ` (${g.reason})` : ''} debt=${String(g.debt.length)}`
     );
   }
-  for (const [k, v] of Object.entries(asksOf(l.run_id)))
-    lines.push(`ask ${k}: ${v?.status ?? '?'}`);
+  try {
+    for (const [k, v] of Object.entries(asksOf(l.run_id)))
+      lines.push(`ask ${k}: ${v?.status ?? '?'}`);
+  } catch (e) {
+    lines.push(`asks: ${tail((e as Error).message, 120)}`);
+  }
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
   if (Array.isArray(s.land)) lines.push(...(s.land as string[]));
@@ -530,8 +591,8 @@ function acceptRun(l: Ledger, pkg: string | undefined): number {
   return out?.ok === true ? 0 : 1;
 }
 
-// supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost、
-// 把红线签收投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答 signal 或终止 run。
+// supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
+// 其余非终态按 HOLD_POLICY 处置；需要拍板的投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答执行。
 const ANSWERS = ['pending', 'yes', 'no', 'expired'];
 interface Ask {
   id?: string; // 先落 unknown 再调 ask；ask 中途崩溃或非零退出都保留 unknown，下一 tick 对账
@@ -539,24 +600,86 @@ interface Ask {
 }
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 
+type Yes = 'retry' | 'resume' | 'approve';
+export type Policy =
+  | { do: 'signoff' | 'expire' | 'auto_retry' | 'backoff' | 'resume' }
+  | { do: 'ask'; yes: Yes; text: string };
+/**
+ * 挂起原因 → 处置：supervise-tick 对非终态 run 的唯一分派表（docs/00「挂起处置」），每行都有单测。
+ * signoff 走 human()；expire 按 plan 截止终止、不提醒；auto_retry/backoff/resume 自动处置，有上限，用尽后转 ask 行；
+ * ask 行投一条提醒（键 run:原因:轮次），“是”执行 yes，“否”终止 run 并保留证据，过期不替用户决定、等 plan 截止。
+ */
+export const HOLD_POLICY = {
+  signoff: { do: 'signoff' },
+  deadline: { do: 'expire' },
+  gate: { do: 'auto_retry' },
+  coder: { do: 'auto_retry' },
+  environment: { do: 'backoff' },
+  paused: { do: 'resume' },
+  auto_retry_exhausted: {
+    do: 'ask',
+    yes: 'retry',
+    text: '自动重试已用尽。是=再给一轮修复（fresh retry），否=终止 run',
+  },
+  no_change: {
+    do: 'ask',
+    yes: 'retry',
+    text: '连续两轮修复无变化。是=再给一轮修复（fresh retry），否=终止 run',
+  },
+  no_attempt_node: {
+    do: 'ask',
+    yes: 'resume',
+    text: '旧工作流无法重跑里程碑。是=原样续跑（resume），否=终止 run',
+  },
+  recover_no_progress: {
+    do: 'ask',
+    yes: 'resume',
+    text: '恢复 3 次无进展。是=清零计数再恢复一次，否=终止 run',
+  },
+  needs: { do: 'ask', yes: 'retry', text: '将军需要补能力(needs)。是=已补齐，再跑一轮，否=终止 run' },
+  redline: { do: 'ask', yes: 'retry', text: '将军命中红线。是=放行重试一次，否=终止 run' },
+  approval: { do: 'ask', yes: 'approve', text: 'Archon 审批门。是=批准（approve），否=终止 run' },
+} as const satisfies Record<string, Policy>;
+export type Hold = keyof typeof HOLD_POLICY;
+type Held = [Hold, Record<string, unknown>];
+
 const asksPath = (): string => join(home().sa, 'asks.json');
 export type Asks = Partial<Record<string, Ask>>;
-const loadAsks = (): Asks => (readJson(asksPath()) as Asks | undefined) ?? {};
+/** 读不出就抛错：把截断或损坏的 asks.json 当空表，会让每个挂起再投一遍提醒。 */
+const loadAsks = (): Asks => {
+  const p = asksPath();
+  if (!existsSync(p)) return {};
+  try {
+    const a = JSON.parse(readFileSync(p, 'utf8')) as unknown;
+    if (a === null || typeof a !== 'object' || Array.isArray(a)) throw new Error('not an object');
+    return a as Asks;
+  } catch (e) {
+    throw new Error(`asks ${p}: ${(e as Error).message}`);
+  }
+};
 const saveAsks = (asks: Asks): void => {
-  writeFileSync(asksPath(), JSON.stringify(asks, null, 2) + '\n');
+  writeAtomic(asksPath(), JSON.stringify(asks, null, 2) + '\n');
 };
 
-/** 某个 run 的签收提问；键 `<run>:<里程碑>:<放行的 gate 轮次>`：recover/resume 后事件门重新等待（resumeAt 变）也不重投。 */
+/** 某个 run 的提问；签收键 `<run>:<里程碑>:<放行的 gate 轮次>`，挂起键 `<run>:<原因>:<轮次>`：resumeAt 变了也不重投。 */
 export const asksOf = (run: string): Asks =>
   Object.fromEntries(Object.entries(loadAsks()).filter(([k]) => k.startsWith(`${run}:`)));
 
 const MAX_TTL_H = 72;
+const ttlHours = (until: number): number =>
+  Number.isFinite(until)
+    ? Math.min(MAX_TTL_H, Math.max(1, Math.ceil((until - Date.now()) / 3600e3)))
+    : MAX_TTL_H;
 const supervisorPy = (): string =>
   process.env.SA_SUPERVISOR ??
   join(homedir(), '.ai-agent-shared', 'skills', 'agent-supervisor', 'scripts', 'supervisor.py');
 
 function supervisor(args: string[]): string {
-  const p = Bun.spawnSync(['python3', supervisorPy(), ...args], { stdout: 'pipe', stderr: 'pipe' });
+  const p = Bun.spawnSync(['python3', supervisorPy(), ...args], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: QUERY_TIMEOUT_MS,
+  });
   if (p.exitCode !== 0)
     throw new Error(
       `supervisor ${args[0]} exit ${String(p.exitCode)}: ${tail(p.stderr.toString(), 200)}`
@@ -588,53 +711,37 @@ function askRecords(): { records: { id: string; question: string }[]; anomalous:
   return { records, anomalous };
 }
 
-function human(l: Ledger, run: RunView, asks: Asks): Action {
-  const w = run.metadata?.wait;
-  if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
-  const m = w.event.slice('sa.human.'.length);
-  const round = gatesOf(artifactsOf(run)).filter(f => f.startsWith(`gate-${m}-r`)).length;
-  const key = `${l.run_id}:${m}:${String(round)}`;
-  const base: { run_id: string; event: string; reason?: string } = {
-    run_id: l.run_id,
-    event: w.event,
-  };
-  const expire = (): Action => {
-    if (!cancelRun(l.archon_run_id, run.status, l.repo))
-      return { ...base, action: 'cancel', ok: false, reason: 'deadline' };
-    asks[key] = { ...asks[key], status: 'expired' };
-    saveLedger({ ...loadLedger(l.run_id), state: 'failed', reason: 'deadline' });
-    return { ...base, action: 'cancel', ok: true, reason: 'deadline' };
-  };
-  // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
-  if (pastDeadline(l)) return expire();
-  // 问题以 key 开头：ask 结果未知时据此在 supervisor 的 ask 记录里找回 id
-  const q = `superagent ${key} 红线签收：批准合入 ${basename(l.repo)}？`.slice(0, 120);
+/**
+ * 一条提醒的投递与对账（签收与挂起共用）。问题以 `superagent <key> ` 开头、≤120 字。先落 unknown 再调 ask；
+ * supervisor 的 create() 先落盘再投递，非零退出或 tick 崩溃时提问可能已存在：unknown 先按前缀找回 id，找不到才重投。
+ * 返回本次投递的 id（asked）或当前回答；多条记录同前缀时不猜，交给人。
+ */
+function pollAsk(
+  key: string,
+  text: string,
+  hours: number,
+  asks: Asks
+): { a: Ask; asked?: string; note?: string } | { conflict: string } {
   let a = asks[key];
-  if (a?.id === undefined && a !== undefined) {
-    // supervisor 的 create() 先落盘再投递：非零退出或 tick 崩溃时提问可能已存在，重投会多出一条提醒
+  let note: string | undefined;
+  if (a !== undefined && a.id === undefined) {
     const { records, anomalous } = askRecords();
-    if (anomalous) base.reason = `${String(anomalous)} anomalous ask records`;
+    if (anomalous) note = `${String(anomalous)} anomalous ask records`;
     const found = records.filter(r => r.question.startsWith(`superagent ${key} `));
     if (found.length > 1)
       return {
-        ...base,
-        action: 'none',
-        ok: false,
-        reason: `ask ${key}: ${String(found.length)} supervisor asks match; decide approve|reject${base.reason ? `; ${base.reason}` : ''}`,
+        conflict: `ask ${key}: ${String(found.length)} supervisor asks match${note ? `; ${note}` : ''}`,
       };
     a = asks[key] = found.length ? { id: found[0].id, status: 'pending' } : undefined;
   }
   if (!a) {
-    const hours = Math.min(
-      MAX_TTL_H,
-      Math.max(1, Math.ceil((Date.parse(w.resumeAt) - Date.now()) / 3600e3))
-    );
     asks[key] = { status: 'unknown' };
     saveAsks(asks);
+    const q = `superagent ${key} ${text}`.slice(0, 120);
     const id = supervisor(['ask', '--question', q, '--ttl-hours', String(hours)]);
     asks[key] = { id, status: 'pending' };
     saveAsks(asks);
-    return { ...base, action: 'ask', ok: true, ask: id };
+    return { a: asks[key], asked: id, note };
   }
   if (a.status === 'pending' && a.id) {
     const st = supervisor(['ask-status', a.id]);
@@ -642,29 +749,102 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
       throw new Error(`supervisor ask-status: unexpected ${st.slice(0, 40)}`);
     a.status = st;
   }
-  // yes/no 的执行失败保留原状态，下一次 tick 重试
-  if (a.status === 'yes') {
-    // 等回答期间可能已过截止：过期的“是”不再批准
-    if (pastDeadline(l)) return expire();
-    const r = signalHuman(
-      run,
-      { decision: 'approve', ask: a.id },
-      join(l.gen_dir, `signal-${w.nodeId}.log`),
-      l.repo
-    );
-    if (r.ok) a.status = 'approved';
-    return { ...base, action: 'approve', ...r };
-  }
-  if (a.status === 'no') {
-    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-    if (ok) a.status = 'rejected';
-    return { ...base, action: 'reject', ok };
-  }
-  // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
-  return { ...base, action: 'none', ok: true, ask: a.status };
+  return { a, note };
 }
 
-/** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。 */
+/** plan 截止已过：终止 run（保留证据），该 run 未执行的提问记 expired，ledger 记 failed/deadline；不提醒。 */
+function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): Action {
+  const x = { run_id: l.run_id, ...base, action: 'cancel', reason: 'deadline' };
+  if (!cancelRun(l.archon_run_id, run.status, l.repo)) return { ...x, ok: false };
+  if (!(asks instanceof Error))
+    for (const [k, a] of Object.entries(asks))
+      if (k.startsWith(`${l.run_id}:`) && a && !['approved', 'rejected'].includes(a.status))
+        asks[k] = { ...a, status: 'expired' };
+  updateLedger(l, cur => {
+    Object.assign(cur, { state: 'failed', reason: 'deadline' });
+  });
+  return { ...x, ok: true };
+}
+
+function human(l: Ledger, run: RunView, asks: Asks): Action {
+  const w = run.metadata?.wait;
+  if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
+  const m = w.event.slice('sa.human.'.length);
+  const round = gatesOf(artifactsOf(run)).filter(f => f.startsWith(`gate-${m}-r`)).length;
+  const key = `${l.run_id}:${m}:${String(round)}`;
+  const base = { run_id: l.run_id, event: w.event };
+  // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
+  if (pastDeadline(l)) return expireRun(l, run, asks, base);
+  const text = `红线签收：批准合入 ${basename(l.repo)}？`;
+  const p = pollAsk(key, text, ttlHours(Date.parse(w.resumeAt)), asks);
+  if ('conflict' in p)
+    return { ...base, action: 'none', ok: false, reason: `${p.conflict}; decide approve|reject` };
+  const b = { ...base, ...(p.note ? { reason: p.note } : {}) };
+  if (p.asked) return { ...b, action: 'ask', ok: true, ask: p.asked };
+  // yes/no 的执行失败保留原状态，下一次 tick 重试
+  if (p.a.status === 'yes') {
+    // 等回答期间可能已过截止：过期的“是”不再批准
+    if (pastDeadline(l)) return expireRun(l, run, asks, base);
+    const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
+    const r = signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
+    if (r.ok) p.a.status = 'approved';
+    return { ...b, action: 'approve', ...r };
+  }
+  if (p.a.status === 'no') {
+    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
+    if (ok) p.a.status = 'rejected';
+    return { ...b, action: 'reject', ok };
+  }
+  // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
+  return { ...b, action: 'none', ok: true, ask: p.a.status };
+}
+
+/** Archon 审批门（非 sa.human.*）的“是”：approve --detach 放行并续跑。 */
+function approveRun(l: Ledger): RecoverResult {
+  const ack = archonJson(['workflow', 'approve', l.archon_run_id, '--detach'], l.repo);
+  return ack.ok === true ? { ok: true, resumed: ack } : { ok: false, reason: tail(JSON.stringify(ack)) };
+}
+
+/**
+ * HOLD_POLICY 的 ask 行。轮次 = recover 次数 + 自动重试次数（“是”之后再挂起就是新一轮、新提醒）；审批门用 pauseId。
+ * 执行失败保留回答，下一 tick 重试；pending/expired 不动。
+ */
+function askHold(
+  l: Ledger,
+  run: RunView,
+  c: Classified,
+  hold: Hold,
+  p: Extract<Policy, { do: 'ask' }>,
+  asks: Asks,
+  extra: Record<string, unknown>
+): Action {
+  const ap = run.metadata?.approval;
+  const round =
+    hold === 'approval'
+      ? (ap?.pauseId ?? ap?.nodeId ?? '?')
+      : String(l.recoveries.length + (l.auto_retries?.length ?? 0));
+  const key = `${l.run_id}:${hold}:${round}`;
+  const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
+  const r = pollAsk(key, p.text, ttlHours(Date.parse(planOf(l).deadline)), asks);
+  if ('conflict' in r)
+    return { ...base, action: 'none', ok: false, error: `${r.conflict}; decide retry|reject` };
+  const b = { ...base, ...(r.note ? { note: r.note } : {}) };
+  if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
+  if (r.a.status === 'yes') {
+    const res =
+      p.yes === 'approve' ? approveRun(l) : p.yes === 'resume' ? recoverRun(l, true) : retry(l, c);
+    if (res.ok) r.a.status = 'approved';
+    return { ...b, action: p.yes, ...(res.ok ? { ok: true } : { ok: false, error: res.reason }) };
+  }
+  if (r.a.status === 'no') {
+    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
+    if (ok) r.a.status = 'rejected';
+    return { ...b, action: 'reject', ok };
+  }
+  return { ...b, action: 'none', ok: true, ask: r.a.status };
+}
+
+/** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。asks.json 的唯一写者。 */
 export function superviseTick(): Action[] | { skipped: 'locked' } {
   const { sa } = home();
   mkdirSync(sa, { recursive: true });
@@ -677,23 +857,21 @@ export function superviseTick(): Action[] | { skipped: 'locked' } {
   }
 }
 
+/** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。 */
 function tick(sa: string): Action[] {
   archonDetached(['workflow', 'wake', '--json'], join(sa, 'wake.log'));
-  const asks = loadAsks();
+  let asks: Asks | Error;
+  try {
+    asks = loadAsks();
+  } catch (e) {
+    asks = e as Error;
+  }
   const out: Action[] = [];
   for (const l of ledgers()) {
     try {
-      const run = getRun(l.archon_run_id, l.repo);
-      const c = classifyRun(l, run);
-      if (c.state === 'held:human') out.push(human(l, run, asks));
-      else if (c.state === 'owner_lost')
-        out.push({ run_id: l.run_id, action: 'recover', ...recoverRun(l) });
-      else if (c.state === 'held:recover_no_progress')
-        out.push({ run_id: l.run_id, action: 'none', ok: true, state: c.state });
-      else if (c.exit === EXIT.held || c.state === 'failed') {
-        const x = autoRetry(l, run, c);
-        if (x) out.push(x);
-      }
+      if ('error' in l) throw new Error(l.error);
+      const x = dispose(l, asks);
+      if (x) out.push(x);
     } catch (e) {
       out.push({
         run_id: l.run_id,
@@ -703,17 +881,110 @@ function tick(sa: string): Action[] {
       });
     }
   }
-  saveAsks(asks);
+  if (!(asks instanceof Error)) saveAsks(asks);
   return out;
 }
 
+/** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
+function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
+  if (c.state === 'held:human') return 'signoff';
+  const h: Hold | undefined =
+    c.state === 'held:gate'
+      ? 'gate'
+      : c.state === 'held:environment'
+        ? 'environment'
+        : c.state === 'held:recover_no_progress'
+          ? 'recover_no_progress'
+          : c.state === 'held:paused'
+            ? run.metadata?.approval
+              ? 'approval'
+              : 'paused'
+            : c.state === 'failed' && /^(code|fix)-/.test(c.node ?? '')
+              ? 'coder'
+              : undefined;
+  return h && pastDeadline(l) ? 'deadline' : h;
+}
+
+/** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
+function dispose(l: Ledger, asks: Asks | Error): Action | undefined {
+  const run = getRun(l.archon_run_id, l.repo);
+  const c = classifyRun(l, run);
+  if (c.state === 'owner_lost')
+    return record(l, 'owner_lost', { run_id: l.run_id, action: 'recover', ...recoverRun(l) });
+  const need = (): Asks => {
+    if (asks instanceof Error) throw asks;
+    return asks;
+  };
+  const act = (hold: Hold, extra: Record<string, unknown> = {}): Action | undefined => {
+    const p: Policy = HOLD_POLICY[hold];
+    const x =
+      p.do === 'signoff'
+        ? human(l, run, need())
+        : p.do === 'expire'
+          ? expireRun(l, run, asks, {})
+          : p.do === 'resume'
+            ? pausedHold(l, run, c)
+            : p.do === 'ask'
+              ? askHold(l, run, c, hold, p, need(), extra)
+              : autoRetry(l, run, c);
+    return Array.isArray(x) ? act(...x) : x && record(l, hold, x);
+  };
+  const hold = holdOf(l, run, c);
+  return hold && act(hold);
+}
+
+export interface Disposition {
+  at: string;
+  reason: string;
+  action: string;
+  ok: boolean;
+  error?: string;
+}
+const MAX_DISPOSITIONS = 20;
+
+/** 自动处置记入 ledger.dispositions（最近 20 条，board 详情可见）；action none 不是处置。记不下时动作照常返回并带 record_error。 */
+function record(l: Ledger, reason: string, x: Action): Action {
+  if (x.action === 'none') return x;
+  const d: Disposition = {
+    at: new Date().toISOString(),
+    reason,
+    action: x.action,
+    ok: x.ok,
+    ...(x.ok ? {} : { error: tail(String(x.error ?? x.reason ?? ''), 200) }),
+  };
+  try {
+    updateLedger(l, cur => {
+      cur.dispositions = [...(cur.dispositions ?? []), d].slice(-MAX_DISPOSITIONS);
+    });
+    return x;
+  } catch (e) {
+    return { ...x, record_error: tail((e as Error).message, 200) };
+  }
+}
+
+const PAUSE_GRACE_MS = 10 * 60e3;
+const MAX_PAUSE_RESUMES = 2;
+/** 非签收、非审批的暂停：到期（resumeAt，或 attention 的 waitingSince）+10 分钟仍未被 wake 唤醒才自动 resume，有上限。 */
+function pausedHold(l: Ledger, run: RunView, c: Classified): Action | Held | undefined {
+  const w = run.metadata?.wait;
+  if (Date.now() < Date.parse(w?.resumeAt ?? w?.waitingSince ?? '') + PAUSE_GRACE_MS)
+    return undefined;
+  const tries = (l.auto_retries ?? []).filter(r => r.reason === 'paused').length;
+  if (tries >= MAX_PAUSE_RESUMES) return ['auto_retry_exhausted', { auto_retries: tries }];
+  const auto = { milestone: 'paused', at: new Date().toISOString(), reason: 'paused' };
+  const r = recoverRun(l, false, auto);
+  return { run_id: l.run_id, action: 'auto_retry', state: c.state, ...auto, attempt: tries + 1, ...r };
+}
+
+const BACKOFF_S = 120;
+const MAX_BACKOFF_S = 1800;
 /**
- * held:gate / held:environment / 编码节点失败的自动重试（docs/00「自动重试」）。只有次数用尽、有 needs、命中红线、
- * 截止已过，或连续两次修复无变化时保持 held。gate 重试先给里程碑每个包追加提示，再走 decide retry 同一恢复入口。
+ * held:gate / held:environment / 编码节点失败的自动重试（docs/00「自动重试」）。重试不了时返回挂起原因交 HOLD_POLICY：
+ * needs、红线、gate 截止、次数用尽、连续两次修复无变化、旧工作流无 attempt 节点。environment 首次立即重试，
+ * 之后按 120s·2^(n-1)（≤30 分钟）退避，未到点返回 none/backoff。gate 重试先给里程碑每个包追加提示。
  */
-function autoRetry(l: Ledger, run: RunView, c: Classified): Action | undefined {
+function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   const node = c.node ?? '';
-  if (!['held:gate', 'held:environment', 'failed'].includes(c.state)) return undefined;
   const plan = planOf(l);
   const art = artifactsOf(run);
   let kind: 'gate' | 'environment' | 'coder';
@@ -725,34 +996,36 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | undefined {
     [kind, m, reason] = ['gate', gateMilestone(node), `gate:${gate?.reason ?? '?'}`];
   } else if (c.state === 'held:environment') {
     [kind, m, reason] = ['environment', 'environment', 'environment'];
-  } else if (c.state === 'failed' && /^(code|fix)-/.test(node)) {
+  } else {
     const pkg = plan.packages.find(p => `code-${p.id}` === node);
     m = node.startsWith('fix-') ? node.replace(/^fix-(.+)-r\d+$/, '$1') : (pkg?.milestone ?? 'm1');
     [kind, reason] = ['coder', `coder:${node}`];
-  } else return undefined;
+  }
   const tries = (l.auto_retries ?? []).filter(
     r => r.milestone === m && r.reason.split(':')[0] === kind
   );
   const needs = needsOf(art, m);
-  const hold = (why: string): Action => ({
-    run_id: l.run_id,
-    action: 'none',
-    ok: true,
-    state: c.state,
-    reason: why,
-    auto_retries: tries.length,
-    ...(needs.length ? { needs } : {}),
-  });
+  const hold = (h: Hold): Held => [
+    h,
+    { auto_retries: tries.length, ...(needs.length ? { needs } : {}) },
+  ];
   if (needs.length) return hold('needs');
   if (codersOf(art, m).some(x => x.error_class === 'redline')) return hold('redline');
-  if (reason.includes('deadline') || pastDeadline(l)) return hold('deadline');
+  if (reason.includes('deadline')) return hold('deadline');
   if (tries.length >= loadTiers().policy.auto_retry[kind]) return hold('auto_retry_exhausted');
   if (reason.includes('no_change') && tries.at(-1)?.reason.includes('no_change'))
     return hold('no_change');
+  if (kind === 'gate' && !attemptable(l, m)) return hold('no_attempt_node');
+  const last = tries.at(-1);
+  if (kind === 'environment' && last) {
+    const wait = Math.min(MAX_BACKOFF_S, BACKOFF_S * 2 ** (tries.length - 1)) * 1000;
+    const next = Date.parse(last.at) + wait;
+    if (Date.now() < next)
+      return { run_id: l.run_id, action: 'none', ok: true, state: c.state, reason: 'backoff', next: new Date(next).toISOString() };
+  }
   const auto = { milestone: m, at: new Date().toISOString(), reason };
   let r: RecoverResult;
   if (kind === 'gate') {
-    if (!attemptable(l, m)) return hold('no_attempt_node');
     const text = gateHint(plan, art, node, gate, tries.length + 1);
     for (const p of plan.packages.filter(x => (x.milestone ?? 'm1') === m))
       appendFileSync(join(l.gen_dir, 'hints', `${p.id}.md`), text);
@@ -837,15 +1110,19 @@ export function summarize(pairs: Pair[]): Record<string, unknown> {
 
 /** 全部登记 run 的 summarize。 */
 export function report(): Record<string, unknown> {
-  return summarize(
-    ledgers().map(l => {
+  const all = ledgers();
+  const r = summarize(
+    all.flatMap((l): Pair[] => {
+      if ('error' in l) return [];
       try {
-        return { ledger: l, run: getRun(l.archon_run_id, l.repo) };
+        return [{ ledger: l, run: getRun(l.archon_run_id, l.repo) }];
       } catch (e) {
-        return { ledger: l, run: e as Error };
+        return [{ ledger: l, run: e as Error }];
       }
     })
   );
+  const bad = all.flatMap(l => ('error' in l ? [`${l.run_id}: ${l.error}`] : []));
+  return { ...r, runs: all.length, unreadable: [...(r.unreadable as string[]), ...bad] };
 }
 
 const USAGE =
