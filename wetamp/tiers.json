@@ -33,7 +33,11 @@
             "Bash(codex *)",
             "Bash(opencode *)",
             "Bash(sol-run *)",
-            "Bash(twin-agent*)"
+            "Bash(twin-agent*)",
+            "Edit",
+            "Write",
+            "MultiEdit",
+            "NotebookEdit"
           ]
         }
       },

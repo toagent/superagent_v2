@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Archon worker 的 Codex 二进制（assistants.codex.codexBinaryPath）：exec 真 codex，前置
 # policy.exec_profiles.{coder,reviewer}.codex 的 -c 覆盖，并关闭沙箱清单外的已声明 MCP server。
-# 只读 config.toml 的 [mcp_servers.<name>] 表头，不读取任何值（值里可能有凭据）。
+# 只取 config.toml 里 mcp_servers 的键名，从不输出任何值（值里可能有凭据）。
 set -euo pipefail
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
@@ -17,9 +17,25 @@ if [ -z "$real" ]; then
   done < <(type -ap codex)
 fi
 [ -n "$real" ] || { echo "codex-worker: real codex not found on PATH (set SA_CODEX_REAL)" >&2; exit 127; }
+# SA_CODEX_REAL 与 PATH 结果同样校验：指向自身会无限 exec 自己。
+resolved="$(realpath "$real" 2>/dev/null)" || { echo "codex-worker: $real does not exist" >&2; exit 2; }
+[ "$resolved" != "$self" ] || { echo "codex-worker: $real resolves to codex-worker itself" >&2; exit 2; }
+[ -f "$resolved" ] && [ -x "$resolved" ] || { echo "codex-worker: $real is not an executable file" >&2; exit 2; }
+config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+# 已声明的 MCP server 名：python3 tomllib 按 TOML 语义取 mcp_servers 的键（不输出任何值）；
+# 不可用或解析失败时记一行 stderr，由下方 node 回退到只认表头的正则。
+declared=""
+if [ -f "$config" ]; then
+  declared="$(python3 -I -c 'import sys, json
+try: import tomllib
+except ImportError: sys.exit(3)
+with open(sys.argv[1], "rb") as f: servers = tomllib.load(f).get("mcp_servers", {})
+print(json.dumps(list(servers) if isinstance(servers, dict) else []))' "$config" 2>/dev/null)" \
+    || { echo "codex-worker: python3 tomllib unavailable or config.toml unparsable; falling back to header regex" >&2; declared=""; }
+fi
 read -r -d '' JS <<'JS' || true
 const fs = require('node:fs');
-const [tiers, config] = process.argv.slice(1);
+const [tiers, config, parsed] = process.argv.slice(1);
 const {policy} = JSON.parse(fs.readFileSync(tiers, 'utf8'));
 const settings = {};
 for (const role of ['coder', 'reviewer'])
@@ -27,20 +43,43 @@ for (const role of ['coder', 'reviewer'])
     if (k in settings && JSON.stringify(settings[k]) !== JSON.stringify(v)) throw new Error(`exec_profiles coder/reviewer disagree on codex ${k}`);
     settings[k] = v;
   }
+// 整个 worker 进程以 reviewer 身份运行时才收紧沙箱；Archon 每节点的 thread/start 仍可覆盖它。
+if (process.env.SUPERAGENT_ROLE === 'reviewer') settings.sandbox_mode = 'read-only';
 const args = Object.entries(settings).flatMap(([k, v]) => ['-c', `${k}=${JSON.stringify(v)}`]);
-let text = '';
-try { text = fs.readFileSync(config, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-const declared = new Set([...text.matchAll(/^\s*\[\s*mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))/gm)].map(m => m[1] ?? m[2]));
-for (const name of declared) if (!policy.sandbox.mcp.includes(name)) args.push('-c', `mcp_servers.${/^[A-Za-z0-9_-]+$/.test(name) ? name : JSON.stringify(name)}.enabled=false`);
+let declared;
+if (parsed) declared = JSON.parse(parsed);
+else {
+  let text = '';
+  try { text = fs.readFileSync(config, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  declared = [...text.matchAll(/^\s*\[\s*mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))/gm)].map(m => m[1] ?? m[2]);
+}
+for (const name of new Set(declared)) {
+  if (policy.sandbox.mcp.includes(name)) continue;
+  // 不能作为裸 -c 键段安全表示的名字不猜引号语义，跳过并留痕。
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) { process.stderr.write(`codex-worker: skipped MCP server with unsafe name ${JSON.stringify(name).slice(0, 80)}\n`); continue; }
+  args.push('-c', `mcp_servers.${name}.enabled=false`);
+}
 if (args.some(a => a.includes('\n'))) throw new Error('codex-worker: newline in generated argument');
 process.stdout.write(args.join('\n'));
 JS
 # 逐行一个参数；node 失败时命令替换让 set -e 终止，不带半套覆盖启动 codex。
-out="$(node -e "$JS" "$WETAMP/tiers.json" "${CODEX_HOME:-$HOME/.codex}/config.toml")"
+out="$(node -e "$JS" "$WETAMP/tiers.json" "$config" "$declared")"
 extra=()
 while IFS= read -r a; do [ -n "$a" ] && extra+=("$a"); done <<< "$out"
 argv=("$real" ${extra[@]+"${extra[@]}"} "$@")
 if [ "${SA_CODEX_WORKER_TRACE:-}" = 1 ]; then
-  node -e 'process.stderr.write(JSON.stringify(process.argv.slice(1)) + "\n")' -- "${argv[@]}"
+  # 只打印本包装器追加的策略参数与脱敏、截断后的调用方 argv。
+  node -e '
+const [count, ...rest] = process.argv.slice(1);
+const policy = rest.slice(0, Number(count)), caller = rest.slice(Number(count));
+const SECRET = /authorization|token|key|secret|password|bearer/i;
+let hide = false;
+const argv = caller.map(a => {
+  const flag = /^--?[\w.-]+$/.test(a);
+  const v = hide ? "***" : flag || !SECRET.test(a) ? a : a.replace(/^([^=:\s]*[=:]\s*)?[\s\S]*$/, (m, k) => (k ?? "") + "***");
+  hide = flag && SECRET.test(a);
+  return v.length > 200 ? v.slice(0, 200) + "…" : v;
+});
+process.stderr.write(JSON.stringify({policy, argv}) + "\n");' -- "${#extra[@]}" ${extra[@]+"${extra[@]}"} "$@"
 fi
 exec "${argv[@]}"

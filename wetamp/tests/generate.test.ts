@@ -125,7 +125,7 @@ describe('buildWorkflow', () => {
       ).denied_tools;
     // console=codex：@sa-reviewer 解析为 claude；@sa-coder 是 codex
     expect(denied('codex', 'review-m1-r1')).toEqual(
-      expect.arrayContaining(['Agent', 'Task', 'Bash(codex *)'])
+      expect.arrayContaining(['Agent', 'Task', 'Bash(codex *)', 'Edit', 'Write', 'MultiEdit'])
     );
     expect(denied('codex', 'code-core')).toBeUndefined();
     expect(denied('claude', 'review-m1-r1')).toBeUndefined();
