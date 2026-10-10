@@ -10,12 +10,14 @@ import { isTier, type Tier } from './roles';
 import { shortModel } from './models';
 import { sessionModel } from './models';
 import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
+import { refreshEta, type EtaInput } from './board/eta';
+import type { RunView } from './archon';
 
 export type Client = 'claude' | 'codex';
 export interface Counts { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number; sessions: number }
 export interface Owner { client: Client; role: Tier | null; model: string | null; cwd: string | null; kind: 'run' | 'job' | 'interactive' | 'inferred' | 'unknown'; run_id?: string; job_id?: string }
 export interface UsageSession extends Counts { id: string; client: Client; model: string | null; at: string; cost: number | null; owner?: Owner; parts?: (Counts & { model: string })[] }
-export interface UsageCache { at: string | null; since?: string; source_at?: Partial<Record<Client, string | null>>; status: string; sources: Partial<Record<Client, string>>; sessions: UsageSession[]; daily: (Omit<Counts, 'sessions'> & { day: string; client: Client; sessions: null })[] }
+export interface UsageCache { at: string | null; since?: string; source_at?: Partial<Record<Client, string | null>>; status: string; sources: Partial<Record<Client, string>>; sessions: UsageSession[]; today?: { day: string; status: string; sessions: UsageSession[] }; daily: (Omit<Counts, 'sessions'> & { day: string; client: Client; sessions: null })[] }
 type ObjectValue = Record<string, unknown>;
 const obj = (v: unknown): ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as ObjectValue : {};
 const arr = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
@@ -73,9 +75,11 @@ export function jobSession(job: Pick<Job, 'kind' | 'cwd' | 'started_at'>): strin
 }
 function claimsOf(): { id: string; owner: Owner }[] {
   const claims: { id: string; owner: Owner }[] = [];
+  const eta: EtaInput[] = [];
   for (const id of ledgerIds()) {
     try {
       const l = loadLedger(id), j = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo);
+      eta.push({ ledger: l, run: j as unknown as RunView, samples: arr(j.events).flatMap(raw => { const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, ms = d.timing?.durationMs ?? d.duration_ms; return e.event_type === 'node_completed' && typeof e.step_name === 'string' && typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? [{ id: e.step_name, seconds: ms / 1000 }] : []; }) });
       for (const raw of arr(j.events)) {
         const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
         if (!d.session_id || !m) continue;
@@ -86,6 +90,7 @@ function claimsOf(): { id: string; owner: Owner }[] {
     } catch { /* A missing run provides no ownership proof; existing index survives. */ }
   }
   const jobs: Job[] = files(join(home().sa, 'jobs')).flatMap(f => { const j = obj(json(f)); return typeof j.cwd === 'string' && typeof j.started_at === 'string' ? [j as unknown as Job] : []; });
+  refreshEta(eta);
   for (const j of jobs) {
     const id = j.session_id ?? jobSession(j);
     if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'job', job_id: j.id } });
@@ -118,7 +123,9 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
   const held = lock(join(root(), 'refresh.lock'));
   if (!held.ok) return readUsage();
   try {
-    const old = readUsage(), cache: UsageCache = { at: new Date().toISOString(), since, status: 'ok', sources: {}, source_at: {}, sessions: [], daily: [] };
+    const day = new Date().toLocaleDateString('sv-SE');
+    const today: NonNullable<UsageCache['today']> = { day, status: 'ok', sessions: [] };
+    const old = readUsage(), cache: UsageCache = { at: new Date().toISOString(), since, status: 'ok', sources: {}, source_at: {}, sessions: [], today, daily: [] };
     await Promise.all((['claude', 'codex'] as const).map(async client => {
       try {
         cache.sessions.push(...parseUsage(await collect(client, 'session', since), client));
@@ -134,9 +141,13 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
         cache.sessions = cache.sessions.filter(s => s.client !== client).concat(old.sessions.filter(s => s.client === client));
         cache.daily.push(...old.daily.filter(d => d.client === client));
       }
+      // Reuse the same ccusage collector/cache, scoped to the local day; lifetime sessions cannot prove role/day totals.
+      try { today.sessions.push(...(since === day.replaceAll('-', '') && cache.sources[client] === 'ok' ? cache.sessions.filter(s => s.client === client) : parseUsage(await collect(client, 'session', day.replaceAll('-', '')), client))); }
+      catch { today.status = 'unavailable'; }
     }));
     if (Object.values(cache.sources).some(s => s !== 'ok')) cache.status = `用量未知（ccusage 不可用：${Object.entries(cache.sources).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}:${v}`).join(', ')}）；保留旧缓存`;
     const index = attribute(cache.sessions, claimsOf(), obj(json(join(root(), 'sessions.json'))) as Record<string, Owner>);
+    attribute(today.sessions, [], index);
     writeAtomic(join(root(), 'sessions.json'), JSON.stringify(index));
     writeAtomic(join(root(), 'cache.json'), JSON.stringify(cache));
     return cache;

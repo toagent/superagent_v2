@@ -47,6 +47,7 @@ export interface RunView {
   nodes?: {
     nodeId: string;
     state: string;
+    startedAt?: string;
     error?: string | null;
     durationMs?: number;
     execution?: NodeExecutionMetadata;

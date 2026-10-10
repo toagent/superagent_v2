@@ -7,6 +7,7 @@ import { lock } from '../archon';
 import { alive } from '../jobs';
 import { createLoader, type Snapshot } from '../board/data';
 import { readUsage, requestUsageRefresh, usageSummary } from '../usage';
+import { cockpit } from '../board/cockpit';
 import { shortModel } from '../models';
 import { parseArgs } from '../cli';
 
@@ -22,7 +23,7 @@ export function overview(s: Snapshot): Record<string, unknown> {
   const a = s.activity, c = s.usage ?? readUsage();
   const jobs = a?.jobs.map(j => ({ id: j.id, state: j.state, role: j.tier, short_model: shortModel(j.model), cwd: basename(j.cwd), owner: j.owner })) ?? [];
   const runs = s.rows.map(r => ({ id: r.run_id, state: r.state, nodes: { done: r.nodes.done, total: r.nodes.total, current: r.nodes.current }, role: r.nodes.currentRole, short_model: shortModel(r.model), cwd: r.repo, rounds: Number(/-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? 0), recoveries: r.recoveries, retries: r.auto_retries, held: r.held ? { node: r.held.node, event: r.held.event } : null, action: r.held ? 'superagent brief <run> 查看处置' : null }));
-  return { at: s.at, terminals: a?.terms.map(t => ({ client: t.kind, role: t.tier, short_model: shortModel(t.model), state: t.state, cwd: t.cwd ? basename(t.cwd) : null, pid: t.pid, jobs: jobs.filter(j => j.owner === t.pid) })) ?? [], jobs, runs, pending: runs.filter(r => r.held), usage: usageSummary(c), estimate: { label: 'ccusage 公开价目估算，非账单', dollars: c.status === 'ok' && c.sessions.every(x => typeof x.cost === 'number') ? c.sessions.reduce((n, x) => n + (x.cost ?? 0), 0) : null } };
+  return { cockpit: cockpit({ ...s, usage: c }, Date.parse(s.at)), at: s.at, terminals: a?.terms.map(t => ({ client: t.kind, role: t.tier, short_model: shortModel(t.model), state: t.state, cwd: t.cwd ? basename(t.cwd) : null, pid: t.pid, jobs: jobs.filter(j => j.owner === t.pid) })) ?? [], jobs, runs, pending: runs.filter(r => r.held), usage: usageSummary(c), estimate: { label: 'ccusage 公开价目估算，非账单', dollars: c.status === 'ok' && c.sessions.every(x => typeof x.cost === 'number') ? c.sessions.reduce((n, x) => n + (x.cost ?? 0), 0) : null } };
 }
 const same = (a: string, b: string): boolean => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 export function handler(port: number, token: string, get: () => Record<string, unknown>): (r: Request) => Response {
@@ -47,7 +48,7 @@ async function serve(): Promise<void> {
   if (!held.ok) throw new Error('web already running');
   const token = randomBytes(32).toString('hex'), load = createLoader();
   let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() }, busy = false;
-  const update = async (): Promise<void> => { if (busy) return; busy = true; try { snapshot = await load(50); if (process.env.NODE_ENV !== 'test') requestUsageRefresh(); } catch { /* Previous safe snapshot remains visible. */ } finally { busy = false; } };
+  const update = async (): Promise<void> => { if (busy) return; busy = true; try { snapshot = await load(Number.MAX_SAFE_INTEGER); if (process.env.NODE_ENV !== 'test') requestUsageRefresh(); } catch { /* Previous safe snapshot remains visible. */ } finally { busy = false; } };
   let server: ReturnType<typeof Bun.serve> | undefined, boundPort = 0;
   for (let port = 39890; port < 39990; port++) {
     try { server = Bun.serve({ hostname: '127.0.0.1', port, fetch: handler(port, token, () => overview(snapshot)) }); boundPort = port; break; }

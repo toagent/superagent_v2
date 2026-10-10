@@ -30,4 +30,5 @@ if [ "$role" = worker ]; then
 fi
 export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
+if [ "${1:-}" = board ]; then exec bun "$WETAMP/src/board/index.ts" "$@"; fi
 exec bun "$WETAMP/src/cli.ts" "$@"

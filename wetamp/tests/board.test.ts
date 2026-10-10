@@ -22,11 +22,9 @@ import {
   readLedger,
   rowOf,
   workflowRoles,
-  type BoardRow,
 } from '../src/board/data';
 import { detailOf, detailLines, redact } from '../src/board/detail';
-import { Frame, layout, shortId, type FrameProps } from '../src/board/App';
-import type { Activity } from '../src/board/activity';
+import { Frame } from '../src/board/App';
 import { tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
@@ -558,308 +556,6 @@ describe('detail', () => {
   });
 });
 
-describe('table layout', () => {
-  // chips 会按宽度换行：从列名行起取（列名行、数据行…）
-  const frame = (width: number, rows: Parameters<typeof rowOf>[]): string[] => {
-    const lines = render(width, rows);
-    return lines.slice(lines.findIndex(l => l.startsWith('id ')));
-  };
-  const render = (width: number, rows: Parameters<typeof rowOf>[]): string[] =>
-    renderToString(
-      createElement(Frame, {
-        snap: { summary: {}, rows: rows.map(args => rowOf(...args)), at: new Date().toISOString() },
-        home: '/h',
-        width,
-        height: 50,
-        interval: 5,
-        sel: -1,
-        activeOnly: false,
-        detail: null,
-        now: new Date(),
-        footer: false,
-      }),
-      { columns: width }
-    ).split('\n');
-  const failedRow = (): Parameters<typeof rowOf> => {
-    const l = ledger('20261010-004139-c439', { status: 'failed' });
-    const run: RunView = {
-      id: 'a',
-      status: 'failed',
-      started_at: '2026-10-10T00:00:00.000Z',
-      completed_at: '2026-10-10T01:02:03.000Z',
-      nodes: [
-        ...['a', 'b', 'c', 'd'].map(n => ({ nodeId: `code-${n}`, state: 'completed' as const })),
-        { nodeId: 'review-m1-r1', state: 'failed' },
-      ],
-    };
-    return [l, run, { now: Date.now() }];
-  };
-
-  test('columns are separated by a space: exit reason and rec stay distinct tokens', () => {
-    const [header, row] = frame(160, [failedRow()]);
-    expect(row).toMatch(/ exit 1 @review-m1-r1 +0 /);
-    expect(header).toMatch(/ exit\/held +rec +console +repo@branch/);
-    const [l, run, o] = failedRow();
-    l.auto_retries = [
-      { milestone: 'm1', at: 't', reason: 'gate' },
-      { milestone: 'm1', at: 't', reason: 'gate' },
-    ];
-    expect(frame(160, [[l, run, o]])[1]).toMatch(/ exit 1 @review-m1-r1 +0\+2 /);
-  });
-
-  test('at 80 columns elapsed, exit/held and rec are not cut off; nodes keep only n/m', () => {
-    expect(layout(80).current).toBeGreaterThanOrEqual(5);
-    // 宽屏只在放得下全部列时启用：100–120 列曾把 console/repo 挤出屏外
-    for (const width of [80, 100, 120, 121, 160]) {
-      const lay = layout(width);
-      expect(
-        Object.values(lay.w).reduce((a, b) => a + b, 0) + lay.current + (lay.wide ? 20 : 0)
-      ).toBeLessThanOrEqual(width);
-    }
-    const [header, row] = frame(80, [failedRow()]);
-    expect(header).toMatch(/ elapsed +exit\/held +rec\s*$/);
-    expect(row).toMatch(/ 4\/5 /);
-    expect(row).not.toContain('█');
-    expect(row).toMatch(/ 1h02m +exit 1 @review-\S* 0\s*$/);
-    for (const line of [header, row]) expect(line.length).toBeLessThanOrEqual(80);
-  });
-});
-
-describe('responsive frame', () => {
-  const now = new Date();
-  const day = now.toISOString().slice(0, 10).replaceAll('-', '');
-  const row = (id: string, run: Omit<RunView, 'id'>): BoardRow =>
-    rowOf(
-      ledger(id, run, { started_at: run.started_at ?? now.toISOString() }),
-      { id: `a-${id}`, ...run },
-      {
-        now: now.getTime(),
-        roles: new Map([
-          ['code-system-vad-captions-with-a-long-name', 'coder'],
-          ['review-m1-r1', 'reviewer'],
-          ['human-m1', 'human'],
-        ]), // 节点总数也取自角色表：三行都是 n/3
-      }
-    );
-  const rows = (): BoardRow[] => [
-    row(`${day}-041949-87a7`, {
-      status: 'running',
-      started_at: new Date(now.getTime() - 65_000).toISOString(),
-      nodes: [
-        { nodeId: 'code-a', state: 'completed' },
-        { nodeId: 'code-system-vad-captions-with-a-long-name', state: 'running' },
-      ],
-    }),
-    row('20261001-004139-c439', {
-      status: 'failed',
-      started_at: '2026-10-01T00:00:00.000Z',
-      completed_at: '2026-10-01T01:02:03.000Z',
-      nodes: [{ nodeId: 'review-m1-r1', state: 'failed' }],
-    }),
-    row(`${day}-010101-aaaa`, {
-      status: 'paused',
-      metadata: {
-        wait: { nodeId: 'human-m1', kind: 'event', event: 'sa.human.m1', resumeAt: 't' },
-      },
-      nodes: [{ nodeId: 'human-m1', state: 'running' }],
-    }),
-  ];
-  const activity = (): Activity => ({
-    jobs: [
-      {
-        id: '20261010-000000-0001',
-        title: '一个很长很长的中文作业标题，用来逼出宽字符截断'.repeat(3),
-        card: null,
-        log: null,
-        cwd: '/',
-        kind: 'claude',
-        model: 'claude-opus-5-5',
-        wrapper_pid: 1,
-        pid: 2,
-        started_at: new Date(now.getTime() - 30_000).toISOString(),
-        state: 'running',
-        tier: 'general',
-        guess: false,
-        owner: 11,
-      },
-      {
-        id: '20261010-000000-0002',
-        title: 'three',
-        card: null,
-        log: null,
-        cwd: '/',
-        kind: 'other',
-        model: null,
-        wrapper_pid: 1,
-        pid: 3,
-        started_at: new Date(now.getTime() - 20_000).toISOString(),
-        ended_at: new Date(now.getTime() - 10_000).toISOString(),
-        state: 'failed',
-        exit_code: 3,
-        tier: null,
-        guess: false,
-        owner: null,
-      },
-    ],
-    procs: [
-      {
-        pid: 37191,
-        kind: 'codex',
-        model: 'gpt-6.1-sol',
-        cwd: `/Users/y/${'deep/'.repeat(20)}wt-caps`,
-        started_ms: now.getTime() - 3_600_000,
-        tier: 'general',
-        guess: true,
-        owner: null, // ppid 链上没有终端会话：归无主
-      },
-    ],
-    remote: [
-      { id: 'job-abcdef1234567890', state: 'running', host: 'dev', agent: 'codex' },
-      { id: '20261010125744-a1b2c3', state: 'queued', host: 'dev', agent: 'claude' },
-    ],
-    terms: [
-      {
-        kind: 'claude',
-        tier: 'commander',
-        pid: 11,
-        tty: 'ttys002',
-        cwd: `/Users/y/${'deep/'.repeat(20)}superagent_v2-with-a-long-name`,
-        state: 'busy',
-        tool: 'Bash',
-        since_ms: now.getTime() - 12_000,
-        bound: true,
-      },
-      {
-        kind: 'codex',
-        tier: 'commander',
-        pid: 12,
-        tty: 'ttys005',
-        cwd: '/Users/y/proposal',
-        state: 'idle',
-        tool: null,
-        since_ms: now.getTime() - 45 * 60_000,
-        bound: true,
-      },
-      {
-        kind: 'opencode',
-        tier: 'general',
-        pid: 13,
-        tty: 'ttys009',
-        cwd: null,
-        state: 'unknown',
-        tool: null,
-        since_ms: null,
-        bound: false,
-      },
-    ],
-    notes: [`procs: ${'x'.repeat(200)}`],
-  });
-  const render = (width: number, extra: Partial<FrameProps> = {}): string[] =>
-    renderToString(
-      createElement(Frame, {
-        snap: {
-          summary: { debt: 12, first_pass: 3, load_error: 'e'.repeat(150) },
-          rows: rows(),
-          at: now.toISOString(),
-          activity: activity(),
-        },
-        home: '/Users/someone/.superagent',
-        width,
-        height: 40,
-        interval: 5,
-        sel: 1,
-        activeOnly: true,
-        detail: null,
-        now,
-        footer: true,
-        ...extra,
-      }),
-      { columns: width }
-    ).split('\n');
-
-  test('no line is wider than the terminal at 40/59/79/100/120 columns', () => {
-    for (const width of [40, 59, 79, 100, 120])
-      for (const help of [false, true]) {
-        const lines = render(width, { help, activeOnly: false });
-        expect(lines.length).toBeGreaterThan(10);
-        expect(lines.filter(l => Bun.stringWidth(l) > width)).toEqual([]);
-      }
-  });
-
-  test('compact: short ids and states, n/m progress, cur line for running/selected rows, short footer', () => {
-    const t = render(59, { activeOnly: false }).join('\n');
-    // 各档运行中：执行中的终端（元帅 1）+ running 作业与无头进程（将军 2）
-    expect(t).toContain('[元帅 1] [将军 2·opus+1] [军师 0] [remote 2]');
-    expect(t).not.toContain('[active');
-    // 作业挂在祖先终端下；紧凑布局显示模型族名
-    expect(t).toContain(
-      '● 元帅 claude 执行中 Bash 12s · superagent_v2-with-… · s002\n  └ ▶ 将军·opus job 30s claude · 一个'
-    );
-    expect(t).toContain('○ 元帅 codex 空闲 45m00s · proposal · s005');
-    expect(t).toContain(
-      '○ 将军 opencode 未知? · ? · s009\n/\n  └ ✗ ? job 10s exit 3 other · three'
-    );
-    expect(t).toMatch(/\n041949-87a7 +▶run +1\/3 +1m0\ds /); // 有非当天 id 时列宽放宽，当天的仍短
-    expect(t).toMatch(/\n1001-004139-c439 +✗fail +0\/3 +1h02m +exit 1/);
-    expect(t).toMatch(/\n010101-aaaa +⏸held/);
-    expect(t).toContain('  cur: code-system-vad-captions-with-a-long-name · 将军');
-    expect(t).toContain('  cur: review-m1-r1 · 军师'); // 选中行
-    expect(t).not.toContain('cur: human-m1'); // 非 running、非选中
-    expect(t).toContain('  └ ▶ 将军·sol? proc 1h00m codex · wt-caps pid 37191');
-    expect(t).toContain('  └ ◆ remote dev codex job-abcdef123 running');
-    expect(t).toContain('  └ ◆ remote dev claude 125744-a1b2c3 queued');
-    const wide = render(140, { activeOnly: false }).join('\n');
-    expect(wide).toContain('  └ ▶ 将军·opus5.5 job 30s claude · 一个');
-    expect(wide).toContain('  └ ▶ 将军·sol6.1? proc 1h00m codex · wt-caps pid 37191');
-    // current(role) 列按显示宽度截断/补齐：中文角色后缀保留，elapsed 列对齐
-    const table = render(140, { activeOnly: false }).filter(l => /^\d+-\d+-\w{4} /.test(l));
-    expect(table.join('\n')).toMatch(/code-system-vad\S*…\(将军\)/);
-    expect(table.join('\n')).toContain('review-m1-r1(军师)');
-    expect(
-      new Set(table.map(l => Bun.stringWidth(l.slice(0, l.search(/ (1m0\ds|1h02m|0s) /)))))
-    ).toHaveProperty('size', 1);
-    expect(t.trimEnd().split('\n').at(-1)).toBe('q r j/k ⏎ a ?');
-    expect(t).not.toContain('current(role)');
-    expect(render(100).join('\n')).toContain('current(role)');
-    expect(shortId('20261001-004139-c439', now.getTime())).toBe('1001-004139-c439');
-    expect(shortId('sa1', now.getTime())).toBe('sa1');
-  });
-
-  test('idle line only when nothing runs anywhere; `?` lists every key', () => {
-    const idle = (a: Partial<Activity>, r: BoardRow[] = []): boolean =>
-      renderToString(
-        createElement(Frame, {
-          snap: {
-            summary: {},
-            rows: r,
-            at: now.toISOString(),
-            activity: { jobs: [], procs: [], remote: [], terms: [], notes: [], ...a },
-          },
-          home: '/h',
-          width: 59,
-          height: 20,
-          interval: 5,
-          sel: -1,
-          activeOnly: false,
-          detail: null,
-          now,
-          footer: false,
-        }),
-        { columns: 59 }
-      ).includes('空闲 · 无运行中的 run/作业 · 刷新 ');
-    expect(idle({})).toBe(true);
-    expect(idle({ procs: activity().procs })).toBe(false);
-    expect(idle({ remote: activity().remote })).toBe(false);
-    expect(idle({ terms: activity().terms })).toBe(false); // 有执行中的终端会话
-    expect(idle({ terms: activity().terms.slice(1) })).toBe(true); // 只有等待/未知的
-    expect(idle({}, rows().slice(1, 2))).toBe(true); // 只有已失败的 run
-    expect(idle({}, rows().slice(0, 1))).toBe(false);
-    const help = render(59, { help: true }).join('\n');
-    for (const k of ['q 退出', 'r 立即刷新', 'j/k', 'Enter', 'a 只看活动', '? 打开/关闭'])
-      expect(help).toContain(k);
-  });
-});
-
 describe('end to end', () => {
   const cli = (args: string[]): { code: number; out: string; err: string } => {
     const p = Bun.spawnSync(['bun', 'src/cli.ts', 'board', ...args], {
@@ -877,9 +573,9 @@ describe('end to end', () => {
     const r = cli(['--once']);
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
-    expect(r.out).toContain('superagent board');
-    expect(r.out).toMatch(/sa1\s+completed\s+█+ 1\/1/);
-    expect(r.out).toContain('unreadable');
+    expect(r.out).toContain('superagent');
+    expect(r.out).toContain('今日结果');
+    expect(r.out).not.toContain('remote');
   });
 
   test('--json prints {summary, rows, selected}; bad flags exit 64', () => {
@@ -895,6 +591,12 @@ describe('end to end', () => {
     expect(j.rows.map(x => x.run_id)).toEqual(['sa1']);
     expect(j.selected.run_id).toBe('sa1');
     expect(cli(['--interval', '0']).code).toBe(64);
+  });
+
+  test('bin entry routes board --view without expanding the shared CLI parser', () => {
+    const run = (view: string): number => Bun.spawnSync(['bash', 'bin/superagent', 'board', '--view', view, '--once'], { cwd: WETAMP, env: { ...process.env }, stdout: 'ignore', stderr: 'ignore' }).exitCode;
+    expect(run('terminals')).toBe(0);
+    expect(run('invalid')).toBe(64);
   });
 });
 

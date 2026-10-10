@@ -395,3 +395,85 @@ HF3 3/5 snapshot=/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/sa-selftest.VF
 HF3 4/5 worktree=same old_commit=preserved
 HF3 5/5 status=completed engine=current
 ```
+
+## WP-BT7 引擎驾驶舱
+
+- 单一模型：`src/board/cockpit.ts::cockpit()` 纯投影，Ink 默认页和 Web `/api/overview.cockpit` 共用；Web 首屏只渲染这个字段，不另推导指标。默认四段为今日指标/用量、需要你、进行中（含派发作业一行）、今日结果；底部保留终端汇总。需要你为空时隐藏，结果最多五条，`a` 展开，`t` 保留 BT3–BT6 的终端/归属/进程明细，`⏎` 仍进详情，`w` 打开 BT6 大看板链接。
+- 指标口径：以进程本地时区午夜为当天开始；达成 = 当天开始且 completed 的 run / 当天开始且 completed 或 failed 的 run；cancelled/held 不进分母。一次通过按 run 计：completed、全部里程碑 R1 gate pass、没有执行 repair/fix 节点且没有自动重试。人工介入计当前保留 ledger 中当天 `dispositions.action=ask` 的次数（ledger 原机制只保留最近二十条，不能重建已退休记录）；评审债直接用与 report 共源的 `summarize().debt`。默认加载全部登记 run，避免旧默认五十条截断日指标；显式 `--limit` 是操作者选择的采样范围。
+- 需要你复用 S3 `HOLD_POLICY` 的确定性后果、asks 状态和处置时间；阶段条按实际节点状态/当前里程碑计算，R2 不受 R1 失败或 skipped R3 污染，成功 repair/settle 覆盖同包旧失败，里程碑排序复用 `plan.ts::milestones`；今日结果按终态结束时刻筛选（包含昨日开始、今日结束的 run）。标题从 repo 相对 plan 路径读取，缺失时尝试受同一 confined 边界保护的生成 plan，无法确认显示未知。失败原因只取结构化 reason，不分类错误 prose。
+- reason 中文唯一映射位置：`src/board/cockpit.ts::REASONS`，`satisfies Record<keyof typeof HOLD_POLICY,string>` 与单测共同覆盖 S3 全表；未知值原样保留。心跳只读现有 `supervise-tick.log` mtime，超过三分钟或缺失标 ✗；日志 mtime 是运行近似信号，不是成功处置证明。
+- 用量复用 BT6 collector/index/cache：保留全量 session/daily，不改变原报表；同一刷新任务额外用原 collector 的 `--since <当天>` session 结果写入 `today`，沿用归属索引计算角色·模型族。当天 scoped session 总量不同于历史会话累计；跨午夜、老缓存或当天采集失败显示角色今日用量未知，ccusage 全量采集失败显示 tok 未知。run token 仍取已归属 run 的累计会话用量，缺归属显示未知。五秒刷新沿用 loader，ccusage 在原异步用量刷新中运行，渲染路径无子进程。
+- 入口兼容：`bin/superagent` 的 board 分支直达 `src/board/index.ts`，本模块处理 `--view cockpit|terminals`，避免修改 HF3 同时工作的 `src/cli.ts`。其他动词入口不变。中文宽度按 `Bun.stringWidth`，题目按剩余宽度留省略号；≥100 列追加短 id/轮次。
+- 验证证据（仓库外）：`/tmp/wpbt7-tests-final.log`、`/tmp/wpbt7-lint.log`、`/tmp/wpbt7-eslint.log`、`/tmp/wpbt7-board62.txt`、`/tmp/wpbt7-board120.txt`、`/tmp/wpbt7-terminals.txt`。实机命令分别为 `COLUMNS=62/120 NODE_ENV=test wetamp/bin/superagent board --once`、`COLUMNS=120 NODE_ENV=test wetamp/bin/superagent board --view terminals --once`；只屏蔽 Web 启动和用量后台刷新副作用，读取真实本机 ledger/Archon/缓存，未重启 pane。当前真实缓存尚无 `today` 字段，显示未知是预期，待后续正常刷新才有当天角色量。
+- `cd wetamp && bunx tsc --noEmit` exit 0；`bun run lint` exit 0。仓库默认 lint 清单未含 wetamp，另经同一 `bun run lint` wrapper 加临时 TS recommended 配置明确检查本包十个 src 文件，exit 0（不冒充全套 typed ESLint 覆盖）。TS/TSX 基线 `20d7b9cd` 为 5631 行，本包 5497 行，净减 134；`cockpit.ts` 90 行；未改 hooks、HF3 三个文件或 node_modules 软链。
+- G1 独立评审与元帅验收 pending；本将军不派生评审，不合入或发布。派生会话按 agent-evolution 跳过学习晋升；无独立评审的候选不作为已验证经验。
+
+62 列真实输出片段（2026-10-10 15:30）：
+```text
+superagent 15:30:22 · 心跳 54s ✓ · 大看板
+今日 达成 10/13 · 一次通过 10 · 人工介入 4 · 评审债 22
+tok 今日 614.6M  角色今日用量未知
+━ 需要你 2 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+? sinan IIQE 题目清单报告… 重试已用尽：是=再跑 否=终止 22m01s
+? sinan IIQE 本次新增与修… 重试已用尽：是=再跑 否=终止 23m12s
+━ 进行中 1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ xiaopan-translator 移植 P1–P5 到 e890971 并合并… 22m16s 未知
+  M1/1 编✓ 验◐ 评· 门· 合·  引擎
+▸ 作业 2 · 将军·sol6.1 BT7 引擎驾驶舱 14m21s · 将军·sol6.1 HF…
+```
+
+120 列真实输出片段：
+```text
+▶ xiaopan-translator 移植 P1–P5 到 e890971 并合并冲突 +1 22m16s R- 未知 070806-57e6
+  M1/1 编✓ 验◐ 评· 门· 合·  引擎
+✗ sinan IIQE 题目清单报告：5 道改答案题补「修订前」版本，节分布按章… 31m58s R- 725.0K repair_exhausted:coder_error:task
+✗ sinan IIQE 本次新增与修改题目清单：给人看的 Excel + Markdown 报告 46m16s R- 1.3M repair_exhausted:coder_partial
+```
+
+终端视图真实输出片段：
+```text
+● 元帅·opus5.5 claude 执行中 2m12s · _mcp_workspace · s009 tok 364.8M
+  └ ▶ 将军·sol6.1 job 10m23s codex · BT7 引擎驾驶舱
+  └ ▶ 将军·sol6.1 job 10m28s codex · HF3 重试用最新引擎
+  └ ✓ 将军·sol6.1 job 10m44s exit 0 codex · HF2 核心理念注入
+  └ ✓ 将军·sol6.1 job 13m18s exit 0 codex · HF1 error_class 误判热修
+○ 元帅 claude 未知? · _mcp_workspace · s002
+○ 元帅 codex 未知? · _mcp_workspace · s003
+```
+
+### WP-BT7 追加：叠加进度与 ETA
+
+- 复用来源：`usage.ts::claimsOf()` 已有的 `workflow get --verbose --events --json` 同一次结果，按 `node_completed.data.timing.durationMs`（兼容 `duration_ms`）取各类别历史成功耗时中位数，无额外采集查询或守护。完整待执行集合复用 `workflowRoles()`；已 skipped 节点权重为零，尚未决定的条件分支仍计入预期，后续跳过后再去除。
+- `board/eta.ts` 只在原用量后台刷新任务中计算，沿用原 refresh.lock 与五分钟缓存节奏，原子写 `$SUPERAGENT_HOME/usage/eta.json`。board loader 只读缓存，render 不查事件/启动进程。超过十分钟、数据不合法、缺工作流/当前开始时间时显示 `?% 剩?`；可用历史少于三例时，用当前 run 已完成节点的实际耗时中位数作为稀疏类别权重，再按 run 已用时 / 已完成权重线性外推，标 `剩~?Nm`。没有已完成耗时证据就保持未知，不按节点个数伪造比例。
+- 当前节点贡献 `min(已用时,预期)`，剩余取当前差额加后续预期；超时以 `超~Nm` 显示。总进度按各 run 预期时长加权，总剩余取并行 run 最大值（头部始终显示剩余；单 run 超时另显示超）；有无法估计的 active run 时总量也未知。作业仍仅显示已用时。`cockpit.active[].progress`、`total` 与相应显示文字统一供 Ink/Web 使用，Web 仅设置宽度/渲染，不另算 ETA。
+- 复用调查：现有依赖只有 Ink/React；查过 `@inkjs/ui` ProgressBar 源码（仅 value、completed/remaining 区）及 npm `ink-progress-bar` 的 props（character/percent/left/right），均没有按填充边界分色的文字叠加 slot，后者还使用旧 Ink Color API。故自写 `board/ProgressBar.tsx` 18 行，无新依赖；字符分段用 backgroundColor 与前景色，宽屏条宽三十列、紧凑条按剩余列数，不够十四列/完整标签则退化纯文本。Web CSS 在同一条上叠加共享标签。
+- 新增七项 ETA 测试与原驾驶舱快照合计十六项通过：长 code/短 verify 不等于节点比例、skip 零权重、超时、linear/unknown、总权重与最大剩余、叠加文字宽度、原子缓存/坏缓存/过期、同一次已有查询同时生成 ETA。证据 `/tmp/wpbt7-progress-tests.log`；62/120 快照保持完整 `47% 剩~12m`，默认无终端 id。
+- 追加 TS/TSX 净增 105 行（≤120）；最终 src 合计 5602，基线 5631，整体净减 29（主体净减 134）。`cockpit.ts` 96 行（≤200）。未动 hooks、HF3 的 cli/generate/sa-check、现有 ledger/run 或 pane。
+- 当前真实用量缓存还没有 ETA/today 数据，实机正确显示 `?% 剩?` 与角色今日量未知；待入口正常后台刷新后取得真实估计。另用隔离临时 home + Archon stub +历史 fixture 通过 worktree 的 `bin/superagent board --once` 取加权条证据，临时树已删除，明确不冒充真实 run 的进度：`/tmp/wpbt7-progress-fixture.ts`、`/tmp/wpbt7-progress62.txt`、`/tmp/wpbt7-progress120.txt`。两种宽度与真实三种视图都 exit 0、逐行无超宽。
+
+62 列实际入口 + 隔离历史 fixture：
+```text
+superagent 15:45:33 · 心跳 0s ✓ · 大看板
+今日 达成 0/0 · 一次通过 0 · 人工介入 0 · 评审债 0
+总 ▕████████████████████1 run · 78% 剩~4m███████░░░░░░░░░░░░░▏
+tok 今日 未知  角色今日用量未知
+━ 进行中 1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ wpbt7-proof-cZs1SP 加权 ETA 展示夹具：长编码与… 10m30s 未知
+  M1/1 编✓ 验◐ 评· 门· 合· ▕█████████78% 剩~4m████░░░░░░▏ 引擎
+```
+
+120 列实际入口 + 同一 fixture：
+```text
+superagent 15:45:34 · 心跳 0s ✓ · 大看板
+今日 达成 0/0 · 一次通过 0 · 人工介入 0 · 评审债 0
+总 ▕█████1 run · 78% 剩~4m░░░░░░▏
+tok 今日 未知  角色今日用量未知
+━ 进行中 1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ wpbt7-proof-cZs1SP 加权 ETA 展示夹具：长编码与短验收 10m31s R- 未知 fixture-progress
+  M1/1 编✓ 验◐ 评· 门· 合· ▕█████████78% 剩~4m████░░░░░░▏ 引擎
+```
+
+- 追加进度条的首轮全量回归暴露五项 job exec 初始化超时：`cli -> usage -> eta -> board/data -> activity -> jobs` 提前加载 jobs，与 cli 的顶层 await 动态分流构成初始化循环。将既有 confined/workflowRoles 原样移到无运行时 cli 依赖的 `board/workflow.ts`，data 原路径保留重导出，eta 直接复用其 owner；没有修改 job 行为或提高测试超时。相同失败测试修复后 `26 pass / 0 fail`（jobs、ownership、ETA），完整失败/定位/修复证据分别 `/tmp/wpbt7-tests-before-cycle-fix.log`、`/tmp/wpbt7-jobs-diagnosis.log`、`/tmp/wpbt7-jobs-fixed.log`。
+
+- 最终验收：`cd wetamp && bunx tsc --noEmit` exit 0；`cd wetamp && bun test` exit 0（390 pass / 0 fail / 2 snapshots，163.97s）；总进度与单 run 超时分开展示的新增断言定向复跑十六项 exit 0；仓库 `bun run lint` 与十文件临时配置 scoped lint 都 exit 0；Web script syntax 与五份输出逐行宽度检查 exit 0；`git diff --check` exit 0。所有证据均在上述 /tmp 文件中，仍待元帅独立评审与最终验收。
+- 修改文件（19）：`wetamp/bin/superagent`、`wetamp/docs/PROGRESS.md`、`wetamp/src/archon.ts`、`wetamp/src/board/App.tsx`、`wetamp/src/board/cockpit.ts`、`wetamp/src/board/data.ts`、`wetamp/src/board/index.ts`、`wetamp/src/board/eta.ts`、`wetamp/src/board/ProgressBar.tsx`、`wetamp/src/board/workflow.ts`、`wetamp/src/usage.ts`、`wetamp/src/web/index.html`、`wetamp/src/web/server.ts`、`wetamp/tests/board.test.ts`、`wetamp/tests/cockpit.test.ts`、`wetamp/tests/eta.test.ts`、`wetamp/tests/ownership.test.ts`、`wetamp/tests/usage-web.test.ts`、`wetamp/tests/__snapshots__/cockpit.test.ts.snap`。
