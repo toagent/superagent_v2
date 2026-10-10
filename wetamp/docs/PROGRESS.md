@@ -19,7 +19,7 @@
 - 对照表 D（Archon 原生）：✅ 由 selftest 与 fake/真实端到端覆盖。
 - 偏差（详见 00-architecture「实现记录」）：escalate 后 `decide retry` 无效（须改分支或新 run）；签收用 wait 事件门 + signoff bash 节点；`get` 动词删除；`report` 逐 ledger 查询；upgrade 的列核对用 pragma_table_info、核 `status`/`metadata` 两列（execution_owner 在 metadata JSON）；`--apply` 不提交 UPSTREAM。
 - 未做（可选或后置）：lessons、vote-<M>、land `--each`/rebase 命令、accept `--quick`、decide cancel `--force/--cascade`、report token 统计、等待期间 worker 退出靠 wake 续跑、包级并行。
-- 预算：TS 1493/1500 行；shell 239/300 行（含 bin/）；文件 25/25（不计 tests/、docs/、README.md）。
+- 预算：shell 239/300 行（含 bin/）；文件 25/25（不计 tests/、docs/、README.md）。
 - 风险：TS 与文件预算已满，再加功能须先删；`supervise-tick` 无并发锁，须单一 launchd 作业调用；recover 直接回拨 Archon 表的 status，依赖 upgrade 脚本与 selftest 复测；M2 提交时 lint-staged 留下 `stash@{0}`（lint-staged automatic backup），内容已提交，可由用户确认后 `git stash drop`；upgrade `--apply` 未在真实仓库执行（当前 behind 0），仅临时仓库测试覆盖。
   2026-10-09T15:45:00Z | fix-r1 | 3e134056 f05303f9 d06f2a4d + 本行提交 | 124/124 | 修复轮 R1：H1–H4、M1–M7、launchd 接线；selftest --fake 全绿（rss=194592KB recover=1004ms signal=542ms）；check-upstream-clean 空；零真实模型调用
 
@@ -37,7 +37,7 @@
 - M6 `--json` no-op、未知参数 64：`src/cli.ts` `main`；测试 `main: unknown flag exits 64 with usage; --json is an accepted no-op on any verb`。
 - M7 派生评审债、land 带债：`sa-check.ts`；测试 `G1: open non-blocking findings become debt…`、`land: carries the last gate debt per milestone…`。
 - launchd：`launchd/com.wetamp.superagent.supervise-tick.plist.tmpl` + `scripts/install.sh`（`SA_LAUNCHD_DIR`，相同不动、不同备份，只打印 bootstrap/bootout，未执行 launchctl）；测试 `launchd plist: rendered with escaped paths, left alone when identical, backed up when different`；README「安装」已加。
-- 预算：TS 1766/1800 行；shell 274/400 行（含 bin/）；文件 26/28（不计 tests/、docs/、README.md）；硬规则 7 已改为 1800/400/28。
+- 预算：shell 274/400 行（含 bin/）；文件 26/28（不计 tests/、docs/、README.md）；硬规则 7 已改为 1800/400/28。
 - 验证：`cd wetamp && bun test` 124/124；`tsc --noEmit` 干净；`check-upstream-clean.sh` 输出空；`selftest.sh --fake` ok。
 - 未修/遗留：根 `bun run lint` 被既有的 `tests/install.test.ts:15` 递归 rmSync 清理漂移检查拦下（HEAD 已存在，wetamp 无 `@archon/paths` 依赖，本轮未改）；`resume --model` 在 00/02/03 设计段的旧描述未改（设计层说明，实现记录已注明以 run-config 层为准）；`stash@{0}` 按要求未动。
 
@@ -47,24 +47,24 @@
 - H4 55b93ebf：`human wait deadline is the time left to the plan deadline, no floor; a passed deadline fails generation`；M1 1d8d48eb：`interleaved recovers at stalled=2: the count is on disk before the lock is released, so only one resumes`。
 - M4a + M4b 4d2a516b：`an aged lock whose holder is alive is never taken; an aged unreadable lock is`、`an ask that saved its record then exited non-zero stays unknown; the next tick reconciles via ask-status instead of asking again`。
 - N2 d69fa26b：`launchd plist: ARCHON_HOME is rendered only when set explicitly at install`。
-- 验证：`bun test` 130/130；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；`selftest.sh --fake` ok（rss=192256KB recover=998ms signal=541ms）；零真实模型调用。预算 TS 1807/2000、shell 277/400、文件 26/28。
+- 验证：`bun test` 130/130；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；`selftest.sh --fake` ok（rss=192256KB recover=998ms signal=541ms）；零真实模型调用。预算 shell 277/400、文件 26/28。
 
 ## 修复轮 R3 摘要
 
 - M4a 0a52c660：`an aged lock whose holder is alive is never taken`、`an aged unreadable lock is NOT taken: tick reports lock_unreadable with exit 1`、`an unreadable recover lock refuses recover without touching the run`、`the lock file appears with its full content and leaves no temp file behind`。
 - H4 70ae7dfa：`held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so`、`held:human before the plan deadline still asks; nothing is cancelled`。
 - N3 7a095e70：`a null or malformed supervisor ask record is skipped and counted; the valid one is still reconciled`。
-- 验证：`bun test` 136/136（新增 7 个测试在 f88040e6 源码上 5 败 2 过，过的两个为行为不变断言）；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；`selftest.sh --fake` ok（rss=193744KB recover=999ms signal=538ms）；零真实模型调用。预算 TS 1853/2000、shell 277/400、文件 26/28。
+- 验证：`bun test` 136/136（新增 7 个测试在 f88040e6 源码上 5 败 2 过，过的两个为行为不变断言）；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；`selftest.sh --fake` ok（rss=193744KB recover=999ms signal=538ms）；零真实模型调用。预算 shell 277/400、文件 26/28。
 
 ## 修复轮 R3b 摘要
 
 - 锁夺取原子化 d8008140：`a dead lock is seized by A; B, a separate process, then gets locked and leaves A's lock in place`、`a dead lock seized by someone else between the check and the rename: locked, no throw, no .stale left`（旧源码上 1 败 1 过，过的为行为不变断言）。
-- 验证：`bun test` 138/138；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；零真实模型调用。预算 TS 1870/2000、shell 277/400、文件 26/28。
+- 验证：`bun test` 138/138；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；零真实模型调用。预算 shell 277/400、文件 26/28。
 
 ## 修复轮 R3c 摘要
 
 - 锁夺取 ABA 窗口 b3281ea4：`a dead lock replaced by a live one between the check and the rename: live lock put back, locked, no .stale left`（去掉比对即失败）；测试临时目录清理改用 `trackTempRoots`/`removeTempTree` db3999cc。
-- 验证：`bun test` 139/139；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；仓库根 `bun run lint` exit 0（test-cleanup drift 不再报 wetamp）；零真实模型调用。预算 TS 1884/2000、shell 277/400、文件 26/28。
+- 验证：`bun test` 139/139；`tsc --noEmit` 干净；`check-upstream-clean.sh` 空；仓库根 `bun run lint` exit 0（test-cleanup drift 不再报 wetamp）；零真实模型调用。预算 shell 277/400、文件 26/28。
 
 ## R4 修复摘要
 
@@ -77,7 +77,7 @@
 - N4 0a747ed4：`human()` 把截止处理提成 `expire()`；yes 分支在 signal 前再调一次 `pastDeadline`。测试 `a yes that arrives after the plan deadline passed is not signalled…`：supervisor 桩在 ask-status 期间把截止改到过去，旧代码发出 signal 且 tick exit 1（红），新代码不发 signal、走 abandon、ask 标 expired（绿）。
 - 文档 38c36c41：`00-architecture.md`（“否”/reject 改为 abandon/cancelRun，删去 R1–R3 锁接管的旧说明，新增「修复轮 R4 实现记录」）、`02-poc-checklist.md` #6 与 §结论、`README.md`（reject = 终止 run）。
 - 验收：`check-upstream-clean.sh` 输出为空；`bun test` 140/140；`tsc --noEmit` 无错误；仓库根 `bun run lint` rc=0（该脚本不覆盖 wetamp/）；`selftest.sh --fake` ok；零真实模型调用。
-- 预算：TS 1851/2000（−33）、shell 304/400（+27，selftest.sh）、文件 26/28。src+scripts 合计 +112/−118；含测试与文档共 +314/−295。
+- 预算：shell 304/400（+27，selftest.sh）、文件 26/28。src+scripts 合计 +112/−118；含测试与文档共 +314/−295。
 - 未做项：01/03 规划与对照矩阵文档未改；flock 只在 darwin 实测，linux 路径（libc.so.6、`__errno_location`、EWOULDBLOCK=11）未实测；hook 的“请军师评审”提示按卡片要求忽略。
 
 ## WP-B 摘要
@@ -94,7 +94,7 @@
 - dry-run（只读）：`--hooks --dry-run` diff 112 行；`--purge-v1 --dry-run` 输出 348 行，将移走 5 个 managed 子代理以及 V1 的 releases/state/checkout 三个目录。
 - agent-supervisor 测试：失败集合与改动前基线一致（28 failure / 2 error，均为既有问题：test_wp5 中 ai-toolkit/twin-toolkit 相关、TasksSh 的 hook_fn/patch_idempotent、wal_breaker 中 ordinary breaker 被其他测试污染，单独跑能通过）。
 - twin-dev：已 align（原记录「未 align」有误）。align-on-change 看门狗已于 2026-10-10 09:30:53 自动把 `25ac8df4` 投送到 dev/mini 并执行 `--remote-hooks`（证据 `~/.lan-dev-machine/logs/twin-align-watch.out.log:1771`）；之后的版本也会被自动投送。注意 `--remote-hooks` 只校验远端 hooks 文件并写台账，不改远端 `settings.json`，所以 dev/mini 实际生效的 hooks 仍是 V1 路径。align 看门狗按「本机验证通过即投送」运行（用户 2026-10-10 决定；投送门的实现另卡处理，M-06）。
-- 预算：TS 2106/2600、shell 397/700、hooks cjs 499/1400、文件 33/40。
+- 预算：shell 397/700、hooks cjs 499/1400、文件 33/40。
 - 未做项与风险：
   - 真实 `--hooks`/`--purge-v1` 写入、launchd 都留给元帅执行。
   - 第一段验收时默认 install 没设 `SA_LAUNCHD_DIR`，改写了真实的 `~/Library/LaunchAgents/com.wetamp.superagent.supervise-tick.plist`。已用 install 生成的 `.bak-20261010090540` 还原，未执行 launchctl。
@@ -121,7 +121,7 @@
 - 文档：`04-hooks-and-nesting.md` 补包装器剥离规则、reviewer 只读边界，并修正 Stop 门/计量/包装器的过时描述；本文 twin-dev 一行改为事实（已 align）。
 - 测试（新增 12 条，均在 HEAD 25ac8df4 旧代码上失败）：hooks 6、exec-profiles 4、generate 断言 1 处、install 2。
 - 验收：upstream-clean 空；`tsc --noEmit` rc=0；`bun test` 168/168；根 `bun run lint` rc=0；临时 home + `SA_LAUNCHD_DIR` install ok、`selftest.sh --fake` ok；真实 `--hooks --dry-run` 只改 12 条路径、无重复；smoke-guard 13/14（第 2 条按规则拒绝）。
-- 预算：TS 2129/2600、shell 436/700、cjs 783/1400、文件 34/40。
+- 预算：shell 436/700、cjs 783/1400、文件 34/40。
 - 剩余风险：
   - Codex reviewer 节点的 `-c sandbox_mode` 被 Archon `thread/start` 的 `danger-full-access` 覆盖，实际边界是 `mutates_checkout:false`。
   - reviewer 白名单只对设了 `SUPERAGENT_ROLE=reviewer` 的会话生效。
@@ -138,7 +138,7 @@
 - 真实探针：
   - Codex：经 Archon `CodexProvider` + `codex-worker` 各跑一次。reviewer 节点执行 `printf x > /tmp/sa-h02-probe-codex` 返回 `operation not permitted`，exit 1，文件不存在；无哨兵的节点写 `/tmp/sa-h02-probe-codex-coder` 成功，exit 0。
   - Claude（haiku）：带上述 sandbox 设置执行 `printf x > /tmp/sa-h02-probe-claude` 返回 `operation not permitted`，文件不存在。
-- 预算：TS 2158/3200、shell 438/700、cjs 905/1400、文件 35/46。
+- 预算：shell 438/700、cjs 905/1400、文件 35/46。
 - 剩余风险：
   - 代理依赖 Archon 的 JSON-RPC 方法名与 `config.mcp_servers` 透传；上游改协议时，哨兵会让线程起不来，暴露为失败而不是可写。
   - 未调用的 `@sa-reviewer-alt` 没有生成只读设置。
@@ -153,15 +153,15 @@
 - 路径边界：plan、gen_dir、transcript、evidence 与各 gate 文件先取 realpath，只读落在 `ledger.repo` 或 `$SUPERAGENT_HOME` 内的；越界（`../`、绝对路径、软链指出）显示 `（路径越界，已跳过）`，不读取。
 - 详情：plan 包与里程碑、各轮 gate 结论（verdict/reason/debt 数）、transcript 末 8 条事件（滤掉 provider_event/watchdog_reset 噪声；exec_output 先脱敏再取末 120 字符；Authorization 遮蔽整个值到行尾或收尾引号，token/key/secret/password 遮蔽整个值，带引号与转义的值整体遮蔽，裸 Bearer 凭据遮蔽）；表格各列固定 1 个空格分隔，表头同一套宽度，宽屏放不下全部列（<121 列）时 nodes 只显示 `n/m`、去掉 console 与 repo 列、asks、held 时的 decide/accept/recover 提示。
 - 验收：`bun test` 180/180（新增 `tests/board.test.ts` 12 条）；`tsc --noEmit` rc=0；wetamp eslint（嵌套配置）与根 `bun run lint` rc=0；临时 home install ok、`selftest.sh --fake` ok（`board:{rows:1}`）；真实 `~/.superagent` 只读 `board --once` 渲染 3 个 run、`--json | jq .summary` 可解析；`script` pty 交互 j/Enter/q 正常退出 0。
-- 预算：TS 2894/3200（.ts+.tsx）、shell 445/700、cjs 783/1400、文件 40/46。
-- R1 修复（astra R1 D01–D06）：脱敏整值、查询超时与取消、非对象 ledger、缓存方案②、路径边界、列分隔与 80 列布局；ink 检查前移。`tests/board.test.ts` 22 条（新增 10 条）。预算 TS 3018/3200、shell 445/700、cjs 783/1400、文件 40/46。
+- 预算：shell 445/700、cjs 783/1400、文件 40/46。
+- R1 修复（astra R1 D01–D06）：脱敏整值、查询超时与取消、非对象 ledger、缓存方案②、路径边界、列分隔与 80 列布局；ink 检查前移。`tests/board.test.ts` 22 条（新增 10 条）。预算 shell 445/700、cjs 783/1400、文件 40/46。
 - 已知限制：currentRole 取自生成目录里的工作流 YAML，gen 目录被清理后显示 `?`；节点总数在 YAML 不可读时退回 run 已调度的节点数；`--once` 在管道里按 160 列渲染；交互模式每 5s 对每个非终态 run 起一个 archon 子进程（约 0.3s/次）。
 
 ## WP-BT board 时间
 
 - 开始时刻取 ledger `started_at`（提交时刻，resume 不变；不可解析才退回 Archon 的，后者每次 resume 重置），排序同口径；终态止于 `completed_at`，缺则 `last_activity_at`，都缺显示 `-`；running/held 止于 now。行带 `span{started_ms,ended_ms}`，界面用 1s 时钟经 `elapsedAt` 重算，`--json` 的 `elapsed_s` 为取数时刻值。
 - 所有界面时刻经 `fmtClock` 按进程本地时区（尊重 `TZ`）显示：当天 `HH:MM:SS`，否则 `MM-DD HH:MM`；header `last` 去掉 `Z`，detail 首行加 `开始 · 耗时`；`--json` 原始 ISO 不变。
-- 验收：`bun test` 200/200（board 27 条，新增 5 条）；真实 `~/.superagent` 只读 d01a 显示 23m26s（原 2m40s）。预算 TS 3100/3200、文件数不变。
+- 验收：`bun test` 200/200（board 27 条，新增 5 条）；真实 `~/.superagent` 只读 d01a 显示 23m26s（原 2m40s）。预算 文件数不变。
 
 ## wpE caps：最大权限 + 红线 + 自动重试（2026-10-10）
 
@@ -171,21 +171,21 @@
 - 执行层红线：`hooks/redline.cjs`（凭据与隐私路径、发布合并、改写共享分支、按名杀进程、连非本机库、派生会话写出 worktree），每条有 allow/deny 测试；provider × 红线矩阵见 `04-hooks-and-nesting.md`。
 - hooks 实测：Claude 节点用户级与项目级 PreToolUse 都触发；Codex 节点只加载用户级 `hooks.json`，git-guardrail 触发，guard 因 trusted_hash 过期被跳过。`codex-worker` 现在失败关闭（exit 3），运维需在交互式 Codex 里 `/hooks` 重新信任 guard。
 - M-06（自动投送未验证版本）：`scripts/verify-local.sh` 是本机投送闸；twin-toolkit 的 superagent 维度只把 `verify.json` 中 ok 且等于 HEAD 的提交投送到 twin 机，未通过时打印「本机未通过 …，暂不投送；远端保持 …」，验证期间 HEAD 前移也不投送。
-- 预算：TS 3426/3800、shell 591/850、cjs 1119/1700、文件 43（+3：codex-readonly-proxy.cjs、redline.cjs、verify-local.sh；理由见 `docs/00` wpE 实现记录）。
+- 预算：shell 591/850、cjs 1119/1700、文件 43（+3：codex-readonly-proxy.cjs、redline.cjs、verify-local.sh；理由见 `docs/00` wpE 实现记录）。
 - 已知限制：主工作区合入 `verify-local.sh` 之前，twin-toolkit align 的 superagent 维度报「无法验证」rc=1；OpenCode 与 Codex 侧 caps 只是提示级；远端 dry-run 未在本包执行。
 
 ## WP-BT2 看板实时作业+窄屏
 - 活动区（run 表上方）：`job exec` 登记作业（`$SUPERAGENT_HOME/jobs/<id>.json` 原子写，不记 argv/prompt；退出码透传、信号转发得 128+n；结束超 24h 回收，死进程记 lost）、未登记无头 AI 进程（一次 ps + ≤8 个 lsof 取 cwd，排除 archon 与已登记 wrapper 的后代）、twin-agent 远端非终态队列；三源并发各 ≤3s，失败降级为一行灰字；chips 增 `[jobs N]` `[remote N]`、空闲行；`--json` 增 jobs/procs/remote/notes。
 - 响应式：<80 紧凑（短 id、短 state、`n/m`；running 与选中行第二行 `cur:`；footer `q r j/k ⏎ a ?`，`?` 开完整按键说明）、80–120 中等、≥121 宽屏；chips 整项换行不截断；`--once` 在管道里认 `COLUMNS`。
 - 验收：`bun test` 210/210（新增 jobs 7 条、board 3 条）；真实 home `COLUMNS=59 board --once` 每行 ≤59 列（按 Bun.stringWidth 计）且列出无头 claude 将军进程；59 列 pty 交互 j/k/Enter/?/q 退出 0。
-- 预算：本分支单独 TS 3698/3200；与 wpE 合并后 TS 3694/3800（wc -l，元帅 2026-10-10 核定在 wpE 上调后的预算内）；shell/cjs 不变，文件 43/46。
+- 预算：shell/cjs 不变，文件 43/46。
 
 ## WP-BT3 看板交互会话
 - 心跳：`hooks/live.cjs` 的 `beat()` 由 guard.cjs / context-budget.cjs 在 try/catch 内调用（不新增 hooks.json 条目），原子写 `$SUPERAGENT_HOME/live/<client>-<sha256(session_id)[:16]>.json`，字段白名单 `{client,session_id,pid,tty,cwd,transcript_path,event,tool,turn_at,at,derived}`；pid 逐级 `ps -p` 只解析一次，连续工具事件节流 2s，任何失败静默；看板读取时回收 pid 已死且 24h 未更新的文件。
 - 终端行：ps 里有 tty 的交互 claude/codex/opencode（同 tty 同类子进程并入最外层），状态按 心跳 → transcript/rollout 尾部 64KB（只看事件类型与 stop_reason）→ %CPU 粗判（标 `?`）；只显示 client/状态/tool/cwd 末段/tty/时长，绝不显示 prompt、argv、transcript 文本；派生会话（心跳 derived）不进终端行；chip `[active 执行中/总数]`。
 - 一次 lsof：无头进程与终端会话共用一次 `lsof -p … -Fn`（≤24 pid），同时取 cwd 与 codex 握着的 rollout。
 - 验收：tsc 0；`bun test` 251/251；wetamp eslint 仅余基线 cli.ts:781；guard claude/codex、context-budget × `ls /tmp`/`pkill -f node` × 可写/只读 HOME 共 12 组 rc/stdout/stderr 逐字节一致；20 次中位数增量 ≤+1.5ms（UserPromptSubmit 必写路径 ≤+3.5ms）；实机 `COLUMNS=59/140 board --once` 每行 ≤59/140 列，无 prompt。
-- 预算：TS 3990/4000（wc -l，src 下 .ts/.tsx）、cjs 1194/1700（+75，live.cjs）、文件 45（+2：live.cjs、terminals.ts）。
+- 预算：cjs 1194/1700（+75，live.cjs）、文件 45（+2：live.cjs、terminals.ts）。
 - 已知限制：hook 部署前没有心跳，claude 会话多显示 `未知?`；空闲 codex 不握 rollout；Claude 被中断后 transcript 末尾是 user 条目，会误判执行中直到下一事件；节流可能丢 PostToolUse，tool 名短暂过期。
 
 ## S2 流程与成本（WP-3 + WP-4，2026-10-10）
@@ -203,7 +203,7 @@
   - gate escalate：`deadline`、`no_change`、`invalid_review`、`*+review_limit`、`review_incomplete`、`review_not_independent:<reviewer_unknown|author_unknown|same_model>`、`budget_*`。
   - 进 repair：`acceptance_failed`、`coder_partial`、`coder_error:<其余>`。
 - 验收：`bunx tsc --noEmit` 干净、`bun test` 258/258、根 `bun run lint` rc=0；`selftest.sh --fake` ok、`verify-local.sh --commit HEAD` ok（均用临时 `SUPERAGENT_HOME`）；two-pkgs dry-run 首轮全过 AI 调用 4 次 = N+M；真实 `~/.superagent` 只读 report rc=0（26 次调用，覆盖 25/26）。
-- 预算：TS 4696/4700（wc -l，S2 前 4024）；shell 452、cjs 1119 未动；文件 +1（`src/report.ts`）。
+- 预算：shell 452、cjs 1119 未动；文件 +1（`src/report.ts`）。
 - 债务：A-04（same-diff 复用条件）、A-12（`policy.json` 是部分快照、无 hash，worker/proxy 未消费）、F-15 剩余（模型池回退）、A-07/08/09、BestIFA 遗留（validate 联动 lint + 宽 glob 告警、`land --each`、accept 显式 `TMPDIR`）、A-06；effort 在生成时按声明风险定，运行时推断升 G2 不回调 effort；Codex 不回执实际模型，身份只到 `<请求名>(pinned)`；report 每个 run 查两次 Archon（`--events` 不带 nodes）；queue_ms 只是 invocation→attempt 间隔；`tests/board.test.ts` 因 report 输出增 usage 做了一行最小改动。
 
 ## S1 稳定性 + 无人值守（2026-10-10，分支 `wetamp-s1`，基线 `2bdb0de1`）
@@ -215,8 +215,8 @@
 - Codex 信任：`scripts/codex-trust.cjs` 按 Codex NormalizedHookIdentity 为本 wetamp 的 hooks 条目写 `trusted_hash`（幂等、只动自己的键、保留注释、写前备份、原子替换）；`codex-worker` 改用 Bun.TOML 核验（不再依赖 tomllib），无法判定仍失败关闭。本机真实 config 只读核对 13/13 相符。
 - F-07：`wait --timeout` 拒绝 NaN/Infinity/非正数（exit 64）；查询子进程各有期限；recover 锁忙不算业务失败——CLI 动词重读状态按其退出码返回，tick 记 `busy:true`、不记 disposition、退出 0，下一轮再处置。A-03：无失败节点的 failed 输出脱敏 `error`（terminal_record → metadata.error）、枚举形 `stop_reason[:signal]` 与存在的 `evidence_paths`。
 - 选做：F-09（wake FD 关闭）、F-12 的 config 原子发布、F-10（gc.sh 不再写 asks.json，tick 回写时丢掉没有 ledger 的 run 的条目）、A-02（gc 只认 `$SUPERAGENT_HOME/gen/<run>` 且非软链，动手前拒绝）。
-- 记债：F-06、F-12 的 context-budget 计数加锁（BT3 在改该文件）、A-01、A-10、A-11；按卡不做 F-03、F-05、F-08、A-13、WP-5 压测。另：`src/redact.ts` 与 `board/detail.ts` 暂为两份（一致性测试守着），BT3 合并后 detail 改为导入；`retryGate` 在 recover 前 bump 轮次，锁忙会耗一次计数；`config.ts`/`generate.ts` 的本地 git 调用无期限；根目录 `bun run lint` 不覆盖 wetamp。
-- 预算：TS 4261/4300（wc -l，src 下 .ts/.tsx；基线 3694）、shell 608/850、cjs 1234/1700（+115 codex-trust.cjs）、文件 45/46（+2：`src/redact.ts`、`scripts/codex-trust.cjs`）。
+- 记债：F-06、F-12 的 context-budget 计数加锁（BT3 在改该文件）、A-01、A-10、A-11；按卡不做 F-03、F-05、F-08、A-13、WP-5 压测。S3 已合并脱敏副本、锁内 attempt 计数与本地 git 期限。根目录 `bun run lint` 默认不覆盖 wetamp，wetamp 检查需指定其嵌套 ESLint 配置。
+- 预算：shell 608/850、cjs 1234/1700（+115 codex-trust.cjs）、文件 45/46（+2：`src/redact.ts`、`scripts/codex-trust.cjs`）。
 
 ## WP-BT4 看板角色
 - 角色：英文键 `commander|general|strategist` 不变，中文（元帅/将军/军师/亲兵）只在展示层。作业角色顺序：`job exec --role` → `SUPERAGENT_ROLE`（general→将军、reviewer→军师）→ 心跳 role → 模型只落在将军/军师之一的池（`tiers.json`）时推断，标 `?`；run 节点 coder→将军、reviewer→军师、确定性→引擎。交互顶层终端默认元帅。
@@ -225,5 +225,35 @@
 - BT3 遗留：会话不再消失（心跳先绑最近锚点）；Claude 中断显示 `等待输入`；codex 无 lsof 时按 session_meta cwd + 启动时刻匹配 rollout（自造 fixture）。
 - 顺带小改：`cli.ts` OPTIONS 加 `role`、`config.ts` Tiers 加 `tiers` 字段（与 S1 可能有文本冲突，均为一行）。
 - 验收：tsc 0；`bun test` 255/255；wetamp eslint 仅余基线 cli.ts:782；12 组 hook 输出逐字节一致，中位数增量最差 +1.2ms；live 键集合等于白名单、role 取值合法、无 prompt；实机 `COLUMNS=59/140 board --once` 有元帅终端行，`job exec --role general -- sleep 60` 与本作业作为将军嵌套其下。
-- 预算：TS 4150/4150（wc -l，src 下 .ts/.tsx）、cjs 1198/1700（+4）、文件数不变。
+- 预算：cjs 1198/1700（+4）、文件数不变。
 - 已知限制：已结束且 wrapper 已退出的作业（如 S1/S2）找不到祖先会话，归 `无主`；无 role、无心跳的旧作业按模型池推断，opus-5-5 只在军师池，故 claude 将军旧作业（如 WP-BT3）显示 `军师?`；已安装的 hooks 需重装后才写 role；App.tsx、cli.ts 沿基线未跑 prettier。
+
+## S3 挂起对齐（2026-10-10，分支 `wetamp-s3`，基线 `e57bacab`）
+
+- 合并后实测 5032（e57bacab，wc -l src 下 .ts/.tsx）；本包上限 5200。
+- `holdOf` 消费 `verify-*` / `settle-*` 的产物与 gate 稳定 reason，由 `HOLD_POLICY` 唯一分派；未知/缺失产物记 `unknown_reason`，不会静默无人处置。
+- 包级自动重试和“是”均在 recover 锁内增加本里程碑 attempt 后 resume；Archon 原已完成 code 缓存因 attempt 输出变化失效。独立性问题的“是”仅增加本轮 `attempt-review-*`，保留已完成编码缓存。
+- 预算“是”：按实际 run 事件计算已用启动数与加权 token；增加启动数 `2N+5`（本里程碑 N 包编码/包内修复 + 3 次评审/2 次修复），token 增量 `max(plan.budget.weighted_tokens, (2N+5) × 单次预留)`。单次预留=已知单次最大 token，无已知则取 policy budget_floor.S；未知回执依旧预留。额度只对当前 milestone/attempt 生效；同一问题恢复失败重试复用授权，不叠加；文件 `gen/<run>/budget-extra` 与 ledger `budget_grants` 留证，不折算金额。
+- 遗留合并：board 导入共用 `redact`（测试核对函数身份与语料）；attempt 在持 recover 锁且状态可恢复后变化；config/generate 本地 git 与查询子进程统一 120s 期限；hooks 未修改。
+
+| 节点/稳定 reason | 处置 | 是/否或上限 |
+| --- | --- | --- |
+| verify/settle `coder_redline` | ask `redline` | 是=已处理，重跑里程碑；否=终止 |
+| verify/settle `coder_needs` | ask `needs` | 是=能力已补齐，重跑里程碑；否=终止 |
+| verify/settle `coder_error:env`、`coder_error:vendor_unavailable_all` | environment 退避 | 本里程碑编码重跑；120s×2^(n−1)，≤30min，次数取 tiers auto_retry.environment |
+| verify/settle `coder_output_invalid`、`repair_exhausted:*` | coder 自动重试 | reason + 脱敏验收日志尾追加 hints；次数取 tiers auto_retry.coder，用尽→ask auto_retry_exhausted |
+| verify/settle `coder_error:sandbox_denied/permission_denied/plan_invalid/scope_violation/budget_exhausted` | ask `coder_blocked` | 是=约束已处理，重跑里程碑；否=终止 |
+| verify/settle 或 gate `budget_launches_exceeded`、`budget_tokens_exceeded` | ask `budget` | 是=增加上述一次 attempt 额度，再跑里程碑；否=终止；禁止自动重试 |
+| verify/settle 未知 reason、产物缺失/损坏；gate 缺失 reason | ask `unknown_reason` | 是=重跑里程碑；否=终止；disposition 明记 unknown_reason |
+| gate `*+review_limit` | ask `review_limit` | 是=再给一轮里程碑修复；否=终止 |
+| gate `review_not_independent:*` | ask `review_not_independent` | 是=身份已处理，仅重跑本轮评审；否=终止 |
+| gate `invalid_review`、`review_incomplete`、其他既有 gate 原因 | gate 自动重试 | 次数取 tiers auto_retry.gate，用尽→ask auto_retry_exhausted |
+| gate `no_change` | 保留既有策略 | 连续两次→ask no_change；是=再给一轮；否=终止 |
+| gate `deadline` / plan deadline 已过 | expire | 终止，不投提醒 |
+| 自动重试用尽 / 旧工作流无 attempt / 恢复无进展 | ask 原行 | 原 fresh retry / resume 策略不变；否=终止 |
+| environment / 非审批 paused / approval / human | 原行 | 原退避、≤2次 resume、是/否审批、签收流程不变 |
+
+- 验证进度：新增 reason 矩阵、各 ask 行去重/是/否、锁忙零计数、预算“是”后 sa-check 实际放行且下一 attempt/里程碑拒绝；真实 Archon fake run 从 settle-core 挂起恢复后 `fake core` 提交由 1 次增到 2 次。
+- 验收：`cd wetamp && bunx tsc --noEmit && bun test` 通过（352/352，0 fail，14 文件）；根 `bun run lint --config wetamp/eslint.config.mjs 'wetamp/src/**/*.ts' 'wetamp/src/**/*.tsx' 'wetamp/templates/.archon/scripts/*.ts'` rc=0；隔离临时 `SUPERAGENT_HOME` 的 `bash scripts/selftest.sh --fake` 返回 `ok:true`；源码实测 5183/5200 行，hooks diff 为空。日志 `/tmp/s3-all-final.log`、`/tmp/s3-lint-final.log`、`/tmp/s3-selftest.log`。
+- 提交绑定复验：`SUPERAGENT_HOME=<同一临时目录> bash scripts/verify-local.sh --commit HEAD` 在 detached scratch worktree 执行；最终 HEAD、逐步退出码和日志路径由该临时目录的 `verify.json` 与交付回执记录。
+- 记债：旧工作流没有 `attempt-review-*` 时拒绝独立性评审重跑，需新 run；独立 G2 评审与主控验收由元帅安排，本派生会话不代签。

@@ -1,5 +1,4 @@
-// 错误/输出文本的值脱敏：cli 的 failed 原因用这里。board/detail.ts 仍有同一份（并行包 WP-BT3 在改 board/），
-// tests/cli.test.ts 的一致性测试逐例比对两份；BT3 合并后 detail.ts 改为从这里导入并删掉副本。
+// cli 与 board 共用的输出脱敏。
 // 带引号的值（支持 \" 转义；被上游截断、没有收尾引号时到行尾）
 const QUOTED = String.raw`"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?`;
 const SECRETS: RegExp[] = [

@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
+  appendFileSync,
   chmodSync,
   cpSync,
   existsSync,
@@ -41,8 +42,9 @@ const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView =
   ...extra,
 });
 
-describe('redact (src/redact.ts ≡ board/detail.ts copy)', () => {
-  test('both copies redact the same corpus identically', () => {
+describe('redact (shared redact (cli and board))', () => {
+  test('board re-exports the shared implementation and redacts the corpus identically', () => {
+    expect(boardRedact).toBe(redact);
     const corpus = [
       'Authorization: Bearer abc.def\ntoken=xyz123 "api_key": "s3cr3t" PASSWORD=hunter2 ok=1',
       'Authorization: ApiKey synthetic_credential',
@@ -1055,9 +1057,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     );
     return { ...s, art };
   };
-  const tick = (): Record<string, unknown>[] => {
+  const tick = (expectedCode = 0): Record<string, unknown>[] => {
     const { code, out } = captured(() => main(['supervise-tick']));
-    expect(code).toBe(0);
+    expect(code).toBe(expectedCode);
     return JSON.parse(out) as Record<string, unknown>[];
   };
   const resumes = (calls: string[]): number =>
@@ -1068,7 +1070,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const log = join(tmp(), 'diff.log');
     writeFileSync(log, Array.from({ length: 100 }, (_, i) => `line ${String(i + 1)}`).join('\n'));
     const s = held('gate-m1-r3', {
-      'gate-m1-r3.json': gate('acceptance_failed+review_limit'),
+      'gate-m1-r3.json': gate('acceptance_failed'),
       'gate-m1-r3.review.json': {
         status: 'FAIL',
         findings: [
@@ -1082,7 +1084,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       ok: true,
       state: 'held:gate',
       milestone: 'm1',
-      reason: 'gate:acceptance_failed+review_limit',
+      reason: 'gate:acceptance_failed',
       attempt: 1,
     });
     const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
@@ -1091,7 +1093,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       '此失败在基线已存在',
       '- R1-1 [high] a.ts:3 boom',
       'line 100',
-      'gate reason：acceptance_failed+review_limit',
+      'gate reason：acceptance_failed',
     ])
       expect(hint).toContain(x);
     expect(hint).not.toContain('line 40\n');
@@ -1111,8 +1113,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(resumes(s.calls())).toBe(2);
     const l = loadLedger('sa1');
     expect(l.auto_retries?.map(r => r.reason)).toEqual([
-      'gate:acceptance_failed+review_limit',
-      'gate:acceptance_failed+review_limit',
+      'gate:acceptance_failed',
+      'gate:acceptance_failed',
     ]);
     // 自动重试与 recover 停滞计数互不影响
     expect([l.recoveries.length, l.stalled ?? 0]).toEqual([0, 0]);
@@ -1186,12 +1188,12 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
     expect(existsSync(join(c.root, 'gen', 'hints', 'api.md'))).toBe(false);
-    // 其他节点失败（验收脚本等）不自动重试
+    // S3：包级失败无产物也有主，不自动猜原因。
     held('verify-core');
-    expect(tick()).toEqual([]);
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'unknown_reason' });
   });
   test('a workflow generated before attempt nodes stays held; decide retry still refuses the gate', () => {
-    const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') }, false);
+    const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('invalid_review') }, false);
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_attempt_node' });
     expect(() => main(['decide', 'sa1', 'retry'])).toThrow(/gate-m1-r3 escalated/);
     expect(resumes(s.calls())).toBe(0);
@@ -1308,6 +1310,39 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       }),
       first: {},
     }),
+    coder_blocked: () => ({
+      s: held('verify-core', { 'verify-core.json': { reason: 'coder_error:sandbox_denied' } }),
+      first: {},
+    }),
+    budget: () => {
+      const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('budget_launches_exceeded') });
+      const plan = JSON.parse(readFileSync(join(s.root, 'gen', 'plan.json'), 'utf8'));
+      writeFileSync(
+        join(s.root, 'gen', 'plan.json'),
+        JSON.stringify({ ...plan, budget: { launches: 1, weighted_tokens: 100 } })
+      );
+      const get = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8'));
+      writeFileSync(
+        join(s.dir, 'get-000.json'),
+        JSON.stringify({ ...get, events: [{ event_type: 'node_started', step_name: 'code-core' }] })
+      );
+      return { s, first: {} };
+    },
+    review_limit: () => ({
+      s: held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') }),
+      first: {},
+    }),
+    review_not_independent: () => {
+      const s = held('gate-m1-r1', {
+        'gate-m1-r1.json': gate('review_not_independent:same_model'),
+      });
+      appendFileSync(
+        join(s.root, 'gen', '.archon', 'workflows', 'sa-sa1', 'sa-sa1.yaml'),
+        '  - id: attempt-review-m1-r1\n'
+      );
+      return { s, first: {} };
+    },
+    unknown_reason: () => ({ s: held('settle-core'), first: {} }),
     approval: () => {
       const s = held('x');
       setGet(
@@ -1318,6 +1353,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     },
   };
   const yesCall: Record<string, string> = {
+    review: 'workflow resume r --detach --json',
     retry: 'workflow resume r --detach --json',
     resume: 'workflow resume r --detach --json',
     approve: 'workflow approve r --detach --json',
@@ -1378,6 +1414,211 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       n.done?.();
     });
   }
+
+  for (const node of ['verify-core', 'settle-core']) {
+    for (const reason of [
+      'coder_redline',
+      'coder_needs',
+      'coder_error:sandbox_denied',
+      'coder_error:permission_denied',
+      'coder_error:plan_invalid',
+      'coder_error:scope_violation',
+      'coder_error:budget_exhausted',
+      'budget_launches_exceeded',
+      'budget_tokens_exceeded',
+      'future_reason',
+      '',
+    ]) {
+      test(`${node} ${reason || 'missing'} asks without model launch`, () => {
+        const s = held(
+          node,
+          reason ? { [`${node}.json`]: { disposition: 'suspend', reason } } : {}
+        );
+        const expected =
+          reason === 'coder_redline'
+            ? 'redline'
+            : reason === 'coder_needs'
+              ? 'needs'
+              : reason.startsWith('coder_error:')
+                ? 'coder_blocked'
+                : reason.startsWith('budget_')
+                  ? 'budget'
+                  : 'unknown_reason';
+        expect(tick()[0]).toMatchObject({ action: 'ask', reason: expected });
+        expect(resumes(s.calls())).toBe(0);
+        expect(loadLedger('sa1').dispositions?.at(-1)?.reason).toBe(expected);
+      });
+    }
+    for (const reason of [
+      'coder_error:env',
+      'coder_error:vendor_unavailable_all',
+      'coder_output_invalid',
+      'repair_exhausted:acceptance_failed',
+    ]) {
+      test(`${node} ${reason} reruns the milestone, preserves evidence and respects its cap`, () => {
+        const log = join(tmp(), 'accept.log');
+        writeFileSync(log, 'acceptance failed\npassword=synthetic\nlast evidence');
+        const s = held(node, { [`${node}.json`]: { disposition: 'suspend', reason, log } });
+        const sup = supervisor(s.root, 'pending');
+        expect(tick()[0]).toMatchObject({ action: 'auto_retry', milestone: 'm1', attempt: 1 });
+        expect(sup()).toEqual([]);
+        expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
+        expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).toContain(reason);
+        expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).toContain(
+          'last evidence'
+        );
+        expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).not.toContain(
+          'synthetic'
+        );
+        const kind = reason.startsWith('coder_error:') ? 'environment' : 'coder';
+        if (kind === 'environment') {
+          expect(tick()[0]).toMatchObject({ action: 'none', reason: 'backoff' });
+          expect(resumes(s.calls())).toBe(1);
+        }
+        patchLedger(s.root, {
+          auto_retries: Array.from({ length: loadTiers().policy.auto_retry[kind] }, () => ({
+            milestone: 'm1',
+            reason: `${kind}:${reason}`,
+            at: new Date().toISOString(),
+          })),
+        });
+        expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
+        expect(resumes(s.calls())).toBe(1);
+      });
+    }
+  }
+  for (const reason of [
+    'budget_launches_exceeded',
+    'budget_tokens_exceeded',
+    'invalid_review+review_limit',
+    'review_not_independent:reviewer_unknown',
+    'review_not_independent:author_unknown',
+  ]) {
+    test(`gate ${reason} cannot silently auto retry`, () => {
+      const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate(reason) });
+      expect(tick()[0].action).toBe('ask');
+      expect(resumes(s.calls())).toBe(0);
+    });
+  }
+  for (const reason of ['invalid_review', 'review_incomplete']) {
+    test(`gate ${reason} still auto retries`, () => {
+      held('gate-m1-r1', { 'gate-m1-r1.json': gate(reason) });
+      expect(tick()[0]).toMatchObject({ action: 'auto_retry' });
+    });
+  }
+  test('recover lock contention does not consume a milestone or review attempt or budget grant', () => {
+    for (const hold of ['gate', 'review_not_independent', 'budget'] as const) {
+      const { s } = scenes[hold]();
+      if (hold !== 'gate') {
+        supervisor(s.root, 'yes');
+        tick();
+      }
+      const l = archonMod.lock(join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock'));
+      if (!l.ok) throw new Error('test lock unavailable');
+      try {
+        expect(tick()[0]).toMatchObject({ busy: true, ok: false });
+        expect(existsSync(join(s.root, 'gen', 'attempts'))).toBe(false);
+        expect(loadLedger('sa1').budget_grants).toBeUndefined();
+        expect(resumes(s.calls())).toBe(0);
+      } finally {
+        l.release();
+      }
+    }
+  });
+  test('a budget yes with a failed resume reuses its one allowance on the next tick', () => {
+    const { s } = scenes.budget();
+    supervisor(s.root, 'yes');
+    tick();
+    const bin = join(s.dir, 'archon');
+    const original = readFileSync(bin, 'utf8');
+    writeFileSync(
+      bin,
+      original.replace(
+        'cur=$(ls',
+        `if [ "$1 $2" = "workflow resume" ]; then echo '{"ok":false}'; exit 0; fi\ncur=$(ls`
+      )
+    );
+    expect(tick(1)[0]).toMatchObject({ action: 'retry', ok: false });
+    const grant = readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8');
+    expect(tick(1)[0]).toMatchObject({ action: 'retry', ok: false });
+    expect(readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8')).toBe(grant);
+    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
+    expect(loadLedger('sa1').budget_grants).toHaveLength(1);
+    writeFileSync(bin, original);
+    expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
+    expect(loadLedger('sa1').budget_grants).toHaveLength(1);
+  });
+  test('budget yes records finite explicit allowances, and review yes changes only the review counter', () => {
+    const { s } = scenes.budget();
+    supervisor(s.root, 'yes');
+    tick();
+    expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
+    const grant = JSON.parse(readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8'));
+    expect(grant).toMatchObject({
+      milestone: 'm1',
+      attempt: 1,
+      launches: 9,
+      weighted_tokens: 9 * loadTiers().policy.budget_floor.S,
+    });
+    expect(loadLedger('sa1').budget_grants).toHaveLength(1);
+    const check = (attempt: string, milestone = 'm1') => {
+      writeFileSync(join(s.root, 'gen', 'attempts', 'm1'), attempt);
+      const repo = gitRepo(tmp());
+      const p = Bun.spawnSync(
+        ['bun', join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts')],
+        {
+          cwd: repo,
+          env: {
+            ...process.env,
+            WORKFLOW_ID: 'r',
+            ARTIFACTS_DIR: s.art,
+            INPUTS_KIND: 'accept',
+            INPUTS_PLAN: join(s.root, 'gen', 'plan.json'),
+            INPUTS_PKGS: 'core',
+            INPUTS_TAG: 'verify-core',
+            INPUTS_MILESTONE: milestone,
+            INPUTS_ARCHON: join(s.dir, 'archon'),
+            INPUTS_POLICY: join(s.root, 'policy.json'),
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }
+      );
+      return {
+        code: p.exitCode,
+        out: p.stdout.length ? JSON.parse(p.stdout.toString()) : null,
+        err: p.stderr.toString(),
+      };
+    };
+    writeFileSync(
+      join(s.root, 'policy.json'),
+      JSON.stringify({ budget_floor: { S: loadTiers().policy.budget_floor.S } })
+    );
+    expect(check('1')).toMatchObject({ code: 0, out: { disposition: 'advance' } });
+    expect(check('2')).toMatchObject({
+      code: 1,
+      out: { disposition: 'suspend', reason: 'budget_launches_exceeded' },
+    });
+    expect(check('1', 'm2')).toMatchObject({
+      code: 1,
+      out: { reason: 'budget_launches_exceeded' },
+    });
+
+    writeFileSync(
+      join(s.root, 'gen', 'budget-extra'),
+      JSON.stringify({ ...grant, limits: { launches: 1 } })
+    );
+    expect(check('1')).toMatchObject({
+      code: 1,
+      err: expect.stringContaining('budget-extra: invalid limits'),
+    });
+    const { s: r } = scenes.review_not_independent();
+    supervisor(r.root, 'yes');
+    tick();
+    tick();
+    expect(readFileSync(join(r.root, 'gen', 'attempts', 'review-m1-r1'), 'utf8')).toBe('1');
+    expect(existsSync(join(r.root, 'gen', 'attempts', 'm1'))).toBe(false);
+  });
 
   test('paused (not approval, not signoff) waits for its due time + grace, resumes at most twice, then asks', () => {
     const { s } = scenes.paused();
@@ -1448,6 +1689,67 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(sup()).toEqual([]);
   });
 });
+
+test('S3 real Archon resume invalidates completed code after a package suspension', () => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    marker = join(root, 'ready');
+  const plan = fixturePlan(root, repo, p => {
+    const pkgs = p.packages as { id: string; accept: { cmd: string; timeout_s: number }[] }[];
+    pkgs.find(p => p.id === 'core')!.accept = [{ cmd: `test -f '${marker}'`, timeout_s: 5 }];
+  });
+  const py = join(root, 'supervisor.py');
+  writeFileSync(py, 'raise Exception("unexpected reminder in automatic package recovery")\n');
+  const env = {
+    ...process.env,
+    SUPERAGENT_HOME: join(root, 'home'),
+    ARCHON_HOME: join(root, 'home', 'archon'),
+    SUPERAGENT_WRITE_ROOTS: root,
+    SA_ARCHON_BIN: '',
+    SA_SUPERVISOR: py,
+    AGENT_SUPERVISOR_STATE: join(root, 'supervisor'),
+    SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
+  };
+  const sa = (...args: string[]) => {
+    const p = Bun.spawnSync([BIN, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
+    return {
+      code: p.exitCode,
+      out: archonMod.lastJson(p.stdout.toString()),
+      err: p.stderr.toString(),
+    };
+  };
+  expect(
+    Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], { env }).exitCode
+  ).toBe(0);
+  const started = sa('run', plan, '--fake', '--skip-selftest');
+  expect(started.code).toBe(0);
+  const id = String(started.out?.run_id);
+  expect(sa('wait', id, '--timeout', '120').out).toMatchObject({
+    state: 'failed',
+    node: 'settle-core',
+  });
+  expect(
+    sh(`git log --format=%s sa/${id}`, repo)
+      .split('\n')
+      .filter(l => l === 'fake core')
+  ).toHaveLength(1);
+  writeFileSync(marker, 'ready');
+  const actions = Bun.spawnSync([BIN, 'supervise-tick'], { env, stdout: 'pipe', stderr: 'pipe' });
+  expect(actions.exitCode).toBe(0);
+  expect(JSON.parse(actions.stdout.toString())[0]).toMatchObject({
+    action: 'auto_retry',
+    milestone: 'm1',
+    ok: true,
+  });
+  expect(sa('wait', id, '--timeout', '120').out).toMatchObject({ state: 'held:human' });
+  expect(
+    sh(`git log --format=%s sa/${id}`, repo)
+      .split('\n')
+      .filter(l => l === 'fake core')
+  ).toHaveLength(2);
+  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', 'm1'), 'utf8')).toBe('1');
+  expect(sa('decide', id, 'reject').code).toBe(0);
+}, 180000);
 
 test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land', () => {
   const root = tmp();

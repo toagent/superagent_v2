@@ -31,6 +31,7 @@ import {
 } from './archon';
 import {
   openBlocking,
+  budgetUsage,
   type Review,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
@@ -111,6 +112,13 @@ export interface Ledger {
   auto_retries?: AutoRetry[];
   /** supervise-tick 的处置记录（最近 20 条）。 */
   dispositions?: Disposition[];
+  budget_grants?: {
+    at: string;
+    milestone: string;
+    attempt: number;
+    launches: number;
+    weighted_tokens: number;
+  }[];
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
 }
@@ -326,7 +334,12 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
  * 计数、指纹、恢复时间同样在锁内写回 ledger：释放锁后才落盘会让交错的第二次 recover 读到旧计数。
  * auto（supervise-tick 自动重试）有自己的次数上限：不看也不改 stalled/recoveries，只追加 auto_retries。
  */
-function recoverRun(l: Ledger, fresh = false, auto?: AutoRetry): RecoverResult {
+function recoverRun(
+  l: Ledger,
+  fresh = false,
+  auto?: AutoRetry,
+  prepare?: () => void
+): RecoverResult {
   let fp = '';
   return recover(
     l.archon_run_id,
@@ -346,7 +359,8 @@ function recoverRun(l: Ledger, fresh = false, auto?: AutoRetry): RecoverResult {
         l.recoveries.push(new Date().toISOString());
       }
       saveLedger(l);
-    }
+    },
+    prepare
   );
 }
 
@@ -592,19 +606,37 @@ function bumpAttempt(l: Ledger, m: string): number {
   return n;
 }
 const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
+const milestoneOf = (l: Ledger, node: string): string =>
+  /^(verify|settle|code|repair)-/.test(node)
+    ? (planOf(l).packages.find(p => node.replace(/^(verify|settle|code|repair)-/, '') === p.id)
+        ?.milestone ?? 'm1')
+    : gateMilestone(node.replace(/^fix-/, 'gate-'));
 
 /** held:gate 的恢复：里程碑计数加一后 resume，重跑本里程碑编码→验收→评审；旧工作流无 attempt 节点则拒绝。 */
-function retryGate(l: Ledger, node: string, fresh: boolean, auto?: AutoRetry): RecoverResult {
-  const m = gateMilestone(node);
+function retryGate(
+  l: Ledger,
+  node: string,
+  fresh: boolean,
+  auto?: AutoRetry,
+  prepare?: () => void,
+  key?: string
+): RecoverResult {
+  const m = milestoneOf(l, node);
   if (!attemptable(l, m))
     throw new Error(`decide retry: ${node} escalated; fix on ${l.branch} or start a new run`);
-  bumpAttempt(l, m);
-  return recoverRun(l, fresh, auto);
+  return recoverRun(l, fresh, auto, () => {
+    if (key && (readJson(join(l.gen_dir, 'budget-extra')) as { key?: string } | null)?.key === key)
+      return;
+    bumpAttempt(l, m);
+    prepare?.();
+  });
 }
 
 /** decide retry 的恢复部分：held:gate 走 retryGate，其余 resume 失败节点。 */
-const retry = (l: Ledger, c: Classified): RecoverResult =>
-  c.state === 'held:gate' ? retryGate(l, c.node ?? '', true) : recoverRun(l, true);
+const retry = (l: Ledger, c: Classified, prepare?: () => void, key?: string): RecoverResult =>
+  c.state === 'held:gate' || /^(verify|settle)-/.test(c.node ?? '')
+    ? retryGate(l, c.node ?? '', true, undefined, prepare, key)
+    : recoverRun(l, true, undefined, prepare);
 
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
 function retryAllHeld(): number {
@@ -729,7 +761,7 @@ interface Ask {
 }
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 
-type Yes = 'retry' | 'resume' | 'approve';
+type Yes = 'retry' | 'resume' | 'approve' | 'review';
 export type Policy =
   | { do: 'signoff' | 'expire' | 'auto_retry' | 'backoff' | 'resume' }
   | { do: 'ask'; yes: Yes; text: string };
@@ -771,6 +803,27 @@ export const HOLD_POLICY = {
     text: '将军需要补能力(needs)。是=已补齐，再跑一轮，否=终止 run',
   },
   redline: { do: 'ask', yes: 'retry', text: '将军命中红线。是=放行重试一次，否=终止 run' },
+  coder_blocked: {
+    do: 'ask',
+    yes: 'retry',
+    text: '将军受执行约束阻断。是=已处理，再跑一轮，否=终止 run',
+  },
+  budget: {
+    do: 'ask',
+    yes: 'retry',
+    text: '预算已用尽。是=按台账额度放宽本里程碑一次，再跑一轮，否=终止 run',
+  },
+  review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽。是=再给一轮修复，否=终止 run' },
+  review_not_independent: {
+    do: 'ask',
+    yes: 'review',
+    text: '评审身份不独立。是=已处理，重跑本轮评审，否=终止 run',
+  },
+  unknown_reason: {
+    do: 'ask',
+    yes: 'retry',
+    text: '挂起产物缺失或原因未知。是=重跑本里程碑，否=终止 run',
+  },
   approval: { do: 'ask', yes: 'approve', text: 'Archon 审批门。是=批准（approve），否=终止 run' },
 } as const satisfies Record<string, Policy>;
 export type Hold = keyof typeof HOLD_POLICY;
@@ -967,7 +1020,22 @@ function askHold(
   if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
   if (r.a.status === 'yes') {
     const res =
-      p.yes === 'approve' ? approveRun(l) : p.yes === 'resume' ? recoverRun(l, true) : retry(l, c);
+      p.yes === 'approve'
+        ? approveRun(l)
+        : p.yes === 'resume'
+          ? recoverRun(l, true)
+          : p.yes === 'review'
+            ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, true)
+            : retry(
+                l,
+                c,
+                hold === 'budget'
+                  ? () => {
+                      grantBudget(l, c.node ?? '', key);
+                    }
+                  : undefined,
+                hold === 'budget' ? key : undefined
+              );
     if (res.ok) r.a.status = 'approved';
     const out = res.ok
       ? { ok: true }
@@ -1024,7 +1092,7 @@ function tick(sa: string): Action[] {
   }
   if (!(asks instanceof Error)) {
     // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者
-    for (const k of Object.keys(asks)) if (!live.has(k.split(':')[0])) delete asks[k];
+    asks = Object.fromEntries(Object.entries(asks).filter(([k]) => live.has(k.split(':')[0])));
     saveAsks(asks);
   }
   return out;
@@ -1035,7 +1103,7 @@ function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
     c.state === 'held:gate'
-      ? 'gate'
+      ? reasonHold(nodeReason(run, c), 'gate')
       : c.state === 'held:environment'
         ? 'environment'
         : c.state === 'held:recover_no_progress'
@@ -1044,10 +1112,66 @@ function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
             ? run.metadata?.approval
               ? 'approval'
               : 'paused'
-            : c.state === 'failed' && /^(code|fix)-/.test(c.node ?? '')
-              ? 'coder'
-              : undefined;
+            : c.state === 'failed' && /^(verify|settle)-/.test(c.node ?? '')
+              ? reasonHold(nodeReason(run, c))
+              : c.state === 'failed' && /^(code|fix)-/.test(c.node ?? '')
+                ? 'coder'
+                : undefined;
   return h && pastDeadline(l) ? 'deadline' : h;
+}
+
+const nodeReason = (run: RunView, c: Classified): string => {
+  const out = readJson(join(artifactsOf(run), `${c.node ?? ''}.json`)) as {
+    reason?: unknown;
+  } | null;
+  return typeof out?.reason === 'string' ? out.reason : '';
+};
+function reasonHold(reason: string, fallback: Hold = 'unknown_reason'): Hold {
+  if (reason.startsWith('budget_')) return 'budget';
+  if (reason.endsWith('+review_limit')) return 'review_limit';
+  if (reason.startsWith('review_not_independent:')) return 'review_not_independent';
+  if (reason === 'coder_redline') return 'redline';
+  if (reason === 'coder_needs') return 'needs';
+  if (['coder_error:env', 'coder_error:vendor_unavailable_all'].includes(reason))
+    return 'environment';
+  if (
+    /^coder_error:(sandbox_denied|permission_denied|plan_invalid|scope_violation|budget_exhausted)$/.test(
+      reason
+    )
+  )
+    return 'coder_blocked';
+  if (reason === 'coder_output_invalid' || reason.startsWith('repair_exhausted:')) return 'coder';
+  if (reason === 'deadline') return 'deadline';
+  return reason ? fallback : 'unknown_reason';
+}
+
+/** 一次明确授权覆盖本里程碑 attempt；后续里程碑恢复原预算。额度基于实际台账，不折算金额。 */
+function grantBudget(l: Ledger, node: string, key: string): void {
+  const plan = planOf(l),
+    m = milestoneOf(l, node);
+  const ack = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as {
+    events?: Parameters<typeof budgetUsage>[0];
+  };
+  if (!Array.isArray(ack.events)) throw new Error('budget grant: events missing');
+  const usage = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
+  const launches = 2 * plan.packages.filter(p => (p.milestone ?? 'm1') === m).length + 5;
+  const weighted_tokens = Math.max(plan.budget.weighted_tokens, launches * usage.reserve);
+  const attempt = Number(readJson(join(l.gen_dir, 'attempts', m)));
+  const grant = { at: new Date().toISOString(), milestone: m, attempt, launches, weighted_tokens };
+  writeAtomic(
+    join(l.gen_dir, 'budget-extra'),
+    JSON.stringify({
+      ...grant,
+      key,
+      limits: {
+        launches: Math.max(plan.budget.launches ?? 0, usage.launches) + launches,
+        weighted_tokens:
+          Math.max(plan.budget.weighted_tokens, usage.weighted_tokens) + weighted_tokens,
+      },
+    })
+  );
+  (l.budget_grants ??= []).push(grant);
+  saveLedger(l);
 }
 
 /** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
@@ -1093,12 +1217,15 @@ const MAX_DISPOSITIONS = 20;
  */
 function record(l: Ledger, reason: string, x: Action): Action {
   if (x.action === 'none' || x.busy === true) return x;
+  const error = x.error ?? x.reason ?? '';
   const d: Disposition = {
     at: new Date().toISOString(),
     reason,
     action: x.action,
     ok: x.ok,
-    ...(x.ok ? {} : { error: tail(String(x.error ?? x.reason ?? ''), 200) }),
+    ...(x.ok
+      ? {}
+      : { error: tail(typeof error === 'string' ? error : JSON.stringify(error), 200) }),
   };
   try {
     updateLedger(l, cur => {
@@ -1152,9 +1279,10 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   } else if (c.state === 'held:environment') {
     [kind, m, reason] = ['environment', 'environment', 'environment'];
   } else {
-    const pkg = plan.packages.find(p => `code-${p.id}` === node);
-    m = node.startsWith('fix-') ? node.replace(/^fix-(.+)-r\d+$/, '$1') : (pkg?.milestone ?? 'm1');
-    [kind, reason] = ['coder', `coder:${node}`];
+    m = milestoneOf(l, node);
+    const why = nodeReason(run, c);
+    kind = reasonHold(why) === 'environment' ? 'environment' : 'coder';
+    reason = `${kind}:${why || node}`;
   }
   const tries = (l.auto_retries ?? []).filter(
     r => r.milestone === m && r.reason.split(':')[0] === kind
@@ -1170,7 +1298,8 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   if (tries.length >= loadTiers().policy.auto_retry[kind]) return hold('auto_retry_exhausted');
   if (reason.includes('no_change') && tries.at(-1)?.reason.includes('no_change'))
     return hold('no_change');
-  if (kind === 'gate' && !attemptable(l, m)) return hold('no_attempt_node');
+  const pkgHold = /^(verify|settle)-/.test(node);
+  if ((kind === 'gate' || pkgHold) && !attemptable(l, m)) return hold('no_attempt_node');
   const last = tries.at(-1);
   if (kind === 'environment' && last) {
     const wait = Math.min(MAX_BACKOFF_S, BACKOFF_S * 2 ** (tries.length - 1)) * 1000;
@@ -1191,6 +1320,18 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
     const text = gateHint(plan, art, node, gate, tries.length + 1);
     for (const p of plan.packages.filter(x => (x.milestone ?? 'm1') === m))
       appendFileSync(join(l.gen_dir, 'hints', `${p.id}.md`), text);
+    r = retryGate(l, node, false, auto);
+  } else if (pkgHold) {
+    const out = readJson(join(art, `${node}.json`)) as { log?: string } | null;
+    const log =
+      out?.log && existsSync(out.log)
+        ? readFileSync(out.log, 'utf8').split('\n').slice(-60).join('\n')
+        : '';
+    for (const p of plan.packages.filter(x => (x.milestone ?? 'm1') === m))
+      appendFileSync(
+        join(l.gen_dir, 'hints', `${p.id}.md`),
+        `\n## 自动重试 ${String(tries.length + 1)}：${node}\nreason：${reason}\n${redact(log)}\n`
+      );
     r = retryGate(l, node, false, auto);
   } else r = recoverRun(l, false, auto);
   return {
@@ -1220,7 +1361,7 @@ function gateHint(plan: Plan, art: string, node: string, g: Gate | undefined, n:
   const rounds = gatesOf(art)
     .filter(f => gateMilestone(f.slice(0, -5)) === m && f.slice(0, -5) <= node)
     .map(f => readJson(join(art, f.replace(/\.json$/, '.review.json'))) as Review | null)
-    .filter((r): r is Review => r !== null && r !== undefined);
+    .filter((r): r is Review => r != null);
   const risk = milestones(plan).find(x => x.id === m)?.risk ?? 'G1';
   const open = openBlocking(rounds, risk);
   const last = new Map(rounds.flatMap(r => r.findings).map(f => [f.id, f]));
