@@ -27,6 +27,7 @@ import {
   loadLedger,
   main,
   parseArgs,
+  superviseTickCli,
   waitRun,
   type Hold,
   type Ledger,
@@ -994,6 +995,40 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(code).toBe(0);
     return JSON.parse(out).actions as Record<string, unknown>[];
   };
+  for (const failed of [false, true]) {
+    test(`HF8 injected console failure preserves tick exit ${failed ? 1 : 0}`, async () => {
+      const s = stub([humanWait()]);
+      if (failed) writeFileSync(join(s.root, 'home', 'asks.json'), '{');
+      const out = spyOn(console, 'log').mockImplementation(() => undefined);
+      const err = spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const message = 'refresh injected\noriginal error';
+        expect(await superviseTickCli(() => { throw new Error(message); })).toBe(failed ? 1 : 0);
+        const result = JSON.parse(String(out.mock.calls[0]?.[0]));
+        expect(result.console_error).toBe(message);
+        expect(result.actions[0]).toMatchObject({ action: failed ? 'error' : 'ask', ok: !failed });
+        expect(String(err.mock.calls[0]?.[0])).toBe('supervise-tick: console refresh failed: refresh injected original error');
+        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+      } finally { out.mockRestore(); err.mockRestore(); }
+    });
+  }
+  test('HF8 CLI still ticks when refreshConsole rejects an ambiguous legacy owner', async () => {
+    const s = stub([humanWait()]);
+    writeFileSync(join(s.root, 'home', 'web.json'), JSON.stringify({
+      pid: process.pid, port: 0, token: 'synthetic', started_at: new Date().toISOString(),
+    }));
+    const p = Bun.spawn([BIN, 'supervise-tick', '--json'], {
+      env: { ...process.env }, stdout: 'pipe', stderr: 'pipe',
+    });
+    const out = await new Response(p.stdout).text();
+    const err = await new Response(p.stderr).text();
+    expect(await p.exited).toBe(0);
+    const result = JSON.parse(out);
+    expect(result.console_error).toBe('console owner ambiguous; legacy PID migration refused: argv');
+    expect(err.trim()).toBe(`supervise-tick: console refresh failed: ${result.console_error}`);
+    expect(result.actions[0]).toMatchObject({ action: 'ask', ok: true });
+    expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+  });
   test('held:human: asks once, then approves on yes (signal) and wakes due waits', async () => {
     const s = stub([humanWait(), humanWait(), run('running')]);
     const sup = supervisor(s.root, 'yes');

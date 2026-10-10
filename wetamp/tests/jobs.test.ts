@@ -169,6 +169,18 @@ describe('job exec', () => {
     expect(files).toHaveLength(1);
     return JSON.parse(readFileSync(join(jobsDir, files[0]), 'utf8')) as Job;
   };
+  const running = async (): Promise<Job | undefined> => {
+    let j: Job | undefined;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (existsSync(jobsDir) && readdirSync(jobsDir).some(f => f.endsWith('.json'))) {
+        j = only();
+        if (j.state === 'running') return j;
+      }
+      await Bun.sleep(50);
+    }
+    return j;
+  };
 
   test('passes the child exit code through and records it without argv', async () => {
     const p = run(['job', 'exec', '--title', 'three', '--', 'sh', '-c', `exit 3 # ${SECRET}`]);
@@ -193,17 +205,49 @@ describe('job exec', () => {
 
   test('forwards SIGTERM to the child and exits 128+15', async () => {
     const p = run(['job', 'exec', '--title', 'sleepy', '--', 'sleep', '20']);
-    let j: Job | undefined;
-    for (let i = 0; i < 100 && !j; i++) {
-      await Bun.sleep(50);
-      if (existsSync(jobsDir) && readdirSync(jobsDir).some(f => f.endsWith('.json'))) j = only();
+    try {
+      expect((await running())?.state).toBe('running');
+      p.kill('SIGTERM');
+      expect(await p.exited).toBe(143);
+      const end = only();
+      expect([end.state, end.signal, end.exit_code]).toEqual(['failed', 'SIGTERM', undefined]);
+      expect(() => process.kill(end.pid, 0)).toThrow();
+    } finally {
+      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
     }
-    expect(j?.state).toBe('running');
-    p.kill('SIGTERM');
-    expect(await p.exited).toBe(143);
-    const end = only();
-    expect([end.state, end.signal, end.exit_code]).toEqual(['failed', 'SIGTERM', undefined]);
-    expect(() => process.kill(end.pid, 0)).toThrow();
+  });
+
+  for (const [signal, code] of [['SIGTERM', 143], ['SIGHUP', 129], ['SIGINT', 130]] as const) {
+    test(`wrapper ${signal} is failed even when the child traps it and exits 0`, async () => {
+      const ready = join(jobsDir, '..', 'ready');
+      const p = run(['job', 'exec', '--title', 'trap', '--', 'bash', '-c',
+        'trap \'kill "$worker"; wait "$worker"; exit 0\' TERM HUP INT; sleep 30 & worker=$!; touch "$1"; wait "$worker"', '_', ready]);
+      try {
+        expect((await running())?.state).toBe('running');
+        for (const deadline = Date.now() + 5000; !existsSync(ready) && Date.now() < deadline;) await Bun.sleep(25);
+        expect(existsSync(ready)).toBe(true); // The trap is installed before signalling the wrapper.
+        p.kill(signal);
+        expect(await p.exited).toBe(code);
+        expect(only()).toMatchObject({ state: 'failed', signal, exit_code: code });
+        expect(only().ended_at).toBeDefined();
+        expect(() => process.kill(only().pid, 0)).toThrow();
+      } finally {
+        if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+      }
+    });
+  }
+
+  test('a signal sent only to the child preserves its existing signal exit semantics', async () => {
+    const p = run(['job', 'exec', '--title', 'child-only', '--', 'sleep', '20']);
+    try {
+      const j = await running();
+      expect(j?.state).toBe('running');
+      process.kill(j!.pid, 'SIGTERM');
+      expect(await p.exited).toBe(143);
+      expect([only().state, only().signal, only().exit_code]).toEqual(['failed', 'SIGTERM', undefined]);
+    } finally {
+      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+    }
   });
 
   test('role: --role wins, else SUPERAGENT_ROLE general/reviewer; shown in `jobs`; old records without it still list', async () => {

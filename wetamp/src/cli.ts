@@ -1504,6 +1504,25 @@ export function report(): Record<string, unknown> {
 const USAGE =
   'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
+function tickOutput(consoleError?: string): number {
+  const actions = superviseTick();
+  print({ ...actions, ...(consoleError !== undefined ? { console_error: consoleError } : {}) });
+  if (!('actions' in actions)) return 0;
+  return actions.actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
+}
+
+/** Console availability must not gate the unattended heartbeat. */
+export async function superviseTickCli(refresh = async (): Promise<unknown> =>
+  (await import('./web/server')).refreshConsole()): Promise<number> {
+  let error: string | undefined;
+  try { await refresh(); }
+  catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+    console.error(`supervise-tick: console refresh failed: ${error.replace(/[\r\n]+/g, ' ')}`);
+  }
+  return tickOutput(error);
+}
+
 export function main(argv: string[]): number {
   let a: Args;
   try {
@@ -1576,12 +1595,8 @@ export function main(argv: string[]): number {
     }
     case 'accept':
       return acceptRun(ledger(), a.flags.pkg);
-    case 'supervise-tick': {
-      const actions = superviseTick();
-      print(actions);
-      if (!('actions' in actions)) return 0;
-      return actions.actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
-    }
+    case 'supervise-tick':
+      return tickOutput();
     case 'report': {
       const r = report();
       const full = readUsage();
@@ -1621,7 +1636,7 @@ if (import.meta.main) {
     })();
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
-    if (verb === 'supervise-tick') await (await import('./web/server')).refreshConsole();
+    if (verb === 'supervise-tick') process.exit(await superviseTickCli());
     if (verb === 'console' || verb === 'web') process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs')
       process.exit(await jobCli(argv));

@@ -592,3 +592,8 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **阈值与应急开关**：`SA_ADMIT=off` 完全跳过探针与阈值判定，并在 stderr 提示一行；否则阈值或最长等待为非有限值或负数时直接拒绝，不留下永远 queued 的记录。MIN_FREE 允许 101 以复现不可满足的准入。探针与等待可注入，测试覆盖 normal、warn/critical 后恢复、低空闲、超时、截止时恢复仍拒绝、sysctl 失败/无效与 fallback、off、无效配置、三个信号、jobs 列表、真实活动加载、Ink/cockpit 等内存呈现及 orphan 判定。
 - **真机证据**：`/tmp/hf7-accept.h825BW/smoke.json` 保存候选 worktree 的两次真实 CLI 冒烟。默认 `job exec --title smoke -- true` exit 0（0.33 秒，stderr 空，压力 1/空闲 90%）；`SA_ADMIT_MIN_FREE=101 SA_ADMIT_MAX_WAIT=20` exit 75（20.32 秒，最后压力 1/空闲 89%，failed/pid=0，true 未启动）。两次等待 stderr 为 `job: queued 等内存; pressure=1 free=89% source=sysctl; min=101%; retry in 15s`，终态为 `job: memory admission timed out; pressure=1 free=89% source=sysctl`。所有运行状态与日志使用临时 SUPERAGENT_HOME，不写生产台账、不发起 AI、不修改 hooks 或 packages。
 - **本包自检**：`cd wetamp && bunx tsc --noEmit && timeout 600 bun test` exit 0（669 pass、0 fail、3 snapshots，222.98 秒，`tsc.log`/`tests.log`）；`bunx eslint src` exit 0（`lint.log`）；`SUPERAGENT_HOME=/tmp/hf7-accept.h825BW ARCHON_HOME=/tmp/hf7-accept.h825BW/archon bash scripts/selftest.sh --fake` exit 0，`selftest-fake.json` 的 ok 为 true。src 净增 38 行（≤60），hooks/packages 受跟踪文件零改动，`git diff --check` exit 0。提交后在同一临时 SUPERAGENT_HOME 执行 `bash scripts/verify-local.sh --commit HEAD`，最终结论以该目录 `verify.json` 的提交绑定回执为准；自检不代替 HF6 独立评审、主控验收或集成。派生会话不执行经验晋升，由主控收尾。
+
+## HF8 巡检解耦与作业中断
+
+- **I4、I8 / P2**：推翻“控制台刷新失败与巡检同生共死可接受”；refreshConsole 抛错仍执行 tick，stderr 单行 `supervise-tick: console refresh failed:` 与 JSON `console_error` 保留错误，退出码仍由巡检本体决定；注入失败与真实旧 PID 迁移拒绝回放覆盖该边界。
+- **I6 / P4**：推翻“子进程 exit 0 = 作业完成”；wrapper 首次收到 SIGINT/SIGTERM/SIGHUP 后，即使子进程 trap 并 exit 0，也登记 failed/原信号并返回 130/143/129，沿用 HF7 字段和等待期语义。TERM/HUP/INT 回归及 child-only 信号回归验证；负载用例改为有截止的回收轮询和 running 等待，不放宽断言。

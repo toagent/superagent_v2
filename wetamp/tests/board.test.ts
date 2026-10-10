@@ -214,6 +214,11 @@ describe('loader robustness', () => {
     ledger(id, { status: 'running', metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } });
   const orphans = (): string =>
     Bun.spawnSync(['pgrep', '-f', 'sleep 31.7'], { stdout: 'pipe' }).stdout.toString().trim();
+  const waitForReap = async (): Promise<void> => {
+    const deadline = Date.now() + 5000;
+    while (orphans() !== '' && Date.now() < deadline) await Bun.sleep(50);
+    expect(orphans()).toBe('');
+  };
 
   test('R2-D01 an external land.json symlink isolates one row across refreshes and report snapshots', async () => {
     const output = join(root, 'out'), art = join(output, 'artifacts/runs/a-bad');
@@ -269,8 +274,7 @@ describe('loader robustness', () => {
     expect(Date.now() - t0).toBeLessThan(3000);
     expect(row?.stale).toBe(true);
     expect(row?.state).toBe('running');
-    await Bun.sleep(100);
-    expect(orphans()).toBe('');
+    await waitForReap();
   });
 
   test('aborting the loader kills in-flight queries', async () => {
@@ -284,8 +288,7 @@ describe('loader robustness', () => {
     const row = (await pending).rows[0];
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(row?.error).toContain('aborted');
-    await Bun.sleep(100);
-    expect(orphans()).toBe('');
+    await waitForReap();
   });
 
   test('a cached failed or held:gate run that gets cancelled shows cancelled on the next round', async () => {
