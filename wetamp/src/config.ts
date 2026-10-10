@@ -1,5 +1,13 @@
 // tiers.json → Archon 别名；install 只改自己的键并先备份（Bun.YAML 与 Archon updateGlobalConfig 同法，注释不保留，备份兜底）。
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  copyFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 export type Console = 'claude' | 'codex';
@@ -9,6 +17,8 @@ export interface Alias {
   effort: string;
 }
 export const WETAMP = join(import.meta.dir, '..');
+/** Archon worker 的 Codex 二进制：前置 exec_profiles 的 -c 并关掉沙箱清单外的 MCP。 */
+export const CODEX_WORKER = join(WETAMP, 'bin', 'codex-worker');
 
 export function home(): { sa: string; archon: string } {
   const sa = process.env.SUPERAGENT_HOME;
@@ -24,9 +34,10 @@ export function providerOf(model: string): Alias['provider'] {
   throw new Error(`unknown vendor for model ${model}`);
 }
 
-interface Tiers {
+export interface Tiers {
   routing: { coder: { models: string[] }; reviewer: { by_console: Record<Console, string[]> } };
   health: { vendor_concurrency: Record<string, number> };
+  policy: { exec_profiles: Record<'coder' | 'reviewer', { claude: { denied_tools: string[] } }> };
 }
 
 export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
@@ -109,7 +120,27 @@ export function mergeConfig(current: unknown, t: Tiers): Obj {
     providers[v === 'chatgpt' ? 'codex' : v] = n;
   const conc = obj(cfg.concurrency);
   cfg.concurrency = { ...conc, providers: { ...obj(conc.providers), ...providers } };
+  const assistants = obj(cfg.assistants);
+  cfg.assistants = {
+    ...assistants,
+    codex: { ...obj(assistants.codex), codexBinaryPath: CODEX_WORKER },
+  };
   return cfg;
+}
+
+/** 全局 config.yaml 的 codexBinaryPath 须指向可执行的 codex-worker；返回问题描述（health 拒绝）。 */
+export function codexWorkerProblem(): string | null {
+  const f = join(home().archon, 'config.yaml');
+  const raw = existsSync(f) ? readFileSync(f, 'utf8') : '';
+  const got = obj(obj(obj(raw ? Bun.YAML.parse(raw) : null).assistants).codex).codexBinaryPath;
+  if (got !== CODEX_WORKER)
+    return `${f}: assistants.codex.codexBinaryPath is ${String(got)}, want ${CODEX_WORKER}`;
+  try {
+    accessSync(CODEX_WORKER, constants.X_OK);
+  } catch {
+    return `${CODEX_WORKER} is not executable`;
+  }
+  return null;
 }
 
 const ENV_LINES = ['ARCHON_TELEMETRY_DISABLED=1', 'DO_NOT_TRACK=1'];

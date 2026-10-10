@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { archon, tail } from './archon';
-import { WETAMP, home, runAliases } from './config';
+import { WETAMP, home, loadTiers, runAliases } from './config';
 import { milestones, type Milestone, type Pkg, type Plan } from './plan';
 
 const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.json'))('yaml') as {
@@ -54,6 +54,13 @@ export function buildWorkflow(
   // 人工等待按“剩余时长”生成，不设下限；已过 deadline 的 plan 生成即失败，不起一个注定 escalate 的 run
   const left = Date.parse(plan.deadline) - now;
   if (left <= 0) throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
+  const tiers = loadTiers();
+  const aliases = runAliases(plan.console ?? 'claude', tiers);
+  // Claude 节点经 SDK disallowedTools 禁再派生；Codex 节点无此字段，由 bin/codex-worker 关 multi_agent 与 MCP
+  const noNesting = (alias: '@sa-coder' | '@sa-reviewer', role: 'coder' | 'reviewer'): Node =>
+    aliases[alias].provider === 'claude'
+      ? { denied_tools: tiers.policy.exec_profiles[role].claude.denied_tools }
+      : {};
   const planPath = join(gen, 'plan.json');
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
@@ -74,6 +81,7 @@ export function buildWorkflow(
         : {
             command: 'sa-code',
             model: '@sa-coder',
+            ...noNesting('@sa-coder', 'coder'),
             with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
           };
       nodes.push({
@@ -105,6 +113,7 @@ export function buildWorkflow(
             : {
                 command: 'sa-fix',
                 model: '@sa-coder',
+                ...noNesting('@sa-coder', 'coder'),
                 with: {
                   milestone: m.id,
                   round: r,
@@ -144,6 +153,7 @@ export function buildWorkflow(
           : {
               command: r === 1 ? 'sa-review' : 'sa-review-delta',
               model: '@sa-reviewer',
+              ...noNesting('@sa-reviewer', 'reviewer'),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,

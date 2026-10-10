@@ -24,12 +24,34 @@
       "reviewer": {
         "disable_mcp": false,
         "codex": { "features.multi_agent": false },
-        "claude": { "exclude_user_instructions": true }
+        "claude": {
+          "exclude_user_instructions": true,
+          "denied_tools": [
+            "Agent",
+            "Task",
+            "Bash(claude *)",
+            "Bash(codex *)",
+            "Bash(opencode *)",
+            "Bash(sol-run *)",
+            "Bash(twin-agent*)"
+          ]
+        }
       },
       "coder": {
         "disable_mcp": false,
         "codex": { "features.multi_agent": false },
-        "claude": { "exclude_user_instructions": true }
+        "claude": {
+          "exclude_user_instructions": true,
+          "denied_tools": [
+            "Agent",
+            "Task",
+            "Bash(claude *)",
+            "Bash(codex *)",
+            "Bash(opencode *)",
+            "Bash(sol-run *)",
+            "Bash(twin-agent*)"
+          ]
+        }
       }
     },
     "dispatch_context": {

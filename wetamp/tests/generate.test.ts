@@ -115,6 +115,21 @@ describe('buildWorkflow', () => {
     );
     expect(() => wait('2026-10-08T00:00:00Z')).toThrow(/already passed/);
   });
+  test('claude nodes deny nested agents; codex nodes leave it to codex-worker', () => {
+    const denied = (console: 'claude' | 'codex', id: string): unknown =>
+      (
+        nodesOf(build(false, { ...fixture, console })).find(x => x.id === id) as Record<
+          string,
+          unknown
+        >
+      ).denied_tools;
+    // console=codex：@sa-reviewer 解析为 claude；@sa-coder 是 codex
+    expect(denied('codex', 'review-m1-r1')).toEqual(
+      expect.arrayContaining(['Agent', 'Task', 'Bash(codex *)'])
+    );
+    expect(denied('codex', 'code-core')).toBeUndefined();
+    expect(denied('claude', 'review-m1-r1')).toBeUndefined();
+  });
   test('plan prose never enters the workflow text (no $ substitution hazard)', () => {
     expect(JSON.stringify(build(false))).not.toContain('$HOME');
   });

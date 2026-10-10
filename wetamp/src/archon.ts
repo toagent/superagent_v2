@@ -33,12 +33,21 @@ const archonBin = (): string => {
   return stub !== undefined && stub !== '' ? stub : join(WETAMP, 'bin', 'archon');
 };
 
+/** 拉起 worker 的进程环境：Claude/Codex 子进程及其 hooks 据此判定为派生会话（N-1 禁再派生）。 */
+const workerEnv = (): Record<string, string | undefined> => ({
+  ...process.env,
+  SUPERAGENT_ROLE: 'worker',
+  SUPERAGENT_HOME: home().sa,
+});
+
 export function archon(args: string[], cwd?: string): Exec {
+  // 只有 run/resume --detach 拉起 worker；status/get/doctor 等查询保持调用方环境
+  const launches = ['run', 'resume'].includes(args[1]) && args.includes('--detach');
   const p = Bun.spawnSync([archonBin(), ...args], {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: process.env,
+    env: launches ? workerEnv() : process.env,
   });
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
@@ -183,7 +192,12 @@ export function recover(
 /** 脱离本进程的 archon 子进程（signal/wake 会在调用进程内执行剩余 DAG）；输出追加到 log。 */
 export function archonDetached(args: string[], log: string, cwd?: string): number {
   const fd = openSync(log, 'a');
-  const p = spawn(archonBin(), args, { cwd, detached: true, stdio: ['ignore', fd, fd] });
+  const p = spawn(archonBin(), args, {
+    cwd,
+    detached: true,
+    stdio: ['ignore', fd, fd],
+    env: workerEnv(),
+  });
   p.unref();
   return p.pid ?? -1;
 }

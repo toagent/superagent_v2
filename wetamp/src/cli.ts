@@ -25,7 +25,7 @@ import {
   type RunView,
 } from './archon';
 import type { decide as decideGate } from '../templates/.archon/scripts/sa-check';
-import { WETAMP, aliasDrift, home, runAliases } from './config';
+import { WETAMP, aliasDrift, codexWorkerProblem, home, runAliases } from './config';
 import { generate, newRunId } from './generate';
 import { loadPlan, type Plan } from './plan';
 
@@ -305,13 +305,16 @@ function health(cwd?: string): number {
     stderr: 'pipe',
   });
   const upstreamDiff = clean.stdout.toString().trim();
-  const ok = doctor.code === 0 && clean.exitCode === 0 && upstreamDiff === '' && !drift.length;
+  const worker = codexWorkerProblem();
+  const ok =
+    doctor.code === 0 && clean.exitCode === 0 && upstreamDiff === '' && !drift.length && !worker;
   print({
     ok,
     doctor: doctor.code === 0 ? 'ok' : tail(doctor.out),
     aliases,
     alias_drift: drift,
     upstream_clean: upstreamDiff === '' ? true : upstreamDiff,
+    codex_worker: worker ?? 'ok',
   });
   return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
 }
