@@ -161,6 +161,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -331,6 +333,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -402,6 +406,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -686,6 +692,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -974,6 +982,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -1289,6 +1299,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -1459,6 +1471,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -1530,6 +1544,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -1813,6 +1829,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance
@@ -2100,6 +2118,8 @@ nodes:
             - 'null'
         head:
           type: string
+        coder_partial:
+          type: boolean
         disposition:
           enum:
             - advance

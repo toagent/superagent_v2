@@ -32,6 +32,8 @@ import {
 } from '../src/cli';
 import { configHash, gitHead, renderAliases, loadTiers } from '../src/config';
 import { redact } from '../src/redact';
+import { engineHash, generate } from '../src/generate';
+import type { Plan } from '../src/plan';
 import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -188,7 +190,10 @@ if [ "$1 $2" = "workflow get" ]; then
   [ "$(ls "${dir}"/get-*.json | wc -l)" -gt 1 ] && mv "$f" "${dir}/used/"
   exit 0
 fi
-[ "$1 $2" = "workflow run" ] && { echo '{"ok":true,"runId":"r"}'; exit 0; }
+[ "$1 $2" = "workflow run" ] && {
+  for arg in "$@"; do [ "$arg" = "--adopt" ] && { echo '{"ok":true,"runId":"r2"}'; exit 0; }; done
+  echo '{"ok":true,"runId":"r"}'; exit 0;
+}
 cur=$(ls "${dir}"/get-*.json 2>/dev/null | head -1)
 st=$([ -n "$cur" ] && grep -o '"status":"[a-z]*"' "$cur" | head -1 | cut -d'"' -f4)
 case "$1 $2:$st" in
@@ -211,6 +216,7 @@ echo '{"ok":true}'
   });
   const ledger: Ledger = {
     run_id: 'sa1',
+    engine_hash: engineHash(),
     archon_run_id: 'r',
     plan: '',
     gen_dir: join(root, 'gen'),
@@ -236,6 +242,112 @@ echo '{"ok":true}'
   supervisor(root, 'pending');
   return { dir, root, ledger, calls };
 }
+
+describe('HF3 latest-engine recovery', () => {
+  const setup = (hash?: string) => {
+    const s = stub([run('failed')]);
+    const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
+    plan.deadline = new Date(Date.now() + 3600_000).toISOString();
+    const gen = generate(plan, 'sa1', true);
+    s.ledger.gen_dir = gen.dir;
+    s.ledger.engine_hash = hash;
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    return s;
+  };
+  test('same fingerprint resumes without changing the run id', () => {
+    const s = setup(engineHash());
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+    expect(s.calls()).toContain('workflow resume r --detach --json');
+    expect(loadLedger('sa1').adoptions).toBeUndefined();
+  });
+  test('old ledger adopts with fresh source and preserves runtime files', () => {
+    const s = setup();
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('stale(unknown)');
+    const dir = s.ledger.gen_dir;
+    mkdirSync(join(dir, 'attempts'));
+    writeFileSync(join(dir, 'attempts', 'm1'), '7');
+    writeFileSync(join(dir, 'budget-extra'), '{"launches":9}');
+    const plan = readFileSync(join(dir, 'plan.json'), 'utf8');
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+    expect(s.calls().at(-1)).toBe(
+      `workflow run sa-sa1 --adopt r --workflow-source ${dir} --cwd ${s.root} --detach --json`
+    );
+    const l = loadLedger('sa1');
+    expect(l).toMatchObject({
+      run_id: 'sa1',
+      archon_run_id: 'r2',
+      branch: 'sa/sa1',
+      engine_hash: engineHash(),
+      stalled: 1,
+    });
+    expect(l.recoveries).toHaveLength(1);
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).toMatchObject({
+      engine: 'current',
+      adoption: { from: 'r', to: 'r2' },
+    });
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('adoption:');
+    expect(l.adoptions).toEqual([
+      expect.objectContaining({
+        from: 'r',
+        to: 'r2',
+        engine_from: null,
+        engine_to: engineHash(),
+        reason: 'engine_stale',
+      }),
+    ]);
+    expect(existsSync(join(dir, '.archon.unknown'))).toBe(true);
+    expect(readFileSync(join(dir, 'plan.json'), 'utf8')).toBe(plan);
+    expect(readFileSync(join(dir, 'attempts', 'm1'), 'utf8')).toBe('7');
+    expect(readFileSync(join(dir, 'budget-extra'), 'utf8')).toBe('{"launches":9}');
+    expect(
+      readdirSync(join(process.env.SUPERAGENT_HOME ?? '', 'runs')).some(f => f.endsWith('.tmp'))
+    ).toBe(false);
+  });
+  test('stale terminals adopt; stale paused owner keeps its snapshot', () => {
+    for (const status of ['cancelled', 'completed', 'paused'] as const) {
+      const s = setup('old');
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run(status)));
+      expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+      expect(
+        s
+          .calls()
+          .at(-1)
+          ?.startsWith(status !== 'paused' ? 'workflow run sa-sa1 --adopt r' : 'workflow resume r')
+      ).toBe(true);
+    }
+  });
+  test('busy lock leaves source, attempts, and recovery counters intact', () => {
+    const s = setup('old');
+    const held = archonMod.lock(join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock'));
+    if (!held.ok) throw new Error('lock not taken');
+    try {
+      const before = readFileSync(ledgerPath('sa1'), 'utf8');
+      const { out } = captured(() => main(['resume', 'sa1']));
+      expect(JSON.parse(out)).toMatchObject({ busy: true });
+      expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+      expect(existsSync(join(s.ledger.gen_dir, '.archon.old'))).toBe(false);
+      expect(s.calls().some(c => c.includes('--adopt'))).toBe(false);
+    } finally {
+      held.release();
+    }
+  });
+  test('an unsuccessful adoption does not publish its engine or consume a recovery; retry remains possible', () => {
+    const s = setup('old');
+    const bin = join(s.dir, 'archon');
+    const original = readFileSync(bin, 'utf8');
+    writeFileSync(
+      bin,
+      original.replace('{"ok":true,"runId":"r2"}', '{"ok":false,"error":"fixture refusal"}')
+    );
+    const before = readFileSync(ledgerPath('sa1'), 'utf8');
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(1);
+    expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+    writeFileSync(bin, original);
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+    expect(loadLedger('sa1').archon_run_id).toBe('r2');
+    expect(loadLedger('sa1').recoveries).toHaveLength(1);
+  });
+});
 
 /**
  * supervisor.py 桩：ask 回固定 id；ask-status 回 answer 文件内容；调用记入 sup-calls。stub() 默认装上（answer=pending），

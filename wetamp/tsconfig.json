@@ -1,5 +1,5 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": { "noEmit": true, "jsx": "react-jsx" },
-  "include": ["src/**/*", "tests/**/*", "templates/.archon/scripts/**/*"]
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*.ts", "templates/.archon/scripts/**/*"]
 }
