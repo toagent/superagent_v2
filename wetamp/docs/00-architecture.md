@@ -242,7 +242,7 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - `recover` 成功即写入 ledger 的 `recoveries`（`wait`、`resume`、`supervise-tick` 共用），`brief`/`report` 读它。
   - 去掉 `get` 动词（`status`/`brief` 已覆盖）；参数解析改用 `node:util` `parseArgs` 严格模式，未知参数报错而不是静默忽略。
   - 消除手工同步的类型：`sa-check.ts` 以 `import type` 引用 `src/plan.ts`（Bun 擦除类型导入，复制到 gen 目录后仍可运行），CLI 的 gate 结论类型取自 `sa-check` 的 `decide` 返回类型。
-  - `gc.sh`（shell，TS 预算已满）：只处理 `superagent status` 为 completed/cancelled 且分支是本地目标分支祖先的 run；worktree 须在 `$ARCHON_HOME` 下，`git worktree remove` 不加 `--force`、`branch -d`；Archon 的 run 记录与环境行留给 `archon workflow cleanup` / `archon isolation cleanup`（后者对已不存在的路径做对账）。
+  - `gc.sh`（shell，TS 预算已满）：只处理 `superagent status` 为 completed/cancelled 且分支是本地目标分支祖先的 run；worktree 须在 `$ARCHON_HOME` 下、`gen_dir` 须正是 `$SUPERAGENT_HOME/gen/<run>` 且非软链（否则动手前拒绝），`git worktree remove` 不加 `--force`、`branch -d`；不改 asks.json（唯一写者是 supervise-tick，回写时丢掉没有 ledger 的 run 的条目）；Archon 的 run 记录与环境行留给 `archon workflow cleanup` / `archon isolation cleanup`（后者对已不存在的路径做对账）。
   - `upgrade-upstream.sh`：dry-run 也 `git fetch upstream dev`（只更新远端跟踪引用，不动分支与工作区）；列核对用 `pragma_table_info` 而非 `.schema` 文本（`ALTER TABLE ADD COLUMN` 会把列写在同一行）；`execution_owner` 是 `metadata` JSON 的键而非列，故核对 `status`、`metadata` 两列。`--apply` 让 merge 自动提交（不触发 pre-commit，避免 lint-staged 改写上游文件），`UPSTREAM` 只改写不提交，由人验证后提交。
   - 文件预算按 `wetamp/` 下除 `tests/`、`docs/`、`README.md` 外的文件计（25 个）。
 - 修复轮 R1 实现记录：

@@ -179,3 +179,15 @@
 - 响应式：<80 紧凑（短 id、短 state、`n/m`；running 与选中行第二行 `cur:`；footer `q r j/k ⏎ a ?`，`?` 开完整按键说明）、80–120 中等、≥121 宽屏；chips 整项换行不截断；`--once` 在管道里认 `COLUMNS`。
 - 验收：`bun test` 210/210（新增 jobs 7 条、board 3 条）；真实 home `COLUMNS=59 board --once` 每行 ≤59 列（按 Bun.stringWidth 计）且列出无头 claude 将军进程；59 列 pty 交互 j/k/Enter/?/q 退出 0。
 - 预算：本分支单独 TS 3698/3200；与 wpE 合并后 TS 3694/3800（wc -l，元帅 2026-10-10 核定在 wpE 上调后的预算内）；shell/cjs 不变，文件 43/46。
+
+## S1 稳定性 + 无人值守（2026-10-10，分支 `wetamp-s1`，基线 `2bdb0de1`）
+
+- 每个非终态都有主：`HOLD_POLICY`（`src/cli.ts`）一张表决定 supervise-tick 的处置——environment 指数退避（≤5 次、间隔 ≤30min）、非 approval 暂停自动 resume（≤2）、auto_retry_exhausted / no_change / no_attempt_node / recover_no_progress / needs / redline / Archon approval 投一条是/否提醒（键 `<run>:<原因>:<轮次>`，与签收共用"先落盘再投递、按问题前缀找回"）、deadline 按 `expire()` 终止；每次处置写 ledger `dispositions[]`，看板 detail 可见。表的每一行有单测。
+- F-02：逐条 ledger 校验，坏 ledger / 读不出的 asks.json 只让受影响的 run 报 `action:error`，从不替换成空表；ledger、asks、attempts、config、selftest/verify 回执同目录唯一临时文件 + rename。
+- F-11：fake 自检写 `selftest-fake.json`，正式回执绑定 HEAD、配置哈希、有效期，preflight 拒绝 fake/过期/漂移并给修复命令。F-01：detached 启动前落启动意图，tick 对账"有意图无 run / 有 run 无 ledger"，结论写 ledger，不重复启动。
+- worker 桩：`install.sh --remote-hooks` 记 `role=worker`，`bin/superagent` 在 worker 上只答 `--version`/`--help`，其余动词"仅本机运行"退出 69，不依赖 bun/node_modules；twin-toolkit 的 superagent 维度 +10/−2（备份 `twin-toolkit.bak-s1-20261010133209`），未投送。
+- Codex 信任：`scripts/codex-trust.cjs` 按 Codex NormalizedHookIdentity 为本 wetamp 的 hooks 条目写 `trusted_hash`（幂等、只动自己的键、保留注释、写前备份、原子替换）；`codex-worker` 改用 Bun.TOML 核验（不再依赖 tomllib），无法判定仍失败关闭。本机真实 config 只读核对 13/13 相符。
+- F-07：`wait --timeout` 拒绝 NaN/Infinity/非正数（exit 64）；查询子进程各有期限；recover 锁忙不算业务失败——CLI 动词重读状态按其退出码返回，tick 记 `busy:true`、不记 disposition、退出 0，下一轮再处置。A-03：无失败节点的 failed 输出脱敏 `error`（terminal_record → metadata.error）、枚举形 `stop_reason[:signal]` 与存在的 `evidence_paths`。
+- 选做：F-09（wake FD 关闭）、F-12 的 config 原子发布、F-10（gc.sh 不再写 asks.json，tick 回写时丢掉没有 ledger 的 run 的条目）、A-02（gc 只认 `$SUPERAGENT_HOME/gen/<run>` 且非软链，动手前拒绝）。
+- 记债：F-06、F-12 的 context-budget 计数加锁（BT3 在改该文件）、A-01、A-10、A-11；按卡不做 F-03、F-05、F-08、A-13、WP-5 压测。另：`src/redact.ts` 与 `board/detail.ts` 暂为两份（一致性测试守着），BT3 合并后 detail 改为导入；`retryGate` 在 recover 前 bump 轮次，锁忙会耗一次计数；`config.ts`/`generate.ts` 的本地 git 调用无期限；根目录 `bun run lint` 不覆盖 wetamp。
+- 预算：TS 4261/4300（wc -l，src 下 .ts/.tsx；基线 3694）、shell 608/850、cjs 1234/1700（+115 codex-trust.cjs）、文件 45/46（+2：`src/redact.ts`、`scripts/codex-trust.cjs`）。
