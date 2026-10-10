@@ -10,6 +10,7 @@ const {spawnSync} = require('node:child_process');
 const ALWAYS = new Set(['SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit']);
 const THROTTLE_MS = 2000;
 const AGENTS = ['claude', 'codex', 'opencode'];
+const ROLES = ['commander', 'general', 'strategist'];
 const str = v => (typeof v === 'string' && v ? v : null);
 
 // `claude`, a native `codex` or `node …/bin/codex`: the agent CLI an argv runs, else null.
@@ -35,8 +36,8 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 }
 
-// derivedOf: () => truthy when guard's derivedBy classifies the session as derived.
-function beat(client, input, derivedOf = () => null, env = process.env) {
+// roleOf: () => guard's sessionRole (passed in so live.cjs never requires guard.cjs); anything else is stored as null.
+function beat(client, input, roleOf = () => null, env = process.env) {
   try {
     const session = str(input?.session_id);
     // A subagent call carries the parent's session_id: it must not overwrite the parent's phase.
@@ -50,18 +51,21 @@ function beat(client, input, derivedOf = () => null, env = process.env) {
     // Codex has no UserPromptSubmit: its turn starts with the first tool call after Stop.
     const turn = event === 'UserPromptSubmit'
       || (event === 'PreToolUse' && (!prior || ['Stop', 'SessionStart'].includes(prior.event)));
-    // Only a run of tool events is throttled: the first one after any other event always lands.
-    const toolRun = !ALWAYS.has(event) && String(prior?.event).endsWith('ToolUse');
+    // Only a repeat of the same tool event is throttled: a PostToolUse right after its PreToolUse always
+    // lands, so the board never keeps showing a tool that has already finished.
+    const toolRun = !ALWAYS.has(event) && prior?.event === event;
     if (toolRun && !turn && now - mtime < THROTTLE_MS) return;
     // The owner is resolved once per session; a session without an agent ancestor stays null.
     const keep = prior && (prior.pid === null || (Number.isSafeInteger(prior.pid) && alive(prior.pid)));
     const who = keep ? {pid: prior.pid, tty: str(prior.tty)} : owner();
+    let role = null;
+    try { role = roleOf(); } catch {}
     const record = {
       client, session_id: session, pid: who?.pid ?? null, tty: who?.tty ?? null,
       cwd: str(input.cwd), transcript_path: str(input.transcript_path), event,
       tool: event.endsWith('ToolUse') ? str(input.tool_name) : null,
       turn_at: turn ? new Date(now).toISOString() : str(prior?.turn_at),
-      at: new Date(now).toISOString(), derived: Boolean(derivedOf()),
+      at: new Date(now).toISOString(), role: ROLES.includes(role) ? role : null,
     };
     fs.mkdirSync(dir, {recursive: true});
     const tmp = `${file}.${process.pid}.tmp`;

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
-import { modelOf, readJobs, type Job } from '../src/jobs';
+import { modelOf, readJobs, roleOf, type Job } from '../src/jobs';
 import { tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
@@ -139,10 +139,10 @@ describe('job registry', () => {
 });
 
 describe('job exec', () => {
-  const run = (args: string[]): ReturnType<typeof Bun.spawn> =>
+  const run = (args: string[], role = ''): ReturnType<typeof Bun.spawn> =>
     Bun.spawn(['bun', 'src/cli.ts', ...args], {
       cwd: WETAMP,
-      env: { ...process.env },
+      env: { ...process.env, SUPERAGENT_ROLE: role },
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -157,7 +157,13 @@ describe('job exec', () => {
     expect(await p.exited).toBe(3);
     const j = only();
     expect(j.id).toMatch(/^\d{8}-\d{6}-[0-9a-f]{4}$/);
-    expect([j.state, j.exit_code, j.kind, j.title]).toEqual(['failed', 3, 'other', 'three']);
+    expect([j.state, j.exit_code, j.kind, j.title, j.role]).toEqual([
+      'failed',
+      3,
+      'other',
+      'three',
+      null,
+    ]);
     expect(JSON.stringify(j)).not.toContain(SECRET);
     const ls = run(['jobs', '--json']);
     expect(await ls.exited).toBe(0);
@@ -180,6 +186,25 @@ describe('job exec', () => {
     const end = only();
     expect([end.state, end.signal, end.exit_code]).toEqual(['failed', 'SIGTERM', undefined]);
     expect(() => process.kill(end.pid, 0)).toThrow();
+  });
+
+  test('role: --role wins, else SUPERAGENT_ROLE general/reviewer; shown in `jobs`; old records without it still list', async () => {
+    expect(roleOf(undefined, { SUPERAGENT_ROLE: 'general' })).toBe('general');
+    expect(roleOf(undefined, { SUPERAGENT_ROLE: 'reviewer' })).toBe('strategist');
+    expect(roleOf(undefined, { SUPERAGENT_ROLE: 'coder' })).toBeNull();
+    expect(roleOf('commander', { SUPERAGENT_ROLE: 'reviewer' })).toBe('commander');
+    expect(await run(['job', 'exec', '--title', 'r', '--', 'true'], 'reviewer').exited).toBe(0);
+    expect(only().role).toBe('strategist');
+    const old = { ...only(), id: '20261010-000000-0000', role: undefined };
+    writeFileSync(join(jobsDir, `${old.id}.json`), JSON.stringify(old));
+    const ls = run(['jobs', '--all']);
+    expect(await ls.exited).toBe(0);
+    const lines = (await new Response(ls.stdout as ReadableStream).text()).trim().split('\n');
+    expect(lines.find(l => l.includes(old.id))).toMatch(/ other - - r$/);
+    expect(lines.find(l => !l.includes(old.id))).toMatch(/ other - strategist r$/);
+    expect(await run(['job', 'exec', '--title', 't', '--role', 'admin', '--', 'true']).exited).toBe(
+      64
+    );
   });
 
   test('usage errors exit 64', async () => {

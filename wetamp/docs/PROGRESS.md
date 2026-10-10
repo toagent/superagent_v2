@@ -217,3 +217,13 @@
 - 选做：F-09（wake FD 关闭）、F-12 的 config 原子发布、F-10（gc.sh 不再写 asks.json，tick 回写时丢掉没有 ledger 的 run 的条目）、A-02（gc 只认 `$SUPERAGENT_HOME/gen/<run>` 且非软链，动手前拒绝）。
 - 记债：F-06、F-12 的 context-budget 计数加锁（BT3 在改该文件）、A-01、A-10、A-11；按卡不做 F-03、F-05、F-08、A-13、WP-5 压测。另：`src/redact.ts` 与 `board/detail.ts` 暂为两份（一致性测试守着），BT3 合并后 detail 改为导入；`retryGate` 在 recover 前 bump 轮次，锁忙会耗一次计数；`config.ts`/`generate.ts` 的本地 git 调用无期限；根目录 `bun run lint` 不覆盖 wetamp。
 - 预算：TS 4261/4300（wc -l，src 下 .ts/.tsx；基线 3694）、shell 608/850、cjs 1234/1700（+115 codex-trust.cjs）、文件 45/46（+2：`src/redact.ts`、`scripts/codex-trust.cjs`）。
+
+## WP-BT4 看板角色
+- 角色：英文键 `commander|general|strategist` 不变，中文（元帅/将军/军师/亲兵）只在展示层。作业角色顺序：`job exec --role` → `SUPERAGENT_ROLE`（general→将军、reviewer→军师）→ 心跳 role → 模型只落在将军/军师之一的池（`tiers.json`）时推断，标 `?`；run 节点 coder→将军、reviewer→军师、确定性→引擎。交互顶层终端默认元帅。
+- 心跳：`live.cjs` 白名单 `derived` 换成 `role`（commander|general|strategist|null，由 guard/context-budget 传入的 sessionRole 判定）；节流只合并同一事件的连续重复。旧心跳的 `derived:true` 读取时映射为 general。
+- 显示：状态符号后加角色标签，`Bun.stringWidth` 按显示宽度截断/补齐；作业/无头进程沿 ppid 链挂到所属终端会话下（`  └ `），找不到的归 `无主`；chip 只计运行中（执行中终端 + running 作业 + 无头进程）；run 表 current 带节点角色，cur 行中文。
+- BT3 遗留：会话不再消失（心跳先绑最近锚点）；Claude 中断显示 `等待输入`；codex 无 lsof 时按 session_meta cwd + 启动时刻匹配 rollout（自造 fixture）。
+- 顺带小改：`cli.ts` OPTIONS 加 `role`、`config.ts` Tiers 加 `tiers` 字段（与 S1 可能有文本冲突，均为一行）。
+- 验收：tsc 0；`bun test` 255/255；wetamp eslint 仅余基线 cli.ts:782；12 组 hook 输出逐字节一致，中位数增量最差 +1.2ms；live 键集合等于白名单、role 取值合法、无 prompt；实机 `COLUMNS=59/140 board --once` 有元帅终端行，`job exec --role general -- sleep 60` 与本作业作为将军嵌套其下。
+- 预算：TS 4150/4150（wc -l，src 下 .ts/.tsx）、cjs 1198/1700（+4）、文件数不变。
+- 已知限制：已结束且 wrapper 已退出的作业（如 S1/S2）找不到祖先会话，归 `无主`；无 role、无心跳的旧作业按模型池推断，opus-5-5 只在军师池，故 claude 将军旧作业（如 WP-BT3）显示 `军师?`；已安装的 hooks 需重装后才写 role；App.tsx、cli.ts 沿基线未跑 prettier。

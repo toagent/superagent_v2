@@ -632,7 +632,14 @@ describe('responsive frame', () => {
     rowOf(
       ledger(id, run, { started_at: run.started_at ?? now.toISOString() }),
       { id: `a-${id}`, ...run },
-      { now: now.getTime() }
+      {
+        now: now.getTime(),
+        roles: new Map([
+          ['code-system-vad-captions-with-a-long-name', 'coder'],
+          ['review-m1-r1', 'reviewer'],
+          ['human-m1', 'human'],
+        ]), // 节点总数也取自角色表：三行都是 n/3
+      }
     );
   const rows = (): BoardRow[] => [
     row(`${day}-041949-87a7`, {
@@ -671,6 +678,9 @@ describe('responsive frame', () => {
         pid: 2,
         started_at: new Date(now.getTime() - 30_000).toISOString(),
         state: 'running',
+        tier: 'general',
+        guess: false,
+        owner: 11,
       },
       {
         id: '20261010-000000-0002',
@@ -686,6 +696,9 @@ describe('responsive frame', () => {
         ended_at: new Date(now.getTime() - 10_000).toISOString(),
         state: 'failed',
         exit_code: 3,
+        tier: null,
+        guess: false,
+        owner: null,
       },
     ],
     procs: [
@@ -695,6 +708,9 @@ describe('responsive frame', () => {
         model: 'gpt-6.1-sol',
         cwd: `/Users/y/${'deep/'.repeat(20)}wt-caps`,
         started_ms: now.getTime() - 3_600_000,
+        tier: 'general',
+        guess: true,
+        owner: null, // ppid 链上没有终端会话：归无主
       },
     ],
     remote: [
@@ -704,6 +720,7 @@ describe('responsive frame', () => {
     terms: [
       {
         kind: 'claude',
+        tier: 'commander',
         pid: 11,
         tty: 'ttys002',
         cwd: `/Users/y/${'deep/'.repeat(20)}superagent_v2-with-a-long-name`,
@@ -714,6 +731,7 @@ describe('responsive frame', () => {
       },
       {
         kind: 'codex',
+        tier: 'commander',
         pid: 12,
         tty: 'ttys005',
         cwd: '/Users/y/proposal',
@@ -724,6 +742,7 @@ describe('responsive frame', () => {
       },
       {
         kind: 'opencode',
+        tier: 'general',
         pid: 13,
         tty: 'ttys009',
         cwd: null,
@@ -769,24 +788,36 @@ describe('responsive frame', () => {
 
   test('compact: short ids and states, n/m progress, cur line for running/selected rows, short footer', () => {
     const t = render(59, { activeOnly: false }).join('\n');
-    expect(t).toContain('[jobs 2]'); // 1 个 running 登记作业 + 1 个未登记进程
-    expect(t).toContain('[remote 2]');
-    expect(t).toContain('[active 1/3]');
-    expect(t).toContain('● claude 执行中 Bash 12s · superagent_v2-with-… · s002');
-    expect(t).toContain('○ codex 空闲 45m00s · proposal · s005');
-    expect(t).toContain('○ opencode 未知? · ? · s009');
-    expect(t.indexOf('● claude')).toBeLessThan(t.indexOf('▶ job'));
-    expect(t).toMatch(/\n041949-87a7 +▶run +1\/2 +1m0\ds /); // 有非当天 id 时列宽放宽，当天的仍短
-    expect(t).toMatch(/\n1001-004139-c439 +✗fail +0\/1 +1h02m +exit 1/);
+    // 各档运行中：执行中的终端（元帅 1）+ running 作业与无头进程（将军 2）
+    expect(t).toContain('[元帅 1] [将军 2] [军师 0] [remote 2]');
+    expect(t).not.toContain('[active');
+    // 作业挂在祖先终端下；紧凑布局不显示模型名
+    expect(t).toContain(
+      '● 元帅 claude 执行中 Bash 12s · superagent_v2-with-… · s002\n  └ ▶ 将军 job 30s claude · 一个'
+    );
+    expect(t).toContain('○ 元帅 codex 空闲 45m00s · proposal · s005');
+    expect(t).toContain(
+      '○ 将军 opencode 未知? · ? · s009\n无主\n  └ ✗ ? job 10s exit 3 other · three'
+    );
+    expect(t).toMatch(/\n041949-87a7 +▶run +1\/3 +1m0\ds /); // 有非当天 id 时列宽放宽，当天的仍短
+    expect(t).toMatch(/\n1001-004139-c439 +✗fail +0\/3 +1h02m +exit 1/);
     expect(t).toMatch(/\n010101-aaaa +⏸held/);
-    expect(t).toContain('  cur: code-system-vad');
-    expect(t).toContain('  cur: review-m1-r1'); // 选中行
+    expect(t).toContain('  cur: code-system-vad-captions-with-a-long-name · 将军');
+    expect(t).toContain('  cur: review-m1-r1 · 军师'); // 选中行
     expect(t).not.toContain('cur: human-m1'); // 非 running、非选中
-    expect(t).toContain('▶ job 30s claude claude-opus-5-5 · 一个');
-    expect(t).toContain('✗ job 10s exit 3 other · three');
-    expect(t).toContain('▶ proc 1h00m codex gpt-6.1-sol · wt-caps pid 37191');
-    expect(t).toContain('◆ remote dev codex job-abcdef123 running');
-    expect(t).toContain('◆ remote dev claude 125744-a1b2c3 queued');
+    expect(t).toContain('  └ ▶ 将军? proc 1h00m codex · wt-caps pid 37191');
+    expect(t).toContain('  └ ◆ remote dev codex job-abcdef123 running');
+    expect(t).toContain('  └ ◆ remote dev claude 125744-a1b2c3 queued');
+    const wide = render(140, { activeOnly: false }).join('\n');
+    expect(wide).toContain('  └ ▶ 将军 job 30s claude claude-opus-5-5 · 一个');
+    expect(wide).toContain('  └ ▶ 将军? proc 1h00m codex gpt-6.1-sol · wt-caps pid 37191');
+    // current(role) 列按显示宽度截断/补齐：中文角色后缀保留，elapsed 列对齐
+    const table = render(140, { activeOnly: false }).filter(l => /^\d+-\d+-\w{4} /.test(l));
+    expect(table.join('\n')).toMatch(/code-system-vad\S*…\(将军\)/);
+    expect(table.join('\n')).toContain('review-m1-r1(军师)');
+    expect(
+      new Set(table.map(l => Bun.stringWidth(l.slice(0, l.search(/ (1m0\ds|1h02m|0s) /)))))
+    ).toHaveProperty('size', 1);
     expect(t.trimEnd().split('\n').at(-1)).toBe('q r j/k ⏎ a ?');
     expect(t).not.toContain('current(role)');
     expect(render(100).join('\n')).toContain('current(role)');
