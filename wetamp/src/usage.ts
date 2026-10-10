@@ -105,13 +105,14 @@ export function usageEvidence(): { claims: { id: string; owner: Owner }[]; eta: 
   }
   const jobs: Job[] = files(join(home().sa, 'jobs')).flatMap(f => { const j = obj(json(f)); return typeof j.cwd === 'string' && typeof j.started_at === 'string' ? [j as unknown as Job] : []; });
   for (const j of jobs) {
+    if (j.pid === 0) continue; // 内存准入等待/失败的作业从未拥有 provider 会话。
     const id = j.session_id ?? jobSession(j);
     if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'job', job_id: j.id } });
   }
   for (const f of files(join(home().sa, 'live'))) {
     const l = obj(json(f)), client = l.client, id = str(l.session_id);
     if (!id || (client !== 'claude' && client !== 'codex')) continue;
-    const hits = jobs.filter(j => j.cwd === l.cwd && j.kind === client && Math.abs(Date.parse(String(l.turn_at ?? l.at)) - Date.parse(j.started_at)) <= 60000);
+    const hits = jobs.filter(j => j.pid !== 0 && j.cwd === l.cwd && j.kind === client && Math.abs(Date.parse(String(l.turn_at ?? l.at)) - Date.parse(j.started_at)) <= 60000);
     const role = isTier(l.role) ? l.role : l.derived === true ? 'general' : l.derived === false ? 'commander' : null;
     claims.push({ id, owner: hits.length === 1 ? { client, role: hits[0].role ?? role, model: hits[0].model, cwd: hits[0].cwd, kind: 'inferred', job_id: hits[0].id } : { client, role, model: str(l.model) ?? sessionModel(str(l.transcript_path), client), cwd: str(l.cwd), kind: 'interactive' } });
   }
