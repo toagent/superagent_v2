@@ -15,6 +15,8 @@ argument-hint: (inputs bound by the generated workflow)
 
 只核验台账遗留与本轮增量：
 
+读取本里程碑各包的 `$ARTIFACTS_DIR/settle-*.json` 与 `verify-*.json`；若 `coder_partial: true`，编码端自报未完成，请判断完整性，缺失按 blocker 记。
+
 - 台账 `blocking` 与 `debt` 中每条都要原 `id` 回填，`carry_over: true`；已修复标 `closed` 并在 `evidence` 写明核验依据（diff 位置或验收日志行），未修复标 `open`。漏填、改 id 或没有 evidence 的 `closed`，引擎一律按仍 open 计。
 - 新发现 `id` 用 `R<本轮轮次>-<序号>`（本轮为 R$INPUTS.round，序号从 1 起）、`carry_over: false`；新发现只有 blocker 才阻塞，其余写进 `debt`。
 - 本轮修复越出任务书预期范围又未在 `deviations[]`（`$ARTIFACTS_DIR/diff-*.coder.json`）登记的文件，记一条 `medium` 新发现。

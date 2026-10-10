@@ -377,3 +377,21 @@ superagent board 15:01:27 · /Users/yong/.superagent
 - Archon 命令加载器直接读 Markdown，`include:` 只组合工作流；`src/generate.ts` 按实际 AI 节点引用的命令去重，统一原样前置理念文本，缺失即明确失败。
 - 每个 AI 节点增加约 350–500 token（按模型分词而异）；稳定前缀可随提示参与缓存，实际命中取决于供应商阈值和请求上下文。script/bash 与 fake 桩不注入。
 - 回归覆盖所有 AI 命令的首部/单次出现、确定性节点不变、缺失来源失败；工作流拓扑未变，golden 无需更新。独立评审与主控验收由元帅安排。
+
+## HF3 重试用最新引擎
+
+- 指纹：按排序后的相对路径与文件内容计算 SHA-256，覆盖 `templates/.archon`（scripts、commands、principles）、`src/generate.ts` 与 `src/config.ts` 的生成逻辑、output schema、brief、tiers；写入 `gen/<run>/engine.json`（同时记录 fake 模式）与 ledger `engine_hash`。旧 ledger 缺指纹即 stale；status/brief 显示 `engine: current|stale(<hash前8>)` 和最新 adoption。
+- 恢复：统一入口在 recover 锁内重新读取 ledger 和 Archon run，使用 Archon 的 `TERMINAL_WORKFLOW_STATUSES` 判终态。终态且 stale 时把旧 `.archon` 备份为 `.archon.<旧hash前8>`（未知为 unknown；重复备份加时间后缀），同一 gen 重新生成并 validate；`plan.json`、`attempts/`、`budget-extra`、hints 保留。锁使用首次 Archon ID，续接后不换锁；adoptions 与新 ID、指纹、恢复计数经同一次原子 ledger 写入发布，锁忙不消耗计数。相同指纹仍 resume；运行中 owner-lost 和 paused 保持原快照。
+- 原生参数：`archon workflow run <wf> --adopt <old-id> --workflow-source <gen> --cwd <repo> --detach`，不传 branch/from/base/no-worktree/resume。真实实测发现含 aliases 的 `--config` 也被 `run-preflight.ts` 拒绝，因此 adoption 继承原生 AI 配置，仅重新捕获工作流源；新任务照常使用当前 run-config。没有修改 Archon 快照、manifest、run 摘要或 `packages/`。
+- partial：红线、blocked 与环境/权限挂起规则优先保持；`partial` + 绿验收返回 `advance,coder_partial:true` 并存入 verify/settle 产物，R1/R2/R3 提示军师核对完整性、缺失记 blocker；`partial` + 红验收仍 repair。债：未实现跨 run 跳过 code 节点，续接时允许重跑编码；复用 Archon 原生 adoption，没有自造跨 run 缓存。G2 独立评审、主控最终实测待元帅。
+- 验证：单测覆盖指纹稳定/模板与生成逻辑敏感、resume/adopt 参数、缺字段旧 ledger、终态/paused 分流、运行时文件保留、原子 ledger、锁忙、失败 adoption 后可重试、partial 绿/红。`selftest.sh --fake` 复用现有临时 home/Archon/repo，并复制临时安装后只改那份模板；真实 run 在 settle-core 失败，经 decide retry adopt 完成。全量测试、lint 和提交绑定 verify-local 的结果记录在本任务隔离验收目录（见交付）。`hooks/*` 无改动。
+
+关键五行（隔离 fake 自检原始输出，非生产 run）：
+
+```text
+HF3 1/5 old=cb489a0f29d9be267d27d73394f8b222 status=failed node=settle-core head=4fb2afb80dc89b854161aab95a854cd6102c98a0
+HF3 2/5 new=9183555754011750adb265ea32bdb344 adoption=engine_stale
+HF3 3/5 snapshot=/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/sa-selftest.VFMSRA/archon/workspaces/sa-selftest.VFMSRA/origin/workflow-source/runs/9183555754011750adb265ea32bdb344/project/.archon/scripts/sa-check.ts marker=true
+HF3 4/5 worktree=same old_commit=preserved
+HF3 5/5 status=completed engine=current
+```

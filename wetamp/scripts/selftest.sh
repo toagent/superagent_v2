@@ -156,6 +156,27 @@ ABANDON_MS=$(( $(ms) - T2 ))
 ID=""
 
 # 正式回执 selftest.json 只由非 fake 写；fake 写 selftest-fake.json（preflight 不认）。同目录临时文件 + rename。
+if [ "$FAKE" = 1 ]; then
+  # Reuse this test's installed Archon/home/repo. Edit only a scratch copy of templates.
+  HF3_TOOLKIT="$TMPH/hf3-toolkit"
+  bun -e 'import { cpSync, mkdirSync, symlinkSync } from "node:fs";
+    import { join, basename } from "node:path";
+    const [src, dst] = process.argv.slice(1);
+    mkdirSync(dst);
+    cpSync(src, join(dst, "wetamp"), { recursive: true, filter: p => basename(p) !== "node_modules" });
+    symlinkSync(join(src, "..", "packages"), join(dst, "packages"));
+    symlinkSync(join(src, "..", "node_modules"), join(dst, "node_modules"));
+    symlinkSync(join(src, "node_modules"), join(dst, "wetamp/node_modules"));' "$WETAMP" "$HF3_TOOLKIT"
+  HF3_REPO="$REPO"
+  if [ "$OWN_REPO" = 0 ]; then
+    # The adoption fixture makes commits; never put them in a supplied operator repo.
+    HF3_REPO="$TMPH/hf3-repo"
+    git clone -q --no-hardlinks --single-branch --branch "$BASE" "$REPO" "$HF3_REPO"
+    git -C "$HF3_REPO" branch -m main
+  fi
+  bun "$HF3_TOOLKIT/wetamp/scripts/hf3-adoption-selftest.ts" "$HF3_REPO" "$TIMEOUT" || fail "HF3 latest-engine adoption"
+fi
+
 OUT="$REAL_HOME/selftest.json"; [ "$FAKE" = 1 ] && OUT="$REAL_HOME/selftest-fake.json"
 mkdir -p "$REAL_HOME"
 SA_OUT="$OUT" SA_KEY="$RECEIPT_KEY" SA_FAKE="$FAKE" SA_METRICS="{\"rss_kb\":$RSS_KB,\"recover_ms\":$RECOVER_MS,\"signal_ms\":$SIGNAL_MS,\"abandon_ms\":$ABANDON_MS,\"board\":{\"rows\":$BOARD_ROWS,\"run_id\":\"selftest-smoke\"}}" \

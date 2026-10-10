@@ -1,6 +1,15 @@
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
 // 计划文本只进 brief 文件、经绝对路径传给节点：with:/command 正文是模板，`$` 无法转义。
-import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
@@ -12,6 +21,33 @@ const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.jso
   stringify(v: unknown, opts: Record<string, unknown>): string;
 };
 type Node = Record<string, unknown>;
+
+/** Hash the owning generation logic and all template inputs, without a manual version. */
+export function engineHash(root = WETAMP): string {
+  const hash = new Bun.CryptoHasher('sha256');
+  const add = (path: string): void => {
+    hash.update(JSON.stringify(path)).update(readFileSync(join(root, path)));
+  };
+  const walk = (path: string): void => {
+    for (const entry of readdirSync(join(root, path), { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else add(child);
+    }
+  };
+  walk('templates/.archon');
+  for (const path of [
+    'src/generate.ts',
+    'src/config.ts',
+    'schemas/output.schema.json',
+    'templates/brief.md',
+    'tiers.json',
+  ])
+    add(path);
+  return hash.digest('hex');
+}
 
 export function newRunId(now = new Date()): string {
   const ts = now.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
@@ -462,10 +498,11 @@ export interface Gen {
   workflow: string;
   /** run-config 层（钉住的别名），经 `workflow run --config` 传入。 */
   config: string;
+  engine_hash: string;
 }
 
 /** 写 gen 目录、提交一次、`archon validate workflows`；校验失败抛错。 */
-export function generate(plan: Plan, run: string, fake = false): Gen {
+export function generate(plan: Plan, run: string, fake = false, previousHash?: string): Gen {
   const principlesPath = join(WETAMP, 'templates', '.archon', 'principles.md');
   let principles: string;
   try {
@@ -474,6 +511,12 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
   }
   const dir = join(home().sa, 'gen', run);
+  const engine_hash = engineHash();
+  if (previousHash !== undefined && existsSync(join(dir, '.archon'))) {
+    let backup = join(dir, `.archon.${previousHash.slice(0, 8) || 'unknown'}`);
+    if (existsSync(backup)) backup += `.${String(Date.now())}`;
+    renameSync(join(dir, '.archon'), backup);
+  }
   const workflow = `sa-${run}`;
   const ms = milestones(plan);
   const definition = buildWorkflow(plan, ms, run, dir, fake);
@@ -493,7 +536,9 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     const path = join(dir, '.archon', 'commands', `${command}.md`);
     writeFileSync(path, principles + '\n' + readFileSync(path, 'utf8'));
   }
-  writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
+  if (!existsSync(join(dir, 'plan.json')))
+    writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
+  writeFileSync(join(dir, 'engine.json'), JSON.stringify({ engine_hash, fake }) + '\n');
   const tiers = loadTiers();
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
   if (plan.budget.weighted_tokens < floor)
@@ -502,7 +547,8 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     );
   writeFileSync(join(dir, 'policy.json'), JSON.stringify(policyOf(tiers), null, 2) + '\n');
   // sa-check 经它查本 run 的 spend/binding（F-14/F-16）；gen 目录可脱离 wetamp 安装位置被引用
-  if (!fake) symlinkSync(join(WETAMP, 'bin', 'archon'), join(dir, 'archon'));
+  if (!fake && !existsSync(join(dir, 'archon')))
+    symlinkSync(join(WETAMP, 'bin', 'archon'), join(dir, 'archon'));
   const mcp = tiers.policy.sandbox.mcp;
   for (const p of plan.packages) {
     writeFileSync(
@@ -521,14 +567,28 @@ export function generate(plan: Plan, run: string, fake = false): Gen {
     join(dir, READONLY_MCP),
     readOnlyMcp(loadTiers().policy.exec_profiles.reviewer.codex_readonly_marker)
   );
-  writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\nbudget-extra\n');
+  writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\nbudget-extra\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
   writeFileSync(config, YAML.stringify({ aliases: runAliases(plan.console ?? 'claude') }, {}));
   git(dir, 'init', '-q');
-  const files = ['.archon', 'plan.json', 'policy.json', 'briefs', '.gitignore', 'run-config.yaml'];
+  const files = [
+    '.archon',
+    'engine.json',
+    'plan.json',
+    'policy.json',
+    'briefs',
+    '.gitignore',
+    'run-config.yaml',
+  ];
   git(dir, 'add', ...files, READONLY_MCP, ...(fake ? [] : ['archon']));
-  git(dir, 'commit', '-qm', `superagent ${run}`);
+  const staged = Bun.spawnSync(['git', 'diff', '--cached', '--quiet'], {
+    cwd: dir,
+    timeout: QUERY_TIMEOUT_MS,
+  });
+  if (staged.exitCode === 1) git(dir, 'commit', '-qm', `superagent ${run}`);
+  else if (staged.exitCode !== 0)
+    throw new Error(`cannot inspect generated source index: ${String(staged.exitCode)}`);
   const v = archon(['validate', 'workflows', workflow, '--cwd', dir]);
   if (v.code !== 0) throw new Error(`generated workflow invalid: ${tail(v.out + v.err)}`);
-  return { dir, workflow, config };
+  return { dir, workflow, config, engine_hash };
 }

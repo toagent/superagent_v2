@@ -1,5 +1,6 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { launcher, type Launcher } from './launcher';
+import { TERMINAL_WORKFLOW_STATUSES } from '../../packages/workflows/src/schemas/workflow-run';
 import { Database } from 'bun:sqlite';
 import {
   appendFileSync,
@@ -47,7 +48,7 @@ import {
   writeAtomic,
   type Receipt,
 } from './config';
-import { generate, newRunId } from './generate';
+import { engineHash, generate, newRunId } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport } from './report';
@@ -95,6 +96,15 @@ export const EXIT_ALIAS_DRIFT = 5;
 export const EXIT_USAGE = 64;
 
 export interface Ledger {
+  engine_hash?: string;
+  adoptions?: {
+    at: string;
+    from: string;
+    to: string;
+    engine_from: string | null;
+    engine_to: string;
+    reason: string;
+  }[];
   launcher?: Launcher;
   run_id: string;
   archon_run_id: string;
@@ -163,7 +173,7 @@ export function loadLedger(run: string): Ledger {
 
 /** ledger 的读改写与 recover 同锁（runs/<archon id>.lock），锁忙最多等 10 秒；改完同步回调用方的副本。 */
 function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
-  const path = join(home().sa, 'runs', `${l.archon_run_id}.lock`);
+  const path = join(home().sa, 'runs', `${l.adoptions?.[0]?.from ?? l.archon_run_id}.lock`);
   for (let i = 0; ; i++) {
     const k = lock(path);
     if (k.ok) {
@@ -266,6 +276,11 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
   const needs = needsOf(art);
   return {
     run_id: l.run_id,
+    engine:
+      l.engine_hash === engineHash()
+        ? 'current'
+        : `stale(${l.engine_hash?.slice(0, 8) ?? 'unknown'})`,
+    adoption: l.adoptions?.at(-1) ?? null,
     state: c.state,
     exit: c.exit,
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(nodes.length)} completed`,
@@ -347,6 +362,7 @@ function recoverRun(
   prepare?: () => void
 ): RecoverResult {
   let fp = '';
+  let adopted: { from: string; hash: string; engine_from: string | null } | undefined;
   return recover(
     l.archon_run_id,
     l.repo,
@@ -357,7 +373,22 @@ function recoverRun(
       fp = progressOf(run);
       return stalledOut(l, run) ? 'recover_no_progress' : undefined;
     },
-    () => {
+    ack => {
+      if (adopted) {
+        const to = String(ack.runId);
+        (l.adoptions ??= []).push({
+          at: new Date().toISOString(),
+          from: adopted.from,
+          to,
+          engine_from: adopted.engine_from,
+          engine_to: adopted.hash,
+          reason: 'engine_stale',
+        });
+        l.archon_run_id = to;
+        l.engine_hash = adopted.hash;
+        l.transcript = typeof ack.transcriptPath === 'string' ? ack.transcriptPath : '';
+        l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
+      }
       if (auto) (l.auto_retries ??= []).push(auto);
       else {
         l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
@@ -366,7 +397,39 @@ function recoverRun(
       }
       saveLedger(l);
     },
-    prepare
+    prepare,
+    {
+      lockId: l.adoptions?.[0]?.from ?? l.archon_run_id,
+      resolveId: () => {
+        Object.assign(l, loadLedger(l.run_id));
+        return l.archon_run_id;
+      },
+      adopt: run => {
+        // Live and paused owners retain their snapshot; terminal recovery may change source.
+        if (!TERMINAL_WORKFLOW_STATUSES.includes(run.status) || l.engine_hash === engineHash())
+          return undefined;
+        const metadata = readJson(join(l.gen_dir, 'engine.json')) as { fake?: boolean } | null;
+        const gen = generate(
+          planOf(l),
+          l.run_id,
+          metadata?.fake ?? false,
+          l.engine_hash ?? 'unknown'
+        );
+        adopted = { from: run.id, hash: gen.engine_hash, engine_from: l.engine_hash ?? null };
+        return [
+          'workflow',
+          'run',
+          l.workflow,
+          '--adopt',
+          run.id,
+          '--workflow-source',
+          gen.dir,
+          '--cwd',
+          l.repo,
+          '--detach',
+        ];
+      },
+    }
   );
 }
 
@@ -436,6 +499,7 @@ function startRun(planPath: string, a: Args): number {
   args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
   const l: Ledger = {
     run_id: run,
+    engine_hash: gen.engine_hash,
     archon_run_id: '',
     plan: planPath,
     gen_dir: gen.dir,
@@ -703,6 +767,8 @@ function brief(l: Ledger): number {
   const lines = [
     `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${l.branch}`,
   ];
+  lines.push(`engine: ${String(s.engine)}`);
+  if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
   for (const f of gatesOf(art)) {
     const g = readJson(join(art, f)) as Gate;
     lines.push(

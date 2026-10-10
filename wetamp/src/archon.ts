@@ -44,7 +44,13 @@ export interface RunView {
   /** 终局记录（事件日志折叠而来）：error 同 metadata.error 的终局快照。resume 中的 run 没有。 */
   terminal_record?: { error?: string | null } | null;
   transcript_path?: string | null;
-  nodes?: { nodeId: string; state: string; error?: string | null; durationMs?: number; execution?: NodeExecutionMetadata }[];
+  nodes?: {
+    nodeId: string;
+    state: string;
+    error?: string | null;
+    durationMs?: number;
+    execution?: NodeExecutionMetadata;
+  }[];
 }
 
 // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）
@@ -247,17 +253,31 @@ export function recover(
   id: string,
   cwd?: string,
   guard?: (run: RunView) => string | undefined,
-  done?: () => void,
-  prepare?: () => void
+  done?: (ack: Json) => void,
+  prepare?: () => void,
+  strategy?: {
+    lockId: string;
+    resolveId: () => string;
+    adopt: (run: RunView) => string[] | undefined;
+  }
 ): RecoverResult {
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
-  const path = join(home().sa, 'runs', `${id}.lock`);
+  const path = join(home().sa, 'runs', `${strategy?.lockId ?? id}.lock`);
   const l = lock(path);
   if (!l.ok) return { ok: false, reason: 'recover_locked', busy: true };
   try {
-    const run = getRun(id, cwd);
+    const run = getRun(strategy?.resolveId() ?? id, cwd);
     const veto = guard?.(run);
     if (veto) return { ok: false, reason: veto };
+    const adoption = strategy?.adopt(run);
+    if (adoption) {
+      prepare?.();
+      const ack = archonJson(adoption, cwd);
+      if (ack.ok !== true || typeof ack.runId !== 'string')
+        return { ok: false, reason: tail(JSON.stringify(ack)) };
+      done?.(ack);
+      return { ok: true, resumed: ack };
+    }
     if (run.status === 'running') {
       const o = run.metadata?.execution_owner;
       if (!o || !ownerLost(run)) return { ok: false, reason: 'owner alive or on another host' };
@@ -279,7 +299,7 @@ export function recover(
     prepare?.(); // 已持锁且确认可恢复；attempt/预算不得在锁忙或 owner 存活时变化
     const resumed = archonJson(['workflow', 'resume', run.id, '--detach'], cwd);
     if (resumed.ok === false) return { ok: false, reason: tail(JSON.stringify(resumed)) };
-    done?.();
+    done?.(resumed);
     return { ok: true, resumed };
   } finally {
     l.release();

@@ -2,7 +2,14 @@ import { describe, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
 import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildWorkflow, capsDenied, generate, newRunId, renderBrief } from '../src/generate';
+import {
+  buildWorkflow,
+  capsDenied,
+  engineHash,
+  generate,
+  newRunId,
+  renderBrief,
+} from '../src/generate';
 import { install, WETAMP } from '../src/config';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
@@ -31,6 +38,22 @@ type N = {
   with?: Record<string, unknown>;
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
+
+test('HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
+  const root = tmp();
+  for (const path of ['templates', 'src', 'schemas'])
+    fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
+  fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
+  const hash = engineHash(root);
+  expect(engineHash(root)).toBe(hash);
+  const script = join(root, 'templates/.archon/scripts/sa-check.ts');
+  fs.appendFileSync(script, '\n// changed template\n');
+  expect(engineHash(root)).not.toBe(hash);
+  fs.copyFileSync(join(WETAMP, 'templates/.archon/scripts/sa-check.ts'), script);
+  expect(engineHash(root)).toBe(hash);
+  fs.appendFileSync(join(root, 'src/generate.ts'), '\n// changed generation\n');
+  expect(engineHash(root)).not.toBe(hash);
+});
 
 describe('buildWorkflow', () => {
   test('golden: two packages across two milestones', () => {

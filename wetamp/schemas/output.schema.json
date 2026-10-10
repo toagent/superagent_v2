@@ -178,6 +178,7 @@
     "accept": {
       "type": "object",
       "properties": {
+        "coder_partial": { "type": "boolean" },
         "ok": {
           "type": "boolean"
         },

@@ -290,12 +290,17 @@ describe('F-18 disposition', () => {
       const r = disposition(c(o), ok);
       return `${r.disposition}:${r.reason ?? ''}`;
     };
-    expect(d({ status: 'partial' })).toBe('repair:coder_partial');
+    expect(disposition(c({ status: 'partial' }), true)).toEqual({
+      disposition: 'advance',
+      reason: null,
+      coder_partial: true,
+    });
+    expect(d({ status: 'partial' }, false)).toBe('repair:coder_partial');
     expect(d({ status: 'blocked' })).toBe('repair:coder_partial');
     expect(d({ status: 'blocked', needs: [{ cap: 'network' }] })).toBe('suspend:coder_needs');
     expect(d({ status: 'blocked', error_class: 'redline' })).toBe('suspend:coder_redline');
     expect(d({ status: 'partial', error_class: 'env' })).toBe('suspend:coder_error:env');
-    expect(d({ status: 'partial', error_class: 'timeout' })).toBe('repair:coder_partial');
+    expect(d({ status: 'partial', error_class: 'timeout' }, false)).toBe('repair:coder_partial');
     expect(disposition('not json', true)).toEqual({
       disposition: 'suspend',
       reason: 'coder_output_invalid',
@@ -478,6 +483,14 @@ describe('sa-check script', () => {
       status: 'blocked',
     });
     expect(coder({ status: 'done' }, 'verify-d')).toMatchObject({ status: 'done' });
+    coder({ status: 'partial' }, 'verify-partial');
+    expect(
+      JSON.parse(readFileSync(join(root, 'art', 'verify-partial.json'), 'utf8'))
+    ).toMatchObject({
+      disposition: 'advance',
+      coder_partial: true,
+      ok: true,
+    });
   });
   test('accept: uncommitted change fails even when commands pass', () => {
     const root = tmp();
