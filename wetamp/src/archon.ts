@@ -101,16 +101,56 @@ function runOf(id: string, j: Json): RunView {
   return j as unknown as RunView;
 }
 
-/** getRun 的异步版（board 并行查询用）：同一子命令、同一解析。 */
-export async function getRunAsync(id: string, cwd?: string): Promise<RunView> {
+/**
+ * getRun 的异步版（board 并行查询用）：同一子命令、同一解析，外加超时与取消。子进程自成进程组（detached），
+ * 超时或 abort 时整组 SIGKILL：只杀直接子进程的话，它派生的进程仍握着 stdout 管道，读管道会一直挂到它们退出。
+ */
+export async function getRunAsync(
+  id: string,
+  cwd: string | undefined,
+  opts: { timeoutMs: number; signal?: AbortSignal }
+): Promise<RunView> {
+  opts.signal?.throwIfAborted();
   const args = ['workflow', 'get', id, '--verbose', '--json'];
-  const p = Bun.spawn([archonBin(), ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
-  const [out, err, code] = await Promise.all([
-    new Response(p.stdout).text(),
-    new Response(p.stderr).text(),
-    p.exited,
-  ]);
-  return runOf(id, jsonOf(args, { code, out, err }));
+  const p = Bun.spawn([archonBin(), ...args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    detached: true,
+  });
+  let onAbort = (): void => undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const killed = new Promise<never>((_, reject) => {
+    const kill = (why: string): void => {
+      try {
+        process.kill(-p.pid, 'SIGKILL');
+      } catch (e) {
+        // ESRCH：整组已退出；其余错误（如 EPERM）原样交给调用方
+        if ((e as NodeJS.ErrnoException).code !== 'ESRCH') {
+          reject(e as Error);
+          return;
+        }
+      }
+      reject(new Error(`archon workflow get ${id}: ${why}`));
+    };
+    timer = setTimeout(() => {
+      kill(`timed out after ${String(opts.timeoutMs)}ms`);
+    }, opts.timeoutMs);
+    onAbort = () => {
+      kill('aborted');
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    const [out, err, code] = await Promise.race([
+      Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]),
+      killed,
+    ]);
+    return runOf(id, jsonOf(args, { code, out, err }));
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 export function pidAlive(pid: number): boolean {

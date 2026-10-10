@@ -14,9 +14,6 @@ const COLOR: Record<string, string> = {
 };
 const colorOf = (s: string): string => (s.startsWith('held:') ? 'yellow' : (COLOR[s] ?? 'white'));
 const ACTIVE = (r: BoardRow): boolean => r.state === 'running' || r.state.startsWith('held:');
-/** 宽度不足时先隐藏 console 与 repo@branch。 */
-export const NARROW = 100;
-
 const pad = (s: string, n: number): string =>
   s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n);
 const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
@@ -30,37 +27,57 @@ function reason(r: BoardRow): string {
     : `exit ${String(r.exit)}${r.nodes.current && r.exit !== 0 ? ` @${r.nodes.current}` : ''}`;
 }
 
-const COLS = [
-  ['id', 21],
-  ['state', 23],
-  ['nodes', 13],
-  ['current(role)', 24],
-  ['elapsed', 8],
-  ['exit/held', 20],
-  ['rec', 4],
-] as const;
-const WIDE = [['console', 8]] as const;
+/**
+ * 列宽含 1 格分隔：内容截到 w−1 再补一个空格，相邻列永不粘连。宽屏放不下 current 与 repo@branch 的最小宽度时转窄屏：隐藏 console 与 repo@branch、
+ * nodes 只留 4/5、state 与 exit/held 收窄，80 列下 elapsed/exit/rec 仍完整；current(role) 吃剩余宽度（5–30）。
+ */
+type Widths = Record<'id' | 'state' | 'nodes' | 'elapsed' | 'reason' | 'rec' | 'console', number>;
+const WIDTHS: Record<'wide' | 'narrow', Widths> = {
+  wide: { id: 21, state: 19, nodes: 13, elapsed: 8, reason: 22, rec: 4, console: 9 },
+  narrow: { id: 21, state: 17, nodes: 6, elapsed: 8, reason: 18, rec: 4, console: 0 },
+};
+const REPO_MIN = 20;
+const CURRENT_MIN = 5;
+const sum = (w: Widths): number => Object.values(w).reduce((a, b) => a + b, 0);
+const WIDE_MIN = sum(WIDTHS.wide) + CURRENT_MIN + REPO_MIN;
+const cell = (s: string, w: number): string => `${pad(s, w - 1)} `;
 
-function Row({ r, sel, wide }: { r: BoardRow; sel: boolean; wide: boolean }): ReactElement {
+interface Layout {
+  wide: boolean;
+  w: Widths;
+  current: number;
+}
+export function layout(width: number): Layout {
+  const wide = width >= WIDE_MIN;
+  const w = wide ? WIDTHS.wide : WIDTHS.narrow;
+  const fixed = sum(w) + (wide ? REPO_MIN : 0);
+  return { wide, w, current: Math.max(CURRENT_MIN, Math.min(30, width - fixed)) };
+}
+
+function Row({ r, sel, lay }: { r: BoardRow; sel: boolean; lay: Layout }): ReactElement {
+  const { w } = lay;
   const current = r.nodes.current ? `${r.nodes.current}(${r.nodes.currentRole ?? '?'})` : '-';
-  const cells = [
-    pad(r.run_id, COLS[0][1]),
-    null, // state 单独着色
-    pad(r.nodes.total ? bar(r.nodes.done, r.nodes.total) : '-', COLS[2][1]),
-    pad(current, COLS[3][1]),
-    pad(fmtElapsed(r.elapsed_s), COLS[4][1]),
-    pad(reason(r), COLS[5][1]),
-    pad(String(r.recoveries), COLS[6][1]),
+  const nodes = !r.nodes.total
+    ? '-'
+    : lay.wide
+      ? bar(r.nodes.done, r.nodes.total)
+      : `${String(r.nodes.done)}/${String(r.nodes.total)}`;
+  const rest = [
+    cell(nodes, w.nodes),
+    cell(current, lay.current),
+    cell(fmtElapsed(r.elapsed_s), w.elapsed),
+    cell(reason(r), w.reason),
+    cell(String(r.recoveries), w.rec),
   ];
   return (
     <Box>
       <Text inverse={sel} wrap="truncate">
-        {cells[0]}
+        {cell(r.run_id, w.id)}
         <Text color={colorOf(r.state)} dimColor={r.state === 'unreadable'}>
-          {pad(`${r.stale ? '~' : ''}${r.state}`, COLS[1][1])}
+          {cell(`${r.stale ? '~' : ''}${r.state}`, w.state)}
         </Text>
-        {cells.slice(2).join('')}
-        {wide ? `${pad(r.console, WIDE[0][1])}${r.repo}@${r.branch}` : ''}
+        {rest.join('')}
+        {lay.wide ? `${cell(r.console, w.console)}${r.repo}@${r.branch}` : ''}
       </Text>
     </Box>
   );
@@ -81,7 +98,8 @@ export interface FrameProps {
 
 export function Frame(p: FrameProps): ReactElement {
   const rows = p.activeOnly ? p.snap.rows.filter(ACTIVE) : p.snap.rows;
-  const wide = p.width >= NARROW;
+  const lay = layout(p.width);
+  const { w } = lay;
   const count = (f: (r: BoardRow) => boolean): number => p.snap.rows.filter(f).length;
   const chips: [string, number, string][] = [
     ['running', count(r => r.state === 'running'), 'cyan'],
@@ -113,12 +131,18 @@ export function Frame(p: FrameProps): ReactElement {
         ) : null}
       </Text>
       <Text bold wrap="truncate">
-        {[...COLS, ...(wide ? WIDE : [])].map(([k, n]) => pad(k, n)).join('')}
-        {wide ? 'repo@branch' : ''}
+        {cell('id', w.id)}
+        {cell('state', w.state)}
+        {cell('nodes', w.nodes)}
+        {cell('current(role)', lay.current)}
+        {cell('elapsed', w.elapsed)}
+        {cell('exit/held', w.reason)}
+        {cell('rec', w.rec)}
+        {lay.wide ? `${cell('console', w.console)}repo@branch` : ''}
       </Text>
       {rows.length === 0 ? <Text dimColor>(no runs)</Text> : null}
       {rows.slice(top, top + room).map((r, i) => (
-        <Row key={r.run_id} r={r} sel={top + i === p.sel} wide={wide} />
+        <Row key={r.run_id} r={r} sel={top + i === p.sel} lay={lay} />
       ))}
       {dlines.map((l, i) => (
         <Text key={i} wrap="truncate" dimColor={i > 0}>

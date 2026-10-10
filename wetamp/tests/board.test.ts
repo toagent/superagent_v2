@@ -1,14 +1,30 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, join } from 'node:path';
+import { createElement } from 'react';
+import { renderToString } from 'ink';
 import type { RunView } from '../src/archon';
 import { report, summarize, type Ledger } from '../src/cli';
 import { bar, createLoader, fmtElapsed, readLedger, rowOf, workflowRoles } from '../src/board/data';
-import { detailOf, redact } from '../src/board/detail';
+import { detailOf, detailLines, redact } from '../src/board/detail';
+import { Frame, layout } from '../src/board/App';
 import { tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
-const ENV_KEYS = ['SA_ARCHON_BIN', 'SUPERAGENT_HOME', 'ARCHON_HOME'] as const;
+const ENV_KEYS = [
+  'SA_ARCHON_BIN',
+  'SUPERAGENT_HOME',
+  'ARCHON_HOME',
+  'SA_BOARD_QUERY_TIMEOUT_MS',
+] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
 // 同一进程里后跑的测试文件不能继承这里的桩与临时 home
 afterAll(() => {
@@ -20,7 +36,10 @@ afterAll(() => {
 let root = '';
 let stubDir = '';
 
-/** archon 桩：`workflow get <id>` 返回 get-<id>.json；有 fail-<id> 标记时非零退出；每次调用记一行。 */
+/**
+ * archon 桩：`workflow get <id>` 返回 get-<id>.json；有 fail-<id> 标记时非零退出；有 hang-<id> 标记时挂起
+ * （sleep 是孙进程、握着 stdout，用来验证整组被杀）；每次调用记一行。
+ */
 beforeEach(() => {
   root = tmp();
   stubDir = join(root, 'stub');
@@ -31,6 +50,7 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 echo "$*" >> "${stubDir}/calls"
 [ -f "${stubDir}/fail-$3" ] && { echo "archon down" >&2; exit 1; }
+[ -f "${stubDir}/hang-$3" ] && sleep 31.7
 cat "${stubDir}/get-$3.json"
 `
   );
@@ -38,6 +58,7 @@ cat "${stubDir}/get-$3.json"
   mkdirSync(join(root, 'home', 'runs'), { recursive: true });
   Object.assign(process.env, {
     SA_ARCHON_BIN: bin,
+    SA_BOARD_QUERY_TIMEOUT_MS: '10000',
     SUPERAGENT_HOME: join(root, 'home'),
     ARCHON_HOME: join(root, 'home', 'archon'),
   });
@@ -173,6 +194,85 @@ describe('data rows', () => {
   });
 });
 
+describe('loader robustness', () => {
+  const live = (id: string): Ledger =>
+    ledger(id, { status: 'running', metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } });
+  const orphans = (): string =>
+    Bun.spawnSync(['pgrep', '-f', 'sleep 31.7'], { stdout: 'pipe' }).stdout.toString().trim();
+
+  test('JSON null, array, string and {} ledgers are unreadable rows; the round does not throw', async () => {
+    ledger('ok', { status: 'completed' });
+    for (const [id, body] of [
+      ['n', 'null'],
+      ['arr', '[]'],
+      ['str', '"x"'],
+      ['empty', '{}'],
+    ])
+      writeFileSync(ledgerFile(id), body);
+    expect(readLedger('n')).toContain('null');
+    expect(readLedger('arr')).toContain('array');
+    expect(readLedger('str')).toContain('string');
+    expect(readLedger('empty')).toContain('run_id');
+    const byId = Object.fromEntries((await createLoader()(50)).rows.map(r => [r.run_id, r]));
+    expect(byId.ok?.state).toBe('completed');
+    for (const id of ['n', 'arr', 'str', 'empty']) expect(byId[id]?.state).toBe('unreadable');
+  });
+
+  test('a hung query is killed at the timeout with its process group; the row goes stale', async () => {
+    live('hang');
+    process.env.SA_BOARD_QUERY_TIMEOUT_MS = '300';
+    const load = createLoader();
+    expect((await load(50)).rows[0]?.stale).toBe(false);
+    writeFileSync(join(stubDir, 'hang-a-hang'), '');
+    const t0 = Date.now();
+    const row = (await load(50)).rows[0];
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(row?.stale).toBe(true);
+    expect(row?.state).toBe('running');
+    await Bun.sleep(100);
+    expect(orphans()).toBe('');
+  });
+
+  test('aborting the loader kills in-flight queries', async () => {
+    live('hang');
+    writeFileSync(join(stubDir, 'hang-a-hang'), '');
+    const ac = new AbortController();
+    const pending = createLoader(ac.signal)(50);
+    await Bun.sleep(200);
+    const t0 = Date.now();
+    ac.abort();
+    const row = (await pending).rows[0];
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(row?.error).toContain('aborted');
+    await Bun.sleep(100);
+    expect(orphans()).toBe('');
+  });
+
+  test('a cached failed or held:gate run that gets cancelled shows cancelled on the next round', async () => {
+    ledger('f', { status: 'failed', nodes: [{ nodeId: 'verify-a', state: 'failed' }] });
+    ledger('g', { status: 'failed', nodes: [{ nodeId: 'gate-m1-r1', state: 'failed' }] });
+    const load = createLoader();
+    const states = async (): Promise<string[]> =>
+      (await load(50)).rows.map(r => `${r.run_id}:${r.state}`).sort();
+    expect(await states()).toEqual(['f:failed', 'g:held:gate']);
+    // cancel/reject 只改 archon，不写 ledger（mtime 不变）
+    for (const id of ['f', 'g'])
+      writeFileSync(
+        join(stubDir, `get-a-${id}.json`),
+        JSON.stringify({ id: `a-${id}`, status: 'cancelled' })
+      );
+    expect(await states()).toEqual(['f:cancelled', 'g:cancelled']);
+    const n = calls();
+    await load(50);
+    expect(calls()).toBe(n); // cancelled 不可逆，此后走缓存
+  });
+
+  test('a non-positive SA_BOARD_QUERY_TIMEOUT_MS is rejected', () => {
+    process.env.SA_BOARD_QUERY_TIMEOUT_MS = '0';
+    expect(() => createLoader()).toThrow('SA_BOARD_QUERY_TIMEOUT_MS');
+  });
+});
+
 describe('format', () => {
   test('elapsed', () => {
     expect([
@@ -193,12 +293,71 @@ describe('format', () => {
 describe('detail', () => {
   test('redacts credential values in exec output before taking the tail', () => {
     const s = redact(
-      'Authorization: Bearer abc.def token=xyz123 "api_key": "s3cr3t" PASSWORD=hunter2 ok=1'
+      'Authorization: Bearer abc.def\ntoken=xyz123 "api_key": "s3cr3t" PASSWORD=hunter2 ok=1'
     );
     for (const secret of ['abc.def', 'xyz123', 's3cr3t', 'hunter2'])
       expect(s).not.toContain(secret);
     expect(s).toContain('token=***');
     expect(s).toContain('ok=1');
+  });
+
+  test('redacts whole values: every Authorization scheme, quoted values with spaces and escaped quotes', () => {
+    const cases: [string, string][] = [
+      ['Authorization: ApiKey synthetic_credential', 'Authorization: ***'],
+      ['Authorization: Bearer x.y.z', 'Authorization: ***'],
+      ['password="alpha beta"', 'password=***'],
+      ["secret='a b'", 'secret=***'],
+      ['{"api_key":"k k"}', '{"api_key":***}'],
+      ['token=xyz rest', 'token=*** rest'],
+      ['"token":"a \\"b\\" c" tail', '"token":*** tail'],
+      ['{"h":"Authorization: Basic zz\\"q","n":1}', '{"h":"Authorization: ***","n":1}'],
+      ['run Bearer abc.def now', 'run Bearer *** now'],
+    ];
+    expect(cases.map(([raw]) => redact(raw))).toEqual(cases.map(([, out]) => out));
+  });
+
+  test('the 120-char tail is taken after redaction and leaves no plaintext at the cut', () => {
+    const l = ledger('cut', { status: 'running' });
+    const secret = 'alpha beta gamma delta';
+    // 值跨过截尾边界：先截尾会丢掉 password= 只剩裸值
+    const stdout = `password="${secret}"${'.'.repeat(110)}`;
+    writeFileSync(
+      l.transcript,
+      JSON.stringify({ type: 'exec_output', step: 'x', stdout_tail: stdout })
+    );
+    const run: RunView = { id: 'a-cut', status: 'running' };
+    const out = detailOf(l, rowOf(l, run, { now: Date.now() })).events[0]?.out ?? '';
+    expect(out.length).toBeLessThanOrEqual(120);
+    for (const part of secret.split(' ')) expect(out).not.toContain(part);
+  });
+
+  test('plan, transcript and evidence paths outside the repo and $SUPERAGENT_HOME are skipped unread', () => {
+    const outside = tmp();
+    writeFileSync(
+      join(outside, 'plan.json'),
+      JSON.stringify({ packages: [{ id: 'x', risk: 'G1' }] })
+    );
+    writeFileSync(join(outside, 't.jsonl'), JSON.stringify({ type: 'node_start', step: 'leak' }));
+    writeFileSync(
+      join(outside, 'gate-m1-r1.json'),
+      JSON.stringify({ verdict: 'pass', reason: null, debt: [] })
+    );
+    const l = ledger(
+      'esc',
+      { status: 'failed', output_root: join(root, 'out') },
+      { plan: `../${basename(outside)}/plan.json`, transcript: join(outside, 't.jsonl') }
+    );
+    const art = join(root, 'out', 'artifacts', 'runs', 'a-esc');
+    mkdirSync(art, { recursive: true });
+    symlinkSync(join(outside, 'gate-m1-r1.json'), join(art, 'gate-m1-r1.json'));
+    const run = JSON.parse(readFileSync(join(stubDir, 'get-a-esc.json'), 'utf8')) as RunView;
+    const d = detailOf(l, rowOf(l, run, { now: Date.now() }));
+    expect(d.packages).toEqual([]);
+    expect(d.events).toEqual([]);
+    expect(d.gates).toEqual([]);
+    expect(d.errors).toHaveLength(3);
+    for (const e of d.errors) expect(e).toContain('（路径越界，已跳过）');
+    expect(detailLines(d).join('\n')).not.toContain('leak');
   });
 
   test('plan packages, gate rounds, last events, held hints', () => {
@@ -260,6 +419,62 @@ describe('detail', () => {
     expect(last?.out).toEndWith('secret: ***');
     expect(d.next[0]).toBe('superagent decide sa1 approve|reject|retry [--pkg id]');
     expect(d.errors).toEqual([]);
+  });
+});
+
+describe('table layout', () => {
+  const frame = (width: number, rows: Parameters<typeof rowOf>[]): string[] =>
+    renderToString(
+      createElement(Frame, {
+        snap: { summary: {}, rows: rows.map(args => rowOf(...args)), at: new Date().toISOString() },
+        home: '/h',
+        width,
+        height: 50,
+        interval: 5,
+        sel: -1,
+        activeOnly: false,
+        detail: null,
+        now: new Date(),
+        footer: false,
+      }),
+      { columns: width }
+    ).split('\n');
+  const failedRow = (): Parameters<typeof rowOf> => {
+    const l = ledger('20261010-004139-c439', { status: 'failed' });
+    const run: RunView = {
+      id: 'a',
+      status: 'failed',
+      started_at: '2026-10-10T00:00:00.000Z',
+      completed_at: '2026-10-10T01:02:03.000Z',
+      nodes: [
+        ...['a', 'b', 'c', 'd'].map(n => ({ nodeId: `code-${n}`, state: 'completed' as const })),
+        { nodeId: 'review-m1-r1', state: 'failed' },
+      ],
+    };
+    return [l, run, { now: Date.now() }];
+  };
+
+  test('columns are separated by a space: exit reason and rec stay distinct tokens', () => {
+    const [header, row] = frame(160, [failedRow()]).slice(2);
+    expect(row).toMatch(/ exit 1 @review-m1-r1 +0 /);
+    expect(header).toMatch(/ exit\/held +rec +console +repo@branch/);
+  });
+
+  test('at 80 columns elapsed, exit/held and rec are not cut off; nodes keep only n/m', () => {
+    expect(layout(80).current).toBeGreaterThanOrEqual(5);
+    // 宽屏只在放得下全部列时启用：100–120 列曾把 console/repo 挤出屏外
+    for (const width of [80, 100, 120, 121, 160]) {
+      const lay = layout(width);
+      expect(
+        Object.values(lay.w).reduce((a, b) => a + b, 0) + lay.current + (lay.wide ? 20 : 0)
+      ).toBeLessThanOrEqual(width);
+    }
+    const [header, row] = frame(80, [failedRow()]).slice(2);
+    expect(header).toMatch(/ elapsed +exit\/held +rec\s*$/);
+    expect(row).toMatch(/ 4\/5 /);
+    expect(row).not.toContain('█');
+    expect(row).toMatch(/ 1h02m +exit 1 @review-\S* 0\s*$/);
+    for (const line of [header, row]) expect(line.length).toBeLessThanOrEqual(80);
   });
 });
 

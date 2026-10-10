@@ -1,7 +1,8 @@
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
-import { readFileSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, join, sep } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
+import { home } from '../config';
 import {
   EXIT,
   artifactsOf,
@@ -51,17 +52,37 @@ const STRINGS = [
   'started_at',
 ] as const;
 
-/** 读 ledger；坏 JSON 或缺字段返回原因而不抛错（一个坏 ledger 不能拖垮整张表）。 */
+/** 读 ledger；坏 JSON、非对象（null/数组/字符串）或缺字段返回原因而不抛错（一个坏 ledger 不能拖垮整张表）。 */
 export function readLedger(id: string): Ledger | string {
-  let l: Partial<Record<string, unknown>>;
   try {
-    l = loadLedger(id) as unknown as Partial<Record<string, unknown>>;
+    const l = loadLedger(id) as unknown;
+    if (typeof l !== 'object' || l === null || Array.isArray(l))
+      return `ledger is not a JSON object (${l === null ? 'null' : Array.isArray(l) ? 'array' : typeof l})`;
+    const o = l as Partial<Record<string, unknown>>;
+    const missing: string[] = STRINGS.filter(k => typeof o[k] !== 'string');
+    if (!Array.isArray(o.recoveries)) missing.push('recoveries');
+    return missing.length ? `ledger missing ${missing.join(', ')}` : (l as Ledger);
   } catch (e) {
     return tail((e as Error).message, 200);
   }
-  const missing: string[] = STRINGS.filter(k => typeof l[k] !== 'string');
-  if (!Array.isArray(l.recoveries)) missing.push('recoveries');
-  return missing.length ? `ledger missing ${missing.join(', ')}` : (l as unknown as Ledger);
+}
+
+export const OUTSIDE = '（路径越界，已跳过）';
+
+/**
+ * ledger 里的路径（plan、gen_dir、transcript、evidence 及其下文件）解析 realpath 后只允许落在 ledger.repo 或
+ * $SUPERAGENT_HOME 之内：ledger 是本地可写文件，不能让它把看板引去读任意文件。不存在返回 null；越界抛错，调用方只丢该项。
+ */
+export function confined(l: Ledger, p: string): string | null {
+  if (!existsSync(p)) return null;
+  const real = realpathSync(p);
+  const inside = [l.repo, home().sa].some(r => {
+    if (!existsSync(r)) return false;
+    const root = realpathSync(r);
+    return real === root || real.startsWith(root + sep);
+  });
+  if (!inside) throw new Error(`${p}${OUTSIDE}`);
+  return real;
 }
 
 export type Role = 'coder' | 'reviewer' | 'human' | 'script';
@@ -71,8 +92,12 @@ export type Role = 'coder' | 'reviewer' | 'human' | 'script';
  * 因为 run 的 nodes 只列已调度的节点。gen 目录缺失或解析失败返回 undefined：表格退回 run 的节点数、角色显示 `?`。
  */
 export function workflowRoles(l: Ledger): Map<string, Role> | undefined {
-  const file = join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`);
   try {
+    const file = confined(
+      l,
+      join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`)
+    );
+    if (!file) return undefined;
     const wf = Bun.YAML.parse(readFileSync(file, 'utf8')) as {
       nodes?: { id: string; model?: string; wait?: unknown }[];
     };
@@ -161,30 +186,41 @@ async function mapPool<T, R>(xs: T[], n: number, f: (x: T) => Promise<R>): Promi
   return out;
 }
 
-const TERMINAL = new Set<RunView['status']>(['completed', 'cancelled', 'failed']);
+/** 不可逆的终态：resume 只接受 failed/paused，failed（含 held:gate/environment）可经 decide/cancel 再变，每轮都查。 */
+const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
 export const PARALLEL = 3;
+export const QUERY_TIMEOUT_MS = 10_000;
 
 /**
- * 带缓存的加载器（一个 board 进程一个）。终态 run 在 ledger mtime 不变时不再查（decide retry/resume 经 recover 写 ledger，
- * mtime 必变）；非终态每次刷新都查；查询失败沿用上一次的 run 并标 stale，从未查到过则为 unreadable 行。
+ * 带缓存的加载器（一个 board 进程一个）。completed/cancelled 在 ledger mtime 不变时不再查；其余每次刷新都查，
+ * 单次查询超过 SA_BOARD_QUERY_TIMEOUT_MS（默认 10s）即杀掉；查询失败沿用上一次的 run 并标 stale，从未查到过则为
+ * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
-export function createLoader(): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal): (limit: number) => Promise<Snapshot> {
+  const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
+  const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    throw new Error(`SA_BOARD_QUERY_TIMEOUT_MS must be a positive number of ms, got ${env ?? ''}`);
   const cache = new Map<string, { run: RunView; mtimeMs: number }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
   return async limit => {
     const now = Date.now();
     const ids = ledgerIds()
-      .map(id => ({ id, mtimeMs: statSync(ledgerPath(id)).mtimeMs }))
+      // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
+      .map(id => ({
+        id,
+        mtimeMs: statSync(ledgerPath(id), { throwIfNoEntry: false })?.mtimeMs ?? 0,
+      }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, limit);
     const results = await mapPool(ids, PARALLEL, async ({ id, mtimeMs }) => {
       const l = readLedger(id);
       if (typeof l === 'string') return { row: unreadableRow(id, l) };
       const hit = cache.get(id);
-      if (hit?.mtimeMs === mtimeMs && TERMINAL.has(hit.run.status))
+      if (hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status))
         return { l, run: hit.run, stale: false };
       try {
-        const run = await getRunAsync(l.archon_run_id, l.repo);
+        const run = await getRunAsync(l.archon_run_id, l.repo, { timeoutMs, signal });
         cache.set(id, { run, mtimeMs });
         return { l, run, stale: false };
       } catch (e) {
