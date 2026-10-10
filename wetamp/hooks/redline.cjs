@@ -1,7 +1,7 @@
 'use strict';
 // 执行层红线（所有角色）：读凭据与隐私、发布与合并、改写共享分支、按名杀进程、连接非本机数据库；
 // 派生会话另把编辑与 shell 写入限制在 worktree、临时目录与包管理缓存内。只做字面判定：
-// 变量（$HOME 除外）、通配与间接调用拦不住，残余风险见 docs/04。
+// 派生写目标含动态展开时拒绝；间接执行的残余风险见 docs/04。
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const {spawnSync} = require('node:child_process');
 const {parse} = require('./shell.cjs');
@@ -111,7 +111,7 @@ function dbHosts(args) {
   }
   return hosts;
 }
-function commandReason(argv, names, dir) {
+function commandReason(argv, allNames, dir) {
   const name = path.posix.basename(argv[0]), args = argv.slice(1), operands = args.filter(a => !a.startsWith('-'));
   if (name === 'git') return gitReason(argv, dir);
   if (name === 'security' && /^(?:find-.*-password|dump-keychain|export)$/.test(operands[0] ?? '')) return `禁止 security ${operands[0]}：钥匙串内容不交给任何模型`;
@@ -121,7 +121,7 @@ function commandReason(argv, names, dir) {
     || name === 'vercel' && args.some(a => a === '--prod' || a === '--production');
   if (publish) return `禁止 ${name} ${operands.slice(0, 2).join(' ')}：发布与合并一律人工执行`;
   if (['pkill', 'killall'].includes(name)) return `禁止 ${name}：只能停止本会话记录的 PID（kill $!、kill %1）`;
-  if (name === 'kill' && names.some(n => ['lsof', 'pgrep', 'pidof'].includes(n))) return '禁止按端口或名字查 PID 再 kill：只能停止本会话记录的 PID（kill $!、kill %1）';
+  if (name === 'kill' && allNames.some(n => ['lsof', 'pgrep', 'pidof'].includes(n))) return '禁止按端口或名字查 PID 再 kill：只能停止本会话记录的 PID（kill $!、kill %1）';
   if (DB_CLIENTS.includes(name)) {
     const remote = dbHosts(args).find(h => !LOCAL_HOST.test(h));
     if (remote !== undefined) return `禁止 ${name} 连接非本机 host ${remote}`;
@@ -190,29 +190,71 @@ function reason({client, name, input, cwd, root, shell, derived, env = process.e
     if (out) return out;
   }
   if (shell === undefined) return null;
-  let parsed;
-  try { parsed = parse(stripHeredocs(shell)); }
+  const roots = writableRoots(cwd, root, env);
+  let allNames = [];
+  try { allNames = parse(stripHeredocs(shell)).argvs.map(a => path.posix.basename(a[0])); }
   catch {
-    // 解析不了的文本（bash 多半也执行不了）：只按词扫一遍受保护路径。
     const kind = shell.split(/[\s;&|()`"'<>]+/).map(w => wordKind(w, cwd, env)).find(Boolean);
-    return kind ? `禁止读取${kind}` : null;
+    if (kind) return `禁止读取${kind}`;
+    if (derived) return '无法确认 shell 写入目标（解析失败）';
   }
-  const names = parsed.argvs.map(argv => path.posix.basename(argv[0]));
-  let dir = cwd;
-  for (const argv of parsed.argvs) {
-    if (argv[0] === 'cd' && argv[1]) dir = path.resolve(dir, expand(argv[1], env));
-    for (const word of argv.slice(argv[0].includes('/') ? 0 : 1)) {
-      const kind = wordKind(word, dir, env);
-      if (kind) return `禁止读取${kind}（命令 ${path.posix.basename(argv[0])}）`;
+  // Preserve shell order and isolate subshell cwd. Conditional cd leaves both possible
+  // directories unless its success is required by &&; every possible write must be safe.
+  function walk(text, dirs, depth = 0) {
+    if (depth > 8) return '无法确认 shell 写入目标（嵌套过深）';
+    let part = '', quote = '', nesting = 0;
+    const pieces = [];
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (c === '\\') { part += text.slice(i, i + 2); i++; continue; }
+      if (quote) { part += c; if (c === quote) quote = ''; continue; }
+      if (c === "'" || c === '"') { quote = c; part += c; continue; }
+      if (c === '(') nesting++;
+      if (c === ')') nesting--;
+      if (!nesting && /[;&|\n]/.test(c) && !(text[i - 1] === '>' && /[&|]/.test(c))) {
+        const op = text[i + 1] === c && /[&|]/.test(c) ? c + text[++i] : c;
+        pieces.push([part, op]); part = '';
+      } else part += c;
     }
-    const why = commandReason(argv, names, dir);
-    if (why) return why;
+    pieces.push([part, '']);
+    if (quote || nesting) return derived ? '无法确认 shell 写入目标（语法不完整）' : null;
+    for (let j = 0; j < pieces.length; j++) {
+      const [line, op] = pieces[j], trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+        const why = walk(trimmed.slice(1, -1), [...dirs], depth + 1); if (why) return why; continue;
+      }
+      let parsed;
+      try { parsed = parse(trimmed); }
+      catch { return derived ? '无法确认 shell 写入目标（解析失败）' : null; }
+      const writes = shellWrites(parsed);
+      if (derived && writes.length && parsed.argvs.length > 1 && parsed.argvs.some(a => a[0] === 'cd')) return '无法确认嵌套 shell 的写入目录';
+      if (derived && writes.some(t => !t || /[$`*?\[\]{}]/.test(expand(t, env)) || t.includes('__sa_sub__'))) return '无法确认 shell 写入目标（动态路径）';
+      for (const dir of dirs) {
+        for (const argv of parsed.argvs) {
+          for (const word of argv.slice(argv[0].includes('/') ? 0 : 1)) {
+            const kind = wordKind(word, dir, env); if (kind) return `禁止读取${kind}（命令 ${path.posix.basename(argv[0])}）`;
+          }
+          const why = commandReason(argv, allNames, dir); if (why) return why;
+          const flag = argv.findIndex((v, k) => k > 0 && /^-[a-z]*c[a-z]*$/.test(v));
+          if (['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(path.posix.basename(argv[0])) && flag > 0) {
+            const why = walk(argv[flag + 1] || '', [dir], depth + 1); if (why) return why;
+          }
+        }
+        for (const file of parsed.reads) { const kind = wordKind(file, dir, env); if (kind) return `禁止读取${kind}（输入重定向）`; }
+        if (derived) { const why = outsideReason(writes, dir, roots, env); if (why) return why; }
+      }
+      const cd = parsed.argvs.find(argv => argv[0] === 'cd');
+      if (cd) {
+        const target = cd[1] || homeOf(env);
+        if (/[$`*?\[\]{}]/.test(expand(target, env)) || cd.length > 2) return derived ? '无法确认 cd 后的写入目录' : null;
+        const next = dirs.map(dir => path.resolve(dir, expand(target, env)));
+        dirs = op === '&&' && !['||', '|', '|&', '&'].includes(pieces[j - 1]?.[1]) ? next : [...new Set([...dirs, ...next])];
+      }
+    }
+    return null;
   }
-  for (const file of parsed.reads) {
-    const kind = wordKind(file, dir, env);
-    if (kind) return `禁止读取${kind}（输入重定向）`;
-  }
-  return derived ? outsideReason(shellWrites(parsed), dir, writableRoots(cwd, root, env), env) : null;
+  return walk(stripHeredocs(shell), [cwd]);
 }
 
 module.exports = {reason, resolvePath, within, secretKind, stripHeredocs};

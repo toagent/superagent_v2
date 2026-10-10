@@ -25,6 +25,7 @@ import {
 } from '../src/board/data';
 import { detailOf, detailLines, redact } from '../src/board/detail';
 import { Frame } from '../src/board/App';
+import { cockpit } from '../src/board/cockpit';
 import { tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
@@ -606,7 +607,7 @@ test('summarize, report and the board share one summary', async () => {
   );
   const f = ledger('f', { status: 'failed', nodes: [{ nodeId: 'verify-a', state: 'failed' }] });
   // report 另带 usage（F-22，report.test.ts 覆盖）；计数摘要部分与 summarize、board 同源
-  const { usage, ...expected } = report();
+  const { usage, metrics, ...expected } = report();
   expect(usage).toMatchObject({ total: { calls: 0, coverage: '0/0', input: 'unknown' } });
   expect(expected).toMatchObject({
     runs: 2,
@@ -621,4 +622,5 @@ test('summarize, report and the board share one summary', async () => {
   }));
   expect(summarize(runs)).toEqual(expected);
   expect((await createLoader()(50)).summary).toEqual(expected);
+  expect(metrics).toEqual(cockpit(await createLoader()(50)).metrics);
 });

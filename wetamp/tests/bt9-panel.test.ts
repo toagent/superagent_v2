@@ -65,7 +65,7 @@ function fixture(): Snapshot {
 }
 test('2 runs, 1 job, pending/superseded and all four token roles render the shared dark panel snapshot', () => {
   setup(); const s = fixture(), d = overview(s), html = panel(d);
-  expect(d).toMatchObject({ at: '12:00', running: 2, metrics: { completed: 1, decided: 1 }, needs: [{ project: 'demo', question: '预算已用尽 是=放宽预算再跑 否=终止', waiting: '5m00s' }] });
+  expect(d).toMatchObject({ at: '12:00', running: 2, metrics: { completed: 0, decided: 1 }, needs: [{ project: 'demo', question: '预算已用尽 是=放宽预算再跑 否=终止', waiting: '5m00s' }] });
   expect(d.runs.map(r => [r.id, r.role, r.state, r.url])).toEqual([['b', '军师·astra', '进行中', '/console/r/archon-b'], ['a', '将军·sol6.1', '完成', '/console/r/archon-a']]);
   expect(d.tokenRows?.map(r => [r.role, r.total])).toEqual([['将军', 4000], ['军师', 3000], ['元帅', 2000], ['未归属', 1000]]);
   expect(d.metrics).toEqual(cockpit(s, now).metrics); expect(html).not.toContain('<script>任务'); expect(html).toContain('&lt;script&gt;任务');

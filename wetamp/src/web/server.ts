@@ -1,8 +1,7 @@
-import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, chmodSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
-import { getSourceWebDistDir } from '../../../packages/paths/src/archon-paths';
 import { home, WETAMP, writeAtomic } from '../config';
 import { engineHash } from '../generate';
 import { lock } from '../archon';
@@ -11,28 +10,39 @@ import { createLoader, type Snapshot } from '../board/data';
 import { fmtTokens, requestUsageRefresh } from '../usage';
 import { cockpit } from '../board/cockpit';
 import { parseArgs } from '../cli';
+import { homedir } from 'node:os';
 
-interface LegacyWebState { port: number; pid: number; token: string; started_at: string }
-export interface WebState extends LegacyWebState { server_pid: number; internal_port: number; engine_hash: string }
+interface LegacyWebState { port: number; pid: number; token: string; started_at: string; uid?: number; server_pid?: number; internal_port?: number }
+export interface WebState extends LegacyWebState { engine_hash: string; socket: string; label: string }
 type ConsoleState = WebState | LegacyWebState;
 const stateFile = (): string => join(home().sa, 'web.json');
 export function webState(): ConsoleState | null { try { return JSON.parse(readFileSync(stateFile(), 'utf8')) as ConsoleState; } catch { return null; } }
 export const webUrl = (s: ConsoleState): string => `http://127.0.0.1:${String(s.port)}/console?t=${s.token}`;
-const serverArgs = (port: number): string[] => ['--no-env-file', join(WETAMP, 'src/web/archon.ts'), String(port)];
-function owned(pid: number, args: string[]): boolean {
-  try { return execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim() === [process.execPath, ...args].join(' '); } catch { return false; }
+const label = (): string => process.env.SA_CONSOLE_LABEL ?? 'com.wetamp.superagent-console';
+const domain = (): string => `gui/${String(process.getuid?.())}`;
+const job = (): string => `${domain()}/${label()}`;
+const launch = (...args: string[]): ReturnType<typeof spawnSync> => spawnSync('launchctl', args, { encoding: 'utf8' });
+const loaded = (): boolean => launch('print', job()).status === 0;
+export const needsRestart = (s: ConsoleState, current = engineHash()): boolean => !('engine_hash' in s) || s.engine_hash !== current;
+// Legacy migration alone uses PID identity; incomplete records fail closed.
+function migrate(s: ConsoleState): void {
+  if ('label' in s) return;
+  const check = (pid: number): void => {
+    const uid = execFileSync('ps', ['-p', String(pid), '-o', 'uid='], { encoding: 'utf8' }).trim();
+    const started = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
+    const argv = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim();
+    const expected = pid === s.pid ? [process.execPath, join(WETAMP, 'src/cli.ts'), 'console', 'serve'].join(' ') : [process.execPath, '--no-env-file', join(WETAMP, 'src/web/archon.ts'), String(s.internal_port)].join(' ');
+    if (s.uid !== Number(uid) || Number(uid) !== process.getuid?.() || !Number.isFinite(Date.parse(s.started_at)) || !Number.isFinite(Date.parse(started)) || Math.abs(Date.parse(started) - Date.parse(s.started_at)) >= 1000 || argv !== expected) throw new Error('console owner ambiguous; legacy PID migration refused');
+  };
+  const pids = [...new Set([s.pid, s.server_pid].filter((p): p is number => p !== undefined && alive(p)))];
+  for (const pid of pids) check(pid);
+  for (const pid of pids) if (alive(pid)) { check(pid); process.kill(pid, 'SIGTERM'); }
 }
-const proxyArgs = [join(WETAMP, 'src/cli.ts'), 'console', 'serve'];
-const residentPids = (s: ConsoleState): number[] => 'server_pid' in s ? [s.pid, s.server_pid] : [s.pid];
-// The previous web command recorded only its own PID; migrate it through the same checked stop path.
-const ownedState = (s: ConsoleState): boolean => (!alive(s.pid) || owned(s.pid, proxyArgs) || owned(s.pid, [join(WETAMP, 'src/cli.ts'), 'web', 'serve'])) && (!('server_pid' in s) || !alive(s.server_pid) || owned(s.server_pid, serverArgs(s.internal_port)));
-export const needsRestart = (s: ConsoleState, current = engineHash()): boolean => !('engine_hash' in s) || s.engine_hash !== current || residentPids(s).some(pid => !alive(pid));
 /** Detached console children receive no ambient credentials or adapter settings. */
 export function consoleEnv(): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const key of ['HOME', 'PATH', 'TMPDIR', 'TZ']) if (process.env[key]) env[key] = process.env[key];
-  // A millennium keeps current recovery handles without overflowing SQLite's datetime range.
-  return { ...env, SUPERAGENT_HOME: home().sa, ARCHON_HOME: home().archon, HOST: '127.0.0.1', NODE_ENV: 'production', ARCHON_TELEMETRY_DISABLED: '1', DO_NOT_TRACK: '1', STALE_THRESHOLD_DAYS: '365000', SESSION_RETENTION_DAYS: '365000' };
+  for (const key of ['HOME', 'PATH', 'TMPDIR', 'TZ', 'SA_CONSOLE_LABEL', 'SA_LAUNCHD_DIR', 'SA_CONSOLE_PORT', 'SA_CONSOLE_WEB_DIST']) if (process.env[key]) env[key] = process.env[key];
+  return { ...env, SUPERAGENT_HOME: home().sa, ARCHON_HOME: home().archon, HOST: '127.0.0.1', NODE_ENV: 'production', ARCHON_TELEMETRY_DISABLED: '1', DO_NOT_TRACK: '1' };
 }
 /** Panel data is a projection of cockpit, never a separate collector. */
 export function overview(s: Snapshot) {
@@ -57,7 +67,7 @@ ${d.needs?.length ? `<section id="needs"><h2>需要你</h2><p>在 Mac 提醒 SUP
 <section id="runs"><h2>今日 run</h2><table><thead><tr><th>项目</th><th>任务</th><th>run</th><th>角色·模型</th><th>token</th><th>用时</th><th>状态</th></tr></thead><tbody>${(d.runs ?? []).map(r => `<tr>${cells([r.project, r.title])}<td>${r.url ? `<a href="${html(r.url)}">${html(r.id)}</a>` : html(r.id)}</td>${cells([r.role, r.tokens, r.elapsed, r.state])}</tr>`).join('')}</tbody></table></section><script>setInterval(()=>location.reload(),15000)</script></body></html>`;
 }
 const same = (a: string, b: string): boolean => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
-export function handler(port: number, token: string, get: () => Record<string, unknown>, upstream: string, forward: typeof fetch = fetch): (r: Request) => Promise<Response> {
+export function handler(port: number, token: string, get: () => Record<string, unknown>, upstream: string, forward: typeof fetch = fetch, unix?: string): (r: Request) => Promise<Response> {
   return async r => {
     const headers: Record<string, string> = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY' };
     const respond = (body: string, status: number, type = 'text/plain'): Response => new Response(r.method === 'HEAD' ? null : body, { status, headers: { ...headers, 'Content-Type': `${type}; charset=utf-8` } });
@@ -73,7 +83,7 @@ export function handler(port: number, token: string, get: () => Record<string, u
     try {
       const target = new URL(upstream); target.pathname = url.pathname; target.search = url.search;
       const pass = new Headers(); for (const key of ['accept', 'last-event-id', 'range']) { const value = r.headers.get(key); if (value) pass.set(key, value); }
-      const response = await forward(target, { method: r.method, headers: pass, signal: r.signal, redirect: 'manual' });
+      const response = await forward(target, { method: r.method, headers: pass, signal: r.signal, redirect: 'manual', ...(unix ? { unix } : {}) });
       const result = new Headers(response.headers); for (const [key, value] of Object.entries(headers)) result.set(key, value);
       if (r.method !== 'HEAD' && response.headers.get('content-type')?.includes('text/html')) {
         const html = (await response.text()).replace('</body>', '<a href="/sa" style="position:fixed;right:12px;bottom:12px;z-index:9999">superagent 角色·模型·token</a></body>');
@@ -85,76 +95,73 @@ export function handler(port: number, token: string, get: () => Record<string, u
   };
 }
 export async function ensureWebDist(hash = engineHash()): Promise<void> {
-  const dist = getSourceWebDistDir(), stamp = join(dist, '.superagent-engine');
+  const { observerDist } = await import('./archon');
+  const dist = observerDist(), stamp = join(dist, '.superagent-engine');
   if (existsSync(join(dist, 'index.html')) && existsSync(stamp) && readFileSync(stamp, 'utf8') === hash) return;
-  const p = Bun.spawn([process.execPath, 'run', 'build:web'], { cwd: join(WETAMP, '..'), env: consoleEnv(), stdout: 'ignore', stderr: 'inherit', timeout: 90000 });
+  const p = Bun.spawn([process.execPath, 'x', 'vite', 'build', '--outDir', dist], { cwd: join(WETAMP, '../packages/web'), env: consoleEnv(), stdout: 'ignore', stderr: 'inherit', timeout: 90000 });
   if (await p.exited !== 0) throw new Error('build:web failed');
   writeFileSync(stamp, hash);
 }
 async function serve(): Promise<void> {
   mkdirSync(home().sa, { recursive: true });
   const held = lock(join(home().sa, 'web.lock')); if (!held.ok) throw new Error('console already running');
-  let server: ReturnType<typeof Bun.serve> | undefined, child: ReturnType<typeof spawn> | undefined;
+  const dir = join(home().sa, 'console'), socket = join(dir, 'archon.sock');
+  mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700);
+  let server: ReturnType<typeof Bun.serve> | undefined, timer: ReturnType<typeof setInterval> | undefined;
   const token = randomBytes(32).toString('hex'), hash = engineHash(), load = createLoader();
-  let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() }, busy = false, timer: ReturnType<typeof setInterval> | undefined;
+  let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() }, busy = false;
   const update = async (): Promise<void> => { if (busy) return; busy = true; try { snapshot = await load(Number.MAX_SAFE_INTEGER); requestUsageRefresh(); } finally { busy = false; } };
+  const cleanup = (): void => { if (existsSync(socket)) unlinkSync(socket); if (webState()?.pid === process.pid) unlinkSync(stateFile()); };
+  process.once('exit', cleanup);
   try {
     await ensureWebDist(hash);
-    const reserve = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response() }), internal = reserve.port; await reserve.stop(true);
-    if (!internal) throw new Error('no internal port');
-    const fd = openSync(join(home().sa, 'console.log'), 'a', 0o600);
-    try { child = spawn(process.execPath, serverArgs(internal), { cwd: home().sa, stdio: ['ignore', fd, fd], env: consoleEnv() }); } finally { closeSync(fd); }
-    for (let i = 0; i < 300; i++) {
-      if (child.exitCode !== null) throw new Error('Archon server failed; see console.log');
-      try { if ((await fetch(`http://127.0.0.1:${String(internal)}/console`, { signal: AbortSignal.timeout(500) })).ok) break; } catch { /* Wait for native boot/migrations. */ }
-      if (i === 299) throw new Error('Archon server startup timeout'); await Bun.sleep(100);
-    }
-    for (let port = 39890; port < 39990; port++) {
-      try { server = Bun.serve({ hostname: '127.0.0.1', port, fetch: handler(port, token, () => overview(snapshot), `http://127.0.0.1:${String(internal)}`) }); break; }
-      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw e; }
-    }
-    if (!server || !child.pid) throw new Error('no free console port');
-    const state: WebState = { port: server.port ?? 0, pid: process.pid, server_pid: child.pid, internal_port: internal, token, started_at: new Date().toISOString(), engine_hash: hash };
-    writeAtomic(stateFile(), JSON.stringify(state));
-    timer = setInterval(() => { void update().catch(() => { /* Keep the previous snapshot; visible timestamp remains unchanged. */ }); }, 5000); void update().catch(() => { /* The initial timestamp exposes an unavailable snapshot. */ });
-    await new Promise<void>(resolve => { process.once('SIGTERM', resolve); process.once('SIGINT', resolve); child?.once('exit', () => { resolve(); }); });
-  } finally {
-    if (timer) clearInterval(timer); if (server) await server.stop(true);
-    if (child?.pid && alive(child.pid) && owned(child.pid, serverArgs(Number(child.spawnargs.at(-1))))) { child.kill('SIGTERM'); await new Promise<void>(resolve => { child?.once('exit', () => { resolve(); }); }); }
-    if (webState()?.pid === process.pid) unlinkSync(stateFile()); held.release();
-  }
+    if (existsSync(socket)) unlinkSync(socket); // Exclusive web.lock proves there is no console owner.
+    const { startObserver } = await import('./archon');
+    await startObserver(socket);
+    const port = Number(process.env.SA_CONSOLE_PORT ?? 39890);
+    server = Bun.serve({ hostname: '127.0.0.1', port, fetch: handler(port, token, () => overview(snapshot), 'http://localhost', fetch, socket) });
+    writeAtomic(stateFile(), JSON.stringify({ port: server.port ?? port, pid: process.pid, token, started_at: new Date().toISOString(), engine_hash: hash, socket, label: label() } satisfies WebState));
+    if (existsSync(join(dir, 'error'))) unlinkSync(join(dir, 'error'));
+    timer = setInterval(() => { void update().catch(() => { /* Loader retains the last snapshot. */ }); }, 5000); void update().catch(() => { /* Loader retains the last snapshot. */ });
+    await new Promise<void>(resolve => { process.once('SIGTERM', resolve); process.once('SIGINT', resolve); });
+  } catch (e) { writeAtomic(join(dir, 'error'), (e as Error).message); throw e; }
+  finally { if (timer) clearInterval(timer); if (server) await server.stop(true); cleanup(); held.release(); }
 }
 export async function stopWeb(s = webState()): Promise<void> {
-  if (!s) return; if (!ownedState(s)) throw new Error('console owner ambiguous; refusing to stop');
-  const pids = residentPids(s);
-  for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGTERM');
-  for (let i = 0; i < 300 && pids.some(alive); i++) await Bun.sleep(50);
-  if (pids.some(alive)) throw new Error('console still stopping');
-  if (webState()?.pid === s.pid) unlinkSync(stateFile());
+  if (s) migrate(s);
+  if (loaded()) { const p = launch('bootout', job()); if (p.status !== 0) throw new Error(`console bootout failed: ${String(p.stderr)}`); }
+  for (let i = 0; i < 300 && (existsSync(join(home().sa, 'console/archon.sock')) || (s && alive(s.pid))); i++) await Bun.sleep(50);
+  if (existsSync(join(home().sa, 'console/archon.sock')) || (s && alive(s.pid))) throw new Error('console still stopping');
 }
 export async function startWeb(): Promise<WebState> {
   mkdirSync(home().sa, { recursive: true });
-  const guard = lock(join(home().sa, 'web-start.lock'));
-  if (!guard.ok) throw new Error('console startup already pending');
+  const guard = lock(join(home().sa, 'web-start.lock')); if (!guard.ok) throw new Error('console startup already pending');
   try {
-    const old = webState();
-    if (old) { if (!ownedState(old)) throw new Error('console owner ambiguous; refusing'); if ('server_pid' in old && !needsRestart(old)) return old; await stopWeb(old); }
-    const p = spawn(process.execPath, proxyArgs, { detached: true, stdio: 'ignore', cwd: home().sa, env: consoleEnv() }); p.unref();
-    for (let i = 0; i < 1200; i++) { await Bun.sleep(100); const s = webState(); if (s && 'server_pid' in s && s.pid === p.pid && ownedState(s)) return s; if (p.exitCode !== null) break; }
-    if (p.pid && alive(p.pid) && owned(p.pid, proxyArgs)) process.kill(p.pid, 'SIGTERM');
-    throw new Error('console startup failed; see console.log');
+    const old = webState(); if (old) migrate(old);
+    const xml = (s: string): string => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c] ?? c);
+    const dir = process.env.SA_LAUNCHD_DIR ?? join(homedir(), 'Library/LaunchAgents'), file = join(dir, `${label()}.plist`);
+    mkdirSync(dir, { recursive: true });
+    const text = `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${xml(label())}</string><key>ProgramArguments</key><array>${[process.execPath, '--no-env-file', '--preload', join(WETAMP, 'src/web/archon.ts'), join(WETAMP, 'src/cli.ts'), 'console', 'serve'].map(x => `<string>${xml(x)}</string>`).join('')}</array><key>EnvironmentVariables</key><dict>${Object.entries(consoleEnv()).map(([k,v]) => `<key>${xml(k)}</key><string>${xml(v)}</string>`).join('')}</dict><key>WorkingDirectory</key><string>${xml(home().sa)}</string><key>KeepAlive</key><true/><key>RunAtLoad</key><true/><key>StandardOutPath</key><string>${xml(join(home().sa, 'console.log'))}</string><key>StandardErrorPath</key><string>${xml(join(home().sa, 'console.log'))}</string></dict></plist>`;
+    const changed = !existsSync(file) || readFileSync(file, 'utf8') !== text;
+    if (changed) writeAtomic(file, text);
+    const error = join(home().sa, 'console/error'); if (existsSync(error)) unlinkSync(error);
+    if (changed && loaded()) await stopWeb(old);
+    if (!loaded()) { const p = launch('bootstrap', domain(), file); if (p.status !== 0) throw new Error(`console bootstrap failed: ${String(p.stderr)}`); }
+    else if (changed || !old || needsRestart(old)) { const p = launch('kickstart', '-k', job()); if (p.status !== 0) throw new Error(`console kickstart failed: ${String(p.stderr)}`); }
+    for (let i = 0; i < 1200; i++) { const s = webState(); if (s && 'label' in s && s.label === label() && !needsRestart(s) && alive(s.pid)) return s; await Bun.sleep(100); const error = join(home().sa, 'console/error'); if (existsSync(error)) throw new Error(`console startup failed: ${readFileSync(error, 'utf8')}`); }
+    throw new Error('console startup timeout; inspect console status and console.log');
   } finally { guard.release(); }
 }
 export async function refreshConsole(restart = startWeb, current = engineHash()): Promise<ConsoleState | null> {
-  const s = webState(); return s && residentPids(s).some(alive) && needsRestart(s, current) ? await restart() : s;
+  const s = webState(); return s && alive(s.pid) && needsRestart(s, current) ? await restart() : s;
 }
 export async function webCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv), sub = a._[1];
   if (sub === 'serve') { await serve(); return 0; }
-  if (sub === 'start') { const s = await startWeb(); console.log(JSON.stringify({ port: s.port, pid: s.pid, server_pid: s.server_pid, state: 'running' })); return 0; }
+  if (sub === 'start') { const s = await startWeb(); console.log(JSON.stringify({ port: s.port, state: 'running' })); return 0; }
   if (sub === 'stop') { await stopWeb(); console.log('stopped'); return 0; }
-  const s = await refreshConsole();
-  if (sub === 'status') { console.log(JSON.stringify({ state: s && alive(s.pid) ? ownedState(s) ? 'running' : 'unknown' : 'stopped', port: s?.port, pid: s?.pid, server_pid: s && 'server_pid' in s ? s.server_pid : undefined })); return 0; }
-  if (sub === 'url' && s && alive(s.pid) && ownedState(s)) { const url = webUrl(s); if (a.flags.open) return await Bun.spawn(['open', url], { stdout: 'ignore', stderr: 'ignore' }).exited; console.log(url); return 0; }
+  const s = webState();
+  if (sub === 'status') { const p = launch('print', job()), error = join(home().sa, 'console/error'); console.log(JSON.stringify({ state: p.status === 0 ? s && alive(s.pid) ? 'running' : 'starting' : 'stopped', port: s?.port, error: existsSync(error) ? readFileSync(error, 'utf8') : undefined, launchd: String(p.stdout).split('\n').filter(x => /state =|last exit code =/.test(x)).map(x => x.trim()) })); return 0; }
+  if (sub === 'url' && s && 'label' in s && loaded()) { const url = webUrl(s); if (a.flags.open) return await Bun.spawn(['open', url], { stdout: 'ignore', stderr: 'ignore' }).exited; console.log(url); return 0; }
   throw new Error('usage: superagent console start|stop|status|url [--open] (web is a compatibility alias)');
 }

@@ -1,4 +1,5 @@
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
+import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
@@ -16,11 +17,14 @@ import {
   ledgerPath,
   loadLedger,
   summarize,
+  evidenceJson,
   type Ledger,
   type Pair,
 } from '../cli';
 
 export interface BoardRow {
+  landed?: boolean;
+  intervened?: boolean;
   archon_id?: string;
   coderModel?: string | null;
   engine?: { title: string; milestones: string[]; currentMilestone: string | null; states: { id: string; state: string }[]; firstPass: boolean; round?: number; reason: string; dispositions: NonNullable<Ledger['dispositions']> };
@@ -127,6 +131,8 @@ export function rowOf(
       firstPass: c.state === 'completed' && ms.length > 0 && stats.first_pass === ms.length && !l.auto_retries?.length && !nodes.some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped'),
       round: Math.max(0, ...Object.keys(stats).filter(k => k.startsWith('rounds:')).map(k => Number(k.slice(7))), ...nodes.filter(n => n.state !== 'skipped').map(n => Number(/-r(\d+)$/.exec(n.nodeId)?.[1] ?? 0))),
       reason: l.reason ?? (nodeReason || undefined) ?? l.dispositions?.at(-1)?.reason ?? run.metadata?.stop_reason?.reason ?? '', dispositions: l.dispositions ?? [] },
+    landed: (() => { if (c.state !== 'completed' || !plan?.base_ref) return false; const land = evidenceJson(l, artifactsOf(run), 'land.json') as { head?: string } | undefined; return !!land?.head && /^[a-f0-9]{40,64}$/.test(land.head) && spawnSync('git', ['merge-base', '--is-ancestor', land.head, `refs/heads/${plan.base_ref.replace(/^origin\//, '')}`], { cwd: l.repo, timeout: 3000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).status === 0; })(),
+    intervened: (l.intervened ?? !!l.recoveries.length) || nodes.some(n => n.nodeId.startsWith('human-') && n.state === 'completed') || !!l.dispositions?.some(d => ['ask', 'approve', 'reject'].includes(d.action)),
     archon_id: l.archon_run_id,
     coderModel: (() => { const m = nodes.find(n => opts.roles?.get(n.nodeId) === 'coder' && n.execution?.binding.model)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
     model: (() => { const m = nodes.find(n => n.nodeId === current)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
@@ -297,4 +303,13 @@ export function fmtElapsed(s: number | null): string {
 export function bar(done: number, total: number, width = 6): string {
   const full = total > 0 ? Math.round((Math.min(done, total) / total) * width) : 0;
   return `${'█'.repeat(full)}${'░'.repeat(width - full)} ${String(done)}/${String(total)}`;
+}
+
+export function snapshotOf(pairs: Pair[], now = Date.now()): Snapshot {
+  const summary = summarize(pairs);
+  const rows = pairs.map(p => {
+    try { if (p.run instanceof Error) throw p.run; return rowOf(p.ledger, p.run, { now }); }
+    catch (e) { const error = tail((e as Error).message, 200); const unreadable = summary.unreadable as string[]; if (!unreadable.some(s => s.startsWith(`${p.ledger.run_id}:`))) unreadable.push(`${p.ledger.run_id}: ${error}`); return unreadableRow(p.ledger.run_id, error, p.ledger); }
+  });
+  return { at: new Date(now).toISOString(), summary, rows };
 }

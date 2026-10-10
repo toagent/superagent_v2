@@ -38,7 +38,7 @@ function entries() {
         const ident = { event_name: snake(event), hooks: [hook] };
         if (g.matcher != null) ident.matcher = g.matcher;
         const hash = 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(sorted(ident))).digest('hex');
-        out.push({ key: `${hooksFile}:${snake(event)}:${gi}:${hi}`, event, command: h.command, hash });
+        out.push({ key: `${hooksFile}:${snake(event)}:${gi}:${hi}`, event, command: h.command, matcher: g.matcher, async: hook.async, hash });
       })
     );
   return out;
@@ -98,7 +98,9 @@ try {
   if (cmd === 'write') process.stdout.write(write(rest.includes('--dry-run')));
   else if (cmd === 'check') {
     const s = state();
-    const ok = entries().some(e => e.event === 'PreToolUse' && e.command.includes('hooks/guard.cjs')
+    const expected = `node '${OURS}guard.cjs' codex`;
+    const ok = entries().some(e => e.event === 'PreToolUse' && e.command === expected && !e.async
+      && [undefined, '', '*'].includes(e.matcher)
       && s[e.key]?.enabled !== false && s[e.key]?.trusted_hash === e.hash);
     process.exit(ok ? 0 : 1);
   } else if (cmd === 'verify') {
