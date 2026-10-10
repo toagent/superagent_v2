@@ -53,6 +53,9 @@ describe('install.sh', () => {
     expect(cfg.aliases['@sa-coder'].provider).toBe('codex');
     expect(cfg.concurrency).toEqual({ maxConversations: 4, providers: { codex: 5, claude: 1 } });
     expect(cfg.workflows.autoResumeOnQuotaReset).toBe(true);
+    expect(cfg.assistants.codex.codexBinaryPath).toBe(
+      join(import.meta.dir, '..', 'bin', 'codex-worker')
+    );
     const backups = readdirSync(join(home, 'archon')).filter(f => f.startsWith('config.yaml.bak-'));
     expect(backups.length).toBe(1);
 
@@ -127,5 +130,119 @@ describe('aliases', () => {
   test('unknown vendor fails instead of guessing', () => {
     expect(providerOf('claude-opus-5')).toBe('claude');
     expect(() => providerOf('llama-4')).toThrow('unknown vendor');
+  });
+});
+
+describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
+  const WETAMP = join(import.meta.dir, '..');
+  const V1 = (h: string, f: string): string =>
+    `node '${join(h, 'work/github/superagent/hooks', f)}'`;
+  const V2 = (f: string): string => `node '${join(WETAMP, 'hooks', f)}'`;
+  function sandbox(): { home: string; sh: (...args: string[]) => { code: number; out: string } } {
+    const home = tmp();
+    const sh = (...args: string[]): { code: number; out: string } => {
+      const p = Bun.spawnSync(['bash', join(WETAMP, 'scripts', 'install.sh'), ...args], {
+        env: {
+          ...process.env,
+          HOME: home,
+          SUPERAGENT_HOME: join(home, '.superagent'),
+          CLAUDE_CONFIG_DIR: '',
+          CODEX_HOME: '',
+          XDG_STATE_HOME: '',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      return { code: p.exitCode, out: p.stdout.toString() + p.stderr.toString() };
+    };
+    return { home, sh };
+  }
+  const cmds = (file: string): string[][] =>
+    Object.entries(
+      (
+        JSON.parse(readFileSync(file, 'utf8')) as {
+          hooks: Record<string, { hooks: { command: string }[] }[]>;
+        }
+      ).hooks
+    ).map(([e, gs]) => [e, ...gs.flatMap(g => g.hooks.map(h => h.command))]);
+
+  test('--hooks rewrites V1 paths, fills missing events, dedupes, keeps other hooks; --dry-run writes nothing', () => {
+    const { home, sh } = sandbox();
+    const settings = join(home, '.claude', 'settings.json');
+    mkdirSync(dirname(settings), { recursive: true });
+    const g = (c: string): unknown => ({ hooks: [{ type: 'command', command: c, timeout: 30 }] });
+    const before =
+      JSON.stringify(
+        {
+          model: 'x',
+          hooks: {
+            PreToolUse: [
+              g('rtk hook claude'),
+              g(`${V1(home, 'guard.cjs')} claude`),
+              g(`${V2('guard.cjs')} claude`),
+            ],
+            Stop: [g(`${V1(home, 'guard.cjs')} claude`)],
+          },
+        },
+        null,
+        2
+      ) + '\n';
+    writeFileSync(settings, before);
+    const dry = sh('--hooks', '--dry-run');
+    expect(dry.code).toBe(0);
+    expect(dry.out).toContain(`+++ ${settings}`);
+    expect(readFileSync(settings, 'utf8')).toBe(before);
+    expect(sh('--hooks').code).toBe(0);
+    const after = cmds(settings);
+    expect(after.find(([e]) => e === 'PreToolUse')).toEqual([
+      'PreToolUse',
+      'rtk hook claude',
+      `${V2('guard.cjs')} claude`,
+      V2('context-budget.cjs'),
+    ]);
+    expect(after.map(([e]) => e)).toEqual([
+      'PreToolUse',
+      'Stop',
+      'SessionStart',
+      'PostToolUse',
+      'SubagentStop',
+      'UserPromptSubmit',
+    ]);
+    expect(JSON.stringify(after)).not.toContain('/work/github/superagent/');
+    expect(readdirSync(join(home, '.superagent', 'backups'))[0]).toMatch(/^hooks-\d{8}T\d{6}Z$/);
+    expect(sh('--hooks').out.trim()).toBe('hooks: no changes');
+  });
+
+  test('--purge-v1 --dry-run lists managed agents and V1 dirs only; moves nothing', () => {
+    const { home, sh } = sandbox();
+    mkdirSync(join(home, '.claude', 'agents'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude', 'agents', 'coder-1.md'),
+      '<!-- superagent:managed:agent x -->'
+    );
+    writeFileSync(join(home, '.claude', 'agents', 'coder-2.md'), 'mine');
+    mkdirSync(join(home, 'work', 'github', 'superagent'), { recursive: true });
+    const out = sh('--purge-v1', '--dry-run').out;
+    expect(out).toContain(`would move ${join(home, '.claude', 'agents', 'coder-1.md')}`);
+    expect(out).not.toContain('coder-2.md');
+    expect(out).toContain(`would move ${join(home, 'work', 'github', 'superagent')}`);
+    expect(readdirSync(join(home, 'work', 'github'))).toEqual(['superagent']);
+  });
+
+  test('--remote-hooks checks hooks with node and writes the install.json ledger; flags are exclusive', () => {
+    const { home, sh } = sandbox();
+    const r = sh('--remote-hooks');
+    expect(r.code).toBe(0);
+    const ledger = JSON.parse(
+      readFileSync(join(home, '.local', 'state', 'superagent', 'install.json'), 'utf8')
+    ) as Record<string, unknown>;
+    expect(ledger).toMatchObject({
+      installer: 'superagent_v2',
+      mode: 'remote-hooks',
+      wetamp: WETAMP,
+    });
+    expect(ledger.hooks).toContain('guard.cjs');
+    expect(sh('--hooks', '--remote-hooks').code).toBe(64);
+    expect(sh('--dry-run').code).toBe(64);
   });
 });
