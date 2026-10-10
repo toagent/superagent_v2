@@ -3,10 +3,10 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { fmtClock, type Snapshot } from './data';
 import { cockpit, fit } from './cockpit';
 import { ProgressBar } from './ProgressBar';
-import { engineHash } from '../generate';
+import { residentHash } from '../generate';
 
 export const ENGINE_CHANGED = 75;
-export const boardExitCode = (started: string, current = engineHash()): number => started === current ? 0 : ENGINE_CHANGED;
+export const boardExitCode = (started: string, current = residentHash()): number => started === current ? 0 : ENGINE_CHANGED;
 export interface FrameProps { snap: Snapshot; width: number; height: number; now: Date }
 export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
   const c = cockpit(snap, now.getTime()), lines: ReactElement[] = [];

@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { parseArgs as parse } from 'node:util';
 import {
   archon,
@@ -41,6 +41,8 @@ import {
   openBlocking,
   budgetUsage,
   effectiveBudget,
+  readAttempt,
+  attemptPath,
   type Review,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
@@ -104,6 +106,8 @@ export const EXIT_ALIAS_DRIFT = 5;
 export const EXIT_USAGE = 64;
 
 export interface Ledger {
+  /** Explicit workflow identity; engine_hash alone may be the legacy combined UI hash. */
+  workflow_hash?: string;
   engine_hash?: string;
   adoptions?: {
     at: string;
@@ -295,9 +299,9 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
   return {
     run_id: l.run_id,
     engine:
-      l.engine_hash === engineHash()
+      workflowIdentity(l) === engineHash()
         ? 'current'
-        : `stale(${l.engine_hash?.slice(0, 8) ?? 'unknown'})`,
+        : `stale(${workflowIdentity(l)?.slice(0, 8) ?? 'unknown'})`,
     adoption: l.adoptions?.at(-1) ?? null,
     state: c.state,
     exit: c.exit,
@@ -358,8 +362,9 @@ const progressOf = (run: RunView): string =>
 
 const stalledOut = (l: Ledger, run: RunView): boolean =>
   l.progress_fp === progressOf(run) && (l.stalled ?? 0) >= MAX_STALLED_RECOVERIES;
+const workflowIdentity = (l: Ledger): string | undefined => l.workflow_hash ?? l.engine_hash;
 const adoptsRun = (l: Ledger, run: RunView): boolean =>
-  ['failed', 'cancelled'].includes(run.status) && l.engine_hash !== engineHash();
+  ['failed', 'cancelled'].includes(run.status) && workflowIdentity(l) !== engineHash();
 
 /** classify + ledger：同一完成节点集合上已 recover 满 3 次的 owner-lost run 不再自动恢复，等元帅。 */
 export function classifyRun(l: Ledger, run: RunView): Classified {
@@ -402,7 +407,7 @@ function recoverRun(
       Object.assign(l, loadLedger(l.run_id));
       if (run.status === 'completed') return 'status completed is not resumable';
       if (auto?.deterministic) {
-        if (l.engine_hash === engineHash() || l.auto_retries?.some(r => r.engine_hash === auto.engine_hash)) return 'deterministic retry already used for this engine';
+        if (workflowIdentity(l) === engineHash() || l.auto_retries?.some(r => r.engine_hash === auto.engine_hash)) return 'deterministic retry already used for this engine';
         if (!['failed', 'cancelled'].includes(run.status)) return 'deterministic retry requires terminal adopt';
         // 先记一次授权的尝试：启动失败也不重复烧同一指纹的调用。
         (l.auto_retries ??= []).push(auto);
@@ -426,6 +431,7 @@ function recoverRun(
         });
         l.archon_run_id = to;
         l.engine_hash = adopted.hash;
+        l.workflow_hash = adopted.hash;
         l.transcript = typeof ack.transcriptPath === 'string' ? ack.transcriptPath : '';
         l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
       }
@@ -551,6 +557,7 @@ function startRun(planPath: string, a: Args): number {
     const l: Ledger = {
       run_id: run,
       engine_hash: gen.engine_hash,
+      workflow_hash: gen.engine_hash,
       archon_run_id: '',
       plan: planPath,
       gen_dir: gen.dir,
@@ -722,17 +729,20 @@ const pastDeadline = (l: Ledger): boolean => Date.now() > Date.parse(planOf(l).d
 const PAST_DEADLINE =
   'plan deadline passed: decide reject, or start a new run with a later deadline';
 
-/** 生成时带 attempt-<m> 节点的工作流（本版起都有）才能让 resume 重跑该里程碑的编码与修复。 */
-const attemptable = (l: Ledger, m: string): boolean => {
-  const wf = join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`);
-  return existsSync(wf) && readFileSync(wf, 'utf8').includes(`id: attempt-${m}\n`);
+/** Read actual generated nodes: old workflows retain their milestone-only retry semantics. */
+const attemptable = (l: Ledger, scope: string): boolean =>
+  workflowRoles(l)?.has(scope.startsWith('pkg/') ? `package-attempt-${scope.slice(4)}` : `attempt-${scope}`) ?? false;
+const retryScope = (l: Ledger, node: string): string => {
+  const pkg = /^(verify|settle|code|repair)-/.test(node) ? node.replace(/^(verify|settle|code|repair)-/, '') : '';
+  return pkg && attemptable(l, `pkg/${pkg}`) ? `pkg/${pkg}` : milestoneOf(l, node);
 };
-/** attempt-<m>（always_run）读这个计数：数值变了，依赖它的 code/verify/fix/diff 节点在 resume 时重跑。 */
+/** always_run reads this scope count; only dependent nodes lose their resume cache. */
 function bumpAttempt(l: Ledger, m: string): number {
-  const dir = join(l.gen_dir, 'attempts');
-  mkdirSync(dir, { recursive: true });
-  const n = Number(readJson(join(dir, m)) ?? 0) + 1;
-  writeAtomic(join(dir, m), String(n));
+  const path = attemptPath(l.gen_dir, m);
+  const n = readAttempt(path) + 1;
+  if (!Number.isSafeInteger(n)) throw new Error(`attempt counter exhausted: ${path}`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeAtomic(path, String(n));
   return n;
 }
 const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
@@ -742,7 +752,7 @@ const milestoneOf = (l: Ledger, node: string): string =>
         ?.milestone ?? 'm1')
     : gateMilestone(node.replace(/^fix-/, 'gate-'));
 
-/** held:gate 的恢复：里程碑计数加一后 resume，重跑本里程碑编码→验收→评审；旧工作流无 attempt 节点则拒绝。 */
+/** Bump the generated scope before resume; missing counters fail explicitly. */
 function retryGate(
   l: Ledger,
   node: string,
@@ -751,7 +761,7 @@ function retryGate(
   prepare?: () => void,
   key?: string
 ): RecoverResult {
-  const m = milestoneOf(l, node);
+  const m = retryScope(l, node);
   if (!attemptable(l, m))
     throw new Error(`decide retry: ${node} escalated; fix on ${l.branch} or start a new run`);
   return recoverRun(l, fresh, auto, () => {
@@ -762,9 +772,13 @@ function retryGate(
   });
 }
 
-/** decide retry 的恢复部分：held:gate 走 retryGate，其余 resume 失败节点。 */
+const scopedRetry = (l: Ledger, c: Classified, node: string): boolean =>
+  c.state === 'held:gate' || /^(verify|settle)-/.test(node) ||
+  (/^(code|repair)-/.test(node) && retryScope(l, node).startsWith('pkg/'));
+
+/** Package holds bump their own count; gates bump the milestone; old coder nodes resume. */
 const retry = (l: Ledger, c: Classified, prepare?: () => void, key?: string): RecoverResult =>
-  c.state === 'held:gate' || /^(verify|settle)-/.test(c.node ?? '')
+  scopedRetry(l, c, c.node ?? '')
     ? retryGate(l, c.node ?? '', true, undefined, prepare, key)
     : recoverRun(l, true, undefined, prepare);
 
@@ -1209,7 +1223,7 @@ function grantBudget(l: Ledger, node: string, key: string): void {
   const usage = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
   const launches = 2 * plan.packages.filter(p => (p.milestone ?? 'm1') === m).length + 5;
   const weighted_tokens = Math.max(plan.budget.weighted_tokens, launches * usage.reserve);
-  const attempt = Number(readJson(join(l.gen_dir, 'attempts', m)));
+  const attempt = readAttempt(join(l.gen_dir, 'attempts', m));
   const grant = { at: new Date().toISOString(), milestone: m, attempt, launches, weighted_tokens };
   writeAtomic(
     join(l.gen_dir, 'budget-extra'),
@@ -1235,20 +1249,21 @@ function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
 function decisionRecovery(l: Ledger, run: RunView, c: Classified, hold: Hold, limit: number, stage: number): [string, string] {
   const p = HOLD_POLICY[hold], node = c.node ?? run.metadata?.wait?.nodeId ?? '恢复节点';
   if (p.do !== 'ask' || p.yes === 'approve') return ['', ''];
-  const gate = p.yes === 'review' || (p.yes === 'retry' && (c.state === 'held:gate' || /^(verify|settle)-/.test(node)));
+  const gate = p.yes === 'review' || (p.yes === 'retry' && scopedRetry(l, c, node));
   let target = `从${askName(node, limit)}续跑`;
   if (gate) {
     const m = milestoneOf(l, p.yes === 'review' ? `review-${(c.node ?? '').slice(5)}` : node);
-    if (!attemptable(l, m)) return [`重试${askName(m, limit)}（缺少attempt节点，无法重跑）`, ''];
+    if (!attemptable(l, p.yes === 'review' ? m : retryScope(l, node))) return [`重试${askName(m, limit)}（缺少attempt节点，无法重跑）`, ''];
     if (p.yes === 'review') target = `重跑${askName(m, limit)}本轮评审`;
+    else if (retryScope(l, node) !== m) target = `重派${askName(node.replace(/^(verify|settle|code|repair)-/, ''), limit)}编码→验收`;
     else {
       const pkgs = planOf(l).packages.filter(p => (p.milestone ?? 'm1') === m);
       const done = pkgs.filter(p => run.nodes?.some(n => n.nodeId === `settle-${p.id}` && n.state === 'completed'));
       const names = done.length <= 3 && stage === 0 ? done.map(p => askName(p.id, Math.min(8, limit))).join('、') : `${String(done.length)}包`;
-      target = `重跑${askName(m, limit)}全部${String(pkgs.length)}包（${done.length ? `含已完成${names}` : '无已完成包'}）`;
+      target = `${/^(verify|settle|code|repair)-/.test(node) && !adoptsRun(l, run) ? '旧工作流：' : ''}重跑${askName(m, limit)}全部${String(pkgs.length)}包（${done.length ? `含已完成${names}` : '无已完成包'}）`;
     }
   }
-  return [target, adoptsRun(l, run) ? '（引擎已升级，将新开run从首个节点重跑）' : ''];
+  return [target, adoptsRun(l, run) ? (l.workflow_hash ? '（引擎已升级，将新开run从首个节点重跑）' : '（旧run身份未确认，将新开run从首个节点重跑）') : ''];
 }
 /** 只展示注册原因、闭集枚举与数字；将军/评审自由文本只在 brief 中读取。 */
 export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: Hold, extra: Record<string, unknown> = {}): string {
@@ -1276,7 +1291,7 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
         const u = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
         const limits = effectiveBudget(plan.budget,
           (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<typeof effectiveBudget>[1], m,
-          existsSync(join(l.gen_dir, 'attempts', m)) ? Number(readFileSync(join(l.gen_dir, 'attempts', m), 'utf8')) : null);
+          readAttempt(join(l.gen_dir, 'attempts', m)));
         detail = `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
           `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`;
         compact = out.reason === 'budget_tokens_exceeded'
@@ -1314,7 +1329,7 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
   const c = classifyRun(l, run);
   const row: HoldSignal = { run_id: l.run_id, since: run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? l.started_at, disposed: false };
   observed.push(row);
-  if (c.state === 'held:engine_suspect') saveIncident(l.run_id, artifactsOf(run), c.node ?? '', planOf(l), { run: l.engine_hash ?? null, current: engineHash() });
+  if (c.state === 'held:engine_suspect') saveIncident(l.run_id, artifactsOf(run), c.node ?? '', planOf(l), { run: workflowIdentity(l) ?? null, current: engineHash() });
   if (c.state === 'owner_lost')
     return record(l, 'owner_lost', { run_id: l.run_id, action: 'recover', ...recoverRun(l) });
   const need = (): Asks => {
@@ -1343,7 +1358,7 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
   };
   const hold = holdOf(l, run, c);
   if (!hold && !(asks instanceof Error)) supersedeAsks(asks, l.run_id);
-  if (hold === 'engine_suspect' && l.engine_hash && l.engine_hash !== engineHash() && run.status === 'failed') return act('gate');
+  if (hold === 'engine_suspect' && workflowIdentity(l) && workflowIdentity(l) !== engineHash() && run.status === 'failed') return act('gate');
   return hold && act(hold);
 }
 
@@ -1444,12 +1459,12 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   if (!cause) return hold('engine_suspect');
   if (cause.hold === 'deadline') return hold('deadline');
   if (cause.hold === 'no_change') return hold('no_change');
-  if (cause.determinism === 'deterministic' && (!l.engine_hash || l.engine_hash === engineHash())) return hold('auto_retry_exhausted');
+  if (cause.determinism === 'deterministic' && (!workflowIdentity(l) || workflowIdentity(l) === engineHash())) return hold('auto_retry_exhausted');
   if (cause.determinism === 'deterministic' && l.auto_retries?.some(r => r.engine_hash === engineHash())) return hold('auto_retry_exhausted');
   if (cause.determinism === 'deterministic' && !['failed', 'cancelled'].includes(run.status)) return hold('auto_retry_exhausted');
   if (cause.determinism !== 'deterministic' && tries.length >= loadTiers().policy.auto_retry[kind]) return hold('auto_retry_exhausted');
   const pkgHold = /^(verify|settle)-/.test(node);
-  if ((kind === 'gate' || pkgHold) && !attemptable(l, m)) return hold('no_attempt_node');
+  if ((kind === 'gate' || pkgHold) && !attemptable(l, retryScope(l, node))) return hold('no_attempt_node');
   const last = tries.at(-1);
   if (kind === 'environment' && last) {
     const wait = Math.min(MAX_BACKOFF_S, BACKOFF_S * 2 ** (tries.length - 1)) * 1000;

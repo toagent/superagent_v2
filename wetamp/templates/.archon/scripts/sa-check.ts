@@ -574,10 +574,29 @@ export function budgetUsage(
     reserve,
   };
 }
+/** A leading dot cannot be a schema-valid milestone; legacy milestone paths stay intact. */
+export const attemptPath = (dir: string, scope: string): string =>
+  join(dir, 'attempts', ...(scope.startsWith('pkg/') ? ['.packages', scope.slice(4)] : [scope]));
+
+/** Absent counters mean zero; malformed or unreadable counters must never become retry state. */
+export function readAttempt(path: string): number {
+  let raw: string;
+  try { raw = readFileSync(path, 'utf8').trim(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(n) || n < 0)
+    throw new Error(`invalid attempt counter: ${path}`);
+  return n;
+}
 /** 生效额度的唯一判定：grant 只覆盖同里程碑的同一次 attempt。 */
 export function effectiveBudget(base: Plan['budget'], grant: {
   milestone: string; attempt: number; limits?: Plan['budget'];
 } | null, milestone: string, attempt: number | null): Plan['budget'] {
+  if (grant && (!Number.isSafeInteger(grant.attempt) || grant.attempt < 0))
+    throw new Error('budget-extra: invalid attempt');
   if (!grant || grant.milestone !== milestone || attempt === null || attempt !== grant.attempt) return base;
   if (!grant.limits || !Number.isSafeInteger(grant.limits.launches) ||
     (grant.limits.launches ?? 0) <= 0 || !Number.isFinite(grant.limits.weighted_tokens) ||
@@ -591,7 +610,7 @@ function budget(): string | null {
   const extra = join(dir, 'budget-extra');
   const g = existsSync(extra) ? JSON.parse(readFileSync(extra, 'utf8')) as Parameters<typeof effectiveBudget>[1] : null;
   const attempt = join(dir, 'attempts', m);
-  const b = effectiveBudget(plan().budget, g, m, g && existsSync(attempt) ? Number(readFileSync(attempt, 'utf8')) : null);
+  const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
   const u = budgetUsage(runEvents(), policy().budget_floor.S);
   if (b.launches !== undefined && u.launches >= b.launches) return 'budget_launches_exceeded';
   return u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;

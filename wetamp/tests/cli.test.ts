@@ -37,10 +37,10 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { configHash, gitHead, renderAliases, loadTiers } from '../src/config';
+import { configHash, gitHead, renderAliases, loadTiers, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
-import { engineHash, generate } from '../src/generate';
-import type { Plan } from '../src/plan';
+import { buildWorkflow, engineHash, generate } from '../src/generate';
+import { milestones, type Plan } from '../src/plan';
 import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -266,6 +266,15 @@ describe('HF3 latest-engine recovery', () => {
     expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
     expect(s.calls()).toContain('workflow resume r --detach --json');
     expect(loadLedger('sa1').adoptions).toBeUndefined();
+  });
+  test.each([false, true])('HF10 BestIFA identity overrides legacy UI hash; workflow changed=%s', changed => {
+    const s = setup('old-ui-hash');
+    s.ledger.workflow_hash = changed ? 'old-workflow' : engineHash();
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+    expect(s.calls().some(c => c.includes('--adopt'))).toBe(changed);
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(!changed);
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('current');
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();
@@ -1385,6 +1394,13 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(JSON.parse(readFileSync(asksFile(), 'utf8'))[askKey('sa1', 'auto_retry_exhausted', 'settle-core@')].status).toBe('superseded');
     expect(s.calls().filter(c => /workflow (resume|run|cancel|abandon)/.test(c))).toEqual([]);
   });
+  test.each(['settle-core', 'code-core'])('HF10 UI drift cannot spend a deterministic retry or auto-adopt engine_suspect at %s', node => {
+    const s = held(node, { [`${node}.json`]: { ok: node === 'code-core', reason: node === 'code-core' ? 'unknown_reason' : 'repair_exhausted:acceptance_failed' } });
+    patchLedger(s.root, { engine_hash: 'old-ui-hash', workflow_hash: engineHash() });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: node === 'code-core' ? 'engine_suspect' : 'auto_retry_exhausted' });
+    expect(s.calls().some(c => c.includes('--adopt') || c.startsWith('workflow resume'))).toBe(false);
+    expect(loadLedger('sa1').auto_retries).toBeUndefined();
+  });
   test('I5 changed fingerprint permits one deterministic adopt, then stops at the current engine', () => {
     const s = held('settle-core', { 'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' } });
     const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
@@ -2101,7 +2117,8 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
       .split('\n')
       .filter(l => l === 'fake core')
   ).toHaveLength(2);
-  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', 'm1'), 'utf8')).toBe('1');
+  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', '.packages', 'core'), 'utf8')).toBe('1');
+  expect(existsSync(join(root, 'home', 'gen', id, 'attempts', 'm1'))).toBe(false);
   expect(sa('decide', id, 'reject').code).toBe(0);
 }, 180000);
 
@@ -2224,15 +2241,25 @@ describe('HF9 decision titles', () => {
     const review = hold === 'review_limit' || hold === 'review_not_independent';
     const node = hold === 'signoff' ? `human-${m}` : review ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`;
     writeFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
-      `nodes:\n  - id: attempt-${m}\n  - id: attempt-review-${m}-r3\n`);
+      `nodes:\n  - id: attempt-${m}\n  - id: attempt-review-${m}-r3\n` +
+      [...plan.packages.slice(0, 3).map(p => `settle-${p.id}`), node].map(id => `  - id: ${id}\n`).join(''));
     r.nodes = [...plan.packages.slice(0, 3).map(p => ({ nodeId: `settle-${p.id}`, state: 'completed' })),
       { nodeId: node, state: 'failed' }];
-    put(`${node}.json`, { reason: hold === 'budget' ? 'budget_tokens_exceeded' : 'coder_redline', rounds: value });
+    const reasons: Partial<Record<Hold, string>> = {
+      needs: 'coder_needs', redline: 'coder_redline', coder_blocked: 'coder_error:sandbox_denied',
+      budget: 'budget_tokens_exceeded', review_limit: 'review_failed+review_limit',
+      review_not_independent: 'review_not_independent:same_model',
+    };
+    put(`${node}.json`, { reason: reasons[hold] ?? hold, rounds: value, verdict: 'escalate' });
     put(`${node}.ledger.json`, { blocking: [{ id: 'R1' }] });
-    put(`${node}.coder.json`, { milestone: m, needs: [{ cap: 'network', why: '', minimal_ask: '' }] });
+    put(`${node}.coder.json`, { milestone: m, needs: hold === 'needs' ? [{ cap: 'network', why: '', minimal_ask: '' }] : [] });
+    if (hold === 'engine_suspect') {
+      s.ledger.workflow_hash = engineHash();
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    }
     if (hold === 'signoff') {
       r.status = 'paused'; r.metadata = { wait: { nodeId: node, kind: 'event', event: `sa.human.${m}`, resumeAt: '2099-01-01T00:00:00Z' } };
-    } else if (hold === 'approval') r.metadata = { approval: { nodeId: node, type: 'merge_review' } };
+    } else if (hold === 'approval') { r.status = 'paused'; r.metadata = { approval: { nodeId: node, type: 'merge_review' } }; }
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
     return { ...f, node, value };
   };
@@ -2245,7 +2272,8 @@ describe('HF9 decision titles', () => {
     expect(Array.from(q).length).toBeLessThanOrEqual(200);
   };
   test('HF9 R4 R2-02: 16-digit budget with four maximum-name packages and adopt reaches supervisor', () => {
-    const { s, value } = maximumTitle('budget');
+    const { s, node, value } = maximumTitle('budget');
+    writeFileSync(join(s.ledger.repo, 'out/artifacts/runs/r', `${node}.json`), JSON.stringify({ reason: 'budget_launches_exceeded' }));
     const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({ launches: value, weighted_tokens: value, reserve: value });
     try {
       const sup = supervisor(s.root, 'pending');
@@ -2253,7 +2281,7 @@ describe('HF9 decision titles', () => {
       const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
       assertBoundedTitle(q, 'budget');
       expect(q).toContain('全部4包（含已完成3包）一次');
-      expect(q).toContain('引擎已升级，将新开run从首个节点重跑');
+      expect(q).toContain('将新开run从首个节点重跑');
       expect(q).toContain(`已用/上限${String(value)}/${String(value)}`);
       if (process.env.HF9_R4_SAMPLE_OUT) writeFileSync(process.env.HF9_R4_SAMPLE_OUT, q + '\n');
     } finally { usage.mockRestore(); }
@@ -2262,15 +2290,23 @@ describe('HF9 decision titles', () => {
     if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
     for (const value of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE])
       test(`HF9 R4 all HOLD_POLICY titles remain deliverable at numeric maximum: ${hold}/${String(value)}`, () => {
-        const { s, r, node } = maximumTitle(hold, value);
+        const { s } = maximumTitle(hold, value);
         const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({ launches: value, weighted_tokens: value, reserve: value });
         try {
-          const q = decisionQuestion(s.ledger, r, { state: 'held:gate', exit: 1, node }, hold, { auto_retries: value });
+          const sup = supervisor(s.root, 'pending');
+          const out = captured(() => main(['supervise-tick']));
+          expect(out.code).toBe(0);
+          expect(JSON.parse(out.out).actions[0]).toMatchObject({ action: 'ask', ...(hold === 'signoff' ? {} : { reason: hold }) });
+          const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
           assertBoundedTitle(q, hold);
+          const yes = /；是=(.+)；否=/.exec(q)?.[1] ?? '';
+          expect(yes.length).toBeGreaterThan(0);
           if (policy.do === 'ask' && policy.yes !== 'approve') {
-            expect(q).toContain('引擎已升级，将新开run从首个节点重跑');
-            expect(q).toContain(policy.yesText.replace('{target}', '').split('一次')[0]);
-          } else expect(q).toContain(policy.yesText);
+            if (hold !== 'engine_suspect') expect(yes).toContain('旧run身份未确认，将新开run从首个节点重跑');
+            const target = /从[^；]+续跑一次|重跑[^；]+本轮评审一次|(?:旧工作流：)?重跑[^；]+全部4包（含已完成[^；]+）一次/.exec(yes)?.[0];
+            expect(target).toBeDefined();
+            expect(yes).toContain(policy.yesText.replace('{target}', target!.replace(/一次$/, '')));
+          } else expect(yes).toBe(policy.yesText);
         } finally { usage.mockRestore(); }
       });
   }
@@ -2287,18 +2323,145 @@ describe('HF9 decision titles', () => {
       plan.packages = plan.packages.slice(0, 4).map((p, i) => ({ ...p, id: `W${String(i)}`.padEnd(64, 'x'), milestone: m, title: '长标题'.repeat(1000) }));
       writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
       const wf = join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml');
-      writeFileSync(wf, `nodes:\n  - id: attempt-${m}\n`);
+      writeFileSync(wf, `nodes:\n  - id: attempt-${m}\n` +
+        [...plan.packages.slice(0, 3).map(p => `settle-${p.id}`), hold === 'signoff' ? `human-${m}` : hold === 'review_limit' ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`].map(id => `  - id: ${id}\n`).join(''));
       const node = hold === 'signoff' ? `human-${m}` : hold === 'review_limit' ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`;
       r.nodes = [...plan.packages.slice(0, 3).map(p => ({ nodeId: `settle-${p.id}`, state: 'completed' })), { nodeId: node, state: 'failed' }];
       if (hold === 'review_limit') { put(`${node}.json`, { rounds: 3, reason: 'coder_redline+review_limit' }); put(`${node}.ledger.json`, { blocking: [{ id: 'R1' }] }); }
       const q = decisionQuestion(s.ledger, r, { state: 'held:gate', exit: 1, node }, hold);
       const policy = HOLD_POLICY[hold]; expect(policy.do === 'ask' || policy.do === 'signoff').toBe(true);
       if (policy.do === 'ask' || policy.do === 'signoff') expect(q).toContain(policy.text);
-      expect(q).toContain('已完成3/1节点');
-      if (hold !== 'signoff') expect(q).toContain('引擎已升级，将新开run从首个节点重跑');
+      expect(q).toContain('已完成3/5节点');
+      if (hold !== 'signoff') expect(q).toContain('将新开run从首个节点重跑');
       expect(q).toContain('是='); expect(q).toContain('否=终止整个run（保留证据）');
       expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
     }
+  });
+  test.each(['code', 'repair', 'verify', 'settle'])('HF10 explicit retry at %s-W4 bumps only the package count', kind => {
+    const { s, r, put } = bestIFA();
+    const node = `${kind}-W4`;
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put(`${node}.json`, { reason: 'coder_redline' });
+    r.nodes = [{ nodeId: node, state: 'failed' }];
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+    expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
+    expect(existsSync(join(s.ledger.gen_dir, 'attempts/m1'))).toBe(false);
+    expect(s.calls()).toContain('workflow resume r --detach --json');
+  });
+  test.each(['NaN', 'null', '-1', '1.5', '9007199254740991'])('HF10 invalid or exhausted package counter %s fails without writing', raw => {
+    const { s, r, put } = bestIFA();
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put('verify-W4.json', { reason: 'coder_redline' });
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+    const path = join(s.ledger.gen_dir, 'attempts/.packages/W4');
+    mkdirSync(join(s.ledger.gen_dir, 'attempts/.packages'), { recursive: true });
+    writeFileSync(path, raw);
+    expect(() => captured(() => main(['decide', 'sa1', 'retry']))).toThrow(/attempt counter/);
+    expect(readFileSync(path, 'utf8')).toBe(raw);
+    expect(existsSync(join(s.ledger.gen_dir, 'attempts/m1'))).toBe(false);
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
+  });
+  for (const order of [['package', 'gate'], ['gate', 'package']])
+    test(`HF10 milestone pkg does not collide: ${order.join(' then ')}`, () => {
+      const { s, r, put } = bestIFA();
+      const planPath = join(s.ledger.gen_dir, 'plan.json');
+      const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+      plan.packages.forEach(p => { p.milestone = 'pkg'; });
+      writeFileSync(planPath, JSON.stringify(plan));
+      s.ledger.workflow_hash = engineHash();
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
+        '  - id: package-attempt-W4\n  - id: attempt-pkg\n');
+      for (const scope of order) {
+        const node = scope === 'package' ? 'verify-W4' : 'gate-pkg-r3';
+        put(`${node}.json`, scope === 'package' ? { reason: 'coder_redline' } :
+          { verdict: 'escalate', reason: 'review_failed+review_limit', rounds: 3 });
+        r.nodes = [{ nodeId: node, state: 'failed' }];
+        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+        expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+      }
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/pkg'), 'utf8')).toBe('1');
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
+      expect(s.calls().filter(c => c === 'workflow resume r --detach --json')).toHaveLength(2);
+    });
+  test('HF10 first and second package budget yes keep milestone zero and grant usable allowances', () => {
+    const { s, r, put, art } = bestIFA();
+    const tick = () => JSON.parse(captured(() => main(['supervise-tick'])).out).actions as Record<string, unknown>[];
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put('verify-W4.json', { reason: 'budget_launches_exceeded' });
+    const planPath = join(s.ledger.gen_dir, 'plan.json');
+    const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+    plan.budget.launches = 1;
+    plan.packages.forEach(p => { p.accept = [{ cmd: 'true', timeout_s: 5 }]; });
+    writeFileSync(planPath, JSON.stringify(plan));
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const events = [{ event_type: 'node_started', step_name: 'code-W4' }];
+    const updateRun = (completed_at: string) => writeFileSync(join(s.dir, 'get-000.json'),
+      JSON.stringify({ ...r, completed_at, events }));
+    updateRun('2026-10-10T00:00:00Z');
+    writeFileSync(join(s.root, 'policy.json'), JSON.stringify({ budget_floor: { S: loadTiers().policy.budget_floor.S } }));
+    const counter = join(s.ledger.gen_dir, 'attempts/m1');
+    const wfPlan = JSON.parse(readFileSync(fixturePlan(tmp(), s.ledger.repo), 'utf8')) as Plan;
+    const node = buildWorkflow(wfPlan, milestones(wfPlan), 'sa1', s.ledger.gen_dir, true).nodes as { id: string; bash?: string }[];
+    // The generated bash reads its copied sa-check implementation, as a real run does.
+    mkdirSync(join(s.ledger.gen_dir, '.archon/scripts'), { recursive: true });
+    cpSync(join(WETAMP, 'templates/.archon/scripts'), join(s.ledger.gen_dir, '.archon/scripts'), { recursive: true });
+    const attemptOutput = () => sh(node.find(n => n.id === 'attempt-m1')!.bash!, s.ledger.gen_dir).trim();
+    expect(attemptOutput()).toBe('{"attempt":"0"}');
+    for (const attempt of [1, 2]) {
+      supervisor(s.root, 'yes');
+      expect(tick()[0].action).toBe('ask');
+      expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
+      const grant = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'budget-extra'), 'utf8'));
+      expect(grant.attempt).toBe(0);
+      expect(Number.isSafeInteger(grant.attempt)).toBe(true);
+      expect(existsSync(counter)).toBe(false);
+      expect(attemptOutput()).toBe('{"attempt":"0"}');
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe(String(attempt));
+      const check = Bun.spawnSync(['bun', join(WETAMP, 'templates/.archon/scripts/sa-check.ts')], {
+        cwd: gitRepo(tmp()), stdout: 'pipe', stderr: 'pipe', env: { ...process.env,
+          WORKFLOW_ID: 'r', ARTIFACTS_DIR: art, INPUTS_KIND: 'accept', INPUTS_PLAN: planPath,
+          INPUTS_PKGS: 'W4', INPUTS_TAG: 'verify-W4', INPUTS_MILESTONE: 'm1',
+          INPUTS_ARCHON: join(s.dir, 'archon'), INPUTS_POLICY: join(s.root, 'policy.json') },
+      });
+      expect(check.exitCode).toBe(0);
+      expect(JSON.parse(check.stdout.toString())).toMatchObject({ disposition: 'advance' });
+      console.error(`HF10 budget retry ${attempt}: grant=${JSON.stringify(grant)} package=${attempt} milestone=absent(0)`);
+      // New completion evidence distinguishes the next budget hold from a replayed answer.
+      updateRun('2026-10-10T00:00:01Z');
+      put('verify-W4.json', { reason: 'budget_launches_exceeded' });
+    }
+    expect(loadLedger('sa1').budget_grants).toHaveLength(2);
+  });
+  test('HF10 supervisor receives package, milestone, adopt and legacy scope titles', () => {
+    const samples: Record<string, string> = {};
+    for (const mode of ['package', 'milestone', 'adopt', 'legacy'] as const) {
+      const { s, r, put } = bestIFA();
+      s.ledger.workflow_hash = mode === 'adopt' ? 'changed-workflow' : engineHash();
+      if (mode !== 'legacy') appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+      if (mode === 'milestone') {
+        r.nodes = [...(r.nodes ?? []).filter(n => n.state === 'completed'), { nodeId: 'gate-m1-r3', state: 'failed' }];
+        put('gate-m1-r3.json', { reason: 'review_failed+review_limit', verdict: 'escalate', rounds: 3 });
+      } else put('verify-W4.json', { reason: 'coder_redline' });
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      assertBoundedTitle(q, mode === 'milestone' ? 'review_limit' : 'redline');
+      if (mode === 'package' || mode === 'adopt') expect(q).toContain('重派W4编码→验收一次');
+      if (mode === 'milestone' || mode === 'legacy') expect(q).toContain('重跑m1全部11包（含已完成W1、W2、W3）一次');
+      if (mode === 'legacy') expect(q).toContain('旧工作流：');
+      expect(q.includes('将新开run从首个节点重跑')).toBe(mode === 'adopt');
+      samples[mode] = q;
+    }
+    if (process.env.HF10_SAMPLES_OUT) writeFileSync(process.env.HF10_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
   });
   test('HF9 R2 retryGate repeats all eleven packages including completed W1-W3; resume names its node', () => {
     const { s, r } = bestIFA();
@@ -2316,7 +2479,7 @@ describe('HF9 decision titles', () => {
       const { s, r } = bestIFA(); r.status = status;
       if (stale) s.ledger.engine_hash = 'old-engine';
       const q = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node: 'verify-W4' }, 'redline');
-      expect(q.includes('引擎已升级，将新开run从首个节点重跑')).toBe(stale && ['failed', 'cancelled'].includes(status));
+      expect(q.includes('将新开run从首个节点重跑')).toBe(stale && ['failed', 'cancelled'].includes(status));
       expect(q).toContain('含已完成W1、W2、W3'); expect(q).toContain('是='); expect(q).toContain('否=终止整个run');
       expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
     });

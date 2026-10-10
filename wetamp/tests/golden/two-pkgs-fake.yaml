@@ -19,7 +19,19 @@ nodes:
       required:
         - head
   - id: attempt-m1
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/m1' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/m1"))}));'''
+    depends_on:
+      - start-m1
+    always_run: true
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: package-attempt-core
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/.packages/core"))}));'''
     depends_on:
       - start-m1
     always_run: true
@@ -38,6 +50,7 @@ nodes:
     depends_on:
       - start-m1
       - attempt-m1
+      - package-attempt-core
     output_format:
       type: object
       properties:
@@ -128,6 +141,7 @@ nodes:
     depends_on:
       - code-core
       - attempt-m1
+      - package-attempt-core
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -209,6 +223,7 @@ nodes:
     depends_on:
       - verify-core
       - attempt-m1
+      - package-attempt-core
     when: $verify-core.output.disposition == 'repair'
     output_format:
       type: object
@@ -301,6 +316,7 @@ nodes:
       - verify-core
       - repair-core
       - attempt-m1
+      - package-attempt-core
     with:
       kind: settle
       plan: /GEN/plan.json
@@ -1182,7 +1198,19 @@ nodes:
       required:
         - head
   - id: attempt-m2
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/m2' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/m2"))}));'''
+    depends_on:
+      - start-m2
+    always_run: true
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: package-attempt-api
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/.packages/api"))}));'''
     depends_on:
       - start-m2
     always_run: true
@@ -1201,6 +1229,7 @@ nodes:
     depends_on:
       - start-m2
       - attempt-m2
+      - package-attempt-api
     output_format:
       type: object
       properties:
@@ -1291,6 +1320,7 @@ nodes:
     depends_on:
       - code-api
       - attempt-m2
+      - package-attempt-api
     with:
       kind: accept
       plan: /GEN/plan.json
@@ -1372,6 +1402,7 @@ nodes:
     depends_on:
       - verify-api
       - attempt-m2
+      - package-attempt-api
     when: $verify-api.output.disposition == 'repair'
     output_format:
       type: object
@@ -1464,6 +1495,7 @@ nodes:
       - verify-api
       - repair-api
       - attempt-m2
+      - package-attempt-api
     with:
       kind: settle
       plan: /GEN/plan.json
