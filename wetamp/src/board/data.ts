@@ -182,6 +182,15 @@ export function unreadableRow(id: string, error: string, l?: Ledger): BoardRow {
   };
 }
 
+function safeRowOf(l: Ledger, run: RunView | Error, opts: Parameters<typeof rowOf>[2], unreadable: string[]): BoardRow {
+  try { if (run instanceof Error) throw run; return rowOf(l, run, opts); }
+  catch (e) {
+    const error = tail((e as Error).message, 200);
+    if (!unreadable.some(s => s.startsWith(`${l.run_id}:`))) unreadable.push(`${l.run_id}: ${error}`);
+    return unreadableRow(l.run_id, error, l);
+  }
+}
+
 /** 并行度 ≤n 的 map，保持输入顺序。 */
 async function mapPool<T, R>(xs: T[], n: number, f: (x: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array<R>(xs.length);
@@ -259,12 +268,12 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
         continue;
       }
       if (!roles.has(l.run_id)) roles.set(l.run_id, workflowRoles(l));
-      rows.push(rowOf(l, r.run, { now, stale: r.stale, roles: roles.get(l.run_id) }));
+      rows.push(safeRowOf(l, r.run, { now, stale: r.stale, roles: roles.get(l.run_id) }, bad));
     }
     const s = summarize(pairs);
     // 读不出的 ledger 不进 summarize（没有可计的 ledger），但计入 runs 与 unreadable，口径与 report 的“单列不吞错”一致
     s.runs = results.length;
-    s.unreadable = [...bad, ...(s.unreadable as string[])];
+    s.unreadable = [...new Set([...bad, ...(s.unreadable as string[])])];
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
     let asks: Snapshot['asks'];
     try { asks = JSON.parse(readFileSync(join(home().sa, 'asks.json'), 'utf8')) as Snapshot['asks']; } catch { /* Missing asks is not proof of a decision. */ }
@@ -307,9 +316,6 @@ export function bar(done: number, total: number, width = 6): string {
 
 export function snapshotOf(pairs: Pair[], now = Date.now()): Snapshot {
   const summary = summarize(pairs);
-  const rows = pairs.map(p => {
-    try { if (p.run instanceof Error) throw p.run; return rowOf(p.ledger, p.run, { now }); }
-    catch (e) { const error = tail((e as Error).message, 200); const unreadable = summary.unreadable as string[]; if (!unreadable.some(s => s.startsWith(`${p.ledger.run_id}:`))) unreadable.push(`${p.ledger.run_id}: ${error}`); return unreadableRow(p.ledger.run_id, error, p.ledger); }
-  });
+  const rows = pairs.map(p => safeRowOf(p.ledger, p.run, { now }, summary.unreadable as string[]));
   return { at: new Date(now).toISOString(), summary, rows };
 }

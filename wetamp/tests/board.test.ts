@@ -21,6 +21,7 @@ import {
   fmtElapsed,
   readLedger,
   rowOf,
+  snapshotOf,
   workflowRoles,
 } from '../src/board/data';
 import { detailOf, detailLines, redact } from '../src/board/detail';
@@ -213,6 +214,31 @@ describe('loader robustness', () => {
     ledger(id, { status: 'running', metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } });
   const orphans = (): string =>
     Bun.spawnSync(['pgrep', '-f', 'sleep 31.7'], { stdout: 'pipe' }).stdout.toString().trim();
+
+  test('R2-D01 an external land.json symlink isolates one row across refreshes and report snapshots', async () => {
+    const output = join(root, 'out'), art = join(output, 'artifacts/runs/a-bad');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(root, 'plan.json'), JSON.stringify({ base_ref: 'origin/main', packages: [{ id: 'p', title: 'p', risk: 'G0', accept: [] }] }));
+    const run: RunView = { id: 'a-bad', status: 'completed', output_root: output, nodes: [{ nodeId: 'land', state: 'completed' }] };
+    const l = ledger('bad', run);
+    ledger('ok', { status: 'completed' });
+    const outside = join(tmp(), 'land.json');
+    writeFileSync(outside, JSON.stringify({ head: 'a'.repeat(40) }));
+    symlinkSync(outside, join(art, 'land.json'));
+    expect(() => rowOf(l, run, { now: Date.now() })).toThrow('路径越界');
+    const load = createLoader();
+    for (let i = 0; i < 2; i++) {
+      const snap = await load(50);
+      const byId = Object.fromEntries(snap.rows.map(r => [r.run_id, r]));
+      expect(byId.ok?.state).toBe('completed');
+      expect(byId.bad).toMatchObject({ state: 'unreadable', error: expect.stringContaining('路径越界') });
+      expect(snap.summary.runs).toBe(2);
+      expect(snap.summary.unreadable).toEqual([expect.stringContaining('bad:')]);
+      const report = snapshotOf([{ ledger: l, run }]);
+      expect(report.rows[0]).toEqual(byId.bad!);
+      expect(report.summary.unreadable).toEqual(snap.summary.unreadable);
+    }
+  });
 
   test('JSON null, array, string and {} ledgers are unreadable rows; the round does not throw', async () => {
     ledger('ok', { status: 'completed' });
