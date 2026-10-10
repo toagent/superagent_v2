@@ -600,6 +600,8 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **HF7-R1-01 / I4、I8**：真实 OS SIGINT/SIGTERM/SIGHUP 回放证实同步 probe 期间的待交付信号会越过 queued→spawn 边界；准入后用现有 timers/promises 让出事件循环，再复查取消状态。已取消保持 pid=0、failed/原信号/128+n，真实信号回归同时断言子进程未创建、命令标记未写，不新增状态或配置。
 - **HF8b / HF8-R1-01 / I6、I8**：推翻“spawn 前交付一次挂起信号就够了”；短 child 退出与同步记账结束后、终态裁决前再次交付挂起 OS 信号，监听器保持至落盘完成，wrapper 首次中断优先登记 failed/原信号/128+n；落盘后的信号不改写记录。真实 TERM/HUP/INT 覆盖 spawn 返回与 child 退出两个窗口。
 - **HF8b / P2**：board 首次查询超时的 unreadable 行同样为 stale=false，不能证明缓存就绪；用有截止的轮询确认 running 且非 stale 后再触发挂起，并按桩记录的 child PID 等待回收，避免全局 pgrep 误认并发测试的 sleep。单次冷查询延迟回归保留原状态、超时与无 orphan 断言。
+- **HF8c / HF8-R1-01 / I6、I8**：推翻“监听器挂到落盘完成就能计入落盘前信号”；本轮替换 HF8b 的落盘边界承诺：正常及异常终态统一按“暂定终态 rename → 下一事件循环交付点 → 中断时改写 failed/原信号/128+n → 同步移除监听器”提交。暂定终态最多可见一个事件循环周期，board 仅展示，不可据此触发不可逆动作。
+- **HF8c 剩余窗口**：交付点之后的信号不改写记录；交付后的必要改写同步完成，随后同步移除监听器（移除步骤无 I/O），不承诺任何时刻的信号都会计入。隔离子进程的真实 TERM/INT/HUP 覆盖 write 前、rename 前、rename 后及边界后默认终止对照。
 
 ### HF6 redline 可建模子集
 

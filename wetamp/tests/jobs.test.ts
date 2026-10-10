@@ -297,7 +297,7 @@ describe('job exec', () => {
     }
   }
 
-  test('HF8b signals delivered after terminal save leave done/0 unchanged', async () => {
+  test('HF8b signals delivered after the commit boundary leave done/0 unchanged', async () => {
     const p = Bun.spawn(['bun', '-e', `
       import { readFileSync, readdirSync } from 'node:fs';
       import { join } from 'node:path';
@@ -315,6 +315,104 @@ describe('job exec', () => {
     try {
       expect(await p.exited).toBe(0);
       expect(JSON.parse(await new Response(p.stdout).text())).toEqual({ code: 0, listeners: 0, unchanged: true });
+      expect(only()).toMatchObject({ state: 'done', exit_code: 0 });
+      expect(only().signal).toBeUndefined();
+    } finally {
+      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+    }
+  });
+
+  for (const outcome of ['done', 'catch'] as const) {
+    for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]] as const) {
+      for (const phase of ['before-write', 'before-rename', 'after-rename'] as const) {
+        test(`HF8c commit boundary: ${outcome} ${phase} ${signal}`, async () => {
+          // Mock fs only in this subprocess; every write/rename and OS signal remains real.
+          const p = Bun.spawn(['bun', '-e', `
+            import { mock } from 'bun:test';
+            import * as fs from 'node:fs';
+            const original = { ...fs };
+            let injected = false, delivered = false, terminalPath = '', stateAtSignal = '';
+            process.on('${signal}', () => { delivered = true; });
+            function interrupt() {
+              injected = true;
+              stateAtSignal = JSON.parse(original.readFileSync(terminalPath, 'utf8')).state;
+              process.kill(process.pid, '${signal}');
+              const until = Date.now() + 80;
+              while (Date.now() < until) {}
+            }
+            mock.module('node:fs', () => ({ ...original,
+              writeFileSync: (...args) => {
+                if (!injected && typeof args[1] === 'string' && JSON.parse(args[1]).ended_at) {
+                  terminalPath = String(args[0]).replace(/\\.\\d+\\.tmp$/, '');
+                  if ('${phase}' === 'before-write') interrupt();
+                }
+                return original.writeFileSync(...args);
+              },
+              renameSync: (from, to) => {
+                const terminal = terminalPath === String(to);
+                if (terminal && !injected && '${phase}' === 'before-rename') interrupt();
+                const result = original.renameSync(from, to);
+                if (terminal && !injected && '${phase}' === 'after-rename') interrupt();
+                return result;
+              }
+            }));
+            const { jobCli } = await import('./src/jobs');
+            const code = await jobCli(['job', 'exec', '--title', 'commit-window', '--', '/bin/sleep', '0.03']);
+            console.log(JSON.stringify({ code, injected, delivered, stateAtSignal,
+              listeners: ['SIGINT', 'SIGTERM', 'SIGHUP'].map(s => process.listenerCount(s)) }));
+            process.exit(code);
+          `], {
+            cwd: WETAMP,
+            env: { ...process.env, SA_ADMIT: outcome === 'catch' ? 'on' : 'off',
+              SA_ADMIT_MIN_FREE: outcome === 'catch' ? 'invalid' : '' },
+            stdout: 'pipe', stderr: 'pipe',
+          });
+          try {
+            expect(await p.exited).toBe(code);
+            expect(JSON.parse(await new Response(p.stdout).text())).toEqual({
+              code, injected: true, delivered: true,
+              stateAtSignal: phase === 'after-rename' ? (outcome === 'catch' ? 'failed' : 'done') : (outcome === 'catch' ? 'queued' : 'running'),
+              listeners: signal === 'SIGINT' ? [1, 0, 0] : signal === 'SIGTERM' ? [0, 1, 0] : [0, 0, 1],
+            });
+            expect(only()).toMatchObject({ state: 'failed', signal, exit_code: code });
+            expect(only().ended_at).toBeDefined();
+            if (outcome === 'catch') expect(only().pid).toBe(0);
+            else expect(() => process.kill(only().pid, 0)).toThrow();
+          } finally {
+            if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+          }
+        });
+      }
+    }
+  }
+
+  test('HF8c commit boundary: no signal keeps a short child done/0', async () => {
+    expect(await run(['job', 'exec', '--title', 'short', '--', '/bin/sleep', '0.03']).exited).toBe(0);
+    expect(only()).toMatchObject({ state: 'done', exit_code: 0 });
+    expect(only().signal).toBeUndefined();
+  });
+
+  test('HF8c commit boundary: post-return SIGTERM uses default termination and preserves done/0', async () => {
+    const p = Bun.spawn(['bun', '-e', `
+      import { readFileSync, readdirSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { jobCli } from './src/jobs';
+      const code = await jobCli(['job', 'exec', '--title', 'short', '--', '/bin/sleep', '0.03']);
+      const dir = join(process.env.SUPERAGENT_HOME, 'jobs');
+      const bytes = readFileSync(join(dir, readdirSync(dir)[0]), 'utf8');
+      console.log(JSON.stringify({ code, bytes,
+        listeners: ['SIGINT', 'SIGTERM', 'SIGHUP'].map(s => process.listenerCount(s)) }));
+      process.kill(process.pid, 'SIGTERM');
+      await Bun.sleep(5000);
+      process.exit(99);
+    `], { cwd: WETAMP, env: { ...process.env, SA_ADMIT: 'off' }, stdout: 'pipe', stderr: 'pipe' });
+    try {
+      expect(await p.exited).toBe(143);
+      expect(p.signalCode).toBe('SIGTERM');
+      const result = JSON.parse(await new Response(p.stdout).text()) as { code: number; bytes: string; listeners: number[] };
+      expect(result.code).toBe(0);
+      expect(result.listeners).toEqual([0, 0, 0]);
+      expect(readFileSync(join(jobsDir, `${only().id}.json`), 'utf8')).toBe(result.bytes);
       expect(only()).toMatchObject({ state: 'done', exit_code: 0 });
       expect(only().signal).toBeUndefined();
     } finally {
