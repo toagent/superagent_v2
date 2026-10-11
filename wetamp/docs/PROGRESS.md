@@ -697,6 +697,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **R2 / ACCT-R1-1**：被推翻的假设是“固定 60s 余量足以覆盖无界辅助子进程”。验收/修复后 settle 改为 `max(120_000, 2 * sum(timeout_s) * 1000 + 9 * 10_000 + 5_000)`；environment 为 `max(120_000, sum(timeout_s) * 1000 + 1 * 10_000 + 5_000)`。辅助清单：git status、缓存 tree rev-parse、全量 binary diff、增量 binary diff、scope raw diff、probe worktree add/remove、HEAD rev-parse、Archon workflow get 台账查询；各自显式 10s 超时，env 只跑 HEAD。常量与次数由 sa-check 导出并由生成器 import；实际最坏路径调用跟踪校验次数与每次超时，settle 失败挂起跳过查询，9 次是覆盖上界。辅助超时沿用该步骤的失败出口（exit 1），保留 stderr、终止信号及 probe 路径；工作树创建失败也尝试非 force 清理，清理超时不放行。gate/land 不施加辅助超时。golden 仅将原 10 个 timeout 从 120000 更新为 155000；下限与旧 run adopt 语义保持。挂起桩缩小辅助超时为 100ms，覆盖 status、probe 创建/清理、台账及 env HEAD；真实 Archon 节点预算缩小 100 倍，失败验收与非空 BASE 的 probe 均执行并存档，台账 stub 返回真实结构，辅助实际使用生产常量以避免 100ms git 偶发调度超时（逐调用上界另由跟踪及挂起回归证明）。
 
 - **R2 本包自检**：定向 ACCT/golden 13 pass/0 fail；`cd wetamp && bunx tsc --noEmit && timeout 600 bun test` exit 0（988 pass/0 fail/3 snapshots，292.08s），`bunx eslint src` exit 0。`SUPERAGENT_HOME=/tmp/acct-r2-accept.nL6ENQ ARCHON_HOME=/tmp/acct-r2-accept.nL6ENQ/archon bash scripts/selftest.sh --fake` exit 0，回执 `ok:true/fake:true`；提交后同一调用方 home 执行 `bash scripts/verify-local.sh --commit HEAD`，以 `verify.json` 的 HEAD 绑定和各步退出码为准。src 相对 f9394a60 净增 46 行（≤70），hooks/packages 受跟踪文件零改动，diff --check 通过。仓库提交钩子强制 prettier，既有模板/进度部分仅发生格式重排；未增加状态、配置或依赖。本会话只编码自检，不发起独立评审、不作主控验收或集成。
+
 ## HF10b：统一评审轮次计数读取
 
 - **问题与不变量归属**：HF10-R2-01 指向评审 attempt 节点的手写 `cat … 2>/dev/null || echo 0`。它允许 NaN、负数和目录读取错误通过；输出 schema 仅要求 string，不能证明计数有效。本包强化 I3 的 attempt 边界证据与 I6 的夹具真实化：不把坏计数或读取错误伪装为 0。
@@ -705,6 +706,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **旧 run 与生产影响、遗留**：`attempts/review-<m>-r<n>` 路径与输出契约不变；旧 run 冻结的 YAML 保留旧读取，生成器纳入 workflow hash，按已有恢复语义采用新引擎后才应用修复，运行中不换源。此包仅编码与自检，批次统一评审、主控集成验收及生产投送由主控执行；原 HF10 的回执及同身份现读依赖自动重试限制继续保留。
 - **编码自检**：定向测试 256 pass/0 fail（`/tmp/hf10b-focused.log`），`bunx tsc --noEmit`、`bunx eslint src` exit 0；`timeout 900 bun test` 979 pass/0 fail/3 snapshots、30 文件、329.61s（`/tmp/hf10b-full.log`）。独立临时 home `/tmp/hf10b-accept.0pduwg` 下 `bash scripts/selftest.sh --fake` exit 0，receipt ok=true（`/tmp/hf10b-selftest.log`）；提交后同目录运行 verify-local 绑定最终 HEAD。相对 f9394a60 源码净增 0 行，hooks/packages 零改动。
 - **提交产物验证中的测试修正**：首提交 `135f7376` 的 verify-local 在并行负载下发现回归单例集中执行 36 次子进程触及 Bun 默认 5 秒上限（日志 `/tmp/hf10b-accept.0pduwg/verify/135f73769720.log`）。保留完整验证结果，将回归拆成每个评审节点独立一例，仍执行实际生成的命令，不提高 timeout；最终生成器定向测试 34 pass/0 fail（`/tmp/hf10b-focused-final.log`）。产品源码与 golden 不再改动，最终提交重新跑 verify-local，不复用首提交结果。
+
 ## B1-ADM：run 受理背压与本机容量/故障矩阵（F-08 / WP-5）
 
 - **问题与被推翻的假设 / I8、P1、P3**：provider 槽位限制不能限制先启动的 worker/worktree；HF7 的 job 内存准入也不覆盖 run。源码确认 Archon detached launcher 在 fork 前持久化 pending，因此在共享受理锁内读取引擎 run 状态并保持到启动回执即可封住跨 CLI 检查/启动窗口，无需第二套排队状态或租约回收器。
@@ -714,6 +716,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **旧 run/生产影响与遗留**：已有 run 不被取消、迁移或改写；旧非终态 run 也占容量，历史积压超额时新提交被拒，须显式处置既有 run。此入口只约束 `superagent run`，保留既有 run 的 resume/adopt，不拦截直接 Archon 调用；终态 worktree/日志回收仍归原 GC，不能把活跃容量上限当磁盘总量上限。本矩阵证明本机 fake provider 下的边界与趋势，不证明真实 provider、长时间无泄漏或外部机器压力；未操作生产 home、launchd、supervisor，未改 packages，统一独立评审/主控验收由主控执行。
 - **完整自检过程证据**：首轮 `timeout 900 bun test` 为 981 pass/1 fail（489.80s），唯一失败是既有 `hooks.test.ts` reviewer Bash 白名单用例的 5 秒超时；该文件原样单跑 22 pass/0 fail（29.06s），未修改测试或放宽超时。按公共卡要求重跑完整套件；原始日志 `/tmp/adm-tests.log`、`/tmp/adm-hooks.log`。
 - **最终整套验收**：第二轮 `timeout 900 bun test` exit 0，982 pass/0 fail/3 snapshots，31 文件、4794 assertions，399.70s（`/tmp/adm-tests-final.log`）；`bunx tsc --noEmit` 与 `bunx eslint src` 均 exit 0。最终脚本快速重放 exit 0，47975ms（`/tmp/adm-matrix-quick-final.json`），fake selftest exit 0、receipt ok=true；提交后以同一临时 home 执行 verify-local，JSON 回执位于 `/tmp/adm-verify-nac4mhcw/verify.json`，不写入仓库或生产 home。
+
 ## B1-RCPT：消费决策答复后的回执
 
 - **问题与被推翻的假设**：提醒勾选/删除后的动作只有引擎台账可见，用户不知道实际是包重试、里程碑重试、续跑还是 adopt；“有普通通知后端 ⇒ 有可用的通知 CLI”也不成立，现有 `notify-test` 标题固定且投递失败仍 exit 0。
@@ -723,6 +726,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **旧 run / 生产影响与遗留**：不改变恢复、审批、取消、预算和 retry 的执行语义；只在新消费的答复上增回执。主控须先应用共享补丁、同步并三端验证再集成启用，旧 supervisor 未升级时动作仍执行，回执会明确失败。为防重复，supervisor 在传输前占位；占位后中断会返回 delivery_unknown，可能漏发但不会二次投递。动作确认与 asks 持久化之间的既有跨系统崩溃窗口、signalHuman 的既有状态确认口径没有扩改。真实 iPhone/TCC、独立评审、主控验收、生产合入与发布未由本派生会话验证。
 - **编码自检证据**：RCPT 定向12 pass/0 fail（`/tmp/b1-rcpt-focused.log`），覆盖勾选、删除、重复 tick、投递失败、动作拒绝、终态 pending 对账、包/里程碑/adopt/审批/评审/续跑、并发身份变化及自由文本排除；RCPT/HOLD_POLICY/HF10 行为验证27 pass/0 fail（`/tmp/b1-rcpt-behavior.log`）。首轮完整测试971 pass/18 fail不计通过，修正旧 supervisor 桩与 ask-status 末条断言后，源码稳定的完整重跑989 pass/0 fail/3 snapshots，418.93s（`/tmp/b1-rcpt-full-final.log`）。tsc、eslint src、diff --check均exit 0，fake 自检exit 0（`/tmp/b1-rcpt-selftest.log`）；同一调用方临时 home为`/tmp/b1-rcpt-accept-bejjxfen`，提交后verify-local绑定HEAD的结果在该目录verify.json，最终回复报告结果。共享补丁临时副本2 pass/0 fail（`/tmp/b1-rcpt-shared-tests.log`），git apply --check通过。
 - **回执原文**：`run=sa1；节点=human-m2；答复=是；已批准等待门并提交续跑；去向=r；结果=动作已受理（不代表后续验收通过）`；`run=sa1；节点=human-m2；答复=否；已终止整个run（保留证据）；去向=r；结果=动作已受理（不代表后续验收通过）`。
+
 ## B1-GUARD：身份、计量事务与安装模式
 
 - **问题与被推翻的假设 / A-07、A-08**：reviewer 子会话结束不证明当前 candidate 已审，child 也不能同时被 rootCall 当作子会话、被 derivedBy 当作主控。`isChild` 是两处唯一身份来源，child 禁止再派生；commander 原模型判定保持。Stop 的 off 静默，advisory/cycle/change 均只提示引擎正式 gate；删除 hook 指纹、reviewEvidence 与自建评审状态，不从完成事件推断通过。`hooks.test.ts` 的 A-07 反例在评审启动后改树并模拟完成，A-08 同时覆盖 Codex/Claude child、root commander 与空 metadata。
@@ -742,7 +746,16 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **未知归属与旧 run**：pending/无 owner/远端 owner/PID 复用返回 held:owner_unknown；未确认接纳返回 held:recovery_admission_unknown，wait exit 3，tick 不自动判终态或投提醒，给出 inspect/显式 abandon 动作。ps 启动时间只用于证实 PID 复用，不凭年龄回收进程。旧 run 没有接纳 marker 时按事实检查；已有 running 节点的自动恢复更保守，需操作员对账，不迁移数据库 schema，不写生产 home。
 - **外部效果**：核对实际 land() 后推翻“land 会执行合入”的前提；它只写 land.json 与两条人工合入命令，未执行 merge。运行中 land 的 receipt 必须匹配 checkout branch/head；缺失/不匹配则 held。prompt code/repair/fix、任意 bash/script 验收命令、计数与输出文件写入均可能有外部效果，因此保守挂起所有其他 running 节点；引擎已记录 failed 的节点保留原 retry 契约。显式 --reconciled <snapshot> 绑定当前 run/owner/阶段/节点，提示先核对实际效果并停止幸存节点进程；不把该确认当作自动业务对账证明。
 - **selftest 与锁**：abandon 完整 receipt 必须 ok=true、cancelled、action 正确且没有 cleanupWarnings/cascadeFailures；未知启动、非零退出、结构化失败或 warning 保留全部临时树及 stdout/stderr，首次失败不会被退出清理重试覆盖。仅无副作用 fake think 自动确认 snapshot；真实模型的禁工具提示不证明效果已结清，未对账即 held/保留 scratch，不写成功 receipt。stop-gate 由 Bun FFI helper 在 Node 继承的 open-file-description 上 flock；保持同一 inode，finally 只 close，慢 owner 不因 mtime 被夺锁，SIGKILL 由内核释放。
-- **测试证据与修正**：真实 Archon 双完整 recover 进程在 CAS 后、新 owner 更新前以屏障交错；第二进程 held，释放屏障后引擎写新 owner。初版 fixture 没有已完成节点，原生 resume 明确拒绝；补无副作用 start 节点后验证实际接纳路径。另测 16 秒慢 Node owner、旧 mtime、双进程锁忙与 SIGKILL释放、land receipt 对账、丢回执的 resume/adoption、旧 DB marker 与新 sidecar、损坏 sidecar，以及七类 selftest 清理结果。首次完整套件 977 pass/14 fail：旧 running fixture 的远端/缺失 owner、pending 启动窗口及恢复桩复用旧 owner 不再符合新契约；补本机活动 owner、由 native wait 到已知结果、桩沿用新执行身份后重跑整套。另修 adoption 切换原始执行回执时遗漏 --json；该次 fake 自检暴露嵌套失败的外层清理风险，现以 LAUNCH_INFLIGHT 保留完整 scratch。验收日志在 /tmp/rec-*-final.log 与 /tmp/rec-full-rerun-final.log；提交后 verify.json 位于隔离 caller home。
+- **测试证据与修正**：真实 Archon 双完整 recover 进程在 CAS 后、新 owner 更新前以屏障交错；第二进程 held，释放屏障后引擎写新 owner。初版 fixture 没有已完成节点，原生 resume 明确拒绝；补无副作用 start 节点后验证实际接纳路径。另测 16 秒慢 Node owner、旧 mtime、双进程锁忙与 SIGKILL释放、land receipt 对账、丢回执的 resume/adoption、旧 DB marker 与新 sidecar、损坏 sidecar，以及七类 selftest 清理结果。首次完整套件 977 pass/14 fail：旧 running fixture 的远端/缺失 owner、pending 启动窗口及恢复桩复用旧 owner 不再符合新契约；补本机活动 owner、由 native wait 到已知结果、桩沿用新执行身份后重跑整套。另修 adoption 切换原始执行回执时遗漏 --json；该次 fake 自检暴露嵌套失败的外层清理风险，现以 LAUNCH_INFLIGHT 保留完整 scratch。验收日志在 /tmp/rec-\*-final.log 与 /tmp/rec-full-rerun-final.log；提交后 verify.json 位于隔离 caller home。
 - **遗留与交付边界**：--reconciled 证明操作员确认的观察版本一致，实际第三方效果与幸存子进程仍需操作员核实；未知归属只能显式检查/终止，不能自动安全接管。本包 fence 约束 overlay recover/adoption；并发直接调用原生 Archon resume 未覆盖，原生引擎不消费 overlay marker。真实模型/外部 provider、生产旧 run、独立 G2 评审、主控集成与发布未执行；本包不改 packages、supervisor、launchd 或提醒事项。
 
 - **本包最终本地验收**：wetamp/ 下 bunx tsc --noEmit、bunx eslint src exit 0；timeout 900 bun test exit 0，991 pass/0 fail/3 snapshots，32 文件，446.78s（/tmp/rec-full-rerun-final.log）。最新 scripts/selftest.sh --fake exit 0，receipt ok=true（/tmp/rec-selftest-final.log）；caller SUPERAGENT_HOME=/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/rec-accept-m5t89_e5/sa，ARCHON_HOME 为其 archon 子目录。bash -n、node --check、diff --check exit 0；提交后在同一 caller home 执行 verify-local --commit HEAD，其绑定提交的结果以 verify.json 为准。
+
+## B1-INT1：GUARD 与 REC 集成
+
+- **问题与被推翻的假设**：两个基于生产基线的包分别维护 hook 状态锁；直接保留两份会让计量与锁身份语义分裂。CLI 第五个恢复参数也分别承载 RCPT 回调与 REC 对账 snapshot，不能按单边签名合并。
+- **新语义与冲突处理**：按 GUARD→REC 顺序合入，保留 ADM 准入、controller/worker preflight、RCPT 实际动作回调和 REC fencing；恢复回调与 snapshot 使用不同参数。Stop 保持 advisory，兼容 withState 导出直接引用唯一 hook-state 事务。hook-state 复用 REC 的内核 flock 与稳定 inode，保留 GUARD 严格状态读取、随机原子发布、事件幂等；无 mtime 抢锁或 finally unlink。
+- **测试与章节**：未删除双方测试；GUARD 的文件占位锁反例改为真实 Node 持锁 owner，保留旧 mtime、竞争者拒绝、owner 内容及 inode 不变，增加 SIGKILL 后释放验证。安装测试明确稳定锁文件保留。PROGRESS 保留 ACCT、HF10b、ADM、RCPT、GUARD、REC 各完整连续章节，未用 union 交错段落。
+- **旧 run/生产影响与遗留**：不新增功能、schema、权限或依赖，不修改 packages。Stop 不恢复旧评审事实源；旧状态继续严格读取，旧锁路径作为稳定 inode 使用，是否持有以内核事实为准。hook 事务沿 REC helper 需要可用 Bun，缺失明确失败；真实 provider、生产运行与外部效果不在本次 fake 验证范围，G2 评审及主控最终验收另行执行。仅本 worktree/分支写入，不 push、不操作其他 worktree 或生产状态。
+- **编码端验收**：结果以本次临时 SUPERAGENT_HOME 中的 tsc/full-test/eslint/selftest 日志与提交绑定 verify.json 为准；通过后另列实际退出码与套件统计，不将单包历史记录当本次集成证明。
+- **本次完整自检结果**：冻结安装补齐本 worktree 原先缺失的根目录及 wetamp/node_modules，未改 lockfile。`bunx tsc --noEmit && timeout 900 bun test` exit 0，1041 pass/0 fail/3 snapshots，34 文件、297.84s；`bunx eslint src` exit 0，定向 GUARD/REC/hooks 39 pass/0 fail。临时 `SUPERAGENT_HOME=/tmp/b1-int1-accept.AcIS2J` 下 fake selftest exit 0、receipt ok=true/fake=true；完整日志 full-test.log、tsc.log、selftest.log 在同目录，eslint 原始日志 /tmp/int1-eslint.log。提交后同一 home 跑 verify-local --commit HEAD，以 verify.json 的最终 HEAD、ok 与各步退出码独立确认；不把编码端自检冒充独立评审或生产验收。
