@@ -4,6 +4,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { home, WETAMP, writeAtomic } from '../config';
 import { residentHash } from '../generate';
+import { ownerLabel } from '../coord';
 import { lock } from '../archon';
 import { alive } from '../jobs';
 import { createLoader, type Snapshot } from '../board/data';
@@ -68,7 +69,7 @@ export function overview(s: Snapshot) {
   const order = new Map(s.rows.map(r => [r.run_id, Date.parse(r.started_at)]));
   const state = (v: string): string => ({ running: '进行中', owner_lost: '进行中', completed: '完成', cancelled: '取消', failed: '失败' })[v] ?? (v.startsWith('held:') ? '挂起' : '—');
   return { at: new Date(now).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }), metrics: c.metrics, running: c.active.length, needs: c.needs.map(r => ({ project: r.project, question: r.question, waiting: r.waiting })), tokenRows: c.tokenRows,
-    runs: c.runs.filter(r => today.has(r.id)).sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0)).map(r => ({ id: r.id, url: r.url, project: r.project, title: r.title, role: r.role, tokens: r.tokens === '未知' ? '—' : r.tokens, elapsed: r.elapsed, state: state(r.state) })) };
+    runs: c.runs.filter(r => today.has(r.id)).sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0)).map(r => ({ id: r.id, url: r.url, project: r.project, title: r.title, ...(r.coordination ? { coordination: r.coordination } : {}), role: r.role, tokens: r.tokens === '未知' ? '—' : r.tokens, elapsed: r.elapsed, state: state(r.state) })) };
 }
 const html = (s: string | number): string => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
 export function panel(d: Partial<ReturnType<typeof overview>>): string {
@@ -81,7 +82,7 @@ body{background:var(--surface);color:var(--text-primary);font:15px system-ui;mar
 </style><body><header id="metrics"><h1>superagent · 跑 ${String(d.running ?? 0)} · 等你 ${String(d.needs?.length ?? 0)} · 今日 ${String(d.metrics?.completed ?? 0)}/${String(d.metrics?.decided ?? 0)}</h1><p>更新 ${html(d.at ?? '—')} · <a href="/console">Archon 控制台</a></p></header>
 ${d.needs?.length ? `<section id="needs"><h2>需要你</h2><p>在 Mac 提醒 SUPERAGENT 列表回答：勾选=是、删除=否</p><ul>${d.needs.map(r => `<li>${html(r.project)} · ${html(r.question)} · 已等待 ${html(r.waiting)}</li>`).join('')}</ul></section>` : ''}
 <section id="tokens"><h2>今日 token</h2><table><thead><tr><th>角色</th><th>合计</th>${models.map(m => `<th>${html(m)}</th>`).join('')}</tr></thead><tbody>${rows ? rows.map(r => `<tr>${cells([r.role, fmtTokens(r.total), ...models.map(m => fmtTokens(r.models[m] ?? 0))])}</tr>`).join('') : '<tr><td colspan="2">今日用量未知</td></tr>'}</tbody></table><p>仅本机日志。未归属：没有 superagent 派发证据的交互终端会话；证据不足的会话也保留在此，不猜角色。</p></section>
-<section id="runs"><h2>今日 run</h2><table><thead><tr><th>项目</th><th>任务</th><th>run</th><th>角色·模型</th><th>token</th><th>用时</th><th>状态</th></tr></thead><tbody>${(d.runs ?? []).map(r => `<tr>${cells([r.project, r.title])}<td>${r.url ? `<a href="${html(r.url)}">${html(r.id)}</a>` : html(r.id)}</td>${cells([r.role, r.tokens, r.elapsed, r.state])}</tr>`).join('')}</tbody></table></section><script>setInterval(()=>location.reload(),15000)</script></body></html>`;
+<section id="runs"><h2>今日 run</h2><table><thead><tr><th>项目</th><th>任务</th><th>run</th><th>角色·模型</th><th>token</th><th>用时</th><th>状态</th></tr></thead><tbody>${(d.runs ?? []).map(r => `<tr>${cells([r.project + (r.coordination ? ` · ${ownerLabel(r.coordination.owner)} ${r.coordination.presence.state} 交接${String(r.coordination.pending)}` : ""), r.title])}<td>${r.url ? `<a href="${html(r.url)}">${html(r.id)}</a>` : html(r.id)}</td>${cells([r.role, r.tokens, r.elapsed, r.state])}</tr>`).join('')}</tbody></table></section><script>setInterval(()=>location.reload(),15000)</script></body></html>`;
 }
 const same = (a: string, b: string): boolean => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 export function handler(port: number, token: string, get: () => Record<string, unknown>, upstream: string, forward: typeof fetch = fetch, unix?: string): (r: Request) => Promise<Response> {

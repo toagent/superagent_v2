@@ -6,6 +6,7 @@
 // stored: never prompts, tool input/output or transcript content.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
+const identity = require('./identity.cjs');
 
 const ALWAYS = new Set(['SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit']);
 const THROTTLE_MS = 2000;
@@ -36,7 +37,7 @@ function owner(interactive = false, inspect = inspectPid, parent = process.ppid)
     const m = inspect(pid);
     if (!m) return null;
     const cli = cliOf(m[3].trim().split(/\s+/));
-    if (interactive ? cli && !cli.headless && m[2] !== '??' : agentOf(m[3]))
+    if (interactive ? cli && !cli.headless : agentOf(m[3]))
       return {pid, tty: m[2] === '??' ? null : m[2]};
     pid = Number(m[1]);
   }
@@ -67,7 +68,9 @@ function launcher(home) {
     const cwd = out.stdout?.split('\n').find(l => l.startsWith('n'))?.slice(1) || str(beats[0]?.cwd);
     if (!cwd) return undefined;
     const session = new Set(beats.map(b => str(b.session_id)).filter(Boolean));
-    return {client: cli.kind, ...who, cwd, ...(session.size === 1 ? {session_id: [...session][0]} : {})};
+    const p = identity.inspect(who.pid);
+    return {client: cli.kind, ...who, cwd, host: os.hostname(), pid_start: p.start,
+      ...(session.size === 1 ? {session_id: [...session][0]} : {})};
   } catch { return undefined; }
 }
 function alive(pid) {
@@ -94,21 +97,31 @@ function beat(client, input, roleOf = () => null, env = process.env) {
     const toolRun = !ALWAYS.has(event) && prior?.event === event;
     if (toolRun && !turn && now - mtime < THROTTLE_MS) return;
     // The owner is resolved once per session; a session without an agent ancestor stays null.
-    const keep = prior && (prior.pid === null || (Number.isSafeInteger(prior.pid) && alive(prior.pid)));
+    const probe = prior?.pid ? identity.inspect(prior.pid) : null;
+    const keep = prior && (prior.pid === null || (probe?.state === 'online' && probe.start === prior.pid_start));
     const who = keep ? {pid: prior.pid, tty: str(prior.tty)} : owner();
     let role = null;
     try { role = roleOf(); } catch {}
     const record = {
       client, session_id: session, pid: who?.pid ?? null, tty: who?.tty ?? null,
+      host: os.hostname(), pid_start: who?.pid ? identity.inspect(who.pid).start ?? null : null,
+      orca_pane: str(env.ORCA_PANE_KEY),
       cwd: str(input.cwd), transcript_path: str(input.transcript_path), event,
       tool: event.endsWith('ToolUse') ? str(input.tool_name) : null,
       turn_at: turn ? new Date(now).toISOString() : str(prior?.turn_at),
       at: new Date(now).toISOString(), role: ROLES.includes(role) ? role : null,
     };
+    let notifications = [];
+    if (record.role !== 'general' && record.role !== 'strategist' && ['UserPromptSubmit', 'PostToolUse'].includes(event)) {
+      const coord = require('./coord.cjs');
+      notifications = coord.unread(path.dirname(dir), record, prior?.coord_seen || [], env.ARCHON_HOME);
+    }
+    record.coord_seen = [...new Set([...(prior?.coord_seen || []), ...notifications.map(m => m.id)])];
     fs.mkdirSync(dir, {recursive: true});
     const tmp = `${file}.${process.pid}.tmp`;
     try { fs.writeFileSync(tmp, JSON.stringify(record)); fs.renameSync(tmp, file); }
     catch { try { fs.unlinkSync(tmp); } catch {} }
+    return notifications;
   } catch {}
 }
 module.exports = {beat, agentOf, cliOf, owner, launcher, THROTTLE_MS};

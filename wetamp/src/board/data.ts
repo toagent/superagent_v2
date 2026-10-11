@@ -4,6 +4,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
 import { home } from '../config';
+import { coord, type Identity, type Presence } from '../coord';
 import { loadActivity, type Activity } from './activity';
 import { milestones, type Plan } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
@@ -23,6 +24,7 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  coordination?: { owner: Identity | null; presence: Presence; pending: number; error?: string };
   landed?: boolean;
   intervened?: boolean;
   archon_id?: string;
@@ -126,6 +128,11 @@ export function rowOf(
   let nodeReason = '';
   try { const file = current ? confined(l, join(artifactsOf(run), current + '.json')) : null; const value: unknown = file ? JSON.parse(readFileSync(file, 'utf8')) : null; if (value && typeof value === 'object' && 'reason' in value && typeof value.reason === 'string') nodeReason = value.reason; } catch { /* Missing outcome provides no reason. */ }
   return {
+    coordination: (() => {
+      try { const c = coord(), scope = c.scope(l.run_id), view = c.owner(scope);
+        return { owner: view.owner, presence: view.presence, pending: c.pending(scope) + (scope.kind === 'run' ? c.pending({ kind: 'repo', id: scope.repo }) : 0) }; }
+      catch (e) { return { owner: null, presence: { state: 'unknown' as const }, pending: 0, error: (e as Error).message }; }
+    })(),
     engine: { title: plan?.packages[0]?.title ? `${plan.packages[0].title}${plan.packages.length > 1 ? ` +${String(plan.packages.length - 1)}` : ''}` : '任务标题未知', milestones: ms, currentMilestone: currentMs ?? null,
       states: nodes.filter(n => !plan || !currentMs || !['code', 'verify', 'repair', 'settle'].some(k => n.nodeId.startsWith(k + '-')) || plan.packages.some(p => (p.milestone ?? 'm1') === currentMs && ['code', 'verify', 'repair', 'settle'].some(k => n.nodeId === `${k}-${p.id}`))).filter(n => !['diff', 'review', 'fix', 'gate', 'human'].some(k => n.nodeId.startsWith(k + '-')) || !currentMs || n.nodeId.startsWith(`${n.nodeId.split('-')[0]}-${currentMs}-`) || n.nodeId === `human-${currentMs}`).map(n => ({ id: n.nodeId, state: n.state })),
       firstPass: c.state === 'completed' && ms.length > 0 && stats.first_pass === ms.length && !l.auto_retries?.length && !nodes.some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped'),

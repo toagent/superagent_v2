@@ -318,6 +318,7 @@ describe('turn state', () => {
 
 describe('heartbeat files', () => {
   const KEYS = [
+    'host', 'pid_start', 'orca_pane', 'coord_seen',
     'client',
     'session_id',
     'pid',

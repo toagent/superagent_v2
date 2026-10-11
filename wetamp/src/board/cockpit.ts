@@ -25,6 +25,7 @@ export function stages(r: BoardRow): string {
   return ({ repair: '修复', fix: '修复', verify: '验收', settle: '验收', diff: '评审准备', gate: '门禁', human: '签收', land: '合入' })[kind] ?? '准备';
 }
 export interface CockpitRun {
+  coordination?: BoardRow['coordination'];
   url?: string;
   progress: Progress; progressText: string;
   id: string; project: string; title: string; state: string; elapsed: string; tokens: string;
@@ -61,7 +62,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const policy = (HOLD_POLICY as Partial<Record<string, typeof HOLD_POLICY[keyof typeof HOLD_POLICY]>>)[key];
     const question = policy && 'yes' in policy ? `${reasonText(key)} 是=${({ retry: key === 'budget' ? '放宽预算再跑' : '再跑', resume: '恢复', approve: '批准', review: '重评' })[policy.yes]} 否=终止` : key === 'signoff' || r.state === 'held:human' ? '等待签收 是=批准 否=终止' : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
-    return { progress, progressText: progressLabel(progress), id: r.run_id, url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined, project: r.repo, title: r.engine?.title ?? '任务标题未知', state: r.state, elapsed: fmtElapsed(elapsedAt(r, now)), tokens: runTokens(r.run_id), stage: stages(r), role: ['completed', 'failed', 'cancelled'].includes(r.state) ? roleTag('coder', r.coderModel ?? c?.sessions.find(x => x.owner?.run_id === r.run_id && x.owner.role === 'general')?.model) : roleTag(r.nodes.currentRole, r.model), round: r.engine?.round ? String(r.engine.round) : /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-', reason: reasonText(r.engine?.reason ?? ''), question, waiting: fmtElapsed(d?.action === 'ask' ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000)) : elapsedAt(r, now)) };
+    return { ...(r.coordination ? { coordination: r.coordination } : {}), progress, progressText: progressLabel(progress), id: r.run_id, url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined, project: r.repo, title: r.engine?.title ?? '任务标题未知', state: r.state, elapsed: fmtElapsed(elapsedAt(r, now)), tokens: runTokens(r.run_id), stage: stages(r), role: ['completed', 'failed', 'cancelled'].includes(r.state) ? roleTag('coder', r.coderModel ?? c?.sessions.find(x => x.owner?.run_id === r.run_id && x.owner.role === 'general')?.model) : roleTag(r.nodes.currentRole, r.model), round: r.engine?.round ? String(r.engine.round) : /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-', reason: reasonText(r.engine?.reason ?? ''), question, waiting: fmtElapsed(d?.action === 'ask' ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000)) : elapsedAt(r, now)) };
   };
   const ended = s.rows.filter(r => ['completed', 'failed', 'cancelled'].includes(r.state) && today(r.span?.ended_ms ?? NaN));
   const achieved = ended.filter(r => r.state === 'completed' && r.landed && !r.intervened && !r.engine?.dispositions.some(d => ['ask', 'approve', 'reject'].includes(d.action)));

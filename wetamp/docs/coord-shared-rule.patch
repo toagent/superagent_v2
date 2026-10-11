@@ -1,0 +1,9 @@
+--- a/TRI_CLIENT_CONSISTENCY.md
++++ b/TRI_CLIENT_CONSISTENCY.md
+@@ -33,1 +33,6 @@
++### 跨元帅归属与交接（COORD）
++- 开始处理仓库或 run 前查看 `superagent owner <path|run> --json`；无主先 claim，自己的归属自行处理。
++- 问题属于其他元帅的仓库时，使用 `superagent handoff --to <path|run> --kind bug|task|question|takeover-request --title <短标题> --body-file <md>`；不要直接修改对方仓库。
++- 在线或状态未知的负责人不得自动接管；仅凭用户明确授权执行 `claim --takeover --reason "<原话>"`。离线普通交接保留积压，urgent 经 supervisor 请求用户决定。
++- `wait` 返回 inbox 或 hook 提示交接时，读取 inbox 并通过 `inbox --ack <id> accepted|rejected|done --note <短文>` 答复；引擎换版只用已提交且干净的检出。
+ ### 评审门禁

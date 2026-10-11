@@ -61,7 +61,8 @@ interface Entry {
   message?: { stop_reason?: unknown; content?: unknown };
 }
 
-const FRESH_MS = 120_000;
+import { createRequire } from 'node:module';
+const { FRESH_MS } = createRequire(import.meta.url)('../../hooks/identity.cjs') as { FRESH_MS: number };
 const TAIL_BYTES = 64 * 1024;
 const GC_MS = 86_400_000;
 const BUSY_CPU = 3;

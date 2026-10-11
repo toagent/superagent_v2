@@ -4,6 +4,7 @@ import { fmtClock, type Snapshot } from './data';
 import { cockpit, fit } from './cockpit';
 import { ProgressBar } from './ProgressBar';
 import { residentHash } from '../generate';
+import { ownerLabel } from '../coord';
 
 export const ENGINE_CHANGED = 75;
 export const boardExitCode = (started: string, current = residentHash()): number => started === current ? 0 : ENGINE_CHANGED;
@@ -14,7 +15,7 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
   text(`superagent ${fmtClock(now.getTime(), now).slice(0, 5)} · 跑 ${String(c.active.length)} · 等你 ${String(c.needs.length)} · 今日 ${String(c.metrics.completed)}/${String(c.metrics.decided)}`);
   text('─'.repeat(width));
   for (const r of c.active) {
-    text(`${fit(r.project, 12)}  ${r.title}`);
+    text(`${fit(r.project, 12)}  ${r.title}${r.coordination ? ` · ${ownerLabel(r.coordination.owner)} ${r.coordination.presence.state} 交接${String(r.coordination.pending)}` : ""}`);
     text(`  ${r.role}  ${r.stage}`);
     lines.push(<Text key={lines.length}>  <ProgressBar progress={r.progress} width={width - 2}/></Text>);
   }

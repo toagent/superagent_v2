@@ -57,21 +57,24 @@ for (const scope of ['package', 'milestone', 'budget'] as const) test(`HF10 fake
   };
   const id = `hf10-${scope}`, branch = `sa/${id}`;
   const ack = archon('workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', repo, '--branch', branch, '--from', 'main', '--detach', '--config', gen.config);
+  const claim = sa('claim', repo);
+  expect(claim.code).toBe(0);
   mkdirSync(join(env.SUPERAGENT_HOME, 'runs'), { recursive: true });
   writeFileSync(join(env.SUPERAGENT_HOME, `runs/${id}.json`), JSON.stringify({
     run_id: id, archon_run_id: ack.runId, engine_hash: 'old-ui-hash', workflow_hash: gen.engine_hash,
     plan: join(gen.dir, 'plan.json'), gen_dir: gen.dir, repo, branch, workflow: gen.workflow,
     console: 'claude', started_at: new Date().toISOString(), transcript: '', log: '', recoveries: [],
+    controller: claim.out!.controller,
   }));
   expect(sa('wait', id, '--timeout', '120').out).toMatchObject({ state: scope !== 'milestone' ? 'failed' : 'held:gate', node: scope !== 'milestone' ? 'verify-W3' : 'gate-m1-r3' });
   const counts = () => Object.fromEntries(plan.packages.map(p => [`code-${p.id}`, readFileSync(trace, 'utf8').split('\n').filter(n => n === `code-${p.id}`).length]));
   expect(counts()).toEqual(scope !== 'milestone' ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 0 } : { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 1 });
-  expect(sa('supervise-tick').code).toBe(0);
+  expect(sa('supervise-tick')).toMatchObject({ code: 0 });
   const question = readFileSync(join(root, 'questions'), 'utf8');
   expect(question).toContain(scope !== 'milestone' ? '重派W3编码→验收一次' : '重跑m1全部4包');
   writeFileSync(ready, 'ready');
   writeFileSync(join(root, 'answer'), 'yes');
-  expect(sa('supervise-tick').code).toBe(0);
+  expect(sa('supervise-tick')).toMatchObject({ code: 0 });
   if (scope === 'budget') {
     const grant = JSON.parse(readFileSync(join(gen.dir, 'budget-extra'), 'utf8'));
     expect(grant.attempt).toBe(0);

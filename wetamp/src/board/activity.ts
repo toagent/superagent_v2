@@ -7,6 +7,7 @@ import { tail } from '../archon';
 import { home, loadTiers, type Tiers } from '../config';
 import { modelOf, readJobs, type Job, type Kind, type Tier } from '../jobs';
 import type { Launcher } from '../launcher';
+import { presence, type Controller } from '../coord';
 import * as term from './terminals';
 import { sessionModel } from '../models';
 
@@ -33,6 +34,7 @@ export interface RunRef {
   run_id: string;
   cwd: string;
   launcher?: Launcher;
+  controller?: Controller;
 }
 export interface Ownership {
   owner: number | null;
@@ -222,17 +224,19 @@ export function attach(
 
 /** One snapshot, one owner: recorded launcher, watcher/parent chain, unique legacy cwd, directory. */
 export function ownership(
-  x: RunRef, rows: term.Rows, sessions: term.Session[], terms: term.Term[], pids: number[] = []
+  x: RunRef, rows: term.Rows, sessions: term.Session[], terms: term.Term[], pids: number[] = [],
+  probe = (who: Launcher | Controller) => presence(who, process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'))
 ): Ownership {
   const leaders = new Map(sessions.flatMap(s => s.pids.map(p => [p, s.pids[0]] as const)));
   const known = (pid: number): number | undefined => {
     const leader = leaders.get(pid);
     return terms.some(t => t.pid === leader) ? leader : undefined;
   };
-  if (x.launcher && rows.has(x.launcher.pid)) {
-    const owner = known(x.launcher.pid);
+  const controller = x.controller ?? x.launcher;
+  if (controller && probe(controller).state === 'online' && rows.has(controller.pid)) {
+    const owner = known(controller.pid);
     const t = terms.find(t => t.pid === owner);
-    if (t?.kind === x.launcher.client && t.tty === x.launcher.tty) return { owner: t.pid, inferred: false };
+    if (t?.kind === controller.client) return { owner: t.pid, inferred: false };
   }
   const watchers = [...rows].filter(([, r]) => {
     const a = ['bun', 'node'].includes(basename(r.argv[0])) ? r.argv.slice(1) : r.argv;

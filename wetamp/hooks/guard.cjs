@@ -24,7 +24,7 @@ function gitRoot(cwd) {
 
 // Why this session is derived (general/reviewer/worker), or null for the commander.
 function derivedBy(payload, client, env = process.env) {
-  if (['general', 'reviewer', 'worker'].includes(env.SUPERAGENT_ROLE)) return `SUPERAGENT_ROLE=${env.SUPERAGENT_ROLE}`;
+  if (['general', 'strategist', 'reviewer', 'worker'].includes(env.SUPERAGENT_ROLE)) return `SUPERAGENT_ROLE=${env.SUPERAGENT_ROLE}`;
   if (env.AI_DISPATCH_ROLE === 'general' || env.TWIN_AGENT_REMOTE === '1') return 'AI_DISPATCH_ROLE/TWIN_AGENT_REMOTE';
   const workspaces = resolvePath(path.join(saHome(env), 'archon', 'workspaces'));
   if (typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd)) {
@@ -198,6 +198,9 @@ function decide(payload, client, env = process.env) {
     if (reason) return deny(`reviewer 只读：${reason}`);
   }
   if (derived) return null;
+  const coord = require('./coord.cjs');
+  const ownership = coord.writeReason(payload, client, env, text, readOnly);
+  if (ownership) return deny(ownership);
   const context = dispatch.contextReason(client, name, input, dispatch.contextPolicy(policy.dispatch_context));
   if (context) return deny(context);
   if (client === 'codex' && name === 'spawn_agent' && input.model && ![...pool('general'), ...pool('strategist')].includes(input.model))
@@ -213,14 +216,18 @@ if (require.main === module) (async () => {
     const client = process.argv[2];
     if (!['claude', 'codex'].includes(client)) throw new Error('usage: guard.cjs claude|codex');
     const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
-    try { require('./live.cjs').beat(client, payload, () => sessionRole(payload, client)); } catch {}
-    if (payload.hook_event_name === 'PreToolUse' && derivedBy(payload, client)
+    let inbox = [];
+    try { inbox = require('./live.cjs').beat(client, payload, () => sessionRole(payload, client)) || []; } catch {}
+    const coord = require('./coord.cjs');
+    if (payload.hook_event_name === 'PreToolUse' && (derivedBy(payload, client) || fs.existsSync(path.join(saHome(process.env), 'coord')) || fs.existsSync(path.join(saHome(process.env), 'runs')))
         && shellText(String(payload.tool_name || ''), payload.tool_input || {}) !== undefined) {
       const error = await redline.init();
-      if (error) { process.stdout.write(JSON.stringify(deny(`shell parser unavailable: ${error}`)) + '\n'); return; }
+      if (error && derivedBy(payload, client)) { process.stdout.write(JSON.stringify(deny(`shell parser unavailable: ${error}`)) + '\n'); return; }
     }
     const result = decide(payload, client);
-    if (result) process.stdout.write(JSON.stringify(result) + '\n');
+    const context = coord.notifications(inbox);
+    const output = result || (context && {hookSpecificOutput: {hookEventName: payload.hook_event_name, additionalContext: context}});
+    if (output) process.stdout.write(JSON.stringify(output) + '\n');
   } catch (error) { process.stderr.write(`superagent guard: ${error.message}\n`); }
 })();
 module.exports = {decide, derivedBy, sessionRole};

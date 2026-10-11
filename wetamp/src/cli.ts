@@ -4,6 +4,8 @@ import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
+import { caller, cleanEngine, control, coord, repoScope, type Controller } from './coord';
+import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
@@ -65,6 +67,7 @@ import { jobCli } from './jobs';
 import { readUsage, usageSummary, usageCli } from './usage';
 
 const OPTIONS = {
+  ...COORD_OPTIONS,
   timeout: { type: 'string' },
   pkg: { type: 'string' },
   hint: { type: 'string' },
@@ -116,8 +119,10 @@ export interface Ledger {
     engine_from: string | null;
     engine_to: string;
     reason: string;
+    engine_commit?: string;
   }[];
   launcher?: Launcher;
+  controller?: Controller;
   run_id: string;
   archon_run_id: string;
   plan: string;
@@ -399,7 +404,7 @@ function recoverRun(
   prepare?: () => void
 ): RecoverResult {
   let fp = '';
-  let adopted: { from: string; hash: string; engine_from: string | null } | undefined;
+  let adopted: { from: string; hash: string; engine_from: string | null; commit: string } | undefined;
   return recover(
     l.archon_run_id,
     l.repo,
@@ -428,6 +433,7 @@ function recoverRun(
           engine_from: adopted.engine_from,
           engine_to: adopted.hash,
           reason: 'engine_stale',
+          engine_commit: adopted.commit,
         });
         l.archon_run_id = to;
         l.engine_hash = adopted.hash;
@@ -454,6 +460,7 @@ function recoverRun(
       adopt: run => {
         // Live and paused owners retain their snapshot; terminal recovery may change source.
         if (!adoptsRun(l, run)) return undefined;
+        const commit = cleanEngine();
         const metadata = readJson(join(l.gen_dir, 'engine.json')) as { fake?: boolean } | null;
         const gen = generate(
           planOf(l),
@@ -461,7 +468,8 @@ function recoverRun(
           metadata?.fake ?? false,
           l.engine_hash ?? 'unknown'
         );
-        adopted = { from: run.id, hash: gen.engine_hash, engine_from: l.engine_hash ?? null };
+        if (cleanEngine() !== commit) throw new Error('换版拒绝：引擎提交在生成期间变化，请重新 retry');
+        adopted = { from: run.id, hash: gen.engine_hash, engine_from: l.engine_hash ?? null, commit };
         return [
           'workflow',
           'run',
@@ -479,14 +487,18 @@ function recoverRun(
   );
 }
 
-/** 分片等待：事件门不会唤醒 archon wait，所以每片 ≤30s 后重新 get；可证实 owner-lost 时自动 recover。 */
+/** 每秒重查 inbox 和事件门；可证实 owner-lost 时校验归属后恢复。 */
 export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
   const deadline = Date.now() + timeoutS * 1000;
   for (;;) {
+    const inbox = coord().surfaced(caller(true));
+    if (inbox.length) return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox };
     const run = getRun(l.archon_run_id, l.repo);
     const c = classifyRun(l, run);
     if (c.state === 'owner_lost') {
-      const r = recoverRun(l);
+      let r: RecoverResult;
+      try { r = control(l, () => recoverRun(l)); }
+      catch (e) { return { ...summary(l, run, c), reason: (e as Error).message }; }
       if (r.ok) continue;
       // 另一进程正在恢复：稍候重读状态；到期仍是 owner_lost 则按运行中返回（exit 4），不报失败
       if (r.busy) {
@@ -509,7 +521,7 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
     const left = Math.ceil((deadline - Date.now()) / 1000);
     if (c.exit !== EXIT.running || left <= 0) return summary(l, run, c);
     archon(
-      ['workflow', 'wait', l.archon_run_id, '--json', '--timeout', String(Math.min(30, left))],
+      ['workflow', 'wait', l.archon_run_id, '--json', '--timeout', String(Math.min(1, left))],
       l.repo
     );
   }
@@ -531,11 +543,15 @@ function preflight(skipSelftest: boolean): void {
 }
 
 function startRun(planPath: string, a: Args): number {
+  return coord().locked(() => startOwnedRun(planPath, a));
+}
+function startOwnedRun(planPath: string, a: Args): number {
   const run = newRunId();
   let phase: 'preflight' | 'engine' = 'preflight';
   try {
     preflight(a.flags['skip-selftest'] ?? false);
     const plan = loadPlan(planPath);
+    const controller = coord().claim(repoScope(plan.repo), caller()).controller;
     const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
     if (checked.exitCode !== 0) {
       const reason = lastJson(checked.stdout.toString())?.reason;
@@ -571,6 +587,7 @@ function startRun(planPath: string, a: Args): number {
       recoveries: [],
       intervened: false,
       launcher: launcher(home().sa),
+      controller,
     };
     // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
     const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
@@ -789,7 +806,7 @@ function retryAllHeld(): number {
       if ('error' in l) throw new Error(l.error);
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
-      return [{ run_id: l.run_id, state: c.state, ...retry(l, c) }];
+      return [control(l, () => ({ run_id: l.run_id, state: c.state, ...retry(l, c) }))];
     } catch (e) {
       return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
     }
@@ -845,6 +862,10 @@ function brief(l: Ledger): number {
   const lines = [
     `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${l.branch}`,
   ];
+  const ownership = coord().owner(coord().scope(l.run_id));
+  lines.push(`controller: ${JSON.stringify(ownership.owner)} ${ownership.presence.state}; inbox: ${String(coord().pending(ownership.scope))}`);
+  const inbox = coord().inbox(caller(true));
+  if (inbox.length) lines.push(`inbox: ${inbox.map(m => m.id).join(' ')}; superagent inbox`);
   lines.push(`engine: ${String(s.engine)}`);
   if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
   for (const f of evidenceGates(l, art)) {
@@ -945,6 +966,7 @@ function supervisor(args: string[]): string {
     stdout: 'pipe',
     stderr: 'pipe',
     timeout: QUERY_TIMEOUT_MS,
+    env: { ...process.env },
   });
   if (p.exitCode !== 0)
     throw new Error(
@@ -1152,7 +1174,12 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
     live.add(l.run_id);
     try {
       if ('error' in l) throw new Error(l.error);
-      const x = dispose(l, asks, observed);
+      const actor = l.controller ?? l.launcher;
+      if (!actor) throw new Error('coord: run 没有可验证 controller/launcher；请先 claim 并显式 resume/decide');
+      const x = control(l, controller => {
+        const action = dispose(l, asks, observed);
+        return action ? { ...action, controller, generation: controller.generation } : undefined;
+      }, actor, l.controller?.generation);
       if (x) out.push(x);
     } catch (e) {
       out.push({
@@ -1164,8 +1191,13 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
     }
   }
   if (!(asks instanceof Error)) {
+    for (const action of coord().tick((key, title) => {
+      const r = pollAsk(key, () => title, MAX_TTL_H, asks as Asks);
+      if ('conflict' in r) throw new Error(r.conflict);
+      return { id: r.a.id, status: r.a.status };
+    })) out.push({ run_id: 'coord', action: 'coord', ok: true, ...action });
     // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者
-    asks = Object.fromEntries(Object.entries(asks).filter(([k]) => live.has(k.split(':')[0])));
+    asks = Object.fromEntries(Object.entries(asks).filter(([k]) => k.startsWith('coord:') || live.has(k.split(':')[0])));
     for (const [key, a] of Object.entries(asks)) {
       if (a?.status !== 'superseded' || a.stale_answer) continue;
       if (!a.id) {
@@ -1595,7 +1627,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -1635,7 +1667,27 @@ export function main(argv: string[]): number {
   }
   const [verb, target] = a._;
   const ledger = (): Ledger => loadLedger(need(target, `${verb} <run>`));
+  const controlled = (l: Ledger, f: () => number): number => control(l, controller => {
+    const code = f();
+    if (code === 0) updateLedger(l, cur => { cur.controller = controller; });
+    return code;
+  });
   switch (verb) {
+    case 'owner': case 'claim': case 'release': case 'handoff': case 'inbox':
+      { const result = coordinationCommand(a);
+        if (verb === 'handoff') {
+          const k = lock(join(home().sa, 'supervise.lock'));
+          if (k.ok) {
+            try { const asks = loadAsks(); coord().tick((key, title) => {
+              const r = pollAsk(key, () => title, MAX_TTL_H, asks);
+              if ('conflict' in r) throw new Error(r.conflict);
+              return { id: r.a.id, status: r.a.status };
+            }); saveAsks(asks); } finally { k.release(); }
+          }
+        }
+        print(result);
+      }
+      return 0;
     case 'run':
       return startRun(need(target, 'run <plan.json>'), a);
     case 'wait': {
@@ -1659,11 +1711,15 @@ export function main(argv: string[]): number {
     case 'recover': {
       const id = need(target, `${verb} <run>`);
       if (!existsSync(ledgerPath(id))) {
-        const res = recover(id); // 未登记：按 archon run id 处理（selftest 用）
+        const run = getRun(id), who = caller();
+        if (!run.working_path) throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
+        const scope = repoScope(run.working_path), c = coord();
+        if (!c.owner(scope).owner) c.claim(scope, who);
+        const res = c.mutate(scope, who, () => recover(id, run.working_path ?? undefined));
         print({ run_id: id, ...res });
         return res.ok ? 0 : 1;
       }
-      const l = loadLedger(id), code = resumeRun(l);
+      const l = loadLedger(id), code = controlled(l, () => resumeRun(l));
       if (code === 0) updateLedger(l, cur => { cur.intervened = true; });
       return code;
     }
@@ -1672,7 +1728,13 @@ export function main(argv: string[]): number {
       // 未登记：按 archon run id 处理（selftest 用）
       const l = existsSync(ledgerPath(id)) ? loadLedger(id) : undefined;
       const rid = l?.archon_run_id ?? id;
-      const ok = cancelRun(rid, getRun(rid, l?.repo).status, l?.repo);
+      const ok = l ? control(l, () => cancelRun(rid, getRun(rid, l.repo).status, l.repo)) : (() => {
+        const run = getRun(rid), who = caller();
+        if (!run.working_path) throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
+        const scope = repoScope(run.working_path), c = coord();
+        if (!c.owner(scope).owner) c.claim(scope, who);
+        return c.mutate(scope, who, () => cancelRun(rid, run.status, run.working_path ?? undefined));
+      })();
       print({ run_id: id, ok });
       return ok ? 0 : 1;
     }
@@ -1681,11 +1743,12 @@ export function main(argv: string[]): number {
         if (target !== 'retry') throw new Error('usage: superagent decide --all-held retry');
         return retryAllHeld();
       }
-      return decide(ledger(), a);
+      { const l = ledger(); return controlled(l, () => decide(l, a)); }
     case 'brief':
       return brief(ledger());
     case 'land': {
       const l = ledger();
+      return controlled(l, () => {
       const run = getRun(l.archon_run_id, l.repo);
       const land = evidenceJson(l, artifactsOf(run), 'land.json');
       if (land === undefined) {
@@ -1694,9 +1757,10 @@ export function main(argv: string[]): number {
       }
       print(land);
       return 0;
+      });
     }
     case 'accept':
-      return acceptRun(ledger(), a.flags.pkg);
+      { const l = ledger(); return controlled(l, () => acceptRun(l, a.flags.pkg)); }
     case 'supervise-tick':
       return tickOutput();
     case 'report': {

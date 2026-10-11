@@ -1,4 +1,5 @@
-import { describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import * as coordModule from '../src/coord';
 import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
 import * as saCheck from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
@@ -45,6 +46,8 @@ import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
+let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
+afterEach(() => { engineBoundary?.mockRestore(); engineBoundary = undefined; });
 const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView => ({
   id: 'r',
   status,
@@ -182,6 +185,10 @@ function stub(responses: RunView[]): {
   calls: () => string[];
 } {
   const root = tmp();
+  sh('git init -q -b fixture', root);
+  // These tests isolate recovery calls; cleanEngine itself has real dirty/committed fixtures in coord.test.ts.
+  engineBoundary?.mockRestore();
+  engineBoundary = spyOn(coordModule, 'cleanEngine').mockReturnValue('a'.repeat(40));
   const dir = join(root, 'stub');
   mkdirSync(join(dir, 'used'), { recursive: true });
   responses.forEach((r, i) =>
@@ -235,6 +242,7 @@ echo '{"ok":true}'
     transcript: '',
     log: '',
     recoveries: [],
+    controller: coordModule.coord().claim(coordModule.repoScope(root), coordModule.caller()).controller,
   };
   writeFileSync(join(home, 'runs', 'sa1.json'), JSON.stringify(ledger));
   mkdirSync(join(root, 'gen', 'hints'), { recursive: true });
@@ -1069,7 +1077,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     const s = stub([humanWait(), humanWait(), run('running')]);
     const sup = supervisor(s.root, 'yes');
     expect(tick()).toEqual([
-      { run_id: 'sa1', event: 'sa.human.m2', action: 'ask', ok: true, ask: 'ask-1' },
+      { run_id: 'sa1', event: 'sa.human.m2', action: 'ask', ok: true, ask: 'ask-1',
+        controller: s.ledger.controller, generation: s.ledger.controller!.generation },
     ]);
     expect(sup()[0]).toMatch(/^ask --question .*human-m2.*等待人工签收.*是=批准签收门.*否=终止整个run.* --ttl-hours 72$/);
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
@@ -1177,7 +1186,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       JSON.stringify({ 'sa1:signoff:39d592de14436296': { id: 'ask-1', status: 'pending' } })
     );
     expect(tick()).toEqual([
-      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
+      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline',
+        controller: s.ledger.controller, generation: s.ledger.controller!.generation },
     ]);
     expect(s.calls()).toContain('workflow abandon r --json');
     expect(existsSync(join(s.root, 'sup-calls'))).toBe(false);
@@ -1208,7 +1218,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     );
     process.env.SA_SUPERVISOR = py;
     expect(tick()).toEqual([
-      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
+      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline',
+        controller: s.ledger.controller, generation: s.ledger.controller!.generation },
     ]);
     expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
     expect(s.calls()).toContain('workflow abandon r --json');
