@@ -9,7 +9,7 @@ argument-hint: (inputs bound by the generated workflow)
 
 - 累计评审台账（JSON 文件，先完整阅读；由引擎按各轮评审历史派生）：`$INPUTS.ledger`。`blocking` 是唯一必须修复的发现清单，`debt` 是已登记的评审债，`closed` 已带证据关闭
 - 上一轮验收日志：`$INPUTS.accept_log`（若有失败命令，修复它是第一优先级；`$ARTIFACTS_DIR/verify-*.probe.log` 存在时表示在里程碑起点复跑过同一命令，结果见该日志）
-- 工作包任务书（目标、预期改动范围、验收命令、权限、红线）：$INPUTS.briefs
+- 工作包任务书（目标、预期改动范围、验收命令、权限、红线）：$INPUTS.briefs，先完整阅读。包括首条读取在内，所有 shell 命令遵循你的 AGENTS.md 命令规则。
 - 元帅提示目录：`$INPUTS.hints`（其中与本里程碑工作包同名的 `<包>.md` 存在时必须完整阅读）
 
 ## 要求

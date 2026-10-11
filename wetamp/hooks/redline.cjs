@@ -1,14 +1,12 @@
 'use strict';
-// 执行层红线（所有角色）：读凭据与隐私、发布与合并、改写共享分支、按名杀进程、连接非本机数据库；
-// 派生会话另把编辑与 shell 写入限制在 worktree、临时目录与包管理缓存内。只做字面判定：
-// 派生写目标含动态展开时拒绝；间接执行的残余风险见 docs/04。
+// Default allow. Effects and ownership establish danger; uncertainty is advisory.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const {spawnSync} = require('node:child_process');
-const {parse, tokens} = require('./shell.cjs');
+const EFFECTS = require('./shell-effects.json');
 const microEdit = require('./micro-edit.cjs');
 
 // child is parent itself or below it.
-const within = (child, parent) => { const r = path.relative(parent, child); return !r.startsWith('..') && !path.isAbsolute(r); };
+const within = (child, parent) => { const r = path.relative(parent, child); return r !== '..' && !r.startsWith('../') && !path.isAbsolute(r); };
 function resolvePath(file) {
   let cursor = file; const tail = [];
   while (!fs.existsSync(cursor)) {
@@ -64,6 +62,30 @@ function wordKind(word, dir, env) {
 
 const PROTECTED = /^(?:refs\/heads\/)?(?:main|master|develop|wetamp|release-.+)$/;
 const GIT_VALUE_OPTIONS = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'];
+function gitInvocation(argv, dir, env) {
+  // undefined = absent; {path: null} = explicitly unknown; {path} = resolved.
+  const locate = value => ({path: typeof value !== 'string' || !value || /[$`*?\[\]{}]|__sa_sub__|__sa_unknown_cwd__/.test(expand(value, env))
+    ? null : resolvePath(path.resolve(dir, expand(value, env)))});
+  let i = 1, gitDir = env.GIT_DIR, workTree = env.GIT_WORK_TREE;
+  const locations = [locate(dir)];
+  const explicit = [gitDir, workTree].filter(value => value !== undefined);
+  while (argv[i]?.startsWith('-')) {
+    const option = argv[i], value = argv[i + 1];
+    if (option === '-C' || /^-C.+/.test(option)) {
+      const location = locate(option === '-C' ? value : option.slice(2)); locations.push(location); dir = location.path || '/__sa_unknown_cwd__';
+    }
+    if (option === '--git-dir') gitDir = value ?? '';
+    if (option === '--work-tree') workTree = value ?? '';
+    if (option === '--git-dir' || option === '--work-tree') explicit.push(value ?? '');
+    i += GIT_VALUE_OPTIONS.includes(option) ? 2 : 1;
+  }
+  gitDir = gitDir === undefined ? undefined : locate(gitDir);
+  workTree = workTree === undefined ? undefined : locate(workTree);
+  const base = (workTree ?? gitDir ?? locate(dir)).path;
+  const metadata = gitDir?.path;
+  const checkout = base && (workTree || gitDir ? base : checkoutOf(base));
+  return {base: base || '/__sa_unknown_cwd__', checkout, metadata, locations: [...locations, ...explicit.map(locate)], sub: argv[i], rest: argv.slice(i + 1)};
+}
 const currentBranch = dir => {
   const r = spawnSync('git', ['-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], {encoding: 'utf8', timeout: 3000, env: {...process.env, GIT_OPTIONAL_LOCKS: '0'}});
   return r.status === 0 ? r.stdout.trim() : '';
@@ -77,7 +99,7 @@ function gitReason(argv, dir) {
   const [sub, ...rest] = argv.slice(i);
   const flags = rest.filter(a => a.startsWith('-')), operands = rest.filter(a => !a.startsWith('-'));
   const shared = operands.find(a => PROTECTED.test(a));
-  const msg = what => `禁止对共享分支 ${what} 执行 git ${sub}：改写共享分支一律人工执行`;
+  const msg = () => '受保护分支';
   if (sub === 'branch' && shared && flags.some(f => /^-[a-zA-Z]*[fDdMm]|^--(?:force|delete|move)$/.test(f))) return msg(shared);
   if (sub === 'update-ref') {
     if (shared) return msg(shared);
@@ -96,186 +118,199 @@ function gitReason(argv, dir) {
   return null;
 }
 
-const LOCAL_HOST = /^(?:localhost|127(?:\.\d+){3}|::1|\[::1\]|0\.0\.0\.0|\/.*)?$/i;
-const DB_CLIENTS = ['mysql', 'psql', 'mongosh', 'redis-cli'];
-function dbHosts(args) {
-  const hosts = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '-h' || a === '--host') hosts.push(args[++i] ?? '');
-    else if (/^-h./.test(a)) hosts.push(a.slice(2));
-    else if (a.startsWith('--host=')) hosts.push(a.slice(7));
-    const uri = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?(\[[^\]]*\]|[^:/?,]*)/i.exec(a);
-    if (uri) hosts.push(uri[1]);
-    for (const m of a.matchAll(/(?:^|\s)host=(\S+)/g)) hosts.push(m[1]);
-  }
-  return hosts;
-}
-function commandReason(argv, allNames, dir) {
-  const name = path.posix.basename(argv[0]), args = argv.slice(1), operands = args.filter(a => !a.startsWith('-'));
-  if (name === 'git') return gitReason(argv, dir);
-  if (name === 'security' && /^(?:find-.*-password|dump-keychain|export)$/.test(operands[0] ?? '')) return `禁止 security ${operands[0]}：钥匙串内容不交给任何模型`;
-  const publish = ['npm', 'pnpm', 'bun', 'yarn'].includes(name) && operands.slice(0, 2).includes('publish')
-    || name === 'docker' && (operands[0] === 'push' || args.includes('--push'))
-    || name === 'gh' && ['release create', 'pr merge'].includes(operands.slice(0, 2).join(' '))
-    || name === 'vercel' && args.some(a => a === '--prod' || a === '--production');
-  if (publish) return `禁止 ${name} ${operands.slice(0, 2).join(' ')}：发布与合并一律人工执行`;
-  if (['pkill', 'killall'].includes(name)) return `禁止 ${name}：只能停止本会话记录的 PID（kill $!、kill %1）`;
-  if (name === 'kill' && allNames.some(n => ['lsof', 'pgrep', 'pidof'].includes(n))) return '禁止按端口或名字查 PID 再 kill：只能停止本会话记录的 PID（kill $!、kill %1）';
-  if (DB_CLIENTS.includes(name)) {
-    const remote = dbHosts(args).find(h => !LOCAL_HOST.test(h));
-    if (remote !== undefined) return `禁止 ${name} 连接非本机 host ${remote}`;
-  }
-  return null;
-}
 
-// 输出与参数中的落点：重定向、tee、包装器副作用之外，常见文件命令的目标操作数。
-const LAST_TARGET = ['cp', 'mv', 'ln', 'install', 'rsync'], ALL_TARGETS = ['touch', 'mkdir', 'rm', 'rmdir', 'truncate'];
-function shellWrites(parsed) {
-  const out = [...parsed.writes];
-  for (const argv of parsed.argvs) {
-    const name = path.posix.basename(argv[0]), operands = argv.slice(1).filter(a => !a.startsWith('-'));
-    if (LAST_TARGET.includes(name) && operands.length > 1) out.push(operands.at(-1));
-    if (ALL_TARGETS.includes(name)) out.push(...operands);
-    if (name === 'dd') out.push(...argv.filter(a => a.startsWith('of=')).map(a => a.slice(3)));
-  }
-  return out;
+// One reminder exit: call sites supply actions and categories, never raw words.
+const message = (action, consequence, alternative = '需要主控执行', target) => {
+  let label = target?.kind || '';
+  if (target?.url) { try { label = new URL(target.url).hostname; } catch { label = '外部服务'; } }
+  return `已拦截：${action}${label ? `（${label}）` : ''}。原因：${consequence}。可以：${alternative}。`;
+};
+const commandLabel = argv => {
+  const name = path.posix.basename(argv[0] || '');
+  return EFFECTS.flatMap(rule => [...rule.commands, ...(rule.commandPrefixes || [])]).find(command => name === command || name.startsWith(command + '-')) || '命令';
+};
+function effects(argv) {
+  const name = path.posix.basename(argv[0] || ''), args = argv.slice(1), operands = args.filter(a => !a.startsWith('-'));
+  return EFFECTS.filter(rule => (rule.commands.includes(name) || rule.commandPrefixes?.some(prefix => name.startsWith(prefix)))
+    && (!rule.pattern || args.some(a => new RegExp(rule.pattern).test(a)))
+    && (!rule.prefixes || rule.prefixes.some(prefix => prefix.every((v, i) => operands[i] === v))))
+    .flatMap(rule => {
+      let targets = [];
+      if (rule.targets === 'operands') targets = operands;
+      if (rule.targets === 'last') targets = operands.slice(-1);
+      if (rule.targets === 'first') targets = operands.slice(0, 1);
+      if (rule.targets === 'of') targets = args.filter(a => a.startsWith('of=')).map(a => a.slice(3));
+      if (rule.targets === 'option') {
+        for (let i = 0; i < args.length; i++) for (const option of rule.options) {
+          if (args[i] === option && args[i + 1]) targets.push(args[i + 1]);
+          else if (args[i].startsWith(option + '=') || option.length === 2 && args[i].startsWith(option) && args[i].length > 2)
+            targets.push(args[i].slice(option.length).replace(/^=/, ''));
+        }
+        if (!targets.length && rule.default) targets.push(rule.default);
+      }
+      const effect = rule.append?.some(option => args.includes(option)) ? 'write' : rule.effect;
+      return rule.targets ? targets.map(target => ({effect, target})) : [{effect, target: name, argv}];
+    });
 }
-function writableRoots(cwd, root, env) {
+function taskRoots(cwd, root, env) {
   const home = homeOf(env);
-  return [root || cwd, '/tmp', '/private/tmp', env.TMPDIR, '/var/folders', '/private/var/folders',
+  return [root || cwd, '/tmp', '/private/tmp', env.TMPDIR, '/var/folders', '/private/var/folders', env.ARTIFACTS_DIR, env.SUPERAGENT_ARTIFACTS_DIR,
     ...['.bun', '.npm', '.cache', 'Library/Caches', '.m2', '.gradle', '.cargo'].map(d => path.join(home, d))]
     .filter(Boolean).map(r => resolvePath(path.resolve(r)));
 }
-function outsideReason(targets, dir, roots, env) {
-  for (const t of targets) {
-    const abs = resolvePath(path.resolve(dir, expand(t, env)));
-    if (!roots.some(r => within(abs, r))) return `派生会话只能写 worktree、临时目录与包管理缓存，${path.basename(abs) || abs} 在范围外`;
+function taskOwnership(file, dir, root, env, git = false) {
+  if (!file) return null;
+  if (root) {
+    const repository = resolvePath(root), marker = path.join(repository, '.git');
+    const metadata = git && fs.existsSync(marker) && fs.statSync(marker).isFile()
+      ? resolvePath(path.resolve(repository, fs.readFileSync(marker, 'utf8').trim().slice(8))) : resolvePath(marker);
+    // File scope is containment; Git scope is this checkout or its exact metadata.
+    if (git ? file === metadata || file === marker || !within(file, marker) && checkoutOf(file) === repository
+      : within(file, repository)) return 'repository';
+  }
+  if (!taskRoots(dir, root, env).some(r => within(file, r))) return null;
+  // A generated mktemp product owns its repository too; existing temp repos do not.
+  return require('./shell-ast.cjs').isTemporaryPath(file) ? 'repository' : 'artifact';
+}
+function checkoutOf(file) {
+  let dir = file;
+  while (path.dirname(dir) !== dir) {
+    if (fs.existsSync(path.join(dir, '.git'))) return resolvePath(dir);
+    dir = path.dirname(dir);
   }
   return null;
 }
-
-// heredoc 正文是数据（交给 bash/sh 等执行的除外），不当作命令解析。
-function stripHeredocs(text) {
-  const lines = text.split('\n'), out = [];
-  for (let i = 0; i < lines.length; i++) {
-    out.push(lines[i]);
-    const m = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(lines[i].replace(/<<</g, ''));
-    if (!m || /(?:^|[\s;&|(])(?:bash|sh|zsh|dash|ksh)\b[^<]*<</.test(lines[i])) continue;
-    while (i + 1 < lines.length && (m[1] ? lines[i + 1].replace(/^\t+/, '') : lines[i + 1]) !== m[3]) i++;
-    if (i + 1 < lines.length) out.push(lines[++i]);
-  }
-  return out.join('\n');
+function protectedKind(abs, root, env) {
+  const home = path.resolve(homeOf(env)), rel = path.relative(home, abs);
+  const own = root && within(abs, resolvePath(root));
+  const local = own ? path.relative(resolvePath(root), abs).split(path.sep) : [];
+  if (local[0] === '.git' || /^\.(?:codex|claude|opencode|agents)$/.test(local[0] || '')) return '护栏或 agent/provider 配置';
+  if (!own && within(abs, home) && rel.split(path.sep)[0].startsWith('.')) return '家目录下的配置或凭据';
+  if (['/etc','/private/etc','/System','/usr','/bin','/sbin','/Library','/Applications'].some(dir => within(abs, dir))) return '系统目录';
+  const checkout = checkoutOf(abs);
+  if (checkout && root && checkout !== resolvePath(root)) return '非本任务的 git 检出';
+  return null;
 }
-
+function targetReason(effect, target, dir, root, env, reviewer, advisory) {
+  const expanded = expand(target, env);
+  if (!target || /[$`*?\[\]{}]|__sa_sub__/.test(expanded) || dir.startsWith('/__sa_unknown_cwd__') && !path.isAbsolute(expanded)) {
+    if (['destroy','overwrite'].includes(effect)) return message('销毁或覆盖目标', '无法确认目标是否属于本任务', '使用明确的本任务路径', {kind: '未知路径'});
+    advisory('write_target_unknown'); return null;
+  }
+  const lexical = path.resolve(dir, expanded), abs = resolvePath(lexical);
+  const task = taskOwnership(abs, dir, root, env);
+  const protectedLocation = protectedKind(lexical, root, env) || protectedKind(abs, root, env);
+  const packageCache = ['.bun','.npm','.cache','.m2','.gradle','.cargo'].some(d => within(abs, path.join(homeOf(env), d)));
+  if (protectedLocation && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
+    return message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: protectedLocation});
+  if (reviewer && root && within(abs, resolvePath(root))) return message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: '本任务仓库'});
+  if (effect === 'destroy' && [root, homeOf(env), env.SUPERAGENT_HOME, '/'].filter(Boolean).some(r => within(resolvePath(r), abs)))
+    return message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'});
+  if (!task && (effect === 'destroy' || fs.existsSync(abs)) && ['destroy','overwrite','write'].includes(effect))
+    return message('销毁或覆盖文件', '会破坏不属于本任务的已有数据', '在 worktree 或临时目录创建副本', {kind: '任务范围外路径'});
+  return null;
+}
+function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory, names) {
+  if (effect === 'delegate') return message(`派生会话再次调用 AI（${commandLabel(argv)}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅');
+  if (['create','destroy','overwrite','write'].includes(effect)) return targetReason(effect, target, dir, root, env, reviewer, advisory);
+  if (effect === 'elevate') return message(`通过 ${commandLabel(argv)} 提升权限`, '会越过本任务权限边界');
+  if (effect === 'credential') return message(`通过 ${commandLabel(argv)} 读取钥匙串`, '凭据内容不能交给模型');
+  if (effect === 'external') {
+    // Arguments are untrusted data and may contain credentials or message bodies.
+    const url = argv.find(v => /^https?:\/\//.test(v));
+    return message(`通过 ${commandLabel(argv)} 发布或写入`, '会对外发布、写入或产生不可撤回的影响', undefined, {url});
+  }
+  if (effect === 'process_selection') return message(`通过 ${commandLabel(argv)} 按名称或模式停止进程`, '可能影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
+  if (effect === 'signal') {
+    const args = argv.slice(1), operands = []; let separator = false;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--') { separator = true; continue; }
+      if (!separator && ['-s','--signal','-n'].includes(args[i])) { i++; continue; }
+      if (!separator && i === 0 && /^-(?:[A-Za-z]+|\d+)$/.test(args[i])) continue;
+      operands.push(args[i]);
+    }
+    if (names.size)
+      return message('按端口或名称查询结果停止进程（kill）', '可能影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
+    if (operands.some(v => v === '0' || /^-\d+$/.test(v) || /pgrep|pidof|lsof/.test(v)))
+      return message('通过 kill 向一组进程发信号', '会选择一组进程或影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
+  }
+  if (effect === 'git') {
+    const {base, checkout, metadata, locations, sub, rest} = gitInvocation(argv, dir, env);
+    const owned = file => taskOwnership(file, dir, root, env, true) === 'repository';
+    if (sub === 'init' && !(reviewer && root && within(resolvePath(base), resolvePath(root)))) return null;
+    if (sub === 'push') return message(`执行 git ${sub}`, '会改写共享的远端版本历史');
+    const gitEffects = EFFECTS.find(r => r.commands[0] === 'git');
+    const query = gitEffects.read.includes(sub) || !rest.length && ['branch','tag','remote','reflog'].includes(sub)
+      || (gitEffects.queries[sub] || []).some(flag => rest.includes(flag))
+        && !rest.some(flag => new RegExp(gitEffects.mutationFlags).test(flag));
+    if (!query && gitEffects.write.includes(sub) && locations.some(location => !owned(location.path)))
+      return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
+    if (sub === 'config' && !query) {
+      if (base.startsWith('/__sa_unknown_cwd__')) return targetReason('overwrite', '', dir, root, env, reviewer, advisory);
+      const fileIndex = rest.findIndex(v => v === '--file' || v === '-f');
+      const config = rest.includes('--global') ? path.join(homeOf(env), '.gitconfig') : rest.includes('--system') ? '/etc/gitconfig'
+        : fileIndex >= 0 ? rest[fileIndex + 1] : metadata ? path.join(metadata, 'config') : path.join(base, '.git/config');
+      return targetReason('overwrite', config || '', dir, root, env, reviewer, advisory);
+    }
+    if ((sub === 'reset' && rest.includes('--hard') || sub === 'clean') && !owned(checkout || base))
+      return message(`执行 git ${sub}`, '会销毁非本任务检出中的文件或改动', undefined, {kind: '非本任务检出'});
+    if (!query && gitEffects.write.includes(sub) && (base.startsWith('/__sa_unknown_cwd__')
+      || metadata && !owned(metadata)))
+      return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
+    if (checkout && !owned(checkout) && !query && gitEffects.write.includes(sub))
+      return message(`执行 git ${sub}`, '会修改非本任务的 git 检出', undefined, {kind: '非本任务检出'});
+    if (reviewer && !query && (sub === 'commit' || root && within(resolvePath(base), resolvePath(root))))
+      return message('在被审仓库执行 git 写入', 'reviewer 只读，提交或修改会污染评审对象', '只查询仓库，在临时目录运行测试');
+    const why = gitReason(['git', sub, ...rest], base);
+    if (why) return message(`执行 git ${sub}`, '会改写共享的版本历史', undefined, {kind: why});
+    if (sub === 'branch' && rest.some(v => /^-[a-zA-Z]*[dD]|^--delete$/.test(v))) {
+      const branch = rest.find(v => !v.startsWith('-'));
+      if (branch && branch !== currentBranch(dir)) return message('删除分支', '无法确认这是本任务拥有的分支', undefined, {kind: '非本任务分支'});
+    }
+  }
+  return null;
+}
 const READ_TOOLS = {Read: ['file_path'], NotebookRead: ['notebook_path'], Grep: ['path'], Glob: ['path'], LS: ['path'], view_image: ['path']};
-/**
- * 红线拒绝理由或 null。shell 为解析后的 shell 文本（非 shell 工具为 undefined）；
- * derived 为真时另查写入落点。root 为 cwd 所在 git 根。
- */
-function reason({client, name, input, cwd, root, shell, derived, modelShell = derived, env = process.env, onCommand}) {
-  const edit = microEdit.isEdit(client, name);
-  let targets = [];
-  if (edit) {
-    try { targets = client === 'codex' ? microEdit.patchEdits(input).map(e => e.file) : [input.file_path || input.notebook_path]; }
-    catch (error) { return derived ? `无法确认补丁写入目标（${error.message}）` : null; }
-  }
-  const reads = [...(READ_TOOLS[name] ?? []).map(k => input[k]), ...targets].filter(v => typeof v === 'string' && v);
-  for (const file of reads) {
-    const kind = pathKind(file, cwd, env);
-    if (kind) return `禁止读写${kind}（${path.basename(file)}）`;
-  }
-  if (edit && derived) {
-    const out = outsideReason(targets, cwd, writableRoots(cwd, root, env), env);
-    if (out) return out;
-  }
-  if (shell === undefined) return null;
-  const roots = writableRoots(cwd, root, env);
-  if (modelShell) return require('./shell-ast.cjs').analyze(shell, cwd, env, (parsed, dir, names, assignment) => {
-    onCommand?.(parsed);
-    for (const argv of parsed.argvs) {
-      for (const word of argv) { const kind = wordKind(word, dir, env); if (kind) return `禁止读取${kind}`; }
-      const why = commandReason(argv, names, dir); if (why) return why;
+function reason({client, name, input = {}, cwd, root, shell, derived, env = process.env, onCommand, onAdvisory = () => {}, reviewer = false}) {
+  try {
+    const edit = microEdit.isEdit(client, name);
+    let targets = [];
+    if (edit) {
+      try { targets = client === 'codex' ? microEdit.patchEdits(input).map(e => e.file) : [input.file_path || input.notebook_path]; }
+      catch { onAdvisory('patch_target_unknown'); return null; }
     }
-    for (const file of parsed.reads) { const kind = wordKind(file, dir, env); if (kind) return `禁止读取${kind}（输入重定向）`; }
-    if (!derived) return null; // Reviewer has a separate read-only write gate.
-    const writes = shellWrites(parsed);
-    if (assignment && writes.some(t => /^(?:~|\$\{?HOME\}?)/.test(t))) return '无法确认 shell 写入目标（赋值影响 HOME 展开）';
-    if (writes.some(t => !t || /[$`*?\[\]{}]/.test(expand(t, env)))) return '无法确认 shell 写入目标（动态路径）';
-    return outsideReason(writes, dir, roots, env);
-  }, word => expand(word, env));
-  let allNames = [];
-  try { allNames = parse(stripHeredocs(shell)).argvs.map(a => path.posix.basename(a[0])); }
-  catch {
-    const kind = shell.split(/[\s;&|()`"'<>]+/).map(w => wordKind(w, cwd, env)).find(Boolean);
-    if (kind) return `禁止读取${kind}`;
-    if (derived) return '无法确认 shell 写入目标（解析失败）';
-  }
-  // Preserve shell order and isolate subshell cwd. Conditional cd leaves both possible
-  // directories unless its success is required by &&; every possible write must be safe.
-  function walk(text, dirs, depth = 0) {
-    if (depth > 8) return '无法确认 shell 写入目标（嵌套过深）';
-    let part = '', quote = '', nesting = 0;
-    const pieces = [];
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      if (c === '\\') { part += text.slice(i, i + 2); i++; continue; }
-      if (quote) { part += c; if (c === quote) quote = ''; continue; }
-      if (c === "'" || c === '"' || c === '`') { quote = c; part += c; continue; }
-      if (c === '(') nesting++;
-      if (c === ')') nesting--;
-      if (!nesting && /[;&|\n]/.test(c) && !(text[i - 1] === '>' && /[&|]/.test(c))) {
-        const op = text[i + 1] === c && /[&|]/.test(c) ? c + text[++i] : c;
-        pieces.push([part, op]); part = '';
-      } else part += c;
+    for (const file of [...(READ_TOOLS[name] ?? []).map(k => input[k]), ...targets].filter(v => typeof v === 'string' && v)) {
+      const kind = pathKind(file, cwd, env);
+      if (kind) return message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
     }
-    pieces.push([part, '']);
-    if (quote || nesting) return derived ? '无法确认 shell 写入目标（语法不完整）' : null;
-    for (let j = 0; j < pieces.length; j++) {
-      const [line, op] = pieces[j], trimmed = line.trim();
-      if (!trimmed) continue;
-      if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
-        const why = walk(trimmed.slice(1, -1), [...dirs], depth + 1); if (why) return why; continue;
-      }
-      let parsed, head;
-      try { parsed = parse(trimmed); head = tokens(trimmed)[0]; }
-      catch { return derived ? '无法确认 shell 写入目标（解析失败）' : null; }
-      // Flattened argv is useful for redlines, but cannot prove which scope owns cd.
-      // Only a literal simple cd owns the parent cwd; shell -c owns a separate scope.
-      const cds = parsed.argvs.filter(argv => argv[0] === 'cd');
-      const cd = head?.value === 'cd' && !head.dynamic && parsed.argvs.length === 1 ? cds[0] : undefined;
-      const childShell = !head?.dynamic && ['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(path.posix.basename(head?.value || ''))
-        && ['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(path.posix.basename(parsed.argvs[0]?.[0] || ''))
-        && parsed.argvs[0].some((v, k) => k > 0 && /^-[a-z]*c[a-z]*$/.test(v));
-      if (derived && cds.length && !cd && !childShell) return '无法确认 cd 所属作用域或写入目录';
-      const writes = shellWrites(parsed);
-      if (derived && writes.length && parsed.argvs.length > 1 && parsed.argvs.some(a => a[0] === 'cd')) return '无法确认嵌套 shell 的写入目录';
-      if (derived && writes.some(t => !t || /[$`*?\[\]{}]/.test(expand(t, env)) || t.includes('__sa_sub__'))) return '无法确认 shell 写入目标（动态路径）';
-      for (const dir of dirs) {
-        for (const argv of parsed.argvs) {
-          for (const word of argv.slice(argv[0].includes('/') ? 0 : 1)) {
-            const kind = wordKind(word, dir, env); if (kind) return `禁止读取${kind}（命令 ${path.posix.basename(argv[0])}）`;
-          }
-          const why = commandReason(argv, allNames, dir); if (why) return why;
-          const flag = argv.findIndex((v, k) => k > 0 && /^-[a-z]*c[a-z]*$/.test(v));
-          if (['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(path.posix.basename(argv[0])) && flag > 0) {
-            const why = walk(argv[flag + 1] || '', [dir], depth + 1); if (why) return why;
-          }
+    if (edit && (derived || reviewer)) for (const target of targets) {
+      const why = targetReason('overwrite', target || '', cwd, root, env, reviewer, onAdvisory); if (why) return why;
+    }
+    if (shell === undefined) return null;
+    return require('./shell-ast.cjs').analyze(shell, cwd, env, (parsed, dir) => {
+      onCommand?.(parsed);
+      const names = new Set(parsed.selections || []);
+      for (const argv of parsed.argvs) {
+        for (const word of argv) {
+          const kind = wordKind(word, dir, env);
+          if (kind) return message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
         }
-        for (const file of parsed.reads) { const kind = wordKind(file, dir, env); if (kind) return `禁止读取${kind}（输入重定向）`; }
-        if (derived) { const why = outsideReason(writes, dir, roots, env); if (why) return why; }
+        for (const action of effects(argv)) {
+          if (!derived && !reviewer && action.effect === 'delegate') continue;
+          if (!derived && !reviewer && ['create','destroy','overwrite','write'].includes(action.effect)) continue;
+          const why = actionReason(action, dir, root, {...env, ...parsed.env}, reviewer, onAdvisory, names); if (why) return why;
+        }
       }
-      if (cd) {
-        const target = cd[1] || homeOf(env);
-        if (/[$`*?\[\]{}]/.test(expand(target, env)) || cd.length > 2) return derived ? '无法确认 cd 后的写入目录' : null;
-        const next = dirs.map(dir => path.resolve(dir, expand(target, env)));
-        dirs = op === '&&' && !['||', '|', '|&', '&'].includes(pieces[j - 1]?.[1]) ? next : [...new Set([...dirs, ...next])];
+      for (const file of parsed.reads) {
+        const kind = wordKind(file, dir, env);
+        if (kind) return message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
       }
-    }
-    return null;
-  }
-  return walk(stripHeredocs(shell), [cwd]);
+      if (derived || reviewer) for (const file of parsed.writes) {
+        const why = targetReason(parsed.overwrites?.includes(file) ? 'overwrite' : 'write', file, dir, root, env, reviewer, onAdvisory); if (why) return why;
+      }
+      return null;
+    }, word => expand(word, env), onAdvisory);
+  } catch { onAdvisory('redline_internal_error'); return null; }
 }
-
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, resolvePath, within, secretKind, stripHeredocs};
+module.exports = {init, reason, resolvePath, within, secretKind, message, commandLabel};

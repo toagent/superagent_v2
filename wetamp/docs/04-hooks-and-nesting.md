@@ -24,9 +24,9 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 3. 会话 cwd 位于 `$SUPERAGENT_HOME/archon/workspaces/` 之下；
 4. 仅 Codex：根调用（无 `agent_type`+`agent_id`）的 `model` 在将军池且不在元帅池。
 
-派生会话：N-1 拒绝 `Agent`/`Task`/`spawn_agent`/`mcp__claude__*`，以及 shell 中命令头为 `claude`/`codex`/`opencode`/`sol-run`/`twin-agent*` 的调用；不计 G-1。`SUPERAGENT_ROLE=reviewer` 另禁止一切编辑。
+派生会话：N-1 拒绝 `Agent`/`Task`/`spawn_agent`/`mcp__claude__*`，以及 shell 中命令头为 `claude`/`codex`/`opencode`/`sol-run`/`twin-agent*` 的调用；不计 G-1。`SUPERAGENT_ROLE=reviewer` 禁止修改被审仓库与提交，但允许临时写入和运行测试。
 
-元帅会话：G-1 微改上限（`policy.micro_edit`：30 行、2 文件、不许新建代码文件；`*.md`、`**/.context/**` 豁免，风险路径优先于豁免）在 `PreToolUse` 按会话累计到 `$SUPERAGENT_HOME/hooks/<sha256(session)>.json`，被拒的那次不计入，不重置；累计在状态锁（`<state>.lock`，`openSync(…,'wx')`，等 5s、15s 视为陈旧）内读改写，并行 `PreToolUse` 不丢累计量，拿不到锁时拒绝并提示重试；补丁本身解析不了时放行并提示。G-2 检查派发上下文长度与 `spawn_agent` 的显式模型。所有会话都拦 `git push`、`git reset --hard`，以及字面路径为 `/`、`~`、`$SUPERAGENT_HOME`、git 根（或其上级）的删除；拒绝信息只回显目标 basename。
+元帅会话：G-1 微改上限（`policy.micro_edit`：30 行、2 文件、不许新建代码文件；`*.md`、`**/.context/**` 豁免，风险路径优先于豁免）在 `PreToolUse` 按会话累计到 `$SUPERAGENT_HOME/hooks/<sha256(session)>.json`，被拒的那次不计入，不重置；累计在状态锁（`<state>.lock`，`openSync(…,'wx')`，等 5s、15s 视为陈旧）内读改写，并行 `PreToolUse` 不丢累计量，拿不到锁时拒绝并提示重试；补丁本身解析不了时放行并提示。G-2 检查派发上下文长度与 `spawn_agent` 的显式模型。共享远端推送、非本任务检出的破坏性操作及删除受保护目录由红线统一判定，提示包含目标、后果和替代动作。
 
 ## 执行层红线（所有角色，`hooks/redline.cjs`）
 
@@ -39,11 +39,11 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 | 凭据文件 | `~/.aws/credentials`、`~/.netrc`、`~/.config/gh/hosts.yml`、直接读 `~/.npmrc`/`~/.pypirc` | 工具自己读取（`npm whoami`） |
 | 隐私 | 任一路径段 `_private`；`~/Library/Mobile Documents`；Chrome/Chromium/Arc/Edge/Firefox/Safari 资料与 `~/Library/Cookies` | `grep _private src`（不存在的相对词视为模式） |
 | 发布与合并 | `npm/pnpm/bun/yarn publish`、`docker push`/`--push`、`gh release create`、`gh pr merge`、`vercel --prod` | `npm pack`、`gh pr view` |
-| 共享分支 | 对 `main/master/develop/wetamp/release-*` 的 `git branch -f/-D/-d/-m`、`update-ref`（含当前分支受保护时的 `update-ref HEAD`）、`checkout -B`/`switch -C`、`rebase`（`--abort/--quit` 除外）；`git push`、`reset --hard` 原有规则照旧 | 对自己分支的同类操作 |
-| 杀进程 | `pkill`、`killall`、同一命令行里 `lsof/pgrep/pidof` 配 `kill` | `kill $!`、`kill %1`、`kill <记录的 PID>` |
-| 远端数据库 | `mysql/psql/mongosh/redis-cli` 的 `-h/--host/host=`/URI 指向非本机 | `localhost`、`127.*`、`::1`、unix socket |
+| 共享历史 | 推送；非本任务检出的 hard reset / clean；删除别人的分支；重写受保护共享分支 | 本任务检出的 reset / clean 与查询 |
+| 发信号 | 按名称、模式、端口或进程组选择对象（含 PID 0、负 PID） | 明确 PID，如 `kill -TERM 41418` |
+| 权限与写入 | 提权；修改家目录点目录、系统目录或非本任务检出；销毁范围外已有数据 | worktree、临时目录、包缓存、本 run 产物；普通范围外新建 |
 
-派生会话（reviewer 除外，它由只读白名单整体拒绝）的写入另限落点：Edit/Write/apply_patch 目标，以及 shell 的写重定向、`tee`、包装器副作用、`cp/mv/ln/install/rsync` 的末操作数、`touch/mkdir/rm/rmdir/truncate` 的操作数、`dd of=`，只能落在 cwd 的 git 根（无则 cwd）、`/tmp`、`/private/tmp`、`$TMPDIR`、`/var/folders`，以及 `~/.bun`、`~/.npm`、`~/.cache`、`~/Library/Caches`、`~/.m2`、`~/.gradle`、`~/.cargo`。
+命令效果集中在 `hooks/shell-effects.json`，统一按效果与目标归属判定；没有登记的命令默认按读/执行放行。解析失败、无法建模、内部异常、未知普通写入通过 hook stdout 的 `systemMessage` 留下 `SUPERAGENT advisory`，可在 provider 会话的 hook 输出查看，不挂起、不发提醒。明确的删除或覆盖动作若目标未知仍拒绝。每条红线拒绝固定为 `已拦截：<动作与对象>。原因：<后果>。可以：<替代做法>。`；`error_class=redline` 的引擎契约不变。
 
 ### provider × 红线（只写实测，2026-10-10，真实 Archon 节点：Claude 1 次、Codex 3 次）
 
@@ -54,8 +54,8 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 | OpenCode | 无 hook 通道 | — | 提示级 |
 
 - `codex-worker` 的信任检查按 codex-rs hooks discovery 复算 hash（`{event_name,matcher?,hooks:[归一化 handler]}` 键排序紧凑 JSON 的 sha256，测试里用本机 Codex 写下的 git-guardrail 值锚定）。运维动作：改过 `hooks.json` 里 guard 的命令或 timeout 后，在交互式 Codex 里 `/hooks` 重新信任；Codex 改了 hash 算法造成误判时可设 `SA_CODEX_HOOK_TRUST=unchecked` 临时放行（每次 stderr 留痕）。
-- 红线随用户级 hooks 指向的 guard 生效：主工作区合入本分支前，worker 用的仍是主工作区旧 guard（无红线）。
-- 残余风险（提示级）：只做字面判定，变量（`$HOME` 除外）、通配、`eval "$x"`、脚本文件内部、解释器（`python -c`/`node -e`）里的读写与网络拦不住；`PGHOST` 等环境变量指定的 DB host 不识别；`grep -r ~` 这类对上级目录的递归读不判；元帅不受落点限制；Bash 外部写入只按上述命令表尽力识别。
+- 上表是 2026-10-10 旧版本历史证据，不证明新版策略的真实 provider 验收。运行时 hooks 随用户配置指向的代码生效；本包尚未合入生产。
+- 残余边界：脚本文件内部、解释器程序与间接网络/文件效果无法完整推断；这类未知效果默认放行。变量路径的普通写入 advisory，明确删除/覆盖未知目标仍拒绝。元帅保留既有微改规则，派生任务与 reviewer 的写入按归属判定。
 
 ## 禁嵌套：本机 Archon worker 三层
 
@@ -67,18 +67,18 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 
 ## 包装器剥离规则（N-1 与 reviewer 判定共用 `hooks/shell.cjs`）
 
-shell 文本先按引号、`$(…)`/反引号/子 shell、管道与 `;`/`&&`/`||`/换行切成命令；单引号内的内容是字面量，不当作执行。每条命令依次去掉前导赋值与 `!`/`{`/`if`/`then`/`do` 等保留字，再按参数语义剥离包装器：`env`（含 `-u NAME`、`-S` 拆分后递归）、`sudo`/`doas`、`nice`、`nohup`、`builtin`、`command`（`-v/-V` 只是查找，不剥离）、`exec`、`caffeinate`、`time`、`xargs`、`timeout/gtimeout`、`stdbuf`、`watch`、`script`（`-c` 命令体递归）、`rtk proxy`；剥完后的第一个词才是命令头。包装器自身的写入副作用（`time -o/--output`、`env -C/--chdir`、`sudo -D`、`nohup` 的 `nohup.out`、`script` 的记录文件与 `-T/-B/-I/-O` 等日志文件）和 `tee` 的文件参数都按写入计入。`bash/sh/zsh -c`、`eval`、`find -exec` 的命令体递归解析，深度超过 4 层直接拒绝。紧贴重定向的 fd 数字不算参数；指向 `/dev/null`、`/dev/stdout`、`/dev/stderr` 与 `>&N` 的重定向不算写入。
+shell 文本先按引号、`$(…)`/反引号/子 shell、管道与 `;`/`&&`/`||`/换行切成命令；单引号内的内容是字面量，不当作执行。每条命令依次去掉前导赋值与 `!`/`{`/`if`/`then`/`do` 等保留字，再按参数语义剥离包装器：`env`（含 `-u NAME`、`-S` 拆分后递归）、`sudo`/`doas`、`nice`、`nohup`、`builtin`、`command`（`-v/-V` 只是查找，不剥离）、`exec`、`caffeinate`、`time`、`xargs`、`timeout/gtimeout`、`stdbuf`、`watch`、`script`（`-c` 命令体递归）、`rtk proxy`；剥完后的第一个词才是命令头。包装器自身的写入副作用（`time -o/--output`、`sudo -D`、`nohup` 的 `nohup.out`、`script` 的记录文件与 `-T/-B/-I/-O` 等日志文件）和 `tee` 的文件参数都按写入计入。`bash/sh/zsh -c`、`eval`、`find -exec` 的命令体递归解析，深度超过 8 层留下 advisory 并放行。紧贴重定向的 fd 数字不算参数；指向 `/dev/null`、`/dev/stdout`、`/dev/stderr` 与 `>&N` 的重定向不算写入。
 
 ## reviewer 只读边界
 
 `SUPERAGENT_ROLE=reviewer` 的会话（`src/archon.ts` 保留继承的 `reviewer`/`general`，只把其他值改成 `worker`）：
 
-- hooks：拒绝一切编辑工具；Bash 只放行白名单读命令（`cat/head/tail/grep/rg/sed -n …p/find`（无 `-delete/-exec`）/`sort`（无 `-o`）/`git` 只读子命令等），任何写重定向（`>`、`>>`、`>|`、`&>`、`<>`）、包装器写入副作用、`tee` 文件或解析失败一律拒绝。
+- hooks：编辑工具与可确认的 shell 写入不得修改被审仓库；临时文件、测试和脚本执行允许。解析失败与未知效果产生 advisory；未知明确删除/覆盖仍拒绝。
 - 主边界在执行层，由 `src/generate.ts` 按 `@sa-reviewer` 的 provider 逐节点生成，不依赖环境变量：
   - Claude 评审节点：节点 `sandbox:` 取 `exec_profiles.reviewer.claude.sandbox`（`filesystem.denyWrite:["/"]`、`failIfUnavailable`、禁止 unsandboxed 命令），另有 `denied_tools` 去掉 `Edit/Write/MultiEdit/NotebookEdit`。
   - Codex 评审节点：节点 `mcp:` 指向生成的 `reviewer-readonly.mcp.json`，内含哨兵 server `codex_readonly_marker`（`required:true`，命令必败）。`codex-worker` 以 `app-server` 被调用时经 `bin/codex-readonly-proxy.cjs` 转发：见到哨兵就删掉它，本连接的 `thread/start|resume|fork` 改 `sandbox:"read-only"`、`turn/start` 注入只读 `sandboxPolicy`。原因是 Archon 在 `thread/start` 固定传 `danger-full-access`，盖掉 `-c sandbox_mode`。绕过代理直连 codex 时哨兵起不来，线程创建失败（失败关闭）。整个 worker 以 reviewer 身份运行时代理从第一条线程起就只读。
-- hooks 白名单是纵深防御。
-- 边界：白名单只对设了该环境变量的会话生效；Stop 门不跟踪 shell 写到其他仓库的改动；`claude -p` 方式的评审不算评审证据（只认 `reviewer-N` 子代理）。
+- hooks 的效果与归属判定提供纵深防御，不构成执行沙箱。
+- 边界：reviewer 归属限制只对设了该环境变量的会话生效；Stop 门不跟踪 shell 写到其他仓库的改动；`claude -p` 方式的评审不算评审证据（只认 `reviewer-N` 子代理）。 现有 provider 只读 sandbox/denied_tools 可能比 hook 严格，真实节点的临时写入权限待主控集成验收。
 
 ## install.sh 单独步骤（互斥）
 
@@ -101,7 +101,7 @@ bash wetamp/scripts/install.sh --remote-hooks        # 远端：只要 node；no
 
 - 真实 `--hooks`/`--purge-v1` 写入由元帅执行；默认安装会写 `~/Library/LaunchAgents` 下的 plist，测试与验收须设 `SA_LAUNCHD_DIR`。
 - codex 版本从 0.160.0 漂移到 0.162.1；`features.multi_agent` 键若被改名，包装器不会报错，可用 `SA_CODEX_REAL` 固定版本。
-- 删除拦截只识别字面路径，变量展开或间接删除拦不住。
+- 未知明确删除/覆盖目标会拒绝；脚本内部的间接删除无法完整识别。
 - 同一 guard 若同时挂在 matcher 分组与"全部"分组，命中两组的工具调用会让 G-1 计两次（更严，不会更松）。
 - G-1 只计量编辑工具（Claude `Edit/Write/MultiEdit/NotebookEdit`、Codex `apply_patch`），shell 写文件不计；`*.md` 不计入。
 - Archon detached 节点默认以 worker 身份运行（继承 reviewer/general 时保留），评审节点多数也用 240K 阈值。

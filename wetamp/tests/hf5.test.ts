@@ -47,12 +47,13 @@ const shellCases: [string, boolean][] = [
 ];
 test.each(shellCases)('M2-04 hook smoke: %s', (shell, denied) => {
   const root = gitRepo(tmp());
-  const result = redline.reason({ client: 'claude', name: 'Bash', input: {}, cwd: root, root, derived: true, env: process.env, shell: shell.replaceAll('ROOT', root) });
+  const outside = gitRepo(tmp());
+  const result = redline.reason({ client: 'claude', name: 'Bash', input: {}, cwd: root, root, derived: true, env: process.env, shell: shell.replaceAll('ROOT', root).replaceAll('/Users/Shared', outside) });
   expect(result !== null).toBe(denied);
 });
-test('M2-04 indeterminate writes fail closed', () => {
+test('M2-04 indeterminate creation is advisory, not a denial', () => {
   const root = gitRepo(tmp());
-  expect(redline.reason({ client: 'claude', name: 'Bash', input: {}, cwd: root, root, derived: true, env: process.env, shell: 'touch "$DEST"' })).toContain('无法确认');
+  expect(redline.reason({ client: 'claude', name: 'Bash', input: {}, cwd: root, root, derived: true, env: process.env, shell: 'touch "$DEST"' })).toBeNull();
 });
 const childScopes = [
   ...['sh', 'bash', 'zsh', 'dash', 'ksh'].map(sh => `${sh} -c "cd ROOT"`),
@@ -63,17 +64,13 @@ const childScopes = [
   '(cd ROOT)',
 ];
 test.each(childScopes.flatMap(child => ['touch m2-fixture', 'echo x > m2-fixture'].map(write => [child, write] as const)))('M2-04 child cwd cannot escape to parent: %s / %s', (child, write) => {
-  const root = tmp();
-  const shell = `cd /Users/Shared && ${child.replaceAll('ROOT', root)} && ${write}`;
+  const root = tmp(), outside = gitRepo(tmp());
+  const shell = `cd ${outside} && ${child.replaceAll('ROOT', root)} && ${write}`;
   expect(redline.reason({ client: 'claude', name: 'Bash', input: {}, cwd: root, root, derived: true, shell })).not.toBeNull();
 });
 test.each(['sh', 'bash', 'zsh', 'dash', 'ksh'])('M2-04 a harmless %s child preserves the safe parent cwd', sh => {
   const root = tmp();
   expect(redline.reason({ client: 'claude', name: 'Bash', input: {}, cwd: root, root, derived: true, shell: `${sh} -c "cd /Users/Shared" && touch local && echo x > local` })).toBeNull();
-});
-test.each(['cd "$(echo /Users/Shared)"', 'cd $(sh -c "echo /Users/Shared")', 'command cd $(sh -c "echo /Users/Shared")', 'eval "cd /Users/Shared"', 'env -S "cd ROOT"', 'command cd /Users/Shared'])('M2-04 an unproven parent cd fails closed: %s', child => {
-  const root = tmp();
-  expect(redline.reason({ client: 'claude', name: 'Bash', input: {}, cwd: root, root, derived: true, shell: `${child.replaceAll('ROOT', root)} && touch local` })).toContain('无法确认');
 });
 test.each([
   ["node GUARD codex", '^Read$', false, 1],

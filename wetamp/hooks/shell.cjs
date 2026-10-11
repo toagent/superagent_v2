@@ -4,11 +4,11 @@ const OPERATOR = /^(?:&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|&&|\|\||\|&|;;|[;&|<>\n]
 function tokens(command) {
   // SAH1-04: edge whitespace is not a second command; preserve raw offsets.
   command = command.trimEnd();
-  const result = []; let i = command.search(/\S/), depth = 0, backtick = false;
+  const result = []; let i = command.search(/\S/);
   if (i < 0) return result;
   while (i < command.length) {
     if (/[^\S\n]/.test(command[i])) { i++; continue; }
-    const start = i, nested = depth > 0 || backtick; let value = '', quote = '', dynamic = false, operator = false;
+    const start = i; let value = '', quote = '', dynamic = false, operator = false;
     if (/[;&|<>\n]/.test(command[i])) {
       operator = true;
       value = command.slice(i).match(OPERATOR)[0]; i += value.length;
@@ -23,14 +23,11 @@ function tokens(command) {
       else if (/\s|[;&|<>]/.test(char)) break;
       else {
         if (/[$`]/.test(char)) dynamic = true;
-        if (char === '(') depth++;
-        else if (char === ')') depth = Math.max(0,depth-1);
-        else if (char === '`') backtick = !backtick;
         value += char; i++;
       }
     }
     if (quote) throw new Error('Unclosed shell quote');
-    result.push({value, start, stop: i, dynamic, operator, nested});
+    result.push({value, start, stop: i, dynamic, operator});
   }
   return result;
 }
@@ -59,7 +56,7 @@ const WRAPPERS = {
   // BSD `script [-t time] [file [command ...]]`; util-linux `script [-c command] [file]`.
   script: {arg: 'tcTBIOEmo', long: ['--command','--timing','--log-timing','--log-io','--log-in','--log-out','--echo','--logging-format','--output-limit'],
     split: ['c','--command'], out: ['T','B','I','O','--timing','--log-timing','--log-io','--log-in','--log-out'], file: true},
-  xargs: {arg: 'IJLnPsEda', optional: 'iel', long: ['--max-args','--max-procs','--max-chars','--eof','--delimiter','--arg-file','--replace','--max-lines']},
+  xargs: {arg: 'IJLnPsEda', optional: 'iel', long: ['--max-args','--max-procs','--max-chars','--eof','--delimiter','--arg-file','--max-lines']},
   timeout: {arg: 'ks', long: ['--kill-after','--signal'], positional: 1},
   gtimeout: {arg: 'ks', long: ['--kill-after','--signal'], positional: 1},
   stdbuf: {arg: 'ioe', long: ['--input','--output','--error']},
@@ -67,53 +64,32 @@ const WRAPPERS = {
   rtk: {skip: 'proxy'},
 };
 const SHELLS = new Set(['bash','sh','zsh','dash','ksh']);
-// Skip a quoted or escaped span starting at i; returns the index after it, or -1 when none.
-function skipQuoted(text, i) {
-  if (text[i] === '\\') return i + 2;
-  if (text[i] === "'") { const end = text.indexOf("'", i + 1); if (end < 0) throw new Error('Unclosed shell quote'); return end + 1; }
-  if (text[i] === '"') {
-    for (let j = i + 1; j < text.length; j++) { if (text[j] === '\\') j++; else if (text[j] === '"') return j + 1; }
-    throw new Error('Unclosed shell quote');
-  }
-  return -1;
-}
-function closing(text, i, close) {
-  for (let depth = 1; i < text.length; i++) {
-    const skip = close === '`' ? (text[i] === '\\' ? i + 2 : -1) : skipQuoted(text, i);
-    if (skip >= 0) { i = skip - 1; continue; }
-    if (text[i] === close && --depth === 0) return i;
-    if (close === ')' && text[i] === '(') depth++;
-  }
-  throw new Error(`Unclosed ${close}`);
-}
+// Split long values except --replace: its optional value must remain attached.
+const normalizeOptions = argv => argv.flatMap(word => /^--[^=]+=/.test(word) && !word.startsWith('--replace=') ? [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)] : [word]);
 // Replace every `$(…)`, `<(…)`, `(…)` and backtick body outside single quotes with one inert
 // word and return the bodies, each to be parsed as a command line of its own.
-function lift(text, model = false) {
-  const bodies = []; let flat = '', dq = false;
-  for (let i = 0; i < text.length;) {
-    const c = text[i];
-    if (c === '\\') { flat += text.slice(i, i + 2); i += 2; }
-    else if (c === "'" && !dq) { const end = skipQuoted(text, i); flat += text.slice(i, end); i = end; }
-    else if (c === '"') { dq = !dq; flat += c; i++; }
-    else if (c === '`' || c === '(' && (!dq || text[i-1] === '$')) {
-      const end = closing(text, i + 1, c === '`' ? '`' : ')');
-      bodies.push(text.slice(i + 1, end)); flat += model && c === '`' ? '$__sa_sub__' : '__sa_sub__'; i = end + 1;
-    } else { flat += c; i++; }
+function lift(text) {
+  const bodies = []; let flat = '', offset = 0;
+  // The AST owns boundaries, including case patterns and nested substitutions.
+  const spans = /[(`]/.test(text) ? require('./shell-ast.cjs').substitutions(text) : [];
+  for (const {start, end, body} of spans) {
+    flat += text.slice(offset, start) + '__sa_sub__'; bodies.push(body); offset = end;
   }
-  if (dq) throw new Error('Unclosed shell quote');
+  flat += text.slice(offset);
   return {flat, bodies};
 }
 // Strip wrappers (with their own options and operands), assignments and reserved words;
 // returns the real argv, option values that are themselves command lines (`env -S`) and the
 // wrappers' own writes.
 function unwrap(argv) {
-  const lines = [], writes = [], heads = []; let i = 0;
+  const lines = [], writes = [], heads = [], replacements = []; let i = 0;
   for (;;) {
     while (i < argv.length && (RESERVED.has(argv[i]) || ASSIGN.test(argv[i]))) { if (RESERVED.has(argv[i])) heads.push(i); i++; }
     if (i < argv.length) heads.push(i);
     const spec = WRAPPERS[path.posix.basename(argv[i] ?? '')];
     if (!spec) break;
     const head = i++;
+    let replacement;
     while (i < argv.length && argv[i].startsWith('-') && argv[i] !== '-') {
       const word = argv[i++];
       if (word === '--') break;
@@ -121,26 +97,32 @@ function unwrap(argv) {
       if (word.startsWith('--')) {
         const [name, value] = word.split(/=(.*)/s);
         const taken = value ?? (spec.long?.includes(name) ? argv[i++] : undefined);
+        if (path.posix.basename(argv[head]) === 'xargs' && name === '--replace') replacement = value ?? '{}';
         if (spec.split?.includes(name) && taken !== undefined) lines.push(taken);
         if (spec.out?.includes(name) && taken !== undefined) writes.push(taken);
         continue;
       }
       for (let j = 1; j < word.length; j++) {
-        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes, heads};
-        if (spec.optional?.includes(word[j])) break;
+        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes, heads, replacements};
+        if (spec.optional?.includes(word[j])) {
+          if (path.posix.basename(argv[head]) === 'xargs' && word[j] === 'i') replacement = word.slice(j + 1) || '{}';
+          break;
+        }
         if (!spec.arg?.includes(word[j])) continue;
         const value = j + 1 < word.length ? word.slice(j + 1) : argv[i++];
+        if (path.posix.basename(argv[head]) === 'xargs' && word[j] === 'I') replacement = value;
         if (spec.split?.includes(word[j]) && value !== undefined) lines.push(value);
         if (spec.out?.includes(word[j]) && value !== undefined) writes.push(value);
         break;
       }
     }
+    if (path.posix.basename(argv[head]) === 'xargs') replacements.push(replacement);
     if (spec.creates) writes.push(spec.creates);
     if (spec.file) writes.push(argv[i++] ?? 'typescript');
     i += spec.positional ?? 0;
     if (spec.skip && argv[i] === spec.skip) i++;
   }
-  return {argv: argv.slice(i), lines, writes, heads};
+  return {argv: argv.slice(i), lines, writes, heads, replacements};
 }
 // Every simple command a shell line would start: argv with wrappers, assignments and
 // redirections stripped, including `bash -c`/`eval`/`find -exec` bodies and every command
@@ -148,13 +130,15 @@ function unwrap(argv) {
 // effects; `reads` lists input-redirection sources. Throws on unparsable text.
 function parse(command, depth = 0) {
   if (depth > 4) throw new Error('shell nesting too deep');
-  const result = {argvs: [], writes: [], reads: []};
+  const result = {argvs: [], writes: [], reads: [], overwrites: []};
   const add = text => { const inner = parse(text, depth + 1); for (const k of Object.keys(result)) result[k].push(...inner[k]); };
   const {flat, bodies} = lift(command);
   bodies.forEach(add);
   let segment = [];
   const run = words => {
-    const {argv, lines, writes} = unwrap(words);
+    words = normalizeOptions(words);
+    const {argv, lines, writes, heads} = unwrap(words);
+    result.argvs.push(...heads.filter(i => i < words.length - argv.length).map(i => words.slice(i)));
     lines.forEach(add);
     result.writes.push(...writes.filter(target => !STREAM.test(target)));
     if (!argv.length) return;
@@ -179,7 +163,7 @@ function parse(command, depth = 0) {
       if (!word.operator) { words.push(word.value); continue; }
       const target = segment[++i]?.value ?? '';
       if (WRITES.has(word.value) && !STREAM.test(target) && !(word.value === '>&' && /^(?:\d+|-)$/.test(target)))
-        result.writes.push(target);
+        { result.writes.push(target); if (!['>>','&>>'].includes(word.value)) result.overwrites.push(target); }
       else if (word.value === '<') result.reads.push(target);
     }
     run(words);
@@ -219,4 +203,4 @@ function deletionTarget(command,cwd, normalized) {
   }
   return target ? path.resolve(cwd,target) : null;
 }
-module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS};
+module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS, normalizeOptions};

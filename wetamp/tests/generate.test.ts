@@ -52,6 +52,15 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
   expect(engineHash(root)).not.toBe(hash);
   fs.copyFileSync(join(WETAMP, 'templates/.archon/scripts/sa-check.ts'), script);
   expect(engineHash(root)).toBe(hash);
+  for (const command of ['sa-code', 'sa-fix', 'sa-repair']) {
+    const file = join(root, `templates/.archon/commands/${command}.md`);
+    const original = fs.readFileSync(file, 'utf8');
+    expect(original).toContain('包括首条读取在内，所有 shell 命令遵循你的 AGENTS.md 命令规则');
+    fs.writeFileSync(file, original + '\nchanged command guidance\n');
+    expect(engineHash(root)).not.toBe(hash);
+    fs.writeFileSync(file, original);
+    expect(engineHash(root)).toBe(hash);
+  }
   const resident = residentHash(root);
   for (const path of ['src/board/App.tsx', 'src/web/server.ts']) {
     fs.appendFileSync(join(root, path), '\n// UI-only change\n');
