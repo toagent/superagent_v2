@@ -1167,6 +1167,24 @@ describe('brief / land (archon stub)', () => {
     withArtifacts('running', {});
     expect(captured(() => main(['land', 'sa1'])).code).toBe(1);
   });
+  test('land displays needs from advanced nodes without asking the operator', () => {
+    const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };
+    const art = withArtifacts('completed', {
+      'land.json': { commands: ['c'] },
+      'verify-core.json': { ok: true, disposition: 'advance' },
+      'verify-core.coder.json': { status: 'blocked', needs: [need], milestone: 'm1' },
+    });
+    const sup = supervisor(join(art, '..', '..', '..', '..'), 'pending');
+    expect(captured(() => main(['land', 'sa1'])).out).toContain(
+      'need approval (verify-core): check process deviation'
+    );
+    expect(JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out)).toEqual({
+      commands: ['c'],
+      needs: [{ tag: 'verify-core', ...need }],
+    });
+    expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
+  });
 });
 
 test('accept runs the plan acceptance in the run worktree; --pkg narrows it', () => {
@@ -2152,6 +2170,21 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'redline' });
     expect(resumes(r.calls())).toBe(0);
+  });
+  test('held gate ignores needs from advanced nodes when retrying', () => {
+    const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };
+    const s = held('gate-m1-r1', {
+      'gate-m1-r1.json': gate('invalid_review'),
+      'verify-core.json': { ok: true, disposition: 'advance' },
+      'verify-core.coder.json': { status: 'blocked', needs: [need], milestone: 'm1' },
+    });
+    const sup = supervisor(s.root, 'pending');
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'gate:invalid_review' });
+    expect(resumes(s.calls())).toBe(1);
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain(
+      'need approval (verify-core): check process deviation'
+    );
   });
   test.each(['acceptance_failed', 'invalid_review'])(
     'held gate %s keeps its structured reason despite a coder redline self-report',

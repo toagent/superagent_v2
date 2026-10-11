@@ -598,13 +598,20 @@ describe('gate rules', () => {
 describe('F-18 disposition', () => {
   const c = (o: Record<string, unknown>): string =>
     JSON.stringify({ status: 'done', error_class: null, needs: [], ...o });
-  test('green acceptance advances unless blocked needs prevents it', () => {
+  test('green acceptance advances despite blocked needs', () => {
     expect(disposition(c({}), true)).toEqual({ disposition: 'advance', reason: null });
     expect(disposition(c({}), false)).toEqual({
       disposition: 'repair',
       reason: 'acceptance_failed',
     });
     expect(disposition('', true).disposition).toBe('advance');
+    const blocked = c({ status: 'blocked', needs: [{ cap: 'network' }] });
+    expect(disposition(blocked, true)).toEqual({
+      disposition: 'advance',
+      reason: null,
+      self_report_conflict: true,
+    });
+    expect(disposition(blocked, false)).toEqual({ disposition: 'suspend', reason: 'coder_needs' });
   });
   test('every coder failure kind has an explicit repair or suspend path', () => {
     const d = (o: Record<string, unknown>, ok = true): string | null => {
@@ -619,7 +626,7 @@ describe('F-18 disposition', () => {
     });
     expect(d({ status: 'partial' }, false)).toBe('repair:coder_partial');
     expect(d({ status: 'blocked' })).toBe('advance:');
-    expect(d({ status: 'blocked', needs: [{ cap: 'network' }] })).toBe('suspend:coder_needs');
+    expect(d({ status: 'blocked', needs: [{ cap: 'network' }] })).toBe('advance:');
     expect(d({ status: 'blocked', error_class: 'redline' })).toBe('advance:');
     expect(d({ status: 'blocked', error_class: 'redline' }, false)).toBe('suspend:coder_redline');
     expect(d({ status: 'partial', error_class: 'env' }, false)).toBe('suspend:coder_error:env');
@@ -668,7 +675,7 @@ describe('F-18 disposition', () => {
 });
 
 describe('HF4 I1 exhaustive disposition table', () => {
-  // 每行定义红验收的判定；绿验收只受 blocked needs 的优先规则约束。
+  // 每行定义红验收的判定；绿验收始终推进，自报冲突保留标记。
   const rows: { error_class: string | null; red: ReturnType<typeof disposition> | null }[] = [
     ...SUSPEND_CLASSES.map(error_class => ({
       error_class,
@@ -683,7 +690,7 @@ describe('HF4 I1 exhaustive disposition table', () => {
         for (const needs of [[], [{ cap: 'network' }]])
           test(`${status}/${String(error_class)}/ok=${String(ok)}/needs=${String(needs.length)}`, () => {
             const expected: ReturnType<typeof disposition> =
-              status === 'blocked' && needs.length > 0
+              !ok && status === 'blocked' && needs.length > 0
                 ? { disposition: 'suspend', reason: 'coder_needs' }
                 : ok
                   ? {
@@ -1307,6 +1314,11 @@ describe('sa-check script', () => {
     expect(coder({ status: 'blocked', needs: [need] }, 'verify-b')).toMatchObject({
       status: 'blocked',
       needs: [need],
+    });
+    expect(JSON.parse(readFileSync(join(root, 'art', 'verify-b.json'), 'utf8'))).toMatchObject({
+      ok: true,
+      disposition: 'advance',
+      self_report_conflict: true,
     });
     expect(coder({ status: 'blocked', error_class: 'redline' }, 'verify-c')).toMatchObject({
       status: 'blocked',

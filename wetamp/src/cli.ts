@@ -2085,7 +2085,11 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   const tries = (l.auto_retries ?? []).filter(
     r => r.milestone === m && r.reason.split(':')[0] === kind
   );
-  const needs = needsOf(art, m);
+  // 已推进节点的 needs 留在报告中，不为它们发起能力请求。
+  const needs = needsOf(art, m).filter(n => {
+    const check = evidenceJson(l, art, `${n.tag}.json`) as { disposition?: string } | undefined;
+    return check?.disposition !== 'advance';
+  });
   const hold = (h: Hold): Held => [
     h,
     { auto_retries: tries.length, ...(needs.length ? { needs } : {}) },
@@ -2442,7 +2446,10 @@ export function main(argv: string[]): number {
           console.error(`land: no land.json yet (state ${classify(run).state})`);
           return 1;
         }
-        print(land);
+        const needs = needsOf(artifactsOf(run), undefined, l);
+        print(a.flags.json && needs.length ? { ...(land as Record<string, unknown>), needs } : land);
+        if (!a.flags.json)
+          for (const n of needs) console.log(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
         return 0;
       });
     }
