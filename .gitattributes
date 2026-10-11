@@ -11,3 +11,7 @@ packages/docs-web/public/install text eol=lf
 docker-entrypoint.sh text eol=lf
 Caddyfile text eol=lf
 Caddyfile.example text eol=lf
+
+# Parallel wetamp worktrees each append a PROGRESS section; union keeps both sides
+# instead of stopping every merge on a conflict over the same tail of the file.
+wetamp/docs/PROGRESS.md merge=union
