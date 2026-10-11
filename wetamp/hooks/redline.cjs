@@ -158,6 +158,13 @@ function taskRoots(cwd, root, env) {
     ...['.bun', '.npm', '.cache', 'Library/Caches', '.m2', '.gradle', '.cargo'].map(d => path.join(home, d))]
     .filter(Boolean).map(r => resolvePath(path.resolve(r)));
 }
+function taskOwnership(file, dir, root, env) {
+  if (!file) return null;
+  if (root && within(file, resolvePath(root))) return 'repository';
+  if (!taskRoots(dir, root, env).some(r => within(file, r))) return null;
+  // A generated mktemp product owns its repository too; existing temp repos do not.
+  return require('./shell-ast.cjs').isTemporaryPath(file) ? 'repository' : 'artifact';
+}
 function checkoutOf(file) {
   let dir = file;
   while (path.dirname(dir) !== dir) {
@@ -184,7 +191,7 @@ function targetReason(effect, target, dir, root, env, reviewer, advisory) {
     advisory('write_target_unknown'); return null;
   }
   const lexical = path.resolve(dir, expanded), abs = resolvePath(lexical);
-  const task = taskRoots(dir, root, env).some(r => within(abs, r));
+  const task = taskOwnership(abs, dir, root, env);
   const protectedLocation = protectedKind(lexical, root, env) || protectedKind(abs, root, env);
   const packageCache = ['.bun','.npm','.cache','.m2','.gradle','.cargo'].some(d => within(abs, path.join(homeOf(env), d)));
   if (protectedLocation && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
@@ -222,13 +229,14 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
   }
   if (effect === 'git') {
     const {base, checkout, metadata, locations, sub, rest} = gitInvocation(argv, dir, env);
+    const owned = file => taskOwnership(file, dir, root, env) === 'repository';
+    if (sub === 'init' && !(reviewer && root && within(resolvePath(base), resolvePath(root)))) return null;
     if (sub === 'push') return message(`执行 git ${sub}`, '会改写共享的远端版本历史');
     const gitEffects = EFFECTS.find(r => r.commands[0] === 'git');
     const query = gitEffects.read.includes(sub) || !rest.length && ['branch','tag','remote','reflog'].includes(sub)
       || (gitEffects.queries[sub] || []).some(flag => rest.includes(flag))
         && !rest.some(flag => new RegExp(gitEffects.mutationFlags).test(flag));
-    if (!query && gitEffects.write.includes(sub) && locations.some(location => !location.path
-      || (!root || !within(location.path, resolvePath(root))) && !(sub === 'init' && reviewer && taskRoots(dir, root, env).some(r => within(location.path, r)))))
+    if (!query && gitEffects.write.includes(sub) && locations.some(location => !owned(location.path)))
       return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
     if (sub === 'config' && !query) {
       if (base.startsWith('/__sa_unknown_cwd__')) return targetReason('overwrite', '', dir, root, env, reviewer, advisory);
@@ -237,12 +245,12 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
         : fileIndex >= 0 ? rest[fileIndex + 1] : metadata ? path.join(metadata, 'config') : path.join(base, '.git/config');
       return targetReason('overwrite', config || '', dir, root, env, reviewer, advisory);
     }
-    if ((sub === 'reset' && rest.includes('--hard') || sub === 'clean') && (!root || checkout !== resolvePath(root)))
+    if ((sub === 'reset' && rest.includes('--hard') || sub === 'clean') && !owned(checkout || base))
       return message(`执行 git ${sub}`, '会销毁非本任务检出中的文件或改动', undefined, {kind: '非本任务检出'});
     if (!query && gitEffects.write.includes(sub) && (base.startsWith('/__sa_unknown_cwd__')
-      || metadata && root && metadata !== resolvePath(path.join(root, '.git'))))
+      || metadata && !owned(metadata)))
       return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
-    if (checkout && root && checkout !== resolvePath(root) && !query && gitEffects.write.includes(sub))
+    if (checkout && !owned(checkout) && !query && gitEffects.write.includes(sub))
       return message(`执行 git ${sub}`, '会修改非本任务的 git 检出', undefined, {kind: '非本任务检出'});
     if (reviewer && !query && (sub === 'commit' || root && within(resolvePath(base), resolvePath(root))))
       return message('在被审仓库执行 git 写入', 'reviewer 只读，提交或修改会污染评审对象', '只查询仓库，在临时目录运行测试');

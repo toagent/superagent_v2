@@ -708,3 +708,12 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 旧 run/生产影响：安装更新后旧会话采用修正后的 hooks；error_class=redline、挂起与告警消费者契约不变。只修改 wetamp-redline 的 hooks、测试和本节，packages/ 与 wetamp/src 零改动；未触发生产 supervisor、提醒、部署、push 或合并。
 - 遗留与验收边界：外部脚本及无法建模的语法仍沿用 advisory；本包只做编码与自检，已超过三轮的主控实测与用户裁决由主控完成。本次完整验收与隔离回执在 /tmp/fixc3-accept-2ky9ks32，最终结果见交付回执。
 - 提交前自检：tsc 与 eslint src exit 0；完整 bun test 913 pass/0 fail、3 snapshots（318.75s）；隔离 selftest --fake exit 0、ok:true。hooks 净增 25 行，git diff --check 通过；提交后在同一临时 home 运行 verify-local 绑定最终 HEAD。
+
+## B1-FIXC4：临时目录 Git 归属一致性
+
+- 问题与被推翻的假设：mktemp 的临时产物只用于文件写入归属，Git 的位置、检出与 metadata 检查仍只认原 worktree；新建 Git 仓库也被当成未知对象上的危险操作。主控报告三个误拦样例；本次新增回归及 `/tmp/rv-c3-variants.cjs` 中 xiaopan 样例在修改前复现拒绝。
+- 新语义：文件写入与 Git 定位共用 `taskOwnership`，AST 拥有并导出临时产物标识判定，生成路径及其子路径、cd 后 cwd、-C、--git-dir、--work-tree、GIT_DIR、GIT_WORK_TREE 均视为任务仓库。普通临时目录仍只是产物范围，既有外部临时仓库的危险操作不因此放行。git init 不因未知或外部定位拒绝；reviewer 修改被审仓库的约束继续生效。
+- 不变量与验收：强化 I1、I6 与 P4，复用既有 AST、mktemp 归属、Git 定位三态及三段式提醒，没有新依赖、配置或状态。新增误拦回放、临时 repo add/commit/硬重置与全部定位形式、越界及既有外部 repo 反例；R1/R2/R3 探针保持原期望。运行时仍通过 guard 的 deny / advisory 通道观察。
+- 旧 run/生产影响：安装更新后旧会话也采用新 hooks，error_class=redline 与消费者契约不变；仅本 worktree 的 hooks、测试与本节改动，不操作生产、supervisor、提醒、合并或发布。
+- 遗留与证据边界：解释器/外部脚本间接效果继续按既有策略处理；本卡按主控裁决只编码与自检，不再派生或评审，主控实测及带债合入由主控执行。验收日志及隔离 selftest / 提交后 verify-local 回执在 `/tmp/fixc4-accept-4t5jr02l`。
+- 提交前自检：tsc、eslint src 与 hooks 语法检查 exit 0；hooks 73 pass/0 fail，最终 FIXC4 定向回归 25 个断言通过；完整 bun test 914 pass/0 fail、3 snapshots（266.91s）。R1 10/10 拒绝且无秘密、R2 5/5、R3 11/11 符合期望；隔离 selftest --fake exit 0、ok:true。hooks 净增 10 行、diff --check 通过，提交后 verify-local 在同一临时 home 绑定 HEAD。

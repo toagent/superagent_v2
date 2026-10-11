@@ -2,6 +2,8 @@
 const path = require('node:path');
 const {unwrap, SHELLS, parse, normalizeOptions} = require('./shell.cjs');
 const STREAM = /^\/dev\/(?:null|stdout|stderr)$/;
+const GENERATED_TEMP = '__sa_generated_temp__';
+const isTemporaryPath = file => path.normalize(file).split(path.sep).includes(GENERATED_TEMP);
 const SELECTORS = new Set(require('./shell-effects.json').filter(rule => rule.effect === 'process_query').flatMap(rule => rule.commands));
 const selections = source => { try { return parse(source).argvs.map(argv => path.posix.basename(argv[0] || '')).filter(name => SELECTORS.has(name)); } catch { return []; } };
 // Parse syntax for effects, never as a command allowlist. Unknown syntax is advisory.
@@ -78,7 +80,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       const dirs = state.dirs.map(dir => path.resolve(dir, path.dirname(target)));
       const roots = ['/tmp','/private/tmp','/var/folders','/private/var/folders',env.TMPDIR].filter(Boolean);
       return dirs.length === 1 && roots.some(root => { const rel = path.relative(root, dirs[0]); return rel === '' || !rel.startsWith('..') && !path.isAbsolute(rel); })
-        ? path.join(dirs[0], '__sa_generated_temp__') : null;
+        ? path.join(dirs[0], GENERATED_TEMP) : null;
     }
     const outcome = (state, ok, fail) => { state.ok = ok; state.fail = fail; state.dirs = union(ok, fail); };
     function execute(values, state, depth) {
@@ -247,4 +249,4 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
   }
   return {init, analyze, substitutions};
 }
-module.exports = {...createLoader(), createLoader};
+module.exports = {...createLoader(), createLoader, isTemporaryPath};

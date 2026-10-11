@@ -329,6 +329,39 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
     const baseline = 'rtk proxy bash -c \'baseline_dir=$(mktemp -d /tmp/mac-presets-baseline.XXXXXX); git archive HEAD app/src-tauri | tar -x -C "$baseline_dir"; cargo test --manifest-path "$baseline_dir/app/src-tauri/Cargo.toml" --lib --locked > /tmp/mac-presets-baseline-cargo.log 2>&1; result=$?; tail -n 10 /tmp/mac-presets-baseline-cargo.log; exit "$result"\'';
     expect(sh(baseline)).toBeNull();
   });
+  test('FIXC4 temporary files and Git locators share task ownership', () => {
+    const sh = box();
+    const hard = ['reset', '--hard'].join(' '), clean = ['clean', '-fdx'].join(' ');
+    for (const command of [
+      'tmp=$(mktemp -d /tmp/xp.XXXXXX) && cd "$tmp" && git init -q',
+      'tmp=$(mktemp -d /tmp/xp.XXXXXX) && git -C "$tmp" init -q',
+      'tmp=$(mktemp -d) && cd "$tmp" && git commit -qm x',
+      'git -C "$(mktemp -d)" init',
+      'git -C "$UNKNOWN" init -q',
+      'git -C /foreign init -q',
+      `tmp=$(mktemp -d) && cd "$tmp" && git init -q && echo a > a.txt && git add a.txt && git commit -qm x && git ${hard} HEAD`,
+      `tmp=$(mktemp -d) && mkdir "$tmp/repo" && cd "$tmp/repo" && echo a > a.txt && git add a.txt && git ${hard} HEAD && git ${clean}`,
+      `tmp=$(mktemp -d) && git -C "$tmp" add a.txt && git -C "$tmp" commit -qm x && git -C "$tmp" ${hard}`,
+      `tmp=$(mktemp -d) && git --git-dir="$tmp/.git" --work-tree="$tmp" ${hard}`,
+      `tmp=$(mktemp -d) && GIT_DIR="$tmp/.git" GIT_WORK_TREE="$tmp" git ${hard}`,
+      `tmp=$(mktemp -d); GIT_DIR="$tmp/.git"; GIT_WORK_TREE="$tmp"; git ${hard}`,
+      `tmp=$(mktemp -d) && cd "$tmp" && git --git-dir=.git --work-tree=. ${hard}`,
+      `tmp=$(mktemp -d) && git -C"$tmp" --git-dir=.git --work-tree=. ${hard}`,
+      `tmp=$(mktemp -d) && sh -c 'cd "$1" && git ${hard}' sh "$tmp"`,
+      'tmp=$(mktemp -d) && git -C "$tmp" config user.name test',
+    ]) expect(sh(command), command).toBeNull();
+    for (const command of [
+      `git -C /foreign ${hard}`,
+      ['GIT_DIR="$UNKNOWN"', 'git', 'push', '--force'].join(' '),
+      `git -C "$UNKNOWN" ${clean}`,
+      `tmp=$(mktemp -d) && git -C "$tmp" --git-dir="$UNKNOWN" ${hard}`,
+      `tmp=$(mktemp -d) && git -C "$tmp" --work-tree=/foreign ${clean}`,
+      `tmp=$(mktemp -d) && git -C "$tmp/.." ${hard}`,
+      `tmp=$(mktemp -d) && GIT_DIR="$tmp/.git"; GIT_WORK_TREE="$tmp"; git ${hard}`,
+      `tmp=$(echo /tmp/fake) && cd "$tmp" && git ${hard}`,
+      `git -C "${gitRepo(tmp())}" ${hard}`,
+    ]) expect(sh(command), command).toMatch(/^已拦截：/);
+  });
 });
 
 describe('FIXC RV-C 机制回归', () => {
