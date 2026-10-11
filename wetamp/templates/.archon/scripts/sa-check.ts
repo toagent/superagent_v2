@@ -243,7 +243,8 @@ export const SUSPEND_CLASSES = [
 ];
 
 /**
- * I1：非法输出、红线与 blocked needs 优先挂起；其余以验收证据为准，自报冲突交评审核实。
+ * I1：非法输出与 blocked needs 优先挂起；自报红线只在验收未通过时挂起，真红线由 hooks 拦截。
+ * 其余以验收证据为准，自报冲突交评审核实。
  * 仅红验收按错误类挂起或修复；保持修复原因串，供 HOLD_POLICY 消费。
  */
 export function disposition(
@@ -265,7 +266,6 @@ export function disposition(
   } catch {
     return to('suspend', 'coder_output_invalid');
   }
-  if (c.error_class === 'redline') return to('suspend', 'coder_redline');
   if (c.status === 'blocked' && (c.needs?.length ?? 0) > 0) return to('suspend', 'coder_needs');
   if (ok)
     return {
@@ -274,6 +274,7 @@ export function disposition(
       ...(c.status === 'partial' ? { coder_partial: true } : {}),
       ...(c.error_class ? { error_class_ignored: true } : {}),
     };
+  if (c.error_class === 'redline') return to('suspend', 'coder_redline');
   if (c.error_class && SUSPEND_CLASSES.includes(c.error_class))
     return to('suspend', `coder_error:${c.error_class}`);
   return to('repair', c.status === 'done' ? 'acceptance_failed' : 'coder_partial');

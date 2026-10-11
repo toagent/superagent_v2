@@ -2142,7 +2142,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(out).toContain('need network (verify-core): allow npm registry');
     expect(resumes(s.calls())).toBe(0);
     const r = held('gate-m1-r1', {
-      'gate-m1-r1.json': gate('acceptance_failed'),
+      'gate-m1-r1.json': gate('coder_redline'),
       'verify-core.coder.json': {
         status: 'blocked',
         error_class: 'redline',
@@ -2153,6 +2153,27 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'redline' });
     expect(resumes(r.calls())).toBe(0);
   });
+  test.each(['acceptance_failed', 'invalid_review'])(
+    'held gate %s keeps its structured reason despite a coder redline self-report',
+    reason => {
+      const s = held('gate-m1-r1', {
+        'gate-m1-r1.json': gate(reason),
+        'verify-core.coder.json': {
+          status: 'blocked',
+          error_class: 'redline',
+          error_class_ignored: true,
+          needs: [],
+          milestone: 'm1',
+        },
+      });
+      supervisor(s.root, 'pending');
+      expect(tick()[0]).toMatchObject(
+        reason === 'acceptance_failed'
+          ? { action: 'ask', reason: 'auto_retry_exhausted' }
+          : { action: 'auto_retry', reason: 'gate:invalid_review' }
+      );
+    }
+  );
   test('held:environment backs off exponentially up to the tier limit; a failed coder node is retried once without hints', () => {
     const e = held('environment');
     expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'environment', attempt: 1 });
@@ -2295,7 +2316,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       first: {},
     }),
     redline: () => ({
-      s: held('code-api', {
+      s: held('verify-api', {
+        'verify-api.json': { reason: 'coder_redline' },
         'code-api.coder.json': {
           status: 'blocked',
           error_class: 'redline',
@@ -2689,7 +2711,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     writeFileSync(asksFile(), bad);
     expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
     expect(readFileSync(asksFile(), 'utf8')).toBe(bad);
-    const r = held('code-api', {
+    const r = held('verify-api', {
+      'verify-api.json': { reason: 'coder_redline' },
       'code-api.coder.json': {
         status: 'blocked',
         error_class: 'redline',

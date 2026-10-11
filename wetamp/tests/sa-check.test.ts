@@ -598,7 +598,7 @@ describe('gate rules', () => {
 describe('F-18 disposition', () => {
   const c = (o: Record<string, unknown>): string =>
     JSON.stringify({ status: 'done', error_class: null, needs: [], ...o });
-  test('green acceptance advances unless a redline or blocked needs prevents it', () => {
+  test('green acceptance advances unless blocked needs prevents it', () => {
     expect(disposition(c({}), true)).toEqual({ disposition: 'advance', reason: null });
     expect(disposition(c({}), false)).toEqual({
       disposition: 'repair',
@@ -620,7 +620,8 @@ describe('F-18 disposition', () => {
     expect(d({ status: 'partial' }, false)).toBe('repair:coder_partial');
     expect(d({ status: 'blocked' })).toBe('advance:');
     expect(d({ status: 'blocked', needs: [{ cap: 'network' }] })).toBe('suspend:coder_needs');
-    expect(d({ status: 'blocked', error_class: 'redline' })).toBe('suspend:coder_redline');
+    expect(d({ status: 'blocked', error_class: 'redline' })).toBe('advance:');
+    expect(d({ status: 'blocked', error_class: 'redline' }, false)).toBe('suspend:coder_redline');
     expect(d({ status: 'partial', error_class: 'env' }, false)).toBe('suspend:coder_error:env');
     expect(d({ status: 'partial', error_class: 'timeout' }, false)).toBe('repair:coder_partial');
     expect(disposition('not json', true)).toEqual({
@@ -628,7 +629,7 @@ describe('F-18 disposition', () => {
       reason: 'coder_output_invalid',
     });
   });
-  test('HF1: done uses acceptance evidence while redline still suspends', () => {
+  test('HF1: done uses acceptance evidence, including self-reported redline', () => {
     for (const error_class of [
       'task',
       'env',
@@ -654,6 +655,12 @@ describe('F-18 disposition', () => {
       });
     }
     expect(disposition(c({ error_class: 'redline' }), true)).toEqual({
+      disposition: 'advance',
+      reason: null,
+      self_report_conflict: true,
+      error_class_ignored: true,
+    });
+    expect(disposition(c({ error_class: 'redline' }), false)).toEqual({
       disposition: 'suspend',
       reason: 'coder_redline',
     });
@@ -661,7 +668,7 @@ describe('F-18 disposition', () => {
 });
 
 describe('HF4 I1 exhaustive disposition table', () => {
-  // 每行定义红验收的判定；绿验收只受 redline 和 blocked needs 的优先规则约束。
+  // 每行定义红验收的判定；绿验收只受 blocked needs 的优先规则约束。
   const rows: { error_class: string | null; red: ReturnType<typeof disposition> | null }[] = [
     ...SUSPEND_CLASSES.map(error_class => ({
       error_class,
@@ -676,22 +683,20 @@ describe('HF4 I1 exhaustive disposition table', () => {
         for (const needs of [[], [{ cap: 'network' }]])
           test(`${status}/${String(error_class)}/ok=${String(ok)}/needs=${String(needs.length)}`, () => {
             const expected: ReturnType<typeof disposition> =
-              error_class === 'redline'
-                ? { disposition: 'suspend', reason: 'coder_redline' }
-                : status === 'blocked' && needs.length > 0
-                  ? { disposition: 'suspend', reason: 'coder_needs' }
-                  : ok
-                    ? {
-                        disposition: 'advance',
-                        reason: null,
-                        ...(status !== 'done' || error_class ? { self_report_conflict: true } : {}),
-                        ...(status === 'partial' ? { coder_partial: true } : {}),
-                        ...(error_class ? { error_class_ignored: true } : {}),
-                      }
-                    : (red ?? {
-                        disposition: 'repair',
-                        reason: status === 'done' ? 'acceptance_failed' : 'coder_partial',
-                      });
+              status === 'blocked' && needs.length > 0
+                ? { disposition: 'suspend', reason: 'coder_needs' }
+                : ok
+                  ? {
+                      disposition: 'advance',
+                      reason: null,
+                      ...(status !== 'done' || error_class ? { self_report_conflict: true } : {}),
+                      ...(status === 'partial' ? { coder_partial: true } : {}),
+                      ...(error_class ? { error_class_ignored: true } : {}),
+                    }
+                  : (red ?? {
+                      disposition: 'repair',
+                      reason: status === 'done' ? 'acceptance_failed' : 'coder_partial',
+                    });
             expect(disposition(JSON.stringify({ status, error_class, needs }), ok)).toEqual(
               expected
             );
@@ -1522,17 +1527,17 @@ describe('sa-check script', () => {
       debt: ['m1 debt', 'm2 debt'],
     });
   });
-  test('F-18: coder redline suspends with exit 1 and a stable reason', () => {
+  test('F-18: coder redline suspends failed acceptance with exit 1 and a stable reason', () => {
     const root = tmp();
     const r = runScript(gitRepo(root), {
       kind: 'accept',
-      plan: planFile(root, 'true'),
+      plan: planFile(root, 'false'),
       pkgs: 'a',
       tag: 'verify-a',
       coder: JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [] }),
     });
     expect(r.code).toBe(1);
-    expect(r.out).toMatchObject({ ok: true, disposition: 'suspend', reason: 'coder_redline' });
+    expect(r.out).toMatchObject({ ok: false, disposition: 'suspend', reason: 'coder_redline' });
   });
   test('HF1: accept preserves ignored error_class in the coder archive only on green', () => {
     const root = tmp();
@@ -1540,7 +1545,8 @@ describe('sa-check script', () => {
     for (const [error_class, acceptance, disposition, reason, code] of [
       ['task', 'true', 'advance', null, 0],
       ['task', 'false', 'repair', 'acceptance_failed', 0],
-      ['redline', 'true', 'suspend', 'coder_redline', 1],
+      ['redline', 'true', 'advance', null, 0],
+      ['redline', 'false', 'suspend', 'coder_redline', 1],
     ] as const) {
       const tag = `verify-${error_class}-${acceptance}`;
       const r = runScript(repo, {
@@ -1552,6 +1558,8 @@ describe('sa-check script', () => {
       });
       expect(r.code).toBe(code);
       expect(r.out).toMatchObject({ ok: acceptance === 'true', disposition, reason });
+      if (error_class === 'redline' && acceptance === 'true')
+        expect(r.out).toMatchObject({ self_report_conflict: true, error_class_ignored: true });
       const saved = JSON.parse(readFileSync(join(r.art, `${tag}.coder.json`), 'utf8'));
       expect(saved).toMatchObject({ status: 'done', error_class });
       expect(saved.error_class_ignored).toBe(disposition === 'advance' ? true : undefined);

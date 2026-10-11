@@ -2091,11 +2091,11 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
     { auto_retries: tries.length, ...(needs.length ? { needs } : {}) },
   ];
   if (needs.length) return hold('needs');
-  if (codersOf(art, m).some(x => x.error_class === 'redline')) return hold('redline');
   const cause = reasonOf(
     c.state === 'held:engine_suspect' ? 'engine_suspect' : nodeReason(l, run, c) || kind
   );
   if (!cause) return hold('engine_suspect');
+  if (cause.hold === 'redline') return hold('redline');
   if (cause.hold === 'deadline') return hold('deadline');
   if (cause.hold === 'no_change') return hold('no_change');
   if (
