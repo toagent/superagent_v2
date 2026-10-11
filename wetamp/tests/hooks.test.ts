@@ -953,6 +953,37 @@ describe('guard.cjs', () => {
     ).toContain('reviewer 只读');
   });
 
+  test('MK：reviewer 按写入路径允许临时产物与隔离校验', () => {
+    const { guard, repo } = setup();
+    const reviewer = { SUPERAGENT_ROLE: 'reviewer', TMPDIR: '/tmp' };
+    for (const cmd of [
+      'mktemp',
+      'mktemp -d',
+      'mktemp -u ./src/x.XXXXXX',
+      't=$(mktemp -d); echo x > $t/a',
+      't=$(mktemp -d); SUPERAGENT_HOME=$t/sa bun test x.test.ts',
+      't=$(mktemp -d); env SUPERAGENT_HOME=$t/sa bun x tsc --noEmit',
+      'echo x > "$TMPDIR/a"',
+      'echo x > "${TMPDIR}/a"',
+      'TMPDIR=/tmp; echo x > "$TMPDIR/a"',
+      'echo x > /tmp/mk-result',
+      'echo x > /private/var/folders/mk-result',
+    ])
+      expect(guard('claude', bash(cmd), reviewer), cmd).toBeNull();
+    for (const cmd of [
+      'echo x > ./src/a.ts',
+      'TMPDIR=.; echo x > "$TMPDIR/a"',
+      'mktemp -d ./src/x.XXXXXX',
+      't=$(mktemp -d); echo x > "$t/../../etc/mk-result"',
+      'echo x > ~/.superagent/mk-result',
+      'git add src/a.ts',
+    ])
+      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toMatch(/^已拦截：/);
+    expect(reason(guard('claude', bash('echo x > ./src/a.ts'), reviewer))).toContain(
+      join(repo, 'src/a.ts')
+    );
+  });
+
   test('动态 cwd 不隐藏明确危险；未知覆盖拒绝、普通新建留 advisory', () => {
     const { guard } = setup();
     const worker = { SUPERAGENT_ROLE: 'worker' };

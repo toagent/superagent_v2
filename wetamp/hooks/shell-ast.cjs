@@ -47,7 +47,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
     const union = (...dirs) => [...new Set(dirs.flat())];
     const fork = (dirs, vars = new Map(), selected = [], locations = new Map()) => ({locations: new Map(locations), dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars), selected: [...selected]});
     const commandValues = new Map();
-    function temporaryPath(values, state) {
+    function temporaryPath(values, state, generatedOnly = true) {
       const {argv} = unwrap(values || []);
       if (path.posix.basename(argv[0] || '') !== 'mktemp') return null;
       const vars = new Map([...state.vars, ...(values || []).filter(v => /^TMPDIR=/.test(v)).map(v => ['TMPDIR', v.slice(7)])]);
@@ -78,6 +78,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       }
       const target = expand((prefix || inBase || !template) && !path.isAbsolute(template || '') ? path.join(base || '', template || 'tmp') : template).replace(/\$\{TMPDIR\}|\$TMPDIR\b/g, tmpdir || '$TMPDIR');
       if (!base || /[$`]/.test(target)) return null;
+      if (!generatedOnly) return argv.some(arg => ['-u','--dry-run'].includes(arg)) ? null : target;
       const dirs = state.dirs.map(dir => path.resolve(dir, path.dirname(target)));
       const roots = ['/tmp','/private/tmp','/var/folders','/private/var/folders',env.TMPDIR].filter(Boolean);
       return dirs.length === 1 && roots.some(root => { const rel = path.relative(root, dirs[0]); return rel === '' || !rel.startsWith('..') && !path.isAbsolute(rel); })
@@ -85,6 +86,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
     }
     const outcome = (state, ok, fail) => { state.ok = ok; state.fail = fail; state.dirs = union(ok, fail); };
     function execute(values, state, depth) {
+      const created = temporaryPath(values, state, false);
       values = normalizeOptions(values);
       const incoming = [...state.dirs], unwrapped = unwrap(values);
       const commandEnv = Object.fromEntries([...state.vars, ...values.filter(v => /^[A-Za-z_][A-Za-z0-9_]*=/.test(v)).map(v => [v.slice(0, v.indexOf('=')), v.slice(v.indexOf('=') + 1)])]);
@@ -109,7 +111,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         argv = replacement ? argv.map(arg => arg.split(replacement).join(selectedInput)) : [...argv, selectedInput];
       const name = path.posix.basename(argv[0] || '');
       if (/[$`]/.test(name)) advisory('command_head_unknown');
-      check({argvs: argv.length ? [argv] : [], reads: [], writes: unwrapped.writes.filter(t => !STREAM.test(t)), env: commandEnv,
+      check({argvs: argv.length ? [argv] : [], reads: [], writes: [...unwrapped.writes, ...(created ? [created] : [])].filter(t => !STREAM.test(t)), env: commandEnv,
         selections: argv.filter(v => /[$`]/.test(v)).flatMap(selections)}, state.dirs);
       if (SHELLS.has(name)) {
         const flag = argv.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
@@ -235,7 +237,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (['command_name','concatenation','string'].includes(n.type)) return n.namedChildren.map(ch => get(ch) || '').join('');
       if (['simple_expansion','expansion'].includes(n.type)) {
         const variable = n.namedChildren.find(ch => ['variable_name','special_variable_name'].includes(ch.type))?.text;
-        return state.vars.get(variable) ?? n.text;
+        return state.vars.get(variable) ?? (variable === 'TMPDIR' ? env.TMPDIR : undefined) ?? n.text;
       }
       if (['command_substitution','process_substitution'].includes(n.type)) {
         const temp = n.type === 'command_substitution' && n.namedChildren.length === 1 ? temporaryPath(commandValues.get(n.namedChildren[0].id), state) : null;
