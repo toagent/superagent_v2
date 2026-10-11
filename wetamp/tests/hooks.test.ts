@@ -496,10 +496,11 @@ describe('guard.cjs', () => {
       'echo "unclosed',
       'sed -i s/old/new/ a.ts',
       'node -e "require(\"fs\").writeFileSync(\"a.ts\", \"x\")"',
-    ])
-      expect(reason(guard('claude', bash(command)))).toBeUndefined();
-    for (const command of ['echo x > a.ts', 'echo x > "$TARGET"', 'echo "unclosed'])
-      expect(guard('claude', bash(command))?.systemMessage).toContain('advisory');
+    ]) {
+      const out = guard('claude', bash(command));
+      expect(reason(out), command).toBeUndefined();
+      expect(out?.systemMessage, command).toContain('advisory');
+    }
     expect(guard('claude', bash('echo x > NOTES.md'))).toBeNull();
     expect(guard('claude', bash('git status'))).toBeNull();
     expect(
