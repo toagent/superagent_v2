@@ -1,0 +1,4 @@
+# Parallel wetamp worktrees each append a PROGRESS section; union keeps both sides
+# instead of stopping every merge on a conflict over the same tail of the file.
+# Kept under wetamp/ so the fork stays identical to upstream outside this directory.
+docs/PROGRESS.md merge=union
