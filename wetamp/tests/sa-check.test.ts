@@ -1002,6 +1002,54 @@ function planFile(root: string, accept: string, environment: string[] = []): str
 }
 
 describe('sa-check script', () => {
+  test('RA: non-product advance passes TESTED with command debt visible in land', () => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    const command = `printf '%s' '{"failure_class":"fixture","evidence":"fixture mismatch"}'; exit 1`;
+    const plan = fixturePlan(root, repo, p => {
+      p.packages = [{ id: 'a', accept: [{ cmd: command, timeout_s: 5 }] }];
+    });
+    const accepted = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      tag: 'diff-m1-r1',
+      risk: 'G1',
+      coder: JSON.stringify({ status: 'done', error_class: null }),
+    });
+    expect(accepted.out).toMatchObject({
+      ok: false,
+      disposition: 'advance',
+      failures: [{ command, failure_class: 'fixture' }],
+    });
+    const gated = runScript(repo, {
+      kind: 'gate',
+      plan,
+      round: '1',
+      review: '0',
+      risk: 'G1',
+      milestone: 'm1',
+      pkgs: 'a',
+      tag: 'gate-m1-r1',
+      r1: 'null',
+      c1: JSON.stringify(accepted.out),
+    });
+    const evidence = join(accepted.art, 'diff-m1-r1.log');
+    expect(gated).toMatchObject({
+      code: 0,
+      out: { verdict: 'pass', grade: 'TESTED' },
+    });
+    const debt = (gated.out as { debt: string[] }).debt;
+    expect(debt).toEqual([expect.stringContaining(command)]);
+    expect(debt[0]).toContain('[fixture non_product]');
+    expect(debt[0]).toContain(evidence);
+    expect(
+      JSON.parse(readFileSync(join(gated.art, 'gate-m1-r1.ledger.json'), 'utf8'))
+    ).toMatchObject({ blocking: [], debt: [{ command, failure_class: 'fixture', evidence }] });
+    expect(runScript(repo, { kind: 'land', plan, base_ref: 'origin/main' }).out).toMatchObject({
+      debt,
+    });
+  });
   test('NR: no review passes TESTED only with green advance and effective risk below G2', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -1363,6 +1411,44 @@ describe('sa-check script', () => {
     });
     expect(preexisting.out).toMatchObject({ ok: false, base_pass: false });
     expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
+  });
+  test('RA: probe records each base result and exposes mixed failures in the held log', () => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    const base = sh('git rev-parse HEAD', repo).trim();
+    sh('git rm -q README.md && git -c user.name=t -c user.email=t@l commit -qm rm', repo);
+    const commands = ['test -f README.md', 'test -f nope'];
+    const plan = fixturePlan(root, repo, p => {
+      p.packages = [{ id: 'a', accept: commands.map(cmd => ({ cmd, timeout_s: 5 })) }];
+    });
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      tag: 'mixed',
+      base,
+      coder: JSON.stringify({ status: 'blocked', error_class: 'env', needs: [{ cap: 'network' }] }),
+    });
+    const base_results = [
+      { cmd: commands[0], pass: true },
+      { cmd: commands[1], pass: false },
+    ];
+    expect(r).toMatchObject({
+      code: 1,
+      out: {
+        ok: false,
+        base_pass: false,
+        disposition: 'suspend',
+        base_results,
+        failures: commands.map(command => ({ command, failure_class: 'product' })),
+      },
+    });
+    expect(JSON.parse(readFileSync(join(r.art, 'mixed.json'), 'utf8'))).toMatchObject({
+      base_results,
+    });
+    expect(readFileSync(join(r.art, 'mixed.log'), 'utf8').trimEnd().split('\n').at(-1)).toContain(
+      JSON.stringify(base_results)
+    );
   });
   test('probe never force-removes: a worktree the check dirtied is kept and its path reported', () => {
     const root = tmp();

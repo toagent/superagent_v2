@@ -1063,3 +1063,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 - 问题与被推翻的假设：终态 run 的 adopt 会新开 run，从首节点重跑；I3 的换版不保证保留已 PASS 产物。复用完成节点集合，在恢复 guard 写 ledger 前拒绝有完成节点的 adopt，返回 run id，并提示 reject 后从最后 PASS commit 新开计划或检出旧引擎 commit；无完成节点仍可 adopt，强化 I1/P1–P4，无新状态、配置或跨 run 复用。
 - 旧 run/生产影响与遗留：仅新恢复调用受保护，运行中/paused/同指纹语义不变，不改生产 ledger、packages 或已生成快照；一条回归覆盖 failed/cancelled 的已完成编码/评审节点、ledger 不变且不启动恢复。`cd wetamp && bun test tests/cli.test.ts -t 'HF3 latest-engine recovery'` 最终 8 pass/0 fail（`/tmp/b1-ad-focused-final.log`）；整文件试跑 261 pass/1 fail（既有 REC-R1-01 的未登记 run selftest recover 失败，不经过本包 guard，`/tmp/b1-ad-cli.log`），不扩范围修复。回归移除重复夹具初始化后通过，未放宽超时；`bunx tsc --noEmit` exit 2，未改动 memory 文件缺相对 zod 依赖及隐式 any（`/tmp/b1-ad-tsc-final.log`）；测试依赖仅用已有缓存临时链接，无安装/升级或生产写入。仅编码自检，主控实测另行执行。
+
+## RA：自治验收内核接线
+
+- 问题与被推翻的假设：模型自检不必重复正式验收；FC 的非产品失败 `ok:false` 不等于必须修产品，`advance` 才是可前进的路由结论。NR 原 TESTED 额外要求 `ok:true`，使已分类非产品失败落入 `decide()` 的 `gate: no review`；旧 probe 的整组布尔无法说明混合失败的逐命令归因。两条新增回归在修改前均失败，证据 `/tmp/ra-accept.3QlPKB/repro.log`。
+- 新语义：三份将军提示只要求证明当前改动的窄测，`quick_checks` 只记实际命令，正式验收由引擎执行；sa-fix 只修 gate 的 blocking，不重跑前序里程碑。TESTED 保留 REVIEW=0、非 strict、未过期、无评审、risk≠G2 和预算边界，仅按末次 `disposition=advance` 放行；末次非产品或 repair_limit 失败转成既有形状的 ledger/debt，保留命令、分类、证据与轮次，land 输出继续可见。
+- 基线证据与兼容：probe 输出逐命令 `base_results: {cmd, pass}[]`，存入验收 JSON 与日志末行，held 自动提示现有的日志尾读取即可展示；不自动改变 failure_class。grep 确认 CLI gateHint、accept schema 与测试读取 `base_pass`，保留原聚合语义：全部 base 通过才 true，任一失败即 false，无 probe 为 null。
+- 旧 run/生产影响与遗留：新生成 run 才加载本次模板与脚本，既有冻结 run 不自动更新；不迁移状态，不改缓存默认值、末端评审、MAX_ROUNDS、risk_paths、恢复逻辑、packages 或生产目录。提示词未改变 workflow YAML，两个 golden 用例通过，无需重生成；本包只编码自检，astra 单轮评审、主控集成实测与上线交主控。
+- 自检：隔离 HOME、SUPERAGENT_HOME、ARCHON_HOME、XDG_STATE_HOME 与 supervisor 路径后，指定两文件测试 357 pass/1 fail（46.94s，`/tmp/ra-accept.3QlPKB/tests.log`）；唯一失败为新增测试的 Bun `toMatchObject` 嵌套数组 matcher 替换实际字符串，独立最小复现确认，改为 `toEqual` 后 RA 两条 2 pass/0 fail（`focused.log`），不重跑整套、不派产品修复。`bunx tsc --noEmit -p wetamp` exit 0（`tsc.log`），diff 检查通过；除测试外净增 27 行，未超 +50 预算。
