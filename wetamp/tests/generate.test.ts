@@ -571,6 +571,7 @@ describe('renderBrief', () => {
       '## 你的权限',
       '包仓库）：禁止',
       '只追加提交',
+      '禁止 git commit 的条款面向人工主仓，此处不适用',
       'searxng',
       '## 红线（执行层强制）',
       'deviations',
