@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 本机投送闸：在临时 detached worktree 里对一个提交依次跑 bun install --frozen-lockfile（根与 wetamp）→ tsc → bun test → selftest --fake，
 # 结果原子写入 $SUPERAGENT_HOME/verify.json：{commit,ok,at,steps:[{name,exit,ms}],log,last_ok_commit}。
-# 同一提交已有结果（含失败）时直接复用，不重跑；环境错误（找不到 bun、等锁超时）不写缓存。twin-toolkit 只投送 ok 的提交。
+# 同一提交已有定论（含普通失败）时直接复用；信号中断/超时及环境错误不写缓存。twin-toolkit 只投送 ok 的提交。
 # 用法：verify-local.sh [--commit <rev>] [--timeout <s>]；退出码 0 通过、1 未通过。
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
@@ -21,7 +21,7 @@ cached() {
   [ -f "$OUT" ] || return 1
   python3 -I -c 'import json, sys
 d = json.load(open(sys.argv[1]))
-if d.get("commit") != sys.argv[2]: sys.exit(3)
+if d.get("commit") != sys.argv[2] or any(s.get("exit", 0) >= 128 for s in d.get("steps", [])): sys.exit(3)
 print("verify-local: %s %s (cached; log %s)" % (d["commit"][:12], "ok" if d.get("ok") else "FAIL", d.get("log")))
 sys.exit(0 if d.get("ok") else 2)' "$OUT" "$SHA" && exit 0
   [ $? = 2 ] && exit 1
@@ -63,7 +63,7 @@ LOG="$SA_HOME/verify/${SHA:0:12}.log"
 export SUPERAGENT_HOME="$TMP/sa" ARCHON_HOME="$TMP/sa/archon" XDG_STATE_HOME="$TMP/state"
 : > "$LOG"
 git -C "$REPO" worktree add -q --detach "$WT" "$SHA" >>"$LOG" 2>&1
-STEPS=() OK=1
+STEPS=() OK=1 INCONCLUSIVE=0
 ms() { python3 -I -c 'import time; print(int(time.time() * 1000))'; }
 # step <name> <dir> <cmd...>：在剩余时间内跑一步（超时 exit 142），记 {name,exit,ms}；失败后不再跑后续步骤。
 step() {
@@ -74,6 +74,7 @@ step() {
   t0="$(ms)"
   set +e; (cd "$dir" && perl -e 'alarm shift; exec @ARGV or exit 127' "$left" "$@") >>"$LOG" 2>&1; rc=$?; set -e
   STEPS+=("$name" "$rc" "$(( $(ms) - t0 ))")
+  [ "$rc" -lt 128 ] || INCONCLUSIVE=1
   [ "$rc" = 0 ] || OK=0
 }
 # 冻结安装失败而该目录的 lock 与主仓一致时，软链主仓已装好的 node_modules（根目录连同 packages/*）。
@@ -81,6 +82,7 @@ install() { # <rel dir> <step name>
   local rel="$1" dir="$WT/${1#.}"
   [ "$OK" = 1 ] || return 0
   step "$2" "$dir" "$BUN" install --frozen-lockfile
+  [ "$INCONCLUSIVE" = 0 ] || return 0
   [ "$OK" = 0 ] || return 0
   if cmp -s "$dir/bun.lock" "$MAIN/${rel#.}/bun.lock" && [ -d "$MAIN/${rel#.}/node_modules" ]; then
     echo "== $2: frozen install failed; lock matches $MAIN, linking its node_modules" >>"$LOG"
@@ -99,6 +101,10 @@ install wetamp install:wetamp
 step tsc "$WT/wetamp" "$BUN" x tsc --noEmit
 step test "$WT/wetamp" "$BUN" test
 step selftest "$WT/wetamp" bash scripts/selftest.sh --fake
+
+if [ "$INCONCLUSIVE" = 1 ]; then
+  echo "verify-local: ${SHA:0:12} inconclusive (interrupted; log $LOG)"; exit 1
+fi
 
 python3 -I -c 'import json, os, sys, time
 out, sha, ok, log, *flat = sys.argv[1:]
