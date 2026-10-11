@@ -38,14 +38,14 @@ if [ -z "$REPO" ]; then
   git clone -q --bare "$REPO" "$TMPH/origin.git"; git -C "$REPO" remote add origin "$TMPH/origin.git"; git -C "$REPO" fetch -q origin
 fi
 BASE="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
-# hooks：元帅会话 31 行写入（*.md 豁免，故用 .txt）被 G-1 拦、worker 会话 Agent 被 N-1 拦（只判定、不落盘到 repo）
-hook() { # <SUPERAGENT_ROLE> <tool_name> <tool_input JSON> → 拒绝原因
+# hooks：元帅会话 31 行写入（*.md 豁免，故用 .txt）只得 G-1 advisory、不拦；worker 会话 Agent 被 N-1 拦（只判定、不落盘到 repo）
+hook() { # <SUPERAGENT_ROLE> <tool_name> <tool_input JSON> → 拒绝原因，无拒绝时为 systemMessage
   node -e 'process.stdout.write(JSON.stringify({hook_event_name: "PreToolUse", session_id: "selftest", cwd: process.argv[1], tool_name: process.argv[2], tool_input: JSON.parse(process.argv[3])}))' "$REPO" "$2" "$3" \
     | env -u AI_DISPATCH_ROLE -u TWIN_AGENT_REMOTE -u SUPERAGENT_ALLOW_COMMANDER_WRITE SUPERAGENT_ROLE="$1" node "$WETAMP/hooks/guard.cjs" claude \
-    | node -e 'let s = ""; process.stdin.on("data", d => s += d).on("end", () => console.log(s ? JSON.parse(s).hookSpecificOutput?.permissionDecisionReason ?? "" : ""))'
+    | node -e 'let s = ""; process.stdin.on("data", d => s += d).on("end", () => { const d = s ? JSON.parse(s) : {}; console.log(d.hookSpecificOutput?.permissionDecisionReason ?? d.systemMessage ?? "") })'
 }
 G1="$(hook '' Edit "$(node -e 'console.log(JSON.stringify({file_path: process.argv[1], old_string: "selftest", new_string: "x\n".repeat(31)}))' "$REPO/selftest.txt")")"
-case "$G1" in G-1:*) ;; *) fail "hooks: commander 31-line edit not denied: $G1";; esac
+case "$G1" in "SUPERAGENT advisory G-1:"*) ;; *) fail "hooks: commander 31-line edit not advised (or denied): $G1";; esac
 N1="$(hook worker Agent '{"prompt":"x"}')"
 case "$N1" in 已拦截：*。原因：*。可以：*。) ;; *) fail "hooks: worker Agent not denied: $N1";; esac
 # 工作流内联在此（不进 templates/：生成器只复制 commands/ 与 scripts/）。先以真实 think 节点 validate：
