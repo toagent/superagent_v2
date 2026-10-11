@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
+import { hostname } from 'node:os';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
 import type { RunView } from '../src/archon';
@@ -107,7 +108,8 @@ function ledger(
     ...extra,
   };
   writeFileSync(ledgerFile(id), JSON.stringify(l));
-  writeFileSync(join(stubDir, `get-a-${id}.json`), JSON.stringify({ id: `a-${id}`, ...run }));
+  writeFileSync(join(stubDir, `get-a-${id}.json`), JSON.stringify({ id: `a-${id}`,
+    ...(run.status === 'running' ? { metadata: { execution_owner: { host: hostname(), pid: process.pid } } } : {}), ...run }));
   return l;
 }
 
@@ -171,7 +173,7 @@ describe('data rows', () => {
     ledger('done', { status: 'completed' });
     ledger('live', {
       status: 'running',
-      metadata: { execution_owner: { host: 'elsewhere', pid: 1 } },
+      metadata: { execution_owner: { host: hostname(), pid: process.pid } },
     });
     const load = createLoader();
     await load(50);
@@ -187,7 +189,7 @@ describe('data rows', () => {
   test('a failed query keeps the previous run and marks the row stale; never-seen runs are unreadable', async () => {
     ledger('live', {
       status: 'running',
-      metadata: { execution_owner: { host: 'elsewhere', pid: 1 } },
+      metadata: { execution_owner: { host: hostname(), pid: process.pid } },
     });
     const load = createLoader();
     expect((await load(50)).rows[0]?.stale).toBe(false);
@@ -212,7 +214,7 @@ describe('data rows', () => {
 
 describe('loader robustness', () => {
   const live = (id: string): Ledger =>
-    ledger(id, { status: 'running', metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } });
+    ledger(id, { status: 'running', metadata: { execution_owner: { host: hostname(), pid: process.pid } } });
   const orphans = (): string => {
     // Concurrent suites also start sleeps: only this stub's children belong to this assertion.
     const file = join(stubDir, 'children');

@@ -8,31 +8,26 @@ const {tiers, policy} = require('../tiers.json');
 const microEdit = require('./micro-edit.cjs');
 
 const MODES = ['off', 'advisory', 'cycle', 'change'];
-const LOCK_WAIT_MS = 5000, LOCK_STALE_MS = 15000;
-const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-// Read-modify-write of the session state under an exclusive lock file; `fn` mutates the
-// state and returns the result. A busy lock throws so callers can fail closed.
+// Keep a stable inode: unlinking a locked path lets two processes own different
+// inodes. A helper locks our inherited open file description; close releases it,
+// including on SIGKILL. Slow live owners are never reclaimed by elapsed time.
 function withState(file, fn) {
   fs.mkdirSync(path.dirname(file), {recursive: true, mode: 0o700});
-  const lock = `${file}.lock`, until = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try { fs.closeSync(fs.openSync(lock, 'wx')); break; }
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      let age = 0; try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }
-      if (age > LOCK_STALE_MS) { try { fs.unlinkSync(lock); } catch {} continue; }
-      if (Date.now() > until) throw new Error('状态锁忙');
-      sleep(20);
-    }
-  }
+  const fd = fs.openSync(`${file}.lock`, 'a', 0o600);
   try {
+    const bun = [process.env.BUN_INSTALL && path.join(process.env.BUN_INSTALL, 'bin/bun'),
+      path.join(require('node:os').homedir(), '.bun/bin/bun'), '/opt/homebrew/bin/bun']
+      .find(p => p && fs.existsSync(p)) || 'bun';
+    const locked = spawnSync(bun, [path.join(__dirname, 'flock.ts')],
+      {stdio: ['ignore', 'ignore', 'pipe', fd], timeout: 7000});
+    if (locked.status !== 0) throw new Error(locked.status === 2 ? '状态锁忙' : '状态锁不可用');
     let state = {};
     try { state = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') state = {corrupt: error.message}; }
     const result = fn(state);
     fs.writeFileSync(`${file}.${process.pid}.tmp`, JSON.stringify(state), {mode: 0o600});
     fs.renameSync(`${file}.${process.pid}.tmp`, file);
     return result;
-  } finally { fs.unlinkSync(lock); }
+  } finally { fs.closeSync(fd); }
 }
 
 function git(root, args, input) {

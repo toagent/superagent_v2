@@ -4,6 +4,7 @@ import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
+import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
@@ -29,6 +30,7 @@ import {
   lastJson,
   lock,
   ownerLost,
+  reusedOwnerPid,
   pidAlive,
   QUERY_TIMEOUT_MS,
   recover,
@@ -83,6 +85,7 @@ const OPTIONS = {
   all: { type: 'boolean' },
   since: { type: 'string' },
   refresh: { type: 'boolean' },
+  reconciled: { type: 'string' }, // explicit external-effect reconciliation, bound to a run snapshot
   open: { type: 'boolean' },
 } as const;
 interface Args {
@@ -216,6 +219,8 @@ export interface Classified {
 
 /** archon run 状态 → superagent 状态。gate/environment 失败是“待决策”而非终局失败：decide retry 可 resume。 */
 export function classify(run: RunView): Classified {
+  if (!['completed', 'cancelled'].includes(run.status) && recoveryAdmissionUnknown(run))
+    return { state: 'held:recovery_admission_unknown', exit: EXIT.held };
   const failed = run.nodes?.find(n => n.state === 'failed')?.nodeId;
   switch (run.status) {
     case 'completed':
@@ -234,6 +239,8 @@ export function classify(run: RunView): Classified {
       if (failed?.startsWith('gate-')) return { state: 'held:gate', exit: EXIT.held, node: failed };
       return { state: 'failed', exit: EXIT.failed, node: failed };
     default:
+      if (ownershipUnknown(run) || reusedOwnerPid(run))
+        return { state: 'held:owner_unknown', exit: EXIT.held };
       return { state: ownerLost(run) ? 'owner_lost' : run.status, exit: EXIT.running };
   }
 }
@@ -316,6 +323,8 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
         }
       : {}),
     evidence: art,
+    ...(c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown'
+      ? { action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.` } : {}),
     recoveries: l.recoveries.length,
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
@@ -396,7 +405,8 @@ function recoverRun(
   l: Ledger,
   fresh = false,
   auto?: AutoRetry,
-  prepare?: () => void
+  prepare?: () => void,
+  reconciled?: string
 ): RecoverResult {
   let fp = '';
   let adopted: { from: string; hash: string; engine_from: string | null } | undefined;
@@ -447,6 +457,7 @@ function recoverRun(
     prepare,
     {
       lockId: l.adoptions?.[0]?.from ?? l.archon_run_id,
+      operatorId: l.run_id,
       resolveId: () => {
         Object.assign(l, loadLedger(l.run_id));
         return l.archon_run_id;
@@ -475,7 +486,8 @@ function recoverRun(
           '--detach',
         ];
       },
-    }
+    },
+    reconciled
   );
 }
 
@@ -494,16 +506,17 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
         Bun.sleepSync(1000);
         continue;
       }
-      const held = r.reason === 'recover_no_progress';
+      const held = r.held ?? r.reason === 'recover_no_progress';
       return {
         ...summary(
           l,
           run,
           held
-            ? { state: 'held:recover_no_progress', exit: EXIT.held }
+            ? { state: `held:${r.reason}`, exit: EXIT.held }
             : { ...c, exit: EXIT.failed }
         ),
         reason: r.reason,
+        ...(r.held ? { action: r.action, snapshot: r.snapshot, nodes: r.nodes } : {}),
       };
     }
     const left = Math.ceil((deadline - Date.now()) / 1000);
@@ -693,11 +706,11 @@ function health(cwd?: string): number {
   return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
 }
 
-function resumeRun(l: Ledger, fresh = false): number {
-  const res = recoverRun(l, fresh);
+function resumeRun(l: Ledger, fresh = false, reconciled?: string): number {
+  const res = recoverRun(l, fresh, undefined, undefined, reconciled);
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
-  return res.ok ? 0 : 1;
+  return res.ok ? 0 : res.held ? EXIT.held : 1;
 }
 
 /** 手动 resume / decide retry 撞上 recover 锁：重读状态后按当前状态退出（多为运行中 4 或 held 3），不当业务失败 1。 */
@@ -833,7 +846,7 @@ function decide(l: Ledger, a: Args): number {
   const res = retry(l, c);
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
-  return res.ok ? 0 : 1;
+  return res.ok ? 0 : res.held ? EXIT.held : 1;
 }
 
 /** ≤20 行纯文本：状态、各轮 gate 结论与评审债、签收提问状态、合入命令、证据路径。 */
@@ -1330,6 +1343,9 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
   const row: HoldSignal = { run_id: l.run_id, since: run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? l.started_at, disposed: false };
   observed.push(row);
   if (c.state === 'held:engine_suspect') saveIncident(l.run_id, artifactsOf(run), c.node ?? '', planOf(l), { run: workflowIdentity(l) ?? null, current: engineHash() });
+  if (c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown')
+    return { run_id: l.run_id, action: 'none', ok: false, held: true, state: c.state,
+      next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.` };
   if (c.state === 'owner_lost')
     return record(l, 'owner_lost', { run_id: l.run_id, action: 'recover', ...recoverRun(l) });
   const need = (): Asks => {
@@ -1659,11 +1675,11 @@ export function main(argv: string[]): number {
     case 'recover': {
       const id = need(target, `${verb} <run>`);
       if (!existsSync(ledgerPath(id))) {
-        const res = recover(id); // 未登记：按 archon run id 处理（selftest 用）
+        const res = recover(id, undefined, undefined, undefined, undefined, undefined, a.flags.reconciled); // 未登记：按 archon run id 处理（selftest 用）
         print({ run_id: id, ...res });
-        return res.ok ? 0 : 1;
+        return res.ok ? 0 : res.held ? EXIT.held : res.busy ? EXIT.running : 1;
       }
-      const l = loadLedger(id), code = resumeRun(l);
+      const l = loadLedger(id), code = resumeRun(l, false, a.flags.reconciled);
       if (code === 0) updateLedger(l, cur => { cur.intervened = true; });
       return code;
     }

@@ -57,6 +57,9 @@ for (const scope of ['package', 'milestone', 'budget'] as const) test(`HF10 fake
   };
   const id = `hf10-${scope}`, branch = `sa/${id}`;
   const ack = archon('workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', repo, '--branch', branch, '--from', 'main', '--detach', '--config', gen.config);
+  // Pending has no proven owner yet. Use the engine's launch/wait contract to
+  // reach the fixture outcome before testing overlay retry policy.
+  archon('workflow', 'wait', String(ack.runId), '--timeout', '120');
   mkdirSync(join(env.SUPERAGENT_HOME, 'runs'), { recursive: true });
   writeFileSync(join(env.SUPERAGENT_HOME, `runs/${id}.json`), JSON.stringify({
     run_id: id, archon_run_id: ack.runId, engine_hash: 'old-ui-hash', workflow_hash: gen.engine_hash,
