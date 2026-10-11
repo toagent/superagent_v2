@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
 import fixture from './fixtures/cockpit-r2.json';
@@ -25,7 +26,10 @@ function setup(): string {
     const dir = join(l.gen_dir, '.archon/workflows', l.workflow); mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, l.workflow + '.yaml'), Bun.YAML.stringify({ nodes: x.roles.map(([id, role]) => ({ id, ...(role === 'coder' ? { model: '@sa-coder' } : role === 'reviewer' ? { model: '@sa-reviewer' } : {}) })) }));
     writeFileSync(join(root, 'runs', l.run_id + '.json'), JSON.stringify(l));
-    writeFileSync(join(root, l.archon_run_id + '.json'), JSON.stringify(x.run));
+    // Recorded events stay fixed; active ownership must be proven on this host.
+    const run = x.run.status === 'running' ? { ...x.run, started_at: new Date().toISOString(),
+      metadata: { execution_owner: { host: hostname(), pid: process.pid } } } : x.run;
+    writeFileSync(join(root, l.archon_run_id + '.json'), JSON.stringify(run));
   }
   fixture.live.forEach((l, i) => writeFileSync(join(root, 'live', i + '.json'), JSON.stringify({ ...l, cwd: root })));
   writeFileSync(join(root, 'jobs/j.json'), JSON.stringify({ ...fixture.job, cwd: root }));

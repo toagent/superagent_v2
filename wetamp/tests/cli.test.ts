@@ -48,6 +48,7 @@ const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
 const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView => ({
   id: 'r',
   status,
+  ...(status === 'running' ? { metadata: { execution_owner: { host: hostname(), pid: process.pid } } } : {}),
   ...extra,
 });
 
@@ -165,7 +166,7 @@ describe('classify', () => {
       classify(
         run('running', { metadata: { execution_owner: { host: 'elsewhere', pid: 2 ** 22 + 1 } } })
       ).state
-    ).toBe('running');
+    ).toBe('held:owner_unknown');
   });
 });
 
@@ -202,6 +203,11 @@ fi
   echo '{"ok":true,"runId":"r"}'; exit 0;
 }
 cur=$(ls "${dir}"/get-*.json 2>/dev/null | head -1)
+if [ "$1 $2" = "workflow resume" ]; then
+  bun -e 'const f=process.argv[1], r=JSON.parse(await Bun.file(f).text());
+    if (r.status !== "completed") {r.metadata={...r.metadata, execution_owner:{host: ${JSON.stringify(hostname())}, pid: 4194305 + Date.now() % 1000000}};
+      r.started_at=new Date().toISOString(); await Bun.write(f, JSON.stringify(r));}' "$cur"
+fi
 st=$([ -n "$cur" ] && grep -o '"status":"[a-z]*"' "$cur" | head -1 | cut -d'"' -f4)
 case "$1 $2:$st" in
   "workflow cancel:running") ;;
@@ -347,7 +353,7 @@ describe('HF3 latest-engine recovery', () => {
       held.release();
     }
   });
-  test('an unsuccessful adoption does not publish its engine or consume a recovery; retry remains possible', () => {
+  test('an unconfirmed adoption does not publish its engine or consume a recovery; repeat launch is held', () => {
     const s = setup('old');
     const bin = join(s.dir, 'archon');
     const original = readFileSync(bin, 'utf8');
@@ -356,12 +362,13 @@ describe('HF3 latest-engine recovery', () => {
       original.replace('{"ok":true,"runId":"r2"}', '{"ok":false,"error":"fixture refusal"}')
     );
     const before = readFileSync(ledgerPath('sa1'), 'utf8');
-    expect(captured(() => main(['resume', 'sa1'])).code).toBe(1);
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(EXIT.held);
     expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
     writeFileSync(bin, original);
-    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
-    expect(loadLedger('sa1').archon_run_id).toBe('r2');
-    expect(loadLedger('sa1').recoveries).toHaveLength(1);
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(EXIT.held);
+    expect(loadLedger('sa1').archon_run_id).toBe('r');
+    expect(loadLedger('sa1').recoveries).toHaveLength(0);
+    expect(s.calls().filter(c => c.includes('--adopt'))).toHaveLength(1);
   });
 });
 
@@ -392,8 +399,8 @@ const LOST = { host: hostname(), pid: 2 ** 22 + 1 };
 /** archon.db 的 runs 表（只含 recover 读写的列），行 r 处于 running、metadata 记着 owner。 */
 function runsDb(owner: { host: string; pid: number }): Database {
   const db = new Database(join(process.env.ARCHON_HOME ?? '', 'archon.db'));
-  db.run('create table remote_agent_workflow_runs (id text, status text, metadata text)');
-  db.run("insert into remote_agent_workflow_runs values ('r', 'running', ?)", [
+  db.run('create table remote_agent_workflow_runs (id text, status text, metadata text, started_at text)');
+  db.run("insert into remote_agent_workflow_runs values ('r', 'running', ?, null)", [
     JSON.stringify({ execution_owner: owner }),
   ]);
   return db;
@@ -605,7 +612,9 @@ describe('waitRun (archon stub)', () => {
     const s = stub([lost]);
     const db = runsDb(LOST);
     const again = (): void => {
-      db.run("update remote_agent_workflow_runs set status='running'");
+      const next = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+      db.run("update remote_agent_workflow_runs set status='running', metadata=?, started_at=?",
+        [JSON.stringify(next.metadata), next.started_at ?? null]);
     };
     for (let i = 0; i < 3; i++) {
       expect(main(['resume', 'sa1'])).toBe(0);
@@ -632,7 +641,9 @@ describe('waitRun (archon stub)', () => {
     expect(main(['resume', 'sa1'])).toBe(0);
     const fp = loadLedger('sa1').progress_fp;
     writeFileSync(ledgerFile, JSON.stringify({ ...s.ledger, progress_fp: fp, stalled: 2 }));
-    db.run("update remote_agent_workflow_runs set status='running'");
+    const next = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+    db.run("update remote_agent_workflow_runs set status='running', metadata=?, started_at=?",
+      [JSON.stringify(next.metadata), next.started_at ?? null]);
     // 第二次 recover 恰在第一次释放锁之后、返回调用方之前进入
     const real = archonMod.recover;
     let second: unknown;
@@ -640,7 +651,9 @@ describe('waitRun (archon stub)', () => {
       const r = real(...args);
       if (second === undefined) {
         second = null;
-        db.run("update remote_agent_workflow_runs set status='running'");
+        const next = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+        db.run("update remote_agent_workflow_runs set status='running', metadata=?, started_at=?",
+          [JSON.stringify(next.metadata), next.started_at ?? null]);
         second = captured(() => main(['resume', 'sa1']));
       }
       return r;
@@ -715,7 +728,7 @@ describe('verbs (archon stub)', () => {
   });
   test('resume refuses a run whose owner may be alive', () => {
     stub([run('running', { metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } })]);
-    expect(main(['resume', 'sa1'])).toBe(1);
+    expect(main(['resume', 'sa1'])).toBe(EXIT.held);
   });
   test('unknown run id fails clearly', () => {
     stub([]);
@@ -2026,7 +2039,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       bin,
       original.replace(
         'cur=$(ls',
-        `if [ "$1 $2" = "workflow resume" ]; then echo '{"ok":false}'; exit 0; fi\ncur=$(ls`
+        `if [ "$1 $2" = "workflow resume" ]; then echo '{"ok":false,"executed":false}'; exit 0; fi\ncur=$(ls`
       )
     );
     expect(tick(1)[0]).toMatchObject({ action: 'retry', ok: false });
@@ -2216,6 +2229,8 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
   const started = sa('run', plan, '--fake', '--skip-selftest');
   expect(started.code).toBe(0);
   const id = String(started.out?.run_id);
+  expect(Bun.spawnSync([join(WETAMP, 'bin/archon'), 'workflow', 'wait', String(started.out?.archon_run_id), '--timeout', '120', '--json'],
+    { env, cwd: repo, stdout: 'pipe', stderr: 'pipe' }).exitCode).toBe(0);
   expect(sa('wait', id, '--timeout', '120').out).toMatchObject({
     state: 'failed',
     node: 'settle-core',
@@ -2501,6 +2516,8 @@ describe('HF9 decision titles', () => {
         r.nodes = [{ nodeId: node, state: 'failed' }];
         writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
         expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+        const resumed = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+        Object.assign(r, { metadata: resumed.metadata, started_at: resumed.started_at });
       }
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts/pkg'), 'utf8')).toBe('1');
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
@@ -2551,6 +2568,8 @@ describe('HF9 decision titles', () => {
       expect(JSON.parse(check.stdout.toString())).toMatchObject({ disposition: 'advance' });
       console.error(`HF10 budget retry ${attempt}: grant=${JSON.stringify(grant)} package=${attempt} milestone=absent(0)`);
       // New completion evidence distinguishes the next budget hold from a replayed answer.
+      const resumed = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+      Object.assign(r, { metadata: resumed.metadata, started_at: resumed.started_at });
       updateRun('2026-10-10T00:00:01Z');
       put('verify-W4.json', { reason: 'budget_launches_exceeded' });
     }
@@ -2680,6 +2699,17 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(started.err).toBe('');
   expect(started.code).toBe(0);
   const id = String(started.out.run_id);
+  // Native wait does not stop at every durable event pause. Observe the actual
+  // fixture pause without treating the ownerless launch window as normal work.
+  let engineStatus = 'pending';
+  for (const deadline = Date.now() + 180000; ['pending', 'running'].includes(engineStatus) && Date.now() < deadline;) {
+    const observed = Bun.spawnSync([join(WETAMP, 'bin/archon'), 'workflow', 'get', String(started.out.archon_run_id), '--json'],
+      { env, cwd: repo, stdout: 'pipe', stderr: 'pipe' });
+    expect(observed.exitCode).toBe(0);
+    engineStatus = String(archonMod.lastJson(observed.stdout.toString())?.status);
+    if (['pending', 'running'].includes(engineStatus)) Bun.sleepSync(250);
+  }
+  expect(engineStatus).toBe('paused');
   const held = sa('wait', id, '--timeout', '180');
   expect(held.out).toMatchObject({ state: 'held:human', exit: EXIT.held, node: 'human-m2' });
   // m1：首轮评审 FAIL → fix-m1-r2 → 第 2 轮 PASS；第 3 轮被条件跳过，汇合节点仍放行 m2

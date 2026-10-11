@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 契约自检：sa-smoke detach → think 节点运行中 kill -9 → wait=owner_lost → superagent recover → 暂停在事件门 → signal → completed；
-# sa-abandon 暂停在事件门 → superagent cancel（引擎只 cancel running 的 run，paused 须走 abandon）→ cancelled。
+# sa-abandon 暂停在事件门 → 原生 abandon 完整回执 → cancelled；清理不明则保留树。
 # 另对 hooks/guard.cjs 喂两个 payload（元帅 31 行写入、worker 会话 Agent）断言均被拒，结果记入 selftest.json 的 hooks 段。
 # 在临时 SUPERAGENT_HOME 里跑；通过后写调用方的 $SUPERAGENT_HOME/selftest.json（--fake 写 selftest-fake.json），绑定 HEAD、配置哈希与有效期。用法：selftest.sh [--repo <path>] [--timeout <s>] [--fake]
 set -euo pipefail
@@ -23,11 +23,7 @@ drop() { # <branch> <worktree>
     if git -C "$REPO" show-ref -q --verify "refs/heads/$1" && ! git -C "$REPO" branch -d "$1" >/dev/null; then keep=1; echo "selftest: kept branch $1 in $REPO" >&2; fi
   fi
 }
-cleanup() {
-  if [ -n "${ID:-}" ]; then "$A" workflow abandon "$ID" --json >/dev/null 2>&1 || true; fi
-  drop "${BR:-}" "${WT:-}"; drop "${BR2:-}" "${WT2:-}"
-  if [ "$keep" = 1 ]; then echo "selftest: kept $TMPH" >&2; else rm -rf "$TMPH"; fi
-}
+source "$WETAMP/scripts/selftest-cleanup.sh"
 trap cleanup EXIT
 fail() { echo "selftest FAIL: $*" >&2; exit 1; }
 field() { bun -e "import { lastJson } from '$WETAMP/src/archon.ts'; const d = lastJson(await Bun.stdin.text()); const v = ($1); console.log(v ?? '')"; }
@@ -96,7 +92,7 @@ await_gate() {
 git -C "$GEN" init -q
 cat > "$WF/sa-abandon.yaml" <<'YAML'
 name: sa-abandon
-description: superagent selftest - a run paused at an event gate is ended by superagent cancel (abandon)
+description: superagent selftest - a paused run is abandoned with a complete cleanup receipt
 nodes:
   - id: gate
     wait: { event: sa.human.abandon, deadline_ms: 900000 }
@@ -106,8 +102,11 @@ smoke "    prompt: 'Reply only with the JSON object {\"answer\": \"pong\"}. Do n
 [ "$FAKE" = 1 ] && smoke "    bash: sleep 20; echo '{\"answer\":\"pong\"}'" fake
 
 BR="sa/selftest-$(date +%s)"
-ACK="$("$A" workflow run sa-smoke --workflow-source "$GEN" --cwd "$REPO" --branch "$BR" --from "$BASE" --detach --json 2>/dev/null)"
+LAUNCH_INFLIGHT=1
+"$A" workflow run sa-smoke --workflow-source "$GEN" --cwd "$REPO" --branch "$BR" --from "$BASE" --detach --json >"$TMPH/launch-smoke.json" 2>"$TMPH/launch-smoke.err"
+ACK="$(cat "$TMPH/launch-smoke.json")"
 ID="$(echo "$ACK" | field 'd?.runId')"; [ -n "$ID" ] || fail "run ack: $ACK"
+LAUNCH_INFLIGHT=0
 get() { "$A" workflow get "$ID" --json --verbose 2>/dev/null; }
 
 PID="" deadline=$((SECONDS + TIMEOUT))
@@ -122,7 +121,14 @@ RSS_KB="$(ps -o rss= -p "$PID" | tr -d ' ')"
 kill -9 "$PID"; T0="$(ms)"
 R="$("$A" workflow wait "$ID" --json --timeout 30 2>/dev/null || true)"
 [ "$(echo "$R" | field 'd?.result')" = owner_lost ] || fail "wait after kill: $R"
-"$WETAMP/bin/superagent" recover "$ID" >/dev/null || fail "recover"
+# Only the deterministic fake body proves no external writes. A real model's
+# instruction not to use tools cannot prove that its interrupted effects settled.
+if [ "$FAKE" = 1 ]; then
+  SNAPSHOT="$(get | bun -e "import { lastJson } from '$WETAMP/src/archon.ts'; import { recoverySnapshot } from '$WETAMP/src/recovery.ts'; console.log(recoverySnapshot(lastJson(await Bun.stdin.text())))")"
+  "$WETAMP/bin/superagent" recover "$ID" --reconciled "$SNAPSHOT" >"$TMPH/recover.json" || fail "recover: $TMPH/recover.json"
+else
+  "$WETAMP/bin/superagent" recover "$ID" >"$TMPH/recover.json" || { keep=1; cat "$TMPH/recover.json" >&2; fail "real model effects require reconciliation; kept $TMPH"; }
+fi
 RECOVER_MS=$(( $(ms) - T0 ))
 
 await_gate sa.human.smoke
@@ -145,12 +151,16 @@ ID=""
 
 BR2="sa/selftest-abandon-$(date +%s)"
 "$A" validate workflows sa-abandon --cwd "$GEN" >/dev/null 2>&1 || fail "validate workflows (abandon)"
-ACK="$("$A" workflow run sa-abandon --workflow-source "$GEN" --cwd "$REPO" --branch "$BR2" --from "$BASE" --detach --json 2>/dev/null)"
+LAUNCH_INFLIGHT=1
+"$A" workflow run sa-abandon --workflow-source "$GEN" --cwd "$REPO" --branch "$BR2" --from "$BASE" --detach --json >"$TMPH/launch-abandon.json" 2>"$TMPH/launch-abandon.err"
+ACK="$(cat "$TMPH/launch-abandon.json")"
 ID="$(echo "$ACK" | field 'd?.runId')"; [ -n "$ID" ] || fail "abandon run ack: $ACK"
+LAUNCH_INFLIGHT=0
 await_gate sa.human.abandon
 WT2="$(get | field 'd?.working_path')"
 T2="$(ms)"
-"$WETAMP/bin/superagent" cancel "$ID" >/dev/null || fail "superagent cancel of a paused run"
+"$A" workflow abandon "$ID" --json >"$TMPH/cancel.json" 2>"$TMPH/cancel.err" || { keep=1; fail "abandon of a paused run: $TMPH/cancel.json $TMPH/cancel.err"; }
+bun "$WETAMP/scripts/selftest-stop.ts" "$TMPH/cancel.json" || { keep=1; fail "cancel has incomplete cleanup: $TMPH/cancel.json"; }
 ABANDON_MS=$(( $(ms) - T2 ))
 [ "$(get | field 'd?.status')" = cancelled ] || fail "paused run not cancelled: $(get | field 'd?.status')"
 ID=""
@@ -174,7 +184,11 @@ if [ "$FAKE" = 1 ]; then
     git clone -q --no-hardlinks --single-branch --branch "$BASE" "$REPO" "$HF3_REPO"
     git -C "$HF3_REPO" branch -m main
   fi
+  # This helper can launch several runs; a failed/unknown return cannot prove
+  # their cleanup. Preserve the entire scratch home until it confirms success.
+  LAUNCH_INFLIGHT=1
   bun "$HF3_TOOLKIT/wetamp/scripts/hf3-adoption-selftest.ts" "$HF3_REPO" "$TIMEOUT" || fail "HF3 latest-engine adoption"
+  LAUNCH_INFLIGHT=0
 fi
 
 OUT="$REAL_HOME/selftest.json"; [ "$FAKE" = 1 ] && OUT="$REAL_HOME/selftest-fake.json"

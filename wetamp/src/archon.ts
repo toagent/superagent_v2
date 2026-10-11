@@ -1,12 +1,15 @@
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
 import { dlopen, FFIType, read, type Pointer } from 'bun:ffi';
 import { Database } from 'bun:sqlite';
-import { spawn } from 'node:child_process';
-import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { WETAMP, home } from './config';
+import { WETAMP, home, writeAtomic } from './config';
 import type { NodeExecutionMetadata } from '../../packages/workflows/src/schemas/node-execution';
+import type { ExecutionOwnerRecord } from '../../packages/workflows/src/schemas/workflow-run';
+import { ownershipUnknown, recoveryAdmissionUnknown, recoverySnapshot, unknownEffects, type RecoveryAdmission } from './recovery';
 
 export interface Exec {
   code: number;
@@ -25,7 +28,8 @@ export interface RunView {
   completed_at?: string | null;
   last_activity_at?: string | null;
   metadata?: {
-    execution_owner?: { host: string; pid: number };
+    execution_owner?: ExecutionOwnerRecord;
+    superagent_recovery?: RecoveryAdmission;
     wait?: {
       nodeId: string;
       kind: string;
@@ -190,7 +194,7 @@ export function pidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
+    return (e as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }
 
@@ -200,10 +204,29 @@ export function ownerLost(run: RunView): boolean {
   return run.status === 'running' && !!o && o.host === hostname() && !pidAlive(o.pid);
 }
 
+/** ps exposes process birth, so a newly reused PID cannot masquerade as the old owner. */
+export function reusedOwnerPid(run: RunView): boolean {
+  const owner = run.metadata?.execution_owner;
+  if (ownershipUnknown(run) || !owner || !run.started_at || !pidAlive(owner.pid)) return false;
+  const p = spawnSync('ps', ['-p', String(owner.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2000, env: { ...process.env, LC_ALL: 'C' } });
+  const birth = Date.parse(p.stdout.trim());
+  return p.status === 0 && Number.isFinite(birth) && birth > Date.parse(run.started_at);
+}
+
+/** Reuse Archon's exact-run owner endpoint before changing lifecycle state. */
+function liveOwnerAnswering(id: string): boolean | undefined {
+  const source = join(WETAMP, '..', 'packages/core/src/services/run-live-owner.ts');
+  const p = Bun.spawnSync([process.execPath, '-e',
+    `import { isRunOwnerAnswering } from ${JSON.stringify(source)}; console.log(await isRunOwnerAnswering(process.argv[1]));`, id],
+    { stdout: 'pipe', stderr: 'pipe', timeout: 5000 });
+  const out = p.stdout.toString().trim();
+  return p.exitCode === 0 && ['true', 'false'].includes(out) ? out === 'true' : undefined;
+}
+
 /** busy：recover 锁被另一进程持有（它正在恢复同一 run）。不是业务失败：调用方重读状态再定，不计次、不记处置。 */
 export type RecoverResult =
   | { ok: true; resumed: Json }
-  | { ok: false; reason: string; busy?: true };
+  | { ok: false; reason: string; busy?: true; held?: true; action?: string; snapshot?: string; nodes?: string[]; evidence?: string };
 
 export type Lock = { ok: true; release: () => void } | { ok: false; reason: 'locked' };
 
@@ -298,9 +321,11 @@ export function recover(
   prepare?: () => void,
   strategy?: {
     lockId: string;
+    operatorId?: string;
     resolveId: () => string;
     adopt: (run: RunView) => string[] | undefined;
-  }
+  },
+  reconciled?: string
 ): RecoverResult {
   mkdirSync(join(home().sa, 'runs'), { recursive: true });
   const path = join(home().sa, 'runs', `${strategy?.lockId ?? id}.lock`);
@@ -310,25 +335,56 @@ export function recover(
     const run = getRun(strategy?.resolveId() ?? id, cwd);
     const veto = guard?.(run);
     if (veto) return { ok: false, reason: veto };
+    const journalPath = join(home().sa, 'runs', `${run.id}.recovery`);
+    const held = (reason: string): Extract<RecoverResult, { ok: false }> => ({ ok: false, held: true, reason,
+      action: `Inspect archon workflow get ${run.id} --verbose and its exact-run owner; resolve ownership or explicitly run archon workflow abandon ${run.id}.` });
+    if (recoveryAdmissionUnknown(run)) return held('recovery_admission_unknown');
+    if (ownershipUnknown(run) || reusedOwnerPid(run)) return held('owner_unknown');
+    const effects = unknownEffects(run);
+    if (effects.length && reconciled !== recoverySnapshot(run)) return {
+      ok: false, held: true, reason: 'effects_unknown', nodes: effects, snapshot: recoverySnapshot(run),
+      action: `Reconcile external effects and stop surviving node processes, then superagent recover ${strategy?.operatorId ?? id} --reconciled ${recoverySnapshot(run)}`,
+    };
+    if (run.status === 'running') {
+      const live = liveOwnerAnswering(run.id);
+      if (live !== false) return held(live ? 'live_owner_answering' : 'owner_probe_unknown');
+    }
     const adoption = strategy?.adopt(run);
     if (adoption) {
+      // Relaunching on a newer engine has the same lost-ack window as resume.
+      // Keep the old run fenced until the ledger records the new run identity.
+      writeAtomic(journalPath, JSON.stringify({ token: randomUUID(), owner: run.metadata?.execution_owner,
+        started_at: run.started_at ?? null } satisfies RecoveryAdmission));
       prepare?.();
-      const ack = archonJson(adoption, cwd);
-      if (ack.ok !== true || typeof ack.runId !== 'string')
-        return { ok: false, reason: tail(JSON.stringify(ack)) };
+      const result = archon([...adoption, '--json'], cwd);
+      const ack = lastJson(result.out);
+      if (result.code !== 0 || ack?.ok !== true || typeof ack.runId !== 'string') {
+        const evidence = `${journalPath}-result`;
+        writeAtomic(evidence, JSON.stringify(result));
+        return { ...held('recovery_admission_unknown'), evidence };
+      }
       done?.(ack);
       return { ok: true, resumed: ack };
     }
+    const claim: RecoveryAdmission = { token: randomUUID(), owner: run.metadata?.execution_owner, started_at: run.started_at ?? null,
+      ...(effects.length ? { reconciled_snapshot: reconciled, reconciled_nodes: effects } : {}) };
     if (run.status === 'running') {
       const o = run.metadata?.execution_owner;
       if (!o || !ownerLost(run)) return { ok: false, reason: 'owner alive or on another host' };
-      const db = new Database(join(home().archon, 'archon.db'));
+      const db = new Database(join(home().archon, 'archon.db'), { create: false, readwrite: true });
       try {
         const r = db.run(
-          `update remote_agent_workflow_runs set status='failed' where id=? and status='running'
+          `update remote_agent_workflow_runs set status='failed',
+             metadata=json_set(metadata,'$.superagent_recovery',json(?))
+             where id=? and status='running'
              and json_extract(metadata,'$.execution_owner.pid')=?
-             and json_extract(metadata,'$.execution_owner.host')=?`,
-          [run.id, o.pid, o.host]
+             and json_extract(metadata,'$.execution_owner.host')=?
+             and json_extract(metadata,'$.execution_owner.uid') is ?
+             and (started_at is ? or julianday(started_at)=julianday(?))
+             and json_extract(metadata,'$.superagent_recovery.token') is ?`,
+          [JSON.stringify(claim), run.id, o.pid, o.host, o.uid ?? null,
+            run.started_at ?? null, run.started_at ?? null,
+            run.metadata?.superagent_recovery?.token ?? null]
         );
         if (r.changes !== 1) return { ok: false, reason: 'owner_changed' };
       } finally {
@@ -337,9 +393,23 @@ export function recover(
     } else if (run.status !== 'failed' && run.status !== 'paused') {
       return { ok: false, reason: `status ${run.status} is not resumable` };
     }
+    // Published before launch: an interrupted caller or lost ack leaves an explicit
+    // unknown admission. Neither a second CLI nor old owner metadata can re-admit it.
+    writeAtomic(journalPath, JSON.stringify(claim));
     prepare?.(); // 已持锁且确认可恢复；attempt/预算不得在锁忙或 owner 存活时变化
-    const resumed = archonJson(['workflow', 'resume', run.id, '--detach'], cwd);
-    if (resumed.ok === false) return { ok: false, reason: tail(JSON.stringify(resumed)) };
+    const result = archon(['workflow', 'resume', run.id, '--detach', '--json'], cwd);
+    const resumed = lastJson(result.out);
+    if (result.code === 0 && resumed?.ok === false && resumed.executed === false && run.status !== 'running') {
+      // A structured pre-admission refusal guarantees no worker was launched.
+      // Any other failure (including a lost acknowledgement) retains the fence.
+      unlinkSync(journalPath);
+      return { ok: false, reason: tail(JSON.stringify(resumed)) };
+    }
+    if (result.code !== 0 || resumed?.ok !== true) {
+      const evidence = `${journalPath}-result`;
+      writeAtomic(evidence, JSON.stringify(result));
+      return { ...held('recovery_admission_unknown'), evidence };
+    }
     done?.(resumed);
     return { ok: true, resumed };
   } finally {

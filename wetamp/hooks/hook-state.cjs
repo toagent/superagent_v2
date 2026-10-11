@@ -1,24 +1,20 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
-const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-// Age alone cannot prove an owner is dead. Empty/ambiguous locks stay busy.
+const {spawnSync} = require('node:child_process');
+// Keep one inode and retain the inherited open file description in the caller.
+// The kernel releases this lock on close/SIGKILL; elapsed time never steals it.
 function withLock(file, fn) {
   fs.mkdirSync(path.dirname(file), {recursive: true, mode: 0o700});
-  const lock = `${file}.lock`, until = Date.now() + 5000;
-  for (;;) {
-    try {
-      const fd = fs.openSync(lock, 'wx', 0o600);
-      try { fs.writeFileSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      // No stale-lock stealing: a competing reclaimer could delete a new owner's
-      // lock between inspection and unlink. Surface ambiguity to the operator.
-      if (Date.now() >= until) throw new Error('状态锁忙；确认 owner 退出后再处理锁文件');
-      sleep(20);
-    }
-  }
-  try { return fn(); } finally { fs.unlinkSync(lock); }
+  const fd = fs.openSync(`${file}.lock`, 'a', 0o600);
+  try {
+    const bun = [process.env.BUN_INSTALL && path.join(process.env.BUN_INSTALL, 'bin/bun'),
+      path.join(require('node:os').homedir(), '.bun/bin/bun'), '/opt/homebrew/bin/bun']
+      .find(p => p && fs.existsSync(p)) || 'bun';
+    const locked = spawnSync(bun, [path.join(__dirname, 'flock.ts')],
+      {stdio: ['ignore', 'ignore', 'pipe', fd], timeout: 7000});
+    if (locked.status !== 0) throw new Error(locked.status === 2 ? '状态锁忙' : '状态锁不可用');
+    return fn();
+  } finally { fs.closeSync(fd); }
 }
 function atomicWrite(file, text) {
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
