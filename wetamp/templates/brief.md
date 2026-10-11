@@ -26,7 +26,7 @@
 
 ## 红线（执行层强制）
 
-以下操作由 hooks 或执行边界直接拒绝，命中即停，不要换写法绕过；确需时在 `needs[]` 说明：
+以下操作由 hooks 或执行边界直接拒绝，命中即停，不要换写法绕过；确需时在 `needs[]` 说明。拒绝消息若给出“可以：…”的补救方式（例如改用明确的本任务路径），且目标仍属本任务，按建议改写重试一次不算绕过、也不是红线；补救后仍被拒才停：
 
 - 读取凭据与隐私：`~/.ssh` 私钥、钥匙串与 `security` 取密码、`~/.aws/credentials`、`~/.netrc`、gh 令牌、`~/.npmrc`/`~/.pypirc`、`_private`、iCloud、浏览器资料；
 - 发布与合并：`npm/bun/pnpm publish`、`docker push`、`gh release create`、`gh pr merge`、`vercel --prod`、`git push`；
