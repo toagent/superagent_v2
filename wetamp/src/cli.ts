@@ -56,6 +56,7 @@ import {
   readAttempt,
   attemptPath,
   type Review,
+  type Accept,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
 import {
@@ -1159,21 +1160,12 @@ function retryAllHeld(): number {
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
-      return [
-        control(l, () =>
-          intervention(
-            l,
-            'decide',
-            () => ({
-              run_id: l.run_id,
-              state: c.state,
-              ...retry(l, c, () => (started = true)),
-            }),
-            undefined,
-            () => started
-          )
-        ),
-      ];
+      const execute = () => ({
+        run_id: l.run_id,
+        state: c.state,
+        ...retry(l, c, () => (started = true)),
+      });
+      return [control(l, () => intervention(l, 'decide', execute, undefined, () => started))];
     } catch (e) {
       return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
     }
@@ -2306,14 +2298,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
 /** 追加到 hints/<包>.md 的提示：失败的验收命令与日志尾、基线预存说明、未关闭的阻塞发现、gate 原因。 */
 function gateHint(plan: Plan, art: string, node: string, g: Gate | undefined, n: number): string {
   const m = gateMilestone(node);
-  const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as
-    | {
-        failed?: string[];
-        base_pass?: boolean | null;
-        base_results?: { cmd: string; pass: boolean }[];
-        log?: string;
-      }
-    | undefined;
+  const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as Accept | undefined;
   const out = [`\n## 自动重试 ${String(n)}：${node} escalate（${g?.reason ?? '?'}）\n`];
   if (acc?.failed?.length) {
     out.push('失败的验收命令：', ...acc.failed.map(x => `- \`${x}\``), '');

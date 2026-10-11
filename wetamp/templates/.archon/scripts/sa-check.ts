@@ -47,7 +47,7 @@ interface Coder {
   needs?: unknown[];
 }
 type Disposition = 'advance' | 'repair' | 'suspend';
-interface Accept {
+export interface Accept {
   ok: boolean;
   diff_hash: string;
   same: boolean;
@@ -57,6 +57,9 @@ interface Accept {
   disposition?: Disposition;
   reason?: string | null;
   failed?: string[];
+  log?: string;
+  base_pass?: boolean | null;
+  base_results?: { cmd: string; pass: boolean }[];
   failures?: CheckFailure[];
   workspace_clean?: boolean;
 }
@@ -418,8 +421,7 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
       ? probe(
           base,
           checks.filter(c => failed.includes(c.cmd)),
-          tag,
-          p
+          tag
         )
       : [];
   if (baseResults.length) appendFileSync(log, `# base_results: ${JSON.stringify(baseResults)}\n`);
@@ -494,19 +496,11 @@ function settle(): void {
 }
 
 /** 在 base 的临时 detached 工作树里准备同一环境后重跑失败命令；无法准备时不作基线结论。 */
-function probe(
-  base: string,
-  checks: Check[],
-  tag: string,
-  p: Plan
-): { cmd: string; pass: boolean }[] {
+function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['base_results']> {
   const log = join(artifacts, `${tag}.probe.log`),
-    setup = environmentChecks(p);
-  writeFileSync(log, '');
-  if (!setup.length) {
-    appendFileSync(log, '# baseline unknown: no environment commands declared\n');
-    return [];
-  }
+    setup = environmentChecks(plan());
+  writeFileSync(log, setup.length ? '' : '# baseline unknown: no environment commands declared\n');
+  if (!setup.length) return [];
   const dir = mkdtempSync(join(tmpdir(), 'sa-probe-'));
   try {
     git('worktree', 'add', '--detach', '-q', dir, base);
@@ -531,10 +525,8 @@ function probe(
   }
 }
 
-export const environmentChecks = (p: Plan): Check[] => [
-  ...(p.environment ?? []),
-  ...p.packages.flatMap(k => k.environment ?? []),
-];
+export const environmentChecks = (p: Plan): Check[] =>
+  (p.environment ?? []).concat(p.packages.flatMap(k => k.environment ?? []));
 
 function environment(): void {
   const log = join(artifacts, 'environment.log');

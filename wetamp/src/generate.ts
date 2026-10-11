@@ -503,14 +503,8 @@ export function buildWorkflow(
     } else after = gates;
   }
   const operator_ledger = join(gen, '..', '..', 'runs', `${run}.json`);
-  nodes.push(
-    check(
-      'land',
-      [],
-      { kind: 'land', base_ref: plan.base_ref, plan: planPath, operator_ledger },
-      after
-    )
-  );
+  const landInputs = { kind: 'land', base_ref: plan.base_ref, plan: planPath, operator_ledger };
+  nodes.push(check('land', [], landInputs, after));
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
