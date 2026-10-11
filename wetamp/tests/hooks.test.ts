@@ -111,10 +111,35 @@ describe('REDLINE 默认放行与危险效果', () => {
     expect(
       reason(guard('claude', bash(`cp ${join(main, 'existing')} copied`), env))
     ).toBeUndefined();
-    humane(reason(guard('claude', bash(`git -C ${main} add existing`), env)));
+    expect(reason(guard('claude', bash(`git -C ${main} add existing`), env))).toBeUndefined();
     expect(reason(guard('claude', bash(`git -C ${main} status --short`), env))).toBeUndefined();
     expect(reason(guard('claude', bash('kill -9 41418'), env))).toBeUndefined();
   });
+  test.each([false, true])(
+    'FIXC6 guard allows foreign additive Git writes, derived=%s',
+    derived => {
+      const { guard } = setup(),
+        foreign = gitRepo(tmp());
+      const env: Record<string, string> = derived ? { SUPERAGENT_ROLE: 'worker' } : {};
+      for (const command of [
+        `cd ${foreign} && git fetch -q origin`,
+        `git -C ${foreign} fetch`,
+        `git -C ${foreign} add .`,
+        `git -C ${foreign} commit -m x`,
+        `git -C ${foreign} checkout -b t`,
+      ])
+        expect(reason(guard('claude', bash(command), env)), command).toBeUndefined();
+      for (const operation of [
+        'reset --hard',
+        'clean -fdx',
+        'checkout -- file',
+        'branch -D t',
+        'push --force',
+        'update-ref -d refs/heads/t',
+      ])
+        humane(reason(guard('claude', bash(`git -C ${foreign} ${operation}`), env)));
+    }
+  );
   test('新建范围外文件放行；临时 HOME 下的 provider 配置仍受保护', () => {
     const { guard } = setup(),
       home = tmp();
@@ -221,7 +246,7 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       expect(sh(`${prefix} ${reset}`), prefix).toBeNull();
     expect(sh('git --git-dir="$META" --work-tree="$TREE" status --short')).toBeNull();
     expect(sh('git --git-dir "$META" --work-tree . clean -fd')).toMatch(/^已拦截：/);
-    expect(sh('git --git-dir=.git --work-tree="$TREE" add a.ts')).toMatch(/^已拦截：/);
+    expect(sh('git --git-dir=.git --work-tree="$TREE" add a.ts')).toBeNull();
   });
   test('R1-07 process selection flows through xargs, positional parameters and forks', () => {
     const sh = box();
@@ -418,14 +443,16 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
     const hard = ['reset', '--hard'].join(' '),
       clean = ['clean', '-fdx'].join(' ');
     for (const nested of [clone, worktree, submodule]) {
-      for (const command of [hard, clean, 'commit -qm x']) {
+      for (const command of [hard, clean]) {
         expect(check(`git -C "${nested}" ${command}`)).toMatch(/^已拦截：/);
         expect(check(`cd "${nested}" && git ${command}`)).toMatch(/^已拦截：/);
       }
+      expect(check(`git -C "${nested}" commit -qm x`)).toBeNull();
+      expect(check(`cd "${nested}" && git commit -qm x`)).toBeNull();
       const marker = join(nested, '.git');
       const metadata = nested === clone ? marker : readFileSync(marker, 'utf8').trim().slice(8);
       expect(check(`git --git-dir="${metadata}" --work-tree=. ${hard}`)).toMatch(/^已拦截：/);
-      expect(check(`GIT_DIR="${metadata}" git commit -qm x`)).toMatch(/^已拦截：/);
+      expect(check(`GIT_DIR="${metadata}" git commit -qm x`)).toBeNull();
       for (const prefix of ['git', `git --git-dir="${marker}"`, `git --git-dir="${metadata}"`]) {
         expect(check(`${prefix} ${hard}`, nested), prefix).toBeNull();
         expect(check(`${prefix} commit -qm x`, nested), prefix).toBeNull();
@@ -444,6 +471,86 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
     expect(
       check('tmp=$(mktemp -d); cd "$tmp"; git init -q; git add a; git commit -qm x; git ' + hard)
     ).toBeNull();
+  });
+  test('FIXC6 foreign and unknown Git targets allow additive writes for both identities', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      foreign = gitRepo(tmp());
+    for (const derived of [false, true]) {
+      const check = (shell: string) =>
+        redline.reason({
+          client: 'claude',
+          name: 'Bash',
+          cwd: repo,
+          root: repo,
+          derived,
+          shell,
+          env: { HOME: join(root, 'home'), TMPDIR: join(root, 'tmp') },
+        });
+      expect(check(`cd "${foreign}" && git fetch -q origin`)).toBeNull();
+      for (const prefix of [
+        `git -C "${foreign}"`,
+        'git -C "$UNKNOWN"',
+        'git --git-dir="$META" --work-tree=.',
+        'cd "$WHERE"; git',
+      ]) {
+        for (const operation of [
+          'fetch',
+          'add .',
+          'commit -m x',
+          'checkout -b t',
+          'switch -c t',
+          'branch t',
+          'branch -c old new',
+          'tag t',
+          'tag -a t -m x',
+          'init',
+          'clone source target',
+          'stash push -m x',
+          'stash apply',
+          'merge t',
+          'pull origin t',
+          'cherry-pick HEAD',
+          'revert HEAD',
+        ])
+          expect(check(`${prefix} ${operation}`), `${derived}: ${prefix} ${operation}`).toBeNull();
+        for (const operation of [
+          'reset --hard',
+          'reset --mixed',
+          'reset --soft HEAD~1',
+          'clean -fdx',
+          'checkout -- file',
+          'checkout other',
+          'checkout -b t --force',
+          'checkout -B t',
+          'switch --discard-changes other',
+          'branch -D t',
+          'branch -m old new',
+          'branch -C old new',
+          'branch -f t HEAD',
+          'tag -d t',
+          'tag -f t',
+          'commit --amend -m x',
+          'push --force',
+          'push origin t',
+          'update-ref -d refs/heads/t',
+          'update-ref refs/heads/t HEAD',
+          'rebase other',
+          'stash drop',
+          'stash clear',
+          'fetch --prune',
+          'fetch -f origin',
+          'fetch origin +HEAD:refs/heads/t',
+          'restore --staged file',
+          'merge --abort',
+          'cherry-pick --abort',
+          'revert --abort',
+        ])
+          expect(check(`${prefix} ${operation}`), `${derived}: ${prefix} ${operation}`).toMatch(
+            /^已拦截：/
+          );
+      }
+    }
   });
 });
 
