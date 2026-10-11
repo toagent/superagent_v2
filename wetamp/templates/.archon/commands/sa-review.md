@@ -11,7 +11,7 @@ argument-hint: (inputs bound by the generated workflow)
 - 本里程碑 diff：`$INPUTS.diff`
 - 引擎复跑的验收日志：`$INPUTS.accept_log`
 
-逐项核对：目标是否实现、改动范围、正确性、安全（注入、XSS、LLM 信任边界、硬编码 secret）、测试是否真的覆盖所述行为。
+逐项核对：目标是否实现、改动范围、正确性、安全（注入、XSS、LLM 信任边界、硬编码 secret）、测试是否真的覆盖所述行为。测试有度：G0/G1 只要求主路径有测试证明，边角场景缺测试记 `low` 进 `debt`，不要求额外测试轮次；G2 或特别难的改动才要求失败模式全覆盖。
 
 读取本里程碑各包的 `$ARTIFACTS_DIR/settle-*.json` 与 `verify-*.json`；若 `coder_partial: true`，编码端自报未完成，请判断完整性，缺失按 blocker 记。
 若 `error_class_ignored: true`，从同名 `.coder.json` 读取原 `error_class`：编码端自报 <class>，请核实。
