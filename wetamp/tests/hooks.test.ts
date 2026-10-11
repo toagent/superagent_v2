@@ -1294,7 +1294,7 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
         root,
         shell,
         derived: true,
-        env: process.env,
+        env: baseEnv,
       });
     for (const flag of ['-d', '--delete']) {
       for (const branch of ['merged', 'release-old']) {
