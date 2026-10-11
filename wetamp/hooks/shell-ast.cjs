@@ -1,6 +1,6 @@
 'use strict';
 const path = require('node:path');
-const {unwrap, SHELLS, parse, normalizeOptions, heredocExpansions} = require('./shell.cjs');
+const {unwrap, SHELLS, parse, normalizeOptions} = require('./shell.cjs');
 const STREAM = /^\/dev\/(?:null|stdout|stderr)$/;
 const SELECTORS = new Set(require('./shell-effects.json').filter(rule => rule.effect === 'process_query').flatMap(rule => rule.commands));
 const selections = source => { try { return parse(source).argvs.map(argv => path.posix.basename(argv[0] || '')).filter(name => SELECTORS.has(name)); } catch { return []; } };
@@ -20,6 +20,16 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
     })();
     return pending;
   }
+  function substitutions(source) {
+    if (!parser) throw new Error('Shell AST unavailable');
+    const tree = parser.parse(source), spans = [];
+    const walk = n => {
+      if (['command_substitution','process_substitution','subshell'].includes(n.type)) {
+        spans.push({start: n.startIndex, end: n.endIndex, body: source.slice(n.firstChild.endIndex, n.lastChild.startIndex)});
+      } else if (n.type !== 'raw_string') for (const child of n.namedChildren) walk(child);
+    };
+    try { walk(tree.rootNode); return spans; } finally { tree.delete(); }
+  }
   function analyze(text, cwd, env, inspect, expand, advisory = () => {}) {
     const check = (parsed, dirs) => {
       for (const dir of dirs) { const why = inspect(parsed, dir); if (why) throw new Error(why); }
@@ -32,7 +42,29 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       }
     };
     const union = (...dirs) => [...new Set(dirs.flat())];
-    const fork = (dirs, vars = new Map(), selected = []) => ({dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars), selected});
+    const fork = (dirs, vars = new Map(), selected = []) => ({dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars), selected: [...selected]});
+    const commandValues = new Map();
+    function temporaryPath(values, state) {
+      const {argv} = unwrap(values || []);
+      if (path.posix.basename(argv[0] || '') !== 'mktemp') return null;
+      const vars = new Map([...state.vars, ...(values || []).filter(v => /^TMPDIR=/.test(v)).map(v => ['TMPDIR', v.slice(7)])]);
+      const tmpdir = vars.get('TMPDIR') ?? env.TMPDIR;
+      let base = tmpdir || require('node:os').tmpdir(), template;
+      for (let i = 1; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '-d' || arg === '--directory' || arg === '--') continue;
+        if (arg === '-t') { if (!argv[i + 1]) return null; template = path.join(base, argv[++i]); continue; }
+        if (arg === '-p' || arg === '--tmpdir') { base = argv[++i]; continue; }
+        if (arg.startsWith('-')) return null;
+        template = arg;
+      }
+      const target = expand(template || path.join(base || '', 'tmp')).replace(/\$\{TMPDIR\}|\$TMPDIR\b/g, tmpdir || '$TMPDIR');
+      if (!base || /[$`]/.test(target)) return null;
+      const dirs = state.dirs.map(dir => path.resolve(dir, path.dirname(target)));
+      const roots = ['/tmp','/private/tmp','/var/folders','/private/var/folders',env.TMPDIR].filter(Boolean);
+      return dirs.length === 1 && roots.some(root => { const rel = path.relative(root, dirs[0]); return rel === '' || !rel.startsWith('..') && !path.isAbsolute(rel); })
+        ? path.join(dirs[0], '__sa_generated_temp__') : null;
+    }
     const outcome = (state, ok, fail) => { state.ok = ok; state.fail = fail; state.dirs = union(ok, fail); };
     function execute(values, state, depth) {
       values = normalizeOptions(values);
@@ -46,22 +78,27 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (change < 0) continue;
         const option = options[change];
         const target = option.includes('=') ? option.slice(option.indexOf('=') + 1) : option.startsWith('-C') && option.length > 2 ? option.slice(2) : options[change + 1];
-        state = fork(target && !/[$`]/.test(target) ? state.dirs.map(dir => path.resolve(dir, expand(target))) : ['/__sa_unknown_cwd__']);
+        state = fork(target && !/[$`]/.test(target) ? state.dirs.map(dir => path.resolve(dir, expand(target))) : ['/__sa_unknown_cwd__'], state.vars, state.selected);
         if (state.dirs.includes('/__sa_unknown_cwd__')) advisory('cwd_unknown');
         unwrapped.writes = unwrapped.writes.filter(v => v !== target);
       }
       // Wrappers themselves may elevate privileges; inspect them before unwrapping.
       check({argvs: wrappers.map(i => values.slice(i)), reads: [], writes: []}, state.dirs);
-      for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars), depth + 1);
+      for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars, state.selected), depth + 1);
       const argv = unwrapped.argv, name = path.posix.basename(argv[0] || '');
+      const selectedInput = wrappers.some(i => path.posix.basename(values[i]) === 'xargs') && state.selected.length ? `$(${state.selected[0]})` : '';
       if (/[$`]/.test(name)) advisory('command_head_unknown');
       check({argvs: argv.length ? [argv] : [], reads: [], writes: unwrapped.writes.filter(t => !STREAM.test(t)), env: commandEnv,
-        selections: [...state.selected, ...argv.filter(v => /[$`]/.test(v)).flatMap(selections)]}, state.dirs);
+        selections: [...(selectedInput ? state.selected : []), ...argv.filter(v => /[$`]/.test(v)).flatMap(selections)]}, state.dirs);
       if (SHELLS.has(name)) {
         const flag = argv.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
         if (flag > 0 && argv[flag + 1]) {
           if (/\$|`/.test(argv[flag + 1]) && !values.includes(argv[flag + 1])) advisory('dynamic_shell_body');
-          script(argv[flag + 1], fork(state.dirs, state.vars), depth + 1);
+          const inner = fork(state.dirs, state.vars, state.selected), args = argv.slice(flag + 3);
+          if (selectedInput) args.push(selectedInput);
+          args.forEach((arg, i) => inner.vars.set(String(i + 1), arg));
+          inner.vars.set('@', args.join(' ')); inner.vars.set('*', args.join(' '));
+          script(argv[flag + 1], inner, depth + 1);
         }
       }
       if (name === 'eval' && argv.length > 1) { script(argv.slice(1).join(' '), state, depth + 1); return; }
@@ -69,7 +106,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (!['-exec','-execdir','-ok','-okdir'].includes(v)) return;
         const end = argv.findIndex((w, j) => j > i && (w === ';' || w === '+'));
         if (end < 0 || v.endsWith('dir')) advisory('find_execution_scope');
-        execute(argv.slice(i + 1, end < 0 ? undefined : end), fork(v.endsWith('dir') ? ['/__sa_unknown_cwd__'] : state.dirs, state.vars), depth + 1);
+        execute(argv.slice(i + 1, end < 0 ? undefined : end), fork(v.endsWith('dir') ? ['/__sa_unknown_cwd__'] : state.dirs, state.vars, state.selected), depth + 1);
       });
       if (name === 'cd') {
         const target = expand(argv[1] || env.HOME || require('node:os').homedir());
@@ -88,15 +125,26 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (n.type === 'heredoc_redirect') {
         const delimiter = n.namedChildren.find(c => c.type === 'heredoc_start');
         const body = n.namedChildren.find(c => c.type === 'heredoc_body');
-        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs, state.vars), depth + 1); return null; }
-        if (!/[\\'"]/.test(delimiter?.text || '')) for (const source of heredocExpansions(body?.text || '')) script(source, fork(state.dirs, state.vars), depth + 1);
+        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs, state.vars, state.selected), depth + 1); return null; }
+        // Heredoc quotes are data. Reparse as string content so the AST also sees
+        // backticks (the grammar's heredoc_content otherwise leaves them opaque).
+        if (!/[\\'"]/.test(delimiter?.text || '')) {
+          const inner = fork(state.dirs, state.vars, state.selected);
+          for (const child of body?.namedChildren || []) if (child.type === 'command_substitution') visit(child, inner, depth + 1);
+          const original = body?.text || '', offsets = []; let source = '"';
+          for (let i = 0; i < original.length; i++) {
+            if (original[i] === '"' || original[i] === '\\' && !/[$`\\\n]/.test(original[i + 1] || '')) { offsets[source.length] = i; source += '\\'; }
+            offsets[source.length] = i; source += original[i];
+          }
+          script(source + '"', inner, depth + 1, {original, offsets});
+        }
         return null;
       }
       if (n.type === 'for_statement') {
         const variable = n.childForFieldName('variable')?.text, values = n.childrenForFieldName('value');
         // Numeric iteration never contributes a slash or a parent-directory component.
         const numeric = values.length && values.every(v => /^\d+$/.test(v.text) || /^\$\(seq\s+\d+(?:\s+\d+){0,2}\)$/.test(v.text));
-        const inner = fork(state.dirs, state.vars);
+        const inner = fork(state.dirs, state.vars, state.selected);
         if (variable) { inner.vars.delete(variable); if (numeric) inner.vars.set(variable, '1'); }
         for (const child of n.namedChildren) visit(child, inner, depth);
         for (const assignment of n.descendantsOfType('variable_assignment')) state.vars.set(assignment.childForFieldName('name')?.text, '$__sa_unknown__');
@@ -107,12 +155,12 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         for (const child of n.namedChildren) visit(child, state, depth);
         outcome(state, state.fail, state.ok); return null;
       }
-      if (n.type === 'pipeline') state = fork(state.dirs, state.vars, selections(n.text));
+      if (n.type === 'pipeline') state = fork(state.dirs, state.vars, union(state.selected, selections(n.text)));
       if (n.type === 'list') {
         const operands = n.namedChildren.filter(c => c.type !== 'comment');
         const op = n.children.find(c => c.type === '&&' || c.type === '||');
         if (operands.length === 2 && op) {
-          const left = fork(state.dirs, state.vars); visit(operands[0], left, depth);
+          const left = fork(state.dirs, state.vars, state.selected); visit(operands[0], left, depth);
           const right = fork(op.type === '&&' ? left.ok : left.fail, left.vars, state.selected); visit(operands[1], right, depth);
           outcome(state, op.type === '&&' ? right.ok : union(left.ok, right.ok), op.type === '&&' ? union(left.fail, right.fail) : right.fail);
           for (const variable of union([...state.vars.keys()], [...left.vars.keys()], [...right.vars.keys()]))
@@ -120,7 +168,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
           return null;
         }
       }
-      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs, state.vars);
+      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs, state.vars, state.selected);
       const children = new Map();
       const ordered = n.type === 'redirected_statement' ? [...n.children].sort((a,b) => (a.type === 'command' ? 1 : 0) - (b.type === 'command' ? 1 : 0)) : n.children;
       for (const ch of ordered) children.set(ch.id, visit(ch, state, depth));
@@ -129,18 +177,20 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       const get = ch => ch && children.get(ch.id);
       if (['command_name','concatenation','string'].includes(n.type)) return n.namedChildren.map(ch => get(ch) || '').join('');
       if (['simple_expansion','expansion'].includes(n.type)) {
-        const variable = n.namedChildren.find(ch => ch.type === 'variable_name')?.text;
+        const variable = n.namedChildren.find(ch => ['variable_name','special_variable_name'].includes(ch.type))?.text;
         return state.vars.get(variable) ?? n.text;
       }
-      if (['command_substitution','process_substitution'].includes(n.type)) return n.text;
+      if (['command_substitution','process_substitution'].includes(n.type)) {
+        const temp = n.type === 'command_substitution' && n.namedChildren.length === 1 ? temporaryPath(commandValues.get(n.namedChildren[0].id), state) : null;
+        if (temp) return temp;
+        const source = n.descendantsOfType(['simple_expansion','expansion']).flatMap(ch => selections(state.vars.get(ch.namedChildren[0]?.text) || '')).find(Boolean);
+        return source ? n.text + `$(${source})` : n.text;
+      }
       if (n.type === 'variable_assignment') {
         const variable = n.childForFieldName('name')?.text, value = n.childForFieldName('value');
-        let literal = get(value);
-        if (value?.type === 'command_substitution') literal = null;
+        const literal = get(value);
         if (variable && n.parent?.type !== 'command') {
-          state.vars.delete(variable);
-          if (literal && !/[$`]/.test(literal)) state.vars.set(variable, literal);
-          else state.vars.set(variable, value?.text || '$__sa_unknown__');
+          state.vars.set(variable, literal || value?.text || '$__sa_unknown__');
         }
         return variable && literal ? `${variable}=${literal}` : n.text;
       }
@@ -151,13 +201,22 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         const writes = op !== '<' && !fd && !STREAM.test(target) ? [target] : [];
         check({argvs: [], reads: op === '<' ? [target] : [], writes, overwrites: ['>>','&>>'].includes(op) ? [] : writes}, state.dirs);
       }
-      if (n.type === 'command') execute([...n.namedChildren.filter(ch => ch.type === 'variable_assignment').map(get), get(n.childForFieldName('name')), ...n.childrenForFieldName('argument').map(get)].filter(v => v !== null && v !== undefined), state, depth);
+      if (n.type === 'command') {
+        const values = [...n.namedChildren.filter(ch => ch.type === 'variable_assignment').map(get), get(n.childForFieldName('name')), ...n.childrenForFieldName('argument').map(get)].filter(v => v !== null && v !== undefined);
+        commandValues.set(n.id, normalizeOptions(values)); execute(values, state, depth);
+      }
       return null;
     }
-    function script(source, state, depth) {
+    function script(source, state, depth, heredoc) {
       if (depth > 8) { advisory('nested_shell_depth'); return; }
       const tree = parser.parse(source);
-      try { if (tree.rootNode.hasError) advisory('shell_parse_failed'); visit(tree.rootNode, state, depth); }
+      const walk = n => {
+        if (n.type === 'command_substitution') {
+          if (n.firstChild.type === '`') script(heredoc.original.slice(heredoc.offsets[n.firstChild.endIndex], heredoc.offsets[n.lastChild.startIndex]), fork(state.dirs, state.vars, state.selected), depth + 1);
+        }
+        else for (const child of n.namedChildren) walk(child);
+      };
+      try { if (tree.rootNode.hasError) advisory('shell_parse_failed'); if (heredoc) walk(tree.rootNode); else visit(tree.rootNode, state, depth); }
       finally { tree.delete(); }
     }
     try {
@@ -168,6 +227,6 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       advisory('shell_analysis_failed'); return null;
     }
   }
-  return {init, analyze};
+  return {init, analyze, substitutions};
 }
 module.exports = {...createLoader(), createLoader};

@@ -55,14 +55,14 @@ const aiCli = name => require('./shell-effects.json').some(rule => rule.effect =
 // N-1: a derived session must not start another agent.
 function nestedReason(name, input, normalized) {
   if (['Agent', 'Task', 'spawn_agent', 'claude.Agent'].includes(name) || name.startsWith('mcp__claude__'))
-    return redline.message(`派生会话再次调用 AI（${name}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅');
+    return redline.message('派生会话再次调用 AI', '派生会话不能再派生或委派', '在本会话完成，或回报元帅', {kind: 'Agent 工具'});
   const text = shellText(name, input);
   if (text === undefined) return null;
   let heads;
   // Unparsable text: every word counts as a possible command head (conservative).
   try { heads = (normalized?.argvs || commands(text)).map(argv => argv[0]); } catch { heads = text.split(/[\s;&|()`$"'<>]+/); }
   const hit = heads.map(head => path.posix.basename(head)).find(aiCli);
-  return hit ? redline.message(`派生会话再次调用 AI（${hit}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅') : null;
+  return hit ? redline.message(`派生会话再次调用 AI（${redline.commandLabel([hit])}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅') : null;
 }
 function shellReason(text, cwd, env, normalized) {
   const target = deletionTarget(text, cwd, normalized?.argvs.length === 1 ? normalized.argvs[0] : normalized ? [] : undefined);
@@ -70,7 +70,7 @@ function shellReason(text, cwd, env, normalized) {
   const resolved = resolvePath(target);
   const guarded = ['/', os.homedir(), saHome(env), gitRoot(cwd)].filter(Boolean).map(resolvePath);
   return guarded.some(root => within(root, resolved))
-    ? redline.message(`删除 ${target}`, '它是或包含受保护目录', '只删除本任务的明确产物文件') : null;
+    ? redline.message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'}) : null;
 }
 
 const stateFile = (payload, env) => {

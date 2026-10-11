@@ -690,3 +690,12 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 旧 run/生产影响：hook 判定取当前安装代码，更新后旧会话也受修正影响；error_class=redline 及挂起/告警读者契约不变，advisory 仍在 guard stdout 的 systemMessage 查看。本包只提交 wetamp-redline，没有更新生产配置、触发 supervisor、合并或发布。
 - 遗留与验收边界：解释器/外部脚本的间接效果及无法建模的语法仍按原策略 advisory；此包只做编码自检，独立 G2 复审及主控集成实测另行完成。验收回执以本次完整测试、隔离 selftest-fake.json 与提交后同一临时 HOME 的 verify.json 为准。
 - 自检：提交前 tsc exit 0、eslint src exit 0；完整 bun test 907 pass / 0 fail（467.37s、3 snapshots），随后新增缺失解析器进程来源回归并单测 1 pass / 0 fail；提交后隔离完整套件 908 pass / 0 fail（385.62s、3 snapshots），最终提交仍由 verify-local 验证。报告 10 个探针全部拒绝，末条提醒不含 FAKE_SECRET；原放行 9 项、拦截 12 项和归属通用性仍绿。隔离 selftest --fake exit 0、ok:true。hooks 净增 184 行，packages/ 与 wetamp/src 零改动。
+
+## B1-FIXC2：RV-C2 REDLINE 遗留收尾
+
+- 问题与被推翻的假设：括号计数无法确定 case 模式中的替换边界；Git 未指定与未知定位不是同一状态；fork 不能丢弃进程选择来源；路径识别成功不代表完整参数可出现在提醒里；mktemp 的可证明临时产出不是任意未知路径。
+- 新语义（REDLINE-R1-03/05/07/09/10）：替换边界由既有 shell AST 的 delimiter 节点决定，删除手写括号扫描；未引用 heredoc 的命令替换直接遍历 AST，反引号通过字符串上下文 AST 定位并恢复原正文分析，保留内部引号。Git 的每个定位对象保留未指定/已解析/未知，危险修改拒绝任一未知或非任务对象。管道来源跨 xargs、shell 位置参数、赋值与 fork 传播。所有红线提醒统一出口，仅使用动作、固定路径类别或 URL host，不回显请求参数、正文或动态分支名。
+- 临时路径与兼容：直接 mktemp 产出按临时父目录中的生成路径建模，支持 -d、-t、/tmp、TMPDIR 模板与无参数，子路径可写入/覆盖；尊重作用域和命令前缀的 TMPDIR，外部或未知模板、任意其他命令替换及越界子路径仍拒绝。保留原放行九项、command -v、which、明确 PID 信号、xiaopan baseline 原文及 reviewer 临时测试权限。
+- 旧 run/生产影响：仅更新当前 worktree 的 hooks、测试与本节；error_class=redline、advisory systemMessage、挂起/告警契约不变，没有新依赖或配置开关，没有修改 packages/ 或 wetamp/src。安装更新后旧会话采用新判定；本包没有部署生产、调用真实 supervisor、合并或发布。
+- 验收证据：新增五组探针与等价变体回归；R2 报告探针 5/5 ok，R1 前九条拒绝、末条拒绝且无 FAKE_SECRET；新增回归 5 pass/0 fail，tsc 与 eslint src exit 0，完整套件 913 pass/0 fail（263.45s、3 snapshots），最终 hooks/HF5/HF6 定向回归 157 pass/0 fail（31.17s），隔离 selftest --fake ok:true。hooks 净增 40 行；提交后 verify-local 的结果见交付回执，临时 home 为 /tmp/fixc2-accept.ZkMCSR。
+- 遗留：无法建模的解释器/外部脚本间接效果仍按既有策略 advisory；本包只做编码自检，R3 独立评审、主控集成验收与生产更新仍由主控处理。

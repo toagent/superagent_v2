@@ -4,11 +4,11 @@ const OPERATOR = /^(?:&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|&&|\|\||\|&|;;|[;&|<>\n]
 function tokens(command) {
   // SAH1-04: edge whitespace is not a second command; preserve raw offsets.
   command = command.trimEnd();
-  const result = []; let i = command.search(/\S/), depth = 0, backtick = false;
+  const result = []; let i = command.search(/\S/);
   if (i < 0) return result;
   while (i < command.length) {
     if (/[^\S\n]/.test(command[i])) { i++; continue; }
-    const start = i, nested = depth > 0 || backtick; let value = '', quote = '', dynamic = false, operator = false;
+    const start = i; let value = '', quote = '', dynamic = false, operator = false;
     if (/[;&|<>\n]/.test(command[i])) {
       operator = true;
       value = command.slice(i).match(OPERATOR)[0]; i += value.length;
@@ -23,14 +23,11 @@ function tokens(command) {
       else if (/\s|[;&|<>]/.test(char)) break;
       else {
         if (/[$`]/.test(char)) dynamic = true;
-        if (char === '(') depth++;
-        else if (char === ')') depth = Math.max(0,depth-1);
-        else if (char === '`') backtick = !backtick;
         value += char; i++;
       }
     }
     if (quote) throw new Error('Unclosed shell quote');
-    result.push({value, start, stop: i, dynamic, operator, nested});
+    result.push({value, start, stop: i, dynamic, operator});
   }
   return result;
 }
@@ -69,52 +66,16 @@ const WRAPPERS = {
 const SHELLS = new Set(['bash','sh','zsh','dash','ksh']);
 // One spelling at the effect boundary: long option values are separate words.
 const normalizeOptions = argv => argv.flatMap(word => /^--[^=]+=/.test(word) ? [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)] : [word]);
-// Skip a quoted or escaped span starting at i; returns the index after it, or -1 when none.
-function skipQuoted(text, i) {
-  if (text[i] === '\\') return i + 2;
-  if (text[i] === "'") { const end = text.indexOf("'", i + 1); if (end < 0) throw new Error('Unclosed shell quote'); return end + 1; }
-  if (text[i] === '"') {
-    for (let j = i + 1; j < text.length; j++) { if (text[j] === '\\') j++; else if (text[j] === '"') return j + 1; }
-    throw new Error('Unclosed shell quote');
-  }
-  return -1;
-}
-function closing(text, i, close) {
-  for (let depth = 1; i < text.length; i++) {
-    const skip = close === '`' ? (text[i] === '\\' ? i + 2 : -1) : skipQuoted(text, i);
-    if (skip >= 0) { i = skip - 1; continue; }
-    if (text[i] === close && --depth === 0) return i;
-    if (close === ')' && text[i] === '(') depth++;
-  }
-  throw new Error(`Unclosed ${close}`);
-}
-// Quotes in an unquoted heredoc body are data; only escapes suppress expansion.
-function heredocExpansions(text) {
-  const bodies = [];
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === '\\') { i++; continue; }
-    const backtick = text[i] === '`', substitution = text[i] === '$' && text[i + 1] === '(';
-    if (!backtick && !substitution) continue;
-    const start = i + (backtick ? 1 : 2), end = closing(text, start, backtick ? '`' : ')');
-    bodies.push(text.slice(start, end)); i = end;
-  }
-  return bodies;
-}
 // Replace every `$(…)`, `<(…)`, `(…)` and backtick body outside single quotes with one inert
 // word and return the bodies, each to be parsed as a command line of its own.
-function lift(text, model = false) {
-  const bodies = []; let flat = '', dq = false;
-  for (let i = 0; i < text.length;) {
-    const c = text[i];
-    if (c === '\\') { flat += text.slice(i, i + 2); i += 2; }
-    else if (c === "'" && !dq) { const end = skipQuoted(text, i); flat += text.slice(i, end); i = end; }
-    else if (c === '"') { dq = !dq; flat += c; i++; }
-    else if (c === '`' || c === '(' && (!dq || text[i-1] === '$')) {
-      const end = closing(text, i + 1, c === '`' ? '`' : ')');
-      bodies.push(text.slice(i + 1, end)); flat += model && c === '`' ? '$__sa_sub__' : '__sa_sub__'; i = end + 1;
-    } else { flat += c; i++; }
+function lift(text) {
+  const bodies = []; let flat = '', offset = 0;
+  // The AST owns boundaries, including case patterns and nested substitutions.
+  const spans = /[(`]/.test(text) ? require('./shell-ast.cjs').substitutions(text) : [];
+  for (const {start, end, body} of spans) {
+    flat += text.slice(offset, start) + '__sa_sub__'; bodies.push(body); offset = end;
   }
-  if (dq) throw new Error('Unclosed shell quote');
+  flat += text.slice(offset);
   return {flat, bodies};
 }
 // Strip wrappers (with their own options and operands), assignments and reserved words;
@@ -235,4 +196,4 @@ function deletionTarget(command,cwd, normalized) {
   }
   return target ? path.resolve(cwd,target) : null;
 }
-module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS, normalizeOptions, heredocExpansions};
+module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS, normalizeOptions};
