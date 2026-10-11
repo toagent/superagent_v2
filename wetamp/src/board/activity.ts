@@ -7,6 +7,7 @@ import { tail } from '../archon';
 import { home, loadTiers, type Tiers } from '../config';
 import { modelOf, readJobs, type Job, type Kind, type Tier } from '../jobs';
 import type { Launcher } from '../launcher';
+import { presence, type Identity } from '../coord';
 import * as term from './terminals';
 import { sessionModel } from '../models';
 
@@ -35,6 +36,7 @@ export interface RunRef {
   run_id: string;
   cwd: string;
   launcher?: Launcher;
+  controller?: Identity | null;
 }
 export interface Ownership {
   owner: number | null;
@@ -238,25 +240,28 @@ export function attach(
   };
 }
 
-/** One snapshot, one owner: recorded launcher, watcher/parent chain, unique legacy cwd, directory. */
+/** Recorded ownership wins; watcher/cwd inference is only for references without ownership evidence. */
 export function ownership(
   x: RunRef,
   rows: term.Rows,
   sessions: term.Session[],
   terms: term.Term[],
-  pids: number[] = []
+  pids: number[] = [],
+  probe = (who: Launcher | Identity) =>
+    presence(who, process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'))
 ): Ownership {
   const leaders = new Map(sessions.flatMap(s => s.pids.map(p => [p, s.pids[0]] as const)));
   const known = (pid: number): number | undefined => {
     const leader = leaders.get(pid);
     return terms.some(t => t.pid === leader) ? leader : undefined;
   };
-  if (x.launcher && rows.has(x.launcher.pid)) {
-    const owner = known(x.launcher.pid);
+  const controller = x.controller === undefined ? x.launcher : x.controller;
+  if (controller && probe(controller).state === 'online' && rows.has(controller.pid)) {
+    const owner = known(controller.pid);
     const t = terms.find(t => t.pid === owner);
-    if (t?.kind === x.launcher.client && t.tty === x.launcher.tty)
-      return { owner: t.pid, inferred: false };
+    if (t?.kind === controller.client) return { owner: t.pid, inferred: false };
   }
+  if (x.controller !== undefined || x.launcher) return { owner: null, inferred: false };
   const watchers = [...rows]
     .filter(([, r]) => {
       const a = ['bun', 'node'].includes(basename(r.argv[0])) ? r.argv.slice(1) : r.argv;
@@ -275,13 +280,11 @@ export function ownership(
     ),
   ];
   if (owners.length === 1) return { owner: owners[0] ?? null, inferred: false };
-  if (!x.launcher) {
-    const cwd = resolve(x.cwd);
-    const inside = (root: string): boolean =>
-      cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep);
-    const hits = terms.filter(t => t.cwd && inside(resolve(t.cwd)));
-    if (hits.length === 1) return { owner: hits[0].pid, inferred: true };
-  }
+  const cwd = resolve(x.cwd);
+  const inside = (root: string): boolean =>
+    cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep);
+  const hits = terms.filter(t => t.cwd && inside(resolve(t.cwd)));
+  if (hits.length === 1) return { owner: hits[0].pid, inferred: true };
   return { owner: null, inferred: false };
 }
 export const visible = (ended: string | number | null | undefined, now: number): boolean =>
@@ -318,7 +321,7 @@ async function scan(
   const cwd = parseLsof(out);
   const terms = term.settle(sessions, own.bound, cwd, term.parseRollouts(out), now);
   return {
-    runs: runs.map(r => ({ run_id: r.run_id, cwd: r.cwd, ...ownership(r, rows, sessions, terms) })),
+    runs: runs.map(r => ({ ...r, ...ownership(r, rows, sessions, terms) })),
     jobs: own.jobs.map(j => ({
       ...j,
       ...ownership({ run_id: j.id, cwd: j.cwd, launcher: j.launcher }, rows, sessions, terms, [

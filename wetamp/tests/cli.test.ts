@@ -1,4 +1,5 @@
-import { describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import * as coordModule from '../src/coord';
 import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
 import * as saCheck from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
@@ -45,6 +46,11 @@ import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
+let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
+afterEach(() => {
+  engineBoundary?.mockRestore();
+  engineBoundary = undefined;
+});
 const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView => ({
   id: 'r',
   status,
@@ -185,6 +191,10 @@ function stub(responses: RunView[]): {
   calls: () => string[];
 } {
   const root = tmp();
+  sh('git init -q -b fixture', root);
+  // These tests isolate recovery calls; cleanEngine itself has real dirty/committed fixtures in coord.test.ts.
+  engineBoundary?.mockRestore();
+  engineBoundary = spyOn(coordModule, 'cleanEngine').mockReturnValue('a'.repeat(40));
   const dir = join(root, 'stub');
   mkdirSync(join(dir, 'used'), { recursive: true });
   responses.forEach((r, i) =>
@@ -243,6 +253,8 @@ echo '{"ok":true}'
     transcript: '',
     log: '',
     recoveries: [],
+    controller: coordModule.coord().claim(coordModule.repoScope(root), coordModule.caller())
+      .controller,
   };
   writeFileSync(join(home, 'runs', 'sa1.json'), JSON.stringify(ledger));
   mkdirSync(join(root, 'gen', 'hints'), { recursive: true });
@@ -1094,11 +1106,12 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
             'supervise-tick: orca sync failed: injected reason'
           );
         }
-        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+        expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
       } finally {
         out.mockRestore();
         err.mockRestore();
       }
+      expect(s.calls()).not.toContain('workflow wake --json');
     }
   });
   for (const failed of [false, true]) {
@@ -1120,11 +1133,12 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
         expect(String(err.mock.calls[0]?.[0])).toBe(
           'supervise-tick: console refresh failed: refresh injected original error'
         );
-        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+        expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
       } finally {
         out.mockRestore();
         err.mockRestore();
       }
+      expect(s.calls()).not.toContain('workflow wake --json');
     });
   }
   test('HF8 CLI still ticks when refreshConsole rejects an ambiguous legacy owner', async () => {
@@ -1152,25 +1166,35 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     );
     expect(err.trim()).toBe(`supervise-tick: console refresh failed: ${result.console_error}`);
     expect(result.actions[0]).toMatchObject({ action: 'ask', ok: true });
-    expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+    expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+    expect(s.calls()).not.toContain('workflow wake --json');
   });
   test('held:human: asks once, then approves on yes (signal) and wakes due waits', async () => {
     const s = stub([humanWait(), humanWait(), run('running')]);
     const sup = supervisor(s.root, 'yes');
     expect(tick()).toEqual([
-      { run_id: 'sa1', event: 'sa.human.m2', action: 'ask', ok: true, ask: 'ask-1' },
+      {
+        run_id: 'sa1',
+        event: 'sa.human.m2',
+        action: 'ask',
+        ok: true,
+        ask: 'ask-1',
+        controller: s.ledger.controller,
+        generation: s.ledger.controller!.generation,
+      },
     ]);
     expect(sup()[0]).toMatch(
       /^ask --question .*human-m2.*等待人工签收.*是=批准签收门.*否=终止整个run.* --ttl-hours 72$/
     );
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
     expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
-    expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+    expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
     expect(sup()).toEqual([
       expect.stringMatching(/^ask /),
       'ask-status ask-1',
       expect.stringMatching(/^notify /),
     ]);
+    expect(s.calls()).not.toContain('workflow wake --json');
   });
   test('pending keeps waiting; no abandons the paused run', () => {
     const s = stub([humanWait()]);
@@ -1295,7 +1319,15 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       JSON.stringify({ 'sa1:signoff:39d592de14436296': { id: 'ask-1', status: 'pending' } })
     );
     expect(tick()).toEqual([
-      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
+      {
+        run_id: 'sa1',
+        event: 'sa.human.m2',
+        action: 'cancel',
+        ok: true,
+        reason: 'deadline',
+        controller: s.ledger.controller,
+        generation: s.ledger.controller!.generation,
+      },
     ]);
     expect(s.calls()).toContain('workflow abandon r --json');
     expect(existsSync(join(s.root, 'sup-calls'))).toBe(false);
@@ -1326,7 +1358,15 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     );
     process.env.SA_SUPERVISOR = py;
     expect(tick()).toEqual([
-      { run_id: 'sa1', event: 'sa.human.m2', action: 'cancel', ok: true, reason: 'deadline' },
+      {
+        run_id: 'sa1',
+        event: 'sa.human.m2',
+        action: 'cancel',
+        ok: true,
+        reason: 'deadline',
+        controller: s.ledger.controller,
+        generation: s.ledger.controller!.generation,
+      },
     ]);
     expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
     expect(s.calls()).toContain('workflow abandon r --json');
@@ -3511,7 +3551,10 @@ test('REC-R1-01: selftest formal receipt admits run without skip; fake workflow 
   expect(brief).toContain('gate-m1-r2: pass debt=0');
   expect(brief).toContain('gate-m2-r2: pass debt=0');
   expect(sa('land', id).code).toBe(1);
-  expect(sa('decide', id, 'approve').code).toBe(0);
+  const approved = sa('decide', id, 'approve');
+  expect(approved.err).toBe('');
+  expect(approved.out).toMatchObject({ ok: true });
+  expect(approved.code).toBe(0);
   const waited = sa('wait', id, '--timeout', '120');
   expect(waited.out).toMatchObject({ state: 'completed', exit: 0 });
   expect((waited.out.land as string[])[1]).toContain(`merge --ff-only 'sa/${id}'`);

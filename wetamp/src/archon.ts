@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import { archonMutation, coord } from './coord';
 import { WETAMP, home, writeAtomic } from './config';
 import type { NodeExecutionMetadata } from '../../packages/workflows/src/schemas/node-execution';
 import type { ExecutionOwnerRecord } from '../../packages/workflows/src/schemas/workflow-run';
@@ -133,7 +134,10 @@ export function archon(args: string[], cwd?: string, intent?: LaunchIntent): Exe
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: launches ? workerEnv() : process.env,
+    env: {
+      ...(launches ? workerEnv() : process.env),
+      ...(archonMutation(args) ? coord().admissionEnv(true) : {}),
+    },
     timeout: QUERY_TIMEOUT_MS,
   });
   const code = Number.isInteger(p.exitCode) ? p.exitCode : -1;
@@ -574,13 +578,18 @@ export function recover(
 }
 
 /** 脱离本进程的 archon 子进程（signal/wake 会在调用进程内执行剩余 DAG）；输出追加到 log。 */
-export function archonDetached(args: string[], log: string, cwd?: string): number {
+export function archonDetached(
+  args: string[],
+  log: string,
+  cwd?: string,
+  inheritLock = false
+): number {
   const fd = openSync(log, 'a');
   const p = spawn(archonBin(), args, {
     cwd,
     detached: true,
     stdio: ['ignore', fd, fd],
-    env: workerEnv(),
+    env: { ...workerEnv(), ...(archonMutation(args) ? coord().admissionEnv(inheritLock) : {}) },
   });
   closeSync(fd); // 子进程已继承 fd；不关的话 tick/wait 每次调用泄漏一个
   p.unref();
@@ -600,7 +609,8 @@ export function signalHuman(
   if (run.status !== 'paused' || !w?.event?.startsWith('sa.human.'))
     return { ok: false, reason: `run ${run.id} is not waiting for a human signoff` };
   const args = ['workflow', 'signal', run.id, '--event', w.event, '--resume-at', w.resumeAt];
-  const pid = archonDetached([...args, '--data', JSON.stringify(data), '--json'], log, cwd);
+  // This parent waits for the signal acknowledgement while holding admission; verify and inherit its lock.
+  const pid = archonDetached([...args, '--data', JSON.stringify(data), '--json'], log, cwd, true);
   for (const end = Date.now() + SIGNAL_ACK_MS; Date.now() < end; ) {
     const now = getRun(run.id, cwd);
     if (now.status !== 'paused' || now.metadata?.wait?.resumeAt !== w.resumeAt)

@@ -4,6 +4,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
 import { home } from '../config';
+import { runScope, coord, type Identity, type Presence } from '../coord';
 import { loadActivity, type Activity } from './activity';
 import { milestones, type Plan } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
@@ -27,6 +28,7 @@ export interface BoardRow {
   nativeState?: RunView['status'];
   lastEvent?: string | null;
   activeNodes?: { id: string; role: string | null; model: string | null }[];
+  coordination?: { owner: Identity | null; presence: Presence; pending: number; error?: string };
   landed?: boolean;
   intervened?: boolean;
   archon_id?: string;
@@ -179,6 +181,25 @@ export function rowOf(
     /* Missing outcome provides no reason. */
   }
   return {
+    coordination: (() => {
+      try {
+        const c = coord(),
+          scope = runScope(l),
+          view = c.owner(scope);
+        return {
+          owner: view.owner,
+          presence: view.presence,
+          pending: c.pending(scope) + c.pending({ kind: 'repo', id: scope.repo }),
+        };
+      } catch (e) {
+        return {
+          owner: null,
+          presence: { state: 'unknown' as const },
+          pending: 0,
+          error: (e as Error).message,
+        };
+      }
+    })(),
     engine: {
       title: plan?.packages[0]?.title
         ? `${plan.packages[0].title}${plan.packages.length > 1 ? ` +${String(plan.packages.length - 1)}` : ''}`
@@ -378,7 +399,21 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       .slice(0, limit);
     const ledgers = new Map(ids.map(({ id }) => [id, readLedger(id)]));
     const refs = [...ledgers.values()].flatMap(l =>
-      typeof l === 'string' ? [] : [{ run_id: l.run_id, cwd: l.repo, launcher: l.launcher }]
+      typeof l === 'string'
+        ? []
+        : [
+            {
+              run_id: l.run_id,
+              cwd: l.repo,
+              controller: (() => {
+                try {
+                  return coord().owner(runScope(l)).owner;
+                } catch {
+                  return null;
+                }
+              })(),
+            },
+          ]
     );
     const activity = loadActivity(now, signal, refs);
     const results = await mapPool(ids, PARALLEL, async ({ id, mtimeMs }) => {

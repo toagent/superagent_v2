@@ -61,7 +61,10 @@ interface Entry {
   message?: { stop_reason?: unknown; content?: unknown };
 }
 
-const FRESH_MS = 120_000;
+import { createRequire } from 'node:module';
+const { FRESH_MS } = createRequire(import.meta.url)('../../hooks/identity.cjs') as {
+  FRESH_MS: number;
+};
 const TAIL_BYTES = 64 * 1024;
 const GC_MS = 86_400_000;
 const BUSY_CPU = 3;
@@ -308,7 +311,16 @@ export function settle(
         : null);
     const c = classify(live, () => (file ? readTail(file, s.kind) : null), s.cpu, now);
     const tier = live?.role ?? 'commander'; // 没有心跳的交互顶层会话按元帅
-    terms.push({ kind: s.kind, tier, pid: s.pids[0], tty: s.tty, cwd: dir, model: live?.model ?? sessionModel(file, s.kind), session_id: live?.session_id ?? logSessionId(file, s.kind), ...c });
+    terms.push({
+      kind: s.kind,
+      tier,
+      pid: s.pids[0],
+      tty: s.tty,
+      cwd: dir,
+      model: live?.model ?? sessionModel(file, s.kind),
+      session_id: live?.session_id ?? logSessionId(file, s.kind),
+      ...c,
+    });
   }
   // 执行中 → 活跃?（CPU 粗判）→ 其余
   const rank = (t: Term): number => (t.state !== 'busy' ? 2 : t.bound ? 0 : 1);

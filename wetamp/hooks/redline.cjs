@@ -313,4 +313,4 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
   } catch { onAdvisory('redline_internal_error'); return null; }
 }
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, resolvePath, within, secretKind, message, commandLabel, effects};
+module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects};

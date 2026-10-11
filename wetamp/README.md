@@ -72,6 +72,21 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 （在 run 的 worktree 里重跑验收命令）、`report`（全部 run 的状态、评审轮次、一次通过率、失败分类、节点耗时、评审债、恢复次数）、
 `health`（doctor + 别名 + upstream 零差异）、`supervise-tick`（由单个 launchd/cron 作业调用：wake、owner-lost 恢复、签收提问桥接）。
 
+## 跨元帅交接
+
+```bash
+superagent owner [<path>|<run>] --json
+superagent claim [<path>|<run>] [--takeover --reason "用户原话"]
+superagent release [<path>|<run>]
+superagent handoff --to <path|run> --kind bug --title "短标题" --body-file details.md [--evidence proof.json] [--severity urgent]
+superagent inbox [--all]
+superagent inbox --ack <id> accepted|rejected|done --note "短文"
+```
+
+发现其他负责人仓库的问题，先 handoff；owner online/unknown 时普通 claim 会被拒，显式接管需要用户授权原话。
+wait 收到交接会返回 `inbox`（退出码 3），先 `inbox --ack` 答复。缺 controller/launcher 的旧 run 不自动处置，先 claim，再显式 resume/decide。
+terminal adopt/retry 只接受已提交且干净的引擎，ledger 记录 engine_commit。模型、路由和边界见 [COORD 设计](docs/2026-10-11-cross-controller-coordination.md)。
+
 ## 清理
 
 ```bash

@@ -140,6 +140,8 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
     // Pending has no proven owner yet. Use the engine's launch/wait contract to
     // reach the fixture outcome before testing overlay retry policy.
     archon('workflow', 'wait', String(ack.runId), '--timeout', '120');
+    const claim = sa('claim', repo);
+    expect(claim.code).toBe(0);
     mkdirSync(join(env.SUPERAGENT_HOME, 'runs'), { recursive: true });
     writeFileSync(
       join(env.SUPERAGENT_HOME, `runs/${id}.json`),
@@ -153,6 +155,7 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
         repo,
         branch,
         workflow: gen.workflow,
+        controller: claim.out!.controller,
         console: 'claude',
         started_at: new Date().toISOString(),
         transcript: '',

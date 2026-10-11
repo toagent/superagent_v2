@@ -4,6 +4,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { home, WETAMP, writeAtomic } from '../config';
 import { residentHash } from '../generate';
+import { ownerLabel } from '../coord';
 import { lock } from '../archon';
 import { alive } from '../jobs';
 import { createLoader, type Snapshot } from '../board/data';
@@ -201,6 +202,7 @@ export function overview(s: Snapshot) {
         url: r.url,
         project: r.project,
         title: r.title,
+        ...(r.coordination ? { coordination: r.coordination } : {}),
         role: r.role,
         tokens: r.tokens === '未知' ? '—' : r.tokens,
         elapsed: r.elapsed,
@@ -226,7 +228,7 @@ body{background:var(--surface);color:var(--text-primary);font:15px system-ui;mar
     `<header id="metrics"><h1>superagent · 跑 ${String(d.running ?? 0)} · 等你 ${String(d.needs?.length ?? 0)} · 今日 ${String(d.metrics?.completed ?? 0)}/${String(d.metrics?.decided ?? 0)}</h1><p>更新 ${html(d.at ?? '—')} · <a href="/console">Archon 控制台</a> · <a href="/sa/memory">经验与进化</a></p></header>
 ${d.needs?.length ? `<section id="needs"><h2>需要你</h2><p>在 Mac 提醒 SUPERAGENT 列表回答：勾选=是、删除=否</p><ul>${d.needs.map(r => `<li>${html(r.project)} · ${html(r.question)} · 已等待 ${html(r.waiting)}</li>`).join('')}</ul></section>` : ''}
 <section id="tokens"><h2>今日 token</h2><table><thead><tr><th>角色</th><th>合计</th>${models.map(m => `<th>${html(m)}</th>`).join('')}</tr></thead><tbody>${rows ? rows.map(r => `<tr>${cells([r.role, fmtTokens(r.total), ...models.map(m => fmtTokens(r.models[m] ?? 0))])}</tr>`).join('') : '<tr><td colspan="2">今日用量未知</td></tr>'}</tbody></table><p>仅本机日志。未归属：没有 superagent 派发证据的交互终端会话；证据不足的会话也保留在此，不猜角色。</p></section>
-<section id="runs"><h2>今日 run</h2><table><thead><tr><th>项目</th><th>任务</th><th>run</th><th>角色·模型</th><th>token</th><th>用时</th><th>状态</th></tr></thead><tbody>${(d.runs ?? []).map(r => `<tr>${cells([r.project, r.title])}<td>${r.url ? `<a href="${html(r.url)}">${html(r.id)}</a>` : html(r.id)}</td>${cells([r.role, r.tokens, r.elapsed, r.state])}</tr>`).join('')}</tbody></table></section>`
+<section id="runs"><h2>今日 run</h2><table><thead><tr><th>项目</th><th>任务</th><th>run</th><th>角色·模型</th><th>token</th><th>用时</th><th>状态</th></tr></thead><tbody>${(d.runs ?? []).map(r => `<tr>${cells([r.project + (r.coordination ? ` · ${ownerLabel(r.coordination.owner)} ${r.coordination.presence.state} 交接${String(r.coordination.pending)}` : ''), r.title])}<td>${r.url ? `<a href="${html(r.url)}">${html(r.id)}</a>` : html(r.id)}</td>${cells([r.role, r.tokens, r.elapsed, r.state])}</tr>`).join('')}</tbody></table></section>`
   }<script>setInterval(()=>location.reload(),15000)</script></body></html>`;
 }
 const same = (a: string, b: string): boolean => {

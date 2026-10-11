@@ -65,6 +65,7 @@ export function stages(r: BoardRow): string {
   );
 }
 export interface CockpitRun {
+  coordination?: BoardRow['coordination'];
   url?: string;
   firstPass?: boolean;
   interventions?: number;
@@ -149,6 +150,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
           : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
     return {
+      ...(r.coordination ? { coordination: r.coordination } : {}),
       interventions: Math.max(
         r.intervened ? 1 : 0,
         r.engine?.dispositions.filter(d => ['ask', 'approve', 'reject', 'retry'].includes(d.action))

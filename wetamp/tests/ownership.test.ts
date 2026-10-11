@@ -4,13 +4,20 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
-import { ownership, psRows, visible, type Activity } from '../src/board/activity';
+import {
+  ownership as verifiedOwnership,
+  psRows,
+  visible,
+  type Activity,
+} from '../src/board/activity';
 import { findSessions, readLive, type Term } from '../src/board/terminals';
 import { Frame } from '../src/board/App';
 import { unreadableRow } from '../src/board/data';
 import { tmp } from './helpers';
 
 const id = '20261010-120000-abcd';
+const ownership: typeof verifiedOwnership = (x, rows, sessions, terms, pids) =>
+  verifiedOwnership(x, rows, sessions, terms, pids, () => ({ state: 'online', activity: 'idle' }));
 const now = Date.parse('2026-10-10T12:00:00Z');
 const owner = createRequire(import.meta.url)('../hooks/live.cjs').owner as (
   interactive: boolean,
@@ -45,7 +52,7 @@ const launcher = {
   cwd: '/w/xiaopan-translator',
 };
 
-test('launcher walks to nearest interactive CLI, skipping headless/service ancestors and missing tty', () => {
+test('launcher walks to nearest interactive CLI, including GUI panes without tty', () => {
   for (const cli of ['claude', 'node /bin/codex', 'opencode']) {
     const fixture = new Map([
       [50, ['', '40', '??', 'bun /w/wetamp/src/cli.ts run p']],
@@ -54,10 +61,10 @@ test('launcher walks to nearest interactive CLI, skipping headless/service ances
       [20, ['', '10', '??', 'opencode']],
       [10, ['', '1', 'ttys001', cli]],
     ]);
-    expect(owner(true, pid => fixture.get(pid) ?? null, 50)).toEqual({ pid: 10, tty: 'ttys001' });
+    expect(owner(true, pid => fixture.get(pid) ?? null, 50)).toEqual({ pid: 20, tty: null });
   }
   expect(owner(true, () => null, 50)).toBeNull();
-  expect(owner(true, () => ['', '1', '??', 'claude'], 50)).toBeNull();
+  expect(owner(true, () => ['', '1', '??', 'claude'], 50)).toEqual({ pid: 50, tty: null });
 });
 
 test('recorded launcher wins over watcher; merged codex launcher/native pids bind once', () => {
@@ -67,9 +74,9 @@ test('recorded launcher wins over watcher; merged codex launcher/native pids bin
   });
 });
 
-test('watcher ancestor wins over cwd, including dead recorded launcher; unrelated argv cannot impersonate watcher', () => {
+test('recorded unavailable owner cannot be replaced by a watcher; unrelated argv cannot impersonate watcher', () => {
   const ref = { run_id: id, cwd: '/w/xiaopan-translator', launcher: { ...launcher, pid: 999 } };
-  expect(ownership(ref, rows, sessions, terms)).toEqual({ owner: 10, inferred: false });
+  expect(ownership(ref, rows, sessions, terms)).toEqual({ owner: null, inferred: false });
   const fake = psRows(`50 20 ?? 0 00:10 echo superagent wait ${id}`);
   expect(ownership(ref, fake, sessions, terms)).toEqual({ owner: null, inferred: false });
 });
@@ -183,7 +190,7 @@ test('job exec persists launcher metadata from matching heartbeat; no prompt/arg
   const { readdirSync } = await import('node:fs');
   const [name] = readdirSync(join(home, 'jobs'));
   const record = JSON.parse(readFileSync(join(home, 'jobs', name), 'utf8'));
-  expect(record.launcher).toEqual({
+  expect(record.launcher).toMatchObject({
     client: 'claude',
     pid: process.pid,
     tty: 'ttys001',
@@ -266,4 +273,20 @@ test('pane renders normalized active rows and hides retired jobs/terminals', () 
     expect(text).not.toContain('old-job');
     expect(text.split('\n').filter(l => Bun.stringWidth(l) > width)).toEqual([]);
   }
+});
+
+test('R1-05: explicit remote/unknown controller suppresses local watcher and cwd inference', () => {
+  expect(
+    verifiedOwnership(
+      { run_id: id, cwd: '/w/sinan', controller: { client: 'claude', host: 'remote', pid: 10 } },
+      rows,
+      sessions,
+      terms,
+      [],
+      () => ({ state: 'unknown' })
+    )
+  ).toEqual({ owner: null, inferred: false });
+  expect(
+    ownership({ run_id: id, cwd: '/w/sinan', controller: null }, rows, sessions, terms)
+  ).toEqual({ owner: null, inferred: false });
 });

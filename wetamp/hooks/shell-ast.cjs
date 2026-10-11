@@ -39,7 +39,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
     const fallback = source => {
       advisory('shell_parse_unavailable');
       try { check({...parse(source), selections: selections(source)}, [cwd]); } catch (error) {
-        if (error.message.startsWith('已拦截：')) throw error;
+        if (/^已(?:拦截|拒绝)：/.test(error.message)) throw error;
         advisory('shell_parse_failed');
       }
     };
@@ -243,7 +243,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (!parser) fallback(text); else script(text, fork([cwd]), 0);
       return null;
     } catch (error) {
-      if (error.message.startsWith('已拦截：')) return error.message;
+      if (/^已(?:拦截|拒绝)：/.test(error.message)) return error.message;
       advisory('shell_analysis_failed'); return null;
     }
   }

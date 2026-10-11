@@ -6,6 +6,8 @@ export interface Launcher {
   tty: string | null;
   cwd: string;
   session_id?: string;
+  host?: string;
+  pid_start?: string;
 }
 export const { launcher, cliOf } = createRequire(import.meta.url)('../hooks/live.cjs') as {
   launcher: (home: string) => Launcher | undefined;

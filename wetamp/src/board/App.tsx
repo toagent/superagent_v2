@@ -5,6 +5,7 @@ import { cockpit, fit, type Cockpit } from './cockpit';
 import { ProgressBar } from './ProgressBar';
 import { residentHash } from '../generate';
 import { fmtTokens } from '../usage';
+import { ownerLabel } from '../coord';
 
 export const ENGINE_CHANGED = 75;
 export const boardExitCode = (started: string, current = residentHash()): number => started === current ? 0 : ENGINE_CHANGED;
@@ -19,7 +20,7 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
     lines.push(<Text key={lines.length} wrap="truncate">{label} <ProgressBar progress={progress} width={width - Bun.stringWidth(label) - 1}/></Text>);
   };
   for (const r of c.tree) {
-    entry(r.project, r.progress);
+    entry(r.project + (r.coordination ? ` · ${ownerLabel(r.coordination.owner)} ${r.coordination.presence.state} 交接${String(r.coordination.pending)}` : ""), r.progress);
     for (const [i, child] of r.children.entries()) entry(`  ${i === r.children.length - 1 ? '└─' : '├─'} ${width < 60 ? child.role.split('·')[0] : child.role} ${child.id}`, child.progress);
   }
   if (!c.tree.length) text('无进行中任务');
