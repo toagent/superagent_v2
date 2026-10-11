@@ -771,7 +771,7 @@ export function lintPlan(
   now = Date.now()
 ): { warnings: string[]; rejected: boolean; override?: string } {
   const warnings: string[] = [];
-  let rejected = false;
+  const rejected = false;
   if (!memoryOn()) return { warnings, rejected };
   const priors = memoryJson<Partial<Record<string, Prior>>>(join(root(), 'priors.json'), {}),
     model = runAliases(plan.console ?? 'claude')['@sa-coder'].model;
@@ -789,16 +789,14 @@ export function lintPlan(
     if (prior.tokens.n >= 5) suggested += prior.tokens.p50;
   }
   if (suggested && plan.budget.weighted_tokens < suggested / 2) {
-    rejected = true;
     warnings.push(`预算低于 p50 一半；建议 weighted_tokens >= ${String(Math.ceil(suggested))}`);
   }
   if (duration && Date.parse(plan.deadline) < now + duration) {
-    rejected = true;
     warnings.push(`截止不现实；建议 deadline >= ${new Date(now + duration).toISOString()}`);
   }
   return {
     warnings,
-    rejected: rejected && !override?.trim(),
+    rejected,
     ...(override?.trim() ? { override: redact(override).slice(0, 240) } : {}),
   };
 }

@@ -32,6 +32,7 @@ import {
   loadLedger,
   main,
   parseArgs,
+  quickPlan,
   superviseTickCli,
   waitRun,
   type Hold,
@@ -41,7 +42,7 @@ import {
 import { configHash, gitHead, renderAliases, loadTiers, resolveRoute, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate } from '../src/generate';
-import { milestones, type Plan } from '../src/plan';
+import { loadPlan, milestones, type Plan } from '../src/plan';
 import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -75,6 +76,105 @@ describe('redact (shared redact (cli and board))', () => {
       'worker spawn failed: client_secret=x; refresh-token: y, plain text',
     ];
     expect(corpus.map(redact)).toEqual(corpus.map(boardRedact));
+  });
+});
+
+describe('quick', () => {
+  test('validated single-package plan resolves git defaults, cache and explicit options', () => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_WRITE_ROOTS'] as const;
+    const saved = keys.map(k => process.env[k]);
+    const cwd = process.cwd();
+    try {
+      Object.assign(process.env, {
+        SUPERAGENT_HOME: join(root, 'sa'),
+        ARCHON_HOME: join(root, 'archon'),
+        SUPERAGENT_WRITE_ROOTS: root,
+      });
+      mkdirSync(join(repo, 'src'));
+      process.chdir(join(repo, 'src'));
+      const path = quickPlan(
+        parseArgs(['quick', '--goal', 'deliver', '--accept', 'true', '--accept', 'echo ok'])
+      );
+      expect(path.startsWith(join(root, 'sa', 'plans', 'quick-'))).toBe(true);
+      const plan = loadPlan(path);
+      expect(plan.repo).toBe(repo);
+      expect(plan.base_ref).toBe('main');
+      expect(plan.budget.weighted_tokens).toBe(4 * loadTiers().policy.budget_floor.S);
+      expect(Date.parse(plan.deadline)).toBeGreaterThan(Date.now());
+      expect(plan.packages).toHaveLength(1);
+      expect(plan.packages[0]).toMatchObject({
+        id: 'quick',
+        title: 'deliver',
+        goal: 'deliver',
+        size: 'S',
+        risk: 'G1',
+        scope: { write: ['**/*'] },
+      });
+      expect(plan.packages[0].accept).toEqual([
+        { cmd: 'true', timeout_s: 180, cache: true },
+        { cmd: 'echo ok', timeout_s: 180, cache: true },
+      ]);
+      expect(milestones(plan)).toHaveLength(1);
+      const explicit = loadPlan(
+        quickPlan(
+          parseArgs([
+            'quick',
+            '--goal',
+            'explicit',
+            '--accept',
+            'true',
+            '--no-cache',
+            '--repo',
+            repo,
+            '--base',
+            'HEAD',
+            '--scope',
+            'src/**',
+            '--scope',
+            'tests/**',
+            '--risk',
+            'G2',
+            '--review',
+            '--json',
+          ])
+        )
+      );
+      expect(explicit.base_ref).toBe('HEAD');
+      expect(explicit.packages[0]).toMatchObject({
+        risk: 'G2',
+        review: true,
+        scope: { write: ['src/**', 'tests/**'] },
+      });
+      expect(explicit.packages[0].accept[0]).not.toHaveProperty('cache');
+    } finally {
+      process.chdir(cwd);
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+  });
+  test('missing or empty arguments fail before launch; help advertises quick', () => {
+    for (const args of [
+      [],
+      ['--accept', 'true'],
+      ['--goal', 'x'],
+      ['--goal', ' ', '--accept', 'true'],
+      ['--goal', 'x', '--accept', ' '],
+    ])
+      expect(() => quickPlan(parseArgs(['quick', ...args]))).toThrow(/quick requires/);
+    expect(() =>
+      quickPlan(parseArgs(['quick', '--goal', 'x', '--accept', 'true', '--risk', 'G3']))
+    ).toThrow('--risk');
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(main(['--help'])).toBe(0);
+      expect(String(log.mock.calls[0]?.[0])).toContain('quick --goal');
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 

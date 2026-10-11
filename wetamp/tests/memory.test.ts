@@ -585,7 +585,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     ).toMatchObject({ helpful: 0, votes: 1 });
     expect(curate(e, { operations: [], reason: '无可复用经验' }, NOW).result).toContain('未提炼');
   });
-  test('plan prior warnings reject only enough samples and record a reasoned override', () => {
+  test('plan admission priors only warn with enough samples and retain a reasoned override', () => {
     const key = priorKey(root, plan.packages[0], loadTiers().tiers.general.pools.chatgpt[0]);
     mkdirSync(join(sa, 'memory'));
     const prior = {
@@ -599,22 +599,24 @@ describe('EV1 lifecycle, privacy and priors', () => {
       deadline: new Date(NOW + 10000).toISOString(),
       budget: { weighted_tokens: 1000000 },
     };
-    expect(lintPlan(next, undefined, NOW)).toMatchObject({ rejected: true });
+    expect(lintPlan(next, undefined, NOW)).toMatchObject({ rejected: false });
     expect(lintPlan(next, '人工确认验收使用缓存', NOW)).toMatchObject({
       rejected: false,
       override: '人工确认验收使用缓存',
     });
-    expect(lintPlan(next, ' ', NOW).rejected).toBe(true);
+    expect(lintPlan(next, ' ', NOW)).toMatchObject({ rejected: false });
+    expect(lintPlan(next, ' ', NOW)).not.toHaveProperty('override');
     expect(lintPlan(next, undefined, NOW).warnings.join(' ')).toContain('5000000');
     expect(lintPlan(next, undefined, NOW).warnings.join(' ')).toContain(
       new Date(NOW + 600000).toISOString()
     );
     writeFileSync(join(sa, 'memory/priors.json'), JSON.stringify({ [key]: { ...prior, n: 4 } }));
     expect(lintPlan(next, undefined, NOW).rejected).toBe(false);
+    expect(lintPlan(next, undefined, NOW).warnings).toEqual([]);
     seed(lesson('plan', { category: 'plan', do: '预算至少一个验收周期' }));
     expect(lintPlan(plan, undefined, NOW).warnings.join(' ')).toContain('预算至少一个验收周期');
   });
-  test('run lint refusal and override are recorded in the real CLI ledgers', () => {
+  test('run admission warnings and override are recorded in the CLI ledgers with a stub engine', () => {
     const repo = gitRepo(root);
     process.env.SUPERAGENT_WRITE_ROOTS = root;
     const next = {
@@ -636,20 +638,22 @@ describe('EV1 lifecycle, privacy and priors', () => {
         },
       })
     );
-    expect(main(['run', path, '--fake', '--skip-selftest'])).toBe(1);
-    const failures = readdirSync(join(sa, 'launch-failures'));
-    expect(
-      JSON.parse(readFileSync(join(sa, 'launch-failures', failures[0]), 'utf8')).plan_lint.rejected
-    ).toBe(true);
     install();
     const stub = join(root, 'ack');
     writeFileSync(stub, '#!/bin/sh\necho \'{"ok":true,"runId":"fixture"}\'\n', { mode: 0o755 });
     process.env.SA_ARCHON_BIN = stub;
+    expect(main(['run', path, '--fake', '--skip-selftest'])).toBe(0);
+    const first = readdirSync(join(sa, 'runs'))[0];
+    const lint = JSON.parse(readFileSync(join(sa, 'runs', first), 'utf8')).plan_lint;
+    expect(lint.rejected).toBe(false);
+    expect(lint.warnings).toHaveLength(2);
+    expect(lint.override).toBeUndefined();
+    expect(existsSync(join(sa, 'launch-failures'))).toBe(false);
     expect(
       main(['run', path, '--fake', '--skip-selftest', '--lint-override', '明确的小样本验收'])
     ).toBe(0);
-    const runs = readdirSync(join(sa, 'runs'));
-    expect(JSON.parse(readFileSync(join(sa, 'runs', runs[0]), 'utf8')).plan_lint).toMatchObject({
+    const second = readdirSync(join(sa, 'runs')).find(file => file !== first)!;
+    expect(JSON.parse(readFileSync(join(sa, 'runs', second), 'utf8')).plan_lint).toMatchObject({
       override: '明确的小样本验收',
       rejected: false,
     });

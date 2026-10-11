@@ -1063,3 +1063,8 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 - 问题与被推翻的假设：终态 run 的 adopt 会新开 run，从首节点重跑；I3 的换版不保证保留已 PASS 产物。复用完成节点集合，在恢复 guard 写 ledger 前拒绝有完成节点的 adopt，返回 run id，并提示 reject 后从最后 PASS commit 新开计划或检出旧引擎 commit；无完成节点仍可 adopt，强化 I1/P1–P4，无新状态、配置或跨 run 复用。
 - 旧 run/生产影响与遗留：仅新恢复调用受保护，运行中/paused/同指纹语义不变，不改生产 ledger、packages 或已生成快照；一条回归覆盖 failed/cancelled 的已完成编码/评审节点、ledger 不变且不启动恢复。`cd wetamp && bun test tests/cli.test.ts -t 'HF3 latest-engine recovery'` 最终 8 pass/0 fail（`/tmp/b1-ad-focused-final.log`）；整文件试跑 261 pass/1 fail（既有 REC-R1-01 的未登记 run selftest recover 失败，不经过本包 guard，`/tmp/b1-ad-cli.log`），不扩范围修复。回归移除重复夹具初始化后通过，未放宽超时；`bunx tsc --noEmit` exit 2，未改动 memory 文件缺相对 zod 依赖及隐式 any（`/tmp/b1-ad-tsc-final.log`）；测试依赖仅用已有缓存临时链接，无安装/升级或生产写入。仅编码自检，主控实测另行执行。
+
+## RB：quick 单命令起 run
+- 问题与被推翻的假设：小活不必手写完整 plan；p50 预算/deadline 预测不是硬拒依据。复用 loadPlan/startRun（I1/P4），quick 单包单里程碑，默认 accept cache:true，--no-cache 不设缓存；floor 合计校验不变，override 字段保留。
+- 旧 run/生产影响与遗留：quick 只创建新 plan，旧冻结 run 不变；新的 run admission 只记录预测 warning，真实预算与截止执行约束不变。README 补 CLI 与拆分准则；未操作生产状态、未启动真实 run，主控实测与集成待主控完成。
+- 自检：隔离状态下卡片三文件 -t "quick|admission" 2 pass/0 fail（297 filtered）；memory.test.ts 的 plan/run admission（stub engine）2 pass/0 fail；bunx tsc --noEmit -p wetamp exit 0。证据 /var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/rb-accept-f9_udaes；产品代码净增 65 行，未全测、未委派/评审、未 push。

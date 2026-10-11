@@ -28,6 +28,13 @@ plan 的目标 repo 必须位于 `SUPERAGENT_WRITE_ROOTS`（冒号分隔，默�
 `signoff: "human"`；可选 `console: "codex"`）。
 包可设 `review: true` 请求里程碑评审；G2、strict 或验收有效风险升到 G2 必须评审，其余默认主控实测，gate 标记 `TESTED`。
 
+小活用 `superagent quick --goal "修复启动错误" --accept "bun test tests/start.test.ts" --scope "src/**" --scope "tests/**"`，
+`--accept` 与 `--scope` 可重复；默认单包、单里程碑、size S、risk G1，预算为 S 的 `budget_floor` × 4，deadline 为创建后 24 小时，单条验收超时 180 秒。
+repo 默认 cwd 所在 git 根，base 默认当前分支，可用 `--repo <path>`、`--base <ref>` 覆盖；默认写范围 `**/*`，建议显式收窄 scope。
+验收默认 `cache:true`，依赖时间、随机性或外部写入的命令须加 `--no-cache`；`--risk G0|G1|G2` 声明风险，`--review` 请求评审，`--json` 输出与 run 同形。
+生成的 plan 先校验，保存在 `$SUPERAGENT_HOME/plans/quick-<ts>.json`，再走 run 的同一启动路径；p50 预算与 deadline 预测不足只警告，预算 floor 合计校验仍拒绝非法计划。
+默认单包；多包只在可独立验收且可并行或风险不同时拆；不按文件或步骤拆；小活用 quick。
+
 ```bash
 superagent run plan.json                 # 立即返回 {run_id, archon_run_id, branch, gen_dir}
 superagent wait <run> --timeout 3000     # 阻塞到终态或需要处理；owner 丢失会自动 recover 后续等

@@ -85,6 +85,15 @@ const OPTIONS = {
   fake: { type: 'boolean' },
   'skip-selftest': { type: 'boolean' },
   'lint-override': { type: 'string' },
+  goal: { type: 'string' },
+  accept: { type: 'string', multiple: true },
+  scope: { type: 'string', multiple: true },
+  risk: { type: 'string' },
+  review: { type: 'boolean' },
+  'no-cache': { type: 'boolean' },
+  base: { type: 'string' },
+  repo: { type: 'string' },
+  help: { type: 'boolean', short: 'h' },
   cwd: { type: 'string' },
   once: { type: 'boolean' },
   interval: { type: 'string' },
@@ -602,6 +611,58 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 }
 
 const MIN_FREE_GB = 2;
+
+const QUICK_BUDGET_MULTIPLIER = 4;
+
+/** Materialize and validate the ordinary plan contract before using the run launcher. */
+export function quickPlan(a: Args): string {
+  const goal = a.flags.goal;
+  if (!goal?.trim()) throw new Error('quick requires --goal <text>');
+  if (!a.flags.accept?.length || a.flags.accept.some(cmd => !cmd.trim()))
+    throw new Error('quick requires at least one non-empty --accept <cmd>');
+  const risk = a.flags.risk ?? 'G1';
+  if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2')
+    throw new Error('quick --risk must be G0|G1|G2');
+  const git = (...args: string[]): string => {
+    const p = Bun.spawnSync(['git', ...args], {
+      cwd: a.flags.repo ?? process.cwd(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: QUERY_TIMEOUT_MS,
+    });
+    if (p.exitCode !== 0) throw new Error(`quick git ${args[0]}: ${tail(p.stderr.toString())}`);
+    return p.stdout.toString().trim();
+  };
+  const size = 'S';
+  const plan: Plan = {
+    repo: git('rev-parse', '--show-toplevel'),
+    base_ref: a.flags.base ?? git('symbolic-ref', '--short', 'HEAD'),
+    deadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    budget: { weighted_tokens: loadTiers().policy.budget_floor[size] * QUICK_BUDGET_MULTIPLIER },
+    packages: [
+      {
+        id: 'quick',
+        title: goal,
+        goal,
+        size,
+        risk,
+        milestone: 'm1',
+        scope: { write: a.flags.scope ?? ['**/*'] },
+        accept: a.flags.accept.map(cmd => ({
+          cmd,
+          timeout_s: 180,
+          ...(a.flags['no-cache'] ? {} : { cache: true }),
+        })),
+        ...(a.flags.review ? { review: true } : {}),
+      },
+    ],
+  };
+  const path = join(home().sa, 'plans', `quick-${newRunId()}.json`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeAtomic(path, JSON.stringify(plan, null, 2) + '\n');
+  loadPlan(path);
+  return path;
+}
 
 function preflight(skipSelftest: boolean): void {
   if (installMode() === 'worker')
@@ -2190,7 +2251,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2232,6 +2293,10 @@ export function main(argv: string[]): number {
     return EXIT_USAGE;
   }
   const [verb, target] = a._;
+  if (a.flags.help || verb === 'help') {
+    console.log(USAGE);
+    return 0;
+  }
   const resolveTarget = (id: string): Ledger | RunView => {
     const registered = coord().resolveRun(id);
     if (registered) return loadLedger(registered.run_id);
@@ -2283,6 +2348,8 @@ export function main(argv: string[]): number {
       return 0;
     case 'run':
       return startRun(need(target, 'run <plan.json>'), a);
+    case 'quick':
+      return startRun(quickPlan(a), a);
     case 'wait': {
       const t = Number(a.flags.timeout ?? 3000);
       if (!Number.isFinite(t) || t <= 0) {
