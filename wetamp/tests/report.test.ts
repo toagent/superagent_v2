@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Plan } from '../src/plan';
-import { callsOf, interventionStats, rollup } from '../src/report';
+import { buildReport, callsOf, interventionStats, rollup } from '../src/report';
+import { archonRunIds } from '../src/archon';
 import type { Ledger } from '../src/cli';
+import { tmp } from './helpers';
+import { WETAMP } from '../src/config';
 
 const plan = {
   packages: [{ id: 'core' }, { id: 'api', milestone: 'm2' }],
@@ -32,6 +37,76 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('generation identities reuse adoption endpoints once in ledger order', () => {
+    expect(archonRunIds({ archon_run_id: 'latest' })).toEqual(['latest']);
+    const adoption = { at: '', engine_from: null, engine_to: '', reason: '' };
+    expect(archonRunIds({
+      archon_run_id: 'latest',
+      adoptions: [
+        { ...adoption, from: 'old', to: 'middle' },
+        { ...adoption, from: 'middle', to: 'latest' },
+      ],
+    })).toEqual(['old', 'middle', 'latest']);
+  });
+
+  test.each([false, true])('adopted usage survives repo deletion=%s without state writes', missing => {
+    const root = tmp(), repo = join(root, 'repo'), gen = join(root, 'gen');
+    mkdirSync(repo);
+    mkdirSync(gen);
+    writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
+    const ledger: Ledger = {
+      run_id: 'sa1', archon_run_id: 'latest', plan: join(gen, 'plan.json'), gen_dir: gen,
+      repo, branch: 'task', workflow: 'fixture', console: 'codex',
+      started_at: '2026-10-10T00:00:00.000Z', transcript: '', log: '', recoveries: [],
+      adoptions: [{ from: 'old', to: 'latest', at: '', engine_from: null, engine_to: '', reason: '' }],
+    };
+    const ledgerFile = join(root, 'ledger.json');
+    writeFileSync(ledgerFile, JSON.stringify(ledger));
+    const generations = {
+      old: [ev('node_completed', 'code-core', provider('review-looking-name', { output: 55 })),
+        ev('node_completed', 'review-m2-r1', provider('model', { output: 10 }))],
+      latest: [ev('node_completed', 'code-core', provider('model', { output: 100 })),
+        ev('node_completed', 'repair-api')],
+    };
+    for (const [id, events] of Object.entries(generations))
+      writeFileSync(join(root, `${id}.json`), JSON.stringify({
+        id, status: 'completed', output_root: root, nodes: [], events,
+        started_at: ledger.started_at, completed_at: '2026-10-10T00:01:00.000Z',
+      }));
+    const before = ['ledger', 'old', 'latest'].map(id => readFileSync(join(root, `${id}.json`), 'utf8'));
+    const bin = join(root, 'archon');
+    writeFileSync(bin, `#!/bin/sh\nprintf '%s|%s\\n' "$3" "$PWD" >> '${root}/queries'\ncat '${root}/'"$3".json\n`, { mode: 0o755 });
+    const saved = process.env.SA_ARCHON_BIN;
+    process.env.SA_ARCHON_BIN = bin;
+    if (missing) rmSync(repo, { recursive: true });
+    const started = Date.now();
+    try {
+      const report = buildReport([ledger]);
+      expect(report).toMatchObject({
+        runs: 1, 'state:completed': 1, unreadable: [], repo_missing: missing ? ['sa1'] : [],
+        usage: {
+          total: { calls: 4, output: 165, coverage: '3/4', infra_retries: 1 },
+          by_run: { sa1: { calls: 4, output: 165 } },
+          by_role: { code: { calls: 2, output: 155 }, review: { calls: 1, output: 10 } },
+          by_attempt: { 'attempt:2': { calls: 1, output: 100 } },
+          window: { scope: 'all_retained_events_for_recorded_generations' }, unreadable: [],
+        },
+      });
+      const window = (report.usage as { window: { generated_at: string } }).window;
+      expect(Date.parse(window.generated_at)).toBeGreaterThanOrEqual(started);
+      expect(Date.parse(window.generated_at)).toBeLessThanOrEqual(Date.now());
+      const cwd = missing ? WETAMP : repo;
+      expect(readFileSync(join(root, 'queries'), 'utf8').trim().split('\n')).toEqual([
+        `latest|${cwd}`, `old|${cwd}`, `latest|${cwd}`,
+      ]);
+      expect(['ledger', 'old', 'latest'].map(id => readFileSync(join(root, `${id}.json`), 'utf8'))).toEqual(before);
+      expect(ledger).toEqual(JSON.parse(before[0]));
+    } finally {
+      if (saved === undefined) delete process.env.SA_ARCHON_BIN;
+      else process.env.SA_ARCHON_BIN = saved;
+    }
+  });
+
   test('intervention distribution excludes unknown history and uses all append-only events', () => {
     const event = { at: '2026-10-12T00:00:00Z', action: 'decide', source: 'cli' as const, ok: false, error: 'exit:1' };
     const runs = [

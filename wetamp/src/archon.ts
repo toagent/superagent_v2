@@ -18,6 +18,7 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { archonMutation, coord } from './coord';
 import { WETAMP, home, writeAtomic } from './config';
+import type { Ledger } from './cli';
 import type { NodeExecutionMetadata } from '../../packages/workflows/src/schemas/node-execution';
 import type { ExecutionOwnerRecord } from '../../packages/workflows/src/schemas/workflow-run';
 import {
@@ -196,6 +197,11 @@ export function runRevision(id: string): string | null {
 }
 
 export const tail = (s: string, n = 400): string => s.trim().slice(-n);
+
+/** Ledger order preserves generation chronology; each engine run contributes once. */
+export const archonRunIds = (l: Pick<Ledger, 'archon_run_id' | 'adoptions'>): string[] => [
+  ...new Set([...(l.adoptions ?? []).flatMap(a => [a.from, a.to]), l.archon_run_id]),
+];
 
 /** Archon 要求 cwd 在 git 仓库内；传 run 的目标 repo，避免把别的仓库登记成 codebase。 */
 export function getRun(id: string, cwd?: string): RunView {

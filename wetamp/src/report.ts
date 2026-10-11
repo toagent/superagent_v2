@@ -1,8 +1,9 @@
 // superagent report（F-22）：run 计数摘要 + 执行层用量台账。用量只来自 Archon 事件里的 spend/binding/timing，
 // 未回执的用量记 unknown，从不当 0；不折算金额。
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { archonJson, getRun, tail } from './archon';
+import { archonJson, archonRunIds, getRun, tail } from './archon';
+import { WETAMP } from './config';
 import { type Ledger, type Pair } from './cli';
 import { snapshotOf } from './board/data';
 import { cockpit } from './board/cockpit';
@@ -163,32 +164,40 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
 
 /**
  * 全部登记 run：summarize 计数 + usage（总计、按 run / 里程碑 / 角色 / 第几次调用）。`--events` 的输出不带 nodes，
- * 所以每个 run 查两次：getRun 供 summarize，事件流供用量；事件查不到的 run 记入 usage.unreadable，不吞错。
+ * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
  */
 export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const calls: Call[] = [];
   const unreadable: string[] = [];
+  const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
+  const cwdOf = (l: Ledger): string => repo_missing.includes(l.run_id) ? WETAMP : l.repo;
   const pairs: Pair[] = ls.map(l => {
     try {
-      return { ledger: l, run: getRun(l.archon_run_id, l.repo) };
+      return { ledger: l, run: getRun(l.archon_run_id, cwdOf(l)) };
     } catch (e) {
       return { ledger: l, run: e as Error };
     }
   });
   for (const l of ls) {
-    try {
-      const j = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo);
-      calls.push(...callsOf(l.run_id, (j.events ?? []) as Event[], planOf(l)));
-    } catch (e) {
-      unreadable.push(`${l.run_id}: ${tail((e as Error).message, 200)}`);
+    const events: Event[] = [];
+    for (const id of archonRunIds(l)) {
+      try {
+        const j = archonJson(['workflow', 'get', id, '--verbose', '--events'], cwdOf(l));
+        events.push(...((j.events ?? []) as Event[]));
+      } catch (e) {
+        unreadable.push(`${l.run_id}/${id}: ${tail((e as Error).message, 200)}`);
+      }
     }
+    calls.push(...callsOf(l.run_id, events, planOf(l)));
   }
   const snapshot = snapshotOf(pairs);
   return {
     ...snapshot.summary,
+    repo_missing,
     metrics: cockpit(snapshot).metrics,
     interventions: interventionStats(ls),
     usage: {
+      window: { scope: 'all_retained_events_for_recorded_generations', generated_at: snapshot.at },
       total: rollup(calls),
       by_run: group(calls, c => c.run),
       by_milestone: group(calls, c => `${c.run}/${c.milestone}`),

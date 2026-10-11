@@ -2,7 +2,7 @@ import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, read
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { archonJson, lock } from './archon';
+import { archonJson, archonRunIds, lock } from './archon';
 import { home, WETAMP, writeAtomic } from './config';
 import { ledgerIds, loadLedger, parseArgs } from './cli';
 import type { Job } from './jobs';
@@ -88,7 +88,7 @@ export function usageEvidence(): { claims: { id: string; owner: Owner }[]; eta: 
       const events = arr(j.events) as WorkflowEventRow[];
       const input = etaInput(l, j as unknown as RunView, events); eta.push(input);
       const roles = workflowRoles(l);
-      const history = (l.adoptions ?? []).flatMap(a => { try { return [archonJson(['workflow', 'get', a.from, '--verbose', '--events'], l.repo)]; } catch { return []; } });
+      const history = archonRunIds(l).filter(id => id !== l.archon_run_id).flatMap(id => { try { return [archonJson(['workflow', 'get', id, '--verbose', '--events'], l.repo)]; } catch { return []; } });
       for (const run of [j, ...history]) for (const raw of arr(run.events)) {
         const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
         const client = d.binding?.provider ?? d.provider;
