@@ -375,7 +375,7 @@ describe('guard.cjs', () => {
   });
 });
 
-describe('context-budget.cjs', () => {
+describe('context-advisory.cjs', () => {
   function budget(
     tokens: number,
     env: Record<string, string>,
@@ -389,7 +389,7 @@ describe('context-budget.cjs', () => {
       JSON.stringify({ message: { usage: { input_tokens: tokens } } }) + '\n'
     );
     return run(
-      'context-budget.cjs',
+      'context-advisory.cjs',
       'claude',
       {
         hook_event_name: 'UserPromptSubmit',
@@ -432,7 +432,7 @@ describe('context-budget.cjs', () => {
     );
     const call = (command: string): Out =>
       run(
-        'context-budget.cjs',
+        'context-advisory.cjs',
         'claude',
         {
           hook_event_name: 'PreToolUse',

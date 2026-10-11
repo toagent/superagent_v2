@@ -121,8 +121,8 @@ export interface Tiers {
   routing: { coder: { models: string[] }; reviewer: { by_console: Record<Console, string[]>; by_risk?: Partial<Record<Pkg['risk'], string[]>> } };
   health: { vendor_concurrency: Record<string, number> };
   policy: {
-    /** Legacy key consumed by context-budget.cjs; this is an advisory, not automatic compaction. */
-    context: { autocompact_tokens: Record<'commander' | 'general' | 'strategist', number> };
+    /** Context advisory thresholds consumed by context-advisory.cjs. */
+    context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
     sandbox: { mcp: string[]; network: boolean };
     /** held:gate / held:environment / coder 节点失败各自的自动重试上限（docs/00 自动重试）。 */
     auto_retry: { gate: number; environment: number; coder: number };

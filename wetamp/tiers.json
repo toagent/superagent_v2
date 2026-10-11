@@ -10,7 +10,7 @@
     },
     "stop_gate": "off",
     "context": {
-      "autocompact_tokens": { "commander": 160000, "general": 240000, "strategist": 360000 }
+      "advisory_tokens": { "commander": 160000, "general": 240000, "strategist": 360000 }
     },
     "cache": { "worker_ttl": "5m" },
     "sandbox": {

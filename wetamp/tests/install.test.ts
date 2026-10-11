@@ -208,7 +208,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       'PreToolUse',
       'rtk hook claude',
       `${V2('guard.cjs')} claude`,
-      V2('context-budget.cjs'),
+      V2('context-advisory.cjs'),
     ]);
     expect(after.map(([e]) => e)).toEqual([
       'PreToolUse',
@@ -257,10 +257,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(at('PreToolUse')).toEqual([
       ['Edit', `${V2('guard.cjs')} claude`],
       ['Bash', `${V2('guard.cjs')} claude`],
-      [undefined, V2('context-budget.cjs')],
+      [undefined, V2('context-advisory.cjs')],
       [undefined, `${V2('guard.cjs')} claude`],
     ]);
-    expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-budget.cjs')]]);
+    expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-advisory.cjs')]]);
     expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
   });
 

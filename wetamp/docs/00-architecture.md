@@ -266,7 +266,7 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - M4a：`lock()` 为内核 `flock(LOCK_EX|LOCK_NB)`（`bun:ffi` 调 libc），持锁进程死亡（含 SIGKILL）时内核随 fd 释放；被占返回 `{ok:false,reason:'locked'}`，没有判死、夺锁、`lock_unreadable`。锁文件内容 `{pid,host,at}` 只供诊断，`release` 只关 fd、不删文件（删除会让两个进程分别锁住新旧 inode）。recover 的 `runs/<id>.lock` 与 `supervise.lock` 共用它，tick 被占即 `{"skipped":"locked"}` 退出 0。
   - N4：`ask-status` 返回“是”后、signal 前再判 plan 截止，已过即走截止路径（终止 run、账目 expired），不批准。
 - WP-B hooks 切换实现记录（详见 `04-hooks-and-nesting.md`）：
-  - V1 的 guard/context-budget/dispatch-context/micro-edit/shell 五个 hook 迁入 `wetamp/hooks/`，策略统一读 `tiers.json` 的 `policy`；派生判定加入 `SUPERAGENT_ROLE=worker` 与 `$SUPERAGENT_HOME/archon/workspaces/` 下的 cwd。`stop_gate` 只支持 `off`（V2 无工作树指纹）。
+  - V1 的 guard/context-budget/dispatch-context/micro-edit/shell 五个 hook 迁入 `wetamp/hooks/`（context-budget 后续归一为 context-advisory），策略统一读 `tiers.json` 的 `policy`；派生判定加入 `SUPERAGENT_ROLE=worker` 与 `$SUPERAGENT_HOME/archon/workspaces/` 下的 cwd。`stop_gate` 只支持 `off`（V2 无工作树指纹）。
   - 禁嵌套：`src/archon.ts` 给 run/resume `--detach` 与 detached 子进程注入 `SUPERAGENT_ROLE=worker`；`policy.exec_profiles.{coder,reviewer}` 的 `claude.denied_tools` 由 `generate.ts` 写进 claude 别名的 prompt 节点，`codex` 段由 `bin/codex-worker` 包装器以 `-c` 前置（并关闭沙箱清单外 MCP）；`install.sh` 把包装器写入 `assistants.codex.codexBinaryPath`。`exclude_user_instructions` 在 Archon 无对应字段，不生成。
   - `install.sh` 增 `--hooks`、`--purge-v1`（均支持 `--dry-run`，实现在 `src/install-hooks.ts`）与 `--remote-hooks`；三者与默认安装互斥，默认安装不碰用户三端配置。`selftest.sh` 增 hooks 段（元帅 31 行写入被 G-1 拒、worker 会话 Agent 被 N-1 拒）。
   - agent-supervisor 删除 V1 signoff 读取（`sv_superagent.py`），`decisions-tick` 只处理 ask；twin-toolkit 的 superagent 维度指向 `superagent_v2`，回执 schema 2 校验 `install.json` 的 `installer:"superagent_v2"`。

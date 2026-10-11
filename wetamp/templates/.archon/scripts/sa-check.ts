@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan } from '../../../src/plan';
+import { readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 
 export interface Finding {
   id: string;
@@ -571,9 +572,11 @@ const AI_NODE = /^(code|repair|fix|review)-/;
  */
 export function budgetUsage(
   events: RunEvent[],
-  floor: number
+  floor: number,
+  attempts: PolicyAttempt[] = []
 ): { launches: number; weighted_tokens: number; reserve: number } {
-  const ev = events.filter(e => AI_NODE.test(e.step_name ?? ''));
+  const owned = new Set(attempts.map(a => a.node));
+  const ev = events.filter(e => AI_NODE.test(e.step_name ?? '') && !owned.has(e.step_name ?? ''));
   const used = ev
     .filter(e => e.event_type === 'node_completed' || e.event_type === 'node_failed')
     .map(e => e.data?.spend?.tokens)
@@ -581,12 +584,12 @@ export function budgetUsage(
       t?.source === 'provider' && t.value
         ? t.value.input - (t.value.cacheRead ?? 0) + t.value.output
         : null
-    );
+    ).concat(attempts.map(a => a.tokens ? a.tokens.input - (a.tokens.cacheRead ?? 0) + a.tokens.output : null));
   const known = used.filter((n): n is number => n !== null);
   const reserve = Math.max(0, ...known) || floor;
   const total = known.reduce((a, n) => a + n, 0) + (used.length - known.length) * reserve;
   return {
-    launches: ev.filter(e => e.event_type === 'node_started').length,
+    launches: ev.filter(e => e.event_type === 'node_started').length + attempts.length,
     weighted_tokens: total,
     reserve,
   };
@@ -628,7 +631,7 @@ function budget(): string | null {
   const g = existsSync(extra) ? JSON.parse(readFileSync(extra, 'utf8')) as Parameters<typeof effectiveBudget>[1] : null;
   const attempt = join(dir, 'attempts', m);
   const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
-  const u = budgetUsage(runEvents(), policy().budget_floor.S);
+  const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
   if (b.launches !== undefined && u.launches >= b.launches) return 'budget_launches_exceeded';
   return u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
 }
@@ -649,6 +652,16 @@ export const identityOf = (b: Binding | undefined): Ident => {
     return { model: m.requested, strength: 'pinned' };
   return { model: null, strength: 'unknown' };
 };
+
+/** Provider receipts remain strongest; a fallback's pinned model must replace the original request. */
+export function attemptIdentity(attempts: PolicyAttempt[], node: string, binding?: Binding): Ident {
+  const attempt = attempts.filter(a => a.node === node).at(-1);
+  if (!attempt) return identityOf(binding);
+  if (attempt.status !== 'completed') return { model: null, strength: 'unknown' };
+  if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
+  return attempt.provider === 'codex' ? { model: attempt.model, strength: 'pinned' }
+    : { model: null, strength: 'unknown' };
+}
 
 /** F-14：不合格的原因；null = 合格独立评审（双方身份已知、实际模型不同）。 */
 export function independence(authors: Ident[], reviewer: Ident): string | null {
@@ -679,9 +692,10 @@ function gate(): void {
     const done = env('ARCHON') ? runEvents().filter(e => e.event_type === 'node_completed') : [];
     const author = new RegExp(`^((code|repair)-(${env('PKGS').split(',').join('|')})|fix-${m}-r\\d)$`);
     const reviewer = `review-${m}-r${String(reviewed + 1)}`;
+    const attempts = readPolicyAttempts(artifacts);
     identity = env('ARCHON') ? {
-      authors: done.filter(e => author.test(e.step_name ?? '')).map(e => identityOf(e.data?.binding)),
-      reviewer: identityOf(done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding),
+      authors: done.filter(e => author.test(e.step_name ?? '')).map(e => attemptIdentity(attempts, e.step_name ?? '', e.data?.binding)),
+      reviewer: attemptIdentity(attempts, reviewer, done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding),
     } : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
   }
   const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';

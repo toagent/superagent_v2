@@ -1,5 +1,6 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { confined, workflowRoles } from './board/workflow';
+import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
@@ -1288,7 +1289,7 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
     try {
       const ack = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as { events?: Parameters<typeof budgetUsage>[0] };
       if (Array.isArray(ack.events)) {
-        const u = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
+        const u = budgetUsage(ack.events, loadTiers().policy.budget_floor.S, readPolicyAttempts(artifactsOf(run)));
         const limits = effectiveBudget(plan.budget,
           (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<typeof effectiveBudget>[1], m,
           readAttempt(join(l.gen_dir, 'attempts', m)));

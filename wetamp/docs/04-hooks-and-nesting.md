@@ -6,14 +6,14 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 
 | 客户端                           | 事件 → handler                                                                                                                               |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude `~/.claude/settings.json` | `SessionStart` `PreToolUse` `PostToolUse` `SubagentStop` `Stop` → `guard.cjs claude`；`UserPromptSubmit` `PreToolUse` → `context-budget.cjs` |
+| Claude `~/.claude/settings.json` | `SessionStart` `PreToolUse` `PostToolUse` `SubagentStop` `Stop` → `guard.cjs claude`；`UserPromptSubmit` `PreToolUse` → `context-advisory.cjs` |
 | Codex `~/.codex/hooks.json`      | `SessionStart` `PreToolUse` `PostToolUse` `SubagentStop` `Stop` → `guard.cjs codex`                                                          |
 | OpenCode                         | 无 hook 通道；规则只靠指令与 Archon 侧的禁嵌套                                                                                               |
 
 - 拒绝用 `hookSpecificOutput.permissionDecision='deny'`，提示用 `systemMessage`/`additionalContext`。
 - `guard.cjs` 的 `PreToolUse` 做拒绝判定；`SessionStart`/`PostToolUse`/`SubagentStop`/`Stop` 服务 G-3 Stop 门（`hooks/stop-gate.cjs`）。
 - G-3（`policy.stop_gate`，默认 `off`）：元帅会话在 `SessionStart` 或首次写入前记下每个涉及的 git 根的 base HEAD 与受控改动指纹（`exempt_paths` 不计）；成功结束的 `reviewer-N` 子代理（Claude `Agent/Task` 或 `SubagentStop`，Codex 为军师池模型的子代理）把当前指纹记为已评审。`Stop` 时指纹既不等于基线也不等于已评审即为未评审改动：`advisory` 只提示；`change` 按改动内容、`cycle` 按写入次数生成令牌并阻断，同一令牌第二次 Stop（或 `stop_hook_active`）放行并提示 UNREVIEWED，避免死循环。首个事件不是 `SessionStart/PreToolUse`、状态文件损坏或 git 失败时会话记为 unknown，按未评审处理。非法取值只在 `Stop` 提示配置错误。
-- `context-budget.cjs`：读 transcript 尾部 usage，按会话角色给阈值提示（元帅 160K / 将军 240K / 军师 360K）；只提示，不阻塞。
+- `context-advisory.cjs`：读 transcript 尾部 usage，按会话角色给阈值提示（元帅 160K / 将军 240K / 军师 360K）；策略键为 `policy.context.advisory_tokens`；advisory 只提示，不阻塞或自动压缩。
 
 ## 派生会话判定（`guard.cjs` 的 `derivedBy`）
 
@@ -90,7 +90,7 @@ bash wetamp/scripts/install.sh --purge-v1            # 删 V1 条目；残留移
 bash wetamp/scripts/install.sh --remote-hooks        # 远端：只要 node；node --check + 真跑一次 guard，写 install.json
 ```
 
-- 去重保留 matcher 不同的同一 handler；V1 清单都不带 matcher，补齐时只认"全部"分组（未设置/空/`*`）。`context-budget.cjs` 尾部的 `claude` 参数去掉后归一为一条。目标文件不存在时按空文件补齐并创建（dry-run 打印与空文件的 diff，不写）。
+- 去重保留 matcher 不同的同一 handler；V1 清单都不带 matcher，补齐时只认"全部"分组（未设置/空/`*`）。`context-advisory.cjs` 尾部的 `claude` 参数去掉后归一为一条。目标文件不存在时按空文件补齐并创建（dry-run 打印与空文件的 diff，不写）。
 - 只动 superagent 自己的 handler（V1 checkout/release 路径或本 `wetamp/hooks/`），其他 hooks 原样保留；只有命令串改写时原地替换，保留文件排版。
 - `--remote-hooks` 写 `${XDG_STATE_HOME:-~/.local/state}/superagent/install.json`（`installer:"superagent_v2"`、`role:"worker"`、`wetamp`、`commit`、`hooks`）；已有 V1 台账先存 `.v1-<毫秒时间戳>` 副本。twin-toolkit 回执 schema 2 按此校验。
 - Codex 信任：`install.sh --hooks` 与 `--remote-hooks` 之后跑 `scripts/codex-trust.cjs write`，为 `hooks.json` 里命令指向本 `wetamp/hooks/` 的条目写 `[hooks.state."<hooks.json>:<event_snake>:<gi>:<hi>"] trusted_hash`（键排序紧凑 JSON 的 sha256，与 Codex 一致）。文本级改写：只替换/补自己键的 `trusted_hash`，其余内容与注释原样；同一键以内联表等其他写法出现时拒绝并提示 `/hooks`；改动前备份到 `$SUPERAGENT_HOME/backups/codex-trust-<UTC>/`，同目录临时文件 rename，保留文件权限。远端 `hooks.json` 由 agentcfg 维度在 superagent 维度之后下推，信任按 install 当时远端已有的条目写；agentcfg 之后改了这些条目时，要到下次投送新提交（必重跑 install）或手动再跑 `install.sh --remote-hooks` 才补齐。

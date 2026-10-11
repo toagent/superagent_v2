@@ -601,7 +601,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
   writeFileSync(worker, `#!/usr/bin/env bash\nSA_POLICY_PATH=${quote(join(dir, 'policy.json'))} exec ${quote(CODEX_WORKER)} "$@"\n`);
   chmodSync(worker, 0o755);
-  const runConfig = YAML.stringify({ aliases, assistants: { codex: { codexBinaryPath: worker } } }, {});
+  const runConfig = YAML.stringify({ aliases, env: { SA_POLICY_PATH: join(dir, 'policy.json') }, assistants: { codex: { codexBinaryPath: worker } } }, {});
   writeFileSync(config, runConfig);
   // Validation resolves aliases from repo config; execution also pins this same content at run scope.
   writeFileSync(join(dir, '.archon', 'config.yaml'), runConfig);
