@@ -1098,3 +1098,10 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **改动与新语义**：仅修测试 shim：先运行 provider 改写辅助程序，再由 shell `exec` Archon，保持调用方看到的子进程 PID 与实际入口一致；辅助程序失败立即退出。生产 recovery、归属/代际校验、未知 admission 的持久化 fence、MAX_ROUNDS、评审与缓存均不变，非测试新增仅为本节文档，运行代码净增 0 行。
 - **验收与证据**：`cd wetamp && bun test --timeout 300000 tests/cli.test.ts -t "REC-R1-01"` 为 1 pass/0 fail（51.54 秒）；`bun test --timeout 300000 tests/recovery.test.ts tests/cli.test.ts -t "recovery|HF3"` 为 23 pass/0 fail；`bunx tsc --noEmit` exit 0。证据目录 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/b1-rec-mcekpi67/`。
 - **旧 run / 生产影响与遗留**：旧 run 和生产行为无变化。隔离 `bash scripts/selftest.sh --fake` 首轮 exit 1 无诊断；跟踪重跑的 kill/recover（约 3 秒）、signal、board 与 abandon 均通过，后续 HF3 临时 toolkit 首提交被既有 pre-commit gitleaks 判疑似 secret，exit 1，未放行或绕过；现场保留 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/sa-selftest.mAW9TK/`，完整 fake exit 0 未覆盖。只交付编码自检，集成、主控验收与统一独立评审另行执行。
+
+## B1-HF3：selftest 跟上 AD 的 latest-engine retry refusal
+
+- **问题与被推翻的假设 / I3、I6、P1–P4**：HF3 仍假设失败 run 在已有完成编码后可换引擎 adopt 并继续完成；AD 已有意拒绝这条路径，避免重做已交付包。`tests/cli.test.ts` 的 AD 单测已覆盖拒绝且不写 ledger，本包仅修过时测试，不改产品恢复策略。
+- **改动与新语义**：复用真实 Archon、fake 编码和隔离 toolkit，先证明 `code-core` 完成、`settle-core` 失败，再提交模板变更。`decide retry` 必须返回非零，`archon_run_id` 不变、`adoptions` 未追加、原 run 状态不变。删除旧 snapshot marker、同 worktree、旧提交保留、diff-m1-r1 与完成新 run 的步骤；日志由 5 步减为 3 步，入口标题与注释同步为 refusal。事故回放就是原 HF3 失败场景，运行证据复用现有 CLI 回执与 HF3 日志，不新增监测路径。首次自检额外要求 ledger 原文不变，实测被 `decide` 既有的 `intervened=true` 记录推翻，删除该过严断言；AD 单测验证的是 `resume` 拒绝不写 ledger。
+- **验收与证据**：隔离 `bun test tests/cli.test.ts -t "AD: stale terminal runs"` 为 1 pass/0 fail（12 个断言）；最终 `bunx tsc --noEmit -p .`、HF3 独立实机段、`bash scripts/selftest.sh --fake` 均 exit 0，后者回执 `ok:true/fake:true`，recover 2684ms、signal 1002ms、abandon 623ms。shell 语法与 diff 检查通过，整体净减行数。证据 `/tmp/b1-hf3.0m8Jyu/{ad-test.log,tsc-final.log,hf3-only.log,selftest-final.log,final-home/selftest-fake.json}`；首次过严断言的失败留在 `selftest.log`，未绕过护栏。
+- **旧 run / 生产影响与遗留**：只改测试脚本和本节记录，旧 run 与生产行为不变；保留 helper 文件名以维持既有入口，不新增兼容层。不操作生产 checkout/台账、真实 supervisor、提醒事项或 launchd，不委派、push 或合并。主控集成验收与统一独立评审未覆盖。

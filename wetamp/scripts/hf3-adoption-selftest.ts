@@ -8,15 +8,10 @@ import { WETAMP, home, writeAtomic } from '../src/config';
 import { caller, coord, repoScope } from '../src/coord';
 import { generate } from '../src/generate';
 import type { Plan } from '../src/plan';
-import {
-  capturedSourceRoots,
-  loadWorkflowSource,
-} from '../../packages/workflows/src/workflow-source';
-import { workflowSourceMetadataSchema } from '../../packages/workflows/src/schemas/workflow-run';
 
 const [repo, timeout] = process.argv.slice(2);
 assert(repo && timeout, 'scratch repo and timeout required');
-// This toolkit is selftest's disposable copy. Adoption must prove a committed snapshot, just like production.
+// Commit the disposable toolkit so retry sees a real engine change.
 const toolkit = dirname(WETAMP);
 const engineGit = (...args: string[]): string => {
   const p = Bun.spawnSync(['git', '-C', toolkit, ...args], { stdout: 'pipe', stderr: 'pipe' });
@@ -71,7 +66,7 @@ const ack = c.mutate(scope, who, () =>
 );
 assert.equal(ack.ok, true);
 assert.equal(typeof ack.runId, 'string');
-let current = String(ack.runId);
+const current = String(ack.runId);
 const ledger: Ledger = {
   run_id: runId,
   archon_run_id: current,
@@ -97,20 +92,16 @@ const awaitTerminal = async (): Promise<RunView> => {
   }
   throw new Error(`HF3 timed out: ${current}`);
 };
-const git = (...args: string[]): string => {
-  const p = Bun.spawnSync(['git', ...args], { cwd: repo, stdout: 'pipe', stderr: 'pipe' });
-  assert.equal(p.exitCode, 0, p.stderr.toString());
-  return p.stdout.toString().trim();
-};
 try {
   const failed = await awaitTerminal();
   assert.equal(failed.status, 'failed');
   assert(failed.nodes?.some(n => n.nodeId === 'settle-core' && n.state === 'failed'));
-  assert(failed.working_path);
-  const oldHead = git('-C', failed.working_path, 'rev-parse', 'HEAD');
-  console.error(`HF3 1/5 old=${current} status=failed node=settle-core head=${oldHead}`);
-  const marker = '// HF3 scratch template adoption proof';
-  appendFileSync(join(WETAMP, 'templates/.archon/scripts/sa-check.ts'), `\n${marker}\n`);
+  assert(failed.nodes?.some(n => n.nodeId === 'code-core' && n.state === 'completed'));
+  console.error(`HF3 1/3 run=${current} status=failed node=settle-core code=completed`);
+  appendFileSync(
+    join(WETAMP, 'templates/.archon/scripts/sa-check.ts'),
+    '\n// HF3 scratch engine change\n'
+  );
   engineGit('add', '--', 'wetamp/templates/.archon/scripts/sa-check.ts');
   engineGit(
     '-c',
@@ -119,40 +110,15 @@ try {
     'user.email=sa@localhost',
     'commit',
     '-qm',
-    'scratch adoption'
+    'scratch engine change'
   );
-  writeFileSync(ready, 'ready');
-  assert.equal(main(['decide', runId, 'retry']), 0);
+  console.error(`HF3 2/3 engine=${engineGit('rev-parse', 'HEAD')} changed=true`);
+  assert.notEqual(main(['decide', runId, 'retry']), 0);
   const next = loadLedger(runId);
-  assert.notEqual(next.archon_run_id, current);
-  assert.equal(next.adoptions?.at(-1)?.from, current);
-  assert.equal(next.adoptions?.at(-1)?.engine_commit, engineGit('rev-parse', 'HEAD'));
-  current = next.archon_run_id;
-  console.error(`HF3 2/5 new=${current} adoption=${String(next.adoptions.at(-1)?.reason)}`);
-  const finished = await awaitTerminal();
-  const metadata = archonJson(['workflow', 'get', current, '--verbose'], repo).metadata;
-  assert(metadata && typeof metadata === 'object' && 'workflow_source' in metadata);
-  const record = workflowSourceMetadataSchema.parse(metadata.workflow_source);
-  const capture = await loadWorkflowSource(record.root, record.digest, record.source_config);
-  const source = capturedSourceRoots(capture.anchor);
-  assert(source.project);
-  const snapshot = join(source.project, '.archon/scripts/sa-check.ts');
-  assert(readFileSync(snapshot, 'utf8').includes(marker));
-  console.error(`HF3 3/5 snapshot=${snapshot} marker=true`);
-  assert.equal(finished.working_path, failed.working_path);
-  git('-C', failed.working_path, 'merge-base', '--is-ancestor', oldHead, 'HEAD');
-  console.error('HF3 4/5 worktree=same old_commit=preserved');
-  assert.equal(finished.status, 'completed');
-  assert(finished.output_root);
-  const diff = JSON.parse(
-    readFileSync(join(finished.output_root, 'artifacts/runs', current, 'diff-m1-r1.json'), 'utf8')
-  ) as { patch: string; same: boolean };
-  assert(
-    readFileSync(diff.patch, 'utf8').includes('+core\n+repair core\n'),
-    'adopt must review the pre-adoption delivery'
-  );
-  assert.equal(diff.same, false, 'first review must not be skipped for an empty coder increment');
-  console.error(`HF3 5/5 status=${finished.status} engine=current`);
+  assert.equal(next.archon_run_id, current);
+  assert.equal(next.adoptions, undefined);
+  assert.equal(getRun(current, repo).status, failed.status);
+  console.error(`HF3 3/3 retry=refused run=${current} status=failed adoption=unchanged`);
 } finally {
   // Every run here belongs to this selftest. Abandon only a nonterminal owned run.
   const run = getRun(current, repo);
