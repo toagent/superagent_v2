@@ -217,6 +217,7 @@
             "default": "auto",
             "description": "G2 qualified PASS integrates automatically unless human signoff is requested"
           },
+          "review": { "type": "boolean", "description": "Request milestone review; G2 and strict always require review" },
           "effort": {
             "enum": [
               "low",

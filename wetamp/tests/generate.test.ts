@@ -116,6 +116,16 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 });
 
 describe('buildWorkflow', () => {
+  test('NR: optional review runs only on effective G2 risk, including fake mode', () => {
+    const plan = { ...fixture, packages: [{ ...fixture.packages[0], review: undefined }] };
+    for (const fake of [false, true]) {
+      const nodes = nodesOf(build(fake, plan));
+      expect(nodes.find(n => n.id === 'review-m1-r1')?.when).toBe(
+        "$diff-m1-r1.output.disposition == 'advance' && $diff-m1-r1.output.risk == 'G2'"
+      );
+      expect(nodes.find(n => n.id === 'gate-m1-r1')?.with?.review).toBe('0');
+    }
+  });
   test('ACCT: short acceptance keeps the Archon subprocess default floor', () => {
     const source = readFileSync(join(WETAMP, '../packages/workflows/src/dag-executor.ts'), 'utf8');
     const ms = Number(

@@ -199,6 +199,7 @@ const repaired = base
   }));
 // gate 可透传验收原因；封闭组合展开为精确码，消费者不解析前后缀。
 export const REASONS: Reason[] = [
+  deterministic('review_not_required', 'gate', 'engine', '验收通过且无需评审'),
   ...base,
   ...repaired,
   ...[...base, ...repaired].map(r => ({

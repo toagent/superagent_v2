@@ -148,7 +148,11 @@ describe('milestones', () => {
     const [m] = milestones(
       plan([pkg('a', { risk: 'G1' }), pkg('b', { risk: 'G2', signoff: 'human' }), pkg('c')])
     );
-    expect([m.risk, m.human]).toEqual(['G2', true]);
+    expect([m.risk, m.human, m.review]).toEqual(['G2', true, true]);
+    const optional = plan([pkg('a', { risk: 'G1' })]);
+    expect(milestones(optional)[0].review).toBe(false);
+    expect(milestones({ ...optional, mode: 'strict' })[0].review).toBe(true);
+    expect(milestones(plan([pkg('a', { review: true })]))[0].review).toBe(true);
     expect(milestones(plan([pkg('a', { signoff: 'auto' })]))[0].human).toBe(false);
   });
   test('milestone dependency cycle is rejected', () => {

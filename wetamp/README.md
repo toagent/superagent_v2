@@ -26,6 +26,7 @@ wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要
 plan 的目标 repo 必须位于 `SUPERAGENT_WRITE_ROOTS`（冒号分隔，默认 `~/work`）下，格式见 `schemas/plan.schema.json`
 （示例 `tests/fixtures/plan-two-pkgs.json`：`repo`、`base_ref`、`deadline`、`budget`、`packages[]`，包可带 `milestone`、
 `signoff: "human"`；可选 `console: "codex"`）。
+包可设 `review: true` 请求里程碑评审；G2、strict 或验收有效风险升到 G2 必须评审，其余默认主控实测，gate 标记 `TESTED`。
 
 ```bash
 superagent run plan.json                 # 立即返回 {run_id, archon_run_id, branch, gen_dir}

@@ -1,5 +1,12 @@
 [
   {
+    "code": "review_not_required",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "验收通过且无需评审"
+  },
+  {
     "code": "base_branch_missing",
     "hold": "engine_suspect",
     "determinism": "deterministic",

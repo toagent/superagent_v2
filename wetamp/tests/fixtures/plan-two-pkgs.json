@@ -11,6 +11,7 @@
       "scope": { "write": ["core.txt"], "read_hint": ["README.md"] },
       "accept": [{ "cmd": "test -f core.txt", "timeout_s": 30 }],
       "risk": "G1",
+      "review": true,
       "size": "S"
     },
     {
