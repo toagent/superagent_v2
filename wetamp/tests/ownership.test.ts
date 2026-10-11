@@ -67,6 +67,40 @@ test('launcher walks to nearest interactive CLI, including GUI panes without tty
   expect(owner(true, () => ['', '1', '??', 'claude'], 50)).toEqual({ pid: 50, tty: null });
 });
 
+test('G1: API app-server owns tools through short-lived shells; exec and MCP cannot own a controller', () => {
+  const fixture = new Map([
+    [50, ['', '40', '??', 'bash -c superagent claim']],
+    [40, ['', '30', '??', 'codex exec -m sol']],
+    [30, ['', '20', '??', 'codex mcp-server']],
+    [20, ['', '1', '??', '/vendor/codex app-server']],
+  ]);
+  expect(owner(true, pid => fixture.get(pid) ?? null, 50)).toEqual({ pid: 20, tty: null });
+  expect(owner(false, pid => fixture.get(pid) ?? null, 50)).toEqual({ pid: 40, tty: null });
+});
+
+test('G1: caller uses app-server PID and only fresh unambiguous heartbeat sessions', () => {
+  const root = tmp(), bin = join(root, 'bin'), home = join(root, 'sa');
+  mkdirSync(bin);
+  mkdirSync(join(home, 'live'), { recursive: true });
+  writeFileSync(join(bin, 'ps'), '#!/bin/sh\ncase "$*" in *lstart*) echo fixture-start;; *) echo "1 ?? codex app-server";; esac\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'lsof'), '#!/bin/sh\nprintf "fcwd\\nn/w/fixture\\n"\n', { mode: 0o755 });
+  const beat = (session: string, at: number) => writeFileSync(join(home, 'live', `${session}.json`),
+    JSON.stringify({ pid: process.pid, client: 'codex', session_id: session, cwd: '/w/fixture', at: new Date(at).toISOString() }));
+  beat('current', Date.now());
+  beat('smoke', Date.now() - 120001);
+  const readCaller = () => {
+    const p = Bun.spawnSync([process.execPath, '-e', `import {caller} from ${JSON.stringify(join(import.meta.dir, '../src/coord/index.ts'))}; console.log(JSON.stringify(caller(true)));`], {
+      env: { ...process.env, SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon'), PATH: `${bin}:${process.env.PATH}` },
+      stdout: 'pipe', stderr: 'pipe',
+    });
+    expect({ code: p.exitCode, err: p.stderr.toString() }).toEqual({ code: 0, err: '' });
+    return JSON.parse(p.stdout.toString());
+  };
+  expect(readCaller()).toMatchObject({ client: 'codex', pid: process.pid, pid_start: 'fixture-start', session_id: 'current' });
+  beat('smoke', Date.now());
+  expect(readCaller().session_id).toBeUndefined();
+});
+
 test('recorded launcher wins over watcher; merged codex launcher/native pids bind once', () => {
   expect(ownership({ run_id: id, cwd: '/w/sinan', launcher }, rows, sessions, terms)).toEqual({
     owner: 20,
@@ -158,7 +192,7 @@ test('job exec persists launcher metadata from matching heartbeat; no prompt/arg
       client: 'claude',
       session_id: 'session-fixture',
       cwd: '/w/sinan',
-      at: new Date(now).toISOString(),
+      at: new Date().toISOString(),
     })
   );
   writeFileSync(join(bin, 'ps'), '#!/bin/sh\nprintf "1 ttys001 claude\\n"\n', { mode: 0o755 });

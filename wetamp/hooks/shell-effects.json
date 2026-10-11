@@ -115,7 +115,7 @@
       "gc": {},
       "checkout": { "unless": "^-b|^--orphan(?:=|$)" },
       "switch": { "unless": "^-c|^--create(?:=|$)" },
-      "branch": { "pattern": "^-[a-zA-Z]*[dDmM][a-zA-Z]*$|^--(?:delete|move)(?:=|$)" },
+      "branch": { "pattern": "^-[a-zA-Z]*[DmM][a-zA-Z]*$|^--move(?:=|$)" },
       "tag": { "pattern": "^-[a-zA-Z]*d[a-zA-Z]*$|^--delete(?:=|$)" },
       "commit": { "pattern": "^--amend(?:=|$)" },
       "fetch": { "pattern": "^--prune(?:-tags)?(?:=|$)|^\\+" },

@@ -186,6 +186,25 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       ).hooks
     ).map(([e, gs]) => [e, ...gs.flatMap(g => g.hooks.map(h => h.command))]);
 
+  test('G1: --hooks publishes controller ledger after trust; dry-run preserves bytes and repeat is idempotent', () => {
+    const { home, sh } = sandbox();
+    const ledger = join(home, '.local/state/superagent/install.json');
+    mkdirSync(dirname(ledger), { recursive: true });
+    const original = JSON.stringify({ installer: 'superagent_v2', role: 'worker', custom: true });
+    writeFileSync(ledger, original);
+    expect(sh('--hooks', '--dry-run').code).toBe(0);
+    expect(readFileSync(ledger, 'utf8')).toBe(original);
+    expect(sh('--hooks').code).toBe(0);
+    expect(JSON.parse(readFileSync(ledger, 'utf8'))).toMatchObject({
+      role: 'controller', mode: 'controller', wetamp: WETAMP, custom: true,
+    });
+    const installed = readFileSync(ledger, 'utf8');
+    expect(sh('--hooks').code).toBe(0);
+    expect(readFileSync(ledger, 'utf8')).toBe(installed);
+    expect(sh('--hooks', '--dry-run').code).toBe(0);
+    expect(readFileSync(ledger, 'utf8')).toBe(installed);
+  });
+
   test('--hooks rewrites V1 paths, fills missing events, dedupes, keeps other hooks; --dry-run writes nothing', () => {
     const { home, sh } = sandbox();
     const settings = join(home, '.claude', 'settings.json');
@@ -231,7 +250,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(JSON.stringify(after)).not.toContain('/work/github/superagent/');
     expect(readdirSync(join(home, '.superagent', 'backups'))[0]).toMatch(/^hooks-\d{8}T\d{6}Z$/);
     expect(sh('--hooks').out.trim()).toMatch(
-      /^hooks: no changes\ncodex trust: \d+ entries already trusted$/
+      /^hooks: no changes\ncodex trust: \d+ entries already trusted\ninstall: mode=controller$/
     );
   });
 
@@ -272,7 +291,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     ]);
     expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-advisory.cjs')]]);
     expect(sh('--hooks').out.trim()).toMatch(
-      /^hooks: no changes\ncodex trust: \d+ entries already trusted$/
+      /^hooks: no changes\ncodex trust: \d+ entries already trusted\ninstall: mode=controller$/
     );
   });
 
@@ -299,7 +318,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(cmds(codex).flat()).toContain(`${V2('guard.cjs')} codex`);
     expect(existsSync(join(home, '.superagent', 'backups'))).toBe(false);
     expect(sh('--hooks').out.trim()).toMatch(
-      /^hooks: no changes\ncodex trust: \d+ entries already trusted$/
+      /^hooks: no changes\ncodex trust: \d+ entries already trusted\ninstall: mode=controller$/
     );
   });
 
