@@ -299,6 +299,32 @@ describe('HF3 latest-engine recovery', () => {
       expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('current');
     }
   );
+  test('AD: stale terminal runs with completed work refuse adoption without ledger writes', () => {
+    for (const [status, nodeId] of [
+      ['failed', 'code-core'],
+      ['cancelled', 'fix-m1-r2'],
+    ] as const) {
+      const s = setup('old');
+      writeFileSync(
+        join(s.dir, 'get-000.json'),
+        JSON.stringify(run(status, { nodes: [{ nodeId, state: 'completed' }] }))
+      );
+      const before = readFileSync(ledgerPath('sa1'), 'utf8');
+      const result = captured(() => main(['resume', 'sa1']));
+      expect(result.code).toBe(1);
+      expect(JSON.parse(result.out)).toMatchObject({
+        ok: false,
+        run_id: 'sa1',
+        reason: expect.stringContaining('superagent decide sa1 reject'),
+      });
+      expect(result.out).toMatch(/last PASS commit.*old engine snapshot.*engine commit/);
+      expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+      expect(s.calls().some(c => c.includes('--adopt') || c.startsWith('workflow resume'))).toBe(
+        false
+      );
+      expect(existsSync(join(s.ledger.gen_dir, '.archon.old'))).toBe(false);
+    }
+  });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();
     expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('stale(unknown)');

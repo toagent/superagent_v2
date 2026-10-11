@@ -463,6 +463,12 @@ function recoverRun(
     run => {
       Object.assign(l, loadLedger(l.run_id));
       if (run.status === 'completed') return 'status completed is not resumable';
+      // 只有已完成的编码节点（code/repair/fix）才算会被重做的工作；start 等引擎节点重跑无代价
+      if (
+        adoptsRun(l, run) &&
+        run.nodes?.some(n => n.state === 'completed' && /^(code|repair|fix)-/.test(n.nodeId))
+      )
+        return `run ${l.run_id} (${run.id}): engine changed since this run started; adopting would redo completed packages. Options: superagent decide ${l.run_id} reject, then start a new plan from the last PASS commit; or resume on the old engine snapshot by checking out its engine commit`;
       if (auto?.deterministic) {
         if (
           workflowIdentity(l) === engineHash() ||

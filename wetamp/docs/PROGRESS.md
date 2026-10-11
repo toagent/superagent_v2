@@ -1055,5 +1055,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **R2 / FC-R1-01、FC-R1-02**：推翻“首条 finding 代表整条命令”和“修复到限即可复用旧评审”的假设；同命令保留全部稳定 finding ID 与各自分类，命令聚合遇 product/未分类即阻塞，不受顺序影响。`repair_limit` 仅改变修复路由，跳过评审仍必须满足候选 head、diff、contract_hash、风险与独立评审身份等原复用条件；现有 open debt 禁止复用，不匹配保持 held。新增混合分类正反序、strict/G2、各 ID 独立分类与关闭、第三轮 debt 叠加候选/契约/身份变化回归，原代码上 3 项均失败；`bun test tests/sa-check.test.ts` 254 pass/0 fail（`/tmp/b1-fc2-sa-check.log`）。旧冻结 run 不自动更新，无生产状态迁移，tsc 与独立复审/集成实测交主控。
 
 ## B1-NR：评审按需触发
+
 - 推翻“每个里程碑都须评审”的假设；复用现有 when/gate（P4、I1），包 `review:true`、strict 或 G2 强制评审；其他仅在绿验收 advance、无任何评审且有效风险低于 G2 时 PASS(TESTED)，保留预算/截止检查，TESTED 不产生评审债。
 - 新 run 加载新语义，旧冻结 run 不自动改变、生产状态不迁移；NR 回归覆盖 plan/schema、正常/fake 条件、有效 G2 升级与 gate 失败关闭，监测点为 gate 的 grade/reason/risk；聚焦 5 pass/0 fail（`/tmp/b1-nr-focused-final.log`），卡片三文件验收 373 pass/2 fail（`/tmp/b1-nr-tests-final.log`）；两项 Archon 子进程失败为 worktree 缺 pino 的 test_env（`/tmp/b1-nr-archon-import.log`），不派产品修复。两份 golden 经 buildWorkflow/原 YAML 序列化路径重生成；除 golden 净增 75 行。tsc 按卡未跑，独立评审与集成实测交主控。
+
+## B1-AD：引擎换版拒绝重跑已完成包
+
+- 问题与被推翻的假设：终态 run 的 adopt 会新开 run，从首节点重跑；I3 的换版不保证保留已 PASS 产物。复用完成节点集合，在恢复 guard 写 ledger 前拒绝有完成节点的 adopt，返回 run id，并提示 reject 后从最后 PASS commit 新开计划或检出旧引擎 commit；无完成节点仍可 adopt，强化 I1/P1–P4，无新状态、配置或跨 run 复用。
+- 旧 run/生产影响与遗留：仅新恢复调用受保护，运行中/paused/同指纹语义不变，不改生产 ledger、packages 或已生成快照；一条回归覆盖 failed/cancelled 的已完成编码/评审节点、ledger 不变且不启动恢复。`cd wetamp && bun test tests/cli.test.ts -t 'HF3 latest-engine recovery'` 最终 8 pass/0 fail（`/tmp/b1-ad-focused-final.log`）；整文件试跑 261 pass/1 fail（既有 REC-R1-01 的未登记 run selftest recover 失败，不经过本包 guard，`/tmp/b1-ad-cli.log`），不扩范围修复。回归移除重复夹具初始化后通过，未放宽超时；`bunx tsc --noEmit` exit 2，未改动 memory 文件缺相对 zod 依赖及隐式 any（`/tmp/b1-ad-tsc-final.log`）；测试依赖仅用已有缓存临时链接，无安装/升级或生产写入。仅编码自检，主控实测另行执行。
