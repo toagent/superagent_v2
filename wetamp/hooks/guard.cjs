@@ -50,7 +50,8 @@ function shellText(name, input) {
   if (Array.isArray(value)) return value.map(arg => `'${String(arg).replace(/'/g, "'\\''")}'`).join(' ');
   return typeof value === 'string' ? value : undefined;
 }
-const aiCli = name => ['claude', 'codex', 'opencode', 'sol-run'].includes(name) || name.startsWith('twin-agent');
+const aiCli = name => require('./shell-effects.json').some(rule => rule.effect === 'delegate'
+  && (rule.commands.includes(name) || rule.commandPrefixes?.some(prefix => name.startsWith(prefix))));
 // N-1: a derived session must not start another agent.
 function nestedReason(name, input, normalized) {
   if (['Agent', 'Task', 'spawn_agent', 'claude.Agent'].includes(name) || name.startsWith('mcp__claude__'))

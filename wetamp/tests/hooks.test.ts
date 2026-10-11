@@ -4,7 +4,9 @@ import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { gitRepo, tmp } from './helpers';
-await (createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }).init();
+await (
+  createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }
+).init();
 
 const HOOKS = join(import.meta.dir, '..', 'hooks');
 // 子进程 env 只保留与判定无关的键，判定相关的由每个用例显式给出。
@@ -58,7 +60,7 @@ describe('REDLINE 默认放行与危险效果', () => {
     'rtk proxy which flock bun timeout',
     'rtk proxy bash -c \'baseline_dir=$(mktemp -d /tmp/mac-presets-baseline.XXXXXX); git archive HEAD app/src-tauri | tar -x -C "$baseline_dir"; cargo test --manifest-path "$baseline_dir/app/src-tauri/Cargo.toml" --lib --locked > /tmp/mac-presets-baseline-cargo.log 2>&1; result=$?; tail -n 10 /tmp/mac-presets-baseline-cargo.log; exit "$result"\'',
     'rtk proxy sh -c \'git diff --check && test "$(git rev-parse HEAD)" = abc && git status --short\'',
-    'rtk proxy bash -c \'for i in $(seq 1 3); do bun test > /tmp/x-$i.log 2>&1; done\'',
+    "rtk proxy bash -c 'for i in $(seq 1 3); do bun test > /tmp/x-$i.log 2>&1; done'",
     'rtk proxy kill -TERM 41418',
     'ln -s /main/app/node_modules app/node_modules',
     'echo x > /Users/test/work/_mcp_workspace/tmp/new-file',
@@ -92,32 +94,220 @@ describe('REDLINE 默认放行与危险效果', () => {
     humane(reason(guard('claude', bash(command), { SUPERAGENT_ROLE: 'worker' })));
   });
   test('覆盖主检出现有文件被拦，陌生命令的目标按归属判定', () => {
-    const { guard, repo } = setup(), main = gitRepo(tmp());
+    const { guard, repo } = setup(),
+      main = gitRepo(tmp());
     writeFileSync(join(main, 'existing'), 'keep');
     const env = { SUPERAGENT_ROLE: 'worker' };
     humane(reason(guard('claude', bash(`echo x > ${join(main, 'existing')}`), env)));
     expect(readFileSync(join(main, 'existing'), 'utf8')).toBe('keep');
-    expect(reason(guard('claude', bash(`never_registered_tool > ${join(repo, 'new')}`), env))).toBeUndefined();
+    expect(
+      reason(guard('claude', bash(`never_registered_tool > ${join(repo, 'new')}`), env))
+    ).toBeUndefined();
     humane(reason(guard('claude', bash('never_registered_tool > ~/.codex/new-config'), env)));
-    expect(reason(guard('claude', bash(`cp ${join(main, 'existing')} copied`), env))).toBeUndefined();
+    expect(
+      reason(guard('claude', bash(`cp ${join(main, 'existing')} copied`), env))
+    ).toBeUndefined();
     humane(reason(guard('claude', bash(`git -C ${main} add existing`), env)));
     expect(reason(guard('claude', bash(`git -C ${main} status --short`), env))).toBeUndefined();
     expect(reason(guard('claude', bash('kill -9 41418'), env))).toBeUndefined();
   });
   test('新建范围外文件放行；临时 HOME 下的 provider 配置仍受保护', () => {
-    const { guard } = setup(), home = tmp();
+    const { guard } = setup(),
+      home = tmp();
     const env = { SUPERAGENT_ROLE: 'worker', HOME: home };
-    expect(reason(guard('claude', { tool_name: 'Write', tool_input: { file_path: '/Users/test/work/tmp/new' } }, env))).toBeUndefined();
-    humane(reason(guard('claude', { tool_name: 'Write', tool_input: { file_path: join(home, '.codex/config.toml') } }, env)));
+    expect(
+      reason(
+        guard(
+          'claude',
+          { tool_name: 'Write', tool_input: { file_path: '/Users/test/work/tmp/new' } },
+          env
+        )
+      )
+    ).toBeUndefined();
+    humane(
+      reason(
+        guard(
+          'claude',
+          { tool_name: 'Write', tool_input: { file_path: join(home, '.codex/config.toml') } },
+          env
+        )
+      )
+    );
   });
   test('reviewer 可以编辑临时文件，但不能提交或编辑被审仓库', () => {
     const { guard, repo } = setup();
     const env = { SUPERAGENT_ROLE: 'reviewer' };
-    expect(reason(guard('claude', { tool_name: 'Write', tool_input: { file_path: '/tmp/reviewer-result' } }, env))).toBeUndefined();
+    expect(
+      reason(
+        guard(
+          'claude',
+          { tool_name: 'Write', tool_input: { file_path: '/tmp/reviewer-result' } },
+          env
+        )
+      )
+    ).toBeUndefined();
     expect(reason(guard('claude', bash('bun test > /tmp/reviewer-test.log'), env))).toBeUndefined();
     expect(reason(guard('claude', bash(`git -C ${tmp()} init`), env))).toBeUndefined();
     humane(reason(guard('claude', edit(repo, 1), env)));
     humane(reason(guard('claude', bash('git commit -m review'), env)));
+  });
+});
+
+describe('FIXC RV-C 机制回归', () => {
+  const probes = [
+    ['R1-01 overwrite', 'echo x > "$UNKNOWN"'],
+    ['R1-02 eval cwd', "eval 'cd /Users/Shared'; rm -rf victim"],
+    ['R1-02 negated cwd', '! cd /Users/Shared || rm -rf victim'],
+    ['R1-03 heredoc expansion', 'cat <<EOF\n$(npm publish)\nEOF'],
+    ['R1-04 find execdir', 'find . -execdir codex exec x \\;'],
+    [
+      'R1-05 git object',
+      ['git', '--git-dir=/foreign/.git', '--work-tree=/foreign', 'reset', '--hard'].join(' '),
+    ],
+    ['R1-06 git config', 'git config --global core.hooksPath /tmp/empty'],
+    ['R1-07 pid provenance', 'pgrep node | xargs kill -TERM 41418'],
+    ['R1-08 option spelling', 'curl --request=DELETE https://example.com/item'],
+    [
+      'R1-09 secret redaction',
+      'curl -H "Authorization: Bearer FAKE_SECRET" -d "{}" https://example.com',
+    ],
+  ];
+  test.each(probes)('探针 %s', (_id, command) => {
+    const { guard } = setup();
+    for (const client of ['claude', 'codex']) {
+      const payload =
+        client === 'claude'
+          ? bash(command)
+          : { tool_name: 'exec_command', tool_input: { cmd: command } };
+      const out = guard(client, payload, { SUPERAGENT_ROLE: 'worker' });
+      expect(reason(out)).toMatch(/^已拦截：.+。原因：.+。可以：.+。$/);
+      expect(JSON.stringify(out)).not.toContain('FAKE_SECRET');
+    }
+  });
+  test('R1-07 fallback retains known process query provenance without parser', () => {
+    const { guard } = setup(hooksWith({}));
+    const out = guard('claude', bash('pgrep worker | xargs kill -TERM 41418'), {
+      SUPERAGENT_ROLE: 'worker',
+    });
+    expect(reason(out)).toContain('按端口或名称查询结果');
+  });
+  const variants = [
+    [
+      'R1-01 overwrite variants',
+      ['echo x >| "$DEST"', 'tee "$DEST"', 'cd "$WHERE"; strange_tool > output'],
+    ],
+    [
+      'R1-02 parent scope variants',
+      [
+        "eval 'cd /Users/Shared' && rm -rf other",
+        '! cd /Users/Shared; rm -rf other',
+        '! cd /Users/Shared || truncate -s 0 "$UNKNOWN"',
+      ],
+    ],
+    [
+      'R1-03 expansion variants',
+      [
+        'cat <<-END\n\t`codex exec other`\n\tEND',
+        'cat <<END\n$(pnpm publish)\nEND',
+        "cat <<END\n'$(npm publish)'\nEND",
+      ],
+    ],
+    [
+      'R1-04 find body variants',
+      [
+        'find . -okdir pnpm publish \\;',
+        'find . -execdir rm -rf relative \\;',
+        'find . -ok codex exec other \\;',
+        'find . -exec npm publish \\;',
+      ],
+    ],
+    [
+      'R1-05 git location variants',
+      [
+        ['git', '-C', '/foreign', 'reset', '--hard'].join(' '),
+        ['git', '--git-dir', '/foreign/.git', '--work-tree', '/foreign', 'clean', '-fd'].join(' '),
+        ['env', 'GIT_DIR=/foreign/.git', 'git', 'reset', '--hard'].join(' '),
+        ['GIT_DIR=/foreign/.git', 'git', 'reset', '--hard'].join(' '),
+        ['GIT_DIR=/foreign/.git;', 'git', 'reset', '--hard'].join(' '),
+        ['git', '--work-tree=$TREE', 'reset', '--hard'].join(' '),
+      ],
+    ],
+    [
+      'R1-06 config variants',
+      [
+        'git config --system user.name changed',
+        'git config core.hooksPath /tmp/empty',
+        'git config --file=$CFG core.hooksPath /tmp/empty',
+        'cd "$WHERE"; git config core.hooksPath /tmp/empty',
+      ],
+    ],
+    [
+      'R1-07 selection variants',
+      [
+        'kill -TERM 41418 $(pidof server)',
+        'pgrep -f worker | xargs -n 2 kill -KILL 41418',
+        'pid=$(pgrep server); kill -TERM "$pid"',
+      ],
+    ],
+    [
+      'R1-08 HTTP option variants',
+      [
+        'curl --request DELETE https://example.org/other',
+        'curl --request=PATCH https://example.org/other',
+      ],
+    ],
+  ];
+  test.each(variants)('%s', (_id, commands) => {
+    const { guard } = setup();
+    for (const command of commands)
+      expect(
+        reason(guard('claude', bash(command), { SUPERAGENT_ROLE: 'worker' })),
+        command
+      ).toMatch(/^已拦截：/);
+  });
+  test('R1-09 only action and host survive external write reminders', () => {
+    const { guard } = setup();
+    for (const command of [
+      'curl --user user:FAKE_SECRET --data=PRIVATE_BODY https://example.org/private?token=QUERY_SECRET',
+      'curl --header="Authorization: Bearer FAKE_SECRET" --request=POST https://user:PASS_SECRET@example.org/private',
+    ]) {
+      const out = guard('claude', bash(command), { SUPERAGENT_ROLE: 'worker' });
+      expect(reason(out)).toContain('example.org');
+      expect(JSON.stringify(out)).not.toMatch(
+        /FAKE_SECRET|PRIVATE_BODY|QUERY_SECRET|PASS_SECRET|Authorization|\/private/
+      );
+    }
+  });
+  test('mechanism controls retain ordinary execution and parent/child cwd distinctions', () => {
+    const { guard, repo } = setup();
+    const worker = { SUPERAGENT_ROLE: 'worker' };
+    for (const command of [
+      "cat <<'END'\n$(npm publish) `codex exec data`\nEND",
+      'cat <<END\n$(git status --short)\nEND',
+      'cat <<END\n\\$(npm publish)\nEND',
+      'find . -execdir echo safe \\;',
+      'find . -okdir git status --short \\;',
+      `eval 'cd ${repo}' && echo x > local`,
+      '! cd /Users/Shared && rm -rf local',
+      'sh -c "cd /Users/Shared"; rm -rf local',
+      'echo x >> "$UNKNOWN"',
+      'tee --append "$UNKNOWN"',
+      'curl --request=GET https://example.org/read',
+      'git --work-tree=. status --short',
+      'git config --global --get core.hooksPath',
+      'env GIT_DIR=/foreign/.git git status; git status --short',
+      'kill -TERM 41418',
+      'pgrep server; kill -TERM 41418',
+    ])
+      expect(reason(guard('claude', bash(command), worker)), command).toBeUndefined();
+    expect(
+      reason(
+        guard('claude', bash(['git', 'reset', '--hard'].join(' ')), {
+          ...worker,
+          GIT_DIR: '/foreign/.git',
+        })
+      )
+    ).toMatch(/^已拦截：/);
   });
 });
 
@@ -261,7 +451,9 @@ describe('guard.cjs', () => {
         })
       )
     ).toContain('git push');
-    expect(reason(guard('claude', bash(['git', '-C', '/x', 'reset', '--hard', 'HEAD~1'].join(' '))))).toContain('非本任务');
+    expect(
+      reason(guard('claude', bash(['git', '-C', '/x', 'reset', '--hard', 'HEAD~1'].join(' '))))
+    ).toContain('非本任务');
   });
 
   test('删除目标拦截与 reviewer 只读', () => {
@@ -330,7 +522,6 @@ describe('guard.cjs', () => {
       'git add a.ts',
       'git checkout -- a.ts',
       'git stash',
-      'git config user.name changed',
       'git branch --list --delete other',
       'git tag changed',
       'git remote add other https://example.com/repo',
@@ -348,12 +539,21 @@ describe('guard.cjs', () => {
     ).toContain('reviewer 只读');
   });
 
-  test('动态 cwd 不隐藏明确危险；未知普通写入留 advisory', () => {
+  test('动态 cwd 不隐藏明确危险；未知覆盖拒绝、普通新建留 advisory', () => {
     const { guard } = setup();
     const worker = { SUPERAGENT_ROLE: 'worker' };
-    for (const cmd of ['cd "$UNKNOWN" && sudo true', 'cd "$UNKNOWN"; rm -rf relative', 'env -C "$UNKNOWN" npm publish', 'case x in x) sudo true;; esac', 'lsof -ti:3000 | xargs kill -9'])
+    for (const cmd of [
+      'cd "$UNKNOWN" && sudo true',
+      'cd "$UNKNOWN"; rm -rf relative',
+      'env -C "$UNKNOWN" npm publish',
+      'case x in x) sudo true;; esac',
+      'lsof -ti:3000 | xargs kill -9',
+    ])
       expect(reason(guard('claude', bash(cmd), worker)), cmd).toMatch(/^已拦截：/);
-    const result = guard('claude', bash('cd "$UNKNOWN" && echo x > relative'), worker);
+    expect(reason(guard('claude', bash('cd "$UNKNOWN" && echo x > relative'), worker))).toMatch(
+      /^已拦截：/
+    );
+    const result = guard('claude', bash('cd "$UNKNOWN" && touch relative'), worker);
     expect(reason(result)).toBeUndefined();
     expect(result?.systemMessage).toContain('advisory');
     expect(guard('claude', bash('curl --fail https://example.com'), worker)).toBeNull();
@@ -600,9 +800,9 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
         '浏览器资料',
       ],
       ['sqlite3 ~/Library/Cookies/Cookies.binarycookies', 'sqlite3 db.sqlite', '浏览器资料'],
-      ['npm publish', 'npm pack', 'publish'],
-      ['bun publish --dry-run', 'bun run build', 'publish'],
-      ['pnpm -r publish', 'pnpm -r build', 'publish'],
+      ['npm publish', 'npm pack', '发布'],
+      ['bun publish --dry-run', 'bun run build', '发布'],
+      ['pnpm -r publish', 'pnpm -r build', '发布'],
       ['docker push img:1', 'docker build -t img:1 .', 'docker'],
       ['gh release create v1', 'gh release view v1', 'gh'],
       ['gh pr merge 12 --squash', 'gh pr view 12', 'gh'],
@@ -654,7 +854,9 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     expect(tool('Read', { file_path: join(repo, 'README.md') })).toBeNull();
     expect(tool('Grep', { pattern: 'x', path: '~/.ssh' })).toBeNull();
     expect(tool('Grep', { pattern: 'x', path: '~/.ssh/id_ed25519' })).toContain('ssh 私钥');
-    expect(tool('Write', { file_path: join(home, '.ssh', 'config') }, true)).toContain('配置或凭据');
+    expect(tool('Write', { file_path: join(home, '.ssh', 'config') }, true)).toContain(
+      '配置或凭据'
+    );
     expect(tool('Write', { file_path: join(home, '.ssh', 'authorized_keys') })).toContain(
       'ssh 私钥'
     );

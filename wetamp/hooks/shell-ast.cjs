@@ -1,7 +1,9 @@
 'use strict';
 const path = require('node:path');
-const {unwrap, SHELLS, parse} = require('./shell.cjs');
+const {unwrap, SHELLS, parse, normalizeOptions, heredocExpansions} = require('./shell.cjs');
 const STREAM = /^\/dev\/(?:null|stdout|stderr)$/;
+const SELECTORS = new Set(require('./shell-effects.json').filter(rule => rule.effect === 'process_query').flatMap(rule => rule.commands));
+const selections = source => { try { return parse(source).argvs.map(argv => path.posix.basename(argv[0] || '')).filter(name => SELECTORS.has(name)); } catch { return []; } };
 // Parse syntax for effects, never as a command allowlist. Unknown syntax is advisory.
 function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath} = {}) {
   let parser, pending, failure = 'initialization not completed';
@@ -24,16 +26,18 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
     };
     const fallback = source => {
       advisory('shell_parse_unavailable');
-      try { check(parse(source), [cwd]); } catch (error) {
+      try { check({...parse(source), selections: selections(source)}, [cwd]); } catch (error) {
         if (error.message.startsWith('已拦截：')) throw error;
         advisory('shell_parse_failed');
       }
     };
     const union = (...dirs) => [...new Set(dirs.flat())];
-    const fork = dirs => ({dirs: [...dirs], ok: [...dirs], fail: [...dirs]});
+    const fork = (dirs, vars = new Map(), selected = []) => ({dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars), selected});
     const outcome = (state, ok, fail) => { state.ok = ok; state.fail = fail; state.dirs = union(ok, fail); };
     function execute(values, state, depth) {
+      values = normalizeOptions(values);
       const incoming = [...state.dirs], unwrapped = unwrap(values);
+      const commandEnv = Object.fromEntries([...state.vars, ...values.filter(v => /^[A-Za-z_][A-Za-z0-9_]*=/.test(v)).map(v => [v.slice(0, v.indexOf('=')), v.slice(v.indexOf('=') + 1)])]);
       const wrappers = unwrapped.heads.filter(i => i < values.length - unwrapped.argv.length);
       for (const head of wrappers.filter(i => path.posix.basename(values[i]) === 'env')) {
         const end = unwrapped.heads.find(i => i > head) ?? values.length;
@@ -48,23 +52,24 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       }
       // Wrappers themselves may elevate privileges; inspect them before unwrapping.
       check({argvs: wrappers.map(i => values.slice(i)), reads: [], writes: []}, state.dirs);
-      for (const line of unwrapped.lines) script(line, fork(state.dirs), depth + 1);
+      for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars), depth + 1);
       const argv = unwrapped.argv, name = path.posix.basename(argv[0] || '');
       if (/[$`]/.test(name)) advisory('command_head_unknown');
-      check({argvs: argv.length ? [argv] : [], reads: [], writes: unwrapped.writes.filter(t => !STREAM.test(t))}, state.dirs);
+      check({argvs: argv.length ? [argv] : [], reads: [], writes: unwrapped.writes.filter(t => !STREAM.test(t)), env: commandEnv,
+        selections: [...state.selected, ...argv.filter(v => /[$`]/.test(v)).flatMap(selections)]}, state.dirs);
       if (SHELLS.has(name)) {
         const flag = argv.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
         if (flag > 0 && argv[flag + 1]) {
           if (/\$|`/.test(argv[flag + 1]) && !values.includes(argv[flag + 1])) advisory('dynamic_shell_body');
-          script(argv[flag + 1], fork(state.dirs), depth + 1);
+          script(argv[flag + 1], fork(state.dirs, state.vars), depth + 1);
         }
       }
-      if (name === 'eval' && argv.length > 1) script(argv.slice(1).join(' '), fork(state.dirs), depth + 1);
+      if (name === 'eval' && argv.length > 1) { script(argv.slice(1).join(' '), state, depth + 1); return; }
       if (name === 'find') argv.forEach((v, i) => {
         if (!['-exec','-execdir','-ok','-okdir'].includes(v)) return;
         const end = argv.findIndex((w, j) => j > i && (w === ';' || w === '+'));
-        if (end < 0 || v.endsWith('dir')) { advisory('find_execution_scope'); return; }
-        execute(argv.slice(i + 1, end), fork(state.dirs), depth + 1);
+        if (end < 0 || v.endsWith('dir')) advisory('find_execution_scope');
+        execute(argv.slice(i + 1, end < 0 ? undefined : end), fork(v.endsWith('dir') ? ['/__sa_unknown_cwd__'] : state.dirs, state.vars), depth + 1);
       });
       if (name === 'cd') {
         const target = expand(argv[1] || env.HOME || require('node:os').homedir());
@@ -83,34 +88,70 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (n.type === 'heredoc_redirect') {
         const delimiter = n.namedChildren.find(c => c.type === 'heredoc_start');
         const body = n.namedChildren.find(c => c.type === 'heredoc_body');
-        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs), depth + 1); return null; }
-        if (!/[\\'"]/.test(delimiter?.text || '') && /[$`\\]/.test(body?.text || '')) advisory('heredoc_expansion');
+        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs, state.vars), depth + 1); return null; }
+        if (!/[\\'"]/.test(delimiter?.text || '')) for (const source of heredocExpansions(body?.text || '')) script(source, fork(state.dirs, state.vars), depth + 1);
         return null;
       }
+      if (n.type === 'for_statement') {
+        const variable = n.childForFieldName('variable')?.text, values = n.childrenForFieldName('value');
+        // Numeric iteration never contributes a slash or a parent-directory component.
+        const numeric = values.length && values.every(v => /^\d+$/.test(v.text) || /^\$\(seq\s+\d+(?:\s+\d+){0,2}\)$/.test(v.text));
+        const inner = fork(state.dirs, state.vars);
+        if (variable) { inner.vars.delete(variable); if (numeric) inner.vars.set(variable, '1'); }
+        for (const child of n.namedChildren) visit(child, inner, depth);
+        for (const assignment of n.descendantsOfType('variable_assignment')) state.vars.set(assignment.childForFieldName('name')?.text, '$__sa_unknown__');
+        if (variable) state.vars.set(variable, '$__sa_unknown__');
+        outcome(state, union(state.dirs, inner.ok), union(state.dirs, inner.fail)); return null;
+      }
+      if (n.type === 'negated_command') {
+        for (const child of n.namedChildren) visit(child, state, depth);
+        outcome(state, state.fail, state.ok); return null;
+      }
+      if (n.type === 'pipeline') state = fork(state.dirs, state.vars, selections(n.text));
       if (n.type === 'list') {
         const operands = n.namedChildren.filter(c => c.type !== 'comment');
         const op = n.children.find(c => c.type === '&&' || c.type === '||');
         if (operands.length === 2 && op) {
-          const left = fork(state.dirs); visit(operands[0], left, depth);
-          const right = fork(op.type === '&&' ? left.ok : left.fail); visit(operands[1], right, depth);
+          const left = fork(state.dirs, state.vars); visit(operands[0], left, depth);
+          const right = fork(op.type === '&&' ? left.ok : left.fail, left.vars, state.selected); visit(operands[1], right, depth);
           outcome(state, op.type === '&&' ? right.ok : union(left.ok, right.ok), op.type === '&&' ? union(left.fail, right.fail) : right.fail);
+          for (const variable of union([...state.vars.keys()], [...left.vars.keys()], [...right.vars.keys()]))
+            state.vars.set(variable, left.vars.get(variable) === right.vars.get(variable) ? right.vars.get(variable) : '$__sa_unknown__');
           return null;
         }
       }
-      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs);
+      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs, state.vars);
       const children = new Map();
       const ordered = n.type === 'redirected_statement' ? [...n.children].sort((a,b) => (a.type === 'command' ? 1 : 0) - (b.type === 'command' ? 1 : 0)) : n.children;
       for (const ch of ordered) children.set(ch.id, visit(ch, state, depth));
+      if (['if_statement','while_statement','case_statement'].includes(n.type))
+        for (const assignment of n.descendantsOfType('variable_assignment')) state.vars.set(assignment.childForFieldName('name')?.text, '$__sa_unknown__');
       const get = ch => ch && children.get(ch.id);
       if (['command_name','concatenation','string'].includes(n.type)) return n.namedChildren.map(ch => get(ch) || '').join('');
-      if (['simple_expansion','expansion','command_substitution','process_substitution'].includes(n.type)) return n.text;
+      if (['simple_expansion','expansion'].includes(n.type)) {
+        const variable = n.namedChildren.find(ch => ch.type === 'variable_name')?.text;
+        return state.vars.get(variable) ?? n.text;
+      }
+      if (['command_substitution','process_substitution'].includes(n.type)) return n.text;
+      if (n.type === 'variable_assignment') {
+        const variable = n.childForFieldName('name')?.text, value = n.childForFieldName('value');
+        let literal = get(value);
+        if (value?.type === 'command_substitution') literal = null;
+        if (variable && n.parent?.type !== 'command') {
+          state.vars.delete(variable);
+          if (literal && !/[$`]/.test(literal)) state.vars.set(variable, literal);
+          else state.vars.set(variable, value?.text || '$__sa_unknown__');
+        }
+        return variable && literal ? `${variable}=${literal}` : n.text;
+      }
       if (n.type === 'file_redirect') {
         const target = get(n.childForFieldName('destination')) || '';
         const op = n.children.find(c => !c.isNamed)?.type;
         const fd = ['>&','<&'].includes(op) && /^(?:\d+|-)$/.test(target);
-        check({argvs: [], reads: op === '<' ? [target] : [], writes: op !== '<' && !fd && !STREAM.test(target) ? [target] : []}, state.dirs);
+        const writes = op !== '<' && !fd && !STREAM.test(target) ? [target] : [];
+        check({argvs: [], reads: op === '<' ? [target] : [], writes, overwrites: ['>>','&>>'].includes(op) ? [] : writes}, state.dirs);
       }
-      if (n.type === 'command') execute([get(n.childForFieldName('name')), ...n.childrenForFieldName('argument').map(get)].filter(v => v !== null && v !== undefined), state, depth);
+      if (n.type === 'command') execute([...n.namedChildren.filter(ch => ch.type === 'variable_assignment').map(get), get(n.childForFieldName('name')), ...n.childrenForFieldName('argument').map(get)].filter(v => v !== null && v !== undefined), state, depth);
       return null;
     }
     function script(source, state, depth) {

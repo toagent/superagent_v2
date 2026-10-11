@@ -681,3 +681,12 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 旧 run/生产：hooks 使用配置当前指向的代码，旧 run 也受其策略影响；三个命令模板增加 AGENTS.md 命令规则提醒并改变 engine identity。仅本包 worktree 交付，未部署生产；B1 集成的 GUARD A-09 冲突以本包默认放行为准。
 - 遗留：解释器和脚本内部间接效果仍是尽力识别；真实 provider、现有更严格 reviewer sandbox 的临时写入权限及 G2 独立评审由主控集成验收。本包只做编码与自检。
 - 本包自检：tsc exit 0；eslint src exit 0；完整 bun test 886 pass / 0 fail、3 snapshots（410.93s）。卡片放行 9 项、拦截 12 项及陌生命令归属断言均通过；补测缺失解析器仍拒绝明确危险、内部异常 advisory、按端口经 xargs 发信号拒绝。隔离 home 的 selftest --fake 回执 ok:true；提交后 verify-local 以绑定新 HEAD 的 verify.json 为准。workflow golden 语义无变化，三个 command 模板均已纳入 engine identity 回归。src 净增 0，packages 受跟踪文件零改动。
+
+## B1-FIXC：RV-C REDLINE R1 修复
+
+- 问题与被推翻的假设：覆盖重定向不是普通写入；eval 不创建子 shell；否定命令不保留原成功/失败状态；未引用 heredoc 不是纯数据；find 的未知 cwd 不意味着命令体没有危险效果；已有 PID 不消除管道追加的按名称选择对象；参数拼法不改变效果，完整 argv 不适合提醒。
+- 新语义（REDLINE-R1-01–09）：保留 overwrite 效果，未知危险目标拒绝而普通新建/追加未知目标 advisory；传播父作用域 cwd 并交换否定状态；检查 heredoc 的命令替换与反引号，引用或转义的数据保持放行；分析 find 的全部执行形式，execdir/okdir 相对目标按未知处理；统一长选项取值，按 -C/--git-dir/--work-tree/GIT_DIR 定位 Git 对象，配置写入进入保护类别；在相关管道、命令替换与变量上保留进程选择来源；外发提醒仅含动作和 URL host，不含认证、正文、userinfo 或 query。
+- 不变量与复用：强化 I1 的红线边界及 I6 的真实事故回放，复用现有 AST、效果表、三段式提醒和 guard advisory 通道，没有新依赖、配置开关或运行状态。10 个报告探针及每个机制的等价变体纳入 hooks 测试，保留原放行清单、归属通用性及父/子 shell 差分；数字循环变量只在循环体内按数字处理，合流后的不确定赋值保留未知。
+- 旧 run/生产影响：hook 判定取当前安装代码，更新后旧会话也受修正影响；error_class=redline 及挂起/告警读者契约不变，advisory 仍在 guard stdout 的 systemMessage 查看。本包只提交 wetamp-redline，没有更新生产配置、触发 supervisor、合并或发布。
+- 遗留与验收边界：解释器/外部脚本的间接效果及无法建模的语法仍按原策略 advisory；此包只做编码自检，独立 G2 复审及主控集成实测另行完成。验收回执以本次完整测试、隔离 selftest-fake.json 与提交后同一临时 HOME 的 verify.json 为准。
+- 自检：提交前 tsc exit 0、eslint src exit 0；完整 bun test 906 pass / 0 fail，最后新增的缺失解析器进程来源回归另测 1 pass / 0 fail；最终提交由 verify-local 再跑完整候选。报告 10 个探针全部拒绝，末条提醒不含 FAKE_SECRET；原放行 9 项、拦截 12 项和归属通用性仍绿。隔离 selftest --fake exit 0、ok:true。hooks 净增 184 行，packages/ 与 wetamp/src 零改动。

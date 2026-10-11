@@ -67,6 +67,8 @@ const WRAPPERS = {
   rtk: {skip: 'proxy'},
 };
 const SHELLS = new Set(['bash','sh','zsh','dash','ksh']);
+// One spelling at the effect boundary: long option values are separate words.
+const normalizeOptions = argv => argv.flatMap(word => /^--[^=]+=/.test(word) ? [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)] : [word]);
 // Skip a quoted or escaped span starting at i; returns the index after it, or -1 when none.
 function skipQuoted(text, i) {
   if (text[i] === '\\') return i + 2;
@@ -85,6 +87,18 @@ function closing(text, i, close) {
     if (close === ')' && text[i] === '(') depth++;
   }
   throw new Error(`Unclosed ${close}`);
+}
+// Quotes in an unquoted heredoc body are data; only escapes suppress expansion.
+function heredocExpansions(text) {
+  const bodies = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') { i++; continue; }
+    const backtick = text[i] === '`', substitution = text[i] === '$' && text[i + 1] === '(';
+    if (!backtick && !substitution) continue;
+    const start = i + (backtick ? 1 : 2), end = closing(text, start, backtick ? '`' : ')');
+    bodies.push(text.slice(start, end)); i = end;
+  }
+  return bodies;
 }
 // Replace every `$(…)`, `<(…)`, `(…)` and backtick body outside single quotes with one inert
 // word and return the bodies, each to be parsed as a command line of its own.
@@ -148,12 +162,13 @@ function unwrap(argv) {
 // effects; `reads` lists input-redirection sources. Throws on unparsable text.
 function parse(command, depth = 0) {
   if (depth > 4) throw new Error('shell nesting too deep');
-  const result = {argvs: [], writes: [], reads: []};
+  const result = {argvs: [], writes: [], reads: [], overwrites: []};
   const add = text => { const inner = parse(text, depth + 1); for (const k of Object.keys(result)) result[k].push(...inner[k]); };
   const {flat, bodies} = lift(command);
   bodies.forEach(add);
   let segment = [];
   const run = words => {
+    words = normalizeOptions(words);
     const {argv, lines, writes, heads} = unwrap(words);
     result.argvs.push(...heads.filter(i => i < words.length - argv.length).map(i => words.slice(i)));
     lines.forEach(add);
@@ -180,7 +195,7 @@ function parse(command, depth = 0) {
       if (!word.operator) { words.push(word.value); continue; }
       const target = segment[++i]?.value ?? '';
       if (WRITES.has(word.value) && !STREAM.test(target) && !(word.value === '>&' && /^(?:\d+|-)$/.test(target)))
-        result.writes.push(target);
+        { result.writes.push(target); if (!['>>','&>>'].includes(word.value)) result.overwrites.push(target); }
       else if (word.value === '<') result.reads.push(target);
     }
     run(words);
@@ -220,4 +235,4 @@ function deletionTarget(command,cwd, normalized) {
   }
   return target ? path.resolve(cwd,target) : null;
 }
-module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS};
+module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS, normalizeOptions, heredocExpansions};

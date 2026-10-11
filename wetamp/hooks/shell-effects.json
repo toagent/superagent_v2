@@ -1,24 +1,136 @@
 [
-  {"commands":["rm","rmdir"],"effect":"destroy","targets":"operands"},
-  {"commands":["cp","ln","install","rsync"],"effect":"overwrite","targets":"last"},
-  {"commands":["mv"],"effect":"destroy","targets":"operands"},
-  {"commands":["truncate","tee"],"effect":"overwrite","targets":"operands"},
-  {"commands":["touch","mkdir"],"effect":"create","targets":"operands"},
-  {"commands":["dd"],"effect":"overwrite","targets":"of"},
-  {"commands":["sed"],"pattern":"^-[^-]*i|^--in-place","effect":"overwrite","targets":"operands"},
-  {"commands":["sort"],"effect":"overwrite","targets":"option","options":["-o","--output"]},
-  {"commands":["find"],"pattern":"^-delete$","effect":"destroy","targets":"first"},
-  {"commands":["tar"],"pattern":"^-[^-]*x|^--extract$|^x","effect":"write","targets":"option","options":["-C","--directory"],"default":"."},
-  {"commands":["sudo","doas"],"effect":"elevate"},
-  {"commands":["pkill","killall"],"effect":"process_selection"},
-  {"commands":["kill"],"effect":"signal"},
-  {"commands":["security"],"pattern":"^(find-.*-password|dump-keychain|export)$","effect":"credential"},
-  {"commands":["npm","pnpm","bun","yarn"],"pattern":"^publish$","effect":"external"},
-  {"commands":["docker"],"pattern":"^push$|^--push$","effect":"external"},
-  {"commands":["gh"],"prefixes":[["release","create"],["pr","merge"],["issue","create"],["issue","comment"],["pr","comment"]],"effect":"external"},
-  {"commands":["vercel","netlify","firebase"],"pattern":"^--prod$|^--production$|^deploy$","effect":"external"},
-  {"commands":["kubectl"],"pattern":"^(apply|delete|replace|patch|create|scale|rollout)$","effect":"external"},
-  {"commands":["curl","wget"],"pattern":"^-[^-]*[dFT]|^--(data.*|form.*|upload-file|post-data|post-file)(=|$)|^(POST|PUT|PATCH|DELETE)$","effect":"external"},
-  {"commands":["osascript"],"pattern":"\\bReminders\\b","effect":"external"},
-  {"commands":["git"],"effect":"git","read":["status","diff","log","show","rev-parse","ls-files","ls-tree","blame","grep","cat-file","describe","merge-base","rev-list","shortlog","show-ref","name-rev","for-each-ref"],"queries":{"branch":["--list","-l","--show-current","-a","-r"],"tag":["--list","-l"],"remote":["-v","--verbose"],"config":["--get","--get-all","--get-regexp","--list","-l"],"reflog":["show"]},"mutationFlags":"^-[a-zA-Z]*[dDfFmMcC]$|^--(delete|force|move|copy|unset.*|add|replace-all|rename-section|remove-section)(=|$)","write":["add","commit","checkout","switch","merge","rebase","reset","clean","branch","tag","remote","config","update-ref","stash","fetch","pull","cherry-pick","revert","notes","reflog","worktree","init","clone","gc","prune","pack-refs"]}
+  { "commands": ["rm", "rmdir"], "effect": "destroy", "targets": "operands" },
+  { "commands": ["cp", "ln", "install", "rsync"], "effect": "overwrite", "targets": "last" },
+  { "commands": ["mv"], "effect": "destroy", "targets": "operands" },
+  {
+    "commands": ["truncate", "tee"],
+    "effect": "overwrite",
+    "targets": "operands",
+    "append": ["-a", "--append"]
+  },
+  { "commands": ["touch", "mkdir"], "effect": "create", "targets": "operands" },
+  { "commands": ["dd"], "effect": "overwrite", "targets": "of" },
+  {
+    "commands": ["sed"],
+    "pattern": "^-[^-]*i|^--in-place",
+    "effect": "overwrite",
+    "targets": "operands"
+  },
+  {
+    "commands": ["sort"],
+    "effect": "overwrite",
+    "targets": "option",
+    "options": ["-o", "--output"]
+  },
+  { "commands": ["find"], "pattern": "^-delete$", "effect": "destroy", "targets": "first" },
+  {
+    "commands": ["tar"],
+    "pattern": "^-[^-]*x|^--extract$|^x",
+    "effect": "write",
+    "targets": "option",
+    "options": ["-C", "--directory"],
+    "default": "."
+  },
+  { "commands": ["sudo", "doas"], "effect": "elevate" },
+  {
+    "commands": ["codex", "claude", "opencode", "sol-run"],
+    "commandPrefixes": ["twin-agent"],
+    "effect": "delegate"
+  },
+  { "commands": ["pkill", "killall"], "effect": "process_selection" },
+  { "commands": ["pgrep", "pidof", "lsof"], "effect": "process_query" },
+  { "commands": ["kill"], "effect": "signal" },
+  {
+    "commands": ["security"],
+    "pattern": "^(find-.*-password|dump-keychain|export)$",
+    "effect": "credential"
+  },
+  { "commands": ["npm", "pnpm", "bun", "yarn"], "pattern": "^publish$", "effect": "external" },
+  { "commands": ["docker"], "pattern": "^push$|^--push$", "effect": "external" },
+  {
+    "commands": ["gh"],
+    "prefixes": [
+      ["release", "create"],
+      ["pr", "merge"],
+      ["issue", "create"],
+      ["issue", "comment"],
+      ["pr", "comment"]
+    ],
+    "effect": "external"
+  },
+  {
+    "commands": ["vercel", "netlify", "firebase"],
+    "pattern": "^--prod$|^--production$|^deploy$",
+    "effect": "external"
+  },
+  {
+    "commands": ["kubectl"],
+    "pattern": "^(apply|delete|replace|patch|create|scale|rollout)$",
+    "effect": "external"
+  },
+  {
+    "commands": ["curl", "wget"],
+    "pattern": "^-[^-]*[dFT]|^--(data.*|form.*|upload-file|post-data|post-file)(=|$)|^(POST|PUT|PATCH|DELETE)$",
+    "effect": "external"
+  },
+  { "commands": ["osascript"], "pattern": "\\bReminders\\b", "effect": "external" },
+  {
+    "commands": ["git"],
+    "effect": "git",
+    "read": [
+      "status",
+      "diff",
+      "log",
+      "show",
+      "rev-parse",
+      "ls-files",
+      "ls-tree",
+      "blame",
+      "grep",
+      "cat-file",
+      "describe",
+      "merge-base",
+      "rev-list",
+      "shortlog",
+      "show-ref",
+      "name-rev",
+      "for-each-ref"
+    ],
+    "queries": {
+      "branch": ["--list", "-l", "--show-current", "-a", "-r"],
+      "tag": ["--list", "-l"],
+      "remote": ["-v", "--verbose"],
+      "config": ["--get", "--get-all", "--get-regexp", "--list", "-l"],
+      "reflog": ["show"]
+    },
+    "mutationFlags": "^-[a-zA-Z]*[dDfFmMcC]$|^--(delete|force|move|copy|unset.*|add|replace-all|rename-section|remove-section)(=|$)",
+    "write": [
+      "add",
+      "commit",
+      "checkout",
+      "switch",
+      "merge",
+      "rebase",
+      "reset",
+      "clean",
+      "branch",
+      "tag",
+      "remote",
+      "config",
+      "update-ref",
+      "stash",
+      "fetch",
+      "pull",
+      "cherry-pick",
+      "revert",
+      "notes",
+      "reflog",
+      "worktree",
+      "init",
+      "clone",
+      "gc",
+      "prune",
+      "pack-refs"
+    ]
+  }
 ]
