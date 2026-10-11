@@ -92,6 +92,7 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
         const c = h.command as string;
         if (purge) return isV1(c) ? [] : [h];
         const next = canonical(c);
+        if (event === 'SessionEnd' && next === cmd('scratch.cjs', client)) return [];
         const key = `${condition(g)}\0${next}`;
         if (seen.has(key)) return [];
         seen.add(key);

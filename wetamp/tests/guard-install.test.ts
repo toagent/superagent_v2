@@ -67,6 +67,20 @@ test('A-11: merged hook groups retain user handlers, unrelated fields and all-ha
   expect(mergeHooks(merged, 'claude')).toEqual(merged);
 });
 
+test('obsolete scratch SessionEnd is removed while user hooks are preserved', () => {
+  const user = { hooks: [{ command: 'user-session-end', custom: true }] };
+  const hooks = {
+    SessionEnd: [user, { hooks: [{ command: `node '${WETAMP}/hooks/scratch.cjs' claude` }] }],
+  };
+  const merged = mergeHooks(hooks, 'claude');
+  expect(merged.SessionEnd[0]).toEqual(user);
+  const commands = merged.SessionEnd.flatMap(g => g.hooks ?? []).map(h => h.command);
+  expect(commands).toEqual(['user-session-end']);
+  expect(mergeHooks({}, 'claude').SessionEnd).toBeUndefined();
+  expect(mergeHooks(merged, 'claude')).toEqual(merged);
+  expect(mergeHooks({}, 'codex').SessionEnd).toBeUndefined();
+});
+
 test('F-12: concurrent hook installation serializes RMW, preserves other config and publishes no fixed .sa-tmp', async () => {
   const root = tmp(),
     settings = join(root, 'claude/settings.json');

@@ -30,7 +30,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs as parse } from 'node:util';
 import {
   archon,
@@ -75,7 +75,17 @@ import { loadPlan, milestones, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport } from './report';
 import { jobCli } from './jobs';
+import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
+
+const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
+if (
+  inheritedTmp &&
+  ['/tmp/sa-scratch', '/private/tmp/sa-scratch'].some(
+    root => inheritedTmp === root || inheritedTmp.startsWith(root + '/')
+  )
+)
+  delete process.env.TMPDIR;
 
 const OPTIONS = {
   ...COORD_OPTIONS,
@@ -108,6 +118,7 @@ const OPTIONS = {
   since: { type: 'string' },
   refresh: { type: 'boolean' },
   reconciled: { type: 'string' }, // explicit external-effect reconciliation, bound to a run snapshot
+  session: { type: 'string' },
   'dry-run': { type: 'boolean' },
   open: { type: 'boolean' },
 } as const;
@@ -134,6 +145,8 @@ export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 
 export interface Ledger {
+  rejected?: string;
+  gc?: GcAction[];
   plan_lint?: ReturnType<typeof lintPlan>;
   /** Explicit workflow identity; engine_hash alone may be the legacy combined UI hash. */
   workflow_hash?: string;
@@ -219,7 +232,7 @@ export function loadLedger(run: string): Ledger {
 }
 
 /** ledger 的读改写与 recover 同锁（runs/<archon id>.lock），锁忙最多等 10 秒；改完同步回调用方的副本。 */
-function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
+export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
   const path = join(home().sa, 'runs', `${l.adoptions?.[0]?.from ?? l.archon_run_id}.lock`);
   for (let i = 0; ; i++) {
     const k = lock(path);
@@ -1110,6 +1123,10 @@ function decide(l: Ledger, a: Args): number {
   }
   if (action === 'reject') {
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
+    if (ok)
+      updateLedger(l, cur => {
+        cur.rejected = run.id;
+      });
     print({ run_id: l.run_id, decision: 'reject', ok });
     return ok ? 0 : 1;
   }
@@ -1349,6 +1366,10 @@ function consumeAnswer(
   effect: DecisionEffect,
   asks: Asks
 ): void {
+  if (effect.action === 'reject')
+    updateLedger(l, cur => {
+      cur.rejected = effect.engine_run;
+    });
   if (a.decision) {
     a.decision.effect = effect;
     saveAsks(asks);
@@ -1644,7 +1665,11 @@ export function superviseTick(): ReturnType<typeof tick> | { skipped: 'locked' }
 
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
-function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSignals> {
+function tick(
+  sa: string
+): { actions: Action[]; gc: GcAction[]; scratch: ScratchAction[] } & ReturnType<
+  typeof cockpitSignals
+> {
   let asks: Asks | Error;
   try {
     asks = loadAsks();
@@ -1725,7 +1750,16 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
     saveAsks(asks);
   }
   memoryTick(asks instanceof Error ? {} : asks);
-  return { actions: out, ...cockpitSignals(observed, asks instanceof Error ? {} : asks) };
+  // supervise.lock serializes the persisted throttle; reserve before the slow GC.
+  const gcStamp = join(sa, 'gc-tick'),
+    due = !existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000;
+  if (due) writeAtomic(gcStamp, String(Date.now()));
+  return {
+    actions: out,
+    ...cockpitSignals(observed, asks instanceof Error ? {} : asks),
+    gc: due ? gc() : [],
+    scratch: scratchClean(),
+  };
 }
 
 /** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
@@ -2278,7 +2312,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2482,6 +2516,12 @@ export function main(argv: string[]): number {
       const l = ledger(true);
       return controlled(l, () => acceptRun(l, a.flags.pkg));
     }
+    case 'gc':
+      print({ gc: gc(a.flags['dry-run']) });
+      return 0;
+    case 'scratch-clean':
+      print({ scratch: scratchClean(a.flags.session, a.flags['dry-run']) });
+      return 0;
     case 'supervise-tick':
       return tickOutput();
     case 'report': {

@@ -135,6 +135,7 @@ function decide(payload, client, env = process.env) {
   const derived = derivedBy(payload, client, env);
   if (event !== 'PreToolUse') {
     if (derived || !['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event)) return null;
+    if (event === 'SessionStart') return require('./scratch.cjs').start(payload, client, env);
     return stopGate.gate(payload);
   }
   const text = shellText(name, input);
@@ -182,7 +183,9 @@ if (require.main === module) (async () => {
     }
     const result = decide(payload, client);
     const context = require('./coord.cjs').notifications(inbox);
-    const output = result || (context && {hookSpecificOutput: {hookEventName: payload.hook_event_name, additionalContext: context}});
+    const output = context && (!result || payload.hook_event_name === 'SessionStart') ?
+      {...result, hookSpecificOutput: {...result?.hookSpecificOutput, hookEventName: payload.hook_event_name,
+        additionalContext: [result?.hookSpecificOutput?.additionalContext, context].filter(Boolean).join('\n')}} : result;
     if (output) process.stdout.write(JSON.stringify(output) + '\n');
   } catch { process.stdout.write(JSON.stringify({systemMessage: 'SUPERAGENT advisory：护栏内部异常，本次已放行。'}) + '\n'); }
 })();
