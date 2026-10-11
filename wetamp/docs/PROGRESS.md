@@ -1081,3 +1081,12 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 基线证据与兼容：probe 输出逐命令 `base_results: {cmd, pass}[]`，存入验收 JSON 与日志末行，held 自动提示现有的日志尾读取即可展示；不自动改变 failure_class。grep 确认 CLI gateHint、accept schema 与测试读取 `base_pass`，保留原聚合语义：全部 base 通过才 true，任一失败即 false，无 probe 为 null。
 - 旧 run/生产影响与遗留：新生成 run 才加载本次模板与脚本，既有冻结 run 不自动更新；不迁移状态，不改缓存默认值、末端评审、MAX_ROUNDS、risk_paths、恢复逻辑、packages 或生产目录。提示词未改变 workflow YAML，两个 golden 用例通过，无需重生成；本包只编码自检，astra 单轮评审、主控集成实测与上线交主控。
 - 自检：隔离 HOME、SUPERAGENT_HOME、ARCHON_HOME、XDG_STATE_HOME 与 supervisor 路径后，指定两文件测试 357 pass/1 fail（46.94s，`/tmp/ra-accept.3QlPKB/tests.log`）；唯一失败为新增测试的 Bun `toMatchObject` 嵌套数组 matcher 替换实际字符串，独立最小复现确认，改为 `toEqual` 后 RA 两条 2 pass/0 fail（`focused.log`），不重跑整套、不派产品修复。`bunx tsc --noEmit -p wetamp` exit 0（`tsc.log`），diff 检查通过；除测试外净增 27 行，未超 +50 预算。
+
+
+## B1-HF10：milestone retry 夹具追随 FC 契约与测试时限核验
+
+- **问题与被推翻的假设 / I1、I3、I6、P1–P4**：`662f8b0d..5afcfe66` 的 FC 有意增加 reviewer finding 必填 `failure_class`、`command`，生成器 fake 输出已同步，但 HF10 注入的 r2/r3 评审漏字段，Archon 在 `review-m1-r2` 按 output_format 拒绝，未到达 gate；不是引擎重试损坏。旧 `/tmp/hf10-iso.log` 的失败与 schema 验证器一致：两项缺失均报 required property。另一旧假设是 G1 第三轮必挂起；FC 现将非 strict/G2 的修复到限 finding 记 `repair_limit` debt 放行，源码及独立 schema/decide 探针均证实该语义。
+- **最小改动 / 新语义**：只给 HF10 fake finding 补 `failure_class: product`、`command: null`，并仅将 milestone 夹具设 `mode: strict`，保留真实 `held:gate @ gate-m1-r3`、同 run id、所有四包重跑且各执行两次的断言；package/budget 两场景保持原配置。新增 `wetamp/bunfig.toml` 按卡声明 `[test] timeout = 30000`，无 root 字段；未改产品、原 hook 用例或 golden，不修改 jobs.test.ts HF8b 三条时序 flaky。
+- **时限环境限制 / 未完成项**：本机 Bun `1.4.3 (c6da4a4d3)` 的裸 `bun test` 不应用该 timeout 键；仓库外及 wetamp 内两个独立 5200ms 探针均在 5000ms 被终止，不能宣称默认 30 秒已生效。wetamp 内测试正常发现且无根 bunfig 的 packages root/coverage 行为；临时探针交付前已删除。保留配置中的限制说明，当前须显式 `bun test --timeout 30000`；不升级 Bun，不为绕过此限制扩展 preload/runner 或修改 hook 测试。该项交主控裁决，配置声明本身不是生效证据。
+- **自检与证据**：隔离 `SUPERAGENT_HOME`、`ARCHON_HOME`、`XDG_STATE_HOME`、`SA_LAUNCHD_DIR`、`AGENT_SUPERVISOR_STATE` 到 `/tmp/b1-hf10.0wIzhW/`，调用 `cd wetamp && bun test --timeout 120000 tests/hf10-retry.test.ts`：3 pass/0 fail、48 assertions；`cd wetamp && bun test tests/sa-check.test.ts tests/generate.test.ts`：358 pass/0 fail、1204 assertions（含两份 golden）；`bunx tsc --noEmit -p wetamp` exit 0。完整日志、退出码、schema/decide 探针和默认时限失败证据均在该目录。运行时证据沿用 wait 的 state/node、gate 台账与 code trace，不新增监测路径；未全测、不重复跑重型 E2E。
+- **旧 run / 生产影响与遗留**：测试配置与夹具变更不改变产品契约、冻结生成身份、旧 run 或生产状态；仅本 worktree、本分支交付。未操作生产 checkout/台账、真实 supervisor、提醒事项或 launchd，未委派、评审、push 或合并。HF8b 信号时序 flaky 仍为已知未处理；主控集成全测与 astra 独立评审仍未覆盖，默认时限不生效明确保留为环境限制。

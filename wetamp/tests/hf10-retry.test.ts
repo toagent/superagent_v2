@@ -22,6 +22,8 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
       accept: [{ cmd: `test -f W${i + 1}.txt`, timeout_s: 5 }],
     }));
     if (scope === 'budget') plan.budget.launches = 3;
+    // FC permits repair-limit debt in non-strict G1; this fixture needs a held gate.
+    if (scope === 'milestone') plan.mode = 'strict';
     const py = join(root, 'supervisor.py');
     writeFileSync(
       py,
@@ -88,6 +90,8 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
               status: 'open',
               evidence: 'fake',
               carry_over: true,
+              failure_class: 'product',
+              command: null,
             },
           ],
           fixture_confirmations: [],
