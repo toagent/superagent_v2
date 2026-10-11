@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 本机投送闸：在临时 detached worktree 里对一个提交依次跑 bun install --frozen-lockfile（根与 wetamp）→ tsc → bun test → selftest --fake，
+# 本机投送闸：在临时 detached worktree 里对一个提交依次跑 bun install --frozen-lockfile（根与 wetamp）→ tsc → bun test --timeout 30000 → selftest --fake，
 # 结果原子写入 $SUPERAGENT_HOME/verify.json：{commit,ok,at,steps:[{name,exit,ms}],log,last_ok_commit}。
 # 同一提交已有定论（含普通失败）时直接复用；信号中断/超时及环境错误不写缓存。twin-toolkit 只投送 ok 的提交。
 # 用法：verify-local.sh [--commit <rev>] [--timeout <s>，默认 1500，等锁与跑步骤各用一份]；退出码 0 通过、1 未通过。
@@ -101,7 +101,8 @@ install() { # <rel dir> <step name>
 install . install
 install wetamp install:wetamp
 step tsc "$WT/wetamp" "$BUN" x tsc --noEmit
-step test "$WT/wetamp" "$BUN" test
+# 显式单测时限：Bun 1.4.3 不读 bunfig 的 [test] timeout，负载下 hook 子进程用例会撞默认 5s。
+step test "$WT/wetamp" "$BUN" test --timeout 30000
 step selftest "$WT/wetamp" bash scripts/selftest.sh --fake
 
 if [ "$INCONCLUSIVE" = 1 ]; then
