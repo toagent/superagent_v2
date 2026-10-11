@@ -361,7 +361,7 @@ export function buildWorkflow(
         id: reviewAttempt,
         always_run: true,
         depends_on: [`diff-${t}`],
-        bash: `printf '{"attempt":"%s"}' "$(cat '${join(gen, 'attempts', `review-${t}`)}' 2>/dev/null || echo 0)"`,
+        bash: attemptCommand(attemptPath(gen, `review-${t}`)),
         output_format: outputSchema('attempt'),
       });
       nodes.push({

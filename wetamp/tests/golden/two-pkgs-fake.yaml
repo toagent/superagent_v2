@@ -479,7 +479,7 @@ nodes:
     always_run: true
     depends_on:
       - diff-m1-r1
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m1-r1' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m1-r1"))}));'''
     output_format:
       type: object
       properties:
@@ -771,7 +771,7 @@ nodes:
     always_run: true
     depends_on:
       - diff-m1-r2
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m1-r2' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m1-r2"))}));'''
     output_format:
       type: object
       properties:
@@ -1067,7 +1067,7 @@ nodes:
     always_run: true
     depends_on:
       - diff-m1-r3
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m1-r3' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m1-r3"))}));'''
     output_format:
       type: object
       properties:
@@ -1663,7 +1663,7 @@ nodes:
     always_run: true
     depends_on:
       - diff-m2-r1
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m2-r1' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m2-r1"))}));'''
     output_format:
       type: object
       properties:
@@ -1954,7 +1954,7 @@ nodes:
     always_run: true
     depends_on:
       - diff-m2-r2
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m2-r2' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m2-r2"))}));'''
     output_format:
       type: object
       properties:
@@ -2249,7 +2249,7 @@ nodes:
     always_run: true
     depends_on:
       - diff-m2-r3
-    bash: printf '{"attempt":"%s"}' "$(cat '/GEN/attempts/review-m2-r3' 2>/dev/null || echo 0)"
+    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m2-r3"))}));'''
     output_format:
       type: object
       properties:
