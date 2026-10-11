@@ -11,7 +11,6 @@ import {
   copyFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { Pkg } from './plan';
 import { QUERY_TIMEOUT_MS } from './archon';
@@ -227,16 +226,15 @@ export function resolveRoute(
 }
 
 /** JSON key order never changes the policy's content identity. */
-const { canonicalPolicy } = createRequire(import.meta.url)('../bin/codex-readonly-proxy.cjs') as {
-  canonicalPolicy: (value: unknown) => string;
+const { snapshotPolicy: buildPolicySnapshot } = createRequire(import.meta.url)(
+  '../bin/codex-readonly-proxy.cjs'
+) as {
+  snapshotPolicy: (tiers: Tiers) => ReturnType<typeof snapshotPolicy>;
 };
 export function snapshotPolicy(
   t: Tiers
 ): Tiers['policy'] & { hash: string; routing: Tiers['routing']; health: Tiers['health'] } {
-  const body = JSON.parse(
-    JSON.stringify({ ...t.policy, routing: t.routing, health: t.health })
-  ) as Tiers['policy'] & { routing: Tiers['routing']; health: Tiers['health'] };
-  return { ...body, hash: createHash('sha256').update(canonicalPolicy(body)).digest('hex') };
+  return buildPolicySnapshot(t);
 }
 
 const mk = (model: string): Alias => ({ provider: providerOf(model), model, effort: 'high' });

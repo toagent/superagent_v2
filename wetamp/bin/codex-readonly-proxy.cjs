@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// codex-worker 对 `codex app-server` 的 stdio 代理：node <tiers.json> <real codex> app-server ...
+// codex-worker 对 `codex app-server` 的 stdio 代理：node <policy.json|空串> <real codex> app-server ...
 // Archon 的 thread/start 固定下发 sandbox:'danger-full-access'，会盖掉 worker 的 -c sandbox_mode；
 // reviewer 节点只能经 generate 写进节点 mcp: 的哨兵 server 认出来（thread config 是唯一逐节点到达的结构化通道）。
 // 认出后：删掉哨兵，本连接此后的 thread/start|resume|fork 改 sandbox:'read-only'，turn/start 注入只读
@@ -8,6 +8,7 @@
 // 服务端→客户端直接继承 stdout；客户端→服务端逐行转发，未改写的行原字节不动。
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
+const { join } = require('node:path');
 
 const { createHash } = require('node:crypto');
 function canonicalPolicy(value) {
@@ -15,16 +16,27 @@ function canonicalPolicy(value) {
   if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalPolicy(value[k])).join(',') + '}';
   return JSON.stringify(value);
 }
+// generate.ts 与无快照的 worker/proxy 共用此构造与哈希，不手抄 policy 子集。
+function snapshotPolicy(tiers) {
+  const body = JSON.parse(JSON.stringify({ ...tiers.policy, routing: tiers.routing, health: tiers.health }));
+  return { ...body, hash: createHash('sha256').update(canonicalPolicy(body)).digest('hex') };
+}
 function loadPolicy(path) {
-  if (!path) throw new Error('SA_POLICY_PATH missing: launch with the generated run-config.yaml');
-  const { hash, ...policy } = JSON.parse(fs.readFileSync(path, 'utf8'));
+  let snapshot;
+  if (!path) {
+    // 凭据预检、selftest 与 POLICY 前的旧 run 没有冻结快照；当前 tiers 等同新 run 将冻结的策略，
+    // 仍执行全部权限限制。显式路径的读取/校验失败绝不回退，已有快照继续钉住原策略。
+    snapshot = snapshotPolicy(JSON.parse(fs.readFileSync(join(__dirname, '..', 'tiers.json'), 'utf8')));
+    process.stderr.write('codex policy: SA_POLICY_PATH unset; using current tiers.json policy (not frozen)\n');
+  } else snapshot = JSON.parse(fs.readFileSync(path, 'utf8'));
+  const { hash, ...policy } = snapshot;
   if (typeof hash !== 'string' || createHash('sha256').update(canonicalPolicy(policy)).digest('hex') !== hash)
     throw new Error('policy snapshot hash mismatch');
   if (typeof policy.exec_profiles?.reviewer?.codex_readonly_marker !== 'string' || !policy.exec_profiles.reviewer.codex_readonly_marker)
     throw new Error('codex_readonly_marker missing');
   return policy;
 }
-module.exports = { canonicalPolicy, loadPolicy };
+module.exports = { canonicalPolicy, snapshotPolicy, loadPolicy };
 if (require.main === module) {
 const [policyPath, real, ...args] = process.argv.slice(2);
 const die = (msg, child) => {

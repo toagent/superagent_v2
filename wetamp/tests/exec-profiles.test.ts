@@ -338,6 +338,23 @@ process.stdin.on('end', () => {
   const turn = '{"id":3,"method":"turn/start","params":{"threadId":"t","input":[]}}';
   const init = '{ "id": 1,  "method":"initialize","params":{"clientInfo":{"name":"é"}} }';
 
+  test('worker and direct proxy without a snapshot retain current reviewer restrictions', () => {
+    const marker = loadTiers().policy.exec_profiles.reviewer.codex_readonly_marker;
+    const input = [start({ [marker]: { command: 'false', required: true } }), turn].join('\n');
+    const worker = appServer(input, { SA_POLICY_PATH: '' });
+    expect(worker.code).toBe(0);
+    expect(worker.err).toContain('using current tiers.json policy (not frozen)');
+    const [s, t] = lines(worker.received);
+    expect(s.params).toMatchObject({ sandbox: 'read-only' });
+    expect(t.params).toMatchObject({
+      sandboxPolicy: { type: 'readOnly', networkAccess: loadTiers().policy.sandbox.network },
+    });
+    expect(worker.received).not.toContain(marker);
+    const direct = appServer('', { SA_POLICY_PATH: '' }, ['node', PROXY, '', 'true']);
+    expect(direct.code).toBe(0);
+    expect(direct.err).toContain('using current tiers.json policy (not frozen)');
+  });
+
   test('non-reviewer bytes pass verbatim; a marker thread turns the connection read-only', () => {
     const plain = [init, start({ searxng: { command: 'x' } }), turn, '{"id":9,"result":{}}'].join(
       '\n'

@@ -86,7 +86,7 @@ describe('B1-POLICY frozen routing', () => {
     writeFileSync(join(root, 'tiers.json'), JSON.stringify(tiers));
     expect(engineHash(root)).not.toBe(before);
   });
-  test('worker consumes its snapshot even when live tiers differ, and refuses missing/corrupt snapshots', () => {
+  test('worker pins explicit snapshots, falls back only without a path, and refuses invalid paths', () => {
     const root = tmp(),
       path = join(root, 'policy.json'),
       real = join(root, 'codex');
@@ -115,11 +115,23 @@ describe('B1-POLICY frozen routing', () => {
     const good = invoke(path);
     expect(good.exitCode).toBe(0);
     expect(JSON.parse(good.stdout.toString())).toContain('snapshot_test=true');
-    expect(invoke('').exitCode).not.toBe(0);
+    const fallback = invoke('');
+    expect(fallback.exitCode).toBe(0);
+    expect(JSON.parse(fallback.stdout.toString())).not.toContain('snapshot_test=true');
+    expect(fallback.stderr.toString()).toContain('using current tiers.json policy (not frozen)');
+    const { hash: _hash, ...current } = snapshotPolicy(loadTiers());
+    expect(loadPolicy('')).toEqual(current);
+    const missing = invoke(join(root, 'missing-policy.json'));
+    expect(missing.exitCode).not.toBe(0);
+    expect(missing.stdout.toString()).toBe('');
+    expect(missing.stderr.toString()).not.toContain('using current tiers.json');
     writeFileSync(path, '{"hash":"broken"}');
     const bad = invoke(path);
     expect(bad.exitCode).not.toBe(0);
     expect(bad.stdout.toString()).toBe('');
+    expect(bad.stderr.toString()).not.toContain('using current tiers.json');
+    writeFileSync(path, '{');
+    expect(invoke(path).exitCode).not.toBe(0);
   });
 });
 
