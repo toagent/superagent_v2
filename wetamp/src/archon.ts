@@ -2,7 +2,7 @@
 import { dlopen, FFIType, read, type Pointer } from 'bun:ffi';
 import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import { closeSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home } from './config';
@@ -206,6 +206,46 @@ export type RecoverResult =
   | { ok: false; reason: string; busy?: true };
 
 export type Lock = { ok: true; release: () => void } | { ok: false; reason: 'locked' };
+
+export type Admission =
+  | { ok: true; capacity: number; active: number; release: () => void }
+  | { ok: false; capacity: number; active?: number; reason: 'admission_busy' | 'run_capacity' };
+
+/**
+ * Hold the shared launch lock until Archon has persisted its pending row. Other CLIs refuse
+ * immediately, before creating a worker/worktree. Paused and owner-ambiguous runs retain
+ * capacity; only the engine's terminal status frees it. The kernel releases a dead launcher.
+ */
+export function admitRun(capacity: number): Admission {
+  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('invalid run capacity');
+  const root = home().archon;
+  mkdirSync(root, { recursive: true });
+  const lease = lock(join(root, 'run-admission.lock'));
+  if (!lease.ok) return { ok: false, capacity, reason: 'admission_busy' };
+  try {
+    const path = join(root, 'archon.db');
+    let active = 0;
+    if (existsSync(path)) {
+      const db = new Database(path, { readonly: true });
+      try {
+        const row = db.query(
+          "select count(*) as n from remote_agent_workflow_runs where status not in ('completed','failed','cancelled')"
+        ).get() as { n: number };
+        active = row.n;
+      } finally {
+        db.close();
+      }
+    }
+    if (active >= capacity) {
+      lease.release();
+      return { ok: false, capacity, active, reason: 'run_capacity' };
+    }
+    return { ok: true, capacity, active, release: lease.release };
+  } catch (e) {
+    lease.release();
+    throw e;
+  }
+}
 
 const DARWIN = process.platform === 'darwin';
 const ERRNO = DARWIN ? '__error' : '__errno_location';

@@ -25,6 +25,7 @@ import {
   archon,
   archonDetached,
   archonJson,
+  admitRun,
   getRun,
   lastJson,
   lock,
@@ -54,6 +55,7 @@ import {
   loadTiers,
   receiptProblem,
   runAliases,
+  runCapacity,
   writeAtomic,
   type Receipt,
 } from './config';
@@ -103,6 +105,8 @@ const print = (o: unknown): void => {
 export const EXIT = { completed: 0, failed: 1, cancelled: 2, held: 3, running: 4 } as const;
 /** 别名漂移：全局或目标 repo 的 @sa-* 别名与 tiers.json 渲染值不一致，run 拒绝启动。 */
 export const EXIT_ALIAS_DRIFT = 5;
+/** Temporary refusal: no run was created; the caller may retry after capacity is available. */
+export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 
 export interface Ledger {
@@ -532,10 +536,22 @@ function preflight(skipSelftest: boolean): void {
 
 function startRun(planPath: string, a: Args): number {
   const run = newRunId();
-  let phase: 'preflight' | 'engine' = 'preflight';
+  let phase: 'preflight' | 'admission' | 'engine' = 'preflight';
+  let release: (() => void) | undefined;
   try {
     preflight(a.flags['skip-selftest'] ?? false);
     const plan = loadPlan(planPath);
+    phase = 'admission';
+    const admission = admitRun(runCapacity());
+    if (!admission.ok) {
+      print({
+        ok: false, phase, status: 'rejected', exit: EXIT_ADMISSION,
+        reason: admission.reason, capacity: admission.capacity, active: admission.active,
+      });
+      return EXIT_ADMISSION;
+    }
+    release = admission.release;
+    phase = 'preflight';
     const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
     if (checked.exitCode !== 0) {
       const reason = lastJson(checked.stdout.toString())?.reason;
@@ -595,6 +611,8 @@ function startRun(planPath: string, a: Args): number {
     writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
     print(failure);
     return 1;
+  } finally {
+    release?.();
   }
 }
 
