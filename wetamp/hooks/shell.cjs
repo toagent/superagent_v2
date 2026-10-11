@@ -154,7 +154,8 @@ function parse(command, depth = 0) {
   bodies.forEach(add);
   let segment = [];
   const run = words => {
-    const {argv, lines, writes} = unwrap(words);
+    const {argv, lines, writes, heads} = unwrap(words);
+    result.argvs.push(...heads.filter(i => i < words.length - argv.length).map(i => words.slice(i)));
     lines.forEach(add);
     result.writes.push(...writes.filter(target => !STREAM.test(target)));
     if (!argv.length) return;

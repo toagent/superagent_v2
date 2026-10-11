@@ -30,9 +30,12 @@
 
 - 读取凭据与隐私：`~/.ssh` 私钥、钥匙串与 `security` 取密码、`~/.aws/credentials`、`~/.netrc`、gh 令牌、`~/.npmrc`/`~/.pypirc`、`_private`、iCloud、浏览器资料；
 - 发布与合并：`npm/bun/pnpm publish`、`docker push`、`gh release create`、`gh pr merge`、`vercel --prod`、`git push`；
-- 改写共享分支：对 main/master/develop/release-\*/wetamp 执行 `git branch -f/-D`、`update-ref`、`reset --hard`、`rebase`；
-- 按名字杀进程（`pkill`、`killall`、`lsof … | xargs kill`）；连接非本机数据库；
-- 在 worktree、临时目录与包管理缓存之外写文件。
+- 改写共享分支：对 main/master/develop/release-*/wetamp 执行强制改写分支、删除、update-ref 或 rebase；非本任务检出的 hard reset / clean；删除别人的分支。本任务检出的 reset / clean 可放行；
+- 按名称、模式、端口或全部选择进程；可对明确 PID 发信号；
+- 提权，修改护栏、hook 或 agent/provider 配置；
+- 销毁或覆盖不属于本任务的已有数据；worktree、临时目录、包缓存与本 run 产物可写；范围外新建文件可放行，但配置、系统目录与其他检出受保护。
+
+护栏默认放行；陌生命令、无法建模与内部异常通过 hook 的 `systemMessage` 留下 advisory，不挂起、不发提醒。明确的删除或覆盖动作若无法确认目标仍拦截。军师可写临时文件与运行测试，但不可修改被审仓库或提交。
 
 ## 备注
 
