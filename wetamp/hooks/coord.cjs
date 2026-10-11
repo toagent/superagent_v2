@@ -123,6 +123,7 @@ function writeReason(payload, client, env, shell, readonly) {
   const beats = (() => { try { return fs.readdirSync(path.join(home, 'live')).map(n => read(path.join(home, 'live', n))); } catch { return []; } })();
   const who = beats.find(b => b?.client === client && b.session_id === payload.session_id && b.host === os.hostname());
   const check = (file, dir) => {
+    file = file && expand(file, env);
     if (!file || /[$`*?]/.test(file)) return null;
     const scope = repoScope(path.resolve(dir, file)); if (!scope) return null;
     const view = resolveOwner(scope, claims, runs);

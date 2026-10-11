@@ -72,6 +72,35 @@ function setup(probe: (who: Identity) => Presence = () => online) {
   const c = new Coordination({ sa, runs: () => [], status: () => 'running', presence: probe });
   return { root, repo, sa, c, scope: repoScope(repo) };
 }
+test('G1: tilde targets resolve against HOME before repository ownership checks', async () => {
+  const s = setup();
+  s.c.claim(s.scope, b);
+  const home = join(s.root, 'home');
+  mkdirSync(join(home, '.superagent/live'), { recursive: true });
+  await req('../hooks/shell-ast.cjs').init();
+  const payload = { cwd: s.repo, session_id: a.session_id, tool_name: 'Bash', tool_input: {} };
+  const env = { HOME: home, SUPERAGENT_HOME: s.sa };
+  expect(
+    hooks.writeReason(payload, 'codex', env, 'rm ~/.superagent/live/x.json', () => false)
+  ).toBeNull();
+  expect(hooks.writeReason(payload, 'codex', env, 'rm README.md', () => false)).toContain(
+    'handoff'
+  );
+  expect(
+    hooks.writeReason(
+      { ...payload, tool_name: 'Write', tool_input: { file_path: '~/.superagent/live/x.json' } },
+      'claude',
+      env
+    )
+  ).toBeNull();
+  expect(
+    hooks.writeReason(
+      { ...payload, tool_name: 'Write', tool_input: { file_path: '~/README.md' } },
+      'claude',
+      { ...env, HOME: s.repo }
+    )
+  ).toContain('handoff');
+});
 test('1: two actual processes race for one scope under flock; exactly one owner and monotonic generations', async () => {
   const s = setup();
   const code = `import {Coordination} from ${JSON.stringify(join(import.meta.dir, '../src/coord/index.ts'))};

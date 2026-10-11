@@ -20,12 +20,6 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-case "$mode" in
-  ""|--remote-hooks) [ -z "$dry" ] || { echo "install.sh: --dry-run only applies to --hooks/--purge-v1" >&2; exit 64; };;
-  # --hooks 之后为本 wetamp/hooks/ 的 Codex 条目写信任（scripts/codex-trust.cjs；--dry-run 按当前 hooks.json 估计条目数）
-  --hooks) bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"}; exec bun "$WETAMP/scripts/codex-trust.cjs" write ${dry:+"$dry"};;
-  *) exec bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"};;
-esac
 # Both installation paths publish the same role fact; lock the full RMW and keep
 # user-owned fields. The unchanged ledger is left byte-for-byte intact.
 publish_mode() {
@@ -48,6 +42,13 @@ withLock(file, () => {
 console.log("install: mode=" + role);
 ' "$state" "$WETAMP" "$(git -C "$WETAMP" rev-parse HEAD 2>/dev/null || echo unknown)" "$role"
 }
+case "$mode" in
+  ""|--remote-hooks) [ -z "$dry" ] || { echo "install.sh: --dry-run only applies to --hooks/--purge-v1" >&2; exit 64; };;
+  # --hooks 之后为本 wetamp/hooks/ 的 Codex 条目写信任（scripts/codex-trust.cjs；--dry-run 按当前 hooks.json 估计条目数）
+  --hooks) bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"}; bun "$WETAMP/scripts/codex-trust.cjs" write ${dry:+"$dry"};
+    [ -n "$dry" ] || publish_mode controller; exit 0;;
+  *) exec bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"};;
+esac
 if [ "$mode" = --remote-hooks ]; then
   command -v node >/dev/null || { echo "install.sh --remote-hooks: node not found" >&2; exit 1; }
   for f in "$WETAMP"/hooks/*.cjs; do node --check "$f"; done

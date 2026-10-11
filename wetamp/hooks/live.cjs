@@ -22,11 +22,12 @@ function agentOf(command) {
   return AGENTS.includes(name) ? name : null;
 }
 // Shared with the board and launcher recording; headless/service processes are not terminals.
-function cliOf(argv) {
+function cliOf(argv, controller = false) {
   const a = ['node', 'bun'].includes(path.basename(argv[0] || '')) ? argv.slice(1) : argv;
   const [k, sub] = [a.length ? path.basename(a[0]) : '', a[1] || ''];
   if (k === 'claude' && sub !== 'mcp') return {kind: k, headless: a.some(t => t === '-p' || t === '--print')};
-  if (k === 'codex' && !['app-server', 'mcp', 'mcp-server'].includes(sub)) return {kind: k, headless: sub === 'exec'};
+  // The API app-server owns tool subprocesses, but is not a board terminal.
+  if (k === 'codex' && !['mcp', 'mcp-server', ...(!controller ? ['app-server'] : [])].includes(sub)) return {kind: k, headless: sub === 'exec'};
   if (k === 'opencode' && sub !== 'serve') return {kind: k, headless: sub === 'run'};
   return null;
 }
@@ -36,7 +37,7 @@ function owner(interactive = false, inspect = inspectPid, parent = process.ppid)
   for (let pid = parent, n = 0; pid > 1 && n < 16; n++) {
     const m = inspect(pid);
     if (!m) return null;
-    const cli = cliOf(m[3].trim().split(/\s+/));
+    const cli = cliOf(m[3].trim().split(/\s+/), true);
     if (interactive ? cli && !cli.headless : agentOf(m[3]))
       return {pid, tty: m[2] === '??' ? null : m[2]};
     pid = Number(m[1]);
@@ -52,14 +53,14 @@ function launcher(home) {
   try {
     const who = owner(true);
     if (!who) return undefined;
-    const cli = cliOf(inspectPid(who.pid)?.[3]?.trim().split(/\s+/) || []);
+    const cli = cliOf(inspectPid(who.pid)?.[3]?.trim().split(/\s+/) || [], true);
     if (!cli || cli.headless) return undefined;
     let beats = [];
     try {
       for (const name of fs.readdirSync(path.join(home, 'live')).filter(n => n.endsWith('.json'))) {
         try {
           const b = JSON.parse(fs.readFileSync(path.join(home, 'live', name), 'utf8'));
-          if (b.pid === who.pid && b.client === cli.kind) beats.push(b);
+          if (b.pid === who.pid && b.client === cli.kind && Date.now() - Date.parse(b.at) < identity.FRESH_MS) beats.push(b);
         } catch {}
       }
     } catch {}

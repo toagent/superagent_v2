@@ -1253,6 +1253,29 @@ const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as {
 };
 
 describe('redline.cjs（所有角色的执行层红线）', () => {
+  test('G1: safe branch deletion passes; forced deletion and destructive branch flags still deny', () => {
+    const repo = gitRepo(tmp());
+    const check = (shell: string, root = repo) =>
+      redline.reason({
+        client: 'claude',
+        name: 'Bash',
+        cwd: repo,
+        root,
+        shell,
+        derived: true,
+        env: process.env,
+      });
+    for (const flag of ['-d', '--delete']) {
+      for (const branch of ['merged', 'release-old']) {
+        expect(check(`git branch ${flag} ${branch}`)).toBeNull();
+        expect(check(`git branch ${flag} ${branch}`, '/foreign')).toBeNull();
+      }
+    }
+    for (const flag of ['-D', '-df', '--delete --force'])
+      expect(check(`git branch ${flag} merged`)).toContain('已拦截：');
+    for (const flag of ['-D', '-m', '-M', '-C', '--delete --force', '-df'])
+      expect(check(`git branch ${flag} old new`, '/foreign')).toContain('已拦截：');
+  });
   const box = (): {
     home: string;
     repo: string;
