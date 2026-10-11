@@ -11,7 +11,7 @@ import { fmtTokens, requestUsageRefresh } from '../usage';
 import { cockpit } from '../board/cockpit';
 import { parseArgs } from '../cli';
 import { homedir } from 'node:os';
-import { memoryJson, type Episode } from '../memory';
+import { episodeOf } from '../memory';
 import { memoryOverview, memoryPanel } from './memory';
 
 interface LegacyWebState {
@@ -287,10 +287,7 @@ export function handler(
       const id = url.searchParams.get('id') ?? '';
       if (!/^[a-zA-Z0-9_-]+$/.test(id)) return respond('Not Found', 404);
       try {
-        const e = memoryJson<Episode | null>(
-          join(home().sa, 'memory/episodes', id + '.json'),
-          null
-        );
+        const e = episodeOf(id);
         return e
           ? respond(JSON.stringify(e, null, 2), 200, 'application/json')
           : respond('Not Found', 404);

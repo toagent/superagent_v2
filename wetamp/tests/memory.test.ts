@@ -12,6 +12,7 @@ import {
 import { join } from 'node:path';
 import {
   diagnosis,
+  episodes,
   foldEpisode,
   injectMemory,
   lessonText,
@@ -60,6 +61,8 @@ const keys = [
   'FAKE_MEMORY_DELAY',
   'FAKE_MEMORY_OVERSIZE',
   'FAKE_EV1_RUN',
+  'FAKE_MEMORY_INPUT',
+  'FAKE_MEMORY_TOKENS',
 ];
 beforeEach(() => {
   for (const k of keys) saved.set(k, process.env[k]);
@@ -72,6 +75,8 @@ beforeEach(() => {
   delete process.env.SUPERAGENT_REFLECT_CMD;
   delete process.env.FAKE_MEMORY_DELAY;
   delete process.env.FAKE_MEMORY_OVERSIZE;
+  delete process.env.FAKE_MEMORY_TOKENS;
+  delete process.env.FAKE_MEMORY_INPUT;
   plan = JSON.parse(
     readFileSync(
       fixturePlan(root, root, p => {
@@ -1040,5 +1045,322 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       expect(e.category).toBe(e.status === 'done' ? 'plan' : 'role');
     }
     expect(d.errors).toEqual([]);
+  });
+});
+
+describe('FIXD review regressions', () => {
+  // Conformance uses sa-check's written artifacts, including fields absent from hand-built fixtures.
+  test.each([true, false])(
+    'EV-R1-03 producer accept/settle/gate artifacts fold through memoryTick (success=%s)',
+    success => {
+      const repo = gitRepo(tmp()),
+        script = join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts');
+      const cmd = success ? 'exit 0' : 'exit 1';
+      plan.packages[0].accept = [{ cmd, timeout_s: 5 }];
+      plan.deadline = new Date(Date.now() + 3600000).toISOString();
+      writeFileSync(join(ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+      const runCheck = (
+        kind: string,
+        tag: string,
+        inputs: Record<string, string> = {},
+        exitCode = 0
+      ) => {
+        const child = Bun.spawnSync([process.execPath, script], {
+          cwd: repo,
+          env: {
+            ...process.env,
+            ARTIFACTS_DIR: artifactsOf(raw),
+            INPUTS_KIND: kind,
+            INPUTS_TAG: tag,
+            INPUTS_PLAN: join(ledger.gen_dir, 'plan.json'),
+            INPUTS_PKGS: 'core',
+            INPUTS_RISK: 'G1',
+            INPUTS_ARCHON: '',
+            INPUTS_BASE: '',
+            INPUTS_PREV: '',
+            INPUTS_CODER: '',
+            ...inputs,
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        expect(child.exitCode).toBe(exitCode);
+        return readFileSync(join(artifactsOf(raw), `${tag}.json`), 'utf8');
+      };
+      const accept = runCheck('accept', 'verify-core');
+      expect(JSON.parse(accept)).toMatchObject({
+        ok: success,
+        reason: success ? null : 'acceptance_failed',
+        risk: 'G1',
+        base_pass: null,
+      });
+      const settle = runCheck(
+        'settle',
+        'settle-core',
+        {
+          INPUTS_FIRST: accept,
+          INPUTS_REPAIRED: success ? 'null' : JSON.stringify({ status: 'done', error_class: null }),
+        },
+        success ? 0 : 1
+      );
+      expect(JSON.parse(settle)).toMatchObject({
+        ok: success,
+        reason: success ? null : 'repair_exhausted:acceptance_failed',
+      });
+      const gate = runCheck('gate', 'gate-m1-r1', {
+        INPUTS_ROUND: '1',
+        INPUTS_R1: success ? JSON.stringify({ status: 'PASS', findings: [], debt: [] }) : 'null',
+        INPUTS_C1: settle,
+        INPUTS_MILESTONE: 'm1',
+        INPUTS_NEXT: '',
+      });
+      expect(JSON.parse(gate)).toMatchObject({
+        verdict: success ? 'pass' : 'fix',
+        reason: success ? null : 'repair_exhausted:acceptance_failed',
+        grade: success ? 'PASS' : null,
+      });
+      raw.status = success ? 'completed' : 'failed';
+      raw.nodes = [
+        { nodeId: 'verify-core', state: 'completed' },
+        { nodeId: 'settle-core', state: success ? 'completed' : 'failed' },
+      ];
+      const file = join(root, 'producer-run.json'),
+        stub = join(root, 'producer-archon');
+      writeFileSync(file, JSON.stringify({ ...raw, events: [] }));
+      writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
+      process.env.SA_ARCHON_BIN = stub;
+      process.env.FAKE_EV1_RUN = file;
+      mkdirSync(join(sa, 'runs'));
+      writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
+      const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
+      expect(folded.acceptance).toEqual([{ cmd, ok: success }]);
+      expect(folded.reasons).toEqual(
+        success ? [] : ['repair_exhausted:acceptance_failed', 'acceptance_failed']
+      );
+      expect(memoryTick({}, NOW, false).errors).toEqual([]);
+      expect(
+        JSON.parse(readFileSync(join(sa, 'memory/fold-index.json'), 'utf8')).terminal.incident
+      ).toBeString();
+      expect(memoryData(NOW).deliveries.incident).toMatchObject({
+        status: raw.status,
+        packages: 1,
+      });
+      expect(existsSync(join(sa, 'memory/errors.jsonl'))).toBe(false);
+      if (success) expect(episodes()).toHaveLength(0);
+      else
+        expect(episodes()[0]).toMatchObject({ status: 'failed', acceptance: [{ cmd, ok: false }] });
+    }
+  );
+  test('EV-R1-01 nested finding evidence and command/log bodies never cross reflection boundary', async () => {
+    fake();
+    process.env.FAKE_MEMORY_INPUT = join(root, 'reflect-input');
+    writeFileSync(
+      join(artifactsOf(raw), 'gate-m1-r1.review.json'),
+      JSON.stringify({
+        status: 'FAIL',
+        findings: [
+          {
+            id: 'f1',
+            severity: 'high',
+            status: 'open',
+            file: 'CLIENT-FILE',
+            evidence: {
+              customer: 'CUSTOMER-SECRET',
+              log: ['LOG-SECRET'],
+              nested: { credential: 'UNLABELLED-SECRET' },
+            },
+          },
+        ],
+      })
+    );
+    const e = episode();
+    e.acceptance[0].cmd = 'COMMAND-SECRET';
+    e.dispositions = [{ at: e.at, reason: 'DISPOSITION-SECRET', action: 'ask', ok: true }];
+    // Old episodes can still contain evidence text; the boundary must exclude it independently.
+    e.findings.push('LEGACY-SECRET');
+    saveEpisode(e);
+    expect(await reflectOne(NOW)).toBe(true);
+    const input = readFileSync(process.env.FAKE_MEMORY_INPUT!, 'utf8');
+    for (const secret of [
+      'CLIENT-FILE',
+      'CUSTOMER-SECRET',
+      'LOG-SECRET',
+      'UNLABELLED-SECRET',
+      'COMMAND-SECRET',
+      'DISPOSITION-SECRET',
+      'LEGACY-SECRET',
+    ])
+      expect(input).not.toContain(secret);
+    expect(input).toContain('acceptance_failed');
+    expect(input).toContain('"findings":{"total":2}');
+  });
+  test('EV-R1-03 real gate null review folds end to end; null decision is invalid', () => {
+    const repo = gitRepo(root),
+      script = join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts');
+    const child = Bun.spawnSync([process.execPath, script], {
+      cwd: repo,
+      env: {
+        ...process.env,
+        ARTIFACTS_DIR: artifactsOf(raw),
+        INPUTS_KIND: 'gate',
+        INPUTS_ROUND: '1',
+        INPUTS_R1: 'null',
+        INPUTS_C1: JSON.stringify({
+          ok: false,
+          disposition: 'escalate',
+          reason: 'acceptance_failed',
+          diff_hash: 'x',
+          same: false,
+          risk: 'G1',
+        }),
+        INPUTS_RISK: 'G1',
+        INPUTS_TAG: 'gate-m1-r1',
+        INPUTS_PLAN: join(ledger.gen_dir, 'plan.json'),
+        INPUTS_MILESTONE: 'm1',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(readFileSync(join(artifactsOf(raw), 'gate-m1-r1.review.json'), 'utf8').trim()).toBe(
+      'null'
+    );
+    expect(child.exitCode).toBe(0);
+    expect(
+      JSON.parse(readFileSync(join(artifactsOf(raw), 'gate-m1-r1.json'), 'utf8')).verdict
+    ).toBe('fix');
+    const file = join(root, 'null-review-run.json'),
+      stub = join(root, 'null-review-archon');
+    writeFileSync(file, JSON.stringify({ ...raw, events: [] }));
+    writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
+    process.env.SA_ARCHON_BIN = stub;
+    process.env.FAKE_EV1_RUN = file;
+    mkdirSync(join(sa, 'runs'));
+    writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
+    expect(memoryTick({}, NOW, false).errors).toEqual([]);
+    expect(memoryData(NOW).all[0].status).toBe('failed');
+    writeFileSync(join(artifactsOf(raw), 'gate-m1-r1.json'), 'null');
+    expect(() => episode()).toThrow();
+    writeFileSync(join(artifactsOf(raw), 'gate-m1-r1.json'), '[]');
+    expect(() => episode()).toThrow();
+  });
+  test('EV-R1-04 paused archive later projects engine_suspect terminal and deduplicates mechanism', () => {
+    const held = {
+      ...raw,
+      status: 'paused',
+      completed_at: null,
+      metadata: {
+        wait: {
+          nodeId: 'gate',
+          kind: 'event',
+          event: 'sa.human',
+          resumeAt: new Date(NOW + 600000).toISOString(),
+          waitingSince: new Date(NOW - 31 * 60000).toISOString(),
+        },
+      },
+      events: [],
+    };
+    const file = join(root, 'changing-run.json'),
+      stub = join(root, 'changing-archon');
+    writeFileSync(file, JSON.stringify(held));
+    writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
+    process.env.SA_ARCHON_BIN = stub;
+    process.env.FAKE_EV1_RUN = file;
+    mkdirSync(join(sa, 'runs'));
+    writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
+    expect(memoryTick({}, NOW, false).errors).toEqual([]);
+    const archive = readFileSync(join(sa, 'memory/episodes/incident.json'), 'utf8');
+    mkdirSync(join(sa, 'incidents', ledger.run_id), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({ ...held, status: 'failed', completed_at: new Date(NOW).toISOString() })
+    );
+    expect(memoryTick({}, NOW + 1000, false).errors).toEqual([]);
+    memoryTick({}, NOW + 2000, false);
+    expect(readFileSync(join(sa, 'memory/episodes/incident.json'), 'utf8')).toBe(archive);
+    expect(episodes()[0]).toMatchObject({
+      status: 'failed',
+      category: 'engine',
+      signature: 'engine_suspect',
+    });
+    expect(memoryData(NOW).queued).toBe(0);
+    expect(
+      JSON.parse(readFileSync(join(sa, 'memory/mechanize/engine_suspect.json'), 'utf8')).episodes
+    ).toEqual(['incident']);
+  });
+  test('EV-R1-05 cached usage priors derive weighted budget; EV-R1-06 normal terminal deliveries need no episode', () => {
+    const model = loadTiers().tiers.general.pools.chatgpt[0],
+      events = [
+        {
+          event_type: 'node_completed',
+          step_name: 'code-core',
+          created_at: new Date(NOW).toISOString(),
+          data: {
+            node: { id: 'code-core', kind: 'agent', source: { kind: 'command', name: 'sa-code' } },
+            invocation: { id: 'invoke', startedAt: ledger.started_at, loopPath: [] },
+            attempt: { id: 'one', startedAt: ledger.started_at },
+            binding: {
+              provider: 'codex',
+              model: { requested: model, resolved: { source: 'provider', value: model } },
+            },
+            timing: { startedAt: ledger.started_at, durationMs: 60000 },
+            spend: {
+              costUsd: { source: 'unavailable', reason: 'not_reported' },
+              stopReason: { source: 'unavailable', reason: 'not_reported' },
+              numTurns: { source: 'unavailable', reason: 'not_reported' },
+              tokens: { source: 'provider', value: { input: 100, cacheRead: 90, output: 10 } },
+            },
+            accounting: 'node',
+          },
+        },
+      ];
+    const file = join(root, 'normal-run.json'),
+      stub = join(root, 'normal-archon');
+    writeFileSync(file, JSON.stringify({ ...raw, status: 'completed', nodes: undefined, events }));
+    writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
+    process.env.SA_ARCHON_BIN = stub;
+    process.env.FAKE_EV1_RUN = file;
+    mkdirSync(join(sa, 'runs'));
+    foldEpisode(ledger, plan, { ...raw, status: 'completed', nodes: undefined }, events, {}, NOW);
+    for (let i = 0; i < 5; i++)
+      writeFileSync(
+        join(sa, 'runs', `quiet${i}.json`),
+        JSON.stringify({ ...ledger, run_id: `quiet${i}` })
+      );
+    expect(memoryTick({}, NOW, false).errors).toEqual([]);
+    expect(episodes()).toHaveLength(0);
+    const priors = JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8'));
+    expect(priors[priorKey(root, plan.packages[0], model)]).toMatchObject({
+      n: 5,
+      tokens: { n: 5, p50: 20 },
+    });
+    expect(
+      lintPlan(
+        {
+          ...plan,
+          deadline: new Date(NOW + 3600000).toISOString(),
+          budget: { ...plan.budget, weighted_tokens: 50 },
+        },
+        undefined,
+        NOW
+      ).rejected
+    ).toBe(false);
+    expect(Object.values(memoryData(NOW).deliveries)).toEqual(
+      Array(5).fill({ status: 'completed', packages: 1, tokens: 110 })
+    );
+  });
+  test('EV-R1-07 over-reservation usage is charged and stops the next call; hard ceiling remains debt', async () => {
+    fake();
+    process.env.FAKE_MEMORY_TOKENS = '10000';
+    mkdirSync(join(sa, 'memory'));
+    writeFileSync(join(sa, 'memory/config.json'), JSON.stringify({ daily_tokens: 9216 }));
+    saveEpisode(episode({ id: 'overspend' }));
+    saveEpisode(episode({ id: 'queued' }));
+    expect(await reflectOne(NOW)).toBe(true);
+    expect(memoryData(NOW).reflection.tokens).toBe(11024);
+    expect(await reflectOne(NOW)).toBe(false);
+    expect(readFileSync(process.env.FAKE_MEMORY_STARTED!, 'utf8').trim().split('\n')).toHaveLength(
+      1
+    );
   });
 });

@@ -21,8 +21,6 @@ const lessonState: Record<Lesson['status'], string> = {
   retired: '退役',
   mechanized: '已机制化',
 };
-const terminal = (e: Episode): boolean =>
-  ['completed', 'done', 'failed', 'cancelled', 'lost'].includes(e.status);
 const ratio = (n: number, d: number): string => (d ? `${String(Math.round((n / d) * 100))}%` : '—');
 const total = (e: Episode): number | null =>
   e.tokens.length && e.tokens.every(t => t.total !== null)
@@ -38,9 +36,7 @@ export function memoryOverview(s: Snapshot, data = memoryData(Date.parse(s.at)),
         [...data.all].sort((a, b) => a.at.localeCompare(b.at)).map(e => [`${e.source}:${e.id}`, e])
       ).values(),
     ];
-  const ended = latest.filter(terminal),
-    runEnded = ended.filter(e => e.source === 'run'),
-    runs = new Map(c.runs.map(r => [r.id, r]));
+  const runs = new Map(c.runs.map(r => [r.id, r]));
   const failures = (from: number, to: number): Episode[] =>
     latest.filter(e => e.status === 'failed' && Date.parse(e.at) >= from && Date.parse(e.at) < to);
   const previous = failures(now - 14 * 86400000, now - 7 * 86400000),
@@ -57,10 +53,9 @@ export function memoryOverview(s: Snapshot, data = memoryData(Date.parse(s.at)),
   };
   const helpful = data.lessons.reduce((n, l) => n + l.helpful, 0),
     harmful = data.lessons.reduce((n, l) => n + l.harmful, 0);
-  const packageTokens = runEnded.flatMap(e => {
-    const t = total(e);
-    return t === null || !e.packages.length ? [] : [{ tokens: t, packages: e.packages.length }];
-  });
+  const packageTokens = Object.values(data.deliveries).filter(
+    (e): e is typeof e & { tokens: number } => e.tokens !== null && e.packages > 0
+  );
   const metrics = {
     '同类失败复发率（近7天 / 前7天）': `${recurrence(recent, previous)} / ${recurrence(previous, [])}`,
     一次通过率: ratio(

@@ -893,3 +893,29 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **自检证据**：新增六项故障回归在旧实现全部失败；修复后按卡运行定向四文件、tsc/eslint src、完整 wetamp 测试、临时 home fake selftest，以及提交绑定 verify-local。定向四文件 268 pass/0 fail/617 assertions（21.77s），tsc/eslint src 与 diff --check exit 0；src 相对 d686c66d 净减 4 行，相对批次基线 f9394a60 净增由 295 降到 291。最终结果以 /tmp/b1-fixe-focused.log、/tmp/b1-fixe-full.log 和临时 home /tmp/b1-fixe-home.c1OvLoWT 的 selftest-fake.json/verify.json 为准。
 - **完整套件**：`cd wetamp && bunx tsc --noEmit && bunx eslint src && timeout 900 bun test` exit 0；1002 pass/0 fail、32 文件、3 snapshots、4978 assertions，347.49s（/tmp/b1-fixe-full.log）。早期定向批次发现 same-diff 夹具缺少 budget/policy、拒绝换厂商夹具仍有合格 Claude 模型，已补齐夹具；最终定向和完整套件全绿，未改无关生产代码。
 - **fake 自检**：`SUPERAGENT_HOME=/tmp/b1-fixe-home.c1OvLoWT ARCHON_HOME=/tmp/b1-fixe-home.c1OvLoWT/archon bash scripts/selftest.sh --fake` exit 0，回执 ok=true/fake=true，恢复、signal、abandon、HF3 adopt 与 G1/N1 hooks 通过（/tmp/b1-fixe-selftest.log）。提交后在同一调用方临时 home 运行 verify-local 绑定新 HEAD；此处不预报结果，以 verify.json 与最终交付为准。
+
+## B1-FIXD：EV R1 返修（2026-10-11）
+
+问题与被推翻的假设：有限正则脱敏不能证明云端输入不含隐私；活性列表为空不代表引擎完成；首次摘要幂等不代表终态永久不变；合法 gate 空评审产物也不能当判定对象读取。强化 I1/I5/I6/I7，按实际生产者与消费边界分别修复。
+
+- EV-R1-01：折叠 finding 只保留 id/severity/status；云端反思只收到显式元数据白名单和已有经验，不发送命令、finding 原文、路径/行号证据、timeline 或 dispositions 正文。旧 episode 即使含原文，边界同样丢弃；新增嵌套 finding evidence、客户资料、日志、命令及旧 evidence 的 fake 输入回归。模板同步说明元数据契约。
+- EV-R1-02：cockpit 分开提供 `unfinished` 与小看板活性树；Orca 只有真实终态且无待答问题时才 completed。无事件的 running、queued、owner unknown、治理层挂起均保留 unfinished；小树的十分钟活性过滤不变。回归包含活性到期、queued 和 unknown。
+- EV-R1-03：读取判定对象时验证消费字段形状；只有 `*.review.json` 允许 null，其余 null/array 拒绝并按 run 隔离。测试实际运行 gate 生成 null review、decision 和 ledger，随后走完整 tick→archive→memoryData；另测 null/array decision 被拒。
+- EV-R1-04：`episodes/<id>.json` 保留首次摘要；`projections/<id>.json` 独立更新最新状态与证据，CLI、反思队列、Web 历史及单 episode JSON 共用投影读取。mechanize 在首次摘要存在时仍独立执行，按签名/episode 去重。回放 paused→failed + engine_suspect，断言旧摘要未改、当前状态已更新、机制化需求存在、反思出队。
+- EV-R1-05/06：总 token 展示为 input+output，cacheRead 不再重复相加；预算先验从 `budgetUsage()` 所有者计算，完全无回执保持未知。fold-index v2 一次重建旧总量先验并回填全部终态 run 的交付包数/总 token（包括正常无 episode 的 run），大看板指标只取此完整终态投影，回填前保持未知，不能回退到异常 episode 子样本。缓存高占比五样本回归为 input=100/cacheRead=90/output=10，总量110、weighted p50=20，预算50不误拒；正常 completed 零 episode 仍纳入指标。
+
+旧 run/生产影响：首次摘要文件和旧 lessons 保留，第一次 tick 会只读重查历史终态以重建上述本地派生缓存；未修改 Archon、hooks 或运行中 workflow。全部写入限 Superagent 自有 memory 目录，本包自检只用 scratch home、fake 模型和临时仓库，未操作生产。
+
+遗留债 EV-R1-07（medium，未闭合）：原生 Codex exec 未提供本包可依赖的整次上下文/工具回合 token 硬边界，`model_max_output_tokens=1024` 不能证明总用量≤9216；禁改 packages、禁新增配置且不能伪称事后记账为硬上限。新增 fake usage 超预留回归，明确证实实际11024被全额记账且下一次调用被拦，但当前调用仍可越过日上限9216。需要主控裁决采用提供硬上界的单次 provider 调用契约或禁用无上界的反思通道；本包不宣称 G2 已通过。
+
+编码自检：`bunx tsc --noEmit`、`bunx eslint src` 均 exit 0；四文件定向88 pass/0 fail/3 snapshots（`/tmp/fixd-focused-final.log`），`timeout 900 bun test` 全套1026 pass/0 fail/6 snapshots、32文件、501.13s（`/tmp/fixd-full.log`）。同一隔离 home `/tmp/fixd-home.y8xY4U` 的 `selftest.sh --fake` exit 0、receipt ok=true；提交后 `verify-local.sh --commit HEAD --timeout 900` 的结果以该 home 中绑定提交的 `verify.json` 为准。src净增20行，未修改packages/hooks，不做独立评审或主控集成验收。
+
+## B1-FIXD2：EV-R1-03 生产者可空字段一致性（2026-10-11）
+
+- **问题与被推翻的假设 / I1、I6、P3**：消费字段形状检查不能仅由省略字段的成功夹具证明。sa-check 成功 accept/settle 和 PASS gate 实际写出 `reason:null`，原采集 schema 将其拒绝为 `fold_failed`，跳过摘要折叠和终态缓存登记。
+- **新语义 / P4**：reason 接受生产者定义的 string/null/省略，null 不产生失败原因；保留对象形状验证，只有独立 review 文件允许整体 null，decision 的整体 null/array 仍拒绝。不新增配置、状态或生产者定义的手抄副本；以真实生产产物的一致性测试约束消费者 schema。
+- **回归与监测**：直接执行 sa-check 产生成功与失败 accept、settle、gate 及 review/ledger 产物，再走 foldEpisode→memoryTick→memoryData，核验验收结果、原因、终态缓存与交付投影；正常成功无异常 episode，失败正常归档，均无 errors.jsonl。原 null/array decision 拒绝回归保留；运行时沿用 memory/errors.jsonl 的 fold_failed 监测点。
+- **旧 run / 生产影响**：此前因 schema 拒绝而未登记终态缓存的 run，可在新采集器下一次 tick 正常折叠；不改旧产物、生产目录或运行中 workflow。memory.ts 属 engineHash 的既有冻结输入，本改动会改变后续生成身份；旧封印不热修，恢复沿用现有 adopt 机制。
+- **遗留**：本包只关闭 EV-R1-03 的编码与自检；EV-R1-07 原有债保持交主控裁决，不做独立评审或主控集成验收。
+
+编码自检：真实生产者回归先红（成功 reason:null 的 ZodError）后绿；四文件 `90 pass / 0 fail / 3 snapshots`（`/tmp/fixd2-focused.log`），`bunx tsc --noEmit && timeout 900 bun test` 全套 `1028 pass / 0 fail / 6 snapshots`、32 文件、336.21s（`/tmp/fixd2-full.log`），`bunx eslint src` exit 0。隔离 home `/tmp/fixd2-home.QhWT3w` 的 `selftest.sh --fake` exit 0、receipt ok=true（`/tmp/fixd2-selftest.log`）；提交后在同一 home 执行 `verify-local.sh --commit HEAD --timeout 900`，结果以该 home 中绑定提交的 `verify.json` 为准。

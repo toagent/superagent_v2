@@ -4,6 +4,7 @@ const input = await new Response(Bun.stdin.stream()).text();
 const data = JSON.parse(input.slice(input.lastIndexOf('\n') + 1)) as {
   episode: { id: string; project: string };
 };
+if (process.env.FAKE_MEMORY_INPUT) writeFileSync(process.env.FAKE_MEMORY_INPUT, input);
 if (process.env.FAKE_MEMORY_STARTED)
   appendFileSync(process.env.FAKE_MEMORY_STARTED, data.episode.id + '\n');
 if (process.env.FAKE_MEMORY_DELAY) await Bun.sleep(Number(process.env.FAKE_MEMORY_DELAY));
@@ -32,6 +33,10 @@ writeFileSync(
 console.log(
   JSON.stringify({
     type: 'turn.completed',
-    usage: { input_tokens: 8192, cached_input_tokens: 4096, output_tokens: 1024 },
+    usage: {
+      input_tokens: Number(process.env.FAKE_MEMORY_TOKENS ?? 8192),
+      cached_input_tokens: 4096,
+      output_tokens: 1024,
+    },
   })
 );

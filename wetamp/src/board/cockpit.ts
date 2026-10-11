@@ -85,6 +85,7 @@ export interface CockpitRun {
 }
 export interface Cockpit {
   tree: (CockpitRun & { children: { id: string; role: string; progress: Progress }[] })[];
+  unfinished: number;
   zombies: number;
   reflection: Snapshot['reflection'];
   tokenRows: { role: string; total: number; models: Record<string, number> }[] | null;
@@ -329,6 +330,15 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
           .sort(([a], [b]) => Number(a.startsWith('未归属')) - Number(b.startsWith('未归属')))
           .map(([k, v]) => `${k} ${fmtTokens(v)}`)
       : ['角色今日用量未知'],
+    unfinished:
+      s.rows.filter(
+        r =>
+          !['completed', 'failed', 'cancelled'].includes(r.state) ||
+          (r.nativeState !== undefined &&
+            !['completed', 'failed', 'cancelled'].includes(r.nativeState))
+      ).length +
+      (s.activity?.jobs.filter(j => !['done', 'failed', 'cancelled', 'lost'].includes(j.state))
+        .length ?? 0),
     tree,
     zombies,
     reflection: s.reflection,

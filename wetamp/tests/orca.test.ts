@@ -252,16 +252,51 @@ describe('syncOrca (injected only)', () => {
     await syncOrca(active.deps);
     expect(active.sets().at(-1)?.args).not.toContain('--read');
   });
-  test('EV liveness expiry updates the Orca projection without changing read status', async () => {
+  test('EV-R1-02 liveness expiry never completes nonterminal Orca work', async () => {
     const s = harness(frame(['active']));
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     s.deps.now = () => Date.parse('2026-10-11T00:10:00Z');
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     const args = s.sets().at(-1)?.args;
-    expect(args).toContain('completed');
+    expect(args).toContain('in-progress');
     expect(args).toContain('跑 0 · 等你 0');
     expect(args).not.toContain('--read');
     expect(args).not.toContain('--unread');
+  });
+  test('EV-R1-02 queued jobs and unknown run ownership remain unfinished', () => {
+    const s = frame();
+    s.rows = [unreadableRow('unknown', '')];
+    expect(orcaView(cockpit(s)).status).toBe('in-progress');
+    s.rows = [];
+    s.activity = {
+      terms: [],
+      procs: [],
+      remote: [],
+      notes: [],
+      jobs: [
+        {
+          id: 'queued',
+          title: '',
+          cwd: '/repo',
+          kind: 'other',
+          card: null,
+          log: null,
+          model: null,
+          role: 'general',
+          tier: 'general',
+          wrapper_pid: 0,
+          pid: 0,
+          started_at: s.at,
+          state: 'queued',
+          owner: null,
+          guess: false,
+        },
+      ],
+    };
+    expect(cockpit(s).tree).toHaveLength(0);
+    expect(orcaView(cockpit(s)).status).toBe('in-progress');
+    s.activity.jobs[0].state = 'done';
+    expect(orcaView(cockpit(s)).status).toBe('completed');
   });
   test('same run with a new registered need marks unread', async () => {
     const s = harness(frame([], ['held']));

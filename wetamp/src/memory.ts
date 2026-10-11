@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import type { infer as Infer } from '../../packages/workflows/node_modules/zod';
 import { archonJson, lock, runRevision, type RunView } from './archon';
-import { home, runAliases, WETAMP, writeAtomic } from './config';
+import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
 import { artifactsOf, classifyRun, ledgerIds, loadLedger, type Ledger } from './cli';
 import { cockpitSignals, type Asks } from './cockpit-signals';
 import { etaInput } from './board/eta';
@@ -22,6 +22,7 @@ import { readUsage } from './usage';
 import { readJobs } from './jobs';
 import { reasonOf } from './reasons';
 import { redact } from './redact';
+import { budgetUsage } from '../templates/.archon/scripts/sa-check';
 import type { Plan, Pkg } from './plan';
 // Reuse the workflows package's existing schema dependency, as plan.ts does for Ajv.
 export const z: typeof import('../../packages/workflows/node_modules/zod').z = (
@@ -123,10 +124,16 @@ const files = (dir: string): string[] =>
         .filter(f => f.endsWith('.json'))
         .sort()
     : [];
-export const episodes = (): Episode[] =>
-  files(join(root(), 'episodes')).map(f =>
-    memoryJson<Episode>(join(root(), 'episodes', f), {} as Episode)
+export const episodeOf = (id: string): Episode | null =>
+  memoryJson<Episode | null>(
+    join(root(), 'projections', id + '.json'),
+    memoryJson<Episode | null>(join(root(), 'episodes', id + '.json'), null)
   );
+export const episodes = (): Episode[] =>
+  files(join(root(), 'episodes')).flatMap(f => {
+    const e = episodeOf(f.slice(0, -5));
+    return e ? [e] : [];
+  });
 export function memoryState(): { lessons: Lesson[]; entries: Entry[] } {
   const file = memoryPath(join(root(), 'lessons.jsonl')),
     entries = file
@@ -256,7 +263,8 @@ export function saveEpisode(e: Episode): boolean {
   const dir = join(root(), 'episodes');
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${e.id}.json`);
-  if (existsSync(path)) return false;
+  const first = !existsSync(path);
+  if (e.category === 'engine') mechanize(e.signature, e.reasons, e.id);
   // Drop whole optional rows, never truncate JSON or omit the failure identity.
   while (Buffer.byteLength(JSON.stringify(e)) > 8192) {
     const rows = [e.timeline, e.findings, e.acceptance, e.dispositions, e.asks, e.tokens].sort(
@@ -265,9 +273,11 @@ export function saveEpisode(e: Episode): boolean {
     if (!rows[0].length) throw new Error('episode metadata exceeds 8KB');
     rows[0].pop();
   }
-  writeAtomic(path, JSON.stringify(e));
-  if (e.category === 'engine') mechanize(e.signature, e.reasons, e.id);
-  return true;
+  const target = first ? path : join(root(), 'projections', `${e.id}.json`);
+  if (!first) mkdirSync(join(root(), 'projections'), { recursive: true });
+  const text = JSON.stringify(e);
+  if (!existsSync(target) || readFileSync(target, 'utf8') !== text) writeAtomic(target, text);
+  return first;
 }
 const quantiles = (xs: number[]): { p50: number; p90: number } => {
   const s = [...xs].sort((a, b) => a - b);
@@ -281,7 +291,29 @@ export const priorKey = (
   p: Pick<Pkg, 'size' | 'risk' | 'scope'>,
   model: string | null
 ): string => JSON.stringify([project, taskTag(p.scope.write), p.size, p.risk, model]);
-function evidenceRows(l: Ledger, run: RunView): { file: string; data: Record<string, unknown> }[] {
+// Producer conformance is exercised with sa-check's success and failure artifacts in memory.test.ts.
+const evidenceSchema = z
+  .object({
+    reason: z.string().nullable().optional(),
+    ok: z.boolean().optional(),
+    failed: z.array(z.string()).optional(),
+    findings: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            severity: z.enum(['blocker', 'high', 'medium', 'low']),
+            status: z.string(),
+          })
+          .loose()
+      )
+      .optional(),
+  })
+  .loose();
+function evidenceRows(
+  l: Ledger,
+  run: RunView
+): { file: string; data: Infer<typeof evidenceSchema> }[] {
   const art = confined(l, artifactsOf(run));
   if (!art) return [];
   return files(art)
@@ -289,7 +321,12 @@ function evidenceRows(l: Ledger, run: RunView): { file: string; data: Record<str
       f =>
         /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)
     )
-    .map(f => ({ file: f, data: memoryJson<Record<string, unknown>>(join(art, f), {}, l) }));
+    .flatMap(file => {
+      const raw = memoryJson<unknown>(join(art, file), null, l);
+      // gate writes a nullable review independently of its mandatory decision object.
+      if (raw === null && file.endsWith('.review.json')) return [];
+      return [{ file, data: evidenceSchema.parse(raw) }];
+    });
 }
 // Closed mapping is diagnostic only: unknown vendor prose is never a retry decision.
 export const failureReason = (text: string): string =>
@@ -338,7 +375,10 @@ function runUsage(
       : calls.map(x => ({
           role: roles?.get(x.node) === 'reviewer' || x.role === 'review' ? 'strategist' : 'general',
           model: x.model,
-          total: x.tokens ? Object.values(x.tokens).reduce((a, b) => a + b, 0) : null,
+          total:
+            typeof x.tokens?.input === 'number' && typeof x.tokens.output === 'number'
+              ? x.tokens.input + x.tokens.output
+              : null,
         })),
   };
 }
@@ -433,28 +473,11 @@ export function foldEpisode(
       rows.find(r => r.file === `verify-${p.id}.json`);
     return p.accept.map(a => ({
       cmd: redact(a.cmd).slice(0, 240),
-      ok: check
-        ? check.data.ok === true && !(check.data.failed as string[] | undefined)?.includes(a.cmd)
-        : null,
+      ok: check ? check.data.ok === true && !check.data.failed?.includes(a.cmd) : null,
     }));
   });
   const findings = rows.flatMap(r =>
-    Array.isArray(r.data.findings)
-      ? (
-          r.data.findings as {
-            id: string;
-            severity: string;
-            file: string;
-            line: number;
-            status: string;
-            evidence: string;
-          }[]
-        ).map(f =>
-          redact(
-            `| ${f.id} | ${f.severity} | ${f.file}:${String(f.line)} | ${f.status} | ${f.evidence} |`
-          ).slice(0, 800)
-        )
-      : []
+    (r.data.findings ?? []).map(f => `| ${f.id} | ${f.severity} | ${f.status} |`)
   );
   let diff: Episode['diff'] = null;
   if (run.working_path && !privateProject(plan.repo)) {
@@ -788,6 +811,7 @@ export const reflectionLimit = (): number =>
       memoryJson<{ daily_tokens?: number }>(join(root(), 'config.json'), {}).daily_tokens ?? 5000000
     );
 export function memoryData(now = Date.now()): {
+  deliveries: Record<string, Delivery>;
   lessons: Lesson[];
   all: (Episode & { result: string })[];
   hits: Record<string, number>;
@@ -853,7 +877,10 @@ export function memoryData(now = Date.now()): {
       if (hit) hitRuns++;
     }
   }
+  const deliveries =
+    memoryJson<FoldIndex | null>(join(root(), 'fold-index.json'), null)?.deliveries ?? {};
   return {
+    deliveries,
     lessons: s.lessons,
     all: history,
     hits,
@@ -884,7 +911,14 @@ interface LiveFold {
   since: string;
   prior_ms: number;
 }
+export interface Delivery {
+  status: string;
+  packages: number;
+  tokens: number | null;
+}
 interface FoldIndex {
+  version?: number;
+  deliveries?: Record<string, Delivery>;
   live?: Partial<Record<string, LiveFold>>;
   day: string;
   terminal: Record<string, string>;
@@ -911,6 +945,14 @@ export function memoryTick(
   const index = dryRun
     ? ({ day: '', terminal: {}, samples: {} } as FoldIndex)
     : memoryJson<FoldIndex>(indexFile, { day: '', terminal: {}, samples: {} });
+  // Rebuild old total-token priors and backfill all terminal runs once.
+  if (index.version !== 2) {
+    index.terminal = {};
+    index.samples = {};
+    index.day = '';
+    index.version = 2;
+  }
+  const deliveries = (index.deliveries ??= {});
   const live = (index.live ??= {});
   const reused: { l: Ledger; cache: LiveFold }[] = [];
   let changed = index.day !== day;
@@ -995,17 +1037,29 @@ export function memoryTick(
           stats = runUsage(l, plan, events);
         observed.push({ l, plan, raw: run, events, stats, stamp, revision });
         if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+          deliveries[id] = {
+            status: run.status,
+            packages: plan.packages.length,
+            tokens:
+              stats.tokens.length && stats.tokens.every(t => t.total !== null)
+                ? stats.tokens.reduce((n, t) => n + (t.total ?? 0), 0)
+                : null,
+          };
           const previous = JSON.stringify(index.samples[id]);
           index.samples[id] = plan.packages.flatMap(p => {
             const calls = stats.calls.filter(
                 c => c.node === `code-${p.id}` || c.node === `repair-${p.id}`
               ),
-              totals =
+              budgetEvents =
                 plan.packages.length === 1
-                  ? stats.tokens.map(t => t.total)
-                  : calls.map(c =>
-                      c.tokens ? Object.values(c.tokens).reduce((a, b) => a + b, 0) : null
-                    );
+                  ? events
+                  : events.filter(
+                      e => e.step_name === `code-${p.id}` || e.step_name === `repair-${p.id}`
+                    ),
+              weighted = budgetUsage(
+                budgetEvents as Parameters<typeof budgetUsage>[0],
+                loadTiers().policy.budget_floor.S
+              );
             const duration =
               plan.packages.length === 1
                 ? Date.parse(run.completed_at ?? '') - Date.parse(run.started_at ?? l.started_at)
@@ -1019,10 +1073,15 @@ export function memoryTick(
                   {
                     key: priorKey(plan.repo, p, stats.model),
                     duration,
-                    tokens:
-                      totals.length && totals.every(t => t !== null)
-                        ? totals.reduce<number>((n, t) => n + t, 0)
-                        : null,
+                    tokens: budgetEvents.some(
+                      e =>
+                        ['node_completed', 'node_failed'].includes(e.event_type) &&
+                        /^(code|repair|fix|review)-/.test(e.step_name ?? '') &&
+                        (e.data as Parameters<typeof budgetUsage>[0][number]['data'])?.spend?.tokens
+                          ?.source === 'provider'
+                    )
+                      ? weighted.weighted_tokens
+                      : null,
                   },
                 ]
               : [];
@@ -1107,7 +1166,10 @@ export function memoryTick(
           raw.status === 'paused'
             ? (raw.metadata?.wait?.waitingSince ?? raw.last_activity_at ?? l.started_at)
             : undefined;
-        if (triggered(e, heldSince, etaMs, now)) {
+        if (
+          triggered(e, heldSince, etaMs, now) ||
+          existsSync(join(root(), 'episodes', `${e.id}.json`))
+        ) {
           if (
             e.category === 'engine' &&
             e.signature === 'evidence_missing' &&
