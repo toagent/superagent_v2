@@ -133,14 +133,16 @@ export function gc(dryRun = false): GcAction[] {
             .trim()
             .split('\n')
             .some(r => r.startsWith('refs/heads/') && !r.startsWith('refs/heads/sa/'));
-          if (!merged && engine.fake !== true && l.rejected !== run.id)
+          // A failed run stays retryable through tick/decide whether or not it is fake.
+          const disposable = engine.fake === true && run.status !== 'failed';
+          if (!merged && !disposable && l.rejected !== run.id)
             throw new Error(`run ${run.status} branch not merged; remains recoverable`);
           if (tree) {
             if (!dryRun) git('worktree', 'remove', path);
             event(dryRun ? 'would_remove' : 'removed', 'terminal run worktree', path);
           }
           object = 'branch';
-          if (!merged && engine.fake !== true)
+          if (!merged && !disposable)
             event('skipped', 'branch not merged into a local non-sa branch');
           else if (
             trees().some(

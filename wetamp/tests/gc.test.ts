@@ -226,7 +226,14 @@ test.each(['running', 'paused', 'pending'] as const)(
   }
 );
 
-test.each(['completed', 'failed', 'cancelled'] as const)(
+test('failed fake run stays retryable while unmerged', () => {
+  const f = fixture('failed', false, true);
+  expect(gc()[0]).toMatchObject({ object: 'worktree', action: 'skipped' });
+  expect(existsSync(f.path)).toBe(true);
+  expect(f.branchExists()).toBe(true);
+});
+
+test.each(['completed', 'cancelled'] as const)(
   'terminal fake %s run can remove an unmerged branch',
   status => {
     const f = fixture(status, false, true);
