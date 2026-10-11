@@ -759,3 +759,14 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **旧 run/生产影响与遗留**：不新增功能、schema、权限或依赖，不修改 packages。Stop 不恢复旧评审事实源；旧状态继续严格读取，旧锁路径作为稳定 inode 使用，是否持有以内核事实为准。hook 事务沿 REC helper 需要可用 Bun，缺失明确失败；真实 provider、生产运行与外部效果不在本次 fake 验证范围，G2 评审及主控最终验收另行执行。仅本 worktree/分支写入，不 push、不操作其他 worktree 或生产状态。
 - **编码端验收**：结果以本次临时 SUPERAGENT_HOME 中的 tsc/full-test/eslint/selftest 日志与提交绑定 verify.json 为准；通过后另列实际退出码与套件统计，不将单包历史记录当本次集成证明。
 - **本次完整自检结果**：冻结安装补齐本 worktree 原先缺失的根目录及 wetamp/node_modules，未改 lockfile。`bunx tsc --noEmit && timeout 900 bun test` exit 0，1041 pass/0 fail/3 snapshots，34 文件、297.84s；`bunx eslint src` exit 0，定向 GUARD/REC/hooks 39 pass/0 fail。临时 `SUPERAGENT_HOME=/tmp/b1-int1-accept.AcIS2J` 下 fake selftest exit 0、receipt ok=true/fake=true；完整日志 full-test.log、tsc.log、selftest.log 在同目录，eslint 原始日志 /tmp/int1-eslint.log。提交后同一 home 跑 verify-local --commit HEAD，以 verify.json 的最终 HEAD、ok 与各步退出码独立确认；不把编码端自检冒充独立评审或生产验收。
+
+## B1-FIXA：辅助进程终止、启动准入与答复崩溃对账
+
+- **问题与被推翻的假设**：ACCT-R1-1 的单进程 TERM timeout 不能约束忽略信号或持管道的后代；ADM-R1-01 的父 CLI 锁释放不能证明 Archon 子进程停止创建 pending；RCPT-R1-01 的动作后持久化不能覆盖取消成功后立即退出。早期屏障桩误停在 workflow validate，已改为只阻塞真实启动的 workflow run；该旧桩不能证明子进程锁继承行为。
+- **新语义 / ACCT**：共享辅助预算与调用次数不变，复用控制面已有 Python3 stdlib watchdog，启动独立进程组并拥有输出管道；TERM、宽限、KILL 与管道回收都在预算内，超时 exit 124 保留原 stderr 与终止错误。外层仍有共享预算的 SIGKILL 上界；真实 post-checkout hook 后代与忽略 TERM 桩均验证实际耗时、失败证据及 PID 已退出。
+- **新语义 / ADM**：共享锁内先原子发布 run-admission.json 启动意图；启动 shell 在 exec Archon 前登记自身 pid/pid_start，exec 保持 PID。父 CLI 死亡后未知/活动身份仍占位；下一受理仅在本机子进程已确认死亡时删除占位，再读取引擎非终态计数。PID 复用不自动回收，缺失或未知身份明确 admission_busy，需操作者核对后处理；不按计时器释放容量，不新增配置或数据库 schema。
+- **新语义 / RCPT**：引擎动作前持久化原 ask occurrence、答复、节点和引擎 run；确认回调先记录实际效果再消费答复。重启时先对账再分类终态：取消事实补 reject 回执，已持久化确认补原动作回执；未确认效果明确 decision_effect_unknown 并停止自动重放。仅 busy 或结构化 executed:false 的恢复拒绝可清除未执行意图并重试。
+- **测试与验收证据**：新增 killed CLI/pre-pending child 双进程屏障、未知/活动占位保留与确认死亡清理；取消崩溃桩在第一次效果落盘前退出，再次 tick 只依据 cancelled 引擎事实补回执。ACCT 定向 10 pass/0 fail，CLI 定向 18 pass/0 fail；最终完整容量矩阵 exit 0、ok=true（141101ms，capacity=6，20 并发 1 受理/19 拒绝、满额拒绝、失败启动后再受理、continuation 36062ms completed、受理 run 无 cancelled），原始证据 /tmp/b1-fixa-accept.DT9drJ/matrix-final.json。完整 tsc/test、eslint 与 fake 自检日志在 /tmp/b1-fixa-accept.DT9drJ；提交后同一调用方 home 跑 verify-local，最终以绑定 HEAD 的 verify.json 为准。
+- **旧 run/生产影响与遗留**：旧 asks 无 decision 继续原回执语义，历史遗漏无法凭空补成功；既有 run 不迁移、不取消，旧生成脚本保持冻结，重新生成后才使用新 watchdog。直接 Archon 入口、脱离进程组的后代及操作者未知效果对账仍在既有边界外；本包不改 packages/hooks、生产 home、supervisor 或提醒事项。不新增安装依赖，运行该辅助路径需要已有 python3。真实通知投递、provider、独立 G2 复审、主控集成验收及生产发布未执行。
+
+- **本包完整编码自检**：`bunx tsc --noEmit && timeout 900 bun test` exit 0，1049 pass/0 fail/3 snapshots、34 文件、469.09s（full-test.log）；`bunx eslint src` exit 0。最新 fake 自检 exit 0，selftest-fake.json 独立确认 ok=true/fake=true；加强后的取消崩溃回归在首次动作效果落盘前退出，1 pass/0 fail（crash-before-effect.log）。提交后同一 home 的 verify-local 会再次检查最终提交产物，不以未提交 selftest 的旧 HEAD 字段冒充提交验收。

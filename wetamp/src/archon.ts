@@ -3,7 +3,7 @@ import { dlopen, FFIType, read, type Pointer } from 'bun:ffi';
 import { Database } from 'bun:sqlite';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { WETAMP, home, writeAtomic } from './config';
@@ -82,10 +82,26 @@ const workerEnv = (): Record<string, string | undefined> => ({
 /** 同步子进程（archon 查询、--detach 启动、supervisor）的期限：挂死的子进程不能卡住 tick 或 wait。 */
 export const QUERY_TIMEOUT_MS = 120_000;
 
-export function archon(args: string[], cwd?: string): Exec {
+interface LaunchIntent { path: string; token: string }
+// The shell registers its own identity before exec: the PID then belongs to the actual Archon CLI.
+const REGISTER_LAUNCH = `
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+const [path, token, pid] = process.argv.slice(1);
+const intent = JSON.parse(readFileSync(path, 'utf8'));
+if (intent.token !== token) throw new Error('launch reservation changed');
+const birth = Bun.spawnSync(['ps', '-p', pid, '-o', 'lstart='], { env: {...process.env, LC_ALL:'C'}, timeout:2000 });
+if (birth.exitCode !== 0 || !birth.stdout.toString().trim()) throw new Error('launch identity unavailable');
+intent.pid = Number(pid); intent.pid_start = birth.stdout.toString().trim();
+const tmp = path + '.' + token; writeFileSync(tmp, JSON.stringify(intent)); renameSync(tmp, path);
+`;
+export function archon(args: string[], cwd?: string, intent?: LaunchIntent): Exec {
   // 只有 run/resume/approve --detach 拉起 worker；status/get/doctor 等查询保持调用方环境
   const launches = ['run', 'resume', 'approve'].includes(args[1]) && args.includes('--detach');
-  const p = Bun.spawnSync([archonBin(), ...args], {
+  const cmd = intent ? ['bash', '-c',
+    '"$1" -e "$2" "$3" "$4" "$$" || exit 1; shift 4; exec "$@"',
+    'sa-admission', process.execPath, REGISTER_LAUNCH, intent.path, intent.token, archonBin(), ...args]
+    : [archonBin(), ...args];
+  const p = Bun.spawnSync(cmd, {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
@@ -120,8 +136,8 @@ const jsonOf = (args: string[], r: Exec): Json => {
   return j;
 };
 
-export function archonJson(args: string[], cwd?: string): Json {
-  return jsonOf(args, archon([...args, '--json'], cwd));
+export function archonJson(args: string[], cwd?: string, intent?: LaunchIntent): Json {
+  return jsonOf(args, archon([...args, '--json'], cwd, intent));
 }
 
 export const tail = (s: string, n = 400): string => s.trim().slice(-n);
@@ -226,18 +242,19 @@ function liveOwnerAnswering(id: string): boolean | undefined {
 /** busy：recover 锁被另一进程持有（它正在恢复同一 run）。不是业务失败：调用方重读状态再定，不计次、不记处置。 */
 export type RecoverResult =
   | { ok: true; resumed: Json }
-  | { ok: false; reason: string; busy?: true; held?: true; action?: string; snapshot?: string; nodes?: string[]; evidence?: string };
+  | { ok: false; reason: string; busy?: true; refused?: true; held?: true; action?: string; snapshot?: string; nodes?: string[]; evidence?: string };
 
 export type Lock = { ok: true; release: () => void } | { ok: false; reason: 'locked' };
 
 export type Admission =
-  | { ok: true; capacity: number; active: number; release: () => void }
+  | { ok: true; capacity: number; active: number; launch: (args: string[], cwd?: string) => Json; release: () => void }
   | { ok: false; capacity: number; active?: number; reason: 'admission_busy' | 'run_capacity' };
 
 /**
  * Hold the shared launch lock until Archon has persisted its pending row. Other CLIs refuse
  * immediately, before creating a worker/worktree. Paused and owner-ambiguous runs retain
- * capacity; only the engine's terminal status frees it. The kernel releases a dead launcher.
+ * capacity; only the engine's terminal status frees it. A durable launch reservation covers
+ * the pre-pending child when the parent CLI dies; unknown effects retain admission.
  */
 export function admitRun(capacity: number): Admission {
   if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('invalid run capacity');
@@ -246,6 +263,17 @@ export function admitRun(capacity: number): Admission {
   const lease = lock(join(root, 'run-admission.lock'));
   if (!lease.ok) return { ok: false, capacity, reason: 'admission_busy' };
   try {
+    const reservation = join(root, 'run-admission.json');
+    if (existsSync(reservation)) {
+      const old = JSON.parse(readFileSync(reservation, 'utf8')) as { host?: unknown; pid?: unknown; pid_start?: unknown };
+      // Only confirmed death clears capacity. Missing identity, remote host and PID reuse stay conservative.
+      if (old.host !== hostname() || typeof old.pid !== 'number' || !Number.isSafeInteger(old.pid) || old.pid < 1 ||
+          typeof old.pid_start !== 'string' || !old.pid_start || pidAlive(old.pid)) {
+        lease.release();
+        return { ok: false, capacity, reason: 'admission_busy' };
+      }
+      unlinkSync(reservation);
+    }
     const path = join(root, 'archon.db');
     let active = 0;
     if (existsSync(path)) {
@@ -263,7 +291,11 @@ export function admitRun(capacity: number): Admission {
       lease.release();
       return { ok: false, capacity, active, reason: 'run_capacity' };
     }
-    return { ok: true, capacity, active, release: lease.release };
+    return { ok: true, capacity, active, release: lease.release, launch: (args, cwd) => {
+      const token = randomUUID();
+      writeAtomic(reservation, JSON.stringify({ token, host: hostname() }) + '\n');
+      return archonJson(args, cwd, { path: reservation, token });
+    } };
   } catch (e) {
     lease.release();
     throw e;
@@ -403,7 +435,7 @@ export function recover(
       // A structured pre-admission refusal guarantees no worker was launched.
       // Any other failure (including a lost acknowledgement) retains the fence.
       unlinkSync(journalPath);
-      return { ok: false, reason: tail(JSON.stringify(resumed)) };
+      return { ok: false, refused: true, reason: tail(JSON.stringify(resumed)) };
     }
     if (result.code !== 0 || resumed?.ok !== true) {
       const evidence = `${journalPath}-result`;

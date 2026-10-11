@@ -64,17 +64,47 @@ export const CHECK_AUX_TIMEOUT_MS = 10_000;
 // accept/settle: status, tree, full/delta patch, scope, probe add/remove, HEAD, events.
 // env: HEAD only. The worst-path subprocess trace test enforces these counts.
 export const CHECK_AUX_COUNTS = { accept: 9, env: 1 } as const;
-const auxiliaryTimeout = (): { timeout?: number } =>
-  ['accept', 'settle', 'env'].includes(env('KIND')) ? { timeout: CHECK_AUX_TIMEOUT_MS } : {};
+// The watchdog owns separate pipes, so even an escaped descendant cannot hold this caller open.
+// The shared budget includes TERM grace, KILL, pipe destruction and watchdog startup.
+const AUX_WATCHDOG = `
+import os, signal, subprocess, sys, time
+ms = int(sys.argv[1])
+grace = min(0.2, ms / 4000)
+p = subprocess.Popen(sys.argv[2:], start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+errors = []
+def terminate(sig):
+    try: os.killpg(p.pid, sig)
+    except ProcessLookupError: pass
+    except OSError as e: errors.append(str(e))
+try:
+    out, err = p.communicate(timeout=max(0.001, ms / 2000 - grace))
+    code = p.returncode if p.returncode >= 0 else 128 - p.returncode
+except subprocess.TimeoutExpired:
+    terminate(signal.SIGTERM)
+    time.sleep(grace)
+    terminate(signal.SIGKILL)
+    try: out, err = p.communicate(timeout=grace)
+    except subprocess.TimeoutExpired as e:
+        out, err = e.output or b'', e.stderr or b''
+        p.stdout.close(); p.stderr.close()
+    err += b'\\nauxiliary timed out: TERM -> SIGKILL; output pipes reclaimed'
+    if errors: err += ('; termination errors: ' + '; '.join(errors)).encode()
+    code = 124
+sys.stdout.buffer.write(out); sys.stderr.buffer.write(err)
+sys.exit(code)
+`;
+function auxiliary(cmd: string[]) {
+  const bounded = ['accept', 'settle', 'env'].includes(env('KIND'));
+  return Bun.spawnSync(bounded ? ['python3', '-c', AUX_WATCHDOG, String(CHECK_AUX_TIMEOUT_MS), ...cmd] : cmd, {
+    stdout: 'pipe', stderr: 'pipe',
+    ...(bounded ? { timeout: CHECK_AUX_TIMEOUT_MS, killSignal: 'SIGKILL' as const } : {}),
+  });
+}
 const artifacts = process.env.ARTIFACTS_DIR ?? '';
 const json = (k: string): unknown =>
   env(k) && env(k) !== 'null' ? (JSON.parse(env(k)) as unknown) : null;
 const git = (...args: string[]): string => {
-  const p = Bun.spawnSync(['git', ...args], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    ...auxiliaryTimeout(),
-  });
+  const p = auxiliary(['git', ...args]);
   if (p.exitCode !== 0 || p.signalCode)
     throw new Error(
       `git ${args[0]}: ${p.stderr.toString().trim()}${p.signalCode ? ` (signal ${p.signalCode})` : ''}`
@@ -358,12 +388,8 @@ function probe(base: string, checks: Check[], tag: string): boolean {
     return run(checks, join(artifacts, `${tag}.probe.log`), dir).length === 0;
   } finally {
     // 不加 --force：验收命令在工作树里留下的文件不替人丢弃；删不掉就保留并报路径
-    const rm = Bun.spawnSync(['git', 'worktree', 'remove', dir], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      ...auxiliaryTimeout(),
-    });
-    if (rm.signalCode)
+    const rm = auxiliary(['git', 'worktree', 'remove', dir]);
+    if (rm.signalCode || rm.exitCode === 124)
       throw new Error(
         `probe: kept worktree ${dir}: ${rm.stderr.toString().trim()} (signal ${rm.signalCode})`
       );
@@ -542,14 +568,7 @@ function runEvents(): RunEvent[] {
   if (events) return events;
   const id = process.env.WORKFLOW_ID;
   if (!id) throw new Error('sa-check: WORKFLOW_ID unset');
-  const p = Bun.spawnSync(
-    [env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json'],
-    {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      ...auxiliaryTimeout(),
-    }
-  );
+  const p = auxiliary([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json']);
   if (p.exitCode !== 0 || p.signalCode)
     throw new Error(
       `archon workflow get ${id}: ${p.stderr.toString().slice(-300)}${p.signalCode ? ` (signal ${p.signalCode})` : ''}`

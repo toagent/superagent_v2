@@ -1346,20 +1346,47 @@ describe('RCPT consumed decision receipts', () => {
     expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
   });
 
-  test('RCPT action refusal keeps the answer retryable and sends no success receipt', () => {
+  test('RCPT unconfirmed effect is explicit and never replayed', () => {
     const s = stub([humanWait()]), sup = supervisor(s.root, 'no');
     tick();
     const original = archonMod.archonJson;
     const fail = spyOn(archonMod, 'archonJson').mockImplementation((a, cwd) =>
       a[1] === 'abandon' ? { ok: false } : original(a, cwd));
-    try {
-      expect(tick(1)[0]).toMatchObject({ action: 'reject', ok: false });
-      expect(Object.values(asks(s.root))[0]).toMatchObject({ status: 'no' });
-      expect(Object.values(asks(s.root))[0].receipt).toBeUndefined();
-      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
-    } finally { fail.mockRestore(); }
-    expect(tick()[0]).toMatchObject({ action: 'reject', ok: true });
+    try { expect(tick(1)[0]).toMatchObject({ action: 'reject', ok: false }); }
+    finally { fail.mockRestore(); }
+    expect(Object.values(asks(s.root))[0]).toMatchObject({ status: 'no', decision: { answer: 'no', engine_run: 'r' } });
+    expect(tick(1)[0]).toMatchObject({ action: 'decision_reconcile', ok: false, error: expect.stringContaining('decision_effect_unknown') });
+    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
+    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(0);
+  });
+
+  test('RCPT exit after cancellation before consumption is reconciled from terminal engine state', () => {
+    const s = stub([humanWait()]), sup = supervisor(s.root, 'no');
+    tick();
+    const script = join(s.root, 'crash.ts');
+    writeFileSync(script, `import {spyOn} from 'bun:test';
+import * as config from ${JSON.stringify(join(WETAMP, 'src/config.ts'))};
+import {main} from ${JSON.stringify(join(WETAMP, 'src/cli.ts'))};
+const original=config.writeAtomic;
+spyOn(config,'writeAtomic').mockImplementation((path,body)=>{
+  if(path.endsWith('/asks.json') && body.includes('"action": "reject"')) process.exit(73);
+  return original(path,body);
+});
+process.exit(main(['supervise-tick']));`);
+    // The fake engine persists cancellation before acknowledging it, independently of asks.json.
+    const bin = join(s.dir, 'archon');
+    writeFileSync(bin, readFileSync(bin, 'utf8').replace("echo '{\"ok\":true}'", `if [ "$2" = abandon ]; then printf '%s' '${JSON.stringify(run('cancelled'))}' > "$cur"; fi\necho '{\"ok\":true}'`));
+    const child = Bun.spawnSync([process.execPath, script], { env: process.env, stdout: 'pipe', stderr: 'pipe', timeout: 5000 });
+    expect(child.exitCode, child.stderr.toString()).toBe(73);
+    expect(Object.values(asks(s.root))[0]).toMatchObject({ status: 'no', decision: { answer: 'no', engine_run: 'r' } });
+    expect(Object.values(asks(s.root))[0].decision?.effect).toBeUndefined();
+    expect(Object.values(asks(s.root))[0].receipt).toBeUndefined();
+    expect(tick()[0]).toMatchObject({ action: 'receipt_reconciled', ok: true });
+    expect(body(s.root)).toContain('已终止整个run');
+    expect(Object.values(asks(s.root))[0]).toMatchObject({ status: 'rejected', receipt: { delivery: 'sent' } });
+    tick();
     expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(1);
+    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
   });
 
   for (const sample of ['package', 'milestone', 'adopt', 'approval', 'review', 'resume', 'concurrent-resume'] as const) test(`RCPT actual ${sample} action uses engine facts and excludes output prose`, () => {
@@ -2052,7 +2079,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
     expect(loadLedger('sa1').budget_grants).toHaveLength(1);
   });
-  test('budget yes records finite explicit allowances, and review yes changes only the review counter', () => {
+  test('budget yes records finite explicit allowances checked by sa-check', () => {
     const { s } = scenes.budget();
     supervisor(s.root, 'yes');
     tick();
@@ -2065,9 +2092,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       weighted_tokens: 9 * loadTiers().policy.budget_floor.S,
     });
     expect(loadLedger('sa1').budget_grants).toHaveLength(1);
+    const repo = gitRepo(tmp());
     const check = (attempt: string, milestone = 'm1') => {
       writeFileSync(join(s.root, 'gen', 'attempts', 'm1'), attempt);
-      const repo = gitRepo(tmp());
       const p = Bun.spawnSync(
         ['bun', join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts')],
         {
@@ -2116,6 +2143,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       code: 1,
       err: expect.stringContaining('budget-extra: invalid limits'),
     });
+  }, 10_000); // Four real sa-check processes validate the persisted allowance.
+  test('review yes changes only the review counter', () => {
     const { s: r } = scenes.review_not_independent();
     supervisor(r.root, 'yes');
     tick();
