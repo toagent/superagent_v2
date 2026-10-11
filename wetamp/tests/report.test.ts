@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Plan } from '../src/plan';
 import { buildReport, callsOf, interventionStats, rollup } from '../src/report';
@@ -75,7 +75,7 @@ describe('F-22 report', () => {
       }));
     const before = ['ledger', 'old', 'latest'].map(id => readFileSync(join(root, `${id}.json`), 'utf8'));
     const bin = join(root, 'archon');
-    writeFileSync(bin, `#!/bin/sh\nprintf '%s|%s\\n' "$3" "$PWD" >> '${root}/queries'\ncat '${root}/'"$3".json\n`, { mode: 0o755 });
+    writeFileSync(bin, `#!/bin/sh\nprintf '%s|%s\\n' "$3" "$(pwd -P)" >> '${root}/queries'\ncat '${root}/'"$3".json\n`, { mode: 0o755 });
     const saved = process.env.SA_ARCHON_BIN;
     process.env.SA_ARCHON_BIN = bin;
     if (missing) rmSync(repo, { recursive: true });
@@ -95,7 +95,8 @@ describe('F-22 report', () => {
       const window = (report.usage as { window: { generated_at: string } }).window;
       expect(Date.parse(window.generated_at)).toBeGreaterThanOrEqual(started);
       expect(Date.parse(window.generated_at)).toBeLessThanOrEqual(Date.now());
-      const cwd = missing ? WETAMP : repo;
+      // The stub reports the physical cwd; tmp roots and the checkout may sit behind symlinks.
+      const cwd = realpathSync(missing ? WETAMP : repo);
       expect(readFileSync(join(root, 'queries'), 'utf8').trim().split('\n')).toEqual([
         `latest|${cwd}`, `old|${cwd}`, `latest|${cwd}`,
       ]);

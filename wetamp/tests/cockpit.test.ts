@@ -38,6 +38,7 @@ const row = (id: string, state = 'running', current = 'review-m1-r2'): BoardRow 
   elapsed_s: 600,
   held: state.startsWith('held:') ? { node: current, event: null } : null,
   recoveries: 0,
+  interventions: 0,
   auto_retries: 0,
   console: 'codex',
   branch: 'branch',
@@ -122,6 +123,8 @@ test('local-day achievement, first-pass run count, ask actions across run days a
     { at: iso(-1000), action: 'ask', reason: 'budget', ok: true },
     { at: iso(-1000), action: 'retry', reason: 'budget', ok: true },
   ];
+  // The answered ask behind that retry is the human intervention the ledger records.
+  old.interventions = 1;
   expect(cockpit(snapshot([done, fail, cancel, old]), now).metrics).toEqual({
     completed: 1,
     decided: 4,
