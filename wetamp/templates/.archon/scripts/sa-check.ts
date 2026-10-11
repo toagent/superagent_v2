@@ -1,7 +1,7 @@
 // superagent 生成工作流的确定性节点（script: sa-check, runtime: bun）。由 INPUTS_KIND 选择：
 //   env    plan 级与包级 environment 检查；失败即 exit 1（held:environment）
 //   accept 执行 INPUTS_PKGS 的验收命令（退出码即结果）+ 工作区必须干净；INPUTS_BASE 非空时另存 diff 并在失败时
-//          于 BASE 的临时工作树重跑失败命令（probe：base_pass=false 即基线本来就失败）；按将军输出与验收结果给出
+//          于 BASE 的临时工作树准备依赖后重跑失败命令（无可信环境则 unknown）；按将军输出与验收结果给出
 //          disposition（advance / repair / suspend + 稳定 reason，F-18），并按实际改动推断风险（F-13）
 //   settle 包级收尾：首次验收 advance 直接透传；repair 后复验，仍不 advance 即 suspend（repair_exhausted:*）
 //   gate   第 INPUTS_ROUND 轮评审后的判定：pass / fix（进入下一轮修复）/ escalate（exit 1，升级给用户）
@@ -418,10 +418,13 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
       ? probe(
           base,
           checks.filter(c => failed.includes(c.cmd)),
-          tag
+          tag,
+          p
         )
       : [];
   if (baseResults.length) appendFileSync(log, `# base_results: ${JSON.stringify(baseResults)}\n`);
+  else if (base && failed.length)
+    appendFileSync(log, `# baseline unknown: see ${join(artifacts, `${tag}.probe.log`)}\n`);
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
     ok,
@@ -446,7 +449,7 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
     base_results: baseResults,
-    base_pass: baseResults.length ? baseResults.every(r => r.pass) : null,
+    base_pass: baseResults.length ? baseResults.some(r => r.pass) : null,
     ...scope,
     head: git('rev-parse', 'HEAD').trim(),
   };
@@ -490,14 +493,30 @@ function settle(): void {
   finish(tag, out);
 }
 
-/** 在 base 的临时 detached 工作树里重跑失败的验收命令：区分“本包引入”与“基线预存”失败。 */
-function probe(base: string, checks: Check[], tag: string): { cmd: string; pass: boolean }[] {
+/** 在 base 的临时 detached 工作树里准备同一环境后重跑失败命令；无法准备时不作基线结论。 */
+function probe(
+  base: string,
+  checks: Check[],
+  tag: string,
+  p: Plan
+): { cmd: string; pass: boolean }[] {
+  const log = join(artifacts, `${tag}.probe.log`),
+    setup = environmentChecks(p);
+  writeFileSync(log, '');
+  if (!setup.length) {
+    appendFileSync(log, '# baseline unknown: no environment commands declared\n');
+    return [];
+  }
   const dir = mkdtempSync(join(tmpdir(), 'sa-probe-'));
   try {
     git('worktree', 'add', '--detach', '-q', dir, base);
+    if (run(setup, log, dir).length) {
+      appendFileSync(log, '# baseline unknown: environment preparation failed\n');
+      return [];
+    }
     return checks.map(c => ({
       cmd: c.cmd,
-      pass: run([c], join(artifacts, `${tag}.probe.log`), dir).length === 0,
+      pass: run([c], log, dir).length === 0,
     }));
   } finally {
     // 不加 --force：验收命令在工作树里留下的文件不替人丢弃；删不掉就保留并报路径
@@ -512,14 +531,15 @@ function probe(base: string, checks: Check[], tag: string): { cmd: string; pass:
   }
 }
 
+export const environmentChecks = (p: Plan): Check[] => [
+  ...(p.environment ?? []),
+  ...p.packages.flatMap(k => k.environment ?? []),
+];
+
 function environment(): void {
   const log = join(artifacts, 'environment.log');
   writeFileSync(log, '');
-  const p = plan();
-  const failed = run(
-    [...(p.environment ?? []), ...p.packages.flatMap(k => k.environment ?? [])],
-    log
-  );
+  const failed = run(environmentChecks(plan()), log);
   emit({ ok: failed.length === 0, failed, log, head: git('rev-parse', 'HEAD').trim() });
   if (failed.length) process.exit(1);
 }
@@ -1126,7 +1146,8 @@ function land(): void {
       ? {
           reason: 'land_target_unknown',
           error: `No existing local merge target for base_ref ${base}; no recorded launch branch applies.`,
-          action: 'Choose and verify a local branch with git show-ref --verify refs/heads/<branch>, then review and merge manually.',
+          action:
+            'Choose and verify a local branch with git show-ref --verify refs/heads/<branch>, then review and merge manually.',
         }
       : {}),
     commands: target

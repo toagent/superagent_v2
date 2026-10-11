@@ -259,7 +259,9 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
   }
 }
 
-function intervention<T extends number | boolean | { ok: boolean; busy?: boolean; refused?: boolean }>(
+function intervention<
+  T extends number | boolean | { ok: boolean; busy?: boolean; refused?: boolean },
+>(
   l: Ledger,
   action: string,
   execute: () => T,
@@ -272,7 +274,8 @@ function intervention<T extends number | boolean | { ok: boolean; busy?: boolean
   try {
     const result = execute();
     skipped = typeof result === 'object' && (result.busy === true || result.refused === true);
-    ok = typeof result === 'number' ? result === 0 : typeof result === 'boolean' ? result : result.ok;
+    ok =
+      typeof result === 'number' ? result === 0 : typeof result === 'boolean' ? result : result.ok;
     if (typeof result === 'number') error = `exit:${String(result)}`;
     return result;
   } catch (e) {
@@ -294,7 +297,12 @@ function intervention<T extends number | boolean | { ok: boolean; busy?: boolean
   }
 }
 
-const answerAction = <T extends { ok: boolean }>(l: Ledger, key: string, a: Ask, execute: () => T): T =>
+const answerAction = <T extends { ok: boolean }>(
+  l: Ledger,
+  key: string,
+  a: Ask,
+  execute: () => T
+): T =>
   a.status === 'yes' || a.status === 'no'
     ? intervention(l, 'answer', execute, { key, id: a.id })
     : execute();
@@ -1008,9 +1016,11 @@ function resumeRun(l: Ledger, fresh = false, reconciled?: string, action = 'reco
   let started = false;
   // prepare runs under the recovery lock only after admission checks have passed.
   const res = intervention(
-    l, action,
+    l,
+    action,
     () => recoverRun(l, fresh, undefined, () => (started = true), undefined, reconciled),
-    undefined, () => started
+    undefined,
+    () => started
   );
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
@@ -1141,11 +1151,21 @@ function retryAllHeld(): number {
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
-      return [control(l, () => intervention(l, 'decide', () => ({
-        run_id: l.run_id,
-        state: c.state,
-        ...retry(l, c, () => (started = true)),
-      }), undefined, () => started))];
+      return [
+        control(l, () =>
+          intervention(
+            l,
+            'decide',
+            () => ({
+              run_id: l.run_id,
+              state: c.state,
+              ...retry(l, c, () => (started = true)),
+            }),
+            undefined,
+            () => started
+          )
+        ),
+      ];
     } catch (e) {
       return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
     }
@@ -1201,7 +1221,11 @@ function decide(l: Ledger, a: Args): number {
   }
   let started = false;
   const res = intervention(
-    l, 'decide', () => retry(l, c, () => (started = true)), undefined, () => started
+    l,
+    'decide',
+    () => retry(l, c, () => (started = true)),
+    undefined,
+    () => started
   );
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
@@ -2279,13 +2303,25 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
 function gateHint(plan: Plan, art: string, node: string, g: Gate | undefined, n: number): string {
   const m = gateMilestone(node);
   const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as
-    | { failed?: string[]; base_pass?: boolean | null; log?: string }
+    | {
+        failed?: string[];
+        base_pass?: boolean | null;
+        base_results?: { cmd: string; pass: boolean }[];
+        log?: string;
+      }
     | undefined;
   const out = [`\n## 自动重试 ${String(n)}：${node} escalate（${g?.reason ?? '?'}）\n`];
   if (acc?.failed?.length) {
     out.push('失败的验收命令：', ...acc.failed.map(x => `- \`${x}\``), '');
-    if (acc.base_pass === false)
-      out.push('此失败在基线已存在，不是你引入的，与本包无关就记 deviations 并继续。', '');
+    if (acc.base_pass == null) out.push('基线状态未知。', '');
+    else
+      for (const cmd of acc.failed)
+        out.push(
+          acc.base_results?.some(r => r.cmd === cmd && !r.pass)
+            ? `\`${cmd}\`：此失败在基线已存在，与本包无关就记 deviations 并继续。`
+            : `\`${cmd}\`：未证明基线同样失败，按本包引入处理。`,
+          ''
+        );
     const log = acc.log && existsSync(acc.log) ? readFileSync(acc.log, 'utf8').trimEnd() : '';
     if (log) out.push('验收日志尾：', '```', ...log.split('\n').slice(-60), '```', '');
   }
@@ -2499,7 +2535,11 @@ export function main(argv: string[]): number {
         print({ run_id: id, ...res });
         return res.ok ? 0 : res.held ? EXIT.held : res.busy ? EXIT.running : 1;
       }
-      return controlled(resolved, () => resumeRun(resolved, false, a.flags.reconciled, verb), false);
+      return controlled(
+        resolved,
+        () => resumeRun(resolved, false, a.flags.reconciled, verb),
+        false
+      );
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);
