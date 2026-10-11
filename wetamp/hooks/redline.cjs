@@ -243,7 +243,11 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
     const query = gitEffects.read.includes(sub) || !rest.length && ['branch','tag','remote','reflog'].includes(sub)
       || (gitEffects.queries[sub] || []).some(flag => rest.includes(flag))
         && !rest.some(flag => new RegExp(gitEffects.mutationFlags).test(flag));
-    if (!query && gitEffects.write.includes(sub) && locations.some(location => !owned(location.path)))
+    const destructiveRule = gitEffects.destructive[sub];
+    const matches = pattern => pattern && rest.some(word => new RegExp(pattern).test(word));
+    const destructive = !query && (matches(gitEffects.forceFlags) || matches(gitEffects.destructiveFlags[sub])
+      || destructiveRule && (!destructiveRule.pattern || matches(destructiveRule.pattern)) && !matches(destructiveRule.unless));
+    if (destructive && (locations.some(location => !owned(location.path)) || !owned(checkout || base)))
       return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
     if (sub === 'config' && !query) {
       if (base.startsWith('/__sa_unknown_cwd__')) return targetReason('overwrite', '', dir, root, env, reviewer, advisory);
@@ -252,13 +256,6 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
         : fileIndex >= 0 ? rest[fileIndex + 1] : metadata ? path.join(metadata, 'config') : path.join(base, '.git/config');
       return targetReason('overwrite', config || '', dir, root, env, reviewer, advisory);
     }
-    if ((sub === 'reset' && rest.includes('--hard') || sub === 'clean') && !owned(checkout || base))
-      return message(`执行 git ${sub}`, '会销毁非本任务检出中的文件或改动', undefined, {kind: '非本任务检出'});
-    if (!query && gitEffects.write.includes(sub) && (base.startsWith('/__sa_unknown_cwd__')
-      || metadata && !owned(metadata)))
-      return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
-    if (checkout && !owned(checkout) && !query && gitEffects.write.includes(sub))
-      return message(`执行 git ${sub}`, '会修改非本任务的 git 检出', undefined, {kind: '非本任务检出'});
     if (reviewer && !query && (sub === 'commit' || root && within(resolvePath(base), resolvePath(root))))
       return message('在被审仓库执行 git 写入', 'reviewer 只读，提交或修改会污染评审对象', '只查询仓库，在临时目录运行测试');
     const why = gitReason(['git', sub, ...rest], base);
