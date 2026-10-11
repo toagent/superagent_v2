@@ -1160,17 +1160,19 @@ function brief(l: Ledger): number {
   if (inbox.length) lines.push(`inbox: ${inbox.map(m => m.id).join(' ')}; superagent inbox`);
   lines.push(`engine: ${String(s.engine)}`);
   if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
+  try {
+    const asks = asksOf(l.run_id),
+      receipt = latestReceipt(asks);
+    if (receipt) lines.push(`receipt: ${receipt.body}`);
+    for (const [k, v] of Object.entries(asks)) lines.push(`ask ${k}: ${v?.status ?? '?'}`);
+  } catch (e) {
+    lines.push(`asks: ${tail((e as Error).message, 120)}`);
+  }
   for (const f of evidenceGates(l, art)) {
     const g = evidenceJson(l, art, f) as Gate;
     lines.push(
       `${f.slice(0, -5)}: ${g.verdict}${g.reason ? ` (${g.reason})` : ''} debt=${String(g.debt.length)}`
     );
-  }
-  try {
-    for (const [k, v] of Object.entries(asksOf(l.run_id)))
-      lines.push(`ask ${k}: ${v?.status ?? '?'}`);
-  } catch (e) {
-    lines.push(`asks: ${tail((e as Error).message, 120)}`);
   }
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
@@ -1260,7 +1262,8 @@ function decisionReceipt(
 interface AnswerReceipt {
   key: string;
   body: string;
-  delivery: 'pending' | 'sent' | 'failed';
+  at?: string;
+  delivery?: 'pending' | 'sent' | 'failed';
   error?: string;
 }
 interface AnswerIntent {
@@ -1294,6 +1297,13 @@ const saveAsks = (asks: Asks): void => {
 /** 某个 run 的提问；键 `<run>:<挂起类别>`：resumeAt 变了也不重投。 */
 export const asksOf = (run: string): Asks =>
   Object.fromEntries(Object.entries(loadAsks()).filter(([k]) => k.startsWith(`${run}:`)));
+
+/** Legacy receipts lack timestamps; ties retain their persisted order. */
+const latestReceipt = (asks: Asks): AnswerReceipt | undefined =>
+  Object.values(asks)
+    .flatMap(a => (a?.receipt ? [a.receipt] : []))
+    .sort((a, b) => (a.at ?? '').localeCompare(b.at ?? ''))
+    .at(-1);
 
 const MAX_TTL_H = 72;
 const ttlHours = (until: number): number =>
@@ -1356,7 +1366,7 @@ function reconcileAnswers(l: Ledger, asks: Asks, out: Action[]): boolean {
   return unresolved;
 }
 
-/** Persist consumption before notification; a notification failure cannot replay the action. */
+/** Persist the acknowledged effect with consumption so later ticks cannot replay the action. */
 function consumeAnswer(
   l: Ledger,
   node: string,
@@ -1379,38 +1389,9 @@ function consumeAnswer(
   a.receipt = {
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
     body: decisionReceipt(l.run_id, node, answer, effect),
-    delivery: 'pending',
+    at: new Date().toISOString(),
   };
   saveAsks(asks);
-}
-
-/** The supervisor owns delivery idempotency, including a crash after transport succeeds. */
-function deliverReceipts(asks: Asks, out: Action[]): void {
-  for (const [key, a] of Object.entries(asks)) {
-    const receipt = a?.receipt;
-    if (receipt?.delivery !== 'pending') continue;
-    try {
-      const result: unknown = JSON.parse(
-        supervisor([
-          'notify',
-          '--key',
-          receipt.key,
-          '--title',
-          `[回执] superagent ${askName(key.split(':')[0], 80)}`,
-          '--body',
-          receipt.body,
-        ])
-      );
-      if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== true)
-        throw new Error('supervisor notify: delivery not confirmed');
-      receipt.delivery = 'sent';
-    } catch (e) {
-      receipt.delivery = 'failed';
-      receipt.error = tail((e as Error).message, 200);
-      out.push({ run_id: key.split(':')[0], action: 'receipt', ok: false, error: receipt.error });
-    }
-    saveAsks(asks);
-  }
 }
 
 /**
@@ -1714,7 +1695,6 @@ function tick(
     }
   }
   if (!(asks instanceof Error)) {
-    deliverReceipts(asks, out);
     for (const action of coord().tick((key, title) => {
       const r = pollAsk(key, () => title, MAX_TTL_H, asks as Asks);
       if ('conflict' in r) throw new Error(r.conflict);
@@ -2425,7 +2405,7 @@ export function main(argv: string[]): number {
       const l = ledger();
       const run = getRun(l.archon_run_id, l.repo);
       const c = classifyRun(l, run);
-      print(summary(l, run, c));
+      print({ ...summary(l, run, c), receipt: latestReceipt(asksOf(l.run_id))?.body ?? null });
       return c.exit;
     }
     case 'resume':

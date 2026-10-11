@@ -617,7 +617,7 @@ function supervisor(root: string, answer: string): () => string[] {
   const py = join(root, 'supervisor.py');
   writeFileSync(
     py,
-    `import json, os, sys\nd = os.path.dirname(os.path.abspath(__file__))\nopen(os.path.join(d, 'sup-calls'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nif sys.argv[1] == 'notify':\n    json.dump(sys.argv[1:], open(os.path.join(d, 'receipt-args.json'), 'w'))\n    print(json.dumps({'ok': True}))\nelse:\n    print('ask-1' if sys.argv[1] == 'ask' else open(os.path.join(d, 'answer')).read().strip())\n`
+    `import os, sys\nd = os.path.dirname(os.path.abspath(__file__))\nopen(os.path.join(d, 'sup-calls'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nif sys.argv[1] not in ('ask', 'ask-status'): sys.exit(2)\nprint('ask-1' if sys.argv[1] == 'ask' else open(os.path.join(d, 'answer')).read().strip())\n`
   );
   writeFileSync(join(root, 'answer'), answer);
   process.env.SA_SUPERVISOR = py;
@@ -1430,7 +1430,6 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(sup()).toEqual([
       expect.stringMatching(/^ask /),
       'ask-status ask-1',
-      expect.stringMatching(/^notify /),
     ]);
     expect(s.calls()).not.toContain('workflow wake --json');
   });
@@ -1462,7 +1461,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
         action: answer === 'yes' ? 'approve' : 'reject',
         ok: true,
       });
-      expect(sup()).toEqual(['ask-status old-signoff', expect.stringMatching(/^notify /)]);
+      expect(sup()).toEqual(['ask-status old-signoff']);
       expect(
         await eventually(
           s.calls,
@@ -1683,16 +1682,16 @@ describe('RCPT consumed decision receipts', () => {
     expect(result.code).toBe(code);
     return JSON.parse(result.out).actions;
   };
-  const args = (root: string): string[] =>
-    JSON.parse(readFileSync(join(root, 'receipt-args.json'), 'utf8'));
-  const body = (root: string): string => {
-    const a = args(root);
-    return a[a.indexOf('--body') + 1];
-  };
   const asks = (
     root: string
-  ): Record<string, { status: string; receipt: { key: string; body: string; delivery: string } }> =>
-    JSON.parse(readFileSync(join(root, 'home', 'asks.json'), 'utf8'));
+  ): Record<
+    string,
+    {
+      status: string;
+      receipt: { key: string; body: string; at?: string; delivery?: string; error?: string };
+    }
+  > => JSON.parse(readFileSync(join(root, 'home', 'asks.json'), 'utf8'));
+  const body = (root: string): string => Object.values(asks(root))[0].receipt.body;
 
   for (const answer of ['yes', 'no'] as const)
     test(`RCPT checked/deleted ${answer}: one receipt, no new decision or replay`, () => {
@@ -1705,18 +1704,22 @@ describe('RCPT consumed decision receipts', () => {
       });
       const expected = `run=sa1；节点=human-m2；答复=${answer === 'yes' ? '是；已批准等待门并提交续跑' : '否；已终止整个run（保留证据）'}；去向=r；结果=动作已受理（不代表后续验收通过）`;
       expect(body(s.root)).toBe(expected);
-      expect(args(s.root)).toContain('[回执] superagent sa1');
       const receipt = Object.values(asks(s.root))[0];
       expect(receipt).toMatchObject({
         status: answer === 'yes' ? 'approved' : 'rejected',
-        receipt: { body: expected, delivery: 'sent' },
+        receipt: { body: expected, at: expect.any(String) },
       });
+      expect(receipt.receipt).not.toHaveProperty('delivery');
       expect(receipt.receipt.key).toMatch(/^[a-f0-9]{64}$/);
+      expect(captured(() => main(['brief', 'sa1'])).out.split('\n')).toContain(
+        `receipt: ${expected}`
+      );
+      expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe(expected);
       tick();
       tick();
       expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
       expect(sup().filter(c => c.startsWith('ask-status '))).toHaveLength(1);
-      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(1);
+      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
       expect(
         s
           .calls()
@@ -1724,54 +1727,43 @@ describe('RCPT consumed decision receipts', () => {
       ).toHaveLength(1);
     });
 
-  test('RCPT failed delivery is observable, consumed answer is durable before transport, action is not replayed', () => {
-    const s = stub([humanWait()]),
-      sup = supervisor(s.root, 'no');
-    const py = join(s.root, 'supervisor.py');
-    writeFileSync(
-      py,
-      readFileSync(py, 'utf8').replace(
-        "print(json.dumps({'ok': True}))",
-        `json.dump(json.load(open(os.path.join(d, 'home', 'asks.json'))), open(os.path.join(d, 'at-notify.json'), 'w'))\n    print(json.dumps({'ok': False}))\n    sys.exit(3)`
-      )
-    );
-    tick();
-    expect(tick(1)).toMatchObject([
-      { action: 'reject', ok: true },
-      { action: 'receipt', ok: false, error: expect.stringContaining('supervisor notify exit 3') },
-    ]);
-    const snapshot = JSON.parse(readFileSync(join(s.root, 'at-notify.json'), 'utf8'));
-    expect(Object.values(snapshot)[0]).toMatchObject({
-      status: 'rejected',
-      receipt: { delivery: 'pending' },
+  for (const delivery of ['pending', 'failed'] as const)
+    test(`RCPT legacy ${delivery} receipt stays readable after terminal state without notification or replay`, () => {
+      const s = stub([humanWait()]),
+        sup = supervisor(s.root, 'no');
+      tick();
+      tick();
+      const saved = asks(s.root),
+        receipt = Object.values(saved)[0].receipt;
+      delete receipt.at;
+      receipt.delivery = delivery;
+      if (delivery === 'failed') receipt.error = "invalid choice: 'notify'";
+      writeFileSync(join(s.root, 'home', 'asks.json'), JSON.stringify(saved));
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('cancelled')));
+      tick();
+      tick();
+      expect(asks(s.root)).toEqual(saved);
+      expect(captured(() => main(['brief', 'sa1'])).out).toContain(`receipt: ${receipt.body}`);
+      expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe(receipt.body);
+      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
+      expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
     });
-    expect(Object.values(asks(s.root))[0]).toMatchObject({
-      status: 'rejected',
-      receipt: { delivery: 'failed' },
-    });
-    tick();
-    tick();
-    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(1);
-    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
-  });
 
-  test('RCPT acknowledged pending receipt is reconciled after the run becomes terminal without replaying the action', () => {
-    const s = stub([humanWait()]),
-      sup = supervisor(s.root, 'no');
-    tick();
-    tick();
-    const saved = asks(s.root),
-      receipt = Object.values(saved)[0].receipt;
-    receipt.delivery = 'pending';
+  test('RCPT brief/status select the latest answer for this run, including out-of-order asks', () => {
+    const s = stub([run('completed')]);
+    const receipt = (body: string, at?: string) => ({ key: body, body, ...(at ? { at } : {}) });
+    const saved = {
+      'sa1:latest': { status: 'approved', receipt: receipt('最新答复', '2026-10-11T12:00:00.000Z') },
+      'other:signoff': { status: 'approved', receipt: receipt('其他run', '2026-10-12T12:00:00.000Z') },
+      'sa1:older': { status: 'approved', receipt: receipt('较早答复', '2026-10-11T11:00:00.000Z') },
+      'sa1:legacy': { status: 'approved', receipt: receipt('旧版答复') },
+      'sa1:pending': { status: 'pending' },
+    };
     writeFileSync(join(s.root, 'home', 'asks.json'), JSON.stringify(saved));
-    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('cancelled')));
-    tick();
-    expect(Object.values(asks(s.root))[0].receipt).toMatchObject({
-      key: receipt.key,
-      delivery: 'sent',
-    });
-    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(2);
-    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
+    const lines = captured(() => main(['brief', 'sa1'])).out.split('\n');
+    expect(lines.filter(line => line.startsWith('receipt:'))).toEqual(['receipt: 最新答复']);
+    expect(lines.length).toBeLessThanOrEqual(20);
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe('最新答复');
   });
 
   test('RCPT unconfirmed effect is explicit and never replayed', () => {
@@ -1843,10 +1835,10 @@ process.exit(main(['supervise-tick']));`
     expect(body(s.root)).toContain('已终止整个run');
     expect(Object.values(asks(s.root))[0]).toMatchObject({
       status: 'rejected',
-      receipt: { delivery: 'sent' },
+      receipt: { body: expect.stringContaining('已终止整个run') },
     });
     tick();
-    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(1);
+    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
     expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
   });
 
@@ -2559,7 +2551,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
           .filter(c => c.startsWith('ask-status '))
           .at(-1)
       ).toBe('ask-status old-pending');
-      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(1);
+      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
       expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
       expect(loadLedger('sa1').dispositions?.map(d => `${d.reason}/${d.action}`)).toEqual([
         `${hold}/ask`,
