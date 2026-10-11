@@ -2560,6 +2560,7 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
     SA_ARCHON_BIN: '',
     SA_SUPERVISOR: py,
     AGENT_SUPERVISOR_STATE: join(root, 'supervisor'),
+    XDG_STATE_HOME: join(root, 'state'),
     SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
     SA_SKIP_DOCTOR: '1',
   };
@@ -3399,7 +3400,7 @@ describe('HF9 decision titles', () => {
   });
 });
 
-test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land', () => {
+test('REC-R1-01: selftest formal receipt admits run without skip; fake workflow fixes, approves and lands', () => {
   const root = tmp();
   const repo = gitRepo(root);
   const plan = fixturePlan(root, repo);
@@ -3409,6 +3410,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
     ARCHON_HOME: join(root, 'home', 'archon'),
     SUPERAGENT_WRITE_ROOTS: root,
     SA_ARCHON_BIN: '',
+    XDG_STATE_HOME: join(root, 'state'),
     SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
     SA_SKIP_DOCTOR: '1',
   };
@@ -3436,7 +3438,49 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
     phase: 'preflight',
     reason: expect.stringContaining('no valid selftest receipt: no selftest.json'),
   }); // preflight 拒绝
-  const started = sa('run', plan, '--fake', '--skip-selftest');
+  const stateFile = join(root, 'state/superagent/install.json');
+  const installed = readFileSync(stateFile);
+  // Keep the real engine and selftest orchestration. Replace only the provider
+  // boundary in the scratch workflow; never call a paid provider from tests.
+  const driver = join(root, 'provider-fixture.ts'),
+    shim = join(root, 'archon-fixture');
+  writeFileSync(
+    driver,
+    `import {readFileSync, writeFileSync, appendFileSync} from 'node:fs';
+    const args=process.argv.slice(2);
+    if(args[0]==='workflow' && args[1]==='run' && args[2]==='sa-provider') {
+      const gen=args[args.indexOf('--workflow-source')+1];
+      const file=gen+'/.archon/workflows/sa-smoke/sa-provider.yaml';
+      const wf=Bun.YAML.parse(readFileSync(file,'utf8'));
+      delete wf.nodes[0].prompt; delete wf.nodes[0].model;
+      wf.nodes[0].bash=\`sleep 1; echo '{"answer":"pong"}'\`;
+      writeFileSync(file,Bun.YAML.stringify(wf));
+      for(const cmd of [['git','-C',gen,'add',file],['git','-C',gen,'-c','user.name=t','-c','user.email=t@l','commit','-qm','provider fixture']]) {
+        if(Bun.spawnSync(cmd).exitCode!==0) process.exit(1);
+      }
+      appendFileSync(${JSON.stringify(join(root, 'provider-calls'))},'provider started normally\\n');
+    }
+    const p=Bun.spawnSync([${JSON.stringify(join(WETAMP, 'bin/archon'))},...args],{stdout:'inherit',stderr:'inherit'});
+    process.exit(p.exitCode);
+  `
+  );
+  writeFileSync(shim, `#!/usr/bin/env bash\nexec '${process.execPath}' '${driver}' "$@"\n`);
+  chmodSync(shim, 0o755);
+  const selftest = Bun.spawnSync(['bash', join(WETAMP, 'scripts/selftest.sh'), '--timeout', '90'], {
+    env: { ...env, SA_ARCHON_BIN: shim },
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: 180000,
+  });
+  if (selftest.exitCode !== 0)
+    throw new Error(`selftest: ${selftest.stdout.toString()} ${selftest.stderr.toString()}`);
+  expect(JSON.parse(readFileSync(join(root, 'home/selftest.json'), 'utf8'))).toMatchObject({
+    ok: true,
+    fake: false,
+  });
+  expect(readFileSync(join(root, 'provider-calls'), 'utf8')).toBe('provider started normally\n');
+  expect(readFileSync(stateFile)).toEqual(installed);
+  const started = sa('run', plan, '--fake');
   expect(started.err).toBe('');
   expect(started.code).toBe(0);
   const id = String(started.out.run_id);
@@ -3475,7 +3519,7 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(sa('land', id).out).toMatchObject({ branch: `sa/${id}`, debt: [] });
   expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
   expect(existsSync(String(waited.out.evidence))).toBe(true);
-}, 240000);
+}, 360000);
 
 describe('launch intents (run + supervise-tick reconcile)', () => {
   const tickOut = (): Record<string, unknown>[] =>

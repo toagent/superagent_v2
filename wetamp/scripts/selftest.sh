@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 契约自检：sa-smoke detach → think 节点运行中 kill -9 → wait=owner_lost → superagent recover → 暂停在事件门 → signal → completed；
+# 契约自检：真实 provider 正常完成（不注入故障）；确定性 sa-smoke detach → think 运行中 kill -9 → recover → 事件门 → completed；
 # sa-abandon 暂停在事件门 → 原生 abandon 完整回执 → cancelled；清理不明则保留树。
 # 另对 hooks/guard.cjs 喂两个 payload（元帅 31 行写入、worker 会话 Agent）断言均被拒，结果记入 selftest.json 的 hooks 段。
 # 在临时 SUPERAGENT_HOME 里跑；通过后写调用方的 $SUPERAGENT_HOME/selftest.json（--fake 写 selftest-fake.json），绑定 HEAD、配置哈希与有效期。用法：selftest.sh [--repo <path>] [--timeout <s>] [--fake]
@@ -13,8 +13,8 @@ done
 # 回执绑定调用方的 HEAD 与配置：换到临时 home 之前算
 RECEIPT_KEY="$(SUPERAGENT_HOME="$REAL_HOME" ARCHON_HOME="${ARCHON_HOME:-$REAL_HOME/archon}" bun -e "import { configHash, gitHead } from '$WETAMP/src/config.ts'; console.log(JSON.stringify({ head: gitHead(), config_hash: configHash() }))")"
 TMPH="$(mktemp -d "${TMPDIR:-/tmp}/sa-selftest.XXXXXX")"
-export SUPERAGENT_HOME="$TMPH" ARCHON_HOME="$TMPH/archon"
-A="$WETAMP/bin/archon"
+export SUPERAGENT_HOME="$TMPH" ARCHON_HOME="$TMPH/archon" XDG_STATE_HOME="$TMPH/state"
+A="${SA_ARCHON_BIN:-$WETAMP/bin/archon}"
 # 清理不加 --force、不用 branch -D：删不掉说明里面有东西，保留并报路径，整个临时目录也一起留下（worktree 在 $TMPH/archon 下）。
 keep=0
 drop() { # <branch> <worktree>
@@ -25,6 +25,7 @@ drop() { # <branch> <worktree>
 }
 source "$WETAMP/scripts/selftest-cleanup.sh"
 trap cleanup EXIT
+get() { "$A" workflow get "$ID" --json --verbose 2>/dev/null; }
 fail() { echo "selftest FAIL: $*" >&2; exit 1; }
 field() { bun -e "import { lastJson } from '$WETAMP/src/archon.ts'; const d = lastJson(await Bun.stdin.text()); const v = ($1); console.log(v ?? '')"; }
 ms() { bun -e 'console.log(Date.now())'; }
@@ -99,7 +100,37 @@ nodes:
 YAML
 smoke "    prompt: 'Reply only with the JSON object {\"answer\": \"pong\"}. Do not run tools or modify files.'
     model: '@sa-coder'" real
-[ "$FAKE" = 1 ] && smoke "    bash: sleep 20; echo '{\"answer\":\"pong\"}'" fake
+# A live provider must finish normally. Interrupt only the deterministic body
+# below: a model instruction cannot reconcile unknown external effects.
+if [ "$FAKE" = 0 ]; then
+  PROVIDER_WF="$WF/sa-provider.yaml"
+  cat > "$PROVIDER_WF" <<'YAML'
+name: sa-provider
+description: uninterrupted real provider contract
+nodes:
+  - id: think
+    prompt: 'Reply only with the JSON object {"answer": "pong"}. Do not run tools or modify files.'
+    model: '@sa-coder'
+    output_format: { type: object, properties: { answer: { type: string } }, required: [answer] }
+  - id: verify
+    depends_on: [think]
+    bash: |
+      answer=$think.output.answer
+      test "$answer" = pong
+YAML
+  git -C "$GEN" add "$PROVIDER_WF"; git -C "$GEN" -c user.name=sa -c user.email=sa@localhost commit -qm provider
+  "$A" validate workflows sa-provider --cwd "$GEN" >/dev/null 2>&1 || fail "validate provider"
+  BR="sa/selftest-provider-$(date +%s)" LAUNCH_INFLIGHT=1
+  "$A" workflow run sa-provider --workflow-source "$GEN" --cwd "$REPO" --branch "$BR" --from "$BASE" --detach --json >"$TMPH/launch-provider.json" 2>"$TMPH/launch-provider.err"
+  ID="$(cat "$TMPH/launch-provider.json" | field 'd?.runId')"; [ -n "$ID" ] || fail "provider launch ack"
+  LAUNCH_INFLIGHT=0
+  WT="$(get | field 'd?.working_path')"
+  R="$("$A" workflow wait "$ID" --json --timeout "$TIMEOUT" 2>"$TMPH/provider.err" || true)"
+  printf '%s\n' "$R" >"$TMPH/provider.json"
+  [ "$(echo "$R" | field 'd?.attention?.status')" = completed ] || { keep=1; fail "provider did not complete: $TMPH/provider.json"; }
+  ID=""; drop "$BR" "$WT"; BR="" WT=""
+fi
+smoke "    bash: sleep 20; echo '{\"answer\":\"pong\"}'" deterministic
 
 BR="sa/selftest-$(date +%s)"
 LAUNCH_INFLIGHT=1
@@ -107,7 +138,6 @@ LAUNCH_INFLIGHT=1
 ACK="$(cat "$TMPH/launch-smoke.json")"
 ID="$(echo "$ACK" | field 'd?.runId')"; [ -n "$ID" ] || fail "run ack: $ACK"
 LAUNCH_INFLIGHT=0
-get() { "$A" workflow get "$ID" --json --verbose 2>/dev/null; }
 
 PID="" deadline=$((SECONDS + TIMEOUT))
 while [ $SECONDS -lt $deadline ]; do
@@ -121,14 +151,9 @@ RSS_KB="$(ps -o rss= -p "$PID" | tr -d ' ')"
 kill -9 "$PID"; T0="$(ms)"
 R="$("$A" workflow wait "$ID" --json --timeout 30 2>/dev/null || true)"
 [ "$(echo "$R" | field 'd?.result')" = owner_lost ] || fail "wait after kill: $R"
-# Only the deterministic fake body proves no external writes. A real model's
-# instruction not to use tools cannot prove that its interrupted effects settled.
-if [ "$FAKE" = 1 ]; then
-  SNAPSHOT="$(get | bun -e "import { lastJson } from '$WETAMP/src/archon.ts'; import { recoverySnapshot } from '$WETAMP/src/recovery.ts'; console.log(recoverySnapshot(lastJson(await Bun.stdin.text())))")"
-  "$WETAMP/bin/superagent" recover "$ID" --reconciled "$SNAPSHOT" >"$TMPH/recover.json" || fail "recover: $TMPH/recover.json"
-else
-  "$WETAMP/bin/superagent" recover "$ID" >"$TMPH/recover.json" || { keep=1; cat "$TMPH/recover.json" >&2; fail "real model effects require reconciliation; kept $TMPH"; }
-fi
+# This body only sleeps and emits JSON; no unknown provider effects are waived.
+SNAPSHOT="$(get | bun -e "import { lastJson } from '$WETAMP/src/archon.ts'; import { recoverySnapshot } from '$WETAMP/src/recovery.ts'; console.log(recoverySnapshot(lastJson(await Bun.stdin.text())))")"
+"$WETAMP/bin/superagent" recover "$ID" --reconciled "$SNAPSHOT" >"$TMPH/recover.json" || fail "recover: $TMPH/recover.json"
 RECOVER_MS=$(( $(ms) - T0 ))
 
 await_gate sa.human.smoke

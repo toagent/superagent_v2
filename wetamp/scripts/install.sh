@@ -57,8 +57,20 @@ if [ "$mode" = --remote-hooks ]; then
   fi
   node -e 'const p = require(process.argv[1] + "/hooks/shell-ast.cjs"); (async () => { const e = await p.init(); if (e) throw new Error(e); const r = p.analyze("echo ok", process.cwd(), {}, () => null, s => s); if (r) throw new Error(r); })().catch(e => { console.error(e.message); process.exitCode = 1; });' "$WETAMP"
   # 真跑一次 guard：require 链（../tiers.json 的键）断了会在这里而不是在用户会话里暴露
-  err="$(printf '{"hook_event_name":"Stop"}' | node "$WETAMP/hooks/guard.cjs" claude 2>&1)"
-  [ -z "$err" ] || { echo "install.sh --remote-hooks: guard.cjs: $err" >&2; exit 1; }
+  node -e '
+const {spawnSync} = require("node:child_process");
+const p = spawnSync(process.execPath, [process.argv[1] + "/hooks/guard.cjs", "claude"],
+  {input: JSON.stringify({hook_event_name: "Stop"}), encoding: "utf8"});
+try {
+  if (p.error || p.status !== 0) throw new Error("guard probe failed (exit " + p.status + ")");
+  const r = p.stdout.trim() ? JSON.parse(p.stdout) : {};
+  if (!r || typeof r !== "object" || Array.isArray(r) || r.ok === false || r.decision === "block" || r.continue === false ||
+      r.hookSpecificOutput?.permissionDecision === "deny") throw new Error("guard probe rejected Stop");
+} catch (e) {
+  if (p.stderr) process.stderr.write(p.stderr);
+  console.error("install.sh --remote-hooks: " + e.message); process.exitCode = 1;
+}
+' "$WETAMP"
   # 远端 hooks.json 由 agentcfg 维度下推；这里为其中指向本 wetamp/hooks/ 的条目写 Codex 信任
   node "$WETAMP/scripts/codex-trust.cjs" write
   publish_mode worker

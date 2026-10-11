@@ -19,7 +19,7 @@ wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要
 
 状态目录 `SUPERAGENT_HOME`（默认 `~/.superagent`），Archon 状态在 `ARCHON_HOME=$SUPERAGENT_HOME/archon`。
 默认安装记录 `controller`，`install.sh --remote-hooks` 记录 `worker`；CLI `health` 与 run preflight 明确报告模式，worker 不启动 run。hook 安装保留用户其他 hooks 与未管理字段；shell hook 只是辅助检查，不是沙箱。
-模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。`selftest.sh --fake` 不调用模型，只用于测试本层。
+模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。正式 selftest 先让真实 provider 正常完成，再对确定性 bash 节点注入故障验证恢复；不会杀掉真实 provider 后自动豁免未知效果。`selftest.sh --fake` 不调用模型，只用于测试本层。升级 HEAD 或配置后重新执行不带 `--fake` 的 selftest，旧回执不再准入；验收脚本的安装状态使用独立临时 `XDG_STATE_HOME`。
 
 ## 日常：run → wait → land
 
@@ -40,8 +40,12 @@ superagent jobs [--all]                  # 列出登记作业（默认 running �
 将军默认最大权限，只有执行层红线是硬边界；`caps` 用于收紧（plan 级，`packages[].caps` 覆盖），未写的项保持全开：
 
 ```json
-{ "caps": { "network": false, "install": false, "git": "commit" },
-  "packages": [{ "id": "docs", "scope": { "write": ["docs/**"] }, "caps": { "read": "scope", "web": false } }] }
+{
+  "caps": { "network": false, "install": false, "git": "commit" },
+  "packages": [
+    { "id": "docs", "scope": { "write": ["docs/**"] }, "caps": { "read": "scope", "web": false } }
+  ]
+}
 ```
 
 Claude 节点上 `network`/`web`/`install`/`services`/`git` 的收紧落成禁用工具，其余（含 Codex 节点）只写进任务书「你的权限」。
@@ -55,14 +59,14 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 
 `wait`/`status` 返回 held 时按 `state` 处理：
 
-| state                      | 含义                                                    | 动作                                                                                    |
-| -------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `held:human`               | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                      |
-| `held:environment`         | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                              |
+| state                      | 含义                                                    | 动作                                                                                                                                         |
+| -------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `held:human`               | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                                                                           |
+| `held:environment`         | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                                                                                   |
 | `held:gate`                | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | `supervise-tick` 已自动重试过（带提示）；仍 held 时看 `needs`，`superagent decide <run> retry [--pkg <id> --hint "提示"]` 再来一轮，或手工修 |
-| `held:paused`              | 其它暂停                                                | `superagent resume <run>`                                                               |
-| `held:recover_no_progress` | owner 丢失后连续 3 次恢复都没有新完成的节点             | 查 `brief` 的证据后 `superagent decide <run> retry`（显式重置计数）或 `cancel`          |
-| `failed`                   | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief） |
+| `held:paused`              | 其它暂停                                                | `superagent resume <run>`                                                                                                                    |
+| `held:recover_no_progress` | owner 丢失后连续 3 次恢复都没有新完成的节点             | 查 `brief` 的证据后 `superagent decide <run> retry`（显式重置计数）或 `cancel`                                                               |
+| `failed`                   | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief）                                                      |
 
 其它动词：`status <run>`、`cancel <run>`、`recover <run>`（只恢复本机 pid 已死的 run）、`accept <run> [--pkg id]`
 （在 run 的 worktree 里重跑验收命令）、`report`（全部 run 的状态、评审轮次、一次通过率、失败分类、节点耗时、评审债、恢复次数）、

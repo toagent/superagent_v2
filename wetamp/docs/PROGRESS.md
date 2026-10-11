@@ -846,3 +846,15 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **本包完整编码自检**：`bunx tsc --noEmit && timeout 900 bun test` exit 0，1049 pass/0 fail/3 snapshots、34 文件、469.09s（full-test.log）；`bunx eslint src` exit 0。最新 fake 自检 exit 0，selftest-fake.json 独立确认 ok=true/fake=true；加强后的取消崩溃回归在首次动作效果落盘前退出，1 pass/0 fail（crash-before-effect.log）。提交后同一 home 的 verify-local 会再次检查最终提交产物，不以未提交 selftest 的旧 HEAD 字段冒充提交验收。
 
 - **提交后验收发现与修正**：首提交 53826635 的 verify-local 在 tsc 阶段 exit 2；加强崩溃测试新增的 decision.effect 直接访问超出了既有夹具返回类型。改为 not.toHaveProperty 属性断言，仍验证效果尚未持久化；产品源码不变。首失败回执与日志保留在同一 home，修正提交重新执行最终 HEAD 的完整 verify-local，不复用首提交结果。
+
+## B1-FIXB：RV-B 的 REC-R1-01、GUARD-R1-01、GUARD-R1-02
+
+- **问题与被推翻的假设**：真实 provider 被杀后，禁止工具的提示不能证明外部效果已结清，recover 必须 held；让正式 selftest 必经该路径会卡住默认 run 和升级后的重新自检。SUPERAGENT_HOME、ARCHON_HOME 和 launchd 目录隔离也不等于安装台账隔离，新增 install.json 位于 XDG_STATE_HOME。Stop 有输出不等于拒绝，advisory/cycle/change 的 systemMessage 都是合法提示。
+- **新语义**：正式 selftest 先运行独立 sa-provider，让 provider 正常完成并由下游 bash 检查结构化 pong；故障恢复始终只打断已知无外部写入的确定性 bash，按当前 snapshot 显式对账。--fake 仍只写 selftest-fake.json，正式 selftest 才写 selftest.json，HEAD/config/TTL 绑定与未知效果 held 保持。升级 HEAD 或调用方配置后，重新运行 scripts/selftest.sh（不带 --fake）；preflight 继续给出该重检入口。不增加配置开关或 schema。
+- **状态隔离**：selftest.sh 与 verify-local.sh 各自在自己创建的 scratch 中导出 XDG_STATE_HOME，所有安装、测试及子进程继承该目录。补齐 recovery、CLI 及 HF10 安装 fixture 的 XDG 隔离；已有 install fixture 的临时 HOME/default state 或显式 XDG 路径保持。调用方 install.json 通过内部字节比较和存在性断言保证未写入；verify-local 的桩在 install/tsc/test/selftest 每步模拟台账写入，断言都落在 scratch。
+- **Stop 探针**：使用 subprocess exit 与结构化 JSON 的拒绝字段判断失败，空输出及 advisory systemMessage 可通过；非零退出、坏 JSON、ok=false、block/continue=false/permissionDecision=deny 明确失败，台账不发布。安装与重复安装覆盖 advisory/cycle/change，保持台账字节幂等和用户字段。
+- **回归与旧 run/生产影响**：REC-R1-01 端到端用真实 Archon + 测试 provider 边界桩执行正式 selftest，生成 fake=false 回执，然后 run --fake 不带 --skip-selftest，继续完成修复/签收/land 契约；未把桩当真实模型验证。生产 run、旧回执、未知效果及 owner fencing 无迁移或权限扩大，不改 packages、全局用户状态、supervisor、launchd、提醒事项。src 净增 0。独立 G2 复审、主控实测和真实 provider 尚由主控执行。
+- **已验证与剩余验收**：首批定向 4 pass/0 fail（/tmp/fixb-focused.log），tsc、eslint src、bash -n exit 0；指定五文件测试、完整套件、fake selftest 和提交后 verify-local 的最终结果按后续实际日志/回执补齐，不复用历史包的结果。
+- **首轮指定测试**：292 pass/2 fail，391.17s（/tmp/fixb-required.log）；两个既有 CLI 用例 held:environment backoff 与 budget/review allowance 均触发默认5秒超时，单独原样重跑2 pass/0 fail、7.46s（/tmp/fixb-timeouts.log），未放宽超时。新增正式回执端到端通过（98.53s）。独立 fake selftest exit 0，HF3 adoption completed，回执 ok=true/fake=true（/tmp/fixb-selftest.log；/tmp/b1-fixb-accept.YM8Tfv/selftest-fake.json）；最终 tsc 复跑 exit 0。
+- **指定测试最终结果**：按卡原命令重跑五文件，exit 0，294 pass/0 fail、2174 assertions、298.41s（/tmp/fixb-required-final.log）；正式回执端到端89.03s通过，两项原超时用例在整组复跑中通过。完整套件随后执行，提交后 verify-local 的 HEAD 绑定以实际 verify.json 为准。
+- **完整自检最终结果**：wetamp/ 下 bunx tsc --noEmit && timeout 900 bun test exit 0，1042 pass/0 fail/3 snapshots、5552 assertions、34文件、478.60s（/tmp/fixb-full.log）；eslint src、bash -n、diff --check exit 0，src 净增0、packages 零 diff。提交后在同一调用方 /tmp/b1-fixb-accept.YM8Tfv 执行 verify-local --commit HEAD --timeout 900（全套实耗478.60s，加安装/tsc/selftest后不应挤入默认600s）；最终 commit/ok/steps 以该目录 verify.json 独立核验，未将编码端绿冒充独立评审、真实 provider 或生产验收。

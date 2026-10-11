@@ -1,15 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import {
   existsSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import {
@@ -28,6 +30,11 @@ function runInstall(
   launchd = join(home, 'LaunchAgents'),
   archonHome = join(home, 'archon')
 ): string {
+  const callerInstall = join(
+    process.env.XDG_STATE_HOME || join(homedir(), '.local/state'),
+    'superagent/install.json'
+  );
+  const before = existsSync(callerInstall) ? readFileSync(callerInstall) : undefined;
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
       ...process.env,
@@ -41,6 +48,8 @@ function runInstall(
     stderr: 'pipe',
   });
   expect(p.exitCode).toBe(0);
+  expect(existsSync(callerInstall)).toBe(before !== undefined);
+  if (before) expect(readFileSync(callerInstall).equals(before)).toBe(true);
   return p.stdout.toString();
 }
 
@@ -220,7 +229,9 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     ]);
     expect(JSON.stringify(after)).not.toContain('/work/github/superagent/');
     expect(readdirSync(join(home, '.superagent', 'backups'))[0]).toMatch(/^hooks-\d{8}T\d{6}Z$/);
-    expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
+    expect(sh('--hooks').out.trim()).toMatch(
+      /^hooks: no changes\ncodex trust: \d+ entries already trusted$/
+    );
   });
 
   test('A-11: --hooks collapses overlapping managed matcher/all handlers and folds context-budget', () => {
@@ -259,7 +270,9 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       [undefined, `${V2('guard.cjs')} claude`],
     ]);
     expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-budget.cjs')]]);
-    expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
+    expect(sh('--hooks').out.trim()).toMatch(
+      /^hooks: no changes\ncodex trust: \d+ entries already trusted$/
+    );
   });
 
   test('--hooks creates a missing settings.json/hooks.json with every event; --dry-run diffs against empty and writes nothing', () => {
@@ -284,7 +297,9 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     ]);
     expect(cmds(codex).flat()).toContain(`${V2('guard.cjs')} codex`);
     expect(existsSync(join(home, '.superagent', 'backups'))).toBe(false);
-    expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
+    expect(sh('--hooks').out.trim()).toMatch(
+      /^hooks: no changes\ncodex trust: \d+ entries already trusted$/
+    );
   });
 
   test('--purge-v1 --dry-run lists managed agents and V1 dirs only; moves nothing', () => {
@@ -308,7 +323,14 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const codex = join(home, '.codex');
     mkdirSync(codex, { recursive: true });
     const hooks = join(codex, 'hooks.json');
-    writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'rtk hook codex', timeout: 10 }] }] } }));
+    writeFileSync(
+      hooks,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ hooks: [{ type: 'command', command: 'rtk hook codex', timeout: 10 }] }],
+        },
+      })
+    );
     const config = join(codex, 'config.toml');
     const user = `# my comment\nmodel = "x"\n\n[hooks.state."${hooks}:pre_tool_use:0:0"]\ntrusted_hash = "sha256:user"\n`;
     writeFileSync(config, user, { mode: 0o600 });
@@ -316,18 +338,34 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const once = readFileSync(config, 'utf8');
     expect(once.startsWith(user)).toBe(true); // 用户的键、注释原样；自己的表追加在后
     expect(statSync(config).mode & 0o777).toBe(0o600);
-    expect(readdirSync(join(home, '.superagent', 'backups')).filter(d => d.startsWith('codex-trust-'))).toHaveLength(1);
-    const state = (Bun.TOML.parse(once) as { hooks: { state: Record<string, { trusted_hash: string }> } }).hooks.state;
+    expect(
+      readdirSync(join(home, '.superagent', 'backups')).filter(d => d.startsWith('codex-trust-'))
+    ).toHaveLength(1);
+    const state = (
+      Bun.TOML.parse(once) as { hooks: { state: Record<string, { trusted_hash: string }> } }
+    ).hooks.state;
     // guard 五个事件各一组，追加在用户 PreToolUse 组之后
     expect(Object.keys(state).sort()).toEqual(
-      [...['post_tool_use', 'session_start', 'stop', 'subagent_stop'].map(e => `${hooks}:${e}:0:0`), `${hooks}:pre_tool_use:0:0`, `${hooks}:pre_tool_use:1:0`].sort()
+      [
+        ...['post_tool_use', 'session_start', 'stop', 'subagent_stop'].map(
+          e => `${hooks}:${e}:0:0`
+        ),
+        `${hooks}:pre_tool_use:0:0`,
+        `${hooks}:pre_tool_use:1:0`,
+      ].sort()
     );
     expect(state[`${hooks}:pre_tool_use:0:0`].trusted_hash).toBe('sha256:user');
     expect(sh('--hooks').out).toContain('already trusted');
     expect(readFileSync(config, 'utf8')).toBe(once);
     // codex-worker 的信任闸认这些值（--version 带参数也要过闸）
     const w = Bun.spawnSync([join(WETAMP, 'bin', 'codex-worker'), '--version', 'exec'], {
-      env: { ...process.env, HOME: home, CODEX_HOME: '', SA_CODEX_HOOK_TRUST: '', SA_CODEX_REAL: '/bin/echo' },
+      env: {
+        ...process.env,
+        HOME: home,
+        CODEX_HOME: '',
+        SA_CODEX_HOOK_TRUST: '',
+        SA_CODEX_REAL: '/bin/echo',
+      },
     });
     expect(w.exitCode).toBe(0);
     // 定义改了（timeout）→ 重写自己的 trusted_hash，不碰用户的
@@ -344,7 +382,16 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     mkdirSync(codex, { recursive: true });
     const hooks = join(codex, 'hooks.json');
     const guard = (gi: number) => `${hooks}:pre_tool_use:${gi}:0`;
-    writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: `${V2('guard.cjs')} codex`, timeout: 30 }] }] } }));
+    writeFileSync(
+      hooks,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { hooks: [{ type: 'command', command: `${V2('guard.cjs')} codex`, timeout: 30 }] },
+          ],
+        },
+      })
+    );
     const inline = `[hooks.state]\n"${guard(0)}" = { trusted_hash = "sha256:old" }\n`;
     writeFileSync(join(codex, 'config.toml'), inline);
     const r = sh('--remote-hooks');
@@ -353,7 +400,9 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(readFileSync(join(codex, 'config.toml'), 'utf8')).toBe(inline);
     rmSync(join(codex, 'config.toml'));
     expect(sh('--remote-hooks').code).toBe(0);
-    expect(readFileSync(join(codex, 'config.toml'), 'utf8')).toMatch(/^\[hooks\.state\."[^"]+:pre_tool_use:0:0"\]\ntrusted_hash = "sha256:[0-9a-f]{64}"\n$/);
+    expect(readFileSync(join(codex, 'config.toml'), 'utf8')).toMatch(
+      /^\[hooks\.state\."[^"]+:pre_tool_use:0:0"\]\ntrusted_hash = "sha256:[0-9a-f]{64}"\n$/
+    );
   });
 
   test('worker stub: after --remote-hooks the superagent entry refuses control-plane verbs without bun', () => {
@@ -371,9 +420,20 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       return { code: p.exitCode, out: p.stdout.toString() + p.stderr.toString() };
     };
     expect(sh('--remote-hooks').code).toBe(0);
-    expect(readdirSync(dirname(entry)).filter(f => f.startsWith('superagent.bak-'))).toHaveLength(1);
+    expect(readdirSync(dirname(entry)).filter(f => f.startsWith('superagent.bak-'))).toHaveLength(
+      1
+    );
     expect(sh('--remote-hooks').out).not.toContain('linked');
-    for (const verb of ['run', 'wait', 'supervise-tick', 'decide', 'land', 'recover', 'brief', 'status']) {
+    for (const verb of [
+      'run',
+      'wait',
+      'supervise-tick',
+      'decide',
+      'land',
+      'recover',
+      'brief',
+      'status',
+    ]) {
       const r = sa(verb, 'x');
       expect(r.code).toBe(69);
       expect(r.out).toContain('仅本机运行（本机为控制面）');
@@ -382,7 +442,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(sa('--help')).toMatchObject({ code: 0, out: expect.stringContaining('worker 桩') });
     // install.json 指向别的 checkout：本入口不是那台 worker 的桩，照常走控制面
     const state = join(home, '.local', 'state', 'superagent', 'install.json');
-    writeFileSync(state, readFileSync(state, 'utf8').replace(`"wetamp": "${WETAMP}"`, '"wetamp": "/elsewhere"'));
+    writeFileSync(
+      state,
+      readFileSync(state, 'utf8').replace(`"wetamp": "${WETAMP}"`, '"wetamp": "/elsewhere"')
+    );
     expect(sa('--version').out).toContain('(controller,');
   });
 
@@ -401,10 +464,88 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(ledger.hooks).toContain('guard.cjs');
     expect(ledger.role).toBe('worker');
     const file = join(home, '.local', 'state', 'superagent', 'install.json');
-    writeFileSync(file, JSON.stringify({...ledger, userField: 'retained'}));
+    writeFileSync(file, JSON.stringify({ ...ledger, userField: 'retained' }));
     expect(sh('--remote-hooks').code).toBe(0);
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({...ledger, userField: 'retained'});
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ ...ledger, userField: 'retained' });
     expect(sh('--hooks', '--remote-hooks').code).toBe(64);
     expect(sh('--dry-run').code).toBe(64);
   });
+
+  test('GUARD-R1-02: advisory/cycle/change install twice without rejecting Stop systemMessage', () => {
+    const root = tmp(),
+      toolkit = join(root, 'wetamp');
+    cpSync(WETAMP, toolkit, { recursive: true, filter: p => !p.endsWith('/node_modules') });
+    symlinkSync(join(WETAMP, 'node_modules'), join(toolkit, 'node_modules'));
+    const tiers = JSON.parse(readFileSync(join(toolkit, 'tiers.json'), 'utf8'));
+    const callerState = join(root, 'caller-state/superagent/install.json');
+    mkdirSync(dirname(callerState), { recursive: true });
+    const callerBytes = '{ "role": "worker", "userField": "untouched" }\n';
+    writeFileSync(callerState, callerBytes);
+    for (const mode of ['advisory', 'cycle', 'change']) {
+      tiers.policy.stop_gate = mode;
+      writeFileSync(join(toolkit, 'tiers.json'), JSON.stringify(tiers));
+      const home = join(root, mode),
+        state = join(home, 'state');
+      const env = {
+        ...process.env,
+        HOME: home,
+        SUPERAGENT_HOME: join(home, 'sa'),
+        XDG_STATE_HOME: state,
+        CLAUDE_CONFIG_DIR: '',
+        CODEX_HOME: '',
+        SUPERAGENT_ROLE: '',
+        AI_DISPATCH_ROLE: '',
+        TWIN_AGENT_REMOTE: '',
+      };
+      const probe = Bun.spawnSync(['node', join(toolkit, 'hooks/guard.cjs'), 'claude'], {
+        env,
+        stdin: new Blob(['{"hook_event_name":"Stop"}']),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(probe.exitCode).toBe(0);
+      expect(JSON.parse(probe.stdout.toString()).systemMessage).toContain('advisory');
+      const install = () =>
+        Bun.spawnSync(['bash', join(toolkit, 'scripts/install.sh'), '--remote-hooks'], {
+          env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+      const first = install();
+      expect(first.exitCode).toBe(0);
+      const ledger = join(state, 'superagent/install.json'),
+        bytes = readFileSync(ledger);
+      expect(install().exitCode).toBe(0);
+      expect(readFileSync(ledger)).toEqual(bytes);
+      expect(readFileSync(callerState, 'utf8')).toBe(callerBytes);
+    }
+    const home = join(root, 'advisory'),
+      state = join(home, 'state');
+    const installed = readFileSync(join(state, 'superagent/install.json'));
+    for (const [output, exit] of [
+      ['{"systemMessage":"advisory"}', 2],
+      ['not-json', 0],
+      ['{"ok":false}', 0],
+      ['{"decision":"block"}', 0],
+      ['{"hookSpecificOutput":{"permissionDecision":"deny"}}', 0],
+    ] as const) {
+      writeFileSync(
+        join(toolkit, 'hooks/guard.cjs'),
+        `process.stdout.write(${JSON.stringify(output)}); process.exitCode=${exit};\n`
+      );
+      const p = Bun.spawnSync(['bash', join(toolkit, 'scripts/install.sh'), '--remote-hooks'], {
+        env: {
+          ...process.env,
+          HOME: home,
+          SUPERAGENT_HOME: join(home, 'sa'),
+          XDG_STATE_HOME: state,
+          CODEX_HOME: '',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(p.exitCode).not.toBe(0);
+      expect(readFileSync(join(state, 'superagent/install.json'))).toEqual(installed);
+    }
+  }, 60000);
 });
