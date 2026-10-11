@@ -594,6 +594,9 @@ export class Coordination {
           const view = this.owner(m.scope);
           if (view.conflicts.length) throw new Error(view.next);
           if ((m.deferred_until ?? 0) > this.d.now()) return [];
+          // 否=继续等 is the user's answer for this owner; re-asking every interval turned it into a nag.
+          // A new owner generation is a different question, so it may ask again.
+          if (m.ask?.status === 'no' && m.ask.generation === view.generation) return [];
           const held = this.d.runs().some(l => {
             try {
               return (
@@ -623,6 +626,7 @@ export class Coordination {
             this.claim(m.scope, m.sender, true, '用户通过 supervisor 同意接管');
           }
           if (['no', 'expired'].includes(a.status)) {
+            // Only an unanswered (expired) ask comes back after the interval; 'no' is fenced above.
             m.deferred_until = this.d.now() + ACK_TIMEOUT_MS;
             m.ask_round = (m.ask_round ?? 0) + 1;
             m.state = 'queued';
