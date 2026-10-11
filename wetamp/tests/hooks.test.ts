@@ -758,18 +758,41 @@ const edit = (repo: string, k: number): object => ({
 const bash = (command: string): object => ({ tool_name: 'Bash', tool_input: { command } });
 
 describe('guard.cjs', () => {
-  test('G-1：元帅 Edit 31 行被拦、29 行放行、ALLOW 放行', () => {
+  test('G-1：元帅 Edit 31 行放行并提示、29 行及 ALLOW 静默放行', () => {
     const { repo, guard } = setup();
-    expect(reason(guard('claude', edit(repo, 31)))).toContain('G-1: 累计 31 行 > 30 行');
+    const out = guard('claude', edit(repo, 31));
+    expect(reason(out)).toBeUndefined();
+    expect(out?.systemMessage).toContain('本会话已改 31 行 / 1 个文件（超过微改 30 行/2 文件）');
+    expect(out?.systemMessage).toContain('superagent quick 交将军编码；本次不拦截。');
     expect(guard('claude', edit(repo, 29))).toBeNull();
     expect(guard('claude', edit(repo, 31), { SUPERAGENT_ALLOW_COMMANDER_WRITE: '1' })).toBeNull();
   });
 
-  test('G-1：同一会话累计计量', () => {
+  test('G-1：同一会话持续累计，首次超限及再增 100 行才提示', () => {
     const { repo, guard } = setup();
     const p = { ...edit(repo, 20), session_id: 'same' };
     expect(guard('claude', p)).toBeNull();
-    expect(reason(guard('claude', p))).toContain('累计 40 行');
+    expect(guard('claude', p)?.systemMessage).toContain('已改 40 行');
+    for (let i = 0; i < 4; i++) expect(guard('claude', p)).toBeNull();
+    expect(guard('claude', p)?.systemMessage).toContain('已改 140 行');
+  });
+
+  test('G-1：文件超限每再增 2 个提示，新增与风险路径只提示，两端一致', () => {
+    const { repo, guard } = setup();
+    const write = (file: string): Out =>
+      guard('codex', {
+        session_id: 'files',
+        tool_name: 'apply_patch',
+        tool_input: { input: `*** Begin Patch\n*** Add File: ${file}\n+x\n*** End Patch` },
+      });
+    for (const file of ['b.txt', 'c.txt']) expect(write(file)).toBeNull();
+    expect(write('d.txt')?.systemMessage).toContain('已改 3 行 / 3 个文件');
+    expect(write('e.txt')).toBeNull();
+    expect(write('f.txt')?.systemMessage).toContain('已改 5 行 / 5 个文件');
+    const risk = write('auth/login.ts');
+    expect(reason(risk)).toBeUndefined();
+    expect(risk?.systemMessage).toContain(join(repo, 'auth/login.ts'));
+    expect(write('auth/login.ts')).toBeNull();
   });
 
   test('N-1：三种派生判定各拦一次再派生', () => {
@@ -1029,7 +1052,7 @@ describe('guard.cjs', () => {
     expect(r).toContain('。可以：');
   });
 
-  test('G-1：并发写入在锁内累计，30 行上限下恰好放行 3 次', async () => {
+  test('G-1：并发写入全部放行，在锁内累计且只提示首次超限', async () => {
     const { home, repo } = setup();
     const payload = JSON.stringify({
       hook_event_name: 'PreToolUse',
@@ -1044,10 +1067,17 @@ describe('guard.cjs', () => {
           env: { ...baseEnv, SUPERAGENT_HOME: home },
           stdout: 'pipe',
         });
-        return (await new Response(p.stdout).text()).trim();
+        const out = (await new Response(p.stdout).text()).trim();
+        expect(await p.exited).toBe(0);
+        return out;
       })
     );
-    expect(outs.filter(o => o === '').length).toBe(3);
+    expect(outs.filter(o => o === '').length).toBe(7);
+    const out = JSON.parse(outs.find(o => o !== '')!) as Out;
+    expect(reason(out)).toBeUndefined();
+    expect(out?.systemMessage).toContain('已改 40 行');
+    const file = join(home, 'hooks', `${createHash('sha256').update('race').digest('hex')}.json`);
+    expect(JSON.parse(readFileSync(file, 'utf8')).micro.lines).toBe(80);
   });
 
   test('A-07: reviewer completion cannot approve the current tree; legacy blocking modes are advisory', () => {
@@ -1137,8 +1167,10 @@ describe('guard.cjs', () => {
     const p = { ...edit(repo, 20), session_id: 'dedup', tool_use_id: 'event-1' };
     expect(guard('claude', p)).toBeNull();
     expect(guard('claude', p)).toBeNull();
-    expect(reason(guard('claude', { ...p, tool_use_id: 'event-2' }))).toContain('累计 40 行');
-    expect(reason(guard('claude', { ...p, tool_use_id: 'event-2' }))).toContain('累计 40 行');
+    expect(guard('claude', { ...p, tool_use_id: 'event-2' })?.systemMessage).toContain(
+      '已改 40 行'
+    );
+    expect(guard('claude', { ...p, tool_use_id: 'event-2' })).toBeNull();
   });
 
   test('G-3：advisory 只提示；无效取值给出配置提示而不报错', () => {
@@ -1192,7 +1224,7 @@ describe('context-advisory.cjs', () => {
     expect(advised(budget(370_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(true);
   });
 
-  test('活动 run（V2 ledger + archon.db）内第 16 次非 superagent 调用提醒一次', () => {
+  test('活动 run 内超过 15 次 Bash/Read 仍静默，不产生工具计数状态', () => {
     const root = tmp();
     const home = join(root, 'sa');
     mkdirSync(join(home, 'runs'), { recursive: true });
@@ -1210,7 +1242,7 @@ describe('context-advisory.cjs', () => {
       transcript,
       JSON.stringify({ message: { usage: { input_tokens: 1000 } } }) + '\n'
     );
-    const call = (command: string): Out =>
+    const call = (command: string, tool_name = 'Bash'): Out =>
       run(
         'context-advisory.cjs',
         'claude',
@@ -1218,28 +1250,25 @@ describe('context-advisory.cjs', () => {
           hook_event_name: 'PreToolUse',
           session_id: 'x',
           transcript_path: transcript,
-          tool_name: 'Bash',
+          tool_name,
           tool_input: { command },
         },
         { SUPERAGENT_HOME: home }
       );
-    for (let i = 0; i < 16; i++) expect(call(i === 0 ? 'superagent wait r1' : 'ls')).toBeNull();
-    expect(call('ls')?.hookSpecificOutput?.additionalContext).toContain('超过 15 次');
-    expect(call('ls')).toBeNull();
+    for (let i = 0; i < 18; i++) expect(call('ls', i % 2 ? 'Read' : 'Bash')).toBeNull();
+    const file = join(
+      home,
+      'hooks/context-advisory',
+      `${createHash('sha256').update('x').digest('hex')}.json`
+    );
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({});
   });
   test('F-12/A-11: concurrent context hooks keep every distinct event and deduplicate repeated IDs', async () => {
     const root = tmp(),
       home = join(root, 'sa'),
       transcript = join(root, 't.jsonl');
-    mkdirSync(join(home, 'runs'), { recursive: true });
-    mkdirSync(join(home, 'archon'), { recursive: true });
-    writeFileSync(join(home, 'runs/r.json'), JSON.stringify({ archon_run_id: 'r' }));
-    const db = new Database(join(home, 'archon/archon.db'));
-    db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
-    db.run("insert into remote_agent_workflow_runs values ('r','running')");
-    db.close();
-    writeFileSync(transcript, JSON.stringify({ usage: { input_tokens: 1000 } }));
-    await Promise.all(
+    writeFileSync(transcript, JSON.stringify({ usage: { input_tokens: 170000 } }));
+    const outs = await Promise.all(
       Array.from({ length: 24 }, async (_, i) => {
         const p = Bun.spawn(['node', join(HOOKS, 'context-budget.cjs')], {
           stdin: Buffer.from(
@@ -1255,8 +1284,9 @@ describe('context-advisory.cjs', () => {
           stdout: 'pipe',
           stderr: 'pipe',
         });
-        await new Response(p.stdout).text();
+        const out = (await new Response(p.stdout).text()).trim();
         expect(await p.exited).toBe(0);
+        return out;
       })
     );
     const file = join(
@@ -1264,7 +1294,10 @@ describe('context-advisory.cjs', () => {
       'hooks/context-advisory',
       `${createHash('sha256').update('race').digest('hex')}.json`
     );
-    expect(JSON.parse(readFileSync(file, 'utf8')).tools).toBe(20);
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    expect(state.warned_at).toBe(170000);
+    expect(Object.keys(state.events)).toHaveLength(20);
+    expect(outs.filter(Boolean)).toHaveLength(1);
   });
 });
 

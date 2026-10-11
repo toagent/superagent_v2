@@ -19,42 +19,17 @@ function recentUsage(file) {
   } catch {} finally { if (fd !== undefined) fs.closeSync(fd); }
   return null;
 }
-// A superagent run is active when a non-failed ledger in $SUPERAGENT_HOME/runs points at an
-// Archon run still pending/running/paused. Any read failure means "not active".
-function activeRun(home) {
-  let db;
-  try {
-    const dir = path.join(home, 'runs');
-    const ids = fs.readdirSync(dir).filter(name => name.endsWith('.json')).flatMap(name => {
-      try { const run = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')); return run.state !== 'failed' && typeof run.archon_run_id === 'string' ? [run.archon_run_id] : []; }
-      catch { return []; }
-    });
-    if (!ids.length) return false;
-    db = new (require('node:sqlite').DatabaseSync)(path.join(process.env.ARCHON_HOME || path.join(home, 'archon'), 'archon.db'), {readOnly: true});
-    const query = db.prepare("SELECT 1 FROM remote_agent_workflow_runs WHERE id=? AND status IN ('pending','running','paused')");
-    return ids.some(id => query.get(id));
-  } catch { return false; } finally { db?.close(); }
-}
 // role: commander | general | strategist (guard.sessionRole); advisory thresholds from policy.context.
 function roleLimit(role, policy) {
   if (policy === undefined) { try { policy = require('../tiers.json').policy; } catch {} }
   const value = policy?.context?.advisory_tokens?.[role];
   return Number.isSafeInteger(value) && value > 0 ? value : 160000;
 }
-function advise(input, tokens, prior = {}, active = false, threshold = roleLimit('commander')) {
+function advise(_input, tokens, prior = {}, _active = false, threshold = roleLimit('commander')) {
   if (tokens === null) return {state: prior, messages: []};
   const state = {...prior}, messages = [];
-  if (input.hook_event_name === 'UserPromptSubmit') { state.tools = 0; state.tool_warned = false; }
   if (tokens > threshold && (!Number.isFinite(state.warned_at) || tokens >= state.warned_at + 40000)) {
     messages.push(`上下文约 ${tokens} token（advisory）：把读文件、跑测试、长输出交给 superagent 或将军，只读 ≤20 行结果。`); state.warned_at = tokens;
-  }
-  if (active && input.hook_event_name === 'PreToolUse' && ['Bash', 'Read'].includes(input.tool_name)) {
-    // Only a Bash call of the superagent CLI is exempt; reading its sources still counts.
-    const superagentCommand = input.tool_name === 'Bash' && /(^|[\s/])superagent(?:\s|$)/.test(String(input.tool_input?.command || ''));
-    if (!superagentCommand) {
-      state.tools = (state.tools || 0) + 1;
-      if (state.tools > 15 && !state.tool_warned) { messages.push('活动 run 内本次输入的非 superagent Bash/Read 已超过 15 次：请回到 superagent wait 处理决策。'); state.tool_warned = true; }
-    }
   }
   return {state, messages};
 }
@@ -69,14 +44,13 @@ function main(input, client = 'claude') {
   const key = crypto.createHash('sha256').update(String(input.session_id || input.transcript_path)).digest('hex');
   const file = path.join(home, 'hooks', 'context-advisory', `${key}.json`);
   const threshold = roleLimit(require('./guard.cjs').sessionRole(input, client));
-  const active = activeRun(home);
   try {
     return require('./hook-state.cjs').withState(file, state => require('./hook-state.cjs').once(state, 'context', input, () => {
-      const result = advise(input, tokens, state, active, threshold);
+      const result = advise(input, tokens, state, false, threshold);
       Object.assign(state, result.state);
       return result.messages.length ? {hookSpecificOutput: {hookEventName: input.hook_event_name, additionalContext: result.messages.join('\n')}} : null;
     }, false));
-  } catch { return null; } // Advisory cannot deny; failed transactions never reset counters.
+  } catch { return null; } // Advisory cannot deny; failed transactions never reset usage state.
 }
 if (require.main === module) {
   try { const result = main(JSON.parse(fs.readFileSync(0, 'utf8')), process.argv[2] || 'claude'); if (result) process.stdout.write(JSON.stringify(result) + '\n'); } catch {}

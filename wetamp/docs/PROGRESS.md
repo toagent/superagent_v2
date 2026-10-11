@@ -1063,3 +1063,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 - 问题与被推翻的假设：终态 run 的 adopt 会新开 run，从首节点重跑；I3 的换版不保证保留已 PASS 产物。复用完成节点集合，在恢复 guard 写 ledger 前拒绝有完成节点的 adopt，返回 run id，并提示 reject 后从最后 PASS commit 新开计划或检出旧引擎 commit；无完成节点仍可 adopt，强化 I1/P1–P4，无新状态、配置或跨 run 复用。
 - 旧 run/生产影响与遗留：仅新恢复调用受保护，运行中/paused/同指纹语义不变，不改生产 ledger、packages 或已生成快照；一条回归覆盖 failed/cancelled 的已完成编码/评审节点、ledger 不变且不启动恢复。`cd wetamp && bun test tests/cli.test.ts -t 'HF3 latest-engine recovery'` 最终 8 pass/0 fail（`/tmp/b1-ad-focused-final.log`）；整文件试跑 261 pass/1 fail（既有 REC-R1-01 的未登记 run selftest recover 失败，不经过本包 guard，`/tmp/b1-ad-cli.log`），不扩范围修复。回归移除重复夹具初始化后通过，未放宽超时；`bunx tsc --noEmit` exit 2，未改动 memory 文件缺相对 zod 依赖及隐式 any（`/tmp/b1-ad-tsc-final.log`）；测试依赖仅用已有缓存临时链接，无安装/升级或生产写入。仅编码自检，主控实测另行执行。
+
+## RC：护栏默认放行
+
+- 推翻“微改超限必须阻断、活动 run 需按工具次数催促”的假设；强化 I1/I6 与 P1–P4，复用累计锁及事件幂等：G-1 改为 advisory，首次超限及再增 100 行/2 文件提示，新风险路径明确展示；删除 15 次提醒及专用计数/活动 run 查询。安装更新后旧会话采用新提示，旧计数不再读取，微改阈值、risk_paths/G2、redline、COORD、嵌套/模型池/push/reviewer 边界不变；未改生产状态。隔离验收两文件 91 pass/0 fail、tsc exit 0（/tmp/rc-accept-107moqfa）；事故回归含超限/风险/并发/去重，观测为 systemMessage/additionalContext，guard-install 无对应旧断言；未覆盖主控集成实测，未评审、push 或部署。
