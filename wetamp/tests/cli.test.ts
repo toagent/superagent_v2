@@ -399,7 +399,7 @@ describe('HF3 latest-engine recovery', () => {
       expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('current');
     }
   );
-  test('AD: stale terminal runs with completed work refuse adoption without ledger writes', () => {
+  test('AD: stale terminal runs with completed work adopt and reverify', () => {
     for (const [status, nodeId] of [
       ['failed', 'code-core'],
       ['cancelled', 'fix-m1-r2'],
@@ -409,21 +409,101 @@ describe('HF3 latest-engine recovery', () => {
         join(s.dir, 'get-000.json'),
         JSON.stringify(run(status, { nodes: [{ nodeId, state: 'completed' }] }))
       );
-      const before = readFileSync(ledgerPath('sa1'), 'utf8');
       const result = captured(() => main(['resume', 'sa1']));
-      expect(result.code).toBe(1);
-      expect(JSON.parse(result.out)).toMatchObject({
-        ok: false,
-        run_id: 'sa1',
-        reason: expect.stringContaining('superagent decide sa1 reject'),
+      expect(result.code).toBe(0);
+      expect(loadLedger('sa1').adoptions?.at(-1)).toMatchObject({
+        from: 'r',
+        to: 'r2',
+        carried: [],
       });
-      expect(result.out).toMatch(/last PASS commit.*old engine snapshot.*engine commit/);
-      expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
-      expect(s.calls().some(c => c.includes('--adopt') || c.startsWith('workflow resume'))).toBe(
-        false
-      );
-      expect(existsSync(join(s.ledger.gen_dir, '.archon.old'))).toBe(false);
+      expect(s.calls().some(c => c.includes('--adopt r'))).toBe(true);
+      expect(existsSync(join(s.ledger.gen_dir, '.archon.old'))).toBe(true);
     }
+  });
+  test.each([
+    'verify',
+    'settle',
+    'repair',
+    'missing',
+    'unrelated',
+    'invalid',
+    'invalid-settle',
+    'settle-repair',
+    'no-worktree',
+  ])('P2: adoption carries only accepted ancestors (%s)', sample => {
+    const s = setup('old');
+    const worktree = gitRepo(s.root);
+    const head = sh('git rev-parse HEAD', worktree).trim();
+    sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm later', worktree);
+    const unrelated = sh(
+      'git -c user.name=t -c user.email=t@l commit-tree HEAD^{tree} -m unrelated',
+      worktree
+    ).trim();
+    const art = join(s.root, 'artifacts', 'runs', 'r');
+    mkdirSync(art, { recursive: true });
+    if (sample !== 'missing')
+      writeFileSync(
+        join(art, 'verify-core.json'),
+        sample === 'invalid'
+          ? '{invalid'
+          : JSON.stringify({
+              disposition: sample === 'repair' ? 'repair' : 'advance',
+              head: sample === 'unrelated' ? unrelated : head,
+            })
+      );
+    if (sample === 'settle' || sample === 'invalid-settle' || sample === 'settle-repair') {
+      writeFileSync(join(art, 'verify-core.json'), JSON.stringify({ disposition: 'repair', head }));
+      if (sample !== 'settle')
+        writeFileSync(
+          join(art, 'verify-core.json'),
+          JSON.stringify({ disposition: 'advance', head })
+        );
+      writeFileSync(
+        join(art, 'settle-core.json'),
+        sample === 'invalid-settle'
+          ? '{invalid'
+          : JSON.stringify({ disposition: sample === 'settle-repair' ? 'repair' : 'advance', head })
+      );
+    }
+    writeFileSync(
+      join(s.dir, 'get-000.json'),
+      JSON.stringify(
+        run('failed', {
+          working_path: sample === 'no-worktree' ? null : worktree,
+          output_root: s.root,
+          nodes: [
+            { nodeId: 'code-core', state: 'completed' },
+            { nodeId: 'gate-m1-r1', state: 'failed' },
+          ],
+        })
+      )
+    );
+    writeFileSync(join(s.ledger.gen_dir, 'engine.json'), JSON.stringify({ fake: false }));
+    expect(captured(() => main(['decide', 'sa1', 'retry']))).toMatchObject({ code: 0 });
+    const l = loadLedger('sa1');
+    const nodes = (
+      Bun.YAML.parse(
+        readFileSync(
+          join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`),
+          'utf8'
+        )
+      ) as { nodes: { id: string; bash?: string; command?: string; script?: string }[] }
+    ).nodes;
+    const code = nodes.find(n => n.id === 'code-core');
+    const carried = sample === 'verify' || sample === 'settle';
+    expect(l.adoptions?.at(-1)?.carried).toEqual(carried ? ['core'] : []);
+    if (carried)
+      expect(JSON.parse(sh(code?.bash ?? '', worktree))).toMatchObject({
+        status: 'done',
+        error_class: null,
+        notes: 'carried from r',
+      });
+    else expect(code?.command).toBe('sa-code');
+    expect(nodes.find(n => n.id === 'code-api')?.command).toBe('sa-code');
+    expect(nodes.find(n => n.id === 'verify-core')?.script).toBe('sa-check');
+    expect(nodes.find(n => n.id === 'repair-core')?.command).toBe('sa-repair');
+    expect(nodes.find(n => n.id === 'settle-core')?.script).toBe('sa-check');
+    expect(sh('git rev-parse HEAD', worktree).trim()).not.toBe(head);
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();

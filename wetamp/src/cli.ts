@@ -146,6 +146,7 @@ export interface Ledger {
     engine_to: string;
     reason: string;
     engine_commit?: string;
+    carried?: string[];
   }[];
   launcher?: Launcher;
   controller?: Controller;
@@ -464,7 +465,7 @@ function recoverRun(
 ): RecoverResult {
   let fp = '';
   let adopted:
-    | { from: string; hash: string; engine_from: string | null; commit: string }
+    | { from: string; hash: string; engine_from: string | null; commit: string; carried: string[] }
     | undefined;
   return recover(
     l.archon_run_id,
@@ -472,12 +473,6 @@ function recoverRun(
     run => {
       Object.assign(l, loadLedger(l.run_id));
       if (run.status === 'completed') return 'status completed is not resumable';
-      // 只有已完成的编码节点（code/repair/fix）才算会被重做的工作；start 等引擎节点重跑无代价
-      if (
-        adoptsRun(l, run) &&
-        run.nodes?.some(n => n.state === 'completed' && /^(code|repair|fix)-/.test(n.nodeId))
-      )
-        return `run ${l.run_id} (${run.id}): engine changed since this run started; adopting would redo completed packages. Options: superagent decide ${l.run_id} reject, then start a new plan from the last PASS commit; or resume on the old engine snapshot by checking out its engine commit`;
       if (auto?.deterministic) {
         if (
           workflowIdentity(l) === engineHash() ||
@@ -506,6 +501,7 @@ function recoverRun(
           engine_to: adopted.hash,
           reason: 'engine_stale',
           engine_commit: adopted.commit,
+          carried: adopted.carried,
         });
         l.archon_run_id = to;
         l.engine_hash = adopted.hash;
@@ -536,12 +532,38 @@ function recoverRun(
         if (!adoptsRun(l, run)) return undefined;
         const commit = cleanEngine();
         const metadata = readJson(join(l.gen_dir, 'engine.json')) as { fake?: boolean } | null;
-        const gen = generate(
-          planOf(l),
-          l.run_id,
-          metadata?.fake ?? false,
-          l.engine_hash ?? 'unknown'
-        );
+        const plan = planOf(l);
+        const carried = plan.packages
+          .filter(p => {
+            if (!run.working_path || !run.output_root) return false;
+            try {
+              const art = artifactsOf(run);
+              const file = existsSync(join(art, `settle-${p.id}.json`))
+                ? `settle-${p.id}.json`
+                : `verify-${p.id}.json`;
+              const evidence = evidenceJson(l, art, file) as
+                | { disposition?: unknown; head?: unknown }
+                | undefined;
+              return (
+                evidence?.disposition === 'advance' &&
+                typeof evidence.head === 'string' &&
+                Bun.spawnSync(['git', 'merge-base', '--is-ancestor', '--', evidence.head, 'HEAD'], {
+                  cwd: run.working_path,
+                  stdout: 'pipe',
+                  stderr: 'pipe',
+                  timeout: QUERY_TIMEOUT_MS,
+                }).exitCode === 0
+              );
+            } catch {
+              // Missing, invalid or inaccessible acceptance evidence never skips coding.
+              return false;
+            }
+          })
+          .map(p => p.id);
+        const gen = generate(plan, l.run_id, metadata?.fake ?? false, l.engine_hash ?? 'unknown', {
+          from: run.id,
+          packages: carried,
+        });
         if (cleanEngine() !== commit)
           throw new Error('换版拒绝：引擎提交在生成期间变化，请重新 retry');
         adopted = {
@@ -549,6 +571,7 @@ function recoverRun(
           hash: gen.engine_hash,
           engine_from: l.engine_hash ?? null,
           commit,
+          carried,
         };
         return [
           'workflow',
@@ -2447,7 +2470,9 @@ export function main(argv: string[]): number {
           return 1;
         }
         const needs = needsOf(artifactsOf(run), undefined, l);
-        print(a.flags.json && needs.length ? { ...(land as Record<string, unknown>), needs } : land);
+        print(
+          a.flags.json && needs.length ? { ...(land as Record<string, unknown>), needs } : land
+        );
         if (!a.flags.json)
           for (const n of needs) console.log(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
         return 0;

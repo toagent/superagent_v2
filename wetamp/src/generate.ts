@@ -99,6 +99,10 @@ const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const MAX_WAIT_MS = 1000 * 365 * 24 * 3600 * 1000; // Archon wait 上限 1000 年
 
 const skippable = (from: string): Node => ({ from, if_skipped: null });
+export interface Carried {
+  from: string;
+  packages: string[];
+}
 
 const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node => ({
   id,
@@ -146,7 +150,8 @@ export function buildWorkflow(
   gen: string,
   fake = false,
   now = Date.now(),
-  tiers: Tiers = loadTiers()
+  tiers: Tiers = loadTiers(),
+  carried?: Carried
 ): Node {
   // 人工等待按“剩余时长”生成，不设下限；已过 deadline 的 plan 生成即失败，不起一个注定 escalate 的 run
   const left = Date.parse(plan.deadline) - now;
@@ -239,15 +244,28 @@ export function buildWorkflow(
         always_run: true,
         output_format: outputSchema('attempt'),
       });
-      const coder = fake
-        ? { bash: fakeEdit(p, p.id) }
-        : {
-            command: 'sa-code',
-            model: '@sa-coder',
-            ...effort('code', p.risk),
-            ...noNesting('@sa-coder', 'coder', [p]),
-            with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
-          };
+      const coder = carried?.packages.includes(p.id)
+        ? {
+            bash: `printf '%s\n' '${JSON.stringify({
+              status: 'done',
+              changed_files: [],
+              quick_checks: [],
+              notes: `carried from ${carried.from}`,
+              blockers: [],
+              error_class: null,
+              deviations: [],
+              needs: [],
+            }).replaceAll("'", "'\\''")}'`,
+          }
+        : fake
+          ? { bash: fakeEdit(p, p.id) }
+          : {
+              command: 'sa-code',
+              model: '@sa-coder',
+              ...effort('code', p.risk),
+              ...noNesting('@sa-coder', 'coder', [p]),
+              with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
+            };
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
@@ -601,7 +619,13 @@ export interface Gen {
 }
 
 /** 写 gen 目录、提交一次、`archon validate workflows`；校验失败抛错。 */
-export function generate(plan: Plan, run: string, fake = false, previousHash?: string): Gen {
+export function generate(
+  plan: Plan,
+  run: string,
+  fake = false,
+  previousHash?: string,
+  carried?: Carried
+): Gen {
   assertSQLite(plan.repo);
   const tiers = loadTiers();
   const policy = snapshotPolicy(tiers);
@@ -621,7 +645,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   }
   const workflow = `sa-${run}`;
   const ms = milestones(plan);
-  const definition = buildWorkflow(plan, ms, run, dir, fake, Date.now(), tiers);
+  const definition = buildWorkflow(plan, ms, run, dir, fake, Date.now(), tiers, carried);
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });

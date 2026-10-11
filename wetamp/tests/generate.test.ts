@@ -116,6 +116,32 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 });
 
 describe('buildWorkflow', () => {
+  test('P2: carry changes only code nodes; an empty carry preserves every byte', () => {
+    const make = (packages: string[]) =>
+      buildWorkflow(fixture, milestones(fixture), 'golden-0001', '/GEN', false, NOW, loadTiers(), {
+        from: "old'run",
+        packages,
+      });
+    const normal = build(false);
+    expect(JSON.stringify(make([]))).toBe(JSON.stringify(normal));
+    const nodes = nodesOf(make(['core']));
+    const code = nodes.find(n => n.id === 'code-core');
+    expect(code?.command).toBeUndefined();
+    expect(JSON.parse(sh(code?.bash ?? '', tmp()))).toEqual({
+      status: 'done',
+      changed_files: [],
+      quick_checks: [],
+      notes: "carried from old'run",
+      blockers: [],
+      error_class: null,
+      deviations: [],
+      needs: [],
+    });
+    expect(nodes.filter(n => n.id !== 'code-core')).toEqual(
+      nodesOf(normal).filter(n => n.id !== 'code-core')
+    );
+    expect(code?.depends_on).toEqual(nodesOf(normal).find(n => n.id === 'code-core')?.depends_on);
+  });
   test('NR: optional review runs only on effective G2 risk, including fake mode', () => {
     const plan = { ...fixture, packages: [{ ...fixture.packages[0], review: undefined }] };
     for (const fake of [false, true]) {
