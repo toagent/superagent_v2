@@ -185,12 +185,14 @@
 - 已知限制：主工作区合入 `verify-local.sh` 之前，twin-toolkit align 的 superagent 维度报「无法验证」rc=1；OpenCode 与 Codex 侧 caps 只是提示级；远端 dry-run 未在本包执行。
 
 ## WP-BT2 看板实时作业+窄屏
+
 - 活动区（run 表上方）：`job exec` 登记作业（`$SUPERAGENT_HOME/jobs/<id>.json` 原子写，不记 argv/prompt；退出码透传、信号转发得 128+n；结束超 24h 回收，死进程记 lost）、未登记无头 AI 进程（一次 ps + ≤8 个 lsof 取 cwd，排除 archon 与已登记 wrapper 的后代）、twin-agent 远端非终态队列；三源并发各 ≤3s，失败降级为一行灰字；chips 增 `[jobs N]` `[remote N]`、空闲行；`--json` 增 jobs/procs/remote/notes。
 - 响应式：<80 紧凑（短 id、短 state、`n/m`；running 与选中行第二行 `cur:`；footer `q r j/k ⏎ a ?`，`?` 开完整按键说明）、80–120 中等、≥121 宽屏；chips 整项换行不截断；`--once` 在管道里认 `COLUMNS`。
 - 验收：`bun test` 210/210（新增 jobs 7 条、board 3 条）；真实 home `COLUMNS=59 board --once` 每行 ≤59 列（按 Bun.stringWidth 计）且列出无头 claude 将军进程；59 列 pty 交互 j/k/Enter/?/q 退出 0。
 - 预算：shell/cjs 不变，文件 43/46。
 
 ## WP-BT3 看板交互会话
+
 - 心跳：`hooks/live.cjs` 的 `beat()` 由 guard.cjs / context-budget.cjs 在 try/catch 内调用（不新增 hooks.json 条目），原子写 `$SUPERAGENT_HOME/live/<client>-<sha256(session_id)[:16]>.json`，字段白名单 `{client,session_id,pid,tty,cwd,transcript_path,event,tool,turn_at,at,derived}`；pid 逐级 `ps -p` 只解析一次，连续工具事件节流 2s，任何失败静默；看板读取时回收 pid 已死且 24h 未更新的文件。
 - 终端行：ps 里有 tty 的交互 claude/codex/opencode（同 tty 同类子进程并入最外层），状态按 心跳 → transcript/rollout 尾部 64KB（只看事件类型与 stop_reason）→ %CPU 粗判（标 `?`）；只显示 client/状态/tool/cwd 末段/tty/时长，绝不显示 prompt、argv、transcript 文本；派生会话（心跳 derived）不进终端行；chip `[active 执行中/总数]`。
 - 一次 lsof：无头进程与终端会话共用一次 `lsof -p … -Fn`（≤24 pid），同时取 cwd 与 codex 握着的 rollout。
@@ -202,7 +204,7 @@
 
 - F-18 disposition：`sa-check settle` 消费 coder `status/blocked/partial/error_class` 与验收 `ok`，只有 done 且验收绿才推进；其余走 repair（当包 `repair` 节点）或挂起（verify/settle/diff 退出 1，reason 写进 gate/settle 产物）。
 - F-19 累计台账：`ledgerOf` 由全部历史 review 派生 blocking/debt/来源轮次/关闭证据；关闭须原 ID + 证据；未知 ID 自报 `carry_over:true` 不扩大阻塞集合。三例（R2 漏 R1 高危、新增伪装 carry-over、新 high 债与真 blocker 共存）在 `tests/sa-check.test.ts`。
-- F-20 增量：R2/R3 用 `sa-review-delta`（上轮候选→本轮候选的 delta + 台账，完整历史只给路径）；fix 只把台账 blocking 当阻塞，新发现非 blocker 记债。修掉基线即有的 `$INPUTS.round-1`（被解析成名为 `round-1` 的输入，dry-run 在 review-*-r2 失败）；新增测试：每个命令模板读到的 `$INPUTS.<name>` 必须由节点绑定。
+- F-20 增量：R2/R3 用 `sa-review-delta`（上轮候选→本轮候选的 delta + 台账，完整历史只给路径）；fix 只把台账 blocking 当阻塞，新发现非 blocker 记债。修掉基线即有的 `$INPUTS.round-1`（被解析成名为 `round-1` 的输入，dry-run 在 review-\*-r2 失败）；新增测试：每个命令模板读到的 `$INPUTS.<name>` 必须由节点绑定。
 - F-17 effort：生成时按 `tiers.json policy.effort` 写每个 AI 节点（code high、repair/fix medium、review R1 high/R2+ medium、G2 review R1 xhigh/R2+ high）；Archon 事件 `binding.effort` 记录生效值，report 按它统计。不被引擎兑现的 plan 字段在校验时点名拒绝（F-15 清理部分 + A-05）：`mode: single:*`、`concurrency > 1`、包级 `accept_quick`/`fixture_exemptions`、`scope.artifact_paths`。
 - F-13 交付范围：`scopeRisk` 用 `git diff --raw -z -M` 的实际 candidate tree（新增/删除/重命名/mode/gitlink/symlink）对照 `scope.write`；越界、gitlink/symlink、命中 risk_paths 推断 G2，有效风险 = max(声明, 推断)。交付门禁，不是沙箱。
 - F-14 模型身份：gate 读执行层 `binding.model` 的实际作者/评审身份；同模型、身份未知、评审不完整不算合格独立评审；非 strict 且非 G2 显式 `DEGRADED_PASS`，strict/G2 escalate。
@@ -229,15 +231,15 @@
 - 预算：shell 608/850、cjs 1234/1700（+115 codex-trust.cjs）、文件 45/46（+2：`src/redact.ts`、`scripts/codex-trust.cjs`）。
 
 ## WP-BT4 看板角色
+
 - 角色：英文键 `commander|general|strategist` 不变，中文（元帅/将军/军师/亲兵）只在展示层。作业角色顺序：`job exec --role` → `SUPERAGENT_ROLE`（general→将军、reviewer→军师）→ 心跳 role → 模型只落在将军/军师之一的池（`tiers.json`）时推断，标 `?`；run 节点 coder→将军、reviewer→军师、确定性→引擎。交互顶层终端默认元帅。
 - 心跳：`live.cjs` 白名单 `derived` 换成 `role`（commander|general|strategist|null，由 guard/context-budget 传入的 sessionRole 判定）；节流只合并同一事件的连续重复。旧心跳的 `derived:true` 读取时映射为 general。
-- 显示：状态符号后加角色标签，`Bun.stringWidth` 按显示宽度截断/补齐；作业/无头进程沿 ppid 链挂到所属终端会话下（`  └ `），找不到的归 `无主`；chip 只计运行中（执行中终端 + running 作业 + 无头进程）；run 表 current 带节点角色，cur 行中文。
+- 显示：状态符号后加角色标签，`Bun.stringWidth` 按显示宽度截断/补齐；作业/无头进程沿 ppid 链挂到所属终端会话下（` └`），找不到的归 `无主`；chip 只计运行中（执行中终端 + running 作业 + 无头进程）；run 表 current 带节点角色，cur 行中文。
 - BT3 遗留：会话不再消失（心跳先绑最近锚点）；Claude 中断显示 `等待输入`；codex 无 lsof 时按 session_meta cwd + 启动时刻匹配 rollout（自造 fixture）。
 - 顺带小改：`cli.ts` OPTIONS 加 `role`、`config.ts` Tiers 加 `tiers` 字段（与 S1 可能有文本冲突，均为一行）。
 - 验收：tsc 0；`bun test` 255/255；wetamp eslint 仅余基线 cli.ts:782；12 组 hook 输出逐字节一致，中位数增量最差 +1.2ms；live 键集合等于白名单、role 取值合法、无 prompt；实机 `COLUMNS=59/140 board --once` 有元帅终端行，`job exec --role general -- sleep 60` 与本作业作为将军嵌套其下。
 - 预算：cjs 1198/1700（+4）、文件数不变。
 - 已知限制：已结束且 wrapper 已退出的作业（如 S1/S2）找不到祖先会话，归 `无主`；无 role、无心跳的旧作业按模型池推断，opus-5-5 只在军师池，故 claude 将军旧作业（如 WP-BT3）显示 `军师?`；已安装的 hooks 需重装后才写 role；App.tsx、cli.ts 沿基线未跑 prettier。
-
 
 ## WP-BT5 看板归属（2026-10-10，wetamp-board5，基线 e57bacab）
 
@@ -277,22 +279,22 @@ COLUMNS=140
 - 预算“是”：按实际 run 事件计算已用启动数与加权 token；增加启动数 `2N+5`（本里程碑 N 包编码/包内修复 + 3 次评审/2 次修复），token 增量 `max(plan.budget.weighted_tokens, (2N+5) × 单次预留)`。单次预留=已知单次最大 token，无已知则取 policy budget_floor.S；未知回执依旧预留。额度只对当前 milestone/attempt 生效；同一问题恢复失败重试复用授权，不叠加；文件 `gen/<run>/budget-extra` 与 ledger `budget_grants` 留证，不折算金额。
 - 遗留合并：board 导入共用 `redact`（测试核对函数身份与语料）；attempt 在持 recover 锁且状态可恢复后变化；config/generate 本地 git 与查询子进程统一 120s 期限；hooks 未修改。
 
-| 节点/稳定 reason | 处置 | 是/否或上限 |
-| --- | --- | --- |
-| verify/settle `coder_redline` | ask `redline` | 是=已处理，重跑里程碑；否=终止 |
-| verify/settle `coder_needs` | ask `needs` | 是=能力已补齐，重跑里程碑；否=终止 |
-| verify/settle `coder_error:env`、`coder_error:vendor_unavailable_all` | environment 退避 | 本里程碑编码重跑；120s×2^(n−1)，≤30min，次数取 tiers auto_retry.environment |
-| verify/settle `coder_output_invalid`、`repair_exhausted:*` | coder 自动重试 | reason + 脱敏验收日志尾追加 hints；次数取 tiers auto_retry.coder，用尽→ask auto_retry_exhausted |
-| verify/settle `coder_error:sandbox_denied/permission_denied/plan_invalid/scope_violation/budget_exhausted` | ask `coder_blocked` | 是=约束已处理，重跑里程碑；否=终止 |
-| verify/settle 或 gate `budget_launches_exceeded`、`budget_tokens_exceeded` | ask `budget` | 是=增加上述一次 attempt 额度，再跑里程碑；否=终止；禁止自动重试 |
-| verify/settle 未知 reason、产物缺失/损坏；gate 缺失 reason | ask `unknown_reason` | 是=重跑里程碑；否=终止；disposition 明记 unknown_reason |
-| gate `*+review_limit` | ask `review_limit` | 是=再给一轮里程碑修复；否=终止 |
-| gate `review_not_independent:*` | ask `review_not_independent` | 是=身份已处理，仅重跑本轮评审；否=终止 |
-| gate `invalid_review`、`review_incomplete`、其他既有 gate 原因 | gate 自动重试 | 次数取 tiers auto_retry.gate，用尽→ask auto_retry_exhausted |
-| gate `no_change` | 保留既有策略 | 连续两次→ask no_change；是=再给一轮；否=终止 |
-| gate `deadline` / plan deadline 已过 | expire | 终止，不投提醒 |
-| 自动重试用尽 / 旧工作流无 attempt / 恢复无进展 | ask 原行 | 原 fresh retry / resume 策略不变；否=终止 |
-| environment / 非审批 paused / approval / human | 原行 | 原退避、≤2次 resume、是/否审批、签收流程不变 |
+| 节点/稳定 reason                                                                                           | 处置                         | 是/否或上限                                                                                     |
+| ---------------------------------------------------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| verify/settle `coder_redline`                                                                              | ask `redline`                | 是=已处理，重跑里程碑；否=终止                                                                  |
+| verify/settle `coder_needs`                                                                                | ask `needs`                  | 是=能力已补齐，重跑里程碑；否=终止                                                              |
+| verify/settle `coder_error:env`、`coder_error:vendor_unavailable_all`                                      | environment 退避             | 本里程碑编码重跑；120s×2^(n−1)，≤30min，次数取 tiers auto_retry.environment                     |
+| verify/settle `coder_output_invalid`、`repair_exhausted:*`                                                 | coder 自动重试               | reason + 脱敏验收日志尾追加 hints；次数取 tiers auto_retry.coder，用尽→ask auto_retry_exhausted |
+| verify/settle `coder_error:sandbox_denied/permission_denied/plan_invalid/scope_violation/budget_exhausted` | ask `coder_blocked`          | 是=约束已处理，重跑里程碑；否=终止                                                              |
+| verify/settle 或 gate `budget_launches_exceeded`、`budget_tokens_exceeded`                                 | ask `budget`                 | 是=增加上述一次 attempt 额度，再跑里程碑；否=终止；禁止自动重试                                 |
+| verify/settle 未知 reason、产物缺失/损坏；gate 缺失 reason                                                 | ask `unknown_reason`         | 是=重跑里程碑；否=终止；disposition 明记 unknown_reason                                         |
+| gate `*+review_limit`                                                                                      | ask `review_limit`           | 是=再给一轮里程碑修复；否=终止                                                                  |
+| gate `review_not_independent:*`                                                                            | ask `review_not_independent` | 是=身份已处理，仅重跑本轮评审；否=终止                                                          |
+| gate `invalid_review`、`review_incomplete`、其他既有 gate 原因                                             | gate 自动重试                | 次数取 tiers auto_retry.gate，用尽→ask auto_retry_exhausted                                     |
+| gate `no_change`                                                                                           | 保留既有策略                 | 连续两次→ask no_change；是=再给一轮；否=终止                                                    |
+| gate `deadline` / plan deadline 已过                                                                       | expire                       | 终止，不投提醒                                                                                  |
+| 自动重试用尽 / 旧工作流无 attempt / 恢复无进展                                                             | ask 原行                     | 原 fresh retry / resume 策略不变；否=终止                                                       |
+| environment / 非审批 paused / approval / human                                                             | 原行                         | 原退避、≤2次 resume、是/否审批、签收流程不变                                                    |
 
 - 验证进度：新增 reason 矩阵、各 ask 行去重/是/否、锁忙零计数、预算“是”后 sa-check 实际放行且下一 attempt/里程碑拒绝；真实 Archon fake run 从 settle-core 挂起恢复后 `fake core` 提交由 1 次增到 2 次。
 - 验收：`cd wetamp && bunx tsc --noEmit && bun test` 通过（352/352，0 fail，14 文件）；根 `bun run lint --config wetamp/eslint.config.mjs 'wetamp/src/**/*.ts' 'wetamp/src/**/*.tsx' 'wetamp/templates/.archon/scripts/*.ts'` rc=0；隔离临时 `SUPERAGENT_HOME` 的 `bash scripts/selftest.sh --fake` 返回 `ok:true`；源码实测 5183/5200 行，hooks diff 为空。日志 `/tmp/s3-all-final.log`、`/tmp/s3-lint-final.log`、`/tmp/s3-selftest.log`。
@@ -383,6 +385,7 @@ superagent board 15:01:27 · /Users/yong/.superagent
 - 测试：HF1 回归旧实现 3/3 失败、修复后 3/3 通过；`bunx tsc --noEmit && bun test` 通过（366/366，0 fail），隔离 `selftest.sh --fake` 与 lint 通过；提交绑定 `verify-local.sh --commit HEAD` 结果见同一临时目录 `/tmp/hf1-error-class.AmFqfG/verify.json`。
 
 ## HF2 核心理念
+
 - 单一来源：`templates/.archon/principles.md`；README 只链接，不复制内容。
 - Archon 命令加载器直接读 Markdown，`include:` 只组合工作流；`src/generate.ts` 按实际 AI 节点引用的命令去重，统一原样前置理念文本，缺失即明确失败。
 - 每个 AI 节点增加约 350–500 token（按模型分词而异）；稳定前缀可随提示参与缓存，实际命中取决于供应商阈值和请求上下文。script/bash 与 fake 桩不注入。
@@ -419,6 +422,7 @@ HF3 5/5 status=completed engine=current
 - G1 独立评审与元帅验收 pending；本将军不派生评审，不合入或发布。派生会话按 agent-evolution 跳过学习晋升；无独立评审的候选不作为已验证经验。
 
 62 列真实输出片段（2026-10-10 15:30）：
+
 ```text
 superagent 15:30:22 · 心跳 54s ✓ · 大看板
 今日 达成 10/13 · 一次通过 10 · 人工介入 4 · 评审债 22
@@ -433,6 +437,7 @@ tok 今日 614.6M  角色今日用量未知
 ```
 
 120 列真实输出片段：
+
 ```text
 ▶ xiaopan-translator 移植 P1–P5 到 e890971 并合并冲突 +1 22m16s R- 未知 070806-57e6
   M1/1 编✓ 验◐ 评· 门· 合·  引擎
@@ -441,6 +446,7 @@ tok 今日 614.6M  角色今日用量未知
 ```
 
 终端视图真实输出片段：
+
 ```text
 ● 元帅·opus5.5 claude 执行中 2m12s · _mcp_workspace · s009 tok 364.8M
   └ ▶ 将军·sol6.1 job 10m23s codex · BT7 引擎驾驶舱
@@ -462,6 +468,7 @@ tok 今日 614.6M  角色今日用量未知
 - 当前真实用量缓存还没有 ETA/today 数据，实机正确显示 `?% 剩?` 与角色今日量未知；待入口正常后台刷新后取得真实估计。另用隔离临时 home + Archon stub +历史 fixture 通过 worktree 的 `bin/superagent board --once` 取加权条证据，临时树已删除，明确不冒充真实 run 的进度：`/tmp/wpbt7-progress-fixture.ts`、`/tmp/wpbt7-progress62.txt`、`/tmp/wpbt7-progress120.txt`。两种宽度与真实三种视图都 exit 0、逐行无超宽。
 
 62 列实际入口 + 隔离历史 fixture：
+
 ```text
 superagent 15:45:33 · 心跳 0s ✓ · 大看板
 今日 达成 0/0 · 一次通过 0 · 人工介入 0 · 评审债 0
@@ -473,6 +480,7 @@ tok 今日 未知  角色今日用量未知
 ```
 
 120 列实际入口 + 同一 fixture：
+
 ```text
 superagent 15:45:34 · 心跳 0s ✓ · 大看板
 今日 达成 0/0 · 一次通过 0 · 人工介入 0 · 评审债 0
@@ -496,17 +504,19 @@ tok 今日 未知  角色今日用量未知
 - adopt 空增量结论：旧 `start-*` 用当前 HEAD 导致 BASE 也随 adopt 前移，确会漏审已有提交；现改为 `git merge-base base_ref HEAD`（`src/generate.ts:154`），所有 verify/diff 的全量 patch、范围和 hash 都来自该共同祖先…HEAD（`templates/.archon/scripts/sa-check.ts:253`），不再来自本次 coder 增量。scope_pkgs 与 brief 由生成器按实际里程碑拓扑累计，前序已交付范围不会误报越界。R1 用全量 patch，且没有 same 守卫（`src/generate.ts:312,336`）；R2/R3 仍用上次实际评审候选以来的 delta 并保留 full_diff，same 只比较全量 patch hash（`sa-check.ts:284`），避免无修复重复评审。基线 ref 前移到包含交付后共同祖先会前移，这是 git 的真实集成状态；本包不改 ref。
 - 回归：已提交代码 + 本次零增量仍生成含既有交付的全量 patch，首轮 same=false；生成器验证全量接线、累计 brief/scope、乱序 plan 的拓扑以及带单引号 ref 的 shell 引用。隔离真实 Archon fake selftest 在 HF3 adopt 后额外断言全量 diff 包含旧失败 attempt 的 `core`/`repair core` 交付；不用单元 fixture 冒充生产恢复。src/模板 TS 净增 18 行（≤60），hooks 与 packages 无改动，无新增依赖。
 - 验收证据：`/tmp/hf4-evidence.jv8Qy0/`。`cd wetamp && bunx tsc --noEmit && bun test` 最终 exit 0（563 pass / 0 fail，`acceptance-final.log`）；定向 generate/sa-check exit 0（253 pass / 0 fail，`targeted-final.log`）。初轮 `acceptance-1.log` 的单个失败是测试将带引号基线分支创建在交付 HEAD，却期望交付前祖先，已固定该分支起点。`bun run lint --config wetamp/eslint.config.mjs wetamp/src/generate.ts wetamp/templates/.archon/scripts/sa-check.ts wetamp/scripts/hf3-adoption-selftest.ts` exit 0（`lint.log`）；`SUPERAGENT_HOME=/tmp/hf4-evidence.jv8Qy0 bash scripts/selftest.sh --fake` exit 0（`selftest.log`、`selftest-fake.json`）。提交后用同一 home 执行 `bash scripts/verify-local.sh --commit HEAD`，提交绑定结果写入 `verify.json`；旧基线反例见 `e7-before.log`。G2 astra 里程碑独立评审及元帅最终实测由主控安排，派生会话不发起评审、不晋升共享经验。
+
 ### WP-BT7 R2：真实形状回放
 
 - 先只读复现：2026-10-10 16:06 的真实 ETA 缓存中运行中 run 为 `basis=unknown, weight=0`；实际 `archon workflow get --verbose --events --json` 返回 events，**以 events 替代 nodes**。上一轮把该响应直接当带 nodes 的 RunView，理想化夹具没有覆盖这一差异。真实事件耗时在 `data.timing.startedAt/durationMs` 或 `data.duration_ms`，工作流节点 id 可以对齐。现在复用上游 `buildRunNodeStates` 折叠生命周期，`readNodeRecordEvent` 读取耗时，保持 reset/cache-success 语义；没有重写引擎状态机、增加查询或渲染采集。
 - 历史来源覆盖全部登记 ledger：实测 19 个，其中 18 个 completed/failed/cancelled，成功节点耗时组成历史样本，运行中 run 的观测只用于稀疏类别线性外推。真实副本重算结果 `pct=84, eta_s=453, overrun_s=483, basis=linear, weight=2743.776`，不再为零权重未知。
 - 角色三路：run claims 按工作流定义区分 coder/reviewer；旧 live 只有 `derived`，沿用既有终端规则 true→将军、false→元帅；高优先级 job 的 null role 允许同客户端同 session 的 live 补全，同时保留 job/run 身份。已知角色不被空角色覆盖。真实今日会话归属前/后：将军 53→60、军师 13→13、元帅 5→14、未归属 324→308。剩余会话无可核对 claims/jobs/live 身份，旧源字段缺失；存在 Claude/Codex 同 UUID，归属键始终含客户端，不能凭模型或另一客户端身份猜测。展示名称改为“未归属”，已归属组优先显示。
-- 旧 pending asks 的两个真实 run 已 classified completed；展示口径改为 held:*，或 S3 接管策略内 failed（code/fix/verify/settle）且有未决 ask。completed/cancelled 旧 asks 不进“需要你”，running/owner_lost 也不被旧 asks 隐藏；没有关闭或改写源提问，S4 仍负责源头收尾。
+- 旧 pending asks 的两个真实 run 已 classified completed；展示口径改为 held:\*，或 S3 接管策略内 failed（code/fix/verify/settle）且有未决 ask。completed/cancelled 旧 asks 不进“需要你”，running/owner_lost 也不被旧 asks 隐藏；没有关闭或改写源提问，S4 仍负责源头收尾。
 - 回放夹具 `tests/fixtures/cockpit-r2.json` 保留五个真实 CLI envelope 的事件结构、时间关系、缺 nodes、claims/jobs/legacy live、同 UUID 不同客户端和 completed 旧 asks；替换 repo/run/session/attempt/package 标识，删除 checkout/sessionPreview/正文。新增四项回放测试同时检查数字 ETA、一次查询、采集无缓存写入、归属补全与不误归属、62/120 不溢出、reset 与缓存成功耗时。
 - 真实验收只读真源；`usageEvidence()` 不写缓存，真实元数据和重算缓存仅落 `/tmp/wpbt7-r2-real-home`。worktree 入口使用该真实副本与真实只读 ARCHON_HOME，`NODE_ENV=test` 禁止 Web 启动/后台刷新，两种宽度均 exit 0；真实 `~/.superagent` 未写入、pane 未重启。副本未复制心跳日志，故心跳未知仅是隔离副本缺该文件。真实缓存待主控上线后的正常后台刷新更新。
 - 自检：`cd wetamp && bunx tsc --noEmit` exit 0；全量 `bun test` 400 pass/0 fail/2 snapshots（167.66s）；最后源编辑后定向 20 pass/0 fail。`bunx eslint src` 全部 24 文件 0 errors/0 warnings，指定五文件清零；真实 lint wrapper scoped 检查 exit 0。隔离 home 的 `selftest.sh --fake` exit 0、ok=true，G1/N1 deny、HF3 5/5 completed；属于 fake 契约自检，不冒充真实 AI 执行。证据 `/tmp/wpbt7-r2-tests.log`、`/tmp/wpbt7-r2-eslint-final.json`、`/tmp/wpbt7-r2-selftest.log`；提交绑定 verify 回执将写 `/tmp/wpbt7-r2-verify-home/verify.json`，由主控按最终 commit 核对。src TS/TSX 基线 c88f2e71 为 5749 行，修复后 5776，净增 27；hooks 及 HF3 三文件无改动。独立复审、集成与上线验收交还元帅。
 
 62 列真实副本入口摘录（2026-10-10 16:17，省略需要你与结果段；完整 `/tmp/wpbt7-r2-real-62.txt`）：
+
 ```text
 今日 达成 12/14 · 一次通过 10 · 人工介入 6 · 评审债 25
 总 ▕████████████████████1 run · 84% 超~9m███████████░░░░░░░░░▏
@@ -517,6 +527,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra…
 ```
 
 120 列同一真实副本入口摘录（完整 `/tmp/wpbt7-r2-real-120.txt`）：
+
 ```text
 今日 达成 12/14 · 一次通过 10 · 人工介入 6 · 评审债 25
 总 ▕█████1 run · 84% 超~9m██░░░░▏
@@ -538,14 +549,14 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 - 范围：派生将军在 `wetamp-s4`、HF4 基线 `1feb4909` 实现 I2/I4/I5/I6/I8，并保持 I1、补强 I3；不委派、不发布，不修改 packages、hooks、board/web/report 生产代码。独立 G2 评审与主控实测仍由元帅安排。RCA 原文落库为 `2026-10-10-systemic-rca.md`，仅修正旧代码行号、HF3/HF4 已上线状态、I1 穷举归属及 completed 不得迁移的事实。
 
-| 不变量 | 机制 | 测试 | 监测 | 记债 |
-|---|---|---|---|---|
-| I1 | 保留 HF4 的证据优先次序与三个冲突标记，不修改 disposition 规则 | HF4 176 格矩阵、E7 partial+env+绿、四场景 golden | verify/settle 保留 self_report_conflict、coder_partial、error_class_ignored | 主控生产验收不能由 fake 代替 |
-| I2 | `src/reasons.ts` 为唯一注册表，带 hold/determinism/owner/description；消费方精确查表，未注册即嫌疑 | producer 闭集覆盖、唯一 reason code、逐项 policy 映射、policy 无孤儿、镜像与生成快照一致 | sa-check emit 校验原因，未知原因经 I5 报警 | BT7 的旧文案表仍含 unknown_reason，须改为 engine_suspect |
-| I4 | 去重键为 run:hold；迁移一个旧 attempt 键并保留 alias，其余作废；终态或 hold 变化将未决项标 superseded，迟到回答不执行动作 | E2 原时间序列、id-less unknown 对账、terminal yes/no、id-less superseded 回答、纯计数函数 | tick 输出 `{actions, orphan_hold, dup_ask, engine_suspect, stale_answer}`，`cockpit-signals.ts` 导出同口径；孤儿阈值 10 分钟、处置记录参与判断 | BT7 尚未接入纯函数；不删除或改写真实 Mac 提醒 |
-| I5 | failed/paused 包级绿证据或未注册原因 => engine_suspect；settle 使用修复后的复验，code/repair 不使用早于节点开始的旧 verify；确定性同指纹不自动重试，换指纹仅一次 terminal adopt，尝试在恢复锁内记账 | E1 两份真实 settle、当前红复验不受首次绿覆盖、unknown reason、同指纹零调用、换指纹一次 adopt、样本白名单/原子写/去重 | tick 自动写 incidents/run/sample.json 并按 run 去重，投一次嫌疑提问 | 判定和恢复的独立评审仍待元帅 |
-| I6 | fake 支持 done_with_error_class/partial_green/blocked_needs/invalid_json；默认 golden 字节保持；事故夹具只含结构与判定字段 | 四场景执行实际生成的 fake body 后检查 disposition；E1/E2/E5/E7 回放 | 测试期证据，不替代线上指标 | E5 是重建仓库；E1/E2 为真实脱敏判定与处置，E7 原始样本沿用 HF4 |
-| I8 | 导入 Archon inspectProjectBaseBranch 与 loadRepoConfig；显式 worktree.baseBranch 由原生配置提供；同步 CLI 通过独立 bun 预检进程复用 async API，不复制分支检测 | E5 无 remote/default branch 被拒且提示 worktree.baseBranch；run 未启动 engine；preflight/engine 两类启动失败台账与 stdout | `launch-failures/run.json` 记录 phase；没有 Archon id 的失败不伪装 active run | 尚未覆盖 Archon 所有其他启动拒绝条件 |
+| 不变量 | 机制                                                                                                                                                                                                | 测试                                                                                                                      | 监测                                                                                                                                           | 记债                                                           |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| I1     | 保留 HF4 的证据优先次序与三个冲突标记，不修改 disposition 规则                                                                                                                                      | HF4 176 格矩阵、E7 partial+env+绿、四场景 golden                                                                          | verify/settle 保留 self_report_conflict、coder_partial、error_class_ignored                                                                    | 主控生产验收不能由 fake 代替                                   |
+| I2     | `src/reasons.ts` 为唯一注册表，带 hold/determinism/owner/description；消费方精确查表，未注册即嫌疑                                                                                                  | producer 闭集覆盖、唯一 reason code、逐项 policy 映射、policy 无孤儿、镜像与生成快照一致                                  | sa-check emit 校验原因，未知原因经 I5 报警                                                                                                     | BT7 的旧文案表仍含 unknown_reason，须改为 engine_suspect       |
+| I4     | 去重键为 run:hold；迁移一个旧 attempt 键并保留 alias，其余作废；终态或 hold 变化将未决项标 superseded，迟到回答不执行动作                                                                           | E2 原时间序列、id-less unknown 对账、terminal yes/no、id-less superseded 回答、纯计数函数                                 | tick 输出 `{actions, orphan_hold, dup_ask, engine_suspect, stale_answer}`，`cockpit-signals.ts` 导出同口径；孤儿阈值 10 分钟、处置记录参与判断 | BT7 尚未接入纯函数；不删除或改写真实 Mac 提醒                  |
+| I5     | failed/paused 包级绿证据或未注册原因 => engine_suspect；settle 使用修复后的复验，code/repair 不使用早于节点开始的旧 verify；确定性同指纹不自动重试，换指纹仅一次 terminal adopt，尝试在恢复锁内记账 | E1 两份真实 settle、当前红复验不受首次绿覆盖、unknown reason、同指纹零调用、换指纹一次 adopt、样本白名单/原子写/去重      | tick 自动写 incidents/run/sample.json 并按 run 去重，投一次嫌疑提问                                                                            | 判定和恢复的独立评审仍待元帅                                   |
+| I6     | fake 支持 done_with_error_class/partial_green/blocked_needs/invalid_json；默认 golden 字节保持；事故夹具只含结构与判定字段                                                                          | 四场景执行实际生成的 fake body 后检查 disposition；E1/E2/E5/E7 回放                                                       | 测试期证据，不替代线上指标                                                                                                                     | E5 是重建仓库；E1/E2 为真实脱敏判定与处置，E7 原始样本沿用 HF4 |
+| I8     | 导入 Archon inspectProjectBaseBranch 与 loadRepoConfig；显式 worktree.baseBranch 由原生配置提供；同步 CLI 通过独立 bun 预检进程复用 async API，不复制分支检测                                       | E5 无 remote/default branch 被拒且提示 worktree.baseBranch；run 未启动 engine；preflight/engine 两类启动失败台账与 stdout | `launch-failures/run.json` 记录 phase；没有 Archon id 的失败不伪装 active run                                                                  | 尚未覆盖 Archon 所有其他启动拒绝条件                           |
 
 - E2 根因证据（只读生产 JSON）：`062040-aa74` 的 asks 键 `auto_retry_exhausted:2`、`:3` 均 pending，对应 dispositions ask 时间 `07:01:23.035Z`、`07:07:10.244Z`；`063513-6a28` 的 `:1`、`:2` 均 pending，对应 `07:01:25.032Z`、`07:08:21.395Z`。旧键使用 `recoveries.length + auto_retries.length`，恢复改变 key 后再次投问。本包复用现有 pollAsk、askRecords、supervise 单实例锁与 ledger 恢复锁；unknown 投递先持久化、legacy id-less 对账保留原 reminder，不再投新提醒。
 - 注册表选择生成 JSON：sa-check 在冻结快照内独立执行，不能依赖安装目录的 src；`generate` 直接序列化 REASONS，`generate:reasons` 维护模板镜像，单测证明镜像相等。engineHash 也包含注册表真源，避免只改原因策略却不更新引擎指纹。
@@ -561,17 +572,17 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 本节取代 BT8 关于 cleanup 仍运行、内部 TCP 监听和 PID state 归属的旧结论，以及 S4 永久 `(run, hold)` 去重的旧机制。派生将军仅在 `wetamp-hf5` 编码与自检，不派生、不 push、不合并、不运行生产服务；G2 astra R2 与元帅最终实测待主控安排。
 
-| Finding / 不变量 | 修法与 P4 复用依据 | 回归与运行时监测 |
-|---|---|---|
-| M2-01 / I5、I7 | 保留原生 server、路由与启动契约，Bun preload 的 onLoad 只替换 cleanup-service.ts 中唯一 startCleanupScheduler 为日志 no-op；目标缺失或歧义即抛错。上游无禁用开关，保留期不能阻止启动回收，故在 wetamp 装配边界适配，不改 packages。board（含 once）只读 resident state，不再拉起控制台。 | 原始源码、改名/双目标以及真实 preload 子进程坏文本回放；日志 cleanup_scheduler_disabled_by_superagent，无 scheduler_starting；启动错误持久化到 console/error，由 console status 显示。 |
-| M2-02 / I7 | 包装原生 Bun.serve，将内部服务改为 Unix socket，目录0700/socket0600；同 UID 仍属既定可信边界。外层沿用 Host/token、GET/HEAD 和 SSE 代理，经 fetch unix 转发。SQLite 的原生认证不可用，故复用 OS 权限边界，不新增认证服务。 | Unix/SSE 转发与 POST 不转发回归；临时真实服务 lsof 只有外层127.0.0.1:39986，console/sa 200、POST403、权限600/700。 |
-| M2-03 / I4 | askKey 绑定 run、hold 与进入挂起的节点/时间 episode；新 episode 归档旧未决问，旧答复不能迁入新问。沿用 pollAsk、supersedeAsks、处置锁和提醒生命周期，不另建调度器。 | 连续两个 human signoff、新 waitingSince 再挂起均新问；同 episode 只问一次，迟到旧 yes 不推进下一 milestone；tick 的 dup_ask/orphan_hold/stale_answer 沿用原监测。 |
-| M2-04 / I2、I6 | 复用 shell.cjs 和现有路径/红线判定，按命令顺序逐个绑定 cwd，条件 cd 保守保留可达目录，子 shell 不传播 cwd；不确定写目标失败关闭。原 parser 只有扁平 argv，局部补顺序扫描，不引入完整 shell 执行器。 | 两个原始分号绕过、&&、||、子 shell 与安全重定向共6个冒烟；动态路径拒绝、原 hooks 回归保持；guard 原拒绝原因即监测证据。 |
-| M2-05 / I2、I6 | repair 与 code/fix 共用失败归属，verify/settle 沿用原原因注册表和 HOLD_POLICY；不增加新 hold/恢复机制。 | 真实节点形状 repair-p 失败、无绿色证据且重试额度耗尽进入 auto_retry_exhausted；decide retry 成功恢复；tick 返回既有处置/原因。 |
-| M2-06 / I7 | Ink、sa、report 均使用 cockpit.metrics；终态 completed/failed/cancelled 按结束日期分桶。达成要求 completed、land.json.head 是本地 base ref 祖先、且无人工介入；land 节点仅打印命令不算合入。复用 git merge-base 而非自造合入台账，Ledger.intervened 持久标记避免20条处置窗口遗忘；新自动恢复不会误计人工，旧 recoveries 无法判别时保守排除。 | 昨日起跑今日结束、未合入/真正合入、持久人工、human节点、cancel、自动恢复回放；report/board 摘要与 metrics 同源断言；各界面直接显示统一计数。 |
-| M2-07 / I4、I5 | 单个 launchd job/process 承载两监听；KeepAlive/RunAtLoad、固定地址、幂等plist，start bootstrap、stop bootout、status print，指纹漂移 kickstart-k。复用 launchd 归属而非 PID 守护；旧 state 只在 UID/argv/有效启动时间都匹配且二次复核时迁移，否则拒停。 | 临时 label 幂等 start 同PID；改旧state指纹后真实 kickstart 替换PID且旧PID退出；stop后 job/PID/socket消失、端口可重绑；未知旧归属回归明确拒绝，未终止外部实例。 |
-| M2-08 / I2、I6 | 沿用 Codex hook identity/hash 与现有安装器，check 另要求本安装规范 node guard.cjs codex、同步、matcher覆盖全部工具、enabled且hash一致；不把路径子串当执行证明。 | 实际脚本在临时 CODEX_HOME 下 write/check：Read-only matcher、echo路径、async拒绝，规范调用通过；codex-worker fail-closed 原回归同步更新有效安装路径。 |
-| M2-09 / I1、I7 | evidenceJson/evidenceGates 复用 detail 的 confined owner；summary、gate枚举、brief、land、分类与报表读取同一受限入口，越界软链不读、不计绿色证据。保留原 unreadable 错误通道，不创建另一套路径校验。 | 外部gate软链、外部目录软链拒绝；summarize记录unreadable且不计first_pass；snapshot/report保留单run错误而不拖垮其它run。 |
+| Finding / 不变量 | 修法与 P4 复用依据                                                                                                                                                                                                                                                                                                                           | 回归与运行时监测                                                                                                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ----------------------------------------------------------------------------------------------- |
+| M2-01 / I5、I7   | 保留原生 server、路由与启动契约，Bun preload 的 onLoad 只替换 cleanup-service.ts 中唯一 startCleanupScheduler 为日志 no-op；目标缺失或歧义即抛错。上游无禁用开关，保留期不能阻止启动回收，故在 wetamp 装配边界适配，不改 packages。board（含 once）只读 resident state，不再拉起控制台。                                                     | 原始源码、改名/双目标以及真实 preload 子进程坏文本回放；日志 cleanup_scheduler_disabled_by_superagent，无 scheduler_starting；启动错误持久化到 console/error，由 console status 显示。 |
+| M2-02 / I7       | 包装原生 Bun.serve，将内部服务改为 Unix socket，目录0700/socket0600；同 UID 仍属既定可信边界。外层沿用 Host/token、GET/HEAD 和 SSE 代理，经 fetch unix 转发。SQLite 的原生认证不可用，故复用 OS 权限边界，不新增认证服务。                                                                                                                   | Unix/SSE 转发与 POST 不转发回归；临时真实服务 lsof 只有外层127.0.0.1:39986，console/sa 200、POST403、权限600/700。                                                                     |
+| M2-03 / I4       | askKey 绑定 run、hold 与进入挂起的节点/时间 episode；新 episode 归档旧未决问，旧答复不能迁入新问。沿用 pollAsk、supersedeAsks、处置锁和提醒生命周期，不另建调度器。                                                                                                                                                                          | 连续两个 human signoff、新 waitingSince 再挂起均新问；同 episode 只问一次，迟到旧 yes 不推进下一 milestone；tick 的 dup_ask/orphan_hold/stale_answer 沿用原监测。                      |
+| M2-04 / I2、I6   | 复用 shell.cjs 和现有路径/红线判定，按命令顺序逐个绑定 cwd，条件 cd 保守保留可达目录，子 shell 不传播 cwd；不确定写目标失败关闭。原 parser 只有扁平 argv，局部补顺序扫描，不引入完整 shell 执行器。                                                                                                                                          | 两个原始分号绕过、&&、                                                                                                                                                                 |     | 、子 shell 与安全重定向共6个冒烟；动态路径拒绝、原 hooks 回归保持；guard 原拒绝原因即监测证据。 |
+| M2-05 / I2、I6   | repair 与 code/fix 共用失败归属，verify/settle 沿用原原因注册表和 HOLD_POLICY；不增加新 hold/恢复机制。                                                                                                                                                                                                                                      | 真实节点形状 repair-p 失败、无绿色证据且重试额度耗尽进入 auto_retry_exhausted；decide retry 成功恢复；tick 返回既有处置/原因。                                                         |
+| M2-06 / I7       | Ink、sa、report 均使用 cockpit.metrics；终态 completed/failed/cancelled 按结束日期分桶。达成要求 completed、land.json.head 是本地 base ref 祖先、且无人工介入；land 节点仅打印命令不算合入。复用 git merge-base 而非自造合入台账，Ledger.intervened 持久标记避免20条处置窗口遗忘；新自动恢复不会误计人工，旧 recoveries 无法判别时保守排除。 | 昨日起跑今日结束、未合入/真正合入、持久人工、human节点、cancel、自动恢复回放；report/board 摘要与 metrics 同源断言；各界面直接显示统一计数。                                           |
+| M2-07 / I4、I5   | 单个 launchd job/process 承载两监听；KeepAlive/RunAtLoad、固定地址、幂等plist，start bootstrap、stop bootout、status print，指纹漂移 kickstart-k。复用 launchd 归属而非 PID 守护；旧 state 只在 UID/argv/有效启动时间都匹配且二次复核时迁移，否则拒停。                                                                                      | 临时 label 幂等 start 同PID；改旧state指纹后真实 kickstart 替换PID且旧PID退出；stop后 job/PID/socket消失、端口可重绑；未知旧归属回归明确拒绝，未终止外部实例。                         |
+| M2-08 / I2、I6   | 沿用 Codex hook identity/hash 与现有安装器，check 另要求本安装规范 node guard.cjs codex、同步、matcher覆盖全部工具、enabled且hash一致；不把路径子串当执行证明。                                                                                                                                                                              | 实际脚本在临时 CODEX_HOME 下 write/check：Read-only matcher、echo路径、async拒绝，规范调用通过；codex-worker fail-closed 原回归同步更新有效安装路径。                                  |
+| M2-09 / I1、I7   | evidenceJson/evidenceGates 复用 detail 的 confined owner；summary、gate枚举、brief、land、分类与报表读取同一受限入口，越界软链不读、不计绿色证据。保留原 unreadable 错误通道，不创建另一套路径校验。                                                                                                                                         | 外部gate软链、外部目录软链拒绝；summarize记录unreadable且不计first_pass；snapshot/report保留单run错误而不拖垮其它run。                                                                 |
 
 - **工作树回收结论/债**：由主控在实际合入并完成验收后显式回收对应单环境，保留 failed/cancelled 的恢复及 accept 所需工作树。`superagent land` 当前只输出命令，不能把 exit0 当真实合入信号。原生单环境 `archon complete` 的 CLI 在 `packages/cli/src/cli.ts:1283` 固定传 `deleteRemote:true`，没有不删远端的命令开关；内部 `isolationCompleteCommand` 虽接受 deleteRemote:false，却需要数据库初始化/执行上下文，不能在本包权限下用不足20行安全接线。故未自动回收、未运行 complete、未删除远端；待主控安排显式无远端副作用的能力后清债。
 - **初始化链回归**：report复用board数据后形成 cli→report→data→activity→jobs→cli，CLI顶层await动态导入jobs等待自身结束，导致5个既有job测试超时。改为静态导入jobCli后保留原异步调用；未改job语义或提高超时。另两项是旧摘要未剥离新增metrics、旧信任夹具使用非本安装路径；只更新夹具，安全校验保持严格。失败 `tests.log`，修复定向 `failures-fixed.log`（56 pass/0 fail）。
@@ -582,7 +593,6 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **HF5c 旧记录迁移**：生产记录推翻“旧记录必带 uid”和“启动时间与 started_at 相差 <1s”两个假设；proxy 在记录写入前约5.9s启动，server 早约0.9s。
   无 label 的记录改按当前 UID（记录有 uid 时一并核对）、精确 argv、lstart ≤ started_at+1s、存活父子 PPID 判定；拒绝错误明确字段，SIGTERM 后最多等15s，不升级 SIGKILL，退出后按 cleanup 归属清除旧记录。
   可注入 ps 回放真实形状与六类拒绝反例；launchd 未加载但旧 PID 存活时 status 显示 legacy 和两个 PID 的存活标记。独立评审并入 HF6 astra R1，生产迁移实测留待元帅。
-
 
 ## HF7 内存准入
 
@@ -608,12 +618,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **被推翻的假设 / I8、P1**：静态扫描 shell 文本并逐个补 cwd 变体不能证明完整 shell 语义。HF6 在现有顺序与子作用域判断前，先限定派生会话可建模子集；不支持的命令拒绝并提示绝对路径或独立命令。commander 不调用此检查，保持原判定。
 - **子集**：shell.cjs 保留包装器和保留字的命令头索引；动态命令头、函数定义、pushd/popd/eval/source/./exec/builtin/command/alias/function/coproc 拒绝。cd 必须是顶层简单命令头，拒绝 cd -、~user、CDPATH 下的相对 cd；复合命令中出现 cd 或未建模执行词则拒绝。普通复合命令、数据 heredoc 和字面 shell -c 递归校验；stdin/here-string/heredoc/管道执行代码拒绝，解释器文件模式排除 `/dev/`、`/proc/` 伪文件。仓库脚本文件（包括 bash -n/-ex script）沿用原策略。
 - **威胁模型与残留**：防派生会话意外写出 worktree，不是安全沙箱。python3 -c、node -e 等内联代码和 bash some.sh 等脚本文件的副作用不在模型内，不能据此宣称强隔离；OS 沙箱另议。复合结构中的执行词采取保守拒绝，可能把目录操作数 `.` 当作未建模词；解释器脚本选项只建模不带值的短选项及 `--`。
-- **真实语料 / I6**：hf6-replay.cjs 只提取 cards/logs/*-sol.log 的 Codex exec 命令头记录，不输出转录正文或工具输出；两版分别加载 25c107b0 的原 redline/shell 和本包版本，使用实际记录的 cwd、现存 git 根（已删除 checkout 保守用记录 cwd），env={}。冻结命令串语料共 **2321** 条；基线拒绝 **7**、本包拒绝 **9**、新增拒绝 **2**，两条均为只读探查，新增误拒率 **2/2321=0.0862%**（<3%）；commander 判定变化 **0**。不把原有拒绝认定为本包新增误拒。证据：`/tmp/hf6-accept.DefNrO/{command-corpus.json,replay.json}`；回放参数支持复用冻结命令语料，新增命令每条仅输出脱敏命令头、sha256 和拒绝理由。
+- **真实语料 / I6**：hf6-replay.cjs 只提取 cards/logs/\*-sol.log 的 Codex exec 命令头记录，不输出转录正文或工具输出；两版分别加载 25c107b0 的原 redline/shell 和本包版本，使用实际记录的 cwd、现存 git 根（已删除 checkout 保守用记录 cwd），env={}。冻结命令串语料共 **2321** 条；基线拒绝 **7**、本包拒绝 **9**、新增拒绝 **2**，两条均为只读探查，新增误拒率 **2/2321=0.0862%**（<3%）；commander 判定变化 **0**。不把原有拒绝认定为本包新增误拒。证据：`/tmp/hf6-accept.DefNrO/{command-corpus.json,replay.json}`；回放参数支持复用冻结命令语料，新增命令每条仅输出脱敏命令头、sha256 和拒绝理由。
   - `e2e4d1fe…`：`sh | command | command | rg | rg | head | sed`（参数与正文省略）——只读 command 查询头不在子集内；改为独立的直接查询命令。
   - `b316c3b5…`：`sh | for | test | echo | rg`（参数与正文省略）——复合结构中的目录操作数 `.` 触发保守执行词拒绝；可拆成独立命令。
 - **编码端证据**：hf6.test.ts 覆盖 R3 三个复现及本卡拒绝/放行集、CDPATH、解释器输入边界、冻结基线 commander 比对和真实命令抽取；只调用 reason()，从未执行越界写入。测试、selftest 和提交后的 verify-local 结果以该临时 home 的原始日志与回执为准，独立 R1 与主控验收仍由主控完成。
 - **本地验收**：在 wetamp/ 执行 `bunx tsc --noEmit && timeout 600 bun test` exit0（729 pass/0 fail/3 snapshots，198.85s，`tsc-final.log`、`tests-final.log`）；`bunx eslint src` exit0（`lint.log`）。同一临时 `SUPERAGENT_HOME=/tmp/hf6-accept.DefNrO`、`ARCHON_HOME=/tmp/hf6-accept.DefNrO/archon` 执行 `bash scripts/selftest.sh --fake` exit0（`selftest-final.log`、`selftest-fake.json` ok:true）。hooks 仅 redline.cjs、shell.cjs，净增42行（≤60）；src 与 packages 受跟踪文件零改动。提交后同一 home 执行 `bash scripts/verify-local.sh --commit HEAD`，最终结果以绑定该 commit 的 verify.json 为准。
-
 
 #### HF6 R2
 
@@ -633,6 +642,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **回放、延迟与范围**：冻结语料 2321 条，25c107b0 / R3 拒绝 7 / 35，新增 28（1.2064%，<3%；命令替换 22、声明命令 5、builtin/reserved head 1），仅作未标注语料的新增拒绝率代理。Node v24.21.0，两版交错 fresh-process 各 20 次，p95 nearest rank、未清 OS 缓存；e09353df p50/p95=34.770/43.880 ms，R3=46.144/55.986 ms，p50 +11.375 ms（≤25 ms）。hooks 相对 e09353df 净增 148 行（生成 JSON 不计），packages 零改动；编码端证据根 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/hf6-r3-fix-ps5ipun9`，独立 R3 评审与主控验收另行完成，威胁模型与 R2 已知残留继续有效。
 
 ## HF9 决策提醒内容
+
 - 推翻“原因模板 + run key 足以让人拍板”：标题展示项目、里程碑/包标题、节点、已完成进度与引擎结构化事实；缺失如实标注，200字内按名称段截短并保留原因、事实与是/否动作。
 - 红线“是”表示重派一次、规则不变；签收只批准等待门并续跑、不自动合入。“否”终止整个run并保留证据；128位key摘要移到标题末尾，unknown对账仍兼容旧格式pending，逐原因与yes/no回归仅使用临时证据和supervisor桩。
 - R2 推翻“写出动作名就等于写出后果”：retryGate 提醒列出里程碑全部包数与其中已完成包，resume 写明续跑节点；与恢复共用 adopt 判定，终态且引擎变化时明确新开run从首个节点重跑。标题仅在新提醒投递时生成，已有 pending/yes/no 不再读取标题证据或额外查询预算事件。
@@ -672,3 +682,17 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **R2 自检过程证据**：最终定向24 pass/0 fail（`/tmp/hf10-r2-focused-final.log`），tsc/eslint src exit 0。首次完整套件960 pass/1 fail（259.60s，`/tmp/hf10-r2-full.log`），唯一失败为 S3 仍断言旧 attempts/pkg/core 路径，已改为 attempts/.packages/core。并行重跑 fake 自检的行为 receipt 为 ok=true，但 EXIT 清理临时目录报 Directory not empty，脚本整体 exit 1（`/tmp/hf10-r2-selftest-final.log`）；不将该次视为通过、不手工删除资源，最终验收采用串行重跑结果。
 - **R2 最终完整验证**：`cd wetamp && bunx tsc --noEmit`、`bunx eslint src` exit 0；`timeout 600 bun test` exit 0，961 pass/0 fail/3 snapshots，29 文件，338.08s（`/tmp/hf10-r2-full-final.log`）。包/预算 E2E code 次数均1/1/2/1，gate2/2/2/2；两次 grant 完整内容在 `/tmp/hf10-r2-grants.json`，均 attempt=0，包计数1→2，里程碑缺失=0。src 相对 b67e0385 净增25行，hooks/packages 受跟踪文件零改动，diff --check exit 0。提交后 verify-local 绑定 HEAD 的结果在同一调用方临时 home `/tmp/hf10-r2-accept.cepGSi/verify.json`，不写入仓库或生产 home。
 - **R2 fake 自检最终结果**：同一临时 SUPERAGENT_HOME 下串行 `bash scripts/selftest.sh --fake` exit 0（`/tmp/hf10-r2-selftest-serial.log`），receipt ok=true。未亲手执行 git worktree remove/prune，未清理脚本之外创建的 worktree/目录；生产 home、supervisor 与 launchd 均未操作。本交付仅编码与自检，astra R2 核验、主控实测及合入发布仍由主控执行。
+
+### ACCT：验收节点超时按实际命令预算推导（G1）
+
+- **问题与来源**：Archon script/exec 节点未显式声明 `timeout` 时按 `SUBPROCESS_DEFAULT_TIMEOUT = 120_000` 毫秒执行，而 plan 验收命令的 `timeout_s` 可以超过 120 秒。06:26 在生产主 checkout 发现未经评审的未提交生成器改动；用户决定转为正式工作包，原样导入为 `8b66157b`。本包仅在 `wetamp-acctimeout` 修正，不操作生产 checkout。
+- **执行模型依据**：`templates/.archon/scripts/sa-check.ts` 的 `run()` 串行执行每条命令，单条预算为 `timeout_s * 1000`，不中途跳过后续失败项；`acceptOnce()` 只选择 `INPUTS_PKGS` 的验收命令，失败时 `probe()` 在基线临时工作树串行重跑失败命令。因此 verify、里程碑 diff 与修复后 settle 的最坏命令预算是两遍总和；`cache:true` 不保证命中且失败不缓存，不减预算。settle 未修复时透传首次证据，但静态节点预算必须容纳修复分支，不能把 verify 本身的执行时间再次累计。里程碑 diff 的命令只覆盖当前 `m.packages`，累计 `scope_pkgs` 仅用于检查授权写入范围，不纳入求和。环境检查串行执行 plan 级与所有包级 environment 命令一次，不 probe；有命令才设置预算。gate/land 等不运行验收命令的节点不添加 timeout。
+- **R1 余量与下限（已被 R2 取代）**：验收/修复后结算 `max(120_000, 2 * sum(timeout_s) * 1000 + 60_000)`；environment 为 `max(120_000, sum(timeout_s) * 1000 + 60_000)`。保留起点的 60 秒运维余量，显式命名 `CHECK_OVERHEAD_MS`，用于 Bun 启动、git status/diff、hash 与文件写入、基线工作树创建/清理及预算台账查询；这是非命令操作的余量选择，并非无超时 git/查询操作的严格耗时上界。下限独立命名 `ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS`，不借用 CLI `QUERY_TIMEOUT_MS`；生成测试读取 Archon 源码常量并核对生成节点下限，防止两边漂移。schema 不变、配置默认值不变。
+- **R1 旧 run 与 golden（R2 更新如下）**：`generate.ts` 属于 HF10 的生成时冻结输入，本包改变 workflow identity；合入后旧终态 run 恢复走 adopt，是工作流行为真实变化，符合 HF10 语义。两个 golden 相对 `f9394a60` 仅多出原导入的 10 个验收/settle/diff 节点的 `timeout: 120000`，30 秒 fixture 在两遍加余量后仍恰好为 120 秒，无其他 golden 变化。
+- **R1 范围与提交钩子（R2 上限 70 行）**：源代码净增上限 40 行；仓库 pre-commit 强制 prettier，未经收敛会重排既有 engineHash、fakeEdit 和 engine.json 写入表达式，使净增达到 72 行。仅给这三个不改语义的既有紧凑表达式加 `prettier-ignore`，其余本包修改按钩子格式化；不禁用或绕过钩子。格式化后 src 相对 `f9394a60` 净增 39 行，hooks 与 packages 受跟踪文件零改动。
+- **回归证据**：新增低时长下限、远超 120 秒的串行多命令（含 cache）、多包里程碑及环境执行次数/空环境预算断言。真实 Archon fake 用例将节点预算缩小 100 倍：2 秒验收命令代表 200 秒，旧预算 1.2 秒使节点 timeout/skip，推导预算 6.6 秒让实际 sa-check 完成。避免每轮等待超过 120 秒；使用真实执行器、真实 sa-check、scratch 仓库与临时 home，无模型调用。定向 5 pass/0 fail；完整验收结果另列于本节末尾。本派生会话只编码与自检，独立 astra 评审、元帅实测、合入发布由主控完成；自动经验晋升收尾不执行。
+- **最终本地自检**：`cd wetamp && bunx tsc --noEmit` 与 `bunx eslint src` 均 exit 0（`/tmp/acct-tsc-final.log`、`/tmp/acct-eslint-final.log`）；`timeout 600 bun test` exit 0，982 pass/0 fail/3 snapshots，30 文件，254.47 秒（`/tmp/acct-full.log`）。串行 `SUPERAGENT_HOME=/tmp/acct-accept.IHjRUB ARCHON_HOME=/tmp/acct-accept.IHjRUB/archon bash scripts/selftest.sh --fake` exit 0（`/tmp/acct-selftest.log`），回执 `/tmp/acct-accept.IHjRUB/selftest-fake.json` 的 ok=true。提交后的 `bash scripts/verify-local.sh --commit HEAD` 使用同一临时 home，结果绑定新提交并写入其 `verify.json`，不写生产状态。不亲手执行 git worktree remove/prune；脚本自行清理其 scratch 资源。src 净增 39 行；hooks/packages 零改动，diff --check exit 0。
+
+- **R2 / ACCT-R1-1**：被推翻的假设是“固定 60s 余量足以覆盖无界辅助子进程”。验收/修复后 settle 改为 `max(120_000, 2 * sum(timeout_s) * 1000 + 9 * 10_000 + 5_000)`；environment 为 `max(120_000, sum(timeout_s) * 1000 + 1 * 10_000 + 5_000)`。辅助清单：git status、缓存 tree rev-parse、全量 binary diff、增量 binary diff、scope raw diff、probe worktree add/remove、HEAD rev-parse、Archon workflow get 台账查询；各自显式 10s 超时，env 只跑 HEAD。常量与次数由 sa-check 导出并由生成器 import；实际最坏路径调用跟踪校验次数与每次超时，settle 失败挂起跳过查询，9 次是覆盖上界。辅助超时沿用该步骤的失败出口（exit 1），保留 stderr、终止信号及 probe 路径；工作树创建失败也尝试非 force 清理，清理超时不放行。gate/land 不施加辅助超时。golden 仅将原 10 个 timeout 从 120000 更新为 155000；下限与旧 run adopt 语义保持。挂起桩缩小辅助超时为 100ms，覆盖 status、probe 创建/清理、台账及 env HEAD；真实 Archon 节点预算缩小 100 倍，失败验收与非空 BASE 的 probe 均执行并存档，台账 stub 返回真实结构，辅助实际使用生产常量以避免 100ms git 偶发调度超时（逐调用上界另由跟踪及挂起回归证明）。
+
+- **R2 本包自检**：定向 ACCT/golden 13 pass/0 fail；`cd wetamp && bunx tsc --noEmit && timeout 600 bun test` exit 0（988 pass/0 fail/3 snapshots，292.08s），`bunx eslint src` exit 0。`SUPERAGENT_HOME=/tmp/acct-r2-accept.nL6ENQ ARCHON_HOME=/tmp/acct-r2-accept.nL6ENQ/archon bash scripts/selftest.sh --fake` exit 0，回执 `ok:true/fake:true`；提交后同一调用方 home 执行 `bash scripts/verify-local.sh --commit HEAD`，以 `verify.json` 的 HEAD 绑定和各步退出码为准。src 相对 f9394a60 净增 46 行（≤70），hooks/packages 受跟踪文件零改动，diff --check 通过。仓库提交钩子强制 prettier，既有模板/进度部分仅发生格式重排；未增加状态、配置或依赖。本会话只编码自检，不发起独立评审、不作主控验收或集成。

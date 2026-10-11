@@ -60,12 +60,25 @@ interface Policy {
 }
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
+export const CHECK_AUX_TIMEOUT_MS = 10_000;
+// accept/settle: status, tree, full/delta patch, scope, probe add/remove, HEAD, events.
+// env: HEAD only. The worst-path subprocess trace test enforces these counts.
+export const CHECK_AUX_COUNTS = { accept: 9, env: 1 } as const;
+const auxiliaryTimeout = (): { timeout?: number } =>
+  ['accept', 'settle', 'env'].includes(env('KIND')) ? { timeout: CHECK_AUX_TIMEOUT_MS } : {};
 const artifacts = process.env.ARTIFACTS_DIR ?? '';
 const json = (k: string): unknown =>
   env(k) && env(k) !== 'null' ? (JSON.parse(env(k)) as unknown) : null;
 const git = (...args: string[]): string => {
-  const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  if (p.exitCode !== 0) throw new Error(`git ${args[0]}: ${p.stderr.toString().trim()}`);
+  const p = Bun.spawnSync(['git', ...args], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    ...auxiliaryTimeout(),
+  });
+  if (p.exitCode !== 0 || p.signalCode)
+    throw new Error(
+      `git ${args[0]}: ${p.stderr.toString().trim()}${p.signalCode ? ` (signal ${p.signalCode})` : ''}`
+    );
   return p.stdout.toString();
 };
 const plan = (): Plan => JSON.parse(readFileSync(env('PLAN'), 'utf8')) as Plan;
@@ -340,15 +353,20 @@ function settle(): void {
 /** 在 base 的临时 detached 工作树里重跑失败的验收命令：区分“本包引入”与“基线预存”失败。 */
 function probe(base: string, checks: Check[], tag: string): boolean {
   const dir = mkdtempSync(join(tmpdir(), 'sa-probe-'));
-  git('worktree', 'add', '--detach', '-q', dir, base);
   try {
+    git('worktree', 'add', '--detach', '-q', dir, base);
     return run(checks, join(artifacts, `${tag}.probe.log`), dir).length === 0;
   } finally {
     // 不加 --force：验收命令在工作树里留下的文件不替人丢弃；删不掉就保留并报路径
     const rm = Bun.spawnSync(['git', 'worktree', 'remove', dir], {
       stdout: 'pipe',
       stderr: 'pipe',
+      ...auxiliaryTimeout(),
     });
+    if (rm.signalCode)
+      throw new Error(
+        `probe: kept worktree ${dir}: ${rm.stderr.toString().trim()} (signal ${rm.signalCode})`
+      );
     if (rm.exitCode !== 0)
       console.error(`probe: kept worktree ${dir}: ${rm.stderr.toString().trim()}`);
   }
@@ -529,10 +547,13 @@ function runEvents(): RunEvent[] {
     {
       stdout: 'pipe',
       stderr: 'pipe',
+      ...auxiliaryTimeout(),
     }
   );
-  if (p.exitCode !== 0)
-    throw new Error(`archon workflow get ${id}: ${p.stderr.toString().slice(-300)}`);
+  if (p.exitCode !== 0 || p.signalCode)
+    throw new Error(
+      `archon workflow get ${id}: ${p.stderr.toString().slice(-300)}${p.signalCode ? ` (signal ${p.signalCode})` : ''}`
+    );
   const lines = p.stdout.toString().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].startsWith('{')) continue;
@@ -581,8 +602,9 @@ export const attemptPath = (dir: string, scope: string): string =>
 /** Absent counters mean zero; malformed or unreadable counters must never become retry state. */
 export function readAttempt(path: string): number {
   let raw: string;
-  try { raw = readFileSync(path, 'utf8').trim(); }
-  catch (error) {
+  try {
+    raw = readFileSync(path, 'utf8').trim();
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
     throw error;
   }
@@ -592,15 +614,28 @@ export function readAttempt(path: string): number {
   return n;
 }
 /** 生效额度的唯一判定：grant 只覆盖同里程碑的同一次 attempt。 */
-export function effectiveBudget(base: Plan['budget'], grant: {
-  milestone: string; attempt: number; limits?: Plan['budget'];
-} | null, milestone: string, attempt: number | null): Plan['budget'] {
+export function effectiveBudget(
+  base: Plan['budget'],
+  grant: {
+    milestone: string;
+    attempt: number;
+    limits?: Plan['budget'];
+  } | null,
+  milestone: string,
+  attempt: number | null
+): Plan['budget'] {
   if (grant && (!Number.isSafeInteger(grant.attempt) || grant.attempt < 0))
     throw new Error('budget-extra: invalid attempt');
-  if (!grant || grant.milestone !== milestone || attempt === null || attempt !== grant.attempt) return base;
-  if (!grant.limits || !Number.isSafeInteger(grant.limits.launches) ||
-    (grant.limits.launches ?? 0) <= 0 || !Number.isFinite(grant.limits.weighted_tokens) ||
-    grant.limits.weighted_tokens <= 0) throw new Error('budget-extra: invalid limits');
+  if (!grant || grant.milestone !== milestone || attempt === null || attempt !== grant.attempt)
+    return base;
+  if (
+    !grant.limits ||
+    !Number.isSafeInteger(grant.limits.launches) ||
+    (grant.limits.launches ?? 0) <= 0 ||
+    !Number.isFinite(grant.limits.weighted_tokens) ||
+    grant.limits.weighted_tokens <= 0
+  )
+    throw new Error('budget-extra: invalid limits');
   return grant.limits;
 }
 function budget(): string | null {
@@ -608,7 +643,9 @@ function budget(): string | null {
   const dir = dirname(env('PLAN')),
     m = env('MILESTONE');
   const extra = join(dir, 'budget-extra');
-  const g = existsSync(extra) ? JSON.parse(readFileSync(extra, 'utf8')) as Parameters<typeof effectiveBudget>[1] : null;
+  const g = existsSync(extra)
+    ? (JSON.parse(readFileSync(extra, 'utf8')) as Parameters<typeof effectiveBudget>[1])
+    : null;
   const attempt = join(dir, 'attempts', m);
   const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
   const u = budgetUsage(runEvents(), policy().budget_floor.S);

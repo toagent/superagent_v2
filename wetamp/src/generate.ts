@@ -14,7 +14,12 @@ import {
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { REASONS } from './reasons';
-import { MAX_ROUNDS, attemptPath } from '../templates/.archon/scripts/sa-check';
+import {
+  MAX_ROUNDS,
+  attemptPath,
+  CHECK_AUX_TIMEOUT_MS,
+  CHECK_AUX_COUNTS,
+} from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
 import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
@@ -47,6 +52,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 }
 
 /** Hash generation-time snapshots; execution-time reads through WETAMP do not require adopt. */
+// prettier-ignore
 export const engineHash = (root = WETAMP): string => hashInputs(root, [
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
@@ -94,6 +100,28 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
   with: inputs,
   ...extra,
 });
+
+// 与 Archon subprocess 默认值的契约由 generate.test.ts 校验；不是 CLI 查询超时。
+const ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS = 120_000;
+// 子进程均有独立上界；额外 5s 仅供 Bun 启动、hash 和本地文件操作。
+const CHECK_OVERHEAD_MS = 5_000;
+const commandTimeout = (checks: Pkg['accept'], passes: number): Node =>
+  checks.length
+    ? {
+        timeout: Math.max(
+          ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS,
+          checks.reduce((n, c) => n + c.timeout_s, 0) * passes * 1000 +
+            CHECK_AUX_COUNTS[passes === 1 ? 'env' : 'accept'] * CHECK_AUX_TIMEOUT_MS +
+            CHECK_OVERHEAD_MS
+        ),
+      }
+    : {};
+// acceptOnce 串行跑全部命令，再于基线 probe 失败命令；settle 修复后也跑 acceptOnce。
+const acceptTimeout = (pkgs: Pkg[]): Node =>
+  commandTimeout(
+    pkgs.flatMap(p => p.accept),
+    2
+  );
 
 /**
  * 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果；now 固定以得到确定的 deadline_ms）。
@@ -146,7 +174,17 @@ export function buildWorkflow(
   const effort = (role: 'code' | 'repair' | 'review', risk: string, r = 1): Node =>
     fake ? {} : { effort: effortFor(tiers, role, risk, r) };
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
-  const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
+  const nodes: Node[] = [
+    check(
+      'environment',
+      [],
+      { kind: 'env', plan: planPath },
+      commandTimeout(
+        [...(plan.environment ?? []), ...plan.packages.flatMap(p => p.environment ?? [])],
+        1
+      )
+    ),
+  ];
   const attemptCommand = (path: string): string => {
     const code = `import { readAttempt } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({attempt: String(readAttempt(${JSON.stringify(path)}))}));`;
     return `bun -e '${code.replaceAll("'", "'\\''")}'`;
@@ -181,7 +219,9 @@ export function buildWorkflow(
       nodes.push({
         id: pkgAttempt,
         bash: attemptCommand(attemptPath(gen, `pkg/${p.id}`)),
-        depends_on: [start], always_run: true, output_format: outputSchema('attempt'),
+        depends_on: [start],
+        always_run: true,
+        output_format: outputSchema('attempt'),
       });
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
@@ -215,7 +255,7 @@ export function buildWorkflow(
           verify,
           [`code-${p.id}`, attempt, pkgAttempt],
           { ...accept, tag: verify, coder: `$code-${p.id}.output` },
-          { output_format: outputSchema('accept') }
+          { output_format: outputSchema('accept'), ...acceptTimeout([p]) }
         )
       );
       nodes.push({
@@ -250,7 +290,11 @@ export function buildWorkflow(
             first: `$${verify}.output`,
             repaired: skippable(`$repair-${p.id}.output`),
           },
-          { trigger_rule: 'none_failed_min_one_success', output_format: outputSchema('accept') }
+          {
+            trigger_rule: 'none_failed_min_one_success',
+            output_format: outputSchema('accept'),
+            ...acceptTimeout([p]),
+          }
         )
       );
       prev = `settle-${p.id}`;
@@ -309,7 +353,7 @@ export function buildWorkflow(
                 }
               : {}),
           },
-          { output_format: outputSchema('accept') }
+          { output_format: outputSchema('accept'), ...acceptTimeout(m.packages) }
         )
       );
       const reviewAttempt = `attempt-review-${t}`;
@@ -461,6 +505,7 @@ const renderCaps = (c: Caps): string =>
 
 const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');
 /** 桩编码：向包的首个写入路径追加一行并提交，输出 coder 结构。 */
+// prettier-ignore
 const fakeEdit = (p: Pkg, line: string): string => {
   const scenario = process.env.FAKE_CODER_SCENARIO ?? "";
   const classes: Record<string, string> = { done_with_error_class: "task", partial_green: "env", blocked_needs: "env" };
@@ -564,6 +609,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   }
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
+  // prettier-ignore
   writeFileSync(join(dir, 'engine.json'), JSON.stringify({ engine_hash, workflow_hash: engine_hash, fake }) + '\n');
   const tiers = loadTiers();
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
