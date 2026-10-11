@@ -443,12 +443,26 @@ describe('gate rules', () => {
       debt: ['R1-1 medium a.ts:1', 'R1-2 medium a.ts:1'],
     });
   });
-  test('G1: an R1 medium omitted in R2 stays debt; closing it with evidence clears it', () => {
-    const r1 = R('FAIL', [f('high', { id: 'R1-1' }), f('medium', { id: 'R1-2' })]);
-    const pass = (r2: Rv): string[] =>
-      decide({ reviews: [r1, r2], rechecks: [C('a'), C('b')], risk: 'G1' }).debt;
-    expect(pass(R('PASS', [fixed('R1-1')]))).toEqual(['R1-2 medium a.ts:1']);
-    expect(pass(R('PASS', [fixed('R1-1'), fixed('R1-2', 'medium')]))).toEqual([]);
+  test('G1: delta closes B1 and D1 with evidence, preserves omitted D2, and cannot pass without B1 closure', () => {
+    const r1 = R('FAIL', [
+      f('blocker', { id: 'B1' }),
+      f('medium', { id: 'D1' }),
+      f('low', { id: 'D2' }),
+    ]);
+    const fold = (r2: Rv) =>
+      decide({ reviews: [r1, r2], rechecks: [C('a'), C('b')], risk: 'G1' });
+    const d = fold(R('PASS', [fixed('B1', 'blocker'), fixed('D1', 'medium')]));
+    expect(d).toMatchObject({ verdict: 'pass', debt: ['D2 low a.ts:1'] });
+    expect(d.ledger.blocking).toEqual([]);
+    expect(d.ledger.closed.map(e => e.id)).toEqual(['B1', 'D1']);
+    expect(d.ledger.debt.map(e => e.id)).toEqual(['D2']);
+    const omitted = fold(R('PASS', [fixed('D1', 'medium')]));
+    expect(omitted).toMatchObject({ verdict: 'fix', reason: 'review_inconsistent' });
+    expect(omitted.ledger.blocking.map(e => e.id)).toEqual(['B1']);
+    const noEvidence = { ...fixed('D1', 'medium'), evidence: ' ' };
+    expect(
+      fold(R('PASS', [fixed('B1', 'blocker'), noEvidence])).ledger.debt.map(e => e.id)
+    ).toEqual(['D1', 'D2']);
   });
   test('N1: a duplicate id (closed + open high) in one review escalates as invalid_review', () => {
     const r1 = R('FAIL', [f('high', { id: 'H1' })]);
