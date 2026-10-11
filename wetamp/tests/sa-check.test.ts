@@ -10,8 +10,10 @@ import {
   scopeRisk,
   SUSPEND_CLASSES,
   readAttempt,
+  CHECK_AUX_COUNTS,
+  CHECK_AUX_TIMEOUT_MS,
 } from '../templates/.archon/scripts/sa-check';
-import { gitRepo, sh, tmp } from './helpers';
+import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
 type Rv = NonNullable<Parameters<typeof decide>[0]['reviews'][number]>;
@@ -505,7 +507,8 @@ describe('F-14 model identity', () => {
 
 function runScript(
   cwd: string,
-  inputs: Record<string, string>
+  inputs: Record<string, string>,
+  script = SCRIPT
 ): { code: number; out: unknown; err: string; art: string } {
   const art = join(cwd, '..', 'art');
   mkdirSync(art, { recursive: true });
@@ -514,7 +517,13 @@ function runScript(
     ARTIFACTS_DIR: art,
   };
   for (const [k, v] of Object.entries(inputs)) env[`INPUTS_${k.toUpperCase()}`] = v;
-  const p = Bun.spawnSync(['bun', SCRIPT], { cwd, env, stdout: 'pipe', stderr: 'pipe' });
+  const p = Bun.spawnSync(['bun', script], {
+    cwd,
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: 10_000,
+  });
   const out = p.stdout.toString().trim();
   return {
     code: p.exitCode,
@@ -523,6 +532,112 @@ function runScript(
     art,
   };
 }
+
+// Trace real auxiliary calls; a selected call can stall in an exec-only subprocess.
+function auxiliaryFixture(kind: string, hang = '', scaled = false) {
+  const root = tmp(),
+    repo = gitRepo(root),
+    trace = join(root, 'trace.jsonl');
+  const base = sh('git rev-parse HEAD', repo).trim();
+  const plan = fixturePlan(root, repo);
+  const p = JSON.parse(readFileSync(plan, 'utf8'));
+  p.packages[0].accept = [{ cmd: 'false', timeout_s: 1, cache: true }];
+  writeFileSync(plan, JSON.stringify(p));
+  const policy = join(root, 'policy.json'),
+    archon = join(root, 'archon-stub');
+  writeFileSync(
+    policy,
+    JSON.stringify({
+      risk_paths: [],
+      code_extensions: [],
+      exempt_paths: [],
+      budget_floor: { S: 1 },
+    })
+  );
+  writeFileSync(archon, '#!/bin/sh\necho \'{"events":[]}\'\n', { mode: 0o755 });
+  const script = join(root, 'sa-check.ts');
+  writeFileSync(
+    join(root, 'reasons.json'),
+    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/reasons.json'))
+  );
+  const instrument = `
+process.env.WORKFLOW_ID = 'fixture';
+const spawn = Bun.spawnSync;
+Bun.spawnSync = (cmd, opts) => {
+  appendFileSync(${JSON.stringify(trace)}, JSON.stringify({cmd, timeout: opts?.timeout}) + '\\n');
+  const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
+  if (key === ${JSON.stringify(hang)})
+    return spawn(['bash', '-c', 'echo auxiliary-stalled >&2; exec sleep 2'], opts);
+  return spawn(cmd, opts);
+};
+`;
+  let source = readFileSync(SCRIPT, 'utf8').replace('const env =', `${instrument}\nconst env =`);
+  if (scaled)
+    source = source.replace('CHECK_AUX_TIMEOUT_MS = 10_000', 'CHECK_AUX_TIMEOUT_MS = 100');
+  writeFileSync(script, source);
+  const r = runScript(
+    repo,
+    {
+      kind,
+      plan,
+      policy,
+      archon,
+      pkgs: 'core',
+      tag: 'acct',
+      base,
+      delta_base: base,
+      risk: 'G1',
+      ...(kind === 'settle'
+        ? { repaired: '{"status":"done","error_class":null}', first: '{}' }
+        : {}),
+    },
+    script
+  );
+  const calls = readFileSync(trace, 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line) as { cmd: string[]; timeout?: number });
+  return { ...r, calls };
+}
+
+test('ACCT: traced worst paths enforce shared auxiliary counts and timeout values', () => {
+  for (const kind of ['accept', 'settle', 'env']) {
+    const r = auxiliaryFixture(kind);
+    const auxiliary = r.calls.filter(c => c.cmd[0] !== 'bash');
+    const count = CHECK_AUX_COUNTS[kind === 'env' ? 'env' : 'accept'];
+    // Failed settle suspends before budget(), so its probe path omits the events query.
+    expect(auxiliary).toHaveLength(count - (kind === 'settle' ? 1 : 0));
+    expect(auxiliary.every(c => c.timeout === CHECK_AUX_TIMEOUT_MS)).toBe(true);
+    if (kind === 'env') expect(r.code).toBe(0);
+    else {
+      expect(r.out).toMatchObject({ ok: false, base_pass: false });
+      expect(r.code).toBe(kind === 'settle' ? 1 : 0);
+      expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(2);
+    }
+  }
+});
+
+for (const [kind, step, evidence] of [
+  ['accept', 'status --porcelain', 'git status:'],
+  ['accept', 'worktree add', 'git worktree:'],
+  ['accept', 'worktree remove', 'probe: kept worktree'],
+  ['accept', 'events', 'archon workflow get fixture:'],
+  ['env', 'rev-parse HEAD', 'git rev-parse:'],
+])
+  test(`ACCT: ${kind} auxiliary ${step} timeout fails with original evidence`, () => {
+    const r = auxiliaryFixture(kind, step, true);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(evidence);
+    expect(r.err).toContain('auxiliary-stalled');
+    expect(r.err).toContain('signal SIG');
+    expect(
+      r.calls.find(c =>
+        c.cmd[0] === 'git'
+          ? c.cmd.slice(1, 3).join(' ') === step
+          : c.cmd[0] !== 'bash' && step === 'events'
+      )?.timeout
+    ).toBe(100);
+  });
 
 function planFile(root: string, accept: string, environment: string[] = []): string {
   const p = join(root, 'plan.json');

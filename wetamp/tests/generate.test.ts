@@ -15,6 +15,7 @@ import { install, WETAMP } from '../src/config';
 import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { CHECK_AUX_COUNTS, CHECK_AUX_TIMEOUT_MS } from '../templates/.archon/scripts/sa-check';
 
 const fixture = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')
@@ -103,7 +104,9 @@ describe('buildWorkflow', () => {
     for (const fake of [false, true]) {
       const nodes = nodesOf(build(fake, plan));
       for (const id of ['verify-core', 'settle-core', 'diff-m1-r1', 'diff-m1-r2', 'diff-m1-r3'])
-        expect(nodes.find(n => n.id === id)?.timeout).toBe(3_060_000);
+        expect(nodes.find(n => n.id === id)?.timeout).toBe(
+          3_000_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000
+        );
     }
   });
   test('ACCT: milestone totals cover only its own packages, not the cumulative scope', () => {
@@ -116,28 +119,30 @@ describe('buildWorkflow', () => {
       accept: [{ cmd: 'third', timeout_s: 600 }],
     });
     const nodes = nodesOf(build(false, plan));
-    expect(nodes.find(n => n.id === 'verify-api')?.timeout).toBe(660_000);
-    expect(nodes.find(n => n.id === 'settle-web')?.timeout).toBe(1_260_000);
+    expect(nodes.find(n => n.id === 'verify-api')?.timeout).toBe(695_000);
+    expect(nodes.find(n => n.id === 'settle-web')?.timeout).toBe(1_295_000);
     for (const r of [1, 2, 3]) {
       const n = nodes.find(n => n.id === `diff-m2-r${r}`);
       expect(n?.with).toMatchObject({ pkgs: 'api,web', scope_pkgs: 'core,api,web' });
-      expect(n?.timeout).toBe(1_860_000);
+      expect(n?.timeout).toBe(1_895_000);
     }
   });
   test('ACCT: environment commands run once and empty environment has no timeout', () => {
     const plan = structuredClone(fixture);
     plan.environment = [{ cmd: 'plan-env', timeout_s: 200 }];
     plan.packages[0].environment = [{ cmd: 'pkg-env', timeout_s: 300 }];
-    expect(nodesOf(build(false, plan)).find(n => n.id === 'environment')?.timeout).toBe(560_000);
+    expect(nodesOf(build(false, plan)).find(n => n.id === 'environment')?.timeout).toBe(
+      500_000 + CHECK_AUX_COUNTS.env * CHECK_AUX_TIMEOUT_MS + 5_000
+    );
     expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBeUndefined();
   });
-  test('ACCT: real Archon completes slow sa-check with the generated budget (time scaled 100:1)', () => {
+  test('ACCT: real Archon completes failed acceptance and baseline probe with the generated budget (time scaled 100:1)', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const plan = structuredClone(fixture);
     plan.repo = repo;
     // 2s represents 200s, longer than the scaled 120s default but within the 300s command budget.
-    plan.packages[0].accept = [{ cmd: 'sleep 2', timeout_s: 300 }];
+    plan.packages[0].accept = [{ cmd: 'sleep 2; false', timeout_s: 300 }];
     const planPath = join(root, 'plan.json');
     fs.writeFileSync(planPath, JSON.stringify(plan));
     const source = join(root, 'source');
@@ -146,12 +151,33 @@ describe('buildWorkflow', () => {
     fs.cpSync(join(WETAMP, 'templates/.archon/scripts'), join(source, '.archon/scripts'), {
       recursive: true,
     });
+    const base = sh('git rev-parse HEAD', repo).trim();
+    const policy = join(root, 'policy.json');
+    fs.writeFileSync(
+      policy,
+      JSON.stringify({
+        risk_paths: [],
+        code_extensions: [],
+        exempt_paths: [],
+        budget_floor: { S: 1 },
+      })
+    );
+    const ledger = join(root, 'archon-stub');
+    fs.writeFileSync(ledger, '#!/bin/sh\necho \'{"events":[]}\'\n', { mode: 0o755 });
     const generated = nodesOf(build(true, plan)).find(n => n.id === 'verify-core')!;
     const node = {
       ...generated,
       depends_on: [],
       timeout: generated.timeout! / 100,
-      with: { ...generated.with, plan: planPath, base: '', coder: '' },
+      with: {
+        ...generated.with,
+        plan: planPath,
+        base,
+        delta_base: base,
+        policy,
+        archon: ledger,
+        coder: '',
+      },
     };
     fs.writeFileSync(
       join(workflow, 'acct.yaml'),
@@ -202,7 +228,8 @@ describe('buildWorkflow', () => {
       '--json'
     );
     const id = String(ack?.runId);
-    expect(archon('workflow', 'wait', id, '--timeout', '20', '--json')).toMatchObject({
+    const waited = archon('workflow', 'wait', id, '--timeout', '20', '--json');
+    expect(waited).toMatchObject({
       attention: { status: 'completed' },
     });
     const view = archon('workflow', 'get', id, '--verbose', '--json');
@@ -213,6 +240,13 @@ describe('buildWorkflow', () => {
         { nodeId: 'verify-core', state: 'completed' },
       ],
     });
+    const verified = JSON.parse(
+      readFileSync(
+        join(String(view?.output_root), 'artifacts/runs', id, 'verify-core.json'),
+        'utf8'
+      )
+    );
+    expect(verified).toMatchObject({ ok: false, base_pass: false, disposition: 'repair' });
   }, 40_000);
   test('golden: two packages across two milestones', () => {
     expect(build(false)).toEqual(golden('two-pkgs'));

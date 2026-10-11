@@ -14,7 +14,12 @@ import {
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { REASONS } from './reasons';
-import { MAX_ROUNDS, attemptPath } from '../templates/.archon/scripts/sa-check';
+import {
+  MAX_ROUNDS,
+  attemptPath,
+  CHECK_AUX_TIMEOUT_MS,
+  CHECK_AUX_COUNTS,
+} from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
 import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
@@ -98,14 +103,16 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
 
 // 与 Archon subprocess 默认值的契约由 generate.test.ts 校验；不是 CLI 查询超时。
 const ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS = 120_000;
-// 给 Bun 启动、git diff/工作树 probe、日志与预算查询预留 60s，不缩短已有默认预算。
-const CHECK_OVERHEAD_MS = 60_000;
+// 子进程均有独立上界；额外 5s 仅供 Bun 启动、hash 和本地文件操作。
+const CHECK_OVERHEAD_MS = 5_000;
 const commandTimeout = (checks: Pkg['accept'], passes: number): Node =>
   checks.length
     ? {
         timeout: Math.max(
           ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS,
-          checks.reduce((n, c) => n + c.timeout_s, 0) * passes * 1000 + CHECK_OVERHEAD_MS
+          checks.reduce((n, c) => n + c.timeout_s, 0) * passes * 1000 +
+            CHECK_AUX_COUNTS[passes === 1 ? 'env' : 'accept'] * CHECK_AUX_TIMEOUT_MS +
+            CHECK_OVERHEAD_MS
         ),
       }
     : {};
