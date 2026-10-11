@@ -130,7 +130,7 @@ function gitReason(argv, dir) {
 }
 
 
-// One reminder exit: call sites supply actions and categories, never raw words.
+// One reminder exit: call sites supply actions, categories and file targets, never command contents.
 const message = (action, consequence, alternative = '需要主控执行', target) => {
   let label = target?.kind || '';
   if (target?.url) { try { label = new URL(target.url).hostname; } catch { label = '外部服务'; } }
@@ -213,8 +213,8 @@ function targetReason(effect, target, dir, root, env, reviewer, advisory) {
   const protectedLocation = protectedKind(lexical, root, env) || protectedKind(abs, root, env);
   const packageCache = ['.bun','.npm','.cache','.m2','.gradle','.cargo'].some(d => within(abs, path.join(homeOf(env), d)));
   if (protectedLocation && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
-    return message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: protectedLocation});
-  if (reviewer && root && within(abs, resolvePath(root))) return message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: '本任务仓库'});
+    return message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: within(abs, path.join(homeOf(env), '.superagent')) ? '~/.superagent' : protectedLocation});
+  if (reviewer && root && within(abs, resolvePath(root))) return message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: `本任务仓库：${abs}`});
   if (effect === 'destroy' && [root, homeOf(env), env.SUPERAGENT_HOME, '/'].filter(Boolean).some(r => within(resolvePath(r), abs)))
     return message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'});
   if (!task && (effect === 'destroy' || fs.existsSync(abs)) && ['destroy','overwrite','write'].includes(effect))
