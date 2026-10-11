@@ -720,8 +720,9 @@ test('summarize, report and the board share one summary', async () => {
     { recoveries: ['t'] }
   );
   const f = ledger('f', { status: 'failed', nodes: [{ nodeId: 'verify-a', state: 'failed' }] });
-  // report 另带 usage（F-22，report.test.ts 覆盖）；计数摘要部分与 summarize、board 同源
-  const { usage, metrics, interventions, ...expected } = report();
+  // Report-only metadata is separate from the shared summarize/board counters.
+  const { usage, metrics, interventions, repo_missing, ...expected } = report();
+  expect(repo_missing).toEqual([]);
   expect(interventions).toMatchObject({ by_run: { g: 'unknown', f: 'unknown' }, unknown: 2 });
   expect(usage).toMatchObject({ total: { calls: 0, coverage: '0/0', input: 'unknown' } });
   expect(expected).toMatchObject({
