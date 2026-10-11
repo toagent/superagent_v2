@@ -158,9 +158,16 @@ function taskRoots(cwd, root, env) {
     ...['.bun', '.npm', '.cache', 'Library/Caches', '.m2', '.gradle', '.cargo'].map(d => path.join(home, d))]
     .filter(Boolean).map(r => resolvePath(path.resolve(r)));
 }
-function taskOwnership(file, dir, root, env) {
+function taskOwnership(file, dir, root, env, git = false) {
   if (!file) return null;
-  if (root && within(file, resolvePath(root))) return 'repository';
+  if (root) {
+    const repository = resolvePath(root), marker = path.join(repository, '.git');
+    const metadata = git && fs.existsSync(marker) && fs.statSync(marker).isFile()
+      ? resolvePath(path.resolve(repository, fs.readFileSync(marker, 'utf8').trim().slice(8))) : resolvePath(marker);
+    // File scope is containment; Git scope is this checkout or its exact metadata.
+    if (git ? file === metadata || file === marker || !within(file, marker) && checkoutOf(file) === repository
+      : within(file, repository)) return 'repository';
+  }
   if (!taskRoots(dir, root, env).some(r => within(file, r))) return null;
   // A generated mktemp product owns its repository too; existing temp repos do not.
   return require('./shell-ast.cjs').isTemporaryPath(file) ? 'repository' : 'artifact';
@@ -229,7 +236,7 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
   }
   if (effect === 'git') {
     const {base, checkout, metadata, locations, sub, rest} = gitInvocation(argv, dir, env);
-    const owned = file => taskOwnership(file, dir, root, env) === 'repository';
+    const owned = file => taskOwnership(file, dir, root, env, true) === 'repository';
     if (sub === 'init' && !(reviewer && root && within(resolvePath(base), resolvePath(root)))) return null;
     if (sub === 'push') return message(`执行 git ${sub}`, '会改写共享的远端版本历史');
     const gitEffects = EFFECTS.find(r => r.commands[0] === 'git');

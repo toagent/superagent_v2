@@ -717,3 +717,13 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 旧 run/生产影响：安装更新后旧会话也采用新 hooks，error_class=redline 与消费者契约不变；仅本 worktree 的 hooks、测试与本节改动，不操作生产、supervisor、提醒、合并或发布。
 - 遗留与证据边界：解释器/外部脚本间接效果继续按既有策略处理；本卡按主控裁决只编码与自检，不再派生或评审，主控实测及带债合入由主控执行。验收日志及隔离 selftest / 提交后 verify-local 回执在 `/tmp/fixc4-accept-4t5jr02l`。
 - 提交前自检：tsc、eslint src 与 hooks 语法检查 exit 0；hooks 73 pass/0 fail，最终 FIXC4 定向回归 25 个断言通过；完整 bun test 914 pass/0 fail、3 snapshots（266.91s）。R1 10/10 拒绝且无秘密、R2 5/5、R3 11/11 符合期望；隔离 selftest --fake exit 0、ok:true。hooks 净增 10 行、diff --check 通过，提交后 verify-local 在同一临时 home 绑定 HEAD。
+
+## B1-FIXC5：嵌套检出的 Git 归属回归
+
+- 问题与被推翻的假设：FIXC4 把文件的路径包含关系当作 Git 检出身份，主检出内的另一个 worktree、clone 或子模块因此获得 Git 写入权限；在旧实现上新增回归首先复现嵌套 clone 的硬重置被放行。
+- 新语义：仍由单一 `taskOwnership` 判定归属；文件写入保持原语义，Git 只认任务检出本身及其精确 `.git`/gitdir 元数据身份。检出内普通子目录仍属于该检出，嵌套检出及主仓 `.git` 下其他 worktree/子模块的元数据不属于任务；AST 已证明的 mktemp 临时产物继续放行，既有临时仓库不继承权限。
+- 不变量与复用：强化 I1 的红线边界、I6 事故回放与 P4 单一来源；复用 `checkoutOf`、真实路径解析、`.git` 原生 gitdir 和 AST 临时产物标识，没有新增依赖、配置或状态。测试以 scratch clone、嵌套 worktree 和 gitdir 文件复现 -C/cd 两种定位及 metadata/env 等价变体；监测仍使用 guard deny/advisory 通道。
+- 旧 run/生产影响：安装更新后旧会话采用修正后的 Git 判定，error_class=redline 与消费者契约保持不变；本包只修改指定 worktree 的 hooks、测试与本节，未修改 packages/、生产 checkout、生产台账、supervisor 或提醒事项，未合并、push 或部署。
+- 自检证据：新增回归在修复前失败、修复后通过；FIXC4/FIXC5 与 Git 定位定向回归 5 pass/0 fail、128 断言，主控提供的 `/tmp/rv-c3-variants.cjs` 11/11 符合预期且 exit 0；hooks 净增 7 行。完整套件与隔离 selftest、提交后同一临时 home 的 verify-local 回执保存在 `/tmp/fixc5-accept.sZ4JnM`，最终结果见本次交付回执。
+- 提交前验收：tsc、eslint src、hooks 语法检查与 diff --check exit 0；hooks 74 pass/0 fail，完整 bun test 915 pass/0 fail、3 snapshots（266.90s），隔离 selftest --fake exit 0、ok:true。提交后 verify-local 在同一临时 home 绑定最终 HEAD。
+- 遗留与验收边界：解释器/外部脚本间接效果仍按既有策略处理；卡片要求只做编码与自检，不再委派或评审，后续主控实测由主控执行。

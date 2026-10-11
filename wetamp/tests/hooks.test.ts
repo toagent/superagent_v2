@@ -362,6 +362,48 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       `git -C "${gitRepo(tmp())}" ${hard}`,
     ]) expect(sh(command), command).toMatch(/^已拦截：/);
   });
+  test('FIXC5 Git ownership follows checkout identity, including nested metadata', () => {
+    const root = tmp(), repo = gitRepo(root), clone = join(repo, 'clone'),
+      worktree = join(repo, '.context', 'wt-other'), submodule = join(repo, 'submodule'),
+      subMetadata = join(repo, '.git', 'modules', 'submodule');
+    mkdirSync(join(repo, '.context'), { recursive: true });
+    mkdirSync(join(repo, '.git', 'modules'), { recursive: true });
+    for (const argv of [
+      ['git', 'clone', '-q', repo, clone],
+      ['git', '-C', repo, 'worktree', 'add', '-q', '-b', 'fixc5', worktree],
+      ['git', 'init', '-q', '--separate-git-dir', subMetadata, submodule],
+    ]) expect(Bun.spawnSync(argv).exitCode, argv.join(' ')).toBe(0);
+    const check = (shell: string, checkout = repo, cwd = checkout) => redline.reason({
+      client: 'claude', name: 'Bash', cwd, root: checkout, derived: true, shell,
+      env: { HOME: join(root, 'home'), TMPDIR: join(root, 'tmp') },
+    });
+    const hard = ['reset', '--hard'].join(' '), clean = ['clean', '-fdx'].join(' ');
+    for (const nested of [clone, worktree, submodule]) {
+      for (const command of [hard, clean, 'commit -qm x']) {
+        expect(check(`git -C "${nested}" ${command}`)).toMatch(/^已拦截：/);
+        expect(check(`cd "${nested}" && git ${command}`)).toMatch(/^已拦截：/);
+      }
+      const marker = join(nested, '.git');
+      const metadata = nested === clone ? marker : readFileSync(marker, 'utf8').trim().slice(8);
+      expect(check(`git --git-dir="${metadata}" --work-tree=. ${hard}`)).toMatch(/^已拦截：/);
+      expect(check(`GIT_DIR="${metadata}" git commit -qm x`)).toMatch(/^已拦截：/);
+      for (const prefix of ['git', `git --git-dir="${marker}"`, `git --git-dir="${metadata}"`]) {
+        expect(check(`${prefix} ${hard}`, nested), prefix).toBeNull();
+        expect(check(`${prefix} commit -qm x`, nested), prefix).toBeNull();
+      }
+    }
+    for (const command of ['status --short', hard, 'commit -qm x']) {
+      expect(check(`git ${command}`)).toBeNull();
+      expect(check(`git --git-dir=.git --work-tree=. ${command}`)).toBeNull();
+    }
+    mkdirSync(join(repo, 'src'));
+    expect(check(`git ${hard}`, repo, join(repo, 'src'))).toBeNull();
+    expect(check(`git --git-dir="${join(repo, '.git')}" ${hard}`, worktree)).toMatch(/^已拦截：/);
+    expect(check(`git -C "${gitRepo(tmp())}" ${hard}`)).toMatch(/^已拦截：/);
+    expect(check(`git -C /foreign ${hard}`)).toMatch(/^已拦截：/);
+    expect(check('echo ok > src/result')).toBeNull();
+    expect(check('tmp=$(mktemp -d); cd "$tmp"; git init -q; git add a; git commit -qm x; git ' + hard)).toBeNull();
+  });
 });
 
 describe('FIXC RV-C 机制回归', () => {
