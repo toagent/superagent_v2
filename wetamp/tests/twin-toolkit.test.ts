@@ -7,7 +7,8 @@ import { sh, tmp } from './helpers';
 // twin-toolkit 不在本仓库：它是本机 ~/.lan-dev-machine 的双机对齐脚本，superagent 维度
 // 消费 verify-local.sh 的结果。这里只做函数级测试——从脚本里抽出函数，远端操作全换成桩，
 // 不连任何远端。机器上没有该脚本时整组跳过。
-const TOOLKIT = process.env.TWIN_TOOLKIT ?? join(homedir(), '.lan-dev-machine', 'bin', 'twin-toolkit');
+const TOOLKIT =
+  process.env.TWIN_TOOLKIT ?? join(homedir(), '.lan-dev-machine', 'bin', 'twin-toolkit');
 const present = existsSync(TOOLKIT);
 const source = present ? readFileSync(TOOLKIT, 'utf8') : '';
 
@@ -23,7 +24,8 @@ function repo() {
   const root = tmp();
   const dir = join(root, 'repo');
   mkdirSync(dir);
-  const git = (cmd: string): string => sh(`git -c user.name=t -c user.email=t@l ${cmd}`, dir).trim();
+  const git = (cmd: string): string =>
+    sh(`git -c user.name=t -c user.email=t@l ${cmd}`, dir).trim();
   sh('git init -q -b main', dir);
   writeFileSync(join(dir, 'f'), '1\n');
   git('add f');
@@ -66,7 +68,12 @@ align_superagent`;
       stdout: 'pipe',
       stderr: 'pipe',
     });
-    return { ...r, code: p.exitCode, out: p.stdout.toString() + p.stderr.toString(), calls: readFileSync(calls, 'utf8') };
+    return {
+      ...r,
+      code: p.exitCode,
+      out: p.stdout.toString() + p.stderr.toString(),
+      calls: readFileSync(calls, 'utf8'),
+    };
   }
 
   test('未通过：打印规定文案、rc=0、不投送不安装', () => {
@@ -75,12 +82,17 @@ align_superagent`;
       verify: 'echo "verify $*" >> "$CALLS"; echo "verify-local: x FAIL (log /v/x.log)"; exit 1\n',
     });
     expect(a.code).toBe(0);
-    expect(a.out).toContain(`superagent: 本机未通过 ${a.head.slice(0, 12)}（日志 /v/x.log），暂不投送；远端保持 ${a.old.slice(0, 12)}`);
-    expect(a.calls).toBe(`verify --commit ${a.head} --timeout 600\n`);
+    expect(a.out).toContain(
+      `superagent: 本机未通过 ${a.head.slice(0, 12)}（日志 /v/x.log），暂不投送；远端保持 ${a.old.slice(0, 12)}`
+    );
+    expect(a.calls).toBe(`verify --commit ${a.head}\n`);
   });
 
   test('通过：投送并安装刚验证的提交', () => {
-    const a = align({ remote: 'old', verify: 'echo "verify-local: x ok (cached; log /v/x.log)"\n' });
+    const a = align({
+      remote: 'old',
+      verify: 'echo "verify-local: x ok (cached; log /v/x.log)"\n',
+    });
     expect(a.code).toBe(0);
     expect(a.out).toContain(`superagent: verified=${a.head.slice(0, 12)}（日志 /v/x.log）`);
     expect(a.calls).toBe(`scp\nssh\ninstall ${a.head}\n`);
@@ -89,7 +101,8 @@ align_superagent`;
   test('验证期间 HEAD 前移：新提交未验证，不投送', () => {
     const a = align({
       remote: 'old',
-      verify: 'git -C "$SUPERAGENT_DIR" -c user.name=t -c user.email=t@l commit -q --allow-empty -m moved; echo "verify-local: x ok (log /v/x.log)"\n',
+      verify:
+        'git -C "$SUPERAGENT_DIR" -c user.name=t -c user.email=t@l commit -q --allow-empty -m moved; echo "verify-local: x ok (log /v/x.log)"\n',
     });
     expect(a.code).toBe(0);
     expect(a.out).toContain('（未验证），暂不投送；远端保持');
@@ -145,14 +158,26 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
   function compare(L: object, R: object) {
     const block = slice('if "superagent" in DIMS:', '\n# 三端受管协议区块');
     const py = `import json, sys\nL, R = json.loads(sys.argv[1]), json.loads(sys.argv[2])\nDIMS = {"superagent"}\nLABEL = "开发机"\nSUPERAGENT_RECEIPT_REL = "r"\nlines, drift = [], []\n${block}\nprint(json.dumps({"lines": lines, "drift": drift}))\n`;
-    const p = Bun.spawnSync(['python3', '-I', '-c', py, JSON.stringify({ superagent: L }), JSON.stringify({ superagent: R })]);
+    const p = Bun.spawnSync([
+      'python3',
+      '-I',
+      '-c',
+      py,
+      JSON.stringify({ superagent: L }),
+      JSON.stringify({ superagent: R }),
+    ]);
     if (p.exitCode !== 0) throw new Error(p.stderr.toString());
     const o = JSON.parse(p.stdout.toString()) as { lines: string[]; drift: string[] };
     return { text: o.lines.join('\n'), drift: o.drift };
   }
   const H = 'a'.repeat(40);
   const OLD = 'b'.repeat(40);
-  const remote = (head: string) => ({ head, dirty: 0, installed: true, receipt: { status: 'ok', commit: head } });
+  const remote = (head: string) => ({
+    head,
+    dirty: 0,
+    installed: true,
+    receipt: { status: 'ok', commit: head },
+  });
 
   test('比对：HEAD 已验证且远端一致 → 无漂移并报 verified=', () => {
     const c = compare({ head: H, dirty: 0, verified: H, last_ok: H }, remote(H));
@@ -164,7 +189,9 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
   test('比对：HEAD 未验证 → 以上次通过的提交为基准并标「待本机验证」', () => {
     const c = compare({ head: H, dirty: 0, verified: null, last_ok: OLD }, remote(OLD));
     expect(c.drift).toEqual([]);
-    expect(c.text).toContain(`verified=${OLD.slice(0, 12)}：本机 HEAD ${H.slice(0, 12)} 待本机验证`);
+    expect(c.text).toContain(
+      `verified=${OLD.slice(0, 12)}：本机 HEAD ${H.slice(0, 12)} 待本机验证`
+    );
     const d = compare({ head: H, dirty: 0, verified: null, last_ok: null }, remote(OLD));
     expect(d.drift).toEqual(['superagent']);
     expect(d.text).toContain('verified=无');
