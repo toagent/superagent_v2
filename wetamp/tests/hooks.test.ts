@@ -92,7 +92,10 @@ describe('REDLINE 默认放行与危险效果', () => {
   };
   test.each(denied)('拦截清单：%s', command => {
     const { guard } = setup();
-    humane(reason(guard('claude', bash(command), { SUPERAGENT_ROLE: 'worker' })));
+    // The foreign checkout must stay outside temporary artifact roots when the caller isolates HOME.
+    humane(
+      reason(guard('claude', bash(command), { SUPERAGENT_ROLE: 'worker', HOME: '/Users/test' }))
+    );
   });
   test('覆盖主检出现有文件被拦，陌生命令的目标按归属判定', () => {
     const { guard, repo } = setup(),
