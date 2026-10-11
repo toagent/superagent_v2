@@ -2,11 +2,11 @@
 # 本机投送闸：在临时 detached worktree 里对一个提交依次跑 bun install --frozen-lockfile（根与 wetamp）→ tsc → bun test → selftest --fake，
 # 结果原子写入 $SUPERAGENT_HOME/verify.json：{commit,ok,at,steps:[{name,exit,ms}],log,last_ok_commit}。
 # 同一提交已有定论（含普通失败）时直接复用；信号中断/超时及环境错误不写缓存。twin-toolkit 只投送 ok 的提交。
-# 用法：verify-local.sh [--commit <rev>] [--timeout <s>]；退出码 0 通过、1 未通过。
+# 用法：verify-local.sh [--commit <rev>] [--timeout <s>，默认 1500，等锁与跑步骤各用一份]；退出码 0 通过、1 未通过。
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
 SA_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
-REV=HEAD TIMEOUT=600
+REV=HEAD TIMEOUT=1500
 while [ $# -gt 0 ]; do
   case "$1" in --commit) REV="$2"; shift 2;; --timeout) TIMEOUT="$2"; shift 2;; *) echo "verify-local: unknown arg $1" >&2; exit 1;; esac
 done
@@ -45,6 +45,8 @@ until mkdir "$LOCK" 2>/dev/null; do
   sleep 2
 done
 echo $$ > "$LOCK/pid"
+# 等锁另计：步骤预算从拿到锁起算，并发排队不吃掉后续 bun test 的时间。
+DEADLINE=$(( $(date +%s) + TIMEOUT ))
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/sa-verify.XXXXXX")"
 WT="$TMP/wt"
 cleanup() {
