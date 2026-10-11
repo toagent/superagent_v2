@@ -244,32 +244,33 @@ export function buildWorkflow(
         always_run: true,
         output_format: outputSchema('attempt'),
       });
-      const coder = carried?.packages.includes(p.id)
-        ? {
-            bash: `printf '%s\n' '${JSON.stringify({
-              status: 'done',
-              changed_files: [],
-              quick_checks: [],
-              notes: `carried from ${carried.from}`,
-              blockers: [],
-              error_class: null,
-              deviations: [],
-              needs: [],
-            }).replaceAll("'", "'\\''")}'`,
-          }
-        : fake
-          ? { bash: fakeEdit(p, p.id) }
-          : {
-              command: 'sa-code',
-              model: '@sa-coder',
-              ...effort('code', p.risk),
-              ...noNesting('@sa-coder', 'coder', [p]),
-              with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
-            };
+      // Carry only the initial package attempt; retries keep the native coder and hint binding.
+      const carry = carried?.packages.includes(p.id)
+        ? JSON.stringify({
+            status: 'done',
+            changed_files: [],
+            quick_checks: [],
+            notes: `carried from ${carried.from}`,
+            blockers: [],
+            error_class: null,
+            deviations: [],
+            needs: [],
+          })
+        : undefined;
+      const coder = fake
+        ? { bash: fakeEdit(p, p.id) }
+        : {
+            command: 'sa-code',
+            model: '@sa-coder',
+            ...effort('code', p.risk),
+            ...noNesting('@sa-coder', 'coder', [p]),
+            with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
+          };
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
         depends_on: [prev, attempt, pkgAttempt],
+        ...(carry ? { when: `$${pkgAttempt}.output.attempt != '0'` } : {}),
         output_format: outputSchema('coder'),
       });
       const accept = {
@@ -288,8 +289,18 @@ export function buildWorkflow(
         check(
           verify,
           [`code-${p.id}`, attempt, pkgAttempt],
-          { ...accept, tag: verify, coder: `$code-${p.id}.output` },
-          { output_format: outputSchema('accept'), ...acceptTimeout([p]) }
+          {
+            ...accept,
+            tag: verify,
+            coder: carry
+              ? { from: `$code-${p.id}.output`, if_skipped: carry }
+              : `$code-${p.id}.output`,
+          },
+          {
+            ...(carry ? { trigger_rule: 'none_failed_min_one_success' } : {}),
+            output_format: outputSchema('accept'),
+            ...acceptTimeout([p]),
+          }
         )
       );
       nodes.push({

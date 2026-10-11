@@ -16,6 +16,12 @@ import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { CHECK_AUX_COUNTS, CHECK_AUX_TIMEOUT_MS } from '../templates/.archon/scripts/sa-check';
+import { attemptPath } from '../templates/.archon/scripts/sa-check';
+import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
+import {
+  resolveNodeBindings,
+  type ShellInputContext,
+} from '../../packages/workflows/src/dag-executor';
 
 const fixture = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')
@@ -116,7 +122,7 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 });
 
 describe('buildWorkflow', () => {
-  test('P2: carry changes only code nodes; an empty carry preserves every byte', () => {
+  test('P2: carry changes only code/verify wiring; an empty carry preserves every byte', () => {
     const make = (packages: string[]) =>
       buildWorkflow(fixture, milestones(fixture), 'golden-0001', '/GEN', false, NOW, loadTiers(), {
         from: "old'run",
@@ -126,8 +132,13 @@ describe('buildWorkflow', () => {
     expect(JSON.stringify(make([]))).toBe(JSON.stringify(normal));
     const nodes = nodesOf(make(['core']));
     const code = nodes.find(n => n.id === 'code-core');
-    expect(code?.command).toBeUndefined();
-    expect(JSON.parse(sh(code?.bash ?? '', tmp()))).toEqual({
+    const verify = nodes.find(n => n.id === 'verify-core');
+    expect(code?.command).toBe('sa-code');
+    expect(code?.when).toBe("$package-attempt-core.output.attempt != '0'");
+    expect(verify?.trigger_rule).toBe('none_failed_min_one_success');
+    const binding = verify?.with?.coder as { from: string; if_skipped: string };
+    expect(binding.from).toBe('$code-core.output');
+    expect(JSON.parse(binding.if_skipped)).toEqual({
       status: 'done',
       changed_files: [],
       quick_checks: [],
@@ -137,10 +148,69 @@ describe('buildWorkflow', () => {
       deviations: [],
       needs: [],
     });
-    expect(nodes.filter(n => n.id !== 'code-core')).toEqual(
-      nodesOf(normal).filter(n => n.id !== 'code-core')
+    expect(nodes.filter(n => !['code-core', 'verify-core'].includes(n.id))).toEqual(
+      nodesOf(normal).filter(n => !['code-core', 'verify-core'].includes(n.id))
     );
     expect(code?.depends_on).toEqual(nodesOf(normal).find(n => n.id === 'code-core')?.depends_on);
+  });
+  test('P2 R2: incrementing a carried package attempt enables sa-code with its hint', () => {
+    const gen = tmp();
+    fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
+    const nodes = nodesOf(
+      buildWorkflow(fixture, milestones(fixture), 'retry', gen, false, NOW, loadTiers(), {
+        from: 'old-run',
+        packages: ['core'],
+      })
+    );
+    const code = nodes.find(n => n.id === 'code-core')!;
+    const attempt = nodes.find(n => n.id === 'package-attempt-core')!;
+    const verify = nodes.find(n => n.id === 'verify-core')!;
+    const binding = verify.with!.coder as { from: string; if_skipped: string };
+    const ctx: ShellInputContext = {
+      workflowRun: { id: 'retry', user_message: '', metadata: {} },
+      artifactsDir: gen,
+      stateDir: gen,
+      baseBranch: 'dev',
+      docsDir: gen,
+      nodeOutputs: new Map(),
+    };
+    const enabled = (): boolean => {
+      ctx.nodeOutputs.set(attempt.id, { state: 'completed', output: sh(attempt.bash!, gen) });
+      const result = evaluateCondition(code.when!, ctx.nodeOutputs);
+      expect(result.parsed).toBe(true);
+      return result.result;
+    };
+    expect(enabled()).toBe(false);
+    ctx.nodeOutputs.set(code.id, {
+      state: 'skipped',
+      output: '',
+      cause: { kind: 'condition', expr: code.when! },
+    });
+    expect(resolveNodeBindings(verify.id, { coder: binding }, ctx, undefined).coder).toBe(
+      binding.if_skipped
+    );
+
+    const path = attemptPath(gen, 'pkg/core');
+    fs.mkdirSync(join(path, '..'), { recursive: true });
+    fs.writeFileSync(path, '1');
+    fs.mkdirSync(join(gen, 'hints'));
+    fs.writeFileSync(join(gen, 'hints/core.md'), 'use the retry hint');
+    expect(enabled()).toBe(true);
+    expect(code.command).toBe('sa-code');
+    expect(code.with).toEqual({
+      pkg: 'core',
+      brief: join(gen, 'briefs/core.md'),
+      hint: join(gen, 'hints/core.md'),
+    });
+    const retryOutput = JSON.stringify({ status: 'done', notes: 'retried' });
+    ctx.nodeOutputs.set(code.id, { state: 'completed', output: retryOutput });
+    expect(resolveNodeBindings(verify.id, { coder: binding }, ctx, undefined).coder).toBe(
+      retryOutput
+    );
+    ctx.nodeOutputs.set(code.id, { state: 'failed', output: '', error: 'coder failed' });
+    expect(() => resolveNodeBindings(verify.id, { coder: binding }, ctx, undefined)).toThrow(
+      'failed'
+    );
   });
   test('NR: optional review runs only on effective G2 risk, including fake mode', () => {
     const plan = { ...fixture, packages: [{ ...fixture.packages[0], review: undefined }] };

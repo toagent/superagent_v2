@@ -487,18 +487,32 @@ describe('HF3 latest-engine recovery', () => {
           join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`),
           'utf8'
         )
-      ) as { nodes: { id: string; bash?: string; command?: string; script?: string }[] }
+      ) as {
+        nodes: {
+          id: string;
+          bash?: string;
+          command?: string;
+          script?: string;
+          when?: string;
+          with?: Record<string, unknown>;
+        }[];
+      }
     ).nodes;
     const code = nodes.find(n => n.id === 'code-core');
     const carried = sample === 'verify' || sample === 'settle';
     expect(l.adoptions?.at(-1)?.carried).toEqual(carried ? ['core'] : []);
-    if (carried)
-      expect(JSON.parse(sh(code?.bash ?? '', worktree))).toMatchObject({
+    if (carried) {
+      expect(code?.when).toBe("$package-attempt-core.output.attempt != '0'");
+      const binding = nodes.find(n => n.id === 'verify-core')?.with?.coder as {
+        if_skipped: string;
+      };
+      expect(JSON.parse(binding.if_skipped)).toMatchObject({
         status: 'done',
         error_class: null,
         notes: 'carried from r',
       });
-    else expect(code?.command).toBe('sa-code');
+    } else expect(code?.when).toBeUndefined();
+    expect(code?.command).toBe('sa-code');
     expect(nodes.find(n => n.id === 'code-api')?.command).toBe('sa-code');
     expect(nodes.find(n => n.id === 'verify-core')?.script).toBe('sa-check');
     expect(nodes.find(n => n.id === 'repair-core')?.command).toBe('sa-repair');
