@@ -7,7 +7,7 @@ argument-hint: (inputs bound by the generated workflow)
 
 ## 工作包 $INPUTS.pkg 包内修复（原因：$INPUTS.reason）
 
-- 任务书（目标、预期改动范围、验收命令、权限、红线）：$INPUTS.brief，先完整阅读
+- 任务书（目标、预期改动范围、验收命令、权限、红线）：$INPUTS.brief，先完整阅读。包括首条读取在内，所有 shell 命令遵循你的 AGENTS.md 命令规则。
 - 引擎验收日志：`$INPUTS.accept_log`（失败命令与输出；`$ARTIFACTS_DIR/verify-$INPUTS.pkg.coder.json` 是上一次编码的输出）
 - 元帅提示：`$INPUTS.hint`（存在时必须完整阅读）
 

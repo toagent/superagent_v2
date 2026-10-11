@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 // superagent V2 guard for Claude Code / Codex hooks: `node guard.cjs claude|codex`.
-// Permission checks fail closed; optional heartbeat/context advice remain best-effort.
+// Unknown effects and parser/internal failures are visible advisories, never a hold.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {tiers, policy} = require('../tiers.json');
-const {commands, parse, deletionTarget} = require('./shell.cjs');
+const {parse, commands, deletionTarget} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 const stopGate = require('./stop-gate.cjs');
 const {withState, once} = require('./hook-state.cjs');
@@ -57,80 +57,22 @@ const aiCli = name => ['claude', 'codex', 'opencode', 'sol-run'].includes(name) 
 // N-1: a derived session must not start another agent.
 function nestedReason(name, input, normalized) {
   if (['Agent', 'Task', 'spawn_agent', 'claude.Agent'].includes(name) || name.startsWith('mcp__claude__'))
-    return `N-1: 派生会话禁止再派生（工具 ${name}）；在本会话内完成，或把需求回报元帅`;
+    return redline.message(`派生会话再次调用 AI（${name}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅');
   const text = shellText(name, input);
   if (text === undefined) return null;
   let heads;
   // Unparsable text: every word counts as a possible command head (conservative).
   try { heads = (normalized?.argvs || commands(text)).map(argv => argv[0]); } catch { heads = text.split(/[\s;&|()`$"'<>]+/); }
   const hit = heads.map(head => path.posix.basename(head)).find(aiCli);
-  return hit ? `N-1: 派生会话禁止调用 ${hit} 再派生 AI；在本会话内完成，或把需求回报元帅` : null;
-}
-const GIT_VALUE_OPTIONS = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'];
-function gitReason(argv) {
-  if (path.posix.basename(argv[0]) !== 'git') return null;
-  let i = 1;
-  while (argv[i]?.startsWith('-')) i += GIT_VALUE_OPTIONS.includes(argv[i]) ? 2 : 1;
-  if (argv[i] === 'push') return '禁止 AI 执行 git push（含 force push）：push/发布一律人工执行';
-  if (argv[i] === 'reset' && argv.includes('--hard')) return '禁止 AI 执行 git reset --hard：历史改写一律人工执行';
-  return null;
+  return hit ? redline.message(`派生会话再次调用 AI（${hit}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅') : null;
 }
 function shellReason(text, cwd, env, normalized) {
-  let argvs; try { argvs = normalized?.argvs || commands(text); } catch { return null; }
-  for (const argv of argvs) { const reason = gitReason(argv); if (reason) return reason; }
   const target = deletionTarget(text, cwd, normalized?.argvs.length === 1 ? normalized.argvs[0] : normalized ? [] : undefined);
   if (!target) return null;
   const resolved = resolvePath(target);
   const guarded = ['/', os.homedir(), saHome(env), gitRoot(cwd)].filter(Boolean).map(resolvePath);
-  const hit = guarded.find(root => within(root, resolved));
-  return hit ? `禁止删除 ${path.basename(target) || target}：它是或包含受保护目录` : null;
-}
-
-// Reviewer shells run an allowlist of read-only commands; anything else, any output
-// redirection or wrapper side effect (shell.cjs `writes`) and any unparsable or dynamic
-// command head is denied.
-const READ_ONLY = new Set(['cat','head','tail','wc','grep','egrep','fgrep','rg','ls','stat','file','diff','cmp','sort','uniq','cut','tr','nl','column','sed','jq','echo','printf','pwd','which','type','realpath','dirname','basename','readlink','date','true','false','test','[','[[',':','cd','sleep','tree','find','git']);
-const GIT_READ = new Set(['status','diff','log','show','rev-parse','ls-files','ls-tree','blame','grep','cat-file','describe','merge-base','rev-list','shortlog','show-ref','name-rev','for-each-ref']);
-const SED_PRINT = /^(?:\d+|\$)(?:,(?:\d+|\$))?p(?:;(?:\d+|\$)(?:,(?:\d+|\$))?p)*$/;
-function gitReadOnly(argv) {
-  let i = 1;
-  while (argv[i]?.startsWith('-')) {
-    // -c/--config-env/--exec-path can install a pager, diff driver or helper command.
-    if (['-c', '--config-env'].includes(argv[i]) || argv[i].startsWith('--exec-path')) return false;
-    i += GIT_VALUE_OPTIONS.includes(argv[i]) ? 2 : 1;
-  }
-  const [sub, ...rest] = argv.slice(i);
-  if (rest.some(arg => /^--output|^--open-files-in-pager|^-O/.test(arg))) return false;
-  if (GIT_READ.has(sub)) return true;
-  const only = (...allowed) => rest.every(arg => allowed.includes(arg));
-  if (sub === 'reflog') return !rest.length || rest[0] === 'show';
-  if (sub === 'branch') return only('-a', '-r', '-v', '-vv', '-l', '--list', '--all', '--remotes', '--verbose', '--show-current');
-  if (sub === 'tag') return ['-l', '--list'].includes(rest[0]) && rest.length <= 2;
-  if (sub === 'remote') return only('-v', '--verbose');
-  if (sub === 'config') return ['--get', '--get-all', '--get-regexp', '--list', '-l'].includes(rest[0]);
-  if (sub === 'worktree' || sub === 'stash') return rest[0] === 'list' || sub === 'stash' && rest[0] === 'show';
-  return false;
-}
-function readOnly(argv) {
-  const [name, ...args] = argv;
-  if (!READ_ONLY.has(name)) return false;
-  const options = args.filter(arg => arg.startsWith('-')), operands = args.filter(arg => !arg.startsWith('-'));
-  switch (name) {
-    case 'sort': return !options.some(arg => /^-[^-]*o|^--output/.test(arg));
-    case 'uniq': return operands.length <= 1;
-    case 'tree': return !options.some(arg => /^-[^-]*o/.test(arg));
-    case 'rg': return !options.some(arg => arg.startsWith('--pre'));
-    case 'find': return !args.some(arg => /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(arg));
-    case 'sed': return options.every(arg => ['-n', '-E', '-r'].includes(arg)) && options.includes('-n') && SED_PRINT.test(operands[0] ?? '');
-    case 'git': return gitReadOnly(argv);
-    default: return true;
-  }
-}
-function reviewerShell(text, normalized) {
-  let parsed; try { parsed = normalized || parse(text); } catch (error) { return `命令无法解析（${error.message}）`; }
-  if (parsed.writes.length) return `禁止写入 ${path.basename(parsed.writes[0]) || parsed.writes[0]}`;
-  const bad = parsed.argvs.find(argv => !readOnly(argv));
-  return bad ? `${bad[0]} 不在只读白名单或带写入参数` : null;
+  return guarded.some(root => within(root, resolved))
+    ? redline.message(`删除 ${target}`, '它是或包含受保护目录', '只删除本任务的明确产物文件') : null;
 }
 
 const stateFile = (payload, env) => {
@@ -145,7 +87,7 @@ function commanderWrite(payload, client, env, text) {
   let edit;
   try {
     if (text !== undefined) {
-      const parsed = parse(text), targets = redline.shellWrites(parsed);
+      const parsed = parse(text), targets = [...parsed.writes, ...parsed.argvs.flatMap(redline.effects).filter(a => ['create', 'destroy', 'overwrite', 'write'].includes(a.effect)).map(a => a.target)];
       if (parsed.argvs.some(a => ['node','bun','python','python3','perl','ruby'].includes(path.posix.basename(a[0])) && a.slice(1).some(v => /^-(?:e|c|pe|pi)/.test(v))))
         throw new Error('内联脚本可能写代码，无法可靠计量；请交 superagent run');
       if (!targets.length) return null;
@@ -159,7 +101,7 @@ function commanderWrite(payload, client, env, text) {
       return null;
     }
     edit = microEdit.plan(client, payload, root, resolvePath, repo);
-  } catch (error) { return deny(`G-1: 无法计量本次写入（${error.message}）`); }
+  } catch (error) { return {systemMessage: `SUPERAGENT advisory G-1: 无法计量本次写入（${error.message}），已放行；超过微改请走 superagent run。`}; }
   if (!edit.files.length) return null;
   const absolute = Object.fromEntries(['files', 'risk', 'newCode'].map(key => [key, edit[key].map(file => path.resolve(root, file))]));
   const file = stateFile(payload, env);
@@ -170,9 +112,9 @@ function commanderWrite(payload, client, env, text) {
     state.micro = next;
     return null;
   });
-  if (!file) return deny('G-1: 缺少会话身份，无法累计本次写入');
+  if (!file) return {systemMessage: 'SUPERAGENT advisory G-1: 缺少会话身份，无法累计本次写入，已放行。'};
   try { return withState(file, check); }
-  catch (error) { return deny(`G-1: 无法计量本次写入（${error.message}），请稍后重试`); }
+  catch (error) { return {systemMessage: `SUPERAGENT advisory G-1: 无法计量本次写入（${error.message}），已放行；请检查计量状态。`}; }
 }
 
 function decide(payload, client, env = process.env) {
@@ -186,34 +128,31 @@ function decide(payload, client, env = process.env) {
     return stopGate.gate(payload);
   }
   const text = shellText(name, input);
-  if (SHELL_TOOLS.includes(name) && text === undefined) return deny('无法确认 shell 命令（缺少文本）');
-  // reviewer 的写入由下方只读白名单整体拒绝，落点检查只给其余派生会话。
-  const confine = Boolean(derived) && env.SUPERAGENT_ROLE !== 'reviewer';
-  const normalized = derived && text !== undefined ? {argvs: [], writes: [], reads: []} : undefined;
-  const red = redline.reason({client, name, input, cwd, root: confine ? gitRoot(cwd) : null, shell: text, derived: confine, modelShell: Boolean(derived), env, onCommand: normalized && (parsed => { for (const key of Object.keys(normalized)) normalized[key].push(...parsed[key]); })});
-  if (red) return deny(`红线：${red}`);
+  const notices = new Set();
+  if (SHELL_TOOLS.includes(name) && text === undefined) notices.add('shell_text_missing');
+  const normalized = text !== undefined ? {argvs: [], writes: [], reads: []} : undefined;
+  const red = redline.reason({client, name, input, cwd, root: gitRoot(cwd), shell: text, derived: Boolean(derived),
+    reviewer: env.SUPERAGENT_ROLE === 'reviewer', env, onAdvisory: code => notices.add(code),
+    onCommand: normalized && (parsed => { for (const key of Object.keys(normalized)) normalized[key].push(...parsed[key]); })});
+  if (red) return deny(red);
   if (derived) {
     const reason = nestedReason(name, input, normalized);
-    if (reason) return deny(`${reason}（判定：${derived}）`);
+    if (reason) return deny(reason);
   }
   if (text !== undefined) {
     const reason = shellReason(text, cwd, env, normalized);
     if (reason) return deny(reason);
   }
   const edit = microEdit.isEdit(client, name);
-  if (env.SUPERAGENT_ROLE === 'reviewer') {
-    if (edit) return deny('reviewer 只读：军师会话禁止编辑文件');
-    const reason = text !== undefined && reviewerShell(text, normalized);
-    if (reason) return deny(`reviewer 只读：${reason}`);
-  }
-  if (derived) return null;
+  const advisory = notices.size ? {systemMessage: `SUPERAGENT advisory：本次护栏无法完整确认命令效果，已放行（${[...notices].join(', ')}）。`} : null;
+  if (derived) return advisory;
   const context = dispatch.contextReason(client, name, input, dispatch.contextPolicy(policy.dispatch_context));
   if (context) return deny(context);
   if (client === 'codex' && name === 'spawn_agent' && input.model && ![...pool('general'), ...pool('strategist')].includes(input.model))
     return deny('G-2: spawn_agent 的显式 model 必须属于将军或军师池；缺省使用 default_subagent_model。');
   const write = (edit || text !== undefined) && rootCall(payload) ? commanderWrite(payload, client, env, text) : null;
   if (write) return write;
-  return null;
+  return advisory;
 }
 
 if (require.main === module) (async () => {
@@ -222,17 +161,13 @@ if (require.main === module) (async () => {
     if (!['claude', 'codex'].includes(client)) throw new Error('usage: guard.cjs claude|codex');
     const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
     try { require('./live.cjs').beat(client, payload, () => sessionRole(payload, client)); } catch {}
-    if (payload.hook_event_name === 'PreToolUse' && derivedBy(payload, client)
+    if (payload.hook_event_name === 'PreToolUse'
         && shellText(String(payload.tool_name || ''), payload.tool_input || {}) !== undefined) {
       const error = await redline.init();
-      if (error) { process.stdout.write(JSON.stringify(deny(`shell parser unavailable: ${error}`)) + '\n'); return; }
+      if (error) { /* decide records parser unavailability through the advisory channel. */ }
     }
     const result = decide(payload, client);
     if (result) process.stdout.write(JSON.stringify(result) + '\n');
-  } catch (error) {
-    process.stderr.write(`superagent guard: permission check failed (${error.code || error.name})\n`);
-    process.stdout.write(JSON.stringify(deny('guard 内部异常，无法确认权限；请修复后重试')) + '\n');
-    process.exitCode = 2;
-  }
+  } catch { process.stdout.write(JSON.stringify({systemMessage: 'SUPERAGENT advisory：护栏内部异常，本次已放行。'}) + '\n'); }
 })();
 module.exports = {decide, derivedBy, sessionRole, isChild};

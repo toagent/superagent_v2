@@ -5,7 +5,9 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gitRepo, tmp } from './helpers';
-await (createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }).init();
+await (
+  createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }
+).init();
 
 const HOOKS = join(import.meta.dir, '..', 'hooks');
 // 子进程 env 只保留与判定无关的键，判定相关的由每个用例显式给出。
@@ -52,6 +54,105 @@ const reason = (o: Out): string | undefined =>
   o?.hookSpecificOutput?.permissionDecision === 'deny'
     ? o.hookSpecificOutput.permissionDecisionReason
     : undefined;
+
+describe('REDLINE 默认放行与危险效果', () => {
+  const allowed = [
+    'rtk proxy command -v uv',
+    'rtk proxy which flock bun timeout',
+    'rtk proxy bash -c \'baseline_dir=$(mktemp -d /tmp/mac-presets-baseline.XXXXXX); git archive HEAD app/src-tauri | tar -x -C "$baseline_dir"; cargo test --manifest-path "$baseline_dir/app/src-tauri/Cargo.toml" --lib --locked > /tmp/mac-presets-baseline-cargo.log 2>&1; result=$?; tail -n 10 /tmp/mac-presets-baseline-cargo.log; exit "$result"\'',
+    'rtk proxy sh -c \'git diff --check && test "$(git rev-parse HEAD)" = abc && git status --short\'',
+    "rtk proxy bash -c 'for i in $(seq 1 3); do bun test > /tmp/x-$i.log 2>&1; done'",
+    'rtk proxy kill -TERM 41418',
+    'ln -s /main/app/node_modules app/node_modules',
+    'echo x > /Users/test/work/_mcp_workspace/tmp/new-file',
+    'echo "unterminated',
+  ];
+  test.each(allowed)('放行清单：%s', command => {
+    const { guard } = setup();
+    const out = guard('claude', bash(command), { SUPERAGENT_ROLE: 'worker' });
+    expect(reason(out)).toBeUndefined();
+    if (command === 'echo "unterminated') expect(out?.systemMessage).toContain('advisory');
+  });
+  const denied = [
+    'rm -rf ~/work/other-repo/src',
+    'rm -rf "$UNKNOWN"',
+    ['git', 'push', '--force'].join(' '),
+    ['git', '-C', '/main', 'reset', '--hard'].join(' '),
+    'pkill -f node',
+    'kill -9 -1',
+    'security find-generic-password -w -s fake',
+    'cat ~/.ssh/id_ed25519',
+    'sudo echo x',
+    'echo x > ~/.codex/hooks.json',
+    'npm publish',
+  ];
+  const humane = (text: string | undefined): void => {
+    expect(text).toMatch(/^已拦截：.+。原因：.+。可以：.+。$/);
+    expect(text).not.toMatch(/builtin_or_reserved_head|node:|shell_parse|internal_error/);
+  };
+  test.each(denied)('拦截清单：%s', command => {
+    const { guard } = setup();
+    humane(reason(guard('claude', bash(command), { SUPERAGENT_ROLE: 'worker' })));
+  });
+  test('覆盖主检出现有文件被拦，陌生命令的目标按归属判定', () => {
+    const { guard, repo } = setup(),
+      main = gitRepo(tmp());
+    writeFileSync(join(main, 'existing'), 'keep');
+    const env = { SUPERAGENT_ROLE: 'worker' };
+    humane(reason(guard('claude', bash(`echo x > ${join(main, 'existing')}`), env)));
+    expect(readFileSync(join(main, 'existing'), 'utf8')).toBe('keep');
+    expect(
+      reason(guard('claude', bash(`never_registered_tool > ${join(repo, 'new')}`), env))
+    ).toBeUndefined();
+    humane(reason(guard('claude', bash('never_registered_tool > ~/.codex/new-config'), env)));
+    expect(
+      reason(guard('claude', bash(`cp ${join(main, 'existing')} copied`), env))
+    ).toBeUndefined();
+    humane(reason(guard('claude', bash(`git -C ${main} add existing`), env)));
+    expect(reason(guard('claude', bash(`git -C ${main} status --short`), env))).toBeUndefined();
+    expect(reason(guard('claude', bash('kill -9 41418'), env))).toBeUndefined();
+  });
+  test('新建范围外文件放行；临时 HOME 下的 provider 配置仍受保护', () => {
+    const { guard } = setup(),
+      home = tmp();
+    const env = { SUPERAGENT_ROLE: 'worker', HOME: home };
+    expect(
+      reason(
+        guard(
+          'claude',
+          { tool_name: 'Write', tool_input: { file_path: '/Users/test/work/tmp/new' } },
+          env
+        )
+      )
+    ).toBeUndefined();
+    humane(
+      reason(
+        guard(
+          'claude',
+          { tool_name: 'Write', tool_input: { file_path: join(home, '.codex/config.toml') } },
+          env
+        )
+      )
+    );
+  });
+  test('reviewer 可以编辑临时文件，但不能提交或编辑被审仓库', () => {
+    const { guard, repo } = setup();
+    const env = { SUPERAGENT_ROLE: 'reviewer' };
+    expect(
+      reason(
+        guard(
+          'claude',
+          { tool_name: 'Write', tool_input: { file_path: '/tmp/reviewer-result' } },
+          env
+        )
+      )
+    ).toBeUndefined();
+    expect(reason(guard('claude', bash('bun test > /tmp/reviewer-test.log'), env))).toBeUndefined();
+    expect(reason(guard('claude', bash(`git -C ${tmp()} init`), env))).toBeUndefined();
+    humane(reason(guard('claude', edit(repo, 1), env)));
+    humane(reason(guard('claude', bash('git commit -m review'), env)));
+  });
+});
 
 // A copy of hooks/ next to a tiers.json with the given policy overrides.
 function hooksWith(policy: Record<string, unknown>): string {
@@ -120,7 +221,7 @@ describe('guard.cjs', () => {
     const worker = { SUPERAGENT_ROLE: 'worker' };
     expect(
       reason(guard('claude', { tool_name: 'Agent', tool_input: { prompt: 'x' } }, worker))
-    ).toContain('N-1');
+    ).toContain('派生会话');
     expect(
       reason(
         guard(
@@ -129,7 +230,7 @@ describe('guard.cjs', () => {
           { AI_DISPATCH_ROLE: 'general' }
         )
       )
-    ).toContain('N-1');
+    ).toContain('派生会话');
     expect(
       reason(
         guard('claude', bash('/opt/bin/codex exec -s read-only x'), { TWIN_AGENT_REMOTE: '1' })
@@ -146,7 +247,7 @@ describe('guard.cjs', () => {
           cwd: ws,
         })
       )
-    ).toContain('N-1');
+    ).toContain('派生会话');
     expect(
       reason(
         guard(
@@ -162,11 +263,22 @@ describe('guard.cjs', () => {
   test('A-08: child metadata and derivedBy agree; commander model keeps its root behavior', () => {
     const { guard } = setup();
     const spawn = { tool_name: 'spawn_agent', tool_input: { message: 'x', fork_turns: 'none' } };
-    expect(reason(guard('codex', { ...spawn, model: 'gpt-6.1-sol' }))).toContain('general 池模型');
+    expect(reason(guard('codex', { ...spawn, model: 'gpt-6.1-sol' }))).toContain('派生会话');
     expect(guard('codex', { ...spawn, model: 'gpt-6-astra' })).toBeNull();
-    expect(reason(guard('codex', { ...spawn, model: 'gpt-6.1-sol', agent_type: 'x', agent_id: 'y' }))).toContain('child metadata');
-    expect(reason(guard('claude', {tool_name: 'Agent', agent_type: 'coder-1', agent_id: 'child'}))).toContain('N-1');
-    expect(guard('codex', {...spawn, model: 'gpt-6-astra', agent_type: ' ', agent_id: 'x'})).toBeNull();
+    const child = { ...spawn, model: 'gpt-6.1-sol', agent_type: 'x', agent_id: 'y' };
+    const identity = createRequire(import.meta.url)('../hooks/guard.cjs') as {
+      derivedBy: (p: object, c: string, env: object) => string | null;
+      isChild: (p: object) => boolean;
+    };
+    expect(identity.isChild(child)).toBe(true);
+    expect(identity.derivedBy(child, 'codex', {})).toBe('child metadata');
+    expect(reason(guard('codex', child))).toContain('派生会话');
+    expect(
+      reason(guard('claude', { tool_name: 'Agent', agent_type: 'coder-1', agent_id: 'child' }))
+    ).toContain('派生会话');
+    expect(
+      guard('codex', { ...spawn, model: 'gpt-6-astra', agent_type: ' ', agent_id: 'x' })
+    ).toBeNull();
   });
 
   test('元帅会话 Agent 放行；G-2 仍生效', () => {
@@ -193,16 +305,18 @@ describe('guard.cjs', () => {
         })
       )
     ).toContain('git push');
-    expect(reason(guard('claude', bash('echo ok; git reset --hard HEAD~1')))).toContain(
-      'reset --hard'
-    );
+    expect(
+      reason(guard('claude', bash(['git', '-C', '/x', 'reset', '--hard', 'HEAD~1'].join(' '))))
+    ).toContain('非本任务');
   });
 
   test('删除目标拦截与 reviewer 只读', () => {
     const { home, repo, guard } = setup();
     expect(reason(guard('claude', bash(`rm -rf ${home}`)))).toContain('受保护目录');
     expect(reason(guard('claude', bash(`rm -rf ${repo}`)))).toContain('受保护目录');
-    expect(reason(guard('claude', bash(`rm -rf ${join(repo, 'build')}`)))).toContain('G-1');
+    const ownDeletion = guard('claude', bash(`rm -rf ${join(repo, 'build')}`));
+    expect(reason(ownDeletion)).toBeUndefined();
+    expect(ownDeletion?.systemMessage).toContain('advisory');
     expect(reason(guard('claude', edit(repo, 1), { SUPERAGENT_ROLE: 'reviewer' }))).toContain(
       'reviewer 只读'
     );
@@ -221,28 +335,25 @@ describe('guard.cjs', () => {
       'env -u FOO claude -p x',
       'env X=1 codex exec x',
       'nohup claude -p x &',
-      'sudo -u root opencode run',
       'nice -n 5 claude -p x',
       'caffeinate -i claude -p x',
       'timeout 5 sol-run x',
       'find . -name a -exec codex exec {} \\;',
     ])
-      expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('N-1');
-    // HF6 rejects these unmodeled heads before reaching the nested-agent gate.
+      expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('派生会话');
     for (const cmd of [
       'time -p claude -p x',
       'echo "$(claude -p x)"',
       'command claude -p x',
       'exec -a name codex exec x',
       'env -S "claude -p x"',
-      'command -v claude',
     ])
-      expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('超出可建模子集');
-    for (const cmd of ["echo '$(claude -p x)'", 'grep -r claude .'])
+      expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('派生会话');
+    for (const cmd of ["echo '$(claude -p x)'", 'grep -r claude .', 'command -v claude'])
       expect(guard('claude', bash(cmd), worker), cmd).toBeNull();
   });
 
-  test('reviewer：Bash 只放行只读白名单，重定向与写命令被拒', () => {
+  test('reviewer：允许执行和临时写入，拒绝修改被审仓库', () => {
     const { guard } = setup();
     const reviewer = { SUPERAGENT_ROLE: 'reviewer' };
     for (const cmd of [
@@ -267,19 +378,40 @@ describe('guard.cjs', () => {
       'git add a.ts',
       'git checkout -- a.ts',
       'git stash',
-      'git -c core.pager=sh log',
+      'git config user.name changed',
+      'git branch --list --delete other',
+      'git tag changed',
+      'git remote add other https://example.com/repo',
       'sort -o a.ts a.ts',
       'find . -delete',
-      'python3 -c "open(1)"',
     ])
       expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('reviewer 只读');
-    expect(reason(guard('claude', bash('$(echo rm) a.ts'), reviewer))).toContain('node:command_substitution');
-    expect(reason(guard('claude', bash('echo ~[x]'), reviewer))).toContain('zsh_word_expansion');
+    expect(reason(guard('claude', bash('echo ~[x]'), reviewer))).toBeUndefined();
+    expect(reason(guard('claude', bash('python3 -c "print(1)"'), reviewer))).toBeUndefined();
+    expect(reason(guard('claude', bash('bun test > /tmp/reviewer.log'), reviewer))).toBeUndefined();
     expect(
       reason(
         guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'touch x' } }, reviewer)
       )
     ).toContain('reviewer 只读');
+  });
+
+  test('动态 cwd 不隐藏明确危险；未知普通写入留 advisory', () => {
+    const { guard } = setup();
+    const worker = { SUPERAGENT_ROLE: 'worker' };
+    for (const cmd of [
+      'cd "$UNKNOWN" && sudo true',
+      'cd "$UNKNOWN"; rm -rf relative',
+      'env -C "$UNKNOWN" npm publish',
+      'case x in x) sudo true;; esac',
+      'lsof -ti:3000 | xargs kill -9',
+    ])
+      expect(reason(guard('claude', bash(cmd), worker)), cmd).toMatch(/^已拦截：/);
+    const result = guard('claude', bash('cd "$UNKNOWN" && echo x > relative'), worker);
+    expect(reason(result)).toBeUndefined();
+    expect(result?.systemMessage).toContain('advisory');
+    expect(guard('claude', bash('curl --fail https://example.com'), worker)).toBeNull();
+    expect(reason(guard('claude', bash('env FOO=x git -C . status'), worker))).toBeUndefined();
   });
 
   test('reviewer：包装器自身的写入副作用按写入处理', () => {
@@ -290,22 +422,24 @@ describe('guard.cjs', () => {
       ['script s.log cat a.ts', 's.log'],
       ['cat a.ts | tee -a b.ts', 'b.ts'],
     ])
-      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain(`禁止写入 ${target}`);
-    for (const cmd of ['time -o out.txt cat a.ts', '/usr/bin/time --output=t.log git status', 'env -C /tmp/elsewhere cat a.ts', 'env --chdir=/w git status'])
-      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('超出可建模子集');
+      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain(target);
+    for (const cmd of ['time -o out.txt cat a.ts', '/usr/bin/time --output=t.log git status'])
+      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('reviewer 只读');
+    expect(reason(guard('claude', bash('env -C /tmp cat a.ts'), reviewer))).toBeUndefined();
     // script 也是包装器：其后的 claude 仍被 N-1 认出
     expect(
       reason(
         guard('claude', bash('script -q /dev/null claude -p x'), { SUPERAGENT_ROLE: 'worker' })
       )
-    ).toContain('N-1');
+    ).toContain('派生会话');
   });
 
-  test('删除拒绝信息只回显 basename', () => {
+  test('删除提醒包含目标、后果和替代动作', () => {
     const { home, guard } = setup();
     const r = reason(guard('claude', bash(`rm -rf ${home}`))) ?? '';
-    expect(r).toContain('禁止删除 sa：');
-    expect(r).not.toContain(home);
+    expect(r).toContain(`已拦截：删除 ${home}`);
+    expect(r).toContain('。原因：');
+    expect(r).toContain('。可以：');
   });
 
   test('G-1：并发写入在锁内累计，30 行上限下恰好放行 3 次', async () => {
@@ -331,55 +465,92 @@ describe('guard.cjs', () => {
 
   test('A-07: reviewer completion cannot approve the current tree; legacy blocking modes are advisory', () => {
     for (const mode of ['change', 'cycle', 'advisory']) {
-      const {repo, guard} = setup(hooksWith({stop_gate: mode}));
-      const s = (p: object): Out => guard('claude', {session_id: 'g', ...p});
-      s({hook_event_name: 'SessionStart'});
+      const { repo, guard } = setup(hooksWith({ stop_gate: mode }));
+      const s = (p: object): Out => guard('claude', { session_id: 'g', ...p });
+      s({ hook_event_name: 'SessionStart' });
       s(edit(repo, 1));
       writeFileSync(join(repo, 'a.ts'), 'changed after review started\n');
       for (const event of [
-        {hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: {subagent_type: 'reviewer-1'}, tool_response: {}},
-        {hook_event_name: 'SubagentStop', agent_type: 'reviewer-1', agent_id: 'child'},
-      ]) s(event);
-      expect(s({hook_event_name: 'Stop'})?.systemMessage).toContain('advisory');
-      expect(s({hook_event_name: 'Stop'})?.systemMessage).toContain('引擎正式 gate');
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Agent',
+          tool_input: { subagent_type: 'reviewer-1' },
+          tool_response: {},
+        },
+        { hook_event_name: 'SubagentStop', agent_type: 'reviewer-1', agent_id: 'child' },
+      ])
+        s(event);
+      expect(s({ hook_event_name: 'Stop' })?.systemMessage).toContain('advisory');
+      expect(s({ hook_event_name: 'Stop' })?.systemMessage).toContain('引擎正式 gate');
     }
   });
 
-  test('A-09: shell code output, unknown write targets and malformed patches fail closed', () => {
-    const {repo, guard} = setup();
-    for (const command of ['echo x > a.ts', 'tee a.ts', 'touch auth.ts', 'cp NOTES.md a.ts', 'echo x > "$TARGET"', 'echo "unclosed', 'sed -i s/old/new/ a.ts', 'node -e "require(\"fs\").writeFileSync(\"a.ts\", \"x\")"'])
-      expect(reason(guard('claude', bash(command)))).toContain('G-1');
+  test('A-09: unmetered shell writes, unknown targets and malformed edits allow with advisory', () => {
+    const { repo, guard } = setup();
+    for (const command of [
+      'echo x > a.ts',
+      'tee a.ts',
+      'touch auth.ts',
+      'cp NOTES.md a.ts',
+      'echo x > "$TARGET"',
+      'echo "unclosed',
+      'sed -i s/old/new/ a.ts',
+      'node -e "require(\"fs\").writeFileSync(\"a.ts\", \"x\")"',
+    ])
+      expect(reason(guard('claude', bash(command)))).toBeUndefined();
+    for (const command of ['echo x > a.ts', 'echo x > "$TARGET"', 'echo "unclosed'])
+      expect(guard('claude', bash(command))?.systemMessage).toContain('advisory');
     expect(guard('claude', bash('echo x > NOTES.md'))).toBeNull();
     expect(guard('claude', bash('git status'))).toBeNull();
-    expect(reason(guard('codex', {tool_name: 'apply_patch', tool_input: {input: 'invalid'}}))).toContain('无法确认补丁');
-    expect(reason(guard('claude', {tool_name: 'Edit', tool_input: {file_path: join(repo, 'a.ts')}}))).toContain('无法计量');
-    expect(reason(guard('claude', {...edit(repo, 1), session_id: '', transcript_path: ''}))).toContain('缺少会话身份');
-    expect(reason(guard('claude', {tool_name: 'Bash', tool_input: {}}))).toContain('缺少文本');
+    expect(
+      guard('codex', { tool_name: 'apply_patch', tool_input: { input: 'invalid' } })?.systemMessage
+    ).toContain('advisory');
+    expect(
+      guard('claude', { tool_name: 'Edit', tool_input: { file_path: join(repo, 'a.ts') } })
+        ?.systemMessage
+    ).toContain('advisory');
+    expect(
+      guard('claude', { ...edit(repo, 1), session_id: '', transcript_path: '' })?.systemMessage
+    ).toContain('advisory');
+    expect(guard('claude', { tool_name: 'Bash', tool_input: {} })?.systemMessage).toContain(
+      'advisory'
+    );
   });
 
-  test('A-09: corrupt quota state and an internal guard exception cannot allow writes', () => {
-    const {home, repo, guard} = setup();
+  test('A-09: corrupt quota state and internal exceptions allow with advisory without resetting state', () => {
+    const { home, repo, guard } = setup();
     const file = join(home, 'hooks', `${createHash('sha256').update('bad').digest('hex')}.json`);
-    mkdirSync(join(home, 'hooks'), {recursive: true});
-    for (const raw of ['{broken', JSON.stringify({micro: {lines: 'NaN', files: [], risk: [], newCode: []}})]) {
+    mkdirSync(join(home, 'hooks'), { recursive: true });
+    for (const raw of [
+      '{broken',
+      JSON.stringify({ micro: { lines: 'NaN', files: [], risk: [], newCode: [] } }),
+    ]) {
       writeFileSync(file, raw);
-      expect(reason(guard('claude', {...edit(repo, 1), session_id: 'bad'}))).toContain('无法计量');
+      expect(guard('claude', { ...edit(repo, 1), session_id: 'bad' })?.systemMessage).toContain(
+        'advisory'
+      );
       expect(readFileSync(file, 'utf8')).toBe(raw);
     }
     const p = Bun.spawnSync(['node', join(HOOKS, 'guard.cjs'), 'claude'], {
-      stdin: Buffer.from('null'), env: {...baseEnv, SUPERAGENT_HOME: home}, stdout: 'pipe', stderr: 'pipe',
+      stdin: Buffer.from('null'),
+      env: { ...baseEnv, SUPERAGENT_HOME: home },
+      stdout: 'pipe',
+      stderr: 'pipe',
     });
-    expect(p.exitCode).toBe(2);
-    expect(reason(JSON.parse(p.stdout.toString()) as Out)).toContain('内部异常');
+    expect(p.exitCode).toBe(0);
+    const out = JSON.parse(p.stdout.toString()) as Out;
+    expect(reason(out)).toBeUndefined();
+    expect(out?.systemMessage).toContain('advisory');
+    expect(out?.systemMessage).toContain('内部异常');
   });
 
   test('A-11: duplicate native event IDs consume G-1 exactly once; new IDs still accumulate', () => {
-    const {repo, guard} = setup();
-    const p = {...edit(repo, 20), session_id: 'dedup', tool_use_id: 'event-1'};
+    const { repo, guard } = setup();
+    const p = { ...edit(repo, 20), session_id: 'dedup', tool_use_id: 'event-1' };
     expect(guard('claude', p)).toBeNull();
     expect(guard('claude', p)).toBeNull();
-    expect(reason(guard('claude', {...p, tool_use_id: 'event-2'}))).toContain('累计 40 行');
-    expect(reason(guard('claude', {...p, tool_use_id: 'event-2'}))).toContain('累计 40 行');
+    expect(reason(guard('claude', { ...p, tool_use_id: 'event-2' }))).toContain('累计 40 行');
+    expect(reason(guard('claude', { ...p, tool_use_id: 'event-2' }))).toContain('累计 40 行');
   });
 
   test('G-3：advisory 只提示；无效取值给出配置提示而不报错', () => {
@@ -469,26 +640,44 @@ describe('context-budget.cjs', () => {
     expect(call('ls')).toBeNull();
   });
   test('F-12/A-11: concurrent context hooks keep every distinct event and deduplicate repeated IDs', async () => {
-    const root = tmp(), home = join(root, 'sa'), transcript = join(root, 't.jsonl');
-    mkdirSync(join(home, 'runs'), {recursive: true});
-    mkdirSync(join(home, 'archon'), {recursive: true});
-    writeFileSync(join(home, 'runs/r.json'), JSON.stringify({archon_run_id: 'r'}));
+    const root = tmp(),
+      home = join(root, 'sa'),
+      transcript = join(root, 't.jsonl');
+    mkdirSync(join(home, 'runs'), { recursive: true });
+    mkdirSync(join(home, 'archon'), { recursive: true });
+    writeFileSync(join(home, 'runs/r.json'), JSON.stringify({ archon_run_id: 'r' }));
     const db = new Database(join(home, 'archon/archon.db'));
     db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
-    db.run("insert into remote_agent_workflow_runs values ('r','running')"); db.close();
-    writeFileSync(transcript, JSON.stringify({usage: {input_tokens: 1000}}));
-    await Promise.all(Array.from({length: 24}, async (_, i) => {
-      const p = Bun.spawn(['node', join(HOOKS, 'context-budget.cjs')], {
-        stdin: Buffer.from(JSON.stringify({hook_event_name: 'PreToolUse', session_id: 'race', tool_name: 'Read', transcript_path: transcript, tool_use_id: `e${i % 20}`})),
-        env: {...baseEnv, SUPERAGENT_HOME: home}, stdout: 'pipe', stderr: 'pipe',
-      });
-      await new Response(p.stdout).text();
-      expect(await p.exited).toBe(0);
-    }));
-    const file = join(home, 'hooks/context-budget', `${createHash('sha256').update('race').digest('hex')}.json`);
+    db.run("insert into remote_agent_workflow_runs values ('r','running')");
+    db.close();
+    writeFileSync(transcript, JSON.stringify({ usage: { input_tokens: 1000 } }));
+    await Promise.all(
+      Array.from({ length: 24 }, async (_, i) => {
+        const p = Bun.spawn(['node', join(HOOKS, 'context-budget.cjs')], {
+          stdin: Buffer.from(
+            JSON.stringify({
+              hook_event_name: 'PreToolUse',
+              session_id: 'race',
+              tool_name: 'Read',
+              transcript_path: transcript,
+              tool_use_id: `e${i % 20}`,
+            })
+          ),
+          env: { ...baseEnv, SUPERAGENT_HOME: home },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        await new Response(p.stdout).text();
+        expect(await p.exited).toBe(0);
+      })
+    );
+    const file = join(
+      home,
+      'hooks/context-budget',
+      `${createHash('sha256').update('race').digest('hex')}.json`
+    );
     expect(JSON.parse(readFileSync(file, 'utf8')).tools).toBe(20);
   });
-
 });
 
 interface RedArgs {
@@ -568,7 +757,7 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       ['gh release create v1', 'gh release view v1', 'gh'],
       ['gh pr merge 12 --squash', 'gh pr view 12', 'gh'],
       ['vercel --prod', 'vercel build', 'vercel'],
-      ['git branch -D release-1', 'git branch -D feature-x', 'release-1'],
+      ['git branch -D release-1', 'git branch --list', 'release-1'],
       ['git branch -f main HEAD~1', 'git branch -f topic HEAD~1', 'main'],
       ['git update-ref refs/heads/wetamp HEAD', 'git update-ref refs/heads/topic HEAD', 'wetamp'],
       ['git rebase main develop', 'git rebase main topic', 'develop'],
@@ -577,14 +766,6 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       ['killall bun', 'kill %1', 'killall'],
       ['lsof -ti :3000 | xargs kill', 'lsof -i :3000', 'kill'],
       ['kill $(pgrep node)', 'kill 12345', 'kill'],
-      ['mysql -h db.prod.internal -u x', 'mysql -h 127.0.0.1 -u x', 'db.prod.internal'],
-      ['psql postgres://u@10.0.0.5/app', 'psql postgres://u@localhost/app', '10.0.0.5'],
-      [
-        'mongosh mongodb://cluster.example.com/x',
-        'mongosh mongodb://localhost:27017/x',
-        'cluster.example.com',
-      ],
-      ['redis-cli -h cache.example.com', 'redis-cli -h localhost ping', 'cache.example.com'],
     ];
     for (const [deny, allow, hit] of pairs) {
       expect(sh(deny), deny).toContain(hit);
@@ -623,14 +804,16 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     expect(tool('Read', { file_path: join(repo, 'README.md') })).toBeNull();
     expect(tool('Grep', { pattern: 'x', path: '~/.ssh' })).toBeNull();
     expect(tool('Grep', { pattern: 'x', path: '~/.ssh/id_ed25519' })).toContain('ssh 私钥');
-    expect(tool('Write', { file_path: join(home, '.ssh', 'config') })).toBeNull();
+    expect(tool('Write', { file_path: join(home, '.ssh', 'config') }, true)).toContain(
+      '配置或凭据'
+    );
     expect(tool('Write', { file_path: join(home, '.ssh', 'authorized_keys') })).toContain(
       'ssh 私钥'
     );
     // 元帅不限落点；派生会话只能写 worktree、临时目录与缓存（测试 home 本身在临时目录下，越界用 /etc）
     const away = '/etc/sa-redline-test/x.ts';
     expect(tool('Write', { file_path: away })).toBeNull();
-    expect(tool('Write', { file_path: away }, true)).toContain('范围外');
+    expect(tool('Write', { file_path: away }, true)).toContain('系统目录');
     expect(tool('Write', { file_path: join(repo, 'src', 'new.ts') }, true)).toBeNull();
     expect(tool('Write', { file_path: '/tmp/sa-x' }, true)).toBeNull();
     expect(tool('Write', { file_path: join(home, '.cache', 'x') }, true)).toBeNull();
@@ -638,11 +821,11 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       command: `*** Begin Patch\n*** Add File: ${f}\n+x\n*** End Patch`,
     });
     expect(tool('apply_patch', patch('a.ts'), true, 'codex')).toBeNull();
-    expect(tool('apply_patch', patch(away), true, 'codex')).toContain('范围外');
-    expect(sh(`echo x > ${away}`, true)).toContain('范围外');
+    expect(tool('apply_patch', patch(away), true, 'codex')).toContain('系统目录');
+    expect(sh(`echo x > ${away}`, true)).toContain('系统目录');
     expect(sh(`echo x > ${away}`, false)).toBeNull();
     expect(sh('echo x > out.txt && cp out.txt /tmp/y && mkdir -p build', true)).toBeNull();
-    expect(sh(`cp out.txt ${away}`, true)).toContain('范围外');
+    expect(sh(`cp out.txt ${away}`, true)).toContain('系统目录');
     expect(sh('echo x 2>/dev/null >> ~/.cache/log', true)).toBeNull();
   });
 
@@ -653,9 +836,9 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       { SUPERAGENT_ROLE: 'worker' },
       { SUPERAGENT_ROLE: 'reviewer' },
     ] as Record<string, string>[])
-      expect(reason(guard('claude', bash('git branch -D release-1'), env))).toContain('红线');
+      expect(reason(guard('claude', bash('git branch -D release-1'), env))).toContain('已拦截：');
     expect(
       reason(guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'npm publish' } }))
-    ).toContain('红线');
+    ).toContain('已拦截：');
   });
 });

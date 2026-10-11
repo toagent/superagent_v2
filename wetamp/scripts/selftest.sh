@@ -46,7 +46,7 @@ hook() { # <SUPERAGENT_ROLE> <tool_name> <tool_input JSON> → 拒绝原因
 G1="$(hook '' Edit "$(node -e 'console.log(JSON.stringify({file_path: process.argv[1], old_string: "selftest", new_string: "x\n".repeat(31)}))' "$REPO/selftest.txt")")"
 case "$G1" in G-1:*) ;; *) fail "hooks: commander 31-line edit not denied: $G1";; esac
 N1="$(hook worker Agent '{"prompt":"x"}')"
-case "$N1" in N-1:*) ;; *) fail "hooks: worker Agent not denied: $N1";; esac
+case "$N1" in 已拦截：*。原因：*。可以：*。) ;; *) fail "hooks: worker Agent not denied: $N1";; esac
 # 工作流内联在此（不进 templates/：生成器只复制 commands/ 与 scripts/）。先以真实 think 节点 validate：
 # 复测 install.sh 写入的 config.yaml aliases 键（§2.4）；--fake 再换成 bash 桩。
 GEN="$TMPH/gen/selftest" WF="$TMPH/gen/selftest/.archon/workflows/sa-smoke"; mkdir -p "$WF"

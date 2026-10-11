@@ -613,7 +613,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **HF8c / HF8-R1-01 / I6、I8**：推翻“监听器挂到落盘完成就能计入落盘前信号”；本轮替换 HF8b 的落盘边界承诺：正常及异常终态统一按“暂定终态 rename → 下一事件循环交付点 → 中断时改写 failed/原信号/128+n → 同步移除监听器”提交。暂定终态最多可见一个事件循环周期，board 仅展示，不可据此触发不可逆动作。
 - **HF8c 剩余窗口**：交付点之后的信号不改写记录；交付后的必要改写同步完成，随后同步移除监听器（移除步骤无 I/O），不承诺任何时刻的信号都会计入。隔离子进程的真实 TERM/INT/HUP 覆盖 write 前、rename 前、rename 后及边界后默认终止对照。
 
-### HF6 redline 可建模子集
+### HF6 redline 可建模子集（历史策略，已由 REDLINE 默认放行替代）
 
 - **被推翻的假设 / I8、P1**：静态扫描 shell 文本并逐个补 cwd 变体不能证明完整 shell 语义。HF6 在现有顺序与子作用域判断前，先限定派生会话可建模子集；不支持的命令拒绝并提示绝对路径或独立命令。commander 不调用此检查，保持原判定。
 - **子集**：shell.cjs 保留包装器和保留字的命令头索引；动态命令头、函数定义、pushd/popd/eval/source/./exec/builtin/command/alias/function/coproc 拒绝。cd 必须是顶层简单命令头，拒绝 cd -、~user、CDPATH 下的相对 cd；复合命令中出现 cd 或未建模执行词则拒绝。普通复合命令、数据 heredoc 和字面 shell -c 递归校验；stdin/here-string/heredoc/管道执行代码拒绝，解释器文件模式排除 `/dev/`、`/proc/` 伪文件。仓库脚本文件（包括 bash -n/-ex script）沿用原策略。
@@ -759,3 +759,12 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **旧 run/生产影响与遗留**：不新增功能、schema、权限或依赖，不修改 packages。Stop 不恢复旧评审事实源；旧状态继续严格读取，旧锁路径作为稳定 inode 使用，是否持有以内核事实为准。hook 事务沿 REC helper 需要可用 Bun，缺失明确失败；真实 provider、生产运行与外部效果不在本次 fake 验证范围，G2 评审及主控最终验收另行执行。仅本 worktree/分支写入，不 push、不操作其他 worktree 或生产状态。
 - **编码端验收**：结果以本次临时 SUPERAGENT_HOME 中的 tsc/full-test/eslint/selftest 日志与提交绑定 verify.json 为准；通过后另列实际退出码与套件统计，不将单包历史记录当本次集成证明。
 - **本次完整自检结果**：冻结安装补齐本 worktree 原先缺失的根目录及 wetamp/node_modules，未改 lockfile。`bunx tsc --noEmit && timeout 900 bun test` exit 0，1041 pass/0 fail/3 snapshots，34 文件、297.84s；`bunx eslint src` exit 0，定向 GUARD/REC/hooks 39 pass/0 fail。临时 `SUPERAGENT_HOME=/tmp/b1-int1-accept.AcIS2J` 下 fake selftest exit 0、receipt ok=true/fake=true；完整日志 full-test.log、tsc.log、selftest.log 在同目录，eslint 原始日志 /tmp/int1-eslint.log。提交后同一 home 跑 verify-local --commit HEAD，以 verify.json 的最终 HEAD、ok 与各步退出码独立确认；不把编码端自检冒充独立评审或生产验收。
+
+## REDLINE
+
+- 问题与被推翻的假设：把未知命令、复杂 shell 与范围外新建一概视为危险，导致只读检查、临时构建与测试停摆。废弃“看不懂就拒绝”的白名单路径。
+- 新语义：默认放行，集中效果数据表加目标归属判断，只拦确认的销毁/覆盖范围外数据、共享历史、外部写入发布、隐私凭据、越权和再委派。未知普通写入、解析失败和内部异常 advisory；明确删除/覆盖未知目标拒绝。reviewer 可写临时文件和运行测试，不可改被审仓库或提交。
+- 记录与契约：advisory 在 guard stdout 的 `systemMessage`（provider 会话 hook 输出）查看，不挂起、不发提醒；拒绝用三段人话，现有 `error_class=redline` 契约不变，不新增状态或配置开关。
+- 旧 run/生产：hooks 使用配置当前指向的代码，旧 run 也受其策略影响；三个命令模板增加 AGENTS.md 命令规则提醒并改变 engine identity。仅本包 worktree 交付，未部署生产；B1 集成的 GUARD A-09 冲突以本包默认放行为准。
+- 遗留：解释器和脚本内部间接效果仍是尽力识别；真实 provider、现有更严格 reviewer sandbox 的临时写入权限及 G2 独立评审由主控集成验收。本包只做编码与自检。
+- 本包自检：tsc exit 0；eslint src exit 0；完整 bun test 886 pass / 0 fail、3 snapshots（410.93s）。卡片放行 9 项、拦截 12 项及陌生命令归属断言均通过；补测缺失解析器仍拒绝明确危险、内部异常 advisory、按端口经 xargs 发信号拒绝。隔离 home 的 selftest --fake 回执 ok:true；提交后 verify-local 以绑定新 HEAD 的 verify.json 为准。workflow golden 语义无变化，三个 command 模板均已纳入 engine identity 回归。src 净增 0，packages 受跟踪文件零改动。
