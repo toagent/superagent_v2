@@ -689,4 +689,4 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 不变量与复用：强化 I1 的红线边界及 I6 的真实事故回放，复用现有 AST、效果表、三段式提醒和 guard advisory 通道，没有新依赖、配置开关或运行状态。10 个报告探针及每个机制的等价变体纳入 hooks 测试，保留原放行清单、归属通用性及父/子 shell 差分；数字循环变量只在循环体内按数字处理，合流后的不确定赋值保留未知。
 - 旧 run/生产影响：hook 判定取当前安装代码，更新后旧会话也受修正影响；error_class=redline 及挂起/告警读者契约不变，advisory 仍在 guard stdout 的 systemMessage 查看。本包只提交 wetamp-redline，没有更新生产配置、触发 supervisor、合并或发布。
 - 遗留与验收边界：解释器/外部脚本的间接效果及无法建模的语法仍按原策略 advisory；此包只做编码自检，独立 G2 复审及主控集成实测另行完成。验收回执以本次完整测试、隔离 selftest-fake.json 与提交后同一临时 HOME 的 verify.json 为准。
-- 自检：提交前 tsc exit 0、eslint src exit 0；完整 bun test 906 pass / 0 fail，最后新增的缺失解析器进程来源回归另测 1 pass / 0 fail；最终提交由 verify-local 再跑完整候选。报告 10 个探针全部拒绝，末条提醒不含 FAKE_SECRET；原放行 9 项、拦截 12 项和归属通用性仍绿。隔离 selftest --fake exit 0、ok:true。hooks 净增 184 行，packages/ 与 wetamp/src 零改动。
+- 自检：提交前 tsc exit 0、eslint src exit 0；完整 bun test 907 pass / 0 fail（467.37s、3 snapshots），包含最后新增的缺失解析器进程来源回归（另测 1 pass / 0 fail）；最终提交由 verify-local 再跑完整候选。报告 10 个探针全部拒绝，末条提醒不含 FAKE_SECRET；原放行 9 项、拦截 12 项和归属通用性仍绿。隔离 selftest --fake exit 0、ok:true。hooks 净增 184 行，packages/ 与 wetamp/src 零改动。
