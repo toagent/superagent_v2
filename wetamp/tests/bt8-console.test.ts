@@ -38,18 +38,22 @@ test('SSE stays streamed and forwarding drops proxy token, cookies and arbitrary
   expect(seenUrl).toBe('http://127.0.0.1:1234/api/stream/dashboard?since=1'); expect(seenHeaders.has('cookie')).toBe(false); expect(seenHeaders.has('authorization')).toBe(false); expect(seenHeaders.get('last-event-id')).toBe('2');
   const reader = response.body!.getReader(); expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: ready\n\n'); await reader.cancel();
 });
-test('whitelisted child environment keeps native home while discarding adapters, DSN and runtime injection', () => {
+test('whitelisted child environment rejects unsupported DSN, keeps native home and discards adapters/runtime injection', () => {
   const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, 'archon');
   Object.assign(process.env, { HOST: '0.0.0.0', DATABASE_URL: 'synthetic', TELEGRAM_BOT_TOKEN: 'synthetic', SLACK_BOT_TOKEN: 'synthetic', NODE_OPTIONS: 'synthetic' });
+  expect(() => consoleEnv()).toThrow('SQLite-only');
+  process.env.DATABASE_URL = '';
   const env = consoleEnv(); expect(env.HOST).toBe('127.0.0.1'); expect(env.ARCHON_HOME).toBe(join(root, 'archon'));
   for (const key of ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'NODE_OPTIONS']) expect(key in env).toBe(false);
 });
 test('observer loader blocks native dotenv reload, including override:true in ARCHON_HOME', async () => {
   const root = tmp(); process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = join(root, 'archon');
   mkdirSync(process.env.ARCHON_HOME);
+  const childEnv = consoleEnv();
   writeFileSync(join(process.env.ARCHON_HOME, '.env'), 'HOST=0.0.0.0\nDATABASE_URL=synthetic\nTELEGRAM_BOT_TOKEN=synthetic\n');
+  expect(() => consoleEnv()).toThrow('SQLite-only');
   const code = 'const { observerEnv } = await import(process.argv[1]); observerEnv(); const { loadArchonEnv } = await import(process.argv[2]); loadArchonEnv(process.cwd()); console.log(JSON.stringify({ host: process.env.HOST, dsn: !!process.env.DATABASE_URL, adapter: !!process.env.TELEGRAM_BOT_TOKEN }));';
-  const child = Bun.spawn([process.execPath, '--no-env-file', '-e', code, join(WETAMP, 'src/web/archon.ts'), join(WETAMP, '../packages/paths/src/env-loader.ts')], { cwd: root, env: consoleEnv(), stdout: 'pipe', stderr: 'pipe' });
+  const child = Bun.spawn([process.execPath, '--no-env-file', '-e', code, join(WETAMP, 'src/web/archon.ts'), join(WETAMP, '../packages/paths/src/env-loader.ts')], { cwd: root, env: childEnv, stdout: 'pipe', stderr: 'pipe' });
   const out = await new Response(child.stdout).text();
   expect(await child.exited).toBe(0); expect(JSON.parse(out)).toEqual({ host: '127.0.0.1', dsn: false, adapter: false });
 });

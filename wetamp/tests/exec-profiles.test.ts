@@ -9,10 +9,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { loadTiers, snapshotPolicy } from '../src/config';
 import { archon, archonDetached } from '../src/archon';
 import { tmp } from './helpers';
 
 const WORKER = join(import.meta.dir, '..', 'bin', 'codex-worker');
+function snapshot(tiers = loadTiers()): string {
+  const path = join(tmp(), 'policy.json');
+  writeFileSync(path, JSON.stringify(snapshotPolicy(tiers)));
+  return path;
+}
 
 function stub(dir: string, name: string, body: string): string {
   const p = join(dir, name);
@@ -43,6 +49,7 @@ describe('bin/codex-worker', () => {
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
+        SA_POLICY_PATH: snapshot(),
       },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -79,6 +86,7 @@ describe('bin/codex-worker', () => {
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
+        SA_POLICY_PATH: snapshot(),
         ...env,
       },
       stdout: 'pipe',
@@ -164,7 +172,7 @@ describe('bin/codex-worker', () => {
       writeFileSync(join(codexHome, 'config.toml'), state);
       const real = stub(root, 'codex', '#!/usr/bin/env node\nconsole.log("ran");\n');
       const p = Bun.spawnSync([WORKER, ...args], {
-        env: { ...process.env, CODEX_HOME: codexHome, SUPERAGENT_ROLE: '', SA_CODEX_REAL: real, SA_CODEX_HOOK_TRUST: '', ...env },
+        env: { ...process.env, SA_POLICY_PATH: snapshot(), CODEX_HOME: codexHome, SUPERAGENT_ROLE: '', SA_CODEX_REAL: real, SA_CODEX_HOOK_TRUST: '', ...env },
         stdout: 'pipe',
         stderr: 'pipe',
       });
@@ -259,6 +267,7 @@ process.stdin.on('end', () => {
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
+        SA_POLICY_PATH: snapshot(),
         ...env,
       },
       stdin: Buffer.from(input),
@@ -332,6 +341,20 @@ process.stdin.on('end', () => {
     const [s, t] = lines(r.received);
     expect(s.params).toMatchObject({ sandbox: 'read-only' });
     expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly' } });
+  });
+
+  test('proxy reads marker and network policy from the frozen snapshot', () => {
+    const tiers = loadTiers();
+    tiers.policy.exec_profiles.reviewer.codex_readonly_marker = 'frozen-review-marker';
+    tiers.policy.sandbox.network = false;
+    const r = appServer([start({ 'frozen-review-marker': { command: 'false', required: true } }), turn].join('\n'), {
+      SA_POLICY_PATH: snapshot(tiers), SUPERAGENT_ROLE: '',
+    });
+    expect(r.code).toBe(0);
+    const [s, t] = lines(r.received);
+    expect(s.params).toMatchObject({ sandbox: 'read-only' });
+    expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } });
+    expect(r.received).not.toContain('frozen-review-marker');
   });
 
   test('fails closed: unparsable reviewer input, a stray marker, unreadable policy', () => {

@@ -37,7 +37,7 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { configHash, gitHead, renderAliases, loadTiers, WETAMP } from '../src/config';
+import { configHash, gitHead, renderAliases, loadTiers, resolveRoute, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
@@ -806,6 +806,7 @@ describe('run (archon stub)', () => {
       '@sa-coder': want['@sa-coder'],
       '@sa-reviewer': want['@sa-reviewer-codex'],
       '@sa-reviewer-alt': want['@sa-reviewer-alt-codex'],
+      '@sa-reviewer-G0': resolveRoute(loadTiers(), 'codex', 'auto', 'review', 'G0', 1, [want['@sa-coder'].model]).candidates[0],
     });
   });
   test('console=claude pins the concrete claude-console models, effort included', () => {

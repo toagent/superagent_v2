@@ -9,7 +9,24 @@
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 
-const [tiersPath, real, ...args] = process.argv.slice(2);
+const { createHash } = require('node:crypto');
+function canonicalPolicy(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonicalPolicy).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalPolicy(value[k])).join(',') + '}';
+  return JSON.stringify(value);
+}
+function loadPolicy(path) {
+  if (!path) throw new Error('SA_POLICY_PATH missing: launch with the generated run-config.yaml');
+  const { hash, ...policy } = JSON.parse(fs.readFileSync(path, 'utf8'));
+  if (typeof hash !== 'string' || createHash('sha256').update(canonicalPolicy(policy)).digest('hex') !== hash)
+    throw new Error('policy snapshot hash mismatch');
+  if (typeof policy.exec_profiles?.reviewer?.codex_readonly_marker !== 'string' || !policy.exec_profiles.reviewer.codex_readonly_marker)
+    throw new Error('codex_readonly_marker missing');
+  return policy;
+}
+module.exports = { canonicalPolicy, loadPolicy };
+if (require.main === module) {
+const [policyPath, real, ...args] = process.argv.slice(2);
 const die = (msg, child) => {
   process.stderr.write(`codex-readonly-proxy: ${msg}\n`);
   if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -17,12 +34,12 @@ const die = (msg, child) => {
 };
 let marker, network;
 try {
-  const { policy } = JSON.parse(fs.readFileSync(tiersPath, 'utf8'));
+  const policy = loadPolicy(policyPath);
   marker = policy.exec_profiles.reviewer.codex_readonly_marker;
   network = policy.sandbox.network === true;
   if (typeof marker !== 'string' || !marker) throw new Error('codex_readonly_marker missing');
 } catch (e) {
-  die(`cannot read policy from ${tiersPath}: ${e.message}`);
+  die(`cannot read policy from ${policyPath}: ${e.message}`);
 }
 
 const THREAD = new Set(['thread/start', 'thread/resume', 'thread/fork']);
@@ -104,3 +121,5 @@ process.stdin.on('end', () => {
   }
   child.stdin.end();
 });
+
+}

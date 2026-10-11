@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
-import { WETAMP, type Console } from './config';
+import { WETAMP, assertSQLite, type Console } from './config';
 
 export interface Check {
   cmd: string;
@@ -109,6 +109,7 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
     throw new Error(`plan invalid: repo ${repo} is not a git checkout`);
   const gap = unsupported(data as Record<string, unknown> & Plan);
   if (gap) throw new Error(`plan unsupported: ${gap}`);
+  assertSQLite(repo);
   milestones({ ...plan, repo });
   return { ...plan, repo };
 }
@@ -118,8 +119,6 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
  * 字段保留在 schema 里，是为了让旧 plan 得到这条说明而不是笼统的 additionalProperties 报错。
  */
 function unsupported(plan: Record<string, unknown> & Plan): string | null {
-  if (plan.mode?.startsWith('single:'))
-    return `/mode ${plan.mode}: single-vendor routing is not wired into node routing; use auto or strict`;
   if ((plan.concurrency ?? 1) > 1)
     return '/concurrency > 1: packages share one worktree and run serially in one DAG';
   for (const p of plan.packages as (Pkg & Record<string, unknown>)[]) {

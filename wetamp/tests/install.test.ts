@@ -18,6 +18,7 @@ import {
   mergeConfig,
   providerOf,
   renderAliases,
+  snapshotPolicy,
 } from '../src/config';
 
 const trackTempRoot = trackTempRoots();
@@ -327,8 +328,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(sh('--hooks').out).toContain('already trusted');
     expect(readFileSync(config, 'utf8')).toBe(once);
     // codex-worker 的信任闸认这些值（--version 带参数也要过闸）
+    const policy = join(home, 'policy.json');
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
     const w = Bun.spawnSync([join(WETAMP, 'bin', 'codex-worker'), '--version', 'exec'], {
-      env: { ...process.env, HOME: home, CODEX_HOME: '', SA_CODEX_HOOK_TRUST: '', SA_CODEX_REAL: '/bin/echo' },
+      env: { ...process.env, SA_POLICY_PATH: policy, HOME: home, CODEX_HOME: '', SA_CODEX_HOOK_TRUST: '', SA_CODEX_REAL: '/bin/echo' },
     });
     expect(w.exitCode).toBe(0);
     // 定义改了（timeout）→ 重写自己的 trusted_hash，不碰用户的

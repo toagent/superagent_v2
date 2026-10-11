@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   decide,
   disposition,
@@ -505,13 +506,15 @@ describe('F-14 model identity', () => {
 
 function runScript(
   cwd: string,
-  inputs: Record<string, string>
+  inputs: Record<string, string>,
+  extraEnv: Record<string, string> = {}
 ): { code: number; out: unknown; err: string; art: string } {
   const art = join(cwd, '..', 'art');
   mkdirSync(art, { recursive: true });
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ARTIFACTS_DIR: art,
+    ...extraEnv,
   };
   for (const [k, v] of Object.entries(inputs)) env[`INPUTS_${k.toUpperCase()}`] = v;
   const p = Bun.spawnSync(['bun', SCRIPT], { cwd, env, stdout: 'pipe', stderr: 'pipe' });
@@ -537,6 +540,49 @@ function planFile(root: string, accept: string, environment: string[] = []): str
 }
 
 describe('sa-check script', () => {
+  test('B1 same-diff reuses a qualified review after acceptance recovers; contract or identity drift refuses reuse', () => {
+    const root = tmp(), repo = gitRepo(root), flag = join(root, 'ready');
+    const p = join(root, 'plan.json');
+    const contract = { deadline: '2099-01-01T00:00:00Z', mode: 'strict', packages: [
+      { id: 'a', scope: { write: ['*.md'] }, accept: [{ cmd: `test -f '${flag}'`, timeout_s: 5 }] },
+    ] };
+    writeFileSync(p, JSON.stringify(contract));
+    const pol = join(root, 'policy.json');
+    writeFileSync(pol, JSON.stringify(snapshotPolicy(loadTiers())));
+    const inputs = { kind: 'accept', plan: p, pkgs: 'a', risk: 'G1', policy: pol, base: sh('git rev-parse HEAD', repo).trim() };
+    const prior = runScript(repo, { ...inputs, tag: 'prior' }).out as { diff_hash: string; contract_hash: string; ok: boolean };
+    expect(prior.ok).toBe(false);
+    writeFileSync(flag, 'ready');
+    const current = runScript(repo, { ...inputs, tag: 'current', prev: prior.diff_hash }).out;
+    expect(current).toMatchObject({ same: true, ok: true, disposition: 'advance', contract_hash: prior.contract_hash });
+    const eventsFile = join(root, 'events.json'), archon = join(root, 'archon');
+    writeFileSync(archon, `#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8'));\n`);
+    chmodSync(archon, 0o755);
+    const events = (reviewer: string) => ({ events: ['code-a', 'review-m1-r1'].map((step_name, i) => ({
+      step_name, event_type: 'node_completed', data: { binding: { model: {
+        requested: i === 0 ? 'author-model' : reviewer, resolved: { reason: 'unsupported' },
+      } } },
+    })) });
+    writeFileSync(eventsFile, JSON.stringify(events('review-model')));
+    const gate = (check: unknown) => runScript(repo, {
+      kind: 'gate', plan: p, pkgs: 'a', milestone: 'm1', tag: 'reuse', round: '2', risk: 'G1', archon,
+      r1: JSON.stringify(R('PASS')), r2: 'null', c1: JSON.stringify(prior), c2: JSON.stringify(check),
+    }, { WORKFLOW_ID: 'scratch-only' });
+    const reused = gate(current).out as { review_file: string };
+    expect(reused).toMatchObject({ verdict: 'pass', grade: 'PASS' });
+    expect(JSON.parse(readFileSync(reused.review_file, 'utf8'))).toEqual(R('PASS'));
+    writeFileSync(eventsFile, JSON.stringify(events('author-model')));
+    expect(gate(current).out).toMatchObject({ verdict: 'escalate', reason: 'no_change' });
+    writeFileSync(eventsFile, JSON.stringify(events('review-model')));
+    writeFileSync(p, JSON.stringify({ ...contract, environment: [{ cmd: 'true', timeout_s: 5 }] }));
+    const changed = runScript(repo, { ...inputs, tag: 'changed', prev: prior.diff_hash }).out;
+    expect(changed).toMatchObject({ same: true, ok: true });
+    expect(gate(changed).out).toMatchObject({ verdict: 'escalate', reason: 'no_change' });
+    writeFileSync(p, JSON.stringify({ ...contract, deadline: '2000-01-01T00:00:00Z' }));
+    // Deadline remains terminal even when the binding/event query is unavailable.
+    writeFileSync(archon, '#!/usr/bin/env node\nprocess.exit(1);\n');
+    expect(gate(current).out).toMatchObject({ verdict: 'escalate', reason: 'deadline' });
+  });
   test('env: failing environment check exits 1 with failed list', () => {
     const root = tmp();
     const r = runScript(gitRepo(root), { kind: 'env', plan: planFile(root, 'true', ['false']) });

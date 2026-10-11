@@ -11,7 +11,7 @@ import {
   newRunId,
   renderBrief,
 } from '../src/generate';
-import { install, WETAMP } from '../src/config';
+import { install, loadTiers, snapshotPolicy, WETAMP } from '../src/config';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -377,6 +377,25 @@ test('generate writes a committed gen repo that archon validates', () => {
   expect(JSON.parse(readFileSync(join(g.dir, 'policy.json'), 'utf8')).budget_floor).toMatchObject({
     S: 200000,
   });
+  const frozen = snapshotPolicy(loadTiers());
+  expect(JSON.parse(readFileSync(join(g.dir, 'policy.json'), 'utf8'))).toEqual(frozen);
+  expect(JSON.parse(readFileSync(join(g.dir, 'engine.json'), 'utf8')).policy_hash).toBe(frozen.hash);
+  const config = Bun.YAML.parse(readFileSync(g.config, 'utf8')) as {
+    assistants: { codex: { codexBinaryPath: string } };
+  };
+  expect(readFileSync(join(g.dir, '.archon/config.yaml'), 'utf8')).toBe(readFileSync(g.config, 'utf8'));
+  expect(config.assistants.codex.codexBinaryPath).toBe(join(g.dir, 'codex-worker'));
+  expect(readFileSync(config.assistants.codex.codexBinaryPath, 'utf8')).toContain(join(g.dir, 'policy.json'));
+  const single = generate({ ...plan, mode: 'single:claude', packages: plan.packages.map(p => ({ ...p, risk: 'G0' })) }, 'gen-single');
+  const singleConfig = Bun.YAML.parse(readFileSync(single.config, 'utf8')) as {
+    aliases: Record<string, { provider: string }>;
+  };
+  expect(Object.values(singleConfig.aliases).every(a => a.provider === 'claude')).toBe(true);
+  const singleWorkflow = Bun.YAML.parse(readFileSync(join(single.dir, '.archon/workflows', single.workflow, `${single.workflow}.yaml`), 'utf8'));
+  for (const n of nodesOf(singleWorkflow).filter(n => n.command)) {
+    const model = (n as N & { model: string }).model;
+    expect(singleConfig.aliases[model].provider).toBe('claude');
+  }
   // F-16：预算低于各包 size 的 budget_floor 之和（S+M）时在生成期拒绝，不等到运行中途挂起
   const thin = loadPlan(
     fixturePlan(root, plan.repo, p => (p.budget = { weighted_tokens: 700000 })),

@@ -47,11 +47,12 @@ interface Accept {
   diff_hash: string;
   same: boolean;
   head?: string;
+  contract_hash?: string;
   risk?: string | null;
   disposition?: Disposition;
   reason?: string | null;
 }
-/** generate 写入 <gen>/policy.json 的 tiers.policy 子集（一次生成、整 run 共用）。 */
+/** sa-check uses these fields from the complete frozen <gen>/policy.json. */
 interface Policy {
   risk_paths: string[];
   code_extensions: string[];
@@ -284,7 +285,9 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     patch,
     delta,
     diff_hash: hash,
-    // 修复轮的 diff 与上一轮相同：修复没有改任何东西，评审节点据此跳过、gate 直接 escalate
+    contract_hash: sha(JSON.stringify([p, ids, scopeIds, base, env('RISK'),
+      env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null])),
+    // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
     base_pass:
       base && failed.length
@@ -462,6 +465,7 @@ export function decide(input: {
   rechecks: Accept[];
   risk: string;
   expired?: boolean;
+  qualifiedReview?: boolean;
 }): { verdict: Verdict; rounds: number; reason: string | null; debt: string[]; ledger: Ledger } {
   const { reviews } = input;
   const rounds = reviews.length;
@@ -475,10 +479,23 @@ export function decide(input: {
     ledger,
   });
   if (input.expired) return out('escalate', 'deadline');
-  if (check?.same) return out('escalate', 'no_change');
   // 同一份评审里 id 重复（含同 id 既 closed 又 open）：账本无法唯一解释，不放行也不降为债务
   if (reviews.some(r => r && new Set(r.findings.map(f => f.id)).size !== r.findings.length))
     return out('escalate', 'invalid_review');
+  if (check?.same) {
+    const prior = reviews.map((r, i) => r ? i : -1).filter(i => i >= 0).at(-1);
+    const accepted = prior === undefined ? undefined : input.rechecks[prior];
+    const review = prior === undefined ? undefined : reviews[prior];
+    // Missing legacy evidence cannot prove equivalence; open debt also forbids reuse.
+    const reusable = input.qualifiedReview === true && reviews.at(-1) === null &&
+      check.ok && check.disposition === 'advance' && review?.status === 'PASS' &&
+      ledger.blocking.length === 0 && ledger.debt.length === 0 && review.debt.length === 0 &&
+      !!check.head && accepted?.head === check.head && !!check.diff_hash &&
+      accepted.diff_hash === check.diff_hash && !!check.contract_hash &&
+      accepted.contract_hash === check.contract_hash && accepted.risk === check.risk &&
+      check.risk === input.risk;
+    return reusable ? out('pass', null) : out('escalate', 'no_change');
+  }
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
   let reason: string;
@@ -651,44 +668,38 @@ function gate(): void {
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
   const risk = maxRisk(env('RISK'), ...rechecks.map(c => c.risk));
-  const d = decide({ reviews, rechecks, risk, expired: expired() });
+  const decision = { reviews, rechecks, risk, expired: expired() };
+  let d = decide(decision);
+  const reviewed = reviews.map((r, i) => r ? i : -1).filter(i => i >= 0).at(-1);
+  const m = env('MILESTONE');
+  const fake = { model: 'fake', strength: 'fake' } as const;
+  let identity: { authors: Ident[]; reviewer: Ident } | null = null;
+  if (reviewed !== undefined && (d.verdict === 'pass' ||
+      (d.reason === 'no_change' && rechecks.at(-1)?.ok && reviews.at(-1) === null))) {
+    const done = env('ARCHON') ? runEvents().filter(e => e.event_type === 'node_completed') : [];
+    const author = new RegExp(`^((code|repair)-(${env('PKGS').split(',').join('|')})|fix-${m}-r\\d)$`);
+    const reviewer = `review-${m}-r${String(reviewed + 1)}`;
+    identity = env('ARCHON') ? {
+      authors: done.filter(e => author.test(e.step_name ?? '')).map(e => identityOf(e.data?.binding)),
+      reviewer: identityOf(done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding),
+    } : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
+  }
+  const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';
+  if (identity && rechecks.at(-1)?.same)
+    d = decide({ ...decision, qualifiedReview: why === null });
   const ledgerFile = join(artifacts, `${tag}.ledger.json`);
   writeFileSync(ledgerFile, JSON.stringify(d.ledger, null, 2));
-  const reviewed = reviews
-    .map((r, i) => (r ? i : -1))
-    .filter(i => i >= 0)
-    .at(-1);
   let grade: string | null = null;
-  let identity: { authors: Ident[]; reviewer: Ident } | null = null;
   if (d.verdict === 'pass') {
-    const m = env('MILESTONE');
-    const fake = { model: 'fake', strength: 'fake' } as const;
-    const done = env('ARCHON') ? runEvents().filter(e => e.event_type === 'node_completed') : [];
-    const author = new RegExp(
-      `^((code|repair)-(${env('PKGS').split(',').join('|')})|fix-${m}-r\\d)$`
-    );
-    const reviewer = `review-${m}-r${String((reviewed ?? 0) + 1)}`;
-    identity = env('ARCHON')
-      ? {
-          authors: done
-            .filter(e => author.test(e.step_name ?? ''))
-            .map(e => identityOf(e.data?.binding)),
-          reviewer: identityOf(done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding),
-        }
-      : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
-    const why = independence(identity.authors, identity.reviewer);
     grade = why ? 'DEGRADED_PASS' : 'PASS';
-    // strict 与 G2 不接受降级：等合格独立评审（escalate 给用户）；其余带原因显式降级放行
-    if (why)
-      Object.assign(
-        d,
-        plan().mode === 'strict' || risk === 'G2'
-          ? { verdict: 'escalate', reason: `review_not_independent:${why}` }
-          : { reason: `review_not_independent:${why}` }
-      );
+    if (why) Object.assign(d, plan().mode === 'strict' || risk === 'G2'
+      ? { verdict: 'escalate', reason: `review_not_independent:${why}` }
+      : { reason: `review_not_independent:${why}` });
   }
   const over = d.verdict === 'fix' || (d.verdict === 'pass' && env('NEXT')) ? budget() : null;
   if (over) Object.assign(d, { verdict: 'escalate', reason: over });
+  if (d.verdict === 'pass' && rechecks.at(-1)?.same && reviewed !== undefined)
+    writeFileSync(reviewFile, JSON.stringify(reviews[reviewed], null, 2));
   const { ledger: _, ...rest } = d;
   void _;
   const out = {
