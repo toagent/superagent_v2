@@ -3637,6 +3637,8 @@ test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
       SUPERAGENT_HOME: join(root, 'home'),
       ARCHON_HOME: join(root, 'home', 'archon'),
       SUPERAGENT_WRITE_ROOTS: root,
+      // Admission belongs to the caller's home; the scratch engine claims its own scope.
+      SA_COORD_ADMISSION: '',
       SA_ARCHON_BIN: '',
       XDG_STATE_HOME: join(root, 'state'),
       SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
