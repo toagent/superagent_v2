@@ -678,6 +678,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 - **问题与不变量归属**：HF10-R2-01 指向评审 attempt 节点的手写 `cat … 2>/dev/null || echo 0`。它允许 NaN、负数和目录读取错误通过；输出 schema 仅要求 string，不能证明计数有效。本包强化 I3 的 attempt 边界证据与 I6 的夹具真实化：不把坏计数或读取错误伪装为 0。
 - **被推翻的假设与新语义**：HF10 的“所有生成 attempt 节点已统一读取”假设不成立。现在里程碑、包及评审轮次节点全部复用 `attemptCommand(attemptPath(...))`，运行时由模板 `readAttempt` 读取；仅 ENOENT 缺省为 0，合法非负安全整数照常，非法值及目录读取错误明确失败，不写回计数、不新增状态或配置。
-- **测试、事故回放与监测**：`generate.test.ts` 在正常及 fake 模式执行全部 6 个评审 attempt 节点，覆盖缺失、0、7、NaN、-1、目录。旧实现的两个回归均因 NaN 时退出 0 而失败；修复后要求非法值退出非 0 且无成功输出。两个 golden 同步；运行时监测点是现有 `attempt-review-*` 节点失败及 stderr 原始错误，不另造监测机制（P4）。
+- **测试、事故回放与监测**：`generate.test.ts` 在正常及 fake 模式逐节点执行全部 6 个评审 attempt 节点（共 12 例），覆盖缺失、0、7、NaN、-1、目录。复现时旧实现的两组回归均因 NaN 时退出 0 而失败；修复后要求非法值退出非 0 且无成功输出。两个 golden 同步；运行时监测点是现有 `attempt-review-*` 节点失败及 stderr 原始错误，不另造监测机制（P4）。
 - **旧 run 与生产影响、遗留**：`attempts/review-<m>-r<n>` 路径与输出契约不变；旧 run 冻结的 YAML 保留旧读取，生成器纳入 workflow hash，按已有恢复语义采用新引擎后才应用修复，运行中不换源。此包仅编码与自检，批次统一评审、主控集成验收及生产投送由主控执行；原 HF10 的回执及同身份现读依赖自动重试限制继续保留。
 - **编码自检**：定向测试 256 pass/0 fail（`/tmp/hf10b-focused.log`），`bunx tsc --noEmit`、`bunx eslint src` exit 0；`timeout 900 bun test` 979 pass/0 fail/3 snapshots、30 文件、329.61s（`/tmp/hf10b-full.log`）。独立临时 home `/tmp/hf10b-accept.0pduwg` 下 `bash scripts/selftest.sh --fake` exit 0，receipt ok=true（`/tmp/hf10b-selftest.log`）；提交后同目录运行 verify-local 绑定最终 HEAD。相对 f9394a60 源码净增 0 行，hooks/packages 零改动。
+- **提交产物验证中的测试修正**：首提交 `135f7376` 的 verify-local 在并行负载下发现回归单例集中执行 36 次子进程触及 Bun 默认 5 秒上限（日志 `/tmp/hf10b-accept.0pduwg/verify/135f73769720.log`）。保留完整验证结果，将回归拆成每个评审节点独立一例，仍执行实际生成的命令，不提高 timeout；最终生成器定向测试 34 pass/0 fail（`/tmp/hf10b-focused-final.log`）。产品源码与 golden 不再改动，最终提交重新跑 verify-local，不复用首提交结果。

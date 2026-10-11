@@ -77,40 +77,42 @@ describe('buildWorkflow', () => {
   test('golden: fake mode swaps coder nodes for bash stubs only', () => {
     expect(build(true)).toEqual(golden('two-pkgs-fake'));
   });
-  test.each([false, true])('HF10b review attempt nodes validate counters at execution (fake=%s)', fake => {
+  const reviewAttempts = [false, true].flatMap(fake =>
+    nodesOf(build(fake)).filter(n => n.id.startsWith('attempt-review-')).map(n => ({ fake, id: n.id }))
+  );
+  test.each(reviewAttempts)('HF10b review attempt node validates counters at execution (%j)', ({ fake, id }) => {
     const gen = tmp();
     fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
     fs.mkdirSync(join(gen, 'attempts'));
     const nodes = nodesOf(buildWorkflow(fixture, milestones(fixture), 'hf10b', gen, fake, NOW))
       .filter(n => n.id.startsWith('attempt-review-'));
     expect(nodes).toHaveLength(6);
-    for (const node of nodes) {
-      const path = join(gen, 'attempts', node.id.slice('attempt-'.length));
-      const run = () => Bun.spawnSync(['bash', '-c', node.bash!], {
-        cwd: gen, stdout: 'pipe', stderr: 'pipe',
-      });
-      const missing = run();
-      expect(missing.exitCode).toBe(0);
-      expect(JSON.parse(missing.stdout.toString())).toEqual({ attempt: '0' });
-      for (const raw of ['0', '7', 'NaN', '-1']) {
-        fs.writeFileSync(path, raw);
-        const result = run();
-        if (raw === '0' || raw === '7') {
-          expect(result.exitCode).toBe(0);
-          expect(JSON.parse(result.stdout.toString())).toEqual({ attempt: raw });
-        } else {
-          expect(result.exitCode).not.toBe(0);
-          expect(result.stderr.toString()).toContain('invalid attempt counter');
-          expect(result.stdout.toString()).toBe('');
-        }
+    const node = nodes.find(n => n.id === id)!;
+    const path = join(gen, 'attempts', node.id.slice('attempt-'.length));
+    const run = () => Bun.spawnSync(['bash', '-c', node.bash!], {
+      cwd: gen, stdout: 'pipe', stderr: 'pipe',
+    });
+    const missing = run();
+    expect(missing.exitCode).toBe(0);
+    expect(JSON.parse(missing.stdout.toString())).toEqual({ attempt: '0' });
+    for (const raw of ['0', '7', 'NaN', '-1']) {
+      fs.writeFileSync(path, raw);
+      const result = run();
+      if (raw === '0' || raw === '7') {
+        expect(result.exitCode).toBe(0);
+        expect(JSON.parse(result.stdout.toString())).toEqual({ attempt: raw });
+      } else {
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr.toString()).toContain('invalid attempt counter');
+        expect(result.stdout.toString()).toBe('');
       }
-      fs.unlinkSync(path);
-      fs.mkdirSync(path);
-      const directory = run();
-      expect(directory.exitCode).not.toBe(0);
-      expect(directory.stderr.toString()).toContain('EISDIR');
-      expect(directory.stdout.toString()).toBe('');
     }
+    fs.unlinkSync(path);
+    fs.mkdirSync(path);
+    const directory = run();
+    expect(directory.exitCode).not.toBe(0);
+    expect(directory.stderr.toString()).toContain('EISDIR');
+    expect(directory.stdout.toString()).toBe('');
   });
   test('HF4: an adopted checkout still reviews pre-existing commits with zero coder delta', () => {
     const root = tmp();
