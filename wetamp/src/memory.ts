@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import type { infer as Infer } from '../../packages/workflows/node_modules/zod';
 import { archonJson, lock, runRevision, type RunView } from './archon';
-import { home, runAliases, WETAMP, writeAtomic } from './config';
+import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
 import { artifactsOf, classifyRun, ledgerIds, loadLedger, type Ledger } from './cli';
 import { cockpitSignals, type Asks } from './cockpit-signals';
 import { etaInput } from './board/eta';
@@ -15,6 +15,7 @@ import { readUsage } from './usage';
 import { readJobs } from './jobs';
 import { reasonOf } from './reasons';
 import { redact } from './redact';
+import { budgetUsage } from '../templates/.archon/scripts/sa-check';
 import type { Plan, Pkg } from './plan';
 // Reuse the workflows package's existing schema dependency, as plan.ts does for Ajv.
 export const z: typeof import('../../packages/workflows/node_modules/zod').z = (createRequire(join(WETAMP, '..', 'packages/workflows/package.json'))('zod') as typeof import('../../packages/workflows/node_modules/zod')).z;
@@ -41,7 +42,8 @@ export const memoryPath = (path: string): string | null => confined({ repo: home
 // Collection may read repository evidence; Web memory reads have no Ledger scope.
 export function memoryJson<T>(path: string, fallback: T, owner?: Ledger): T { const file = owner ? confined(owner, path) : memoryPath(path); return file ? JSON.parse(readFileSync(file, 'utf8')) as T : fallback; }
 const files = (dir: string): string[] => existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')).sort() : [];
-export const episodes = (): Episode[] => files(join(root(), 'episodes')).map(f => memoryJson<Episode>(join(root(), 'episodes', f), {} as Episode));
+export const episodeOf = (id: string): Episode | null => memoryJson<Episode | null>(join(root(), 'projections', id + '.json'), memoryJson<Episode | null>(join(root(), 'episodes', id + '.json'), null));
+export const episodes = (): Episode[] => files(join(root(), 'episodes')).flatMap(f => { const e = episodeOf(f.slice(0, -5)); return e ? [e] : []; });
 export function memoryState(): { lessons: Lesson[]; entries: Entry[] } {
   const file = memoryPath(join(root(), 'lessons.jsonl')), entries = file ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(s => JSON.parse(s) as Entry) : [];
   return { entries, lessons: [...new Map(entries.flatMap(e => e.lessons).map(l => [l.id, l])).values()] };
@@ -84,18 +86,28 @@ function mechanize(signature: string, reasons: string[], episode: string): void 
 export function saveEpisode(e: Episode): boolean {
   if (basename(e.id) !== e.id || !e.id || e.id === '..') throw new Error('invalid episode id');
   const dir = join(root(), 'episodes'); mkdirSync(dir, { recursive: true }); const path = join(dir, `${e.id}.json`);
-  if (existsSync(path)) return false;
+  const first = !existsSync(path);
+  if (e.category === 'engine') mechanize(e.signature, e.reasons, e.id);
   // Drop whole optional rows, never truncate JSON or omit the failure identity.
   while (Buffer.byteLength(JSON.stringify(e)) > 8192) {
     const rows = [e.timeline, e.findings, e.acceptance, e.dispositions, e.asks, e.tokens].sort((a, b) => b.length - a.length);
     if (!rows[0].length) throw new Error('episode metadata exceeds 8KB'); rows[0].pop();
   }
-  writeAtomic(path, JSON.stringify(e)); if (e.category === 'engine') mechanize(e.signature, e.reasons, e.id); return true;
+  const target = first ? path : join(root(), 'projections', `${e.id}.json`);
+  if (!first) mkdirSync(join(root(), 'projections'), { recursive: true });
+  const text = JSON.stringify(e); if (!existsSync(target) || readFileSync(target, 'utf8') !== text) writeAtomic(target, text); return first;
 }
 const quantiles = (xs: number[]): { p50: number; p90: number } => { const s = [...xs].sort((a, b) => a - b); return { p50: s[Math.floor((s.length - 1) / 2)] ?? 0, p90: s[Math.ceil((s.length - 1) * .9)] ?? 0 }; };
 export const priorKey = (project: string, p: Pick<Pkg, 'size' | 'risk' | 'scope'>, model: string | null): string => JSON.stringify([project, taskTag(p.scope.write), p.size, p.risk, model]);
-function evidenceRows(l: Ledger, run: RunView): { file: string; data: Record<string, unknown> }[] {
-  const art = confined(l, artifactsOf(run)); if (!art) return []; return files(art).filter(f => /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)).map(f => ({ file: f, data: memoryJson<Record<string, unknown>>(join(art, f), {}, l) }));
+const evidenceSchema = z.object({ reason: z.string().optional(), ok: z.boolean().optional(), failed: z.array(z.string()).optional(), findings: z.array(z.object({ id: z.string(), severity: z.enum(['blocker', 'high', 'medium', 'low']), status: z.string() }).loose()).optional() }).loose();
+function evidenceRows(l: Ledger, run: RunView): { file: string; data: Infer<typeof evidenceSchema> }[] {
+  const art = confined(l, artifactsOf(run)); if (!art) return [];
+  return files(art).filter(f => /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)).flatMap(file => {
+    const raw = memoryJson<unknown>(join(art, file), null, l);
+    // gate writes a nullable review independently of its mandatory decision object.
+    if (raw === null && file.endsWith('.review.json')) return [];
+    return [{ file, data: evidenceSchema.parse(raw) }];
+  });
 }
 // Closed mapping is diagnostic only: unknown vendor prose is never a retry decision.
 export const failureReason = (text: string): string => reasonOf(text)?.code ?? (text.includes('No base branch could be detected') ? 'base_branch_missing' : 'unregistered_reason');
@@ -104,7 +116,7 @@ const holdReason = (s: string): string => holdCodes[s] ?? reasonOf(s)?.code ?? '
 const rowReasons = (rows: ReturnType<typeof evidenceRows>): string[] => [...new Set(rows.flatMap(r => typeof r.data.reason === 'string' ? [reasonOf(r.data.reason)?.code ?? 'unregistered_reason'] : []))];
 function runUsage(l: Ledger, plan: Plan, events: Parameters<typeof etaInput>[2]): { model: string | null; tokens: Episode['tokens']; calls: ReturnType<typeof callsOf> } {
   const usage = readUsage().sessions.filter(s => s.owner?.run_id === l.run_id), calls = callsOf(l.run_id, events as Parameters<typeof callsOf>[1], plan), roles = workflowRoles(l);
-  return { calls, model: usage.find(s => s.owner?.role === 'general')?.model ?? calls.find(x => x.role !== 'review')?.model.replace(/\(pinned\)$/, '') ?? null, tokens: usage.length ? usage.flatMap(s => (s.parts?.length ? s.parts : [s]).map(p => ({ role: s.owner?.role ?? null, model: p.model, total: p.total }))) : calls.map(x => ({ role: roles?.get(x.node) === 'reviewer' || x.role === 'review' ? 'strategist' : 'general', model: x.model, total: x.tokens ? Object.values(x.tokens).reduce((a, b) => a + b, 0) : null })) };
+  return { calls, model: usage.find(s => s.owner?.role === 'general')?.model ?? calls.find(x => x.role !== 'review')?.model.replace(/\(pinned\)$/, '') ?? null, tokens: usage.length ? usage.flatMap(s => (s.parts?.length ? s.parts : [s]).map(p => ({ role: s.owner?.role ?? null, model: p.model, total: p.total }))) : calls.map(x => ({ role: roles?.get(x.node) === 'reviewer' || x.role === 'review' ? 'strategist' : 'general', model: x.model, total: typeof x.tokens?.input === 'number' && typeof x.tokens.output === 'number' ? x.tokens.input + x.tokens.output : null })) };
 }
 export function foldEpisode(l: Ledger, plan: Plan, raw: RunView, events: Parameters<typeof etaInput>[2], asks: Asks, now: number, prior?: Prior): Episode {
   const run = etaInput(l, raw, events).run, ownAsks = Object.fromEntries(Object.entries(asks).filter(([k]) => k.startsWith(`${l.run_id}:`))), rows = evidenceRows(l, run), reasons = [...new Set([...rowReasons(rows), ...(l.reason ? [l.reason] : []), ...(l.dispositions ?? []).flatMap(d => ['recover', 'adopt', 'owner_lost'].includes(d.reason) ? [] : [holdReason(d.reason)]), ...[run.terminal_record?.error, run.metadata?.error, ...(run.nodes ?? []).map(n => n.error)].flatMap(text => text ? [failureReason(text)] : [])])];
@@ -117,8 +129,8 @@ export function foldEpisode(l: Ledger, plan: Plan, raw: RunView, events: Paramet
   const repeated = (l.auto_retries ?? []).some((r, i, all) => r.deterministic && all.slice(0, i).some(old => old.reason === r.reason && old.engine_hash === r.engine_hash));
   if (c.state === 'held:engine_suspect' || repeated) reasons.push('engine_suspect');
   const duration_ms = Math.max(0, Date.parse(run.completed_at ?? new Date(now).toISOString()) - Date.parse(run.started_at ?? l.started_at));
-  const acceptance = plan.packages.flatMap(p => { const check = rows.find(r => r.file === `settle-${p.id}.json`) ?? rows.find(r => r.file === `verify-${p.id}.json`); return p.accept.map(a => ({ cmd: redact(a.cmd).slice(0, 240), ok: check ? check.data.ok === true && !(check.data.failed as string[] | undefined)?.includes(a.cmd) : null })); });
-  const findings = rows.flatMap(r => Array.isArray(r.data.findings) ? (r.data.findings as { id: string; severity: string; file: string; line: number; status: string; evidence: string }[]).map(f => redact(`| ${f.id} | ${f.severity} | ${f.file}:${String(f.line)} | ${f.status} | ${f.evidence} |`).slice(0, 800)) : []);
+  const acceptance = plan.packages.flatMap(p => { const check = rows.find(r => r.file === `settle-${p.id}.json`) ?? rows.find(r => r.file === `verify-${p.id}.json`); return p.accept.map(a => ({ cmd: redact(a.cmd).slice(0, 240), ok: check ? check.data.ok === true && !check.data.failed?.includes(a.cmd) : null })); });
+  const findings = rows.flatMap(r => (r.data.findings ?? []).map(f => `| ${f.id} | ${f.severity} | ${f.status} |`));
   let diff: Episode['diff'] = null;
   if (run.working_path && !privateProject(plan.repo)) { const d = Bun.spawnSync(['git', '-C', run.working_path, 'diff', '--numstat', plan.base_ref, 'HEAD'], { stdout: 'pipe', stderr: 'ignore', timeout: 5000 }); if (d.exitCode === 0) { const stats = d.stdout.toString().trim().split('\n').filter(Boolean).map(s => s.split('\t')); diff = { files: stats.length, added: stats.reduce((n, s) => n + (Number(s[0]) || 0), 0), removed: stats.reduce((n, s) => n + (Number(s[1]) || 0), 0) }; } }
   const decision = diagnosis({ reasons, signals, status: run.status, acceptance, dispositions: l.dispositions, p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null, coder_error: rows.some(r => !!r.data.error_class || r.data.self_report_conflict === true) || files(artifactsOf(run)).filter(f => f.endsWith('.coder.json')).some(f => !!memoryJson<{ error_class?: string | null }>(join(artifactsOf(run), f), {}, l).error_class) }, repeated);
@@ -172,7 +184,7 @@ export function lintPlan(plan: Plan, override?: string, now = Date.now()): { war
   return { warnings, rejected: rejected && !override?.trim(), ...(override?.trim() ? { override: redact(override).slice(0, 240) } : {}) };
 }
 export const reflectionLimit = (): number => z.number().int().nonnegative().parse(memoryJson<{ daily_tokens?: number }>(join(root(), 'config.json'), {}).daily_tokens ?? 5000000);
-export function memoryData(now = Date.now()): { lessons: Lesson[]; all: (Episode & { result: string })[]; hits: Record<string, number>; scored: number; hitRuns: number; states: Record<Lesson['status'], number>; categories: Record<Category, number>; reflection: { day: string; tokens: number; limit: number; yellow: boolean }; queued: number; recent: (Episode & { result: string })[] } {
+export function memoryData(now = Date.now()): { deliveries: Record<string, Delivery>; lessons: Lesson[]; all: (Episode & { result: string })[]; hits: Record<string, number>; scored: number; hitRuns: number; states: Record<Lesson['status'], number>; categories: Record<Category, number>; reflection: { day: string; tokens: number; limit: number; yellow: boolean }; queued: number; recent: (Episode & { result: string })[] } {
   const s = memoryState(), all = episodes(), day = new Date(now).toLocaleDateString('sv-SE'), tokens = s.entries.filter(e => e.day === day).reduce((n, e) => n + (e.tokens ?? 0), 0), done = new Map(s.entries.filter(e => e.reflected).map(e => [e.reflected, e.result ?? '未提炼']));
   const queue = all.filter(e => !done.has(e.id) && !['engine', 'transient'].includes(e.category) && !privateProject(e.project) && (!e.fake || !!process.env.SUPERAGENT_REFLECT_CMD));
   const categories: Record<Category, number> = { engine: 0, plan: 0, project: 0, role: 0, transient: 0 }; for (const e of all) categories[e.category]++;
@@ -188,15 +200,20 @@ export function memoryData(now = Date.now()): { lessons: Lesson[]; all: (Episode
     }
     if (entry.scored) { scored++; if (hit) hitRuns++; }
   }
-  return { lessons: s.lessons, all: history, hits, scored, hitRuns, categories, states: Object.fromEntries(['trial', 'stable', 'retired', 'mechanized'].map(status => [status, s.lessons.filter(l => l.status === status).length])) as Record<Lesson['status'], number>, reflection: { day, tokens, limit: reflectionLimit(), yellow: tokens >= reflectionLimit() || queue.length > 0 && tokens + 9216 > reflectionLimit() }, queued: queue.length, recent: history.slice(0, 10) };
+  const deliveries = memoryJson<FoldIndex | null>(join(root(), 'fold-index.json'), null)?.deliveries ?? {};
+  return { deliveries, lessons: s.lessons, all: history, hits, scored, hitRuns, categories, states: Object.fromEntries(['trial', 'stable', 'retired', 'mechanized'].map(status => [status, s.lessons.filter(l => l.status === status).length])) as Record<Lesson['status'], number>, reflection: { day, tokens, limit: reflectionLimit(), yellow: tokens >= reflectionLimit() || queue.length > 0 && tokens + 9216 > reflectionLimit() }, queued: queue.length, recent: history.slice(0, 10) };
 }
 interface LiveFold { stamp: string; episode: Episode; hold?: string; since: string; prior_ms: number }
-interface FoldIndex { live?: Partial<Record<string, LiveFold>>; day: string; terminal: Record<string, string>; samples: Record<string, { key: string; duration: number; tokens: number | null }[]> }
+export interface Delivery { status: string; packages: number; tokens: number | null }
+interface FoldIndex { version?: number; deliveries?: Record<string, Delivery>; live?: Partial<Record<string, LiveFold>>; day: string; terminal: Record<string, string>; samples: Record<string, { key: string; duration: number; tokens: number | null }[]> }
 export function memoryTick(asks: Asks, now = Date.now(), kick = true, dryRun = false): { categories: Record<Category, number>; episodes: Episode[]; errors: { id: string; reason: string }[] } {
   const result = { categories: { engine: 0, plan: 0, project: 0, role: 0, transient: 0 }, episodes: [] as Episode[], errors: [] as { id: string; reason: string }[] };
   if (!memoryOn() && !dryRun) return result;
   const day = new Date(now).toLocaleDateString('sv-SE'), indexFile = join(root(), 'fold-index.json');
   const index = dryRun ? { day: '', terminal: {}, samples: {} } as FoldIndex : memoryJson<FoldIndex>(indexFile, { day: '', terminal: {}, samples: {} });
+  // Rebuild old total-token priors and backfill all terminal runs once.
+  if (index.version !== 2) { index.terminal = {}; index.samples = {}; index.day = ''; index.version = 2; }
+  const deliveries = index.deliveries ??= {};
   const live = index.live ??= {}; const reused: { l: Ledger; cache: LiveFold }[] = []; let changed = index.day !== day;
   const error = (id: string, e: unknown): void => { const reason = e instanceof SyntaxError ? 'invalid_json' : e instanceof Error && e.message.includes('路径越界') ? 'path_outside' : (e instanceof Error ? (e as NodeJS.ErrnoException).code : undefined) ?? 'fold_failed'; result.errors.push({ id, reason }); if (!dryRun) { mkdirSync(root(), { recursive: true }); appendFileSync(join(root(), 'errors.jsonl'), JSON.stringify({ id, reason }) + '\n'); } };
   const emit = (e: Episode): void => { result.episodes.push(e); result.categories[e.category]++; if (!dryRun) saveEpisode(e); };
@@ -213,9 +230,10 @@ export function memoryTick(asks: Asks, now = Date.now(), kick = true, dryRun = f
       if (!Array.isArray(raw.events)) throw new Error('events missing');
       const events = raw.events, run = etaInput(l, raw, events).run, stats = runUsage(l, plan, events); observed.push({ l, plan, raw: run, events, stats, stamp, revision });
       if (['completed', 'failed', 'cancelled'].includes(run.status)) {
-        const previous = JSON.stringify(index.samples[id]); index.samples[id] = plan.packages.flatMap(p => { const calls = stats.calls.filter(c => c.node === `code-${p.id}` || c.node === `repair-${p.id}`), totals = plan.packages.length === 1 ? stats.tokens.map(t => t.total) : calls.map(c => c.tokens ? Object.values(c.tokens).reduce((a, b) => a + b, 0) : null);
+        deliveries[id] = { status: run.status, packages: plan.packages.length, tokens: stats.tokens.length && stats.tokens.every(t => t.total !== null) ? stats.tokens.reduce((n, t) => n + (t.total ?? 0), 0) : null };
+        const previous = JSON.stringify(index.samples[id]); index.samples[id] = plan.packages.flatMap(p => { const calls = stats.calls.filter(c => c.node === `code-${p.id}` || c.node === `repair-${p.id}`), budgetEvents = plan.packages.length === 1 ? events : events.filter(e => e.step_name === `code-${p.id}` || e.step_name === `repair-${p.id}`), weighted = budgetUsage(budgetEvents as Parameters<typeof budgetUsage>[0], loadTiers().policy.budget_floor.S);
           const duration = plan.packages.length === 1 ? Date.parse(run.completed_at ?? '') - Date.parse(run.started_at ?? l.started_at) : calls.every(c => c.exec_ms !== null) ? calls.reduce((n, c) => n + (c.exec_ms ?? 0), 0) : 0;
-          return ['completed', 'failed'].includes(run.status) && Number.isFinite(duration) && duration > 0 ? [{ key: priorKey(plan.repo, p, stats.model), duration, tokens: totals.length && totals.every(t => t !== null) ? totals.reduce<number>((n, t) => n + t, 0) : null }] : []; }); changed ||= previous !== JSON.stringify(index.samples[id]);
+          return ['completed', 'failed'].includes(run.status) && Number.isFinite(duration) && duration > 0 ? [{ key: priorKey(plan.repo, p, stats.model), duration, tokens: budgetEvents.some(e => ['node_completed', 'node_failed'].includes(e.event_type) && /^(code|repair|fix|review)-/.test(e.step_name ?? '') && (e.data as Parameters<typeof budgetUsage>[0][number]['data'])?.spend?.tokens?.source === 'provider') ? weighted.weighted_tokens : null }] : []; }); changed ||= previous !== JSON.stringify(index.samples[id]);
       }
     } catch (e) { error(id, e); }
     const priorOf = (ss: { duration: number; tokens: number | null }[]): Prior => { const totals = ss.flatMap(v => v.tokens === null ? [] : [v.tokens]); return { n: ss.length, duration: quantiles(ss.map(v => v.duration)), tokens: { n: totals.length, ...quantiles(totals) } }; };
@@ -229,7 +247,7 @@ export function memoryTick(asks: Asks, now = Date.now(), kick = true, dryRun = f
     for (const { l, plan, raw, events, stats, stamp, revision } of observed) try {
       const prior = priorOf(Object.entries(index.samples).filter(([id]) => id !== l.run_id).flatMap(([, ss]) => ss).filter(s => s.key === priorKey(plan.repo, plan.packages[0], stats.model))), e = foldEpisode(l, plan, raw, events, asks, now, prior), etaMs = (eta?.[l.run_id]?.weight ?? 0) * 1000;
       const heldSince = raw.status === 'paused' ? raw.metadata?.wait?.waitingSince ?? raw.last_activity_at ?? l.started_at : undefined;
-      if (triggered(e, heldSince, etaMs, now)) { if (e.category === 'engine' && e.signature === 'evidence_missing' && etaMs > 0 && e.duration_ms > etaMs * 1.5) Object.assign(e, diagnosis({ ...e, overrun: true })); emit(e); }
+      if (triggered(e, heldSince, etaMs, now) || existsSync(join(root(), 'episodes', `${e.id}.json`))) { if (e.category === 'engine' && e.signature === 'evidence_missing' && etaMs > 0 && e.duration_ms > etaMs * 1.5) Object.assign(e, diagnosis({ ...e, overrun: true })); emit(e); }
       if (['completed', 'failed', 'cancelled'].includes(raw.status)) {
         if (!dryRun) maintainLessons({ id: l.run_id, reasons: e.reasons, failed: raw.status === 'failed', ids: Object.values(memoryJson<{ lessons?: Record<string, string[]> }>(join(l.gen_dir, 'engine.json'), {}, l).lessons ?? {}).flat() }, now);
         index.terminal[l.run_id] = stamp; live[l.run_id] = undefined;

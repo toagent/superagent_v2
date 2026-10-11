@@ -11,7 +11,7 @@ import { fmtTokens, requestUsageRefresh } from '../usage';
 import { cockpit } from '../board/cockpit';
 import { parseArgs } from '../cli';
 import { homedir } from 'node:os';
-import { memoryJson, type Episode } from '../memory';
+import { episodeOf } from '../memory';
 import { memoryOverview, memoryPanel } from './memory';
 
 interface LegacyWebState { port: number; pid: number; token: string; started_at: string; uid?: number; server_pid?: number; internal_port?: number }
@@ -99,7 +99,7 @@ export function handler(port: number, token: string, get: () => Record<string, u
     if (url.pathname === '/sa/memory') { try { const all = url.searchParams.get('filter') === 'all'; return respond(memoryPanel(memoryOverview(snapshot(), undefined, all), all), 200, 'text/html'); } catch { return respond('Memory unavailable', 503); } }
     if (url.pathname === '/sa/memory/episode') {
       const id = url.searchParams.get('id') ?? ''; if (!/^[a-zA-Z0-9_-]+$/.test(id)) return respond('Not Found', 404);
-      try { const e = memoryJson<Episode | null>(join(home().sa, 'memory/episodes', id + '.json'), null); return e ? respond(JSON.stringify(e, null, 2), 200, 'application/json') : respond('Not Found', 404); } catch { return respond('Not Found', 404); }
+      try { const e = episodeOf(id); return e ? respond(JSON.stringify(e, null, 2), 200, 'application/json') : respond('Not Found', 404); } catch { return respond('Not Found', 404); }
     }
     if (url.pathname === '/sa/data') return respond(JSON.stringify(get()), 200, 'application/json');
     if (url.pathname === '/api/overview') return respond('Not Found', 404);

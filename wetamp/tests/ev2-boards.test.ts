@@ -54,6 +54,7 @@ function setupMemory() {
   mkdirSync(join(root, 'memory/episodes'), { recursive: true });
   const episodes: Episode[] = ['failed', 'paused', 'completed', 'completed'].map((status, i) => ({ id: ['failure', 'held', 'long', 'complete'][i], at: iso(-i * 60), source: 'run', status, project: '/repo/demo', tag: 'ts-cli', risk: 'G1', size: 'S', model: 'gpt-6.1-sol', fake: false, packages: [{ id: 'p', tag: 'ts-cli', risk: 'G1', size: 'S' }], duration_ms: i === 2 ? 240000 : 60000, p50_ratio: i === 2 ? 4 : 1, reasons: i === 0 ? ['review_failed'] : [], category: 'project', signature: 'review_failed', fingerprint: null, incidents: [], timeline: [], acceptance: [], findings: i === 0 ? ['high:missing'] : [], diff: null, tokens: [{ role: 'general', model: 'gpt-6.1-sol', total: (i + 1) * 100 }], asks: [], dispositions: i === 1 ? [{ at, action: 'ask', reason: 'budget', ok: true }] : [], signals: { engine_suspect: 0, dup_ask: 0, orphan_hold: 0, stale_answer: 0 } }));
   episodes.forEach(e => writeFileSync(join(root, 'memory/episodes', e.id + '.json'), JSON.stringify(e)));
+  writeFileSync(join(root, 'memory/fold-index.json'), JSON.stringify({ deliveries: Object.fromEntries(episodes.filter(e => ['completed', 'failed', 'cancelled'].includes(e.status)).map(e => [e.id, { status: e.status, packages: e.packages.length, tokens: e.tokens[0].total }])) }));
   const lessons: Lesson[] = ['trial', 'stable', 'retired', 'mechanized'].map((status, i) => ({ id: `l${String(i)}`, tier: 'project', scope: '/repo/demo', tag: 'ts-cli', when: '启动前', do: `确认条件${String(i)}`, dont: '', why: '已验证', evidence: [episodes[i].id], mechanizable: false, category: 'project', reasons: ['review_failed'], status: status as Lesson['status'], helpful: i === 1 ? 3 : 0, harmful: i === 2 ? 1 : 0, created_at: iso(-86400), last_hit: at }));
   const entries = [{ lessons, day: '2026-10-10', tokens: 5000000 }, { lessons: [], reflected: 'failure', result: '提炼 1 条' }, { lessons: [], scored: 'complete', hit_ids: ['l1'] }, { lessons: [], scored: 'long', hit_ids: [] }];
   writeFileSync(join(root, 'memory/lessons.jsonl'), entries.map(e => JSON.stringify(e)).join('\n') + '\n');
@@ -72,7 +73,7 @@ test('week recurrence keys require both project and reason; empty samples stay u
   const { s } = setupMemory(), d = memoryData(ms), first = d.all[0];
   d.all = [{ ...first, id: 'old', at: iso(-8 * 86400) }, { ...first, id: 'new', at: iso(-86400) }, { ...first, id: 'other', project: '/repo/other', at: at }];
   expect(memoryOverview(s, d).metrics['同类失败复发率（近7天 / 前7天）']).toBe('50% / 0%');
-  d.all = []; expect(memoryOverview(s, d).metrics['每个交付包 token']).toBe('—');
+  d.all = []; d.deliveries = {}; expect(memoryOverview(s, d).metrics['每个交付包 token']).toBe('—');
 });
 test('history and episode routes are authenticated, read-only and confined with no writes', async () => {
   const { root, s } = setupMemory(), file = join(root, 'memory/lessons.jsonl'), before = readFileSync(file, 'utf8');
@@ -94,4 +95,21 @@ test('history excludes short running episodes, escapes text, and keeps missing t
   const d = memoryOverview(s, data, true), missing = d.rows.find(r => r.id === 'short-running')!;
   expect(missing.tokenText).toBe('—'); missing.title = '<script>private</script>';
   const page = memoryPanel(d, true); expect(page).not.toContain('<script>private'); expect(page).toContain('&lt;script&gt;private');
+});
+
+test('EV-R1-06 delivery token metric includes ordinary terminal runs without episodes', () => {
+  const { root, s } = setupMemory();
+  writeFileSync(join(root, 'memory/fold-index.json'), JSON.stringify({ deliveries: { failure: { status: 'failed', packages: 1, tokens: 100 }, long: { status: 'completed', packages: 1, tokens: 300 }, complete: { status: 'completed', packages: 1, tokens: 400 }, ordinary: { status: 'completed', packages: 2, tokens: 1200 }, unknown: { status: 'cancelled', packages: 1, tokens: null } } }));
+  const data = memoryData(ms); expect(data.all.some(e => e.id === 'ordinary')).toBe(false);
+  expect(memoryOverview(s, data).metrics['每个交付包 token']).toBe('400');
+});
+
+test('EV-R1-04 episode JSON route reads current projection and keeps first archive', async () => {
+  const { root, s } = setupMemory(); mkdirSync(join(root, 'memory/projections'));
+  const before = readFileSync(join(root, 'memory/episodes/held.json'), 'utf8');
+  writeFileSync(join(root, 'memory/projections/held.json'), JSON.stringify({ ...JSON.parse(before), status: 'failed', category: 'engine', signature: 'engine_suspect' }));
+  const h = handler(39900, 'fixture-auth', () => ({}), 'http://localhost', fetch, undefined, () => s);
+  const response = await h(new Request('http://127.0.0.1:39900/sa/memory/episode?id=held', { headers: { host: '127.0.0.1:39900', cookie: 'sa_web=fixture-auth' } }));
+  expect(await response.json()).toMatchObject({ status: 'failed', category: 'engine', signature: 'engine_suspect' });
+  expect(readFileSync(join(root, 'memory/episodes/held.json'), 'utf8')).toBe(before);
 });

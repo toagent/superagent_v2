@@ -2,16 +2,18 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from './archon';
+import { reasonOf } from './reasons';
 import { home, loadTiers, WETAMP } from './config';
 import { z, episodes, lessonSchema, memoryData, memoryJson, memoryLog, maintainLessons, memoryOn, memoryState, memoryWrite, privateProject, selectLessons, type Episode, type Lesson } from './memory';
 
 const operation = z.discriminatedUnion('op', [z.object({ op: z.literal('ADD'), lesson: lessonSchema }).strict(), z.object({ op: z.literal('EDIT'), id: z.string().max(240), lesson: lessonSchema }).strict(), z.object({ op: z.literal('UPVOTE'), id: z.string().max(240) }).strict()]);
 const resultSchema = z.object({ operations: z.array(z.unknown()).max(3), reason: z.string().max(240).optional() }).strict();
 export function reflectionInput(e: Episode): string {
-  const episode = structuredClone(e), lessons = selectLessons(e.project, e.tag, e.tokens.find(t => t.role)?.role ?? (e.category === 'role' ? 'general' : undefined)).slice(0, 30).map(l => ({ id: l.id, when: l.when, do: l.do, dont: l.dont }));
+  // Only metadata crosses the model boundary, including for legacy episodes containing evidence.
+  const episode = { id: e.id, project: e.project, tag: e.tag, risk: e.risk, size: e.size, status: e.status, category: e.category, reasons: e.reasons.filter(r => !!reasonOf(r)), duration_ms: e.duration_ms, p50_ratio: e.p50_ratio, signals: { engine_suspect: e.signals.engine_suspect, dup_ask: e.signals.dup_ask, orphan_hold: e.signals.orphan_hold, stale_answer: e.signals.stale_answer }, acceptance: { total: e.acceptance.length, passed: e.acceptance.filter(a => a.ok === true).length }, findings: { total: e.findings.length }, tokens: e.tokens.map(t => ({ role: ['general', 'strategist', 'commander'].includes(t.role ?? '') ? t.role : null, total: t.total })) }, lessons = selectLessons(e.project, e.tag, e.tokens.find(t => t.role)?.role ?? (e.category === 'role' ? 'general' : undefined)).slice(0, 30).map(l => ({ id: l.id, when: l.when, do: l.do, dont: l.dont }));
   const template = readFileSync(join(WETAMP, 'templates', 'memory-reflect.md'), 'utf8');
   const input = (): string => template + '\n' + JSON.stringify({ episode, lessons });
-  while (Buffer.byteLength(input()) > 8000) { if (lessons.length) lessons.pop(); else { const rows = [episode.timeline, episode.findings, episode.acceptance, episode.dispositions, episode.asks, episode.tokens].sort((a, b) => b.length - a.length); if (!rows[0].length) throw new Error('reflection metadata exceeds input budget'); rows[0].pop(); } }
+  while (Buffer.byteLength(input()) > 8000) { if (lessons.length) lessons.pop(); else if (episode.tokens.length) episode.tokens.pop(); else throw new Error('reflection metadata exceeds input budget'); }
   return input();
 }
 export function curate(e: Episode, output: unknown, now: number): { lessons: Lesson[]; result: string } {

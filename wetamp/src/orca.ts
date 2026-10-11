@@ -28,7 +28,7 @@ export function orcaView(c: Cockpit): OrcaView {
     ...(kept < parts.length ? [`…+${String(parts.length - kept)}`] : [])].join('｜');
   while (comment().length > 200 && kept > 0) kept--;
   return {
-    status: c.needs.length ? 'in-review' : c.active.length ? 'in-progress' : 'completed',
+    status: c.needs.length ? 'in-review' : c.unfinished || c.active.length ? 'in-progress' : 'completed',
     comment: comment(),
     needs: [...new Set(c.needs.map(r => JSON.stringify([r.id, reason(r.reason || (r.state === 'held:human' ? 'signoff' : ''))])))].sort(),
   };

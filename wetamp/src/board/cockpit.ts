@@ -32,7 +32,7 @@ export interface CockpitRun {
 }
 export interface Cockpit {
   tree: (CockpitRun & { children: { id: string; role: string; progress: Progress }[] })[];
-  zombies: number; reflection: Snapshot['reflection'];
+  unfinished: number; zombies: number; reflection: Snapshot['reflection'];
   tokenRows: { role: string; total: number; models: Record<string, number> }[] | null;
   metrics: { completed: number; decided: number; firstPass: number; asks: number; debt: number };
   tokens: string; roleTokens: string[]; needs: CockpitRun[]; active: CockpitRun[]; runs: CockpitRun[];
@@ -98,6 +98,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     tokenRows: known && todaySessions ? tokenRows.sort((a, b) => b.total - a.total) : null,
     metrics: { completed: achieved.length, decided: ended.length, firstPass: achieved.filter(r => r.engine?.firstPass).length, asks: s.rows.reduce((n, r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(Date.parse(d.at))).length ?? 0), 0), debt: typeof s.summary.debt === 'number' ? s.summary.debt : 0 },
     tokens: known ? fmtTokens(daily.reduce((n, d) => n + d.total, 0)) : '未知', roleTokens: byRole.size ? [...byRole].sort(([a], [b]) => Number(a.startsWith('未归属')) - Number(b.startsWith('未归属'))).map(([k, v]) => `${k} ${fmtTokens(v)}`) : ['角色今日用量未知'],
+    unfinished: s.rows.filter(r => !['completed', 'failed', 'cancelled'].includes(r.state) || r.nativeState !== undefined && !['completed', 'failed', 'cancelled'].includes(r.nativeState)).length + (s.activity?.jobs.filter(j => !['done', 'failed', 'cancelled', 'lost'].includes(j.state)).length ?? 0),
     tree, zombies, reflection: s.reflection, needs,
     active,
     runs: s.rows.map(r => project(r)),

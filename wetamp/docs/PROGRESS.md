@@ -727,3 +727,20 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **完整验收**：同一隔离 home `/tmp/b1-ev-accept.bDAu0q` 下，`bunx tsc --noEmit && timeout 900 bun test` 最终 exit 0，1017 pass / 0 fail / 6 snapshots，32 文件、424.49s（`full-final.log`）；`bunx eslint src` exit 0（`lint-final.log`），暂存 diff --check exit 0。首次完整测试 1015 pass / 2 fail，两项仅默认 5000ms 超时：S4 registry mirror 与 CLI budget yes；原代码单跑 2 pass / 0 fail（`timeout-recheck.log`），再整套重跑全绿，未增加单测超时。记忆与 ORCA 定向 47 pass / 0 fail（`focused-final.log`）。
 - **fake 自检与提交后闸门**：串行 `bash scripts/selftest.sh --fake` exit 0，`selftest-fake.json` 的 ok=true / fake=true（`selftest.log`），回执绑定提交前 HEAD；fake 回执不冒充真实 provider 校准。提交后在同一调用方临时 home 执行 `bash scripts/verify-local.sh --commit HEAD --timeout 900`，其最终结果以绑定提交的 `verify.json` 与 `verify-local.log` 为准；脚本只操作自建隔离副本，未亲手清理 worktree。独立评审与主控验收留给批次集成。
 - **提交后负载修正**：首个合并提交 `98c1c61d` 的 verify-local 为 1016 pass / 1 fail（472.71s），唯一失败仍是预算/评审组合测试的 5000ms 超时，发生在第三次 sa-check 子进程，exitCode=null。该测试原来四次初始化并 clone 独立 git 仓库，再校验无关评审恢复；单跑和一次整套通过未证明负载下稳定。预算校验复用同一干净仓库，评审计数另列独立测试，所有行为断言和默认超时不变。修正后定向 2 pass / 0 fail，预算 1506.69ms、评审 393.87ms（`budget-focused.log`）；新 HEAD 的 verify-local 从冻结安装起完整重跑，保留首轮失败日志，不改失败缓存。
+
+
+## B1-FIXD：EV R1 返修（2026-10-11）
+
+问题与被推翻的假设：有限正则脱敏不能证明云端输入不含隐私；活性列表为空不代表引擎完成；首次摘要幂等不代表终态永久不变；合法 gate 空评审产物也不能当判定对象读取。强化 I1/I5/I6/I7，按实际生产者与消费边界分别修复。
+
+- EV-R1-01：折叠 finding 只保留 id/severity/status；云端反思只收到显式元数据白名单和已有经验，不发送命令、finding 原文、路径/行号证据、timeline 或 dispositions 正文。旧 episode 即使含原文，边界同样丢弃；新增嵌套 finding evidence、客户资料、日志、命令及旧 evidence 的 fake 输入回归。模板同步说明元数据契约。
+- EV-R1-02：cockpit 分开提供 `unfinished` 与小看板活性树；Orca 只有真实终态且无待答问题时才 completed。无事件的 running、queued、owner unknown、治理层挂起均保留 unfinished；小树的十分钟活性过滤不变。回归包含活性到期、queued 和 unknown。
+- EV-R1-03：读取判定对象时验证消费字段形状；只有 `*.review.json` 允许 null，其余 null/array 拒绝并按 run 隔离。测试实际运行 gate 生成 null review、decision 和 ledger，随后走完整 tick→archive→memoryData；另测 null/array decision 被拒。
+- EV-R1-04：`episodes/<id>.json` 保留首次摘要；`projections/<id>.json` 独立更新最新状态与证据，CLI、反思队列、Web 历史及单 episode JSON 共用投影读取。mechanize 在首次摘要存在时仍独立执行，按签名/episode 去重。回放 paused→failed + engine_suspect，断言旧摘要未改、当前状态已更新、机制化需求存在、反思出队。
+- EV-R1-05/06：总 token 展示为 input+output，cacheRead 不再重复相加；预算先验从 `budgetUsage()` 所有者计算，完全无回执保持未知。fold-index v2 一次重建旧总量先验并回填全部终态 run 的交付包数/总 token（包括正常无 episode 的 run），大看板指标只取此完整终态投影，回填前保持未知，不能回退到异常 episode 子样本。缓存高占比五样本回归为 input=100/cacheRead=90/output=10，总量110、weighted p50=20，预算50不误拒；正常 completed 零 episode 仍纳入指标。
+
+旧 run/生产影响：首次摘要文件和旧 lessons 保留，第一次 tick 会只读重查历史终态以重建上述本地派生缓存；未修改 Archon、hooks 或运行中 workflow。全部写入限 Superagent 自有 memory 目录，本包自检只用 scratch home、fake 模型和临时仓库，未操作生产。
+
+遗留债 EV-R1-07（medium，未闭合）：原生 Codex exec 未提供本包可依赖的整次上下文/工具回合 token 硬边界，`model_max_output_tokens=1024` 不能证明总用量≤9216；禁改 packages、禁新增配置且不能伪称事后记账为硬上限。新增 fake usage 超预留回归，明确证实实际11024被全额记账且下一次调用被拦，但当前调用仍可越过日上限9216。需要主控裁决采用提供硬上界的单次 provider 调用契约或禁用无上界的反思通道；本包不宣称 G2 已通过。
+
+编码自检：`bunx tsc --noEmit`、`bunx eslint src` 均 exit 0；四文件定向88 pass/0 fail/3 snapshots（`/tmp/fixd-focused-final.log`），`timeout 900 bun test` 全套1026 pass/0 fail/6 snapshots、32文件、501.13s（`/tmp/fixd-full.log`）。同一隔离 home `/tmp/fixd-home.y8xY4U` 的 `selftest.sh --fake` exit 0、receipt ok=true；提交后 `verify-local.sh --commit HEAD --timeout 900` 的结果以该 home 中绑定提交的 `verify.json` 为准。src净增20行，未修改packages/hooks，不做独立评审或主控集成验收。
