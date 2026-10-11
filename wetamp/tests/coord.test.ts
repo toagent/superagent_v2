@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createRequire } from 'node:module';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Coordination, ACK_TIMEOUT_MS, caller, cleanEngine, repoScope, presence, escalationTitle, type Identity, type Message, type Presence } from '../src/coord';
@@ -242,7 +242,13 @@ function isolated(s: ReturnType<typeof setup>): void {
 }
 test('R1-01/06: actual hook rejects cd and nested-shell writes; absolute git status stays open', async () => {
   const s = setup(), other = gitRepo(tmp()); s.c.claim(s.scope, a);
-  const commands = [`cd '${s.repo}' && echo x > tracked.txt`, `bash -c "cd '${s.repo}' && echo x > tracked.txt"`, `/usr/bin/git -C '${s.repo}' status`];
+  mkdirSync(join(s.repo, 'owned path'));
+  symlinkSync(join(s.repo, 'owned path'), join(other, 'link'));
+  const commands = [`cd '${s.repo}' && echo x > tracked.txt`, `bash -c "cd '${s.repo}' && echo x > tracked.txt"`,
+    `cd -- '${s.repo}' && echo x > tracked.txt`, `cd -P '${s.repo}' && echo x > tracked.txt`,
+    `cd -L -- '${s.repo}' && echo x > tracked.txt`, `pushd '${s.repo}' && echo x > tracked.txt`,
+    `(cd -- '${s.repo}' && echo x > tracked.txt)`, `cd -- '${s.repo}/owned path' && echo x > tracked.txt`,
+    `cd -P link/.. && echo x > tracked.txt`, `/usr/bin/git -C '${s.repo}' status`];
   for (const [i, command] of commands.entries()) {
     const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
       cwd: other, env: { ...process.env, SUPERAGENT_HOME: s.sa, ARCHON_HOME: join(s.sa, 'archon'), SUPERAGENT_ROLE: '', SUPERAGENT_ALLOW_COMMANDER_WRITE: '1' },
@@ -250,9 +256,65 @@ test('R1-01/06: actual hook rejects cd and nested-shell writes; absolute git sta
     });
     p.stdin.write(JSON.stringify({ session_id: 'foreign', cwd: other, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } })); p.stdin.end();
     const out = await new Response(p.stdout).text(); expect(await p.exited).toBe(0);
-    if (i < 2) expect(out).toContain('已拒绝'); else expect(out).not.toContain('deny');
+    if (i < commands.length - 1) expect(out).toContain('已拒绝'); else expect(out).not.toContain('deny');
   }
 });
+test('R2-01: redline shares directory transitions and subshells keep the parent cwd', async () => {
+  const s = setup(), other = gitRepo(tmp());
+  const secret = join(s.root, '.ssh'); mkdirSync(secret);
+  writeFileSync(join(secret, 'id_ed25519'), 'synthetic fixture');
+  for (const command of [`cd -- '${secret}' && cat id_ed25519`, `cd -P '${secret}' && cat id_ed25519`,
+    `pushd '${secret}' && cat id_ed25519`, `(cd -L '${secret}' && cat id_ed25519)`]) {
+    const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
+      cwd: s.repo, env: { ...process.env, HOME: s.root, SUPERAGENT_HOME: s.sa, SUPERAGENT_ROLE: 'general' },
+      stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+    });
+    p.stdin.write(JSON.stringify({ cwd: s.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } })); p.stdin.end();
+    expect(await new Response(p.stdout).text()).toContain('deny'); expect(await p.exited).toBe(0);
+  }
+  s.c.claim(repoScope(other), a);
+  await req('../hooks/shell-ast.cjs').init();
+  expect(hooks.writeReason({ cwd: s.repo, tool_name: 'Bash', tool_input: {} }, 'claude', { SUPERAGENT_HOME: s.sa },
+    `(cd -- '${other}' && pwd); echo x > local.txt`, () => true)).toBeNull();
+});
+test('R2-02: ledger, Archon and short IDs reject before recovering a dead executor or other mutations', async () => {
+  const s = setup(); isolated(s); const actor = caller();
+  const l = registered(s, s.c.claim(s.scope, actor).controller);
+  s.c.claim({ kind: 'run', id: l.run_id, repo: s.scope.id }, b, true, 'run taken over');
+  const { Database } = await import('bun:sqlite');
+  mkdirSync(process.env.ARCHON_HOME!, { recursive: true });
+  const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
+  const metadata = { execution_owner: { host: hostname(), pid: 99999999 } };
+  db.run('create table remote_agent_workflow_runs (id text primary key, status text, metadata text)');
+  db.run('insert into remote_agent_workflow_runs values (?, ?, ?)', [l.archon_run_id, 'running', JSON.stringify(metadata)]);
+  const calls = join(s.root, 'mutations'), stub = join(s.root, 'engine');
+  const run = { id: l.archon_run_id, status: 'running', working_path: s.repo, metadata };
+  writeFileSync(stub, `#!/usr/bin/env python3\nimport sys,json\nif sys.argv[1:3]==['workflow','get']: print(${JSON.stringify(JSON.stringify(run))})\nelse:\n open(${JSON.stringify(calls)},'a').write(json.dumps(sys.argv[1:])+'\\n')\n print('{"ok":true}')\n`);
+  chmodSync(stub, 0o755); process.env.SA_ARCHON_BIN = stub;
+  const before = readFileSync(join(s.sa, 'runs', l.run_id + '.json'), 'utf8');
+  try {
+    for (const verb of ['recover', 'resume', 'cancel', 'decide', 'land']) for (const id of [l.run_id, l.archon_run_id, 'archon']) {
+      expect(() => main([verb, id, 'retry'])).toThrow(/fencing/);
+      expect(db.query('select status from remote_agent_workflow_runs where id=?').get(l.archon_run_id)).toEqual({ status: 'running' });
+      expect(readFileSync(join(s.sa, 'runs', l.run_id + '.json'), 'utf8')).toBe(before);
+      expect(existsSync(calls)).toBe(false);
+    }
+  } finally { db.close(); }
+});
+test('R2-04: shim keeps run scope despite same-named directories, across two repositories and both IDs', async () => {
+  const s = setup(); isolated(s); const actor = caller(), other = gitRepo(tmp());
+  const first = registered(s, s.c.claim(s.scope, actor).controller);
+  const second = { ...first, run_id: 'ledger-other', archon_run_id: 'archon-other', repo: other };
+  s.c.claim(repoScope(other), actor);
+  writeFileSync(join(s.sa, 'runs', second.run_id + '.json'), JSON.stringify(second));
+  for (const l of [first, second]) s.c.claim({ kind: 'run', id: l.run_id, repo: repoScope(l.repo).id }, b, true, 'taken over');
+  for (const l of [first, second]) mkdirSync(join(s.repo, l.run_id));
+  const shim = join(import.meta.dir, '../bin/archon');
+  for (const l of [first, second]) for (const id of [l.run_id, l.archon_run_id]) {
+    const p = Bun.spawn([shim, 'workflow', 'approve', id, '--json'], { cwd: s.repo, env: process.env, stdout: 'pipe', stderr: 'pipe' });
+    expect(await new Response(p.stderr).text()).toContain('fencing'); expect(await p.exited).toBe(1);
+  }
+}, 15000);
 test('R1-02/03/04: both IDs and direct shim/hook reject a stale controller before any continuation', async () => {
   const s = setup(); isolated(s); const actor = caller();
   const l = registered(s, s.c.claim(s.scope, actor).controller);
@@ -333,11 +395,14 @@ test('R1-03/04: actual durable-wait database survives stale tick/shim, while a s
     db.query('update remote_agent_workflow_runs set metadata=? where id=?').run(JSON.stringify(metadata), ack.runId);
     writeFileSync(source, readFileSync(source, 'utf8').replace('attention: fixture', 'duration_ms: 1'));
     const scope = { kind: 'run' as const, id: l.run_id, repo: s.scope.id }; s.c.claim(scope, b, true, 'takeover');
+    mkdirSync(join(s.repo, l.run_id));
     const { spyOn } = await import('bun:test'), output = spyOn(console, 'log').mockImplementation(() => undefined);
     try { main(['supervise-tick']); expect(JSON.stringify(output.mock.calls)).toContain('fencing'); }
     finally { output.mockRestore(); }
-    const denied = Bun.spawn([shim, 'workflow', 'wake', ack.runId, '--json'], { cwd: s.repo, env: process.env, stdout: 'pipe', stderr: 'pipe' });
-    expect(await new Response(denied.stderr).text()).toContain('fencing'); expect(await denied.exited).toBe(1);
+    for (const id of [l.run_id, ack.runId, ack.runId.slice(0, 8)]) {
+      const denied = Bun.spawn([shim, 'workflow', 'wake', id, '--json'], { cwd: s.repo, env: process.env, stdout: 'pipe', stderr: 'pipe' });
+      expect(await new Response(denied.stderr).text()).toContain('fencing'); expect(await denied.exited).toBe(1);
+    }
     expect(db.query('select status from remote_agent_workflow_runs where id=?').get(ack.runId)).toMatchObject({ status: 'paused' });
     expect(existsSync(join(s.repo, 'resumed.txt'))).toBe(false);
     const singleton = req('../src/coord/index.ts') as typeof import('../src/coord'), native = await import('../src/archon');

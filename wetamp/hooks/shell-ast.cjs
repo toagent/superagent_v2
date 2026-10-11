@@ -1,7 +1,8 @@
 'use strict';
 const path = require('node:path');
+const {realpathSync} = require('node:fs');
 const {unwrap, SHELLS} = require('./shell.cjs');
-const SAFE = new Set(['cd','echo','printf','pwd','true','false','test','[',':','exit','break','continue','return']);
+const SAFE = new Set(['cd','pushd','echo','printf','pwd','true','false','test','[',':','exit','break','continue','return']);
 const NODES = new Set(['program','list','pipeline','command','command_name','word','string','string_content','raw_string','number','concatenation',
   'redirected_statement','file_redirect','file_descriptor','heredoc_redirect','heredoc_start','heredoc_body','heredoc_end',
   'for_statement','if_statement','elif_clause','else_clause','do_group','while_statement','variable_name','special_variable_name',
@@ -78,13 +79,27 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (v.endsWith('dir')) reject('find_execdir_cwd');
         execute(words.slice(offset + i + 1, offset + end), fork(state.dirs), true, depth);
       });
-      if (name === 'cd') {
+      if (name === 'cd' || name === 'pushd') {
         ctx.cd = true;
-        const target = argv[1] || env.HOME || require('node:os').homedir();
+        let at = 1, physical = false;
+        while (at < argv.length && argv[at].startsWith('-')) {
+          const flag = argv[at++];
+          if (flag === '--') break;
+          if (name !== 'cd' || !/^-[LP]+$/.test(flag)) reject('directory_options_or_stack');
+          physical = flag.endsWith('P');
+        }
+        if (argv.length - at > 1 || name === 'pushd' && at === argv.length) reject('directory_target_or_stack');
+        const target = argv[at] ?? env.HOME ?? require('node:os').homedir();
         if (compound) reject('compound_cd_scope');
-        if (argv.length > 2 || target === '-' || /[$`*?\[\]{}]/.test(expand(target)) ||
+        if (target === '-' || target === '' || /[$`*?\[\]{}]/.test(expand(target)) ||
             env.CDPATH !== undefined && !/^(?:\/|~\/)/.test(target)) reject('cd_target_or_CDPATH');
-        const next = state.dirs.map(dir => path.resolve(dir, expand(target)));
+        const next = state.dirs.flatMap(dir => {
+          const expanded = expand(target);
+          if (!physical) return [path.resolve(dir, expanded)];
+          // -P traverses symlinks before '..'; lexical normalization would inspect the wrong repository.
+          try { return [realpathSync.native(path.isAbsolute(expanded) ? expanded : dir + '/' + expanded)]; }
+          catch (error) { if (['ENOENT','ENOTDIR','EACCES'].includes(error.code)) return []; throw error; }
+        });
         outcome(state, next, incoming);
       } else outcome(state, incoming, incoming); // Unknown command status may take either short-circuit edge.
     }

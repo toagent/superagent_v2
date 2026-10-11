@@ -4,7 +4,7 @@ import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
 export type { Asks } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
-import { caller, cleanEngine, control, coord, repoScope, type Controller } from './coord';
+import { caller, cleanEngine, control, coord, repoScope, runScope, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
@@ -866,7 +866,7 @@ function brief(l: Ledger): number {
   const lines = [
     `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${l.branch}`,
   ];
-  const ownership = coord().owner(coord().scope(l.run_id));
+  const ownership = coord().owner(runScope(l));
   lines.push(`controller: ${JSON.stringify(ownership.owner)} ${ownership.presence.state}; inbox: ${String(coord().pending(ownership.scope))}`);
   const inbox = coord().inbox(caller(true));
   if (inbox.length) lines.push(`inbox: ${inbox.map(m => m.id).join(' ')}; superagent inbox`);
@@ -1670,7 +1670,18 @@ export function main(argv: string[]): number {
     return EXIT_USAGE;
   }
   const [verb, target] = a._;
-  const ledger = (): Ledger => loadLedger(coord().resolveRun(need(target, `${verb} <run>`))?.run_id ?? target);
+  const resolveTarget = (id: string): Ledger | RunView => {
+    const registered = coord().resolveRun(id);
+    if (registered) return loadLedger(registered.run_id);
+    const run = getRun(id), resolved = coord().resolveRun(run.id);
+    return resolved ? loadLedger(resolved.run_id) : run;
+  };
+  const ledger = (mutation = false): Ledger => {
+    const id = need(target, `${verb} <run>`);
+    if (!mutation) return loadLedger(coord().resolveRun(id)?.run_id ?? id);
+    const resolved = resolveTarget(id);
+    return 'run_id' in resolved ? resolved : loadLedger(resolved.id);
+  };
   const controlled = (l: Ledger, f: () => number): number => control(l, controller => {
     const code = f();
     if (code === 0) updateLedger(l, cur => { cur.controller = controller; });
@@ -1714,26 +1725,25 @@ export function main(argv: string[]): number {
     case 'resume':
     case 'recover': {
       const id = need(target, `${verb} <run>`);
-      const registered = coord().resolveRun(id);
-      if (!registered) {
-        const run = getRun(id);
+      const resolved = resolveTarget(id);
+      if (!('run_id' in resolved)) {
+        const run = resolved;
         if (!run.working_path) throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
         const res = control({ run_id: run.id, archon_run_id: run.id, repo: run.working_path }, () => recover(run.id, run.working_path ?? undefined));
         print({ run_id: id, ...res });
         return res.ok ? 0 : 1;
       }
-      const l = loadLedger(registered.run_id), code = controlled(l, () => resumeRun(l));
+      const l = resolved, code = controlled(l, () => resumeRun(l));
       if (code === 0) updateLedger(l, cur => { cur.intervened = true; });
       return code;
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);
       // 未登记：按 archon run id 处理（selftest 用）
-      const registered = coord().resolveRun(id);
-      const l = registered ? loadLedger(registered.run_id) : undefined;
-      const rid = l?.archon_run_id ?? id;
-      const ok = l ? control(l, () => cancelRun(rid, getRun(rid, l.repo).status, l.repo)) : (() => {
-        const run = getRun(rid);
+      const resolved = resolveTarget(id);
+      const ok = 'run_id' in resolved ? control(resolved, () => cancelRun(resolved.archon_run_id,
+        getRun(resolved.archon_run_id, resolved.repo).status, resolved.repo)) : (() => {
+        const run = resolved;
         if (!run.working_path) throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
         return control({ run_id: run.id, archon_run_id: run.id, repo: run.working_path }, () => cancelRun(run.id, run.status, run.working_path ?? undefined));
       })();
@@ -1745,11 +1755,11 @@ export function main(argv: string[]): number {
         if (target !== 'retry') throw new Error('usage: superagent decide --all-held retry');
         return retryAllHeld();
       }
-      { const l = ledger(); return controlled(l, () => decide(l, a)); }
+      { const l = ledger(true); return controlled(l, () => decide(l, a)); }
     case 'brief':
       return brief(ledger());
     case 'land': {
-      const l = ledger();
+      const l = ledger(true);
       return controlled(l, () => {
       const run = getRun(l.archon_run_id, l.repo);
       const land = evidenceJson(l, artifactsOf(run), 'land.json');
@@ -1762,7 +1772,7 @@ export function main(argv: string[]): number {
       });
     }
     case 'accept':
-      { const l = ledger(); return controlled(l, () => acceptRun(l, a.flags.pkg)); }
+      { const l = ledger(true); return controlled(l, () => acceptRun(l, a.flags.pkg)); }
     case 'supervise-tick':
       return tickOutput();
     case 'report': {

@@ -44,6 +44,9 @@ export function repoScope(path: string): Scope {
   if (p.exitCode !== 0) throw new Error(`coord: not a repository: ${path}`);
   return { kind: 'repo', id: realpathSync(p.stdout.toString().trim()) };
 }
+export function runScope(l: Pick<RunRef, 'run_id' | 'repo'>): Extract<Scope, { kind: 'run' }> {
+  return { kind: 'run', id: l.run_id, repo: repoScope(l.repo).id };
+}
 export function caller(readonly = false): Identity {
   if (!readonly && ['general', 'strategist', 'reviewer', 'worker'].includes(process.env.SUPERAGENT_ROLE ?? ''))
     throw new Error('派生会话不参与认领或控制；请交回元帅');
@@ -146,7 +149,7 @@ export class Coordination {
   scope(target = process.cwd()): Scope {
     if (existsSync(resolve(target))) return repoScope(resolve(target));
     const l = this.resolveRun(target);
-    return l ? { kind: 'run', id: l.run_id, repo: repoScope(l.repo).id } : repoScope(resolve(target));
+    return l ? runScope(l) : repoScope(resolve(target));
   }
   private claimOf(scope: Scope): Claim | null {
     const c = this.read('claims', shared.hash(scope));
@@ -295,7 +298,7 @@ export function coord(): Coordination {
   if (singleton?.d.sa !== home().sa) singleton = new Coordination(); return singleton;
 }
 export function control<T>(l: RunRef, f: (controller: Controller) => T, who = caller(), expected?: number): T {
-  const c = coord(), scope: Scope = { kind: 'run', id: l.run_id, repo: repoScope(l.repo).id };
+  const c = coord(), scope = runScope(l);
   if (!c.owner(scope).owner && expected === undefined) c.claim({ kind: 'repo', id: scope.repo }, who);
   return c.mutate(scope, who, f, expected);
 }

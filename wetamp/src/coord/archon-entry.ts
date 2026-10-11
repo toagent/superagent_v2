@@ -2,7 +2,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { caller, coord, repoScope, type Scope } from './index';
+import { caller, coord, repoScope, runScope, type Scope } from './index';
 import { getRun } from '../archon';
 import { WETAMP } from '../config';
 import { cliArgOptions } from '../../../packages/cli/src/args';
@@ -42,13 +42,13 @@ export async function archonEntry(args: string[]): Promise<number> {
   if (verb === 'wake' && (!target || target === 'schedule' || values.watch)) throw new Error('coord: workflow wake requires one run; global wake/watch/schedule is not admitted');
   const c = coord(), registered = target ? c.resolveRun(target) : undefined;
   let scope: Scope, id = target;
-  if (registered) { scope = c.scope(registered.run_id); id = registered.archon_run_id; }
+  if (registered) { scope = runScope(registered); id = registered.archon_run_id; }
   else if (positionals[0] !== 'workflow' || verb === 'run' && !target) scope = repoScope(typeof values.cwd === 'string' ? values.cwd : process.cwd());
   else {
     if (!target) throw new Error('coord: mutation requires a run id');
-    const run = getRun(target); if (!run.working_path) throw new Error('coord: run has no working_path');
-    const ledger = c.resolveRun(run.id);
-    scope = ledger ? c.scope(ledger.run_id) : { kind: 'run', id: run.id, repo: repoScope(run.working_path).id }; id = run.id;
+    const run = getRun(target), ledger = c.resolveRun(run.id), repo = ledger?.repo ?? run.working_path;
+    if (!repo) throw new Error('coord: run has no working_path');
+    scope = runScope(ledger ?? { run_id: run.id, repo }); id = run.id;
   }
   if (target && id && id !== target) forwarded = args.map(word => word === target ? id : word === `--run-id=${target}` ? `--run-id=${id}` : word === `--adopt=${target}` ? `--adopt=${id}` : word);
   const token = process.env.SA_COORD_ADMISSION;
