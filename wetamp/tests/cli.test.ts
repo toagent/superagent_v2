@@ -2580,6 +2580,26 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     approve: 'workflow approve r --detach --json',
   };
 
+  test.each(['approve', 'reject', 'retry', 'resume', 'recover'])(
+    'intervene leaves the ledger untouched when completed run refuses %s',
+    action => {
+      const s = stub([run('completed')]);
+      const before = readFileSync(ledgerPath('sa1'), 'utf8');
+      const args = ['resume', 'recover'].includes(action) ? [action, 'sa1'] : ['decide', 'sa1', action];
+      expect(captured(() => main(args)).code).toBe(1);
+      expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+      expect(s.calls().some(c => /workflow (resume|run|cancel|abandon|signal)/.test(c))).toBe(false);
+    }
+  );
+
+  test('intervene refuses approve past deadline without recording an event', () => {
+    const { s } = scenes.signoff();
+    writeFileSync(join(s.root, 'gen', 'plan.json'), JSON.stringify({ deadline: '2020-01-01T00:00:00Z' }));
+    const before = readFileSync(ledgerPath('sa1'), 'utf8');
+    expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(1);
+    expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+  });
+
   test('intervene records failed decide only after execution and excludes private error contents', () => {
     const { s } = scenes.signoff();
     patchLedger(s.root, { intervention_events: [] });

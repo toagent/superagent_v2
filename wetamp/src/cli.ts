@@ -259,18 +259,19 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
   }
 }
 
-function intervention<T extends number | boolean | { ok: boolean; busy?: boolean }>(
+function intervention<T extends number | boolean | { ok: boolean; busy?: boolean; refused?: boolean }>(
   l: Ledger,
   action: string,
   execute: () => T,
-  ask?: { key: string; id?: string }
+  ask?: { key: string; id?: string },
+  started: () => boolean = () => true
 ): T {
   let ok = false;
-  let busy = false;
+  let skipped = false;
   let error = 'action_failed';
   try {
     const result = execute();
-    busy = typeof result === 'object' && result.busy === true;
+    skipped = typeof result === 'object' && (result.busy === true || result.refused === true);
     ok = typeof result === 'number' ? result === 0 : typeof result === 'boolean' ? result : result.ok;
     if (typeof result === 'number') error = `exit:${String(result)}`;
     return result;
@@ -278,7 +279,7 @@ function intervention<T extends number | boolean | { ok: boolean; busy?: boolean
     error = e instanceof Error ? e.name : 'thrown'; // Never persist command output or message contents.
     throw e;
   } finally {
-    if (!busy)
+    if (!skipped && started())
       updateLedger(l, cur => {
         if (ask && cur.intervention_events?.some(e => e.key === ask.key)) return;
         (cur.intervention_events ??= []).push({
@@ -1004,8 +1005,12 @@ function health(cwd?: string): number {
 }
 
 function resumeRun(l: Ledger, fresh = false, reconciled?: string, action = 'recover'): number {
-  const res = intervention(l, action, () =>
-    recoverRun(l, fresh, undefined, undefined, undefined, reconciled)
+  let started = false;
+  // prepare runs under the recovery lock only after admission checks have passed.
+  const res = intervention(
+    l, action,
+    () => recoverRun(l, fresh, undefined, () => (started = true), undefined, reconciled),
+    undefined, () => started
   );
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
@@ -1135,11 +1140,12 @@ function retryAllHeld(): number {
       if ('error' in l) throw new Error(l.error);
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
+      let started = false;
       return [control(l, () => intervention(l, 'decide', () => ({
         run_id: l.run_id,
         state: c.state,
-        ...retry(l, c),
-      })))];
+        ...retry(l, c, () => (started = true)),
+      }), undefined, () => started))];
     } catch (e) {
       return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
     }
@@ -1166,13 +1172,19 @@ function decide(l: Ledger, a: Args): number {
       print({ run_id: l.run_id, ok: false, reason: PAST_DEADLINE });
       return 1;
     }
+    if (c.state !== 'held:human') {
+      print({ run_id: l.run_id, ok: false, reason: 'run is not waiting for a human signoff' });
+      return 1;
+    }
     const log = join(l.gen_dir, `signal-${c.node ?? 'none'}.log`);
-    const r = signalHuman(run, { decision: 'approve' }, log, l.repo);
-    print({ run_id: l.run_id, ...r });
-    return r.ok ? 0 : 1;
+    return intervention(l, 'decide', () => {
+      const r = signalHuman(run, { decision: 'approve' }, log, l.repo);
+      print({ run_id: l.run_id, ...r });
+      return r.ok ? 0 : 1;
+    });
   }
   if (action === 'reject') {
-    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
+    const ok = intervention(l, 'decide', () => cancelRun(l.archon_run_id, run.status, l.repo));
     if (ok)
       updateLedger(l, cur => {
         cur.rejected = run.id;
@@ -1187,7 +1199,10 @@ function decide(l: Ledger, a: Args): number {
       throw new Error('decide retry --hint needs --pkg <package id from the plan>');
     writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
   }
-  const res = intervention(l, 'decide', () => retry(l, c));
+  let started = false;
+  const res = intervention(
+    l, 'decide', () => retry(l, c, () => (started = true)), undefined, () => started
+  );
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
   return res.ok ? 0 : res.held ? EXIT.held : 1;
@@ -2520,7 +2535,7 @@ export function main(argv: string[]): number {
       }
       {
         const l = ledger(true);
-        return controlled(l, () => decide(l, a), a._[2] !== 'retry');
+        return controlled(l, () => decide(l, a), false);
       }
     case 'brief':
       return brief(ledger());
