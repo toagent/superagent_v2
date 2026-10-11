@@ -1289,6 +1289,58 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
+  test.each(['accept', 'probe'])('%s: acceptance commands exclude engine node variables', kind => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    const base = sh('git rev-parse HEAD', repo).trim();
+    if (kind === 'probe')
+      sh('git rm -q README.md && git -c user.name=t -c user.email=t@l commit -qm rm', repo);
+    const command = `bun -e 'const keys = Object.keys(process.env).filter(k => k.startsWith("INPUTS_") || ["WORKFLOW_ID", "ARTIFACTS_DIR", "SA_COORD_ADMISSION", "SUPERAGENT_ROLE"].includes(k)); if (keys.length || process.env.SA_PROBE_KEEP !== "1" || process.env.SUPERAGENT_HOME !== "kept-home" || !process.env.PATH || !process.env.HOME) process.exit(1); console.log("isolated")'`;
+    const r = runScript(
+      repo,
+      {
+        kind: 'accept',
+        plan: planFile(root, kind === 'probe' ? `${command} && test -f README.md` : command),
+        pkgs: 'a',
+        tag: 'verify-a',
+        ...(kind === 'probe' ? { base } : {}),
+      },
+      SCRIPT,
+      {
+        INPUTS_UNUSED: 'node-input',
+        WORKFLOW_ID: 'node-workflow',
+        SA_COORD_ADMISSION: 'fixture-admission',
+        SUPERAGENT_ROLE: 'worker',
+        SUPERAGENT_HOME: 'kept-home',
+        SA_PROBE_KEEP: '1',
+      }
+    );
+    expect(r.code).toBe(0);
+    expect(r.out).toMatchObject(kind === 'probe' ? { ok: false, base_pass: true } : { ok: true });
+    expect(
+      readFileSync(join(r.art, kind === 'probe' ? 'verify-a.probe.log' : 'verify-a.log'), 'utf8')
+    ).toContain('isolated');
+  });
+  test('env: environment commands retain engine node variables', () => {
+    const root = tmp();
+    const command = `bun -e 'if (process.env.INPUTS_KIND !== "env" || process.env.INPUTS_UNUSED !== "node-input" || process.env.WORKFLOW_ID !== "node-workflow" || !process.env.ARTIFACTS_DIR || process.env.SA_COORD_ADMISSION !== "fixture-admission" || process.env.SUPERAGENT_ROLE !== "worker") process.exit(1)'`;
+    const r = runScript(
+      gitRepo(root),
+      {
+        kind: 'env',
+        plan: planFile(root, 'true', [command]),
+      },
+      SCRIPT,
+      {
+        INPUTS_UNUSED: 'node-input',
+        WORKFLOW_ID: 'node-workflow',
+        SA_COORD_ADMISSION: 'fixture-admission',
+        SUPERAGENT_ROLE: 'worker',
+      }
+    );
+    expect(r.code).toBe(0);
+    expect(r.out).toMatchObject({ ok: true, failed: [] });
+  });
   test('accept: archives the result and the coder output; blocked without needs or redline counts as partial', () => {
     const root = tmp();
     const repo = gitRepo(root);

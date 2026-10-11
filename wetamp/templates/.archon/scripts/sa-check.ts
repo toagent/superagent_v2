@@ -153,6 +153,18 @@ function run(
   failures: CheckFailure[] = []
 ): string[] {
   const failed: string[] = [];
+  // These variables belong to the engine node, not the project acceptance command (including probes).
+  // Environment nodes keep their existing inherited environment.
+  const commandEnv =
+    env('KIND') === 'env'
+      ? process.env
+      : Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([k]) =>
+              !k.startsWith('INPUTS_') &&
+              !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k)
+          )
+        );
   const tree = envKey && git('rev-parse', 'HEAD^{tree}').trim();
   for (const c of checks) {
     const hit =
@@ -166,6 +178,7 @@ function run(
     const t0 = Date.now();
     const p = Bun.spawnSync(['bash', '-c', c.cmd], {
       cwd,
+      env: commandEnv,
       stdout: 'pipe',
       stderr: 'pipe',
       timeout: c.timeout_s * 1000,
