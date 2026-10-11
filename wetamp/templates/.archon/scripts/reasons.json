@@ -1,5 +1,19 @@
 [
   {
+    "code": "base_branch_missing",
+    "hold": "engine_suspect",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "起跑缺少可检测的 base branch"
+  },
+  {
+    "code": "cancelled_source",
+    "hold": "paused",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "有结构化取消来源"
+  },
+  {
     "code": "signoff",
     "hold": "signoff",
     "determinism": "deterministic",
@@ -320,6 +334,20 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "编码端报告 redline"
+  },
+  {
+    "code": "base_branch_missing+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "起跑缺少可检测的 base branch"
+  },
+  {
+    "code": "cancelled_source+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "env",
+    "description": "有结构化取消来源"
   },
   {
     "code": "signoff+review_limit",

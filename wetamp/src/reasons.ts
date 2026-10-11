@@ -19,49 +19,58 @@ export const HOLD_POLICY = {
   auto_retry_exhausted: {
     do: 'ask',
     yes: 'retry',
-    text: '自动重试已用尽', yesText: '{target}一次',
+    text: '自动重试已用尽',
+    yesText: '{target}一次',
   },
   no_change: {
     do: 'ask',
     yes: 'retry',
-    text: '连续两轮修复无变化', yesText: '{target}一次',
+    text: '连续两轮修复无变化',
+    yesText: '{target}一次',
   },
   no_attempt_node: {
     do: 'ask',
     yes: 'resume',
-    text: '旧工作流无法重跑里程碑', yesText: '清零恢复计数并{target}一次',
+    text: '旧工作流无法重跑里程碑',
+    yesText: '清零恢复计数并{target}一次',
   },
   recover_no_progress: {
     do: 'ask',
     yes: 'resume',
-    text: '恢复3次无进展', yesText: '清零恢复计数并{target}一次',
+    text: '恢复3次无进展',
+    yesText: '清零恢复计数并{target}一次',
   },
   needs: {
     do: 'ask',
     yes: 'retry',
-    text: '将军需要补能力', yesText: '确认已补齐后{target}一次',
+    text: '将军需要补能力',
+    yesText: '确认已补齐后{target}一次',
   },
   redline: { do: 'ask', yes: 'retry', text: '将军命中红线', yesText: '{target}一次（红线不变）' },
   coder_blocked: {
     do: 'ask',
     yes: 'retry',
-    text: '将军受执行约束阻断', yesText: '确认已处理后{target}一次',
+    text: '将军受执行约束阻断',
+    yesText: '确认已处理后{target}一次',
   },
   budget: {
     do: 'ask',
     yes: 'retry',
-    text: '预算已用尽', yesText: '按台账追加本里程碑额度并{target}一次',
+    text: '预算已用尽',
+    yesText: '按台账追加本里程碑额度并{target}一次',
   },
   review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽', yesText: '{target}一次' },
   review_not_independent: {
     do: 'ask',
     yes: 'review',
-    text: '评审身份不独立', yesText: '确认已处理后{target}一次',
+    text: '评审身份不独立',
+    yesText: '确认已处理后{target}一次',
   },
   engine_suspect: {
     do: 'ask',
     yes: 'resume',
-    text: '引擎判定与验收矛盾或原因未注册', yesText: '确认已修复引擎后清零恢复计数并{target}一次',
+    text: '引擎判定与验收矛盾或原因未注册',
+    yesText: '确认已修复引擎后清零恢复计数并{target}一次',
   },
   approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
 } as const satisfies Record<string, Policy>;
@@ -70,20 +79,28 @@ export type Hold = keyof typeof HOLD_POLICY;
 // 仅用于引擎标识与 plan 名称；自由文本证据不进入提醒标题。
 export const askName = (v: string, limit: number): string =>
   Array.from(v.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, limit).join('');
-export function askQuestion(hold: Hold, names: string[], details: [string, string],
-  recovery: (limit: number, stage: number) => [string, string], marker: string): string {
+export function askQuestion(
+  hold: Hold,
+  names: string[],
+  details: [string, string],
+  recovery: (limit: number, stage: number) => [string, string],
+  marker: string
+): string {
   const p = HOLD_POLICY[hold];
   if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not an ask policy: ${hold}`);
   // 依次缩名称、完成包名单、数字事实、固定文案；原因与完整动作/marker 始终保留。
-  for (let stage = 0; stage <= 3; stage++) for (let limit = 24; limit >= 1; limit--) {
-    const [target, consequence] = recovery(limit, stage);
-    const detail = stage < 2 ? details[0] : details[1];
-    const q = `${names.map(n => askName(n, limit)).join('/')}：${p.text}` +
-      (stage < 3 ? `；${detail || '证据缺失'}` : '') +
-      `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）` +
-      (stage < 3 ? '；详情superagent brief <run>' : '') + `；${marker}`;
-    if (Array.from(q).length <= 200) return q;
-  }
+  for (let stage = 0; stage <= 3; stage++)
+    for (let limit = 24; limit >= 1; limit--) {
+      const [target, consequence] = recovery(limit, stage);
+      const detail = stage < 2 ? details[0] : details[1];
+      const q =
+        `${names.map(n => askName(n, limit)).join('/')}：${p.text}` +
+        (stage < 3 ? `；${detail || '证据缺失'}` : '') +
+        `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）` +
+        (stage < 3 ? '；详情superagent brief <run>' : '') +
+        `；${marker}`;
+      if (Array.from(q).length <= 200) return q;
+    }
   throw new Error('ask title: structured facts exceed 200 characters');
 }
 
@@ -119,6 +136,8 @@ export const CODER_CLASSES = [
   'redline',
 ] as const;
 const base: Reason[] = [
+  deterministic('base_branch_missing', 'engine_suspect', 'engine', '起跑缺少可检测的 base branch'),
+  entry('cancelled_source', 'paused', 'transient', 'env', '有结构化取消来源'),
   deterministic('signoff', 'signoff', 'human', '等待人工签收'),
   deterministic('deadline', 'deadline', 'human', '计划截止已过'),
   entry('gate', 'gate', 'transient', 'engine', '评审节点执行失败'),

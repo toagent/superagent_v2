@@ -24,6 +24,8 @@ export interface Remote {
   agent: string;
 }
 export interface Owned {
+  pidAlive?: boolean;
+  heartbeatAt?: string | null;
   tier: Tier | null;
   inferred?: boolean; // owner inferred from unique cwd
   guess: boolean; // tier 是按模型池推断的
@@ -215,14 +217,34 @@ export function attach(
   });
   return {
     bound,
-    jobs: jobs.map(j => ({ ...j, model: j.model ?? bound.get(j)?.model ?? sessionModel(bound.get(j)?.transcript_path ?? null, j.kind), ...own(j, j.role, j.wrapper_pid, j.pid) })),
-    procs: procs.map(p => ({ ...p, model: p.model ?? bound.get(p)?.model ?? sessionModel(bound.get(p)?.transcript_path ?? null, p.kind), ...own(p, null, p.pid) })),
+    jobs: jobs.map(j => ({
+      ...j,
+      pidAlive: rows.has(j.pid),
+      heartbeatAt: bound.get(j)?.at ?? null,
+      model:
+        j.model ??
+        bound.get(j)?.model ??
+        sessionModel(bound.get(j)?.transcript_path ?? null, j.kind),
+      ...own(j, j.role, j.wrapper_pid, j.pid),
+    })),
+    procs: procs.map(p => ({
+      ...p,
+      model:
+        p.model ??
+        bound.get(p)?.model ??
+        sessionModel(bound.get(p)?.transcript_path ?? null, p.kind),
+      ...own(p, null, p.pid),
+    })),
   };
 }
 
 /** One snapshot, one owner: recorded launcher, watcher/parent chain, unique legacy cwd, directory. */
 export function ownership(
-  x: RunRef, rows: term.Rows, sessions: term.Session[], terms: term.Term[], pids: number[] = []
+  x: RunRef,
+  rows: term.Rows,
+  sessions: term.Session[],
+  terms: term.Term[],
+  pids: number[] = []
 ): Ownership {
   const leaders = new Map(sessions.flatMap(s => s.pids.map(p => [p, s.pids[0]] as const)));
   const known = (pid: number): number | undefined => {
@@ -232,39 +254,56 @@ export function ownership(
   if (x.launcher && rows.has(x.launcher.pid)) {
     const owner = known(x.launcher.pid);
     const t = terms.find(t => t.pid === owner);
-    if (t?.kind === x.launcher.client && t.tty === x.launcher.tty) return { owner: t.pid, inferred: false };
+    if (t?.kind === x.launcher.client && t.tty === x.launcher.tty)
+      return { owner: t.pid, inferred: false };
   }
-  const watchers = [...rows].filter(([, r]) => {
-    const a = ['bun', 'node'].includes(basename(r.argv[0])) ? r.argv.slice(1) : r.argv;
-    return (basename(a[0] ?? '') === 'superagent' || a[0]?.endsWith('/wetamp/src/cli.ts'))
-      && ['wait', 'status', 'board'].includes(a[1])
-      && a.slice(2).find(arg => /^\d{8}-\d{6}-[0-9a-f]{4}$/.test(arg)) === x.run_id;
-  }).map(([pid]) => pid);
-  const owners = [...new Set(
-    [...watchers, ...pids].map(p => term.up(leaders, p, rows))
-      .filter(p => p !== undefined && terms.some(t => t.pid === p))
-  )];
+  const watchers = [...rows]
+    .filter(([, r]) => {
+      const a = ['bun', 'node'].includes(basename(r.argv[0])) ? r.argv.slice(1) : r.argv;
+      return (
+        (basename(a[0] ?? '') === 'superagent' || a[0]?.endsWith('/wetamp/src/cli.ts')) &&
+        ['wait', 'status', 'board'].includes(a[1]) &&
+        a.slice(2).find(arg => /^\d{8}-\d{6}-[0-9a-f]{4}$/.test(arg)) === x.run_id
+      );
+    })
+    .map(([pid]) => pid);
+  const owners = [
+    ...new Set(
+      [...watchers, ...pids]
+        .map(p => term.up(leaders, p, rows))
+        .filter(p => p !== undefined && terms.some(t => t.pid === p))
+    ),
+  ];
   if (owners.length === 1) return { owner: owners[0] ?? null, inferred: false };
   if (!x.launcher) {
     const cwd = resolve(x.cwd);
-    const inside = (root: string): boolean => cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep);
+    const inside = (root: string): boolean =>
+      cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep);
     const hits = terms.filter(t => t.cwd && inside(resolve(t.cwd)));
     if (hits.length === 1) return { owner: hits[0].pid, inferred: true };
   }
   return { owner: null, inferred: false };
 }
 export const visible = (ended: string | number | null | undefined, now: number): boolean =>
-  ended === null || (ended !== undefined && now - (typeof ended === 'number' ? ended : Date.parse(ended)) <= 30 * 60_000);
+  ended === null ||
+  (ended !== undefined &&
+    now - (typeof ended === 'number' ? ended : Date.parse(ended)) <= 30 * 60_000);
 
 type Procs = Pick<Activity, 'jobs' | 'procs' | 'terms' | 'runs'>;
 async function scan(
-  now: number, jobs: Job[], pools: Pools, signal?: AbortSignal, runs: RunRef[] = []
+  now: number,
+  jobs: Job[],
+  pools: Pools,
+  signal?: AbortSignal,
+  runs: RunRef[] = []
 ): Promise<Procs> {
   const t0 = Date.now();
   const ps = await capture(['ps', '-axo', PS_FIELDS], SOURCE_TIMEOUT_MS, signal);
   if (ps.code !== 0) throw new Error(`ps exited ${String(ps.code)}`);
   const rows = psRows(ps.out);
-  const wrappers = new Set(jobs.filter(j => ['queued', 'running'].includes(j.state)).map(j => j.wrapper_pid));
+  const wrappers = new Set(
+    jobs.filter(j => ['queued', 'running'].includes(j.state)).map(j => j.wrapper_pid)
+  );
   const procs = parsePs(rows, now, wrappers);
   const sessions = term.findSessions(rows);
   const lives = term.readLive(join(home().sa, 'live'), now, true);
@@ -281,9 +320,11 @@ async function scan(
   return {
     runs: runs.map(r => ({ run_id: r.run_id, cwd: r.cwd, ...ownership(r, rows, sessions, terms) })),
     jobs: own.jobs.map(j => ({
-      ...j, ...ownership(
-        {run_id: j.id, cwd: j.cwd, launcher: j.launcher}, rows, sessions, terms, [j.wrapper_pid, j.pid]
-      ),
+      ...j,
+      ...ownership({ run_id: j.id, cwd: j.cwd, launcher: j.launcher }, rows, sessions, terms, [
+        j.wrapper_pid,
+        j.pid,
+      ]),
     })),
     procs: own.procs.map(p => ({ ...p, cwd: cwd.get(p.pid) ?? null })),
     terms,
@@ -299,12 +340,17 @@ async function remoteOf(signal?: AbortSignal): Promise<Remote[]> {
   return r.code === 0 ? parseQueue(r.out) : [];
 }
 
-export async function loadActivity(now: number, signal?: AbortSignal, runs: RunRef[] = []): Promise<Activity> {
+export async function loadActivity(
+  now: number,
+  signal?: AbortSignal,
+  runs: RunRef[] = []
+): Promise<Activity> {
   const notes: string[] = [];
   const note = (src: string, e: unknown): void => {
     notes.push(`${src}: ${tail((e as Error).message, 120)}`);
   };
-  let jobs: Job[] = [], jobHistory: Job[] = [];
+  let jobs: Job[] = [],
+    jobHistory: Job[] = [];
   try {
     const r = readJobs(now, true);
     jobHistory = r.jobs;
@@ -323,8 +369,10 @@ export async function loadActivity(now: number, signal?: AbortSignal, runs: RunR
     scan(now, jobs, pools, signal, runs).catch((e: unknown): Procs => {
       note('procs', e);
       return {
-        jobs: attach(new Map(), [], jobs, [], [], pools).jobs, procs: [], terms: [],
-        runs: runs.map(r => ({run_id: r.run_id, cwd: r.cwd, owner: null, inferred: false})),
+        jobs: attach(new Map(), [], jobs, [], [], pools).jobs,
+        procs: [],
+        terms: [],
+        runs: runs.map(r => ({ run_id: r.run_id, cwd: r.cwd, owner: null, inferred: false })),
       };
     }),
     remoteOf(signal).catch(() => []), // 远端不可达不是看板的问题：静默省略

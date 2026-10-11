@@ -79,12 +79,40 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
     fs.appendFileSync(join(root, path), '\n// execution-time change\n');
     expect(engineHash(root)).toBe(hash);
   }
-  for (const path of ['src/generate.ts', 'src/config.ts', 'src/plan.ts', 'src/reasons.ts']) {
+  for (const path of [
+    'src/generate.ts',
+    'src/config.ts',
+    'src/plan.ts',
+    'src/reasons.ts',
+    'src/memory.ts',
+    'src/board/workflow.ts',
+  ]) {
     fs.appendFileSync(join(root, path), '\n// frozen generation input\n');
     expect(engineHash(root)).not.toBe(hash);
     fs.copyFileSync(join(WETAMP, path), join(root, path));
     expect(engineHash(root)).toBe(hash);
   }
+});
+
+test('EV reflection and memory views are read live; lesson data is outside both identities', () => {
+  const root = tmp();
+  for (const path of ['templates', 'src', 'schemas'])
+    fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
+  fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
+  const workflow = engineHash(root),
+    resident = residentHash(root);
+  for (const path of ['src/memory-reflect.ts', 'src/web/memory.ts']) {
+    fs.appendFileSync(join(root, path), '\n// execution-time change\n');
+    expect(engineHash(root)).toBe(workflow);
+    expect(residentHash(root)).not.toBe(resident);
+    fs.copyFileSync(join(WETAMP, path), join(root, path));
+    expect(residentHash(root)).toBe(resident);
+  }
+  fs.appendFileSync(join(root, 'templates/memory-reflect.md'), '\nLive reflection prompt\n');
+  fs.mkdirSync(join(root, 'memory'));
+  fs.writeFileSync(join(root, 'memory/lessons.jsonl'), '{"lessons":[]}\n');
+  expect(engineHash(root)).toBe(workflow);
+  expect(residentHash(root)).toBe(resident);
 });
 
 describe('buildWorkflow', () => {

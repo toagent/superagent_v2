@@ -197,6 +197,7 @@ test('pane renders normalized active rows and hides retired jobs/terminals', () 
   const running = {
     ...unreadableRow(id, ''),
     repo: 'sinan',
+    lastEvent: new Date(now).toISOString(),
     state: 'running',
     nodes: { done: 1, total: 4, current: '中文当前节点'.repeat(20), currentRole: 'coder' },
   };

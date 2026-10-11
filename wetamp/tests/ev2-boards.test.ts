@@ -1,0 +1,334 @@
+import { afterEach, expect, test } from 'bun:test';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createElement } from 'react';
+import { renderToString } from 'ink';
+import { Frame } from '../src/board/App';
+import { cockpit } from '../src/board/cockpit';
+import type { BoardRow, Snapshot } from '../src/board/data';
+import { unknownProgress } from '../src/board/eta';
+import { memoryData, type Episode, type Lesson } from '../src/memory';
+import { memoryOverview, memoryPanel } from '../src/web/memory';
+import { handler } from '../src/web/server';
+import { attach } from '../src/board/activity';
+import { tmp } from './helpers';
+
+const at = '2026-10-10T04:00:00Z',
+  now = new Date(at),
+  ms = now.getTime();
+const saved = {
+  SUPERAGENT_HOME: process.env.SUPERAGENT_HOME,
+  ARCHON_HOME: process.env.ARCHON_HOME,
+  TZ: process.env.TZ,
+};
+afterEach(() => {
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+});
+const iso = (seconds: number): string => new Date(ms + seconds * 1000).toISOString();
+function row(id: string, state = 'running'): BoardRow {
+  return {
+    run_id: id,
+    archon_id: `native-${id}`,
+    repo: id,
+    state,
+    nativeState: 'running',
+    lastEvent: iso(-30),
+    nodes: { done: 2, total: 4, current: 'code-a', currentRole: 'coder' },
+    activeNodes: [],
+    started_at: iso(-600),
+    span: null,
+    elapsed_s: null,
+    exit: null,
+    held: null,
+    recoveries: 0,
+    auto_retries: 0,
+    console: 'codex',
+    branch: 'b',
+    evidence: '',
+    plan: '',
+    stale: false,
+    engine: {
+      title: `${id}交付`,
+      milestones: [],
+      currentMilestone: null,
+      states: [],
+      firstPass: id === 'complete',
+      reason: '',
+      dispositions: [],
+    },
+  };
+}
+function snapshot(): Snapshot {
+  const a = row('active'),
+    held = row('held', 'held:budget'),
+    dead = row('zombie');
+  dead.lastEvent = iso(-1800);
+  a.activeNodes = [
+    { id: 'code-a', role: 'coder', model: 'gpt-6.1-sol' },
+    { id: 'review-b', role: 'reviewer', model: 'gpt-6-astra' },
+  ];
+  const progress = { pct: 62, eta_s: 840, overrun_s: 0, basis: 'history' as const };
+  return {
+    at,
+    summary: {},
+    rows: [a, held, dead],
+    reflection: { day: '2026-10-10', tokens: 5000000, limit: 5000000, yellow: true },
+    asks: { 'held:budget:1': { status: 'pending' }, 'active:budget:0': { status: 'superseded' } },
+    eta: { active: { progress, weight: 1200, nodes: { 'code-a': progress } } },
+    activity: {
+      terms: [],
+      procs: [],
+      remote: [],
+      notes: [],
+      jobs: ['j1', 'j2'].map(id => ({
+        id,
+        title: id,
+        cwd: '/repo/interactive',
+        kind: 'codex',
+        card: null,
+        log: null,
+        model: 'gpt-6.1-sol',
+        role: 'general',
+        tier: 'general',
+        wrapper_pid: 1,
+        pid: 2,
+        started_at: iso(-600),
+        state: 'running',
+        owner: null,
+        guess: false,
+        pidAlive: true,
+        heartbeatAt: iso(-10),
+      })),
+    },
+  };
+}
+for (const width of [120, 56])
+  test(`EV2 alive tree ${String(width)} columns`, () => {
+    process.env.TZ = 'Asia/Taipei';
+    const s = snapshot(),
+      c = cockpit(s, ms),
+      text = renderToString(createElement(Frame, { snap: s, width, height: 100, now }), {
+        columns: width,
+      });
+    expect(c.tree.map(r => [r.project, r.children.length])).toEqual([
+      ['active', 2],
+      ['held', 0],
+      ['interactive', 2],
+    ]);
+    const frame = Frame({ snap: s, width, height: 100, now });
+    const header = (frame.props as { children: { props: { color?: string } }[] }).children[0];
+    expect(header.props.color).toBe('yellow');
+    expect(c.zombies).toBe(1);
+    expect(c.reflection?.yellow).toBe(true);
+    expect(c.needs).toHaveLength(1);
+    expect(text).toMatchSnapshot();
+    expect(text).not.toContain('zombie');
+    expect(text).not.toContain('?%');
+    expect(text).toContain('62% 剩~14m');
+    expect(text).toContain('需要你');
+    expect(text).toContain('12:00');
+    if (width < 60) expect(text).not.toContain('sol6.1');
+    else expect(text).toContain('将军·sol6.1');
+    for (const line of text.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
+  });
+test('activity projects exact bound heartbeat and observed child PID; stale/future heartbeats fail closed', () => {
+  const s = snapshot(),
+    j = s.activity!.jobs[0],
+    live = {
+      pid: j.pid,
+      at: iso(-1),
+      role: 'general' as const,
+      event: 'tool',
+      tool: null,
+      turn_at: at,
+      transcript_path: null,
+      cwd: j.cwd,
+    };
+  const a = attach(
+    new Map([[j.pid, { ppid: 0, tty: '??', cpu: 1, etime: 1, argv: ['codex'] }]]),
+    [],
+    [j],
+    [],
+    [live],
+    null
+  );
+  expect(a.jobs[0]).toMatchObject({ pidAlive: true, heartbeatAt: iso(-1) });
+  for (const heartbeatAt of [iso(-600), iso(1), null]) {
+    const x = snapshot();
+    x.activity!.jobs[0].heartbeatAt = heartbeatAt;
+    expect(cockpit(x, ms).tree.at(-1)?.children).toHaveLength(1);
+  }
+  const x = snapshot();
+  x.rows[0].lastEvent = iso(-600);
+  expect(cockpit(x, ms).zombies).toBe(2);
+});
+function setupMemory() {
+  const root = tmp();
+  Object.assign(process.env, {
+    SUPERAGENT_HOME: root,
+    ARCHON_HOME: join(root, 'archon'),
+    TZ: 'Asia/Taipei',
+  });
+  mkdirSync(join(root, 'memory/episodes'), { recursive: true });
+  const episodes: Episode[] = ['failed', 'paused', 'completed', 'completed'].map((status, i) => ({
+    id: ['failure', 'held', 'long', 'complete'][i],
+    at: iso(-i * 60),
+    source: 'run',
+    status,
+    project: '/repo/demo',
+    tag: 'ts-cli',
+    risk: 'G1',
+    size: 'S',
+    model: 'gpt-6.1-sol',
+    fake: false,
+    packages: [{ id: 'p', tag: 'ts-cli', risk: 'G1', size: 'S' }],
+    duration_ms: i === 2 ? 240000 : 60000,
+    p50_ratio: i === 2 ? 4 : 1,
+    reasons: i === 0 ? ['review_failed'] : [],
+    category: 'project',
+    signature: 'review_failed',
+    fingerprint: null,
+    incidents: [],
+    timeline: [],
+    acceptance: [],
+    findings: i === 0 ? ['high:missing'] : [],
+    diff: null,
+    tokens: [{ role: 'general', model: 'gpt-6.1-sol', total: (i + 1) * 100 }],
+    asks: [],
+    dispositions: i === 1 ? [{ at, action: 'ask', reason: 'budget', ok: true }] : [],
+    signals: { engine_suspect: 0, dup_ask: 0, orphan_hold: 0, stale_answer: 0 },
+  }));
+  episodes.forEach(e =>
+    writeFileSync(join(root, 'memory/episodes', e.id + '.json'), JSON.stringify(e))
+  );
+  const lessons: Lesson[] = ['trial', 'stable', 'retired', 'mechanized'].map((status, i) => ({
+    id: `l${String(i)}`,
+    tier: 'project',
+    scope: '/repo/demo',
+    tag: 'ts-cli',
+    when: '启动前',
+    do: `确认条件${String(i)}`,
+    dont: '',
+    why: '已验证',
+    evidence: [episodes[i].id],
+    mechanizable: false,
+    category: 'project',
+    reasons: ['review_failed'],
+    status: status as Lesson['status'],
+    helpful: i === 1 ? 3 : 0,
+    harmful: i === 2 ? 1 : 0,
+    created_at: iso(-86400),
+    last_hit: at,
+  }));
+  const entries = [
+    { lessons, day: '2026-10-10', tokens: 5000000 },
+    { lessons: [], reflected: 'failure', result: '提炼 1 条' },
+    { lessons: [], scored: 'complete', hit_ids: ['l1'] },
+    { lessons: [], scored: 'long', hit_ids: [] },
+  ];
+  writeFileSync(
+    join(root, 'memory/lessons.jsonl'),
+    entries.map(e => JSON.stringify(e)).join('\n') + '\n'
+  );
+  const s = snapshot();
+  s.rows = episodes.map(e => ({
+    ...row(e.id, e.status),
+    nativeState: e.status as BoardRow['nativeState'],
+  }));
+  return { root, s };
+}
+test('EV2 default/all history and evolution metrics match hand-calculated fixture', () => {
+  const { s } = setupMemory(),
+    data = memoryData(ms),
+    d = memoryOverview(s, data);
+  expect(d.rows.map(r => r.id)).toEqual(['failure', 'held', 'long']);
+  expect(memoryOverview(s, data, true).rows).toHaveLength(4);
+  expect(d.metrics).toEqual({
+    '同类失败复发率（近7天 / 前7天）': '0% / —',
+    一次通过率: '33%',
+    人工干预次数: 1,
+    '每个交付包 token': '267',
+    经验命中率: '50%',
+    经验有效率: '75%',
+    引擎自修复次数: 0,
+  });
+  expect(d.queued).toBe(3);
+  expect(d.reflection.yellow).toBe(true);
+  const page = memoryPanel(d, false);
+  expect(page).toMatchSnapshot();
+  expect(page.match(/data-episode=/g)).toHaveLength(3);
+  expect(page).toContain('/console/r/native-failure');
+  expect(page).toContain('<details><summary>退役');
+  expect(page).toContain('?filter=all');
+});
+test('week recurrence keys require both project and reason; empty samples stay unknown', () => {
+  const { s } = setupMemory(),
+    d = memoryData(ms),
+    first = d.all[0];
+  d.all = [
+    { ...first, id: 'old', at: iso(-8 * 86400) },
+    { ...first, id: 'new', at: iso(-86400) },
+    { ...first, id: 'other', project: '/repo/other', at: at },
+  ];
+  expect(memoryOverview(s, d).metrics['同类失败复发率（近7天 / 前7天）']).toBe('50% / 0%');
+  d.all = [];
+  expect(memoryOverview(s, d).metrics['每个交付包 token']).toBe('—');
+});
+test('history and episode routes are authenticated, read-only and confined with no writes', async () => {
+  const { root, s } = setupMemory(),
+    file = join(root, 'memory/lessons.jsonl'),
+    before = readFileSync(file, 'utf8');
+  const h = handler(
+    39900,
+    'fixture-auth',
+    () => ({}),
+    'http://localhost',
+    fetch,
+    undefined,
+    () => s
+  );
+  const request = (path: string, method = 'GET', auth = true) =>
+    h(
+      new Request(`http://127.0.0.1:39900${path}`, {
+        method,
+        headers: { host: '127.0.0.1:39900', ...(auth ? { cookie: 'sa_web=fixture-auth' } : {}) },
+      })
+    );
+  expect((await request('/sa/memory')).status).toBe(200);
+  expect((await request('/sa/memory', 'POST')).status).toBe(403);
+  expect((await request('/sa/memory', 'GET', false)).status).toBe(401);
+  const json = await request('/sa/memory/episode?id=failure');
+  expect(json.status).toBe(200);
+  expect(await json.json()).toMatchObject({ id: 'failure' });
+  expect((await request('/sa/memory/episode?id=../lessons')).status).toBe(404);
+  const outside = tmp();
+  writeFileSync(join(outside, 'secret.json'), '{}');
+  symlinkSync(join(outside, 'secret.json'), join(root, 'memory/episodes/outside.json'));
+  expect((await request('/sa/memory/episode?id=outside')).status).toBe(404);
+  expect(() => memoryData(ms)).toThrow('路径越界');
+  expect(readFileSync(file, 'utf8')).toBe(before);
+  expect(unknownProgress().pct).toBeNull();
+});
+
+test('history excludes short running episodes, escapes text, and keeps missing token/p50 unknown', () => {
+  const { s } = setupMemory(),
+    data = memoryData(ms);
+  data.all.push({
+    ...data.all[0],
+    id: 'short-running',
+    status: 'running',
+    p50_ratio: null,
+    tokens: [],
+  });
+  expect(memoryOverview(s, data).rows).toHaveLength(3);
+  const d = memoryOverview(s, data, true),
+    missing = d.rows.find(r => r.id === 'short-running')!;
+  expect(missing.tokenText).toBe('—');
+  missing.title = '<script>private</script>';
+  const page = memoryPanel(d, true);
+  expect(page).not.toContain('<script>private');
+  expect(page).toContain('&lt;script&gt;private');
+});

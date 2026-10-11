@@ -1,0 +1,708 @@
+{
+  "sampled_at": "2026-10-10T12:35:25.431Z",
+  "paths": "All paths supplied by temporary test roots; no source bodies retained.",
+  "runs": [
+    {
+      "id": "20261010-004139-c439",
+      "status": "failed",
+      "started_at": "2026-10-10T00:41:40.000Z",
+      "completed_at": "2026-10-10T00:41:41.000Z",
+      "nodes": [],
+      "failure": "base_branch_missing",
+      "cancellations": [],
+      "dispositions": [],
+      "incident": false,
+      "artifacts": {}
+    },
+    {
+      "id": "20261010-032838-87e4",
+      "status": "cancelled",
+      "started_at": "2026-10-10T03:28:40.000Z",
+      "completed_at": "2026-10-10T03:29:49.000Z",
+      "nodes": [
+        {
+          "nodeId": "environment",
+          "state": "completed"
+        },
+        {
+          "nodeId": "start-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-voice-presets",
+          "state": "running"
+        }
+      ],
+      "failure": null,
+      "cancellations": [
+        {
+          "event_type": "workflow_cancelled",
+          "data": {
+            "cancel_reason": "operator"
+          }
+        }
+      ],
+      "dispositions": [],
+      "incident": false,
+      "artifacts": {}
+    },
+    {
+      "id": "20261010-062040-aa74",
+      "status": "completed",
+      "started_at": "2026-10-10T07:46:08.000Z",
+      "completed_at": "2026-10-10T07:48:56.000Z",
+      "nodes": [
+        {
+          "nodeId": "environment",
+          "state": "completed"
+        },
+        {
+          "nodeId": "start-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "attempt-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-iiqe-question-list-report",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-iiqe-question-list-report",
+          "state": "completed"
+        },
+        {
+          "nodeId": "repair-iiqe-question-list-report",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "settle-iiqe-question-list-report",
+          "state": "completed"
+        },
+        {
+          "nodeId": "diff-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "attempt-review-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "review-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "gate-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "fix-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "diff-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "attempt-review-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "review-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "gate-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "fix-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "diff-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "attempt-review-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "review-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "gate-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "land",
+          "state": "completed"
+        }
+      ],
+      "failure": null,
+      "cancellations": [],
+      "dispositions": [
+        {
+          "at": "2026-10-10T06:57:44.796Z",
+          "reason": "coder",
+          "action": "auto_retry",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T07:01:23.035Z",
+          "reason": "auto_retry_exhausted",
+          "action": "ask",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T07:07:10.244Z",
+          "reason": "auto_retry_exhausted",
+          "action": "ask",
+          "ok": true
+        }
+      ],
+      "incident": false,
+      "artifacts": {
+        "gate-m1-r1.json": {},
+        "verify-iiqe-question-list-report.json": {
+          "ok": true
+        },
+        "verify-iiqe-question-list-report.coder.json": {
+          "error_class": "task"
+        },
+        "settle-iiqe-question-list-report.json": {
+          "ok": true
+        },
+        "gate-m1-r1.review.json": {}
+      }
+    },
+    {
+      "id": "20261010-063513-6a28",
+      "status": "completed",
+      "started_at": "2026-10-10T07:47:07.000Z",
+      "completed_at": "2026-10-10T07:49:43.000Z",
+      "nodes": [
+        {
+          "nodeId": "environment",
+          "state": "completed"
+        },
+        {
+          "nodeId": "start-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "attempt-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-iiqe-question-list-polish",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-iiqe-question-list-polish",
+          "state": "completed"
+        },
+        {
+          "nodeId": "repair-iiqe-question-list-polish",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "settle-iiqe-question-list-polish",
+          "state": "completed"
+        },
+        {
+          "nodeId": "diff-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "attempt-review-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "review-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "gate-m1-r1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "fix-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "diff-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "attempt-review-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "review-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "gate-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "fix-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "diff-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "attempt-review-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "review-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "gate-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "land",
+          "state": "completed"
+        }
+      ],
+      "failure": null,
+      "cancellations": [],
+      "dispositions": [
+        {
+          "at": "2026-10-10T06:57:48.651Z",
+          "reason": "coder",
+          "action": "auto_retry",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T07:01:25.032Z",
+          "reason": "auto_retry_exhausted",
+          "action": "ask",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T07:08:21.395Z",
+          "reason": "auto_retry_exhausted",
+          "action": "ask",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T07:47:07.984Z",
+          "reason": "environment",
+          "action": "auto_retry",
+          "ok": true
+        }
+      ],
+      "incident": false,
+      "artifacts": {
+        "gate-m1-r1.json": {},
+        "verify-iiqe-question-list-polish.coder.json": {
+          "error_class": "task"
+        },
+        "verify-iiqe-question-list-polish.json": {
+          "ok": true
+        },
+        "settle-iiqe-question-list-polish.json": {
+          "ok": true
+        },
+        "gate-m1-r1.review.json": {}
+      }
+    },
+    {
+      "id": "20261010-044000-3bc3",
+      "status": "cancelled",
+      "started_at": "2026-10-10T04:40:01.000Z",
+      "completed_at": "2026-10-10T04:44:22.000Z",
+      "nodes": [
+        {
+          "nodeId": "environment",
+          "state": "completed"
+        },
+        {
+          "nodeId": "start-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-rpa_architecture",
+          "state": "running"
+        }
+      ],
+      "failure": null,
+      "cancellations": [
+        {
+          "event_type": "workflow_cancelled",
+          "data": {
+            "cancel_reason": "operator"
+          }
+        }
+      ],
+      "dispositions": [],
+      "incident": false,
+      "artifacts": {}
+    },
+    {
+      "id": "20261010-053353-9e81",
+      "status": "cancelled",
+      "started_at": "2026-10-10T05:33:55.000Z",
+      "completed_at": "2026-10-10T07:01:49.000Z",
+      "nodes": [
+        {
+          "nodeId": "environment",
+          "state": "completed"
+        },
+        {
+          "nodeId": "start-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "attempt-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-launch-runtime-config",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-launch-runtime-config",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-stable-signing-tcc",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-stable-signing-tcc",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-ui-tabs-themes",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-ui-tabs-themes",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-caption-overlays",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-caption-overlays",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-apple-translation-engine",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-apple-translation-engine",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-coreaudio-system-tap",
+          "state": "running"
+        }
+      ],
+      "failure": null,
+      "cancellations": [
+        {
+          "event_type": "workflow_cancelled",
+          "data": {
+            "cancel_reason": "operator"
+          }
+        }
+      ],
+      "dispositions": [],
+      "incident": false,
+      "artifacts": {
+        "verify-caption-overlays.coder.json": {
+          "error_class": "task"
+        },
+        "verify-stable-signing-tcc.json": {
+          "ok": false
+        },
+        "verify-apple-translation-engine.coder.json": {
+          "error_class": "task"
+        },
+        "verify-apple-translation-engine.json": {
+          "ok": false
+        },
+        "verify-caption-overlays.json": {
+          "ok": false
+        },
+        "verify-launch-runtime-config.json": {
+          "ok": false
+        },
+        "verify-stable-signing-tcc.coder.json": {
+          "error_class": "task"
+        },
+        "verify-launch-runtime-config.coder.json": {
+          "error_class": "task"
+        },
+        "verify-ui-tabs-themes.json": {
+          "ok": false
+        },
+        "verify-ui-tabs-themes.coder.json": {
+          "error_class": "task"
+        }
+      }
+    },
+    {
+      "id": "20261010-045248-6eb5",
+      "status": "cancelled",
+      "started_at": "2026-10-10T04:52:49.000Z",
+      "completed_at": "2026-10-10T05:00:12.000Z",
+      "nodes": [
+        {
+          "nodeId": "environment",
+          "state": "completed"
+        },
+        {
+          "nodeId": "start-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "attempt-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-rpa_vnext_architecture",
+          "state": "running"
+        }
+      ],
+      "failure": null,
+      "cancellations": [
+        {
+          "event_type": "workflow_cancelled",
+          "data": {
+            "cancel_reason": "operator"
+          }
+        }
+      ],
+      "dispositions": [],
+      "incident": false,
+      "artifacts": {}
+    },
+    {
+      "id": "20261010-070806-57e6",
+      "status": "cancelled",
+      "started_at": "2026-10-10T09:14:05.000Z",
+      "completed_at": "2026-10-10T09:22:37.000Z",
+      "nodes": [
+        {
+          "nodeId": "environment",
+          "state": "completed"
+        },
+        {
+          "nodeId": "start-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "attempt-m1",
+          "state": "completed"
+        },
+        {
+          "nodeId": "code-port-p1p5-onto-main",
+          "state": "completed"
+        },
+        {
+          "nodeId": "verify-port-p1p5-onto-main",
+          "state": "failed"
+        },
+        {
+          "nodeId": "repair-port-p1p5-onto-main",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "settle-port-p1p5-onto-main",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "code-macos-crates-system-tap",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "verify-macos-crates-system-tap",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "repair-macos-crates-system-tap",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "settle-macos-crates-system-tap",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "diff-m1-r1",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "attempt-review-m1-r1",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "review-m1-r1",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "gate-m1-r1",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "fix-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "diff-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "attempt-review-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "review-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "gate-m1-r2",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "fix-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "diff-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "attempt-review-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "review-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "gate-m1-r3",
+          "state": "skipped"
+        },
+        {
+          "nodeId": "land",
+          "state": "skipped"
+        }
+      ],
+      "failure": "unregistered_reason",
+      "cancellations": [
+        {
+          "event_type": "workflow_cancelled",
+          "data": {
+            "cancel_reason": "operator"
+          }
+        }
+      ],
+      "dispositions": [
+        {
+          "at": "2026-10-10T07:21:14.561Z",
+          "reason": "coder",
+          "action": "auto_retry",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T07:31:49.859Z",
+          "reason": "auto_retry_exhausted",
+          "action": "ask",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T07:36:34.124Z",
+          "reason": "auto_retry_exhausted",
+          "action": "ask",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T09:12:10.082Z",
+          "reason": "engine_suspect",
+          "action": "ask",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T09:14:06.493Z",
+          "reason": "engine_suspect",
+          "action": "resume",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T09:18:59.514Z",
+          "reason": "redline",
+          "action": "ask",
+          "ok": true
+        },
+        {
+          "at": "2026-10-10T09:22:37.588Z",
+          "reason": "redline",
+          "action": "reject",
+          "ok": true
+        }
+      ],
+      "incident": true,
+      "artifacts": {
+        "verify-port-p1p5-onto-main.json": {
+          "ok": true,
+          "reason": "coder_redline"
+        },
+        "verify-port-p1p5-onto-main.coder.json": {
+          "error_class": "task"
+        }
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "id": "20261010-120013-9969",
+      "state": "done",
+      "role": "strategist",
+      "card": "M2-astra-r3.md",
+      "started_at": "2026-10-10T12:00:13.824Z",
+      "ended_at": "2026-10-10T12:04:15.483Z",
+      "exit_code": 0
+    },
+    {
+      "id": "20261010-112201-ab51",
+      "state": "done",
+      "role": "strategist",
+      "card": "M2-astra-r2.md",
+      "started_at": "2026-10-10T11:22:01.411Z",
+      "ended_at": "2026-10-10T11:34:19.355Z",
+      "exit_code": 0
+    },
+    {
+      "id": "20261010-101306-8133",
+      "state": "done",
+      "role": "strategist",
+      "card": "M2-milestone-review.md",
+      "started_at": "2026-10-10T10:13:06.372Z",
+      "ended_at": "2026-10-10T10:29:17.028Z",
+      "exit_code": 0
+    },
+    {
+      "id": "20261010-101252-8715",
+      "state": "failed",
+      "role": "strategist",
+      "card": "M2-milestone-review.md",
+      "started_at": "2026-10-10T10:12:52.878Z",
+      "ended_at": "2026-10-10T10:12:52.973Z",
+      "exit_code": 1
+    }
+  ]
+}

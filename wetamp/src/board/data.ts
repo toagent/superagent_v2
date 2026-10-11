@@ -9,6 +9,7 @@ import { milestones, type Plan } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
 import { readEta, type Estimate } from './eta';
 import { confined, workflowRoles, type Role } from './workflow';
+import { memoryData } from '../memory';
 import {
   EXIT,
   artifactsOf,
@@ -23,11 +24,23 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  nativeState?: RunView['status'];
+  lastEvent?: string | null;
+  activeNodes?: { id: string; role: string | null; model: string | null }[];
   landed?: boolean;
   intervened?: boolean;
   archon_id?: string;
   coderModel?: string | null;
-  engine?: { title: string; milestones: string[]; currentMilestone: string | null; states: { id: string; state: string }[]; firstPass: boolean; round?: number; reason: string; dispositions: NonNullable<Ledger['dispositions']> };
+  engine?: {
+    title: string;
+    milestones: string[];
+    currentMilestone: string | null;
+    states: { id: string; state: string }[];
+    firstPass: boolean;
+    round?: number;
+    reason: string;
+    dispositions: NonNullable<Ledger['dispositions']>;
+  };
   model?: string | null;
   run_id: string;
   state: string;
@@ -54,6 +67,7 @@ export interface BoardRow {
 }
 
 export interface Snapshot {
+  reflection?: ReturnType<typeof memoryData>['reflection'];
   eta?: Record<string, Estimate>;
   heartbeat_ms?: number;
   asks?: Record<string, { status: string }>;
@@ -117,25 +131,147 @@ export function rowOf(
       ? { started_ms: startedMs, ended_ms: end }
       : null;
   let plan: Plan | undefined;
-  try { const file = confined(l, resolve(l.repo, l.plan)) ?? confined(l, join(l.gen_dir, 'plan.json')); if (file) { const value = JSON.parse(readFileSync(file, 'utf8')) as { packages?: (Plan['packages'][number] | null)[] }; if (Array.isArray(value.packages) && value.packages.every(p => p && typeof p.id === 'string' && typeof p.title === 'string' && (p.milestone === undefined || typeof p.milestone === 'string'))) plan = value as Plan; } } catch { /* Unavailable plan stays explicit. */ }
+  try {
+    const file = confined(l, resolve(l.repo, l.plan)) ?? confined(l, join(l.gen_dir, 'plan.json'));
+    if (file) {
+      const value = JSON.parse(readFileSync(file, 'utf8')) as {
+        packages?: (Plan['packages'][number] | null)[];
+      };
+      if (
+        Array.isArray(value.packages) &&
+        value.packages.every(
+          p =>
+            p &&
+            typeof p.id === 'string' &&
+            typeof p.title === 'string' &&
+            (p.milestone === undefined || typeof p.milestone === 'string')
+        )
+      )
+        plan = value as Plan;
+    }
+  } catch {
+    /* Unavailable plan stays explicit. */
+  }
   let ms: string[] = [];
-  try { if (plan) ms = milestones(plan).map(m => m.id); } catch { plan = undefined; }
-  const pkg = plan?.packages.find(p => ['code', 'verify', 'repair', 'settle'].some(k => current === `${k}-${p.id}`));
-  const currentMs = pkg ? pkg.milestone ?? 'm1' : ms.find(m => ['diff', 'review', 'fix', 'gate', 'human', 'attempt', 'start'].some(k => current === `${k}-${m}` || current?.startsWith(`${k}-${m}-`))) ?? (current === 'land' ? ms.at(-1) : null);
+  try {
+    if (plan) ms = milestones(plan).map(m => m.id);
+  } catch {
+    plan = undefined;
+  }
+  const pkg = plan?.packages.find(p =>
+    ['code', 'verify', 'repair', 'settle'].some(k => current === `${k}-${p.id}`)
+  );
+  const currentMs = pkg
+    ? (pkg.milestone ?? 'm1')
+    : (ms.find(m =>
+        ['diff', 'review', 'fix', 'gate', 'human', 'attempt', 'start'].some(
+          k => current === `${k}-${m}` || current?.startsWith(`${k}-${m}-`)
+        )
+      ) ?? (current === 'land' ? ms.at(-1) : null));
   const stats = summarize([{ ledger: l, run }]);
   let nodeReason = '';
-  try { const file = current ? confined(l, join(artifactsOf(run), current + '.json')) : null; const value: unknown = file ? JSON.parse(readFileSync(file, 'utf8')) : null; if (value && typeof value === 'object' && 'reason' in value && typeof value.reason === 'string') nodeReason = value.reason; } catch { /* Missing outcome provides no reason. */ }
+  try {
+    const file = current ? confined(l, join(artifactsOf(run), current + '.json')) : null;
+    const value: unknown = file ? JSON.parse(readFileSync(file, 'utf8')) : null;
+    if (value && typeof value === 'object' && 'reason' in value && typeof value.reason === 'string')
+      nodeReason = value.reason;
+  } catch {
+    /* Missing outcome provides no reason. */
+  }
   return {
-    engine: { title: plan?.packages[0]?.title ? `${plan.packages[0].title}${plan.packages.length > 1 ? ` +${String(plan.packages.length - 1)}` : ''}` : '任务标题未知', milestones: ms, currentMilestone: currentMs ?? null,
-      states: nodes.filter(n => !plan || !currentMs || !['code', 'verify', 'repair', 'settle'].some(k => n.nodeId.startsWith(k + '-')) || plan.packages.some(p => (p.milestone ?? 'm1') === currentMs && ['code', 'verify', 'repair', 'settle'].some(k => n.nodeId === `${k}-${p.id}`))).filter(n => !['diff', 'review', 'fix', 'gate', 'human'].some(k => n.nodeId.startsWith(k + '-')) || !currentMs || n.nodeId.startsWith(`${n.nodeId.split('-')[0]}-${currentMs}-`) || n.nodeId === `human-${currentMs}`).map(n => ({ id: n.nodeId, state: n.state })),
-      firstPass: c.state === 'completed' && ms.length > 0 && stats.first_pass === ms.length && !l.auto_retries?.length && !nodes.some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped'),
-      round: Math.max(0, ...Object.keys(stats).filter(k => k.startsWith('rounds:')).map(k => Number(k.slice(7))), ...nodes.filter(n => n.state !== 'skipped').map(n => Number(/-r(\d+)$/.exec(n.nodeId)?.[1] ?? 0))),
-      reason: l.reason ?? (nodeReason || undefined) ?? l.dispositions?.at(-1)?.reason ?? run.metadata?.stop_reason?.reason ?? '', dispositions: l.dispositions ?? [] },
-    landed: (() => { if (c.state !== 'completed' || !plan?.base_ref) return false; const land = evidenceJson(l, artifactsOf(run), 'land.json') as { head?: string } | undefined; return !!land?.head && /^[a-f0-9]{40,64}$/.test(land.head) && spawnSync('git', ['merge-base', '--is-ancestor', land.head, `refs/heads/${plan.base_ref.replace(/^origin\//, '')}`], { cwd: l.repo, timeout: 3000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).status === 0; })(),
-    intervened: (l.intervened ?? !!l.recoveries.length) || nodes.some(n => n.nodeId.startsWith('human-') && n.state === 'completed') || !!l.dispositions?.some(d => ['ask', 'approve', 'reject'].includes(d.action)),
+    engine: {
+      title: plan?.packages[0]?.title
+        ? `${plan.packages[0].title}${plan.packages.length > 1 ? ` +${String(plan.packages.length - 1)}` : ''}`
+        : '任务标题未知',
+      milestones: ms,
+      currentMilestone: currentMs ?? null,
+      states: nodes
+        .filter(
+          n =>
+            !plan ||
+            !currentMs ||
+            !['code', 'verify', 'repair', 'settle'].some(k => n.nodeId.startsWith(k + '-')) ||
+            plan.packages.some(
+              p =>
+                (p.milestone ?? 'm1') === currentMs &&
+                ['code', 'verify', 'repair', 'settle'].some(k => n.nodeId === `${k}-${p.id}`)
+            )
+        )
+        .filter(
+          n =>
+            !['diff', 'review', 'fix', 'gate', 'human'].some(k => n.nodeId.startsWith(k + '-')) ||
+            !currentMs ||
+            n.nodeId.startsWith(`${n.nodeId.split('-')[0]}-${currentMs}-`) ||
+            n.nodeId === `human-${currentMs}`
+        )
+        .map(n => ({ id: n.nodeId, state: n.state })),
+      firstPass:
+        c.state === 'completed' &&
+        ms.length > 0 &&
+        stats.first_pass === ms.length &&
+        !l.auto_retries?.length &&
+        !nodes.some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped'),
+      round: Math.max(
+        0,
+        ...Object.keys(stats)
+          .filter(k => k.startsWith('rounds:'))
+          .map(k => Number(k.slice(7))),
+        ...nodes
+          .filter(n => n.state !== 'skipped')
+          .map(n => Number(/-r(\d+)$/.exec(n.nodeId)?.[1] ?? 0))
+      ),
+      reason:
+        l.reason ??
+        (nodeReason || undefined) ??
+        l.dispositions?.at(-1)?.reason ??
+        run.metadata?.stop_reason?.reason ??
+        '',
+      dispositions: l.dispositions ?? [],
+    },
+    landed: (() => {
+      if (c.state !== 'completed' || !plan?.base_ref) return false;
+      const land = evidenceJson(l, artifactsOf(run), 'land.json') as { head?: string } | undefined;
+      return (
+        !!land?.head &&
+        /^[a-f0-9]{40,64}$/.test(land.head) &&
+        spawnSync(
+          'git',
+          [
+            'merge-base',
+            '--is-ancestor',
+            land.head,
+            `refs/heads/${plan.base_ref.replace(/^origin\//, '')}`,
+          ],
+          { cwd: l.repo, timeout: 3000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }
+        ).status === 0
+      );
+    })(),
+    intervened:
+      (l.intervened ?? !!l.recoveries.length) ||
+      nodes.some(n => n.nodeId.startsWith('human-') && n.state === 'completed') ||
+      !!l.dispositions?.some(d => ['ask', 'approve', 'reject'].includes(d.action)),
+    nativeState: run.status,
+    lastEvent: run.last_activity_at,
+    activeNodes: nodes
+      .filter(n => n.state === 'running')
+      .map(n => {
+        const m = n.execution?.binding.model;
+        return {
+          id: n.nodeId,
+          role: opts.roles?.get(n.nodeId) ?? null,
+          model: m?.resolved.source === 'provider' ? m.resolved.value : (m?.requested ?? null),
+        };
+      }),
     archon_id: l.archon_run_id,
-    coderModel: (() => { const m = nodes.find(n => opts.roles?.get(n.nodeId) === 'coder' && n.execution?.binding.model)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
-    model: (() => { const m = nodes.find(n => n.nodeId === current)?.execution?.binding.model; return m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? null; })(),
+    coderModel: (() => {
+      const m = nodes.find(n => opts.roles?.get(n.nodeId) === 'coder' && n.execution?.binding.model)
+        ?.execution?.binding.model;
+      return m?.resolved.source === 'provider' ? m.resolved.value : (m?.requested ?? null);
+    })(),
+    model: (() => {
+      const m = nodes.find(n => n.nodeId === current)?.execution?.binding.model;
+      return m?.resolved.source === 'provider' ? m.resolved.value : (m?.requested ?? null);
+    })(),
     run_id: l.run_id,
     state: c.state,
     exit: c.exit,
@@ -182,11 +318,19 @@ export function unreadableRow(id: string, error: string, l?: Ledger): BoardRow {
   };
 }
 
-function safeRowOf(l: Ledger, run: RunView | Error, opts: Parameters<typeof rowOf>[2], unreadable: string[]): BoardRow {
-  try { if (run instanceof Error) throw run; return rowOf(l, run, opts); }
-  catch (e) {
+function safeRowOf(
+  l: Ledger,
+  run: RunView | Error,
+  opts: Parameters<typeof rowOf>[2],
+  unreadable: string[]
+): BoardRow {
+  try {
+    if (run instanceof Error) throw run;
+    return rowOf(l, run, opts);
+  } catch (e) {
     const error = tail((e as Error).message, 200);
-    if (!unreadable.some(s => s.startsWith(`${l.run_id}:`))) unreadable.push(`${l.run_id}: ${error}`);
+    if (!unreadable.some(s => s.startsWith(`${l.run_id}:`)))
+      unreadable.push(`${l.run_id}: ${error}`);
     return unreadableRow(l.run_id, error, l);
   }
 }
@@ -232,9 +376,10 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, limit);
-    const ledgers = new Map(ids.map(({id}) => [id, readLedger(id)]));
-    const refs = [...ledgers.values()].flatMap(l => typeof l === 'string'
-      ? [] : [{ run_id: l.run_id, cwd: l.repo, launcher: l.launcher }]);
+    const ledgers = new Map(ids.map(({ id }) => [id, readLedger(id)]));
+    const refs = [...ledgers.values()].flatMap(l =>
+      typeof l === 'string' ? [] : [{ run_id: l.run_id, cwd: l.repo, launcher: l.launcher }]
+    );
     const activity = loadActivity(now, signal, refs);
     const results = await mapPool(ids, PARALLEL, async ({ id, mtimeMs }) => {
       const l = ledgers.get(id);
@@ -276,8 +421,29 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     s.unreadable = [...new Set([...bad, ...(s.unreadable as string[])])];
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
     let asks: Snapshot['asks'];
-    try { asks = JSON.parse(readFileSync(join(home().sa, 'asks.json'), 'utf8')) as Snapshot['asks']; } catch { /* Missing asks is not proof of a decision. */ }
-    return { heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })?.mtimeMs, asks, summary: s, rows, at: new Date(now).toISOString(), activity: await activity, usage: readUsage(), eta: readEta() };
+    try {
+      asks = JSON.parse(readFileSync(join(home().sa, 'asks.json'), 'utf8')) as Snapshot['asks'];
+    } catch {
+      /* Missing asks is not proof of a decision. */
+    }
+    let reflection: Snapshot['reflection'];
+    try {
+      reflection = memoryData(now).reflection;
+    } catch {
+      /* Missing memory remains unknown. */
+    }
+    return {
+      reflection,
+      heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })
+        ?.mtimeMs,
+      asks,
+      summary: s,
+      rows,
+      at: new Date(now).toISOString(),
+      activity: await activity,
+      usage: readUsage(),
+      eta: readEta(),
+    };
   };
 }
 

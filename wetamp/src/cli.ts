@@ -2,7 +2,14 @@
 import { installMode } from './install-mode';
 import { confined, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
-import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask as BaseAsk } from './cockpit-signals';
+import { lintPlan, memoryData, memoryTick } from './memory';
+import {
+  askKey,
+  cockpitSignals,
+  supersedeAsks,
+  type HoldSignal,
+  type Ask as BaseAsk,
+} from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
@@ -74,6 +81,7 @@ const OPTIONS = {
   hint: { type: 'string' },
   fake: { type: 'boolean' },
   'skip-selftest': { type: 'boolean' },
+  'lint-override': { type: 'string' },
   cwd: { type: 'string' },
   once: { type: 'boolean' },
   interval: { type: 'string' },
@@ -88,6 +96,7 @@ const OPTIONS = {
   since: { type: 'string' },
   refresh: { type: 'boolean' },
   reconciled: { type: 'string' }, // explicit external-effect reconciliation, bound to a run snapshot
+  'dry-run': { type: 'boolean' },
   open: { type: 'boolean' },
 } as const;
 interface Args {
@@ -113,6 +122,7 @@ export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 
 export interface Ledger {
+  plan_lint?: ReturnType<typeof lintPlan>;
   /** Explicit workflow identity; engine_hash alone may be the legacy combined UI hash. */
   workflow_hash?: string;
   engine_hash?: string;
@@ -262,10 +272,12 @@ export const gatesOf = (art: string): string[] =>
         .sort()
     : [];
 export const evidenceJson = (l: Ledger, art: string, file: string): unknown => {
-  const path = confined(l, join(art, file)); return path ? readJson(path) : undefined;
+  const path = confined(l, join(art, file));
+  return path ? readJson(path) : undefined;
 };
 export const evidenceGates = (l: Ledger, art: string): string[] => {
-  const path = confined(l, art); return path ? gatesOf(path).filter(f => confined(l, join(path, f))) : [];
+  const path = confined(l, art);
+  return path ? gatesOf(path).filter(f => confined(l, join(path, f))) : [];
 };
 /** 将军输出存档（sa-check accept 写的 `<tag>.coder.json`），可按里程碑过滤。 */
 interface CoderOut {
@@ -276,7 +288,10 @@ interface CoderOut {
 }
 const codersOf = (art: string, m?: string, l?: Ledger): CoderOut[] =>
   (existsSync(art) ? readdirSync(art).filter(f => f.endsWith('.coder.json')) : [])
-    .map(f => ({ ...((l ? evidenceJson(l, art, f) : readJson(join(art, f))) as CoderOut), tag: f.slice(0, -'.coder.json'.length) }))
+    .map(f => ({
+      ...((l ? evidenceJson(l, art, f) : readJson(join(art, f))) as CoderOut),
+      tag: f.slice(0, -'.coder.json'.length),
+    }))
     .filter(c => m === undefined || c.milestone === m);
 /** 聚合 needs[]（每条带来源 tag）：status/brief/board 展示，自动重试据此保持 held。 */
 export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
@@ -323,12 +338,16 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     ...(c.state === 'failed' ? failure(l, run, c.node) : {}),
     ...(c.state === 'completed'
       ? {
-          land: (evidenceJson(l, art, 'land.json') as { commands?: string[] } | undefined)?.commands,
+          land: (evidenceJson(l, art, 'land.json') as { commands?: string[] } | undefined)
+            ?.commands,
         }
       : {}),
     evidence: art,
     ...(c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown'
-      ? { action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.` } : {}),
+      ? {
+          action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.`,
+        }
+      : {}),
     recoveries: l.recoveries.length,
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
@@ -386,12 +405,29 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     const reason = nodeReason(l, run, c);
     const pkg = c.node.replace(/^(verify|settle|code|repair)-/, '');
     // settle 是修复后的复验；其红证据不能被首次 verify 的旧绿证据覆盖。
-    const evidence = join(artifactsOf(run), `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`);
-    const verify = evidenceJson(l, artifactsOf(run), `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`) as { ok?: boolean } | null;
+    const evidence = join(
+      artifactsOf(run),
+      `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`
+    );
+    const verify = evidenceJson(
+      l,
+      artifactsOf(run),
+      `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`
+    ) as { ok?: boolean } | null;
     const started = run.nodes?.find(n => n.nodeId === c.node)?.startedAt;
-    const current = !started || !/^(code|repair)-/.test(c.node) || (existsSync(evidence) && statSync(evidence).mtimeMs >= Date.parse(started));
+    const current =
+      !started ||
+      !/^(code|repair)-/.test(c.node) ||
+      (existsSync(evidence) && statSync(evidence).mtimeMs >= Date.parse(started));
     const deliberate = ['needs', 'redline', 'budget', 'coder_blocked'].includes(reasonHold(reason));
-    if ((reason && !reasonOf(reason)) || (/^(verify|settle)-/.test(c.node) && !reason) || (/^(verify|settle|code|repair)-/.test(c.node) && current && verify?.ok === true && !deliberate))
+    if (
+      (reason && !reasonOf(reason)) ||
+      (/^(verify|settle)-/.test(c.node) && !reason) ||
+      (/^(verify|settle|code|repair)-/.test(c.node) &&
+        current &&
+        verify?.ok === true &&
+        !deliberate)
+    )
       return { ...c, state: 'held:engine_suspect', exit: EXIT.held };
   }
   return c.state === 'owner_lost' && stalledOut(l, run)
@@ -422,8 +458,13 @@ function recoverRun(
       Object.assign(l, loadLedger(l.run_id));
       if (run.status === 'completed') return 'status completed is not resumable';
       if (auto?.deterministic) {
-        if (workflowIdentity(l) === engineHash() || l.auto_retries?.some(r => r.engine_hash === auto.engine_hash)) return 'deterministic retry already used for this engine';
-        if (!['failed', 'cancelled'].includes(run.status)) return 'deterministic retry requires terminal adopt';
+        if (
+          workflowIdentity(l) === engineHash() ||
+          l.auto_retries?.some(r => r.engine_hash === auto.engine_hash)
+        )
+          return 'deterministic retry already used for this engine';
+        if (!['failed', 'cancelled'].includes(run.status))
+          return 'deterministic retry requires terminal adopt';
         // 先记一次授权的尝试：启动失败也不重复烧同一指纹的调用。
         (l.auto_retries ??= []).push(auto);
         saveLedger(l);
@@ -517,9 +558,7 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
         ...summary(
           l,
           run,
-          held
-            ? { state: `held:${r.reason}`, exit: EXIT.held }
-            : { ...c, exit: EXIT.failed }
+          held ? { state: `held:${r.reason}`, exit: EXIT.held } : { ...c, exit: EXIT.failed }
         ),
         reason: r.reason,
         ...(r.held ? { action: r.action, snapshot: r.snapshot, nodes: r.nodes } : {}),
@@ -537,7 +576,8 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 const MIN_FREE_GB = 2;
 
 function preflight(skipSelftest: boolean): void {
-  if (installMode() === 'worker') throw new Error('preflight: mode=worker; run requires the controller install');
+  if (installMode() === 'worker')
+    throw new Error('preflight: mode=worker; run requires the controller install');
   const { sa } = home();
   const fs = statfsSync(sa);
   if ((fs.bavail * fs.bsize) / 2 ** 30 < MIN_FREE_GB)
@@ -555,40 +595,74 @@ function startRun(planPath: string, a: Args): number {
   let phase: 'preflight' | 'admission' | 'engine' = 'preflight';
   let release: (() => void) | undefined;
   let mode: 'controller' | 'worker' | 'unknown' = 'unknown';
+  let plan_lint: ReturnType<typeof lintPlan> | undefined;
   try {
     mode = installMode();
     preflight(a.flags['skip-selftest'] ?? false);
     const plan = loadPlan(planPath);
+    plan_lint = lintPlan(plan, a.flags['lint-override']);
+    if (plan_lint.rejected)
+      throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
     phase = 'admission';
     const admission = admitRun(runCapacity());
     if (!admission.ok) {
       print({
-        ok: false, phase, status: 'rejected', exit: EXIT_ADMISSION,
-        reason: admission.reason, capacity: admission.capacity, active: admission.active,
+        ok: false,
+        phase,
+        status: 'rejected',
+        exit: EXIT_ADMISSION,
+        reason: admission.reason,
+        capacity: admission.capacity,
+        active: admission.active,
       });
       return EXIT_ADMISSION;
     }
     release = admission.release;
     phase = 'preflight';
-    const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+    const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: QUERY_TIMEOUT_MS,
+    });
     if (checked.exitCode !== 0) {
       const reason = lastJson(checked.stdout.toString())?.reason;
-      throw new Error(typeof reason === 'string' ? reason : 'preflight: base branch inspection failed');
+      throw new Error(
+        typeof reason === 'string' ? reason : 'preflight: base branch inspection failed'
+      );
     }
     const drift = aliasDrift(plan.repo);
     if (drift.length) {
-      const failure = { run_id: run, ok: false, phase, reason: 'alias_drift', drift, fix: 'wetamp/scripts/install.sh' };
+      const failure = {
+        run_id: run,
+        ok: false,
+        phase,
+        reason: 'alias_drift',
+        drift,
+        fix: 'wetamp/scripts/install.sh',
+      };
       mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
-      writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
+      writeAtomic(
+        join(home().sa, 'launch-failures', `${run}.json`),
+        JSON.stringify(failure) + '\n'
+      );
       print(failure);
       return EXIT_ALIAS_DRIFT;
     }
     phase = 'engine';
     const gen = generate(plan, run, a.flags.fake ?? false);
     const branch = `sa/${run}`;
-    const args = ['workflow', 'run', gen.workflow, '--workflow-source', gen.dir, '--cwd', plan.repo];
+    const args = [
+      'workflow',
+      'run',
+      gen.workflow,
+      '--workflow-source',
+      gen.dir,
+      '--cwd',
+      plan.repo,
+    ];
     args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
     const l: Ledger = {
+      plan_lint,
       run_id: run,
       engine_hash: gen.engine_hash,
       workflow_hash: gen.engine_hash,
@@ -621,10 +695,24 @@ function startRun(planPath: string, a: Args): number {
     mkdirSync(join(home().sa, 'runs'), { recursive: true });
     saveLedger(l);
     rmSync(intentPath(run), { force: true });
-    print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir, mode: 'controller' });
+    print({
+      run_id: run,
+      archon_run_id: l.archon_run_id,
+      branch,
+      gen_dir: gen.dir,
+      mode: 'controller',
+      plan_lint,
+    });
     return 0;
   } catch (e) {
-    const failure = { run_id: run, ok: false, phase, mode, reason: redact((e as Error).message) };
+    const failure = {
+      run_id: run,
+      ok: false,
+      phase,
+      mode,
+      plan_lint,
+      reason: redact((e as Error).message),
+    };
     mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
     writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
     print(failure);
@@ -769,9 +857,13 @@ const PAST_DEADLINE =
 
 /** Read actual generated nodes: old workflows retain their milestone-only retry semantics. */
 const attemptable = (l: Ledger, scope: string): boolean =>
-  workflowRoles(l)?.has(scope.startsWith('pkg/') ? `package-attempt-${scope.slice(4)}` : `attempt-${scope}`) ?? false;
+  workflowRoles(l)?.has(
+    scope.startsWith('pkg/') ? `package-attempt-${scope.slice(4)}` : `attempt-${scope}`
+  ) ?? false;
 const retryScope = (l: Ledger, node: string): string => {
-  const pkg = /^(verify|settle|code|repair)-/.test(node) ? node.replace(/^(verify|settle|code|repair)-/, '') : '';
+  const pkg = /^(verify|settle|code|repair)-/.test(node)
+    ? node.replace(/^(verify|settle|code|repair)-/, '')
+    : '';
   return pkg && attemptable(l, `pkg/${pkg}`) ? `pkg/${pkg}` : milestoneOf(l, node);
 };
 /** always_run reads this scope count; only dependent nodes lose their resume cache. */
@@ -803,23 +895,49 @@ function retryGate(
   const m = retryScope(l, node);
   if (!attemptable(l, m))
     throw new Error(`decide retry: ${node} escalated; fix on ${l.branch} or start a new run`);
-  return recoverRun(l, fresh, auto, () => {
-    if (key && (readJson(join(l.gen_dir, 'budget-extra')) as { key?: string } | null)?.key === key)
-      return;
-    bumpAttempt(l, m);
-    prepare?.();
-  }, effect => onEffect?.(effect.action === 'adopt' ? effect : {
-    action: m.startsWith('pkg/') ? 'retry_package' : node.startsWith('review-') ? 'review' : 'retry_milestone',
-    target: m.startsWith('pkg/') ? m.slice(4) : m, engine_run: effect.engine_run,
-  }));
+  return recoverRun(
+    l,
+    fresh,
+    auto,
+    () => {
+      if (
+        key &&
+        (readJson(join(l.gen_dir, 'budget-extra')) as { key?: string } | null)?.key === key
+      )
+        return;
+      bumpAttempt(l, m);
+      prepare?.();
+    },
+    effect =>
+      onEffect?.(
+        effect.action === 'adopt'
+          ? effect
+          : {
+              action: m.startsWith('pkg/')
+                ? 'retry_package'
+                : node.startsWith('review-')
+                  ? 'review'
+                  : 'retry_milestone',
+              target: m.startsWith('pkg/') ? m.slice(4) : m,
+              engine_run: effect.engine_run,
+            }
+      )
+  );
 }
 
 const scopedRetry = (l: Ledger, c: Classified, node: string): boolean =>
-  c.state === 'held:gate' || /^(verify|settle)-/.test(node) ||
+  c.state === 'held:gate' ||
+  /^(verify|settle)-/.test(node) ||
   (/^(code|repair)-/.test(node) && retryScope(l, node).startsWith('pkg/'));
 
 /** Package holds bump their own count; gates bump the milestone; old coder nodes resume. */
-const retry = (l: Ledger, c: Classified, prepare?: () => void, key?: string, onEffect?: (effect: DecisionEffect) => void): RecoverResult =>
+const retry = (
+  l: Ledger,
+  c: Classified,
+  prepare?: () => void,
+  key?: string,
+  onEffect?: (effect: DecisionEffect) => void
+): RecoverResult =>
   scopedRetry(l, c, c.node ?? '')
     ? retryGate(l, c.node ?? '', true, undefined, prepare, key, onEffect)
     : recoverRun(l, true, undefined, prepare, onEffect);
@@ -846,10 +964,17 @@ function decide(l: Ledger, a: Args): number {
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
   if (!holdOf(l, run, c)) {
-    print({ run_id: l.run_id, ok: false, reason: `decide refused: run ${run.status} is not currently held` });
+    print({
+      run_id: l.run_id,
+      ok: false,
+      reason: `decide refused: run ${run.status} is not currently held`,
+    });
     return 1;
   }
-  if (['approve', 'reject', 'retry'].includes(action)) updateLedger(l, cur => { cur.intervened = true; });
+  if (['approve', 'reject', 'retry'].includes(action))
+    updateLedger(l, cur => {
+      cur.intervened = true;
+    });
   if (action === 'approve') {
     if (pastDeadline(l)) {
       print({ run_id: l.run_id, ok: false, reason: PAST_DEADLINE });
@@ -953,21 +1078,45 @@ type DecisionEffect =
   | { action: 'approve' | 'reject' | 'resume' | 'adopt'; engine_run: string }
   | { action: 'retry_package' | 'retry_milestone' | 'review'; engine_run: string; target: string };
 /** Only engine identifiers and the acknowledged execution branch enter a receipt. */
-function decisionReceipt(run: string, node: string, answer: 'yes' | 'no', effect: DecisionEffect): string {
+function decisionReceipt(
+  run: string,
+  node: string,
+  answer: 'yes' | 'no',
+  effect: DecisionEffect
+): string {
   const name = (v: string): string => askName(v, 80);
   let action: string;
   switch (effect.action) {
-    case 'approve': action = '已批准等待门并提交续跑'; break;
-    case 'reject': action = '已终止整个run（保留证据）'; break;
-    case 'resume': action = '已提交原run续跑'; break;
-    case 'adopt': action = '已新开run从首个节点重跑'; break;
-    case 'retry_package': action = `已提交包${name(effect.target)}编码→验收重跑`; break;
-    case 'retry_milestone': action = `已提交里程碑${name(effect.target)}全部包重跑`; break;
-    case 'review': action = `已提交${name(effect.target)}本轮评审重跑`; break;
+    case 'approve':
+      action = '已批准等待门并提交续跑';
+      break;
+    case 'reject':
+      action = '已终止整个run（保留证据）';
+      break;
+    case 'resume':
+      action = '已提交原run续跑';
+      break;
+    case 'adopt':
+      action = '已新开run从首个节点重跑';
+      break;
+    case 'retry_package':
+      action = `已提交包${name(effect.target)}编码→验收重跑`;
+      break;
+    case 'retry_milestone':
+      action = `已提交里程碑${name(effect.target)}全部包重跑`;
+      break;
+    case 'review':
+      action = `已提交${name(effect.target)}本轮评审重跑`;
+      break;
   }
   return `run=${name(run)}；节点=${name(node) || '未指定'}；答复=${answer === 'yes' ? '是' : '否'}；${action}；去向=${name(effect.engine_run)}；结果=动作已受理（不代表后续验收通过）`;
 }
-interface AnswerReceipt { key: string; body: string; delivery: 'pending' | 'sent' | 'failed'; error?: string }
+interface AnswerReceipt {
+  key: string;
+  body: string;
+  delivery: 'pending' | 'sent' | 'failed';
+  error?: string;
+}
 type Ask = BaseAsk & { receipt?: AnswerReceipt };
 export type Asks = Partial<Record<string, Ask>>;
 
@@ -1017,7 +1166,15 @@ function supervisor(args: string[]): string {
 }
 
 /** Persist consumption before notification; a notification failure cannot replay the action. */
-function consumeAnswer(l: Ledger, node: string, key: string, a: Ask, answer: 'yes' | 'no', effect: DecisionEffect, asks: Asks): void {
+function consumeAnswer(
+  l: Ledger,
+  node: string,
+  key: string,
+  a: Ask,
+  answer: 'yes' | 'no',
+  effect: DecisionEffect,
+  asks: Asks
+): void {
   a.status = answer === 'yes' ? 'approved' : 'rejected';
   a.receipt = {
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
@@ -1033,8 +1190,17 @@ function deliverReceipts(asks: Asks, out: Action[]): void {
     const receipt = a?.receipt;
     if (receipt?.delivery !== 'pending') continue;
     try {
-      const result: unknown = JSON.parse(supervisor(['notify', '--key', receipt.key,
-        '--title', `[回执] superagent ${askName(key.split(':')[0], 80)}`, '--body', receipt.body]));
+      const result: unknown = JSON.parse(
+        supervisor([
+          'notify',
+          '--key',
+          receipt.key,
+          '--title',
+          `[回执] superagent ${askName(key.split(':')[0], 80)}`,
+          '--body',
+          receipt.body,
+        ])
+      );
       if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== true)
         throw new Error('supervisor notify: delivery not confirmed');
       receipt.delivery = 'sent';
@@ -1075,8 +1241,10 @@ function askRecords(): { records: { id: string; question: string }[]; anomalous:
  * 一条提醒的投递与对账（签收与挂起共用）。≤200字的标题末尾是 key 的128位摘要，旧前缀仍可找回。
  * 先落 unknown 再调 ask；supervisor 先落盘再投递，失败或崩溃时先对账，找不到才重投；多条匹配不猜。
  */
-const askMarker = (key: string): string => `[sa:${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}]`;
-const matchesAsk = (question: string, key: string): boolean => question.endsWith(`；${askMarker(key)}`) || question.startsWith(`superagent ${key} `);
+const askMarker = (key: string): string =>
+  `[sa:${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}]`;
+const matchesAsk = (question: string, key: string): boolean =>
+  question.endsWith(`；${askMarker(key)}`) || question.startsWith(`superagent ${key} `);
 function pollAsk(
   key: string,
   text: () => string,
@@ -1088,7 +1256,9 @@ function pollAsk(
   if (a !== undefined && a.id === undefined) {
     const { records, anomalous } = askRecords();
     if (anomalous) note = `${String(anomalous)} anomalous ask records`;
-    const found = records.filter(r => matchesAsk(r.question, key) || (a?.legacy_key && matchesAsk(r.question, a.legacy_key)));
+    const found = records.filter(
+      r => matchesAsk(r.question, key) || (a?.legacy_key && matchesAsk(r.question, a.legacy_key))
+    );
     if (found.length > 1)
       return {
         conflict: `ask ${key}: ${String(found.length)} supervisor asks match${note ? `; ${note}` : ''}`,
@@ -1133,7 +1303,12 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   const base = { run_id: l.run_id, event: w.event };
   // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
-  const p = pollAsk(key, () => decisionQuestion(l, run, classifyRun(l, run), 'signoff'), ttlHours(Date.parse(w.resumeAt)), asks);
+  const p = pollAsk(
+    key,
+    () => decisionQuestion(l, run, classifyRun(l, run), 'signoff'),
+    ttlHours(Date.parse(w.resumeAt)),
+    asks
+  );
   if ('conflict' in p)
     return { ...base, action: 'none', ok: false, reason: `${p.conflict}; decide approve|reject` };
   const b = { ...base, ...(p.note ? { reason: p.note } : {}) };
@@ -1144,12 +1319,30 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     if (pastDeadline(l)) return expireRun(l, run, asks, base);
     const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
     const r = signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
-    if (r.ok) consumeAnswer(l, w.nodeId, key, p.a, 'yes', { action: 'approve', engine_run: l.archon_run_id }, asks);
+    if (r.ok)
+      consumeAnswer(
+        l,
+        w.nodeId,
+        key,
+        p.a,
+        'yes',
+        { action: 'approve', engine_run: l.archon_run_id },
+        asks
+      );
     return { ...b, action: 'approve', ...r };
   }
   if (p.a.status === 'no') {
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-    if (ok) consumeAnswer(l, w.nodeId, key, p.a, 'no', { action: 'reject', engine_run: l.archon_run_id }, asks);
+    if (ok)
+      consumeAnswer(
+        l,
+        w.nodeId,
+        key,
+        p.a,
+        'no',
+        { action: 'reject', engine_run: l.archon_run_id },
+        asks
+      );
     return { ...b, action: 'reject', ok };
   }
   // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
@@ -1179,21 +1372,37 @@ function askHold(
 ): Action {
   const key = askKey(l.run_id, hold, holdEpisode(l, run, c));
   const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
-  const r = pollAsk(key, () => decisionQuestion(l, run, c, hold, extra), ttlHours(Date.parse(planOf(l).deadline)), asks);
+  const r = pollAsk(
+    key,
+    () => decisionQuestion(l, run, c, hold, extra),
+    ttlHours(Date.parse(planOf(l).deadline)),
+    asks
+  );
   if ('conflict' in r)
     return { ...base, action: 'none', ok: false, error: `${r.conflict}; decide retry|reject` };
   const b = { ...base, ...(r.note ? { note: r.note } : {}) };
   if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
   if (r.a.status === 'yes') {
-    let effect: DecisionEffect | undefined = p.yes === 'approve' ? { action: 'approve', engine_run: l.archon_run_id } : undefined;
-    const onEffect = (actual: DecisionEffect): void => { effect = actual; };
+    let effect: DecisionEffect | undefined =
+      p.yes === 'approve' ? { action: 'approve', engine_run: l.archon_run_id } : undefined;
+    const onEffect = (actual: DecisionEffect): void => {
+      effect = actual;
+    };
     const res =
       p.yes === 'approve'
         ? approveRun(l)
         : p.yes === 'resume'
           ? recoverRun(l, true, undefined, undefined, onEffect)
           : p.yes === 'review'
-            ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, true, undefined, undefined, undefined, onEffect)
+            ? retryGate(
+                l,
+                `review-${(c.node ?? '').slice(5)}`,
+                true,
+                undefined,
+                undefined,
+                undefined,
+                onEffect
+              )
             : retry(
                 l,
                 c,
@@ -1216,7 +1425,16 @@ function askHold(
   }
   if (r.a.status === 'no') {
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-    if (ok) consumeAnswer(l, c.node ?? '', key, r.a, 'no', { action: 'reject', engine_run: l.archon_run_id }, asks);
+    if (ok)
+      consumeAnswer(
+        l,
+        c.node ?? '',
+        key,
+        r.a,
+        'no',
+        { action: 'reject', engine_run: l.archon_run_id },
+        asks
+      );
     return { ...b, action: 'reject', ok };
   }
   return { ...b, action: 'none', ok: true, ask: r.a.status };
@@ -1273,12 +1491,25 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
         const records = askRecords().records.filter(r => matchesAsk(r.question, key));
         if (records.length === 1) a.id = records[0].id;
       }
-      if (!a.id || Object.values(asks).some(live => live && live.id === a.id && live.status !== 'superseded')) continue;
-      try { a.stale_answer = ['yes', 'no'].includes(supervisor(['ask-status', a.id])); }
-      catch (e) { out.push({ run_id: 'asks', action: 'error', ok: false, error: tail((e as Error).message, 200) }); }
+      if (
+        !a.id ||
+        Object.values(asks).some(live => live && live.id === a.id && live.status !== 'superseded')
+      )
+        continue;
+      try {
+        a.stale_answer = ['yes', 'no'].includes(supervisor(['ask-status', a.id]));
+      } catch (e) {
+        out.push({
+          run_id: 'asks',
+          action: 'error',
+          ok: false,
+          error: tail((e as Error).message, 200),
+        });
+      }
     }
     saveAsks(asks);
   }
+  memoryTick(asks instanceof Error ? {} : asks);
   return { actions: out, ...cockpitSignals(observed, asks instanceof Error ? {} : asks) };
 }
 
@@ -1347,93 +1578,184 @@ function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
   return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? run.started_at ?? l.started_at}`;
 }
 /** 展示与实际 retryGate/resume 分支一致；settle 是包的最终验收节点。 */
-function decisionRecovery(l: Ledger, run: RunView, c: Classified, hold: Hold, limit: number, stage: number): [string, string] {
-  const p = HOLD_POLICY[hold], node = c.node ?? run.metadata?.wait?.nodeId ?? '恢复节点';
+function decisionRecovery(
+  l: Ledger,
+  run: RunView,
+  c: Classified,
+  hold: Hold,
+  limit: number,
+  stage: number
+): [string, string] {
+  const p = HOLD_POLICY[hold],
+    node = c.node ?? run.metadata?.wait?.nodeId ?? '恢复节点';
   if (p.do !== 'ask' || p.yes === 'approve') return ['', ''];
   const gate = p.yes === 'review' || (p.yes === 'retry' && scopedRetry(l, c, node));
   let target = `从${askName(node, limit)}续跑`;
   if (gate) {
     const m = milestoneOf(l, p.yes === 'review' ? `review-${(c.node ?? '').slice(5)}` : node);
-    if (!attemptable(l, p.yes === 'review' ? m : retryScope(l, node))) return [`重试${askName(m, limit)}（缺少attempt节点，无法重跑）`, ''];
+    if (!attemptable(l, p.yes === 'review' ? m : retryScope(l, node)))
+      return [`重试${askName(m, limit)}（缺少attempt节点，无法重跑）`, ''];
     if (p.yes === 'review') target = `重跑${askName(m, limit)}本轮评审`;
-    else if (retryScope(l, node) !== m) target = `重派${askName(node.replace(/^(verify|settle|code|repair)-/, ''), limit)}编码→验收`;
+    else if (retryScope(l, node) !== m)
+      target = `重派${askName(node.replace(/^(verify|settle|code|repair)-/, ''), limit)}编码→验收`;
     else {
       const pkgs = planOf(l).packages.filter(p => (p.milestone ?? 'm1') === m);
-      const done = pkgs.filter(p => run.nodes?.some(n => n.nodeId === `settle-${p.id}` && n.state === 'completed'));
-      const names = done.length <= 3 && stage === 0 ? done.map(p => askName(p.id, Math.min(8, limit))).join('、') : `${String(done.length)}包`;
+      const done = pkgs.filter(p =>
+        run.nodes?.some(n => n.nodeId === `settle-${p.id}` && n.state === 'completed')
+      );
+      const names =
+        done.length <= 3 && stage === 0
+          ? done.map(p => askName(p.id, Math.min(8, limit))).join('、')
+          : `${String(done.length)}包`;
       target = `${/^(verify|settle|code|repair)-/.test(node) && !adoptsRun(l, run) ? '旧工作流：' : ''}重跑${askName(m, limit)}全部${String(pkgs.length)}包（${done.length ? `含已完成${names}` : '无已完成包'}）`;
     }
   }
-  return [target, adoptsRun(l, run) ? (l.workflow_hash ? '（引擎已升级，将新开run从首个节点重跑）' : '（旧run身份未确认，将新开run从首个节点重跑）') : ''];
+  return [
+    target,
+    adoptsRun(l, run)
+      ? l.workflow_hash
+        ? '（引擎已升级，将新开run从首个节点重跑）'
+        : '（旧run身份未确认，将新开run从首个节点重跑）'
+      : '',
+  ];
 }
 /** 只展示注册原因、闭集枚举与数字；将军/评审自由文本只在 brief 中读取。 */
-export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: Hold, extra: Record<string, unknown> = {}): string {
-  const plan = planOf(l), node = c.node ?? run.metadata?.approval?.nodeId ?? '恢复节点';
+export function decisionQuestion(
+  l: Ledger,
+  run: RunView,
+  c: Classified,
+  hold: Hold,
+  extra: Record<string, unknown> = {}
+): string {
+  const plan = planOf(l),
+    node = c.node ?? run.metadata?.approval?.nodeId ?? '恢复节点';
   const m = hold === 'signoff' ? node.replace(/^human-/, '') : milestoneOf(l, node);
   const read = (f: string): Record<string, unknown> => {
-    try { return (evidenceJson(l, artifactsOf(run), f) as Record<string, unknown> | null) ?? {}; }
-    catch { return {}; }
+    try {
+      return (evidenceJson(l, artifactsOf(run), f) as Record<string, unknown> | null) ?? {};
+    } catch {
+      return {};
+    }
   };
-  const out = read(`${node}.json`), pkg = plan.packages.find(p => p.id === node.replace(/^(verify|settle|code|repair)-/, ''));
-  const reason = typeof out.reason === 'string' ? reasonOf(out.reason)?.description ?? '未注册原因（证据缺失）' : '证据缺失';
+  const out = read(`${node}.json`),
+    pkg = plan.packages.find(p => p.id === node.replace(/^(verify|settle|code|repair)-/, ''));
+  const reason =
+    typeof out.reason === 'string'
+      ? (reasonOf(out.reason)?.description ?? '未注册原因（证据缺失）')
+      : '证据缺失';
   const names = [basename(l.repo), pkg?.title ?? m, node];
   const progress = `已完成${String((run.nodes ?? []).filter(n => n.state === 'completed').length)}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
-  let detail = reason, compact = reason;
+  let detail = reason,
+    compact = reason;
   if (hold === 'needs') {
     let coders: CoderOut[] = [];
-    try { coders = codersOf(artifactsOf(run), m, l); } catch { /* 展示证据缺失 */ }
+    try {
+      coders = codersOf(artifactsOf(run), m, l);
+    } catch {
+      /* 展示证据缺失 */
+    }
     const needs = coders.find(x => x.tag === node)?.needs;
     detail = Array.isArray(needs) ? `能力请求${String(needs.length)}项` : '证据缺失';
   } else if (hold === 'budget') {
     detail = '证据缺失';
     try {
-      const ack = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as { events?: Parameters<typeof budgetUsage>[0] };
+      const ack = archonJson(
+        ['workflow', 'get', l.archon_run_id, '--verbose', '--events'],
+        l.repo
+      ) as { events?: Parameters<typeof budgetUsage>[0] };
       if (Array.isArray(ack.events)) {
         const u = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
-        const limits = effectiveBudget(plan.budget,
-          (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<typeof effectiveBudget>[1], m,
-          readAttempt(join(l.gen_dir, 'attempts', m)));
-        detail = `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
+        const limits = effectiveBudget(
+          plan.budget,
+          (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<
+            typeof effectiveBudget
+          >[1],
+          m,
+          readAttempt(join(l.gen_dir, 'attempts', m))
+        );
+        detail =
+          `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
           `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`;
-        compact = out.reason === 'budget_tokens_exceeded'
-          ? `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`
-          : `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}`;
+        compact =
+          out.reason === 'budget_tokens_exceeded'
+            ? `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`
+            : `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}`;
       }
-    } catch { /* 展示证据缺失 */ }
+    } catch {
+      /* 展示证据缺失 */
+    }
   } else if (hold === 'review_limit' || hold === 'review_not_independent') {
     const ledger = read(`${node}.ledger.json`);
-    detail = `轮次${typeof out.rounds === 'number' ? String(out.rounds) : '证据缺失'}，` +
+    detail =
+      `轮次${typeof out.rounds === 'number' ? String(out.rounds) : '证据缺失'}，` +
       `未决${Array.isArray(ledger.blocking) ? String(ledger.blocking.length) : '证据缺失'}；${reason}`;
   } else if (hold === 'approval') detail = '等待批准';
   else if (hold === 'signoff') {
     let files: string[] = [];
-    try { files = evidenceGates(l, artifactsOf(run)); } catch { /* 展示证据缺失 */ }
-    const verdict = read(files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json').verdict;
+    try {
+      files = evidenceGates(l, artifactsOf(run));
+    } catch {
+      /* 展示证据缺失 */
+    }
+    const verdict = read(
+      files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json'
+    ).verdict;
     detail = `验收/评审${verdict === 'pass' ? '通过' : verdict === 'fix' ? '需修复' : verdict === 'escalate' ? '需升级处理' : '证据缺失'}`;
   } else if (hold !== 'redline' && hold !== 'coder_blocked') {
-    const check = Array.isArray(out.failed) ? out : read(`diff-${m}-r${String(typeof out.rounds === 'number' ? out.rounds : 1)}.json`);
+    const check = Array.isArray(out.failed)
+      ? out
+      : read(`diff-${m}-r${String(typeof out.rounds === 'number' ? out.rounds : 1)}.json`);
     if (Array.isArray(check.failed) && check.failed.length) {
       const failed = check.failed;
-      detail += `；失败检查${plan.packages.flatMap(p => p.accept.flatMap((a, i) =>
-        failed.includes(a.cmd) ? [`${askName(p.id, 4)}验收#${String(i + 1)}`] : [])).slice(0, 3).join('、') || '证据缺失'}`;
+      detail += `；失败检查${
+        plan.packages
+          .flatMap(p =>
+            p.accept.flatMap((a, i) =>
+              failed.includes(a.cmd) ? [`${askName(p.id, 4)}验收#${String(i + 1)}`] : []
+            )
+          )
+          .slice(0, 3)
+          .join('、') || '证据缺失'
+      }`;
     }
-    if (hold === 'auto_retry_exhausted') detail += `；已重试${String(typeof extra.auto_retries === 'number' ? extra.auto_retries : l.auto_retries?.length ?? 0)}次`;
-    if (hold === 'recover_no_progress') detail = `已恢复${String(l.stalled ?? 0)}次，完成节点集合未变化`;
+    if (hold === 'auto_retry_exhausted')
+      detail += `；已重试${String(typeof extra.auto_retries === 'number' ? extra.auto_retries : (l.auto_retries?.length ?? 0))}次`;
+    if (hold === 'recover_no_progress')
+      detail = `已恢复${String(l.stalled ?? 0)}次，完成节点集合未变化`;
   }
-  return askQuestion(hold, names, [`${detail}；${progress}`, `${compact}；${progress}`],
+  return askQuestion(
+    hold,
+    names,
+    [`${detail}；${progress}`, `${compact}；${progress}`],
     (limit, stage) => decisionRecovery(l, run, c, hold, limit, stage),
-    askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c))));
+    askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c)))
+  );
 }
 /** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
 function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action | undefined {
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
-  const row: HoldSignal = { run_id: l.run_id, since: run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? l.started_at, disposed: false };
+  const row: HoldSignal = {
+    run_id: l.run_id,
+    since:
+      run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? l.started_at,
+    disposed: false,
+  };
   observed.push(row);
-  if (c.state === 'held:engine_suspect') saveIncident(l.run_id, artifactsOf(run), c.node ?? '', planOf(l), { run: workflowIdentity(l) ?? null, current: engineHash() });
+  if (c.state === 'held:engine_suspect')
+    saveIncident(l.run_id, artifactsOf(run), c.node ?? '', planOf(l), {
+      run: workflowIdentity(l) ?? null,
+      current: engineHash(),
+    });
   if (c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown')
-    return { run_id: l.run_id, action: 'none', ok: false, held: true, state: c.state,
-      next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.` };
+    return {
+      run_id: l.run_id,
+      action: 'none',
+      ok: false,
+      held: true,
+      state: c.state,
+      next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.`,
+    };
   if (c.state === 'owner_lost')
     return record(l, 'owner_lost', { run_id: l.run_id, action: 'recover', ...recoverRun(l) });
   const need = (): Asks => {
@@ -1442,9 +1764,17 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
   };
   const act = (hold: Hold, extra: Record<string, unknown> = {}): Action | undefined => {
     row.hold = hold;
-    row.disposed = l.dispositions?.some(d => d.reason === hold && d.ok && Date.parse(d.at) >= Date.parse(row.since)) ?? false;
+    row.disposed =
+      l.dispositions?.some(
+        d => d.reason === hold && d.ok && Date.parse(d.at) >= Date.parse(row.since)
+      ) ?? false;
     const p: Policy = HOLD_POLICY[hold];
-    if (!(asks instanceof Error) && ['ask', 'signoff'].includes(p.do) && !(hold === 'signoff' && pastDeadline(l))) supersedeAsks(asks, l.run_id, hold, holdEpisode(l, run, c));
+    if (
+      !(asks instanceof Error) &&
+      ['ask', 'signoff'].includes(p.do) &&
+      !(hold === 'signoff' && pastDeadline(l))
+    )
+      supersedeAsks(asks, l.run_id, hold, holdEpisode(l, run, c));
     const x =
       p.do === 'signoff'
         ? human(l, run, need())
@@ -1457,12 +1787,19 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
               : autoRetry(l, run, c);
     if (Array.isArray(x)) return act(...x);
     row.disposed ||= !!x && x.action !== 'none' && x.ok;
-    if (!(asks instanceof Error) && !['ask', 'signoff', 'expire'].includes(p.do)) supersedeAsks(asks, l.run_id);
+    if (!(asks instanceof Error) && !['ask', 'signoff', 'expire'].includes(p.do))
+      supersedeAsks(asks, l.run_id);
     return x && record(l, hold, x);
   };
   const hold = holdOf(l, run, c);
   if (!hold && !(asks instanceof Error)) supersedeAsks(asks, l.run_id);
-  if (hold === 'engine_suspect' && workflowIdentity(l) && workflowIdentity(l) !== engineHash() && run.status === 'failed') return act('gate');
+  if (
+    hold === 'engine_suspect' &&
+    workflowIdentity(l) &&
+    workflowIdentity(l) !== engineHash() &&
+    run.status === 'failed'
+  )
+    return act('gate');
   return hold && act(hold);
 }
 
@@ -1559,16 +1896,29 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   ];
   if (needs.length) return hold('needs');
   if (codersOf(art, m).some(x => x.error_class === 'redline')) return hold('redline');
-  const cause = reasonOf(c.state === 'held:engine_suspect' ? 'engine_suspect' : nodeReason(l, run, c) || kind);
+  const cause = reasonOf(
+    c.state === 'held:engine_suspect' ? 'engine_suspect' : nodeReason(l, run, c) || kind
+  );
   if (!cause) return hold('engine_suspect');
   if (cause.hold === 'deadline') return hold('deadline');
   if (cause.hold === 'no_change') return hold('no_change');
-  if (cause.determinism === 'deterministic' && (!workflowIdentity(l) || workflowIdentity(l) === engineHash())) return hold('auto_retry_exhausted');
-  if (cause.determinism === 'deterministic' && l.auto_retries?.some(r => r.engine_hash === engineHash())) return hold('auto_retry_exhausted');
-  if (cause.determinism === 'deterministic' && !['failed', 'cancelled'].includes(run.status)) return hold('auto_retry_exhausted');
-  if (cause.determinism !== 'deterministic' && tries.length >= loadTiers().policy.auto_retry[kind]) return hold('auto_retry_exhausted');
+  if (
+    cause.determinism === 'deterministic' &&
+    (!workflowIdentity(l) || workflowIdentity(l) === engineHash())
+  )
+    return hold('auto_retry_exhausted');
+  if (
+    cause.determinism === 'deterministic' &&
+    l.auto_retries?.some(r => r.engine_hash === engineHash())
+  )
+    return hold('auto_retry_exhausted');
+  if (cause.determinism === 'deterministic' && !['failed', 'cancelled'].includes(run.status))
+    return hold('auto_retry_exhausted');
+  if (cause.determinism !== 'deterministic' && tries.length >= loadTiers().policy.auto_retry[kind])
+    return hold('auto_retry_exhausted');
   const pkgHold = /^(verify|settle)-/.test(node);
-  if ((kind === 'gate' || pkgHold) && !attemptable(l, retryScope(l, node))) return hold('no_attempt_node');
+  if ((kind === 'gate' || pkgHold) && !attemptable(l, retryScope(l, node)))
+    return hold('no_attempt_node');
   const last = tries.at(-1);
   if (kind === 'environment' && last) {
     const wait = Math.min(MAX_BACKOFF_S, BACKOFF_S * 2 ** (tries.length - 1)) * 1000;
@@ -1583,7 +1933,13 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
         next: new Date(next).toISOString(),
       };
   }
-  const auto = { milestone: m, at: new Date().toISOString(), reason, engine_hash: engineHash(), ...(cause.determinism === 'deterministic' ? { deterministic: true as const } : {}) };
+  const auto = {
+    milestone: m,
+    at: new Date().toISOString(),
+    reason,
+    engine_hash: engineHash(),
+    ...(cause.determinism === 'deterministic' ? { deterministic: true as const } : {}),
+  };
   let r: RecoverResult;
   if (kind === 'gate') {
     const text = gateHint(plan, art, node, gate, tries.length + 1);
@@ -1699,7 +2055,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <run <plan.json> [--fake] [--skip-selftest]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -1709,19 +2065,22 @@ function tickOutput(consoleError?: string): number {
 }
 
 /** Console availability must not gate the unattended heartbeat. */
-export async function superviseTickCli(refresh = async (): Promise<unknown> =>
-  (await import('./web/server')).refreshConsole(), sync = async (): Promise<unknown> =>
-  (await import('./orca')).syncOrca()): Promise<number> {
+export async function superviseTickCli(
+  refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(),
+  sync = async (): Promise<unknown> => (await import('./orca')).syncOrca()
+): Promise<number> {
   let error: string | undefined;
-  try { await refresh(); }
-  catch (e) {
+  try {
+    await refresh();
+  } catch (e) {
     error = e instanceof Error ? e.message : String(e);
     console.error(`supervise-tick: console refresh failed: ${error.replace(/[\r\n]+/g, ' ')}`);
   }
   const exit = tickOutput(error);
   try {
     const result = await sync();
-    if (result && typeof result === 'object' && 'error' in result) throw new Error(String(result.error));
+    if (result && typeof result === 'object' && 'error' in result)
+      throw new Error(String(result.error));
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`supervise-tick: orca sync failed: ${reason.replace(/[\r\n]+/g, ' ')}`);
@@ -1763,12 +2122,24 @@ export function main(argv: string[]): number {
     case 'recover': {
       const id = need(target, `${verb} <run>`);
       if (!existsSync(ledgerPath(id))) {
-        const res = recover(id, undefined, undefined, undefined, undefined, undefined, a.flags.reconciled); // 未登记：按 archon run id 处理（selftest 用）
+        const res = recover(
+          id,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          a.flags.reconciled
+        ); // 未登记：按 archon run id 处理（selftest 用）
         print({ run_id: id, ...res });
         return res.ok ? 0 : res.held ? EXIT.held : res.busy ? EXIT.running : 1;
       }
-      const l = loadLedger(id), code = resumeRun(l, false, a.flags.reconciled);
-      if (code === 0) updateLedger(l, cur => { cur.intervened = true; });
+      const l = loadLedger(id),
+        code = resumeRun(l, false, a.flags.reconciled);
+      if (code === 0)
+        updateLedger(l, cur => {
+          cur.intervened = true;
+        });
       return code;
     }
     case 'cancel': {
@@ -1810,6 +2181,9 @@ export function main(argv: string[]): number {
       const usage = r.usage as { unreadable: string[] };
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
+    case 'memory':
+      print(a.flags['dry-run'] ? memoryTick(loadAsks(), Date.now(), false, true) : memoryData());
+      return 0;
     case 'health':
       return health(a.flags.cwd);
     case 'board':
@@ -1843,9 +2217,9 @@ if (import.meta.main) {
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
     if (verb === 'supervise-tick') process.exit(await superviseTickCli());
-    if (verb === 'console' || verb === 'web') process.exit(await (await import('./web/server')).webCli(argv));
-    if (verb === 'job' || verb === 'jobs')
-      process.exit(await jobCli(argv));
+    if (verb === 'console' || verb === 'web')
+      process.exit(await (await import('./web/server')).webCli(argv));
+    if (verb === 'job' || verb === 'jobs') process.exit(await jobCli(argv));
     process.exit(main(argv));
   } catch (e) {
     console.error(`superagent: ${(e as Error).message}`);

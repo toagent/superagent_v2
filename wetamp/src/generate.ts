@@ -14,6 +14,7 @@ import {
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { REASONS } from './reasons';
+import { injectMemory } from './memory';
 import {
   MAX_ROUNDS,
   attemptPath,
@@ -56,6 +57,8 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 export const engineHash = (root = WETAMP): string => hashInputs(root, [
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
+  // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
+  'src/memory.ts', 'src/board/workflow.ts',
 ]);
 /** Shared by console restart and board refresh; includes their CLI/data consumers. */
 export const residentHash = (root = WETAMP): string => hashInputs(root, ['src'], engineHash(root));
@@ -609,8 +612,6 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   }
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
-  // prettier-ignore
-  writeFileSync(join(dir, 'engine.json'), JSON.stringify({ engine_hash, workflow_hash: engine_hash, fake }) + '\n');
   const tiers = loadTiers();
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
   if (plan.budget.weighted_tokens < floor)
@@ -628,6 +629,20 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
       renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p, mcp))
     );
   }
+  const lessons = injectMemory(
+    plan,
+    dir,
+    definition.nodes as {
+      id: string;
+      command?: unknown;
+      model?: unknown;
+      with?: Record<string, unknown>;
+    }[]
+  );
+  writeFileSync(
+    join(dir, 'engine.json'),
+    JSON.stringify({ engine_hash, workflow_hash: engine_hash, fake, lessons }) + '\n'
+  );
   writeFileSync(
     join(wfDir, `${workflow}.yaml`),
     YAML.stringify(definition, {

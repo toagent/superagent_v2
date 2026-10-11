@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   chmodSync,
   existsSync,
@@ -64,7 +64,6 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 echo "$*" >> "${stubDir}/calls"
 [ -f "${stubDir}/fail-$3" ] && { echo "archon down" >&2; exit 1; }
-[ -f "${stubDir}/cold-$3" ] && { rm "${stubDir}/cold-$3"; sleep 0.35; }
 [ -f "${stubDir}/hang-$3" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
 cat "${stubDir}/get-$3.json"
 `
@@ -108,8 +107,16 @@ function ledger(
     ...extra,
   };
   writeFileSync(ledgerFile(id), JSON.stringify(l));
-  writeFileSync(join(stubDir, `get-a-${id}.json`), JSON.stringify({ id: `a-${id}`,
-    ...(run.status === 'running' ? { metadata: { execution_owner: { host: hostname(), pid: process.pid } } } : {}), ...run }));
+  writeFileSync(
+    join(stubDir, `get-a-${id}.json`),
+    JSON.stringify({
+      id: `a-${id}`,
+      ...(run.status === 'running'
+        ? { metadata: { execution_owner: { host: hostname(), pid: process.pid } } }
+        : {}),
+      ...run,
+    })
+  );
   return l;
 }
 
@@ -214,15 +221,27 @@ describe('data rows', () => {
 
 describe('loader robustness', () => {
   const live = (id: string): Ledger =>
-    ledger(id, { status: 'running', metadata: { execution_owner: { host: hostname(), pid: process.pid } } });
+    ledger(id, {
+      status: 'running',
+      metadata: { execution_owner: { host: hostname(), pid: process.pid } },
+    });
   const orphans = (): string => {
     // Concurrent suites also start sleeps: only this stub's children belong to this assertion.
     const file = join(stubDir, 'children');
     if (!existsSync(file)) return '';
-    return readFileSync(file, 'utf8').trim().split('\n').filter(pid => {
-      try { process.kill(Number(pid), 0); return true; }
-      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; return false; }
-    }).join('\n');
+    return readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(pid => {
+        try {
+          process.kill(Number(pid), 0);
+          return true;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+          return false;
+        }
+      })
+      .join('\n');
   };
   const waitForReap = async (): Promise<void> => {
     const deadline = Date.now() + 5000;
@@ -231,10 +250,22 @@ describe('loader robustness', () => {
   };
 
   test('R2-D01 an external land.json symlink isolates one row across refreshes and report snapshots', async () => {
-    const output = join(root, 'out'), art = join(output, 'artifacts/runs/a-bad');
+    const output = join(root, 'out'),
+      art = join(output, 'artifacts/runs/a-bad');
     mkdirSync(art, { recursive: true });
-    writeFileSync(join(root, 'plan.json'), JSON.stringify({ base_ref: 'origin/main', packages: [{ id: 'p', title: 'p', risk: 'G0', accept: [] }] }));
-    const run: RunView = { id: 'a-bad', status: 'completed', output_root: output, nodes: [{ nodeId: 'land', state: 'completed' }] };
+    writeFileSync(
+      join(root, 'plan.json'),
+      JSON.stringify({
+        base_ref: 'origin/main',
+        packages: [{ id: 'p', title: 'p', risk: 'G0', accept: [] }],
+      })
+    );
+    const run: RunView = {
+      id: 'a-bad',
+      status: 'completed',
+      output_root: output,
+      nodes: [{ nodeId: 'land', state: 'completed' }],
+    };
     const l = ledger('bad', run);
     ledger('ok', { status: 'completed' });
     const outside = join(tmp(), 'land.json');
@@ -246,7 +277,10 @@ describe('loader robustness', () => {
       const snap = await load(50);
       const byId = Object.fromEntries(snap.rows.map(r => [r.run_id, r]));
       expect(byId.ok?.state).toBe('completed');
-      expect(byId.bad).toMatchObject({ state: 'unreadable', error: expect.stringContaining('路径越界') });
+      expect(byId.bad).toMatchObject({
+        state: 'unreadable',
+        error: expect.stringContaining('路径越界'),
+      });
       expect(snap.summary.runs).toBe(2);
       expect(snap.summary.unreadable).toEqual([expect.stringContaining('bad:')]);
       const report = snapshotOf([{ ledger: l, run }]);
@@ -276,24 +310,39 @@ describe('loader robustness', () => {
   test('a hung query is killed at the timeout with its process group; the row goes stale', async () => {
     live('hang');
     process.env.SA_BOARD_QUERY_TIMEOUT_MS = '300';
-    writeFileSync(join(stubDir, 'cold-a-hang'), '');
-    const load = createLoader();
-    // A cold query can time out under load: unreadable also has stale=false, but does not seed the cache.
-    let initial = (await load(50)).rows[0];
-    const deadline = Date.now() + 5000;
-    while ((initial?.state !== 'running' || initial.stale) && Date.now() < deadline) {
-      await Bun.sleep(50);
-      initial = (await load(50)).rows[0];
+    const schedule = globalThis.setTimeout;
+    const ac = new AbortController();
+    let expire = (): void => {
+      throw new Error('query timeout was not scheduled');
+    };
+    // Advance only the query deadline after the subprocess is ready; CPU load cannot expire cache seeding.
+    const controlledTimer = Object.assign(
+      (...input: Parameters<typeof setTimeout>): ReturnType<typeof setTimeout> => {
+        const [callback, ms, ...args] = input;
+        if (ms !== 300) return schedule(callback, ms, ...args);
+        expire = () => callback(...args);
+        return schedule(() => undefined, ms);
+      },
+      { __promisify__: schedule.__promisify__ }
+    );
+    const timer = spyOn(globalThis, 'setTimeout').mockImplementation(controlledTimer);
+    try {
+      const load = createLoader(ac.signal);
+      expect((await load(50)).rows[0]).toMatchObject({ state: 'running', stale: false });
+      writeFileSync(join(stubDir, 'hang-a-hang'), '');
+      const pending = load(50);
+      const deadline = Date.now() + 5000;
+      while (!existsSync(join(stubDir, 'children')) && Date.now() < deadline) await Bun.sleep(10);
+      expect(existsSync(join(stubDir, 'children'))).toBe(true);
+      expire();
+      const row = (await pending).rows[0];
+      expect(row?.stale).toBe(true);
+      expect(row?.state).toBe('running');
+      await waitForReap();
+    } finally {
+      ac.abort(); // Also reap the query if readiness/assertion fails.
+      timer.mockRestore();
     }
-    expect(initial?.state).toBe('running');
-    expect(initial?.stale).toBe(false);
-    writeFileSync(join(stubDir, 'hang-a-hang'), '');
-    const t0 = Date.now();
-    const row = (await load(50)).rows[0];
-    expect(Date.now() - t0).toBeLessThan(3000);
-    expect(row?.stale).toBe(true);
-    expect(row?.state).toBe('running');
-    await waitForReap();
   });
 
   test('aborting the loader kills in-flight queries', async () => {
@@ -403,7 +452,10 @@ describe('time', () => {
         }),
         { columns: 160 }
       );
-    for (const instant of ['2026-10-10T00:00:50Z', '2026-10-10T00:02:05Z']) expect(text(instant)).toStartWith(`superagent ${fmtClock(at(instant), new Date(instant)).slice(0, 5)} · `);
+    for (const instant of ['2026-10-10T00:00:50Z', '2026-10-10T00:02:05Z'])
+      expect(text(instant).split('\n')[0]).toEndWith(
+        fmtClock(at(instant), new Date(instant)).slice(0, 5)
+      );
   });
 
   test('fmtClock uses the process time zone: HH:MM:SS today, MM-DD HH:MM otherwise', () => {
@@ -615,7 +667,7 @@ describe('end to end', () => {
     const r = cli(['--once']);
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
-    expect(r.out).toContain('superagent');
+    expect(r.out).toContain('跑');
     expect(r.out).toContain('无进行中任务');
     expect(r.out).not.toContain('remote');
   });

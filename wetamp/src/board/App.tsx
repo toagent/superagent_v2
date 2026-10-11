@@ -1,9 +1,10 @@
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { fmtClock, type Snapshot } from './data';
-import { cockpit, fit } from './cockpit';
+import { cockpit, fit, type Cockpit } from './cockpit';
 import { ProgressBar } from './ProgressBar';
 import { residentHash } from '../generate';
+import { fmtTokens } from '../usage';
 
 export const ENGINE_CHANGED = 75;
 export const boardExitCode = (started: string, current = residentHash()): number => started === current ? 0 : ENGINE_CHANGED;
@@ -11,16 +12,19 @@ export interface FrameProps { snap: Snapshot; width: number; height: number; now
 export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
   const c = cockpit(snap, now.getTime()), lines: ReactElement[] = [];
   const text = (value: string, color?: string): void => { lines.push(<Text key={lines.length} color={color} wrap="truncate">{fit(value, width)}</Text>); };
-  text(`superagent ${fmtClock(now.getTime(), now).slice(0, 5)} · 跑 ${String(c.active.length)} · 等你 ${String(c.needs.length)} · 今日 ${String(c.metrics.completed)}/${String(c.metrics.decided)}`);
-  text('─'.repeat(width));
-  for (const r of c.active) {
-    text(`${fit(r.project, 12)}  ${r.title}`);
-    text(`  ${r.role}  ${r.stage}`);
-    lines.push(<Text key={lines.length}>  <ProgressBar progress={r.progress} width={width - 2}/></Text>);
+  const budget = c.reflection ? `${fmtTokens(c.reflection.tokens)}/${fmtTokens(c.reflection.limit)}` : '—/—';
+  text(width < 100 ? `跑${String(c.tree.length)} 等你${String(c.needs.length)} 僵死${String(c.zombies)} 今日${String(c.metrics.completed)}/${String(c.metrics.decided)} 反思${budget} ${fmtClock(now.getTime(), now).slice(0, 5)}` : `跑 ${String(c.tree.length)} · 等你 ${String(c.needs.length)} · 僵死 ${String(c.zombies)} · 今日 ${String(c.metrics.completed)}/${String(c.metrics.decided)} · 反思 token ${budget} · ${fmtClock(now.getTime(), now).slice(0, 5)}`, c.reflection?.yellow ? 'yellow' : undefined);
+  const entry = (name: string, progress: Cockpit['tree'][number]['progress']): void => {
+    const label = fit(name, Math.max(1, Math.min(36, Math.floor(width / 2))));
+    lines.push(<Text key={lines.length} wrap="truncate">{label} <ProgressBar progress={progress} width={width - Bun.stringWidth(label) - 1}/></Text>);
+  };
+  for (const r of c.tree) {
+    entry(r.project, r.progress);
+    for (const [i, child] of r.children.entries()) entry(`  ${i === r.children.length - 1 ? '└─' : '├─'} ${width < 60 ? child.role.split('·')[0] : child.role} ${child.id}`, child.progress);
   }
-  if (!c.active.length) text('无进行中任务');
+  if (!c.tree.length) text('无进行中任务');
   if (c.needs.length) {
-    text('─'.repeat(width));
+    text('需要你');
     for (const r of c.needs) {
       const suffix = ` ${r.question} ${r.waiting}`;
       text(`? ${fit(r.project, Math.max(1, width - Bun.stringWidth(suffix) - 3))}${suffix}`, 'yellow');
