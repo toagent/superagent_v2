@@ -124,6 +124,67 @@ describe('FC failure classification', () => {
     expect(decide({ reviews: [R('PASS')], rechecks: [check], risk: 'G1' }).verdict).toBe('fix');
     expect(decide({ reviews: [R('FAIL', [finding])], rechecks: [{ ...check, workspace_clean: false }], risk: 'G1' }).verdict).toBe('fix');
   });
+  test('FC-R1-01: mixed findings for one failed command preserve IDs and block in either order', () => {
+    const command = 'bun test';
+    const check = {
+      ...C('a', false), failed: [command], disposition: 'repair' as const,
+      failures: [{ command, failure_class: 'fixture' as const, evidence: '/tmp/validator.log' }],
+    };
+    const fixture = f('blocker', {
+      id: 'fixture-id', command, failure_class: 'fixture', evidence: '/tmp/fixture.log',
+    });
+    for (const failure_class of ['product' as const, undefined]) {
+      const product = f('blocker', {
+        id: 'product-id', command, failure_class, evidence: '/tmp/product.log',
+      });
+      for (const findings of [[fixture, product], [product, fixture]])
+        for (const protection of [{ risk: 'G1', strict: true }, { risk: 'G2' }]) {
+          const d = decide({ reviews: [R('FAIL', findings)], rechecks: [check], ...protection });
+          expect(d.verdict).toBe('fix');
+          expect(d.ledger.blocking).toHaveLength(2);
+          expect(d.ledger.blocking).toContainEqual(expect.objectContaining({
+            id: 'product-id', command, failure_class: 'product', evidence: '/tmp/product.log',
+          }));
+          expect(d.ledger.blocking.some(e => e.id.startsWith('check:') && e.failure_class === 'product')).toBe(true);
+          expect(d.ledger.debt).toMatchObject([{
+            id: 'fixture-id', command, failure_class: 'fixture', evidence: '/tmp/fixture.log',
+          }]);
+        }
+    }
+  });
+  test('FC-R1-01: distinct non-product findings keep their own classifications and close by ID', () => {
+    const command = 'bun test';
+    const findings = [
+      f('blocker', { id: 'fixture-id', command, failure_class: 'fixture', evidence: '/tmp/fixture.log' }),
+      f('blocker', { id: 'baseline-id', command, failure_class: 'baseline', evidence: '/tmp/baseline.log' }),
+    ];
+    const check = { ...C('a', false), failed: [command], disposition: 'repair' as const };
+    const d = decide({ reviews: [R('FAIL', findings)], rechecks: [check], risk: 'G2', strict: true });
+    expect(d.verdict).toBe('pass');
+    expect(d.ledger.debt).toContainEqual(expect.objectContaining({ id: 'fixture-id', failure_class: 'fixture' }));
+    expect(d.ledger.debt).toContainEqual(expect.objectContaining({ id: 'baseline-id', failure_class: 'baseline' }));
+    const resolved = ledgerOf([R('FAIL', findings), R('PASS')], 'G2', { rechecks: [check, C('b')] });
+    expect(resolved.debt).toEqual([]);
+    expect(resolved.closed.map(e => e.id)).toEqual(expect.arrayContaining(['fixture-id', 'baseline-id']));
+  });
+  test('FC-R1-02: repair-limit debt cannot bypass skipped-review reuse checks', () => {
+    const r = R('FAIL', [f('high', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' })]);
+    const prior = {
+      ...C('diff'), head: 'candidate', contract_hash: 'contract', risk: 'G1', disposition: 'advance' as const,
+    };
+    for (const drift of [{}, { head: 'changed' }, { contract_hash: 'changed' }, { diff_hash: 'changed' }])
+      for (const qualifiedReview of [true, false]) {
+        const d = decide({
+          reviews: [r, r, null],
+          rechecks: [prior, prior, { ...prior, same: true, ...drift }],
+          risk: 'G1', qualifiedReview,
+        });
+        expect(d).toMatchObject({
+          verdict: 'escalate', reason: 'no_change',
+          ledger: { blocking: [], debt: [{ id: 'stable', repair_rounds: 2, debt_reason: 'repair_limit' }] },
+        });
+      }
+  });
   test('validator fixture JSON advances with red check evidence; coder cannot classify it', () => {
     const root = tmp(), repo = gitRepo(root);
     const command = `printf '%s' '{"failure_class":"fixture","evidence":"isolated fixture mismatch"}'; exit 1`;

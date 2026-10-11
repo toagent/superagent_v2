@@ -527,13 +527,16 @@ export function ledgerOf(reviews: (Review | null)[], risk: string, options: {
     const check = options.rechecks?.[i];
     // Commands are stable keys. Only validator or reviewer evidence may classify them.
     const checks: Finding[] = (check?.failed ?? []).map(command => {
-      const reviewed = r?.findings.find(f => f.command === command && f.status === 'open');
+      const reviewed = r?.findings.filter(f => f.command === command && f.status === 'open') ?? [];
+      const classifications = reviewed.map(f => failureClass(f.evidence.trim() ? f.failure_class : undefined));
       const validated = check?.failures?.find(f => f.command === command);
       return {
         id: `check:${sha(command).slice(0, 16)}`, severity: 'blocker', file: command, line: 0,
         status: 'open', carry_over: i > 0, command,
-        failure_class: failureClass(reviewed?.evidence.trim() ? reviewed.failure_class : validated?.failure_class),
-        evidence: validated?.evidence || reviewed?.evidence || '',
+        // A non-product finding cannot hide a product or unclassified failure in the same command.
+        failure_class: classifications.includes('product') ? 'product' :
+          classifications[0] ?? failureClass(validated?.failure_class),
+        evidence: validated?.evidence || reviewed.map(f => f.evidence).join('\n'),
       };
     });
     if (!r && !check) return;
@@ -548,7 +551,7 @@ export function ledgerOf(reviews: (Review | null)[], risk: string, options: {
         const ev = current.findings.find(f => f.id === id)?.evidence ?? '';
         closed.push({ ...entry, evidence: ev, closed_round: i + 1 });
       }
-    for (const f of [...current.findings.filter(f => !f.command || !check?.failed?.includes(f.command)), ...checks]) {
+    for (const f of [...current.findings, ...checks]) {
       if (f.status !== 'open') continue;
       const known = open.get(f.id);
       const classification = failureClass(f.evidence.trim() ? f.failure_class : undefined);
@@ -639,7 +642,7 @@ export function decide(input: {
   // 同一份评审里 id 重复（含同 id 既 closed 又 open）：账本无法唯一解释，不放行也不降为债务
   if (reviews.some(r => r && new Set(r.findings.map(f => f.id)).size !== r.findings.length))
     return out('escalate', 'invalid_review');
-  if (check?.same && !ledger.debt.some(e => e.debt_reason === 'repair_limit')) {
+  if (check?.same) {
     const prior = reviews
       .map((r, i) => (r ? i : -1))
       .filter(i => i >= 0)
@@ -673,8 +676,7 @@ export function decide(input: {
     check?.failed?.every(command => ledger.debt.some(e => e.command === command)));
   // A completed review's FAIL can describe only classified debt. Empty/unclassified FAIL stays a failure.
   const debtOnly = ledger.blocking.length === 0 && ledger.debt.some(e => e.debt_reason) &&
-    (last?.status === 'PASS' || (last?.status === 'FAIL' && last.findings.length > 0) ||
-      (!last && ledger.debt.every(e => e.debt_reason === 'repair_limit')));
+    (last?.status === 'PASS' || (last?.status === 'FAIL' && last.findings.length > 0));
   if (accepted && debtOnly) return out('pass', null, debt);
   let reason: string;
   if (!last) {
