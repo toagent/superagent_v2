@@ -1090,3 +1090,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **时限环境限制 / 未完成项**：本机 Bun `1.4.3 (c6da4a4d3)` 的裸 `bun test` 不应用该 timeout 键；仓库外及 wetamp 内两个独立 5200ms 探针均在 5000ms 被终止，不能宣称默认 30 秒已生效。wetamp 内测试正常发现且无根 bunfig 的 packages root/coverage 行为；临时探针交付前已删除。保留配置中的限制说明，当前须显式 `bun test --timeout 30000`；不升级 Bun，不为绕过此限制扩展 preload/runner 或修改 hook 测试。该项交主控裁决，配置声明本身不是生效证据。
 - **自检与证据**：隔离 `SUPERAGENT_HOME`、`ARCHON_HOME`、`XDG_STATE_HOME`、`SA_LAUNCHD_DIR`、`AGENT_SUPERVISOR_STATE` 到 `/tmp/b1-hf10.0wIzhW/`，调用 `cd wetamp && bun test --timeout 120000 tests/hf10-retry.test.ts`：3 pass/0 fail、48 assertions；`cd wetamp && bun test tests/sa-check.test.ts tests/generate.test.ts`：358 pass/0 fail、1204 assertions（含两份 golden）；`bunx tsc --noEmit -p wetamp` exit 0。完整日志、退出码、schema/decide 探针和默认时限失败证据均在该目录。运行时证据沿用 wait 的 state/node、gate 台账与 code trace，不新增监测路径；未全测、不重复跑重型 E2E。
 - **旧 run / 生产影响与遗留**：测试配置与夹具变更不改变产品契约、冻结生成身份、旧 run 或生产状态；仅本 worktree、本分支交付。未操作生产 checkout/台账、真实 supervisor、提醒事项或 launchd，未委派、评审、push 或合并。HF8b 信号时序 flaky 仍为已知未处理；主控集成全测与 astra 独立评审仍未覆盖，默认时限不生效明确保留为环境限制。
+
+
+## B1-REC：selftest recover 回执的直接父进程契约
+
+- **问题与被推翻的假设 / I1、I6、P1–P4**：现场 `recover.json` 的 `recovery_admission_unknown` 不是首次归属判定失败；`.recovery-result` 为 resume 调用超时 120 秒。REC-R1-01 的 provider-fixture 通过额外 `Bun.spawnSync` 转发 Archon，破坏 COORD `inherited()` 对直接父进程 PID/start 与持锁者的联合验证；子进程等待调用方持有的同一 scope lock，调用方超时后恢复才开始。未登记 run 不等于不可恢复，缺失 ledger 不是本次根因。
+- **改动与新语义**：仅修测试 shim：先运行 provider 改写辅助程序，再由 shell `exec` Archon，保持调用方看到的子进程 PID 与实际入口一致；辅助程序失败立即退出。生产 recovery、归属/代际校验、未知 admission 的持久化 fence、MAX_ROUNDS、评审与缓存均不变，非测试新增仅为本节文档，运行代码净增 0 行。
+- **验收与证据**：`cd wetamp && bun test --timeout 300000 tests/cli.test.ts -t "REC-R1-01"` 为 1 pass/0 fail（51.54 秒）；`bun test --timeout 300000 tests/recovery.test.ts tests/cli.test.ts -t "recovery|HF3"` 为 23 pass/0 fail；`bunx tsc --noEmit` exit 0。证据目录 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/b1-rec-mcekpi67/`。
+- **旧 run / 生产影响与遗留**：旧 run 和生产行为无变化。隔离 `bash scripts/selftest.sh --fake` 首轮 exit 1 无诊断；跟踪重跑的 kill/recover（约 3 秒）、signal、board 与 abandon 均通过，后续 HF3 临时 toolkit 首提交被既有 pre-commit gitleaks 判疑似 secret，exit 1，未放行或绕过；现场保留 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/sa-selftest.mAW9TK/`，完整 fake exit 0 未覆盖。只交付编码自检，集成、主控验收与统一独立评审另行执行。
