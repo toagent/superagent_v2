@@ -1922,7 +1922,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
     expect(loadLedger('sa1').budget_grants).toHaveLength(1);
   });
-  test('budget yes records finite explicit allowances, and review yes changes only the review counter', () => {
+  test('budget yes records finite explicit allowances scoped to the milestone attempt', () => {
     const { s } = scenes.budget();
     supervisor(s.root, 'yes');
     tick();
@@ -1935,9 +1935,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       weighted_tokens: 9 * loadTiers().policy.budget_floor.S,
     });
     expect(loadLedger('sa1').budget_grants).toHaveLength(1);
+    // Budget checks leave this clean repository unchanged; repeated git init/clone adds unrelated I/O.
+    const repo = gitRepo(tmp());
     const check = (attempt: string, milestone = 'm1') => {
       writeFileSync(join(s.root, 'gen', 'attempts', 'm1'), attempt);
-      const repo = gitRepo(tmp());
       const p = Bun.spawnSync(
         ['bun', join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts')],
         {
@@ -1986,6 +1987,8 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       code: 1,
       err: expect.stringContaining('budget-extra: invalid limits'),
     });
+  });
+  test('review yes changes only the review counter', () => {
     const { s: r } = scenes.review_not_independent();
     supervisor(r.root, 'yes');
     tick();
