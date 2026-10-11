@@ -98,6 +98,19 @@ export function providerOf(model: string): Alias['provider'] {
   throw new Error(`unknown vendor for model ${model}`);
 }
 
+/** Run admission shares the existing vendor budget; no second capacity setting can drift. */
+export function runCapacity(t = loadTiers()): number {
+  const caps = Object.values(t.health.vendor_concurrency);
+  const capacity = caps.reduce((sum, n) => sum + n, 0);
+  if (
+    !caps.length ||
+    caps.some(n => !Number.isSafeInteger(n) || n < 1) ||
+    !Number.isSafeInteger(capacity)
+  )
+    throw new Error('run admission: vendor_concurrency must contain positive safe integers');
+  return capacity;
+}
+
 export interface Tiers {
   tiers: Record<string, { pools: Record<string, string[]> }>;
   routing: { coder: { models: string[] }; reviewer: { by_console: Record<Console, string[]> } };
