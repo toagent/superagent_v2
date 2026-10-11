@@ -105,7 +105,7 @@ interface LaunchIntent {
   token: string;
 }
 // The shell registers its own identity before exec: the PID then belongs to the actual Archon CLI.
-const REGISTER_LAUNCH = `
+const registerLaunch = (): string => `
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 const [path, token, pid] = process.argv.slice(1);
 const intent = JSON.parse(readFileSync(path, 'utf8'));
@@ -126,7 +126,7 @@ export function archon(args: string[], cwd?: string, intent?: LaunchIntent): Exe
         '"$1" -e "$2" "$3" "$4" "$$" || exit 1; shift 4; exec "$@"',
         'sa-admission',
         process.execPath,
-        REGISTER_LAUNCH,
+        registerLaunch(),
         intent.path,
         intent.token,
         archonBin(),

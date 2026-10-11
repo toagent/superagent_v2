@@ -891,7 +891,7 @@ test('R1-03/04: actual durable-wait database survives stale tick/shim, while a s
   });
   const launchOut = await new Response(launch.stdout).text(),
     launchErr = await new Response(launch.stderr).text();
-  await launch.exited;
+  if ((await launch.exited) !== 0) throw new Error(`launch: ${launchErr} ${launchOut}`);
   const { Database } = await import('bun:sqlite');
   const db = new Database(join(s.sa, 'archon/archon.db'));
   const found = db.query('select id from remote_agent_workflow_runs').get() as {

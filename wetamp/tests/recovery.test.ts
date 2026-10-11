@@ -303,6 +303,9 @@ test('real Archon CAS/new-owner barrier fences two complete recover CLI processe
       stderr: 'pipe',
       timeout: 30000,
     });
+    if (install.exitCode !== 0) {
+      throw new Error(`install fixture: ${install.stderr.toString()} ${install.stdout.toString()}`);
+    }
     expect(install.exitCode).toBe(0);
     const ack = call([
       'workflow',
