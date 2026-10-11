@@ -2,7 +2,7 @@
 // Read-only hook projection. Heartbeat owns the per-session seen IDs; registry writes belong to the CLI.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {same} = require('./identity.cjs');
-const {resolvePath, shellWrites} = require('./redline.cjs');
+const {resolvePath, shellWrites, expand} = require('./redline.cjs');
 const micro = require('./micro-edit.cjs');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function read(file) {
@@ -70,6 +70,31 @@ function resolveOwner(scope, claims, runs) {
     generation: Math.max(0, ...distinct.map(r => r.generation)),
     conflicts: distinct.length > 1 ? distinct.map(r => r.owner) : [], evidence: distinct.map(r => r.evidence)};
 }
+// One target and admission contract for CLI, shim and hook. Both ledger IDs resolve before fallback.
+function targetScope(home, target, cwd) {
+  const dir = path.join(home, 'runs');
+  const names = fs.existsSync(dir) ? fs.readdirSync(dir).filter(n => n.endsWith('.json')) : [];
+  const run = names.map(n => read(path.join(dir, n))).find(l => l.run_id === target || l.archon_run_id === target);
+  if (run) return {kind: 'run', id: run.run_id, repo: repoScope(run.repo).id};
+  return repoScope(cwd);
+}
+function admission(home, scope, who, expected, archon, resolved) {
+  if (!scope) throw new Error('coord: cannot resolve mutation scope');
+  const claims = files(home, 'claims'), view = resolved || resolveOwner(scope, claims, () => candidates(home, archon));
+  const owned = claims.find(c => hash(c.scope) === hash(scope))?.scope ||
+    (scope.kind === 'run' ? {kind: 'repo', id: scope.repo} : scope);
+  const lease = read(path.join(home, 'coord', 'leases', hash([owned, require('./identity.cjs').key(who || {})]) + '.json'));
+  if (!same(view.owner, who) || (expected !== undefined && expected !== view.generation) ||
+      (claims.some(c => hash(c.scope) === hash(owned)) && lease?.generation !== view.generation))
+    throw new Error(refusal('变更动作（owner/generation fencing）', view.owner));
+  return {...who, generation: view.generation};
+}
+function archonMutation(argv) {
+  if (!argv.length || ['version', 'help', 'doctor', 'validate', 'complete'].includes(argv[0])) return false;
+  if (argv[0] === 'workflow') return !['list', 'runs', 'get', 'status', 'wait', 'events', 'logs', 'validate', 'help'].includes(argv[1]);
+  return !(['ai', 'user', 'isolation', 'telemetry'].includes(argv[0]) &&
+    (['list', 'status', 'capacity'].includes(argv[1]) || ['alias', 'tier'].includes(argv[1]) && argv[2] === 'list'));
+}
 function unread(home, who, seen = [], archon) {
   const claims = files(home, 'claims'), runs = () => candidates(home, archon);
   return files(home, 'inbox').filter(m => !seen.includes(m.id) &&
@@ -101,7 +126,15 @@ function writeReason(payload, client, env, shell, readonly) {
     for (const file of shellWrites(parsed)) { const why = check(file, dir); if (why) return why; }
     for (const argv of parsed.argvs) {
       const name = path.basename(argv[0] || ''), args = argv.slice(1);
-      if (name === 'git' && !readonly(argv)) {
+      const option = key => args.find(a => a.startsWith(key + '='))?.slice(key.length + 1) || (args.includes(key) ? args[args.indexOf(key) + 1] : undefined);
+      const command = args.filter((a, i) => !a.startsWith('-') && !['--cwd', '--run-id', '--adopt'].includes(args[i - 1]));
+      if (name === 'archon' && archonMutation(command)) {
+        if (args.includes('--help') || args.includes('-h')) continue;
+        if (command[1] === 'wake' && !command[2]) return refusal('全局 wake 未限定 run', null);
+        try { admission(home, targetScope(home, command[0] === 'workflow' ? command[1] === 'event' ? option('--run-id') : command[1] === 'run' ? option('--adopt') : command[2] : undefined, option('--cwd') ? path.resolve(dir, option('--cwd')) : dir), who, undefined, env.ARCHON_HOME); }
+        catch (error) { return error.message; }
+      }
+      if (name === 'git' && !readonly([name, ...args])) {
         const at = argv.indexOf('-C');
         const why = check('.', at >= 0 && argv[at + 1] ? path.resolve(dir, argv[at + 1]) : dir); if (why) return why;
       }
@@ -115,7 +148,7 @@ function writeReason(payload, client, env, shell, readonly) {
       }
     }
     return null;
-  });
+  }, word => expand(word, env));
   return why?.startsWith('已拒绝：') ? why : null;
 }
-module.exports = {hash, read, files, repoScope, resolveOwner, label, refusal, unread, notifications, writeReason};
+module.exports = {hash, read, files, repoScope, resolveOwner, targetScope, admission, archonMutation, label, refusal, unread, notifications, writeReason};

@@ -27,7 +27,8 @@ import {
 import { detailOf, detailLines, redact } from '../src/board/detail';
 import { Frame } from '../src/board/App';
 import { cockpit } from '../src/board/cockpit';
-import { tmp } from './helpers';
+import { gitRepo, tmp } from './helpers';
+import { caller, coord, repoScope } from '../src/coord';
 
 const WETAMP = join(import.meta.dir, '..');
 const ENV_KEYS = [
@@ -669,4 +670,15 @@ test('summarize, report and the board share one summary', async () => {
   expect(summarize(runs)).toEqual(expected);
   expect((await createLoader()(50)).summary).toEqual(expected);
   expect(metrics).toEqual(cockpit(await createLoader()(50)).metrics);
+});
+
+test('R1-05: actual board loader projects takeover owner rather than launcher, including cross-host unknown', async () => {
+  const repo = gitRepo(tmp()), l = ledger('owner-ref', { status: 'paused' }, { repo,
+    launcher: { client: 'codex', pid: 999999, tty: null, cwd: repo } });
+  const c = coord(), scope = repoScope(repo), a = caller(true);
+  c.claim(scope, a, true, 'fixture initial controller'); const b = { ...a, client: 'claude', session_id: 'new-owner', host: 'remote-host' };
+  c.claim(scope, b, true, 'fixture takeover');
+  const snap = await createLoader()(50);
+  expect(snap.rows[0]?.coordination).toMatchObject({ owner: b, presence: { state: 'unknown' } });
+  expect(snap.activity?.runs?.find(r => r.run_id === l.run_id)).toMatchObject({ controller: b, owner: null, inferred: false });
 });

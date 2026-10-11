@@ -1035,7 +1035,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
           expect(exit).toBe(baseline); expect(exit).toBe(failed ? 1 : 0);
           expect(String(err.mock.calls.at(-1)?.[0])).toBe('supervise-tick: orca sync failed: injected reason');
         }
-        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+        expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+        expect(s.calls()).not.toContain('workflow wake --json');
       } finally { out.mockRestore(); err.mockRestore(); }
     }
   });
@@ -1052,7 +1053,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
         expect(result.console_error).toBe(message);
         expect(result.actions[0]).toMatchObject({ action: failed ? 'error' : 'ask', ok: !failed });
         expect(String(err.mock.calls[0]?.[0])).toBe('supervise-tick: console refresh failed: refresh injected original error');
-        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+        expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+        expect(s.calls()).not.toContain('workflow wake --json');
       } finally { out.mockRestore(); err.mockRestore(); }
     });
   }
@@ -1071,7 +1073,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(result.console_error).toBe('console owner ambiguous; legacy PID migration refused: argv');
     expect(err.trim()).toBe(`supervise-tick: console refresh failed: ${result.console_error}`);
     expect(result.actions[0]).toMatchObject({ action: 'ask', ok: true });
-    expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+    expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+    expect(s.calls()).not.toContain('workflow wake --json');
   });
   test('held:human: asks once, then approves on yes (signal) and wakes due waits', async () => {
     const s = stub([humanWait(), humanWait(), run('running')]);
@@ -1083,7 +1086,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(sup()[0]).toMatch(/^ask --question .*human-m2.*等待人工签收.*是=批准签收门.*否=终止整个run.* --ttl-hours 72$/);
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
     expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
-    expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+    expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+    expect(s.calls()).not.toContain('workflow wake --json');
     expect(sup()).toEqual([expect.stringMatching(/^ask /), 'ask-status ask-1']);
   });
   test('pending keeps waiting; no abandons the paused run', () => {
@@ -2582,7 +2586,10 @@ test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land'
   expect(brief).toContain('gate-m1-r2: pass debt=0');
   expect(brief).toContain('gate-m2-r2: pass debt=0');
   expect(sa('land', id).code).toBe(1);
-  expect(sa('decide', id, 'approve').code).toBe(0);
+  const approved = sa('decide', id, 'approve');
+  expect(approved.err).toBe('');
+  expect(approved.out).toMatchObject({ ok: true });
+  expect(approved.code).toBe(0);
   const waited = sa('wait', id, '--timeout', '120');
   expect(waited.out).toMatchObject({ state: 'completed', exit: 0 });
   expect((waited.out.land as string[])[1]).toContain(`merge --ff-only 'sa/${id}'`);

@@ -241,7 +241,9 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       .slice(0, limit);
     const ledgers = new Map(ids.map(({id}) => [id, readLedger(id)]));
     const refs = [...ledgers.values()].flatMap(l => typeof l === 'string'
-      ? [] : [{ run_id: l.run_id, cwd: l.repo, launcher: l.launcher }]);
+      ? [] : [{ run_id: l.run_id, cwd: l.repo, controller: (() => {
+        try { return coord().owner(coord().scope(l.run_id)).owner; } catch { return null; }
+      })() }]);
     const activity = loadActivity(now, signal, refs);
     const results = await mapPool(ids, PARALLEL, async ({ id, mtimeMs }) => {
       const l = ledgers.get(id);

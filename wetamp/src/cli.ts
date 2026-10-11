@@ -543,7 +543,11 @@ function preflight(skipSelftest: boolean): void {
 }
 
 function startRun(planPath: string, a: Args): number {
-  return coord().locked(() => startOwnedRun(planPath, a));
+  const scope = repoScope(loadPlan(planPath).repo);
+  return coord().scoped(scope, () => {
+    const who = caller(); coord().claim(scope, who);
+    return coord().mutate(scope, who, () => startOwnedRun(planPath, a));
+  });
 }
 function startOwnedRun(planPath: string, a: Args): number {
   const run = newRunId();
@@ -1160,7 +1164,6 @@ export function superviseTick(): ReturnType<typeof tick> | { skipped: 'locked' }
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
 function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSignals> {
-  archonDetached(['workflow', 'wake', '--json'], join(sa, 'wake.log'));
   let asks: Asks | Error;
   try {
     asks = loadAsks();
@@ -1177,6 +1180,7 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
       const actor = l.controller ?? l.launcher;
       if (!actor) throw new Error('coord: run 没有可验证 controller/launcher；请先 claim 并显式 resume/decide');
       const x = control(l, controller => {
+        archonDetached(['workflow', 'wake', l.archon_run_id, '--json'], join(sa, 'wake.log'), l.repo);
         const action = dispose(l, asks, observed);
         return action ? { ...action, controller, generation: controller.generation } : undefined;
       }, actor, l.controller?.generation);
@@ -1666,7 +1670,7 @@ export function main(argv: string[]): number {
     return EXIT_USAGE;
   }
   const [verb, target] = a._;
-  const ledger = (): Ledger => loadLedger(need(target, `${verb} <run>`));
+  const ledger = (): Ledger => loadLedger(coord().resolveRun(need(target, `${verb} <run>`))?.run_id ?? target);
   const controlled = (l: Ledger, f: () => number): number => control(l, controller => {
     const code = f();
     if (code === 0) updateLedger(l, cur => { cur.controller = controller; });
@@ -1710,30 +1714,28 @@ export function main(argv: string[]): number {
     case 'resume':
     case 'recover': {
       const id = need(target, `${verb} <run>`);
-      if (!existsSync(ledgerPath(id))) {
-        const run = getRun(id), who = caller();
+      const registered = coord().resolveRun(id);
+      if (!registered) {
+        const run = getRun(id);
         if (!run.working_path) throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
-        const scope = repoScope(run.working_path), c = coord();
-        if (!c.owner(scope).owner) c.claim(scope, who);
-        const res = c.mutate(scope, who, () => recover(id, run.working_path ?? undefined));
+        const res = control({ run_id: run.id, archon_run_id: run.id, repo: run.working_path }, () => recover(run.id, run.working_path ?? undefined));
         print({ run_id: id, ...res });
         return res.ok ? 0 : 1;
       }
-      const l = loadLedger(id), code = controlled(l, () => resumeRun(l));
+      const l = loadLedger(registered.run_id), code = controlled(l, () => resumeRun(l));
       if (code === 0) updateLedger(l, cur => { cur.intervened = true; });
       return code;
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);
       // 未登记：按 archon run id 处理（selftest 用）
-      const l = existsSync(ledgerPath(id)) ? loadLedger(id) : undefined;
+      const registered = coord().resolveRun(id);
+      const l = registered ? loadLedger(registered.run_id) : undefined;
       const rid = l?.archon_run_id ?? id;
       const ok = l ? control(l, () => cancelRun(rid, getRun(rid, l.repo).status, l.repo)) : (() => {
-        const run = getRun(rid), who = caller();
+        const run = getRun(rid);
         if (!run.working_path) throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
-        const scope = repoScope(run.working_path), c = coord();
-        if (!c.owner(scope).owner) c.claim(scope, who);
-        return c.mutate(scope, who, () => cancelRun(rid, run.status, run.working_path ?? undefined));
+        return control({ run_id: run.id, archon_run_id: run.id, repo: run.working_path }, () => cancelRun(run.id, run.status, run.working_path ?? undefined));
       })();
       print({ run_id: id, ok });
       return ok ? 0 : 1;

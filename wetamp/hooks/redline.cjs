@@ -278,4 +278,4 @@ function reason({client, name, input, cwd, root, shell, derived, modelShell = de
 }
 
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, resolvePath, within, secretKind, stripHeredocs, shellWrites};
+module.exports = {init, reason, expand, resolvePath, within, secretKind, stripHeredocs, shellWrites};

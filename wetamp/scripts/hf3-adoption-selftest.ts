@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { archonJson, getRun, type RunView } from '../src/archon';
 import { main, loadLedger, ledgerPath, type Ledger } from '../src/cli';
 import { WETAMP, home, writeAtomic } from '../src/config';
+import { caller, coord, repoScope } from '../src/coord';
 import { generate } from '../src/generate';
 import type { Plan } from '../src/plan';
 import {
@@ -35,7 +36,8 @@ plan.repo = repo;
 plan.packages = [plan.packages[0]];
 plan.packages[0].accept = [{ cmd: `test -f '${ready}'`, timeout_s: 10 }];
 const gen = generate(plan, runId, true);
-const ack = archonJson(
+const c = coord(), scope = repoScope(repo), who = caller(), { controller } = c.claim(scope, who);
+const ack = c.mutate(scope, who, () => archonJson(
   [
     'workflow',
     'run',
@@ -53,7 +55,7 @@ const ack = archonJson(
     gen.config,
   ],
   repo
-);
+));
 assert.equal(ack.ok, true);
 assert.equal(typeof ack.runId, 'string');
 let current = String(ack.runId);
@@ -71,6 +73,7 @@ const ledger: Ledger = {
   transcript: String(ack.transcriptPath),
   log: String(ack.logPath),
   recoveries: [],
+  controller,
 };
 writeAtomic(ledgerPath(runId), JSON.stringify(ledger));
 const awaitTerminal = async (): Promise<RunView> => {
@@ -133,5 +136,5 @@ try {
   // Every run here belongs to this selftest. Abandon only a nonterminal owned run.
   const run = getRun(current, repo);
   if (!['failed', 'cancelled', 'completed'].includes(run.status))
-    archonJson(['workflow', run.status === 'running' ? 'cancel' : 'abandon', current], repo);
+    c.mutate(c.scope(runId), who, () => archonJson(['workflow', run.status === 'running' ? 'cancel' : 'abandon', current], repo));
 }

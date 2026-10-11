@@ -69,9 +69,9 @@ test('recorded launcher wins over watcher; merged codex launcher/native pids bin
   });
 });
 
-test('watcher ancestor wins over cwd, including dead recorded launcher; unrelated argv cannot impersonate watcher', () => {
+test('recorded unavailable owner cannot be replaced by a watcher; unrelated argv cannot impersonate watcher', () => {
   const ref = { run_id: id, cwd: '/w/xiaopan-translator', launcher: { ...launcher, pid: 999 } };
-  expect(ownership(ref, rows, sessions, terms)).toEqual({ owner: 10, inferred: false });
+  expect(ownership(ref, rows, sessions, terms)).toEqual({ owner: null, inferred: false });
   const fake = psRows(`50 20 ?? 0 00:10 echo superagent wait ${id}`);
   expect(ownership(ref, fake, sessions, terms)).toEqual({ owner: null, inferred: false });
 });
@@ -267,4 +267,10 @@ test('pane renders normalized active rows and hides retired jobs/terminals', () 
     expect(text).not.toContain('old-job');
     expect(text.split('\n').filter(l => Bun.stringWidth(l) > width)).toEqual([]);
   }
+});
+
+test('R1-05: explicit remote/unknown controller suppresses local watcher and cwd inference', () => {
+  expect(verifiedOwnership({ run_id: id, cwd: '/w/sinan', controller: { client: 'claude', host: 'remote', pid: 10 } },
+    rows, sessions, terms, [], () => ({ state: 'unknown' }))).toEqual({ owner: null, inferred: false });
+  expect(ownership({ run_id: id, cwd: '/w/sinan', controller: null }, rows, sessions, terms)).toEqual({ owner: null, inferred: false });
 });

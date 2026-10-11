@@ -12,7 +12,9 @@
 
 归属顺序是 run/仓库显式 claim → 非终态 run 的 controller（缺失回退 launcher）→ 无主。释放写 tombstone，避免旧 run 将已释放的归属复活。多个不同 controller 是歧义状态：owner 列出 evidence/conflicts，普通 claim/handoff 拒绝；只有带原话 reason 的显式 takeover 可以消歧，并通知所有旧 owner。CJS resolver 同时供 CLI 与 hook 使用，hook 只读 ledger 和数据库状态，数据库无法读取时保留 unknown 证据。
 
-claims 在 `$SUPERAGENT_HOME/coord/claims/<sha(scope)>.json`；包含 owner、generation、since、reason、history。所有修改在同一个 flock 内、同目录临时文件 rename。lease 保存身份获授的 generation。run、decide、cancel、resume、recover、land、accept 与自动恢复均校验当前 owner/lease；拒绝包含动作、原因、可选下一步三段。supervise-tick 以 ledger 的 controller/launcher 及 generation 执行，并在动作输出中携带身份；旧 owner 被接管后不得继续驱动。没有身份的旧 run 不自动处置，需先 claim，再由元帅显式 resume/decide 建立 controller。
+claims 在 `$SUPERAGENT_HOME/coord/claims/<sha(scope)>.json`；包含 owner、generation、since、reason、history。registry flock 只包读改写短事务，同目录临时文件 rename；执行、claim、release、ack 另持仓库 scope flock，同仓库 run 串行，无关仓库互不阻塞。lease 保存身份获授的 generation。run、decide、cancel、resume、recover、land、accept 与自动恢复均校验当前 owner/lease；拒绝包含动作、原因、可选下一步三段。supervise-tick 以 ledger 的 controller/launcher 及 generation 执行，并在动作输出中携带身份；旧 owner 被接管后不得继续驱动。没有身份的旧 run 不自动处置，需先 claim，再由元帅显式 resume/decide 建立 controller。
+
+ledger run_id 与 archon_run_id 先映射到同一 run scope，再走共享 `admission()`；adopt 按 `--adopt` 的 ID 沿用原 run scope，未指明目标的 `run --resume` 拒绝。wetamp Archon shim 与 hook 也使用该函数；查询保持开放。内部调用使用原子消费的一次性随机准入 token，同步调用与等待回执的 signal 还验证父 PID/start 与持锁事实，普通异步调用重新取得 scope 锁并验证 generation；不接受布尔旁路。tick 只逐 run 启动 scoped wake，复用原生 continuation 的 cursor/CAS 与 provider 配置，只缩窄到期 run 来源；禁止全局 wake/watch/schedule。
 
 未登记的 Archon run 通过真实 `working_path` 定位仓库，同样经过认领和 fencing；不能定位时明确拒绝。只读 status/brief/owner/board/wait 不要求是 owner；wait 中的自动恢复仍是变更，必须校验。
 
@@ -45,6 +47,8 @@ agent 判断目标 scope；CLI 的 `--to/--kind/--severity` 执行确定性路�
 ## Orca 与展示
 
 core 不调用 Orca orchestration，不用 pane/mailbox 当事实源。live 仅记录 `ORCA_PANE_KEY`，本包没有启用可选 pane 提示投递：现有 Orca 模块是看板投影，未发现适用于外部启动会话的可靠投递契约。`SA_ORCA=0` 或 Orca 不可用不影响认领、wait、hook、inbox、supervisor。现有 board/console 项目行加 owner、presence、待办数量，没有重组布局。
+
+看板 run 引用从统一 owner resolver 取得 controller；已有明确 owner 或明确无主结果时不再用 watcher/cwd 推断替代。跨机 unknown 或本机 offline 保留原归属证据，不把只读 watcher 绑定为负责人。
 
 ## 五个事件成因与边界
 

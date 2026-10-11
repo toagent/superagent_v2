@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readdirSync, realpathSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, realpathSync, lstatSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -8,6 +9,7 @@ import { home, writeAtomic, WETAMP } from '../config';
 import { launcher, type Launcher } from '../launcher';
 
 export interface Identity { client: string; session_id?: string; host?: string; pid: number; pid_start?: string }
+interface Admission { scope: Scope; controller: Controller; parent?: { pid: number; start?: string } }
 export type Controller = Identity & { generation: number };
 export type Scope = { kind: 'repo'; id: string } | { kind: 'run'; id: string; repo: string };
 export type Presence = { state: 'online'; activity: 'active' | 'idle' } | { state: 'offline' | 'unknown' };
@@ -20,6 +22,8 @@ export interface Message { id: string; scope: Scope; sender: Identity; recipient
   severity: 'normal' | 'urgent'; state: MessageState; at: string; note?: string; type?: 'receipt' | 'takeover'; source?: string;
   ask?: { id?: string; question: string; status: string; generation: number; owner: Identity | null }; ask_round?: number; deferred_until?: number }
 const shared = createRequire(import.meta.url)('../../hooks/coord.cjs') as {
+  archonMutation: (args: string[]) => boolean;
+  admission: (home: string, scope: Scope, who: Identity, expected?: number, archon?: string, view?: { owner: Identity | null; generation: number }) => Controller;
   hash: (value: unknown) => string; read: (file: string) => unknown; files: (home: string, dir: string) => Message[];
   refusal: (action: string, owner: Identity | null, state: Presence['state']) => string;
   resolveOwner: (scope: Scope, claims: Claim[], runs: { scope: Scope; owner?: Identity; generation: number; evidence: string }[]) =>
@@ -32,6 +36,7 @@ const identity = createRequire(import.meta.url)('../../hooks/identity.cjs') as {
   presence: (who: Identity, home: string) => Presence;
 };
 export const presence = identity.presence, same = identity.same;
+export const archonMutation = shared.archonMutation;
 export const ownerLabel = (who: Identity | null): string => who ? `${who.client} ${who.session_id?.slice(0, 8) ?? `pid:${String(who.pid)}`}` : '无主';
 export const ACK_TIMEOUT_MS = 15 * 60_000;
 export function repoScope(path: string): Scope {
@@ -65,6 +70,8 @@ interface Deps { sa: string; runs: () => RunRef[]; status: (l: RunRef) => string
 interface Stores { claims: Claim; leases: { generation: number }; inbox: Message }
 export class Coordination {
   private depth = 0;
+  private scopes = new Set<string>();
+  private active?: Admission;
   readonly d: Deps;
   constructor(overrides: Partial<Deps> = {}) {
     const sa = overrides.sa ?? home().sa;
@@ -92,7 +99,7 @@ export class Coordination {
     return value as Stores[K];
   }
   private save(dir: string, key: string, value: unknown): void {
-    const file = this.path(dir, key); mkdirSync(dirname(file), { recursive: true }); writeAtomic(file, JSON.stringify(value) + '\n');
+    this.locked(() => { const file = this.path(dir, key); mkdirSync(dirname(file), { recursive: true }); writeAtomic(file, JSON.stringify(value) + '\n'); });
   }
   locked<T>(f: () => T): T {
     if (this.depth) return f();
@@ -103,9 +110,42 @@ export class Coordination {
       if (n >= 200) throw new Error('coord: registry busy'); Bun.sleepSync(50);
     }
   }
+  private scopeLock(scope: Scope): string { return join(this.d.sa, 'coord', 'locks', shared.hash(scope.kind === 'run' ? { kind: 'repo', id: scope.repo } : scope) + '.lock'); }
+  scoped<T>(scope: Scope, f: () => T): T {
+    const key = this.scopeLock(scope);
+    if (this.scopes.has(key)) return f();
+    const root = join(this.d.sa, 'coord', 'locks'); mkdirSync(root, { recursive: true });
+    for (let n = 0; ; n++) {
+      const k = lock(key);
+      if (k.ok) {
+        this.scopes.add(key);
+        const release = (): void => { this.scopes.delete(key); k.release(); };
+        try { const r = f(); if (r instanceof Promise) return r.finally(release) as T; release(); return r; }
+        catch (e) { release(); throw e; }
+      }
+      if (n >= 2400) throw new Error('coord: scope busy'); Bun.sleepSync(50);
+    }
+  }
+  resolveRun(id: string): RunRef | undefined {
+    const direct = /^[\w-]+$/.test(id) ? shared.read(join(this.d.sa, 'runs', id + '.json')) as RunRef | null : null;
+    return direct?.run_id === id ? direct : this.d.runs().find(l => l.run_id === id || l.archon_run_id === id);
+  }
+  admissionEnv(inheritLock = false): Record<string, string> {
+    if (!this.active) return {};
+    const token = randomUUID(); this.locked(() => { this.save('admissions', token, { ...this.active, parent: inheritLock ? { pid: process.pid, start: identity.inspect(process.pid).start } : undefined }); });
+    return { SA_COORD_ADMISSION: token };
+  }
+  consume(token: string): Admission {
+    if (!/^[0-9a-f-]{36}$/.test(token)) throw new Error('coord: invalid admission token');
+    return this.locked(() => {
+      const file = this.path('admissions', token), value = shared.read(file) as typeof this.active;
+      if (!value) throw new Error('coord: unknown admission token');
+      rmSync(file); return value;
+    });
+  }
   scope(target = process.cwd()): Scope {
     if (existsSync(resolve(target))) return repoScope(resolve(target));
-    const l = this.d.runs().find(l => l.run_id === target || l.archon_run_id === target);
+    const l = this.resolveRun(target);
     return l ? { kind: 'run', id: l.run_id, repo: repoScope(l.repo).id } : repoScope(resolve(target));
   }
   private claimOf(scope: Scope): Claim | null {
@@ -143,7 +183,7 @@ export class Coordination {
     return c;
   }
   claim(scope: Scope, who: Identity, takeover = false, reason = '认领'): { controller: Controller; inbox: Message[] } {
-    return this.locked(() => {
+    return this.scoped(scope, () => this.locked(() => {
       if (!who.host || !who.pid_start) throw new Error('coord: claim needs verifiable identity');
       if (takeover && !reason.trim()) throw new Error('claim --takeover needs --reason "<原话>"');
       const view = this.owner(scope);
@@ -154,18 +194,23 @@ export class Coordination {
       const c = same(view.owner, who) && existing ? existing : this.transfer(scope, who, reason);
       this.save('leases', this.leaseKey(scope, who), { generation: c.generation });
       return { controller: { ...who, generation: c.generation }, inbox: this.inbox(who) };
-    });
+    }));
   }
-  release(scope: Scope, who: Identity): void { this.mutate(scope, who, () => { this.transfer(scope, null, '主动释放'); }); }
+  release(scope: Scope, who: Identity): void { this.mutate(scope, who, () => { this.locked(() => { this.transfer(scope, null, '主动释放'); }); }); }
+  admit(scope: Scope, who: Identity, expected?: number): Controller {
+    return this.locked(() => shared.admission(this.d.sa, scope, who, expected, join(this.d.sa, 'archon'), this.owner(scope)));
+  }
+  inherited(a: Admission): boolean {
+    if (a.parent?.pid !== process.ppid || a.parent.start !== identity.inspect(a.parent.pid).start) return false;
+    const file = this.scopeLock(a.scope), k = lock(file);
+    if (k.ok) { k.release(); return false; }
+    return (shared.read(file) as { pid: number }).pid === a.parent.pid;
+  }
   mutate<T>(scope: Scope, who: Identity, f: (controller: Controller) => T, expected?: number): T {
-    return this.locked(() => {
-      const view = this.owner(scope);
-      const ownedScope = this.claimOf(scope) ? scope : scope.kind === 'run' ? { kind: 'repo' as const, id: scope.repo } : scope;
-      const lease = this.read('leases', this.leaseKey(ownedScope, who));
-      if (!same(view.owner, who) || (expected !== undefined && view.generation !== expected) ||
-        (this.claimOf(ownedScope) && lease?.generation !== view.generation))
-        throw new Error(shared.refusal('变更动作（owner/generation fencing）', view.owner, view.presence.state));
-      return f({ ...who, generation: view.generation });
+    return this.scoped(scope, () => {
+      const controller = this.admit(scope, who, expected);
+      const previous = this.active; this.active = { scope, controller };
+      try { return f(controller); } finally { this.active = previous; }
     });
   }
   messages(): Message[] { return shared.files(this.d.sa, 'inbox'); }
@@ -179,7 +224,7 @@ export class Coordination {
       title: type === 'takeover' ? '归属已转移' : '交接回执', body, evidence: [], severity: 'normal', state: 'queued', at: new Date(this.d.now()).toISOString(), source });
   }
   handoff(scope: Scope, sender: Identity, input: Pick<Message, 'kind' | 'title' | 'body' | 'evidence' | 'severity'>): Record<string, unknown> {
-    return this.locked(() => {
+    return this.scoped(scope, () => this.locked(() => {
       let view = this.owner(scope), claimed = false;
       if (view.conflicts.length) throw new Error(view.next);
       if (!view.owner) { this.claim(scope, sender); view = this.owner(scope); claimed = true; }
@@ -188,7 +233,7 @@ export class Coordination {
       if (!shared.read(this.path('inbox', id))) this.save('inbox', id, { ...input, id, scope, sender, recipient: view.owner,
         generation: view.generation, state: 'queued', at: new Date(this.d.now()).toISOString() });
       return { id, routed_to: view.owner, presence: view.presence, delivery: 'queued', next: claimed ? '已认领，由你处理' : '收件人必须通过 inbox --ack 答复' };
-    });
+    }));
   }
   surfaced(who: Identity): Message[] {
     return this.locked(() => this.inbox(who).filter(m => ['queued', 'escalated'].includes(m.state) || !same(m.recipient, who)).map(m => {
@@ -199,7 +244,8 @@ export class Coordination {
   }
   ack(id: string, who: Identity, state: 'accepted' | 'rejected' | 'done', note: string): void {
     if (!/^[0-9a-f]{64}$/.test(id)) throw new Error('inbox: invalid message id');
-    this.locked(() => {
+    const initial = this.read('inbox', id); if (!initial) throw new Error('inbox: unknown id');
+    this.scoped(initial.scope, () => { this.locked(() => {
       const m = this.read('inbox', id); if (!m) throw new Error('inbox: unknown id');
       const apply = (): void => {
         if (m.state === state && m.note === note) {
@@ -212,12 +258,12 @@ export class Coordination {
       };
       if (m.type) { if (!same(m.recipient, who)) throw new Error('inbox: only recipient can ack'); apply(); }
       else this.mutate(m.scope, who, apply);
-    });
+    }); });
   }
   pending(scope: Scope): number { return this.messages().filter(m => shared.hash(m.scope) === shared.hash(scope) && !m.type && ['queued', 'surfaced', 'accepted', 'escalated'].includes(m.state)).length; }
   // Supervisor is an injected transport. Every answer is fenced against the owner/generation asked about.
   tick(ask: (key: string, question: string) => { id?: string; status: string }): Record<string, unknown>[] {
-    return this.locked(() => this.messages().filter(m => !m.type && ['queued', 'surfaced', 'escalated'].includes(m.state)).flatMap(m => {
+    return this.messages().filter(m => !m.type && ['queued', 'surfaced', 'escalated'].includes(m.state)).flatMap(m => this.scoped(m.scope, () => {
       const view = this.owner(m.scope);
       if (view.conflicts.length) throw new Error(view.next);
       if ((m.deferred_until ?? 0) > this.d.now()) return [];

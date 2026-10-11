@@ -8,4 +8,4 @@ done
 REPO="$(cd -P "$(dirname "$src")/../.." && pwd)"
 export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
-exec bun "$REPO/packages/cli/src/cli.ts" "$@"
+exec bun "$REPO/wetamp/src/coord/archon-entry.ts" "$@"
