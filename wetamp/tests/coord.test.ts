@@ -637,6 +637,57 @@ test('R1-01/06: actual hook rejects cd and nested-shell writes; absolute git sta
     else expect(out).not.toContain('deny');
   }
 });
+test('INT-R1-01: actual hook checks every Git location and preserves unclaimed writes', async () => {
+  const s = setup(),
+    other = gitRepo(tmp());
+  s.c.claim(s.scope, a);
+  const commands = [
+    `git -C '${other}' -C '${s.repo}' add tracked.txt`,
+    `git -C '${other}' -C '${s.repo}' -C . add tracked.txt`,
+    `git --git-dir='${s.repo}/.git' --work-tree='${s.repo}' add tracked.txt`,
+    `git --git-dir '${s.repo}/.git' --work-tree '${other}' add tracked.txt`,
+    `git --git-dir '${other}/.git' --work-tree '${s.repo}' add tracked.txt`,
+    `GIT_DIR='${s.repo}/.git' GIT_WORK_TREE='${s.repo}' git add tracked.txt`,
+    `env GIT_DIR='${s.repo}/.git' GIT_WORK_TREE='${s.repo}' git add tracked.txt`,
+    'git add tracked.txt',
+    `git -C '${other}' add tracked.txt`,
+    `git -C '${s.repo}' status`,
+  ];
+  for (const [i, command] of commands.entries()) {
+    const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
+      cwd: other,
+      env: {
+        ...process.env,
+        HOME: s.root,
+        SUPERAGENT_HOME: s.sa,
+        ARCHON_HOME: join(s.sa, 'archon'),
+        SUPERAGENT_ROLE: '',
+        SUPERAGENT_ALLOW_COMMANDER_WRITE: '1',
+        GIT_DIR: i === 7 ? join(s.repo, '.git') : '',
+        GIT_WORK_TREE: i === 7 ? s.repo : '',
+      },
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    p.stdin.write(
+      JSON.stringify({
+        session_id: 'foreign',
+        cwd: other,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command },
+      })
+    );
+    p.stdin.end();
+    const out = await new Response(p.stdout).text();
+    expect(await p.exited).toBe(0);
+    if (i < 8) {
+      expect(out).toContain('deny');
+      expect(out).toContain('向其他元帅负责的仓库写文件');
+    } else expect(out).not.toContain('deny');
+  }
+});
 test('R2-01: redline shares directory transitions and subshells keep the parent cwd', async () => {
   const s = setup(),
     other = gitRepo(tmp());

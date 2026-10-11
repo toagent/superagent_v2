@@ -13,7 +13,8 @@ import { join } from 'node:path';
 import { WETAMP } from '../src/config';
 import { installMode } from '../src/install-mode';
 import { mergeHooks } from '../src/install-hooks';
-import { tmp } from './helpers';
+import { Coordination, caller, repoScope } from '../src/coord';
+import { fixturePlan, gitRepo, tmp } from './helpers';
 const state = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
   withLock: <T>(file: string, fn: () => T) => T;
   withState: <T>(file: string, fn: (s: Record<string, unknown>) => T) => T;
@@ -151,6 +152,60 @@ test('WP-1: direct CLI worker run reports preflight mode and never starts the en
   expect(out).toMatchObject({ phase: 'preflight', mode: 'worker' });
   expect(out.reason).toContain('run requires the controller');
   expect(readdirSync(join(root, 'sa'))).toEqual(['launch-failures']);
+});
+
+test('WP-1: plan parsing and foreign-owner failures retain JSON launch-failure evidence', () => {
+  const root = tmp(),
+    sa = join(root, 'sa'),
+    repo = gitRepo(root);
+  mkdirSync(sa);
+  const badJson = join(root, 'bad-json.json'),
+    badSchema = join(root, 'bad-schema.json');
+  writeFileSync(badJson, '{invalid');
+  writeFileSync(badSchema, '{}');
+  const ownedPlan = fixturePlan(root, repo);
+  new Coordination({ sa, runs: () => [] }).claim(repoScope(repo), {
+    ...caller(),
+    client: 'claude',
+    session_id: 'foreign-owner',
+  });
+  for (const [plan, reason] of [
+    [join(root, 'missing-plan.json'), 'ENOENT'],
+    [badJson, 'JSON'],
+    [badSchema, 'plan invalid'],
+    [ownedPlan, '普通认领'],
+  ] as const) {
+    const p = Bun.spawnSync(
+      [process.execPath, join(WETAMP, 'src/cli.ts'), 'run', plan, '--skip-selftest', '--json'],
+      {
+        env: {
+          ...process.env,
+          HOME: root,
+          XDG_STATE_HOME: join(root, 'state'),
+          SUPERAGENT_HOME: sa,
+          ARCHON_HOME: join(sa, 'archon'),
+          SUPERAGENT_WRITE_ROOTS: root,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+    expect(p.exitCode).toBe(1);
+    const out = JSON.parse(p.stdout.toString()) as {
+      run_id: string;
+      ok: boolean;
+      phase: string;
+      mode: string;
+      reason: string;
+    };
+    expect(out).toMatchObject({ ok: false, phase: 'preflight', mode: 'controller' });
+    expect(out.reason).toContain(reason);
+    expect(
+      JSON.parse(readFileSync(join(sa, 'launch-failures', `${out.run_id}.json`), 'utf8'))
+    ).toEqual(out);
+  }
+  expect(existsSync(join(sa, 'runs'))).toBe(false);
+  expect(existsSync(join(sa, 'intents'))).toBe(false);
 });
 
 test('F-12: even an old live-owner lock is never stolen or released by a contender', async () => {

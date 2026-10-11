@@ -613,14 +613,6 @@ function preflight(skipSelftest: boolean): void {
 }
 
 function startRun(planPath: string, a: Args): number {
-  const scope = repoScope(loadPlan(planPath).repo);
-  return coord().scoped(scope, () => {
-    const who = caller();
-    coord().claim(scope, who);
-    return coord().mutate(scope, who, () => startOwnedRun(planPath, a));
-  });
-}
-function startOwnedRun(planPath: string, a: Args): number {
   const run = newRunId();
   let phase: 'preflight' | 'admission' | 'engine' = 'preflight';
   let release: (() => void) | undefined;
@@ -630,112 +622,121 @@ function startOwnedRun(planPath: string, a: Args): number {
     mode = installMode();
     preflight(a.flags['skip-selftest'] ?? false);
     const plan = loadPlan(planPath);
-    const controller = coord().claim(repoScope(plan.repo), caller()).controller;
-    plan_lint = lintPlan(plan, a.flags['lint-override']);
-    if (plan_lint.rejected)
-      throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
-    phase = 'admission';
-    const admission = admitRun(runCapacity());
-    if (!admission.ok) {
-      print({
-        ok: false,
-        phase,
-        status: 'rejected',
-        exit: EXIT_ADMISSION,
-        reason: admission.reason,
-        capacity: admission.capacity,
-        active: admission.active,
+    const scope = repoScope(plan.repo);
+    return coord().scoped(scope, () => {
+      const who = caller();
+      const controller = coord().claim(scope, who).controller;
+      return coord().mutate(scope, who, () => {
+        plan_lint = lintPlan(plan, a.flags['lint-override']);
+        if (plan_lint.rejected)
+          throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
+        phase = 'admission';
+        const admission = admitRun(runCapacity());
+        if (!admission.ok) {
+          print({
+            ok: false,
+            phase,
+            status: 'rejected',
+            exit: EXIT_ADMISSION,
+            reason: admission.reason,
+            capacity: admission.capacity,
+            active: admission.active,
+          });
+          return EXIT_ADMISSION;
+        }
+        release = admission.release;
+        phase = 'preflight';
+        const checked = Bun.spawnSync(
+          [process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo],
+          {
+            stdout: 'pipe',
+            stderr: 'pipe',
+            timeout: QUERY_TIMEOUT_MS,
+          }
+        );
+        if (checked.exitCode !== 0) {
+          const reason = lastJson(checked.stdout.toString())?.reason;
+          throw new Error(
+            typeof reason === 'string' ? reason : 'preflight: base branch inspection failed'
+          );
+        }
+        const drift = aliasDrift(plan.repo);
+        if (drift.length) {
+          const failure = {
+            run_id: run,
+            ok: false,
+            phase,
+            reason: 'alias_drift',
+            drift,
+            fix: 'wetamp/scripts/install.sh',
+          };
+          mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
+          writeAtomic(
+            join(home().sa, 'launch-failures', `${run}.json`),
+            JSON.stringify(failure) + '\n'
+          );
+          print(failure);
+          return EXIT_ALIAS_DRIFT;
+        }
+        phase = 'engine';
+        const gen = generate(plan, run, a.flags.fake ?? false);
+        const branch = `sa/${run}`;
+        const args = [
+          'workflow',
+          'run',
+          gen.workflow,
+          '--workflow-source',
+          gen.dir,
+          '--cwd',
+          plan.repo,
+        ];
+        args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
+        const l: Ledger = {
+          plan_lint,
+          run_id: run,
+          engine_hash: gen.engine_hash,
+          workflow_hash: gen.engine_hash,
+          archon_run_id: '',
+          plan: planPath,
+          gen_dir: gen.dir,
+          repo: plan.repo,
+          branch,
+          workflow: gen.workflow,
+          console: plan.console ?? 'claude',
+          started_at: new Date().toISOString(),
+          transcript: '',
+          log: '',
+          recoveries: [],
+          intervened: false,
+          launcher: launcher(home().sa),
+          controller,
+        };
+        // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
+        const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
+        mkdirSync(join(home().sa, 'intents'), { recursive: true });
+        writeAtomic(intentPath(run), JSON.stringify(intent, null, 2) + '\n');
+        const ack = admission.launch(args, plan.repo);
+        if (ack.ok !== true || typeof ack.runId !== 'string')
+          throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
+        Object.assign(l, {
+          archon_run_id: ack.runId,
+          transcript: String(ack.transcriptPath),
+          log: String(ack.logPath),
+        });
+        mkdirSync(join(home().sa, 'runs'), { recursive: true });
+        saveLedger(l);
+        rmSync(intentPath(run), { force: true });
+        print({
+          run_id: run,
+          archon_run_id: l.archon_run_id,
+          branch,
+          gen_dir: gen.dir,
+          mode: 'controller',
+          plan_lint,
+        });
+        return 0;
       });
-      return EXIT_ADMISSION;
-    }
-    release = admission.release;
-    phase = 'preflight';
-    const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: QUERY_TIMEOUT_MS,
     });
-    if (checked.exitCode !== 0) {
-      const reason = lastJson(checked.stdout.toString())?.reason;
-      throw new Error(
-        typeof reason === 'string' ? reason : 'preflight: base branch inspection failed'
-      );
-    }
-    const drift = aliasDrift(plan.repo);
-    if (drift.length) {
-      const failure = {
-        run_id: run,
-        ok: false,
-        phase,
-        reason: 'alias_drift',
-        drift,
-        fix: 'wetamp/scripts/install.sh',
-      };
-      mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
-      writeAtomic(
-        join(home().sa, 'launch-failures', `${run}.json`),
-        JSON.stringify(failure) + '\n'
-      );
-      print(failure);
-      return EXIT_ALIAS_DRIFT;
-    }
-    phase = 'engine';
-    const gen = generate(plan, run, a.flags.fake ?? false);
-    const branch = `sa/${run}`;
-    const args = [
-      'workflow',
-      'run',
-      gen.workflow,
-      '--workflow-source',
-      gen.dir,
-      '--cwd',
-      plan.repo,
-    ];
-    args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
-    const l: Ledger = {
-      plan_lint,
-      run_id: run,
-      engine_hash: gen.engine_hash,
-      workflow_hash: gen.engine_hash,
-      archon_run_id: '',
-      plan: planPath,
-      gen_dir: gen.dir,
-      repo: plan.repo,
-      branch,
-      workflow: gen.workflow,
-      console: plan.console ?? 'claude',
-      started_at: new Date().toISOString(),
-      transcript: '',
-      log: '',
-      recoveries: [],
-      intervened: false,
-      launcher: launcher(home().sa),
-      controller,
-    };
-    // 先落启动意图再启动：进程死在 archon 建 run 与写 ledger 之间时，tick 按工作流名对账（reconcileIntents）
-    const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
-    mkdirSync(join(home().sa, 'intents'), { recursive: true });
-    writeAtomic(intentPath(run), JSON.stringify(intent, null, 2) + '\n');
-    const ack = admission.launch(args, plan.repo);
-    if (ack.ok !== true || typeof ack.runId !== 'string')
-      throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
-    Object.assign(l, {
-      archon_run_id: ack.runId,
-      transcript: String(ack.transcriptPath),
-      log: String(ack.logPath),
-    });
-    mkdirSync(join(home().sa, 'runs'), { recursive: true });
-    saveLedger(l);
-    rmSync(intentPath(run), { force: true });
-    print({
-      run_id: run,
-      archon_run_id: l.archon_run_id,
-      branch,
-      gen_dir: gen.dir,
-      mode: 'controller',
-      plan_lint,
-    });
-    return 0;
   } catch (e) {
     const failure = {
       run_id: run,

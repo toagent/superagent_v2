@@ -1013,3 +1013,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 旧 run/生产影响：安装更新后既有会话采用本次更窄的 REDLINE 规则，`error_class=redline` 和消费者契约不变。本包仅改指定 worktree 的两份 hooks、hooks 测试与本节；未修改生产 checkout/台账、packages、supervisor 或提醒事项，未合并、push 或部署。
 - 遗留与验收边界：解释器和外部脚本的间接效果继续遵循既有策略；本卡只编码与自检，不再委派或评审，生产实测由主控完成。验收证据与隔离 selftest、提交后同一临时 home 的 verify-local 回执在 `/tmp/fixc6-accept.SQctam`；最终结果以本次交付及提交绑定回执为准。
 - 提交前验收：tsc、eslint src、hooks 语法检查及 diff --check exit 0；hooks 77 pass/0 fail，完整 bun test 918 pass/0 fail、3 snapshots（345.89s），FIXC6 三项定向回归 456 个断言通过，R3 变体 11/11、exit 0。隔离 selftest --fake exit 0、ok:true；首次把两种身份的全部 guard 回放放入一个用例触发 5 秒超时，按身份拆分后保持全部断言通过。hooks（含 JSON）净减少 1 行，提交后同一隔离 home 以 verify.json 校验最终 HEAD。
+
+## B1-FIXINT：集成总审 Git 归属与启动失败出口修复
+
+- 问题与被推翻的假设：REDLINE 放行非破坏性 Git 写入后，COORD 只看首个 `-C` 不能代表实际 Git 目标；其单独解析也遗漏 metadata、worktree 与命令环境。新增真实 hook 回归在修复前复现异主仓库的第二个 `-C` 被放行。CLI 外层读取 plan 和执行 COORD 准入绕过启动失败捕获，使缺失/非法计划及归属拒绝失去 JSON 输出和 `launch-failures` 证据。
+- 新语义与复用：REDLINE 导出既有 `gitInvocation`，COORD 直接消费其 locations、checkout、metadata，并合并 AST 的命令环境，对每个解析目标执行既有 owner 校验；不新增第二套 Git 解析。无主外仓库的普通 add 继续放行，Git 查询继续放行。CLI 只读一次 plan，把 scope 锁、claim 和 mutate 放入原有结构化启动失败出口，保留全程 owner/generation fencing；worker preflight 仍先于 plan 读取。
+- 不变量与回归：无新依赖、配置或状态；强化 I1、I6 与 P4。真实 hook 覆盖连续 `-C`、等号/分离 Git 路径选项、metadata 与 worktree 分属不同仓库、命令赋值/env 包装及继承的 Git 环境。真实 CLI 验证缺失计划、非法 JSON/schema、异主 claim 的 `--json` 失败回执与落盘记录一致，且不产生 run/intent；原 WP-1 worker 用例恢复通过。
+- 旧 run/生产影响：仅本 worktree 六个文件，不改 packages、schema、生产 checkout/台账、supervisor、launchd 或提醒事项。新版 hooks 生效后旧会话沿用新的目标检查；旧 ledger 与 launcher fallback 不变，启动失败沿用原有输出和记录形状。未 push、合并或部署。
+- 聚焦自检与遗留：隔离 HOME 下 `bun test --timeout 60000 tests/coord.test.ts tests/hooks.test.ts` exit 0，109 pass/0 fail、1915 assertions；`bun test --timeout 60000 tests/guard-install.test.ts -t WP-1` exit 0，3 pass/0 fail、28 assertions；`bunx tsc --noEmit` exit 0。证据 `/tmp/fixint-accept.A0jWXZ/{coord-hooks,wp1,tsc}.log`。未运行完整套件、selftest 或 verify-local；本卡仅编码与自检，主控聚焦实测及合入待主控执行，不再开启评审轮。动态/间接 shell 效果沿用既有解析边界。

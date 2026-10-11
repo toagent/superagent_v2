@@ -319,4 +319,4 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
   } catch { onAdvisory('redline_internal_error'); return null; }
 }
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects, gitReadOnly};
+module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects, gitReadOnly, gitInvocation};

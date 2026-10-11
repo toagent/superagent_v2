@@ -2,7 +2,7 @@
 // Read-only hook projection. Heartbeat owns the per-session seen IDs; registry writes belong to the CLI.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {same} = require('./identity.cjs');
-const {resolvePath, effects, expand} = require('./redline.cjs');
+const {resolvePath, effects, expand, gitInvocation} = require('./redline.cjs');
 const micro = require('./micro-edit.cjs');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function read(file) {
@@ -147,8 +147,10 @@ function writeReason(payload, client, env, shell, readonly) {
         catch (error) { return error.message; }
       }
       if (name === 'git' && !readonly([name, ...args])) {
-        const at = argv.indexOf('-C');
-        const why = check('.', at >= 0 && argv[at + 1] ? path.resolve(dir, argv[at + 1]) : dir); if (why) return why;
+        const {locations, checkout, metadata} = gitInvocation(argv, dir, {...env, ...parsed.env});
+        for (const file of [...locations.map(location => location.path), checkout, metadata]) {
+          const why = check(file, dir); if (why) return why;
+        }
       }
       const inplace = name === 'sed' && args.some(a => a === '--in-place' || /^-i/.test(a)) ||
         name === 'perl' && args.some(a => /^-[^-]*i/.test(a));
