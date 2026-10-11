@@ -3629,11 +3629,14 @@ test('REC-R1-01: selftest formal receipt admits run without skip; fake workflow 
       }
       appendFileSync(${JSON.stringify(join(root, 'provider-calls'))},'provider started normally\\n');
     }
-    const p=Bun.spawnSync([${JSON.stringify(join(WETAMP, 'bin/archon'))},...args],{stdout:'inherit',stderr:'inherit'});
-    process.exit(p.exitCode);
   `
   );
-  writeFileSync(shim, `#!/usr/bin/env bash\nexec '${process.execPath}' '${driver}' "$@"\n`);
+  // COORD validates the direct parent's held lock; keep this shim's PID when
+  // entering Archon rather than adding a forwarding process between them.
+  writeFileSync(
+    shim,
+    `#!/usr/bin/env bash\nset -e\n'${process.execPath}' '${driver}' "$@"\nexec '${join(WETAMP, 'bin/archon')}' "$@"\n`
+  );
   chmodSync(shim, 0o755);
   const selftest = Bun.spawnSync(['bash', join(WETAMP, 'scripts/selftest.sh'), '--timeout', '90'], {
     env: { ...env, SA_ARCHON_BIN: shim },
