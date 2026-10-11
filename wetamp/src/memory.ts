@@ -99,7 +99,8 @@ export function saveEpisode(e: Episode): boolean {
 }
 const quantiles = (xs: number[]): { p50: number; p90: number } => { const s = [...xs].sort((a, b) => a - b); return { p50: s[Math.floor((s.length - 1) / 2)] ?? 0, p90: s[Math.ceil((s.length - 1) * .9)] ?? 0 }; };
 export const priorKey = (project: string, p: Pick<Pkg, 'size' | 'risk' | 'scope'>, model: string | null): string => JSON.stringify([project, taskTag(p.scope.write), p.size, p.risk, model]);
-const evidenceSchema = z.object({ reason: z.string().optional(), ok: z.boolean().optional(), failed: z.array(z.string()).optional(), findings: z.array(z.object({ id: z.string(), severity: z.enum(['blocker', 'high', 'medium', 'low']), status: z.string() }).loose()).optional() }).loose();
+// Producer conformance is exercised with sa-check's success and failure artifacts in memory.test.ts.
+const evidenceSchema = z.object({ reason: z.string().nullable().optional(), ok: z.boolean().optional(), failed: z.array(z.string()).optional(), findings: z.array(z.object({ id: z.string(), severity: z.enum(['blocker', 'high', 'medium', 'low']), status: z.string() }).loose()).optional() }).loose();
 function evidenceRows(l: Ledger, run: RunView): { file: string; data: Infer<typeof evidenceSchema> }[] {
   const art = confined(l, artifactsOf(run)); if (!art) return [];
   return files(art).filter(f => /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)).flatMap(file => {

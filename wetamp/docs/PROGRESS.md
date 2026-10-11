@@ -744,3 +744,13 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 遗留债 EV-R1-07（medium，未闭合）：原生 Codex exec 未提供本包可依赖的整次上下文/工具回合 token 硬边界，`model_max_output_tokens=1024` 不能证明总用量≤9216；禁改 packages、禁新增配置且不能伪称事后记账为硬上限。新增 fake usage 超预留回归，明确证实实际11024被全额记账且下一次调用被拦，但当前调用仍可越过日上限9216。需要主控裁决采用提供硬上界的单次 provider 调用契约或禁用无上界的反思通道；本包不宣称 G2 已通过。
 
 编码自检：`bunx tsc --noEmit`、`bunx eslint src` 均 exit 0；四文件定向88 pass/0 fail/3 snapshots（`/tmp/fixd-focused-final.log`），`timeout 900 bun test` 全套1026 pass/0 fail/6 snapshots、32文件、501.13s（`/tmp/fixd-full.log`）。同一隔离 home `/tmp/fixd-home.y8xY4U` 的 `selftest.sh --fake` exit 0、receipt ok=true；提交后 `verify-local.sh --commit HEAD --timeout 900` 的结果以该 home 中绑定提交的 `verify.json` 为准。src净增20行，未修改packages/hooks，不做独立评审或主控集成验收。
+
+## B1-FIXD2：EV-R1-03 生产者可空字段一致性（2026-10-11）
+
+- **问题与被推翻的假设 / I1、I6、P3**：消费字段形状检查不能仅由省略字段的成功夹具证明。sa-check 成功 accept/settle 和 PASS gate 实际写出 `reason:null`，原采集 schema 将其拒绝为 `fold_failed`，跳过摘要折叠和终态缓存登记。
+- **新语义 / P4**：reason 接受生产者定义的 string/null/省略，null 不产生失败原因；保留对象形状验证，只有独立 review 文件允许整体 null，decision 的整体 null/array 仍拒绝。不新增配置、状态或生产者定义的手抄副本；以真实生产产物的一致性测试约束消费者 schema。
+- **回归与监测**：直接执行 sa-check 产生成功与失败 accept、settle、gate 及 review/ledger 产物，再走 foldEpisode→memoryTick→memoryData，核验验收结果、原因、终态缓存与交付投影；正常成功无异常 episode，失败正常归档，均无 errors.jsonl。原 null/array decision 拒绝回归保留；运行时沿用 memory/errors.jsonl 的 fold_failed 监测点。
+- **旧 run / 生产影响**：此前因 schema 拒绝而未登记终态缓存的 run，可在新采集器下一次 tick 正常折叠；不改旧产物、生产目录或运行中 workflow。memory.ts 属 engineHash 的既有冻结输入，本改动会改变后续生成身份；旧封印不热修，恢复沿用现有 adopt 机制。
+- **遗留**：本包只关闭 EV-R1-03 的编码与自检；EV-R1-07 原有债保持交主控裁决，不做独立评审或主控集成验收。
+
+编码自检：真实生产者回归先红（成功 reason:null 的 ZodError）后绿；四文件 `90 pass / 0 fail / 3 snapshots`（`/tmp/fixd2-focused.log`），`bunx tsc --noEmit && timeout 900 bun test` 全套 `1028 pass / 0 fail / 6 snapshots`、32 文件、336.21s（`/tmp/fixd2-full.log`），`bunx eslint src` exit 0。隔离 home `/tmp/fixd2-home.QhWT3w` 的 `selftest.sh --fake` exit 0、receipt ok=true（`/tmp/fixd2-selftest.log`）；提交后在同一 home 执行 `verify-local.sh --commit HEAD --timeout 900`，结果以该 home 中绑定提交的 `verify.json` 为准。

@@ -331,6 +331,40 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
 
 
 describe('FIXD review regressions', () => {
+  // Conformance uses sa-check's written artifacts, including fields absent from hand-built fixtures.
+  test.each([true, false])('EV-R1-03 producer accept/settle/gate artifacts fold through memoryTick (success=%s)', success => {
+    const repo = gitRepo(tmp()), script = join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts');
+    const cmd = success ? 'exit 0' : 'exit 1';
+    plan.packages[0].accept = [{ cmd, timeout_s: 5 }];
+    plan.deadline = new Date(Date.now() + 3600000).toISOString();
+    writeFileSync(join(ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+    const runCheck = (kind: string, tag: string, inputs: Record<string, string> = {}, exitCode = 0) => {
+      const child = Bun.spawnSync([process.execPath, script], { cwd: repo, env: { ...process.env, ARTIFACTS_DIR: artifactsOf(raw), INPUTS_KIND: kind, INPUTS_TAG: tag, INPUTS_PLAN: join(ledger.gen_dir, 'plan.json'), INPUTS_PKGS: 'core', INPUTS_RISK: 'G1', INPUTS_ARCHON: '', INPUTS_BASE: '', INPUTS_PREV: '', INPUTS_CODER: '', ...inputs }, stdout: 'pipe', stderr: 'pipe' });
+      expect(child.exitCode).toBe(exitCode);
+      return readFileSync(join(artifactsOf(raw), `${tag}.json`), 'utf8');
+    };
+    const accept = runCheck('accept', 'verify-core');
+    expect(JSON.parse(accept)).toMatchObject({ ok: success, reason: success ? null : 'acceptance_failed', risk: 'G1', base_pass: null });
+    const settle = runCheck('settle', 'settle-core', { INPUTS_FIRST: accept, INPUTS_REPAIRED: success ? 'null' : JSON.stringify({ status: 'done', error_class: null }) }, success ? 0 : 1);
+    expect(JSON.parse(settle)).toMatchObject({ ok: success, reason: success ? null : 'repair_exhausted:acceptance_failed' });
+    const gate = runCheck('gate', 'gate-m1-r1', { INPUTS_ROUND: '1', INPUTS_R1: success ? JSON.stringify({ status: 'PASS', findings: [], debt: [] }) : 'null', INPUTS_C1: settle, INPUTS_MILESTONE: 'm1', INPUTS_NEXT: '' });
+    expect(JSON.parse(gate)).toMatchObject({ verdict: success ? 'pass' : 'fix', reason: success ? null : 'repair_exhausted:acceptance_failed', grade: success ? 'PASS' : null });
+    raw.status = success ? 'completed' : 'failed';
+    raw.nodes = [{ nodeId: 'verify-core', state: 'completed' }, { nodeId: 'settle-core', state: success ? 'completed' : 'failed' }];
+    const file = join(root, 'producer-run.json'), stub = join(root, 'producer-archon');
+    writeFileSync(file, JSON.stringify({ ...raw, events: [] })); writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
+    process.env.SA_ARCHON_BIN = stub; process.env.FAKE_EV1_RUN = file;
+    mkdirSync(join(sa, 'runs')); writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
+    const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
+    expect(folded.acceptance).toEqual([{ cmd, ok: success }]);
+    expect(folded.reasons).toEqual(success ? [] : ['repair_exhausted:acceptance_failed', 'acceptance_failed']);
+    expect(memoryTick({}, NOW, false).errors).toEqual([]);
+    expect(JSON.parse(readFileSync(join(sa, 'memory/fold-index.json'), 'utf8')).terminal.incident).toBeString();
+    expect(memoryData(NOW).deliveries.incident).toMatchObject({ status: raw.status, packages: 1 });
+    expect(existsSync(join(sa, 'memory/errors.jsonl'))).toBe(false);
+    if (success) expect(episodes()).toHaveLength(0);
+    else expect(episodes()[0]).toMatchObject({ status: 'failed', acceptance: [{ cmd, ok: false }] });
+  });
   test('EV-R1-01 nested finding evidence and command/log bodies never cross reflection boundary', async () => {
     fake(); process.env.FAKE_MEMORY_INPUT = join(root, 'reflect-input');
     writeFileSync(join(artifactsOf(raw), 'gate-m1-r1.review.json'), JSON.stringify({ status: 'FAIL', findings: [{ id: 'f1', severity: 'high', status: 'open', file: 'CLIENT-FILE', evidence: { customer: 'CUSTOMER-SECRET', log: ['LOG-SECRET'], nested: { credential: 'UNLABELLED-SECRET' } } }] }));
