@@ -99,7 +99,7 @@ function gitReason(argv, dir) {
   const [sub, ...rest] = argv.slice(i);
   const flags = rest.filter(a => a.startsWith('-')), operands = rest.filter(a => !a.startsWith('-'));
   const shared = operands.find(a => PROTECTED.test(a));
-  const msg = what => what;
+  const msg = () => '受保护分支';
   if (sub === 'branch' && shared && flags.some(f => /^-[a-zA-Z]*[fDdMm]|^--(?:force|delete|move)$/.test(f))) return msg(shared);
   if (sub === 'update-ref') {
     if (shared) return msg(shared);
@@ -247,7 +247,7 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
     if (reviewer && !query && (sub === 'commit' || root && within(resolvePath(base), resolvePath(root))))
       return message('在被审仓库执行 git 写入', 'reviewer 只读，提交或修改会污染评审对象', '只查询仓库，在临时目录运行测试');
     const why = gitReason(['git', sub, ...rest], base);
-    if (why) return message(`执行 git ${sub}`, `会改写共享分支 ${why.startsWith('release-') ? 'release-*' : why} 的版本历史`);
+    if (why) return message(`执行 git ${sub}`, '会改写共享的版本历史', undefined, {kind: why});
     if (sub === 'branch' && rest.some(v => /^-[a-zA-Z]*[dD]|^--delete$/.test(v))) {
       const branch = rest.find(v => !v.startsWith('-'));
       if (branch && branch !== currentBranch(dir)) return message('删除分支', '无法确认这是本任务拥有的分支', undefined, {kind: '非本任务分支'});

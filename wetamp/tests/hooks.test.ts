@@ -211,6 +211,15 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
     const sh = box();
     for (const command of [
       `pgrep node | xargs sh -c 'kill -TERM "$@"' sh`,
+      `pgrep node | xargs -I{} sh -c 'kill -TERM "$1"' sh {}`,
+      `pgrep node | xargs -I X sh -c 'kill -TERM "$1"' sh X`,
+      `pidof worker | xargs -i bash -c 'kill -KILL "$@"' bash {}`,
+      `pgrep node | xargs --replace bash -c 'kill -TERM "$@"' bash {}`,
+      `pgrep node | xargs --replace=PID sh -c 'kill -TERM "$1"' sh PID`,
+      `pgrep node | xargs -iPID sh -c 'kill -TERM "$1"' sh PID`,
+      `pgrep node | xargs -n1 bash -c 'kill -TERM "$@"' bash`,
+      `p=$(pgrep node | xargs -I X sh -c 'printf "%s" "$1"' sh X); kill -TERM "$p"`,
+      `pgrep node | xargs -I X sh -c 'kill -TERM X' sh`,
       `pidof worker | xargs bash -c 'kill -KILL "$1"' bash`,
       `pgrep node | xargs sh -c '(kill -TERM "$@")' sh`,
       `pgrep node | xargs sh -c 'p=$1; kill -TERM "$p"' sh`,
@@ -225,6 +234,10 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       `sh -c 'p=$1; kill -TERM "$p"' sh 41418`,
       'pgrep node; kill -TERM 41418',
       `pgrep node | xargs sh -c 'kill -TERM 41418' sh`,
+      `pgrep node | xargs -I X sh -c 'kill -TERM "$1"' sh 41418`,
+      'pgrep node | xargs -I X kill -TERM 41418',
+      `pgrep node | xargs --replace sh -c 'kill -TERM 41418' sh {}`,
+      `printf 41418 | xargs -I{} sh -c 'kill -TERM "$1"' sh {}`,
       'pgrep node | kill -TERM 41418',
     ]) expect(sh(command), command).toBeNull();
   });
@@ -251,6 +264,14 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       `git --git-dir="$FAKE_SECRET" --work-tree=. ${reset}`,
       'git config --global user.name FAKE_SECRET',
       'git branch -D release-FAKE_SECRET',
+      'git update-ref refs/heads/release-FAKE_SECRET HEAD',
+      'git update-ref -d refs/heads/release-FAKE_SECRET',
+      'git branch -f refs/heads/release-FAKE_SECRET HEAD',
+      'git checkout -B release-FAKE_SECRET',
+      'git switch --force-create release-FAKE_SECRET',
+      'git rebase main release-FAKE_SECRET',
+      'git push origin HEAD:refs/heads/release-FAKE_SECRET',
+      'git push origin :refs/heads/release-FAKE_SECRET',
       'git branch -D FAKE_SECRET',
     ];
     for (const command of commands) {
@@ -279,6 +300,14 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       'd=$(mktemp -d /tmp/rv-c2.XXXXXX); printf ok > "$d/result"',
       'd=$(mktemp -d); tee "$d/result"',
       'd=$(mktemp -t baseline); printf ok > "$d/result"',
+      'd=$(mktemp -dt rv-c3); printf ok > "$d/result"',
+      'd=$(mktemp -td baseline); printf ok > "$d/result"',
+      'd=$(mktemp -d -t baseline); printf ok > "$d/result"',
+      'd=$(mktemp -p "$TMPDIR" x.XXXX); printf ok > "$d/result"',
+      'd=$(mktemp --tmpdir=/tmp -d); printf ok > "$d/result"',
+      'd=$(mktemp --tmpdir -d x.XXXX); printf ok > "$d/result"',
+      'd=$(mktemp -p /tmp -d x.XXXX); printf ok > "$d/result"',
+      'd=$(mktemp -dp/tmp x.XXXX); printf ok > "$d/result"',
       'd=$(mktemp -d "$TMPDIR/baseline.XXXXXX"); cp input "$d/result"',
       'f=$(mktemp); printf ok > "$f"',
       `d=$(mktemp -d); sh -c 'printf ok > "$1/result"' sh "$d"`,
@@ -287,6 +316,10 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
     ]) expect(sh(command), command).toBeNull();
     for (const command of [
       'd=$(mktemp -d /foreign/rv-c2.XXXXXX); printf ok > "$d/result"',
+      'd=$(mktemp -p /foreign -d x.XXXX); printf ok > "$d/result"',
+      'd=$(mktemp --tmpdir=/foreign -d); printf ok > "$d/result"',
+      'd=$(mktemp -dt "$UNKNOWN"); printf ok > "$d/result"',
+      'd=$(mktemp -p /tmp ../foreign/x.XXXX); printf ok > "$d/result"',
       'd=$(echo /tmp/fake); printf ok > "$d/result"',
       'd=$(mktemp -d "$UNKNOWN/x.XXXXXX"); printf ok > "$d/result"',
       'd=$(mktemp -d /tmp/x.XXXXXX); printf ok > "$d/../../etc/x"',
@@ -949,11 +982,11 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       ['gh release create v1', 'gh release view v1', 'gh'],
       ['gh pr merge 12 --squash', 'gh pr view 12', 'gh'],
       ['vercel --prod', 'vercel build', 'vercel'],
-      ['git branch -D release-1', 'git branch --list', 'release-*'],
-      ['git branch -f main HEAD~1', 'git branch -f topic HEAD~1', 'main'],
-      ['git update-ref refs/heads/wetamp HEAD', 'git update-ref refs/heads/topic HEAD', 'wetamp'],
-      ['git rebase main develop', 'git rebase main topic', 'develop'],
-      ['git -c x=y checkout -B master', 'git checkout -B topic', 'master'],
+      ['git branch -D release-1', 'git branch --list', '受保护分支'],
+      ['git branch -f main HEAD~1', 'git branch -f topic HEAD~1', '受保护分支'],
+      ['git update-ref refs/heads/wetamp HEAD', 'git update-ref refs/heads/topic HEAD', '受保护分支'],
+      ['git rebase main develop', 'git rebase main topic', '受保护分支'],
+      ['git -c x=y checkout -B master', 'git checkout -B topic', '受保护分支'],
       ['pkill -f node', 'kill $!', 'pkill'],
       ['killall bun', 'kill %1', 'killall'],
       ['lsof -ti :3000 | xargs kill', 'lsof -i :3000', 'kill'],
@@ -967,7 +1000,7 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
 
   test('rebase 无分支参数时按当前分支判定', () => {
     const { repo, sh } = box();
-    expect(sh('git rebase -i HEAD~2')).toContain('main'); // gitRepo 在 main 上
+    expect(sh('git rebase -i HEAD~2')).toContain('受保护分支'); // gitRepo 在 main 上
     expect(sh(`git -C ${repo} rebase --abort`)).toBeNull();
   });
 

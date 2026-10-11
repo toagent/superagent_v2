@@ -49,16 +49,31 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (path.posix.basename(argv[0] || '') !== 'mktemp') return null;
       const vars = new Map([...state.vars, ...(values || []).filter(v => /^TMPDIR=/.test(v)).map(v => ['TMPDIR', v.slice(7)])]);
       const tmpdir = vars.get('TMPDIR') ?? env.TMPDIR;
-      let base = tmpdir || require('node:os').tmpdir(), template;
+      let base = tmpdir || require('node:os').tmpdir(), template, prefix = false, inBase = false, positional = false;
       for (let i = 1; i < argv.length; i++) {
-        const arg = argv[i];
-        if (arg === '-d' || arg === '--directory' || arg === '--') continue;
-        if (arg === '-t') { if (!argv[i + 1]) return null; template = path.join(base, argv[++i]); continue; }
-        if (arg === '-p' || arg === '--tmpdir') { base = argv[++i]; continue; }
-        if (arg.startsWith('-')) return null;
+        let arg = argv[i];
+        if (!positional && arg === '--') { positional = true; continue; }
+        if (!positional && /^-[^-]/.test(arg)) {
+          // Normalize flag bundles before consuming the option's attached/next value.
+          const options = [];
+          for (let j = 1; j < arg.length; j++) {
+            options.push('-' + arg[j]);
+            if (arg[j] === 'p') { if (arg.slice(j + 1)) options.push(arg.slice(j + 1)); break; }
+          }
+          argv.splice(i, 1, ...options); arg = argv[i];
+        }
+        if (!positional && ['-d','-u','-q','--directory','--dry-run','--quiet'].includes(arg)) continue;
+        if (!positional && arg === '-t') { prefix = true; continue; }
+        if (!positional && arg === '-p') { base = argv[++i]; inBase = true; continue; }
+        if (!positional && (arg === '--tmpdir' || arg.startsWith('--tmpdir='))) {
+          if (arg.includes('=')) base = arg.slice(arg.indexOf('=') + 1);
+          inBase = true; continue;
+        }
+        if (!positional && arg.startsWith('-')) return null;
+        if (template !== undefined) return null;
         template = arg;
       }
-      const target = expand(template || path.join(base || '', 'tmp')).replace(/\$\{TMPDIR\}|\$TMPDIR\b/g, tmpdir || '$TMPDIR');
+      const target = expand((prefix || inBase || !template) && !path.isAbsolute(template || '') ? path.join(base || '', template || 'tmp') : template).replace(/\$\{TMPDIR\}|\$TMPDIR\b/g, tmpdir || '$TMPDIR');
       if (!base || /[$`]/.test(target)) return null;
       const dirs = state.dirs.map(dir => path.resolve(dir, path.dirname(target)));
       const roots = ['/tmp','/private/tmp','/var/folders','/private/var/folders',env.TMPDIR].filter(Boolean);
@@ -85,17 +100,20 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       // Wrappers themselves may elevate privileges; inspect them before unwrapping.
       check({argvs: wrappers.map(i => values.slice(i)), reads: [], writes: []}, state.dirs);
       for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars, state.selected), depth + 1);
-      const argv = unwrapped.argv, name = path.posix.basename(argv[0] || '');
+      let argv = unwrapped.argv;
       const selectedInput = wrappers.some(i => path.posix.basename(values[i]) === 'xargs') && state.selected.length ? `$(${state.selected[0]})` : '';
+      if (selectedInput) for (const replacement of unwrapped.replacements)
+        argv = replacement ? argv.map(arg => arg.split(replacement).join(selectedInput)) : [...argv, selectedInput];
+      const name = path.posix.basename(argv[0] || '');
       if (/[$`]/.test(name)) advisory('command_head_unknown');
       check({argvs: argv.length ? [argv] : [], reads: [], writes: unwrapped.writes.filter(t => !STREAM.test(t)), env: commandEnv,
-        selections: [...(selectedInput ? state.selected : []), ...argv.filter(v => /[$`]/.test(v)).flatMap(selections)]}, state.dirs);
+        selections: argv.filter(v => /[$`]/.test(v)).flatMap(selections)}, state.dirs);
       if (SHELLS.has(name)) {
         const flag = argv.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
         if (flag > 0 && argv[flag + 1]) {
           if (/\$|`/.test(argv[flag + 1]) && !values.includes(argv[flag + 1])) advisory('dynamic_shell_body');
           const inner = fork(state.dirs, state.vars, state.selected), args = argv.slice(flag + 3);
-          if (selectedInput) args.push(selectedInput);
+          inner.vars.set('0', argv[flag + 2] || '');
           args.forEach((arg, i) => inner.vars.set(String(i + 1), arg));
           inner.vars.set('@', args.join(' ')); inner.vars.set('*', args.join(' '));
           script(argv[flag + 1], inner, depth + 1);
@@ -203,7 +221,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       }
       if (n.type === 'command') {
         const values = [...n.namedChildren.filter(ch => ch.type === 'variable_assignment').map(get), get(n.childForFieldName('name')), ...n.childrenForFieldName('argument').map(get)].filter(v => v !== null && v !== undefined);
-        commandValues.set(n.id, normalizeOptions(values)); execute(values, state, depth);
+        commandValues.set(n.id, values); execute(values, state, depth);
       }
       return null;
     }

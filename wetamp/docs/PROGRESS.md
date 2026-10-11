@@ -699,3 +699,12 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 旧 run/生产影响：仅更新当前 worktree 的 hooks、测试与本节；error_class=redline、advisory systemMessage、挂起/告警契约不变，没有新依赖或配置开关，没有修改 packages/ 或 wetamp/src。安装更新后旧会话采用新判定；本包没有部署生产、调用真实 supervisor、合并或发布。
 - 验收证据：新增五组探针与等价变体回归；R2 报告探针 5/5 ok，R1 前九条拒绝、末条拒绝且无 FAKE_SECRET；新增回归 5 pass/0 fail，tsc 与 eslint src exit 0，完整套件 913 pass/0 fail（263.45s、3 snapshots），最终 hooks/HF5/HF6 定向回归 157 pass/0 fail（31.17s），隔离 selftest --fake ok:true。hooks 净增 40 行；提交后 verify-local 的结果见交付回执，临时 home 为 /tmp/fixc2-accept.ZkMCSR。
 - 遗留：无法建模的解释器/外部脚本间接效果仍按既有策略 advisory；本包只做编码自检，R3 独立评审、主控集成验收与生产更新仍由主控处理。
+
+## B1-FIXC3：RV-C3 三条遗留修复
+
+- 问题与被推翻的假设：xargs 输入不是永远追加的参数，替换模式必须在占位符出现处传播来源；识别到受保护分支不意味着原始 ref 可以进入提醒；mktemp 的组合短选项及临时父目录参数不能按普通位置模板处理。
+- 新语义（REDLINE-R1-07/09/10）：复用 wrapper 参数解析，区分 -I、-i、--replace 的替换与默认追加，把生成参数交给 shell 的 $0、$1、$@；没有用到替换输入的明确 PID 命令仍放行。Git 只向现有三段式提醒出口传递“受保护分支”等类别，update-ref、分支操作与 push refspec 不回显 ref。mktemp 先规范化 -dt/-td 等选项束，保留 --tmpdir 可选值的拼法，再按临时父目录和位置模板推导产物归属；外部/未知父目录及越界子路径仍拒绝。
+- 不变量与证据：强化 I1 的真实红线边界与 I6 事故回放；三个报告样例及等价变体扩展既有 hooks 回归，FAKE_SECRET 遍历 Git ref 与其他拒绝类别。R1 报告 10/10 拒绝且无秘密、R2 5/5 ok、R3 三变体 3/3 ok，判定器只分析命令字符串。advisory 继续在 guard stdout 的 systemMessage 查看，未新增日志/状态/配置机制。
+- 旧 run/生产影响：安装更新后旧会话采用修正后的 hooks；error_class=redline、挂起与告警消费者契约不变。只修改 wetamp-redline 的 hooks、测试和本节，packages/ 与 wetamp/src 零改动；未触发生产 supervisor、提醒、部署、push 或合并。
+- 遗留与验收边界：外部脚本及无法建模的语法仍沿用 advisory；本包只做编码与自检，已超过三轮的主控实测与用户裁决由主控完成。本次完整验收与隔离回执在 /tmp/fixc3-accept-2ky9ks32，最终结果见交付回执。
+- 提交前自检：tsc 与 eslint src exit 0；完整 bun test 913 pass/0 fail、3 snapshots（318.75s）；隔离 selftest --fake exit 0、ok:true。hooks 净增 25 行，git diff --check 通过；提交后在同一临时 home 运行 verify-local 绑定最终 HEAD。

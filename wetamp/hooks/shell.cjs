@@ -56,7 +56,7 @@ const WRAPPERS = {
   // BSD `script [-t time] [file [command ...]]`; util-linux `script [-c command] [file]`.
   script: {arg: 'tcTBIOEmo', long: ['--command','--timing','--log-timing','--log-io','--log-in','--log-out','--echo','--logging-format','--output-limit'],
     split: ['c','--command'], out: ['T','B','I','O','--timing','--log-timing','--log-io','--log-in','--log-out'], file: true},
-  xargs: {arg: 'IJLnPsEda', optional: 'iel', long: ['--max-args','--max-procs','--max-chars','--eof','--delimiter','--arg-file','--replace','--max-lines']},
+  xargs: {arg: 'IJLnPsEda', optional: 'iel', long: ['--max-args','--max-procs','--max-chars','--eof','--delimiter','--arg-file','--max-lines']},
   timeout: {arg: 'ks', long: ['--kill-after','--signal'], positional: 1},
   gtimeout: {arg: 'ks', long: ['--kill-after','--signal'], positional: 1},
   stdbuf: {arg: 'ioe', long: ['--input','--output','--error']},
@@ -64,8 +64,8 @@ const WRAPPERS = {
   rtk: {skip: 'proxy'},
 };
 const SHELLS = new Set(['bash','sh','zsh','dash','ksh']);
-// One spelling at the effect boundary: long option values are separate words.
-const normalizeOptions = argv => argv.flatMap(word => /^--[^=]+=/.test(word) ? [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)] : [word]);
+// Split long values except --replace: its optional value must remain attached.
+const normalizeOptions = argv => argv.flatMap(word => /^--[^=]+=/.test(word) && !word.startsWith('--replace=') ? [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)] : [word]);
 // Replace every `$(…)`, `<(…)`, `(…)` and backtick body outside single quotes with one inert
 // word and return the bodies, each to be parsed as a command line of its own.
 function lift(text) {
@@ -82,13 +82,14 @@ function lift(text) {
 // returns the real argv, option values that are themselves command lines (`env -S`) and the
 // wrappers' own writes.
 function unwrap(argv) {
-  const lines = [], writes = [], heads = []; let i = 0;
+  const lines = [], writes = [], heads = [], replacements = []; let i = 0;
   for (;;) {
     while (i < argv.length && (RESERVED.has(argv[i]) || ASSIGN.test(argv[i]))) { if (RESERVED.has(argv[i])) heads.push(i); i++; }
     if (i < argv.length) heads.push(i);
     const spec = WRAPPERS[path.posix.basename(argv[i] ?? '')];
     if (!spec) break;
     const head = i++;
+    let replacement;
     while (i < argv.length && argv[i].startsWith('-') && argv[i] !== '-') {
       const word = argv[i++];
       if (word === '--') break;
@@ -96,26 +97,32 @@ function unwrap(argv) {
       if (word.startsWith('--')) {
         const [name, value] = word.split(/=(.*)/s);
         const taken = value ?? (spec.long?.includes(name) ? argv[i++] : undefined);
+        if (path.posix.basename(argv[head]) === 'xargs' && name === '--replace') replacement = value ?? '{}';
         if (spec.split?.includes(name) && taken !== undefined) lines.push(taken);
         if (spec.out?.includes(name) && taken !== undefined) writes.push(taken);
         continue;
       }
       for (let j = 1; j < word.length; j++) {
-        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes, heads};
-        if (spec.optional?.includes(word[j])) break;
+        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes, heads, replacements};
+        if (spec.optional?.includes(word[j])) {
+          if (path.posix.basename(argv[head]) === 'xargs' && word[j] === 'i') replacement = word.slice(j + 1) || '{}';
+          break;
+        }
         if (!spec.arg?.includes(word[j])) continue;
         const value = j + 1 < word.length ? word.slice(j + 1) : argv[i++];
+        if (path.posix.basename(argv[head]) === 'xargs' && word[j] === 'I') replacement = value;
         if (spec.split?.includes(word[j]) && value !== undefined) lines.push(value);
         if (spec.out?.includes(word[j]) && value !== undefined) writes.push(value);
         break;
       }
     }
+    if (path.posix.basename(argv[head]) === 'xargs') replacements.push(replacement);
     if (spec.creates) writes.push(spec.creates);
     if (spec.file) writes.push(argv[i++] ?? 'typescript');
     i += spec.positional ?? 0;
     if (spec.skip && argv[i] === spec.skip) i++;
   }
-  return {argv: argv.slice(i), lines, writes, heads};
+  return {argv: argv.slice(i), lines, writes, heads, replacements};
 }
 // Every simple command a shell line would start: argv with wrappers, assignments and
 // redirections stripped, including `bash -c`/`eval`/`find -exec` bodies and every command
