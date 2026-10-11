@@ -12,6 +12,7 @@ import {
   renderBrief,
 } from '../src/generate';
 import { install, WETAMP } from '../src/config';
+import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -35,6 +36,7 @@ type N = {
   depends_on?: string[];
   trigger_rule?: string;
   when?: string;
+  timeout?: number;
   wait?: { event: string; deadline_ms: number };
   with?: Record<string, unknown>;
 };
@@ -58,7 +60,12 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
     expect(engineHash(root)).toBe(hash);
     expect(residentHash(root)).not.toBe(resident);
   }
-  for (const path of ['bin/codex-worker', 'bin/codex-readonly-proxy.cjs', 'scripts/codex-trust.cjs', 'src/archon.ts']) {
+  for (const path of [
+    'bin/codex-worker',
+    'bin/codex-readonly-proxy.cjs',
+    'scripts/codex-trust.cjs',
+    'src/archon.ts',
+  ]) {
     fs.appendFileSync(join(root, path), '\n// execution-time change\n');
     expect(engineHash(root)).toBe(hash);
   }
@@ -71,6 +78,142 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
 });
 
 describe('buildWorkflow', () => {
+  test('ACCT: short acceptance keeps the Archon subprocess default floor', () => {
+    const source = readFileSync(join(WETAMP, '../packages/workflows/src/dag-executor.ts'), 'utf8');
+    const ms = Number(
+      source.match(/const SUBPROCESS_DEFAULT_TIMEOUT = ([\d_]+);/)?.[1]?.replaceAll('_', '')
+    );
+    expect(ms).toBe(120_000);
+    const plan = structuredClone(fixture);
+    for (const p of plan.packages) p.accept = [{ cmd: 'short-check', timeout_s: 10 }];
+    for (const fake of [false, true]) {
+      const nodes = nodesOf(build(fake, plan));
+      for (const n of nodes.filter(n => n.with?.kind === 'accept' || n.with?.kind === 'settle'))
+        expect(n.timeout).toBe(ms);
+      for (const n of nodes.filter(n => n.with?.kind !== 'accept' && n.with?.kind !== 'settle'))
+        expect(n.timeout).toBeUndefined();
+    }
+  });
+  test('ACCT: serial checks include a full failed-command baseline probe, even with cache enabled', () => {
+    const plan = structuredClone(fixture);
+    plan.packages[0].accept = [
+      { cmd: 'check-a', timeout_s: 600, cache: true },
+      { cmd: 'check-b', timeout_s: 900 },
+    ];
+    for (const fake of [false, true]) {
+      const nodes = nodesOf(build(fake, plan));
+      for (const id of ['verify-core', 'settle-core', 'diff-m1-r1', 'diff-m1-r2', 'diff-m1-r3'])
+        expect(nodes.find(n => n.id === id)?.timeout).toBe(3_060_000);
+    }
+  });
+  test('ACCT: milestone totals cover only its own packages, not the cumulative scope', () => {
+    const plan = structuredClone(fixture);
+    plan.packages[0].accept = [{ cmd: 'first', timeout_s: 900 }];
+    plan.packages[1].accept = [{ cmd: 'second', timeout_s: 300 }];
+    plan.packages.push({
+      ...plan.packages[1],
+      id: 'web',
+      accept: [{ cmd: 'third', timeout_s: 600 }],
+    });
+    const nodes = nodesOf(build(false, plan));
+    expect(nodes.find(n => n.id === 'verify-api')?.timeout).toBe(660_000);
+    expect(nodes.find(n => n.id === 'settle-web')?.timeout).toBe(1_260_000);
+    for (const r of [1, 2, 3]) {
+      const n = nodes.find(n => n.id === `diff-m2-r${r}`);
+      expect(n?.with).toMatchObject({ pkgs: 'api,web', scope_pkgs: 'core,api,web' });
+      expect(n?.timeout).toBe(1_860_000);
+    }
+  });
+  test('ACCT: environment commands run once and empty environment has no timeout', () => {
+    const plan = structuredClone(fixture);
+    plan.environment = [{ cmd: 'plan-env', timeout_s: 200 }];
+    plan.packages[0].environment = [{ cmd: 'pkg-env', timeout_s: 300 }];
+    expect(nodesOf(build(false, plan)).find(n => n.id === 'environment')?.timeout).toBe(560_000);
+    expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBeUndefined();
+  });
+  test('ACCT: real Archon completes slow sa-check with the generated budget (time scaled 100:1)', () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const plan = structuredClone(fixture);
+    plan.repo = repo;
+    // 2s represents 200s, longer than the scaled 120s default but within the 300s command budget.
+    plan.packages[0].accept = [{ cmd: 'sleep 2', timeout_s: 300 }];
+    const planPath = join(root, 'plan.json');
+    fs.writeFileSync(planPath, JSON.stringify(plan));
+    const source = join(root, 'source');
+    const workflow = join(source, '.archon/workflows/acct');
+    fs.mkdirSync(workflow, { recursive: true });
+    fs.cpSync(join(WETAMP, 'templates/.archon/scripts'), join(source, '.archon/scripts'), {
+      recursive: true,
+    });
+    const generated = nodesOf(build(true, plan)).find(n => n.id === 'verify-core')!;
+    const node = {
+      ...generated,
+      depends_on: [],
+      timeout: generated.timeout! / 100,
+      with: { ...generated.with, plan: planPath, base: '', coder: '' },
+    };
+    fs.writeFileSync(
+      join(workflow, 'acct.yaml'),
+      Bun.YAML.stringify({
+        name: 'acct',
+        description: 'ACCT scaled subprocess timeout contract',
+        nodes: [
+          {
+            ...node,
+            id: 'old-budget',
+            timeout: 120_000 / 100,
+            on_timeout: 'skip',
+            with: { ...node.with, tag: 'old-budget' },
+          },
+          { ...node, depends_on: ['old-budget'], trigger_rule: 'all_done' },
+        ],
+      })
+    );
+    sh(
+      'git init -q && git add .archon && git -c user.name=t -c user.email=t@l commit -qm fixture',
+      source
+    );
+    const env = {
+      ...process.env,
+      SUPERAGENT_HOME: join(root, 'home'),
+      ARCHON_HOME: join(root, 'home/archon'),
+    };
+    const archon = (...args: string[]) => {
+      const p = Bun.spawnSync([join(WETAMP, 'bin/archon'), ...args], {
+        env,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 30_000,
+      });
+      expect(p.exitCode).toBe(0);
+      return lastJson(p.stdout.toString());
+    };
+    const ack = archon(
+      'workflow',
+      'run',
+      'acct',
+      '--workflow-source',
+      source,
+      '--cwd',
+      repo,
+      '--no-worktree',
+      '--detach',
+      '--json'
+    );
+    const id = String(ack?.runId);
+    expect(archon('workflow', 'wait', id, '--timeout', '20', '--json')).toMatchObject({
+      attention: { status: 'completed' },
+    });
+    const view = archon('workflow', 'get', id, '--verbose', '--json');
+    expect(view).toMatchObject({
+      status: 'completed',
+      nodes: [
+        { nodeId: 'old-budget', state: 'skipped' },
+        { nodeId: 'verify-core', state: 'completed' },
+      ],
+    });
+  }, 40_000);
   test('golden: two packages across two milestones', () => {
     expect(build(false)).toEqual(golden('two-pkgs'));
   });
