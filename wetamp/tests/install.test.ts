@@ -35,6 +35,7 @@ function runInstall(
       ARCHON_HOME: archonHome,
       SA_LAUNCHD_DIR: launchd,
       SA_SKIP_DOCTOR: '1',
+      XDG_STATE_HOME: join(home, 'state'),
     },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -68,7 +69,7 @@ describe('install.sh', () => {
     const backups = readdirSync(join(home, 'archon')).filter(f => f.startsWith('config.yaml.bak-'));
     expect(backups.length).toBe(1);
 
-    expect(runInstall(home).trim()).toBe('');
+    expect(runInstall(home).trim()).toBe('install: mode=controller');
     expect(readFileSync(join(home, 'archon', '.env'), 'utf8')).toBe(env1);
     expect(readFileSync(join(home, 'archon', 'config.yaml'), 'utf8')).toBe(cfg1);
     expect(
@@ -94,7 +95,7 @@ describe('install.sh', () => {
     ])
       expect(xml).toContain(s);
     expect(xml).not.toContain('__');
-    expect(runInstall(home, la).trim()).toBe('');
+    expect(runInstall(home, la).trim()).toBe('install: mode=controller');
     writeFileSync(plist, 'stale');
     expect(runInstall(home, la)).toContain('launchctl bootstrap');
     expect(readFileSync(plist, 'utf8')).toBe(xml);
@@ -222,7 +223,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(sh('--hooks').out.trim()).toMatch(/^hooks: no changes\ncodex trust: \d+ entries already trusted$/);
   });
 
-  test('--hooks keeps matcher-scoped copies and folds V1 context-budget with or without the claude arg', () => {
+  test('A-11: --hooks collapses overlapping managed matcher/all handlers and folds context-budget', () => {
     const { home, sh } = sandbox();
     const settings = join(home, '.claude', 'settings.json');
     mkdirSync(dirname(settings), { recursive: true });
@@ -254,8 +255,6 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const at = (e: string): [string | undefined, string][] =>
       pre[e].flatMap(x => x.hooks.map((h): [string | undefined, string] => [x.matcher, h.command]));
     expect(at('PreToolUse')).toEqual([
-      ['Edit', `${V2('guard.cjs')} claude`],
-      ['Bash', `${V2('guard.cjs')} claude`],
       [undefined, V2('context-budget.cjs')],
       [undefined, `${V2('guard.cjs')} claude`],
     ]);
@@ -401,6 +400,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     });
     expect(ledger.hooks).toContain('guard.cjs');
     expect(ledger.role).toBe('worker');
+    const file = join(home, '.local', 'state', 'superagent', 'install.json');
+    writeFileSync(file, JSON.stringify({...ledger, userField: 'retained'}));
+    expect(sh('--remote-hooks').code).toBe(0);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({...ledger, userField: 'retained'});
     expect(sh('--hooks', '--remote-hooks').code).toBe(64);
     expect(sh('--dry-run').code).toBe(64);
   });

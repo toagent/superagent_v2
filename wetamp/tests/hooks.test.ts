@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { gitRepo, tmp } from './helpers';
 await (createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }).init();
 
@@ -158,14 +159,14 @@ describe('guard.cjs', () => {
     expect(guard('claude', bash('ls && git status'), worker)).toBeNull();
   });
 
-  test('Codex 判定：general 池且不在 commander 池为派生；子调用与 commander 模型不按模型判', () => {
+  test('A-08: child metadata and derivedBy agree; commander model keeps its root behavior', () => {
     const { guard } = setup();
     const spawn = { tool_name: 'spawn_agent', tool_input: { message: 'x', fork_turns: 'none' } };
     expect(reason(guard('codex', { ...spawn, model: 'gpt-6.1-sol' }))).toContain('general 池模型');
     expect(guard('codex', { ...spawn, model: 'gpt-6-astra' })).toBeNull();
-    expect(
-      guard('codex', { ...spawn, model: 'gpt-6.1-sol', agent_type: 'x', agent_id: 'y' })
-    ).toBeNull();
+    expect(reason(guard('codex', { ...spawn, model: 'gpt-6.1-sol', agent_type: 'x', agent_id: 'y' }))).toContain('child metadata');
+    expect(reason(guard('claude', {tool_name: 'Agent', agent_type: 'coder-1', agent_id: 'child'}))).toContain('N-1');
+    expect(guard('codex', {...spawn, model: 'gpt-6-astra', agent_type: ' ', agent_id: 'x'})).toBeNull();
   });
 
   test('元帅会话 Agent 放行；G-2 仍生效', () => {
@@ -201,7 +202,7 @@ describe('guard.cjs', () => {
     const { home, repo, guard } = setup();
     expect(reason(guard('claude', bash(`rm -rf ${home}`)))).toContain('受保护目录');
     expect(reason(guard('claude', bash(`rm -rf ${repo}`)))).toContain('受保护目录');
-    expect(guard('claude', bash(`rm -rf ${join(repo, 'build')}`))).toBeNull();
+    expect(reason(guard('claude', bash(`rm -rf ${join(repo, 'build')}`)))).toContain('G-1');
     expect(reason(guard('claude', edit(repo, 1), { SUPERAGENT_ROLE: 'reviewer' }))).toContain(
       'reviewer 只读'
     );
@@ -328,37 +329,57 @@ describe('guard.cjs', () => {
     expect(outs.filter(o => o === '').length).toBe(3);
   });
 
-  test('G-3：stop_gate=change 有未评审改动时 Stop 被拒；同一状态二次 Stop 放行；评审后通过', () => {
-    const { repo, guard } = setup(hooksWith({ stop_gate: 'change' }));
-    const s = (p: object): Out => guard('claude', { session_id: 'g', ...p });
-    expect(s({ hook_event_name: 'SessionStart' })).toBeNull();
-    expect(s({ hook_event_name: 'Stop' })).toBeNull();
-    expect(s(edit(repo, 1))).toBeNull();
-    writeFileSync(join(repo, 'a.ts'), 'changed\n');
-    const blocked = s({ hook_event_name: 'Stop' }) as { decision?: string; reason?: string };
-    expect(blocked.decision).toBe('block');
-    expect(blocked.reason).toContain('G-3');
-    expect(s({ hook_event_name: 'Stop' })?.systemMessage).toContain('UNREVIEWED');
-    writeFileSync(join(repo, 'a.ts'), 'changed again\n');
-    expect((s({ hook_event_name: 'Stop' }) as { decision?: string }).decision).toBe('block');
-    expect(s({ hook_event_name: 'Stop', stop_hook_active: true })?.systemMessage).toContain(
-      'UNREVIEWED'
-    );
-    s({
-      hook_event_name: 'PostToolUse',
-      tool_name: 'Agent',
-      tool_input: { subagent_type: 'reviewer-1', prompt: 'x' },
-      tool_response: {},
+  test('A-07: reviewer completion cannot approve the current tree; legacy blocking modes are advisory', () => {
+    for (const mode of ['change', 'cycle', 'advisory']) {
+      const {repo, guard} = setup(hooksWith({stop_gate: mode}));
+      const s = (p: object): Out => guard('claude', {session_id: 'g', ...p});
+      s({hook_event_name: 'SessionStart'});
+      s(edit(repo, 1));
+      writeFileSync(join(repo, 'a.ts'), 'changed after review started\n');
+      for (const event of [
+        {hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: {subagent_type: 'reviewer-1'}, tool_response: {}},
+        {hook_event_name: 'SubagentStop', agent_type: 'reviewer-1', agent_id: 'child'},
+      ]) s(event);
+      expect(s({hook_event_name: 'Stop'})?.systemMessage).toContain('advisory');
+      expect(s({hook_event_name: 'Stop'})?.systemMessage).toContain('引擎正式 gate');
+    }
+  });
+
+  test('A-09: shell code output, unknown write targets and malformed patches fail closed', () => {
+    const {repo, guard} = setup();
+    for (const command of ['echo x > a.ts', 'tee a.ts', 'touch auth.ts', 'cp NOTES.md a.ts', 'echo x > "$TARGET"', 'echo "unclosed', 'sed -i s/old/new/ a.ts', 'node -e "require(\"fs\").writeFileSync(\"a.ts\", \"x\")"'])
+      expect(reason(guard('claude', bash(command)))).toContain('G-1');
+    expect(guard('claude', bash('echo x > NOTES.md'))).toBeNull();
+    expect(guard('claude', bash('git status'))).toBeNull();
+    expect(reason(guard('codex', {tool_name: 'apply_patch', tool_input: {input: 'invalid'}}))).toContain('无法确认补丁');
+    expect(reason(guard('claude', {tool_name: 'Edit', tool_input: {file_path: join(repo, 'a.ts')}}))).toContain('无法计量');
+    expect(reason(guard('claude', {...edit(repo, 1), session_id: '', transcript_path: ''}))).toContain('缺少会话身份');
+    expect(reason(guard('claude', {tool_name: 'Bash', tool_input: {}}))).toContain('缺少文本');
+  });
+
+  test('A-09: corrupt quota state and an internal guard exception cannot allow writes', () => {
+    const {home, repo, guard} = setup();
+    const file = join(home, 'hooks', `${createHash('sha256').update('bad').digest('hex')}.json`);
+    mkdirSync(join(home, 'hooks'), {recursive: true});
+    for (const raw of ['{broken', JSON.stringify({micro: {lines: 'NaN', files: [], risk: [], newCode: []}})]) {
+      writeFileSync(file, raw);
+      expect(reason(guard('claude', {...edit(repo, 1), session_id: 'bad'}))).toContain('无法计量');
+      expect(readFileSync(file, 'utf8')).toBe(raw);
+    }
+    const p = Bun.spawnSync(['node', join(HOOKS, 'guard.cjs'), 'claude'], {
+      stdin: Buffer.from('null'), env: {...baseEnv, SUPERAGENT_HOME: home}, stdout: 'pipe', stderr: 'pipe',
     });
-    expect(s({ hook_event_name: 'Stop' })).toBeNull();
-    // 文档改动不计入；首个事件为 Stop 的会话是 unknown。
-    writeFileSync(join(repo, 'NOTES.md'), 'x\n');
-    expect(s({ hook_event_name: 'Stop' })).toBeNull();
-    const unknown = guard('claude', { session_id: 'late', hook_event_name: 'Stop' }) as {
-      decision?: string;
-      reason?: string;
-    };
-    expect(unknown.reason).toContain('unknown');
+    expect(p.exitCode).toBe(2);
+    expect(reason(JSON.parse(p.stdout.toString()) as Out)).toContain('内部异常');
+  });
+
+  test('A-11: duplicate native event IDs consume G-1 exactly once; new IDs still accumulate', () => {
+    const {repo, guard} = setup();
+    const p = {...edit(repo, 20), session_id: 'dedup', tool_use_id: 'event-1'};
+    expect(guard('claude', p)).toBeNull();
+    expect(guard('claude', p)).toBeNull();
+    expect(reason(guard('claude', {...p, tool_use_id: 'event-2'}))).toContain('累计 40 行');
+    expect(reason(guard('claude', {...p, tool_use_id: 'event-2'}))).toContain('累计 40 行');
   });
 
   test('G-3：advisory 只提示；无效取值给出配置提示而不报错', () => {
@@ -367,7 +388,7 @@ describe('guard.cjs', () => {
     writeFileSync(join(adv.repo, 'a.ts'), 'changed\n');
     expect(
       adv.guard('claude', { session_id: 'a', hook_event_name: 'Stop' })?.systemMessage
-    ).toContain('UNREVIEWED');
+    ).toContain('advisory');
     const bad = setup(hooksWith({ stop_gate: 'strict' }));
     expect(bad.guard('claude', { hook_event_name: 'Stop' })?.systemMessage).toContain(
       'stop_gate=strict 无效'
@@ -447,6 +468,27 @@ describe('context-budget.cjs', () => {
     expect(call('ls')?.hookSpecificOutput?.additionalContext).toContain('超过 15 次');
     expect(call('ls')).toBeNull();
   });
+  test('F-12/A-11: concurrent context hooks keep every distinct event and deduplicate repeated IDs', async () => {
+    const root = tmp(), home = join(root, 'sa'), transcript = join(root, 't.jsonl');
+    mkdirSync(join(home, 'runs'), {recursive: true});
+    mkdirSync(join(home, 'archon'), {recursive: true});
+    writeFileSync(join(home, 'runs/r.json'), JSON.stringify({archon_run_id: 'r'}));
+    const db = new Database(join(home, 'archon/archon.db'));
+    db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
+    db.run("insert into remote_agent_workflow_runs values ('r','running')"); db.close();
+    writeFileSync(transcript, JSON.stringify({usage: {input_tokens: 1000}}));
+    await Promise.all(Array.from({length: 24}, async (_, i) => {
+      const p = Bun.spawn(['node', join(HOOKS, 'context-budget.cjs')], {
+        stdin: Buffer.from(JSON.stringify({hook_event_name: 'PreToolUse', session_id: 'race', tool_name: 'Read', transcript_path: transcript, tool_use_id: `e${i % 20}`})),
+        env: {...baseEnv, SUPERAGENT_HOME: home}, stdout: 'pipe', stderr: 'pipe',
+      });
+      await new Response(p.stdout).text();
+      expect(await p.exited).toBe(0);
+    }));
+    const file = join(home, 'hooks/context-budget', `${createHash('sha256').update('race').digest('hex')}.json`);
+    expect(JSON.parse(readFileSync(file, 'utf8')).tools).toBe(20);
+  });
+
 });
 
 interface RedArgs {

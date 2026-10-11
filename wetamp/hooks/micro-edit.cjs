@@ -120,6 +120,8 @@ function violations(micro) {
   return reasons;
 }
 function accumulate(micro, edit) {
+  if (!Number.isSafeInteger(micro.lines) || micro.lines < 0 || ['files','risk','newCode'].some(k => !Array.isArray(micro[k]) || micro[k].some(v => typeof v !== 'string')))
+    throw new Error('微改状态损坏');
   return {...micro,lines:micro.lines+edit.lines,...Object.fromEntries(['files','risk','newCode'].map(key => [key,[...new Set([...micro[key],...edit[key]])]]))};
 }
 // F1: reuse patch target parsing when discovering repositories before writing.

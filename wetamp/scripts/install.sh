@@ -26,6 +26,28 @@ case "$mode" in
   --hooks) bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"}; exec bun "$WETAMP/scripts/codex-trust.cjs" write ${dry:+"$dry"};;
   *) exec bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"};;
 esac
+# Both installation paths publish the same role fact; lock the full RMW and keep
+# user-owned fields. The unchanged ledger is left byte-for-byte intact.
+publish_mode() {
+  local role="$1" state="${XDG_STATE_HOME:-$HOME/.local/state}/superagent"
+  node -e '
+const fs = require("node:fs"), [state, wetamp, commit, role] = process.argv.slice(1), file = state + "/install.json";
+const {withLock, atomicWrite} = require(wetamp + "/hooks/hook-state.cjs");
+withLock(file, () => {
+  let old = {}, raw = "";
+  try { raw = fs.readFileSync(file, "utf8"); old = JSON.parse(raw); }
+  catch (e) { if (e.code !== "ENOENT") throw e; }
+  if (!old || typeof old !== "object" || Array.isArray(old)) throw new Error("install.json must be an object");
+  const managed = {installer: "superagent_v2", mode: role === "worker" ? "remote-hooks" : "controller", role, wetamp, commit,
+    hooks: fs.readdirSync(wetamp + "/hooks").filter(f => f.endsWith(".cjs")).sort()};
+  if (Object.entries(managed).every(([k,v]) => JSON.stringify(old[k]) === JSON.stringify(v))) return;
+  if (raw && old.installer !== "superagent_v2") fs.copyFileSync(file, file + ".v1-" + Date.now());
+  atomicWrite(file, JSON.stringify({...old, ...managed, installed_at: new Date().toISOString()}, null, 2) + "\n");
+  console.log("updated " + file);
+});
+console.log("install: mode=" + role);
+' "$state" "$WETAMP" "$(git -C "$WETAMP" rev-parse HEAD 2>/dev/null || echo unknown)" "$role"
+}
 if [ "$mode" = --remote-hooks ]; then
   command -v node >/dev/null || { echo "install.sh --remote-hooks: node not found" >&2; exit 1; }
   for f in "$WETAMP"/hooks/*.cjs; do node --check "$f"; done
@@ -39,16 +61,7 @@ if [ "$mode" = --remote-hooks ]; then
   [ -z "$err" ] || { echo "install.sh --remote-hooks: guard.cjs: $err" >&2; exit 1; }
   # 远端 hooks.json 由 agentcfg 维度下推；这里为其中指向本 wetamp/hooks/ 的条目写 Codex 信任
   node "$WETAMP/scripts/codex-trust.cjs" write
-  state="${XDG_STATE_HOME:-$HOME/.local/state}/superagent"; mkdir -p "$state"
-  node -e '
-const fs = require("node:fs"), [state, wetamp, commit] = process.argv.slice(1), file = state + "/install.json";
-// V1 台账（同一位置）先留副本：V1 卸载器仍要读它
-if (fs.existsSync(file) && !fs.readFileSync(file, "utf8").includes("\"superagent_v2\"")) fs.copyFileSync(file, file + ".v1-" + Date.now());
-fs.writeFileSync(file + ".tmp", JSON.stringify({installer: "superagent_v2", mode: "remote-hooks", role: "worker", wetamp, commit,
-  hooks: fs.readdirSync(wetamp + "/hooks").filter(f => f.endsWith(".cjs")).sort(), installed_at: new Date().toISOString()}, null, 2) + "\n");
-fs.renameSync(file + ".tmp", file);
-console.log("updated " + file);
-' "$state" "$WETAMP" "$(git -C "$WETAMP" rev-parse HEAD 2>/dev/null || echo unknown)"
+  publish_mode worker
   entry="$HOME/.local/bin/superagent"; mkdir -p "$HOME/.local/bin"
   if [ -e "$entry" ] && [ ! -L "$entry" ]; then mv "$entry" "$entry.bak-$(date +%Y%m%d%H%M%S)"; fi
   [ "$(readlink "$entry" 2>/dev/null)" = "$WETAMP/bin/superagent" ] || { ln -sfn "$WETAMP/bin/superagent" "$entry"; echo "linked $entry -> $WETAMP/bin/superagent"; }
@@ -79,5 +92,6 @@ if ! { [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ]; }; then
   echo "  load (manual):   launchctl bootout gui/$(id -u)/$label 2>/dev/null; launchctl bootstrap gui/$(id -u) $plist"
   echo "  unload (manual): launchctl bootout gui/$(id -u)/$label"
 fi
+publish_mode controller
 [ "${SA_SKIP_DOCTOR:-}" = 1 ] && exit 0
 if out="$("$WETAMP/bin/archon" doctor 2>&1)"; then echo "doctor: ok"; else echo "$out" | grep -v "^[○✓]" | tail -20; echo "doctor: FAILED" >&2; exit 1; fi

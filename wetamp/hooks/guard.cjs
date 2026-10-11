@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 // superagent V2 guard for Claude Code / Codex hooks: `node guard.cjs claude|codex`.
-// Parser failures deny derived shell calls; other internal failures are reported on stderr.
+// Permission checks fail closed; optional heartbeat/context advice remain best-effort.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {tiers, policy} = require('../tiers.json');
 const {commands, parse, deletionTarget} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 const stopGate = require('./stop-gate.cjs');
+const {withState, once} = require('./hook-state.cjs');
 const dispatch = require('./dispatch-context.cjs');
 const redline = require('./redline.cjs');
 const {resolvePath, within} = redline;
@@ -16,7 +17,8 @@ const saHome = env => env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagen
 const pool = tier => tiers[tier].pools.chatgpt;
 const deny = reason => ({hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason}});
 // Only two nonempty strings establish a child (subagent) call.
-const rootCall = payload => !(typeof payload.agent_type === 'string' && payload.agent_type.trim() && typeof payload.agent_id === 'string' && payload.agent_id.trim());
+const isChild = payload => Boolean(typeof payload.agent_type === 'string' && payload.agent_type.trim() && typeof payload.agent_id === 'string' && payload.agent_id.trim());
+const rootCall = payload => !isChild(payload);
 function gitRoot(cwd) {
   const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {encoding: 'utf8', timeout: 3000, env: {...process.env, GIT_OPTIONAL_LOCKS: '0'}});
   return r.status === 0 ? r.stdout.trim() : null;
@@ -25,6 +27,7 @@ function gitRoot(cwd) {
 // Why this session is derived (general/reviewer/worker), or null for the commander.
 function derivedBy(payload, client, env = process.env) {
   if (['general', 'reviewer', 'worker'].includes(env.SUPERAGENT_ROLE)) return `SUPERAGENT_ROLE=${env.SUPERAGENT_ROLE}`;
+  if (isChild(payload)) return 'child metadata';
   if (env.AI_DISPATCH_ROLE === 'general' || env.TWIN_AGENT_REMOTE === '1') return 'AI_DISPATCH_ROLE/TWIN_AGENT_REMOTE';
   const workspaces = resolvePath(path.join(saHome(env), 'archon', 'workspaces'));
   if (typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd)) {
@@ -135,36 +138,41 @@ const stateFile = (payload, env) => {
   return session ? path.join(saHome(env), 'hooks', `${crypto.createHash('sha256').update(String(session)).digest('hex')}.json`) : null;
 };
 // G-1: commander edits accumulate per session (never reset) against policy.micro_edit.
-function commanderWrite(payload, client, env) {
+function commanderWrite(payload, client, env, text) {
   if (env.SUPERAGENT_ALLOW_COMMANDER_WRITE === '1') return null;
   const cwd = typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
   const repo = gitRoot(cwd), root = resolvePath(repo || cwd);
   let edit;
-  try { edit = microEdit.plan(client, payload, root, resolvePath, repo); }
-  catch (error) { return {systemMessage: `SUPERAGENT G-1: 无法计量本次写入（${error.message}），已放行；超过微改请走 superagent run。`}; }
+  try {
+    if (text !== undefined) {
+      const parsed = parse(text), targets = redline.shellWrites(parsed);
+      if (parsed.argvs.some(a => ['node','bun','python','python3','perl','ruby'].includes(path.posix.basename(a[0])) && a.slice(1).some(v => /^-(?:e|c|pe|pi)/.test(v))))
+        throw new Error('内联脚本可能写代码，无法可靠计量；请交 superagent run');
+      if (!targets.length) return null;
+      // Shell output size and cwd-dependent destinations cannot be measured before execution.
+      if (targets.some(t => !t || /[$`*?\[\]{}~]/.test(t)) || parsed.argvs.some(a => a[0] === 'cd'))
+        throw new Error('无法确认 shell 写入范围');
+      for (const target of targets) {
+        const candidate = microEdit.plan('claude', {...payload, tool_name: 'Write', tool_input: {file_path: target, content: ''}}, root, resolvePath, repo);
+        if (candidate.files.length) throw new Error('无法可靠计量 shell 代码写入；请用 Edit/Write/apply_patch 或 superagent run');
+      }
+      return null;
+    }
+    edit = microEdit.plan(client, payload, root, resolvePath, repo);
+  } catch (error) { return deny(`G-1: 无法计量本次写入（${error.message}）`); }
   if (!edit.files.length) return null;
   const absolute = Object.fromEntries(['files', 'risk', 'newCode'].map(key => [key, edit[key].map(file => path.resolve(root, file))]));
   const file = stateFile(payload, env);
-  const check = state => {
+  const check = state => once(state, 'micro', payload, () => {
     const next = microEdit.accumulate(state.micro || {lines: 0, files: [], risk: [], newCode: []}, {...edit, ...absolute});
     const reasons = microEdit.violations(next);
     if (reasons.length) return deny(`G-1: ${reasons.join('；')}；超过微改，请写 plan 交 superagent run 由将军编码`);
     state.micro = next;
     return null;
-  };
-  try { return file ? stopGate.withState(file, check) : check({}); }
-  catch (error) { return deny(`G-1: 无法计量本次写入（${error.message}），请稍后重试`); }
-}
-// Write targets of an edit tool, or the cwd for a shell; [] for read-only tools.
-function writeRoots(client, name, input, cwd) {
-  if (shellText(name, input) !== undefined) return [gitRoot(cwd)];
-  if (!microEdit.isEdit(client, name)) return [];
-  const files = client === 'codex' ? microEdit.patchEdits(input).map(edit => edit.file) : [input.file_path || input.notebook_path];
-  return files.filter(file => typeof file === 'string' && file).map(file => {
-    let parent = path.dirname(resolvePath(path.resolve(cwd, file)));
-    while (!fs.existsSync(parent)) parent = path.dirname(parent);
-    return gitRoot(parent);
   });
+  if (!file) return deny('G-1: 缺少会话身份，无法累计本次写入');
+  try { return withState(file, check); }
+  catch (error) { return deny(`G-1: 无法计量本次写入（${error.message}），请稍后重试`); }
 }
 
 function decide(payload, client, env = process.env) {
@@ -175,9 +183,10 @@ function decide(payload, client, env = process.env) {
   const derived = derivedBy(payload, client, env);
   if (event !== 'PreToolUse') {
     if (derived || !['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event)) return null;
-    return stopGate.gate(stateFile(payload, env), payload, client, [gitRoot(cwd)], rootCall(payload));
+    return stopGate.gate(payload);
   }
   const text = shellText(name, input);
+  if (SHELL_TOOLS.includes(name) && text === undefined) return deny('无法确认 shell 命令（缺少文本）');
   // reviewer 的写入由下方只读白名单整体拒绝，落点检查只给其余派生会话。
   const confine = Boolean(derived) && env.SUPERAGENT_ROLE !== 'reviewer';
   const normalized = derived && text !== undefined ? {argvs: [], writes: [], reads: []} : undefined;
@@ -202,10 +211,9 @@ function decide(payload, client, env = process.env) {
   if (context) return deny(context);
   if (client === 'codex' && name === 'spawn_agent' && input.model && ![...pool('general'), ...pool('strategist')].includes(input.model))
     return deny('G-2: spawn_agent 的显式 model 必须属于将军或军师池；缺省使用 default_subagent_model。');
-  const write = edit && rootCall(payload) ? commanderWrite(payload, client, env) : null;
+  const write = (edit || text !== undefined) && rootCall(payload) ? commanderWrite(payload, client, env, text) : null;
   if (write) return write;
-  let roots; try { roots = writeRoots(client, name, input, cwd); } catch { roots = [gitRoot(cwd)]; }
-  return stopGate.gate(stateFile(payload, env), payload, client, roots, rootCall(payload));
+  return null;
 }
 
 if (require.main === module) (async () => {
@@ -221,6 +229,10 @@ if (require.main === module) (async () => {
     }
     const result = decide(payload, client);
     if (result) process.stdout.write(JSON.stringify(result) + '\n');
-  } catch (error) { process.stderr.write(`superagent guard: ${error.message}\n`); }
+  } catch (error) {
+    process.stderr.write(`superagent guard: permission check failed (${error.code || error.name})\n`);
+    process.stdout.write(JSON.stringify(deny('guard 内部异常，无法确认权限；请修复后重试')) + '\n');
+    process.exitCode = 2;
+  }
 })();
-module.exports = {decide, derivedBy, sessionRole};
+module.exports = {decide, derivedBy, sessionRole, isChild};

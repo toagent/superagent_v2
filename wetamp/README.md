@@ -18,6 +18,7 @@ wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要
 `install.sh` 把 `launchd/com.wetamp.superagent.supervise-tick.plist.tmpl` 渲染到 `~/Library/LaunchAgents`（每 60 秒跑 `supervise-tick`，日志 `$SUPERAGENT_HOME/supervise-tick.log`；内容变了先备份再覆盖），只打印 `launchctl bootstrap/bootout` 命令，加载由人执行。
 
 状态目录 `SUPERAGENT_HOME`（默认 `~/.superagent`），Archon 状态在 `ARCHON_HOME=$SUPERAGENT_HOME/archon`。
+默认安装记录 `controller`，`install.sh --remote-hooks` 记录 `worker`；CLI `health` 与 run preflight 明确报告模式，worker 不启动 run。hook 安装保留用户其他 hooks 与未管理字段；shell hook 只是辅助检查，不是沙箱。
 模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。`selftest.sh --fake` 不调用模型，只用于测试本层。
 
 ## 日常：run → wait → land

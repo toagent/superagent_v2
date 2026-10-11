@@ -11,8 +11,8 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 | OpenCode                         | 无 hook 通道；规则只靠指令与 Archon 侧的禁嵌套                                                                                               |
 
 - 拒绝用 `hookSpecificOutput.permissionDecision='deny'`，提示用 `systemMessage`/`additionalContext`。
-- `guard.cjs` 的 `PreToolUse` 做拒绝判定；`SessionStart`/`PostToolUse`/`SubagentStop`/`Stop` 服务 G-3 Stop 门（`hooks/stop-gate.cjs`）。
-- G-3（`policy.stop_gate`，默认 `off`）：元帅会话在 `SessionStart` 或首次写入前记下每个涉及的 git 根的 base HEAD 与受控改动指纹（`exempt_paths` 不计）；成功结束的 `reviewer-N` 子代理（Claude `Agent/Task` 或 `SubagentStop`，Codex 为军师池模型的子代理）把当前指纹记为已评审。`Stop` 时指纹既不等于基线也不等于已评审即为未评审改动：`advisory` 只提示；`change` 按改动内容、`cycle` 按写入次数生成令牌并阻断，同一令牌第二次 Stop（或 `stop_hook_active`）放行并提示 UNREVIEWED，避免死循环。首个事件不是 `SessionStart/PreToolUse`、状态文件损坏或 git 失败时会话记为 unknown，按未评审处理。非法取值只在 `Stop` 提示配置错误。
+- `guard.cjs` 的 `PreToolUse` 做拒绝判定；其余事件仅供心跳，`Stop` 可给 G-3 提示。
+- G-3（`policy.stop_gate`，默认 `off`）：`advisory` 只提示以引擎正式 gate 证据确认 candidate、实际模型独立性与 verdict。旧 `cycle/change` 同样降为 advisory，永不阻断；hook 不记录树指纹、不把 reviewer 子会话结束当评审通过，旧状态内的 `gate` 数据不再消费。
 - `context-budget.cjs`：读 transcript 尾部 usage，按会话角色给阈值提示（元帅 160K / 将军 240K / 军师 360K）；只提示，不阻塞。
 
 ## 派生会话判定（`guard.cjs` 的 `derivedBy`）
@@ -20,13 +20,17 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 任一成立即为派生会话：
 
 1. `SUPERAGENT_ROLE` 为 `general`/`reviewer`/`worker`（Archon 经 `src/archon.ts` 给 run/resume `--detach` 与 detached 子进程注入 `worker`）；
-2. `AI_DISPATCH_ROLE=general` 或 `TWIN_AGENT_REMOTE=1`；
-3. 会话 cwd 位于 `$SUPERAGENT_HOME/archon/workspaces/` 之下；
-4. 仅 Codex：根调用（无 `agent_type`+`agent_id`）的 `model` 在将军池且不在元帅池。
+2. `agent_type` 与 `agent_id` 都是非空字符串（唯一 `isChild` 判定，root 为它的取反）；
+3. `AI_DISPATCH_ROLE=general` 或 `TWIN_AGENT_REMOTE=1`；
+4. 会话 cwd 位于 `$SUPERAGENT_HOME/archon/workspaces/` 之下；
+5. 仅 Codex：根调用（无 `agent_type`+`agent_id`）的 `model` 在将军池且不在元帅池。
 
 派生会话：N-1 拒绝 `Agent`/`Task`/`spawn_agent`/`mcp__claude__*`，以及 shell 中命令头为 `claude`/`codex`/`opencode`/`sol-run`/`twin-agent*` 的调用；不计 G-1。`SUPERAGENT_ROLE=reviewer` 另禁止一切编辑。
 
-元帅会话：G-1 微改上限（`policy.micro_edit`：30 行、2 文件、不许新建代码文件；`*.md`、`**/.context/**` 豁免，风险路径优先于豁免）在 `PreToolUse` 按会话累计到 `$SUPERAGENT_HOME/hooks/<sha256(session)>.json`，被拒的那次不计入，不重置；累计在状态锁（`<state>.lock`，`openSync(…,'wx')`，等 5s、15s 视为陈旧）内读改写，并行 `PreToolUse` 不丢累计量，拿不到锁时拒绝并提示重试；补丁本身解析不了时放行并提示。G-2 检查派发上下文长度与 `spawn_agent` 的显式模型。所有会话都拦 `git push`、`git reset --hard`，以及字面路径为 `/`、`~`、`$SUPERAGENT_HOME`、git 根（或其上级）的删除；拒绝信息只回显目标 basename。
+元帅会话：G-1 微改上限（`policy.micro_edit`：30 行、2 文件、不许新建代码文件；文档/临时路径按策略豁免，风险路径优先）在 `PreToolUse` 按会话累计到 `$SUPERAGENT_HOME/hooks/<sha256(session)>.json`，被拒的那次不计入，不重置。编辑解析失败、状态损坏、缺会话身份与计量异常均 deny。shell 的已识别写入复用红线目标表：命中受控路径时因无法预先确认行数而 deny，提示使用 Edit/Write/apply_patch 或交 `superagent run`；动态写入目标、带 cwd 变动的写入、内联解释器代码与解析失败同样 deny。可确认的豁免路径与只读 shell 照常放行，原 `SUPERAGENT_ALLOW_COMMANDER_WRITE=1` 例外保留，红线仍先行。
+
+G-1 与 context 计数共用 `hook-state.cjs`：`<state>.lock` 排他锁内完成读改写，同目录唯一临时文件原子 rename；等待最多 5s，锁的年龄不能证明 owner 死亡。计量锁忙 deny；context 仅 advisory，失败不重置计数。事件通过原生 `tool_use_id/tool_call_id/event_id/prompt_id` 在本会话内去重，无 ID 不按内容猜同一事件。G-2 的派发上下文与模型池规则保持；所有角色的 push/reset/受保护目录删除规则保持。
+
 
 ## 执行层红线（所有角色，`hooks/redline.cjs`）
 
@@ -61,9 +65,9 @@ V1 的 `hooks/*.cjs` 迁到 `wetamp/hooks/`，策略读 `wetamp/tiers.json` 的 
 
 1. 包装器 `bin/codex-worker`（`install.sh` 写入 `assistants.codex.codexBinaryPath`）：先确认 guard 的 Codex `PreToolUse` hook 受信任（见上节，否则 exit 3），再前置 `exec_profiles.*.codex` 的 `-c`（`features.multi_agent=false`），并把 `~/.codex/config.toml` 中已声明、不在 `policy.sandbox.mcp` 的 MCP server 设为 `enabled=false`。server 名由 `Bun.TOML` 按 TOML 键解析（表头、引号键、点键、内联表），只取 `mcp_servers` 的键名、不输出值；名字不符合 `[A-Za-z0-9_-]+` 的跳过并在 stderr 记一行；解析失败时退回表头正则并在 stderr 记一行。信任核验与写入是同一份实现 `scripts/codex-trust.cjs`（`check` 用 `Bun.TOML`，不依赖 python3 tomllib；bun 不可用即无法判定 → exit 3）。`SA_CODEX_REAL` 指定真 codex；选定路径 realpath 后指向包装器自身、不存在或不可执行时 exit 2。`SA_CODEX_WORKER_TRACE=1` 在 stderr 打印 `{policy, argv}`：policy 为追加的 `-c` 列表，argv 为调用方参数的脱敏副本（token/key/secret/password/Authorization/Bearer 之类的值换成 `***`，超过 200 字符截断）。
 2. `exec_profiles.*.claude.denied_tools` → 生成的 prompt 节点 `denied_tools`（Archon `disallowedTools`）：`Agent`、`Task`、`Bash(claude *)`、`Bash(codex *)`、`Bash(opencode *)`、`Bash(sol-run *)`、`Bash(twin-agent*)`。只对 provider 为 claude 的别名生成。
-3. hooks 的 N-1（用户三端配置里挂了 guard 时生效，依赖上面的派生判定 1/3；Codex 侧要求该 hook 受信任，由第 1 层把关）。
+3. hooks 的 N-1（用户三端配置里挂了 guard 时生效，依赖上面的派生判定；Codex 侧要求该 hook 受信任，由第 1 层把关）。
 
-远端（dev/mini）的禁嵌套由 twin-agent runner 负责；远端会话带 `TWIN_AGENT_REMOTE=1` 时 hooks 按判定 2 视为派生。`--remote-hooks` 只保证远端 hooks 文件可用并留下台账。
+远端（dev/mini）的禁嵌套由 twin-agent runner 负责；远端会话带 `TWIN_AGENT_REMOTE=1` 时 hooks 按派生身份规则视为派生。`--remote-hooks` 只保证远端 hooks 文件可用并留下台账。
 
 ## 包装器剥离规则（N-1 与 reviewer 判定共用 `hooks/shell.cjs`）
 
@@ -78,7 +82,7 @@ shell 文本先按引号、`$(…)`/反引号/子 shell、管道与 `;`/`&&`/`||
   - Claude 评审节点：节点 `sandbox:` 取 `exec_profiles.reviewer.claude.sandbox`（`filesystem.denyWrite:["/"]`、`failIfUnavailable`、禁止 unsandboxed 命令），另有 `denied_tools` 去掉 `Edit/Write/MultiEdit/NotebookEdit`。
   - Codex 评审节点：节点 `mcp:` 指向生成的 `reviewer-readonly.mcp.json`，内含哨兵 server `codex_readonly_marker`（`required:true`，命令必败）。`codex-worker` 以 `app-server` 被调用时经 `bin/codex-readonly-proxy.cjs` 转发：见到哨兵就删掉它，本连接的 `thread/start|resume|fork` 改 `sandbox:"read-only"`、`turn/start` 注入只读 `sandboxPolicy`。原因是 Archon 在 `thread/start` 固定传 `danger-full-access`，盖掉 `-c sandbox_mode`。绕过代理直连 codex 时哨兵起不来，线程创建失败（失败关闭）。整个 worker 以 reviewer 身份运行时代理从第一条线程起就只读。
 - hooks 白名单是纵深防御。
-- 边界：白名单只对设了该环境变量的会话生效；Stop 门不跟踪 shell 写到其他仓库的改动；`claude -p` 方式的评审不算评审证据（只认 `reviewer-N` 子代理）。
+- 边界：白名单只对设了该环境变量的会话生效；Stop 仅 advisory，任何子会话完成都不是正式评审证据。
 
 ## install.sh 单独步骤（互斥）
 
@@ -87,23 +91,23 @@ bash wetamp/scripts/install.sh --hooks --dry-run     # 打印 settings.json / ho
 bash wetamp/scripts/install.sh --hooks               # V1 路径改写、按（事件×matcher 等条件×command）去重、补齐上表；写前备份
 bash wetamp/scripts/install.sh --purge-v1 --dry-run  # 列出将删的 V1 hook 条目与将移走的残留
 bash wetamp/scripts/install.sh --purge-v1            # 删 V1 条目；残留移到 backups/v1-<UTC>/files/<原绝对路径>，不删除
-bash wetamp/scripts/install.sh --remote-hooks        # 远端：只要 node；node --check + 真跑一次 guard，写 install.json
+bash wetamp/scripts/install.sh --remote-hooks        # 远端：node 与 parser 依赖；校验 guard，写 worker 台账
 ```
 
-- 去重保留 matcher 不同的同一 handler；V1 清单都不带 matcher，补齐时只认"全部"分组（未设置/空/`*`）。`context-budget.cjs` 尾部的 `claude` 参数去掉后归一为一条。目标文件不存在时按空文件补齐并创建（dry-run 打印与空文件的 diff，不写）。
+- 自有 handler 的全部分组覆盖 matcher 分组时，删除重复自有 handler，保留同组用户 hooks 与未管理字段；V1 清单都不带 matcher，补齐时只认"全部"分组（未设置/空/`*`）。`context-budget.cjs` 尾部的 `claude` 参数去掉后归一为一条。目标文件不存在时按空文件补齐并创建（dry-run 打印与空文件的 diff，不写）。
 - 只动 superagent 自己的 handler（V1 checkout/release 路径或本 `wetamp/hooks/`），其他 hooks 原样保留；只有命令串改写时原地替换，保留文件排版。
 - `--remote-hooks` 写 `${XDG_STATE_HOME:-~/.local/state}/superagent/install.json`（`installer:"superagent_v2"`、`role:"worker"`、`wetamp`、`commit`、`hooks`）；已有 V1 台账先存 `.v1-<毫秒时间戳>` 副本。twin-toolkit 回执 schema 2 按此校验。
 - Codex 信任：`install.sh --hooks` 与 `--remote-hooks` 之后跑 `scripts/codex-trust.cjs write`，为 `hooks.json` 里命令指向本 `wetamp/hooks/` 的条目写 `[hooks.state."<hooks.json>:<event_snake>:<gi>:<hi>"] trusted_hash`（键排序紧凑 JSON 的 sha256，与 Codex 一致）。文本级改写：只替换/补自己键的 `trusted_hash`，其余内容与注释原样；同一键以内联表等其他写法出现时拒绝并提示 `/hooks`；改动前备份到 `$SUPERAGENT_HOME/backups/codex-trust-<UTC>/`，同目录临时文件 rename，保留文件权限。远端 `hooks.json` 由 agentcfg 维度在 superagent 维度之后下推，信任按 install 当时远端已有的条目写；agentcfg 之后改了这些条目时，要到下次投送新提交（必重跑 install）或手动再跑 `install.sh --remote-hooks` 才补齐。
 - worker 桩：`--remote-hooks` 把 `~/.local/bin/superagent` 指向本仓库 `bin/superagent`（原为普通文件先存 `.bak-<时间>`）。`bin/superagent` 读到 `role:"worker"` 且 `wetamp` 是自己时，在 `exec bun` 之前处理：`--version`/`--help` 照答，其余动词打印“仅本机运行（本机为控制面）”退出 69；不需要 bun 与 node_modules。twin-toolkit 回执 `checks` 记 `role`/`entry`。
-- 默认安装（不带参数）不碰 hooks。
+- 默认安装（不带参数）不碰 hooks；同一安装台账写 `role:"controller"`。两种模式均锁内原子发布、保留未管理字段，重复安装不更新台账时间。CLI `health` 和 run 的 preflight/启动回执明确报告模式；直接调用 TypeScript CLI 的 worker run 也会在启动前拒绝。缺台账的旧本机安装维持 controller，坏台账或本 checkout 的未知 role 明确失败。
 
 ## 风险与口径
 
 - 真实 `--hooks`/`--purge-v1` 写入由元帅执行；默认安装会写 `~/Library/LaunchAgents` 下的 plist，测试与验收须设 `SA_LAUNCHD_DIR`。
 - codex 版本从 0.160.0 漂移到 0.162.1；`features.multi_agent` 键若被改名，包装器不会报错，可用 `SA_CODEX_REAL` 固定版本。
 - 删除拦截只识别字面路径，变量展开或间接删除拦不住。
-- 同一 guard 若同时挂在 matcher 分组与"全部"分组，命中两组的工具调用会让 G-1 计两次（更严，不会更松）。
-- G-1 只计量编辑工具（Claude `Edit/Write/MultiEdit/NotebookEdit`、Codex `apply_patch`），shell 写文件不计；`*.md` 不计入。
+- 安装折叠自有 matcher/all 重叠，事件 ID 去重提供第二层保护；无 ID 的事件不能保证重复计量幂等。
+- shell hook 是辅助检查，不是沙箱：脚本文件内部、未建模程序与间接执行的任意外部进程无法由该 hook 全面约束。交付仍按引擎的实际 diff/scope/有效风险门禁复核，provider 原生沙箱和能力限制才是执行边界。
 - Archon detached 节点默认以 worker 身份运行（继承 reviewer/general 时保留），评审节点多数也用 240K 阈值。
 - `exclude_user_instructions` 在 Archon 中没有对应字段，仅作为策略记录。
 - `install.json` 与 V1 台账同位置，V1 工具读它会看到 V2 内容。
