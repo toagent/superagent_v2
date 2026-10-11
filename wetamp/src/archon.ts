@@ -1,7 +1,8 @@
+import { inspectProcess } from './launcher';
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
 import { dlopen, FFIType, read, type Pointer } from 'bun:ffi';
 import { Database } from 'bun:sqlite';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -21,6 +22,7 @@ import type { NodeExecutionMetadata } from '../../packages/workflows/src/schemas
 import type { ExecutionOwnerRecord } from '../../packages/workflows/src/schemas/workflow-run';
 import {
   ownershipUnknown,
+  executionOwnership,
   recoveryAdmissionUnknown,
   recoverySnapshot,
   unknownEffects,
@@ -108,9 +110,10 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 const [path, token, pid] = process.argv.slice(1);
 const intent = JSON.parse(readFileSync(path, 'utf8'));
 if (intent.token !== token) throw new Error('launch reservation changed');
-const birth = Bun.spawnSync(['ps', '-p', pid, '-o', 'lstart='], { env: {...process.env, LC_ALL:'C'}, timeout:2000 });
-if (birth.exitCode !== 0 || !birth.stdout.toString().trim()) throw new Error('launch identity unavailable');
-intent.pid = Number(pid); intent.pid_start = birth.stdout.toString().trim();
+const {createRequire} = await import('node:module');
+const birth = createRequire(import.meta.path)(${JSON.stringify(join(WETAMP, 'hooks/identity.cjs'))}).inspect(Number(pid));
+if (birth.state !== 'online') throw new Error('launch identity unavailable');
+intent.pid = Number(pid); intent.pid_start = birth.start;
 const tmp = path + '.' + token; writeFileSync(tmp, JSON.stringify(intent)); renameSync(tmp, path);
 `;
 export function archon(args: string[], cwd?: string, intent?: LaunchIntent): Exec {
@@ -258,31 +261,15 @@ export async function getRunAsync(
 }
 
 export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
+  return inspectProcess(pid).state !== 'offline';
 }
 
-/** 本机且 pid 已死的 running run 才算可证实的 owner-lost；其余一律不动。 */
+/** Only a confirmed dead executor can enter REC recovery; COORD owns controller admission. */
 export function ownerLost(run: RunView): boolean {
-  const o = run.metadata?.execution_owner;
-  return run.status === 'running' && !!o && o.host === hostname() && !pidAlive(o.pid);
+  return run.status === 'running' && executionOwnership(run).state === 'offline';
 }
-
-/** ps exposes process birth, so a newly reused PID cannot masquerade as the old owner. */
 export function reusedOwnerPid(run: RunView): boolean {
-  const owner = run.metadata?.execution_owner;
-  if (ownershipUnknown(run) || !owner || !run.started_at || !pidAlive(owner.pid)) return false;
-  const p = spawnSync('ps', ['-p', String(owner.pid), '-o', 'lstart='], {
-    encoding: 'utf8',
-    timeout: 2000,
-    env: { ...process.env, LC_ALL: 'C' },
-  });
-  const birth = Date.parse(p.stdout.trim());
-  return p.status === 0 && Number.isFinite(birth) && birth > Date.parse(run.started_at);
+  return executionOwnership(run).reused === true;
 }
 
 /** Reuse Archon's exact-run owner endpoint before changing lifecycle state. */
@@ -472,7 +459,7 @@ export function recover(
       action: `Inspect archon workflow get ${run.id} --verbose and its exact-run owner; resolve ownership or explicitly run archon workflow abandon ${run.id}.`,
     });
     if (recoveryAdmissionUnknown(run)) return held('recovery_admission_unknown');
-    if (ownershipUnknown(run) || reusedOwnerPid(run)) return held('owner_unknown');
+    if (ownershipUnknown(run)) return held('owner_unknown');
     const effects = unknownEffects(run);
     if (effects.length && reconciled !== recoverySnapshot(run))
       return {

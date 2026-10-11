@@ -16,12 +16,14 @@ import {
   caller,
   cleanEngine,
   repoScope,
+  runScope,
   presence,
   escalationTitle,
   type Identity,
   type Message,
   type Presence,
 } from '../src/coord';
+import { ownerLost } from '../src/archon';
 import { main, waitRun, type Ledger } from '../src/cli';
 import { gitRepo, sh, tmp } from './helpers';
 
@@ -539,14 +541,17 @@ test('wait already blocking returns inbox after a new message arrives, before ti
   // The wait boundary itself is the subject: its stub deposits mail during the first wait slice.
   writeFileSync(
     bin,
-    `#!/usr/bin/env python3\nimport sys,json\nif sys.argv[2]=='get': print(json.dumps({'id':'p','status':'running','metadata':{'execution_owner':{'host':'remote','pid':1}}}))\nelse:\n open(${JSON.stringify(file)},'w').write(${JSON.stringify(JSON.stringify(message))})\n print('{}')\n`
+    `#!/usr/bin/env python3\nimport sys,json\nif sys.argv[2]=='get': print(json.dumps({'id':'p','status':'running','metadata':{'execution_owner':{'host':${JSON.stringify(hostname())},'pid':${String(process.pid)}}}}))\nelse:\n open(${JSON.stringify(file)},'w').write(${JSON.stringify(JSON.stringify(message))})\n print('{}')\n`
   );
   sh(`chmod +x '${bin}'`, s.root);
   process.env.SA_ARCHON_BIN = bin;
   const start = Date.now();
-  expect(waitRun({ run_id: 'late', archon_run_id: 'p', repo: s.repo } as Ledger, 30)).toMatchObject(
-    { state: 'inbox', exit: 3 }
-  );
+  expect(
+    waitRun(
+      { run_id: 'late', archon_run_id: 'p', repo: s.repo, recoveries: [] } as unknown as Ledger,
+      30
+    )
+  ).toMatchObject({ state: 'inbox', exit: 3 });
   expect(Date.now() - start).toBeLessThan(5000);
 });
 
@@ -638,31 +643,35 @@ test('R2-01: redline shares directory transitions and subshells keep the parent 
   const secret = join(s.root, '.ssh');
   mkdirSync(secret);
   writeFileSync(join(secret, 'id_ed25519'), 'synthetic fixture');
-  for (const command of [
-    `cd -- '${secret}' && cat id_ed25519`,
-    `cd -P '${secret}' && cat id_ed25519`,
-    `pushd '${secret}' && cat id_ed25519`,
-    `(cd -L '${secret}' && cat id_ed25519)`,
-  ]) {
-    const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
-      cwd: s.repo,
-      env: { ...process.env, HOME: s.root, SUPERAGENT_HOME: s.sa, SUPERAGENT_ROLE: 'general' },
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    p.stdin.write(
-      JSON.stringify({
+  for (const role of ['', 'general'])
+    for (const command of [
+      'cd -LP -- "$HOME/.ssh" && cat id_ed25519',
+      'pushd -- "$HOME/.ssh" && cat id_ed25519',
+      'cd -P "$HOME/.ssh" && cat id_ed25519',
+      '(cd "$HOME/.ssh" && cat id_ed25519)',
+      'cd -L -- "$HOME/.ssh" && cat id_ed25519',
+      'pushd "$HOME/.ssh" && cat id_ed25519',
+      'cd "$HOME/.ssh" && pushd -- "$HOME" && popd && cat id_ed25519',
+    ]) {
+      const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
         cwd: s.repo,
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Bash',
-        tool_input: { command },
-      })
-    );
-    p.stdin.end();
-    expect(await new Response(p.stdout).text()).toContain('deny');
-    expect(await p.exited).toBe(0);
-  }
+        env: { ...process.env, HOME: s.root, SUPERAGENT_HOME: s.sa, SUPERAGENT_ROLE: role },
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      p.stdin.write(
+        JSON.stringify({
+          cwd: s.repo,
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command },
+        })
+      );
+      p.stdin.end();
+      expect(await new Response(p.stdout).text()).toContain('deny');
+      expect(await p.exited).toBe(0);
+    }
   s.c.claim(repoScope(other), a);
   await req('../hooks/shell-ast.cjs').init();
   expect(
@@ -957,3 +966,39 @@ test('R1-03/04: actual durable-wait database survives stale tick/shim, while a s
     db.close();
   }
 }, 60000);
+
+test('INT3: ledger scope wins over same-named paths; executor death does not transfer a live controller', () => {
+  const s = setup();
+  isolated(s);
+  const controller = s.c.claim(s.scope, caller()).controller;
+  const l = registered(s, controller);
+  mkdirSync(join(s.repo, l.run_id));
+  for (const target of [l.run_id, l.archon_run_id, 'archon']) {
+    expect(s.c.scope(target)).toEqual(runScope(l));
+    expect(req('../hooks/coord.cjs').targetScope(s.sa, target, s.repo)).toEqual(runScope(l));
+  }
+  expect(
+    ownerLost({
+      id: l.archon_run_id,
+      status: 'running',
+      metadata: {
+        execution_owner: { host: hostname(), pid: 99999999 },
+      },
+    })
+  ).toBe(true);
+  expect(s.c.owner(runScope(l)).presence.state).toBe('online');
+  expect(() => s.c.claim(s.scope, b)).toThrow('普通认领');
+  s.c.claim(runScope(l), b, true, 'explicit takeover');
+  let recovered = false;
+  expect(() =>
+    s.c.mutate(
+      runScope(l),
+      controller,
+      () => {
+        recovered = true;
+      },
+      controller.generation
+    )
+  ).toThrow('fencing');
+  expect(recovered).toBe(false);
+});

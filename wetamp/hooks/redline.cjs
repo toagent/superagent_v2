@@ -90,6 +90,17 @@ const currentBranch = dir => {
   const r = spawnSync('git', ['-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], {encoding: 'utf8', timeout: 3000, env: {...process.env, GIT_OPTIONAL_LOCKS: '0'}});
   return r.status === 0 ? r.stdout.trim() : '';
 };
+function gitQuery(sub, rest) {
+  const rules = EFFECTS.find(r => r.commands[0] === 'git');
+  return rules.read.includes(sub) || !rest.length && ['branch','tag','remote','reflog'].includes(sub)
+    || (rules.queries[sub] || []).some(flag => rest.includes(flag))
+      && !rest.some(flag => new RegExp(rules.mutationFlags).test(flag));
+}
+function gitReadOnly(argv) {
+  let i = 1;
+  while (argv[i]?.startsWith('-')) i += GIT_VALUE_OPTIONS.includes(argv[i]) ? 2 : 1;
+  return gitQuery(argv[i], argv.slice(i + 1));
+}
 function gitReason(argv, dir) {
   let i = 1;
   while (argv[i]?.startsWith('-')) {
@@ -240,9 +251,7 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
     if (sub === 'init' && !(reviewer && root && within(resolvePath(base), resolvePath(root)))) return null;
     if (sub === 'push') return message(`执行 git ${sub}`, '会改写共享的远端版本历史');
     const gitEffects = EFFECTS.find(r => r.commands[0] === 'git');
-    const query = gitEffects.read.includes(sub) || !rest.length && ['branch','tag','remote','reflog'].includes(sub)
-      || (gitEffects.queries[sub] || []).some(flag => rest.includes(flag))
-        && !rest.some(flag => new RegExp(gitEffects.mutationFlags).test(flag));
+    const query = gitQuery(sub, rest);
     if (!query && gitEffects.write.includes(sub) && locations.some(location => !owned(location.path)))
       return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
     if (sub === 'config' && !query) {
@@ -313,4 +322,4 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
   } catch { onAdvisory('redline_internal_error'); return null; }
 }
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects};
+module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects, gitReadOnly};

@@ -41,7 +41,6 @@ import {
   lastJson,
   lock,
   ownerLost,
-  reusedOwnerPid,
   pidAlive,
   QUERY_TIMEOUT_MS,
   recover,
@@ -259,8 +258,7 @@ export function classify(run: RunView): Classified {
       if (failed?.startsWith('gate-')) return { state: 'held:gate', exit: EXIT.held, node: failed };
       return { state: 'failed', exit: EXIT.failed, node: failed };
     default:
-      if (ownershipUnknown(run) || reusedOwnerPid(run))
-        return { state: 'held:owner_unknown', exit: EXIT.held };
+      if (ownershipUnknown(run)) return { state: 'held:owner_unknown', exit: EXIT.held };
       return { state: ownerLost(run) ? 'owner_lost' : run.status, exit: EXIT.running };
   }
 }

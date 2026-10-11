@@ -994,3 +994,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **旧 run 与生产影响**：不改数据库 schema、packages、依赖或持久化形状，保留旧 ledger launcher fallback 与只读命令行为。已登记短 ID 现在沿用 ledger run scope，不再进入未登记恢复分支；目录与 ledger 同名不再影响内部 run 准入。生产状态、真实 supervisor、提醒事项与 launchd 均未操作。
 - **最终自检证据**：`bunx tsc --noEmit && timeout 900 bun test` exit 0，1005 pass、0 fail、3 snapshots、4998 assertions、31 文件、297.45s（`/tmp/fixf2-full.log`）；R2 报告指定的临时 HOME/状态/supervisor 桩四文件动态复跑 exit 0，311 pass、0 fail、2167 assertions、191.42s（`/tmp/fixf2-dynamic.log`）。`bunx eslint src`、`git diff --check` exit 0。fake selftest exit 0 且 ok=true，recover=2458ms、signal=1020ms、abandon=1204ms，实际 HF3 adopt 后 completed（`/tmp/fixf2-selftest.log`）。同一调用方临时 home 为 `/tmp/fixf2-accept.mbjkD7/sa`，提交绑定 verify-local 的最终 HEAD/ok/步骤退出码以其中 `verify.json` 为准；不提交运行产物。
 - **遗留与验收边界**：src 净增 13 行，packages 零改动；REC 执行身份统一仍留 INT3。本包仅编码与自检，不宣称 RV-F3 独立评审、主控集成验收或上线完成。未委派、push、合并、手工删除 worktree 或修改生产状态。
+
+## B1-INT3：COORD 集成、REC 执行身份统一与 COORD-R1-01
+
+- **问题与被推翻的假设**：COORD 的旧 AST 和元帅解析分支不能覆盖 b1 REDLINE；目录切换只认裸 cd 目标，会漏掉 `cd -LP --`、`pushd --` 的相对私钥读取。COORD、hook 各自构造 run scope、REC 各自调用 ps 的实现会产生身份漂移；执行进程死亡不等于元帅离线。
+- **合并裁决**：合入 wetamp-coord@90103e06，15 个冲突保留 REDLINE 的默认放行、确认危险拒绝、三段式脱敏提醒与效果 AST；保留 POLICY context-budget→context-advisory 薄委派、执行 provider 包装和 EV 的树/预算/投影。COORD 的 owner/generation fencing 与交接提示叠加其上；双方测试保留，RCPT 通知和带 run 的 wake 同时保留。Archon shim 的原生执行仍通过 POLICY 入口，wake 同样安装其执行边界。
+- **统一链 / I1、I3、I6、P2、P4**：COORD owner/generation 授权先于 REC 的执行归属与恢复 fencing，死亡只影响执行者恢复，不转移 controller。run scope 唯一由 hooks/coord.cjs 构造，CLI、shim、board 与 hook 复用；ledger 的精确/唯一短 Archon ID 优先于同名目录。REC 启动登记、执行存活/复用检查与 COORD 都复用 identity.cjs 的 ps 探针；未知、远端与复用执行 PID 保持 held，COORD 的 owner presence 独立决定元帅在线三态。Git 查询语义直接从 REDLINE 效果表推导，删除接线中的旧只读解析依赖。
+- **目录机制与事故回归**：shell-ast.cjs 一处处理 cd 的 -L/-P/组合/--、pushd/popd 的目录栈、cd - 的旧目录与子 shell 隔离；-P 按物理路径遍历软链。无法确定目录产生 advisory，危险动作目标未知仍拒绝。合成 HOME 的真实 hook 验证元帅/派生两种身份各 7 个读取变体，含报告外 cd -P、子 shell、popd；修改前组合选项回归实际放行，修改后拒绝。既有 REDLINE 11 项 /tmp/rv-c3-variants.cjs 探针保持 exit 0。
+- **旧 run / 生产影响与遗留**：不改 packages、schema、依赖、生产状态或共享协议；旧 ledger 的 launcher fallback、REC 对账及恢复 token 不变。hooks 是现读代码，投送后旧 run 也消费新目录分析；本派生会话仅编码与隔离自检，不代表独立 G2 评审、主控验收或上线。验收证据写临时目录，完整套件、自检及提交绑定 verify-local 结果由交付回复报告。

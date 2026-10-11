@@ -1,5 +1,6 @@
 'use strict';
 const path = require('node:path');
+const {realpathSync} = require('node:fs');
 const {unwrap, SHELLS, parse, normalizeOptions} = require('./shell.cjs');
 const STREAM = /^\/dev\/(?:null|stdout|stderr)$/;
 const GENERATED_TEMP = '__sa_generated_temp__';
@@ -44,7 +45,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       }
     };
     const union = (...dirs) => [...new Set(dirs.flat())];
-    const fork = (dirs, vars = new Map(), selected = []) => ({dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars), selected: [...selected]});
+    const fork = (dirs, vars = new Map(), selected = [], locations = new Map()) => ({locations: new Map(locations), dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars), selected: [...selected]});
     const commandValues = new Map();
     function temporaryPath(values, state) {
       const {argv} = unwrap(values || []);
@@ -95,13 +96,13 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (change < 0) continue;
         const option = options[change];
         const target = option.includes('=') ? option.slice(option.indexOf('=') + 1) : option.startsWith('-C') && option.length > 2 ? option.slice(2) : options[change + 1];
-        state = fork(target && !/[$`]/.test(target) ? state.dirs.map(dir => path.resolve(dir, expand(target))) : ['/__sa_unknown_cwd__'], state.vars, state.selected);
+        state = fork(target && !/[$`]/.test(target) ? state.dirs.map(dir => path.resolve(dir, expand(target))) : ['/__sa_unknown_cwd__'], state.vars, state.selected, state.locations);
         if (state.dirs.includes('/__sa_unknown_cwd__')) advisory('cwd_unknown');
         unwrapped.writes = unwrapped.writes.filter(v => v !== target);
       }
       // Wrappers themselves may elevate privileges; inspect them before unwrapping.
       check({argvs: wrappers.map(i => values.slice(i)), reads: [], writes: []}, state.dirs);
-      for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars, state.selected), depth + 1);
+      for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars, state.selected, state.locations), depth + 1);
       let argv = unwrapped.argv;
       const selectedInput = wrappers.some(i => path.posix.basename(values[i]) === 'xargs') && state.selected.length ? `$(${state.selected[0]})` : '';
       if (selectedInput) for (const replacement of unwrapped.replacements)
@@ -114,7 +115,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         const flag = argv.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
         if (flag > 0 && argv[flag + 1]) {
           if (/\$|`/.test(argv[flag + 1]) && !values.includes(argv[flag + 1])) advisory('dynamic_shell_body');
-          const inner = fork(state.dirs, state.vars, state.selected), args = argv.slice(flag + 3);
+          const inner = fork(state.dirs, state.vars, state.selected, state.locations), args = argv.slice(flag + 3);
           inner.vars.set('0', argv[flag + 2] || '');
           args.forEach((arg, i) => inner.vars.set(String(i + 1), arg));
           inner.vars.set('@', args.join(' ')); inner.vars.set('*', args.join(' '));
@@ -126,13 +127,48 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (!['-exec','-execdir','-ok','-okdir'].includes(v)) return;
         const end = argv.findIndex((w, j) => j > i && (w === ';' || w === '+'));
         if (end < 0 || v.endsWith('dir')) advisory('find_execution_scope');
-        execute(argv.slice(i + 1, end < 0 ? undefined : end), fork(v.endsWith('dir') ? ['/__sa_unknown_cwd__'] : state.dirs, state.vars, state.selected), depth + 1);
+        execute(argv.slice(i + 1, end < 0 ? undefined : end), fork(v.endsWith('dir') ? ['/__sa_unknown_cwd__'] : state.dirs, state.vars, state.selected, state.locations), depth + 1);
       });
-      if (name === 'cd') {
-        const target = expand(argv[1] || env.HOME || require('node:os').homedir());
-        if (argv.length > 2 || target === '-' || /[$`*?\[\]{}]/.test(target) || env.CDPATH && !path.isAbsolute(target)) {
-          advisory('cwd_unknown'); outcome(state, ['/__sa_unknown_cwd__'], incoming);
-        } else outcome(state, incoming.map(dir => path.resolve(dir, target)), incoming);
+      if (['cd','pushd','popd'].includes(name)) {
+        let at = 1, physical = false, valid = true;
+        while (at < argv.length && argv[at].startsWith('-') && argv[at] !== '-') {
+          const flag = argv[at++];
+          if (flag === '--') break;
+          if (name !== 'cd' || !/^-[LP]+$/.test(flag)) { valid = false; break; }
+          physical = flag.endsWith('P');
+        }
+        const target = expand(argv[at] ?? env.HOME ?? require('node:os').homedir());
+        if (!valid || argv.length - at > (name === 'popd' ? 0 : 1)
+            || name !== 'cd' && argv.length === at && name !== 'popd'
+            || name !== 'popd' && (target === '' || /[$`*?\[\]{}]/.test(target)
+              || env.CDPATH && !path.isAbsolute(target) && target !== '-')) {
+          advisory('cwd_unknown'); outcome(state, ['/__sa_unknown_cwd__'], incoming); return;
+        }
+        const next = [];
+        for (const dir of incoming) {
+          const frames = state.locations.get(dir) || [{stack: [dir], previous: env.OLDPWD}];
+          for (const frame of frames) {
+            let destination;
+            if (name === 'popd') destination = frame.stack[1];
+            else if (target === '-') destination = name === 'cd' ? frame.previous : undefined;
+            else {
+              destination = path.resolve(dir, target);
+              if (physical && !isTemporaryPath(destination)) {
+                try { destination = realpathSync.native(path.isAbsolute(target) ? target : dir + '/' + target); }
+                catch (error) { if (['ENOENT','ENOTDIR','EACCES'].includes(error.code)) continue; throw error; }
+              }
+            }
+            if (!destination || dir === '/__sa_unknown_cwd__' && !path.isAbsolute(target)) {
+              advisory('cwd_unknown'); next.push('/__sa_unknown_cwd__'); continue;
+            }
+            const stack = name === 'pushd' ? [destination, ...frame.stack] : name === 'popd' ? frame.stack.slice(1) : [destination, ...frame.stack.slice(1)];
+            const updated = {stack, previous: dir};
+            const prior = state.locations.get(destination) || [];
+            state.locations.set(destination, [...prior, updated]);
+            next.push(destination);
+          }
+        }
+        outcome(state, union(next), incoming);
       } else outcome(state, incoming, incoming);
     }
     function visit(n, state, depth) {
@@ -145,11 +181,11 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (n.type === 'heredoc_redirect') {
         const delimiter = n.namedChildren.find(c => c.type === 'heredoc_start');
         const body = n.namedChildren.find(c => c.type === 'heredoc_body');
-        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs, state.vars, state.selected), depth + 1); return null; }
+        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs, state.vars, state.selected, state.locations), depth + 1); return null; }
         // Heredoc quotes are data. Reparse as string content so the AST also sees
         // backticks (the grammar's heredoc_content otherwise leaves them opaque).
         if (!/[\\'"]/.test(delimiter?.text || '')) {
-          const inner = fork(state.dirs, state.vars, state.selected);
+          const inner = fork(state.dirs, state.vars, state.selected, state.locations);
           for (const child of body?.namedChildren || []) if (child.type === 'command_substitution') visit(child, inner, depth + 1);
           const original = body?.text || '', offsets = []; let source = '"';
           for (let i = 0; i < original.length; i++) {
@@ -164,7 +200,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         const variable = n.childForFieldName('variable')?.text, values = n.childrenForFieldName('value');
         // Numeric iteration never contributes a slash or a parent-directory component.
         const numeric = values.length && values.every(v => /^\d+$/.test(v.text) || /^\$\(seq\s+\d+(?:\s+\d+){0,2}\)$/.test(v.text));
-        const inner = fork(state.dirs, state.vars, state.selected);
+        const inner = fork(state.dirs, state.vars, state.selected, state.locations);
         if (variable) { inner.vars.delete(variable); if (numeric) inner.vars.set(variable, '1'); }
         for (const child of n.namedChildren) visit(child, inner, depth);
         for (const assignment of n.descendantsOfType('variable_assignment')) state.vars.set(assignment.childForFieldName('name')?.text, '$__sa_unknown__');
@@ -175,20 +211,21 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         for (const child of n.namedChildren) visit(child, state, depth);
         outcome(state, state.fail, state.ok); return null;
       }
-      if (n.type === 'pipeline') state = fork(state.dirs, state.vars, union(state.selected, selections(n.text)));
+      if (n.type === 'pipeline') state = fork(state.dirs, state.vars, union(state.selected, selections(n.text)), state.locations);
       if (n.type === 'list') {
         const operands = n.namedChildren.filter(c => c.type !== 'comment');
         const op = n.children.find(c => c.type === '&&' || c.type === '||');
         if (operands.length === 2 && op) {
-          const left = fork(state.dirs, state.vars, state.selected); visit(operands[0], left, depth);
-          const right = fork(op.type === '&&' ? left.ok : left.fail, left.vars, state.selected); visit(operands[1], right, depth);
+          const left = fork(state.dirs, state.vars, state.selected, state.locations); visit(operands[0], left, depth);
+          const right = fork(op.type === '&&' ? left.ok : left.fail, left.vars, state.selected, left.locations); visit(operands[1], right, depth);
           outcome(state, op.type === '&&' ? right.ok : union(left.ok, right.ok), op.type === '&&' ? union(left.fail, right.fail) : right.fail);
+          for (const [dir, frames] of right.locations) state.locations.set(dir, frames);
           for (const variable of union([...state.vars.keys()], [...left.vars.keys()], [...right.vars.keys()]))
             state.vars.set(variable, left.vars.get(variable) === right.vars.get(variable) ? right.vars.get(variable) : '$__sa_unknown__');
           return null;
         }
       }
-      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs, state.vars, state.selected);
+      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs, state.vars, state.selected, state.locations);
       const children = new Map();
       const ordered = n.type === 'redirected_statement' ? [...n.children].sort((a,b) => (a.type === 'command' ? 1 : 0) - (b.type === 'command' ? 1 : 0)) : n.children;
       for (const ch of ordered) children.set(ch.id, visit(ch, state, depth));
@@ -232,7 +269,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       const tree = parser.parse(source);
       const walk = n => {
         if (n.type === 'command_substitution') {
-          if (n.firstChild.type === '`') script(heredoc.original.slice(heredoc.offsets[n.firstChild.endIndex], heredoc.offsets[n.lastChild.startIndex]), fork(state.dirs, state.vars, state.selected), depth + 1);
+          if (n.firstChild.type === '`') script(heredoc.original.slice(heredoc.offsets[n.firstChild.endIndex], heredoc.offsets[n.lastChild.startIndex]), fork(state.dirs, state.vars, state.selected, state.locations), depth + 1);
         }
         else for (const child of n.namedChildren) walk(child);
       };

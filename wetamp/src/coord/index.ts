@@ -1,12 +1,12 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readdirSync, realpathSync, lstatSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, lstatSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { lock } from '../archon';
 import { home, writeAtomic, WETAMP } from '../config';
-import { launcher, type Launcher } from '../launcher';
+import { launcher, inspectProcess, type Launcher } from '../launcher';
 
 export interface Identity {
   client: string;
@@ -69,6 +69,9 @@ export interface Message {
   deferred_until?: number;
 }
 const shared = createRequire(import.meta.url)('../../hooks/coord.cjs') as {
+  repoScope: (path: string) => Extract<Scope, { kind: 'repo' }> | null;
+  runScope: (run: Pick<RunRef, 'run_id' | 'repo'>) => Extract<Scope, { kind: 'run' }>;
+  resolveRun: (home: string, target: string) => RunRef | undefined;
   archonMutation: (args: string[]) => boolean;
   admission: (
     home: string,
@@ -89,7 +92,6 @@ const shared = createRequire(import.meta.url)('../../hooks/coord.cjs') as {
   ) => { owner: Identity | null; generation: number; conflicts: Identity[]; evidence: string[] };
 };
 const identity = createRequire(import.meta.url)('../../hooks/identity.cjs') as {
-  inspect: (pid: number) => { state: Presence['state']; start?: string };
   same: (a: Identity | null | undefined, b: Identity | null | undefined) => boolean;
   key: (who: Identity) => (string | number | null)[];
   presence: (who: Identity, home: string) => Presence;
@@ -100,17 +102,12 @@ export const archonMutation = shared.archonMutation;
 export const ownerLabel = (who: Identity | null): string =>
   who ? `${who.client} ${who.session_id?.slice(0, 8) ?? `pid:${String(who.pid)}`}` : '无主';
 export const ACK_TIMEOUT_MS = 15 * 60_000;
-export function repoScope(path: string): Scope {
-  const p = Bun.spawnSync(
-    ['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-    { stdout: 'pipe', stderr: 'pipe' }
-  );
-  if (p.exitCode !== 0) throw new Error(`coord: not a repository: ${path}`);
-  return { kind: 'repo', id: realpathSync(p.stdout.toString().trim()) };
+export function repoScope(path: string): Extract<Scope, { kind: 'repo' }> {
+  const scope = shared.repoScope(path);
+  if (!scope) throw new Error(`coord: not a repository: ${path}`);
+  return scope;
 }
-export function runScope(l: Pick<RunRef, 'run_id' | 'repo'>): Extract<Scope, { kind: 'run' }> {
-  return { kind: 'run', id: l.run_id, repo: repoScope(l.repo).id };
-}
+export const runScope = shared.runScope;
 export function caller(readonly = false): Identity {
   if (
     !readonly &&
@@ -120,7 +117,7 @@ export function caller(readonly = false): Identity {
   const who = launcher(home().sa);
   if (who?.pid_start) return who;
   // A human shell is also an explicit local controller; use its parent lifetime, never the short-lived CLI PID.
-  const p = identity.inspect(process.ppid);
+  const p = inspectProcess(process.ppid);
   if (p.state !== 'online' || !p.start) throw new Error('coord: 无法验证调用者进程身份');
   return { client: 'shell', host: hostname(), pid: process.ppid, pid_start: p.start };
 }
@@ -265,12 +262,7 @@ export class Coordination {
     }
   }
   resolveRun(id: string): RunRef | undefined {
-    const direct = /^[\w-]+$/.test(id)
-      ? (shared.read(join(this.d.sa, 'runs', id + '.json')) as RunRef | null)
-      : null;
-    return direct?.run_id === id
-      ? direct
-      : this.d.runs().find(l => l.run_id === id || l.archon_run_id === id);
+    return shared.resolveRun(this.d.sa, id);
   }
   admissionEnv(inheritLock = false): Record<string, string> {
     if (!this.active) return {};
@@ -279,7 +271,7 @@ export class Coordination {
       this.save('admissions', token, {
         ...this.active,
         parent: inheritLock
-          ? { pid: process.pid, start: identity.inspect(process.pid).start }
+          ? { pid: process.pid, start: inspectProcess(process.pid).start }
           : undefined,
       });
     });
@@ -296,7 +288,6 @@ export class Coordination {
     });
   }
   scope(target = process.cwd()): Scope {
-    if (existsSync(resolve(target))) return repoScope(resolve(target));
     const l = this.resolveRun(target);
     return l ? runScope(l) : repoScope(resolve(target));
   }
@@ -422,7 +413,7 @@ export class Coordination {
     );
   }
   inherited(a: Admission): boolean {
-    if (a.parent?.pid !== process.ppid || a.parent.start !== identity.inspect(a.parent.pid).start)
+    if (a.parent?.pid !== process.ppid || a.parent.start !== inspectProcess(a.parent.pid).start)
       return false;
     const file = this.scopeLock(a.scope),
       k = lock(file);

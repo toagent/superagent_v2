@@ -148,7 +148,7 @@ function decide(payload, client, env = process.env) {
   const advisory = notices.size ? {systemMessage: `SUPERAGENT advisory：本次护栏无法完整确认命令效果，已放行（${[...notices].join(', ')}）。`} : null;
   if (derived) return advisory;
   const coord = require('./coord.cjs');
-  const ownership = coord.writeReason(payload, client, env, text, readOnly);
+  const ownership = coord.writeReason(payload, client, env, text, redline.gitReadOnly);
   if (ownership) return deny(ownership);
   const context = dispatch.contextReason(client, name, input, dispatch.contextPolicy(policy.dispatch_context));
   if (context) return deny(context);

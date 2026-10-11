@@ -71,12 +71,24 @@ function resolveOwner(scope, claims, runs) {
     conflicts: distinct.length > 1 ? distinct.map(r => r.owner) : [], evidence: distinct.map(r => r.evidence)};
 }
 // One target and admission contract for CLI, shim and hook. Both ledger IDs resolve before fallback.
-function targetScope(home, target, cwd) {
+function runScope(run) {
+  const repo = repoScope(run.repo);
+  if (!repo) throw new Error('coord: run repository unavailable');
+  return {kind: 'run', id: run.run_id, repo: repo.id};
+}
+function resolveRun(home, target) {
+  if (typeof target !== 'string') return undefined;
   const dir = path.join(home, 'runs');
   const names = fs.existsSync(dir) ? fs.readdirSync(dir).filter(n => n.endsWith('.json')) : [];
-  const run = names.map(n => read(path.join(dir, n))).find(l => l.run_id === target || l.archon_run_id === target);
-  if (run) return {kind: 'run', id: run.run_id, repo: repoScope(run.repo).id};
-  return repoScope(cwd);
+  const runs = names.map(n => read(path.join(dir, n)));
+  const exact = runs.find(l => l.run_id === target || l.archon_run_id === target);
+  if (exact) return exact;
+  const matches = runs.filter(l => l.archon_run_id?.startsWith(target));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+function targetScope(home, target, cwd) {
+  const run = resolveRun(home, target);
+  return run ? runScope(run) : repoScope(cwd);
 }
 function admission(home, scope, who, expected, archon, resolved) {
   if (!scope) throw new Error('coord: cannot resolve mutation scope');
@@ -151,4 +163,4 @@ function writeReason(payload, client, env, shell, readonly) {
   }, word => expand(word, env));
   return why?.startsWith('已拒绝：') ? why : null;
 }
-module.exports = {hash, read, files, repoScope, resolveOwner, targetScope, admission, archonMutation, label, refusal, unread, notifications, writeReason};
+module.exports = {hash, read, files, repoScope, resolveOwner, runScope, resolveRun, targetScope, admission, archonMutation, label, refusal, unread, notifications, writeReason};

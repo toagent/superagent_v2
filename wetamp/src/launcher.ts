@@ -13,3 +13,11 @@ export const { launcher, cliOf } = createRequire(import.meta.url)('../hooks/live
   launcher: (home: string) => Launcher | undefined;
   cliOf: (argv: string[]) => { kind: Launcher['client']; headless: boolean } | null;
 };
+
+export const { inspect: inspectProcess } = createRequire(import.meta.url)(
+  '../hooks/identity.cjs'
+) as {
+  inspect: (
+    pid: number
+  ) => { state: 'online'; start: string } | { state: 'offline' | 'unknown'; start?: undefined };
+};
