@@ -259,7 +259,9 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
   }
 }
 
-function intervention<T extends number | boolean | { ok: boolean; busy?: boolean; refused?: boolean }>(
+function intervention<
+  T extends number | boolean | { ok: boolean; busy?: boolean; refused?: boolean },
+>(
   l: Ledger,
   action: string,
   execute: () => T,
@@ -272,7 +274,8 @@ function intervention<T extends number | boolean | { ok: boolean; busy?: boolean
   try {
     const result = execute();
     skipped = typeof result === 'object' && (result.busy === true || result.refused === true);
-    ok = typeof result === 'number' ? result === 0 : typeof result === 'boolean' ? result : result.ok;
+    ok =
+      typeof result === 'number' ? result === 0 : typeof result === 'boolean' ? result : result.ok;
     if (typeof result === 'number') error = `exit:${String(result)}`;
     return result;
   } catch (e) {
@@ -294,7 +297,12 @@ function intervention<T extends number | boolean | { ok: boolean; busy?: boolean
   }
 }
 
-const answerAction = <T extends { ok: boolean }>(l: Ledger, key: string, a: Ask, execute: () => T): T =>
+const answerAction = <T extends { ok: boolean }>(
+  l: Ledger,
+  key: string,
+  a: Ask,
+  execute: () => T
+): T =>
   a.status === 'yes' || a.status === 'no'
     ? intervention(l, 'answer', execute, { key, id: a.id })
     : execute();
@@ -328,7 +336,11 @@ export function classify(run: RunView): Classified {
       if (failed?.startsWith('gate-')) return { state: 'held:gate', exit: EXIT.held, node: failed };
       return { state: 'failed', exit: EXIT.failed, node: failed };
     default:
-      if (ownershipUnknown(run)) return { state: 'held:owner_unknown', exit: EXIT.held };
+      // A pending row is Archon's detached launch before its child claims it: no execution owner
+      // exists yet, so that absence is not ambiguity. Report pending and keep waiting; only
+      // recovery must refuse to act on it.
+      if (run.status === 'running' && ownershipUnknown(run))
+        return { state: 'held:owner_unknown', exit: EXIT.held };
       return { state: ownerLost(run) ? 'owner_lost' : run.status, exit: EXIT.running };
   }
 }
@@ -1008,9 +1020,11 @@ function resumeRun(l: Ledger, fresh = false, reconciled?: string, action = 'reco
   let started = false;
   // prepare runs under the recovery lock only after admission checks have passed.
   const res = intervention(
-    l, action,
+    l,
+    action,
     () => recoverRun(l, fresh, undefined, () => (started = true), undefined, reconciled),
-    undefined, () => started
+    undefined,
+    () => started
   );
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
@@ -1141,11 +1155,21 @@ function retryAllHeld(): number {
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
-      return [control(l, () => intervention(l, 'decide', () => ({
-        run_id: l.run_id,
-        state: c.state,
-        ...retry(l, c, () => (started = true)),
-      }), undefined, () => started))];
+      return [
+        control(l, () =>
+          intervention(
+            l,
+            'decide',
+            () => ({
+              run_id: l.run_id,
+              state: c.state,
+              ...retry(l, c, () => (started = true)),
+            }),
+            undefined,
+            () => started
+          )
+        ),
+      ];
     } catch (e) {
       return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
     }
@@ -1201,7 +1225,11 @@ function decide(l: Ledger, a: Args): number {
   }
   let started = false;
   const res = intervention(
-    l, 'decide', () => retry(l, c, () => (started = true)), undefined, () => started
+    l,
+    'decide',
+    () => retry(l, c, () => (started = true)),
+    undefined,
+    () => started
   );
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
@@ -2499,7 +2527,11 @@ export function main(argv: string[]): number {
         print({ run_id: id, ...res });
         return res.ok ? 0 : res.held ? EXIT.held : res.busy ? EXIT.running : 1;
       }
-      return controlled(resolved, () => resumeRun(resolved, false, a.flags.reconciled, verb), false);
+      return controlled(
+        resolved,
+        () => resumeRun(resolved, false, a.flags.reconciled, verb),
+        false
+      );
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);

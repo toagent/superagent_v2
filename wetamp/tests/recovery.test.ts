@@ -26,9 +26,13 @@ async function until(check: () => boolean, ms = 15000): Promise<void> {
 }
 
 describe('recovery ownership and effects', () => {
-  test('pending, missing owner, remote owner, and reused PID are held with no guessed terminal transition', () => {
+  test('missing owner, remote owner, and reused PID are held with no guessed terminal transition', () => {
+    // Detached launch before the child claims the row: still starting, wait keeps waiting.
+    expect(classify({ id: 'r', status: 'pending' })).toEqual({
+      state: 'pending',
+      exit: EXIT.running,
+    });
     for (const r of [
-      { id: 'r', status: 'pending' },
       { id: 'r', status: 'running' },
       { id: 'r', status: 'running', metadata: { execution_owner: { host: 'remote', pid: 10 } } },
     ] satisfies RunView[])

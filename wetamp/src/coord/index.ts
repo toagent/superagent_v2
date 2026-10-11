@@ -322,7 +322,8 @@ export class Coordination {
       : this.d
           .runs()
           .filter(l => {
-            if (repoScope(l.repo).id !== repo.id || l.state === 'failed') return false;
+            // A ledger whose repository no longer resolves cannot share a live repository's scope.
+            if (shared.repoScope(l.repo)?.id !== repo.id || l.state === 'failed') return false;
             try {
               return !['completed', 'cancelled'].includes(this.d.status(l));
             } catch {

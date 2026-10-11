@@ -341,6 +341,13 @@ test('9: old ledger controller falls back to launcher; linked worktrees share re
         repo: s.repo,
         launcher: { ...a, client: 'codex', tty: null, cwd: s.repo },
       },
+      // A deleted repository's ledger must not break ownership queries for live repositories.
+      {
+        run_id: 'gone',
+        archon_run_id: 'g',
+        repo: join(s.root, 'deleted-repo'),
+        launcher: { ...b, client: 'codex', tty: null, cwd: s.root },
+      },
     ],
     status: () => 'running',
     presence: () => online,
