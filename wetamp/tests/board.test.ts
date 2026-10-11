@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   chmodSync,
   existsSync,
@@ -63,7 +63,7 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 echo "$*" >> "${stubDir}/calls"
 [ -f "${stubDir}/fail-$3" ] && { echo "archon down" >&2; exit 1; }
-[ -f "${stubDir}/hang-$3" ] && sleep 31.7
+[ -f "${stubDir}/hang-$3" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
 cat "${stubDir}/get-$3.json"
 `
   );
@@ -212,8 +212,20 @@ describe('data rows', () => {
 describe('loader robustness', () => {
   const live = (id: string): Ledger =>
     ledger(id, { status: 'running', metadata: { execution_owner: { host: 'elsewhere', pid: 1 } } });
-  const orphans = (): string =>
-    Bun.spawnSync(['pgrep', '-f', 'sleep 31.7'], { stdout: 'pipe' }).stdout.toString().trim();
+  const orphans = (): string => {
+    // Concurrent suites also start sleeps: only this stub's children belong to this assertion.
+    const file = join(stubDir, 'children');
+    if (!existsSync(file)) return '';
+    return readFileSync(file, 'utf8').trim().split('\n').filter(pid => {
+      try { process.kill(Number(pid), 0); return true; }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; return false; }
+    }).join('\n');
+  };
+  const waitForReap = async (): Promise<void> => {
+    const deadline = Date.now() + 5000;
+    while (orphans() !== '' && Date.now() < deadline) await Bun.sleep(50);
+    expect(orphans()).toBe('');
+  };
 
   test('R2-D01 an external land.json symlink isolates one row across refreshes and report snapshots', async () => {
     const output = join(root, 'out'), art = join(output, 'artifacts/runs/a-bad');
@@ -261,16 +273,34 @@ describe('loader robustness', () => {
   test('a hung query is killed at the timeout with its process group; the row goes stale', async () => {
     live('hang');
     process.env.SA_BOARD_QUERY_TIMEOUT_MS = '300';
-    const load = createLoader();
-    expect((await load(50)).rows[0]?.stale).toBe(false);
-    writeFileSync(join(stubDir, 'hang-a-hang'), '');
-    const t0 = Date.now();
-    const row = (await load(50)).rows[0];
-    expect(Date.now() - t0).toBeLessThan(3000);
-    expect(row?.stale).toBe(true);
-    expect(row?.state).toBe('running');
-    await Bun.sleep(100);
-    expect(orphans()).toBe('');
+    const schedule = globalThis.setTimeout;
+    const ac = new AbortController();
+    let expire = (): void => { throw new Error('query timeout was not scheduled'); };
+    // Advance only the query deadline after the subprocess is ready; CPU load cannot expire cache seeding.
+    const controlledTimer = Object.assign((...input: Parameters<typeof setTimeout>): ReturnType<typeof setTimeout> => {
+      const [callback, ms, ...args] = input;
+      if (ms !== 300) return schedule(callback, ms, ...args);
+      expire = () => callback(...args);
+      return schedule(() => undefined, ms);
+    }, { __promisify__: schedule.__promisify__ });
+    const timer = spyOn(globalThis, 'setTimeout').mockImplementation(controlledTimer);
+    try {
+      const load = createLoader(ac.signal);
+      expect((await load(50)).rows[0]).toMatchObject({ state: 'running', stale: false });
+      writeFileSync(join(stubDir, 'hang-a-hang'), '');
+      const pending = load(50);
+      const deadline = Date.now() + 5000;
+      while (!existsSync(join(stubDir, 'children')) && Date.now() < deadline) await Bun.sleep(10);
+      expect(existsSync(join(stubDir, 'children'))).toBe(true);
+      expire();
+      const row = (await pending).rows[0];
+      expect(row?.stale).toBe(true);
+      expect(row?.state).toBe('running');
+      await waitForReap();
+    } finally {
+      ac.abort(); // Also reap the query if readiness/assertion fails.
+      timer.mockRestore();
+    }
   });
 
   test('aborting the loader kills in-flight queries', async () => {
@@ -284,8 +314,7 @@ describe('loader robustness', () => {
     const row = (await pending).rows[0];
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(row?.error).toContain('aborted');
-    await Bun.sleep(100);
-    expect(orphans()).toBe('');
+    await waitForReap();
   });
 
   test('a cached failed or held:gate run that gets cancelled shows cancelled on the next round', async () => {

@@ -11,7 +11,7 @@ import {
 import { launcher, type Launcher } from './launcher';
 import { basename, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as yieldEventLoop, setTimeout as delay } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
 import { home } from './config';
 import { newRunId } from './generate';
@@ -142,8 +142,8 @@ export const recent = (j: Job, now: number): boolean =>
   ['queued', 'running'].includes(j.state) || now - Date.parse(j.ended_at ?? '') <= RECENT_MS;
 
 /**
- * 继承 stdio 前台跑子进程，转发 SIGINT/SIGTERM/SIGHUP；退出码与子进程一致，信号退出为 128+n（Bun 的 exited 即此值）。
- * 先登记 queued 并按内存准入；超时/信号不启动子进程，启动失败登记 failed 并抛错。
+ * 继承 stdio 前台跑子进程，转发 SIGINT/SIGTERM/SIGHUP；wrapper 被中断时以首次信号的 128+n 失败，优先于子进程退出码。
+ * 先登记 queued 并按内存准入；超时/信号不启动子进程，启动失败登记 failed，无边界内中断时抛错。
  */
 async function exec(
   cmd: string[],
@@ -169,14 +169,34 @@ async function exec(
   };
   let child: ReturnType<typeof Bun.spawn> | undefined, identity: ReturnType<typeof setInterval> | undefined, code = 0;
   const stop = new AbortController();
+  let interrupted = 0;
   const forward = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(s => {
     const h = (): void => {
+      if (!interrupted) { interrupted = 128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[s]; job.signal = s; }
       if (child) child.kill(s);
-      else { code = 128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[s]; job.signal = s; stop.abort(); }
+      else { code = interrupted; stop.abort(); }
     };
     process.on(s, h);
     return () => process.off(s, h);
   });
+  // Terminal records are provisional for one event-loop turn; board only displays them.
+  // Do not use that provisional state to trigger irreversible actions.
+  const commit = async (terminal: Job): Promise<number> => {
+    clearInterval(identity);
+    try {
+      const known = interrupted;
+      if (known && terminal.exit_code !== undefined) terminal = { ...terminal, exit_code: known };
+      save(terminal);
+      // The delivery point after rename is the boundary, not the synchronous syscall.
+      await yieldEventLoop();
+      if (interrupted !== known) save({ ...terminal, state: 'failed', signal: job.signal, exit_code: interrupted });
+      return interrupted || code;
+    } finally {
+      // Later signals are excluded; removal is synchronous, with no further yield or I/O.
+      for (const off of forward) off();
+    }
+  };
+  let terminal: Job, failure: { error: unknown } | undefined;
   try {
     save(job);
     let waited = false;
@@ -194,22 +214,27 @@ async function exec(
         await wait(Math.min(15000, Math.max(0, deadline - Date.now())), stop.signal).catch((e: unknown) => { if (!stop.signal.aborted) throw e; }); waited = true;
       }
     }
-    if (!code) {
+    // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
+    if (!code) await yieldEventLoop();
+    if (!code && !stop.signal.aborted) {
       child = Bun.spawn(cmd, { stdio: ['inherit', 'inherit', 'inherit'] });
       job.pid = child.pid; job.state = 'running'; delete job.reason; job.started_at = new Date().toISOString(); save(job);
       identity = setInterval(() => { if (!job.session_id) { job.session_id = jobSession(job); if (job.session_id) save(job); } }, 5000);
       code = await child.exited;
     }
-    save({ ...job, session_id: child ? job.session_id ?? jobSession(job) : null, state: code === 0 ? 'done' : 'failed', ended_at: new Date().toISOString(), ...(child?.signalCode ? { signal: child.signalCode } : { exit_code: code }) });
-    return code;
+    const session_id = child ? job.session_id ?? jobSession(job) : null;
+    // Spawn/bookkeeping can outlast a short child; deliver pending signals before the provisional write.
+    await yieldEventLoop();
+    code = interrupted || code;
+    terminal = { ...job, session_id, state: code === 0 ? 'done' : 'failed', ended_at: new Date().toISOString(), ...(child?.signalCode ? { signal: job.signal ?? child.signalCode } : { exit_code: code }) };
   } catch (e) {
     child?.kill('SIGTERM'); // 登记不了就不让它成为看板看不见的作业
-    save({ ...job, state: 'failed', ended_at: new Date().toISOString(), exit_code: 1 });
-    throw e;
-  } finally {
-    clearInterval(identity);
-    for (const off of forward) off();
+    terminal = { ...job, state: 'failed', ended_at: new Date().toISOString(), exit_code: 1 };
+    code = 1; failure = { error: e };
   }
+  const result = await commit(terminal);
+  if (failure && !interrupted) throw failure.error;
+  return result;
 }
 
 export async function jobCli(argv: string[], probe = memoryReading, wait = admissionWait): Promise<number> {

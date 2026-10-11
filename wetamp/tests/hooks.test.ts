@@ -4,6 +4,7 @@ import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { gitRepo, tmp } from './helpers';
+await (createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }).init();
 
 const HOOKS = join(import.meta.dir, '..', 'hooks');
 // 子进程 env 只保留与判定无关的键，判定相关的由每个用例显式给出。
@@ -219,19 +220,24 @@ describe('guard.cjs', () => {
       'env -u FOO claude -p x',
       'env X=1 codex exec x',
       'nohup claude -p x &',
-      'time -p claude -p x',
-      'command claude -p x',
-      'exec -a name codex exec x',
       'sudo -u root opencode run',
       'nice -n 5 claude -p x',
       'caffeinate -i claude -p x',
-      'env -S "claude -p x"',
       'timeout 5 sol-run x',
-      'echo "$(claude -p x)"',
       'find . -name a -exec codex exec {} \\;',
     ])
       expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('N-1');
-    for (const cmd of ["echo '$(claude -p x)'", 'command -v claude', 'grep -r claude .'])
+    // HF6 rejects these unmodeled heads before reaching the nested-agent gate.
+    for (const cmd of [
+      'time -p claude -p x',
+      'echo "$(claude -p x)"',
+      'command claude -p x',
+      'exec -a name codex exec x',
+      'env -S "claude -p x"',
+      'command -v claude',
+    ])
+      expect(reason(guard('claude', bash(cmd), worker)), cmd).toContain('超出可建模子集');
+    for (const cmd of ["echo '$(claude -p x)'", 'grep -r claude .'])
       expect(guard('claude', bash(cmd), worker), cmd).toBeNull();
   });
 
@@ -263,10 +269,11 @@ describe('guard.cjs', () => {
       'git -c core.pager=sh log',
       'sort -o a.ts a.ts',
       'find . -delete',
-      '$(echo rm) a.ts',
       'python3 -c "open(1)"',
     ])
       expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('reviewer 只读');
+    expect(reason(guard('claude', bash('$(echo rm) a.ts'), reviewer))).toContain('node:command_substitution');
+    expect(reason(guard('claude', bash('echo ~[x]'), reviewer))).toContain('zsh_word_expansion');
     expect(
       reason(
         guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'touch x' } }, reviewer)
@@ -278,15 +285,13 @@ describe('guard.cjs', () => {
     const { guard } = setup();
     const reviewer = { SUPERAGENT_ROLE: 'reviewer' };
     for (const [cmd, target] of [
-      ['time -o out.txt cat a.ts', 'out.txt'],
-      ['/usr/bin/time --output=t.log git status', 't.log'],
       ['nohup cat a.ts', 'nohup.out'],
       ['script s.log cat a.ts', 's.log'],
       ['cat a.ts | tee -a b.ts', 'b.ts'],
-      ['env -C /tmp/elsewhere cat a.ts', 'elsewhere'],
-      ['env --chdir=/w git status', 'w'],
     ])
       expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain(`禁止写入 ${target}`);
+    for (const cmd of ['time -o out.txt cat a.ts', '/usr/bin/time --output=t.log git status', 'env -C /tmp/elsewhere cat a.ts', 'env --chdir=/w git status'])
+      expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toContain('超出可建模子集');
     // script 也是包装器：其后的 claude 仍被 N-1 认出
     expect(
       reason(
@@ -477,7 +482,15 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       repo,
       env,
       sh: (cmd, derived = false) =>
-        redline.reason({ client: 'claude', name: 'Bash', cwd: repo, root: repo, shell: cmd, derived, env }),
+        redline.reason({
+          client: 'claude',
+          name: 'Bash',
+          cwd: repo,
+          root: repo,
+          shell: cmd,
+          derived,
+          env,
+        }),
     };
   };
 
@@ -485,7 +498,11 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     const { sh } = box();
     const pairs: [string, string, string][] = [
       ['cat ~/.ssh/id_ed25519', 'cat ~/.ssh/id_ed25519.pub', 'ssh 私钥'],
-      [`python3 -c "open('$HOME/.ssh/id_rsa')"`, 'ssh-keygen -F host -f ~/.ssh/known_hosts', 'ssh 私钥'],
+      [
+        `python3 -c "open('$HOME/.ssh/id_rsa')"`,
+        'ssh-keygen -F host -f ~/.ssh/known_hosts',
+        'ssh 私钥',
+      ],
       ['ls ~/Library/Keychains/login.keychain-db', 'ls ~/Library/Caches', '钥匙串'],
       ['security find-generic-password -s x -w', 'security list-keychains', 'security'],
       ['security dump-keychain', 'security find-certificate -a', 'security'],
@@ -520,7 +537,11 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       ['kill $(pgrep node)', 'kill 12345', 'kill'],
       ['mysql -h db.prod.internal -u x', 'mysql -h 127.0.0.1 -u x', 'db.prod.internal'],
       ['psql postgres://u@10.0.0.5/app', 'psql postgres://u@localhost/app', '10.0.0.5'],
-      ['mongosh mongodb://cluster.example.com/x', 'mongosh mongodb://localhost:27017/x', 'cluster.example.com'],
+      [
+        'mongosh mongodb://cluster.example.com/x',
+        'mongosh mongodb://localhost:27017/x',
+        'cluster.example.com',
+      ],
       ['redis-cli -h cache.example.com', 'redis-cli -h localhost ping', 'cache.example.com'],
     ];
     for (const [deny, allow, hit] of pairs) {
@@ -554,13 +575,16 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       input: Record<string, unknown>,
       derived = false,
       client = 'claude'
-    ): string | null => redline.reason({ client, name, input, cwd: repo, root: repo, derived, env });
+    ): string | null =>
+      redline.reason({ client, name, input, cwd: repo, root: repo, derived, env });
     expect(tool('Read', { file_path: join(home, '.netrc') })).toContain('凭据文件');
     expect(tool('Read', { file_path: join(repo, 'README.md') })).toBeNull();
     expect(tool('Grep', { pattern: 'x', path: '~/.ssh' })).toBeNull();
     expect(tool('Grep', { pattern: 'x', path: '~/.ssh/id_ed25519' })).toContain('ssh 私钥');
     expect(tool('Write', { file_path: join(home, '.ssh', 'config') })).toBeNull();
-    expect(tool('Write', { file_path: join(home, '.ssh', 'authorized_keys') })).toContain('ssh 私钥');
+    expect(tool('Write', { file_path: join(home, '.ssh', 'authorized_keys') })).toContain(
+      'ssh 私钥'
+    );
     // 元帅不限落点；派生会话只能写 worktree、临时目录与缓存（测试 home 本身在临时目录下，越界用 /etc）
     const away = '/etc/sa-redline-test/x.ts';
     expect(tool('Write', { file_path: away })).toBeNull();
@@ -582,7 +606,11 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
 
   test('guard 对所有角色先查红线（元帅、worker、reviewer 都拒）', () => {
     const { guard } = setup();
-    for (const env of [{}, { SUPERAGENT_ROLE: 'worker' }, { SUPERAGENT_ROLE: 'reviewer' }] as Record<string, string>[])
+    for (const env of [
+      {},
+      { SUPERAGENT_ROLE: 'worker' },
+      { SUPERAGENT_ROLE: 'reviewer' },
+    ] as Record<string, string>[])
       expect(reason(guard('claude', bash('git branch -D release-1'), env))).toContain('红线');
     expect(
       reason(guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'npm publish' } }))

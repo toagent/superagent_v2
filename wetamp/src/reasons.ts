@@ -1,15 +1,16 @@
 // 原因与处置的唯一注册表；generate 将 REASONS 写入冻结模板。
 export type Yes = 'retry' | 'resume' | 'approve' | 'review';
 export type Policy =
-  | { do: 'signoff' | 'expire' | 'auto_retry' | 'backoff' | 'resume' }
-  | { do: 'ask'; yes: Yes; text: string };
+  | { do: 'expire' | 'auto_retry' | 'backoff' | 'resume' }
+  | { do: 'signoff'; text: string; yesText: string }
+  | { do: 'ask'; yes: Yes; text: string; yesText: string };
 /**
  * 挂起原因 → 处置：supervise-tick 对非终态 run 的唯一分派表（docs/00「挂起处置」），每行都有单测。
  * signoff 走 human()；expire 按 plan 截止终止、不提醒；auto_retry/backoff/resume 自动处置，有上限，用尽后转 ask 行；
  * ask 行投一条提醒（键 run:挂起类别），“是”执行 yes，“否”终止 run 并保留证据，过期不替用户决定、等 plan 截止。
  */
 export const HOLD_POLICY = {
-  signoff: { do: 'signoff' },
+  signoff: { do: 'signoff', text: '等待人工签收', yesText: '批准签收门并续跑（不自动合入）' },
   deadline: { do: 'expire' },
   gate: { do: 'auto_retry' },
   coder: { do: 'auto_retry' },
@@ -18,53 +19,73 @@ export const HOLD_POLICY = {
   auto_retry_exhausted: {
     do: 'ask',
     yes: 'retry',
-    text: '自动重试已用尽。是=再给一轮修复（fresh retry），否=终止 run',
+    text: '自动重试已用尽', yesText: '{target}一次',
   },
   no_change: {
     do: 'ask',
     yes: 'retry',
-    text: '连续两轮修复无变化。是=再给一轮修复（fresh retry），否=终止 run',
+    text: '连续两轮修复无变化', yesText: '{target}一次',
   },
   no_attempt_node: {
     do: 'ask',
     yes: 'resume',
-    text: '旧工作流无法重跑里程碑。是=原样续跑（resume），否=终止 run',
+    text: '旧工作流无法重跑里程碑', yesText: '清零恢复计数并{target}一次',
   },
   recover_no_progress: {
     do: 'ask',
     yes: 'resume',
-    text: '恢复 3 次无进展。是=清零计数再恢复一次，否=终止 run',
+    text: '恢复3次无进展', yesText: '清零恢复计数并{target}一次',
   },
   needs: {
     do: 'ask',
     yes: 'retry',
-    text: '将军需要补能力(needs)。是=已补齐，再跑一轮，否=终止 run',
+    text: '将军需要补能力', yesText: '确认已补齐后{target}一次',
   },
-  redline: { do: 'ask', yes: 'retry', text: '将军命中红线。是=放行重试一次，否=终止 run' },
+  redline: { do: 'ask', yes: 'retry', text: '将军命中红线', yesText: '{target}一次（红线不变）' },
   coder_blocked: {
     do: 'ask',
     yes: 'retry',
-    text: '将军受执行约束阻断。是=已处理，再跑一轮，否=终止 run',
+    text: '将军受执行约束阻断', yesText: '确认已处理后{target}一次',
   },
   budget: {
     do: 'ask',
     yes: 'retry',
-    text: '预算已用尽。是=按台账额度放宽本里程碑一次，再跑一轮，否=终止 run',
+    text: '预算已用尽', yesText: '按台账追加本里程碑额度并{target}一次',
   },
-  review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽。是=再给一轮修复，否=终止 run' },
+  review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽', yesText: '{target}一次' },
   review_not_independent: {
     do: 'ask',
     yes: 'review',
-    text: '评审身份不独立。是=已处理，重跑本轮评审，否=终止 run',
+    text: '评审身份不独立', yesText: '确认已处理后{target}一次',
   },
   engine_suspect: {
     do: 'ask',
     yes: 'resume',
-    text: '引擎判定与验收矛盾或原因未注册。是=已修复引擎，续跑一次，否=终止 run',
+    text: '引擎判定与验收矛盾或原因未注册', yesText: '确认已修复引擎后清零恢复计数并{target}一次',
   },
-  approval: { do: 'ask', yes: 'approve', text: 'Archon 审批门。是=批准（approve），否=终止 run' },
+  approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
 } as const satisfies Record<string, Policy>;
 export type Hold = keyof typeof HOLD_POLICY;
+
+// 仅用于引擎标识与 plan 名称；自由文本证据不进入提醒标题。
+export const askName = (v: string, limit: number): string =>
+  Array.from(v.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, limit).join('');
+export function askQuestion(hold: Hold, names: string[], details: [string, string],
+  recovery: (limit: number, stage: number) => [string, string], marker: string): string {
+  const p = HOLD_POLICY[hold];
+  if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not an ask policy: ${hold}`);
+  // 依次缩名称、完成包名单、数字事实、固定文案；原因与完整动作/marker 始终保留。
+  for (let stage = 0; stage <= 3; stage++) for (let limit = 24; limit >= 1; limit--) {
+    const [target, consequence] = recovery(limit, stage);
+    const detail = stage < 2 ? details[0] : details[1];
+    const q = `${names.map(n => askName(n, limit)).join('/')}：${p.text}` +
+      (stage < 3 ? `；${detail || '证据缺失'}` : '') +
+      `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）` +
+      (stage < 3 ? '；详情superagent brief <run>' : '') + `；${marker}`;
+    if (Array.from(q).length <= 200) return q;
+  }
+  throw new Error('ask title: structured facts exceed 200 characters');
+}
 
 export interface Reason {
   code: string;

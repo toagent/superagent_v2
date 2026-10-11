@@ -6,6 +6,7 @@ import {
   buildWorkflow,
   capsDenied,
   engineHash,
+  residentHash,
   generate,
   newRunId,
   renderBrief,
@@ -41,7 +42,7 @@ const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
 
 test('HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
   const root = tmp();
-  for (const path of ['templates', 'src', 'schemas'])
+  for (const path of ['templates', 'src', 'schemas', 'bin', 'scripts'])
     fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
   fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
   const hash = engineHash(root);
@@ -51,8 +52,42 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
   expect(engineHash(root)).not.toBe(hash);
   fs.copyFileSync(join(WETAMP, 'templates/.archon/scripts/sa-check.ts'), script);
   expect(engineHash(root)).toBe(hash);
-  fs.appendFileSync(join(root, 'src/generate.ts'), '\n// changed generation\n');
-  expect(engineHash(root)).not.toBe(hash);
+  const resident = residentHash(root);
+  for (const path of ['src/board/App.tsx', 'src/web/server.ts']) {
+    fs.appendFileSync(join(root, path), '\n// UI-only change\n');
+    expect(engineHash(root)).toBe(hash);
+    expect(residentHash(root)).not.toBe(resident);
+  }
+  for (const path of ['bin/codex-worker', 'bin/codex-readonly-proxy.cjs', 'scripts/codex-trust.cjs', 'src/archon.ts']) {
+    fs.appendFileSync(join(root, path), '\n// execution-time change\n');
+    expect(engineHash(root)).toBe(hash);
+  }
+  for (const path of ['src/generate.ts', 'src/config.ts', 'src/plan.ts', 'src/reasons.ts', 'src/memory.ts', 'src/board/workflow.ts']) {
+    fs.appendFileSync(join(root, path), '\n// frozen generation input\n');
+    expect(engineHash(root)).not.toBe(hash);
+    fs.copyFileSync(join(WETAMP, path), join(root, path));
+    expect(engineHash(root)).toBe(hash);
+  }
+});
+
+test('EV reflection and memory views are read live; lesson data is outside both identities', () => {
+  const root = tmp();
+  for (const path of ['templates', 'src', 'schemas'])
+    fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
+  fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
+  const workflow = engineHash(root), resident = residentHash(root);
+  for (const path of ['src/memory-reflect.ts', 'src/web/memory.ts']) {
+    fs.appendFileSync(join(root, path), '\n// execution-time change\n');
+    expect(engineHash(root)).toBe(workflow);
+    expect(residentHash(root)).not.toBe(resident);
+    fs.copyFileSync(join(WETAMP, path), join(root, path));
+    expect(residentHash(root)).toBe(resident);
+  }
+  fs.appendFileSync(join(root, 'templates/memory-reflect.md'), '\nLive reflection prompt\n');
+  fs.mkdirSync(join(root, 'memory'));
+  fs.writeFileSync(join(root, 'memory/lessons.jsonl'), '{"lessons":[]}\n');
+  expect(engineHash(root)).toBe(workflow);
+  expect(residentHash(root)).toBe(resident);
 });
 
 describe('buildWorkflow', () => {
@@ -117,7 +152,7 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('start-m1')?.depends_on).toEqual(['environment']);
-    expect(n('code-core')?.depends_on).toEqual(['start-m1', 'attempt-m1']);
+    expect(n('code-core')?.depends_on).toEqual(['start-m1', 'attempt-m1', 'package-attempt-core']);
     expect(n('start-m2')).toMatchObject({
       depends_on: ['gate-m1-r1', 'gate-m1-r2', 'gate-m1-r3'],
       trigger_rule: 'none_failed_min_one_success',

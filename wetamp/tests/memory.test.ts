@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { diagnosis, foldEpisode, injectMemory, lessonText, lintPlan, maintainLessons, memoryData, memoryState, memoryTick, memoryWrite, priorKey, privateProject, saveEpisode, selectLessons, taskTag, triage, triggered, type Episode, type Lesson } from '../src/memory';
 import { curate, reflectOne, reflectionInput, reflectionUsage } from '../src/memory-reflect';
@@ -39,6 +39,13 @@ const episode = (patch: Partial<Episode> = {}): Episode => ({ ...foldEpisode(led
 const lesson = (id: string, patch: Partial<Lesson> = {}): Lesson => ({ id, tier: 'project', scope: root, tag: 'ts-cli', category: 'project', reasons: ['acceptance_failed'], when: 'port', do: 'free', dont: 'busy', why: 'test', evidence: ['incident'], mechanizable: false, status: 'trial', helpful: 0, harmful: 0, created_at: new Date(NOW).toISOString(), last_hit: new Date(NOW).toISOString(), ...patch });
 const seed = (...lessons: Lesson[]): void => memoryWrite(() => ({ lessons }));
 const fake = (): void => { process.env.SUPERAGENT_REFLECT_CMD = JSON.stringify([process.execPath, join(import.meta.dir, 'fixtures/fake-memory-reflector.ts')]); process.env.FAKE_MEMORY_STARTED = join(root, 'started'); };
+// Real Archon validation is covered by generate.test.ts and selftest; these tests inspect memory injection.
+const fakeValidation = (): void => {
+  const bin = join(root, 'validate-archon');
+  writeFileSync(bin, '#!/usr/bin/env bash\n[ "$1" = validate ] && [ "$2" = workflows ] && exit 0\necho "unexpected archon command" >&2\nexit 1\n');
+  chmodSync(bin, 0o755);
+  process.env.SA_ARCHON_BIN = bin;
+};
 
 describe('EV1 incident replay', () => {
   test('EV2 confined memory reads preserve repository-owned artifact evidence outside the memory home', () => {
@@ -91,6 +98,7 @@ describe('EV1 incident replay', () => {
     expect(failure.phase).toBe('preflight'); expect(failure.reason).toContain('worktree.baseBranch'); expect(existsSync(join(sa, 'runs'))).toBe(false);
   });
   test('project fake reflection enters the matching next brief, repeats retire it and request mechanism', async () => {
+    fakeValidation();
     fake(); const e = episode(); expect(e.category).toBe('project'); saveEpisode(e);
     expect(await reflectOne(NOW)).toBe(true); const learned = memoryState().lessons[0]; expect(learned.scope).toBe(root); expect(learned.status).toBe('trial');
     const generated = generate(plan, 'next', true); expect(readFileSync(join(generated.dir, 'briefs/core.md'), 'utf8')).toContain('选取空闲端口');
@@ -155,11 +163,14 @@ describe('EV1 budgets and deterministic matching', () => {
     for (const n of nodes.slice(0, 2)) { expect(hits[n.id]).toEqual(['review-role']); expect(readFileSync(join(dir, '.archon/commands', n.command + '.md'), 'utf8')).toContain('[review-role]'); } expect(hits.n2).toEqual([]);
   });
   test('memory off means no injection or reflection, and data does not change engine hash', async () => {
+    fakeValidation();
     fake(); seed(lesson('x')); saveEpisode(episode()); const before = engineHash();
     process.env.SUPERAGENT_MEMORY = 'off'; const off = generate(plan, 'off', true); expect(readFileSync(join(off.dir, 'briefs/core.md'), 'utf8')).not.toContain('经验（自动'); expect(JSON.parse(readFileSync(join(off.dir, 'engine.json'), 'utf8')).lessons).toEqual({}); expect(await reflectOne(NOW)).toBe(false);
     process.env.SUPERAGENT_MEMORY = 'on'; const on = generate(plan, 'on', true); expect(readFileSync(join(on.dir, 'briefs/core.md'), 'utf8')).toContain('[x]'); expect(on.engine_hash).toBe(off.engine_hash); expect(engineHash()).toBe(before);
+    expect(JSON.parse(readFileSync(join(on.dir, 'engine.json'), 'utf8'))).toMatchObject({ workflow_hash: on.engine_hash, engine_hash: on.engine_hash, lessons: { 'code-core': ['x'] } });
   });
   test('lesson retrieval failures are fail-open', () => {
+    fakeValidation();
     mkdirSync(join(sa, 'memory')); writeFileSync(join(sa, 'memory/lessons.jsonl'), '{broken\n');
     const gen = generate(plan, 'broken', true); expect(existsSync(join(gen.dir, 'engine.json'))).toBe(true); expect(JSON.parse(readFileSync(join(gen.dir, 'engine.json'), 'utf8')).lessons).toEqual({});
   });

@@ -1,4 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
+import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
+import * as saCheck from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
 import { Database } from 'bun:sqlite';
 import {
@@ -14,11 +16,13 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import * as fs from 'node:fs';
 import * as archonMod from '../src/archon';
 import type { RunView } from '../src/archon';
 import {
   classify,
   classifyRun,
+  decisionQuestion,
   EXIT,
   EXIT_ALIAS_DRIFT,
   EXIT_USAGE,
@@ -27,15 +31,16 @@ import {
   loadLedger,
   main,
   parseArgs,
+  superviseTickCli,
   waitRun,
   type Hold,
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { configHash, gitHead, renderAliases, loadTiers } from '../src/config';
+import { configHash, gitHead, renderAliases, loadTiers, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
-import { engineHash, generate } from '../src/generate';
-import type { Plan } from '../src/plan';
+import { buildWorkflow, engineHash, generate } from '../src/generate';
+import { milestones, type Plan } from '../src/plan';
 import { redact as boardRedact } from '../src/board/detail';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -261,6 +266,15 @@ describe('HF3 latest-engine recovery', () => {
     expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
     expect(s.calls()).toContain('workflow resume r --detach --json');
     expect(loadLedger('sa1').adoptions).toBeUndefined();
+  });
+  test.each([false, true])('HF10 BestIFA identity overrides legacy UI hash; workflow changed=%s', changed => {
+    const s = setup('old-ui-hash');
+    s.ledger.workflow_hash = changed ? 'old-workflow' : engineHash();
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+    expect(s.calls().some(c => c.includes('--adopt'))).toBe(changed);
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(!changed);
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('current');
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();
@@ -994,13 +1008,70 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(code).toBe(0);
     return JSON.parse(out).actions as Record<string, unknown>[];
   };
+  test('ORCA1 sync runs after tick and its failure preserves both tick exit codes', async () => {
+    for (const failed of [false, true]) {
+      const s = stub([humanWait()]);
+      if (failed) writeFileSync(join(s.root, 'home', 'asks.json'), '{');
+      const out = spyOn(console, 'log').mockImplementation(() => undefined);
+      const err = spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const baseline = await superviseTickCli(async () => undefined, async () => undefined);
+        for (const returned of [false, true]) {
+          const printed = out.mock.calls.length;
+          const exit = await superviseTickCli(async () => undefined, async () => {
+            expect(out.mock.calls.length).toBe(printed + 1);
+            if (!failed) expect(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')).toContain('pending');
+            if (returned) return { error: 'injected\nreason' };
+            throw new Error('injected\nreason');
+          });
+          expect(exit).toBe(baseline); expect(exit).toBe(failed ? 1 : 0);
+          expect(String(err.mock.calls.at(-1)?.[0])).toBe('supervise-tick: orca sync failed: injected reason');
+        }
+        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+      } finally { out.mockRestore(); err.mockRestore(); }
+    }
+  });
+  for (const failed of [false, true]) {
+    test(`HF8 injected console failure preserves tick exit ${failed ? 1 : 0}`, async () => {
+      const s = stub([humanWait()]);
+      if (failed) writeFileSync(join(s.root, 'home', 'asks.json'), '{');
+      const out = spyOn(console, 'log').mockImplementation(() => undefined);
+      const err = spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const message = 'refresh injected\noriginal error';
+        expect(await superviseTickCli(() => { throw new Error(message); })).toBe(failed ? 1 : 0);
+        const result = JSON.parse(String(out.mock.calls[0]?.[0]));
+        expect(result.console_error).toBe(message);
+        expect(result.actions[0]).toMatchObject({ action: failed ? 'error' : 'ask', ok: !failed });
+        expect(String(err.mock.calls[0]?.[0])).toBe('supervise-tick: console refresh failed: refresh injected original error');
+        expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+      } finally { out.mockRestore(); err.mockRestore(); }
+    });
+  }
+  test('HF8 CLI still ticks when refreshConsole rejects an ambiguous legacy owner', async () => {
+    const s = stub([humanWait()]);
+    writeFileSync(join(s.root, 'home', 'web.json'), JSON.stringify({
+      pid: process.pid, port: 0, token: 'synthetic', started_at: new Date().toISOString(),
+    }));
+    const p = Bun.spawn([BIN, 'supervise-tick', '--json'], {
+      env: { ...process.env }, stdout: 'pipe', stderr: 'pipe',
+    });
+    const out = await new Response(p.stdout).text();
+    const err = await new Response(p.stderr).text();
+    expect(await p.exited).toBe(0);
+    const result = JSON.parse(out);
+    expect(result.console_error).toBe('console owner ambiguous; legacy PID migration refused: argv');
+    expect(err.trim()).toBe(`supervise-tick: console refresh failed: ${result.console_error}`);
+    expect(result.actions[0]).toMatchObject({ action: 'ask', ok: true });
+    expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
+  });
   test('held:human: asks once, then approves on yes (signal) and wakes due waits', async () => {
     const s = stub([humanWait(), humanWait(), run('running')]);
     const sup = supervisor(s.root, 'yes');
     expect(tick()).toEqual([
       { run_id: 'sa1', event: 'sa.human.m2', action: 'ask', ok: true, ask: 'ask-1' },
     ]);
-    expect(sup()[0]).toMatch(/^ask --question superagent sa1:signoff:39d592de14436296 红线签收.* --ttl-hours 72$/);
+    expect(sup()[0]).toMatch(/^ask --question .*human-m2.*等待人工签收.*是=批准签收门.*否=终止整个run.* --ttl-hours 72$/);
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
     expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
     expect(await eventually(s.calls, 'workflow wake --json')).toBeDefined();
@@ -1014,6 +1085,15 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     writeFileSync(join(s.root, 'answer'), 'no');
     expect(tick()[0]).toMatchObject({ action: 'reject', ok: true });
     expect(s.calls()).toContain('workflow abandon r --json');
+  });
+  for (const answer of ['yes', 'no']) test(`HF9 old unknown signoff reconciles ${answer} without creating a reminder`, async () => {
+    const s = stub(answer === 'yes' ? [humanWait(), run('running')] : [humanWait()]), sup = supervisor(s.root, answer), key = 'sa1:signoff:39d592de14436296';
+    const state = join(s.root, 'sv-state', 'asks'); mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, 'old.json'), JSON.stringify({ id: 'old-signoff', question: `superagent ${key} 红线签收：批准合入 x？` }));
+    writeFileSync(join(s.root, 'home', 'asks.json'), JSON.stringify({ [key]: { status: 'unknown' } }));
+    expect(tick()[0]).toMatchObject({ action: answer === 'yes' ? 'approve' : 'reject', ok: true });
+    expect(sup()).toEqual(['ask-status old-signoff']);
+    expect(await eventually(s.calls, answer === 'yes' ? 'workflow signal r --event sa.human.m2' : 'workflow abandon r --json')).toBeDefined();
   });
   test('ttl follows the wait deadline (≥1h)', () => {
     const s = stub([humanWait(new Date(Date.now() + 5 * 3600e3).toISOString())]);
@@ -1313,6 +1393,13 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(JSON.parse(result.out)).toMatchObject({ actions: [], stale_answer: 1, orphan_hold: 0 });
     expect(JSON.parse(readFileSync(asksFile(), 'utf8'))[askKey('sa1', 'auto_retry_exhausted', 'settle-core@')].status).toBe('superseded');
     expect(s.calls().filter(c => /workflow (resume|run|cancel|abandon)/.test(c))).toEqual([]);
+  });
+  test.each(['settle-core', 'code-core'])('HF10 UI drift cannot spend a deterministic retry or auto-adopt engine_suspect at %s', node => {
+    const s = held(node, { [`${node}.json`]: { ok: node === 'code-core', reason: node === 'code-core' ? 'unknown_reason' : 'repair_exhausted:acceptance_failed' } });
+    patchLedger(s.root, { engine_hash: 'old-ui-hash', workflow_hash: engineHash() });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: node === 'code-core' ? 'engine_suspect' : 'auto_retry_exhausted' });
+    expect(s.calls().some(c => c.includes('--adopt') || c.startsWith('workflow resume'))).toBe(false);
+    expect(loadLedger('sa1').auto_retries).toBeUndefined();
   });
   test('I5 changed fingerprint permits one deterministic adopt, then stops at the current engine', () => {
     const s = held('settle-core', { 'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' } });
@@ -1658,7 +1745,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       });
       continue;
     }
-    test(`HOLD_POLICY ${hold} → ask once (≤120 chars); yes runs ${p.yes}, no ends the run`, () => {
+    test(`HOLD_POLICY ${hold} → ask once (≤200 chars); yes runs ${p.yes}, no ends the run`, () => {
       const { s, done } = scenes[hold]();
       const sup = supervisor(s.root, 'pending');
       expect(tick()[0]).toMatchObject({
@@ -1669,15 +1756,22 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         ask: 'ask-1',
       });
       const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
-      expect(q).toStartWith(`superagent sa1:${hold}:`);
-      expect(q.length).toBeLessThanOrEqual(120);
+      expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
+      expect(Array.from(q).length).toBeLessThanOrEqual(200);
       expect(q).toContain('是=');
       expect(tick()[0]).toMatchObject({ action: 'none', reason: hold, ask: 'pending' });
       expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+      // 旧版本已投递但本地只落 unknown：仍按原 key 找回，不能重复投递。
+      const oldKey = Object.keys(JSON.parse(readFileSync(asksFile(), 'utf8')))[0];
+      const records = join(s.root, 'sv-state', 'asks'); mkdirSync(records, { recursive: true });
+      writeFileSync(join(records, 'old.json'), JSON.stringify({ id: 'old-pending', question: `superagent ${oldKey} 旧模板` }));
+      writeFileSync(asksFile(), JSON.stringify({ [oldKey]: { status: 'unknown' } }));
       writeFileSync(join(s.root, 'answer'), 'yes');
       const before = s.calls().length;
       expect(tick()[0]).toMatchObject({ action: p.yes, reason: hold, ok: true });
       expect(s.calls().slice(before)).toContain(yesCall[p.yes]);
+      expect(sup().at(-1)).toBe('ask-status old-pending');
+      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
       expect(loadLedger('sa1').dispositions?.map(d => `${d.reason}/${d.action}`)).toEqual([
         `${hold}/ask`,
         `${hold}/${p.yes}`,
@@ -1686,6 +1780,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       const n = scenes[hold]();
       supervisor(n.s.root, 'no');
       tick();
+      const noKey = Object.keys(JSON.parse(readFileSync(asksFile(), 'utf8')))[0];
+      const noRecords = join(n.s.root, 'sv-state', 'asks'); mkdirSync(noRecords, { recursive: true });
+      writeFileSync(join(noRecords, 'old.json'), JSON.stringify({ id: 'old-no', question: `superagent ${noKey} 旧模板` }));
+      writeFileSync(asksFile(), JSON.stringify({ [noKey]: { status: 'unknown' } }));
       expect(tick()[0]).toMatchObject({ action: 'reject', reason: hold, ok: true });
       expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(true);
       n.done?.();
@@ -2019,9 +2117,417 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
       .split('\n')
       .filter(l => l === 'fake core')
   ).toHaveLength(2);
-  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', 'm1'), 'utf8')).toBe('1');
+  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', '.packages', 'core'), 'utf8')).toBe('1');
+  expect(existsSync(join(root, 'home', 'gen', id, 'attempts', 'm1'))).toBe(false);
   expect(sa('decide', id, 'reject').code).toBe(0);
 }, 180000);
+
+describe('HF9 decision titles', () => {
+  const setup = () => {
+    const s = stub([]), repo = join(s.root, 'BestIFA'); mkdirSync(repo);
+    cpSync(join(s.root, 'gen'), join(repo, 'gen'), { recursive: true });
+    Object.assign(s.ledger, { repo, gen_dir: join(repo, 'gen'), stalled: 3 });
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const plan = { deadline: '2099-01-01T00:00:00Z', budget: { launches: 1, weighted_tokens: 100 }, packages: [{ id: 'W4', title: 'W4验收', milestone: 'm1', accept: [{ cmd: 'synthetic-check', timeout_s: 1 }] }] };
+    writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+    const wf = join(s.ledger.gen_dir, '.archon/workflows/sa-sa1'); mkdirSync(wf, { recursive: true });
+    writeFileSync(join(wf, 'sa-sa1.yaml'), 'nodes:\n  - id: attempt-m1\n' + Array.from({ length: 61 }, (_, i) => `  - id: n${i}\n`).join(''));
+    const r = run('failed', { output_root: join(repo, 'out'), nodes: [...Array.from({ length: 13 }, (_, i) => ({ nodeId: `n${i}`, state: 'completed' })), { nodeId: 'verify-W4', state: 'failed' }] });
+    const art = join(repo, 'out/artifacts/runs/r'); mkdirSync(art, { recursive: true });
+    const put = (file: string, data: unknown): void => writeFileSync(join(art, file), JSON.stringify(data));
+    put('verify-W4.json', { reason: 'acceptance_failed', failed: ['synthetic-check'] });
+    put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: ['只读检索命令被拒：无法确认shell写入目标（解析失败）'], needs: [{ cap: 'network', why: '依赖', minimal_ask: '请补齐依赖下载能力' }] });
+    put('gate-m1-r3.json', { verdict: 'pass', rounds: 3, reason: 'review_not_independent:same_model' });
+    put('gate-m1-r3.ledger.json', { blocking: [{ id: 'R1-1' }] });
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [{ event_type: 'node_started', step_name: 'code-W4' }] }));
+    return { s, r, put, art };
+  };
+  const details: Record<string, string> = { redline: '将军命中红线', needs: '能力请求1项', coder_blocked: '将军受执行约束阻断', budget: '已用/上限1/1', review_limit: '轮次3，未决1', review_not_independent: 'same_model', recover_no_progress: '已恢复3次', approval: '等待批准', signoff: '验收/评审通过' };
+  for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
+    if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
+    test(`HF9 ${hold}: project, node, evidence, truthful actions and ≤200 characters`, () => {
+      const { s, r } = setup();
+      const node = hold.startsWith('review') ? 'gate-m1-r3' : hold === 'signoff' ? 'human-m1' : 'verify-W4';
+      r.metadata = { approval: { nodeId: node, type: 'merge_review' } };
+      const q = decisionQuestion(s.ledger, r, { state: node.startsWith('gate-') ? 'held:gate' : 'failed', exit: 1, node }, hold);
+      expect(q).toContain('BestIFA/'); expect(q).toContain(node); expect(q).toContain('已完成13/62节点');
+      expect(q).toContain(details[hold] ?? '验收失败');
+      if (hold === 'auto_retry_exhausted') expect(q).toContain('W4验收#1');
+      expect(q).toContain('是='); expect(q).toContain('否=终止整个run（保留证据）');
+      expect(q).not.toContain('放行'); expect(q).not.toContain('synthetic-check'); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+      if (policy.do === 'ask' && policy.yes === 'retry') expect(q).toContain('重跑m1全部1包（无已完成包）一次');
+    });
+  }
+  test('HF9 missing/corrupt display evidence does not prevent delivery', () => {
+    const { s, r, art } = setup();
+    writeFileSync(join(art, 'verify-W4.json'), '{"reason":"coder_redline"}');
+    rmSync(join(art, 'verify-W4.coder.json'));
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+    const sup = supervisor(s.root, 'pending');
+    expect(captured(() => main(['supervise-tick'])).code).toBe(0); expect(sup()[0]).toContain('将军命中红线');
+    writeFileSync(join(art, 'verify-W4.coder.json'), '{');
+    expect(decisionQuestion(s.ledger, r, classify(r), 'needs')).toContain('证据缺失');
+  });
+  test('HF9 R3 free text never reaches the supervisor title, even for unknown reasons and enums', () => {
+    const dirty = 'rg "synthetic-needle" src/a.ts; echo synthetic-value; DB_URL: postgres://demo:synthetic-pass@host.invalid/db';
+    for (const hold of ['redline', 'needs', 'signoff', 'approval', 'review_limit'] as const) {
+      const { s, r, put } = setup();
+      const node = hold === 'signoff' ? 'human-m1' : hold === 'review_limit' ? 'gate-m1-r3' : 'verify-W4';
+      put(`${node}.json`, { reason: dirty, summary: dirty, rounds: 3, failed: [dirty] });
+      put('verify-W4.coder.json', { milestone: 'm1', error_class: dirty, blockers: [dirty],
+        summary: dirty, needs: [{ cap: dirty, why: dirty, minimal_ask: dirty }] });
+      put('gate-m1-r3.json', { reason: dirty, verdict: dirty, summary: dirty, rounds: 3 });
+      put('gate-m1-r3.ledger.json', { blocking: [{ id: dirty, evidence: dirty }] });
+      if (hold === 'signoff') {
+        r.status = 'paused'; r.metadata = { wait: { nodeId: node, kind: 'event', event: 'sa.human.m1', resumeAt: '2099-01-01T00:00:00Z' } };
+      } else if (hold === 'approval') {
+        r.status = 'paused'; r.metadata = { approval: { nodeId: node, type: dirty } };
+      } else {
+        // Drive a registered hold; all supplementary free text remains deliberately hostile.
+        put('verify-W4.json', { reason: hold === 'needs' ? 'coder_needs' : 'coder_redline', summary: dirty });
+        if (hold === 'review_limit') { r.nodes = [{ nodeId: node, state: 'failed' }]; put(`${node}.json`, { verdict: 'escalate', reason: 'coder_redline+review_limit', rounds: 3, summary: dirty }); }
+      }
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const q = sup()[0];
+      for (const fragment of ['rg', 'synthetic-needle', 'src/a.ts', 'echo', 'synthetic-value', 'DB_URL',
+        'postgres', 'demo', 'synthetic-pass', 'host.invalid', '/db']) expect(q).not.toContain(fragment);
+      expect(q).toContain('详情superagent brief <run>');
+      expect(q).toContain('是='); expect(q).toContain('否=终止整个run');
+      const unregistered = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node }, hold);
+      expect(unregistered).not.toContain(dirty);
+    }
+  });
+  for (const [milestone, attempt, launches] of [['m2', 1, 1], ['m1', 2, 1], ['m1', 1, 100]] as const)
+    test(`HF9 R3 budget title uses execution limits for ${milestone}/attempt${attempt}`, () => {
+      const { s, r } = setup();
+      const path = join(s.ledger.gen_dir, 'plan.json');
+      const plan = JSON.parse(readFileSync(path, 'utf8')) as Plan;
+      plan.packages[0].milestone = milestone; writeFileSync(path, JSON.stringify(plan));
+      const grant = { milestone: 'm1', attempt: 1, limits: { launches: 100, weighted_tokens: 10000 } };
+      writeFileSync(join(s.ledger.gen_dir, 'budget-extra'), JSON.stringify(grant));
+      mkdirSync(join(s.ledger.gen_dir, 'attempts'), { recursive: true });
+      writeFileSync(join(s.ledger.gen_dir, 'attempts', milestone), String(attempt));
+      const actual = effectiveBudget(plan.budget, grant, milestone, attempt);
+      expect(actual.launches).toBe(launches);
+      const q = decisionQuestion(s.ledger, r, classify(r), 'budget');
+      expect(q).toContain(`调用已用/上限1/${String(actual.launches)}`);
+      expect(q).toContain(`加权token已用/上限0/${String(actual.weighted_tokens)}`);
+    });
+  const bestIFA = () => {
+    const f = setup(), plan = JSON.parse(readFileSync(join(f.s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
+    plan.packages = Array.from({ length: 11 }, (_, i) => ({ ...plan.packages[0], id: `W${i + 1}`, title: `W${i + 1}验收` }));
+    writeFileSync(join(f.s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+    f.r.nodes = [...['W1', 'W2', 'W3'].flatMap(id => ['code', 'verify', 'repair', 'settle'].map(kind => ({ nodeId: `${kind}-${id}`, state: 'completed' }))),
+      { nodeId: 'start-m1', state: 'completed' }, { nodeId: 'verify-W4', state: 'failed' }];
+    return f;
+  };
+  const maximumTitle = (hold: Hold, value = Number.MAX_SAFE_INTEGER) => {
+    const f = setup(), { s, r } = f;
+    const repo = join(s.root, 'R'.repeat(255)); mkdirSync(repo);
+    cpSync(s.ledger.gen_dir, join(repo, 'gen'), { recursive: true });
+    cpSync(join(s.ledger.repo, 'out'), join(repo, 'out'), { recursive: true });
+    r.output_root = join(repo, 'out');
+    const put = (file: string, data: unknown): void => writeFileSync(join(repo, 'out/artifacts/runs/r', file), JSON.stringify(data));
+    Object.assign(s.ledger, { repo, gen_dir: join(repo, 'gen'), engine_hash: 'old-engine', stalled: value });
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
+    const m = 'M'.repeat(32);
+    plan.budget = { launches: value, weighted_tokens: value };
+    plan.packages = Array.from({ length: 4 }, (_, i) => ({ ...plan.packages[0],
+      id: `W${String(i)}`.padEnd(64, 'x'), milestone: m, title: '长标题'.repeat(1000) }));
+    writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+    const review = hold === 'review_limit' || hold === 'review_not_independent';
+    const node = hold === 'signoff' ? `human-${m}` : review ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`;
+    writeFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
+      `nodes:\n  - id: attempt-${m}\n  - id: attempt-review-${m}-r3\n` +
+      [...plan.packages.slice(0, 3).map(p => `settle-${p.id}`), node].map(id => `  - id: ${id}\n`).join(''));
+    r.nodes = [...plan.packages.slice(0, 3).map(p => ({ nodeId: `settle-${p.id}`, state: 'completed' })),
+      { nodeId: node, state: 'failed' }];
+    const reasons: Partial<Record<Hold, string>> = {
+      needs: 'coder_needs', redline: 'coder_redline', coder_blocked: 'coder_error:sandbox_denied',
+      budget: 'budget_tokens_exceeded', review_limit: 'review_failed+review_limit',
+      review_not_independent: 'review_not_independent:same_model',
+    };
+    put(`${node}.json`, { reason: reasons[hold] ?? hold, rounds: value, verdict: 'escalate' });
+    put(`${node}.ledger.json`, { blocking: [{ id: 'R1' }] });
+    put(`${node}.coder.json`, { milestone: m, needs: hold === 'needs' ? [{ cap: 'network', why: '', minimal_ask: '' }] : [] });
+    if (hold === 'engine_suspect') {
+      s.ledger.workflow_hash = engineHash();
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    }
+    if (hold === 'signoff') {
+      r.status = 'paused'; r.metadata = { wait: { nodeId: node, kind: 'event', event: `sa.human.${m}`, resumeAt: '2099-01-01T00:00:00Z' } };
+    } else if (hold === 'approval') { r.status = 'paused'; r.metadata = { approval: { nodeId: node, type: 'merge_review' } }; }
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
+    return { ...f, node, value };
+  };
+  const assertBoundedTitle = (q: string, hold: Hold) => {
+    const policy = HOLD_POLICY[hold];
+    if (policy.do !== 'ask' && policy.do !== 'signoff') throw new Error('not an ask');
+    expect(q).toContain(policy.text); expect(q).toContain('是=');
+    expect(q).toContain('否=终止整个run（保留证据）');
+    expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
+    expect(Array.from(q).length).toBeLessThanOrEqual(200);
+  };
+  test('HF9 R4 R2-02: 16-digit budget with four maximum-name packages and adopt reaches supervisor', () => {
+    const { s, node, value } = maximumTitle('budget');
+    writeFileSync(join(s.ledger.repo, 'out/artifacts/runs/r', `${node}.json`), JSON.stringify({ reason: 'budget_launches_exceeded' }));
+    const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({ launches: value, weighted_tokens: value, reserve: value });
+    try {
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      assertBoundedTitle(q, 'budget');
+      expect(q).toContain('全部4包（含已完成3包）一次');
+      expect(q).toContain('将新开run从首个节点重跑');
+      expect(q).toContain(`已用/上限${String(value)}/${String(value)}`);
+      if (process.env.HF9_R4_SAMPLE_OUT) writeFileSync(process.env.HF9_R4_SAMPLE_OUT, q + '\n');
+    } finally { usage.mockRestore(); }
+  });
+  for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
+    if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
+    for (const value of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE])
+      test(`HF9 R4 all HOLD_POLICY titles remain deliverable at numeric maximum: ${hold}/${String(value)}`, () => {
+        const { s } = maximumTitle(hold, value);
+        const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({ launches: value, weighted_tokens: value, reserve: value });
+        try {
+          const sup = supervisor(s.root, 'pending');
+          const out = captured(() => main(['supervise-tick']));
+          expect(out.code).toBe(0);
+          expect(JSON.parse(out.out).actions[0]).toMatchObject({ action: 'ask', ...(hold === 'signoff' ? {} : { reason: hold }) });
+          const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+          assertBoundedTitle(q, hold);
+          const yes = /；是=(.+)；否=/.exec(q)?.[1] ?? '';
+          expect(yes.length).toBeGreaterThan(0);
+          if (policy.do === 'ask' && policy.yes !== 'approve') {
+            if (hold !== 'engine_suspect') expect(yes).toContain('旧run身份未确认，将新开run从首个节点重跑');
+            const target = /从[^；]+续跑一次|重跑[^；]+本轮评审一次|(?:旧工作流：)?重跑[^；]+全部4包（含已完成[^；]+）一次/.exec(yes)?.[0];
+            expect(target).toBeDefined();
+            expect(yes).toContain(policy.yesText.replace('{target}', target!.replace(/一次$/, '')));
+          } else expect(yes).toBe(policy.yesText);
+        } finally { usage.mockRestore(); }
+      });
+  }
+  test('HF9 R3 maximum identifiers and unbounded schema names preserve reasons, facts, actions and marker', () => {
+    // schema: id ≤64, milestone ≤32; repo basename ≤255 on disk, title has no maximum.
+    for (const hold of ['redline', 'needs', 'budget', 'review_limit', 'engine_suspect', 'signoff'] as const) {
+      const { s, r, put } = bestIFA();
+      const oldRepo = s.ledger.repo, repo = join(s.root, 'R'.repeat(255)); mkdirSync(repo);
+      cpSync(s.ledger.gen_dir, join(repo, 'gen'), { recursive: true });
+      Object.assign(s.ledger, { repo, gen_dir: join(repo, 'gen'), engine_hash: 'old-engine' });
+      r.output_root = join(oldRepo, 'out');
+      const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
+      const m = 'M'.repeat(32);
+      plan.packages = plan.packages.slice(0, 4).map((p, i) => ({ ...p, id: `W${String(i)}`.padEnd(64, 'x'), milestone: m, title: '长标题'.repeat(1000) }));
+      writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+      const wf = join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml');
+      writeFileSync(wf, `nodes:\n  - id: attempt-${m}\n` +
+        [...plan.packages.slice(0, 3).map(p => `settle-${p.id}`), hold === 'signoff' ? `human-${m}` : hold === 'review_limit' ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`].map(id => `  - id: ${id}\n`).join(''));
+      const node = hold === 'signoff' ? `human-${m}` : hold === 'review_limit' ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`;
+      r.nodes = [...plan.packages.slice(0, 3).map(p => ({ nodeId: `settle-${p.id}`, state: 'completed' })), { nodeId: node, state: 'failed' }];
+      if (hold === 'review_limit') { put(`${node}.json`, { rounds: 3, reason: 'coder_redline+review_limit' }); put(`${node}.ledger.json`, { blocking: [{ id: 'R1' }] }); }
+      const q = decisionQuestion(s.ledger, r, { state: 'held:gate', exit: 1, node }, hold);
+      const policy = HOLD_POLICY[hold]; expect(policy.do === 'ask' || policy.do === 'signoff').toBe(true);
+      if (policy.do === 'ask' || policy.do === 'signoff') expect(q).toContain(policy.text);
+      expect(q).toContain('已完成3/5节点');
+      if (hold !== 'signoff') expect(q).toContain('将新开run从首个节点重跑');
+      expect(q).toContain('是='); expect(q).toContain('否=终止整个run（保留证据）');
+      expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+    }
+  });
+  test.each(['code', 'repair', 'verify', 'settle'])('HF10 explicit retry at %s-W4 bumps only the package count', kind => {
+    const { s, r, put } = bestIFA();
+    const node = `${kind}-W4`;
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put(`${node}.json`, { reason: 'coder_redline' });
+    r.nodes = [{ nodeId: node, state: 'failed' }];
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+    expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
+    expect(existsSync(join(s.ledger.gen_dir, 'attempts/m1'))).toBe(false);
+    expect(s.calls()).toContain('workflow resume r --detach --json');
+  });
+  test.each(['NaN', 'null', '-1', '1.5', '9007199254740991'])('HF10 invalid or exhausted package counter %s fails without writing', raw => {
+    const { s, r, put } = bestIFA();
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put('verify-W4.json', { reason: 'coder_redline' });
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+    const path = join(s.ledger.gen_dir, 'attempts/.packages/W4');
+    mkdirSync(join(s.ledger.gen_dir, 'attempts/.packages'), { recursive: true });
+    writeFileSync(path, raw);
+    expect(() => captured(() => main(['decide', 'sa1', 'retry']))).toThrow(/attempt counter/);
+    expect(readFileSync(path, 'utf8')).toBe(raw);
+    expect(existsSync(join(s.ledger.gen_dir, 'attempts/m1'))).toBe(false);
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
+  });
+  for (const order of [['package', 'gate'], ['gate', 'package']])
+    test(`HF10 milestone pkg does not collide: ${order.join(' then ')}`, () => {
+      const { s, r, put } = bestIFA();
+      const planPath = join(s.ledger.gen_dir, 'plan.json');
+      const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+      plan.packages.forEach(p => { p.milestone = 'pkg'; });
+      writeFileSync(planPath, JSON.stringify(plan));
+      s.ledger.workflow_hash = engineHash();
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
+        '  - id: package-attempt-W4\n  - id: attempt-pkg\n');
+      for (const scope of order) {
+        const node = scope === 'package' ? 'verify-W4' : 'gate-pkg-r3';
+        put(`${node}.json`, scope === 'package' ? { reason: 'coder_redline' } :
+          { verdict: 'escalate', reason: 'review_failed+review_limit', rounds: 3 });
+        r.nodes = [{ nodeId: node, state: 'failed' }];
+        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+        expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+      }
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/pkg'), 'utf8')).toBe('1');
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
+      expect(s.calls().filter(c => c === 'workflow resume r --detach --json')).toHaveLength(2);
+    });
+  test('HF10 first and second package budget yes keep milestone zero and grant usable allowances', () => {
+    const { s, r, put, art } = bestIFA();
+    const tick = () => JSON.parse(captured(() => main(['supervise-tick'])).out).actions as Record<string, unknown>[];
+    s.ledger.workflow_hash = engineHash();
+    appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+    put('verify-W4.json', { reason: 'budget_launches_exceeded' });
+    const planPath = join(s.ledger.gen_dir, 'plan.json');
+    const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+    plan.budget.launches = 1;
+    plan.packages.forEach(p => { p.accept = [{ cmd: 'true', timeout_s: 5 }]; });
+    writeFileSync(planPath, JSON.stringify(plan));
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const events = [{ event_type: 'node_started', step_name: 'code-W4' }];
+    const updateRun = (completed_at: string) => writeFileSync(join(s.dir, 'get-000.json'),
+      JSON.stringify({ ...r, completed_at, events }));
+    updateRun('2026-10-10T00:00:00Z');
+    writeFileSync(join(s.root, 'policy.json'), JSON.stringify({ budget_floor: { S: loadTiers().policy.budget_floor.S } }));
+    const counter = join(s.ledger.gen_dir, 'attempts/m1');
+    const wfPlan = JSON.parse(readFileSync(fixturePlan(tmp(), s.ledger.repo), 'utf8')) as Plan;
+    const node = buildWorkflow(wfPlan, milestones(wfPlan), 'sa1', s.ledger.gen_dir, true).nodes as { id: string; bash?: string }[];
+    // The generated bash reads its copied sa-check implementation, as a real run does.
+    mkdirSync(join(s.ledger.gen_dir, '.archon/scripts'), { recursive: true });
+    cpSync(join(WETAMP, 'templates/.archon/scripts'), join(s.ledger.gen_dir, '.archon/scripts'), { recursive: true });
+    const attemptOutput = () => sh(node.find(n => n.id === 'attempt-m1')!.bash!, s.ledger.gen_dir).trim();
+    expect(attemptOutput()).toBe('{"attempt":"0"}');
+    for (const attempt of [1, 2]) {
+      supervisor(s.root, 'yes');
+      expect(tick()[0].action).toBe('ask');
+      expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
+      const grant = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'budget-extra'), 'utf8'));
+      expect(grant.attempt).toBe(0);
+      expect(Number.isSafeInteger(grant.attempt)).toBe(true);
+      expect(existsSync(counter)).toBe(false);
+      expect(attemptOutput()).toBe('{"attempt":"0"}');
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe(String(attempt));
+      const check = Bun.spawnSync(['bun', join(WETAMP, 'templates/.archon/scripts/sa-check.ts')], {
+        cwd: gitRepo(tmp()), stdout: 'pipe', stderr: 'pipe', env: { ...process.env,
+          WORKFLOW_ID: 'r', ARTIFACTS_DIR: art, INPUTS_KIND: 'accept', INPUTS_PLAN: planPath,
+          INPUTS_PKGS: 'W4', INPUTS_TAG: 'verify-W4', INPUTS_MILESTONE: 'm1',
+          INPUTS_ARCHON: join(s.dir, 'archon'), INPUTS_POLICY: join(s.root, 'policy.json') },
+      });
+      expect(check.exitCode).toBe(0);
+      expect(JSON.parse(check.stdout.toString())).toMatchObject({ disposition: 'advance' });
+      console.error(`HF10 budget retry ${attempt}: grant=${JSON.stringify(grant)} package=${attempt} milestone=absent(0)`);
+      // New completion evidence distinguishes the next budget hold from a replayed answer.
+      updateRun('2026-10-10T00:00:01Z');
+      put('verify-W4.json', { reason: 'budget_launches_exceeded' });
+    }
+    expect(loadLedger('sa1').budget_grants).toHaveLength(2);
+  });
+  test('HF10 supervisor receives package, milestone, adopt and legacy scope titles', () => {
+    const samples: Record<string, string> = {};
+    for (const mode of ['package', 'milestone', 'adopt', 'legacy'] as const) {
+      const { s, r, put } = bestIFA();
+      s.ledger.workflow_hash = mode === 'adopt' ? 'changed-workflow' : engineHash();
+      if (mode !== 'legacy') appendFileSync(join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'), '  - id: package-attempt-W4\n');
+      if (mode === 'milestone') {
+        r.nodes = [...(r.nodes ?? []).filter(n => n.state === 'completed'), { nodeId: 'gate-m1-r3', state: 'failed' }];
+        put('gate-m1-r3.json', { reason: 'review_failed+review_limit', verdict: 'escalate', rounds: 3 });
+      } else put('verify-W4.json', { reason: 'coder_redline' });
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      assertBoundedTitle(q, mode === 'milestone' ? 'review_limit' : 'redline');
+      if (mode === 'package' || mode === 'adopt') expect(q).toContain('重派W4编码→验收一次');
+      if (mode === 'milestone' || mode === 'legacy') expect(q).toContain('重跑m1全部11包（含已完成W1、W2、W3）一次');
+      if (mode === 'legacy') expect(q).toContain('旧工作流：');
+      expect(q.includes('将新开run从首个节点重跑')).toBe(mode === 'adopt');
+      samples[mode] = q;
+    }
+    if (process.env.HF10_SAMPLES_OUT) writeFileSync(process.env.HF10_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
+  });
+  test('HF9 R2 retryGate repeats all eleven packages including completed W1-W3; resume names its node', () => {
+    const { s, r } = bestIFA();
+    const q = decisionQuestion(s.ledger, r, classify(r), 'redline');
+    expect(q).toContain('m1全部11包（含已完成W1、W2、W3）');
+    expect(q).not.toContain('redline：');
+    const resumed = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node: 'code-W4' }, 'auto_retry_exhausted');
+    expect(resumed).toContain('从code-W4续跑一次');
+    expect(resumed).not.toContain('全部11包');
+    const resume = decisionQuestion(s.ledger, r, classify(r), 'no_attempt_node');
+    expect(resume).toContain('从verify-W4续跑一次');
+  });
+  for (const status of ['failed', 'cancelled', 'paused', 'running', 'completed'] as const)
+    for (const stale of [true, false]) test(`HF9 R2 adopt warning shares recovery predicate: ${status}/${stale}`, () => {
+      const { s, r } = bestIFA(); r.status = status;
+      if (stale) s.ledger.engine_hash = 'old-engine';
+      const q = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node: 'verify-W4' }, 'redline');
+      expect(q.includes('将新开run从首个节点重跑')).toBe(stale && ['failed', 'cancelled'].includes(status));
+      expect(q).toContain('含已完成W1、W2、W3'); expect(q).toContain('是='); expect(q).toContain('否=终止整个run');
+      expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/); expect(Array.from(q).length).toBeLessThanOrEqual(200);
+    });
+  for (const hold of ['redline', 'budget', 'signoff'] as const)
+    for (const answer of ['pending', 'yes', 'no'] as const) test(`HF9 R2 existing ${hold}/${answer} skips title evidence and events query`, () => {
+      const { s, r, put, art } = setup();
+      if (hold === 'signoff') {
+        r.status = 'paused'; r.metadata = { wait: { nodeId: 'human-m1', kind: 'event', event: 'sa.human.m1', resumeAt: '2099-01-01T00:00:00Z' } };
+      } else put('verify-W4.json', { reason: hold === 'redline' ? 'coder_redline' : 'budget_launches_exceeded' });
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      const before = s.calls().filter(c => c.includes('--events')).length;
+      writeFileSync(join(s.root, 'answer'), answer);
+      // Suppress the answer's recovery/signal action; count only question-related I/O.
+      const recovery = spyOn(archonMod, 'recover').mockReturnValue({ ok: false, reason: 'test busy', busy: true });
+      const signal = spyOn(archonMod, 'signalHuman').mockReturnValue({ ok: true, pid: 0, log: '' });
+      const read = spyOn(fs, 'readFileSync');
+      try {
+        expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+        expect(read.mock.calls.filter(([path]) => String(path) === join(art, 'verify-W4.coder.json') ||
+          String(path) === join(art, 'gate-m1-r3.json') || String(path).endsWith('/budget-extra'))).toHaveLength(0);
+        expect(s.calls().filter(c => c.includes('--events')).length).toBe(before);
+        expect(sup().filter(c => c.startsWith('ask --question'))).toHaveLength(1);
+      } finally { read.mockRestore(); signal.mockRestore(); recovery.mockRestore(); }
+    });
+  test('HF9 supervisor stub captures five R3 titles', () => {
+    const samples: Record<string, string> = {};
+    for (const sample of ['redline', 'redline-adopt', 'needs', 'budget', 'signoff'] as const) {
+      const hold = sample === 'redline-adopt' ? 'redline' : sample;
+      const { s, r, put, art } = bestIFA();
+      if (sample === 'redline-adopt') { s.ledger.engine_hash = 'old-engine'; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); }
+      if (hold === 'signoff') {
+        r.status = 'paused'; r.metadata = { wait: { nodeId: 'human-m1', kind: 'event', event: 'sa.human.m1', resumeAt: '2099-01-01T00:00:00Z' } };
+      } else {
+        put('verify-W4.json', { reason: hold === 'redline' ? 'coder_redline' : hold === 'needs' ? 'coder_needs' : 'budget_launches_exceeded' });
+        if (hold === 'redline') put('verify-W4.coder.json', { milestone: 'm1', error_class: 'redline', blockers: ['只读检索命令被拒：无法确认shell写入目标（解析失败）'], needs: [] });
+        if (hold === 'budget') rmSync(join(art, 'verify-W4.coder.json'));
+      }
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [{ event_type: 'node_started', step_name: 'code-W4' }] }));
+      const sup = supervisor(s.root, 'pending');
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      samples[sample] = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
+      expect(samples[sample]).toContain('BestIFA'); expect(samples[sample]).toContain('是='); expect(Array.from(samples[sample]).length).toBeLessThanOrEqual(200);
+    }
+    if (process.env.HF9_SAMPLES_OUT) writeFileSync(process.env.HF9_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
+  });
+});
 
 test('run --fake end to end: fix loop in m1, human signoff in m2, approve, land', () => {
   const root = tmp();

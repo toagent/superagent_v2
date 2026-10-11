@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # 幂等安装：$ARCHON_HOME/.env 两行、config.yaml 只写 aliases/workflows/concurrency.providers（先备份）、建 gen/runs；
-# 断言 @sa-coder ≠ @sa-reviewer；装 board 的自有依赖（wetamp/package.json，按 wetamp/bun.lock 冻结，失败只警告）；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份；只打印 bootstrap 命令，不执行）；
+# 断言 @sa-coder ≠ @sa-reviewer；装 hooks/board 的自有依赖（wetamp/package.json，按 wetamp/bun.lock 冻结，失败只警告）；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份；只打印 bootstrap 命令，不执行）；
 # 末尾 doctor 摘要。可重复跑。plist 目录默认 ~/Library/LaunchAgents，SA_LAUNCHD_DIR 可改（测试与 selftest 用）。
 # config.yaml 另写 assistants.codex.codexBinaryPath=wetamp/bin/codex-worker（worker 禁嵌套，见 docs/04-hooks-and-nesting.md）。
 # 单独步骤（互斥，不走上面的默认安装）：
 #   --hooks [--dry-run]     三端 hook 条目改指 wetamp/hooks/（src/install-hooks.ts），再写这些 Codex 条目的 trusted_hash
 #                           （scripts/codex-trust.cjs，只动自己的键、先备份、原子写）；--dry-run 只打印统一 diff
 #   --purge-v1 [--dry-run]  清 V1 hook 条目并把 V1 残留移到 $SUPERAGENT_HOME/backups/v1-<UTC>/（不删除）
-#   --remote-hooks          dev/mini 用：只要 node，校验 hooks 与 tiers.json，写 twin-toolkit 读取的 install.json 台账（role=worker），
+#   --remote-hooks          dev/mini 用：node 与已投送的 wetamp 依赖，校验 hooks 与 tiers.json，写 twin-toolkit 读取的 install.json 台账（role=worker），
 #                           并把 ~/.local/bin/superagent 指向本仓库 bin/superagent（worker 上即桩；原为普通文件时先备份）
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
@@ -29,6 +29,11 @@ esac
 if [ "$mode" = --remote-hooks ]; then
   command -v node >/dev/null || { echo "install.sh --remote-hooks: node not found" >&2; exit 1; }
   for f in "$WETAMP"/hooks/*.cjs; do node --check "$f"; done
+  # twin-toolkit 的 git bundle 不带依赖；有 bun 时冻结安装，否则必须已预装。
+  if command -v bun >/dev/null; then
+    (cd "$WETAMP" && bun install --frozen-lockfile >/dev/null) || { echo 'install.sh --remote-hooks: shell parser dependencies unavailable' >&2; exit 1; }
+  fi
+  node -e 'const p = require(process.argv[1] + "/hooks/shell-ast.cjs"); (async () => { const e = await p.init(); if (e) throw new Error(e); const r = p.analyze("echo ok", process.cwd(), {}, () => null, s => s); if (r) throw new Error(r); })().catch(e => { console.error(e.message); process.exitCode = 1; });' "$WETAMP"
   # 真跑一次 guard：require 链（../tiers.json 的键）断了会在这里而不是在用户会话里暴露
   err="$(printf '{"hook_event_name":"Stop"}' | node "$WETAMP/hooks/guard.cjs" claude 2>&1)"
   [ -z "$err" ] || { echo "install.sh --remote-hooks: guard.cjs: $err" >&2; exit 1; }
@@ -54,8 +59,8 @@ export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 SA_ARCHON="${ARCHON_HOME:-}"
 export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
 bun -e "import { install } from '$WETAMP/src/config.ts'; for (const f of install()) console.log('updated ' + f.replace(process.env.HOME, '~'))"
-# board（Ink 看板）是唯一用 wetamp 自有依赖的动词；装不上只影响 board，其余动词零依赖，不阻塞安装
-(cd "$WETAMP" && bun install --frozen-lockfile >/dev/null 2>&1) || echo "install.sh: wetamp bun install --frozen-lockfile failed; board 不可用 (others unaffected)" >&2
+# hooks 解析器与 board 使用 wetamp 自有依赖；主安装失败明确提示派生 Bash 会拒绝。
+(cd "$WETAMP" && bun install --frozen-lockfile >/dev/null 2>&1) || echo "install.sh: wetamp bun install --frozen-lockfile failed; 派生会话 Bash 将全部被 redline 拒绝；board 不可用" >&2
 label=com.wetamp.superagent.supervise-tick dir="${SA_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
 plist="$dir/$label.plist"
 # PATH 取安装时的 PATH 并把 bun 放最前：tick 触发的 resume 要找到 bun、git 与各家 CLI；路径按 XML 转义后代入

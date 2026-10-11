@@ -8,7 +8,7 @@ import { createLoader, readLedger, type BoardRow, type Snapshot } from './data';
 import { detailOf, type Detail } from './detail';
 import { webState, webUrl } from '../web/server';
 import { requestUsageRefresh } from '../usage';
-import { engineHash } from '../generate';
+import { residentHash } from '../generate';
 
 const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval s] [--limit n]';
 
@@ -85,7 +85,7 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     import('./App'),
   ]);
 
-  const fingerprint = engineHash();
+  const fingerprint = residentHash();
   if (a.flags.once || !process.stdout.isTTY) {
     // 管道里没有终端宽度：认 COLUMNS（与 shell 一致），再没有就按宽屏出全列
     const width = process.stdout.columns || Number(process.env.COLUMNS) || 160;

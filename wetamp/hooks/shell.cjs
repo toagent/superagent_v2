@@ -88,7 +88,7 @@ function closing(text, i, close) {
 }
 // Replace every `$(…)`, `<(…)`, `(…)` and backtick body outside single quotes with one inert
 // word and return the bodies, each to be parsed as a command line of its own.
-function lift(text) {
+function lift(text, model = false) {
   const bodies = []; let flat = '', dq = false;
   for (let i = 0; i < text.length;) {
     const c = text[i];
@@ -97,7 +97,7 @@ function lift(text) {
     else if (c === '"') { dq = !dq; flat += c; i++; }
     else if (c === '`' || c === '(' && (!dq || text[i-1] === '$')) {
       const end = closing(text, i + 1, c === '`' ? '`' : ')');
-      bodies.push(text.slice(i + 1, end)); flat += '__sa_sub__'; i = end + 1;
+      bodies.push(text.slice(i + 1, end)); flat += model && c === '`' ? '$__sa_sub__' : '__sa_sub__'; i = end + 1;
     } else { flat += c; i++; }
   }
   if (dq) throw new Error('Unclosed shell quote');
@@ -107,9 +107,10 @@ function lift(text) {
 // returns the real argv, option values that are themselves command lines (`env -S`) and the
 // wrappers' own writes.
 function unwrap(argv) {
-  const lines = [], writes = []; let i = 0;
+  const lines = [], writes = [], heads = []; let i = 0;
   for (;;) {
-    while (i < argv.length && (RESERVED.has(argv[i]) || ASSIGN.test(argv[i]))) i++;
+    while (i < argv.length && (RESERVED.has(argv[i]) || ASSIGN.test(argv[i]))) { if (RESERVED.has(argv[i])) heads.push(i); i++; }
+    if (i < argv.length) heads.push(i);
     const spec = WRAPPERS[path.posix.basename(argv[i] ?? '')];
     if (!spec) break;
     const head = i++;
@@ -125,7 +126,7 @@ function unwrap(argv) {
         continue;
       }
       for (let j = 1; j < word.length; j++) {
-        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes};
+        if (spec.lookup?.includes(word[j])) return {argv: argv.slice(head), lines, writes, heads};
         if (spec.optional?.includes(word[j])) break;
         if (!spec.arg?.includes(word[j])) continue;
         const value = j + 1 < word.length ? word.slice(j + 1) : argv[i++];
@@ -139,7 +140,7 @@ function unwrap(argv) {
     i += spec.positional ?? 0;
     if (spec.skip && argv[i] === spec.skip) i++;
   }
-  return {argv: argv.slice(i), lines, writes};
+  return {argv: argv.slice(i), lines, writes, heads};
 }
 // Every simple command a shell line would start: argv with wrappers, assignments and
 // redirections stripped, including `bash -c`/`eval`/`find -exec` bodies and every command
@@ -193,10 +194,10 @@ function parse(command, depth = 0) {
 const commands = command => parse(command).argvs;
 // Parse only a complete, literal deletion command. Operators, expansion,
 // wrappers and multiple targets stay uncertain; never evaluate shell text.
-function deletionTarget(command,cwd) {
+function deletionTarget(command,cwd, normalized) {
   // An unparsable or non-string command is "not a literal deletion", never an error.
   if (typeof command !== 'string') return null;
-  let words; try { words = tokens(command); } catch { return null; }
+  let words; try { words = normalized ? normalized.map(value => ({value})) : tokens(command); } catch { return null; }
   if (!words.length || words.some(word => word.operator || word.dynamic || word.nested || /[()*?{}\[\]~]/.test(word.value))) return null;
   const args = words.map(word => word.value);
   let target;
@@ -218,4 +219,4 @@ function deletionTarget(command,cwd) {
   }
   return target ? path.resolve(cwd,target) : null;
 }
-module.exports = {tokens, commands, parse, deletionTarget};
+module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS};

@@ -9,6 +9,7 @@ import {
   ledgerOf,
   scopeRisk,
   SUSPEND_CLASSES,
+  readAttempt,
 } from '../templates/.archon/scripts/sa-check';
 import { gitRepo, sh, tmp } from './helpers';
 
@@ -48,6 +49,20 @@ const ids = (reviews: (Rv | null)[], risk = 'G1'): string[] =>
   ledgerOf(reviews, risk)
     .blocking.map(e => e.id)
     .sort();
+
+test('HF10 attempt counters default only missing files to zero and reject invalid contents', () => {
+  const path = join(tmp(), 'attempt');
+  expect(readAttempt(path)).toBe(0);
+  for (const raw of ['', 'null', 'NaN', '-1', '1.5', 'true', '1e2', '9007199254740992']) {
+    writeFileSync(path, raw);
+    expect(() => readAttempt(path)).toThrow('invalid attempt counter');
+    expect(readFileSync(path, 'utf8')).toBe(raw);
+  }
+  for (const n of [0, 1, 42]) {
+    writeFileSync(path, `${n}\n`);
+    expect(readAttempt(path)).toBe(n);
+  }
+});
 
 describe('gate rules', () => {
   test('R1: open high blocks G1; medium does not', () => {

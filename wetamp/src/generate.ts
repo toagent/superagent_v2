@@ -8,13 +8,14 @@ import {
   readdirSync,
   renameSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { REASONS } from './reasons';
 import { injectMemory } from './memory';
-import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
+import { MAX_ROUNDS, attemptPath } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
 import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
@@ -24,9 +25,9 @@ const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.jso
 };
 type Node = Record<string, unknown>;
 
-/** Hash the owning generation logic and all template inputs, without a manual version. */
-export function engineHash(root = WETAMP): string {
-  const hash = new Bun.CryptoHasher('sha256');
+/** One traversal owns hashing; callers own workflow and resident input scopes. */
+function hashInputs(root: string, paths: string[], seed = ''): string {
+  const hash = new Bun.CryptoHasher('sha256').update(seed);
   const add = (path: string): void => {
     hash.update(JSON.stringify(path)).update(readFileSync(join(root, path)));
   };
@@ -39,21 +40,22 @@ export function engineHash(root = WETAMP): string {
       else add(child);
     }
   };
-  walk('templates/.archon');
-  // Resident surfaces must restart when their implementation changes too.
-  walk('src/board');
-  walk('src/web');
-  for (const path of [
-    'src/generate.ts',
-    'src/reasons.ts',
-    'src/config.ts',
-    'schemas/output.schema.json',
-    'templates/brief.md',
-    'tiers.json',
-  ])
-    add(path);
+  for (const path of paths) {
+    if (statSync(join(root, path)).isDirectory()) walk(path);
+    else add(path);
+  }
   return hash.digest('hex');
 }
+
+/** Hash generation-time snapshots; execution-time reads through WETAMP do not require adopt. */
+export const engineHash = (root = WETAMP): string => hashInputs(root, [
+  'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
+  'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
+  // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
+  'src/memory.ts', 'src/board/workflow.ts',
+]);
+/** Shared by console restart and board refresh; includes their CLI/data consumers. */
+export const residentHash = (root = WETAMP): string => hashInputs(root, ['src'], engineHash(root));
 
 export function newRunId(now = new Date()): string {
   const ts = now.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
@@ -148,6 +150,10 @@ export function buildWorkflow(
     fake ? {} : { effort: effortFor(tiers, role, risk, r) };
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [check('environment', [], { kind: 'env', plan: planPath })];
+  const attemptCommand = (path: string): string => {
+    const code = `import { readAttempt } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({attempt: String(readAttempt(${JSON.stringify(path)}))}));`;
+    return `bun -e '${code.replaceAll("'", "'\\''")}'`;
+  };
   let after: Node = { depends_on: ['environment'] };
   for (const m of ms) {
     const covered = ms.slice(0, ms.indexOf(m) + 1).flatMap(k => k.packages);
@@ -166,7 +172,7 @@ export function buildWorkflow(
     const attempt = `attempt-${m.id}`;
     nodes.push({
       id: attempt,
-      bash: `printf '{"attempt":"%s"}' "$(cat '${join(gen, 'attempts', m.id)}' 2>/dev/null || echo 0)"`,
+      bash: attemptCommand(attemptPath(gen, m.id)),
       depends_on: [start],
       always_run: true,
       output_format: outputSchema('attempt'),
@@ -174,6 +180,12 @@ export function buildWorkflow(
     let prev = start;
     const last = ms.at(-1) === m;
     for (const p of m.packages) {
+      const pkgAttempt = `package-attempt-${p.id}`;
+      nodes.push({
+        id: pkgAttempt,
+        bash: attemptCommand(attemptPath(gen, `pkg/${p.id}`)),
+        depends_on: [start], always_run: true, output_format: outputSchema('attempt'),
+      });
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
         : {
@@ -186,7 +198,7 @@ export function buildWorkflow(
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
-        depends_on: [prev, attempt],
+        depends_on: [prev, attempt, pkgAttempt],
         output_format: outputSchema('coder'),
       });
       const accept = {
@@ -204,7 +216,7 @@ export function buildWorkflow(
       nodes.push(
         check(
           verify,
-          [`code-${p.id}`, attempt],
+          [`code-${p.id}`, attempt, pkgAttempt],
           { ...accept, tag: verify, coder: `$code-${p.id}.output` },
           { output_format: outputSchema('accept') }
         )
@@ -226,14 +238,14 @@ export function buildWorkflow(
                 accept_log: `$${verify}.output.log`,
               },
             }),
-        depends_on: [verify, attempt],
+        depends_on: [verify, attempt, pkgAttempt],
         when: `$${verify}.output.disposition == 'repair'`,
         output_format: outputSchema('coder'),
       });
       nodes.push(
         check(
           `settle-${p.id}`,
-          [verify, `repair-${p.id}`, attempt],
+          [verify, `repair-${p.id}`, attempt, pkgAttempt],
           {
             ...accept,
             kind: 'settle',
@@ -573,7 +585,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
     );
   }
   const lessons = injectMemory(plan, dir, definition.nodes as { id: string; command?: unknown; model?: unknown; with?: Record<string, unknown> }[]);
-  writeFileSync(join(dir, 'engine.json'), JSON.stringify({ engine_hash, fake, lessons }) + '\n');
+  writeFileSync(join(dir, 'engine.json'), JSON.stringify({ engine_hash, workflow_hash: engine_hash, fake, lessons }) + '\n');
   writeFileSync(
     join(wfDir, `${workflow}.yaml`),
     YAML.stringify(definition, {

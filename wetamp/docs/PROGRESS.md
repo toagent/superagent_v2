@@ -634,3 +634,95 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **读取边界回归**：memory/JSONL和新Web JSON视图只接受 SUPERAGENT_HOME 内的 confined 文件；已有 episode 采集的 artifacts/gen 文件保留对应 Ledger 的仓库范围，不把合法仓库证据误限到 memory home。`memory.test.ts` 回放仓库内但 home 外的验收/自报错误证据，仍得到 evidence_conflict；home 与仓库之外的路径仍拒绝。追加后定向38 pass/0 fail/3 snapshots（同目录 `focused-final.log`）。
 - **交付边界**：本包只做派生将军编码和隔离自检；不触及生产台账/Archon库、hooks、packages受跟踪文件，不操作 cmux、真实提醒，不委派、合并或发布。最终全量、lint、fake selftest 与提交绑定 verify-local 结果见下方；独立 astra 里程碑评审与主控集成实测仍待元帅执行。
 - **最终自检**：在隔离 home 下执行 `cd wetamp && bunx tsc --noEmit && timeout 600 bun test` exit 0（719 pass/0 fail/6 snapshots，210.74s，`/tmp/ev2-accept.aEOrZz/{tsc-final,tests-final}.log`）；`bunx eslint src` exit 0（`lint-final.log`），根 lint wrapper此前exit 0。同一临时 `SUPERAGENT_HOME=/tmp/ev2-accept.aEOrZz`、临时ARCHON_HOME执行 `bash scripts/selftest.sh --fake` exit 0、ok=true（`selftest-final.log`）。最终控制台冒烟exit 0：GET200/POST403、原生open命令、stop后PID/socket/label消失、端口可复用均通过（`console-smoke-final.log`）。src净增96行（≤300），hooks/packages受跟踪文件零改动，`git diff --check`通过；预置node_modules软链保留且不暂存。提交后在同一调用方临时home执行 `bash scripts/verify-local.sh --commit HEAD`，提交绑定结果以该目录的 `verify.json` 为准，不将fake或本包自检当作独立评审、实际像素或主控集成验收。
+
+## HF8 巡检解耦与作业中断
+
+- **I4、I8 / P2**：推翻“控制台刷新失败与巡检同生共死可接受”；refreshConsole 抛错仍执行 tick，stderr 单行 `supervise-tick: console refresh failed:` 与 JSON `console_error` 保留错误，退出码仍由巡检本体决定；注入失败与真实旧 PID 迁移拒绝回放覆盖该边界。
+- **I6 / P4**：推翻“子进程 exit 0 = 作业完成”；wrapper 首次收到 SIGINT/SIGTERM/SIGHUP 后，即使子进程 trap 并 exit 0，也登记 failed/原信号并返回 130/143/129，沿用 HF7 字段和等待期语义。TERM/HUP/INT 回归及 child-only 信号回归验证；负载用例改为有截止的回收轮询和 running 等待，不放宽断言。
+- **HF7-R1-01 / I4、I8**：真实 OS SIGINT/SIGTERM/SIGHUP 回放证实同步 probe 期间的待交付信号会越过 queued→spawn 边界；准入后用现有 timers/promises 让出事件循环，再复查取消状态。已取消保持 pid=0、failed/原信号/128+n，真实信号回归同时断言子进程未创建、命令标记未写，不新增状态或配置。
+- **HF8b / HF8-R1-01 / I6、I8**：推翻“spawn 前交付一次挂起信号就够了”；短 child 退出与同步记账结束后、终态裁决前再次交付挂起 OS 信号，监听器保持至落盘完成，wrapper 首次中断优先登记 failed/原信号/128+n；落盘后的信号不改写记录。真实 TERM/HUP/INT 覆盖 spawn 返回与 child 退出两个窗口。
+- **HF8b / P2**：board 首次查询超时的 unreadable 行同样为 stale=false，不能证明缓存就绪；用有截止的轮询确认 running 且非 stale 后再触发挂起，并按桩记录的 child PID 等待回收，避免全局 pgrep 误认并发测试的 sleep。单次冷查询延迟回归保留原状态、超时与无 orphan 断言。
+- **HF8c / HF8-R1-01 / I6、I8**：推翻“监听器挂到落盘完成就能计入落盘前信号”；本轮替换 HF8b 的落盘边界承诺：正常及异常终态统一按“暂定终态 rename → 下一事件循环交付点 → 中断时改写 failed/原信号/128+n → 同步移除监听器”提交。暂定终态最多可见一个事件循环周期，board 仅展示，不可据此触发不可逆动作。
+- **HF8c 剩余窗口**：交付点之后的信号不改写记录；交付后的必要改写同步完成，随后同步移除监听器（移除步骤无 I/O），不承诺任何时刻的信号都会计入。隔离子进程的真实 TERM/INT/HUP 覆盖 write 前、rename 前、rename 后及边界后默认终止对照。
+
+### HF6 redline 可建模子集
+
+- **被推翻的假设 / I8、P1**：静态扫描 shell 文本并逐个补 cwd 变体不能证明完整 shell 语义。HF6 在现有顺序与子作用域判断前，先限定派生会话可建模子集；不支持的命令拒绝并提示绝对路径或独立命令。commander 不调用此检查，保持原判定。
+- **子集**：shell.cjs 保留包装器和保留字的命令头索引；动态命令头、函数定义、pushd/popd/eval/source/./exec/builtin/command/alias/function/coproc 拒绝。cd 必须是顶层简单命令头，拒绝 cd -、~user、CDPATH 下的相对 cd；复合命令中出现 cd 或未建模执行词则拒绝。普通复合命令、数据 heredoc 和字面 shell -c 递归校验；stdin/here-string/heredoc/管道执行代码拒绝，解释器文件模式排除 `/dev/`、`/proc/` 伪文件。仓库脚本文件（包括 bash -n/-ex script）沿用原策略。
+- **威胁模型与残留**：防派生会话意外写出 worktree，不是安全沙箱。python3 -c、node -e 等内联代码和 bash some.sh 等脚本文件的副作用不在模型内，不能据此宣称强隔离；OS 沙箱另议。复合结构中的执行词采取保守拒绝，可能把目录操作数 `.` 当作未建模词；解释器脚本选项只建模不带值的短选项及 `--`。
+- **真实语料 / I6**：hf6-replay.cjs 只提取 cards/logs/*-sol.log 的 Codex exec 命令头记录，不输出转录正文或工具输出；两版分别加载 25c107b0 的原 redline/shell 和本包版本，使用实际记录的 cwd、现存 git 根（已删除 checkout 保守用记录 cwd），env={}。冻结命令串语料共 **2321** 条；基线拒绝 **7**、本包拒绝 **9**、新增拒绝 **2**，两条均为只读探查，新增误拒率 **2/2321=0.0862%**（<3%）；commander 判定变化 **0**。不把原有拒绝认定为本包新增误拒。证据：`/tmp/hf6-accept.DefNrO/{command-corpus.json,replay.json}`；回放参数支持复用冻结命令语料，新增命令每条仅输出脱敏命令头、sha256 和拒绝理由。
+  - `e2e4d1fe…`：`sh | command | command | rg | rg | head | sed`（参数与正文省略）——只读 command 查询头不在子集内；改为独立的直接查询命令。
+  - `b316c3b5…`：`sh | for | test | echo | rg`（参数与正文省略）——复合结构中的目录操作数 `.` 触发保守执行词拒绝；可拆成独立命令。
+- **编码端证据**：hf6.test.ts 覆盖 R3 三个复现及本卡拒绝/放行集、CDPATH、解释器输入边界、冻结基线 commander 比对和真实命令抽取；只调用 reason()，从未执行越界写入。测试、selftest 和提交后的 verify-local 结果以该临时 home 的原始日志与回执为准，独立 R1 与主控验收仍由主控完成。
+- **本地验收**：在 wetamp/ 执行 `bunx tsc --noEmit && timeout 600 bun test` exit0（729 pass/0 fail/3 snapshots，198.85s，`tsc-final.log`、`tests-final.log`）；`bunx eslint src` exit0（`lint.log`）。同一临时 `SUPERAGENT_HOME=/tmp/hf6-accept.DefNrO`、`ARCHON_HOME=/tmp/hf6-accept.DefNrO/archon` 执行 `bash scripts/selftest.sh --fake` exit0（`selftest-final.log`、`selftest-fake.json` ok:true）。hooks 仅 redline.cjs、shell.cjs，净增42行（≤60）；src 与 packages 受跟踪文件零改动。提交后同一 home 执行 `bash scripts/verify-local.sh --commit HEAD`，最终结果以绑定该 commit 的 verify.json 为准。
+
+
+#### HF6 R2
+
+- **被推翻的假设 / HF6-R1-01/02/03**：手写 tokenizer 能复现 shell 词法、model 与 parse 两套遍历能保持一致。派生模式现在只走 shell-ast.cjs：一次 parse、同一 AST 遍历解码词并检查命令头、wrapper/find/shell -c 执行位置、重定向和 cwd；guard 的 N-1/git/删除判定消费该规范 argv，不再重解析。commander 保留原 redline 路径，不加载解析器。bash grammar 会把未引用续行误分为词边界，因此此边界保守拒绝；双引号续行按引用语义解码，单引号保持原字节。
+- **准入与拒绝**：沿 spike (b) 的显式节点/标点白名单保留普通赋值、参数引用、file_redirect、for/if/while、测试、compound/subshell、注释及数据 heredoc。hasError/missing、不支持节点、替换/函数/here-string/复杂展开、NULLCMD 重定向、非字面头、未引用前导 = 与非 ~/ 命名目录展开都拒绝。builtin/resword 联集从 shell 自身生成，只有卡片的小白名单可执行；always 块以 grammar 错误夹具拒绝。嵌套 shell 执行体走同一遍历；stdin 执行拒绝，显式脚本文件沿原卡豁免。复合结构 cd、cd -、CDPATH 相对 cd、任何赋值与 cd 共存拒绝；wrapper chdir/find-execdir 的未知 cwd 保守拒绝。heredoc 引用 delimiter 为纯数据；未引用正文含 $、反引号或反斜杠拒绝。显式 subshell 隔离 cwd。
+- **依赖 / 加载**：dependencies 精确固定 web-tree-sitter@0.27.1、tree-sitter-bash@0.25.1；只 require.resolve grammar 包定位随包 WASM，不加载 native binding、不加 trustedDependencies、不引入 npm 锁。Bun 阻止 grammar install 生命周期；新副本 frozen install 与派生 guard 已通过。加载器参数注入测试 dependency/WASM 缺失、WASM 损坏、Parser.init/Language.load 异常；初始化前 reason 及异常均 deny，含 shell parser unavailable。入口 await init，内部 parse 同步。
+- **安装链**：主安装依赖失败明确提示“派生会话 Bash 将全部被 redline 拒绝”。只读核对 ~/.lan-dev-machine/bin/twin-toolkit 的 align_superagent：投送 git bundle 后在登录环境运行 --remote-hooks，bundle 不携带 node_modules。因此最小变更在 install.sh 内：远端有 bun 时按 wetamp/bun.lock 冻结安装；无 bun 需预装依赖，实际 init + parse echo ok 失败就 exit 1。未运行远端安装、未修改 twin-toolkit 或三端配置。
+- **语料 / I6**：冻结 command-only corpus SHA256 ffc03a2f0bdcbd6048a710177e7b3cde0a332fcf842a72fcc3d6dfd3cbaf5e68，2321 条，env={}；25c107b0 / e09353df / R2 拒绝数为 7 / 9 / 35。相对 25c107b0 新增 28（1.2064%，<3%）；新增原因：command_substitution 22、declaration_command 5、builtin_or_reserved_head 1。commander 语料逐条变化 0，定向 R2 fixtures 也逐条与 e09353df 一致。此比例为未标注语料的新增拒绝率代理，不是逐条人工确认的 false-positive rate；只输出类别/hash，无正文。
+- **延迟**：Node v24.21.0，同 spike bench.py 的交错 fresh-process 墙钟口径、两版各 20 次、OS 缓存未清、p95 nearest rank。e09353df p50/p95=36.153/38.153 ms；R2=47.966/50.148 ms，p50 +11.813 ms（≤25 ms）。WASM 体积 210415+1358224 bytes；spike 的发布包逻辑安装体积 24.227 MiB（包括 native prebuild/debug，不等同于运行时 WASM）。正式安装用本 worktree 自有 node_modules，未修改生产软链目标。
+- **威胁模型 / 已知残留**：防派生会话意外写出 worktree，非 OS 沙箱。zsh native alias/function、zsh_directory_name 之外的模块与选项配置不能由 bash AST 全面保证；~[name] 已拒绝。AUTO_CD 需 SHIN_STDIN，本轮未证实生产目标开启。脚本文件与解释器内联代码（python -c/node -e）仍是原卡豁免；允许的 shell -c 是递归分析的例外。独立 R2 评审与主控最终验收仍待主控完成。
+- **编码端验证**：原卡与 R1/spike 全部拒绝/放行夹具、加载失败、生成物一致性、commander 对照均以纯判定验证，不执行样例。tsc/eslint exit 0，最终全量测试全绿；selftest --fake exit 0，fresh frozen install + 派生 guard exit 0。hooks 净增 132 行、install.sh 净增 5 行、生成脚本 33 行，packages 零改动。最终测试、selftest、fresh install、延迟、回放及提交后 verify-local 证据在 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/hf6-r2-fix-o9y4nzpx`。本节的局部/自检成功不代表独立评审、主控集成或部署。
+
+#### HF6 R3
+
+- **HF6-R2-01 / 被推翻的假设与修法**：“列表整体成功 ⇒ 最后一个命令执行且成功”对 `||` 不成立。单次 AST 遍历改为分别传递成功/失败 cwd 集合：`&&` 的右侧只接成功集合，`||` 只接失败集合，列表结果合并短路与执行分支，`;` 继续接全部可能 cwd；未知命令状态保守覆盖两条边。原 touch/重定向反例和 R2 额外拒绝项均拒绝，真实 guard 两版反例也 deny。旧 hf5 的 `cd X || touch f` 拒绝断言改为放行：写入仅在 cd 失败、仍处于原 worktree 时发生。HF6-R2-02 的解释器集合统一由无副作用 shell.cjs 导出，两模式共享所有者，commander 定向与冻结语料变化均为 0。
+- **差分证据**：hf6-r3.test.ts 独立穷举 cd 成败、true/false 与短路真值，逐个写入位置比较 analyzer 检查过的 cwd 超集；6 种原子、3 种运算符、长度 ≤4 的 37050 条列表，另有 !/管道/subshell/compound/if/while 252 条，共 37302 条，违例 0，拒绝 7694（20.6262%，枚举拒绝比例，并非误拒率）。只调用纯判定，不执行样例；R2 对照 witness 漏检外部 cwd，R3 同例覆盖全部 cwd。
+- **回放、延迟与范围**：冻结语料 2321 条，25c107b0 / R3 拒绝 7 / 35，新增 28（1.2064%，<3%；命令替换 22、声明命令 5、builtin/reserved head 1），仅作未标注语料的新增拒绝率代理。Node v24.21.0，两版交错 fresh-process 各 20 次，p95 nearest rank、未清 OS 缓存；e09353df p50/p95=34.770/43.880 ms，R3=46.144/55.986 ms，p50 +11.375 ms（≤25 ms）。hooks 相对 e09353df 净增 148 行（生成 JSON 不计），packages 零改动；编码端证据根 `/var/folders/j1/ng2qb8qs6d141y_yk08z9fy40000gn/T/hf6-r3-fix-ps5ipun9`，独立 R3 评审与主控验收另行完成，威胁模型与 R2 已知残留继续有效。
+
+## HF9 决策提醒内容
+- 推翻“原因模板 + run key 足以让人拍板”：标题展示项目、里程碑/包标题、节点、已完成进度与引擎结构化事实；缺失如实标注，200字内按名称段截短并保留原因、事实与是/否动作。
+- 红线“是”表示重派一次、规则不变；签收只批准等待门并续跑、不自动合入。“否”终止整个run并保留证据；128位key摘要移到标题末尾，unknown对账仍兼容旧格式pending，逐原因与yes/no回归仅使用临时证据和supervisor桩。
+- R2 推翻“写出动作名就等于写出后果”：retryGate 提醒列出里程碑全部包数与其中已完成包，resume 写明续跑节点；与恢复共用 adopt 判定，终态且引擎变化时明确新开run从首个节点重跑。标题仅在新提醒投递时生成，已有 pending/yes/no 不再读取标题证据或额外查询预算事件。
+- R3（HF9-R1-01–04 / I2、I4 / P4）：推翻“清洗后的自由文本可以安全展示”；标题只取注册原因、标识、闭集枚举与数字，详情用 `superagent brief <run>`；预算标题与执行层共用同里程碑同 attempt 的生效额度函数，长名称按段缩短。合成泄露样例、grant 三场景、长名称与 BestIFA 重跑回放覆盖；运行时监测沿用 supervise-tick 的 `orphan_hold`（漏投）/`dup_ask`（重复），不新增状态或配置。
+- R4（HF9-R2-01–02 / I2、I4 / P4）：元帅裁决 `pkg.title` 是 plan 作者的计划元数据，与 plan 同一信任级别，允许进标题；派生会话产出的自由文本一律不进标题。新增不变量“标题在任何合法输入下都可投递”：依次缩名称、完成包名单转数量、压缩数字事实、压缩固定文案，始终保留原因、完整是/否后果及 marker；16 位预算四包三完成加 adopt 的最终投递与全部提问策略最大输入回归覆盖，监测继续归属 `orphan_hold`/`dup_ask`。
+
+- **ORCA1**：supervise-tick 处置后将 cockpit 的“跑 / 等你”汇总投影到 Orca superagent 看板；只是视图，不参与决策，拍板仍走 SUPERAGENT 提醒/decide。新待办标未读、全部解除标已读，其余变化保留用户读状态；同步失败不影响心跳退出码，SA_ORCA=0、orca-board 不存在、CLI 缺失或 Orca 未运行/不可达时跳过，绝不启动 Orca。
+- **ORCA1 R2 配置与缓存**：CLI 按 `SA_ORCA_BIN` → `/usr/local/bin/orca` → `/Applications/Orca.app/Contents/Resources/bin/orca` 顺序查找；探活、加载、比较与写入共用 `home().sa/orca-board.lock` 非阻塞锁，忙时跳过，退出时释放。坏 JSON 或结构不合法的缓存按无历史重建，有 needs 时标未读；读取和写入失败仍返回 error。
+- **ORCA1-R1-01（中，已知限制）**：快照加载含同步 git 调用，超时只在异步边界生效；git 卡住时单次 tick 可能超过 60 秒，launchd 只会漏周期不会并发。
+- **ORCA1-R1-02（中，已知限制）**：set 结果不确定（响应超时或本地状态保存失败）时，下轮可能重发一次 `--unread`，覆盖用户手动已读状态。
+
+## HF10：恢复身份与重试范围
+
+- **被推翻的假设**：一是“引擎哈希变了 ⇒ 生成的工作流变了”；BT8 把 board/web 合入工作流哈希，纯界面更新也触发终态 adopt，而 Archon adopt 不继承节点输出。二是“包级挂起的重试 = 里程碑级重试”；共享 attempt-m1 会让已交付包失去编码缓存。
+- **身份所有权**：`generate.ts` 的 `engineHash` 按“生成时冻结 / 执行时现读”划分，散列生成器、复制的模板/脚本、原因注册表、配置、plan 解析、输出 schema、brief 和 tiers；`residentHash` 以它为 seed 再散列 src，由 board 刷新与 web 重启共同消费。文件遍历只有一个 owner，常驻身份没有复制工作流清单。web state 的既有 engine_hash wire 字段保存 resident 指纹，避免更改界面状态契约。
+- **恢复与兼容**：新 ledger/engine.json 写 workflow_hash，保留 engine_hash。恢复与提醒继续共用 adoptsRun，优先 workflow_hash；旧 ledger 只有 engine_hash 时，仅相等才确认可 resume，不相等或缺失则保守 adopt，标题明确“旧run身份未确认，将新开run从首个节点重跑”。failed/cancelled 以外不新增 adopt，completed 仍禁止恢复。
+- **逐处身份用途**：新 run/adopt 的 engine_hash 与 workflow_hash 均记录生成身份；summary.engine 判断生成物是否过期；recoverRun 的确定性防重、autoRetry 的同身份零次/换身份最多一次、engine_suspect 自动处置和 incident 指纹均使用 workflowIdentity。auto_retries/adoptions 的既有 engine_hash/engine_from/engine_to 字段继续保存工作流身份，不改 wire 字段。纯 UI 漂移不再烧确定性重试或新开嫌疑 run；原一次重试限制不变。board/web 才使用 residentHash。
+- **包与里程碑**：每包 package-attempt-<id> always_run 节点读取 attempts/.packages/<id>（前导点不符合里程碑 schema，旧 attempts/<m> 不变），code/verify/repair/settle 同时依赖包与里程碑计数。显式包重试只 bump 包计数；held:gate 仍 bump 里程碑。读取实际 YAML 节点判断能力，旧生成工作流没有包计数时 verify/settle 仍重跑整个里程碑，标题标“旧工作流”；旧 code/repair 保持直接 resume。缺少所需里程碑计数则明确拒绝，不猜能力、不加 YAML 字段。
+- **预算归属**：预算授权仍绑定里程碑 attempt，不改计费语义。任何计数文件缺失时读取为 0，不为包重试创建或改写里程碑文件；CLI、生成的 attempt 节点和 budget() 共用 readAttempt，拒绝非法非负整数与无法精确表示的计数，bump 也拒绝溢出。budget() 在里程碑文件缺失时以 0 匹配 grant；下一次里程碑重试仍使旧额度失效。
+- **HF9-R3-01**：所有提问策略的两个数值极值都经 supervise-tick，断言 supervisor 桩最终 question 参数、非空完整是/否后果、marker 与 ≤200 字；旧“已完成3/2节点”夹具改为真实3/5。包/里程碑/adopt/旧工作流四种范围也经过最终投递路径。仅为编码自检，独立评审是否关闭债务仍由主控确认。
+- **实际投递标题**（每条 ≤200 字，原文）：
+  - 包级：BestIFA/W4验收/verify-W4：将军命中红线；编码端命中红线；已完成13/63节点；是=重派W4编码→验收一次（红线不变）；否=终止整个run（保留证据）；详情superagent brief <run>；[sa:1ee9998357b47b971a63ccd2588cb69e]
+  - 里程碑：BestIFA/m1/gate-m1-r3：三轮评审已用尽；轮次3，未决1；评审未通过；已完成13/63节点；是=重跑m1全部11包（含已完成W1、W2、W3）一次；否=终止整个run（保留证据）；详情superagent brief <run>；[sa:89f25f3850653cff37ae65847fd2d73a]
+  - adopt：BestIFA/W4验收/verify-W4：将军命中红线；编码端命中红线；已完成13/63节点；是=重派W4编码→验收一次（红线不变）（引擎已升级，将新开run从首个节点重跑）；否=终止整个run（保留证据）；详情superagent brief <run>；[sa:1ee9998357b47b971a63ccd2588cb69e]
+- **身份复算**（历史源码快照，不切分支；算法统一用 HF10）：f7f9c2b1 的 workflow=`a6a253162013eb1aa39725ef7e3b6f44fe1207ff6ca6dd3dc3345f160807706c`、resident=`ff657bd5172f954fc4be026ca4ffc53bf0bb66b1f15902aba9cc0d54243b930c`；纯 UI 终点 b5923378 的 workflow 相同、resident=`46e8ae348ac85ec8cadd38cdcbfa8f9c6d18a5ab1ffac51857678d357cd6facf`。本包 workflow=`9ad5884b039b6d1102d8a2ead3176a106253eb7cf4c1273a0ed4f6ec74d67d54`、resident=`e915bb8d2ef624986b327411fcddb9785687a2a00dff183d260a97dff949846e`；差异包含生成器和计数语义的实际改动，不是纯 UI 漂移。
+- **验证**：tsc、eslint src、diff --check 均 exit 0；HF9/HF10 定向78 pass/0 fail（`/tmp/hf10-focused-final.log`），界面回归76 pass/0 fail/3 snapshots（`/tmp/hf10-ui-final.log`）。全部 CLI/生成器与真实 Archon fake E2E 三文件最终262 pass/0 fail、exit 0（173.44s，`/tmp/hf10-behavior-final.log`）；包重试 code-W1/W2/W3/W4 次数为1/1/2/1，gate重试为2/2/2/2。`scripts/selftest.sh --fake` exit 0（`/tmp/hf10-selftest-final.log`），调用方临时 home 为本 worktree 的 `wetamp/.context/hf10-test-tmp/accept.1h7x4N`；首次将 TMPDIR 放在 wetamp 内造成 cpSync 自包含错误，移到根级 .context 后通过，未改自检脚本。src 净增19行，hooks/packages 受跟踪文件零改动。
+- **R1 验收边界（R2 卡已裁决允许脚本/测试清理自建临时资源）**：原卡同时要求完整 bun test/verify-local，又绝对禁止 git worktree remove/prune 与删除 worktree 外目录；verify-local 及其测试确实会执行这些清理。R1 未取得例外授权，未执行该项；R2 卡已明确允许脚本/测试内部清理自建临时目录与 worktree，派生会话仍不得手工执行 worktree remove/prune。R1 的可执行回归与 fake 自检临时资源放在本 worktree 内，selftest 不传 --repo，OWN_REPO=1 跳过 worktree remove。证据在 /tmp，scratch 状态不提交。
+- **执行偏差**：扩大为排除 verify-local.test.ts 的28文件测试批次时，漏查 scripts.test.ts 对 gc.sh --apply 的间接调用，已对本 worktree 内自建临时仓库执行 git worktree remove，违反卡片绝对禁令。发现后停止批次（exit 130，`/tmp/hf10-safe-suite.log`），不把该批次计为通过；无既有/HF10 worktree 删除。后续只复跑已核对的 CLI/生成器/HF10 三文件。早先合并测试261 pass/1 fail为 S3 旧计数断言仍读 attempts/m1，已改成 attempts/pkg/core=1 并断言无里程碑 bump。
+- **遗留**：执行时现读类运行依赖修复后，同身份确定性自动重试不会再给一次机会；这是本包合入前已有的语义，未改自动重试身份清单或次数限制。消费提醒回答后的用户回执另立工作包，需共享 agent-supervisor 技能改动；本包不改。独立 astra 评审、元帅验收、生产恢复与合入发布均不由本派生会话宣称完成。
+
+### HF10 R2：计数、身份与路径修复
+
+- **HF10-R1-01**：真实 Archon fake 预算回归先复现 grant.attempt=null（`/tmp/hf10-r2-repro.log`），修复后 grant.attempt=0 且无需 attempts/m1。首次包级恢复的 code-W1/W2/W3/W4=1/1/2/1，证明其他包保留缓存，且 verify-W3 经真实事件查询的 budget() 已允许追加额度。独立 CLI 两次回答“是”回归各执行 sa-check accept/budget() 并验证 advance，grant 都绑定 milestone=m1、attempt=0、launches=27、weighted_tokens=5400000、limits={launches:28,weighted_tokens:5400100}；包计数依次为1、2，里程碑文件均缺失，生成的 attempt-m1 输出均为 {"attempt":"0"}。非法计数与安全整数上界回归确认失败时原文件未改、没有 resume。
+- **HF10-R1-02 裁决与证据**：生成时冻结的输入才决定 run 是否过期：`src/generate.ts:551-554` cpSync 复制 templates/.archon，`src/generate.ts:585-593` 写出 YAML，因此模板与生成源码已在清单中；没有删除清单既有项。四项均为执行时现读，不新增到 engineHash：`bin/codex-worker` 经 `src/config.ts:24,233` 的绝对 codexBinaryPath 调用；`bin/codex-readonly-proxy.cjs` 经 `bin/codex-worker:96` 现读 exec；`scripts/codex-trust.cjs` 经 `bin/codex-worker:34` 现读 bun check；`src/archon.ts` 经 `bin/superagent:34` 加载 cli.ts 的 `src/cli.ts:26-40` import，并在 `src/archon.ts:83-88,311-317` 为每次 run/resume/approve 启动构造 workerEnv。`src/generate.ts:576-577` 仅 symlinkSync bin/archon，未复制其实现。逐项变更测试证明四项 workflow hash 不变；templates/.archon 与 generate/config/plan/reasons 逐项变更均改变 hash。engineHash 旁注释写明该划分不变量。
+- **HF10-R1-03**：包计数路径由模板内共享 attemptPath 统一构造，生成器与 CLI 均导入该 owner；物理路径 attempts/.packages/<id>，逻辑 scope 仍为 pkg/<id>；里程碑 schema（`schemas/plan.schema.json:235`）只接受字母开头，构造上排除 .packages。里程碑 pkg 的“先包后 gate / 先 gate 后包”均两次 resume 成功，两份计数各为1，旧 attempts/<m> 路径保持兼容。
+- **原卡样例**：普通包回归执行次数仍1/1/2/1；gate仍2/2/2/2；三种实际投递标题原文未变化，沿用上方样例。R2 用同一 hash owner 重算 f7f9c2b1 与纯 UI 终点 b5923378，与上方历史值一致；R2 candidate workflow=`933dd4efe4671773e8a99057262de8cba2ba834bfa18734c934fe25d41cd9c17`、resident=`b484937640d1f5e6343156721a4800c05bce6f859307665524e3ce0e623a3018`（`/tmp/hf10-r2-identities.log`）。
+- **R2 自检过程证据**：最终定向24 pass/0 fail（`/tmp/hf10-r2-focused-final.log`），tsc/eslint src exit 0。首次完整套件960 pass/1 fail（259.60s，`/tmp/hf10-r2-full.log`），唯一失败为 S3 仍断言旧 attempts/pkg/core 路径，已改为 attempts/.packages/core。并行重跑 fake 自检的行为 receipt 为 ok=true，但 EXIT 清理临时目录报 Directory not empty，脚本整体 exit 1（`/tmp/hf10-r2-selftest-final.log`）；不将该次视为通过、不手工删除资源，最终验收采用串行重跑结果。
+- **R2 最终完整验证**：`cd wetamp && bunx tsc --noEmit`、`bunx eslint src` exit 0；`timeout 600 bun test` exit 0，961 pass/0 fail/3 snapshots，29 文件，338.08s（`/tmp/hf10-r2-full-final.log`）。包/预算 E2E code 次数均1/1/2/1，gate2/2/2/2；两次 grant 完整内容在 `/tmp/hf10-r2-grants.json`，均 attempt=0，包计数1→2，里程碑缺失=0。src 相对 b67e0385 净增25行，hooks/packages 受跟踪文件零改动，diff --check exit 0。提交后 verify-local 绑定 HEAD 的结果在同一调用方临时 home `/tmp/hf10-r2-accept.cepGSi/verify.json`，不写入仓库或生产 home。
+- **R2 fake 自检最终结果**：同一临时 SUPERAGENT_HOME 下串行 `bash scripts/selftest.sh --fake` exit 0（`/tmp/hf10-r2-selftest-serial.log`），receipt ok=true。未亲手执行 git worktree remove/prune，未清理脚本之外创建的 worktree/目录；生产 home、supervisor 与 launchd 均未操作。本交付仅编码与自检，astra R2 核验、主控实测及合入发布仍由主控执行。
+
+
+## B1-EV：EV1 / EV1b / EV2 与 HF10 生产基线重新集成
+
+- **问题与被推翻的假设 / I3、I7、P3**：EV 分支停在 HF5c/HF7 基线；无文本冲突不代表生成身份、作业生命周期与投影仍相容。尤其 engine.json 的两次写入会让后写的经验元数据覆盖 HF10 workflow_hash；300ms 查询能稳定预热缓存、无心跳 running 夹具仍是活动行、记忆单测可在默认 5 秒内重复启动完整 Archon 校验，均不是可靠前提。
+- **合并裁决 / P4**：在 wetamp-ev 合并 f9394a60，4 个冲突文件逐项处理：PROGRESS 保留 EV 和生产两侧历史；App 保留 EV 活任务树、预算显示和 fmtTokens，但常驻退出使用生产 residentHash；CLI Ledger 同时保留 plan_lint 与 workflow_hash，HF8 作业中断/巡检解耦、HF9 标题白名单、HF10 包/里程碑计数和恢复、ORCA1 同步均沿用生产实现；generate 同时导入 injectMemory 与 attemptPath，并在注入后一次写入 engine_hash/workflow_hash/fake/lessons，避免覆盖身份。未修改 Archon packages。
+- **冻结 / 现读边界 / I3**：memory.ts 的检索、预算内注入与 board/workflow.ts 的 nodeRole 会改变生成的 briefs、commands 和 YAML，故纳入 engineHash；residentHash 仍复用同一 owner，以 engineHash 为 seed 并遍历 src。memory-reflect.ts 与 web/memory.ts 在执行时现读，只改变 resident 身份；templates/memory-reflect.md 是反思时读取的提示，不改变两类身份。SUPERAGENT_HOME 下的经验数据不进入源码身份；生成物的 lessons 显式记录命中。文件敏感性回归逐项证明该分类。memory.ts 同时拥有采集/统计代码，当前按文件保守冻结，纯采集代码改动也会改变 workflow 身份，不拆新模块扩大本包范围。
+- **确定性测试 / I6、P4**：board 挂起查询测试只控制 300ms 查询计时器，先等待成功缓存，再等记录的挂起 child PID 就绪，显式触发原超时回调，核验 stale=true、旧 running 状态和整组子进程回收；失败清理使用 AbortController，不增加期限或 sleep 延迟。ORCA 夹具补原生状态/心跳，时间与 token 无关变化保持新鲜，另覆盖活性满 10 分钟后更新状态且不改已读标记。记忆注入单测使用只接受 validate workflows 的桩，真实 Archon 校验仍由 generate.test.ts 与 fake selftest 验证。
+- **旧 run / 生产影响与边界**：没有迁移或修改任何生产台账、提醒、launchd 或控制台。将来集成后常驻读取新投影，新增生成期依赖使工作流身份变化；旧 run 恢复仍按 HF10 原规则判断 resume/adopt，运行中不换封印、completed 不重跑。记忆写入仍仅 SUPERAGENT_HOME/memory，私有项目不反思，Web/Ink 对引擎状态只读；不写共享记忆、不发真实云端反思、不执行经验晋升。
+- **遗留**：真实反思 provider 用量校准、真机像素、独立评审、主控集成验收与发布仍由主控负责；本包只交编码与隔离自检。
+- **完整验收**：同一隔离 home `/tmp/b1-ev-accept.bDAu0q` 下，`bunx tsc --noEmit && timeout 900 bun test` 最终 exit 0，1017 pass / 0 fail / 6 snapshots，32 文件、424.49s（`full-final.log`）；`bunx eslint src` exit 0（`lint-final.log`），暂存 diff --check exit 0。首次完整测试 1015 pass / 2 fail，两项仅默认 5000ms 超时：S4 registry mirror 与 CLI budget yes；原代码单跑 2 pass / 0 fail（`timeout-recheck.log`），再整套重跑全绿，未增加单测超时。记忆与 ORCA 定向 47 pass / 0 fail（`focused-final.log`）。
+- **fake 自检与提交后闸门**：串行 `bash scripts/selftest.sh --fake` exit 0，`selftest-fake.json` 的 ok=true / fake=true（`selftest.log`），回执绑定提交前 HEAD；fake 回执不冒充真实 provider 校准。提交后在同一调用方临时 home 执行 `bash scripts/verify-local.sh --commit HEAD --timeout 900`，其最终结果以绑定提交的 `verify.json` 与 `verify-local.log` 为准；脚本只操作自建隔离副本，未亲手清理 worktree。独立评审与主控验收留给批次集成。
