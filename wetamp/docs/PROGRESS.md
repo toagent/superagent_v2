@@ -919,3 +919,49 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **遗留**：本包只关闭 EV-R1-03 的编码与自检；EV-R1-07 原有债保持交主控裁决，不做独立评审或主控集成验收。
 
 编码自检：真实生产者回归先红（成功 reason:null 的 ZodError）后绿；四文件 `90 pass / 0 fail / 3 snapshots`（`/tmp/fixd2-focused.log`），`bunx tsc --noEmit && timeout 900 bun test` 全套 `1028 pass / 0 fail / 6 snapshots`、32 文件、336.21s（`/tmp/fixd2-full.log`），`bunx eslint src` exit 0。隔离 home `/tmp/fixd2-home.QhWT3w` 的 `selftest.sh --fake` exit 0、receipt ok=true（`/tmp/fixd2-selftest.log`）；提交后在同一 home 执行 `verify-local.sh --commit HEAD --timeout 900`，结果以该 home 中绑定提交的 `verify.json` 为准。
+
+## B1-FIXC：RV-C REDLINE R1 修复
+
+- 问题与被推翻的假设：覆盖重定向不是普通写入；eval 不创建子 shell；否定命令不保留原成功/失败状态；未引用 heredoc 不是纯数据；find 的未知 cwd 不意味着命令体没有危险效果；已有 PID 不消除管道追加的按名称选择对象；参数拼法不改变效果，完整 argv 不适合提醒。
+- 新语义（REDLINE-R1-01–09）：保留 overwrite 效果，未知危险目标拒绝而普通新建/追加未知目标 advisory；传播父作用域 cwd 并交换否定状态；检查 heredoc 的命令替换与反引号，引用或转义的数据保持放行；分析 find 的全部执行形式，execdir/okdir 相对目标按未知处理；统一长选项取值，按 -C/--git-dir/--work-tree/GIT_DIR 定位 Git 对象，配置写入进入保护类别；在相关管道、命令替换与变量上保留进程选择来源；外发提醒仅含动作和 URL host，不含认证、正文、userinfo 或 query。
+- 不变量与复用：强化 I1 的红线边界及 I6 的真实事故回放，复用现有 AST、效果表、三段式提醒和 guard advisory 通道，没有新依赖、配置开关或运行状态。10 个报告探针及每个机制的等价变体纳入 hooks 测试，保留原放行清单、归属通用性及父/子 shell 差分；数字循环变量只在循环体内按数字处理，合流后的不确定赋值保留未知。
+- 旧 run/生产影响：hook 判定取当前安装代码，更新后旧会话也受修正影响；error_class=redline 及挂起/告警读者契约不变，advisory 仍在 guard stdout 的 systemMessage 查看。本包只提交 wetamp-redline，没有更新生产配置、触发 supervisor、合并或发布。
+- 遗留与验收边界：解释器/外部脚本的间接效果及无法建模的语法仍按原策略 advisory；此包只做编码自检，独立 G2 复审及主控集成实测另行完成。验收回执以本次完整测试、隔离 selftest-fake.json 与提交后同一临时 HOME 的 verify.json 为准。
+- 自检：提交前 tsc exit 0、eslint src exit 0；完整 bun test 907 pass / 0 fail（467.37s、3 snapshots），随后新增缺失解析器进程来源回归并单测 1 pass / 0 fail；提交后隔离完整套件 908 pass / 0 fail（385.62s、3 snapshots），最终提交仍由 verify-local 验证。报告 10 个探针全部拒绝，末条提醒不含 FAKE_SECRET；原放行 9 项、拦截 12 项和归属通用性仍绿。隔离 selftest --fake exit 0、ok:true。hooks 净增 184 行，packages/ 与 wetamp/src 零改动。
+
+## B1-FIXC2：RV-C2 REDLINE 遗留收尾
+
+- 问题与被推翻的假设：括号计数无法确定 case 模式中的替换边界；Git 未指定与未知定位不是同一状态；fork 不能丢弃进程选择来源；路径识别成功不代表完整参数可出现在提醒里；mktemp 的可证明临时产出不是任意未知路径。
+- 新语义（REDLINE-R1-03/05/07/09/10）：替换边界由既有 shell AST 的 delimiter 节点决定，删除手写括号扫描；未引用 heredoc 的命令替换直接遍历 AST，反引号通过字符串上下文 AST 定位并恢复原正文分析，保留内部引号。Git 的每个定位对象保留未指定/已解析/未知，危险修改拒绝任一未知或非任务对象。管道来源跨 xargs、shell 位置参数、赋值与 fork 传播。所有红线提醒统一出口，仅使用动作、固定路径类别或 URL host，不回显请求参数、正文或动态分支名。
+- 临时路径与兼容：直接 mktemp 产出按临时父目录中的生成路径建模，支持 -d、-t、/tmp、TMPDIR 模板与无参数，子路径可写入/覆盖；尊重作用域和命令前缀的 TMPDIR，外部或未知模板、任意其他命令替换及越界子路径仍拒绝。保留原放行九项、command -v、which、明确 PID 信号、xiaopan baseline 原文及 reviewer 临时测试权限。
+- 旧 run/生产影响：仅更新当前 worktree 的 hooks、测试与本节；error_class=redline、advisory systemMessage、挂起/告警契约不变，没有新依赖或配置开关，没有修改 packages/ 或 wetamp/src。安装更新后旧会话采用新判定；本包没有部署生产、调用真实 supervisor、合并或发布。
+- 验收证据：新增五组探针与等价变体回归；R2 报告探针 5/5 ok，R1 前九条拒绝、末条拒绝且无 FAKE_SECRET；新增回归 5 pass/0 fail，tsc 与 eslint src exit 0，完整套件 913 pass/0 fail（263.45s、3 snapshots），最终 hooks/HF5/HF6 定向回归 157 pass/0 fail（31.17s），隔离 selftest --fake ok:true。hooks 净增 40 行；提交后 verify-local 的结果见交付回执，临时 home 为 /tmp/fixc2-accept.ZkMCSR。
+- 遗留：无法建模的解释器/外部脚本间接效果仍按既有策略 advisory；本包只做编码自检，R3 独立评审、主控集成验收与生产更新仍由主控处理。
+
+## B1-FIXC3：RV-C3 三条遗留修复
+
+- 问题与被推翻的假设：xargs 输入不是永远追加的参数，替换模式必须在占位符出现处传播来源；识别到受保护分支不意味着原始 ref 可以进入提醒；mktemp 的组合短选项及临时父目录参数不能按普通位置模板处理。
+- 新语义（REDLINE-R1-07/09/10）：复用 wrapper 参数解析，区分 -I、-i、--replace 的替换与默认追加，把生成参数交给 shell 的 $0、$1、$@；没有用到替换输入的明确 PID 命令仍放行。Git 只向现有三段式提醒出口传递“受保护分支”等类别，update-ref、分支操作与 push refspec 不回显 ref。mktemp 先规范化 -dt/-td 等选项束，保留 --tmpdir 可选值的拼法，再按临时父目录和位置模板推导产物归属；外部/未知父目录及越界子路径仍拒绝。
+- 不变量与证据：强化 I1 的真实红线边界与 I6 事故回放；三个报告样例及等价变体扩展既有 hooks 回归，FAKE_SECRET 遍历 Git ref 与其他拒绝类别。R1 报告 10/10 拒绝且无秘密、R2 5/5 ok、R3 三变体 3/3 ok，判定器只分析命令字符串。advisory 继续在 guard stdout 的 systemMessage 查看，未新增日志/状态/配置机制。
+- 旧 run/生产影响：安装更新后旧会话采用修正后的 hooks；error_class=redline、挂起与告警消费者契约不变。只修改 wetamp-redline 的 hooks、测试和本节，packages/ 与 wetamp/src 零改动；未触发生产 supervisor、提醒、部署、push 或合并。
+- 遗留与验收边界：外部脚本及无法建模的语法仍沿用 advisory；本包只做编码与自检，已超过三轮的主控实测与用户裁决由主控完成。本次完整验收与隔离回执在 /tmp/fixc3-accept-2ky9ks32，最终结果见交付回执。
+- 提交前自检：tsc 与 eslint src exit 0；完整 bun test 913 pass/0 fail、3 snapshots（318.75s）；隔离 selftest --fake exit 0、ok:true。hooks 净增 25 行，git diff --check 通过；提交后在同一临时 home 运行 verify-local 绑定最终 HEAD。
+
+## B1-FIXC4：临时目录 Git 归属一致性
+
+- 问题与被推翻的假设：mktemp 的临时产物只用于文件写入归属，Git 的位置、检出与 metadata 检查仍只认原 worktree；新建 Git 仓库也被当成未知对象上的危险操作。主控报告三个误拦样例；本次新增回归及 `/tmp/rv-c3-variants.cjs` 中 xiaopan 样例在修改前复现拒绝。
+- 新语义：文件写入与 Git 定位共用 `taskOwnership`，AST 拥有并导出临时产物标识判定，生成路径及其子路径、cd 后 cwd、-C、--git-dir、--work-tree、GIT_DIR、GIT_WORK_TREE 均视为任务仓库。普通临时目录仍只是产物范围，既有外部临时仓库的危险操作不因此放行。git init 不因未知或外部定位拒绝；reviewer 修改被审仓库的约束继续生效。
+- 不变量与验收：强化 I1、I6 与 P4，复用既有 AST、mktemp 归属、Git 定位三态及三段式提醒，没有新依赖、配置或状态。新增误拦回放、临时 repo add/commit/硬重置与全部定位形式、越界及既有外部 repo 反例；R1/R2/R3 探针保持原期望。运行时仍通过 guard 的 deny / advisory 通道观察。
+- 旧 run/生产影响：安装更新后旧会话也采用新 hooks，error_class=redline 与消费者契约不变；仅本 worktree 的 hooks、测试与本节改动，不操作生产、supervisor、提醒、合并或发布。
+- 遗留与证据边界：解释器/外部脚本间接效果继续按既有策略处理；本卡按主控裁决只编码与自检，不再派生或评审，主控实测及带债合入由主控执行。验收日志及隔离 selftest / 提交后 verify-local 回执在 `/tmp/fixc4-accept-4t5jr02l`。
+- 提交前自检：tsc、eslint src 与 hooks 语法检查 exit 0；hooks 73 pass/0 fail，最终 FIXC4 定向回归 25 个断言通过；完整 bun test 914 pass/0 fail、3 snapshots（266.91s）。R1 10/10 拒绝且无秘密、R2 5/5、R3 11/11 符合期望；隔离 selftest --fake exit 0、ok:true。hooks 净增 10 行、diff --check 通过，提交后 verify-local 在同一临时 home 绑定 HEAD。
+
+## B1-FIXC5：嵌套检出的 Git 归属回归
+
+- 问题与被推翻的假设：FIXC4 把文件的路径包含关系当作 Git 检出身份，主检出内的另一个 worktree、clone 或子模块因此获得 Git 写入权限；在旧实现上新增回归首先复现嵌套 clone 的硬重置被放行。
+- 新语义：仍由单一 `taskOwnership` 判定归属；文件写入保持原语义，Git 只认任务检出本身及其精确 `.git`/gitdir 元数据身份。检出内普通子目录仍属于该检出，嵌套检出及主仓 `.git` 下其他 worktree/子模块的元数据不属于任务；AST 已证明的 mktemp 临时产物继续放行，既有临时仓库不继承权限。
+- 不变量与复用：强化 I1 的红线边界、I6 事故回放与 P4 单一来源；复用 `checkoutOf`、真实路径解析、`.git` 原生 gitdir 和 AST 临时产物标识，没有新增依赖、配置或状态。测试以 scratch clone、嵌套 worktree 和 gitdir 文件复现 -C/cd 两种定位及 metadata/env 等价变体；监测仍使用 guard deny/advisory 通道。
+- 旧 run/生产影响：安装更新后旧会话采用修正后的 Git 判定，error_class=redline 与消费者契约保持不变；本包只修改指定 worktree 的 hooks、测试与本节，未修改 packages/、生产 checkout、生产台账、supervisor 或提醒事项，未合并、push 或部署。
+- 自检证据：新增回归在修复前失败、修复后通过；FIXC4/FIXC5 与 Git 定位定向回归 5 pass/0 fail、128 断言，主控提供的 `/tmp/rv-c3-variants.cjs` 11/11 符合预期且 exit 0；hooks 净增 7 行。完整套件与隔离 selftest、提交后同一临时 home 的 verify-local 回执保存在 `/tmp/fixc5-accept.sZ4JnM`，最终结果见本次交付回执。
+- 提交前验收：tsc、eslint src、hooks 语法检查与 diff --check exit 0；hooks 74 pass/0 fail，完整 bun test 915 pass/0 fail、3 snapshots（266.90s），隔离 selftest --fake exit 0、ok:true。提交后 verify-local 在同一临时 home 绑定最终 HEAD。
+- 遗留与验收边界：解释器/外部脚本间接效果仍按既有策略处理；卡片要求只做编码与自检，不再委派或评审，后续主控实测由主控执行。

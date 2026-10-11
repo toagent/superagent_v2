@@ -2,7 +2,12 @@
   { "commands": ["rm", "rmdir"], "effect": "destroy", "targets": "operands" },
   { "commands": ["cp", "ln", "install", "rsync"], "effect": "overwrite", "targets": "last" },
   { "commands": ["mv"], "effect": "destroy", "targets": "operands" },
-  { "commands": ["truncate", "tee"], "effect": "overwrite", "targets": "operands" },
+  {
+    "commands": ["truncate", "tee"],
+    "effect": "overwrite",
+    "targets": "operands",
+    "append": ["-a", "--append"]
+  },
   { "commands": ["touch", "mkdir"], "effect": "create", "targets": "operands" },
   { "commands": ["dd"], "effect": "overwrite", "targets": "of" },
   {
@@ -27,7 +32,13 @@
     "default": "."
   },
   { "commands": ["sudo", "doas"], "effect": "elevate" },
+  {
+    "commands": ["codex", "claude", "opencode", "sol-run"],
+    "commandPrefixes": ["twin-agent"],
+    "effect": "delegate"
+  },
   { "commands": ["pkill", "killall"], "effect": "process_selection" },
+  { "commands": ["pgrep", "pidof", "lsof"], "effect": "process_query" },
   { "commands": ["kill"], "effect": "signal" },
   {
     "commands": ["security"],
