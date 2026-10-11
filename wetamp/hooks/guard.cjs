@@ -108,11 +108,20 @@ function commanderWrite(payload, client, env, text) {
   const file = stateFile(payload, env);
   const check = state => once(state, 'micro', payload, () => {
     const next = microEdit.accumulate(state.micro || {lines: 0, files: [], risk: [], newCode: []}, {...edit, ...absolute});
-    const reasons = microEdit.violations(next);
-    if (reasons.length) return deny(`G-1: ${reasons.join('；')}；超过微改，请写 plan 交 superagent run 由将军编码`);
     state.micro = next;
+    const prior = state.micro_notice;
+    if (microEdit.violations(next).length && (!prior || next.lines >= prior.lines + 100
+        || next.files.length >= prior.files + 2 || next.risk.some(file => !prior.risk.includes(file)))) {
+      state.micro_notice = {lines: next.lines, files: next.files.length, risk: next.risk};
+      const limit = policy.micro_edit;
+      const scope = next.lines > limit.max_lines || next.files.length > limit.max_files
+        ? `超过微改 ${limit.max_lines} 行/${limit.max_files} 文件` : '超出微改范围';
+      const paths = next.risk.length ? `；命中风险路径：${next.risk.join(', ')}` : '';
+      const fresh = next.newCode.length ? `；新建代码文件：${next.newCode.join(', ')}` : '';
+      return {systemMessage: `SUPERAGENT advisory G-1: 本会话已改 ${next.lines} 行 / ${next.files.length} 个文件（${scope}）${paths}${fresh}，建议改用 superagent quick 交将军编码；本次不拦截。`};
+    }
     return null;
-  });
+  }, false);
   if (!file) return {systemMessage: 'SUPERAGENT advisory G-1: 缺少会话身份，无法累计本次写入，已放行。'};
   try { return withState(file, check); }
   catch (error) { return {systemMessage: `SUPERAGENT advisory G-1: 无法计量本次写入（${error.message}），已放行；请检查计量状态。`}; }
