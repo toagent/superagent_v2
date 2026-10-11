@@ -140,7 +140,6 @@ nodes:
         - needs
   - id: verify-core
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - code-core
@@ -172,10 +171,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -235,6 +242,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: repair-core
     command: sa-repair
     model: '@sa-coder'
@@ -336,7 +344,6 @@ nodes:
         - needs
   - id: settle-core
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - verify-core
@@ -373,10 +380,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -436,9 +451,9 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: diff-m1-r1
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - settle-core
@@ -468,10 +483,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -531,6 +554,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: attempt-review-m1-r1
     always_run: true
     depends_on:
@@ -599,9 +623,16 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               command:
-                type: [string, 'null']
+                type:
+                  - string
+                  - 'null'
               carry_over:
                 type: boolean
             required:
@@ -653,6 +684,7 @@ nodes:
       - review-m1-r1
     with:
       kind: gate
+      review: '1'
       round: 1
       R1:
         from: $review-m1-r1.output
@@ -768,7 +800,6 @@ nodes:
         - needs
   - id: diff-m1-r2
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - fix-m1-r2
@@ -801,10 +832,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -864,6 +903,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: attempt-review-m1-r2
     always_run: true
     depends_on:
@@ -934,9 +974,16 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               command:
-                type: [string, 'null']
+                type:
+                  - string
+                  - 'null'
               carry_over:
                 type: boolean
             required:
@@ -988,6 +1035,7 @@ nodes:
       - review-m1-r2
     with:
       kind: gate
+      review: '1'
       round: 2
       R1:
         from: $review-m1-r1.output
@@ -1107,7 +1155,6 @@ nodes:
         - needs
   - id: diff-m1-r3
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - fix-m1-r3
@@ -1140,10 +1187,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1203,6 +1258,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: attempt-review-m1-r3
     always_run: true
     depends_on:
@@ -1273,9 +1329,16 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               command:
-                type: [string, 'null']
+                type:
+                  - string
+                  - 'null'
               carry_over:
                 type: boolean
             required:
@@ -1327,6 +1390,7 @@ nodes:
       - review-m1-r3
     with:
       kind: gate
+      review: '1'
       round: 3
       R1:
         from: $review-m1-r1.output
@@ -1485,7 +1549,6 @@ nodes:
         - needs
   - id: verify-api
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - code-api
@@ -1517,10 +1580,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1580,6 +1651,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: repair-api
     command: sa-repair
     model: '@sa-coder'
@@ -1681,7 +1753,6 @@ nodes:
         - needs
   - id: settle-api
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - verify-api
@@ -1718,10 +1789,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1781,9 +1860,9 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: diff-m2-r1
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - settle-api
@@ -1813,10 +1892,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1876,6 +1963,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: attempt-review-m2-r1
     always_run: true
     depends_on:
@@ -1944,9 +2032,16 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               command:
-                type: [string, 'null']
+                type:
+                  - string
+                  - 'null'
               carry_over:
                 type: boolean
             required:
@@ -1998,6 +2093,7 @@ nodes:
       - review-m2-r1
     with:
       kind: gate
+      review: '1'
       round: 1
       R1:
         from: $review-m2-r1.output
@@ -2112,7 +2208,6 @@ nodes:
         - needs
   - id: diff-m2-r2
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - fix-m2-r2
@@ -2145,10 +2240,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -2208,6 +2311,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: attempt-review-m2-r2
     always_run: true
     depends_on:
@@ -2278,9 +2382,16 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               command:
-                type: [string, 'null']
+                type:
+                  - string
+                  - 'null'
               carry_over:
                 type: boolean
             required:
@@ -2332,6 +2443,7 @@ nodes:
       - review-m2-r2
     with:
       kind: gate
+      review: '1'
       round: 2
       R1:
         from: $review-m2-r1.output
@@ -2450,7 +2562,6 @@ nodes:
         - needs
   - id: diff-m2-r3
     script: sa-check
-    timeout: 155000
     runtime: bun
     depends_on:
       - fix-m2-r3
@@ -2483,10 +2594,18 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               evidence:
                 type: string
-            required: [command, failure_class, evidence]
+            required:
+              - command
+              - failure_class
+              - evidence
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -2546,6 +2665,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+    timeout: 155000
   - id: attempt-review-m2-r3
     always_run: true
     depends_on:
@@ -2616,9 +2736,16 @@ nodes:
                 type: string
               failure_class:
                 type: string
-                enum: [product, test_env, fixture, baseline, test_data]
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
               command:
-                type: [string, 'null']
+                type:
+                  - string
+                  - 'null'
               carry_over:
                 type: boolean
             required:
@@ -2670,6 +2797,7 @@ nodes:
       - review-m2-r3
     with:
       kind: gate
+      review: '1'
       round: 3
       R1:
         from: $review-m2-r1.output

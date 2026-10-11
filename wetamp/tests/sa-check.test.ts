@@ -1002,6 +1002,36 @@ function planFile(root: string, accept: string, environment: string[] = []): str
 }
 
 describe('sa-check script', () => {
+  test('NR: no review passes TESTED only with green advance and effective risk below G2', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      plan = fixturePlan(root, repo);
+    const gate = (risk: string, reviewed = false) =>
+      runScript(repo, {
+        kind: 'gate',
+        plan,
+        round: '1',
+        review: '0',
+        risk: 'G1',
+        milestone: 'm1',
+        pkgs: 'core',
+        tag: 'gate-m1-r1',
+        r1: JSON.stringify(reviewed ? R('PASS') : null),
+        c1: JSON.stringify({ ...C('a'), disposition: 'advance', risk }),
+      });
+    expect(gate('G1')).toMatchObject({
+      code: 0,
+      out: {
+        verdict: 'pass',
+        grade: 'TESTED',
+        reason: 'review_not_required',
+        identity: null,
+        debt: [],
+      },
+    });
+    expect(gate('G2')).toMatchObject({ code: 1, err: expect.stringContaining('gate: no review') });
+    expect(gate('G2', true)).toMatchObject({ code: 0, out: { grade: 'PASS', risk: 'G2' } });
+  });
   test('B1 same-diff reuses a qualified review after acceptance recovers; contract or identity drift refuses reuse', () => {
     const root = tmp(),
       repo = gitRepo(root),

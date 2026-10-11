@@ -22,6 +22,7 @@ export interface Pkg {
   risk: 'G0' | 'G1' | 'G2';
   size: 'S' | 'M' | 'L';
   signoff?: 'auto' | 'human';
+  review?: boolean;
   notes?: string;
   milestone?: string;
   caps?: Partial<Caps>;
@@ -66,6 +67,7 @@ export interface Milestone {
   packages: Pkg[];
   risk: Pkg['risk'];
   human: boolean;
+  review: boolean;
 }
 
 interface AjvError {
@@ -185,6 +187,12 @@ export function milestones(plan: Plan): Milestone[] {
   return order.map(id => {
     const group = pkgs.filter(p => ms(p) === id);
     const risk = RISK_ORDER[Math.max(...group.map(p => RISK_ORDER.indexOf(p.risk)))];
-    return { id, packages: group, risk, human: group.some(p => p.signoff === 'human') };
+    return {
+      id,
+      packages: group,
+      risk,
+      human: group.some(p => p.signoff === 'human'),
+      review: risk === 'G2' || plan.mode === 'strict' || group.some(p => p.review === true),
+    };
   });
 }

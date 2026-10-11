@@ -943,7 +943,13 @@ function gate(): void {
     strict: plan().mode === 'strict',
     expired: expired(),
   };
-  let d = decide(decision);
+  const tested = env('REVIEW') === '0' && !decision.strict && !decision.expired &&
+    reviews.every(r => r === null) && rechecks.at(-1)?.ok === true &&
+    rechecks.at(-1)?.disposition === 'advance' && risk !== 'G2';
+  let d: ReturnType<typeof decide> = tested
+    ? { verdict: 'pass', rounds: round, reason: 'review_not_required', debt: [],
+        ledger: ledgerOf(reviews, risk, decision) }
+    : decide(decision);
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
     .filter(i => i >= 0)
@@ -976,13 +982,13 @@ function gate(): void {
       : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
   }
   const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';
-  if (d.verdict === 'pass' && reviewed === undefined)
+  if (!tested && d.verdict === 'pass' && reviewed === undefined)
     Object.assign(d, { verdict: 'escalate', reason: 'review_incomplete' });
   if (identity && rechecks.at(-1)?.same) d = decide({ ...decision, qualifiedReview: why === null });
   const ledgerFile = join(artifacts, `${tag}.ledger.json`);
   writeFileSync(ledgerFile, JSON.stringify(d.ledger, null, 2));
-  let grade: string | null = null;
-  if (d.verdict === 'pass') {
+  let grade: string | null = tested ? 'TESTED' : null;
+  if (d.verdict === 'pass' && !tested) {
     grade = why ? 'DEGRADED_PASS' : 'PASS';
     if (why)
       Object.assign(

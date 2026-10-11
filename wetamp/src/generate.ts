@@ -385,7 +385,8 @@ export function buildWorkflow(
         // 验收未 advance 不烧评审调用；修复无变化（same）同样跳过，gate 直接 escalate
         when:
           `$diff-${t}.output.disposition == 'advance'` +
-          (r > 1 ? ` && $diff-${t}.output.same != 'true'` : ''),
+          (r > 1 ? ` && $diff-${t}.output.same != 'true'` : '') +
+          (m.review ? '' : ` && $diff-${t}.output.risk == 'G2'`),
         ...(fake
           ? { bash: fakeReview(r) }
           : {
@@ -426,6 +427,7 @@ export function buildWorkflow(
           [`diff-${t}`, `review-${t}`],
           {
             kind: 'gate',
+            review: m.review ? '1' : '0',
             round: r,
             ...rounds,
             risk: m.risk,
