@@ -727,3 +727,12 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 自检证据：新增回归在修复前失败、修复后通过；FIXC4/FIXC5 与 Git 定位定向回归 5 pass/0 fail、128 断言，主控提供的 `/tmp/rv-c3-variants.cjs` 11/11 符合预期且 exit 0；hooks 净增 7 行。完整套件与隔离 selftest、提交后同一临时 home 的 verify-local 回执保存在 `/tmp/fixc5-accept.sZ4JnM`，最终结果见本次交付回执。
 - 提交前验收：tsc、eslint src、hooks 语法检查与 diff --check exit 0；hooks 74 pass/0 fail，完整 bun test 915 pass/0 fail、3 snapshots（266.90s），隔离 selftest --fake exit 0、ok:true。提交后 verify-local 在同一临时 home 绑定最终 HEAD。
 - 遗留与验收边界：解释器/外部脚本间接效果仍按既有策略处理；卡片要求只做编码与自检，不再委派或评审，后续主控实测由主控执行。
+
+## B1-FIXC6：外部仓库的非破坏 Git 写入默认放行
+
+- 问题与被推翻的假设：Git 写入不等于销毁既有内容；FIXC5 的检出身份检查覆盖全部写入，误拦了外部仓库的 fetch、add、commit 和新建分支。新增回归在修复前复现主控身份的 `cd R && git fetch -q origin` 被拒。仓库协作归属由 COORD 管理，REDLINE 不据此拒绝普通新增操作。
+- 新语义与复用：`shell-effects.json` 统一定义破坏性子命令、条件标志和强制标志，删除笼统的 Git write 清单；代码将这些效果组合后，只对破坏操作调用既有 Git 定位三态与 `taskOwnership`，不列举放行样例。外部/未知定位的 fetch、新提交、新分支/标签、add、init、clone、stash push 放行；丢弃工作区/索引、删除或移动既有引用、改写历史、强制操作和 push 仍拒绝。新增引用与强制覆盖引用分别验证；嵌套 checkout 的破坏操作继续拒绝，reviewer 只读、配置保护、受保护引用与 mktemp 归属保持原约束。
+- 不变量与证据：遵循 P1–P4，复用 AST、Git 调用解析与 deny/advisory 通道，无新增依赖、运行状态或配置开关。五条生产误拦命令经真实 guard 在主控/worker 两种身份回放；纯判定矩阵覆盖外部及未知定位的普通新增和破坏标志，不执行破坏样例。旧测试中外部 add/嵌套 commit 的拒绝断言更新为本卡要求的放行，R1/R2/R3 的破坏操作探针保留。
+- 旧 run/生产影响：安装更新后既有会话采用本次更窄的 REDLINE 规则，`error_class=redline` 和消费者契约不变。本包仅改指定 worktree 的两份 hooks、hooks 测试与本节；未修改生产 checkout/台账、packages、supervisor 或提醒事项，未合并、push 或部署。
+- 遗留与验收边界：解释器和外部脚本的间接效果继续遵循既有策略；本卡只编码与自检，不再委派或评审，生产实测由主控完成。验收证据与隔离 selftest、提交后同一临时 home 的 verify-local 回执在 `/tmp/fixc6-accept.SQctam`；最终结果以本次交付及提交绑定回执为准。
+- 提交前验收：tsc、eslint src、hooks 语法检查及 diff --check exit 0；hooks 77 pass/0 fail，完整 bun test 918 pass/0 fail、3 snapshots（345.89s），FIXC6 三项定向回归 456 个断言通过，R3 变体 11/11、exit 0。隔离 selftest --fake exit 0、ok:true；首次把两种身份的全部 guard 回放放入一个用例触发 5 秒超时，按身份拆分后保持全部断言通过。hooks（含 JSON）净减少 1 行，提交后同一隔离 home 以 verify.json 校验最终 HEAD。
