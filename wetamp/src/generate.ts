@@ -536,7 +536,14 @@ const fakeEdit = (p: Pkg, line: string): string => {
   ].join('\n');
 };
 
-const FAKE_HIGH = { id: 'R1-1', severity: 'high', file: 'fake', line: 1 };
+const FAKE_HIGH = {
+  id: 'R1-1',
+  severity: 'high',
+  file: 'fake',
+  line: 1,
+  failure_class: 'product',
+  command: null,
+};
 /** 桩评审：第 1 轮 open 一条 high；之后按原 id 关闭并附证据（gate 只认这种关闭）。 */
 const fakeReview = (r: number): string => {
   const findings = [

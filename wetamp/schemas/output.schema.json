@@ -1,6 +1,10 @@
 {
   "$comment": "Node output_format (AI nodes; accept/head are deterministic sa-check/bash nodes). Codex strict mode: every key required, optional values as null unions, no length/range keywords. Field set is v2 coder/reviewer results flattened (anyOf → single branch) plus reviewer debt.",
   "$defs": {
+    "failure_class": {
+      "type": "string",
+      "enum": ["product", "test_env", "fixture", "baseline", "test_data"]
+    },
     "coder": {
       "type": "object",
       "properties": {
@@ -135,11 +139,26 @@
               "evidence": {
                 "type": "string"
               },
+              "failure_class": {
+                "type": "string",
+                "enum": ["product", "test_env", "fixture", "baseline", "test_data"]
+              },
+              "command": { "type": ["string", "null"] },
               "carry_over": {
                 "type": "boolean"
               }
             },
-            "required": ["id", "severity", "file", "line", "status", "evidence", "carry_over"]
+            "required": [
+              "id",
+              "severity",
+              "file",
+              "line",
+              "status",
+              "evidence",
+              "carry_over",
+              "failure_class",
+              "command"
+            ]
           }
         },
         "fixture_confirmations": {
@@ -178,6 +197,22 @@
     "accept": {
       "type": "object",
       "properties": {
+        "workspace_clean": { "type": "boolean" },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "command": { "type": "string" },
+              "failure_class": {
+                "type": "string",
+                "enum": ["product", "test_env", "fixture", "baseline", "test_data"]
+              },
+              "evidence": { "type": "string" }
+            },
+            "required": ["command", "failure_class", "evidence"]
+          }
+        },
         "coder_partial": { "type": "boolean" },
         "self_report_conflict": { "type": "boolean" },
         "error_class_ignored": { "type": "boolean" },

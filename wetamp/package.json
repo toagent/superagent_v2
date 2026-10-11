@@ -12,6 +12,7 @@
     "@types/react": "^19.3.0"
   },
   "scripts": {
-    "generate:reasons": "bun scripts/generate-reasons.ts"
+    "generate:reasons": "bun scripts/generate-reasons.ts",
+    "generate:failure-class": "bun scripts/generate-failure-class.ts"
   }
 }
