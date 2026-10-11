@@ -63,18 +63,9 @@ export function memoryOverview(s: Snapshot, data = memoryData(Date.parse(s.at)),
         .length,
       c.runs.filter(r => ['completed', 'failed', 'cancelled'].includes(r.state)).length
     ),
-    人工干预次数: c.runs.reduce(
-      (n, r) =>
-        n +
-        Math.max(
-          r.interventions ?? 0,
-          latest
-            .find(e => e.source === 'run' && e.id === r.id)
-            ?.dispositions.filter(d => ['ask', 'approve', 'reject', 'retry'].includes(d.action))
-            .length ?? 0
-        ),
-      0
-    ),
+    人工干预次数: c.runs.every(r => r.interventions !== undefined)
+      ? c.runs.reduce((n, r) => n + r.interventions!, 0)
+      : '未知',
     '每个交付包 token': packageTokens.length
       ? fmtTokens(
           Math.round(

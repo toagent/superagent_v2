@@ -187,6 +187,12 @@ export interface Ledger {
   /** supervise-tick 的处置记录（最近 20 条）。 */
   dispositions?: Disposition[];
   intervened?: boolean;
+  /** Append-only explicit decisions; absent on historical runs with unknown coverage. */
+  intervention_events?: (Pick<Disposition, 'at' | 'action' | 'ok' | 'error'> & {
+    source: 'superagent' | 'cli' | 'commander';
+    ask_id?: string;
+    key?: string;
+  })[];
   budget_grants?: {
     at: string;
     milestone: string;
@@ -252,6 +258,45 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
     Bun.sleepSync(100);
   }
 }
+
+function intervention<T extends number | boolean | { ok: boolean; busy?: boolean }>(
+  l: Ledger,
+  action: string,
+  execute: () => T,
+  ask?: { key: string; id?: string }
+): T {
+  let ok = false;
+  let busy = false;
+  let error = 'action_failed';
+  try {
+    const result = execute();
+    busy = typeof result === 'object' && result.busy === true;
+    ok = typeof result === 'number' ? result === 0 : typeof result === 'boolean' ? result : result.ok;
+    if (typeof result === 'number') error = `exit:${String(result)}`;
+    return result;
+  } catch (e) {
+    error = e instanceof Error ? e.name : 'thrown'; // Never persist command output or message contents.
+    throw e;
+  } finally {
+    if (!busy)
+      updateLedger(l, cur => {
+        if (ask && cur.intervention_events?.some(e => e.key === ask.key)) return;
+        (cur.intervention_events ??= []).push({
+          at: new Date().toISOString(),
+          action,
+          source: ask ? 'superagent' : caller(true).client === 'shell' ? 'cli' : 'commander',
+          ...(ask ? { key: ask.key, ask_id: ask.id } : {}),
+          ok,
+          ...(!ok ? { error } : {}),
+        });
+      });
+  }
+}
+
+const answerAction = <T extends { ok: boolean }>(l: Ledger, key: string, a: Ask, execute: () => T): T =>
+  a.status === 'yes' || a.status === 'no'
+    ? intervention(l, 'answer', execute, { key, id: a.id })
+    : execute();
 
 export interface Classified {
   state: string;
@@ -813,7 +858,7 @@ function startRun(planPath: string, a: Args): number {
           transcript: '',
           log: '',
           recoveries: [],
-          intervened: false,
+          intervention_events: [],
           launcher: launcher(home().sa),
           controller,
         };
@@ -958,8 +1003,10 @@ function health(cwd?: string): number {
   return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
 }
 
-function resumeRun(l: Ledger, fresh = false, reconciled?: string): number {
-  const res = recoverRun(l, fresh, undefined, undefined, undefined, reconciled);
+function resumeRun(l: Ledger, fresh = false, reconciled?: string, action = 'recover'): number {
+  const res = intervention(l, action, () =>
+    recoverRun(l, fresh, undefined, undefined, undefined, reconciled)
+  );
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
   return res.ok ? 0 : res.held ? EXIT.held : 1;
@@ -1088,7 +1135,11 @@ function retryAllHeld(): number {
       if ('error' in l) throw new Error(l.error);
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
-      return [control(l, () => ({ run_id: l.run_id, state: c.state, ...retry(l, c) }))];
+      return [control(l, () => intervention(l, 'decide', () => ({
+        run_id: l.run_id,
+        state: c.state,
+        ...retry(l, c),
+      })))];
     } catch (e) {
       return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
     }
@@ -1110,10 +1161,6 @@ function decide(l: Ledger, a: Args): number {
     });
     return 1;
   }
-  if (['approve', 'reject', 'retry'].includes(action))
-    updateLedger(l, cur => {
-      cur.intervened = true;
-    });
   if (action === 'approve') {
     if (pastDeadline(l)) {
       print({ run_id: l.run_id, ok: false, reason: PAST_DEADLINE });
@@ -1140,7 +1187,7 @@ function decide(l: Ledger, a: Args): number {
       throw new Error('decide retry --hint needs --pkg <package id from the plan>');
     writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
   }
-  const res = retry(l, c);
+  const res = intervention(l, 'decide', () => retry(l, c));
   if (!res.ok && res.busy) return busyExit(l, res);
   print({ run_id: l.run_id, ...res });
   return res.ok ? 0 : res.held ? EXIT.held : 1;
@@ -1379,6 +1426,8 @@ function consumeAnswer(
   effect: DecisionEffect,
   asks: Asks
 ): void {
+  // Reconciled acknowledgements use the same decision key as the original execution.
+  intervention(l, 'answer', () => true, { key, id: a.id });
   if (effect.action === 'reject')
     updateLedger(l, cur => {
       cur.rejected = effect.engine_run;
@@ -1497,42 +1546,43 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     return { ...base, action: 'none', ok: false, reason: `${p.conflict}; decide approve|reject` };
   const b = { ...base, ...(p.note ? { reason: p.note } : {}) };
   if (p.asked) return { ...b, action: 'ask', ok: true, ask: p.asked };
-  // yes/no 的执行失败保留原状态，下一次 tick 重试
-  if (p.a.status === 'yes') {
-    // 等回答期间可能已过截止：过期的“是”不再批准
-    if (pastDeadline(l)) return expireRun(l, run, asks, base);
-    beginAnswer(l, w.nodeId, p.a, 'yes', asks);
-    const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
-    const r = signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
-    if (r.ok)
-      consumeAnswer(
-        l,
-        w.nodeId,
-        key,
-        p.a,
-        'yes',
-        { action: 'approve', engine_run: l.archon_run_id },
-        asks
-      );
-    return { ...b, action: 'approve', ...r };
-  }
-  if (p.a.status === 'no') {
-    beginAnswer(l, w.nodeId, p.a, 'no', asks);
-    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-    if (ok)
-      consumeAnswer(
-        l,
-        w.nodeId,
-        key,
-        p.a,
-        'no',
-        { action: 'reject', engine_run: l.archon_run_id },
-        asks
-      );
-    return { ...b, action: 'reject', ok };
-  }
-  // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
-  return { ...b, action: 'none', ok: true, ask: p.a.status };
+  if (p.a.status === 'yes' && pastDeadline(l)) return expireRun(l, run, asks, base);
+  return answerAction(l, key, p.a, () => {
+    // yes/no 的执行失败保留原状态，下一次 tick 重试
+    if (p.a.status === 'yes') {
+      beginAnswer(l, w.nodeId, p.a, 'yes', asks);
+      const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
+      const r = signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
+      if (r.ok)
+        consumeAnswer(
+          l,
+          w.nodeId,
+          key,
+          p.a,
+          'yes',
+          { action: 'approve', engine_run: l.archon_run_id },
+          asks
+        );
+      return { ...b, action: 'approve', ...r };
+    }
+    if (p.a.status === 'no') {
+      beginAnswer(l, w.nodeId, p.a, 'no', asks);
+      const ok = cancelRun(l.archon_run_id, run.status, l.repo);
+      if (ok)
+        consumeAnswer(
+          l,
+          w.nodeId,
+          key,
+          p.a,
+          'no',
+          { action: 'reject', engine_run: l.archon_run_id },
+          asks
+        );
+      return { ...b, action: 'reject', ok };
+    }
+    // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
+    return { ...b, action: 'none', ok: true, ask: p.a.status };
+  });
 }
 
 /** Archon 审批门（非 sa.human.*）的“是”：approve --detach 放行并续跑。 */
@@ -1568,70 +1618,72 @@ function askHold(
     return { ...base, action: 'none', ok: false, error: `${r.conflict}; decide retry|reject` };
   const b = { ...base, ...(r.note ? { note: r.note } : {}) };
   if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
-  if (r.a.status === 'yes') {
-    beginAnswer(l, c.node ?? '', r.a, 'yes', asks);
-    let effect: DecisionEffect | undefined =
-      p.yes === 'approve' ? { action: 'approve', engine_run: l.archon_run_id } : undefined;
-    const onEffect = (actual: DecisionEffect): void => {
-      effect = actual;
-      if (r.a.decision) r.a.decision.effect = actual;
-      saveAsks(asks);
-    };
-    const res =
-      p.yes === 'approve'
-        ? approveRun(l)
-        : p.yes === 'resume'
-          ? recoverRun(l, true, undefined, undefined, onEffect)
-          : p.yes === 'review'
-            ? retryGate(
-                l,
-                `review-${(c.node ?? '').slice(5)}`,
-                true,
-                undefined,
-                undefined,
-                undefined,
-                onEffect
-              )
-            : retry(
-                l,
-                c,
-                hold === 'budget'
-                  ? () => {
-                      grantBudget(l, c.node ?? '', key);
-                    }
-                  : undefined,
-                hold === 'budget' ? key : undefined,
-                onEffect
-              );
-    if (res.ok) {
-      if (!effect) throw new Error('decision recovery succeeded without an execution receipt');
-      consumeAnswer(l, c.node ?? '', key, r.a, 'yes', effect, asks);
+  return answerAction(l, key, r.a, () => {
+    if (r.a.status === 'yes') {
+      beginAnswer(l, c.node ?? '', r.a, 'yes', asks);
+      let effect: DecisionEffect | undefined =
+        p.yes === 'approve' ? { action: 'approve', engine_run: l.archon_run_id } : undefined;
+      const onEffect = (actual: DecisionEffect): void => {
+        effect = actual;
+        if (r.a.decision) r.a.decision.effect = actual;
+        saveAsks(asks);
+      };
+      const res =
+        p.yes === 'approve'
+          ? approveRun(l)
+          : p.yes === 'resume'
+            ? recoverRun(l, true, undefined, undefined, onEffect)
+            : p.yes === 'review'
+              ? retryGate(
+                  l,
+                  `review-${(c.node ?? '').slice(5)}`,
+                  true,
+                  undefined,
+                  undefined,
+                  undefined,
+                  onEffect
+                )
+              : retry(
+                  l,
+                  c,
+                  hold === 'budget'
+                    ? () => {
+                        grantBudget(l, c.node ?? '', key);
+                      }
+                    : undefined,
+                  hold === 'budget' ? key : undefined,
+                  onEffect
+                );
+      if (res.ok) {
+        if (!effect) throw new Error('decision recovery succeeded without an execution receipt');
+        consumeAnswer(l, c.node ?? '', key, r.a, 'yes', effect, asks);
+      }
+      if (!res.ok && (res.busy || res.refused)) {
+        delete r.a.decision;
+        saveAsks(asks);
+      }
+      const out = res.ok
+        ? { ok: true }
+        : { ok: false, error: res.reason, ...(res.busy ? { busy: true } : {}) };
+      return { ...b, action: p.yes, ...out };
     }
-    if (!res.ok && (res.busy || res.refused)) {
-      delete r.a.decision;
-      saveAsks(asks);
+    if (r.a.status === 'no') {
+      beginAnswer(l, c.node ?? '', r.a, 'no', asks);
+      const ok = cancelRun(l.archon_run_id, run.status, l.repo);
+      if (ok)
+        consumeAnswer(
+          l,
+          c.node ?? '',
+          key,
+          r.a,
+          'no',
+          { action: 'reject', engine_run: l.archon_run_id },
+          asks
+        );
+      return { ...b, action: 'reject', ok };
     }
-    const out = res.ok
-      ? { ok: true }
-      : { ok: false, error: res.reason, ...(res.busy ? { busy: true } : {}) };
-    return { ...b, action: p.yes, ...out };
-  }
-  if (r.a.status === 'no') {
-    beginAnswer(l, c.node ?? '', r.a, 'no', asks);
-    const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-    if (ok)
-      consumeAnswer(
-        l,
-        c.node ?? '',
-        key,
-        r.a,
-        'no',
-        { action: 'reject', engine_run: l.archon_run_id },
-        asks
-      );
-    return { ...b, action: 'reject', ok };
-  }
-  return { ...b, action: 'none', ok: true, ask: r.a.status };
+    return { ...b, action: 'none', ok: true, ask: r.a.status };
+  });
 }
 
 /** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。asks.json 的唯一写者。 */
@@ -2066,7 +2118,6 @@ function record(l: Ledger, reason: string, x: Action): Action {
   };
   try {
     updateLedger(l, cur => {
-      if (['ask', 'approve', 'reject'].includes(d.action)) cur.intervened = true;
       cur.dispositions = [...(cur.dispositions ?? []), d].slice(-MAX_DISPOSITIONS);
     });
     return x;
@@ -2354,9 +2405,9 @@ export function main(argv: string[]): number {
     const resolved = resolveTarget(id);
     return 'run_id' in resolved ? resolved : loadLedger(resolved.id);
   };
-  const controlled = (l: Ledger, f: () => number): number =>
+  const controlled = (l: Ledger, f: () => number, record = true): number =>
     control(l, controller => {
-      const code = f();
+      const code = record ? intervention(l, verb, f) : f();
       if (code === 0)
         updateLedger(l, cur => {
           cur.controller = controller;
@@ -2433,13 +2484,7 @@ export function main(argv: string[]): number {
         print({ run_id: id, ...res });
         return res.ok ? 0 : res.held ? EXIT.held : res.busy ? EXIT.running : 1;
       }
-      const l = resolved,
-        code = controlled(l, () => resumeRun(l, false, a.flags.reconciled));
-      if (code === 0)
-        updateLedger(l, cur => {
-          cur.intervened = true;
-        });
-      return code;
+      return controlled(resolved, () => resumeRun(resolved, false, a.flags.reconciled, verb), false);
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);
@@ -2448,10 +2493,12 @@ export function main(argv: string[]): number {
       const ok =
         'run_id' in resolved
           ? control(resolved, () =>
-              cancelRun(
-                resolved.archon_run_id,
-                getRun(resolved.archon_run_id, resolved.repo).status,
-                resolved.repo
+              intervention(resolved, 'cancel', () =>
+                cancelRun(
+                  resolved.archon_run_id,
+                  getRun(resolved.archon_run_id, resolved.repo).status,
+                  resolved.repo
+                )
               )
             )
           : (() => {
@@ -2473,7 +2520,7 @@ export function main(argv: string[]): number {
       }
       {
         const l = ledger(true);
-        return controlled(l, () => decide(l, a));
+        return controlled(l, () => decide(l, a), a._[2] !== 'retry');
       }
     case 'brief':
       return brief(ledger());

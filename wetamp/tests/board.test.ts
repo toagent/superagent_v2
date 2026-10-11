@@ -122,6 +122,19 @@ function ledger(
 }
 
 describe('data rows', () => {
+  test('interventions use explicit events, never automatic asks or legacy booleans', () => {
+    const run: RunView = { id: 'a-sa1', status: 'failed' };
+    const l = ledger('sa1', run, {
+      intervened: true, recoveries: ['a'],
+      dispositions: [{ at: '2026-10-12T00:00:00Z', action: 'ask', reason: 'needs', ok: true }],
+    });
+    const count = () => cockpit(snapshotOf([{ ledger: l, run }])).runs[0]?.interventions;
+    expect(count()).toBeUndefined();
+    l.intervention_events = [];
+    expect(count()).toBe(0);
+    l.intervention_events.push({ at: '2026-10-12T00:00:00Z', action: 'cancel', source: 'cli', ok: false });
+    expect(count()).toBe(1);
+  });
   test('normal row: progress, current node and role from the generated workflow, elapsed, held', () => {
     const l = ledger('sa1', { status: 'paused' });
     mkdirSync(join(l.gen_dir, '.archon', 'workflows', l.workflow), { recursive: true });
@@ -708,7 +721,8 @@ test('summarize, report and the board share one summary', async () => {
   );
   const f = ledger('f', { status: 'failed', nodes: [{ nodeId: 'verify-a', state: 'failed' }] });
   // report 另带 usage（F-22，report.test.ts 覆盖）；计数摘要部分与 summarize、board 同源
-  const { usage, metrics, ...expected } = report();
+  const { usage, metrics, interventions, ...expected } = report();
+  expect(interventions).toMatchObject({ by_run: { g: 'unknown', f: 'unknown' }, unknown: 2 });
   expect(usage).toMatchObject({ total: { calls: 0, coverage: '0/0', input: 'unknown' } });
   expect(expected).toMatchObject({
     runs: 2,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { Plan } from '../src/plan';
-import { callsOf, rollup } from '../src/report';
+import { callsOf, interventionStats, rollup } from '../src/report';
+import type { Ledger } from '../src/cli';
 
 const plan = {
   packages: [{ id: 'core' }, { id: 'api', milestone: 'm2' }],
@@ -31,6 +32,21 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('intervention distribution excludes unknown history and uses all append-only events', () => {
+    const event = { at: '2026-10-12T00:00:00Z', action: 'decide', source: 'cli' as const, ok: false, error: 'exit:1' };
+    const runs = [
+      { run_id: 'old', recoveries: ['a'], intervened: true },
+      { run_id: 'zero', intervention_events: [] },
+      { run_id: 'one', intervention_events: [event] },
+      { run_id: 'many', intervention_events: Array.from({ length: 25 }, () => event) },
+    ] as Ledger[];
+    expect(interventionStats(runs)).toEqual({
+      by_run: { old: 'unknown', zero: 0, one: 1, many: 25 },
+      known: 3, unknown: 1, median: 1, max: 25, zero_share: 1 / 3,
+    });
+    expect(interventionStats(runs.slice(0, 1))).toMatchObject({ median: 'unknown', max: 'unknown', zero_share: 'unknown' });
+    expect(interventionStats(runs.slice(1, 3)).median).toBe(0.5);
+  });
   const events = [
     ev('node_started', 'code-core'),
     ev('node_completed', 'code-core'),

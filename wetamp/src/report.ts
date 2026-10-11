@@ -143,6 +143,24 @@ function planOf(l: Ledger): Plan | null {
   }
 }
 
+export function interventionStats(ls: Ledger[]): Record<string, unknown> {
+  const by_run = Object.fromEntries(
+    ls.map(l => [l.run_id, l.intervention_events?.length ?? 'unknown'])
+  );
+  const counts = Object.values(by_run)
+    .filter((n): n is number => typeof n === 'number')
+    .sort((a, b) => a - b);
+  const n = counts.length;
+  return {
+    by_run,
+    known: n,
+    unknown: ls.length - n,
+    median: n ? (counts[Math.floor((n - 1) / 2)]! + counts[Math.floor(n / 2)]!) / 2 : 'unknown',
+    max: counts.at(-1) ?? 'unknown',
+    zero_share: n ? counts.filter(c => c === 0).length / n : 'unknown',
+  };
+}
+
 /**
  * 全部登记 run：summarize 计数 + usage（总计、按 run / 里程碑 / 角色 / 第几次调用）。`--events` 的输出不带 nodes，
  * 所以每个 run 查两次：getRun 供 summarize，事件流供用量；事件查不到的 run 记入 usage.unreadable，不吞错。
@@ -169,6 +187,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   return {
     ...snapshot.summary,
     metrics: cockpit(snapshot).metrics,
+    interventions: interventionStats(ls),
     usage: {
       total: rollup(calls),
       by_run: group(calls, c => c.run),

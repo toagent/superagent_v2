@@ -31,6 +31,7 @@ export interface BoardRow {
   coordination?: { owner: Identity | null; presence: Presence; pending: number; error?: string };
   landed?: boolean;
   intervened?: boolean;
+  interventions?: number;
   archon_id?: string;
   coderModel?: string | null;
   engine?: {
@@ -267,10 +268,8 @@ export function rowOf(
         ).status === 0
       );
     })(),
-    intervened:
-      (l.intervened ?? !!l.recoveries.length) ||
-      nodes.some(n => n.nodeId.startsWith('human-') && n.state === 'completed') ||
-      !!l.dispositions?.some(d => ['ask', 'approve', 'reject'].includes(d.action)),
+    interventions: l.intervention_events?.length,
+    intervened: l.intervention_events ? l.intervention_events.length > 0 : undefined,
     nativeState: run.status,
     lastEvent: run.last_activity_at,
     activeNodes: nodes

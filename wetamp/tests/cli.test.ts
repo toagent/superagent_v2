@@ -603,7 +603,9 @@ describe('HF3 latest-engine recovery', () => {
     );
     const before = readFileSync(ledgerPath('sa1'), 'utf8');
     expect(captured(() => main(['resume', 'sa1'])).code).toBe(EXIT.held);
-    expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+    const { intervention_events, ...unchanged } = loadLedger('sa1');
+    expect(unchanged).toEqual(JSON.parse(before));
+    expect(intervention_events).toMatchObject([{ action: 'resume', ok: false }]);
     writeFileSync(bin, original);
     expect(captured(() => main(['resume', 'sa1'])).code).toBe(EXIT.held);
     expect(loadLedger('sa1').archon_run_id).toBe('r');
@@ -1004,6 +1006,7 @@ describe('run (archon stub)', () => {
       expect(result.code, result.out).toBe(0);
       const id = JSON.parse(result.out).run_id as string;
       const ledger = loadLedger(id);
+      expect(ledger.intervention_events).toEqual([]);
       expect(ledger.launch_branch).toBe(detached ? undefined : 'feature/launch');
       expect(JSON.parse(readFileSync(join(ledger.gen_dir, 'plan.json'), 'utf8')).base_ref).toBe(sha);
       expect(s.calls().find(c => c.startsWith('workflow run'))).toContain(`--from ${sha}`);
@@ -2576,6 +2579,42 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     resume: 'workflow resume r --detach --json',
     approve: 'workflow approve r --detach --json',
   };
+
+  test('intervene records failed decide only after execution and excludes private error contents', () => {
+    const { s } = scenes.signoff();
+    patchLedger(s.root, { intervention_events: [] });
+    const signal = spyOn(archonMod, 'signalHuman').mockImplementation(() => {
+      expect(loadLedger('sa1').intervention_events).toEqual([]);
+      return { ok: false, reason: 'token=synthetic-private-message' };
+    });
+    try {
+      expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(1);
+      const events = loadLedger('sa1').intervention_events!;
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ action: 'decide', ok: false, error: 'exit:1' });
+      expect(['cli', 'commander']).toContain(events[0].source);
+      expect(JSON.stringify(events)).not.toContain('synthetic-private-message');
+    } finally {
+      signal.mockRestore();
+    }
+  });
+
+  test('intervene counts one yes decision across its automatic retry and later ticks', () => {
+    const { s } = scenes.budget();
+    patchLedger(s.root, { intervention_events: [] });
+    supervisor(s.root, 'yes');
+    expect(tick()[0]).toMatchObject({ action: 'ask' });
+    expect(loadLedger('sa1').intervention_events).toEqual([]);
+    expect(loadLedger('sa1').intervened).toBeUndefined();
+    expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
+    expect(loadLedger('sa1').intervention_events).toHaveLength(1);
+    expect(loadLedger('sa1').intervention_events![0]).toMatchObject({
+      action: 'answer', source: 'superagent', ask_id: 'ask-1', ok: true,
+    });
+    tick();
+    expect(loadLedger('sa1').intervention_events).toHaveLength(1);
+    expect(resumes(s.calls())).toBe(1);
+  });
 
   for (const [hold, p] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
     if (p.do !== 'ask') {

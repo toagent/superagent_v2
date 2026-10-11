@@ -151,11 +151,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
     return {
       ...(r.coordination ? { coordination: r.coordination } : {}),
-      interventions: Math.max(
-        r.intervened ? 1 : 0,
-        r.engine?.dispositions.filter(d => ['ask', 'approve', 'reject', 'retry'].includes(d.action))
-          .length ?? 0
-      ),
+      interventions: r.interventions,
       firstPass: r.engine?.firstPass,
       progress,
       progressText: progressLabel(progress),
@@ -194,8 +190,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     r =>
       r.state === 'completed' &&
       r.landed &&
-      !r.intervened &&
-      !r.engine?.dispositions.some(d => ['ask', 'approve', 'reject'].includes(d.action))
+      r.interventions === 0
   );
   const fresh = (at: string | null | undefined): boolean => {
     const age = now - Date.parse(at ?? '');

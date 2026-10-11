@@ -250,6 +250,7 @@ function setupMemory() {
   s.rows = episodes.map(e => ({
     ...row(e.id, e.status),
     nativeState: e.status as BoardRow['nativeState'],
+    interventions: e.id === 'held' ? 1 : 0,
   }));
   return { root, s };
 }
@@ -268,6 +269,8 @@ test('EV2 default/all history and evolution metrics match hand-calculated fixtur
     经验有效率: '75%',
     引擎自修复次数: 0,
   });
+  s.rows[0].interventions = undefined;
+  expect(memoryOverview(s, data).metrics.人工干预次数).toBe('未知');
   expect(d.queued).toBe(3);
   expect(d.reflection.yellow).toBe(true);
   const page = memoryPanel(d, false);

@@ -241,6 +241,7 @@ function fixture() {
     transcript: '',
     log: '',
     recoveries: [],
+    intervention_events: [],
   };
   const run: RunView = {
     id: 'r',
@@ -268,12 +269,11 @@ test('M2-06 ended date, real integration, and durable human intervention define 
   expect(rowOf(f.ledger, f.run, { now: f.now }).landed).toBe(true);
   expect(metrics()).toMatchObject({ completed: 1, decided: 1 });
   f.ledger.recoveries = ['2026-10-10T10:00:00Z'];
-  f.ledger.intervened = false;
   expect(metrics().completed).toBe(1); // automatic recovery is not human intervention
-  f.ledger.intervened = true;
+  f.ledger.intervention_events!.push({ at: new Date(f.now).toISOString(), action: 'decide', source: 'commander', ok: true });
   expect(metrics()).toMatchObject({ completed: 0, decided: 1 });
   f.run.nodes!.push({ nodeId: 'human-m1', state: 'completed' });
-  f.ledger.intervened = undefined;
+  f.ledger.intervention_events = undefined;
   expect(metrics().completed).toBe(0);
   f.run.status = 'cancelled';
   expect(metrics().decided).toBe(1);
