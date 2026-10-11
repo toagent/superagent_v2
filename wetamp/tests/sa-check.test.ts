@@ -821,8 +821,13 @@ function runScript(
 ): { code: number; out: unknown; err: string; art: string } {
   const art = join(cwd, '..', 'art');
   mkdirSync(art, { recursive: true });
+  // An engine accept node runs this suite with its own INPUTS_*/WORKFLOW_ID; inheriting them points
+  // the script at the live run's Archon instead of the fixture.
+  const inherited = Object.entries(process.env as Record<string, string>).filter(
+    ([k]) => !k.startsWith('INPUTS_') && k !== 'WORKFLOW_ID'
+  );
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    ...Object.fromEntries(inherited),
     ARTIFACTS_DIR: art,
     ...extraEnv,
   };
