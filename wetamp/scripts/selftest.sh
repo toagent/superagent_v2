@@ -192,7 +192,7 @@ ID=""
 
 # 正式回执 selftest.json 只由非 fake 写；fake 写 selftest-fake.json（preflight 不认）。同目录临时文件 + rename。
 if [ "$FAKE" = 1 ]; then
-  # Prove latest-engine retry refusal after completed coding, using scratch templates only.
+  # Prove latest-engine retry adoption after completed coding, using scratch templates only.
   HF3_TOOLKIT="$TMPH/hf3-toolkit"
   bun -e 'import { cpSync, mkdirSync, symlinkSync } from "node:fs";
     import { join, basename } from "node:path";
@@ -204,7 +204,7 @@ if [ "$FAKE" = 1 ]; then
     symlinkSync(join(src, "node_modules"), join(dst, "wetamp/node_modules"));' "$WETAMP" "$HF3_TOOLKIT"
   HF3_REPO="$REPO"
   if [ "$OWN_REPO" = 0 ]; then
-    # The refusal fixture makes commits; never put them in a supplied operator repo.
+    # The adoption fixture makes commits; never put them in a supplied operator repo.
     HF3_REPO="$TMPH/hf3-repo"
     git clone -q --no-hardlinks --single-branch --branch "$BASE" "$REPO" "$HF3_REPO"
     git -C "$HF3_REPO" branch -m main
@@ -212,7 +212,7 @@ if [ "$FAKE" = 1 ]; then
   # A failed/unknown helper return cannot prove run cleanup.
   # Preserve the entire scratch home until it confirms success.
   LAUNCH_INFLIGHT=1
-  bun "$HF3_TOOLKIT/wetamp/scripts/hf3-adoption-selftest.ts" "$HF3_REPO" "$TIMEOUT" || fail "HF3 latest-engine retry refusal"
+  bun "$HF3_TOOLKIT/wetamp/scripts/hf3-adoption-selftest.ts" "$HF3_REPO" "$TIMEOUT" || fail "HF3 latest-engine retry adoption"
   LAUNCH_INFLIGHT=0
 fi
 

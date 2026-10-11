@@ -113,17 +113,21 @@ try {
     'scratch engine change'
   );
   console.error(`HF3 2/3 engine=${engineGit('rev-parse', 'HEAD')} changed=true`);
-  assert.notEqual(main(['decide', runId, 'retry']), 0);
+  // A changed engine adopts the run; settle-core never advanced, so no package is carried.
+  assert.equal(main(['decide', runId, 'retry']), 0);
   const next = loadLedger(runId);
-  assert.equal(next.archon_run_id, current);
-  assert.equal(next.adoptions, undefined);
-  assert.equal(getRun(current, repo).status, failed.status);
-  console.error(`HF3 3/3 retry=refused run=${current} status=failed adoption=unchanged`);
+  assert.notEqual(next.archon_run_id, current);
+  assert.equal(next.adoptions?.length, 1);
+  assert.equal(next.adoptions[0].from, current);
+  assert.deepEqual(next.adoptions[0].carried, []);
+  console.error(`HF3 3/3 retry=adopted run=${next.archon_run_id} from=${current} carried=none`);
 } finally {
   // Every run here belongs to this selftest. Abandon only a nonterminal owned run.
-  const run = getRun(current, repo);
-  if (!['failed', 'cancelled', 'completed'].includes(run.status))
-    c.mutate(c.scope(runId), who, () =>
-      archonJson(['workflow', run.status === 'running' ? 'cancel' : 'abandon', current], repo)
-    );
+  for (const id of new Set([current, loadLedger(runId).archon_run_id])) {
+    const run = getRun(id, repo);
+    if (!['failed', 'cancelled', 'completed'].includes(run.status))
+      c.mutate(c.scope(runId), who, () =>
+        archonJson(['workflow', run.status === 'running' ? 'cancel' : 'abandon', id], repo)
+      );
+  }
 }
