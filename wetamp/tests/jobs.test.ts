@@ -123,7 +123,11 @@ describe('job registry', () => {
     const old = put({ id: 'old-readonly', state: 'done', ended_at: '2026-10-09T11:00:00Z' });
     const lost = put({ id: 'lost-readonly', pid: 99999999, wrapper_pid: 99999999 });
     const bytes = readFileSync(lost, 'utf8');
-    expect(readJobs(NOW, true).jobs.map(j => j.state).sort()).toEqual(['done', 'lost']);
+    expect(
+      readJobs(NOW, true)
+        .jobs.map(j => j.state)
+        .sort()
+    ).toEqual(['done', 'lost']);
     expect(existsSync(old)).toBe(true);
     expect(readFileSync(lost, 'utf8')).toBe(bytes);
   });
@@ -213,18 +217,36 @@ describe('job exec', () => {
       expect([end.state, end.signal, end.exit_code]).toEqual(['failed', 'SIGTERM', undefined]);
       expect(() => process.kill(end.pid, 0)).toThrow();
     } finally {
-      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+      if (p.exitCode === null) {
+        p.kill('SIGTERM');
+        await p.exited;
+      }
     }
   });
 
-  for (const [signal, code] of [['SIGTERM', 143], ['SIGHUP', 129], ['SIGINT', 130]] as const) {
+  for (const [signal, code] of [
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+    ['SIGINT', 130],
+  ] as const) {
     test(`wrapper ${signal} is failed even when the child traps it and exits 0`, async () => {
       const ready = join(jobsDir, '..', 'ready');
-      const p = run(['job', 'exec', '--title', 'trap', '--', 'bash', '-c',
-        'trap \'kill "$worker"; wait "$worker"; exit 0\' TERM HUP INT; sleep 30 & worker=$!; touch "$1"; wait "$worker"', '_', ready]);
+      const p = run([
+        'job',
+        'exec',
+        '--title',
+        'trap',
+        '--',
+        'bash',
+        '-c',
+        'trap \'kill "$worker"; wait "$worker"; exit 0\' TERM HUP INT; sleep 30 & worker=$!; touch "$1"; wait "$worker"',
+        '_',
+        ready,
+      ]);
       try {
         expect((await running())?.state).toBe('running');
-        for (const deadline = Date.now() + 5000; !existsSync(ready) && Date.now() < deadline;) await Bun.sleep(25);
+        for (const deadline = Date.now() + 5000; !existsSync(ready) && Date.now() < deadline; )
+          await Bun.sleep(25);
         expect(existsSync(ready)).toBe(true); // The trap is installed before signalling the wrapper.
         p.kill(signal);
         expect(await p.exited).toBe(code);
@@ -232,7 +254,10 @@ describe('job exec', () => {
         expect(only().ended_at).toBeDefined();
         expect(() => process.kill(only().pid, 0)).toThrow();
       } finally {
-        if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+        if (p.exitCode === null) {
+          p.kill('SIGTERM');
+          await p.exited;
+        }
       }
     });
   }
@@ -244,13 +269,24 @@ describe('job exec', () => {
       expect(j?.state).toBe('running');
       process.kill(j!.pid, 'SIGTERM');
       expect(await p.exited).toBe(143);
-      expect([only().state, only().signal, only().exit_code]).toEqual(['failed', 'SIGTERM', undefined]);
+      expect([only().state, only().signal, only().exit_code]).toEqual([
+        'failed',
+        'SIGTERM',
+        undefined,
+      ]);
     } finally {
-      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+      if (p.exitCode === null) {
+        p.kill('SIGTERM');
+        await p.exited;
+      }
     }
   });
 
-  for (const [signal, code] of [['SIGTERM', 143], ['SIGHUP', 129], ['SIGINT', 130]] as const) {
+  for (const [signal, code] of [
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+    ['SIGINT', 130],
+  ] as const) {
     for (const window of ['spawn-return', 'child-exited'] as const) {
       test(`HF8b short child: pending ${signal} during ${window} fails before terminal save`, async () => {
         // A separate wrapper receives real OS signals while synchronous work prevents delivery.
@@ -261,7 +297,9 @@ describe('job exec', () => {
           process.on('${signal}', () => { delivered = true; });
           const interrupt = () => {
             process.kill(process.pid, '${signal}');
-            const until = Date.now() + 80;
+            // Hold delivery until the 30ms child has surely exited; at 80ms a loaded host still had it running,
+            // so the forwarded signal killed it and the run took the (correct) signal-only path instead.
+            const until = Date.now() + 500;
             while (Date.now() < until) {}
           };
           Bun.spawn = (...args) => {
@@ -282,7 +320,8 @@ describe('job exec', () => {
         const p = Bun.spawn(['bun', '-e', script], {
           cwd: WETAMP,
           env: { ...process.env, SA_ADMIT: 'off' },
-          stdout: 'pipe', stderr: 'pipe',
+          stdout: 'pipe',
+          stderr: 'pipe',
         });
         try {
           expect(await p.exited).toBe(code);
@@ -291,14 +330,21 @@ describe('job exec', () => {
           expect(only().ended_at).toBeDefined();
           expect(() => process.kill(only().pid, 0)).toThrow();
         } finally {
-          if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+          if (p.exitCode === null) {
+            p.kill('SIGTERM');
+            await p.exited;
+          }
         }
       });
     }
   }
 
   test('HF8b signals delivered after the commit boundary leave done/0 unchanged', async () => {
-    const p = Bun.spawn(['bun', '-e', `
+    const p = Bun.spawn(
+      [
+        'bun',
+        '-e',
+        `
       import { readFileSync, readdirSync } from 'node:fs';
       import { join } from 'node:path';
       import { jobCli } from './src/jobs';
@@ -311,23 +357,41 @@ describe('job exec', () => {
       process.kill(process.pid, 'SIGTERM');
       await Bun.sleep(25);
       console.log(JSON.stringify({ code, listeners, unchanged: before === readFileSync(file, 'utf8') }));
-    `], { cwd: WETAMP, env: { ...process.env, SA_ADMIT: 'off' }, stdout: 'pipe', stderr: 'pipe' });
+    `,
+      ],
+      { cwd: WETAMP, env: { ...process.env, SA_ADMIT: 'off' }, stdout: 'pipe', stderr: 'pipe' }
+    );
     try {
       expect(await p.exited).toBe(0);
-      expect(JSON.parse(await new Response(p.stdout).text())).toEqual({ code: 0, listeners: 0, unchanged: true });
+      expect(JSON.parse(await new Response(p.stdout).text())).toEqual({
+        code: 0,
+        listeners: 0,
+        unchanged: true,
+      });
       expect(only()).toMatchObject({ state: 'done', exit_code: 0 });
       expect(only().signal).toBeUndefined();
     } finally {
-      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+      if (p.exitCode === null) {
+        p.kill('SIGTERM');
+        await p.exited;
+      }
     }
   });
 
   for (const outcome of ['done', 'catch'] as const) {
-    for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]] as const) {
+    for (const [signal, code] of [
+      ['SIGTERM', 143],
+      ['SIGINT', 130],
+      ['SIGHUP', 129],
+    ] as const) {
       for (const phase of ['before-write', 'before-rename', 'after-rename'] as const) {
         test(`HF8c commit boundary: ${outcome} ${phase} ${signal}`, async () => {
           // Mock fs only in this subprocess; every write/rename and OS signal remains real.
-          const p = Bun.spawn(['bun', '-e', `
+          const p = Bun.spawn(
+            [
+              'bun',
+              '-e',
+              `
             import { mock } from 'bun:test';
             import * as fs from 'node:fs';
             const original = { ...fs };
@@ -361,25 +425,45 @@ describe('job exec', () => {
             console.log(JSON.stringify({ code, injected, delivered, stateAtSignal,
               listeners: ['SIGINT', 'SIGTERM', 'SIGHUP'].map(s => process.listenerCount(s)) }));
             process.exit(code);
-          `], {
-            cwd: WETAMP,
-            env: { ...process.env, SA_ADMIT: outcome === 'catch' ? 'on' : 'off',
-              SA_ADMIT_MIN_FREE: outcome === 'catch' ? 'invalid' : '' },
-            stdout: 'pipe', stderr: 'pipe',
-          });
+          `,
+            ],
+            {
+              cwd: WETAMP,
+              env: {
+                ...process.env,
+                SA_ADMIT: outcome === 'catch' ? 'on' : 'off',
+                SA_ADMIT_MIN_FREE: outcome === 'catch' ? 'invalid' : '',
+              },
+              stdout: 'pipe',
+              stderr: 'pipe',
+            }
+          );
           try {
             expect(await p.exited).toBe(code);
             expect(JSON.parse(await new Response(p.stdout).text())).toEqual({
-              code, injected: true, delivered: true,
-              stateAtSignal: phase === 'after-rename' ? (outcome === 'catch' ? 'failed' : 'done') : (outcome === 'catch' ? 'queued' : 'running'),
-              listeners: signal === 'SIGINT' ? [1, 0, 0] : signal === 'SIGTERM' ? [0, 1, 0] : [0, 0, 1],
+              code,
+              injected: true,
+              delivered: true,
+              stateAtSignal:
+                phase === 'after-rename'
+                  ? outcome === 'catch'
+                    ? 'failed'
+                    : 'done'
+                  : outcome === 'catch'
+                    ? 'queued'
+                    : 'running',
+              listeners:
+                signal === 'SIGINT' ? [1, 0, 0] : signal === 'SIGTERM' ? [0, 1, 0] : [0, 0, 1],
             });
             expect(only()).toMatchObject({ state: 'failed', signal, exit_code: code });
             expect(only().ended_at).toBeDefined();
             if (outcome === 'catch') expect(only().pid).toBe(0);
             else expect(() => process.kill(only().pid, 0)).toThrow();
           } finally {
-            if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+            if (p.exitCode === null) {
+              p.kill('SIGTERM');
+              await p.exited;
+            }
           }
         });
       }
@@ -387,13 +471,19 @@ describe('job exec', () => {
   }
 
   test('HF8c commit boundary: no signal keeps a short child done/0', async () => {
-    expect(await run(['job', 'exec', '--title', 'short', '--', '/bin/sleep', '0.03']).exited).toBe(0);
+    expect(await run(['job', 'exec', '--title', 'short', '--', '/bin/sleep', '0.03']).exited).toBe(
+      0
+    );
     expect(only()).toMatchObject({ state: 'done', exit_code: 0 });
     expect(only().signal).toBeUndefined();
   });
 
   test('HF8c commit boundary: post-return SIGTERM uses default termination and preserves done/0', async () => {
-    const p = Bun.spawn(['bun', '-e', `
+    const p = Bun.spawn(
+      [
+        'bun',
+        '-e',
+        `
       import { readFileSync, readdirSync } from 'node:fs';
       import { join } from 'node:path';
       import { jobCli } from './src/jobs';
@@ -405,18 +495,28 @@ describe('job exec', () => {
       process.kill(process.pid, 'SIGTERM');
       await Bun.sleep(5000);
       process.exit(99);
-    `], { cwd: WETAMP, env: { ...process.env, SA_ADMIT: 'off' }, stdout: 'pipe', stderr: 'pipe' });
+    `,
+      ],
+      { cwd: WETAMP, env: { ...process.env, SA_ADMIT: 'off' }, stdout: 'pipe', stderr: 'pipe' }
+    );
     try {
       expect(await p.exited).toBe(143);
       expect(p.signalCode).toBe('SIGTERM');
-      const result = JSON.parse(await new Response(p.stdout).text()) as { code: number; bytes: string; listeners: number[] };
+      const result = JSON.parse(await new Response(p.stdout).text()) as {
+        code: number;
+        bytes: string;
+        listeners: number[];
+      };
       expect(result.code).toBe(0);
       expect(result.listeners).toEqual([0, 0, 0]);
       expect(readFileSync(join(jobsDir, `${only().id}.json`), 'utf8')).toBe(result.bytes);
       expect(only()).toMatchObject({ state: 'done', exit_code: 0 });
       expect(only().signal).toBeUndefined();
     } finally {
-      if (p.exitCode === null) { p.kill('SIGTERM'); await p.exited; }
+      if (p.exitCode === null) {
+        p.kill('SIGTERM');
+        await p.exited;
+      }
     }
   });
 
