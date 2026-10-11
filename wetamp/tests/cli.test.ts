@@ -300,7 +300,7 @@ describe('HF3 latest-engine recovery', () => {
     }
   );
   test('AD: stale terminal runs with completed work refuse adoption without ledger writes', () => {
-    for (const [status, nodeId] of [['failed', 'code-core'], ['cancelled', 'review-m1']] as const) {
+    for (const [status, nodeId] of [['failed', 'code-core'], ['cancelled', 'fix-m1-r2']] as const) {
       const s = setup('old');
       writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run(status, { nodes: [{ nodeId, state: 'completed' }] })));
       const before = readFileSync(ledgerPath('sa1'), 'utf8');
