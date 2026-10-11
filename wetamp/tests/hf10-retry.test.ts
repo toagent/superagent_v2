@@ -16,7 +16,7 @@ for (const scope of ['package', 'milestone', 'budget'] as const) test(`HF10 fake
   }));
   if (scope === 'budget') plan.budget.launches = 3;
   const py = join(root, 'supervisor.py');
-  writeFileSync(py, `import sys\nfrom pathlib import Path\np = Path(__file__).parent\nwith (p / 'questions').open('a') as f: f.write(' '.join(sys.argv[1:]) + '\\n')\nprint('ask-1' if sys.argv[1] == 'ask' else (p / 'answer').read_text())\n`);
+  writeFileSync(py, `import json, sys\nfrom pathlib import Path\np = Path(__file__).parent\nwith (p / 'questions').open('a') as f: f.write(' '.join(sys.argv[1:]) + '\\n')\nif sys.argv[1] == 'notify':\n    (p / 'receipt.json').write_text(json.dumps(sys.argv[1:]))\n    print(json.dumps({'ok': True}))\nelse:\n    print('ask-1' if sys.argv[1] == 'ask' else (p / 'answer').read_text())\n`);
   writeFileSync(join(root, 'answer'), 'pending');
   const env = { ...process.env, SUPERAGENT_HOME: join(root, 'home'), ARCHON_HOME: join(root, 'home/archon'),
     SUPERAGENT_WRITE_ROOTS: root, SA_ARCHON_BIN: '', SA_SUPERVISOR: py,
@@ -72,6 +72,10 @@ for (const scope of ['package', 'milestone', 'budget'] as const) test(`HF10 fake
   writeFileSync(ready, 'ready');
   writeFileSync(join(root, 'answer'), 'yes');
   expect(sa('supervise-tick').code).toBe(0);
+  const receiptArgs = JSON.parse(readFileSync(join(root, 'receipt.json'), 'utf8')) as string[];
+  const receipt = receiptArgs[receiptArgs.indexOf('--body') + 1];
+  expect(receipt).toContain(scope !== 'milestone' ? '已提交包W3编码→验收重跑' : '已提交里程碑m1全部包重跑');
+  expect(receipt).toContain(`去向=${String(ack.runId)}`);
   if (scope === 'budget') {
     const grant = JSON.parse(readFileSync(join(gen.dir, 'budget-extra'), 'utf8'));
     expect(grant.attempt).toBe(0);

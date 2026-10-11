@@ -1,8 +1,7 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { confined, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
-import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
-export type { Asks } from './cockpit-signals';
+import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask as BaseAsk } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
@@ -396,7 +395,8 @@ function recoverRun(
   l: Ledger,
   fresh = false,
   auto?: AutoRetry,
-  prepare?: () => void
+  prepare?: () => void,
+  onEffect?: (effect: DecisionEffect) => void
 ): RecoverResult {
   let fp = '';
   let adopted: { from: string; hash: string; engine_from: string | null } | undefined;
@@ -443,6 +443,7 @@ function recoverRun(
         l.recoveries.push(new Date().toISOString());
       }
       saveLedger(l);
+      onEffect?.({ action: adopted ? 'adopt' : 'resume', engine_run: l.archon_run_id });
     },
     prepare,
     {
@@ -759,7 +760,8 @@ function retryGate(
   fresh: boolean,
   auto?: AutoRetry,
   prepare?: () => void,
-  key?: string
+  key?: string,
+  onEffect?: (effect: DecisionEffect) => void
 ): RecoverResult {
   const m = retryScope(l, node);
   if (!attemptable(l, m))
@@ -769,7 +771,10 @@ function retryGate(
       return;
     bumpAttempt(l, m);
     prepare?.();
-  });
+  }, effect => onEffect?.(effect.action === 'adopt' ? effect : {
+    action: m.startsWith('pkg/') ? 'retry_package' : node.startsWith('review-') ? 'review' : 'retry_milestone',
+    target: m.startsWith('pkg/') ? m.slice(4) : m, engine_run: effect.engine_run,
+  }));
 }
 
 const scopedRetry = (l: Ledger, c: Classified, node: string): boolean =>
@@ -777,10 +782,10 @@ const scopedRetry = (l: Ledger, c: Classified, node: string): boolean =>
   (/^(code|repair)-/.test(node) && retryScope(l, node).startsWith('pkg/'));
 
 /** Package holds bump their own count; gates bump the milestone; old coder nodes resume. */
-const retry = (l: Ledger, c: Classified, prepare?: () => void, key?: string): RecoverResult =>
+const retry = (l: Ledger, c: Classified, prepare?: () => void, key?: string, onEffect?: (effect: DecisionEffect) => void): RecoverResult =>
   scopedRetry(l, c, c.node ?? '')
-    ? retryGate(l, c.node ?? '', true, undefined, prepare, key)
-    : recoverRun(l, true, undefined, prepare);
+    ? retryGate(l, c.node ?? '', true, undefined, prepare, key, onEffect)
+    : recoverRun(l, true, undefined, prepare, onEffect);
 
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
 function retryAllHeld(): number {
@@ -907,6 +912,27 @@ function acceptRun(l: Ledger, pkg: string | undefined): number {
 // 其余非终态按 HOLD_POLICY 处置；需要拍板的投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答执行。
 export const ANSWERS = ['pending', 'yes', 'no', 'expired', 'superseded'];
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
+type DecisionEffect =
+  | { action: 'approve' | 'reject' | 'resume' | 'adopt'; engine_run: string }
+  | { action: 'retry_package' | 'retry_milestone' | 'review'; engine_run: string; target: string };
+/** Only engine identifiers and the acknowledged execution branch enter a receipt. */
+function decisionReceipt(run: string, node: string, answer: 'yes' | 'no', effect: DecisionEffect): string {
+  const name = (v: string): string => askName(v, 80);
+  let action: string;
+  switch (effect.action) {
+    case 'approve': action = '已批准等待门并提交续跑'; break;
+    case 'reject': action = '已终止整个run（保留证据）'; break;
+    case 'resume': action = '已提交原run续跑'; break;
+    case 'adopt': action = '已新开run从首个节点重跑'; break;
+    case 'retry_package': action = `已提交包${name(effect.target)}编码→验收重跑`; break;
+    case 'retry_milestone': action = `已提交里程碑${name(effect.target)}全部包重跑`; break;
+    case 'review': action = `已提交${name(effect.target)}本轮评审重跑`; break;
+  }
+  return `run=${name(run)}；节点=${name(node) || '未指定'}；答复=${answer === 'yes' ? '是' : '否'}；${action}；去向=${name(effect.engine_run)}；结果=动作已受理（不代表后续验收通过）`;
+}
+interface AnswerReceipt { key: string; body: string; delivery: 'pending' | 'sent' | 'failed'; error?: string }
+type Ask = BaseAsk & { receipt?: AnswerReceipt };
+export type Asks = Partial<Record<string, Ask>>;
 
 type Held = [Hold, Record<string, unknown>];
 
@@ -951,6 +977,37 @@ function supervisor(args: string[]): string {
       `supervisor ${args[0]} exit ${String(p.exitCode)}: ${tail(p.stderr.toString(), 200)}`
     );
   return p.stdout.toString().trim();
+}
+
+/** Persist consumption before notification; a notification failure cannot replay the action. */
+function consumeAnswer(l: Ledger, node: string, key: string, a: Ask, answer: 'yes' | 'no', effect: DecisionEffect, asks: Asks): void {
+  a.status = answer === 'yes' ? 'approved' : 'rejected';
+  a.receipt = {
+    key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
+    body: decisionReceipt(l.run_id, node, answer, effect),
+    delivery: 'pending',
+  };
+  saveAsks(asks);
+}
+
+/** The supervisor owns delivery idempotency, including a crash after transport succeeds. */
+function deliverReceipts(asks: Asks, out: Action[]): void {
+  for (const [key, a] of Object.entries(asks)) {
+    const receipt = a?.receipt;
+    if (receipt?.delivery !== 'pending') continue;
+    try {
+      const result: unknown = JSON.parse(supervisor(['notify', '--key', receipt.key,
+        '--title', `[回执] superagent ${askName(key.split(':')[0], 80)}`, '--body', receipt.body]));
+      if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== true)
+        throw new Error('supervisor notify: delivery not confirmed');
+      receipt.delivery = 'sent';
+    } catch (e) {
+      receipt.delivery = 'failed';
+      receipt.error = tail((e as Error).message, 200);
+      out.push({ run_id: key.split(':')[0], action: 'receipt', ok: false, error: receipt.error });
+    }
+    saveAsks(asks);
+  }
 }
 
 /**
@@ -1050,12 +1107,12 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     if (pastDeadline(l)) return expireRun(l, run, asks, base);
     const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
     const r = signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
-    if (r.ok) p.a.status = 'approved';
+    if (r.ok) consumeAnswer(l, w.nodeId, key, p.a, 'yes', { action: 'approve', engine_run: l.archon_run_id }, asks);
     return { ...b, action: 'approve', ...r };
   }
   if (p.a.status === 'no') {
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-    if (ok) p.a.status = 'rejected';
+    if (ok) consumeAnswer(l, w.nodeId, key, p.a, 'no', { action: 'reject', engine_run: l.archon_run_id }, asks);
     return { ...b, action: 'reject', ok };
   }
   // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
@@ -1091,13 +1148,15 @@ function askHold(
   const b = { ...base, ...(r.note ? { note: r.note } : {}) };
   if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
   if (r.a.status === 'yes') {
+    let effect: DecisionEffect | undefined = p.yes === 'approve' ? { action: 'approve', engine_run: l.archon_run_id } : undefined;
+    const onEffect = (actual: DecisionEffect): void => { effect = actual; };
     const res =
       p.yes === 'approve'
         ? approveRun(l)
         : p.yes === 'resume'
-          ? recoverRun(l, true)
+          ? recoverRun(l, true, undefined, undefined, onEffect)
           : p.yes === 'review'
-            ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, true)
+            ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, true, undefined, undefined, undefined, onEffect)
             : retry(
                 l,
                 c,
@@ -1106,9 +1165,13 @@ function askHold(
                       grantBudget(l, c.node ?? '', key);
                     }
                   : undefined,
-                hold === 'budget' ? key : undefined
+                hold === 'budget' ? key : undefined,
+                onEffect
               );
-    if (res.ok) r.a.status = 'approved';
+    if (res.ok) {
+      if (!effect) throw new Error('decision recovery succeeded without an execution receipt');
+      consumeAnswer(l, c.node ?? '', key, r.a, 'yes', effect, asks);
+    }
     const out = res.ok
       ? { ok: true }
       : { ok: false, error: res.reason, ...(res.busy ? { busy: true } : {}) };
@@ -1116,7 +1179,7 @@ function askHold(
   }
   if (r.a.status === 'no') {
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-    if (ok) r.a.status = 'rejected';
+    if (ok) consumeAnswer(l, c.node ?? '', key, r.a, 'no', { action: 'reject', engine_run: l.archon_run_id }, asks);
     return { ...b, action: 'reject', ok };
   }
   return { ...b, action: 'none', ok: true, ask: r.a.status };
@@ -1164,6 +1227,7 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
     }
   }
   if (!(asks instanceof Error)) {
+    deliverReceipts(asks, out);
     // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者
     asks = Object.fromEntries(Object.entries(asks).filter(([k]) => live.has(k.split(':')[0])));
     for (const [key, a] of Object.entries(asks)) {
