@@ -288,6 +288,33 @@ test('nonterminal run plan copies referencing either scratch spelling retain the
   expect(scratchClean(f.session)[0].action).toBe('removed');
 });
 
+test('a relative launch plan path falls back to the gen copy instead of blocking every directory', () => {
+  const f = setup();
+  f.exited();
+  mkdirSync(join(f.root, 'sa', 'runs'), { recursive: true });
+  mkdirSync(join(f.root, 'gen'));
+  writeFileSync(join(f.root, 'gen', 'plan.json'), JSON.stringify({ repo: realpathSync(f.dir) }));
+  const l: Ledger = {
+    run_id: 'relative',
+    archon_run_id: 'engine-relative',
+    plan: '.context/sessions/missing/plan.json',
+    gen_dir: join(f.root, 'gen'),
+    repo: f.root,
+    branch: 'sa/relative',
+    workflow: 'relative',
+    console: 'codex',
+    started_at: '',
+    transcript: '',
+    log: '',
+    recoveries: [],
+  };
+  writeFileSync(ledgerPath(l.run_id), JSON.stringify(l));
+  query = spyOn(archon, 'getRun').mockReturnValue({ id: l.archon_run_id, status: 'running' });
+  expect(scratchClean(f.session)[0].reason).toContain('nonterminal run plan');
+  query.mockReturnValue({ id: l.archon_run_id, status: 'completed' });
+  expect(scratchClean(f.session)[0].action).toBe('removed');
+});
+
 test('CLI dry-run leaves the worktree, symlink, owner and log unchanged', () => {
   const f = setup(),
     repo = gitRepo(f.root),

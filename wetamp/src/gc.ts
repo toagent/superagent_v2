@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { isPathInside } from '@archon/paths';
 import { getRun, QUERY_TIMEOUT_MS } from './archon';
 import { home } from './config';
@@ -22,12 +22,10 @@ export function scratchClean(session?: string, dryRun = false): ScratchAction[] 
   return scratch.clean(session, dryRun, path =>
     ledgerIds().some(id => {
       const l = loadLedger(id);
-      if (
-        ![l.plan, join(l.gen_dir, 'plan.json')].some(file =>
-          readFileSync(file, 'utf8').includes(path)
-        )
-      )
-        return false;
+      // l.plan keeps the launch argument verbatim; a relative one only resolves in the launch
+      // cwd, so the absolute gen copy (same parsed plan) stands in for it.
+      const plans = [join(l.gen_dir, 'plan.json'), ...(isAbsolute(l.plan) ? [l.plan] : [])];
+      if (!plans.some(file => readFileSync(file, 'utf8').includes(path))) return false;
       const run = getRun(l.archon_run_id, l.repo);
       if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
       return !['completed', 'failed', 'cancelled'].includes(run.status);
