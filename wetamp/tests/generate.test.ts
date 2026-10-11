@@ -574,6 +574,8 @@ describe('renderBrief', () => {
       '禁止 git commit 的条款面向人工主仓，此处不适用',
       'searxng',
       '## 红线（执行层强制）',
+      '过程规范的偏差不是红线',
+      '不延续到本轮',
       'deviations',
     ])
       expect(b).toContain(s);
