@@ -3569,53 +3569,56 @@ describe('HF9 decision titles', () => {
   });
 });
 
-test('REC-R1-01: selftest formal receipt admits run without skip; fake workflow fixes, approves and lands', () => {
-  const root = tmp();
-  const repo = gitRepo(root);
-  const plan = fixturePlan(root, repo);
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    SUPERAGENT_HOME: join(root, 'home'),
-    ARCHON_HOME: join(root, 'home', 'archon'),
-    SUPERAGENT_WRITE_ROOTS: root,
-    SA_ARCHON_BIN: '',
-    XDG_STATE_HOME: join(root, 'state'),
-    SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
-    SA_SKIP_DOCTOR: '1',
-  };
-  const sa = (
-    ...args: string[]
-  ): { code: number; out: Record<string, unknown>; text: string; err: string } => {
-    const p = Bun.spawnSync([BIN, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
-    const text = p.stdout.toString();
-    const json = text.startsWith('{') || text === '';
-    return {
-      code: p.exitCode,
-      out: json ? (JSON.parse(text || '{}') as Record<string, unknown>) : {},
-      text,
-      err: p.stderr.toString(),
+// verify-local runs selftest as its own step; this ~110s end-to-end copy only runs outside that gate.
+test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
+  'REC-R1-01: selftest formal receipt admits run without skip; fake workflow fixes, approves and lands',
+  () => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const plan = fixturePlan(root, repo);
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      SUPERAGENT_HOME: join(root, 'home'),
+      ARCHON_HOME: join(root, 'home', 'archon'),
+      SUPERAGENT_WRITE_ROOTS: root,
+      SA_ARCHON_BIN: '',
+      XDG_STATE_HOME: join(root, 'state'),
+      SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
+      SA_SKIP_DOCTOR: '1',
     };
-  };
-  expect(
-    Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
-      env,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }).exitCode
-  ).toBe(0);
-  expect(sa('run', plan).out).toMatchObject({
-    phase: 'preflight',
-    reason: expect.stringContaining('no valid selftest receipt: no selftest.json'),
-  }); // preflight 拒绝
-  const stateFile = join(root, 'state/superagent/install.json');
-  const installed = readFileSync(stateFile);
-  // Keep the real engine and selftest orchestration. Replace only the provider
-  // boundary in the scratch workflow; never call a paid provider from tests.
-  const driver = join(root, 'provider-fixture.ts'),
-    shim = join(root, 'archon-fixture');
-  writeFileSync(
-    driver,
-    `import {readFileSync, writeFileSync, appendFileSync} from 'node:fs';
+    const sa = (
+      ...args: string[]
+    ): { code: number; out: Record<string, unknown>; text: string; err: string } => {
+      const p = Bun.spawnSync([BIN, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
+      const text = p.stdout.toString();
+      const json = text.startsWith('{') || text === '';
+      return {
+        code: p.exitCode,
+        out: json ? (JSON.parse(text || '{}') as Record<string, unknown>) : {},
+        text,
+        err: p.stderr.toString(),
+      };
+    };
+    expect(
+      Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
+        env,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }).exitCode
+    ).toBe(0);
+    expect(sa('run', plan).out).toMatchObject({
+      phase: 'preflight',
+      reason: expect.stringContaining('no valid selftest receipt: no selftest.json'),
+    }); // preflight 拒绝
+    const stateFile = join(root, 'state/superagent/install.json');
+    const installed = readFileSync(stateFile);
+    // Keep the real engine and selftest orchestration. Replace only the provider
+    // boundary in the scratch workflow; never call a paid provider from tests.
+    const driver = join(root, 'provider-fixture.ts'),
+      shim = join(root, 'archon-fixture');
+    writeFileSync(
+      driver,
+      `import {readFileSync, writeFileSync, appendFileSync} from 'node:fs';
     const args=process.argv.slice(2);
     if(args[0]==='workflow' && args[1]==='run' && args[2]==='sa-provider') {
       const gen=args[args.indexOf('--workflow-source')+1];
@@ -3630,71 +3633,82 @@ test('REC-R1-01: selftest formal receipt admits run without skip; fake workflow 
       appendFileSync(${JSON.stringify(join(root, 'provider-calls'))},'provider started normally\\n');
     }
   `
-  );
-  // COORD validates the direct parent's held lock; keep this shim's PID when
-  // entering Archon rather than adding a forwarding process between them.
-  writeFileSync(
-    shim,
-    `#!/usr/bin/env bash\nset -e\n'${process.execPath}' '${driver}' "$@"\nexec '${join(WETAMP, 'bin/archon')}' "$@"\n`
-  );
-  chmodSync(shim, 0o755);
-  const selftest = Bun.spawnSync(['bash', join(WETAMP, 'scripts/selftest.sh'), '--timeout', '90'], {
-    env: { ...env, SA_ARCHON_BIN: shim },
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: 180000,
-  });
-  if (selftest.exitCode !== 0)
-    throw new Error(`selftest: ${selftest.stdout.toString()} ${selftest.stderr.toString()}`);
-  expect(JSON.parse(readFileSync(join(root, 'home/selftest.json'), 'utf8'))).toMatchObject({
-    ok: true,
-    fake: false,
-  });
-  expect(readFileSync(join(root, 'provider-calls'), 'utf8')).toBe('provider started normally\n');
-  expect(readFileSync(stateFile)).toEqual(installed);
-  const started = sa('run', plan, '--fake');
-  expect(started.err).toBe('');
-  expect(started.code).toBe(0);
-  const id = String(started.out.run_id);
-  // Native wait does not stop at every durable event pause. Observe the actual
-  // fixture pause without treating the ownerless launch window as normal work.
-  let engineStatus = 'pending';
-  for (
-    const deadline = Date.now() + 180000;
-    ['pending', 'running'].includes(engineStatus) && Date.now() < deadline;
-  ) {
-    const observed = Bun.spawnSync(
-      [join(WETAMP, 'bin/archon'), 'workflow', 'get', String(started.out.archon_run_id), '--json'],
-      { env, cwd: repo, stdout: 'pipe', stderr: 'pipe' }
     );
-    expect(observed.exitCode).toBe(0);
-    engineStatus = String(archonMod.lastJson(observed.stdout.toString())?.status);
-    if (['pending', 'running'].includes(engineStatus)) Bun.sleepSync(250);
-  }
-  expect(engineStatus).toBe('paused');
-  const held = sa('wait', id, '--timeout', '180');
-  expect(held.out).toMatchObject({ state: 'held:human', exit: EXIT.held, node: 'human-m2' });
-  // m1：首轮评审 FAIL → fix-m1-r2 → 第 2 轮 PASS；第 3 轮被条件跳过，汇合节点仍放行 m2
-  const brief = sa('brief', id).text.split('\n');
-  expect(brief).toContain('gate-m1-r1: fix (review_failed) debt=0');
-  expect(brief).toContain('gate-m1-r2: pass debt=0');
-  expect(brief).toContain('gate-m2-r2: pass debt=0');
-  expect(sa('land', id).code).toBe(1);
-  const approved = sa('decide', id, 'approve');
-  expect(approved.err).toBe('');
-  expect(approved.out).toMatchObject({ ok: true });
-  expect(approved.code).toBe(0);
-  const waited = sa('wait', id, '--timeout', '120');
-  expect(waited.out).toMatchObject({ state: 'completed', exit: 0 });
-  expect((waited.out.land as string[])[1]).toContain(`merge --ff-only 'sa/${id}'`);
-  expect(readdirSync(join(root, 'home', 'runs')).filter(f => f.endsWith('.json'))).toEqual([
-    `${id}.json`,
-  ]);
-  expect(sa('status', id).code).toBe(0);
-  expect(sa('land', id).out).toMatchObject({ branch: `sa/${id}`, debt: [] });
-  expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
-  expect(existsSync(String(waited.out.evidence))).toBe(true);
-}, 360000);
+    // COORD validates the direct parent's held lock; keep this shim's PID when
+    // entering Archon rather than adding a forwarding process between them.
+    writeFileSync(
+      shim,
+      `#!/usr/bin/env bash\nset -e\n'${process.execPath}' '${driver}' "$@"\nexec '${join(WETAMP, 'bin/archon')}' "$@"\n`
+    );
+    chmodSync(shim, 0o755);
+    const selftest = Bun.spawnSync(
+      ['bash', join(WETAMP, 'scripts/selftest.sh'), '--timeout', '90'],
+      {
+        env: { ...env, SA_ARCHON_BIN: shim },
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 180000,
+      }
+    );
+    if (selftest.exitCode !== 0)
+      throw new Error(`selftest: ${selftest.stdout.toString()} ${selftest.stderr.toString()}`);
+    expect(JSON.parse(readFileSync(join(root, 'home/selftest.json'), 'utf8'))).toMatchObject({
+      ok: true,
+      fake: false,
+    });
+    expect(readFileSync(join(root, 'provider-calls'), 'utf8')).toBe('provider started normally\n');
+    expect(readFileSync(stateFile)).toEqual(installed);
+    const started = sa('run', plan, '--fake');
+    expect(started.err).toBe('');
+    expect(started.code).toBe(0);
+    const id = String(started.out.run_id);
+    // Native wait does not stop at every durable event pause. Observe the actual
+    // fixture pause without treating the ownerless launch window as normal work.
+    let engineStatus = 'pending';
+    for (
+      const deadline = Date.now() + 180000;
+      ['pending', 'running'].includes(engineStatus) && Date.now() < deadline;
+    ) {
+      const observed = Bun.spawnSync(
+        [
+          join(WETAMP, 'bin/archon'),
+          'workflow',
+          'get',
+          String(started.out.archon_run_id),
+          '--json',
+        ],
+        { env, cwd: repo, stdout: 'pipe', stderr: 'pipe' }
+      );
+      expect(observed.exitCode).toBe(0);
+      engineStatus = String(archonMod.lastJson(observed.stdout.toString())?.status);
+      if (['pending', 'running'].includes(engineStatus)) Bun.sleepSync(250);
+    }
+    expect(engineStatus).toBe('paused');
+    const held = sa('wait', id, '--timeout', '180');
+    expect(held.out).toMatchObject({ state: 'held:human', exit: EXIT.held, node: 'human-m2' });
+    // m1：首轮评审 FAIL → fix-m1-r2 → 第 2 轮 PASS；第 3 轮被条件跳过，汇合节点仍放行 m2
+    const brief = sa('brief', id).text.split('\n');
+    expect(brief).toContain('gate-m1-r1: fix (review_failed) debt=0');
+    expect(brief).toContain('gate-m1-r2: pass debt=0');
+    expect(brief).toContain('gate-m2-r2: pass debt=0');
+    expect(sa('land', id).code).toBe(1);
+    const approved = sa('decide', id, 'approve');
+    expect(approved.err).toBe('');
+    expect(approved.out).toMatchObject({ ok: true });
+    expect(approved.code).toBe(0);
+    const waited = sa('wait', id, '--timeout', '120');
+    expect(waited.out).toMatchObject({ state: 'completed', exit: 0 });
+    expect((waited.out.land as string[])[1]).toContain(`merge --ff-only 'sa/${id}'`);
+    expect(readdirSync(join(root, 'home', 'runs')).filter(f => f.endsWith('.json'))).toEqual([
+      `${id}.json`,
+    ]);
+    expect(sa('status', id).code).toBe(0);
+    expect(sa('land', id).out).toMatchObject({ branch: `sa/${id}`, debt: [] });
+    expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
+    expect(existsSync(String(waited.out.evidence))).toBe(true);
+  },
+  360000
+);
 
 describe('launch intents (run + supervise-tick reconcile)', () => {
   const tickOut = (): Record<string, unknown>[] =>

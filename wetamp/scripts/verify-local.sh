@@ -102,7 +102,8 @@ install . install
 install wetamp install:wetamp
 step tsc "$WT/wetamp" "$BUN" x tsc --noEmit
 # 显式单测时限：Bun 1.4.3 不读 bunfig 的 [test] timeout，负载下 hook 子进程用例会撞默认 5s。
-step test "$WT/wetamp" "$BUN" test --timeout 30000
+# SA_VERIFY_LOCAL=1：单测里内嵌整轮 selftest 的 REC-R1-01 跳过，下一步 selftest 已覆盖。
+step test "$WT/wetamp" env SA_VERIFY_LOCAL=1 "$BUN" test --timeout 30000
 step selftest "$WT/wetamp" bash scripts/selftest.sh --fake
 
 if [ "$INCONCLUSIVE" = 1 ]; then
