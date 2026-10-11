@@ -1493,7 +1493,7 @@ describe('RCPT consumed decision receipts', () => {
     expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
   });
 
-  test('RCPT action refusal keeps the answer retryable and sends no success receipt', () => {
+  test('RCPT unconfirmed effect is explicit and never replayed', () => {
     const s = stub([humanWait()]),
       sup = supervisor(s.root, 'no');
     tick();
@@ -1503,14 +1503,70 @@ describe('RCPT consumed decision receipts', () => {
     );
     try {
       expect(tick(1)[0]).toMatchObject({ action: 'reject', ok: false });
-      expect(Object.values(asks(s.root))[0]).toMatchObject({ status: 'no' });
-      expect(Object.values(asks(s.root))[0].receipt).toBeUndefined();
-      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
     } finally {
       fail.mockRestore();
     }
-    expect(tick()[0]).toMatchObject({ action: 'reject', ok: true });
+    expect(Object.values(asks(s.root))[0]).toMatchObject({
+      status: 'no',
+      decision: { answer: 'no', engine_run: 'r' },
+    });
+    expect(tick(1)[0]).toMatchObject({
+      action: 'decision_reconcile',
+      ok: false,
+      error: expect.stringContaining('decision_effect_unknown'),
+    });
+    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
+    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(0);
+  });
+
+  test('RCPT exit after cancellation before consumption is reconciled from terminal engine state', () => {
+    const s = stub([humanWait()]),
+      sup = supervisor(s.root, 'no');
+    tick();
+    const script = join(s.root, 'crash.ts');
+    writeFileSync(
+      script,
+      `import {spyOn} from 'bun:test';
+import * as config from ${JSON.stringify(join(WETAMP, 'src/config.ts'))};
+import {main} from ${JSON.stringify(join(WETAMP, 'src/cli.ts'))};
+const original=config.writeAtomic;
+spyOn(config,'writeAtomic').mockImplementation((path,body)=>{
+  if(path.endsWith('/asks.json') && body.includes('"action": "reject"')) process.exit(73);
+  return original(path,body);
+});
+process.exit(main(['supervise-tick']));`
+    );
+    // The fake engine persists cancellation before acknowledging it, independently of asks.json.
+    const bin = join(s.dir, 'archon');
+    writeFileSync(
+      bin,
+      readFileSync(bin, 'utf8').replace(
+        'echo \'{"ok":true}\'',
+        `if [ "$2" = abandon ]; then printf '%s' '${JSON.stringify(run('cancelled'))}' > "$cur"; fi\necho '{\"ok\":true}'`
+      )
+    );
+    const child = Bun.spawnSync([process.execPath, script], {
+      env: process.env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 5000,
+    });
+    expect(child.exitCode, child.stderr.toString()).toBe(73);
+    expect(Object.values(asks(s.root))[0]).toMatchObject({
+      status: 'no',
+      decision: { answer: 'no', engine_run: 'r' },
+    });
+    expect(Object.values(asks(s.root))[0]).not.toHaveProperty('decision.effect');
+    expect(Object.values(asks(s.root))[0].receipt).toBeUndefined();
+    expect(tick()[0]).toMatchObject({ action: 'receipt_reconciled', ok: true });
+    expect(body(s.root)).toContain('已终止整个run');
+    expect(Object.values(asks(s.root))[0]).toMatchObject({
+      status: 'rejected',
+      receipt: { delivery: 'sent' },
+    });
+    tick();
     expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(1);
+    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
   });
 
   for (const sample of [
@@ -2341,7 +2397,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
     expect(loadLedger('sa1').budget_grants).toHaveLength(1);
   });
-  test('budget yes records finite explicit allowances scoped to the milestone attempt', () => {
+  test('budget yes records finite explicit allowances checked by sa-check', () => {
     const { s } = scenes.budget();
     supervisor(s.root, 'yes');
     tick();
@@ -2956,14 +3012,12 @@ describe('HF9 decision titles', () => {
       r.output_root = join(oldRepo, 'out');
       const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
       const m = 'M'.repeat(32);
-      plan.packages = plan.packages
-        .slice(0, 4)
-        .map((p, i) => ({
-          ...p,
-          id: `W${String(i)}`.padEnd(64, 'x'),
-          milestone: m,
-          title: '长标题'.repeat(1000),
-        }));
+      plan.packages = plan.packages.slice(0, 4).map((p, i) => ({
+        ...p,
+        id: `W${String(i)}`.padEnd(64, 'x'),
+        milestone: m,
+        title: '长标题'.repeat(1000),
+      }));
       writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
       const wf = join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml');
       writeFileSync(

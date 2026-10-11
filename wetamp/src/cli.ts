@@ -684,7 +684,7 @@ function startRun(planPath: string, a: Args): number {
     const intent: Intent = { ledger: l, host: hostname(), pid: process.pid };
     mkdirSync(join(home().sa, 'intents'), { recursive: true });
     writeAtomic(intentPath(run), JSON.stringify(intent, null, 2) + '\n');
-    const ack = archonJson(args, plan.repo);
+    const ack = admission.launch(args, plan.repo);
     if (ack.ok !== true || typeof ack.runId !== 'string')
       throw new Error(`archon run: ${tail(JSON.stringify(ack))}`);
     Object.assign(l, {
@@ -1117,7 +1117,13 @@ interface AnswerReceipt {
   delivery: 'pending' | 'sent' | 'failed';
   error?: string;
 }
-type Ask = BaseAsk & { receipt?: AnswerReceipt };
+interface AnswerIntent {
+  answer: 'yes' | 'no';
+  node: string;
+  engine_run: string;
+  effect?: DecisionEffect;
+}
+type Ask = BaseAsk & { receipt?: AnswerReceipt; decision?: AnswerIntent };
 export type Asks = Partial<Record<string, Ask>>;
 
 type Held = [Hold, Record<string, unknown>];
@@ -1165,6 +1171,44 @@ function supervisor(args: string[]): string {
   return p.stdout.toString().trim();
 }
 
+/** Publish the occurrence before any engine action; an interrupted decision is never replayed. */
+function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks: Asks): void {
+  a.decision = { answer, node, engine_run: l.archon_run_id };
+  saveAsks(asks);
+}
+
+/** Cancellation has a terminal engine fact. Other unacknowledged effects remain explicitly unknown. */
+function reconcileAnswers(l: Ledger, asks: Asks, out: Action[]): boolean {
+  let unresolved = false;
+  for (const [key, a] of Object.entries(asks)) {
+    if (!key.startsWith(`${l.run_id}:`) || !a?.decision) continue;
+    const d = a.decision;
+    try {
+      const run = getRun(d.effect?.engine_run ?? d.engine_run, l.repo);
+      const effect =
+        d.effect ??
+        (d.answer === 'no' && run.status === 'cancelled'
+          ? { action: 'reject' as const, engine_run: run.id }
+          : undefined);
+      if (!effect)
+        throw new Error(
+          'decision_effect_unknown: inspect engine evidence; action will not be replayed'
+        );
+      consumeAnswer(l, d.node, key, a, d.answer, effect, asks);
+      out.push({ run_id: l.run_id, action: 'receipt_reconciled', ok: true });
+    } catch (e) {
+      unresolved = true;
+      out.push({
+        run_id: l.run_id,
+        action: 'decision_reconcile',
+        ok: false,
+        error: tail((e as Error).message, 200),
+      });
+    }
+  }
+  return unresolved;
+}
+
 /** Persist consumption before notification; a notification failure cannot replay the action. */
 function consumeAnswer(
   l: Ledger,
@@ -1175,7 +1219,12 @@ function consumeAnswer(
   effect: DecisionEffect,
   asks: Asks
 ): void {
+  if (a.decision) {
+    a.decision.effect = effect;
+    saveAsks(asks);
+  }
   a.status = answer === 'yes' ? 'approved' : 'rejected';
+  delete a.decision;
   a.receipt = {
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
     body: decisionReceipt(l.run_id, node, answer, effect),
@@ -1317,6 +1366,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   if (p.a.status === 'yes') {
     // 等回答期间可能已过截止：过期的“是”不再批准
     if (pastDeadline(l)) return expireRun(l, run, asks, base);
+    beginAnswer(l, w.nodeId, p.a, 'yes', asks);
     const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
     const r = signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
     if (r.ok)
@@ -1332,6 +1382,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     return { ...b, action: 'approve', ...r };
   }
   if (p.a.status === 'no') {
+    beginAnswer(l, w.nodeId, p.a, 'no', asks);
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
     if (ok)
       consumeAnswer(
@@ -1383,10 +1434,13 @@ function askHold(
   const b = { ...base, ...(r.note ? { note: r.note } : {}) };
   if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
   if (r.a.status === 'yes') {
+    beginAnswer(l, c.node ?? '', r.a, 'yes', asks);
     let effect: DecisionEffect | undefined =
       p.yes === 'approve' ? { action: 'approve', engine_run: l.archon_run_id } : undefined;
     const onEffect = (actual: DecisionEffect): void => {
       effect = actual;
+      if (r.a.decision) r.a.decision.effect = actual;
+      saveAsks(asks);
     };
     const res =
       p.yes === 'approve'
@@ -1418,12 +1472,17 @@ function askHold(
       if (!effect) throw new Error('decision recovery succeeded without an execution receipt');
       consumeAnswer(l, c.node ?? '', key, r.a, 'yes', effect, asks);
     }
+    if (!res.ok && (res.busy || res.refused)) {
+      delete r.a.decision;
+      saveAsks(asks);
+    }
     const out = res.ok
       ? { ok: true }
       : { ok: false, error: res.reason, ...(res.busy ? { busy: true } : {}) };
     return { ...b, action: p.yes, ...out };
   }
   if (r.a.status === 'no') {
+    beginAnswer(l, c.node ?? '', r.a, 'no', asks);
     const ok = cancelRun(l.archon_run_id, run.status, l.repo);
     if (ok)
       consumeAnswer(
@@ -1470,6 +1529,7 @@ function tick(sa: string): { actions: Action[] } & ReturnType<typeof cockpitSign
     live.add(l.run_id);
     try {
       if ('error' in l) throw new Error(l.error);
+      if (!(asks instanceof Error) && reconcileAnswers(l, asks, out)) continue;
       const x = dispose(l, asks, observed);
       if (x) out.push(x);
     } catch (e) {

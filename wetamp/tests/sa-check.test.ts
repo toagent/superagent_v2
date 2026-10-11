@@ -533,11 +533,12 @@ function runScript(
   };
 }
 
-// Trace real auxiliary calls; a selected call can stall in an exec-only subprocess.
-function auxiliaryFixture(kind: string, hang = '', scaled = false) {
+// Trace real auxiliary calls through the process-group watchdog.
+function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = false, hook = false) {
   const root = tmp(),
     repo = gitRepo(root),
-    trace = join(root, 'trace.jsonl');
+    trace = join(root, 'trace.jsonl'),
+    trackedPid = join(root, 'auxiliary.pid');
   const base = sh('git rev-parse HEAD', repo).trim();
   const plan = fixturePlan(root, repo);
   const p = JSON.parse(readFileSync(plan, 'utf8'));
@@ -560,20 +561,29 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false) {
     join(root, 'reasons.json'),
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/reasons.json'))
   );
+  if (hook) sh(`git config core.hooksPath '${join(repo, '.git/hooks')}'`, repo);
+  if (hook)
+    writeFileSync(
+      join(repo, '.git/hooks/post-checkout'),
+      `#!/bin/bash\n(trap '' TERM; echo $BASHPID > '${trackedPid}'; echo hook-descendant >&2; while :; do sleep 1; done) &\nexit 0\n`,
+      { mode: 0o755 }
+    );
   const instrument = `
 process.env.WORKFLOW_ID = 'fixture';
 const spawn = Bun.spawnSync;
-Bun.spawnSync = (cmd, opts) => {
+Bun.spawnSync = (actual, opts) => {
+  const wrapped = actual[0] === 'python3' && actual[1] === '-c';
+  const cmd = wrapped ? actual.slice(4) : actual;
   appendFileSync(${JSON.stringify(trace)}, JSON.stringify({cmd, timeout: opts?.timeout}) + '\\n');
   const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
   if (key === ${JSON.stringify(hang)})
-    return spawn(['bash', '-c', 'echo auxiliary-stalled >&2; exec sleep 2'], opts);
-  return spawn(cmd, opts);
+    return spawn([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
+  return spawn(actual, opts);
 };
 `;
   let source = readFileSync(SCRIPT, 'utf8').replace('const env =', `${instrument}\nconst env =`);
   if (scaled)
-    source = source.replace('CHECK_AUX_TIMEOUT_MS = 10_000', 'CHECK_AUX_TIMEOUT_MS = 100');
+    source = source.replace('CHECK_AUX_TIMEOUT_MS = 10_000', 'CHECK_AUX_TIMEOUT_MS = 2000');
   writeFileSync(script, source);
   const r = runScript(
     repo,
@@ -597,11 +607,11 @@ Bun.spawnSync = (cmd, opts) => {
     .trim()
     .split('\n')
     .map(line => JSON.parse(line) as { cmd: string[]; timeout?: number });
-  return { ...r, calls };
+  return { ...r, calls, trackedPid };
 }
 
-test('ACCT: traced worst paths enforce shared auxiliary counts and timeout values', () => {
-  for (const kind of ['accept', 'settle', 'env']) {
+for (const kind of ['accept', 'settle', 'env'])
+  test(`ACCT: ${kind} traced worst path enforces shared auxiliary count and timeout`, () => {
     const r = auxiliaryFixture(kind);
     const auxiliary = r.calls.filter(c => c.cmd[0] !== 'bash');
     const count = CHECK_AUX_COUNTS[kind === 'env' ? 'env' : 'accept'];
@@ -614,8 +624,7 @@ test('ACCT: traced worst paths enforce shared auxiliary counts and timeout value
       expect(r.code).toBe(kind === 'settle' ? 1 : 0);
       expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(2);
     }
-  }
-});
+  });
 
 for (const [kind, step, evidence] of [
   ['accept', 'status --porcelain', 'git status:'],
@@ -629,15 +638,42 @@ for (const [kind, step, evidence] of [
     expect(r.code).toBe(1);
     expect(r.err).toContain(evidence);
     expect(r.err).toContain('auxiliary-stalled');
-    expect(r.err).toContain('signal SIG');
+    expect(r.err).toContain('TERM -> SIGKILL');
     expect(
       r.calls.find(c =>
         c.cmd[0] === 'git'
           ? c.cmd.slice(1, 3).join(' ') === step
           : c.cmd[0] !== 'bash' && step === 'events'
       )?.timeout
-    ).toBe(100);
+    ).toBe(2000);
   });
+
+function expectAuxiliaryDead(path: string): void {
+  const pid = readFileSync(path, 'utf8').trim();
+  const p = Bun.spawnSync(['ps', '-p', pid, '-o', 'stat=']);
+  expect(p.exitCode !== 0 || p.stdout.toString().trim().startsWith('Z')).toBe(true);
+}
+
+test('ACCT: TERM-ignoring auxiliary is killed within the shared budget with evidence', () => {
+  const started = Date.now();
+  const r = auxiliaryFixture('env', 'rev-parse HEAD', true, true);
+  expect(Date.now() - started).toBeLessThan(5000);
+  expect(r.code).toBe(1);
+  expect(r.err).toContain('auxiliary-stalled');
+  expect(r.err).toContain('TERM -> SIGKILL; output pipes reclaimed');
+  expectAuxiliaryDead(r.trackedPid);
+});
+
+test('ACCT: real git hook descendant holding pipes is killed within the shared budget', () => {
+  const started = Date.now();
+  const r = auxiliaryFixture('accept', '', true, false, true);
+  expect(Date.now() - started).toBeLessThan(6000);
+  expect(r.code).toBe(1);
+  expect(r.err).toContain('git worktree:');
+  expect(r.err).toContain('hook-descendant');
+  expect(r.err).toContain('TERM -> SIGKILL; output pipes reclaimed');
+  expectAuxiliaryDead(r.trackedPid);
+});
 
 function planFile(root: string, accept: string, environment: string[] = []): string {
   const p = join(root, 'plan.json');
@@ -1085,7 +1121,7 @@ describe('sa-check script', () => {
     write(['src/']);
     commit('src/auth/x.md');
     expect(go('G1')).toMatchObject({ risk: 'G2', out_of_scope: [] });
-  });
+  }, 15_000); // Six real accept invocations exercise patch and scope integration.
   test('unknown kind fails loudly', () => {
     const root = tmp();
     expect(runScript(gitRepo(root), { kind: 'bogus' }).code).not.toBe(0);
