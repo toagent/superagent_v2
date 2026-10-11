@@ -70,7 +70,7 @@ export function writeAtomic(path: string, text: string): void {
 }
 
 /**
- * selftest 回执（$SUPERAGENT_HOME/selftest.json）：只由非 fake 的 selftest 写，绑定 wetamp 的 git HEAD、配置哈希与有效期；
+ * selftest 回执（$SUPERAGENT_HOME/selftest.json）：只由非 fake 的 selftest 写，绑定运行边界、配置哈希与有效期；
  * preflight 拒绝 fake、过期或漂移的回执。fake 只证明引擎契约，写 selftest-fake.json，不覆盖正式回执。
  */
 export const SELFTEST_TTL_MS = 7 * 24 * 3600e3;
@@ -80,16 +80,45 @@ export interface Receipt {
   expires_at: string;
   fake: boolean;
   head: string;
+  fingerprint?: string;
   config_hash: string;
 }
 /** wetamp 所在检出的 HEAD；不是 git 检出时为空串（回执无法绑定，preflight 视为漂移）。 */
-export function gitHead(): string {
-  const p = Bun.spawnSync(['git', '-C', WETAMP, 'rev-parse', 'HEAD'], {
+export function gitHead(repo = WETAMP): string {
+  const p = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], {
     stdout: 'pipe',
     stderr: 'pipe',
     timeout: QUERY_TIMEOUT_MS,
   });
   return p.exitCode === 0 ? p.stdout.toString().trim() : '';
+}
+/** Default to inclusion: template Markdown is executable guidance, not documentation. */
+const runtimePath = (path: string): boolean =>
+  !/^(?:wetamp\/(?:tests|docs)\/|packages\/docs-web\/|\.github\/)/.test(path) &&
+  !/(?:^|\/)(?:tests|__tests__)\//.test(path) &&
+  !path.endsWith('.test.ts') &&
+  (!path.endsWith('.md') || path.startsWith('wetamp/templates/'));
+
+export function runtimeFingerprint(repo = join(WETAMP, '..')): string {
+  const git = (...args: string[]): string => {
+    const p = Bun.spawnSync(['git', '-C', repo, ...args], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: QUERY_TIMEOUT_MS,
+    });
+    if (p.exitCode !== 0) throw new Error('runtime fingerprint unavailable (git query failed)');
+    return p.stdout.toString();
+  };
+  // Disable rename folding so both old and new paths pass through the same boundary filter.
+  const dirty = git(
+    '-c', 'status.renames=false', 'status', '--porcelain=v1',
+    '-z', '--untracked-files=all', '--ignore-submodules=none'
+  );
+  if (dirty.split('\0').some(entry => entry && runtimePath(entry.slice(3))))
+    throw new Error('runtime worktree drift (uncommitted runtime files)');
+  const tree = git('ls-tree', '--full-tree', '-r', '-z', 'HEAD').split('\0')
+    .filter(entry => entry && runtimePath(entry.slice(entry.indexOf('\t') + 1)));
+  return new Bun.CryptoHasher('sha256').update(tree.join('\0')).digest('hex');
 }
 /** 回执绑定的配置：tiers.json 与调用方 $ARCHON_HOME/config.yaml 的内容（任一改动都要重跑 selftest）。 */
 export function configHash(): string {
@@ -98,15 +127,29 @@ export function configHash(): string {
     h.update(`${existsSync(p) ? readFileSync(p, 'utf8') : ''}\0`);
   return h.digest('hex').slice(0, 16);
 }
-export function receiptProblem(r: Partial<Receipt> | undefined, now = Date.now()): string | null {
+export function receiptProblem(
+  r: Partial<Receipt> | undefined,
+  now = Date.now(),
+  repo = join(WETAMP, '..')
+): string | null {
   if (!r) return 'no selftest.json';
   if (r.ok !== true) return 'receipt is not a pass';
   if (r.fake !== false) return 'fake receipt (selftest --fake proves only the engine contract)';
   const exp = Date.parse(r.expires_at ?? '');
   if (!(exp > now)) return `expired (expires_at ${r.expires_at ?? '?'})`;
-  const head = gitHead();
-  if (r.head !== head)
-    return `HEAD drift (receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`;
+  try {
+    const fingerprint = runtimeFingerprint(repo);
+    if (r.fingerprint !== undefined) {
+      if (r.fingerprint !== fingerprint)
+        return 'runtime fingerprint drift (committed runtime files changed)';
+    } else {
+      const head = gitHead(repo);
+      if (!head || r.head !== head)
+        return `HEAD drift (legacy receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`;
+    }
+  } catch (e) {
+    return (e as Error).message;
+  }
   if (r.config_hash !== configHash())
     return 'config drift (tiers.json or $ARCHON_HOME/config.yaml changed)';
   return null;

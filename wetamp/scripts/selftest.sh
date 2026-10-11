@@ -2,7 +2,7 @@
 # 契约自检：真实 provider 正常完成（不注入故障）；确定性 sa-smoke detach → think 运行中 kill -9 → recover → 事件门 → completed；
 # sa-abandon 暂停在事件门 → 原生 abandon 完整回执 → cancelled；清理不明则保留树。
 # 另对 hooks/guard.cjs 喂两个 payload（元帅 31 行写入、worker 会话 Agent）断言均被拒，结果记入 selftest.json 的 hooks 段。
-# 在临时 SUPERAGENT_HOME 里跑；通过后写调用方的 $SUPERAGENT_HOME/selftest.json（--fake 写 selftest-fake.json），绑定 HEAD、配置哈希与有效期。用法：selftest.sh [--repo <path>] [--timeout <s>] [--fake]
+# 在临时 SUPERAGENT_HOME 里跑；通过后写调用方的 $SUPERAGENT_HOME/selftest.json（--fake 写 selftest-fake.json），绑定运行边界、配置哈希与有效期。用法：selftest.sh [--repo <path>] [--timeout <s>] [--fake]
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
 REAL_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
@@ -10,8 +10,8 @@ REPO="" TIMEOUT=300 FAKE=0 OWN_REPO=0
 while [ $# -gt 0 ]; do
   case "$1" in --repo) REPO="$2"; shift 2;; --timeout) TIMEOUT="$2"; shift 2;; --fake) FAKE=1; shift;; *) echo "unknown arg $1" >&2; exit 64;; esac
 done
-# 回执绑定调用方的 HEAD 与配置：换到临时 home 之前算
-RECEIPT_KEY="$(SUPERAGENT_HOME="$REAL_HOME" ARCHON_HOME="${ARCHON_HOME:-$REAL_HOME/archon}" bun -e "import { configHash, gitHead } from '$WETAMP/src/config.ts'; console.log(JSON.stringify({ head: gitHead(), config_hash: configHash() }))")"
+# 回执绑定调用方的运行边界与配置：换到临时 home 之前算，拒绝脏运行代码
+RECEIPT_KEY="$(SUPERAGENT_HOME="$REAL_HOME" ARCHON_HOME="${ARCHON_HOME:-$REAL_HOME/archon}" bun -e "import { configHash, gitHead, runtimeFingerprint } from '$WETAMP/src/config.ts'; console.log(JSON.stringify({ head: gitHead(), fingerprint: runtimeFingerprint(), config_hash: configHash() }))")"
 TMPH="$(mktemp -d "${TMPDIR:-/tmp}/sa-selftest.XXXXXX")"
 export SUPERAGENT_HOME="$TMPH" ARCHON_HOME="$TMPH/archon" XDG_STATE_HOME="$TMPH/state"
 A="${SA_ARCHON_BIN:-$WETAMP/bin/archon}"
@@ -220,9 +220,10 @@ OUT="$REAL_HOME/selftest.json"; [ "$FAKE" = 1 ] && OUT="$REAL_HOME/selftest-fake
 mkdir -p "$REAL_HOME"
 SA_OUT="$OUT" SA_KEY="$RECEIPT_KEY" SA_FAKE="$FAKE" SA_METRICS="{\"rss_kb\":$RSS_KB,\"recover_ms\":$RECOVER_MS,\"signal_ms\":$SIGNAL_MS,\"abandon_ms\":$ABANDON_MS,\"board\":{\"rows\":$BOARD_ROWS,\"run_id\":\"selftest-smoke\"}}" \
 SA_UPSTREAM="$(head -1 "$WETAMP/UPSTREAM")" bun -e "
-import { SELFTEST_TTL_MS, writeAtomic } from '$WETAMP/src/config.ts';
+import { SELFTEST_TTL_MS, writeAtomic, runtimeFingerprint } from '$WETAMP/src/config.ts';
 const e = process.env, at = new Date();
 const r = { ok: true, at: at.toISOString(), expires_at: new Date(at.getTime() + SELFTEST_TTL_MS).toISOString(), fake: e.SA_FAKE === '1',
   ...JSON.parse(e.SA_KEY), ...JSON.parse(e.SA_METRICS), hooks: { g1_commander_31_lines: 'advise', n1_worker_agent: 'deny' }, upstream: e.SA_UPSTREAM };
+if (runtimeFingerprint() !== r.fingerprint) throw new Error('runtime fingerprint drift during selftest');
 writeAtomic(e.SA_OUT, JSON.stringify(r) + '\\n');
 console.log(JSON.stringify(r));"

@@ -39,7 +39,10 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { configHash, gitHead, renderAliases, loadTiers, resolveRoute, WETAMP } from '../src/config';
+import {
+  configHash, gitHead, receiptProblem, runtimeFingerprint,
+  renderAliases, loadTiers, resolveRoute, WETAMP,
+} from '../src/config';
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate } from '../src/generate';
 import { loadPlan, milestones, type Plan } from '../src/plan';
@@ -1056,7 +1059,60 @@ describe('run (archon stub)', () => {
     expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
-  test('preflight: only a real, unexpired receipt bound to this HEAD and config passes; each rejection says why and how to fix', () => {
+  test('selftest fingerprint: documentation and tests preserve receipts; runtime commits and dirty files invalidate them', () => {
+    const s = stub([]), repo = gitRepo(s.root);
+    const now = Date.now();
+    const receipt = () => ({
+      ok: true, fake: false, head: gitHead(repo), config_hash: configHash(),
+      expires_at: new Date(now + 3600e3).toISOString(), fingerprint: runtimeFingerprint(repo),
+    });
+    const put = (path: string, text = 'fixture\n'): void => {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), text);
+    };
+    const commit = (path: string): void => {
+      sh(`git add -- '${path}' && git -c user.name=t -c user.email=t@l commit -qm fixture`, repo);
+    };
+    let good = receipt();
+    const legacy = { ...good, fingerprint: undefined };
+    expect(receiptProblem(legacy, now, repo)).toBeNull();
+    for (const path of [
+      'wetamp/tests/x.test.ts', 'wetamp/docs/guide.md', 'PROGRESS.md',
+      'packages/docs-web/src/index.ts', '.github/workflows/ci.yml',
+      'packages/core/tests/fixture.ts', 'packages/core/__tests__/fixture.ts',
+      'packages/core/src/index.test.ts',
+    ]) {
+      put(path);
+      expect(receiptProblem(good, now, repo)).toBeNull();
+      commit(path);
+      expect(receiptProblem(good, now, repo)).toBeNull();
+    }
+    expect(receiptProblem(legacy, now, repo)).toContain('HEAD drift (legacy receipt');
+    for (const path of [
+      'wetamp/src/runtime.ts', 'wetamp/templates/nested/prompt.md',
+      'packages/core/src/runtime.ts', 'wetamp/bin/worker', 'wetamp/hooks/runtime.cjs',
+      'wetamp/schemas/runtime.json',
+    ]) {
+      put(path);
+      expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
+      sh(`git add -- '${path}'`, repo);
+      expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
+      commit(path);
+      expect(receiptProblem(good, now, repo)).toContain('runtime fingerprint drift');
+      good = receipt();
+      expect(receiptProblem(good, now, repo)).toBeNull();
+    }
+    put('wetamp/src/runtime.ts', 'edited\n');
+    expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
+    expect(receiptProblem({ ...good, fingerprint: undefined }, now, repo)).toContain('runtime worktree drift');
+    commit('wetamp/src/runtime.ts');
+    good = receipt();
+    // Rename folding must not hide removal of runtime code behind a documentation destination.
+    fs.renameSync(join(repo, 'wetamp/src/runtime.ts'), join(repo, 'wetamp/docs/runtime.md'));
+    sh('git add -- wetamp/src/runtime.ts wetamp/docs/runtime.md', repo);
+    expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
+  });
+  test('preflight: only a real, unexpired receipt bound to this runtime and config passes; each rejection says why and how to fix', () => {
     const s = stub([]);
     const repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
@@ -1067,6 +1123,7 @@ describe('run (archon stub)', () => {
       expires_at: new Date(Date.now() + 3600e3).toISOString(),
       fake: false,
       head: gitHead(),
+      fingerprint: runtimeFingerprint(),
       config_hash: configHash(),
     };
     const attempt = (r?: object): string => {
@@ -1083,7 +1140,9 @@ describe('run (archon stub)', () => {
     expect(attempt({ ...good, fake: true })).toContain('fake receipt');
     expect(attempt({ ...good, fake: undefined })).toContain('fake receipt');
     expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
-    expect(attempt({ ...good, head: '0'.repeat(40) })).toContain('HEAD drift');
+    expect(attempt({ ...good, head: '0'.repeat(40) })).toBe('0');
+    expect(attempt({ ...good, fingerprint: 'x' })).toContain('runtime fingerprint drift');
+    expect(attempt({ ...good, fingerprint: undefined, head: '0'.repeat(40) })).toContain('HEAD drift');
     expect(attempt({ ...good, config_hash: 'x' })).toContain('config drift');
     expect(attempt(good)).toBe('0');
     writeFileSync(join(s.root, 'home', 'archon', 'config.yaml'), 'edited: true\n');
@@ -3822,6 +3881,7 @@ test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
     expect(JSON.parse(readFileSync(join(root, 'home/selftest.json'), 'utf8'))).toMatchObject({
       ok: true,
       fake: false,
+      fingerprint: expect.any(String),
     });
     expect(readFileSync(join(root, 'provider-calls'), 'utf8')).toBe('provider started normally\n');
     expect(readFileSync(stateFile)).toEqual(installed);
