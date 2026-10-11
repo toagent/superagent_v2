@@ -11,6 +11,9 @@ import {
   copyFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import type { Pkg } from './plan';
 import { QUERY_TIMEOUT_MS } from './archon';
 
 export type Console = 'claude' | 'codex';
@@ -28,7 +31,25 @@ export function home(): { sa: string; archon: string } {
   const archon = process.env.ARCHON_HOME;
   if (!sa || !archon)
     throw new Error('SUPERAGENT_HOME/ARCHON_HOME unset: run through wetamp/bin/*');
+  assertSQLite(process.cwd(), archon);
   return { sa, archon };
+}
+
+/** Match Archon's env precedence without printing or applying credential values. */
+export function assertSQLite(repo: string, archonHome = process.env.ARCHON_HOME): void {
+  const { parse } = createRequire(join(WETAMP, '..', 'packages/paths/package.json'))('dotenv') as {
+    parse: (text: string) => Record<string, string>;
+  };
+  let database = process.env.DATABASE_URL;
+  for (const path of [archonHome && join(archonHome, '.env'), join(repo, '.archon', '.env')]) {
+    if (!path || !existsSync(path)) continue;
+    const vars = parse(readFileSync(path, 'utf8'));
+    if ('DATABASE_URL' in vars) database = vars.DATABASE_URL;
+  }
+  if (database)
+    throw new Error(
+      'superagent is SQLite-only: DATABASE_URL/PostgreSQL is unsupported; use a separate SQLite ARCHON_HOME'
+    );
 }
 
 /**
@@ -113,15 +134,24 @@ export function runCapacity(t = loadTiers()): number {
 
 export interface Tiers {
   tiers: Record<string, { pools: Record<string, string[]> }>;
-  routing: { coder: { models: string[] }; reviewer: { by_console: Record<Console, string[]> } };
+  routing: {
+    coder: { models: string[] };
+    reviewer: {
+      by_console: Record<Console, string[]>;
+      by_risk?: Partial<Record<Pkg['risk'], string[]>>;
+    };
+  };
   health: { vendor_concurrency: Record<string, number> };
   policy: {
-    sandbox: { mcp: string[] };
+    /** Context advisory thresholds consumed by context-advisory.cjs. */
+    context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
+    sandbox: { mcp: string[]; network: boolean };
     /** held:gate / held:environment / coder 节点失败各自的自动重试上限（docs/00 自动重试）。 */
     auto_retry: { gate: number; environment: number; coder: number };
     exec_profiles: {
-      coder: { claude: { denied_tools: string[] } };
+      coder: { codex?: Record<string, unknown>; claude: { denied_tools: string[] } };
       reviewer: {
+        codex?: Record<string, unknown>;
         codex_readonly_marker: string;
         claude: { denied_tools: string[]; sandbox: Record<string, unknown> };
       };
@@ -164,6 +194,51 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
   return JSON.parse(readFileSync(path, 'utf8')) as Tiers;
 }
 
+export interface Route {
+  candidates: Alias[];
+  effort: string;
+}
+/** One resolver owns role/risk/round and mode filtering; no vendor inference at execution time. */
+export function resolveRoute(
+  t: Tiers,
+  console: Console,
+  mode = 'auto',
+  role: 'code' | 'repair' | 'review' = 'code',
+  risk: Pkg['risk'] = 'G1',
+  round = 1,
+  authors: string[] = []
+): Route {
+  if (!['auto', 'strict', 'single:claude', 'single:chatgpt'].includes(mode))
+    throw new Error(`unsupported routing mode: ${mode}`);
+  const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
+  const models =
+    role === 'review'
+      ? (t.routing.reviewer.by_risk?.[risk] ?? t.routing.reviewer.by_console[console])
+      : t.routing.coder.models;
+  const effort = effortFor(t, role, risk, round);
+  const candidates = [...new Set(models)]
+    .map(model => ({ model, provider: providerOf(model), effort }))
+    .filter(
+      a => (!vendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
+    );
+  if (!candidates.length)
+    throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);
+  return { candidates, effort };
+}
+
+/** JSON key order never changes the policy's content identity. */
+const { canonicalPolicy } = createRequire(import.meta.url)('../bin/codex-readonly-proxy.cjs') as {
+  canonicalPolicy: (value: unknown) => string;
+};
+export function snapshotPolicy(
+  t: Tiers
+): Tiers['policy'] & { hash: string; routing: Tiers['routing']; health: Tiers['health'] } {
+  const body = JSON.parse(
+    JSON.stringify({ ...t.policy, routing: t.routing, health: t.health })
+  ) as Tiers['policy'] & { routing: Tiers['routing']; health: Tiers['health'] };
+  return { ...body, hash: createHash('sha256').update(canonicalPolicy(body)).digest('hex') };
+}
+
 const mk = (model: string): Alias => ({ provider: providerOf(model), model, effort: 'high' });
 
 /** 渲染全部别名；console=codex 的评审池用 -codex 后缀别名，run 时由 runAliases 钉成 @sa-reviewer。 */
@@ -199,14 +274,17 @@ const obj = (v: unknown): Obj =>
  * 钉进 run 的别名（Archon run-config 层，优先级高于全局/repo/用户层，resume 继承快照）：
  * 运行中改 config.yaml 或 tiers.json 不影响已启动的 run。不用 `--model`：字面 spec 不带 effort。
  */
-export function runAliases(c: Console, t = loadTiers()): Record<string, Alias> {
-  const a = renderAliases(t);
-  assertAuthorNotReviewer(a);
-  const sfx = c === 'codex' ? '-codex' : '';
+export function runAliases(c: Console, t = loadTiers(), mode = 'auto'): Record<string, Alias> {
+  const coder = resolveRoute(t, c, mode).candidates[0];
+  const reviewers = resolveRoute(t, c, mode, 'review', 'G1', 1, [coder.model]).candidates;
+  const reviewer = reviewers[0];
   return {
-    '@sa-coder': a['@sa-coder'],
-    '@sa-reviewer': a[`@sa-reviewer${sfx}`],
-    '@sa-reviewer-alt': a[`@sa-reviewer-alt${sfx}`],
+    '@sa-coder': { ...coder, effort: 'high' },
+    '@sa-reviewer': { ...reviewer, effort: 'high' },
+    '@sa-reviewer-alt': {
+      ...(reviewers.find(a => a.provider !== reviewer.provider) ?? reviewers.at(1) ?? reviewer),
+      effort: 'high',
+    },
   };
 }
 

@@ -37,7 +37,7 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { configHash, gitHead, renderAliases, loadTiers, WETAMP } from '../src/config';
+import { configHash, gitHead, renderAliases, loadTiers, resolveRoute, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
@@ -858,6 +858,9 @@ describe('run (archon stub)', () => {
       '@sa-coder': want['@sa-coder'],
       '@sa-reviewer': want['@sa-reviewer-codex'],
       '@sa-reviewer-alt': want['@sa-reviewer-alt-codex'],
+      '@sa-reviewer-G0': resolveRoute(loadTiers(), 'codex', 'auto', 'review', 'G0', 1, [
+        want['@sa-coder'].model,
+      ]).candidates[0],
     });
   });
   test('console=claude pins the concrete claude-console models, effort included', () => {
@@ -2462,7 +2465,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       code: 1,
       err: expect.stringContaining('budget-extra: invalid limits'),
     });
-  });
+  }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
   test('review yes changes only the review counter', () => {
     const { s: r } = scenes.review_not_independent();
     supervisor(r.root, 'yes');
@@ -3219,7 +3222,7 @@ describe('HF9 decision titles', () => {
       put('verify-W4.json', { reason: 'budget_launches_exceeded' });
     }
     expect(loadLedger('sa1').budget_grants).toHaveLength(2);
-  });
+  }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
   test('HF10 supervisor receives package, milestone, adopt and legacy scope titles', () => {
     const samples: Record<string, string> = {};
     for (const mode of ['package', 'milestone', 'adopt', 'legacy'] as const) {

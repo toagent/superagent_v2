@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan } from '../../../src/plan';
+import { readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 
 export interface Finding {
   id: string;
@@ -47,11 +48,12 @@ interface Accept {
   diff_hash: string;
   same: boolean;
   head?: string;
+  contract_hash?: string;
   risk?: string | null;
   disposition?: Disposition;
   reason?: string | null;
 }
-/** generate 写入 <gen>/policy.json 的 tiers.policy 子集（一次生成、整 run 共用）。 */
+/** sa-check uses these fields from the complete frozen <gen>/policy.json. */
 interface Policy {
   risk_paths: string[];
   code_extensions: string[];
@@ -239,9 +241,15 @@ export function disposition(
   return to('repair', c.status === 'done' ? 'acceptance_failed' : 'coder_partial');
 }
 
-const RISKS = ['G0', 'G1', 'G2'];
-const maxRisk = (...rs: (string | null | undefined)[]): string =>
-  RISKS[Math.max(0, ...rs.map(r => RISKS.indexOf(r ?? '')))];
+const RISKS = ['G0', 'G1', 'G2'] as const;
+const maxRisk = (...rs: (string | null | undefined)[]): Plan['packages'][number]['risk'] =>
+  RISKS[Math.max(0, ...rs.map(r => RISKS.findIndex(v => v === r)))];
+
+/** Routing and the gate consume the same structured acceptance risks, never infer them twice. */
+export const effectiveRisk = (
+  declared: string,
+  rechecks: Pick<Accept, 'risk'>[]
+): Plan['packages'][number]['risk'] => maxRisk(declared, ...rechecks.map(c => c.risk));
 
 /** `git diff --raw -z -M` 的逐项：状态、两侧 mode、路径（重命名/复制为源与目标）。 */
 function changes(base: string): { modes: string[]; paths: string[] }[] {
@@ -331,7 +339,17 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     patch,
     delta,
     diff_hash: hash,
-    // 修复轮的 diff 与上一轮相同：修复没有改任何东西，评审节点据此跳过、gate 直接 escalate
+    contract_hash: sha(
+      JSON.stringify([
+        p,
+        ids,
+        scopeIds,
+        base,
+        env('RISK'),
+        env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null,
+      ])
+    ),
+    // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
     base_pass:
       base && failed.length
@@ -511,6 +529,7 @@ export function decide(input: {
   rechecks: Accept[];
   risk: string;
   expired?: boolean;
+  qualifiedReview?: boolean;
 }): { verdict: Verdict; rounds: number; reason: string | null; debt: string[]; ledger: Ledger } {
   const { reviews } = input;
   const rounds = reviews.length;
@@ -524,10 +543,36 @@ export function decide(input: {
     ledger,
   });
   if (input.expired) return out('escalate', 'deadline');
-  if (check?.same) return out('escalate', 'no_change');
   // 同一份评审里 id 重复（含同 id 既 closed 又 open）：账本无法唯一解释，不放行也不降为债务
   if (reviews.some(r => r && new Set(r.findings.map(f => f.id)).size !== r.findings.length))
     return out('escalate', 'invalid_review');
+  if (check?.same) {
+    const prior = reviews
+      .map((r, i) => (r ? i : -1))
+      .filter(i => i >= 0)
+      .at(-1);
+    const accepted = prior === undefined ? undefined : input.rechecks[prior];
+    const review = prior === undefined ? undefined : reviews[prior];
+    // Missing legacy evidence cannot prove equivalence; open debt also forbids reuse.
+    const reusable =
+      input.qualifiedReview === true &&
+      reviews.at(-1) === null &&
+      check.ok &&
+      check.disposition === 'advance' &&
+      review?.status === 'PASS' &&
+      ledger.blocking.length === 0 &&
+      ledger.debt.length === 0 &&
+      review.debt.length === 0 &&
+      !!check.head &&
+      accepted?.head === check.head &&
+      !!check.diff_hash &&
+      accepted.diff_hash === check.diff_hash &&
+      !!check.contract_hash &&
+      accepted.contract_hash === check.contract_hash &&
+      accepted.risk === check.risk &&
+      check.risk === input.risk;
+    return reusable ? out('pass', null) : out('escalate', 'no_change');
+  }
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
   let reason: string;
@@ -599,9 +644,11 @@ const AI_NODE = /^(code|repair|fix|review)-/;
  */
 export function budgetUsage(
   events: RunEvent[],
-  floor: number
+  floor: number,
+  attempts: PolicyAttempt[] = []
 ): { launches: number; weighted_tokens: number; reserve: number } {
-  const ev = events.filter(e => AI_NODE.test(e.step_name ?? ''));
+  const owned = new Set(attempts.map(a => a.node));
+  const ev = events.filter(e => AI_NODE.test(e.step_name ?? '') && !owned.has(e.step_name ?? ''));
   const used = ev
     .filter(e => e.event_type === 'node_completed' || e.event_type === 'node_failed')
     .map(e => e.data?.spend?.tokens)
@@ -609,12 +656,17 @@ export function budgetUsage(
       t?.source === 'provider' && t.value
         ? t.value.input - (t.value.cacheRead ?? 0) + t.value.output
         : null
+    )
+    .concat(
+      attempts.map(a =>
+        a.tokens ? a.tokens.input - (a.tokens.cacheRead ?? 0) + a.tokens.output : null
+      )
     );
   const known = used.filter((n): n is number => n !== null);
   const reserve = Math.max(0, ...known) || floor;
   const total = known.reduce((a, n) => a + n, 0) + (used.length - known.length) * reserve;
   return {
-    launches: ev.filter(e => e.event_type === 'node_started').length,
+    launches: ev.filter(e => e.event_type === 'node_started').length + attempts.length,
     weighted_tokens: total,
     reserve,
   };
@@ -661,7 +713,7 @@ export function effectiveBudget(
     throw new Error('budget-extra: invalid limits');
   return grant.limits;
 }
-function budget(): string | null {
+function budget(nextLaunch = true): string | null {
   if (!env('ARCHON')) return null;
   const dir = dirname(env('PLAN')),
     m = env('MILESTONE');
@@ -671,8 +723,9 @@ function budget(): string | null {
     : null;
   const attempt = join(dir, 'attempts', m);
   const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
-  const u = budgetUsage(runEvents(), policy().budget_floor.S);
-  if (b.launches !== undefined && u.launches >= b.launches) return 'budget_launches_exceeded';
+  const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
+  if (b.launches !== undefined && (nextLaunch ? u.launches >= b.launches : u.launches > b.launches))
+    return 'budget_launches_exceeded';
   return u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
 }
 
@@ -693,6 +746,17 @@ export const identityOf = (b: Binding | undefined): Ident => {
   return { model: null, strength: 'unknown' };
 };
 
+/** Provider receipts remain strongest; a fallback's pinned model must replace the original request. */
+export function attemptIdentity(attempts: PolicyAttempt[], node: string, binding?: Binding): Ident {
+  const attempt = attempts.filter(a => a.node === node).at(-1);
+  if (!attempt) return identityOf(binding);
+  if (attempt.status !== 'completed') return { model: null, strength: 'unknown' };
+  if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
+  return attempt.provider === 'codex'
+    ? { model: attempt.model, strength: 'pinned' }
+    : { model: null, strength: 'unknown' };
+}
+
 /** F-14：不合格的原因；null = 合格独立评审（双方身份已知、实际模型不同）。 */
 export function independence(authors: Ident[], reviewer: Ident): string | null {
   if (reviewer.strength === 'unknown') return 'reviewer_unknown';
@@ -710,35 +774,47 @@ function gate(): void {
   const tag = env('TAG');
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
-  const risk = maxRisk(env('RISK'), ...rechecks.map(c => c.risk));
-  const d = decide({ reviews, rechecks, risk, expired: expired() });
-  const ledgerFile = join(artifacts, `${tag}.ledger.json`);
-  writeFileSync(ledgerFile, JSON.stringify(d.ledger, null, 2));
+  const risk = effectiveRisk(env('RISK'), rechecks);
+  const decision = { reviews, rechecks, risk, expired: expired() };
+  let d = decide(decision);
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
     .filter(i => i >= 0)
     .at(-1);
-  let grade: string | null = null;
+  const m = env('MILESTONE');
+  const fake = { model: 'fake', strength: 'fake' } as const;
   let identity: { authors: Ident[]; reviewer: Ident } | null = null;
-  if (d.verdict === 'pass') {
-    const m = env('MILESTONE');
-    const fake = { model: 'fake', strength: 'fake' } as const;
+  if (
+    reviewed !== undefined &&
+    (d.verdict === 'pass' ||
+      (d.reason === 'no_change' && rechecks.at(-1)?.ok && reviews.at(-1) === null))
+  ) {
     const done = env('ARCHON') ? runEvents().filter(e => e.event_type === 'node_completed') : [];
     const author = new RegExp(
       `^((code|repair)-(${env('PKGS').split(',').join('|')})|fix-${m}-r\\d)$`
     );
-    const reviewer = `review-${m}-r${String((reviewed ?? 0) + 1)}`;
+    const reviewer = `review-${m}-r${String(reviewed + 1)}`;
+    const attempts = readPolicyAttempts(artifacts);
     identity = env('ARCHON')
       ? {
           authors: done
             .filter(e => author.test(e.step_name ?? ''))
-            .map(e => identityOf(e.data?.binding)),
-          reviewer: identityOf(done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding),
+            .map(e => attemptIdentity(attempts, e.step_name ?? '', e.data?.binding)),
+          reviewer: attemptIdentity(
+            attempts,
+            reviewer,
+            done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding
+          ),
         }
       : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
-    const why = independence(identity.authors, identity.reviewer);
+  }
+  const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';
+  if (identity && rechecks.at(-1)?.same) d = decide({ ...decision, qualifiedReview: why === null });
+  const ledgerFile = join(artifacts, `${tag}.ledger.json`);
+  writeFileSync(ledgerFile, JSON.stringify(d.ledger, null, 2));
+  let grade: string | null = null;
+  if (d.verdict === 'pass') {
     grade = why ? 'DEGRADED_PASS' : 'PASS';
-    // strict 与 G2 不接受降级：等合格独立评审（escalate 给用户）；其余带原因显式降级放行
     if (why)
       Object.assign(
         d,
@@ -747,8 +823,13 @@ function gate(): void {
           : { reason: `review_not_independent:${why}` }
       );
   }
-  const over = d.verdict === 'fix' || (d.verdict === 'pass' && env('NEXT')) ? budget() : null;
+  const over =
+    d.verdict === 'fix' || d.verdict === 'pass'
+      ? budget(d.verdict === 'fix' || Boolean(env('NEXT')))
+      : null;
   if (over) Object.assign(d, { verdict: 'escalate', reason: over });
+  if (d.verdict === 'pass' && rechecks.at(-1)?.same && reviewed !== undefined)
+    writeFileSync(reviewFile, JSON.stringify(reviews[reviewed], null, 2));
   const { ledger: _, ...rest } = d;
   void _;
   const out = {

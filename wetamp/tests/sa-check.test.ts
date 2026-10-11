@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   decide,
   disposition,
@@ -508,13 +509,15 @@ describe('F-14 model identity', () => {
 function runScript(
   cwd: string,
   inputs: Record<string, string>,
-  script = SCRIPT
+  script = SCRIPT,
+  extraEnv: Record<string, string> = {}
 ): { code: number; out: unknown; err: string; art: string } {
   const art = join(cwd, '..', 'art');
   mkdirSync(art, { recursive: true });
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ARTIFACTS_DIR: art,
+    ...extraEnv,
   };
   for (const [k, v] of Object.entries(inputs)) env[`INPUTS_${k.toUpperCase()}`] = v;
   const p = Bun.spawnSync(['bun', script], {
@@ -560,6 +563,11 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
   writeFileSync(
     join(root, 'reasons.json'),
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/reasons.json'))
+  );
+  // Runtime sibling import of sa-check.ts; type-only imports are erased and need no copy.
+  writeFileSync(
+    join(root, 'policy-attempts.ts'),
+    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/policy-attempts.ts'))
   );
   if (hook) sh(`git config core.hooksPath '${join(repo, '.git/hooks')}'`, repo);
   if (hook)
@@ -688,6 +696,181 @@ function planFile(root: string, accept: string, environment: string[] = []): str
 }
 
 describe('sa-check script', () => {
+  test('B1 same-diff reuses a qualified review after acceptance recovers; contract or identity drift refuses reuse', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      flag = join(root, 'ready');
+    const p = join(root, 'plan.json');
+    const contract = {
+      deadline: '2099-01-01T00:00:00Z',
+      mode: 'strict',
+      budget: { launches: 20, weighted_tokens: 2_000_000 },
+      packages: [
+        {
+          id: 'a',
+          scope: { write: ['*.md'] },
+          accept: [{ cmd: `test -f '${flag}'`, timeout_s: 5 }],
+        },
+      ],
+    };
+    writeFileSync(p, JSON.stringify(contract));
+    const pol = join(root, 'policy.json');
+    writeFileSync(pol, JSON.stringify(snapshotPolicy(loadTiers())));
+    const inputs = {
+      kind: 'accept',
+      plan: p,
+      pkgs: 'a',
+      risk: 'G1',
+      policy: pol,
+      base: sh('git rev-parse HEAD', repo).trim(),
+    };
+    const prior = runScript(repo, { ...inputs, tag: 'prior' }).out as {
+      diff_hash: string;
+      contract_hash: string;
+      ok: boolean;
+    };
+    expect(prior.ok).toBe(false);
+    writeFileSync(flag, 'ready');
+    const current = runScript(repo, { ...inputs, tag: 'current', prev: prior.diff_hash }).out;
+    expect(current).toMatchObject({
+      same: true,
+      ok: true,
+      disposition: 'advance',
+      contract_hash: prior.contract_hash,
+    });
+    const eventsFile = join(root, 'events.json'),
+      archon = join(root, 'archon');
+    writeFileSync(
+      archon,
+      `#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8'));\n`
+    );
+    chmodSync(archon, 0o755);
+    const events = (reviewer: string) => ({
+      events: ['code-a', 'review-m1-r1'].map((step_name, i) => ({
+        step_name,
+        event_type: 'node_completed',
+        data: {
+          binding: {
+            model: {
+              requested: i === 0 ? 'author-model' : reviewer,
+              resolved: { reason: 'unsupported' },
+            },
+          },
+        },
+      })),
+    });
+    writeFileSync(eventsFile, JSON.stringify(events('review-model')));
+    const gate = (check: unknown) =>
+      runScript(
+        repo,
+        {
+          kind: 'gate',
+          plan: p,
+          pkgs: 'a',
+          milestone: 'm1',
+          tag: 'reuse',
+          round: '2',
+          risk: 'G1',
+          archon,
+          policy: pol,
+          r1: JSON.stringify(R('PASS')),
+          r2: 'null',
+          c1: JSON.stringify(prior),
+          c2: JSON.stringify(check),
+        },
+        SCRIPT,
+        { WORKFLOW_ID: 'scratch-only' }
+      );
+    const reusedResult = gate(current);
+    expect(reusedResult.err).toBe('');
+    const reused = reusedResult.out as { review_file: string };
+    expect(reused).toMatchObject({ verdict: 'pass', grade: 'PASS' });
+    expect(JSON.parse(readFileSync(reused.review_file, 'utf8'))).toEqual(R('PASS'));
+    writeFileSync(eventsFile, JSON.stringify(events('author-model')));
+    expect(gate(current).out).toMatchObject({ verdict: 'escalate', reason: 'no_change' });
+    writeFileSync(eventsFile, JSON.stringify(events('review-model')));
+    writeFileSync(p, JSON.stringify({ ...contract, environment: [{ cmd: 'true', timeout_s: 5 }] }));
+    const changed = runScript(repo, { ...inputs, tag: 'changed', prev: prior.diff_hash }).out;
+    expect(changed).toMatchObject({ same: true, ok: true });
+    expect(gate(changed).out).toMatchObject({ verdict: 'escalate', reason: 'no_change' });
+    writeFileSync(p, JSON.stringify({ ...contract, deadline: '2000-01-01T00:00:00Z' }));
+    // Deadline remains terminal even when the binding/event query is unavailable.
+    writeFileSync(archon, '#!/usr/bin/env node\nprocess.exit(1);\n');
+    expect(gate(current).out).toMatchObject({ verdict: 'escalate', reason: 'deadline' });
+  }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
+  test('POLICY-R1-03: final review exceeding its reservation cannot PASS or reach land', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      p = join(root, 'plan.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        deadline: '2099-01-01T00:00:00Z',
+        mode: 'strict',
+        budget: { launches: 2, weighted_tokens: 30 },
+        packages: [],
+      })
+    );
+    const pol = join(root, 'policy.json');
+    writeFileSync(pol, JSON.stringify(snapshotPolicy(loadTiers())));
+    const eventsFile = join(root, 'events.json'),
+      archon = join(root, 'archon');
+    writeFileSync(
+      archon,
+      `#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8'));\n`
+    );
+    chmodSync(archon, 0o755);
+    const events = ['code-a', 'review-m1-r1'].flatMap((step_name, i) => [
+      { step_name, event_type: 'node_started' },
+      {
+        step_name,
+        event_type: 'node_completed',
+        data: {
+          binding: {
+            model: {
+              requested: i ? 'review-model' : 'author-model',
+              resolved: { reason: 'unsupported' },
+            },
+          },
+          spend: {
+            tokens: { source: 'provider', value: { input: i ? 25 : 5, output: i ? 20 : 5 } },
+          },
+        },
+      },
+    ]);
+    writeFileSync(eventsFile, JSON.stringify({ events }));
+    const gate = () =>
+      runScript(
+        repo,
+        {
+          kind: 'gate',
+          plan: p,
+          policy: pol,
+          archon,
+          pkgs: 'a',
+          milestone: 'm1',
+          tag: 'gate-m1-r1',
+          round: '1',
+          risk: 'G0',
+          r1: JSON.stringify(R('PASS')),
+          c1: JSON.stringify({ ...C('a'), risk: 'G2' }),
+        },
+        SCRIPT,
+        { WORKFLOW_ID: 'scratch-only' }
+      );
+    const exceeded = gate();
+    expect(exceeded.code).toBe(1);
+    expect(exceeded.out).toMatchObject({
+      verdict: 'escalate',
+      grade: null,
+      risk: 'G2',
+      reason: 'budget_tokens_exceeded',
+    });
+    // Exactly the allowed final launch count is legal once actual tokens are within budget.
+    events[3]!.data!.spend.tokens.value = { input: 5, output: 5 };
+    writeFileSync(eventsFile, JSON.stringify({ events }));
+    expect(gate()).toMatchObject({ code: 0, out: { verdict: 'pass', grade: 'PASS' } });
+  });
   test('env: failing environment check exits 1 with failed list', () => {
     const root = tmp();
     const r = runScript(gitRepo(root), { kind: 'env', plan: planFile(root, 'true', ['false']) });
@@ -743,7 +926,7 @@ describe('sa-check script', () => {
       coder_partial: true,
       ok: true,
     });
-  });
+  }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
   test('accept: uncommitted change fails even when commands pass', () => {
     const root = tmp();
     const repo = gitRepo(root);

@@ -39,7 +39,7 @@ function derivedBy(payload, client, env = process.env) {
       && pool('general').includes(payload.model) && !pool('commander').includes(payload.model)) return `general 池模型 ${payload.model}`;
   return null;
 }
-// Tier whose autocompact budget applies to this session.
+// Tier whose context advisory threshold applies to this session.
 function sessionRole(payload, client, env = process.env) {
   if (env.SUPERAGENT_ROLE === 'reviewer') return 'strategist';
   return derivedBy(payload, client, env) ? 'general' : 'commander';

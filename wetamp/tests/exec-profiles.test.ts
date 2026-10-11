@@ -9,10 +9,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { loadTiers, snapshotPolicy } from '../src/config';
 import { archon, archonDetached } from '../src/archon';
 import { tmp } from './helpers';
 
 const WORKER = join(import.meta.dir, '..', 'bin', 'codex-worker');
+function snapshot(tiers = loadTiers()): string {
+  const path = join(tmp(), 'policy.json');
+  writeFileSync(path, JSON.stringify(snapshotPolicy(tiers)));
+  return path;
+}
 
 function stub(dir: string, name: string, body: string): string {
   const p = join(dir, name);
@@ -43,6 +49,7 @@ describe('bin/codex-worker', () => {
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
+        SA_POLICY_PATH: snapshot(),
       },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -79,6 +86,7 @@ describe('bin/codex-worker', () => {
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
+        SA_POLICY_PATH: snapshot(),
         ...env,
       },
       stdout: 'pipe',
@@ -124,20 +132,33 @@ describe('bin/codex-worker', () => {
 
   // codex-rs hooks discovery：NormalizedHookIdentity 的键排序紧凑 JSON 的 sha256。
   const hookHash = (command: string, timeout: number): string => {
-    const identity = { event_name: 'pre_tool_use', hooks: [{ async: false, command, timeout, type: 'command' }] };
+    const identity = {
+      event_name: 'pre_tool_use',
+      hooks: [{ async: false, command, timeout, type: 'command' }],
+    };
     return `sha256:${new Bun.CryptoHasher('sha256').update(JSON.stringify(identity)).digest('hex')}`;
   };
   const TRUST = join(import.meta.dir, '..', 'scripts', 'codex-trust.cjs');
   const verify = (env: Record<string, string>): { trusted: number; match: number } =>
-    JSON.parse(Bun.spawnSync(['bun', TRUST, 'verify'], { env: { ...process.env, ...env } }).stdout.toString());
+    JSON.parse(
+      Bun.spawnSync(['bun', TRUST, 'verify'], { env: { ...process.env, ...env } }).stdout.toString()
+    );
   test('scripts/codex-trust.cjs reproduces trusted_hash values written by Codex /hooks', () => {
     // 本机 ~/.codex/config.toml 里 Codex 为 git-guardrail（timeout 10）记下的值（2026-10-10 实测）。
     const command = 'bash /Users/yong/.wetamp/bin/git-guardrail.sh';
     const want = 'sha256:4e71123e2967f6c83d07b6b042e8c7b6f17948d33d904874c64a8e1c6600f109';
     expect(hookHash(command, 10)).toBe(want);
     const codexHome = tmp();
-    writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command, timeout: 10 }] }] } }));
-    writeFileSync(join(codexHome, 'config.toml'), `[hooks.state."${join(codexHome, 'hooks.json')}:pre_tool_use:0:0"]\ntrusted_hash = "${want}"\n`);
+    writeFileSync(
+      join(codexHome, 'hooks.json'),
+      JSON.stringify({
+        hooks: { PreToolUse: [{ hooks: [{ type: 'command', command, timeout: 10 }] }] },
+      })
+    );
+    writeFileSync(
+      join(codexHome, 'config.toml'),
+      `[hooks.state."${join(codexHome, 'hooks.json')}:pre_tool_use:0:0"]\ntrusted_hash = "${want}"\n`
+    );
     expect(verify({ CODEX_HOME: codexHome })).toEqual({ trusted: 1, match: 1 });
   });
   // 只读核对本机真实 ~/.codex：只取两个计数。条目改过而未重新信任时 match 会少于 trusted（Codex 也会跳过它们），
@@ -153,18 +174,37 @@ describe('bin/codex-worker', () => {
 
   test('fails closed unless the guard PreToolUse hook is trusted and enabled', () => {
     const guard = `node '${join(realpathSync(join(import.meta.dir, '..')), 'hooks/guard.cjs')}' codex`;
-    const run = (trusted: string | null, extra = '', env: Record<string, string> = {}, args = ['exec', 'x']) => {
+    const run = (
+      trusted: string | null,
+      extra = '',
+      env: Record<string, string> = {},
+      args = ['exec', 'x']
+    ) => {
       const root = tmp();
       const codexHome = join(root, 'codex-home');
       mkdirSync(codexHome);
       const hooks = join(codexHome, 'hooks.json');
       const group = (command: string) => ({ hooks: [{ type: 'command', command, timeout: 30 }] });
-      writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [group('bash /x/other.sh'), group(guard)] } }));
-      const state = trusted === null ? '' : `[hooks.state."${hooks}:pre_tool_use:1:0"]\ntrusted_hash = "${trusted}"\n${extra}`;
+      writeFileSync(
+        hooks,
+        JSON.stringify({ hooks: { PreToolUse: [group('bash /x/other.sh'), group(guard)] } })
+      );
+      const state =
+        trusted === null
+          ? ''
+          : `[hooks.state."${hooks}:pre_tool_use:1:0"]\ntrusted_hash = "${trusted}"\n${extra}`;
       writeFileSync(join(codexHome, 'config.toml'), state);
       const real = stub(root, 'codex', '#!/usr/bin/env node\nconsole.log("ran");\n');
       const p = Bun.spawnSync([WORKER, ...args], {
-        env: { ...process.env, CODEX_HOME: codexHome, SUPERAGENT_ROLE: '', SA_CODEX_REAL: real, SA_CODEX_HOOK_TRUST: '', ...env },
+        env: {
+          ...process.env,
+          SA_POLICY_PATH: snapshot(),
+          CODEX_HOME: codexHome,
+          SUPERAGENT_ROLE: '',
+          SA_CODEX_REAL: real,
+          SA_CODEX_HOOK_TRUST: '',
+          ...env,
+        },
         stdout: 'pipe',
         stderr: 'pipe',
       });
@@ -172,7 +212,11 @@ describe('bin/codex-worker', () => {
     };
     expect(run(hookHash(guard, 30))).toMatchObject({ code: 0, out: 'ran\n' });
     // 定义改过（hash 不符）、从未信任、被禁用：Codex 都不会执行它。
-    for (const r of [run(hookHash(guard, 10)), run(null), run(hookHash(guard, 30), 'enabled = false\n')]) {
+    for (const r of [
+      run(hookHash(guard, 10)),
+      run(null),
+      run(hookHash(guard, 30), 'enabled = false\n'),
+    ]) {
       expect(r.code).toBe(3);
       expect(r.out).toBe('');
       expect(r.err).toContain('/hooks');
@@ -188,8 +232,11 @@ describe('bin/codex-worker', () => {
     stub(bin, 'python3', '#!/bin/sh\nexit 1\n');
     const node = dirname(Bun.which('node') ?? '');
     const bun = dirname(Bun.which('bun') ?? '');
-    expect(run(hookHash(guard, 30), '', { PATH: `${bin}:${bun}:${node}:/usr/bin:/bin` })).toMatchObject({ code: 0, out: 'ran\n' });
-    if (node !== bun) expect(run(hookHash(guard, 30), '', { PATH: `${node}:/usr/bin:/bin` }).code).toBe(3);
+    expect(
+      run(hookHash(guard, 30), '', { PATH: `${bin}:${bun}:${node}:/usr/bin:/bin` })
+    ).toMatchObject({ code: 0, out: 'ran\n' });
+    if (node !== bun)
+      expect(run(hookHash(guard, 30), '', { PATH: `${node}:/usr/bin:/bin` }).code).toBe(3);
   });
 
   test('reviewer role adds a read-only sandbox; TRACE prints policy and redacted caller argv only', () => {
@@ -259,6 +306,7 @@ process.stdin.on('end', () => {
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
+        SA_POLICY_PATH: snapshot(),
         ...env,
       },
       stdin: Buffer.from(input),
@@ -332,6 +380,24 @@ process.stdin.on('end', () => {
     const [s, t] = lines(r.received);
     expect(s.params).toMatchObject({ sandbox: 'read-only' });
     expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly' } });
+  });
+
+  test('proxy reads marker and network policy from the frozen snapshot', () => {
+    const tiers = loadTiers();
+    tiers.policy.exec_profiles.reviewer.codex_readonly_marker = 'frozen-review-marker';
+    tiers.policy.sandbox.network = false;
+    const r = appServer(
+      [start({ 'frozen-review-marker': { command: 'false', required: true } }), turn].join('\n'),
+      {
+        SA_POLICY_PATH: snapshot(tiers),
+        SUPERAGENT_ROLE: '',
+      }
+    );
+    expect(r.code).toBe(0);
+    const [s, t] = lines(r.received);
+    expect(s.params).toMatchObject({ sandbox: 'read-only' });
+    expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } });
+    expect(r.received).not.toContain('frozen-review-marker');
   });
 
   test('fails closed: unparsable reviewer input, a stray marker, unreadable policy', () => {

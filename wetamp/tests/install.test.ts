@@ -20,6 +20,7 @@ import {
   mergeConfig,
   providerOf,
   renderAliases,
+  snapshotPolicy,
 } from '../src/config';
 
 const trackTempRoot = trackTempRoots();
@@ -217,7 +218,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       'PreToolUse',
       'rtk hook claude',
       `${V2('guard.cjs')} claude`,
-      V2('context-budget.cjs'),
+      V2('context-advisory.cjs'),
     ]);
     expect(after.map(([e]) => e)).toEqual([
       'PreToolUse',
@@ -266,10 +267,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const at = (e: string): [string | undefined, string][] =>
       pre[e].flatMap(x => x.hooks.map((h): [string | undefined, string] => [x.matcher, h.command]));
     expect(at('PreToolUse')).toEqual([
-      [undefined, V2('context-budget.cjs')],
+      [undefined, V2('context-advisory.cjs')],
       [undefined, `${V2('guard.cjs')} claude`],
     ]);
-    expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-budget.cjs')]]);
+    expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-advisory.cjs')]]);
     expect(sh('--hooks').out.trim()).toMatch(
       /^hooks: no changes\ncodex trust: \d+ entries already trusted$/
     );
@@ -358,9 +359,12 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(sh('--hooks').out).toContain('already trusted');
     expect(readFileSync(config, 'utf8')).toBe(once);
     // codex-worker 的信任闸认这些值（--version 带参数也要过闸）
+    const policy = join(home, 'policy.json');
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
     const w = Bun.spawnSync([join(WETAMP, 'bin', 'codex-worker'), '--version', 'exec'], {
       env: {
         ...process.env,
+        SA_POLICY_PATH: policy,
         HOME: home,
         CODEX_HOME: '',
         SA_CODEX_HOOK_TRUST: '',

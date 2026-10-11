@@ -45,7 +45,7 @@ const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
 const cmd = (file: string, client?: Client): string =>
   `node ${quote(V2_HOOKS + file)}${client ? ` ${client}` : ''}`;
 
-/** V1 register-guards 的事件清单与顺序：guard 五个事件；Claude 另有 context-budget 两个。 */
+/** 延续 V1 事件清单与顺序：guard 五个事件；Claude 另有 advisory 两个。 */
 export function wanted(client: Client): [string, string][] {
   const guard = ['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop'].map(
     (e): [string, string] => [e, cmd('guard.cjs', client)]
@@ -55,7 +55,7 @@ export function wanted(client: Client): [string, string][] {
     ...guard,
     ...['UserPromptSubmit', 'PreToolUse'].map((e): [string, string] => [
       e,
-      cmd('context-budget.cjs'),
+      cmd('context-advisory.cjs'),
     ]),
   ];
 }
@@ -69,7 +69,10 @@ const ours = (h: Handler): boolean =>
 
 // context-budget 不读 client 参数：V1 尾部带不带 claude 都是同一个 handler
 const canonical = (c: string): string =>
-  c.replace(V1_HOOKS, V2_HOOKS).replace(/(context-budget\.cjs'?)\s+claude\s*$/, '$1');
+  c
+    .replace(V1_HOOKS, V2_HOOKS)
+    .replace(/context-budget\.cjs/g, 'context-advisory.cjs')
+    .replace(/(context-advisory\.cjs'?)\s+claude\s*$/, '$1');
 // 组级执行条件（matcher 等 hooks 以外的键）；未设置、空串与 '*' 都是"全部"
 const condition = (g: Group): string => {
   const all = g.matcher === undefined || g.matcher === '' || g.matcher === '*';
@@ -112,7 +115,7 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
     out[event] = out[event].flatMap(g => {
       if (condition(g) === ALL || !Array.isArray(g.hooks)) return [g];
       const kept = g.hooks.filter(h => h.command !== command);
-      return kept.length || !g.hooks.length ? [{...g, hooks: kept}] : [];
+      return kept.length || !g.hooks.length ? [{ ...g, hooks: kept }] : [];
     });
   }
   return out;

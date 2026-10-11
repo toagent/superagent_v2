@@ -56,7 +56,6 @@ describe('loadPlan', () => {
   });
   test('rejects schema fields the engine does not honour, naming the field', () => {
     const cases: [(p: Record<string, unknown>) => void, RegExp][] = [
-      [p => (p.mode = 'single:claude'), /plan unsupported: \/mode single:claude/],
       [p => (p.concurrency = 2), /plan unsupported: \/concurrency/],
       [p => (pkgs(p)[0].accept_quick = []), /plan unsupported: \/packages\/core\/accept_quick/],
       [
@@ -70,6 +69,12 @@ describe('loadPlan', () => {
     }
     const ok = setup(p => ((p.concurrency = 1), (p.mode = 'strict')));
     expect(loadPlan(ok.path, [ok.root]).concurrency).toBe(1);
+  });
+  test('accepts supported single-vendor modes', () => {
+    for (const mode of ['single:claude', 'single:chatgpt']) {
+      const { path, root } = setup(p => (p.mode = mode));
+      expect(loadPlan(path, [root]).mode).toBe(mode);
+    }
   });
   test('rejects duplicate package id', () => {
     const { path, root } = setup(p => (pkgs(p)[1].id = 'core'));

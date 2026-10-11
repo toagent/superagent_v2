@@ -1,6 +1,7 @@
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
 // 计划文本只进 brief 文件、经绝对路径传给节点：with:/command 正文是模板，`$` 无法转义。
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -22,7 +23,18 @@ import {
   CHECK_AUX_COUNTS,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
-import { WETAMP, effortFor, home, loadTiers, runAliases, type Tiers } from './config';
+import {
+  WETAMP,
+  CODEX_WORKER,
+  assertSQLite,
+  effortFor,
+  home,
+  loadTiers,
+  runAliases,
+  resolveRoute,
+  snapshotPolicy,
+  type Tiers,
+} from './config';
 import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
 
 const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.json'))('yaml') as {
@@ -54,12 +66,12 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 
 /** Hash generation-time snapshots; execution-time reads through WETAMP do not require adopt. */
 // prettier-ignore
-export const engineHash = (root = WETAMP): string => hashInputs(root, [
+export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
   'src/memory.ts', 'src/board/workflow.ts',
-]);
+], policyHash);
 /** Shared by console restart and board refresh; includes their CLI/data consumers. */
 export const residentHash = (root = WETAMP): string => hashInputs(root, ['src'], engineHash(root));
 
@@ -86,13 +98,6 @@ const readOnlyMcp = (marker: string): string =>
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const MAX_WAIT_MS = 1000 * 365 * 24 * 3600 * 1000; // Archon wait 上限 1000 年
 
-/** sa-check 读取的 tiers.policy 子集：生成时快照一次，整 run 共用（运行中改 tiers.json 不影响已起的 run）。 */
-const policyOf = (t: Tiers): Node => ({
-  risk_paths: t.policy.risk_paths,
-  code_extensions: t.policy.code_extensions,
-  exempt_paths: t.policy.exempt_paths,
-  budget_floor: t.policy.budget_floor,
-});
 const skippable = (from: string): Node => ({ from, if_skipped: null });
 
 const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node => ({
@@ -140,21 +145,27 @@ export function buildWorkflow(
   run: string,
   gen: string,
   fake = false,
-  now = Date.now()
+  now = Date.now(),
+  tiers: Tiers = loadTiers()
 ): Node {
   // 人工等待按“剩余时长”生成，不设下限；已过 deadline 的 plan 生成即失败，不起一个注定 escalate 的 run
   const left = Date.parse(plan.deadline) - now;
   if (left <= 0) throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
-  const tiers = loadTiers();
-  const aliases = runAliases(plan.console ?? 'claude', tiers);
+  const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
   // Claude 节点经 SDK disallowedTools 禁再派生；Codex 节点无此字段，由 bin/codex-worker 关 multi_agent 与 MCP
   // caps 收紧项对 Claude 将军追加 denied_tools；修复节点覆盖整个里程碑，取各包限制的并集
   const noNesting = (
     alias: '@sa-coder' | '@sa-reviewer',
     role: 'coder' | 'reviewer',
-    pkgs: Pkg[] = []
+    pkgs: Pkg[] = [],
+    risk: Pkg['risk'] = 'G1'
   ): Node =>
-    aliases[alias].provider === 'claude'
+    (alias === '@sa-reviewer'
+      ? resolveRoute(tiers, plan.console ?? 'claude', plan.mode, 'review', risk, 1, [
+          aliases['@sa-coder'].model,
+        ]).candidates[0]
+      : aliases[alias]
+    ).provider === 'claude'
       ? {
           denied_tools: [
             ...new Set([
@@ -166,8 +177,10 @@ export function buildWorkflow(
       : {};
   // 评审只读落在执行层：Claude 节点由 SDK sandbox 拦 Bash 写入；Codex 节点挂哨兵 MCP（见 readOnlyMcp），
   // bin/codex-worker 的代理据此把线程与回合改成只读。
-  const readOnly: Node =
-    aliases['@sa-reviewer'].provider === 'claude'
+  const readOnly = (risk: Pkg['risk']): Node =>
+    resolveRoute(tiers, plan.console ?? 'claude', plan.mode, 'review', risk, 1, [
+      aliases['@sa-coder'].model,
+    ]).candidates[0].provider === 'claude'
       ? { sandbox: tiers.policy.exec_profiles.reviewer.claude.sandbox }
       : { mcp: join(gen, READONLY_MCP) };
   const planPath = join(gen, 'plan.json');
@@ -377,9 +390,11 @@ export function buildWorkflow(
           ? { bash: fakeReview(r) }
           : {
               command: r === 1 ? 'sa-review' : 'sa-review-delta',
-              model: '@sa-reviewer',
-              ...noNesting('@sa-reviewer', 'reviewer'),
-              ...readOnly,
+              model: tiers.routing.reviewer.by_risk?.[m.risk]
+                ? `@sa-reviewer-${m.risk}`
+                : '@sa-reviewer',
+              ...noNesting('@sa-reviewer', 'reviewer', [], m.risk),
+              ...readOnly(m.risk),
               ...effort('review', m.risk, r),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
@@ -576,6 +591,9 @@ export interface Gen {
 
 /** 写 gen 目录、提交一次、`archon validate workflows`；校验失败抛错。 */
 export function generate(plan: Plan, run: string, fake = false, previousHash?: string): Gen {
+  assertSQLite(plan.repo);
+  const tiers = loadTiers();
+  const policy = snapshotPolicy(tiers);
   const principlesPath = join(WETAMP, 'templates', '.archon', 'principles.md');
   let principles: string;
   try {
@@ -584,7 +602,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
     throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
   }
   const dir = join(home().sa, 'gen', run);
-  const engine_hash = engineHash();
+  const engine_hash = engineHash(WETAMP, policy.hash);
   if (previousHash !== undefined && existsSync(join(dir, '.archon'))) {
     let backup = join(dir, `.archon.${previousHash.slice(0, 8) || 'unknown'}`);
     if (existsSync(backup)) backup += `.${String(Date.now())}`;
@@ -592,7 +610,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   }
   const workflow = `sa-${run}`;
   const ms = milestones(plan);
-  const definition = buildWorkflow(plan, ms, run, dir, fake);
+  const definition = buildWorkflow(plan, ms, run, dir, fake, Date.now(), tiers);
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
@@ -612,13 +630,12 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   }
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
-  const tiers = loadTiers();
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
   if (plan.budget.weighted_tokens < floor)
     throw new Error(
       `plan invalid: /budget/weighted_tokens ${String(plan.budget.weighted_tokens)} < policy.budget_floor sum ${String(floor)}`
     );
-  writeFileSync(join(dir, 'policy.json'), JSON.stringify(policyOf(tiers), null, 2) + '\n');
+  writeFileSync(join(dir, 'policy.json'), JSON.stringify(policy, null, 2) + '\n');
   // sa-check 经它查本 run 的 spend/binding（F-14/F-16）；gen 目录可脱离 wetamp 安装位置被引用
   if (!fake && !existsSync(join(dir, 'archon')))
     symlinkSync(join(WETAMP, 'bin', 'archon'), join(dir, 'archon'));
@@ -641,7 +658,13 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   );
   writeFileSync(
     join(dir, 'engine.json'),
-    JSON.stringify({ engine_hash, workflow_hash: engine_hash, fake, lessons }) + '\n'
+    JSON.stringify({
+      engine_hash,
+      workflow_hash: engine_hash,
+      policy_hash: policy.hash,
+      fake,
+      lessons,
+    }) + '\n'
   );
   writeFileSync(
     join(wfDir, `${workflow}.yaml`),
@@ -652,11 +675,41 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
   );
   writeFileSync(
     join(dir, READONLY_MCP),
-    readOnlyMcp(loadTiers().policy.exec_profiles.reviewer.codex_readonly_marker)
+    readOnlyMcp(tiers.policy.exec_profiles.reviewer.codex_readonly_marker)
   );
   writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\nbudget-extra\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
-  writeFileSync(config, YAML.stringify({ aliases: runAliases(plan.console ?? 'claude') }, {}));
+  const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
+  for (const risk of ['G0', 'G1', 'G2'] as const) {
+    if (tiers.routing.reviewer.by_risk?.[risk])
+      aliases[`@sa-reviewer-${risk}`] = resolveRoute(
+        tiers,
+        plan.console ?? 'claude',
+        plan.mode,
+        'review',
+        risk,
+        1,
+        [aliases['@sa-coder'].model]
+      ).candidates[0];
+  }
+  const worker = join(dir, 'codex-worker');
+  const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
+  writeFileSync(
+    worker,
+    `#!/usr/bin/env bash\nSA_POLICY_PATH=${quote(join(dir, 'policy.json'))} exec ${quote(CODEX_WORKER)} "$@"\n`
+  );
+  chmodSync(worker, 0o755);
+  const runConfig = YAML.stringify(
+    {
+      aliases,
+      env: { SA_POLICY_PATH: join(dir, 'policy.json') },
+      assistants: { codex: { codexBinaryPath: worker } },
+    },
+    {}
+  );
+  writeFileSync(config, runConfig);
+  // Validation resolves aliases from repo config; execution also pins this same content at run scope.
+  writeFileSync(join(dir, '.archon', 'config.yaml'), runConfig);
   git(dir, 'init', '-q');
   const files = [
     '.archon',
@@ -666,6 +719,7 @@ export function generate(plan: Plan, run: string, fake = false, previousHash?: s
     'briefs',
     '.gitignore',
     'run-config.yaml',
+    'codex-worker',
   ];
   git(dir, 'add', ...files, READONLY_MCP, ...(fake ? [] : ['archon']));
   const staged = Bun.spawnSync(['git', 'diff', '--cached', '--quiet'], {
