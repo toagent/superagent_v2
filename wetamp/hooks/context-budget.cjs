@@ -64,12 +64,17 @@ function main(input, client = 'claude') {
   const tokens = recentUsage(input.transcript_path); if (tokens === null) return null;
   const home = process.env.SUPERAGENT_HOME || path.join(require('node:os').homedir(), '.superagent');
   const key = crypto.createHash('sha256').update(String(input.session_id || input.transcript_path)).digest('hex');
-  const file = path.join(home, 'hooks', 'context-budget', `${key}.json`); let prior = {};
-  try { prior = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+  const file = path.join(home, 'hooks', 'context-budget', `${key}.json`);
   const threshold = roleLimit(require('./guard.cjs').sessionRole(input, client));
-  const result = advise(input, tokens, prior, activeRun(home), threshold);
-  try { fs.mkdirSync(path.dirname(file), {recursive: true}); const tmp = `${file}.${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(result.state)); fs.renameSync(tmp, file); } catch {}
-  return result.messages.length ? {hookSpecificOutput: {hookEventName: input.hook_event_name, additionalContext: result.messages.join('\n')}} : null;
+  const active = activeRun(home);
+  try {
+    return require('./hook-state.cjs').withState(file, state => require('./hook-state.cjs').once(state, 'context', input, () => {
+      const result = advise(input, tokens, state, active, threshold);
+      Object.assign(state, result.state);
+      return result.messages.length ? {hookSpecificOutput: {hookEventName: input.hook_event_name, additionalContext: result.messages.join('\n')}} : null;
+    }, false));
+  } catch { return null; } // Advisory cannot deny; failed transactions never reset counters.
+
 }
 if (require.main === module) {
   try { const result = main(JSON.parse(fs.readFileSync(0, 'utf8')), process.argv[2] || 'claude'); if (result) process.stdout.write(JSON.stringify(result) + '\n'); } catch {}

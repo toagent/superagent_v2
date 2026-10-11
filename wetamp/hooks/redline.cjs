@@ -137,6 +137,7 @@ function shellWrites(parsed) {
     const name = path.posix.basename(argv[0]), operands = argv.slice(1).filter(a => !a.startsWith('-'));
     if (LAST_TARGET.includes(name) && operands.length > 1) out.push(operands.at(-1));
     if (ALL_TARGETS.includes(name)) out.push(...operands);
+    if (name === 'sed' && argv.some(a => /^-(?:[^-]*i|\-in-place)/.test(a))) out.push(...operands.slice(1));
     if (name === 'dd') out.push(...argv.filter(a => a.startsWith('of=')).map(a => a.slice(3)));
   }
   return out;
@@ -178,7 +179,7 @@ function reason({client, name, input, cwd, root, shell, derived, modelShell = de
   let targets = [];
   if (edit) {
     try { targets = client === 'codex' ? microEdit.patchEdits(input).map(e => e.file) : [input.file_path || input.notebook_path]; }
-    catch (error) { return derived ? `无法确认补丁写入目标（${error.message}）` : null; }
+    catch (error) { return `无法确认补丁写入目标（${error.message}）`; }
   }
   const reads = [...(READ_TOOLS[name] ?? []).map(k => input[k]), ...targets].filter(v => typeof v === 'string' && v);
   for (const file of reads) {
@@ -278,4 +279,4 @@ function reason({client, name, input, cwd, root, shell, derived, modelShell = de
 }
 
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, resolvePath, within, secretKind, stripHeredocs};
+module.exports = {shellWrites, init, reason, resolvePath, within, secretKind, stripHeredocs};

@@ -1,4 +1,5 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
+import { installMode } from './install-mode';
 import { confined, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
 import { askKey, cockpitSignals, supersedeAsks, type HoldSignal, type Ask, type Asks } from './cockpit-signals';
@@ -518,6 +519,7 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 const MIN_FREE_GB = 2;
 
 function preflight(skipSelftest: boolean): void {
+  if (installMode() === 'worker') throw new Error('preflight: mode=worker; run requires the controller install');
   const { sa } = home();
   const fs = statfsSync(sa);
   if ((fs.bavail * fs.bsize) / 2 ** 30 < MIN_FREE_GB)
@@ -533,7 +535,9 @@ function preflight(skipSelftest: boolean): void {
 function startRun(planPath: string, a: Args): number {
   const run = newRunId();
   let phase: 'preflight' | 'engine' = 'preflight';
+  let mode: 'controller' | 'worker' | 'unknown' = 'unknown';
   try {
+    mode = installMode();
     preflight(a.flags['skip-selftest'] ?? false);
     const plan = loadPlan(planPath);
     const checked = Bun.spawnSync([process.execPath, join(WETAMP, 'src/preflight.ts'), plan.repo], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
@@ -587,10 +591,10 @@ function startRun(planPath: string, a: Args): number {
     mkdirSync(join(home().sa, 'runs'), { recursive: true });
     saveLedger(l);
     rmSync(intentPath(run), { force: true });
-    print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir });
+    print({ run_id: run, archon_run_id: l.archon_run_id, branch, gen_dir: gen.dir, mode: 'controller' });
     return 0;
   } catch (e) {
-    const failure = { run_id: run, ok: false, phase, reason: redact((e as Error).message) };
+    const failure = { run_id: run, ok: false, phase, mode, reason: redact((e as Error).message) };
     mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
     writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
     print(failure);
@@ -670,6 +674,7 @@ function reconcileIntents(): Action[] {
 }
 
 function health(cwd?: string): number {
+  const mode = installMode();
   const aliases = runAliases('claude');
   const drift = aliasDrift(cwd);
   const doctor = archon(['doctor']);
@@ -684,6 +689,7 @@ function health(cwd?: string): number {
     doctor.code === 0 && clean.exitCode === 0 && upstreamDiff === '' && !drift.length && !worker;
   print({
     ok,
+    mode,
     doctor: doctor.code === 0 ? 'ok' : tail(doctor.out),
     aliases,
     alias_drift: drift,

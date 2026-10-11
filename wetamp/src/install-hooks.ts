@@ -11,8 +11,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, join } from 'node:path';
 import { WETAMP } from './config';
+import { createRequire } from 'node:module';
+const { withLock, atomicWrite } = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
+  withLock: <T>(file: string, fn: () => T) => T;
+  atomicWrite: (file: string, text: string) => void;
+};
 
 interface Handler {
   type?: string;
@@ -101,6 +106,15 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
     if (!list.some(g => condition(g) === ALL && g.hooks?.some(h => h.command === command)))
       list.push({ hooks: [{ type: 'command', command, timeout: 30 }] });
   }
+  // A managed all-events handler already covers its matcher-scoped copies. Keep
+  // unrelated handlers and their group/handler fields; do not execute ours twice.
+  for (const [event, command] of wanted(client)) {
+    out[event] = out[event].flatMap(g => {
+      if (condition(g) === ALL || !Array.isArray(g.hooks)) return [g];
+      const kept = g.hooks.filter(h => h.command !== command);
+      return kept.length || !g.hooks.length ? [{...g, hooks: kept}] : [];
+    });
+  }
   return out;
 }
 
@@ -155,20 +169,23 @@ export function installHooks(dryRun: boolean, purge = false): string {
   let out = '';
   const stamp = utc();
   for (const [client, file] of Object.entries(paths()) as [Client, string][]) {
-    const exists = existsSync(file);
-    if (!exists && purge) continue;
-    const raw = exists ? readFileSync(file, 'utf8') : '';
-    const next = render(raw, client, purge);
-    if (next === raw) continue;
-    out += diff(file, raw, next);
-    if (dryRun) continue;
-    if (exists) {
-      const dir = join(backups(), `${purge ? 'v1' : 'hooks'}-${stamp}`, client);
-      mkdirSync(dir, { recursive: true });
-      cpSync(file, join(dir, basename(file)));
-    } else mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(`${file}.sa-tmp`, next);
-    renameSync(`${file}.sa-tmp`, file);
+    const update = (): void => {
+      const exists = existsSync(file);
+      if (!exists && purge) return;
+      const raw = exists ? readFileSync(file, 'utf8') : '';
+      const next = render(raw, client, purge);
+      if (next === raw) return;
+      out += diff(file, raw, next);
+      if (dryRun) return;
+      if (exists) {
+        const dir = join(backups(), `${purge ? 'v1' : 'hooks'}-${stamp}`, client);
+        mkdirSync(dir, { recursive: true });
+        cpSync(file, join(dir, basename(file)));
+      }
+      atomicWrite(file, next);
+    };
+    if (dryRun) update();
+    else withLock(file, update);
   }
   return out;
 }
