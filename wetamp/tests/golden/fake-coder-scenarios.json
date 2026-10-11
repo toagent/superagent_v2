@@ -24,8 +24,10 @@
     "status": "blocked",
     "error_class": "env",
     "decision": {
-      "disposition": "suspend",
-      "reason": "coder_needs"
+      "disposition": "advance",
+      "reason": null,
+      "self_report_conflict": true,
+      "error_class_ignored": true
     }
   },
   "invalid_json": {
