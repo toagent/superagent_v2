@@ -15,6 +15,7 @@ argument-hint: (inputs bound by the generated workflow)
 
 只核验台账遗留与本轮增量：
 
+- 每个失败给出 `failure_class: product | test_env | fixture | baseline | test_data`，判据为“改产品代码能否修好”；非 product 必须在 `evidence` 附证据路径，涉及验收命令时 `command` 填原命令，否则填 null。不信 coder 自报；非 product 记已知问题/debt，不计入 FAIL 的阻塞发现。
 读取本里程碑各包的 `$ARTIFACTS_DIR/settle-*.json` 与 `verify-*.json`；若 `coder_partial: true`，编码端自报未完成，请判断完整性，缺失按 blocker 记。
 若 `error_class_ignored: true`，从同名 `.coder.json` 读取原 `error_class`：编码端自报 <class>，请核实。
 

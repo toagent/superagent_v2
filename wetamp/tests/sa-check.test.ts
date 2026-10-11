@@ -15,6 +15,8 @@ import {
   CHECK_AUX_TIMEOUT_MS,
 } from '../templates/.archon/scripts/sa-check';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
+import outputSchema from '../schemas/output.schema.json';
 
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
 type Rv = NonNullable<Parameters<typeof decide>[0]['reviews'][number]>;
@@ -52,6 +54,106 @@ const ids = (reviews: (Rv | null)[], risk = 'G1'): string[] =>
   ledgerOf(reviews, risk)
     .blocking.map(e => e.id)
     .sort();
+
+describe('FC failure classification', () => {
+  test('runtime enum and embedded output schemas derive from their owning schema', () => {
+    expect([...FAILURE_CLASSES] as string[]).toEqual(outputSchema.$defs.failure_class.enum);
+    expect(outputSchema.$defs.reviewer.properties.findings.items.properties.failure_class)
+      .toEqual(outputSchema.$defs.failure_class);
+    expect(outputSchema.$defs.accept.properties.failures.items.properties.failure_class)
+      .toEqual(outputSchema.$defs.failure_class);
+    for (const name of ['two-pkgs', 'two-pkgs-fake']) {
+      const snapshot = Bun.YAML.parse(readFileSync(join(import.meta.dir, 'golden', `${name}.yaml`), 'utf8')) as {
+        nodes: { id: string; output_format?: unknown; bash?: string }[];
+      };
+      for (const node of snapshot.nodes) {
+        if (/^(verify|settle|diff)-/.test(node.id)) expect(node.output_format).toEqual(outputSchema.$defs.accept);
+        if (/^review-/.test(node.id)) {
+          expect(node.output_format).toEqual(outputSchema.$defs.reviewer);
+          if (node.bash) expect(node.bash).toContain('"failure_class":"product","command":null');
+        }
+      }
+    }
+  });
+  test('product and missing/invalid/no-evidence classifications remain blocking', () => {
+    for (const extra of [
+      { failure_class: 'product' as const }, {},
+      JSON.parse('{"failure_class":"unknown"}'),
+      { failure_class: 'fixture' as const, evidence: '' },
+    ]) {
+      const finding = f('high', { evidence: '/tmp/accept.log', ...extra });
+      const d = decide({ reviews: [R('FAIL', [finding])], rechecks: [C('a')], risk: 'G1' });
+      expect(d.verdict).toBe('fix');
+      expect(d.ledger.blocking).toHaveLength(1);
+      expect(d.ledger.blocking[0].failure_class).toBe('product');
+    }
+  });
+  test('reviewer non-product failures become observable debt without any repair round', () => {
+    for (const failure_class of FAILURE_CLASSES.filter(c => c !== 'product')) {
+      const d = decide({
+        reviews: [R('FAIL', [f('blocker', { failure_class, evidence: '/tmp/accept.log' })])],
+        rechecks: [C('a')], risk: 'G2', strict: true,
+      });
+      expect(d.verdict).toBe('pass');
+      expect(d.ledger.blocking).toEqual([]);
+      expect(d.ledger.debt[0]).toMatchObject({ failure_class, repair_rounds: 0, evidence: '/tmp/accept.log' });
+      expect(d.debt[0]).toContain('/tmp/accept.log');
+    }
+  });
+  test('same finding after two repairs becomes debt, while strict/G2 remains held', () => {
+    const r = R('FAIL', [f('high', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' })]);
+    const input = { reviews: [r, r, r], rechecks: [C('a'), C('b'), C('c')], risk: 'G1' };
+    expect(decide({ ...input, reviews: [r, r], rechecks: [C('a'), C('b')] }).verdict).toBe('fix');
+    const d = decide(input);
+    expect(d.verdict).toBe('pass');
+    expect(d.ledger.debt[0]).toMatchObject({ id: 'stable', repair_rounds: 2, debt_reason: 'repair_limit', failure_class: 'product' });
+    for (const protectedInput of [{ strict: true }, { risk: 'G2' }])
+      expect(decide({ ...input, ...protectedInput })).toMatchObject({
+        verdict: 'escalate', reason: 'review_failed+review_limit', ledger: { blocking: [{ id: 'stable' }], debt: [] },
+      });
+    const newer = R('FAIL', [f('blocker', { id: 'new', evidence: '/tmp/new.log' })]);
+    expect(decide({ ...input, reviews: [R('PASS'), R('PASS'), newer] }).verdict).toBe('escalate');
+  });
+  test('reviewer classifies exact failed commands; omitted classification fails closed', () => {
+    const check = { ...C('a', false), failed: ['bun test'], disposition: 'repair' as const };
+    const finding = f('high', { command: 'bun test', failure_class: 'fixture', evidence: '/tmp/test.log' });
+    const d = decide({ reviews: [R('FAIL', [finding])], rechecks: [check], risk: 'G1' });
+    expect(d.verdict).toBe('pass');
+    expect(d.ledger.blocking).toEqual([]);
+    expect(d.ledger.debt.some(e => e.command === 'bun test')).toBe(true);
+    expect(decide({ reviews: [R('PASS')], rechecks: [check], risk: 'G1' }).verdict).toBe('fix');
+    expect(decide({ reviews: [R('FAIL', [finding])], rechecks: [{ ...check, workspace_clean: false }], risk: 'G1' }).verdict).toBe('fix');
+  });
+  test('validator fixture JSON advances with red check evidence; coder cannot classify it', () => {
+    const root = tmp(), repo = gitRepo(root);
+    const command = `printf '%s' '{"failure_class":"fixture","evidence":"isolated fixture mismatch"}'; exit 1`;
+    const out = runScript(repo, { kind: 'accept', plan: planFile(root, command), pkgs: 'a', tag: 'verify-fixture' });
+    expect(out.code).toBe(0);
+    expect(out.out).toMatchObject({ ok: false, disposition: 'advance', failed: [command], failures: [{ command, failure_class: 'fixture' }] });
+    const known = out.out as Parameters<typeof decide>[0]['rechecks'][number];
+    expect(decide({ reviews: [R('PASS')], rechecks: [known], risk: 'G1' }).verdict).toBe('pass');
+    const coder = JSON.stringify({ status: 'done', error_class: null, failure_class: 'fixture' });
+    const red = runScript(repo, { kind: 'accept', plan: planFile(root, 'false'), pkgs: 'a', tag: 'verify-product', coder });
+    expect(red.out).toMatchObject({ ok: false, disposition: 'repair', failures: [{ failure_class: 'product' }] });
+  });
+  test('third validation of the same product command stops repairs and proceeds to review only outside strict/G2', () => {
+    const root = tmp(), repo = gitRepo(root), art = join(root, 'artifacts');
+    mkdirSync(art);
+    for (const i of [1, 2]) writeFileSync(join(art, `diff-m1-r${i}.json`), JSON.stringify({
+      ...C(String(i), false), failed: ['false'], disposition: 'repair',
+      failures: [{ command: 'false', failure_class: 'product', evidence: '/tmp/fail.log' }],
+    }));
+    const path = planFile(root, 'false');
+    for (const [mode, risk, expected] of [['milestone', 'G1', 'advance'], ['strict', 'G1', 'repair'], ['milestone', 'G2', 'repair']]) {
+      const p = JSON.parse(readFileSync(path, 'utf8'));
+      p.mode = mode;
+      writeFileSync(path, JSON.stringify(p));
+      const result = runScript(repo, { kind: 'accept', plan: path, pkgs: 'a', milestone: 'm1', tag: 'diff-m1-r3', risk }, SCRIPT, { ARTIFACTS_DIR: art });
+      expect(result.out).toMatchObject({ ok: false, disposition: expected });
+      if (expected === 'advance') expect(result.out).toMatchObject({ failures: [{ failure_class: 'product', repair_rounds: 2, debt_reason: 'repair_limit' }] });
+    }
+  });
+});
 
 test('HF10 attempt counters default only missing files to zero and reject invalid contents', () => {
   const path = join(tmp(), 'attempt');
@@ -102,7 +204,8 @@ describe('gate rules', () => {
   test('R3 baseline is what R2 left open, not only what R2 reported', () => {
     const r1 = R('FAIL', [f('high', { id: 'R1-1' }), f('high', { id: 'R1-2' })]);
     const r2 = R('FAIL', [fixed('R1-1')]);
-    expect(ids([r1, r2, R('PASS', [])])).toEqual(['R1-2']);
+    expect(ledgerOf([r1, r2, R('PASS', [])], 'G1', { strict: true }).blocking.map(e => e.id))
+      .toEqual(['R1-2']);
   });
   test('G2: a previous medium also needs explicit closure', () => {
     const r1 = R('FAIL', [f('medium', { id: 'R1-1' })]);
@@ -219,7 +322,7 @@ describe('gate rules', () => {
       reason: 'review_incomplete',
     });
   });
-  test('ledger: R2 漏掉 R1 高危——遗漏的 high 仍阻塞，PASS 判为不一致，R3 仍遗漏则到上限 escalate', () => {
+  test('ledger: R2 漏掉 R1 高危仍阻塞，R3 两轮修复后非 strict 转债', () => {
     const r1 = R('FAIL', [f('high', { id: 'R1-1', file: 'k.ts', line: 9 })]);
     const l = ledgerOf([r1, R('PASS')], 'G1');
     expect(l.blocking).toMatchObject([
@@ -237,7 +340,7 @@ describe('gate rules', () => {
         rechecks: [C('a'), C('b'), C('c')],
         risk: 'G1',
       })
-    ).toMatchObject({ verdict: 'escalate', reason: 'review_inconsistent+review_limit' });
+    ).toMatchObject({ verdict: 'pass', ledger: { blocking: [], debt: [{ id: 'R1-1', debt_reason: 'repair_limit' }] } });
   });
   test('ledger: 新增项伪装 carry-over——未知 id 不扩大阻塞集合，只按新发现记债', () => {
     const r1 = R('FAIL', [f('high', { id: 'R1-1' })]);
@@ -569,6 +672,8 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
     join(root, 'policy-attempts.ts'),
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/policy-attempts.ts'))
   );
+  writeFileSync(join(root, 'failure-class.ts'),
+    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/failure-class.ts')));
   if (hook) sh(`git config core.hooksPath '${join(repo, '.git/hooks')}'`, repo);
   if (hook)
     writeFileSync(

@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan } from '../../../src/plan';
 import { readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
+import { failureClass, type FailureClass } from './failure-class';
 
 export interface Finding {
   id: string;
@@ -31,6 +32,8 @@ export interface Finding {
   status: 'open' | 'closed';
   evidence: string;
   carry_over: boolean;
+  failure_class?: FailureClass;
+  command?: string | null;
 }
 export interface Review {
   status: 'PASS' | 'FAIL' | 'INCOMPLETE';
@@ -52,6 +55,16 @@ interface Accept {
   risk?: string | null;
   disposition?: Disposition;
   reason?: string | null;
+  failed?: string[];
+  failures?: CheckFailure[];
+  workspace_clean?: boolean;
+}
+export interface CheckFailure {
+  command: string;
+  failure_class: FailureClass;
+  evidence: string;
+  repair_rounds?: number;
+  debt_reason?: 'repair_limit';
 }
 /** sa-check uses these fields from the complete frozen <gen>/policy.json. */
 interface Policy {
@@ -132,7 +145,7 @@ const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。plan 声明 cache:true 的检查在同一 tree、命令、超时与环境下
  * 复用本 run 已通过的结果（F-21）；未声明的（可能外写、依赖时间或随机性）每次实跑。只缓存通过，失败永远重跑。
  */
-function run(checks: Check[], log: string, cwd?: string, envKey = ''): string[] {
+function run(checks: Check[], log: string, cwd?: string, envKey = '', failures: CheckFailure[] = []): string[] {
   const failed: string[] = [];
   const tree = envKey && git('rev-parse', 'HEAD^{tree}').trim();
   for (const c of checks) {
@@ -156,7 +169,18 @@ function run(checks: Check[], log: string, cwd?: string, envKey = ''): string[] 
       log,
       `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
     );
-    if (code !== 0) failed.push(c.cmd);
+    if (code !== 0) {
+      failed.push(c.cmd);
+      // A validation command may emit one JSON object. Prose and coder reports never classify failures.
+      let classification: unknown;
+      try {
+        const output: unknown = JSON.parse(p.stdout.toString());
+        if (!p.signalCode && output && typeof output === 'object' &&
+            'evidence' in output && typeof output.evidence === 'string' && output.evidence.trim() &&
+            'failure_class' in output) classification = output.failure_class;
+      } catch { /* Unstructured output fails closed. */ }
+      failures.push({ command: c.cmd, failure_class: failureClass(classification), evidence: log });
+    }
     else if (hit) {
       mkdirSync(dirname(hit), { recursive: true });
       writeFileSync(hit, env('TAG'));
@@ -303,7 +327,8 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   // 缓存目录在本 run 的 ARTIFACTS_DIR 下，进程环境由同一 engine 给出；键里只放 plan 声明的环境检查
   const envKey = sha(JSON.stringify([p.environment, pkgs.map(k => k.environment)]));
   const dirty = git('status', '--porcelain').trim();
-  const failed = run(checks, log, undefined, dirty ? '' : envKey);
+  const failures: CheckFailure[] = [];
+  const failed = run(checks, log, undefined, dirty ? '' : envKey, failures);
   if (dirty)
     appendFileSync(
       log,
@@ -328,13 +353,34 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
-  const result = disposition(coder, ok);
+  // Generated diff artifact names are the engine's structured channel, not vendor prose.
+  // On the final allowed round, stop dispatching repairs but still run the reviewer.
+  const reviewRound = Array.from({ length: MAX_ROUNDS }, (_, i) =>
+    `diff-${env('MILESTONE')}-r${String(i + 1)}`).indexOf(tag) + 1;
+  if (reviewRound === MAX_ROUNDS && scope.risk !== 'G2' && p.mode !== 'strict')
+    for (const f of failures) {
+      if (f.failure_class !== 'product') continue;
+      let repairs = 0;
+      for (let i = reviewRound - 1; i >= 1; i--) {
+        const path = join(artifacts, `diff-${env('MILESTONE')}-r${String(i)}.json`);
+        if (!existsSync(path)) break;
+        const previous = JSON.parse(readFileSync(path, 'utf8')) as Accept;
+        if (!previous.failed?.includes(f.command) ||
+            failureClass(previous.failures?.find(v => v.command === f.command)?.failure_class) !== 'product') break;
+        repairs++;
+      }
+      if (repairs >= MAX_ROUNDS - 1) Object.assign(f, { repair_rounds: repairs, debt_reason: 'repair_limit' });
+    }
+  const result = disposition(coder, !dirty && failures.every(f =>
+    f.failure_class !== 'product' || f.debt_reason === 'repair_limit'));
   saveCoder(tag, coder, result.error_class_ignored);
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
     ok,
     ...result,
     failed,
+    failures,
+    workspace_clean: !dirty,
     log,
     patch,
     delta,
@@ -451,6 +497,10 @@ export interface Entry {
   round: number;
   evidence?: string;
   closed_round?: number;
+  failure_class?: FailureClass;
+  command?: string | null;
+  repair_rounds?: number;
+  debt_reason?: 'non_product' | 'repair_limit';
 }
 export interface Ledger {
   blocking: Entry[];
@@ -459,60 +509,102 @@ export interface Ledger {
 }
 
 /**
- * F-19 累计台账，只由各轮评审历史派生。基准轮（首份非空评审）：open 的 blocker/high（G2 含 medium）阻塞。
+ * F-19/FC 累计台账，由评审与验证历史派生。基准轮（首份非空评审）：product 的 blocker/high（G2 含 medium）阻塞。
  * 之后只有 closes() 成立的条目才关闭；缺失、改 id、carry_over:false 一律仍 open。不在台账里的 id 一律是新发现——
  * 自报 carry_over:true 也不扩大阻塞集合：只有 blocker 阻塞，其余记债；已在台账里的条目升为 blocker 时转为阻塞。
  */
-export function ledgerOf(reviews: (Review | null)[], risk: string): Ledger {
+export function ledgerOf(reviews: (Review | null)[], risk: string, options: {
+  strict?: boolean;
+  rechecks?: Accept[];
+} = {}): Ledger {
   const sev = severities(risk);
-  const open = new Map<string, Entry & { blocks: boolean }>();
+  const open = new Map<string, Entry & { blocks: boolean; eligible: boolean }>();
   const closed: Entry[] = [];
   let base = true;
   reviews.forEach((r, i) => {
-    if (!r) return;
+    for (const e of open.values())
+      if (e.blocks) e.repair_rounds = (e.repair_rounds ?? 0) + 1;
+    const check = options.rechecks?.[i];
+    // Commands are stable keys. Only validator or reviewer evidence may classify them.
+    const checks: Finding[] = (check?.failed ?? []).map(command => {
+      const reviewed = r?.findings.find(f => f.command === command && f.status === 'open');
+      const validated = check?.failures?.find(f => f.command === command);
+      return {
+        id: `check:${sha(command).slice(0, 16)}`, severity: 'blocker', file: command, line: 0,
+        status: 'open', carry_over: i > 0, command,
+        failure_class: failureClass(reviewed?.evidence.trim() ? reviewed.failure_class : validated?.failure_class),
+        evidence: validated?.evidence || reviewed?.evidence || '',
+      };
+    });
+    if (!r && !check) return;
+    const current = r ?? { status: 'FAIL', findings: [], debt: [] };
     for (const [id, e] of open)
-      if (closes(r, id)) {
+      if (closes(current, id) || (e.command && (check?.ok ||
+          (check?.failed && !check.failed.includes(e.command) && check.workspace_clean !== false)))) {
         open.delete(id);
-        const { blocks: _, ...entry } = e;
+        const { blocks: _, eligible: __, ...entry } = e;
         void _;
-        const ev = r.findings.find(f => f.id === id)?.evidence ?? '';
+        void __;
+        const ev = current.findings.find(f => f.id === id)?.evidence ?? '';
         closed.push({ ...entry, evidence: ev, closed_round: i + 1 });
       }
-    for (const f of r.findings) {
+    for (const f of [...current.findings.filter(f => !f.command || !check?.failed?.includes(f.command)), ...checks]) {
       if (f.status !== 'open') continue;
       const known = open.get(f.id);
-      if (known) known.blocks ||= f.severity === 'blocker';
-      else
+      const classification = failureClass(f.evidence.trim() ? f.failure_class : undefined);
+      const nonProduct = classification !== 'product';
+      if (known) {
+        known.eligible ||= f.severity === 'blocker';
+        Object.assign(known, {
+          failure_class: classification, evidence: f.evidence,
+          blocks: !nonProduct && known.eligible && known.debt_reason !== 'repair_limit',
+          debt_reason: nonProduct ? 'non_product' : known.debt_reason === 'repair_limit' ? 'repair_limit' : undefined,
+        });
+      } else
         open.set(f.id, {
           id: f.id,
           severity: f.severity,
           file: f.file,
           line: f.line,
           round: i + 1,
-          blocks: base ? sev.includes(f.severity) : f.severity === 'blocker',
+          evidence: f.evidence,
+          failure_class: classification,
+          command: f.command,
+          repair_rounds: 0,
+          ...(nonProduct ? { debt_reason: 'non_product' as const } : {}),
+          blocks: !nonProduct && (base ? sev.includes(f.severity) : f.severity === 'blocker'),
+          eligible: base ? sev.includes(f.severity) : f.severity === 'blocker',
         });
     }
-    base = false;
+    if (r) base = false;
   });
+  if (risk !== 'G2' && !options.strict)
+    for (const e of open.values())
+      if (e.blocks && (e.repair_rounds ?? 0) >= MAX_ROUNDS - 1) {
+        e.blocks = false;
+        e.debt_reason = 'repair_limit';
+      }
   const strip = (b: boolean): Entry[] =>
     [...open.values()]
       .filter(e => e.blocks === b)
-      .map(({ blocks: _, ...e }) => {
+      .map(({ blocks: _, eligible: __, ...e }) => {
         void _;
+        void __;
         return e;
       });
   return { blocking: strip(true), debt: strip(false), closed };
 }
 
-/** 台账阻塞 id 集合（cli gateHint 的读取口）。 */
+/** CLI 重试提示没有完整验证/模式证据，保守保留阻塞；gate 用完整输入派生最终台账。 */
 export const openBlocking = (reviews: (Review | null)[], risk: string): Set<string> =>
-  new Set(ledgerOf(reviews, risk).blocking.map(e => e.id));
+  new Set(ledgerOf(reviews, risk, { strict: true }).blocking.map(e => e.id));
 
 /** 评审债 = 末份评审员 debt[] ∪ 台账里 open 且不阻塞的条目（派生项始终并入，不信任评审员只登记部分）。 */
 const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
   ...new Set([
     ...(reviews.filter(r => r !== null).at(-1)?.debt ?? []),
-    ...l.debt.map(e => `${e.id} ${e.severity} ${e.file}:${String(e.line)}`),
+    ...l.debt.map(e => `${e.id} ${e.severity} ${e.file}:${String(e.line)}` +
+      (e.debt_reason ? ` [${e.failure_class ?? 'product'} ${e.debt_reason}] ${e.evidence ?? ''}` : '')),
   ]),
 ];
 
@@ -530,11 +622,12 @@ export function decide(input: {
   risk: string;
   expired?: boolean;
   qualifiedReview?: boolean;
+  strict?: boolean;
 }): { verdict: Verdict; rounds: number; reason: string | null; debt: string[]; ledger: Ledger } {
   const { reviews } = input;
   const rounds = reviews.length;
   const check = input.rechecks.at(-1);
-  const ledger = ledgerOf(reviews, input.risk);
+  const ledger = ledgerOf(reviews, input.risk, { strict: input.strict, rechecks: input.rechecks });
   const out = (verdict: Verdict, reason: string | null, debt: string[] = []) => ({
     verdict,
     rounds,
@@ -546,7 +639,7 @@ export function decide(input: {
   // 同一份评审里 id 重复（含同 id 既 closed 又 open）：账本无法唯一解释，不放行也不降为债务
   if (reviews.some(r => r && new Set(r.findings.map(f => f.id)).size !== r.findings.length))
     return out('escalate', 'invalid_review');
-  if (check?.same) {
+  if (check?.same && !ledger.debt.some(e => e.debt_reason === 'repair_limit')) {
     const prior = reviews
       .map((r, i) => (r ? i : -1))
       .filter(i => i >= 0)
@@ -575,12 +668,20 @@ export function decide(input: {
   }
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
+  const accepted = check?.ok || (check?.workspace_clean !== false &&
+    (check?.failed?.length ?? 0) > 0 && check?.disposition !== 'suspend' &&
+    check?.failed?.every(command => ledger.debt.some(e => e.command === command)));
+  // A completed review's FAIL can describe only classified debt. Empty/unclassified FAIL stays a failure.
+  const debtOnly = ledger.blocking.length === 0 && ledger.debt.some(e => e.debt_reason) &&
+    (last?.status === 'PASS' || (last?.status === 'FAIL' && last.findings.length > 0) ||
+      (!last && ledger.debt.every(e => e.debt_reason === 'repair_limit')));
+  if (accepted && debtOnly) return out('pass', null, debt);
   let reason: string;
   if (!last) {
     if (!check?.disposition || check.disposition === 'advance') throw new Error('gate: no review');
     reason = check.reason ?? 'acceptance_failed';
   } else {
-    const ok = check?.ok ?? false;
+    const ok = accepted ?? false;
     if (last.status === 'PASS' && ledger.blocking.length === 0 && ok)
       return out('pass', null, debt);
     reason = !ok
@@ -775,7 +876,7 @@ function gate(): void {
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
   const risk = effectiveRisk(env('RISK'), rechecks);
-  const decision = { reviews, rechecks, risk, expired: expired() };
+  const decision = { reviews, rechecks, risk, strict: plan().mode === 'strict', expired: expired() };
   let d = decide(decision);
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
@@ -809,6 +910,8 @@ function gate(): void {
       : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
   }
   const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';
+  if (d.verdict === 'pass' && reviewed === undefined)
+    Object.assign(d, { verdict: 'escalate', reason: 'review_incomplete' });
   if (identity && rechecks.at(-1)?.same) d = decide({ ...decision, qualifiedReview: why === null });
   const ledgerFile = join(artifacts, `${tag}.ledger.json`);
   writeFileSync(ledgerFile, JSON.stringify(d.ledger, null, 2));

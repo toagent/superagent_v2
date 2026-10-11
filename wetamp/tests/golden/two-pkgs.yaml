@@ -161,6 +161,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -347,6 +362,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -427,6 +457,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -552,6 +597,11 @@ nodes:
                   - closed
               evidence:
                 type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              command:
+                type: [string, 'null']
               carry_over:
                 type: boolean
             required:
@@ -562,6 +612,8 @@ nodes:
               - status
               - evidence
               - carry_over
+              - failure_class
+              - command
         fixture_confirmations:
           type: array
           items:
@@ -738,6 +790,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -865,6 +932,11 @@ nodes:
                   - closed
               evidence:
                 type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              command:
+                type: [string, 'null']
               carry_over:
                 type: boolean
             required:
@@ -875,6 +947,8 @@ nodes:
               - status
               - evidence
               - carry_over
+              - failure_class
+              - command
         fixture_confirmations:
           type: array
           items:
@@ -1055,6 +1129,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1182,6 +1271,11 @@ nodes:
                   - closed
               evidence:
                 type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              command:
+                type: [string, 'null']
               carry_over:
                 type: boolean
             required:
@@ -1192,6 +1286,8 @@ nodes:
               - status
               - evidence
               - carry_over
+              - failure_class
+              - command
         fixture_confirmations:
           type: array
           items:
@@ -1410,6 +1506,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1596,6 +1707,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1676,6 +1802,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -1801,6 +1942,11 @@ nodes:
                   - closed
               evidence:
                 type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              command:
+                type: [string, 'null']
               carry_over:
                 type: boolean
             required:
@@ -1811,6 +1957,8 @@ nodes:
               - status
               - evidence
               - carry_over
+              - failure_class
+              - command
         fixture_confirmations:
           type: array
           items:
@@ -1986,6 +2134,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -2113,6 +2276,11 @@ nodes:
                   - closed
               evidence:
                 type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              command:
+                type: [string, 'null']
               carry_over:
                 type: boolean
             required:
@@ -2123,6 +2291,8 @@ nodes:
               - status
               - evidence
               - carry_over
+              - failure_class
+              - command
         fixture_confirmations:
           type: array
           items:
@@ -2302,6 +2472,21 @@ nodes:
     output_format:
       type: object
       properties:
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              evidence:
+                type: string
+            required: [command, failure_class, evidence]
         coder_partial:
           type: boolean
         self_report_conflict:
@@ -2429,6 +2614,11 @@ nodes:
                   - closed
               evidence:
                 type: string
+              failure_class:
+                type: string
+                enum: [product, test_env, fixture, baseline, test_data]
+              command:
+                type: [string, 'null']
               carry_over:
                 type: boolean
             required:
@@ -2439,6 +2629,8 @@ nodes:
               - status
               - evidence
               - carry_over
+              - failure_class
+              - command
         fixture_confirmations:
           type: array
           items:
