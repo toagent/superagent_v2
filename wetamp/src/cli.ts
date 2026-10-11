@@ -463,6 +463,8 @@ function recoverRun(
     run => {
       Object.assign(l, loadLedger(l.run_id));
       if (run.status === 'completed') return 'status completed is not resumable';
+      if (adoptsRun(l, run) && run.nodes?.some(n => n.state === 'completed'))
+        return `run ${l.run_id} (${run.id}): engine changed since this run started; adopting would redo completed packages. Options: superagent decide ${l.run_id} reject, then start a new plan from the last PASS commit; or resume on the old engine snapshot by checking out its engine commit`;
       if (auto?.deterministic) {
         if (
           workflowIdentity(l) === engineHash() ||
