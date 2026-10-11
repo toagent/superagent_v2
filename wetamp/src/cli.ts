@@ -375,9 +375,17 @@ const codersOf = (art: string, m?: string, l?: Ledger): CoderOut[] =>
       tag: f.slice(0, -'.coder.json'.length),
     }))
     .filter(c => m === undefined || c.milestone === m);
-/** 聚合 needs[]（每条带来源 tag）：status/brief/board 展示，自动重试据此保持 held。 */
+/** 只聚合未推进检查的 needs[]；已推进节点的自报保留在原始 coder 存档。 */
 export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
-  codersOf(art, m, l).flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
+  codersOf(art, m, l)
+    .filter(c => {
+      const file = `${c.tag}.json`;
+      const check = (l ? evidenceJson(l, art, file) : readJson(join(art, file))) as
+        | { disposition?: string }
+        | undefined;
+      return check?.disposition !== 'advance';
+    })
+    .flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
 
 /** 登记过的 run id（runs/*.json 去掉扩展名）。 */
 export const ledgerIds = (): string[] => {
@@ -1266,7 +1274,7 @@ function brief(l: Ledger): number {
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
   if (Array.isArray(s.land)) lines.push(...(s.land as string[]));
-  for (const n of needsOf(art).slice(0, 3))
+  for (const n of needsOf(art, undefined, l).slice(0, 3))
     lines.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
   lines.push(
     `evidence: ${art}`,
@@ -2215,11 +2223,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   const tries = (l.auto_retries ?? []).filter(
     r => r.milestone === m && r.reason.split(':')[0] === kind
   );
-  // 已推进节点的 needs 留在报告中，不为它们发起能力请求。
-  const needs = needsOf(art, m).filter(n => {
-    const check = evidenceJson(l, art, `${n.tag}.json`) as { disposition?: string } | undefined;
-    return check?.disposition !== 'advance';
-  });
+  const needs = needsOf(art, m, l);
   const hold = (h: Hold): Held => [
     h,
     { auto_retries: tries.length, ...(needs.length ? { needs } : {}) },

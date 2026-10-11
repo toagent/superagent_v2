@@ -1373,7 +1373,7 @@ describe('brief / land (archon stub)', () => {
     expect(result.code).toBe(1);
     expect(JSON.parse(result.out)).toMatchObject({ commands: [], reason: 'land_target_unknown' });
   });
-  test('land displays needs from advanced nodes without asking the operator', () => {
+  test('land omits needs from advanced nodes without asking the operator', () => {
     const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };
     const art = withArtifacts('completed', {
       'land.json': { commands: ['c'] },
@@ -1381,12 +1381,11 @@ describe('brief / land (archon stub)', () => {
       'verify-core.coder.json': { status: 'blocked', needs: [need], milestone: 'm1' },
     });
     const sup = supervisor(join(art, '..', '..', '..', '..'), 'pending');
-    expect(captured(() => main(['land', 'sa1'])).out).toContain(
+    expect(captured(() => main(['land', 'sa1'])).out).not.toContain(
       'need approval (verify-core): check process deviation'
     );
     expect(JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out)).toEqual({
       commands: ['c'],
-      needs: [{ tag: 'verify-core', ...need }],
     });
     expect(captured(() => main(['supervise-tick'])).code).toBe(0);
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
@@ -2380,6 +2379,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const need = { cap: 'network', why: 'registry', minimal_ask: 'allow npm registry' };
     const s = held('gate-m1-r1', {
       'gate-m1-r1.json': gate('acceptance_failed'),
+      'verify-core.json': { disposition: 'suspend' },
       'verify-core.coder.json': {
         status: 'blocked',
         error_class: 'env',
@@ -2394,6 +2394,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     });
     const { out } = captured(() => main(['brief', 'sa1']));
     expect(out).toContain('need network (verify-core): allow npm registry');
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).needs).toEqual([
+      { tag: 'verify-core', ...need },
+    ]);
     expect(resumes(s.calls())).toBe(0);
     const r = held('gate-m1-r1', {
       'gate-m1-r1.json': gate('coder_redline'),
@@ -2412,15 +2415,24 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const s = held('gate-m1-r1', {
       'gate-m1-r1.json': gate('invalid_review'),
       'verify-core.json': { ok: true, disposition: 'advance' },
-      'verify-core.coder.json': { status: 'blocked', needs: [need], milestone: 'm1' },
+      'verify-core.coder.json': {
+        status: 'blocked',
+        error_class: 'redline',
+        needs: [need],
+        milestone: 'm1',
+      },
     });
+    const archive = join(s.art, 'verify-core.coder.json');
+    const original = readFileSync(archive, 'utf8');
     const sup = supervisor(s.root, 'pending');
     expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'gate:invalid_review' });
     expect(resumes(s.calls())).toBe(1);
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
-    expect(captured(() => main(['brief', 'sa1'])).out).toContain(
+    expect(captured(() => main(['brief', 'sa1'])).out).not.toContain(
       'need approval (verify-core): check process deviation'
     );
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).needs).toBeUndefined();
+    expect(readFileSync(archive, 'utf8')).toBe(original);
   });
   test.each(['acceptance_failed', 'invalid_review'])(
     'held gate %s keeps its structured reason despite a coder redline self-report',

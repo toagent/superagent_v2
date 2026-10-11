@@ -724,6 +724,11 @@ test('generate writes a committed gen repo that archon validates', () => {
     const prompt = readFileSync(join(g.dir, '.archon', 'commands', `${n.command}.md`), 'utf8');
     expect(prompt.startsWith(principles + '\n')).toBe(true);
     expect(prompt.split(principles)).toHaveLength(2);
+    if (n.command === 'sa-code') {
+      expect(prompt).toContain('拒绝须附工具调用证据');
+      expect(prompt).toContain('在 `needs[].why` 引用该工具调用及原始返回');
+      expect(prompt).toContain('status=done、error_class=null');
+    }
   }
   for (const n of nodesOf(generated).filter(n => n.script || n.bash)) {
     expect(n.bash ?? '').not.toContain(principles);

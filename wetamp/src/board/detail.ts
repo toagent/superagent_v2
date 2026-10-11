@@ -1,10 +1,11 @@
 // board 详情：选中 run 的 plan 包、gate 各轮结论、transcript 末尾事件、待决签收与下一步命令。只读，任何一项读不到只影响该项。
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { milestones, type Plan } from '../plan';
 import {
   asksOf,
   gatesOf,
+  needsOf,
   readJson,
   type Asks,
   type Disposition,
@@ -127,13 +128,13 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
   });
   part('needs', () => {
     const art = confined(l, row.evidence);
-    for (const f of art ? readdirSync(art).filter(x => x.endsWith('.coder.json')) : []) {
-      const file = confined(l, join(art ?? '', f));
-      if (!file) continue;
-      const c = readJson(file) as { needs?: { cap: string; minimal_ask: string }[] };
-      const tag = f.slice(0, -'.coder.json'.length);
-      for (const n of c.needs ?? []) d.needs.push({ tag, cap: n.cap, minimal_ask: n.minimal_ask });
-    }
+    d.needs = art
+      ? needsOf(art, undefined, l).map(n => ({
+          tag: n.tag,
+          cap: n.cap,
+          minimal_ask: n.minimal_ask,
+        }))
+      : [];
   });
   part('asks', () => {
     d.asks = asksOf(l.run_id);
