@@ -140,6 +140,7 @@ nodes:
         - needs
   - id: verify-core
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - code-core
@@ -320,6 +321,7 @@ nodes:
         - needs
   - id: settle-core
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - verify-core
@@ -406,6 +408,7 @@ nodes:
         - out_of_scope
   - id: diff-m1-r1
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - settle-core
@@ -713,6 +716,7 @@ nodes:
         - needs
   - id: diff-m1-r2
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - fix-m1-r2
@@ -1029,6 +1033,7 @@ nodes:
         - needs
   - id: diff-m1-r3
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - fix-m1-r3
@@ -1384,6 +1389,7 @@ nodes:
         - needs
   - id: verify-api
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - code-api
@@ -1564,6 +1570,7 @@ nodes:
         - needs
   - id: settle-api
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - verify-api
@@ -1650,6 +1657,7 @@ nodes:
         - out_of_scope
   - id: diff-m2-r1
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - settle-api
@@ -1956,6 +1964,7 @@ nodes:
         - needs
   - id: diff-m2-r2
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - fix-m2-r2
@@ -2271,6 +2280,7 @@ nodes:
         - needs
   - id: diff-m2-r3
     script: sa-check
+    timeout: 120000
     runtime: bun
     depends_on:
       - fix-m2-r3

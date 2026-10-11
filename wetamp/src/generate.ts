@@ -95,6 +95,10 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
   ...extra,
 });
 
+/** 验收节点超时：按 plan 中各命令 timeout_s 之和留 60s 余量，不低于 archon 默认 120s（否则慢验收必被 Archon 杀掉）。 */
+const acceptTimeout = (pkgs: Pkg[]): number =>
+  Math.max(QUERY_TIMEOUT_MS, (pkgs.flatMap(p => p.accept).reduce((n, c) => n + c.timeout_s, 0) + 60) * 1000);
+
 /**
  * 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果；now 固定以得到确定的 deadline_ms）。
  * 每个里程碑：start → 逐包 code/verify/[repair]/settle → 至多 3 轮 diff → review → gate（第 2、3 轮前有 when 守卫的
@@ -215,7 +219,7 @@ export function buildWorkflow(
           verify,
           [`code-${p.id}`, attempt, pkgAttempt],
           { ...accept, tag: verify, coder: `$code-${p.id}.output` },
-          { output_format: outputSchema('accept') }
+          { output_format: outputSchema('accept'), timeout: acceptTimeout([p]) }
         )
       );
       nodes.push({
@@ -250,7 +254,7 @@ export function buildWorkflow(
             first: `$${verify}.output`,
             repaired: skippable(`$repair-${p.id}.output`),
           },
-          { trigger_rule: 'none_failed_min_one_success', output_format: outputSchema('accept') }
+          { trigger_rule: 'none_failed_min_one_success', output_format: outputSchema('accept'), timeout: acceptTimeout([p]) }
         )
       );
       prev = `settle-${p.id}`;
@@ -309,7 +313,7 @@ export function buildWorkflow(
                 }
               : {}),
           },
-          { output_format: outputSchema('accept') }
+          { output_format: outputSchema('accept'), timeout: acceptTimeout(m.packages) }
         )
       );
       const reviewAttempt = `attempt-review-${t}`;
