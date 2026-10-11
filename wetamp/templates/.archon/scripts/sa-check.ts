@@ -194,9 +194,13 @@ export function disposition(
   return to('repair', c.status === 'done' ? 'acceptance_failed' : 'coder_partial');
 }
 
-const RISKS = ['G0', 'G1', 'G2'];
-const maxRisk = (...rs: (string | null | undefined)[]): string =>
-  RISKS[Math.max(0, ...rs.map(r => RISKS.indexOf(r ?? '')))];
+const RISKS = ['G0', 'G1', 'G2'] as const;
+const maxRisk = (...rs: (string | null | undefined)[]): Plan['packages'][number]['risk'] =>
+  RISKS[Math.max(0, ...rs.map(r => RISKS.findIndex(v => v === r)))];
+
+/** Routing and the gate consume the same structured acceptance risks, never infer them twice. */
+export const effectiveRisk = (declared: string, rechecks: Pick<Accept, 'risk'>[]): Plan['packages'][number]['risk'] =>
+  maxRisk(declared, ...rechecks.map(c => c.risk));
 
 /** `git diff --raw -z -M` 的逐项：状态、两侧 mode、路径（重命名/复制为源与目标）。 */
 function changes(base: string): { modes: string[]; paths: string[] }[] {
@@ -623,7 +627,7 @@ export function effectiveBudget(base: Plan['budget'], grant: {
     grant.limits.weighted_tokens <= 0) throw new Error('budget-extra: invalid limits');
   return grant.limits;
 }
-function budget(): string | null {
+function budget(nextLaunch = true): string | null {
   if (!env('ARCHON')) return null;
   const dir = dirname(env('PLAN')),
     m = env('MILESTONE');
@@ -632,7 +636,7 @@ function budget(): string | null {
   const attempt = join(dir, 'attempts', m);
   const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
   const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
-  if (b.launches !== undefined && u.launches >= b.launches) return 'budget_launches_exceeded';
+  if (b.launches !== undefined && (nextLaunch ? u.launches >= b.launches : u.launches > b.launches)) return 'budget_launches_exceeded';
   return u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
 }
 
@@ -680,7 +684,7 @@ function gate(): void {
   const tag = env('TAG');
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
-  const risk = maxRisk(env('RISK'), ...rechecks.map(c => c.risk));
+  const risk = effectiveRisk(env('RISK'), rechecks);
   const decision = { reviews, rechecks, risk, expired: expired() };
   let d = decide(decision);
   const reviewed = reviews.map((r, i) => r ? i : -1).filter(i => i >= 0).at(-1);
@@ -710,7 +714,8 @@ function gate(): void {
       ? { verdict: 'escalate', reason: `review_not_independent:${why}` }
       : { reason: `review_not_independent:${why}` });
   }
-  const over = d.verdict === 'fix' || (d.verdict === 'pass' && env('NEXT')) ? budget() : null;
+  const over = d.verdict === 'fix' || d.verdict === 'pass'
+    ? budget(d.verdict === 'fix' || Boolean(env('NEXT'))) : null;
   if (over) Object.assign(d, { verdict: 'escalate', reason: over });
   if (d.verdict === 'pass' && rechecks.at(-1)?.same && reviewed !== undefined)
     writeFileSync(reviewFile, JSON.stringify(reviews[reviewed], null, 2));

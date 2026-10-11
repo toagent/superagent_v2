@@ -697,3 +697,16 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **验证**：最终定向 policy-executor 回归 11 pass/0 fail/60 assertions，含三类 typed failure、cooldown/到期、reviewer-alt、跨厂商编码回退、预算拒绝、非类型化失败与损坏记录；tsc/eslint src exit 0（`/tmp/b1-policy2-focused-extra.log`）。完整套件、fake selftest 与提交绑定 verify-local 在下方补记，日志及回执放临时 home，不入仓库。
 - **最终完整验证**：`cd wetamp && bunx tsc --noEmit && bunx eslint src && timeout 900 bun test` exit 0；996 pass/0 fail/3 snapshots、4954 assertions、32 文件、333.23s（`/tmp/b1-policy2-full-final.log`）。第一次完整批次为 993 pass/1 fail（I5 settle 证据用例），期间源文件仍在修改，不把该批次计为通过；源码稳定后单跑该用例 1 pass/0 fail（`/tmp/b1-policy2-i5-recheck.log`），并重跑完整套件全绿，未改该用例或其生产逻辑。提交前 fake 与提交后隔离验证共用 `/tmp/b1-policy2-home.uzzbmj58`，最终以其 selftest-fake.json 与绑定 HEAD 的 verify.json 为准。
 - **fake 自检**：`SUPERAGENT_HOME=/tmp/b1-policy2-home.uzzbmj58 bash scripts/selftest.sh --fake` exit 0；回执 ok=true/fake=true，owner-loss recover、signal、abandon、HF3 adopt 与 hooks G1/N1 全部通过。此提交前回执 head=50a6c191；提交后 verify-local 会在同一调用方 home 生成隔离验证回执，绑定本包提交且再次重跑 install/tsc/full test/fake selftest。
+
+
+### B1-FIXE：POLICY R1 五项修复（编码与自检）
+
+- **裁决 / F-15 / 被推翻的假设**：节点包装器承担跨厂商切换会越过凭据、准入和 session 的所有权边界。同一节点现在仅消费原厂商的冻结模型池、cooldown 和总预算；跨厂商切换交给引擎已有熔断、改派、held 路径，不新增状态或配置。池耗尽返回原类型化失败；原厂商无合格模型则返回明确 misconfigured，不能暗换厂商。此裁决替代上方 POLICY2 的跨厂商回退描述。
+- **POLICY-R1-01/02（blocker/high）**：删除跨厂商凭据剥离、assistant config/只读配置重构和原始 factory 回退调用；所有尝试复用同一个 native sendQuery 与外层原厂商准入槽位。env、protectedEnvKeys、原生配置与权限原样保留，包含 GH_TOKEN 的空值覆盖。真实 scratch 子进程验证每次尝试环境值一致；槽位回归覆盖整个流只准入/释放一次，跨厂商候选不执行。
+- **POLICY-R1-04（high）**：跨模型尝试不传入旧 session；返回模型与引擎请求模型不同（含 resolved 回执不同）时不外传 sessionId/resumed，因此引擎不会将回退会话绑定到原请求模型。cooldown 到期后的下一节点回归证明新开会话。reviewer-alt 排除真实作者，只能在原厂商内选合格候选；需要换厂商时明确失败，交回引擎。
+- **POLICY-R1-03（high）**：每次 provider stream 结算后立即按累计实际用量检查预算，包含成功末次调用；超限返回 typed budget_exceeded，保留 tokens 与预算 evidence，并将该尝试记录为 failed。gate 末里程碑 PASS 前同样核验预算；末次已结算 launch 数等于上限可放行，超过 token 上限不得 PASS/进入 land。启动前预留是估算，不能保证单次调用绝对零超额。原 same-diff 测试补齐真实 plan 必需的 budget 和 gate 的 policy 输入，避免旧测试依靠末次 gate 不检查预算。
+- **POLICY-R1-05（medium）**：sa-check 的 effectiveRisk 是有效风险唯一计算拥有者；gate 与 runtime 路由共用声明及本轮全部结构化 diff 验收证据。模型池与 effort 同取该值；G0 修改风险路径的 G2 评审及后续轮次不能降级均有回归，不在 runtime 再解析文件路径。
+- **旧 run/生产影响与遗留**：模板变更进入既有 workflow identity，旧 run 按已有 adopt 重新生成；执行包装器现读代码。未改 packages/、模型名单或生产 checkout/home，也未操作 supervisor/launchd。既有 schema 文案债务保留；真实厂商、引擎跨厂商改派与生产验收未在本派生会话验证，交由主控。无独立评审或集成上线结论。
+- **自检证据**：新增六项故障回归在旧实现全部失败；修复后按卡运行定向四文件、tsc/eslint src、完整 wetamp 测试、临时 home fake selftest，以及提交绑定 verify-local。定向四文件 268 pass/0 fail/617 assertions（21.77s），tsc/eslint src 与 diff --check exit 0；src 相对 d686c66d 净减 4 行，相对批次基线 f9394a60 净增由 295 降到 291。最终结果以 /tmp/b1-fixe-focused.log、/tmp/b1-fixe-full.log 和临时 home /tmp/b1-fixe-home.c1OvLoWT 的 selftest-fake.json/verify.json 为准。
+- **完整套件**：`cd wetamp && bunx tsc --noEmit && bunx eslint src && timeout 900 bun test` exit 0；1002 pass/0 fail、32 文件、3 snapshots、4978 assertions，347.49s（/tmp/b1-fixe-full.log）。早期定向批次发现 same-diff 夹具缺少 budget/policy、拒绝换厂商夹具仍有合格 Claude 模型，已补齐夹具；最终定向和完整套件全绿，未改无关生产代码。
+- **fake 自检**：`SUPERAGENT_HOME=/tmp/b1-fixe-home.c1OvLoWT ARCHON_HOME=/tmp/b1-fixe-home.c1OvLoWT/archon bash scripts/selftest.sh --fake` exit 0，回执 ok=true/fake=true，恢复、signal、abandon、HF3 adopt 与 G1/N1 hooks 通过（/tmp/b1-fixe-selftest.log）。提交后在同一调用方临时 home 运行 verify-local 绑定新 HEAD；此处不预报结果，以 verify.json 与最终交付为准。

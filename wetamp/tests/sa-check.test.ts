@@ -543,7 +543,8 @@ describe('sa-check script', () => {
   test('B1 same-diff reuses a qualified review after acceptance recovers; contract or identity drift refuses reuse', () => {
     const root = tmp(), repo = gitRepo(root), flag = join(root, 'ready');
     const p = join(root, 'plan.json');
-    const contract = { deadline: '2099-01-01T00:00:00Z', mode: 'strict', packages: [
+    const contract = { deadline: '2099-01-01T00:00:00Z', mode: 'strict',
+      budget: { launches: 20, weighted_tokens: 2_000_000 }, packages: [
       { id: 'a', scope: { write: ['*.md'] }, accept: [{ cmd: `test -f '${flag}'`, timeout_s: 5 }] },
     ] };
     writeFileSync(p, JSON.stringify(contract));
@@ -565,10 +566,12 @@ describe('sa-check script', () => {
     })) });
     writeFileSync(eventsFile, JSON.stringify(events('review-model')));
     const gate = (check: unknown) => runScript(repo, {
-      kind: 'gate', plan: p, pkgs: 'a', milestone: 'm1', tag: 'reuse', round: '2', risk: 'G1', archon,
+      kind: 'gate', plan: p, pkgs: 'a', milestone: 'm1', tag: 'reuse', round: '2', risk: 'G1', archon, policy: pol,
       r1: JSON.stringify(R('PASS')), r2: 'null', c1: JSON.stringify(prior), c2: JSON.stringify(check),
     }, { WORKFLOW_ID: 'scratch-only' });
-    const reused = gate(current).out as { review_file: string };
+    const reusedResult = gate(current);
+    expect(reusedResult.err).toBe('');
+    const reused = reusedResult.out as { review_file: string };
     expect(reused).toMatchObject({ verdict: 'pass', grade: 'PASS' });
     expect(JSON.parse(readFileSync(reused.review_file, 'utf8'))).toEqual(R('PASS'));
     writeFileSync(eventsFile, JSON.stringify(events('author-model')));
@@ -582,6 +585,35 @@ describe('sa-check script', () => {
     // Deadline remains terminal even when the binding/event query is unavailable.
     writeFileSync(archon, '#!/usr/bin/env node\nprocess.exit(1);\n');
     expect(gate(current).out).toMatchObject({ verdict: 'escalate', reason: 'deadline' });
+  });
+  test('POLICY-R1-03: final review exceeding its reservation cannot PASS or reach land', () => {
+    const root = tmp(), repo = gitRepo(root), p = join(root, 'plan.json');
+    writeFileSync(p, JSON.stringify({ deadline: '2099-01-01T00:00:00Z', mode: 'strict',
+      budget: { launches: 2, weighted_tokens: 30 }, packages: [] }));
+    const pol = join(root, 'policy.json');
+    writeFileSync(pol, JSON.stringify(snapshotPolicy(loadTiers())));
+    const eventsFile = join(root, 'events.json'), archon = join(root, 'archon');
+    writeFileSync(archon, `#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8'));\n`);
+    chmodSync(archon, 0o755);
+    const events = ['code-a', 'review-m1-r1'].flatMap((step_name, i) => [
+      { step_name, event_type: 'node_started' },
+      { step_name, event_type: 'node_completed', data: {
+        binding: { model: { requested: i ? 'review-model' : 'author-model', resolved: { reason: 'unsupported' } } },
+        spend: { tokens: { source: 'provider', value: { input: i ? 25 : 5, output: i ? 20 : 5 } } },
+      } },
+    ]);
+    writeFileSync(eventsFile, JSON.stringify({ events }));
+    const gate = () => runScript(repo, { kind: 'gate', plan: p, policy: pol, archon,
+      pkgs: 'a', milestone: 'm1', tag: 'gate-m1-r1', round: '1', risk: 'G0',
+      r1: JSON.stringify(R('PASS')), c1: JSON.stringify({ ...C('a'), risk: 'G2' }),
+    }, { WORKFLOW_ID: 'scratch-only' });
+    const exceeded = gate();
+    expect(exceeded.code).toBe(1);
+    expect(exceeded.out).toMatchObject({ verdict: 'escalate', grade: null, risk: 'G2', reason: 'budget_tokens_exceeded' });
+    // Exactly the allowed final launch count is legal once actual tokens are within budget.
+    events[3]!.data!.spend.tokens.value = { input: 5, output: 5 };
+    writeFileSync(eventsFile, JSON.stringify({ events }));
+    expect(gate()).toMatchObject({ code: 0, out: { verdict: 'pass', grade: 'PASS' } });
   });
   test('env: failing environment check exits 1 with failed list', () => {
     const root = tmp();
