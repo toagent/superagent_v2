@@ -1379,7 +1379,7 @@ process.exit(main(['supervise-tick']));`);
     const child = Bun.spawnSync([process.execPath, script], { env: process.env, stdout: 'pipe', stderr: 'pipe', timeout: 5000 });
     expect(child.exitCode, child.stderr.toString()).toBe(73);
     expect(Object.values(asks(s.root))[0]).toMatchObject({ status: 'no', decision: { answer: 'no', engine_run: 'r' } });
-    expect(Object.values(asks(s.root))[0].decision?.effect).toBeUndefined();
+    expect(Object.values(asks(s.root))[0]).not.toHaveProperty('decision.effect');
     expect(Object.values(asks(s.root))[0].receipt).toBeUndefined();
     expect(tick()[0]).toMatchObject({ action: 'receipt_reconciled', ok: true });
     expect(body(s.root)).toContain('已终止整个run');

@@ -770,3 +770,5 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **旧 run/生产影响与遗留**：旧 asks 无 decision 继续原回执语义，历史遗漏无法凭空补成功；既有 run 不迁移、不取消，旧生成脚本保持冻结，重新生成后才使用新 watchdog。直接 Archon 入口、脱离进程组的后代及操作者未知效果对账仍在既有边界外；本包不改 packages/hooks、生产 home、supervisor 或提醒事项。不新增安装依赖，运行该辅助路径需要已有 python3。真实通知投递、provider、独立 G2 复审、主控集成验收及生产发布未执行。
 
 - **本包完整编码自检**：`bunx tsc --noEmit && timeout 900 bun test` exit 0，1049 pass/0 fail/3 snapshots、34 文件、469.09s（full-test.log）；`bunx eslint src` exit 0。最新 fake 自检 exit 0，selftest-fake.json 独立确认 ok=true/fake=true；加强后的取消崩溃回归在首次动作效果落盘前退出，1 pass/0 fail（crash-before-effect.log）。提交后同一 home 的 verify-local 会再次检查最终提交产物，不以未提交 selftest 的旧 HEAD 字段冒充提交验收。
+
+- **提交后验收发现与修正**：首提交 53826635 的 verify-local 在 tsc 阶段 exit 2；加强崩溃测试新增的 decision.effect 直接访问超出了既有夹具返回类型。改为 not.toHaveProperty 属性断言，仍验证效果尚未持久化；产品源码不变。首失败回执与日志保留在同一 home，修正提交重新执行最终 HEAD 的完整 verify-local，不复用首提交结果。
