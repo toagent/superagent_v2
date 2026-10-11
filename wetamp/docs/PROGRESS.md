@@ -651,7 +651,8 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **恢复与兼容**：新 ledger/engine.json 写 workflow_hash，保留 engine_hash。恢复与提醒继续共用 adoptsRun，优先 workflow_hash；旧 ledger 只有 engine_hash 时，仅相等才确认可 resume，不相等或缺失则保守 adopt，标题明确“旧run身份未确认，将新开run从首个节点重跑”。failed/cancelled 以外不新增 adopt，completed 仍禁止恢复。
 - **逐处身份用途**：新 run/adopt 的 engine_hash 与 workflow_hash 均记录生成身份；summary.engine 判断生成物是否过期；recoverRun 的确定性防重、autoRetry 的同身份零次/换身份最多一次、engine_suspect 自动处置和 incident 指纹均使用 workflowIdentity。auto_retries/adoptions 的既有 engine_hash/engine_from/engine_to 字段继续保存工作流身份，不改 wire 字段。纯 UI 漂移不再烧确定性重试或新开嫌疑 run；原一次重试限制不变。board/web 才使用 residentHash。
 - **包与里程碑**：每包 package-attempt-<id> always_run 节点读取 attempts/.packages/<id>（前导点不符合里程碑 schema，旧 attempts/<m> 不变），code/verify/repair/settle 同时依赖包与里程碑计数。显式包重试只 bump 包计数；held:gate 仍 bump 里程碑。读取实际 YAML 节点判断能力，旧生成工作流没有包计数时 verify/settle 仍重跑整个里程碑，标题标“旧工作流”；旧 code/repair 保持直接 resume。缺少所需里程碑计数则明确拒绝，不猜能力、不加 YAML 字段。
-- **预算归属**：预算授权仍绑定里程碑 attempt，不改计费语义。任何计数文件缺失时读取为 0，不为包重试创建或改写里程碑文件；CLI、生成的 attempt 节点和 budget() 共用 readAttempt，拒绝非法非负整数与无法精确表示的计数，bump 也拒绝溢出。budget() 在里程碑文件缺失时以 0 匹配 grant；下一次里程碑重试仍使旧额度失效。
+- **预算归属**：预算授权仍绑定里程碑 attempt，不改计费语义。任何计数文件缺失时读取为 0，不为包重试创建或改写里程碑文件；CLI、budget() 与生成的里程碑、包及评审 attempt 节点共用模板 readAttempt，生成器通过 attemptCommand(attemptPath(...)) 构造全部计数读取，拒绝负数、非法值与无法精确表示的计数，bump 也拒绝溢出。budget() 在里程碑文件缺失时以 0 匹配 grant；下一次里程碑重试仍使旧额度失效。
+- **HF10b / HF10-R2-01**：评审轮次计数也使用同一读取与路径 owner；正常及 fake 模式全部评审 attempt 节点覆盖缺失、合法值、NaN、负数和目录，两个 golden 同步。
 - **HF9-R3-01**：所有提问策略的两个数值极值都经 supervise-tick，断言 supervisor 桩最终 question 参数、非空完整是/否后果、marker 与 ≤200 字；旧“已完成3/2节点”夹具改为真实3/5。包/里程碑/adopt/旧工作流四种范围也经过最终投递路径。仅为编码自检，独立评审是否关闭债务仍由主控确认。
 - **实际投递标题**（每条 ≤200 字，原文）：
   - 包级：BestIFA/W4验收/verify-W4：将军命中红线；编码端命中红线；已完成13/63节点；是=重派W4编码→验收一次（红线不变）；否=终止整个run（保留证据）；详情superagent brief <run>；[sa:1ee9998357b47b971a63ccd2588cb69e]
@@ -672,3 +673,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **R2 自检过程证据**：最终定向24 pass/0 fail（`/tmp/hf10-r2-focused-final.log`），tsc/eslint src exit 0。首次完整套件960 pass/1 fail（259.60s，`/tmp/hf10-r2-full.log`），唯一失败为 S3 仍断言旧 attempts/pkg/core 路径，已改为 attempts/.packages/core。并行重跑 fake 自检的行为 receipt 为 ok=true，但 EXIT 清理临时目录报 Directory not empty，脚本整体 exit 1（`/tmp/hf10-r2-selftest-final.log`）；不将该次视为通过、不手工删除资源，最终验收采用串行重跑结果。
 - **R2 最终完整验证**：`cd wetamp && bunx tsc --noEmit`、`bunx eslint src` exit 0；`timeout 600 bun test` exit 0，961 pass/0 fail/3 snapshots，29 文件，338.08s（`/tmp/hf10-r2-full-final.log`）。包/预算 E2E code 次数均1/1/2/1，gate2/2/2/2；两次 grant 完整内容在 `/tmp/hf10-r2-grants.json`，均 attempt=0，包计数1→2，里程碑缺失=0。src 相对 b67e0385 净增25行，hooks/packages 受跟踪文件零改动，diff --check exit 0。提交后 verify-local 绑定 HEAD 的结果在同一调用方临时 home `/tmp/hf10-r2-accept.cepGSi/verify.json`，不写入仓库或生产 home。
 - **R2 fake 自检最终结果**：同一临时 SUPERAGENT_HOME 下串行 `bash scripts/selftest.sh --fake` exit 0（`/tmp/hf10-r2-selftest-serial.log`），receipt ok=true。未亲手执行 git worktree remove/prune，未清理脚本之外创建的 worktree/目录；生产 home、supervisor 与 launchd 均未操作。本交付仅编码与自检，astra R2 核验、主控实测及合入发布仍由主控执行。
+
+## HF10b：统一评审轮次计数读取
+
+- **问题与不变量归属**：HF10-R2-01 指向评审 attempt 节点的手写 `cat … 2>/dev/null || echo 0`。它允许 NaN、负数和目录读取错误通过；输出 schema 仅要求 string，不能证明计数有效。本包强化 I3 的 attempt 边界证据与 I6 的夹具真实化：不把坏计数或读取错误伪装为 0。
+- **被推翻的假设与新语义**：HF10 的“所有生成 attempt 节点已统一读取”假设不成立。现在里程碑、包及评审轮次节点全部复用 `attemptCommand(attemptPath(...))`，运行时由模板 `readAttempt` 读取；仅 ENOENT 缺省为 0，合法非负安全整数照常，非法值及目录读取错误明确失败，不写回计数、不新增状态或配置。
+- **测试、事故回放与监测**：`generate.test.ts` 在正常及 fake 模式执行全部 6 个评审 attempt 节点，覆盖缺失、0、7、NaN、-1、目录。旧实现的两个回归均因 NaN 时退出 0 而失败；修复后要求非法值退出非 0 且无成功输出。两个 golden 同步；运行时监测点是现有 `attempt-review-*` 节点失败及 stderr 原始错误，不另造监测机制（P4）。
+- **旧 run 与生产影响、遗留**：`attempts/review-<m>-r<n>` 路径与输出契约不变；旧 run 冻结的 YAML 保留旧读取，生成器纳入 workflow hash，按已有恢复语义采用新引擎后才应用修复，运行中不换源。此包仅编码与自检，批次统一评审、主控集成验收及生产投送由主控执行；原 HF10 的回执及同身份现读依赖自动重试限制继续保留。
+- **编码自检**：定向测试 256 pass/0 fail（`/tmp/hf10b-focused.log`），`bunx tsc --noEmit`、`bunx eslint src` exit 0；`timeout 900 bun test` 979 pass/0 fail/3 snapshots、30 文件、329.61s（`/tmp/hf10b-full.log`）。独立临时 home `/tmp/hf10b-accept.0pduwg` 下 `bash scripts/selftest.sh --fake` exit 0，receipt ok=true（`/tmp/hf10b-selftest.log`）；提交后同目录运行 verify-local 绑定最终 HEAD。相对 f9394a60 源码净增 0 行，hooks/packages 零改动。
