@@ -223,6 +223,6 @@ SA_UPSTREAM="$(head -1 "$WETAMP/UPSTREAM")" bun -e "
 import { SELFTEST_TTL_MS, writeAtomic } from '$WETAMP/src/config.ts';
 const e = process.env, at = new Date();
 const r = { ok: true, at: at.toISOString(), expires_at: new Date(at.getTime() + SELFTEST_TTL_MS).toISOString(), fake: e.SA_FAKE === '1',
-  ...JSON.parse(e.SA_KEY), ...JSON.parse(e.SA_METRICS), hooks: { g1_commander_31_lines: 'deny', n1_worker_agent: 'deny' }, upstream: e.SA_UPSTREAM };
+  ...JSON.parse(e.SA_KEY), ...JSON.parse(e.SA_METRICS), hooks: { g1_commander_31_lines: 'advise', n1_worker_agent: 'deny' }, upstream: e.SA_UPSTREAM };
 writeAtomic(e.SA_OUT, JSON.stringify(r) + '\\n');
 console.log(JSON.stringify(r));"
