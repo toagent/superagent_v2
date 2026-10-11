@@ -1,12 +1,19 @@
-import { afterAll } from 'bun:test';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { afterAll, expect } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
 
 const roots: string[] = [];
+// Installation fixtures must isolate their writes, even when their caller has
+// a real worker ledger. Snapshot bytes internally; never print user state.
+const callerInstall = join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'superagent/install.json');
+const installBytes = (): Buffer | undefined => existsSync(callerInstall) ? readFileSync(callerInstall) : undefined;
+const originalInstall = installBytes();
 afterAll(async () => {
   for (const r of roots.splice(0)) await removeTempTree(r);
+  expect(existsSync(callerInstall)).toBe(originalInstall !== undefined);
+  if (originalInstall) expect(installBytes()?.equals(originalInstall)).toBe(true);
 });
 export const tmp = (): string => {
   const d = realpathSync(mkdtempSync(join(tmpdir(), 'sa-test-')));

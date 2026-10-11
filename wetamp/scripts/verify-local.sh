@@ -60,7 +60,7 @@ cached || true
 
 LOG="$SA_HOME/verify/${SHA:0:12}.log"
 # 各步骤（含 bun test）只碰临时 home，不写调用方的台账。
-export SUPERAGENT_HOME="$TMP/sa" ARCHON_HOME="$TMP/sa/archon"
+export SUPERAGENT_HOME="$TMP/sa" ARCHON_HOME="$TMP/sa/archon" XDG_STATE_HOME="$TMP/state"
 : > "$LOG"
 git -C "$REPO" worktree add -q --detach "$WT" "$SHA" >>"$LOG" 2>&1
 STEPS=() OK=1

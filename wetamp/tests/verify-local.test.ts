@@ -20,10 +20,15 @@ interface Verify {
  */
 function fixture() {
   const root = tmp();
+  const stateFile = join(root, 'caller-state/superagent/install.json');
+  mkdirSync(join(root, 'caller-state/superagent'), { recursive: true });
+  const stateBytes = '{ "role": "worker", "commit": "caller" }\n';
+  writeFileSync(stateFile, stateBytes);
+  const writeState = 'mkdir -p "$XDG_STATE_HOME/superagent"\nprintf \'{"role":"controller"}\\n\' > "$XDG_STATE_HOME/superagent/install.json"\necho "$XDG_STATE_HOME" >> "$STATE_CALLS"\n';
   const repo = join(root, 'repo');
   mkdirSync(join(repo, 'wetamp', 'scripts'), { recursive: true });
   copyFileSync(SCRIPT, join(repo, 'wetamp', 'scripts', 'verify-local.sh'));
-  writeFileSync(join(repo, 'wetamp', 'scripts', 'selftest.sh'), 'echo "selftest $SUPERAGENT_HOME" >> "$CALLS"\n');
+  writeFileSync(join(repo, 'wetamp', 'scripts', 'selftest.sh'), writeState + 'echo "selftest $SUPERAGENT_HOME" >> "$CALLS"\n');
   writeFileSync(join(repo, 'bun.lock'), 'root-lock\n');
   writeFileSync(join(repo, 'wetamp', 'bun.lock'), 'wetamp-lock\n');
   writeFileSync(join(repo, 'wetamp', 'RESULT'), 'pass\n');
@@ -33,6 +38,7 @@ function fixture() {
   writeFileSync(
     join(bunDir, 'bun'),
     `#!/bin/sh
+${writeState}
 echo "bun $* @ $PWD" >> "$CALLS"
 case "$1" in
   install) [ -n "$INSTALL_FAILS" ] && exit 1; exit 0;;
@@ -54,11 +60,15 @@ exit 0
   const calls = join(root, 'calls.log');
   const run = (rev: string, env: Record<string, string> = {}) => {
     const p = Bun.spawnSync(['bash', join(repo, 'wetamp', 'scripts', 'verify-local.sh'), '--commit', rev, '--timeout', '60'], {
-      env: { ...process.env, SUPERAGENT_HOME: home, BUN_INSTALL: join(root, 'bun'), CALLS: calls, INSTALL_FAILS: '', ...env },
+      env: { ...process.env, SUPERAGENT_HOME: home, XDG_STATE_HOME: join(root, 'caller-state'),
+        STATE_CALLS: join(root, 'state-calls'), BUN_INSTALL: join(root, 'bun'), CALLS: calls, INSTALL_FAILS: '', ...env },
       stdout: 'pipe',
       stderr: 'pipe',
     });
     const out = join(home, 'verify.json');
+    expect(readFileSync(stateFile, 'utf8')).toBe(stateBytes);
+    if (existsSync(join(root, 'state-calls')))
+      expect(readFileSync(join(root, 'state-calls'), 'utf8')).not.toContain(join(root, 'caller-state'));
     return {
       code: p.exitCode,
       out: p.stdout.toString(),

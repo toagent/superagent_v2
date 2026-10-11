@@ -20,7 +20,7 @@ for (const scope of ['package', 'milestone', 'budget'] as const) test(`HF10 fake
   writeFileSync(join(root, 'answer'), 'pending');
   const env = { ...process.env, SUPERAGENT_HOME: join(root, 'home'), ARCHON_HOME: join(root, 'home/archon'),
     SUPERAGENT_WRITE_ROOTS: root, SA_ARCHON_BIN: '', SA_SUPERVISOR: py,
-    AGENT_SUPERVISOR_STATE: join(root, 'supervisor'), SA_LAUNCHD_DIR: join(root, 'LaunchAgents'), SA_SKIP_DOCTOR: '1' };
+    AGENT_SUPERVISOR_STATE: join(root, 'supervisor'), XDG_STATE_HOME: join(root, 'state'), SA_LAUNCHD_DIR: join(root, 'LaunchAgents'), SA_SKIP_DOCTOR: '1' };
   const before = { ...process.env };
   Object.assign(process.env, env);
   let gen: ReturnType<typeof generate>;

@@ -19,7 +19,7 @@ wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要
 
 状态目录 `SUPERAGENT_HOME`（默认 `~/.superagent`），Archon 状态在 `ARCHON_HOME=$SUPERAGENT_HOME/archon`。
 默认安装记录 `controller`，`install.sh --remote-hooks` 记录 `worker`；CLI `health` 与 run preflight 明确报告模式，worker 不启动 run。hook 安装保留用户其他 hooks 与未管理字段；shell hook 只是辅助检查，不是沙箱。
-模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。`selftest.sh --fake` 不调用模型，只用于测试本层。
+模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。正式 selftest 先让真实 provider 正常完成，再对确定性 bash 节点注入故障验证恢复；不会杀掉真实 provider 后自动豁免未知效果。`selftest.sh --fake` 不调用模型，只用于测试本层。升级 HEAD 或配置后重新执行不带 `--fake` 的 selftest，旧回执不再准入；验收脚本的安装状态使用独立临时 `XDG_STATE_HOME`。
 
 ## 日常：run → wait → land
 

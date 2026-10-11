@@ -153,7 +153,7 @@ test('real Archon CAS/new-owner barrier fences two complete recover CLI processe
   const shim = join(root, 'archon');
   writeFileSync(shim, `#!/usr/bin/env bash\nexec '${process.execPath}' '${driver}' "$@"\n`); chmodSync(shim, 0o755);
   const env = { ...process.env, SUPERAGENT_HOME: sa, ARCHON_HOME: join(sa, 'archon'), SA_ARCHON_BIN: shim,
-    DATABASE_URL: '', SA_SKIP_DOCTOR: '1', SA_LAUNCHD_DIR: join(root, 'LaunchAgents'), REC_BARRIER: '0' };
+    XDG_STATE_HOME: join(root, 'state'), DATABASE_URL: '', SA_SKIP_DOCTOR: '1', SA_LAUNCHD_DIR: join(root, 'LaunchAgents'), REC_BARRIER: '0' };
   const call = (args: string[]) => {
     const p = Bun.spawnSync([shim, ...args], { cwd: repo, env, stdout: 'pipe', stderr: 'pipe', timeout: 30000 });
     if (p.exitCode !== 0) throw new Error(`archon fixture ${args[1]}: ${p.stderr.toString()} ${p.stdout.toString()}`);

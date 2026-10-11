@@ -1,15 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import {
   existsSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import {
@@ -28,6 +30,8 @@ function runInstall(
   launchd = join(home, 'LaunchAgents'),
   archonHome = join(home, 'archon')
 ): string {
+  const callerInstall = join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'superagent/install.json');
+  const before = existsSync(callerInstall) ? readFileSync(callerInstall) : undefined;
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
       ...process.env,
@@ -41,6 +45,8 @@ function runInstall(
     stderr: 'pipe',
   });
   expect(p.exitCode).toBe(0);
+  expect(existsSync(callerInstall)).toBe(before !== undefined);
+  if (before) expect(readFileSync(callerInstall).equals(before)).toBe(true);
   return p.stdout.toString();
 }
 
@@ -407,4 +413,50 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(sh('--hooks', '--remote-hooks').code).toBe(64);
     expect(sh('--dry-run').code).toBe(64);
   });
+
+  test('GUARD-R1-02: advisory/cycle/change install twice without rejecting Stop systemMessage', () => {
+    const root = tmp(), toolkit = join(root, 'wetamp');
+    cpSync(WETAMP, toolkit, { recursive: true, filter: p => !p.endsWith('/node_modules') });
+    symlinkSync(join(WETAMP, 'node_modules'), join(toolkit, 'node_modules'));
+    const tiers = JSON.parse(readFileSync(join(toolkit, 'tiers.json'), 'utf8'));
+    const callerState = join(root, 'caller-state/superagent/install.json');
+    mkdirSync(dirname(callerState), { recursive: true });
+    const callerBytes = '{ "role": "worker", "userField": "untouched" }\n';
+    writeFileSync(callerState, callerBytes);
+    for (const mode of ['advisory', 'cycle', 'change']) {
+      tiers.policy.stop_gate = mode;
+      writeFileSync(join(toolkit, 'tiers.json'), JSON.stringify(tiers));
+      const home = join(root, mode), state = join(home, 'state');
+      const env = { ...process.env, HOME: home, SUPERAGENT_HOME: join(home, 'sa'), XDG_STATE_HOME: state,
+        CLAUDE_CONFIG_DIR: '', CODEX_HOME: '', SUPERAGENT_ROLE: '', AI_DISPATCH_ROLE: '', TWIN_AGENT_REMOTE: '' };
+      const probe = Bun.spawnSync(['node', join(toolkit, 'hooks/guard.cjs'), 'claude'], {
+        env, stdin: new Blob(['{"hook_event_name":"Stop"}']), stdout: 'pipe', stderr: 'pipe',
+      });
+      expect(probe.exitCode).toBe(0);
+      expect(JSON.parse(probe.stdout.toString()).systemMessage).toContain('advisory');
+      const install = () => Bun.spawnSync(['bash', join(toolkit, 'scripts/install.sh'), '--remote-hooks'], {
+        env, stdout: 'pipe', stderr: 'pipe',
+      });
+      const first = install();
+      expect(first.exitCode).toBe(0);
+      const ledger = join(state, 'superagent/install.json'), bytes = readFileSync(ledger);
+      expect(install().exitCode).toBe(0);
+      expect(readFileSync(ledger)).toEqual(bytes);
+      expect(readFileSync(callerState, 'utf8')).toBe(callerBytes);
+    }
+    const home = join(root, 'advisory'), state = join(home, 'state');
+    const installed = readFileSync(join(state, 'superagent/install.json'));
+    for (const [output, exit] of [
+      ['{"systemMessage":"advisory"}', 2], ['not-json', 0], ['{"ok":false}', 0],
+      ['{"decision":"block"}', 0], ['{"hookSpecificOutput":{"permissionDecision":"deny"}}', 0],
+    ] as const) {
+      writeFileSync(join(toolkit, 'hooks/guard.cjs'), `process.stdout.write(${JSON.stringify(output)}); process.exitCode=${exit};\n`);
+      const p = Bun.spawnSync(['bash', join(toolkit, 'scripts/install.sh'), '--remote-hooks'], {
+        env: { ...process.env, HOME: home, SUPERAGENT_HOME: join(home, 'sa'), XDG_STATE_HOME: state, CODEX_HOME: '' },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      expect(p.exitCode).not.toBe(0);
+      expect(readFileSync(join(state, 'superagent/install.json'))).toEqual(installed);
+    }
+  }, 60000);
 });
