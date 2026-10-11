@@ -1563,6 +1563,48 @@ describe('sa-check script', () => {
         .commands[1]
     ).toContain('--no-ff');
   });
+  for (const base of ['main', 'origin/main', 'refs/heads/main', 'sha'] as const)
+    test(`LAND: ${base} uses a verified local branch without changing the comparison base`, () => {
+      const root = tmp(), repo = gitRepo(root);
+      const sha = sh('git rev-parse HEAD', repo).trim();
+      const plan = fixturePlan(root, repo);
+      const ledger = join(root, 'ledger.json');
+      writeFileSync(ledger, JSON.stringify({ launch_branch: base === 'sha' ? 'main' : 'wrong' }));
+      sh('git switch -qc sa/land', repo);
+      const result = runScript(repo, {
+        kind: 'land', base_ref: base === 'sha' ? sha : base, plan, operator_ledger: ledger,
+      });
+      expect(result.code, result.err).toBe(0);
+      expect(result.out).toMatchObject({ commands: [
+        `git -C '${repo}' switch 'main'`, `git -C '${repo}' merge --ff-only 'sa/land'`,
+      ] });
+      expect(sh('git branch --show-current', repo).trim()).toBe('sa/land');
+    });
+
+  for (const sample of ['missing-ledger', 'old-ledger', 'missing-branch', 'missing-base'] as const)
+    test(`LAND: ${sample} records why manual target selection is needed and emits no commands`, () => {
+      const root = tmp(), repo = gitRepo(root);
+      const sha = sh('git rev-parse HEAD', repo).trim();
+      const plan = fixturePlan(root, repo);
+      const ledger = join(root, 'ledger.json');
+      if (sample !== 'missing-ledger') writeFileSync(ledger, JSON.stringify(
+        sample === 'old-ledger' ? {} : { launch_branch: sample === 'missing-base' ? 'main' : 'deleted' }
+      ));
+      sh('git switch -qc sa/land', repo);
+      const result = runScript(repo, {
+        kind: 'land', base_ref: sample === 'missing-base' ? 'missing' : sha,
+        plan, operator_ledger: ledger,
+      });
+      expect(result.code).toBe(1);
+      expect(result.out).toMatchObject({
+        reason: 'land_target_unknown', commands: [],
+        error: expect.stringContaining('No existing local merge target'),
+        action: expect.stringContaining('git show-ref --verify refs/heads/<branch>'),
+      });
+      expect(JSON.parse(readFileSync(join(result.art, 'land.json'), 'utf8'))).toEqual(result.out);
+      expect(sh('git branch --show-current', repo).trim()).toBe('sa/land');
+    });
+
   test('land: carries the last gate debt per milestone; refuses past the plan deadline', () => {
     const root = tmp();
     const repo = gitRepo(root);

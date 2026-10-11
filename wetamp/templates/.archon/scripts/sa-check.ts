@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan } from '../../../src/plan';
+import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { failureClass, type FailureClass } from './failure-class';
 
@@ -1082,8 +1083,24 @@ function land(): void {
   }
   const repo = dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
   const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
-  const target = env('BASE_REF').replace(/^origin\//, '');
+  const local = (name: string): boolean => {
+    const p = auxiliary(['git', 'show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
+    if (p.exitCode !== 0 && p.exitCode !== 1) throw new Error(p.stderr.toString());
+    return p.exitCode === 0;
+  };
+  const base = env('BASE_REF');
+  let target = [base.replace(/^refs\/heads\//, ''), base.replace(/^origin\//, '')].find(local);
+  if (!target && /^[a-f0-9]{7,64}$/i.test(base)) {
+    const path = env('OPERATOR_LEDGER');
+    const ledger =
+      path && existsSync(path)
+        ? (JSON.parse(readFileSync(path, 'utf8')) as Pick<OperatorLedger, 'launch_branch'>)
+        : undefined;
+    if (typeof ledger?.launch_branch === 'string' && local(ledger.launch_branch))
+      target = ledger.launch_branch;
+  }
   const ff =
+    target !== undefined &&
     Bun.spawnSync(['git', 'merge-base', '--is-ancestor', `refs/heads/${target}`, 'HEAD'])
       .exitCode === 0;
   const q = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
@@ -1105,14 +1122,24 @@ function land(): void {
   const out = {
     branch,
     head: git('rev-parse', 'HEAD').trim(),
-    commands: [
-      `git -C ${q(repo)} switch ${q(target)}`,
-      `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(branch)}`,
-    ],
+    ...(!target
+      ? {
+          reason: 'land_target_unknown',
+          error: `No existing local merge target for base_ref ${base}; no recorded launch branch applies.`,
+          action: 'Choose and verify a local branch with git show-ref --verify refs/heads/<branch>, then review and merge manually.',
+        }
+      : {}),
+    commands: target
+      ? [
+          `git -C ${q(repo)} switch ${q(target)}`,
+          `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(branch)}`,
+        ]
+      : [],
     debt: [...last.values()].flat(),
   };
   writeFileSync(join(artifacts, 'land.json'), JSON.stringify(out, null, 2));
   emit(out);
+  if (!target) process.exit(1);
 }
 
 if (import.meta.main) {

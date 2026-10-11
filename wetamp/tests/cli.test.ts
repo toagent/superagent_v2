@@ -990,6 +990,21 @@ describe('verbs (archon stub)', () => {
 });
 
 describe('run (archon stub)', () => {
+  for (const detached of [false, true])
+    test(`LAND run records plan.repo launch branch, detached=${String(detached)}, with a SHA comparison base`, () => {
+      const s = stub([]), repo = gitRepo(s.root);
+      process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+      const sha = sh('git rev-parse HEAD', repo).trim();
+      sh(detached ? 'git switch -q --detach HEAD' : 'git switch -qc feature/launch', repo);
+      const plan = fixturePlan(s.root, repo, p => { p.base_ref = sha; });
+      const result = captured(() => main(['run', plan, '--fake', '--skip-selftest']));
+      expect(result.code, result.out).toBe(0);
+      const id = JSON.parse(result.out).run_id as string;
+      const ledger = loadLedger(id);
+      expect(ledger.launch_branch).toBe(detached ? undefined : 'feature/launch');
+      expect(JSON.parse(readFileSync(join(ledger.gen_dir, 'plan.json'), 'utf8')).base_ref).toBe(sha);
+      expect(s.calls().find(c => c.startsWith('workflow run'))).toContain(`--from ${sha}`);
+    });
   test('E5 run preflight refuses before engine launch and failure ledger records the phase', () => {
     const s = stub([]);
     const repo = join(s.root, 'repo');
@@ -1260,6 +1275,14 @@ describe('brief / land (archon stub)', () => {
     expect(captured(() => main(['land', 'sa1'])).out).toContain('"c"');
     withArtifacts('running', {});
     expect(captured(() => main(['land', 'sa1'])).code).toBe(1);
+  });
+  test('LAND CLI prints a missing-target reason and returns failure without merge commands', () => {
+    withArtifacts('failed', {
+      'land.json': { commands: [], reason: 'land_target_unknown', action: 'Choose a local branch' },
+    });
+    const result = captured(() => main(['land', 'sa1']));
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.out)).toMatchObject({ commands: [], reason: 'land_target_unknown' });
   });
   test('land displays needs from advanced nodes without asking the operator', () => {
     const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };

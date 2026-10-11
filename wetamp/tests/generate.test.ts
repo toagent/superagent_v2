@@ -550,6 +550,8 @@ describe('buildWorkflow', () => {
     expect(nodes.find(x => x.id === 'land')?.with).toMatchObject({
       kind: 'land',
       plan: '/GEN/plan.json',
+      base_ref: fixture.base_ref,
+      operator_ledger: '/runs/golden-0001.json',
     });
   });
   test('without human signoff the next step joins the gates directly', () => {
@@ -701,6 +703,9 @@ test('generate writes a committed gen repo that archon validates', () => {
     readFileSync(join(g.dir, '.archon', 'workflows', g.workflow, `${g.workflow}.yaml`), 'utf8')
   );
   const ai = nodesOf(generated).filter(n => n.command);
+  expect(nodesOf(generated).find(n => n.id === 'land')?.with?.operator_ledger).toBe(
+    join(env.SUPERAGENT_HOME, 'runs', 'gen-0001.json')
+  );
   expect([...new Set(ai.map(n => n.command))].sort()).toEqual([
     'sa-code',
     'sa-fix',

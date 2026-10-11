@@ -499,7 +499,10 @@ export function buildWorkflow(
       after = { depends_on: [`signoff-${m.id}`] };
     } else after = gates;
   }
-  nodes.push(check('land', [], { kind: 'land', base_ref: plan.base_ref, plan: planPath }, after));
+  const operator_ledger = join(gen, '..', '..', 'runs', `${run}.json`);
+  nodes.push(
+    check('land', [], { kind: 'land', base_ref: plan.base_ref, plan: planPath, operator_ledger }, after)
+  );
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,

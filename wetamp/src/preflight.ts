@@ -1,7 +1,7 @@
 // 同步 CLI 的独立预检进程；复用 Archon 的分支检测与配置，不复制检测算法。
 import { inspectProjectBaseBranch } from '../../packages/core/src/handlers/clone';
 import { loadRepoConfig } from '../../packages/core/src/config/config-loader';
-import { validateBranchName } from '@archon/git';
+import { getCurrentBranchStrict, toRepoPath, validateBranchName } from '@archon/git';
 export async function inspectBase(repo: string): Promise<void> {
   const inspection = await inspectProjectBaseBranch({ path: repo });
   const configured = (await loadRepoConfig(repo)).worktree?.baseBranch?.trim();
@@ -17,7 +17,8 @@ export async function inspectBase(repo: string): Promise<void> {
 if (import.meta.main) {
   try {
     await inspectBase(process.argv[2]);
-    console.log(JSON.stringify({ ok: true }));
+    const launch_branch = await getCurrentBranchStrict(toRepoPath(process.argv[2]));
+    console.log(JSON.stringify({ ok: true, launch_branch }));
   } catch (e) {
     console.log(JSON.stringify({ ok: false, reason: (e as Error).message }));
     process.exit(1);

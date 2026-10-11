@@ -2841,5 +2841,6 @@ nodes:
       kind: land
       base_ref: main
       plan: /GEN/plan.json
+      operator_ledger: /runs/golden-0001.json
     depends_on:
       - signoff-m2

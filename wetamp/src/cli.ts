@@ -169,6 +169,7 @@ export interface Ledger {
   gen_dir: string;
   repo: string;
   branch: string;
+  launch_branch?: string;
   workflow: string;
   console: string;
   started_at: string;
@@ -781,6 +782,7 @@ function startRun(planPath: string, a: Args): number {
           print(failure);
           return EXIT_ALIAS_DRIFT;
         }
+        const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
         phase = 'engine';
         const gen = generate(plan, run, a.flags.fake ?? false);
         const branch = `sa/${run}`;
@@ -804,6 +806,7 @@ function startRun(planPath: string, a: Args): number {
           gen_dir: gen.dir,
           repo: plan.repo,
           branch,
+          launch_branch: typeof launchBranch === 'string' ? launchBranch : undefined,
           workflow: gen.workflow,
           console: plan.console ?? 'claude',
           started_at: new Date().toISOString(),
@@ -2489,7 +2492,7 @@ export function main(argv: string[]): number {
         );
         if (!a.flags.json)
           for (const n of needs) console.log(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
-        return 0;
+        return (land as { reason?: string }).reason === 'land_target_unknown' ? 1 : 0;
       });
     }
     case 'accept': {
