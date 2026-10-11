@@ -1073,3 +1073,11 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 ## RC：护栏默认放行
 
 - 推翻“微改超限必须阻断、活动 run 需按工具次数催促”的假设；强化 I1/I6 与 P1–P4，复用累计锁及事件幂等：G-1 改为 advisory，首次超限及再增 100 行/2 文件提示，新风险路径明确展示；删除 15 次提醒及专用计数/活动 run 查询。安装更新后旧会话采用新提示，旧计数不再读取，微改阈值、risk_paths/G2、redline、COORD、嵌套/模型池/push/reviewer 边界不变；未改生产状态。隔离验收两文件 91 pass/0 fail、tsc exit 0（/tmp/rc-accept-107moqfa）；事故回归含超限/风险/并发/去重，观测为 systemMessage/additionalContext，guard-install 无对应旧断言；未覆盖主控集成实测，未评审、push 或部署。
+
+## RA：自治验收内核接线
+
+- 问题与被推翻的假设：模型自检不必重复正式验收；FC 的非产品失败 `ok:false` 不等于必须修产品，`advance` 才是可前进的路由结论。NR 原 TESTED 额外要求 `ok:true`，使已分类非产品失败落入 `decide()` 的 `gate: no review`；旧 probe 的整组布尔无法说明混合失败的逐命令归因。两条新增回归在修改前均失败，证据 `/tmp/ra-accept.3QlPKB/repro.log`。
+- 新语义：三份将军提示只要求证明当前改动的窄测，`quick_checks` 只记实际命令，正式验收由引擎执行；sa-fix 只修 gate 的 blocking，不重跑前序里程碑。TESTED 保留 REVIEW=0、非 strict、未过期、无评审、risk≠G2 和预算边界，仅按末次 `disposition=advance` 放行；末次非产品或 repair_limit 失败转成既有形状的 ledger/debt，保留命令、分类、证据与轮次，land 输出继续可见。
+- 基线证据与兼容：probe 输出逐命令 `base_results: {cmd, pass}[]`，存入验收 JSON 与日志末行，held 自动提示现有的日志尾读取即可展示；不自动改变 failure_class。grep 确认 CLI gateHint、accept schema 与测试读取 `base_pass`，保留原聚合语义：全部 base 通过才 true，任一失败即 false，无 probe 为 null。
+- 旧 run/生产影响与遗留：新生成 run 才加载本次模板与脚本，既有冻结 run 不自动更新；不迁移状态，不改缓存默认值、末端评审、MAX_ROUNDS、risk_paths、恢复逻辑、packages 或生产目录。提示词未改变 workflow YAML，两个 golden 用例通过，无需重生成；本包只编码自检，astra 单轮评审、主控集成实测与上线交主控。
+- 自检：隔离 HOME、SUPERAGENT_HOME、ARCHON_HOME、XDG_STATE_HOME 与 supervisor 路径后，指定两文件测试 357 pass/1 fail（46.94s，`/tmp/ra-accept.3QlPKB/tests.log`）；唯一失败为新增测试的 Bun `toMatchObject` 嵌套数组 matcher 替换实际字符串，独立最小复现确认，改为 `toEqual` 后 RA 两条 2 pass/0 fail（`focused.log`），不重跑整套、不派产品修复。`bunx tsc --noEmit -p wetamp` exit 0（`tsc.log`），diff 检查通过；除测试外净增 27 行，未超 +50 预算。

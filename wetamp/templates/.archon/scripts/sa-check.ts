@@ -398,6 +398,15 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     !dirty && failures.every(f => f.failure_class !== 'product' || f.debt_reason === 'repair_limit')
   );
   saveCoder(tag, coder, result.error_class_ignored);
+  const baseResults =
+    base && failed.length
+      ? probe(
+          base,
+          checks.filter(c => failed.includes(c.cmd)),
+          tag
+        )
+      : [];
+  if (baseResults.length) appendFileSync(log, `# base_results: ${JSON.stringify(baseResults)}\n`);
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
     ok,
@@ -421,14 +430,8 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     ),
     // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
-    base_pass:
-      base && failed.length
-        ? probe(
-            base,
-            checks.filter(c => failed.includes(c.cmd)),
-            tag
-          )
-        : null,
+    base_results: baseResults,
+    base_pass: baseResults.length ? baseResults.every(r => r.pass) : null,
     ...scope,
     head: git('rev-parse', 'HEAD').trim(),
   };
@@ -473,11 +476,14 @@ function settle(): void {
 }
 
 /** 在 base 的临时 detached 工作树里重跑失败的验收命令：区分“本包引入”与“基线预存”失败。 */
-function probe(base: string, checks: Check[], tag: string): boolean {
+function probe(base: string, checks: Check[], tag: string): { cmd: string; pass: boolean }[] {
   const dir = mkdtempSync(join(tmpdir(), 'sa-probe-'));
   try {
     git('worktree', 'add', '--detach', '-q', dir, base);
-    return run(checks, join(artifacts, `${tag}.probe.log`), dir).length === 0;
+    return checks.map(c => ({
+      cmd: c.cmd,
+      pass: run([c], join(artifacts, `${tag}.probe.log`), dir).length === 0,
+    }));
   } finally {
     // 不加 --force：验收命令在工作树里留下的文件不替人丢弃；删不掉就保留并报路径
     const rm = auxiliary(['git', 'worktree', 'remove', dir]);
@@ -943,13 +949,38 @@ function gate(): void {
     strict: plan().mode === 'strict',
     expired: expired(),
   };
-  const tested = env('REVIEW') === '0' && !decision.strict && !decision.expired &&
-    reviews.every(r => r === null) && rechecks.at(-1)?.ok === true &&
-    rechecks.at(-1)?.disposition === 'advance' && risk !== 'G2';
-  let d: ReturnType<typeof decide> = tested
-    ? { verdict: 'pass', rounds: round, reason: 'review_not_required', debt: [],
-        ledger: ledgerOf(reviews, risk, decision) }
-    : decide(decision);
+  const tested =
+    env('REVIEW') === '0' &&
+    !decision.strict &&
+    !decision.expired &&
+    reviews.every(r => r === null) &&
+    rechecks.at(-1)?.disposition === 'advance' &&
+    risk !== 'G2';
+  let d: ReturnType<typeof decide>;
+  if (tested) {
+    const ledger: Ledger = {
+      blocking: [],
+      closed: [],
+      debt: (rechecks.at(-1)?.failures ?? [])
+        .filter(f => f.failure_class !== 'product' || f.debt_reason)
+        .map(f => ({
+          id: `check:${sha(f.command).slice(0, 16)}`,
+          severity: 'blocker',
+          file: f.command,
+          line: 0,
+          round,
+          ...f,
+          debt_reason: f.debt_reason ?? 'non_product',
+        })),
+    };
+    d = {
+      verdict: 'pass',
+      rounds: round,
+      reason: 'review_not_required',
+      debt: debtOf(reviews, ledger),
+      ledger,
+    };
+  } else d = decide(decision);
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
     .filter(i => i >= 0)

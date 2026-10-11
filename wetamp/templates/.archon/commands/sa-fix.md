@@ -16,7 +16,7 @@ argument-hint: (inputs bound by the generated workflow)
 
 1. 只修复台账 `blocking` 中的发现和失败命令；分类以 reviewer 或验证节点为准，coder 自报仅供参考，不可自行降级阻塞失败。测试数据、夹具、截图遮罩/基线、测试环境引起的失败不改产品代码。`debt` 与评审里的其他意见不动（新出现的非阻塞问题由引擎记债，不在本轮扩大修复范围）。任务书的改动范围只是预期，必须越出时直接改，并在 `deviations` 逐条登记 `{path, why}`。
 2. 修完 `git add <文件>` 并 `git commit -m "fix($INPUTS.milestone): r$INPUTS.round"`，工作区必须干净。
-3. 交付前实跑各任务书的全部验收命令，失败就修主线问题，把命令与退出码写进 `quick_checks`。测试有度、先修主线：迭代时只跑证明本次改动的窄测试，验收命令在交付前跑一次即可（引擎会复跑）；不为边角场景追加测试或反复重跑整套。验收命令被护栏或环境挡住时，不申请放行、不绕过，改用等价的省事验证或跳过，并在 `deviations` 注明。基线上就失败且与本里程碑无关的命令，在 `deviations` 记下并继续。
+3. 只跑证明本次 gate 指出问题已修复的窄测试，把实际跑过的命令与退出码写进 `quick_checks`；不重跑前序里程碑验收。正式验收由引擎独占执行，不要求交付前跑各任务书的全部验收命令。测试有度、先修主线，不为边角场景追加测试或反复重跑整套。窄测试被护栏或环境挡住时，不申请放行、不绕过，改用等价的省事验证或跳过，并在 `deviations` 注明。基线上就失败且与本里程碑无关的命令，在 `deviations` 记下并继续。
 4. 能自己解决的问题不得返回 `blocked` 或 `partial`。`blocked` 只在命中红线（`error_class` 填 `redline`）或缺外部资源且 `needs` 非空（每条 `{cap, why, minimal_ask}`）时合法；没有 `needs` 的 `blocked` 按 `partial` 处理。`deviations`/`needs` 没有就填空数组。
 
 正常完成时 `status` 填 `done`、`error_class` 填 null。
