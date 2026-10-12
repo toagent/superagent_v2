@@ -21,7 +21,7 @@ export function roleContext(input: {
   gen: string; artifacts: string; node: string; cwd: string;
   base: string; head: string; deltaBase?: string; acceptance?: Accept;
   patch?: string; delta?: string; environment: string;
-}): string {
+}) {
   const { gen, artifacts, node } = input;
   const plan = read<Plan>(join(gen, 'plan.json'));
   const table = read<Record<string, ExecutionDescriptor>>(join(gen, 'execution.json'));

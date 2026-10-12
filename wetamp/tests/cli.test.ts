@@ -3010,7 +3010,7 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
     }).exitCode
   ).toBe(0);
   const started = sa('run', plan, '--fake', '--skip-selftest');
-  expect(started.code).toBe(0);
+  expect({ code: started.code, err: started.err }).toMatchObject({ code: 0 });
   const id = String(started.out?.run_id);
   expect(
     Bun.spawnSync(
