@@ -1347,11 +1347,23 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     }
     expect(check('git branch -D unmerged')).toBeNull(); // same-tip preserves it.
     expect(check('git branch -D unmerged same-tip')).toContain('分支有未合并提交，删除会丢失');
+    // R1-3: separate commands must not count each other's deleted refs as survivors.
+    for (const separator of [' && ', '; ', ' || ']) {
+      expect(check(`git branch -D unmerged${separator}git branch -D same-tip`)).toContain(
+        '已拦截：'
+      );
+    }
+    expect(check('git branch -d unmerged; git branch -D same-tip')).toContain('已拦截：');
+    expect(check('git branch -D merged && git branch -D merged-two')).toBeNull();
     expect(check('git branch -D merged unmerged same-tip')).toContain('已拦截：');
     git('tag', 'tag-only', 'unmerged');
     expect(check('git branch -D unmerged same-tip')).toContain('已拦截：');
     git('update-ref', 'refs/remotes/origin/saved', 'unmerged');
     expect(check('git branch -D unmerged same-tip')).toBeNull();
+    expect(check('git branch -D unmerged && git branch -D same-tip')).toBeNull();
+    expect(
+      check('git branch -D unmerged; git branch -drD origin/saved; git branch -D same-tip')
+    ).toContain('已拦截：');
     expect(check('git branch -D missing')).toContain('Git 查询失败');
     expect(check('git -C /nonexistent-sa-delete-query branch -D merged')).toContain('已拦截：');
     expect(check('git branch -D main')).toContain('受保护分支');
@@ -1360,10 +1372,18 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     git('worktree', 'add', '-q', '--detach', worktree, 'main');
     expect(check(`git worktree remove "${worktree}"`)).toBeNull();
     expect(check(`git worktree remove --force "${worktree}"`)).toBeNull();
+    // R1-2: an existing cwd-relative directory must not mask Git's registered suffix target.
+    mkdirSync(join(repo, 'clean-worktree'));
+    expect(check('git worktree remove --force clean-worktree')).toBeNull();
     expect(check('git worktree prune')).toBeNull();
     expect(check(`git worktree move "${worktree}" "${worktree}-moved"`)).toContain('已拦截：');
     writeFileSync(join(worktree, 'untracked'), 'keep');
     expect(check(`git worktree remove --force "${worktree}"`)).toContain('未提交改动');
+    expect(check('git worktree remove --force clean-worktree')).toContain('未提交改动');
+    // R1-1: all accepted force prefixes must perform the same dirty-tree check.
+    for (const force of ['--f', '--fo', '--for', '--forc', '--force', '-ff']) {
+      expect(check(`git worktree remove ${force} "${worktree}"`), force).toContain('未提交改动');
+    }
     // Non-forced deletion delegates dirty/locked checks to Git.
     expect(check(`git worktree remove "${worktree}"`)).toBeNull();
     const other = join(root, 'detached-worktree');
