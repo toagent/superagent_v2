@@ -47,7 +47,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
     userMessage: '', loopUserInput: '', loopPrevOutput: '', rejectionReason: '',
     typedArtifactsFile: join(art, `${node}.listing.json`),
     nodeExecution: startNodeExecution({ runId: 'fixture', path: node,
-      node: { id: node, kind: 'exec', runtime: 'sh' }, invocation: newNodeInvocation() }),
+      node: { id: node, kind: 'exec', runtime: 'sh', script: ':' }, invocation: newNodeInvocation() }),
   });
   const diffEnv = { ...process.env, ...nodeEnv('diff-m2-r2'),
     PYTHONDONTWRITEBYTECODE: '1', SA_CONTEXT_TEST_ENV: 'before' };
