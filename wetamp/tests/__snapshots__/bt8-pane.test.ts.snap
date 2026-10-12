@@ -9,7 +9,7 @@ xiaopan ▕████████████████░░░░░31% �
 xiaopan ▕█████████████████░░░░33% 剩~20m░░░░░░░░░░░░░░░░░░░░░▏
   └─ 将军·sol6.1 job ▕█████████████░33% 剩~20m░░░░░░░░░░░░░░░▏
 需要你
-? xiaopan 重试已用尽 是=再跑 否=终止 1h02m"
+? xiaopan 重试已用尽；superagent brief 查看处置 1h02m"
 `;
 
 exports[`46 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
@@ -21,5 +21,5 @@ xiaopan ▕███████████░░31% 剩~40m░░░░░░�
 xiaopan ▕████████████░33% 剩~20m░░░░░░░░░░░░░▏
   └─ 将军 job ▕██████████33% 剩~20m░░░░░░░░░░▏
 需要你
-? xiaopan 重试已用尽 是=再跑 否=终止 1h02m"
+? … 重试已用尽；superagent brief 查看处置 1h0…"
 `;

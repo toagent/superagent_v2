@@ -1226,10 +1226,12 @@ describe('run (archon stub)', () => {
       expect(attempt()).toContain('no selftest.json');
       expect(attempt({ ...good, fake: true })).toContain('fake receipt');
       expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
-      probe.mockImplementationOnce(() => {
+      // Admission rechecks the receipt after taking the selftest lock.
+      probe.mockImplementation(() => {
         throw new Error('runtime worktree drift');
       });
       expect(attempt({ ...good, config_hash: 'x' })).toContain('runtime worktree drift');
+      probe.mockReturnValue('fixture');
       expect(existsSync(calls)).toBe(false);
       expect(attempt({ ...good, config_hash: 'x' })).toBe('0');
       expect(attempt({ ...good, fingerprint: 'x', config_hash: 'x' })).toBe('0');

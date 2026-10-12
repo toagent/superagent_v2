@@ -25,8 +25,9 @@ const plan = JSON.parse(
 describe('B1-POLICY frozen routing', () => {
   // prettier-ignore
   test('budget cache only downgrades auto: all roles, unknown observations and explicit modes', () => {
-    const previous = process.env.SUPERAGENT_HOME, dir = tmp(), tiers = loadTiers(), now = Date.now();
+    const previous = process.env.SUPERAGENT_HOME, quota = process.env.SUPERAGENT_RELAY_QUOTA, dir = tmp(), tiers = loadTiers(), now = Date.now();
     process.env.SUPERAGENT_HOME = dir;
+    process.env.SUPERAGENT_RELAY_QUOTA = 'off';
     const cache = (value: unknown) => writeFileSync(join(dir, 'relay-quota.json'), typeof value === 'string' ? value : JSON.stringify(value));
     const models = () => { const p = Bun.spawnSync([process.execPath, join(WETAMP, 'src/cli.ts'), 'models', '--json'], { env: process.env }); expect(p.exitCode).toBe(0); return JSON.parse(p.stdout.toString()); };
     try {
@@ -47,7 +48,7 @@ describe('B1-POLICY frozen routing', () => {
       for (const mode of ['strict', 'single:claude', 'single:chatgpt']) expect(budgetState(tiers, mode).degraded).toBe(false);
       expect(resolveRoute(tiers, 'claude', 'single:claude', 'code').candidates.every(a => a.provider === 'claude')).toBe(true);
       tiers.routing.budget.claude_daily_usd = 301; expect(budgetState(tiers).degraded).toBe(false);
-    } finally { if (previous === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = previous; }
+    } finally { if (quota === undefined) delete process.env.SUPERAGENT_RELAY_QUOTA; else process.env.SUPERAGENT_RELAY_QUOTA = quota; if (previous === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = previous; }
   });
   // prettier-ignore
   test('commander routing follows console and validates its configured pools', () => {

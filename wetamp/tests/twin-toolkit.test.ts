@@ -42,6 +42,10 @@ describe.skipIf(!present)('twin-toolkit superagent 投送闸', () => {
     const calls = join(r.root, 'calls.log');
     writeFileSync(calls, '');
     const verify = join(r.root, 'verify-local.sh');
+    writeFileSync(
+      join(r.root, 'verify.json'),
+      JSON.stringify({ commit: r.head, steps: [{ exit: 0 }] })
+    );
     if (opts.verify !== null) writeFileSync(verify, opts.verify);
     const fn = slice('align_superagent() {', '\n# ── opencode');
     const script = `set -euo pipefail
@@ -61,6 +65,7 @@ align_superagent`;
         ROOT: r.root,
         CALLS: calls,
         SUPERAGENT_DIR: r.dir,
+        SUPERAGENT_HOME: r.root,
         TWIN_SUPERAGENT_VERIFY: verify,
         RHEAD: opts.remote === 'old' ? r.old : r.head,
         RECEIPT: opts.receipt ?? (opts.remote === 'old' ? r.old : r.head),

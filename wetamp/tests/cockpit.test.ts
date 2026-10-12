@@ -194,8 +194,15 @@ test('queued jobs without a live child stay outside the alive-only tree', () => 
   expect(render(s)).toContain('跑0');
 });
 test('every S3 reason translates, unknown reason survives unchanged, needs comes from held and asks', () => {
-  expect(Object.keys(REASONS).sort()).toEqual(Object.keys(HOLD_POLICY).sort());
-  for (const k of Object.keys(HOLD_POLICY)) expect(reasonText(k)).not.toBe(k);
+  expect(Object.keys(REASONS).sort()).toEqual(
+    [
+      ...Object.keys(HOLD_POLICY),
+      'auto_retry_exhausted',
+      'no_attempt_node',
+      'recover_no_progress',
+    ].sort()
+  );
+  for (const k of Object.keys(REASONS)) expect(reasonText(k)).not.toBe(k);
   expect(reasonText('coder_error:task')).toBe('coder_error:task');
   const r = row('pending', 'failed', 'code-a');
   r.engine!.dispositions = [
@@ -210,7 +217,7 @@ test('every S3 reason translates, unknown reason survives unchanged, needs comes
   );
   expect(c.needs).toHaveLength(1);
   expect(c.active).toHaveLength(0);
-  expect(c.needs[0].question).toBe('重试已用尽 是=再跑 否=终止');
+  expect(c.needs[0].question).toBe('重试已用尽；superagent brief 查看处置');
   expect(c.needs[0].waiting).toBe('3m00s');
   expect(render(snapshot())).not.toContain('需要你');
 });
