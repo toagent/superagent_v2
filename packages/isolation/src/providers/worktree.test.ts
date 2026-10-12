@@ -431,7 +431,15 @@ describe('WorktreeProvider', () => {
       expect(resetCalls).toHaveLength(0);
     });
 
-    test('creates task worktree from specified fromBranch', async () => {
+    test('creates task worktree from specified fromBranch even when remote is unreachable', async () => {
+      getDefaultRemoteSpy.mockRejectedValue(new Error('Remote unavailable'));
+      syncWorkspaceSpy.mockRejectedValue(new Error('Network unavailable'));
+      const cutFrom = 'b'.repeat(40);
+      execSpy.mockImplementation(async (_cmd: string, args: string[]) =>
+        args.includes('HEAD^{commit}')
+          ? { stdout: `${cutFrom}\n`, stderr: '' }
+          : { stdout: '', stderr: '' }
+      );
       const request: IsolationRequest = {
         ...baseRequest,
         workflowType: 'task',
@@ -442,7 +450,12 @@ describe('WorktreeProvider', () => {
         },
       };
 
-      await provider.create(request);
+      const env = await provider.create(request);
+
+      expect(env.metadata).toMatchObject({ cutFromCommit: cutFrom });
+      expect(getDefaultRemoteSpy).not.toHaveBeenCalled();
+      expect(syncWorkspaceSpy).not.toHaveBeenCalled();
+      expect(execSpy.mock.calls.some(([, args]) => args.includes('fetch'))).toBe(false);
 
       expect(execSpy).toHaveBeenCalledWith(
         'git',
@@ -459,6 +472,28 @@ describe('WorktreeProvider', () => {
         ]),
         expect.any(Object)
       );
+    });
+
+    test('fails for a missing fromBranch without falling back to a remote base', async () => {
+      const failure = new Error('fatal: invalid reference: missing-start');
+      execSpy.mockImplementation(async (_cmd: string, args: string[]) => {
+        if (args.includes('add')) throw failure;
+        return { stdout: '', stderr: '' };
+      });
+
+      await expect(
+        provider.create({
+          ...baseRequest,
+          workflowType: 'task',
+          taskBranch: { kind: 'new', fromBranch: git.toBranchName('missing-start') },
+        })
+      ).rejects.toThrow('invalid reference: missing-start');
+
+      expect(getDefaultRemoteSpy).not.toHaveBeenCalled();
+      expect(syncWorkspaceSpy).not.toHaveBeenCalled();
+      const adds = execSpy.mock.calls.filter(([, args]) => args.includes('add'));
+      expect(adds).toHaveLength(1);
+      expect(adds[0]?.[1]).toContain('missing-start');
     });
 
     test('checks out an exact existing task branch without creating or syncing a branch', async () => {
@@ -3458,7 +3493,7 @@ describe('WorktreeProvider', () => {
       );
     });
 
-    test('auto-detects base branch when fromBranch is set but no baseBranch configured', async () => {
+    test('skips base branch detection when fromBranch is set but no baseBranch configured', async () => {
       worktreeExistsSpy.mockResolvedValue(false);
       const configLoader: RepoConfigLoader = async () => ({});
       provider = new WorktreeProvider(configLoader);
@@ -3472,14 +3507,12 @@ describe('WorktreeProvider', () => {
 
       await provider.create(request);
 
-      // fromBranch is the start-point for the branch, not for sync — sync auto-detects
-      expect(syncWorkspaceSpy).toHaveBeenCalledWith('/workspace/owner/repo', undefined, {
-        mode: 'fast-forward',
-        remote: 'origin',
-      });
+      expect(getDefaultBranchSpy).not.toHaveBeenCalled();
+      expect(getDefaultRemoteSpy).not.toHaveBeenCalled();
+      expect(syncWorkspaceSpy).not.toHaveBeenCalled();
     });
 
-    test('uses configuredBaseBranch over fromBranch when both are set', async () => {
+    test('skips configured base branch sync when fromBranch is set', async () => {
       worktreeExistsSpy.mockResolvedValue(false);
       const configLoader: RepoConfigLoader = async () => ({ baseBranch: git.toBranchName('main') });
       provider = new WorktreeProvider(configLoader);
@@ -3493,10 +3526,8 @@ describe('WorktreeProvider', () => {
 
       await provider.create(request);
 
-      expect(syncWorkspaceSpy).toHaveBeenCalledWith('/workspace/owner/repo', 'main', {
-        mode: 'fast-forward',
-        remote: 'origin',
-      });
+      expect(getDefaultRemoteSpy).not.toHaveBeenCalled();
+      expect(syncWorkspaceSpy).not.toHaveBeenCalled();
     });
 
     test('auto-detects when fromBranch is set but workflowType is not task and no baseBranch', async () => {
