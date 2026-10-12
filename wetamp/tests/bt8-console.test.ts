@@ -2,6 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  createDemandSnapshot,
   consoleEnv,
   consoleStatus,
   handler,
@@ -398,4 +399,49 @@ test('HF5c status exposes legacy ownership when launchd is absent, including orp
   expect(consoleStatus(s, false, live).state).toBe('stopped');
   expect(consoleStatus(s, true, live).state).toBe('starting');
   expect(consoleStatus(null, false, live).state).toBe('stopped');
+});
+
+test('console snapshots are demand-only, authorized, and coalesce concurrent readers', async () => {
+  let loads = 0,
+    refreshes = 0;
+  let release: () => void = () => {};
+  const wait = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const demand = createDemandSnapshot(
+    async () => {
+      loads++;
+      await wait;
+      return { summary: {}, rows: [], at: 'fresh' };
+    },
+    () => {
+      refreshes++;
+    }
+  );
+  const forward = Object.assign(async () => new Response('native'), { preconnect: () => {} });
+  const serve = handler(
+    39890,
+    'fixture',
+    () => ({ at: demand.snapshot().at }),
+    'http://localhost',
+    forward,
+    undefined,
+    demand.snapshot,
+    demand.update
+  );
+  await Bun.sleep(10);
+  expect(loads).toBe(0);
+  expect(refreshes).toBe(0);
+  expect((await serve(request('/sa/data'))).status).toBe(401);
+  await serve(request('/console?t=fixture'));
+  expect(loads).toBe(0);
+  const first = serve(request('/sa/data?t=fixture'));
+  const second = serve(request('/sa/data?t=fixture'));
+  expect(loads).toBe(1);
+  release();
+  expect(await (await first).json()).toEqual({ at: 'fresh' });
+  await second;
+  expect(refreshes).toBe(1);
+  await serve(request('/sa/data?t=fixture'));
+  expect(loads).toBe(2);
 });
