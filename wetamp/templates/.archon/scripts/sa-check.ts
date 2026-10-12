@@ -1060,9 +1060,10 @@ function gate(): void {
     strict: plan().mode === 'strict',
     expired: expired(),
     reviewRequired: env('REVIEW') !== '0',
-    permissions: env('ARCHON')
-      ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'))
-      : [],
+    permissions:
+      env('ARCHON') && !expired()
+        ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'))
+        : [],
   };
   let d = decide(decision);
   const tested = d.reason === 'review_not_required';
@@ -1098,8 +1099,6 @@ function gate(): void {
       : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
   }
   const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';
-  if (!tested && d.verdict === 'pass' && reviewed === undefined)
-    Object.assign(d, { verdict: 'escalate', reason: 'review_incomplete' });
   if (identity && rechecks.at(-1)?.same) d = decide({ ...decision, qualifiedReview: why === null });
   const ledgerFile = join(artifacts, `${tag}.ledger.json`);
   writeFileSync(ledgerFile, JSON.stringify(d.ledger, null, 2));

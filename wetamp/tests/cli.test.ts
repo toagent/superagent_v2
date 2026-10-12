@@ -2009,15 +2009,16 @@ process.exit(main(['supervise-tick']));`
       const art = join(s.root, 'out/artifacts/runs/r');
       mkdirSync(art, { recursive: true });
       const dirty = 'synthetic-secret arbitrary model output';
+      const reason =
+        sample === 'milestone'
+          ? 'coder_redline+review_limit'
+          : sample === 'review'
+            ? 'review_not_independent:same_model'
+            : 'coder_redline';
       writeFileSync(
         join(art, `${node}.json`),
         JSON.stringify({
-          reason:
-            sample === 'milestone'
-              ? 'coder_redline+review_limit'
-              : sample === 'review'
-                ? 'review_not_independent:same_model'
-                : 'coder_redline',
+          decision: { kind: 'block', reason, evidence: [], debt: [] },
           summary: dirty,
           rounds: 3,
         })

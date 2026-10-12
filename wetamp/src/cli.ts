@@ -1168,7 +1168,7 @@ function retryGate(
 
 const scopedRetry = (l: Ledger, c: Classified, node: string): boolean =>
   c.state === 'held:gate' ||
-  /^(verify|settle)-/.test(node) ||
+  /^(gate|verify|settle)-/.test(node) ||
   (/^(code|repair)-/.test(node) && retryScope(l, node).startsWith('pkg/'));
 
 /** Package holds bump their own count; gates bump the milestone; old coder nodes resume. */

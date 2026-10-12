@@ -942,8 +942,8 @@ for (const kind of ['accept', 'settle', 'env'])
     const r = auxiliaryFixture(kind);
     const auxiliary = r.calls.filter(c => c.cmd[0] !== 'bash');
     const count = CHECK_AUX_COUNTS[kind === 'env' ? 'env' : 'accept'];
-    // Failed settle suspends before budget(), so its probe path omits the events query.
-    expect(auxiliary).toHaveLength(count - (kind === 'settle' ? 1 : 0));
+    // Permission evidence is queried even when failed settle suspends before budget().
+    expect(auxiliary).toHaveLength(count);
     expect(auxiliary.every(c => c.timeout === CHECK_AUX_TIMEOUT_MS)).toBe(true);
     if (kind === 'env') expect(r.code).toBe(0);
     else {
