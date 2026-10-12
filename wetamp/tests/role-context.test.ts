@@ -39,6 +39,11 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   };
   writeFileSync(join(art, 'gate-m2-r1.ledger.json'), JSON.stringify(ledger));
   const head = sh('git rev-parse HEAD', repo).trim();
+  const reviewEnv = { ...process.env, ARTIFACTS_DIR: art, SA_CONTEXT_TEST_ENV: 'before' };
+  const fingerprint = Bun.spawnSync([process.execPath, '-e',
+    `import { environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(environmentIdentity(process.env));`],
+    { cwd: repo, env: reviewEnv, stdout: 'pipe', stderr: 'pipe' });
+  expect(fingerprint.exitCode).toBe(0);
   const input = {
     gen,
     artifacts: art,
@@ -48,7 +53,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
     head,
     patch: '/full.patch',
     delta: '/delta.patch',
-    environment: 'actual-env-hmac',
+    environment: fingerprint.stdout.toString().trim(),
   };
   const path = prepareContext(input),
     bytes = readFileSync(path, 'utf8'),
@@ -72,8 +77,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   expect(missing.carry_over).toBe('unknown');
   const pointer = join(art, 'review-m2-r2.context.json');
   writeFileSync(pointer, JSON.stringify({ path }));
-  sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm new', repo);
-  const stale = Bun.spawnSync(
+  const startReview = (extra: Record<string, string> = {}) => Bun.spawnSync(
     [
       process.execPath,
       join(gen, '.archon/scripts/sa-context.ts'),
@@ -84,11 +88,19 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
     ],
     {
       cwd: repo,
-      env: { ...process.env, ARTIFACTS_DIR: art },
+      env: { ...reviewEnv, ...extra },
       stdout: 'pipe',
       stderr: 'pipe',
     }
   );
+  expect(startReview().exitCode).toBe(0);
+  expect(startReview({ INPUTS_ROUND: '2' }).exitCode).toBe(0);
+  const drifted = startReview({ SA_CONTEXT_TEST_ENV: 'after' });
+  expect(drifted.exitCode).not.toBe(0);
+  expect(drifted.stderr.toString()).toContain('stale review environment');
+  expect(drifted.stdout.toString()).toBe('');
+  sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm new', repo);
+  const stale = startReview();
   expect(stale.exitCode).not.toBe(0);
   expect(stale.stderr.toString()).toContain('stale review refs');
   // Reproducible read-volume comparison on the same fixture, including complete requirements.

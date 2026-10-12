@@ -77,6 +77,8 @@ if (import.meta.main) {
       if (context === 'unknown' || context.node !== review || context.refs.head !== git.stdout.toString().trim())
         throw new Error('context: stale review refs');
       if (context.carry_over === 'unknown') throw new Error('context: missing carry-over');
+      if (context.environment !== environmentIdentity(process.env))
+        throw new Error('context: stale review environment');
     }
     for (const role of pkg ? ['code'] : []) {
       const node = `${role}-${pkg}`;

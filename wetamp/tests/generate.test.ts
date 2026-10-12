@@ -493,8 +493,10 @@ describe('buildWorkflow', () => {
         fs.writeFileSync(path, counter);
       }
       const context = join(gen, 'prepared.json');
+      const environment = sh(`bun -e 'import { environmentIdentity } from "./.archon/scripts/sa-check.ts"; console.log(environmentIdentity(process.env));'`,
+        gen, { ARTIFACTS_DIR: gen }).trim();
       fs.writeFileSync(context, JSON.stringify({ node: id.slice('attempt-'.length),
-        refs: { head: sh('git rev-parse HEAD', gen).trim() }, carry_over: null }));
+        refs: { head: sh('git rev-parse HEAD', gen).trim() }, carry_over: null, environment }));
       fs.writeFileSync(join(gen, `${id.slice('attempt-'.length)}.context.json`), JSON.stringify({ path: context }));
       const result = Bun.spawnSync(['bash', '-c', node.bash!], {
         cwd: gen,
