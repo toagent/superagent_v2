@@ -24,6 +24,7 @@ import {
   environmentChecks,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
+import { cleanEngine } from './coord';
 import {
   WETAMP,
   CODEX_WORKER,
@@ -637,6 +638,8 @@ export interface Gen {
   /** run-config 层（钉住的别名），经 `workflow run --config` 传入。 */
   config: string;
   engine_hash: string;
+  /** Provenance only; execution still uses the installed runtime. */
+  engine_commit: string;
 }
 
 /** 写 gen 目录、提交一次、`archon validate workflows`；校验失败抛错。 */
@@ -647,6 +650,7 @@ export function generate(
   previousHash?: string,
   carried?: Carried
 ): Gen {
+  const engine_commit = cleanEngine();
   assertSQLite(plan.repo);
   const tiers = loadTiers();
   const policy = snapshotPolicy(tiers);
@@ -721,6 +725,7 @@ export function generate(
     join(dir, 'engine.json'),
     JSON.stringify({
       engine_hash,
+      engine_commit,
       workflow_hash: engine_hash,
       policy_hash: policy.hash,
       fake,
@@ -792,5 +797,7 @@ export function generate(
     throw new Error(`cannot inspect generated source index: ${String(staged.exitCode)}`);
   const v = archon(['validate', 'workflows', workflow, '--cwd', dir]);
   if (v.code !== 0) throw new Error(`generated workflow invalid: ${tail(v.out + v.err)}`);
-  return { dir, workflow, config, engine_hash };
+  if (cleanEngine() !== engine_commit)
+    throw new Error('换版拒绝：引擎提交在生成期间变化，请重新 retry');
+  return { dir, workflow, config, engine_hash, engine_commit };
 }

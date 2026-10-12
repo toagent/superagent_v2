@@ -77,6 +77,7 @@ const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | 
   debt: [],
 });
 let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
+const cleanEngine = coordModule.cleanEngine;
 const originalMemory = process.env.SUPERAGENT_MEMORY;
 const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
 beforeEach(() => {
@@ -646,7 +647,13 @@ describe('HF3 latest-engine recovery', () => {
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();
+    const engine = gitRepo(tmp());
+    engineBoundary!.mockImplementation(() => cleanEngine(engine));
+    const commit = gitHead(engine);
+    const historical = readFileSync(ledgerPath('sa1'), 'utf8');
     expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('stale(unknown)');
+    expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(historical);
+    expect(loadLedger('sa1').engine_commit).toBeUndefined();
     const dir = s.ledger.gen_dir;
     mkdirSync(join(dir, 'attempts'));
     writeFileSync(join(dir, 'attempts', 'm1'), '7');
@@ -662,6 +669,7 @@ describe('HF3 latest-engine recovery', () => {
       archon_run_id: 'r2',
       branch: 'sa/sa1',
       engine_hash: engineHash(),
+      engine_commit: commit,
     });
     expect(l.recoveries).toHaveLength(0);
     expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).toMatchObject({
@@ -676,8 +684,10 @@ describe('HF3 latest-engine recovery', () => {
         engine_from: null,
         engine_to: engineHash(),
         reason: 'engine_stale',
+        engine_commit: commit,
       }),
     ]);
+    expect(JSON.parse(readFileSync(join(dir, 'engine.json'), 'utf8')).engine_commit).toBe(commit);
     expect(existsSync(join(dir, '.archon.unknown'))).toBe(true);
     expect(readFileSync(join(dir, 'plan.json'), 'utf8')).toBe(plan);
     expect(readFileSync(join(dir, 'attempts', 'm1'), 'utf8')).toBe('7');
@@ -732,6 +742,8 @@ describe('HF3 latest-engine recovery', () => {
     expect(captured(() => main(['resume', 'sa1'])).code).toBe(EXIT.held);
     expect(loadLedger('sa1').archon_run_id).toBe('r');
     expect(loadLedger('sa1').recoveries).toHaveLength(0);
+    expect(loadLedger('sa1').engine_commit).toBeUndefined();
+    expect(loadLedger('sa1').adoptions).toBeUndefined();
     expect(s.calls().filter(c => c.includes('--adopt'))).toHaveLength(1);
   });
 });
@@ -1054,12 +1066,42 @@ describe('verbs (archon stub)', () => {
 });
 
 describe('run (archon stub)', () => {
+  test.each(['dirty', 'changed'] as const)(
+    'P4a failed generation publishes no ledger: %s',
+    sample => {
+      const s = stub([]),
+        repo = gitRepo(s.root),
+        engine = gitRepo(tmp());
+      process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+      engineBoundary!.mockImplementation(() => cleanEngine(engine));
+      if (sample === 'dirty') writeFileSync(join(engine, 'dirty'), 'changed');
+      const validation = spyOn(archonMod, 'archon').mockImplementation(args => {
+        if (sample === 'changed' && args[0] === 'validate')
+          sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm changed', engine);
+        return fixtureArchon(s.dir, args);
+      });
+      const before = readFileSync(ledgerPath('sa1'), 'utf8');
+      try {
+        const result = captured(() => main(['run', fixturePlan(s.root, repo), '--skip-selftest']));
+        expect(result.code).toBe(1);
+        expect(JSON.parse(result.out).reason).toContain(
+          sample === 'dirty' ? '工作树不干净' : '引擎提交在生成期间变化'
+        );
+        expect(readdirSync(join(s.root, 'home/runs'))).toEqual(['sa1.json']);
+        expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+        expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(false);
+      } finally {
+        validation.mockRestore();
+      }
+    }
+  );
   for (const detached of [false, true])
     test(`LAND run records plan.repo launch branch, detached=${String(detached)}, with a SHA comparison base`, () => {
       const s = stub([]),
         repo = gitRepo(s.root);
       process.env.SUPERAGENT_WRITE_ROOTS = s.root;
       const sha = sh('git rev-parse HEAD', repo).trim();
+      engineBoundary!.mockImplementation(() => cleanEngine(repo));
       sh(detached ? 'git switch -q --detach HEAD' : 'git switch -qc feature/launch', repo);
       const plan = fixturePlan(s.root, repo, p => {
         p.base_ref = sha;
@@ -1071,6 +1113,10 @@ describe('run (archon stub)', () => {
       expect(result.code, result.out).toBe(0);
       const id = JSON.parse(result.out).run_id as string;
       const ledger = loadLedger(id);
+      expect(ledger.engine_commit).toBe(sha);
+      expect(
+        JSON.parse(readFileSync(join(ledger.gen_dir, 'engine.json'), 'utf8')).engine_commit
+      ).toBe(sha);
       expect(ledger.intervention_events).toEqual([]);
       expect(ledger.launch_branch).toBe(detached ? undefined : 'feature/launch');
       expect(JSON.parse(readFileSync(join(ledger.gen_dir, 'plan.json'), 'utf8')).base_ref).toBe(

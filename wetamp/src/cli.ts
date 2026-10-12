@@ -15,7 +15,7 @@ import {
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
-import { caller, cleanEngine, control, coord, repoScope, runScope, type Controller } from './coord';
+import { caller, control, coord, repoScope, runScope, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
@@ -160,6 +160,7 @@ export interface Ledger {
   /** Explicit workflow identity; engine_hash alone may be the legacy combined UI hash. */
   workflow_hash?: string;
   engine_hash?: string;
+  engine_commit?: string;
   adoptions?: {
     at: string;
     from: string;
@@ -588,6 +589,7 @@ function recoverRun(
         });
         l.archon_run_id = to;
         l.engine_hash = adopted.hash;
+        l.engine_commit = adopted.commit;
         l.workflow_hash = adopted.hash;
         l.transcript = typeof ack.transcriptPath === 'string' ? ack.transcriptPath : '';
         l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
@@ -606,7 +608,6 @@ function recoverRun(
       adopt: run => {
         // Live and paused owners retain their snapshot; terminal recovery may change source.
         if (!adoptsRun(l, run)) return undefined;
-        const commit = cleanEngine();
         const metadata = readJson(join(l.gen_dir, 'engine.json')) as { fake?: boolean } | null;
         const plan = planOf(l);
         const carried = plan.packages
@@ -640,13 +641,11 @@ function recoverRun(
           from: run.id,
           packages: carried,
         });
-        if (cleanEngine() !== commit)
-          throw new Error('换版拒绝：引擎提交在生成期间变化，请重新 retry');
         adopted = {
           from: run.id,
           hash: gen.engine_hash,
           engine_from: l.engine_hash ?? null,
-          commit,
+          commit: gen.engine_commit,
           carried,
         };
         return [
@@ -883,6 +882,7 @@ function startRun(planPath: string, a: Args): number {
           plan_lint,
           run_id: run,
           engine_hash: gen.engine_hash,
+          engine_commit: gen.engine_commit,
           workflow_hash: gen.engine_hash,
           archon_run_id: '',
           plan: planPath,

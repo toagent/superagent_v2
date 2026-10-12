@@ -12,6 +12,8 @@ import {
   renderBrief,
 } from '../src/generate';
 import { install, loadTiers, snapshotPolicy, WETAMP } from '../src/config';
+import * as coord from '../src/coord';
+import * as archon from '../src/archon';
 import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
@@ -719,6 +721,48 @@ describe('renderBrief', () => {
 test('newRunId is sortable timestamp plus 4 hex', () => {
   expect(newRunId(new Date('2026-10-09T01:02:03Z'))).toMatch(/^20261009-010203-[0-9a-f]{4}$/);
 });
+
+test.each(['stable', 'dirty-before', 'dirty-during', 'commit-during', 'invalid'] as const)(
+  'P4a generation provenance uses a verified git checkout: %s',
+  sample => {
+    const root = tmp(),
+      engine = gitRepo(tmp());
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: join(root, 'archon') });
+    const plan = loadPlan(fixturePlan(root, gitRepo(root)), [root]);
+    const commit = sh('git rev-parse HEAD', engine).trim();
+    const clean = coord.cleanEngine;
+    const boundary = spyOn(coord, 'cleanEngine').mockImplementation(() => clean(engine));
+    const validation = spyOn(archon, 'archon').mockImplementation(() => {
+      if (sample === 'dirty-during') fs.writeFileSync(join(engine, 'dirty'), 'changed');
+      if (sample === 'commit-during')
+        sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm changed', engine);
+      return { code: sample === 'invalid' ? 1 : 0, out: '', err: 'fixture invalid' };
+    });
+    try {
+      if (sample === 'dirty-before') fs.writeFileSync(join(engine, 'dirty'), 'changed');
+      if (sample === 'stable') {
+        const gen = generate(plan, 'provenance');
+        expect(gen.engine_commit).toBe(commit);
+        expect(JSON.parse(readFileSync(join(gen.dir, 'engine.json'), 'utf8')).engine_commit).toBe(
+          commit
+        );
+        expect(boundary).toHaveBeenCalledTimes(2);
+      } else {
+        expect(() => generate(plan, 'provenance')).toThrow(
+          sample.startsWith('dirty')
+            ? '工作树不干净'
+            : sample === 'invalid'
+              ? 'generated workflow invalid'
+              : '引擎提交在生成期间变化'
+        );
+        if (sample === 'dirty-before') expect(existsSync(join(root, 'gen'))).toBe(false);
+      }
+    } finally {
+      validation.mockRestore();
+      boundary.mockRestore();
+    }
+  }
+);
 
 test('generate writes a committed gen repo that archon validates', () => {
   const root = tmp();
