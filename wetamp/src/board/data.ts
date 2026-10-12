@@ -4,7 +4,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
 import { home } from '../config';
-import { runScope, coord, type Identity, type Presence } from '../coord';
+import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
 import { loadActivity, type Activity } from './activity';
 import { milestones, type Plan } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
@@ -75,6 +75,7 @@ export interface Snapshot {
   eta?: Record<string, Estimate>;
   heartbeat_ms?: number;
   asks?: Record<string, { status: string }>;
+  coordMessages?: Message[];
   usage?: UsageCache;
   web_url?: string;
   summary: Record<string, unknown>;
@@ -460,6 +461,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     } catch {
       /* Missing asks is not proof of a decision. */
     }
+    const coordMessages = coord().messages();
     let reflection: Snapshot['reflection'];
     try {
       reflection = memoryData(now).reflection;
@@ -471,6 +473,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })
         ?.mtimeMs,
       asks,
+      coordMessages,
       summary: s,
       rows,
       at: new Date(now).toISOString(),

@@ -111,7 +111,11 @@ function harness(s: Snapshot = frame()) {
 
 describe('orcaView', () => {
   test('empty, active and needs use cockpit counts and prioritize needs', () => {
-    expect(orcaView(view())).toEqual({ status: 'completed', comment: '跑 0 · 等你 0', needs: [] });
+    expect(orcaView(view())).toEqual({
+      status: 'completed',
+      comment: '跑 0 · 等你 0 · 僵死 0 · ETA 未知 · 异常 0',
+      needs: [],
+    });
     expect(orcaView(view([item('BestIFA')])).status).toBe('in-progress');
     const v = orcaView(
       view(
@@ -121,7 +125,7 @@ describe('orcaView', () => {
     );
     expect(v.status).toBe('in-review');
     expect(v.comment).toBe(
-      '跑 2 · 等你 1｜? xiaopan-translator 三轮评审用尽｜BestIFA 编码 m1/1｜wt-hf10 评审'
+      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? xiaopan-translator 三轮评审用尽｜BestIFA 编码 m1/1｜wt-hf10 评审'
     );
     expect(v.comment).not.toMatch(/%|12m05s|99K|private question|3h/);
   });
@@ -133,9 +137,13 @@ describe('orcaView', () => {
       )
     );
     expect(v.comment.length).toBeLessThanOrEqual(200);
-    expect(v.comment).toStartWith('跑 6 · 等你 1｜? need 三轮评审用尽｜p0-');
+    expect(v.comment).toStartWith(
+      '跑 6 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? need 三轮评审用尽｜p0-'
+    );
     expect(v.comment).toEndWith('｜…+5');
-    expect(orcaView(view([item('项'.repeat(300))])).comment).toBe('跑 1 · 等你 0｜…+1');
+    expect(orcaView(view([item('项'.repeat(300))])).comment).toBe(
+      '跑 1 · 等你 0 · 僵死 0 · ETA 未知 · 异常 0｜…+1'
+    );
   });
   test('node free text is excluded; needs identities are sorted unique pairs', () => {
     const v = orcaView(
