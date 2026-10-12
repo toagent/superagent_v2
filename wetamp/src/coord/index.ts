@@ -146,7 +146,7 @@ export function cleanEngine(root = WETAMP): string {
 }
 interface Deps {
   sa: string;
-  runs: () => RunRef[];
+  runs: (id?: string) => RunRef[];
   status: (l: RunRef) => string;
   now: () => number;
   presence: (who: Identity) => Presence;
@@ -167,14 +167,18 @@ export class Coordination {
       sa,
       now: Date.now,
       presence: who => presence(who, sa),
-      runs: () => {
+      runs: id => {
         const dir = join(sa, 'runs');
-        return (existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith('.json')) : []).map(n => {
-          const l = shared.read(join(dir, n)) as RunRef | null;
-          if (!l || typeof l.repo !== 'string' || typeof l.run_id !== 'string')
-            throw new Error(`coord: invalid ledger ${n}`);
-          return l;
-        });
+        // A run's owner must not depend on unrelated ledgers being readable.
+        const names = existsSync(dir) ? readdirSync(dir) : [];
+        return names
+          .filter(n => n.endsWith('.json') && (!id || n === `${id}.json`))
+          .map(n => {
+            const l = shared.read(join(dir, n)) as RunRef | null;
+            if (!l || typeof l.repo !== 'string' || typeof l.run_id !== 'string')
+              throw new Error(`coord: invalid ledger ${n}`);
+            return l;
+          });
       },
       status: l => {
         if (l.state === 'failed') return 'failed';
@@ -317,7 +321,7 @@ export class Coordination {
     const runs = claims.length
       ? []
       : this.d
-          .runs()
+          .runs(scope.kind === 'run' ? scope.id : undefined)
           .filter(l => {
             // A ledger whose repository no longer resolves cannot share a live repository's scope.
             if (scope.kind === 'run') return l.run_id === scope.id;

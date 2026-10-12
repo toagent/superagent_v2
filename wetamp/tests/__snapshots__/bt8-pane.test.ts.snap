@@ -1,25 +1,21 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`62 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
-"跑3 等你1 僵死0 今日0/0 反思—/— 16:58
-sinan ▕██████████████████████62% 剩~14m█░░░░░░░░░░░░░░░░░░░░░▏
-  └─ 将军·sol6.1 code-a ▕░░░░░░░░░░░░░░░— 剩—░░░░░░░░░░░░░░░░▏
-xiaopan ▕████████████████░░░░░31% 剩~40m░░░░░░░░░░░░░░░░░░░░░▏
-  └─ 军师·astra review-m2-r1 ▕░░░░░░░░░░░░░— 剩—░░░░░░░░░░░░░▏
-xiaopan ▕█████████████████░░░░33% 剩~20m░░░░░░░░░░░░░░░░░░░░░▏
-  └─ 将军·sol6.1 job ▕█████████████░33% 剩~20m░░░░░░░░░░░░░░░▏
+"跑 3 · 等你 1 · 僵死 0 · ETA ~14m · 异常 0
 需要你
-? xiaopan 重试已用尽；superagent brief 查看处置 1h02m"
+? xiaopan·xia…/revi…·编码未通过 是=再跑 否=终止 已等1h02m
+进行中
+sinan · IIQE 题目清单报告 · code-a (编码 m2/3) · 已用 1h00m ·…
+xiaopan · 启动配置烘焙 · review-m2-r1 (评审 r1) · 已用 1h00m …
+xiaopan · 启动配置烘焙 · 编码 · 已用 10m00s · 33% 剩~20m · 第…"
 `;
 
 exports[`46 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
-"跑3 等你1 僵死0 今日0/0 反思—/— 16:58
-sinan ▕██████████████62% 剩~14m░░░░░░░░░░░░░░▏
-  └─ 将军 code-a ▕░░░░░░░░░░░— 剩—░░░░░░░░░░░▏
-xiaopan ▕███████████░░31% 剩~40m░░░░░░░░░░░░░▏
-  └─ 军师 review-m2-r1 ▕░░░░░░░░— 剩—░░░░░░░░▏
-xiaopan ▕████████████░33% 剩~20m░░░░░░░░░░░░░▏
-  └─ 将军 job ▕██████████33% 剩~20m░░░░░░░░░░▏
+"跑 3 · 等你 1 · 僵死 0 · ETA ~14m · 异常 0
 需要你
-? … 重试已用尽；superagent brief 查看处置 1h0…"
+? xiao…·x…/r…·编码… 是=再跑 否=终止 已等1h02m
+进行中
+sinan · IIQE 题目清单报告 · code-a (编码 m2/3…
+xiaopan · 启动配置烘焙 · review-m2-r1 (评审 r…
+xiaopan · 启动配置烘焙 · 编码 · 已用 10m00s ·…"
 `;

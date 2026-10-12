@@ -29,7 +29,7 @@ import { detailOf, detailLines, redact } from '../src/board/detail';
 import { Frame } from '../src/board/App';
 import { cockpit } from '../src/board/cockpit';
 import { gitRepo, tmp } from './helpers';
-import { caller, coord, repoScope } from '../src/coord';
+import { caller, coord, repoScope, runScope } from '../src/coord';
 
 const WETAMP = join(import.meta.dir, '..');
 const ENV_KEYS = [
@@ -796,8 +796,9 @@ test('R1-05: actual board loader projects takeover owner rather than launcher, i
       { repo, launcher: { client: 'codex', pid: 999999, tty: null, cwd: repo } }
     );
   const c = coord(),
-    scope = repoScope(repo),
+    scope = runScope(l),
     a = caller(true);
+  c.claim(repoScope(repo), a, true, 'fixture repository contact');
   c.claim(scope, a, true, 'fixture initial controller');
   const b = { ...a, client: 'claude', session_id: 'new-owner', host: 'remote-host' };
   c.claim(scope, b, true, 'fixture takeover');

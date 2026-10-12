@@ -95,7 +95,7 @@ const snap: Snapshot = {
     },
   },
   asks: {
-    'xiaopan-run:auto_retry_exhausted': { status: 'pending' },
+    'xiaopan-run:coder': { status: 'pending' },
     'sinan-run:budget': { status: 'superseded' },
   },
   activity: {
@@ -109,24 +109,21 @@ const snap: Snapshot = {
     notes: [],
   },
 };
-snap.rows[1].engine!.dispositions = [
-  { at: iso(-3720), reason: 'auto_retry_exhausted', action: 'ask', ok: true },
-];
+snap.rows[1].askReason = 'coder';
+snap.rows[1].engine!.dispositions = [{ at: iso(-3720), reason: 'coder', action: 'ask', ok: true }];
 for (const width of [62, 46])
   test(`${String(width)} columns: 2 runs + job + pending/superseded ask snapshot`, () => {
     const frame = renderToString(createElement(Frame, { snap, width, height: 100, now }), {
       columns: width,
     });
     expect(frame).toMatchSnapshot();
-    expect(frame.split('\n')).toHaveLength(9);
-    expect(frame).toContain('跑3 等你1');
-    if (width >= 60) expect(frame).toContain('将军·sol6.1');
-    if (width >= 60) expect(frame).toContain('军师·astra');
-    expect(frame).toContain(
-      width >= 60
-        ? '? xiaopan 重试已用尽；superagent brief 查看处置 1h02m'
-        : '? … 重试已用尽；superagent brief 查看处置 1h0…'
-    );
+    expect(frame.split('\n')).toHaveLength(7);
+    expect(frame).toContain('跑 3 · 等你 1');
+    const roles = cockpit(snap, now.getTime()).active.map(r => r.role);
+    expect(roles).toContain('将军·sol6.1');
+    expect(roles).toContain('军师·astra');
+    expect(frame).toContain('是=再跑 否=终止 已等1h02m');
+    expect(frame).toContain(width >= 60 ? '编码未通过' : '编码…');
     expect(frame).not.toMatch(/心跳|tok |今日结果|终端|预算|q退出/);
     for (const line of frame.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   });
@@ -153,6 +150,10 @@ test('needs never infer questions from held states; unanswered asks remain visib
     expect(
       cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, state })) }, now.getTime()).needs
     ).toHaveLength(1);
+  expect(
+    cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, askReason: 'budget' })) }, now.getTime())
+      .needs
+  ).toEqual([]);
   const empty = renderToString(
     createElement(Frame, {
       snap: { at: now.toISOString(), summary: {}, rows: [] },

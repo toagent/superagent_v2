@@ -268,6 +268,7 @@ function fixture(): Snapshot {
     lastEvent: at,
     run_id: id,
     archon_id: `archon-${id}`,
+    askReason: 'budget',
     repo: 'demo',
     state,
     started_at,

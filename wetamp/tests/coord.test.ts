@@ -1122,7 +1122,7 @@ test('parallel runs claim independently of the online repository contact and fen
   expect(s.c.mutate(second, b, () => true)).toBe(true);
 });
 
-test('run launches under its own claim while another online owner remains repository contact', () => {
+test('run launches under its own claim while another online owner remains repository contact', async () => {
   const s = setup();
   isolated(s);
   process.env.SUPERAGENT_WRITE_ROOTS = s.root;
@@ -1132,6 +1132,31 @@ test('run launches under its own claim while another online owner remains reposi
   const l = registered(s, contact);
   l.plan = plan;
   writeFileSync(join(s.sa, 'runs', l.run_id + '.json'), JSON.stringify(l));
+  writeFileSync(
+    join(s.sa, 'runs', 'failed.json'),
+    JSON.stringify({
+      ...l,
+      run_id: 'failed',
+      archon_run_id: 'failed-engine',
+      state: 'failed',
+      plan: 'missing.json',
+    })
+  );
+  writeFileSync(
+    join(s.sa, 'runs', 'completed.json'),
+    JSON.stringify({
+      ...l,
+      run_id: 'completed',
+      archon_run_id: 'completed-engine',
+      plan: 'missing.json',
+    })
+  );
+  const { Database } = await import('bun:sqlite');
+  mkdirSync(process.env.ARCHON_HOME!, { recursive: true });
+  const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
+  db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
+  db.run('insert into remote_agent_workflow_runs values (?, ?)', [l.archon_run_id, 'running']);
+  db.run('insert into remote_agent_workflow_runs values (?, ?)', ['completed-engine', 'completed']);
   const native = req('../src/archon.ts') as typeof import('../src/archon');
   const coordination = req('../src/coord/index.ts') as typeof import('../src/coord');
   const relay = req('../src/relay-quota.ts') as typeof import('../src/relay-quota');
@@ -1149,9 +1174,11 @@ test('run launches under its own claim while another online owner remains reposi
     const result = JSON.parse(outputs.at(-1)!);
     expect(result.default_contact).toMatchObject(b);
     expect(result.overlap_warnings).toMatchObject([{ run_id: l.run_id, paths: expect.any(Array) }]);
+    expect(launch.mock.calls.some(([args]) => args[1] === 'get')).toBe(false);
     expect(s.c.owner(runScope({ run_id: result.run_id, repo: s.repo })).owner).toEqual(a);
     expect(s.c.owner(s.scope).owner).toEqual(b);
   } finally {
+    db.close();
     launch.mockRestore();
     identity.mockRestore();
     quota.mockRestore();

@@ -760,6 +760,8 @@ function preflight(skipSelftest: boolean): void {
 }
 
 function startRun(planPath: string, a: Args): number {
+  if (process.env.DATABASE_URL)
+    console.error('run: overlap check skipped: DATABASE_URL is set (SQLite status unavailable)');
   const run = newRunId();
   let phase: 'preflight' | 'admission' | 'engine' = 'preflight';
   let release: (() => void) | undefined;
@@ -831,12 +833,13 @@ function startRun(planPath: string, a: Args): number {
           print(failure);
           return EXIT_ALIAS_DRIFT;
         }
-        const overlap_warnings = ledgers().flatMap(l => {
+        const overlap_warnings = (process.env.DATABASE_URL ? [] : ledgers()).flatMap(l => {
           try {
             if (
               'error' in l ||
+              l.state === 'failed' ||
               repoScope(l.repo).id !== repo.id ||
-              ['completed', 'failed', 'cancelled'].includes(getRun(l.archon_run_id, l.repo).status)
+              ['completed', 'failed', 'cancelled'].includes(coord().d.status(l))
             )
               return [];
             const previous = loadPlan(l.plan).packages.flatMap(p => p.scope.write);

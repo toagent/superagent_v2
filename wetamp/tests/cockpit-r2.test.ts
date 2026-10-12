@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
@@ -14,6 +14,7 @@ import { rowOf, type Snapshot } from '../src/board/data';
 import type { Ledger } from '../src/cli';
 import type { RunView } from '../src/archon';
 import { isTier } from '../src/roles';
+import * as launcher from '../src/launcher';
 
 const now = Date.parse(fixture.captured_at);
 const saved = {
@@ -122,54 +123,83 @@ test('real claims/jobs/live identities recover roles, enrich null-role jobs and 
     true
   );
 });
-test('asks alone govern needs; pending asks do not hide running work; 62/120 render numeric progress', () => {
-  setup();
-  const evidence = usageEvidence();
-  refreshEta(evidence.eta, now);
-  const eta = JSON.parse(
-    readFileSync(join(process.env.SUPERAGENT_HOME!, 'usage/eta.json'), 'utf8')
-  ).runs;
-  const snap: Snapshot = {
-    at: fixture.captured_at,
-    summary: {},
-    asks: fixture.asks,
-    eta,
-    rows: evidence.eta.map(x =>
-      rowOf(x.ledger, x.run, {
-        now,
-        roles: new Map(
-          fixture.inputs.find(f => f.ledger.run_id === x.ledger.run_id)!.roles as [
-            string,
-            'coder' | 'reviewer' | 'script',
-          ][]
-        ),
-      })
-    ),
-  };
-  expect(cockpit(snap, now).needs).toHaveLength(
-    Object.values(fixture.asks).filter(a => ['pending', 'unknown'].includes(a.status)).length
-  );
-  snap.asks = { 'run-0:budget:1': { status: 'pending' } };
-  expect(cockpit(snap, now).active).toHaveLength(1);
-  const failed = {
-    ...snap.rows[0],
-    state: 'failed',
-    nodes: { ...snap.rows[0].nodes, current: 'code-package-1' },
-  };
-  expect(cockpit({ ...snap, rows: [failed] }, now).needs).toHaveLength(1);
-  expect(
-    cockpit({ ...snap, rows: [{ ...failed, nodes: { ...failed.nodes, current: 'land' } }] }, now)
-      .needs
-  ).toHaveLength(1);
-  for (const width of [62, 120]) {
-    const out = renderToString(
-      createElement(Frame, { snap, width, height: 100, now: new Date(now) }),
-      { columns: width }
-    );
-    expect(out).toMatch(/\d+% (剩~|超~)/);
-    expect(out).not.toContain('?%');
-    expect(out).toContain('需要你');
-    expect(out.split('\n').every(l => Bun.stringWidth(l) <= width)).toBe(true);
+test('matching engine reasons and pending asks govern needs; pending asks do not hide running work; 62/120 preserve numeric progress with narrow-row clipping', () => {
+  const probe = spyOn(launcher, 'inspectProcess').mockReturnValue({
+    state: 'online',
+    start: '2026-10-01T00:00:00Z',
+  });
+  try {
+    setup();
+    const evidence = usageEvidence();
+    refreshEta(evidence.eta, now);
+    const eta = JSON.parse(
+      readFileSync(join(process.env.SUPERAGENT_HOME!, 'usage/eta.json'), 'utf8')
+    ).runs;
+    const snap: Snapshot = {
+      at: fixture.captured_at,
+      summary: {},
+      asks: fixture.asks,
+      eta,
+      rows: evidence.eta.map(x =>
+        rowOf(
+          x.ledger,
+          {
+            ...x.run,
+            ...(x.run.status === 'running'
+              ? {
+                  started_at: new Date().toISOString(),
+                  metadata: { execution_owner: { host: hostname(), pid: process.pid } },
+                }
+              : {}),
+          },
+          {
+            now,
+            roles: new Map(
+              fixture.inputs.find(f => f.ledger.run_id === x.ledger.run_id)!.roles as [
+                string,
+                'coder' | 'reviewer' | 'script',
+              ][]
+            ),
+          }
+        )
+      ),
+    };
+    // Historical auto_retry_exhausted asks no longer match an engine-owned ask reason.
+    expect(cockpit(snap, now).needs).toHaveLength(0);
+    const running = snap.rows.find(r => r.run_id === 'run-0')!;
+    expect(running.state).toBe('running');
+    running.lastEvent = fixture.captured_at;
+    running.askReason = 'budget';
+    snap.asks = { 'run-0:budget:1': { status: 'pending' } };
+    expect(cockpit(snap, now).needs).toHaveLength(1);
+    expect(
+      cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, askReason: 'coder' })) }, now).needs
+    ).toHaveLength(0);
+    expect(cockpit(snap, now).active).toHaveLength(1);
+    const failed = {
+      ...running,
+      state: 'failed',
+      nodes: { ...running.nodes, current: 'code-package-1' },
+    };
+    expect(cockpit({ ...snap, rows: [failed] }, now).needs).toHaveLength(1);
+    expect(
+      cockpit({ ...snap, rows: [{ ...failed, nodes: { ...failed.nodes, current: 'land' } }] }, now)
+        .needs
+    ).toHaveLength(1);
+    for (const width of [62, 120]) {
+      const out = renderToString(
+        createElement(Frame, { snap, width, height: 100, now: new Date(now) }),
+        { columns: width }
+      );
+      expect(cockpit(snap, now).active[0].progress.pct).toBeGreaterThan(0);
+      if (width === 120) expect(out).toMatch(/\d+% (剩~|超~)/);
+      else expect(out).toMatch(/ETA ~\d+m/);
+      expect(out).not.toContain('?%');
+      expect(out).toContain('需要你');
+      expect(out.split('\n').every(l => Bun.stringWidth(l) <= width)).toBe(true);
+    }
+  } finally {
+    probe.mockRestore();
   }
 });
 test('event replay resets previous timing and cached success preserves completed duration', () => {
