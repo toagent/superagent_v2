@@ -1,6 +1,4 @@
-// superagent 确定性节点（bun），由 INPUTS_KIND 选择；env 检查声明环境，失败即 held:environment。
-//   accept 执行验收、检查权限证据与工作区；BASE 非空时保存 diff 并探测基线，自报仅作审计。
-//   settle / gate 复用交付判定；land 仅打印本地合入命令（永不 push）。
+// superagent 确定性节点（bun）：INPUTS_KIND 选择环境/验收/交付判定/合入命令；自报仅作审计，永不 push。
 import reasons from './reasons.json';
 import { createHash } from 'node:crypto';
 import {
@@ -851,6 +849,7 @@ interface RunEvent {
   step_name?: string;
   data?: {
     attemptId?: string;
+    structured_output?: { attempt?: string };
     event?: import('../../../../packages/provider-contract/src/events').ProviderEvent;
     hook_event?: string;
     exit_code?: number;
@@ -860,36 +859,41 @@ interface RunEvent {
     };
   };
 }
-/** Keep audit history, but only the current node attempt can block delivery. */
-export function permissionEvidence(
-  events: RunEvent[],
-  packages: string[],
-  milestone: string
-): string[] {
-  const nodes = new Set(packages.flatMap(id => [`code-${id}`, `repair-${id}`]));
-  for (let r = 1; r <= MAX_ROUNDS; r++) nodes.add(`fix-${milestone}-r${String(r)}`);
-  const starts = new Map<string, number>(),
-    attempts = new Map<string, string>();
+/** Counter changes clear their scope; an unchanged always_run counter preserves denials. */
+export function permissionEvidence(events: RunEvent[], pkgs: string[], m: string): string[] {
+  const nodes = new Map<string, string>();
+  for (const id of pkgs)
+    for (const node of [`code-${id}`, `repair-${id}`]) nodes.set(node, `package-attempt-${id}`);
+  const scope = `attempt-${m}`;
+  for (let r = 1; r <= MAX_ROUNDS; r++) nodes.set(`fix-${m}-r${String(r)}`, scope);
+  const attempts = new Map<string, string>(),
+    counters = new Map<string, string>(),
+    denied = new Map<string, string>();
   events.forEach((e, i) => {
     const node = e.step_name ?? '';
-    if (e.event_type === 'node_started') starts.set(node, i);
-    if (e.event_type === 'provider_event' && e.data?.attemptId)
-      attempts.set(node, e.data.attemptId);
-  });
-  return events.flatMap((e, i) => {
-    const node = e.step_name ?? '';
-    if (!nodes.has(node) || i < (starts.get(node) ?? 0)) return [];
-    if (e.data?.attemptId && e.data.attemptId !== attempts.get(node)) return [];
+    const count =
+      e.event_type === 'node_completed' ? e.data?.structured_output?.attempt : undefined;
+    if (typeof count === 'string' && counters.get(node) !== count) {
+      for (const [member, owner] of nodes)
+        if (node === owner || node === scope) denied.delete(member);
+      counters.set(node, count);
+    }
+    if (!nodes.has(node)) return;
+    const attempt = e.event_type === 'provider_event' ? e.data?.attemptId : undefined;
+    if (e.event_type === 'node_started' || (attempt && attempts.get(node) !== attempt))
+      denied.delete(node);
+    if (attempt) attempts.set(node, attempt);
     const hook = e.event_type === 'provider_event' ? e.data?.event : undefined;
-    const denied =
+    const refusal =
       (hook?.type === 'warning' && hook.permissionDenied === true) ||
       (hook?.type === 'hook' && hook.hookEvent === 'PreToolUse' && hook.exitCode === 2);
     const legacy =
       e.event_type === 'hook_activity' &&
       e.data?.hook_event === 'PreToolUse' &&
       e.data.exit_code === 2;
-    return denied || legacy ? [`events:${e.step_name ?? ''}:${String(i)}`] : [];
+    if (refusal || legacy) denied.set(node, `events:${node}:${String(i)}`);
   });
+  return [...denied.values()];
 }
 let events: RunEvent[] | undefined;
 /**

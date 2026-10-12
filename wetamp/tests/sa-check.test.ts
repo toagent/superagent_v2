@@ -622,17 +622,21 @@ describe('single delivery decision', () => {
     const event = (attemptId: string, permissionDenied?: true) => ({
       event_type: 'provider_event',
       step_name: 'code-a',
-      data: {
-        attemptId,
-        event: { type: 'warning', code: 'test', message: 'denied', permissionDenied },
-      },
+      data: { attemptId, event: { type: 'warning', code: 'x', message: 'x', permissionDenied } },
     });
     const start = { event_type: 'node_started', step_name: 'code-a' };
+    const counter = (step_name: string, attempt = '1') => ({
+      event_type: 'node_completed',
+      step_name,
+      data: { structured_output: { attempt } },
+    });
+    const repair = { ...event('old', true), step_name: 'repair-a' };
+    const fix = { ...repair, step_name: 'fix-m1-r2' };
     for (const [events, reason] of [
-      [[event('old', true)], 'coder_redline'],
-      [[event('old', true), event('new')], null],
-      [[event('old', true), start], null],
-      [[event('old', true), start, event('new', true)], 'coder_redline'],
+      [[repair, counter('package-attempt-a'), start, event('new')], null],
+      [[fix, counter('attempt-m1'), start, event('new')], null],
+      [[counter('package-attempt-a'), repair, counter('package-attempt-a')], 'coder_redline'],
+      [[repair, counter('package-attempt-a'), start, event('new', true)], 'coder_redline'],
       [[], 'environment'],
     ] as const) {
       writeFileSync(archon, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ events })}'\n`, {
@@ -642,17 +646,10 @@ describe('single delivery decision', () => {
         reason === 'environment'
           ? `printf '%s' '{"failure_class":"test_env","evidence":"environment unavailable"}'; exit 1`
           : 'true';
-      const result = runScript(
-        repo,
-        {
-          ...inputs,
-          plan: fixturePlan(root, repo, p => {
-            p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5 }] }];
-          }),
-        },
-        SCRIPT,
-        { WORKFLOW_ID: 'fixture' }
-      );
+      const plan = fixturePlan(root, repo, p => {
+        p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5 }] }];
+      });
+      const result = runScript(repo, { ...inputs, plan }, SCRIPT, { WORKFLOW_ID: 'fixture' });
       expect(result.code, result.err).toBe(reason ? 1 : 0);
       expect(result.out).toMatchObject({
         ok: reason !== 'environment',
