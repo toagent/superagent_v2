@@ -1167,7 +1167,7 @@ describe('run (archon stub)', () => {
     sh('git add -- wetamp/src/runtime.ts wetamp/docs/runtime.md', repo);
     expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
   });
-  test('preflight: auto selftest refreshes only fingerprint or legacy HEAD drift; failures and invalid receipts reject', () => {
+  test('preflight: auto selftest refreshes config, fingerprint or legacy HEAD drift; failures and invalid receipts reject', () => {
     const s = stub([]);
     const repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
@@ -1198,13 +1198,32 @@ describe('run (archon stub)', () => {
       expect(attempt()).toContain('no selftest.json');
       expect(attempt({ ...good, fake: true })).toContain('fake receipt');
       expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
-      expect(attempt({ ...good, fingerprint: 'x', config_hash: 'x' })).toContain('config drift');
+      probe.mockImplementationOnce(() => {
+        throw new Error('runtime worktree drift');
+      });
+      expect(attempt({ ...good, config_hash: 'x' })).toContain('runtime worktree drift');
       expect(existsSync(calls)).toBe(false);
+      expect(attempt({ ...good, config_hash: 'x' })).toBe('0');
+      expect(attempt({ ...good, fingerprint: 'x', config_hash: 'x' })).toBe('0');
       expect(attempt({ ...good, fingerprint: 'x' })).toBe('0');
       expect(attempt({ ...good, fingerprint: undefined, head: '0'.repeat(40) })).toBe('0');
-      expect(readFileSync(calls, 'utf8')).toBe('called\ncalled\n');
+      expect(readFileSync(calls, 'utf8')).toBe('called\ncalled\ncalled\ncalled\n');
+      writeFileSync(
+        join(s.root, 'home', 'relay-quota.json'),
+        JSON.stringify({
+          at: Date.now(),
+          claude_daily_usd: loadTiers().routing.budget.claude_daily_usd,
+        })
+      );
+      const budgetRun = captured(() => main(['run', plan]));
+      expect(budgetRun.code).toBe(0);
+      expect(JSON.parse(budgetRun.out).quota).toContain('已降级到 Codex');
+      const { aliases } = Bun.YAML.parse(
+        readFileSync(join(JSON.parse(budgetRun.out).gen_dir, 'run-config.yaml'), 'utf8')
+      ) as { aliases: Record<string, { provider: string }> };
+      expect(Object.values(aliases).every(a => a.provider === 'codex')).toBe(true);
       writeFileSync(bin, 'echo failure-tail >&2\nexit 7\n');
-      expect(attempt({ ...good, fingerprint: 'x' })).toContain(
+      expect(attempt({ ...good, config_hash: 'x' })).toContain(
         'selftest exit 7; log tail:\nfailure-tail'
       );
       const pidfile = join(s.root, 'grandchild.pid');

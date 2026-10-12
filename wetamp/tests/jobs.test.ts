@@ -217,6 +217,9 @@ describe('job exec', () => {
     }
     const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
+    writeFileSync(join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'), JSON.stringify({ at: Date.now(), claude_daily_usd: loadTiers().routing.budget.claude_daily_usd }));
+    const downgraded = run(['job', 'exec', '--title', 'budget', '--role', 'strategist', '--', claude, '-p']);
+    expect(await downgraded.exited).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('candidates:');
   });
   // prettier-ignore
   test('clean refuses dirty or unintegrated worktrees and removes only integrated registered work', async () => {

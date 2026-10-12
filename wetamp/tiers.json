@@ -170,6 +170,7 @@
     }
   },
   "routing": {
+    "budget": { "claude_daily_usd": 300, "claude_medium_usd": 200, "codex_warning_usd": 500 },
     "commander": {
       "by_console": {
         "claude": ["claude-opus-5-5", "claude-fable-5-1"],

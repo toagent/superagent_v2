@@ -126,7 +126,10 @@ export function configHash(): string {
     h.update(`${existsSync(p) ? readFileSync(p, 'utf8') : ''}\0`);
   return h.digest('hex').slice(0, 16);
 }
-type Issue = { kind: 'drift'; message: string } | { kind: 'invalid'; message: string };
+interface Issue {
+  kind: 'drift' | 'config-drift' | 'invalid';
+  message: string;
+}
 export function receiptIssue(
   r: Partial<Receipt> | undefined,
   now = Date.now(),
@@ -139,10 +142,10 @@ export function receiptIssue(
     return issue('fake receipt (selftest --fake proves only the engine contract)');
   const exp = Date.parse(r.expires_at ?? '');
   if (!(exp > now)) return issue(`expired (expires_at ${r.expires_at ?? '?'})`);
-  if (r.config_hash !== configHash())
-    return issue('config drift (tiers.json or $ARCHON_HOME/config.yaml changed)');
   try {
     const fingerprint = runtimeFingerprint(repo);
+    if (r.config_hash !== configHash())
+      return issue('config drift (tiers.json or $ARCHON_HOME/config.yaml changed)', 'config-drift');
     if (r.fingerprint !== undefined) {
       if (r.fingerprint !== fingerprint)
         return issue('runtime fingerprint drift (committed runtime files changed)', 'drift');
@@ -184,6 +187,7 @@ export function runCapacity(t = loadTiers()): number {
 export interface Tiers {
   tiers: Record<string, { pools: Record<string, string[]> }>;
   routing: {
+    budget: { claude_daily_usd: number; claude_medium_usd: number; codex_warning_usd: number };
     commander: { by_console: Record<Console, string[]> };
     coder: { models: string[] };
     reviewer: {
@@ -243,6 +247,9 @@ export function effortFor(
 // prettier-ignore
 export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
   const t = JSON.parse(readFileSync(path, 'utf8')) as Tiers;
+  const budget = obj(t.routing.budget);
+  if ([budget.claude_daily_usd, budget.claude_medium_usd, budget.codex_warning_usd].some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0))
+    throw new Error('tiers.routing.budget: expected nonnegative finite thresholds');
   for (const c of ['claude', 'codex'] as const) {
     const models = obj(obj(obj(t.routing).commander).by_console)[c];
     if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))
@@ -254,6 +261,18 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
 export interface Route {
   candidates: Alias[];
   effort: string;
+}
+/** Only fresh, same-day local observations affect auto routing; never fetch during resolution. */
+// prettier-ignore
+export function budgetState(t: Tiers, mode = 'auto', now = Date.now()): { degraded: boolean; notice: string } {
+  if (mode !== 'auto') return { degraded: false, notice: '' };
+  try {
+    if (!process.env.SUPERAGENT_HOME) throw new Error('no cache home');
+    const c = JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME, 'relay-quota.json'), 'utf8')) as { at: number; claude_daily_usd: number };
+    if (!Number.isFinite(c.at) || c.at > now || now - c.at > 3600e3 || new Date(c.at).toDateString() !== new Date(now).toDateString() || !Number.isFinite(c.claude_daily_usd) || c.claude_daily_usd < 0) throw new Error('invalid cache');
+    const degraded = c.claude_daily_usd >= t.routing.budget.claude_daily_usd;
+    return { degraded, notice: degraded ? '已降级到 Codex' : '' };
+  } catch { return { degraded: false, notice: '预算状态未知' }; }
 }
 /** One resolver owns role/risk/round and mode filtering; no vendor inference at execution time. */
 // prettier-ignore
@@ -268,6 +287,7 @@ export function resolveRoute(
 ): Route {
   if (!['auto', 'strict', 'single:claude', 'single:chatgpt'].includes(mode))
     throw new Error(`unsupported routing mode: ${mode}`);
+  if (budgetState(t, mode).degraded) { mode = 'single:chatgpt'; console = 'codex'; }
   const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
   const models =
     role === 'command' ? t.routing.commander.by_console[console] : role === 'review'

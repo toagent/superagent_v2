@@ -61,6 +61,7 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import {
   WETAMP,
+  budgetState,
   aliasDrift,
   codexWorkerProblem,
   home,
@@ -812,13 +813,13 @@ function preflight(skipSelftest: boolean): void {
   const issue = () =>
     receiptIssue(readJson(join(sa, 'selftest.json')) as Partial<Receipt> | undefined);
   let why = issue();
-  if (why?.kind === 'drift') {
+  if (why && why.kind !== 'invalid') {
     const lease = lock(join(sa, 'selftest.lock'));
     if (!lease.ok) throw new Error('preflight: selftest 正在运行，稍后重试');
     try {
       why = issue();
-      if (why?.kind === 'drift') {
-        console.error('preflight: runtime drift; running real selftest synchronously');
+      if (why && why.kind !== 'invalid') {
+        console.error(`preflight: ${why.kind}; running real selftest synchronously`);
         let bin = join(WETAMP, 'scripts/selftest.sh');
         if (process.env.NODE_ENV === 'test') bin = process.env.SA_SELFTEST_BIN ?? bin;
         const timeout =
@@ -917,6 +918,7 @@ function startRun(planPath: string, a: Args): number {
         }
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
         phase = 'engine';
+        const budget = budgetState(loadTiers(), plan.mode);
         const gen = generate(plan, run, a.flags.fake ?? false);
         const branch = `sa/${run}`;
         const args = [
@@ -965,6 +967,8 @@ function startRun(planPath: string, a: Args): number {
         mkdirSync(join(home().sa, 'runs'), { recursive: true });
         saveLedger(l);
         rmSync(intentPath(run), { force: true });
+        const quota = relayQuota(gen.dir, 'start');
+        if (budget.degraded) quota.quota = [quota.quota, budget.notice].filter(Boolean).join(' · ');
         print({
           run_id: run,
           archon_run_id: l.archon_run_id,
@@ -972,7 +976,7 @@ function startRun(planPath: string, a: Args): number {
           gen_dir: gen.dir,
           mode: 'controller',
           plan_lint,
-          ...relayQuota(gen.dir, 'start'),
+          ...quota,
         });
         return 0;
       });
@@ -2512,11 +2516,13 @@ export function main(argv: string[]): number {
       // prettier-ignore
       const models = Object.fromEntries((['claude', 'codex'] as const).map(c => [c,
         Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r]).candidates.map(a => a.model)]))]));
-      if (a.flags.json) print(models);
+      const budget = budgetState(tiers, mode);
+      if (a.flags.json) print({ ...models, budget });
       else
         for (const [c, roles] of Object.entries(models))
           for (const [r, candidates] of Object.entries(roles))
             console.log(`${c} ${r}: ${candidates.join(', ')}`);
+      if (!a.flags.json && budget.notice) console.log(budget.notice);
       return 0;
     }
     case 'owner':
