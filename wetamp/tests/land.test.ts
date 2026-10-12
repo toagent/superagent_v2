@@ -23,6 +23,39 @@ const fixture = () => {
   return { root, repo, worktree, art, land, run };
 };
 // prettier-ignore
+test.each(['.', 'wetamp'])('candidate owns the %s workspace graph even with an unchanged lockfile', rel => {
+  const f = fixture(), dir = join(f.repo, rel), pkg = join(dir, 'packages/provider');
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(f.repo, '.gitignore'), 'node_modules/\n');
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'land-fixture', private: true, workspaces: ['packages/*'], dependencies: { '@land/provider': 'workspace:*' } }));
+  const manifest = { name: '@land/provider', version: '1.0.0', exports: { '.': './index.ts' } };
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify(manifest));
+  writeFileSync(join(pkg, 'index.ts'), 'export const owner = "target";\n');
+  const install = Bun.spawnSync([process.execPath, 'install'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+  expect(install.exitCode).toBe(0);
+  sh(`git add .gitignore '${rel}/package.json' '${rel}/bun.lock' '${rel}/packages/provider/package.json' '${rel}/packages/provider/index.ts' && git commit -qm workspace`, f.repo);
+  sh('git merge --no-edit main', f.worktree);
+  const workerDir = join(f.worktree, rel), workerPkg = join(workerDir, 'packages/provider');
+  writeFileSync(join(workerPkg, 'package.json'), JSON.stringify({ ...manifest, exports: { ...manifest.exports, './launch-policy': './launch-policy.ts' } }));
+  writeFileSync(join(workerPkg, 'index.ts'), 'export const owner = "candidate";\n');
+  writeFileSync(join(workerPkg, 'launch-policy.ts'), 'export const policy = "candidate-policy";\n');
+  sh(`git add '${rel}/packages/provider/package.json' '${rel}/packages/provider/index.ts' '${rel}/packages/provider/launch-policy.ts' && git commit -qm candidate-exports`, f.worktree);
+  f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
+  expect(readFileSync(join(workerDir, 'bun.lock')).equals(readFileSync(join(dir, 'bun.lock')))).toBe(true);
+  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  let candidate = '';
+  try { applyLand(f.run, f.land, cwd => {
+    candidate = cwd;
+    const result = Bun.spawnSync([process.execPath, '-e', 'import { owner } from "@land/provider"; import { policy } from "@land/provider/launch-policy"; console.log(owner, policy);'], { cwd: join(cwd, rel), stdout: 'pipe', stderr: 'pipe' });
+    expect(result.stderr.toString()).toBe('');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString().trim()).toBe('candidate candidate-policy');
+    return result.exitCode;
+  }); } finally { probe.mockRestore(); }
+  expect(existsSync(candidate)).toBe(false);
+  expect(readFileSync(join(pkg, 'index.ts'), 'utf8')).toContain('candidate');
+});
+// prettier-ignore
 test.each(['current', 'legacy-ref', 'legacy-hash'])('%s apply checks the accepted tree, reuses cache and cleans worktree/branch', mode => {
   const f = fixture(), counter = join(f.root, 'calls');
   const receipt = mode === 'current' ? f.land : { branch: f.land.branch, head: f.land.head, commands: [], debt: [] };

@@ -6,9 +6,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
-  readdirSync,
   rmSync,
-  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,7 +80,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   const fingerprint = runtimeFingerprint();
   for (let attempt = 0; ; attempt++) {
   const tip = git('rev-parse', `refs/heads/${target}`), root = mkdtempSync(join(tmpdir(), 'sa-land-')), candidate = join(root, 'wt');
-  const links: string[] = [];
   try {
     git('worktree', 'add', '--detach', candidate, tip);
     const ff = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', tip, land.head], { stdout: 'pipe', stderr: 'pipe' });
@@ -104,20 +101,14 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       gitAt(candidate, 'commit', '--no-edit');
     }
     const accepted = gitAt(candidate, 'rev-parse', 'HEAD');
-    // Reuse installed dependencies only when their owning lockfile matches.
+    // Workspace links must resolve within the checkout being accepted.
     for (const rel of ['.', 'wetamp']) {
-      const dir = join(candidate, rel), source = join(repo, rel), lockfile = join(dir, 'bun.lock');
+      const dir = join(candidate, rel), lockfile = join(dir, 'bun.lock');
       if (!existsSync(lockfile)) continue;
-      if (existsSync(join(source, 'bun.lock')) && readFileSync(lockfile).equals(readFileSync(join(source, 'bun.lock'))) && existsSync(join(source, 'node_modules'))) {
-        const deps = ['node_modules', ...(rel === '.' && existsSync(join(source, 'packages')) ? readdirSync(join(source, 'packages')).map(p => `packages/${p}/node_modules`) : [])];
-        for (const dep of deps) if (existsSync(join(source, dep)) && existsSync(join(dir, dep, '..')) && !existsSync(join(dir, dep))) { symlinkSync(join(source, dep), join(dir, dep)); links.push(join(dir, dep)); }
-      } else {
-        const p = Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
-        if (p.exitCode !== 0) throw new Error(`land: dependency install failed: ${p.stderr.toString().trim()}`);
-      }
+      const p = Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+      if (p.exitCode !== 0) throw new Error(`land: dependency install failed: ${p.stderr.toString().trim()}`);
     }
     if (verify(candidate) !== 0) throw new Error('land: acceptance failed');
-    for (const link of links.splice(0)) rmSync(link);
     if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new Error('land: acceptance changed candidate checkout');
     sameTree(); clean();
     if (targetCheckout() !== checkout) throw new Error('land: target checkout changed during acceptance; retry land --apply');
@@ -130,7 +121,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     console.log(`land: integrated ${accepted} in ${checkout ?? repo}`);
     break;
   } finally {
-    for (const link of links) rmSync(link, { force: true });
     try { if (existsSync(candidate)) git('worktree', 'remove', '--force', candidate); }
     finally { rmSync(root, { recursive: true, force: true }); }
   }
