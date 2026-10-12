@@ -1627,7 +1627,7 @@ test.each([['completed', 1], ['completed', 100], ['cancelled', 1], ['cancelled',
   } finally { snapshot.mockRestore(); }
 });
 
-test.each(['failed', 'running', 'paused', 'unknown'])(
+test.each(['failed', 'running', 'paused', 'pending'] as const)(
   'non-terminal exemption status=%s retains per-run wake', async status => {
     const s = stub([run(status)]);
     const snapshot = spyOn(archonMod, 'getRun').mockReturnValue(run(status));
