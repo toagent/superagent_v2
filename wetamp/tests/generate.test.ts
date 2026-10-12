@@ -350,7 +350,12 @@ describe('buildWorkflow', () => {
     plan.repo = repo;
     // Budget arithmetic is covered above. Keep real subprocess overhead unscaled here.
     plan.environment = [{ cmd: 'true', timeout_s: 1 }];
-    plan.packages[0].accept = [{ cmd: 'false', timeout_s: 1 }];
+    plan.packages[0].accept = [
+      {
+        cmd: `printf '%s' '{"failure_class":"product","evidence":"ACCT product fixture"}'; exit 1`,
+        timeout_s: 1,
+      },
+    ];
     const planPath = join(root, 'plan.json');
     fs.writeFileSync(planPath, JSON.stringify(plan));
     const source = join(root, 'source');
