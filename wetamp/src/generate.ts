@@ -786,6 +786,7 @@ export function generate(
     'engine.json',
     'plan.json',
     'policy.json',
+    'accept-inputs.json',
     'briefs',
     '.gitignore',
     'run-config.yaml',

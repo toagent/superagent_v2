@@ -2946,7 +2946,10 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
     marker = join(root, 'ready');
   const plan = fixturePlan(root, repo, p => {
     const pkgs = p.packages as { id: string; accept: { cmd: string; timeout_s: number }[] }[];
-    pkgs.find(p => p.id === 'core')!.accept = [{ cmd: `test -f '${marker}'`, timeout_s: 5 }];
+    pkgs.find(p => p.id === 'core')!.accept = [{
+      cmd: `test -f '${marker}' || { printf '%s\\n' '{"failure_class":"product","evidence":"S3 readiness marker missing"}'; exit 1; }`,
+      timeout_s: 5,
+    }];
   });
   const py = join(root, 'supervisor.py');
   writeFileSync(py, 'raise Exception("unexpected reminder in automatic package recovery")\n');
