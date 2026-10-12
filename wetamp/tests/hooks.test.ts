@@ -1317,6 +1317,75 @@ const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as {
 };
 
 describe('redline.cjs（所有角色的执行层红线）', () => {
+  test('safe-delete checks surviving refs and actual worktree contents, failing closed', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      worktree = join(root, 'clean-worktree');
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(['git', '-C', repo, ...args]);
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+    };
+    const check = (shell: string, reviewer = false) =>
+      redline.reason({
+        client: 'claude',
+        name: 'Bash',
+        cwd: repo,
+        root: reviewer ? repo : '/foreign',
+        derived: true,
+        reviewer,
+        shell,
+        env: baseEnv,
+      });
+    git('branch', 'merged');
+    git('branch', 'merged-two');
+    git('checkout', '-q', '-b', 'unmerged');
+    git('-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '--allow-empty', '-qm', 'unique');
+    git('branch', 'same-tip');
+    git('checkout', '-q', 'main');
+    for (const flags of ['-d', '--delete', '-D', '-df', '-fd', '--delete --force']) {
+      expect(check(`git branch ${flags} merged merged-two`), flags).toBeNull();
+    }
+    expect(check('git branch -D unmerged')).toBeNull(); // same-tip preserves it.
+    expect(check('git branch -D unmerged same-tip')).toContain('分支有未合并提交，删除会丢失');
+    expect(check('git branch -D merged unmerged same-tip')).toContain('已拦截：');
+    git('tag', 'tag-only', 'unmerged');
+    expect(check('git branch -D unmerged same-tip')).toContain('已拦截：');
+    git('update-ref', 'refs/remotes/origin/saved', 'unmerged');
+    expect(check('git branch -D unmerged same-tip')).toBeNull();
+    expect(check('git branch -D missing')).toContain('Git 查询失败');
+    expect(check('git -C /nonexistent-sa-delete-query branch -D merged')).toContain('已拦截：');
+    expect(check('git branch -D main')).toContain('受保护分支');
+    expect(check('git branch -m merged new')).toContain('已拦截：');
+    expect(check('git branch -D merged', true)).toContain('reviewer 只读');
+    git('worktree', 'add', '-q', '--detach', worktree, 'main');
+    expect(check(`git worktree remove "${worktree}"`)).toBeNull();
+    expect(check(`git worktree remove --force "${worktree}"`)).toBeNull();
+    expect(check('git worktree prune')).toBeNull();
+    expect(check(`git worktree move "${worktree}" "${worktree}-moved"`)).toContain('已拦截：');
+    writeFileSync(join(worktree, 'untracked'), 'keep');
+    expect(check(`git worktree remove --force "${worktree}"`)).toContain('未提交改动');
+    // Non-forced deletion delegates dirty/locked checks to Git.
+    expect(check(`git worktree remove "${worktree}"`)).toBeNull();
+    const other = join(root, 'detached-worktree');
+    git('worktree', 'add', '-q', '--detach', other, 'main');
+    expect(
+      Bun.spawnSync([
+        'git',
+        '-C',
+        other,
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@l',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'detached',
+      ]).exitCode
+    ).toBe(0);
+    expect(check(`git worktree remove -f "${other}"`)).toContain('未保留的提交');
+    expect(check(`git worktree remove -f "${other}-missing"`)).toContain('Git 查询失败');
+  });
   test('G1: safe branch deletion passes; forced deletion and destructive branch flags still deny', () => {
     const repo = gitRepo(tmp());
     const check = (shell: string, root = repo) =>

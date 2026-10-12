@@ -84,7 +84,47 @@ function gitInvocation(argv, dir, env) {
   const base = (workTree ?? gitDir ?? locate(dir)).path;
   const metadata = gitDir?.path;
   const checkout = base && (workTree || gitDir ? base : checkoutOf(base));
-  return {base: base || '/__sa_unknown_cwd__', checkout, metadata, locations: [...locations, ...explicit.map(locate)], sub: argv[i], rest: argv.slice(i + 1)};
+  return {base: base || '/__sa_unknown_cwd__', directory: dir, checkout, metadata, locations: [...locations, ...explicit.map(locate)], prefix: argv.slice(1, i), sub: argv[i], rest: argv.slice(i + 1)};
+}
+// Delete only when another surviving branch owns the commits; tags/reflogs do not count.
+function safeGitDelete(sub, rest, query, dir, env) {
+  const short = letter => rest.some(v => /^-[A-Za-z]+$/.test(v) && v.includes(letter));
+  const force = short('f') || rest.includes('--force') || short('D');
+  const branch = sub === 'branch' && (short('d') || short('D') || rest.includes('--delete'));
+  const worktree = sub === 'worktree' && ['remove', 'prune'].includes(rest[0]);
+  if (!branch && !worktree) return undefined;
+  if (branch && (['m', 'M', 'c', 'C'].some(short) || rest.some(v => ['--move', '--copy'].includes(v)))) return undefined;
+  if (!force) return null; // Git itself refuses unsafe non-forced deletion.
+  const reachable = (tip, excluded = []) => {
+    const refs = query(['for-each-ref', '--format=%(refname)%09%(symref)', `--contains=${tip}`, 'refs/heads', 'refs/remotes']);
+    return refs !== null && refs.split('\n').some(line => {
+      const [ref, symbolic] = line.split('\t');
+      return ref && !symbolic && !excluded.includes(ref);
+    });
+  };
+  try {
+    if (branch) {
+      const remote = short('r') || rest.includes('--remotes');
+      const refs = rest.filter(v => !v.startsWith('-')).map(v => `refs/${remote ? 'remotes' : 'heads'}/${v}`);
+      if (refs.length && refs.every(ref => reachable(ref, refs))) return null;
+      return message('删除分支', '分支有未合并提交，删除会丢失（或 Git 查询失败）');
+    }
+    if (rest[0] === 'prune') return null;
+    const targets = rest.slice(1).filter(v => !v.startsWith('-'));
+    if (targets.length === 1 && !/[$`*?\[\]{}]|__sa_/.test(targets[0])) {
+      const target = path.resolve(dir, expand(targets[0], env));
+      // Inspect the actual checkout, not an inherited alternate index or Git directory.
+      const cleanEnv = Object.fromEntries(Object.entries({...process.env, ...env}).filter(([key]) => !key.startsWith('GIT_')));
+      const inspect = args => {
+        const r = spawnSync('git', ['-C', target, ...args], {encoding: 'utf8', timeout: 3000, env: {...cleanEnv, GIT_OPTIONAL_LOCKS: '0'}});
+        return r.status === 0 ? r.stdout.trim() : null;
+      };
+      const status = inspect(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']);
+      const head = inspect(['rev-parse', '--verify', 'HEAD']);
+      if (status === '' && head && reachable(head)) return null;
+    }
+    return message('删除工作树', '工作树有未提交改动或未保留的提交（或 Git 查询失败）');
+  } catch { return message('删除 git 对象', 'Git 安全查询失败'); }
 }
 const currentBranch = dir => {
   const r = spawnSync('git', ['-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], {encoding: 'utf8', timeout: 3000, env: {...process.env, GIT_OPTIONAL_LOCKS: '0'}});
@@ -246,7 +286,7 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
       return message('通过 kill 向一组进程发信号', '会选择一组进程或影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
   }
   if (effect === 'git') {
-    const {base, checkout, metadata, locations, sub, rest} = gitInvocation(argv, dir, env);
+    const {base, directory, checkout, metadata, locations, prefix, sub, rest} = gitInvocation(argv, dir, env);
     const owned = file => taskOwnership(file, dir, root, env, true) === 'repository';
     if (sub === 'init' && !(reviewer && root && within(resolvePath(base), resolvePath(root)))) return null;
     if (sub === 'push') return message(`执行 git ${sub}`, '会改写共享的远端版本历史');
@@ -256,7 +296,12 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
     const matches = pattern => pattern && rest.some(word => new RegExp(pattern).test(word));
     const destructive = !query && (matches(gitEffects.forceFlags) || matches(gitEffects.destructiveFlags[sub])
       || destructiveRule && (!destructiveRule.pattern || matches(destructiveRule.pattern)) && !matches(destructiveRule.unless));
-    if (destructive && (locations.some(location => !owned(location.path)) || !owned(checkout || base)))
+    const deletion = safeGitDelete(sub, rest, args => {
+      const r = spawnSync('git', [...prefix, ...args], {cwd: dir, encoding: 'utf8', timeout: 3000, env: {...process.env, ...env, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1'}});
+      return r.status === 0 ? r.stdout.trim() : null;
+    }, directory, env);
+    if (deletion) return deletion;
+    if (destructive && deletion === undefined && (locations.some(location => !owned(location.path)) || !owned(checkout || base)))
       return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
     if (sub === 'config' && !query) {
       if (base.startsWith('/__sa_unknown_cwd__')) return targetReason('overwrite', '', dir, root, env, reviewer, advisory);
@@ -269,10 +314,6 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
       return message('在被审仓库执行 git 写入', 'reviewer 只读，提交或修改会污染评审对象', '只查询仓库，在临时目录运行测试');
     const why = gitReason(['git', sub, ...rest], base);
     if (why) return message(`执行 git ${sub}`, '会改写共享的版本历史', undefined, {kind: why});
-    if (sub === 'branch' && destructive && rest.some(v => /^-[a-zA-Z]*[dD]|^--delete$/.test(v))) {
-      const branch = rest.find(v => !v.startsWith('-'));
-      if (branch && branch !== currentBranch(dir)) return message('删除分支', '无法确认这是本任务拥有的分支', undefined, {kind: '非本任务分支'});
-    }
   }
   return null;
 }
