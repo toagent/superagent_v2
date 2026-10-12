@@ -1,5 +1,15 @@
 import { describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
@@ -157,25 +167,17 @@ describe('FC failure classification', () => {
       expect(d.debt[0]).toContain('/tmp/accept.log');
     }
   });
-  test('same finding after two repairs becomes debt, while strict/G2 remains held', () => {
+  test('delivery-truth: same blocker after two repairs stays blocked in G1/strict/G2', () => {
     const r = R('FAIL', [
-      f('high', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' }),
+      f('blocker', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' }),
     ]);
     const input = { reviews: [r, r, r], rechecks: [C('a'), C('b'), C('c')], risk: 'G1' };
     expect(decide({ ...input, reviews: [r, r], rechecks: [C('a'), C('b')] }).verdict).toBe('fix');
-    const d = decide(input);
-    expect(d.verdict).toBe('pass');
-    expect(d.ledger.debt[0]).toMatchObject({
-      id: 'stable',
-      repair_rounds: 2,
-      debt_reason: 'repair_limit',
-      failure_class: 'product',
-    });
-    for (const protectedInput of [{ strict: true }, { risk: 'G2' }])
+    for (const protectedInput of [{}, { strict: true }, { risk: 'G2' }])
       expect(decide({ ...input, ...protectedInput })).toMatchObject({
         verdict: 'escalate',
         reason: 'review_failed+review_limit',
-        ledger: { blocking: [{ id: 'stable' }], debt: [] },
+        ledger: { blocking: [{ id: 'stable', repair_rounds: 2 }], debt: [] },
       });
     const newer = R('FAIL', [f('blocker', { id: 'new', evidence: '/tmp/new.log' })]);
     expect(decide({ ...input, reviews: [R('PASS'), R('PASS'), newer] }).verdict).toBe('escalate');
@@ -289,7 +291,7 @@ describe('FC failure classification', () => {
       expect.arrayContaining(['fixture-id', 'baseline-id'])
     );
   });
-  test('FC-R1-02: repair-limit debt cannot bypass skipped-review reuse checks', () => {
+  test('FC-R1-02: unresolved products cannot bypass skipped-review reuse checks', () => {
     const r = R('FAIL', [
       f('high', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' }),
     ]);
@@ -317,8 +319,8 @@ describe('FC failure classification', () => {
           verdict: 'escalate',
           reason: 'no_change',
           ledger: {
-            blocking: [],
-            debt: [{ id: 'stable', repair_rounds: 2, debt_reason: 'repair_limit' }],
+            blocking: [{ id: 'stable', repair_rounds: 2 }],
+            debt: [],
           },
         });
       }
@@ -356,7 +358,7 @@ describe('FC failure classification', () => {
       failures: [{ failure_class: 'product' }],
     });
   });
-  test('third validation of the same product command stops repairs and proceeds to review only outside strict/G2', () => {
+  test('delivery-truth: third product validation stops repairs without advancing in G1/strict/G2', () => {
     const root = tmp(),
       repo = gitRepo(root),
       art = join(root, 'artifacts');
@@ -373,9 +375,9 @@ describe('FC failure classification', () => {
       );
     const path = planFile(root, 'false');
     for (const [mode, risk, expected] of [
-      ['milestone', 'G1', 'advance'],
-      ['strict', 'G1', 'repair'],
-      ['milestone', 'G2', 'repair'],
+      ['milestone', 'G1', 'suspend'],
+      ['strict', 'G1', 'suspend'],
+      ['milestone', 'G2', 'suspend'],
     ]) {
       const p = JSON.parse(readFileSync(path, 'utf8'));
       p.mode = mode;
@@ -387,10 +389,16 @@ describe('FC failure classification', () => {
         { ARTIFACTS_DIR: art }
       );
       expect(result.out).toMatchObject({ ok: false, disposition: expected });
-      if (expected === 'advance')
-        expect(result.out).toMatchObject({
-          failures: [{ failure_class: 'product', repair_rounds: 2, debt_reason: 'repair_limit' }],
-        });
+      expect(result.code).toBe(1);
+      expect(result.out).toMatchObject({
+        reason: 'acceptance_failed+review_limit',
+        decision: { kind: 'block' },
+        failures: [{ failure_class: 'product' }],
+      });
+      const check = result.out as Parameters<typeof decide>[0]['rechecks'][number];
+      expect(
+        decide({ reviews: [R('PASS'), R('PASS'), R('PASS')], rechecks: [check, check, check] })
+      ).toMatchObject({ verdict: 'escalate', reason: 'acceptance_failed+review_limit' });
     }
   });
 });
@@ -576,7 +584,7 @@ describe('gate rules', () => {
       reason: 'review_incomplete',
     });
   });
-  test('ledger: R2 漏掉 R1 高危仍阻塞，R3 两轮修复后非 strict 转债', () => {
+  test('ledger: R2 漏掉 R1 高危仍阻塞，R3 两轮修复后仍须升级', () => {
     const r1 = R('FAIL', [f('high', { id: 'R1-1', file: 'k.ts', line: 9 })]);
     const l = ledgerOf([r1, R('PASS')], 'G1');
     expect(l.blocking).toMatchObject([
@@ -595,8 +603,9 @@ describe('gate rules', () => {
         risk: 'G1',
       })
     ).toMatchObject({
-      verdict: 'pass',
-      ledger: { blocking: [], debt: [{ id: 'R1-1', debt_reason: 'repair_limit' }] },
+      verdict: 'escalate',
+      reason: 'review_inconsistent+review_limit',
+      ledger: { blocking: [{ id: 'R1-1' }], debt: [] },
     });
   });
   test('ledger: 新增项伪装 carry-over——未知 id 不扩大阻塞集合，只按新发现记债', () => {
@@ -1930,6 +1939,103 @@ describe('sa-check script', () => {
     );
     go('diff-m1-r2');
     expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\nc\nu\n');
+  });
+  test('delivery-truth: cache binds filtered command environment and private context, never legacy identity', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      p = join(root, 'plan.json');
+    const counter = join(root, 'n'),
+      art = join(root, 'art'),
+      cache = join(art, 'accept-cache');
+    const cmd = `echo x >> ${counter}; test "$SA_REVIEW_MODE" = good`;
+    const check = { cmd, timeout_s: 5, cache: true };
+    writeFileSync(p, JSON.stringify({ packages: [{ id: 'a', accept: [check] }] }));
+    const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+    mkdirSync(cache, { recursive: true });
+    const legacy = hash([sh('git rev-parse HEAD^{tree}', repo).trim(), cmd, 5, hash([])]);
+    writeFileSync(join(cache, legacy), JSON.stringify({ tag: 'legacy', failure: null }));
+    const sentinel = 'private-environment-sentinel-ARCH-R1-01';
+    const go = (tag: string, mode = 'good', extra: Record<string, string> = {}) =>
+      runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag }, SCRIPT, {
+        SA_REVIEW_MODE: mode,
+        SA_CACHE_SENTINEL: sentinel,
+        ...extra,
+      });
+    // A legacy pass must not hide a real failure.
+    expect(go('legacy-rejected', 'bad').out).toMatchObject({ ok: false });
+    expect(go('first').out).toMatchObject({ ok: true });
+    expect(go('same').out).toMatchObject({ ok: true });
+    expect(
+      go('excluded', 'good', {
+        INPUTS_UNUSED: 'changed',
+        WORKFLOW_ID: 'changed',
+        SA_COORD_ADMISSION: 'changed',
+        SUPERAGENT_ROLE: 'changed',
+      }).out
+    ).toMatchObject({ ok: true });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
+    expect(go('changed', 'worse').out).toMatchObject({ ok: false });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
+    const keyPath = join(cache, '.key'),
+      key = readFileSync(keyPath);
+    expect(key.length).toBe(32);
+    expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+    for (const dir of [art, cache])
+      for (const file of readdirSync(dir)) {
+        const path = join(dir, file);
+        if (path === keyPath || !statSync(path).isFile()) continue;
+        const bytes = readFileSync(path);
+        expect(bytes.includes(key)).toBe(false);
+        expect(bytes.toString()).not.toContain(sentinel);
+        expect(bytes.toString()).not.toContain(key.toString('hex'));
+        expect(bytes.toString()).not.toContain(key.toString('base64'));
+      }
+    unlinkSync(keyPath);
+    expect(go('lost-context').out).toMatchObject({ ok: true });
+    expect(readFileSync(keyPath).equals(key)).toBe(false);
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
+    writeFileSync(join(repo, 'dirty.txt'), 'dirty');
+    expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
+  });
+  test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      p = planFile(root, 'true');
+    const art = join(root, 'art');
+    mkdirSync(art);
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => !k.startsWith('INPUTS_') && k !== 'WORKFLOW_ID')
+    );
+    const children = [1, 2, 3].map(i =>
+      Bun.spawn(['bun', SCRIPT], {
+        cwd: repo,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: {
+          ...inherited,
+          ARTIFACTS_DIR: art,
+          INPUTS_KIND: 'accept',
+          INPUTS_PLAN: p,
+          INPUTS_PKGS: 'a',
+          INPUTS_TAG: `parallel-${i}`,
+        },
+      })
+    );
+    for (const child of children) {
+      const [code, output, error] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(error).toBe('');
+      expect(code).toBe(0);
+      expect(JSON.parse(output)).toMatchObject({ ok: true });
+    }
+    const cache = join(art, 'accept-cache');
+    expect(readdirSync(cache).filter(f => f !== '.key')).toHaveLength(1);
+    expect(readFileSync(join(cache, '.key')).length).toBe(32);
+    expect(statSync(join(cache, '.key')).mode & 0o777).toBe(0o600);
   });
   test('P2: cached failures survive cumulative checks; contract and environment changes rerun', () => {
     const root = tmp(),

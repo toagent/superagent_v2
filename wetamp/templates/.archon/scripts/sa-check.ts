@@ -1,10 +1,12 @@
 // superagent 确定性节点（bun）：INPUTS_KIND 选择环境/验收/交付判定/合入命令；永不 push。
 import reasons from './reasons.json';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  linkSync,
+  unlinkSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -149,9 +151,30 @@ const emit = (o: unknown): void => {
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
 
+// Publish a complete private key atomically; concurrent nodes share the winner's context.
+function cacheKey(): Buffer {
+  const dir = join(artifacts, 'accept-cache');
+  const path = join(dir, '.key');
+  mkdirSync(dir, { recursive: true });
+  if (!existsSync(path)) {
+    const temp = join(dir, `.key-${randomBytes(16).toString('hex')}`);
+    writeFileSync(temp, randomBytes(32), { mode: 0o600, flag: 'wx' });
+    try {
+      linkSync(temp, path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    } finally {
+      unlinkSync(temp);
+    }
+  }
+  const key = readFileSync(path);
+  if (key.length !== 32) throw new Error('invalid acceptance cache key');
+  return key;
+}
+
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
- * 复用本 run 的结果；外写、依赖时间或随机性的命令须声明 cache:false，每次实跑。
+ * 复用本 run 的结果；身份仅证明传入环境，外部可变资源须声明 cache:false，每次实跑。
  */
 function run(
   checks: Check[],
@@ -173,11 +196,27 @@ function run(
               !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k)
           )
         );
-  const tree = envKey && git('rev-parse', 'HEAD^{tree}').trim();
+  const tree = artifacts && envKey && git('rev-parse', 'HEAD^{tree}').trim();
+  const environment =
+    tree && checks.some(c => c.cache !== false)
+      ? createHmac('sha256', cacheKey())
+          .update(
+            JSON.stringify(
+              Object.keys(commandEnv)
+                .sort()
+                .map(k => [k, commandEnv[k]])
+            )
+          )
+          .digest('hex')
+      : '';
   for (const c of checks) {
     const hit =
       tree && c.cache !== false
-        ? join(artifacts, 'accept-cache', sha(JSON.stringify([tree, c.cmd, c.timeout_s, envKey])))
+        ? join(
+            artifacts,
+            'accept-cache',
+            sha(JSON.stringify(['hmac-v1', tree, c.cmd, c.timeout_s, envKey, environment]))
+          )
         : '';
     if (hit && existsSync(hit)) {
       const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
@@ -363,7 +402,7 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   const scopeIds = (env('SCOPE_PKGS') || env('PKGS')).split(',');
   const covered = p.packages.filter(k => scopeIds.includes(k.id));
   const checks = pkgs.flatMap(k => k.accept);
-  // 缓存目录在本 run 的 ARTIFACTS_DIR 下，进程环境由同一 engine 给出；键里只放 plan 声明的环境检查
+  // 声明环境契约与实际传入环境分别绑定；缓存上下文只属于本 run 的 ARTIFACTS_DIR。
   const envKey = sha(JSON.stringify(environmentChecks(p)));
   const dirty = git('status', '--porcelain').trim();
   const failures: CheckFailure[] = [];
@@ -393,31 +432,12 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
       : { risk: env('RISK') || null, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
-  // On the final allowed round, stop dispatching repairs but still run the reviewer.
+  // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
     Array.from(
       { length: MAX_ROUNDS },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
-  if (reviewRound === MAX_ROUNDS && scope.risk !== 'G2' && p.mode !== 'strict')
-    for (const f of failures) {
-      if (f.failure_class !== 'product') continue;
-      let repairs = 0;
-      for (let i = reviewRound - 1; i >= 1; i--) {
-        const path = join(artifacts, `diff-${env('MILESTONE')}-r${String(i)}.json`);
-        if (!existsSync(path)) break;
-        const previous = JSON.parse(readFileSync(path, 'utf8')) as Accept;
-        if (
-          !previous.failed?.includes(f.command) ||
-          failureClass(previous.failures?.find(v => v.command === f.command)?.failure_class) !==
-            'product'
-        )
-          break;
-        repairs++;
-      }
-      if (repairs >= MAX_ROUNDS - 1)
-        Object.assign(f, { repair_rounds: repairs, debt_reason: 'repair_limit' });
-    }
   const baseResults =
     base && failed.length
       ? probe(
@@ -445,6 +465,12 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : [],
     join(artifacts, `${tag}.coder.json`)
   );
+  if (reviewRound >= MAX_ROUNDS && result.disposition === 'repair')
+    Object.assign(result, {
+      disposition: 'suspend',
+      reason: 'acceptance_failed+review_limit',
+      decision: { ...result.decision, kind: 'block', reason: 'acceptance_failed+review_limit' },
+    });
   saveCoder(tag, coder, result.error_class_ignored);
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
@@ -691,12 +717,8 @@ export function ledgerOf(
         Object.assign(known, {
           failure_class: classification,
           evidence: f.evidence,
-          blocks: !nonProduct && known.eligible && known.debt_reason !== 'repair_limit',
-          debt_reason: nonProduct
-            ? 'non_product'
-            : known.debt_reason === 'repair_limit'
-              ? 'repair_limit'
-              : undefined,
+          blocks: !nonProduct && known.eligible,
+          debt_reason: nonProduct ? 'non_product' : undefined,
         });
       } else
         open.set(f.id, {
@@ -716,12 +738,6 @@ export function ledgerOf(
     }
     if (r) base = false;
   });
-  if (risk !== 'G2' && !options.strict)
-    for (const e of open.values())
-      if (e.blocks && (e.repair_rounds ?? 0) >= MAX_ROUNDS - 1) {
-        e.blocks = false;
-        e.debt_reason = 'repair_limit';
-      }
   const strip = (b: boolean): Entry[] =>
     [...open.values()]
       .filter(e => e.blocks === b)
@@ -816,15 +832,11 @@ export function deliveryDecision(input: {
     check.workspace_clean !== false &&
     (check.ok ||
       ((check.failed?.length ?? 0) > 0 &&
-        check.failed?.every(
-          command =>
-            ledger.debt.some(e => e.command === command) ||
-            check.failures?.some(f => f.command === command && f.debt_reason === 'repair_limit')
+        check.failed?.every(command =>
+          ledger.debt.some(e => e.command === command && e.debt_reason === 'non_product')
         )));
   if (!input.reviews) {
     const debt = debtOf(reviews, ledger);
-    for (const f of check.failures ?? [])
-      if (f.debt_reason === 'repair_limit') debt.push(`${f.command} [repair_limit] ${f.evidence}`);
     return accepted ? out('advance', null, debt) : out('repair', 'acceptance_failed', debt);
   }
   if (input.expired) return out('block', 'deadline');
