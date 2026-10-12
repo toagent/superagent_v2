@@ -335,6 +335,14 @@ test('row source resolves relative plan, milestone and first-pass from actual ga
       { nodeId: 'repair-b', state: 'skipped' },
     ],
   };
+  expect(rowOf(l, run, { now }).engine!.firstPass).toBe(false);
+  for (const m of ['m1', 'm2'])
+    writeFileSync(
+      join(art, `gate-${m}-r1.json`),
+      JSON.stringify({
+        decision: { kind: 'advance', reason: null, evidence: [], debt: [] },
+      })
+    );
   expect(rowOf(l, run, { now }).engine).toMatchObject({
     title: '任务一 +1',
     milestones: ['m1', 'm2'],

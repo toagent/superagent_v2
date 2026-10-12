@@ -218,6 +218,7 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
             .min(1)
             .parse(JSON.parse(override) as unknown),
           out,
+          input,
         ]
       : [
           'codex',
@@ -236,7 +237,7 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
           'features.multi_agent=false',
           '-o',
           out,
-          '-',
+          input,
         ];
     const day = budget.day;
     memoryWrite(() => ({
@@ -260,7 +261,8 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
       ],
       {
         cwd: dir,
-        stdin: new TextEncoder().encode(input),
+        // Jobs deliberately close stdin; pass the bounded metadata prompt explicitly.
+        stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'ignore',
         env: { ...process.env, SUPERAGENT_ROLE: 'general' },

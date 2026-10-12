@@ -1,6 +1,6 @@
 // A command fixture, never a model. The job wrapper and stdout wire format are the subject under test.
 import { appendFileSync, writeFileSync } from 'node:fs';
-const input = await new Response(Bun.stdin.stream()).text();
+const input = process.argv[3];
 const data = JSON.parse(input.slice(input.lastIndexOf('\n') + 1)) as {
   episode: { id: string; project: string };
 };

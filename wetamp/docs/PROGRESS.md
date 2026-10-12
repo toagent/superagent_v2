@@ -607,7 +607,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 
 - **数据流**：`supervise-tick` 从已有 ledger、Archon `--events`、asks、验收/门禁 JSON 的表格 finding、incident 链接与 BT9 usage 投影摘要，按 run/job id 原子存一次 `memory/episodes/*.json`（≤8KB）。五类规则分诊：engine 直接写 `memory/mechanize/`；transient 仅计数（只读出口返回各分类episode数）；plan/project/role 进入反思队列。摘要不保存 prompt、转录正文或凭据；私有项目只分诊。终态计分另读当前验收原因，不用早期挂起摘要替代最终证据。
 - **复用与 P4**：复用 `archonJson`、原生 `etaInput` 事件折叠、`classifyRun` 的证据优先判定、`reasons.ts` 的 owner/determinism、`cockpitSignals`、BT9 `workflowRoles/nodeRole`、`callsOf/readUsage`、`job exec --role general`、现有 flock 和原子写入。复用 workflows 已安装的 Zod，不添加依赖。只取 ACE 增量 helpful/harmful、ExpeL ADD/EDIT/UPVOTE 和带条件的条目；不安装 ACE Python 运行器、向量库或轨迹采集器：当前需求是精确 scope/tag 匹配，现有 JSONL 与来源足够。
-- **反思与预算**：单个后台工作进程持有 flock；输入摘要与最多30条适用经验，≤8000 bytes，输出≤1024 bytes，采用 bytes 作为保守 token 上界。`memory/config.json` 的 `daily_tokens` 默认 5,000,000；每次先预留9216 tokens，按 Codex `turn.completed.usage` 的 input+output结算（cached 已含在 input）。无有效 usage 保留预留，余额不足则不启动、排到次日、只读出口标黄。实际 provider usage 如超过预留仍如实记账并停止后续启动；原生模型上下文开销尚未由本包真实调用校准。模型来自 tiers general/chatgpt，推理 low；`SUPERAGENT_REFLECT_CMD` 接受 JSON argv 数组，追加结果文件路径，用于 fake 或受控替代命令。
+- **反思与预算**：单个后台工作进程持有 flock；输入摘要与最多30条适用经验，≤8000 bytes，输出≤1024 bytes，采用 bytes 作为保守 token 上界。`memory/config.json` 的 `daily_tokens` 默认 5,000,000；每次先预留9216 tokens，按 Codex `turn.completed.usage` 的 input+output结算（cached 已含在 input）。无有效 usage 保留预留，余额不足则不启动、排到次日、只读出口标黄。实际 provider usage 如超过预留仍如实记账并停止后续启动；原生模型上下文开销尚未由本包真实调用校准。模型来自 tiers general/chatgpt，推理 low；`SUPERAGENT_REFLECT_CMD` 接受 JSON argv 数组，追加结果文件路径与受限元数据 prompt（job 关闭 stdin），用于 fake 或受控替代命令。
 - **中环**：项目/type经验进入包 brief，角色经验进入专属命令；多包节点使用 brief 副本，共享≤600 bytes（保守≤600 tokens）、≤5条、≤2试用条目，写入 `engine.json.lessons`。经验数据不进入 `engineHash()`；检索失败记一行日志后继续生成。`SUPERAGENT_MEMORY=off` 关闭整条经验链路（注入、反思、计划lint及tick采集），只读出口仍可读取既存数据。计划lint按项目/tag/规模/风险/编码模型取p50/p90与plan经验；有效样本≥5才拒绝明显不足的预算或截止，并提供修正值，`--lint-override "理由"`连同警告写入run输出和ledger；拒绝也写launch-failures。
 - **先验与生命周期**：先验只用 completed/failed 的已知耗时，token缺回执保留null，不作零样本；单包统计run耗时和可归属总token，多包只采各包code/repair实测，不猜分摊共享节点/会话；并行包截止建议取最大p50。长耗时基准排除本run。注入命中更新last_hit；终态每run计一次，同原因码再失败harmful+1，否则helpful+1；helpful≥2且harmful=0稳定，harmful≥2退役并提出机制化，30天未命中退役，scope活跃最多30条。EV3负责机制应用后标记mechanized；本包不执行引擎自修。
 - **I1/I6**：E1绿验收与自报错误、E2重复提问/同指纹确定性重复重试、M2-01、xiaopan 57e6均走engine机制通道，不由反思改写判定；E5继续复用原生base preflight。project端口夹具经过fake反思、同项目同类型brief注入、跨项目隔离、两次复发退役并写机制需求。另覆盖日预算/次日恢复、单调用锁、注入上限、总开关/指纹、隐私、schema和输出上限、未知用量、挂起归档后终态计分及真实CLI lint台账。
@@ -1082,7 +1082,6 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 旧 run/生产影响与遗留：新生成 run 才加载本次模板与脚本，既有冻结 run 不自动更新；不迁移状态，不改缓存默认值、末端评审、MAX_ROUNDS、risk_paths、恢复逻辑、packages 或生产目录。提示词未改变 workflow YAML，两个 golden 用例通过，无需重生成；本包只编码自检，astra 单轮评审、主控集成实测与上线交主控。
 - 自检：隔离 HOME、SUPERAGENT_HOME、ARCHON_HOME、XDG_STATE_HOME 与 supervisor 路径后，指定两文件测试 357 pass/1 fail（46.94s，`/tmp/ra-accept.3QlPKB/tests.log`）；唯一失败为新增测试的 Bun `toMatchObject` 嵌套数组 matcher 替换实际字符串，独立最小复现确认，改为 `toEqual` 后 RA 两条 2 pass/0 fail（`focused.log`），不重跑整套、不派产品修复。`bunx tsc --noEmit -p wetamp` exit 0（`tsc.log`），diff 检查通过；除测试外净增 27 行，未超 +50 预算。
 
-
 ## B1-HF10：milestone retry 夹具追随 FC 契约与测试时限核验
 
 - **问题与被推翻的假设 / I1、I3、I6、P1–P4**：`662f8b0d..5afcfe66` 的 FC 有意增加 reviewer finding 必填 `failure_class`、`command`，生成器 fake 输出已同步，但 HF10 注入的 r2/r3 评审漏字段，Archon 在 `review-m1-r2` 按 output_format 拒绝，未到达 gate；不是引擎重试损坏。旧 `/tmp/hf10-iso.log` 的失败与 schema 验证器一致：两项缺失均报 required property。另一旧假设是 G1 第三轮必挂起；FC 现将非 strict/G2 的修复到限 finding 记 `repair_limit` debt 放行，源码及独立 schema/decide 探针均证实该语义。
@@ -1090,7 +1089,6 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **时限环境限制 / 未完成项**：本机 Bun `1.4.3 (c6da4a4d3)` 的裸 `bun test` 不应用该 timeout 键；仓库外及 wetamp 内两个独立 5200ms 探针均在 5000ms 被终止，不能宣称默认 30 秒已生效。wetamp 内测试正常发现且无根 bunfig 的 packages root/coverage 行为；临时探针交付前已删除。保留配置中的限制说明，当前须显式 `bun test --timeout 30000`；不升级 Bun，不为绕过此限制扩展 preload/runner 或修改 hook 测试。该项交主控裁决，配置声明本身不是生效证据。
 - **自检与证据**：隔离 `SUPERAGENT_HOME`、`ARCHON_HOME`、`XDG_STATE_HOME`、`SA_LAUNCHD_DIR`、`AGENT_SUPERVISOR_STATE` 到 `/tmp/b1-hf10.0wIzhW/`，调用 `cd wetamp && bun test --timeout 120000 tests/hf10-retry.test.ts`：3 pass/0 fail、48 assertions；`cd wetamp && bun test tests/sa-check.test.ts tests/generate.test.ts`：358 pass/0 fail、1204 assertions（含两份 golden）；`bunx tsc --noEmit -p wetamp` exit 0。完整日志、退出码、schema/decide 探针和默认时限失败证据均在该目录。运行时证据沿用 wait 的 state/node、gate 台账与 code trace，不新增监测路径；未全测、不重复跑重型 E2E。
 - **旧 run / 生产影响与遗留**：测试配置与夹具变更不改变产品契约、冻结生成身份、旧 run 或生产状态；仅本 worktree、本分支交付。未操作生产 checkout/台账、真实 supervisor、提醒事项或 launchd，未委派、评审、push 或合并。HF8b 信号时序 flaky 仍为已知未处理；主控集成全测与 astra 独立评审仍未覆盖，默认时限不生效明确保留为环境限制。
-
 
 ## B1-REC：selftest recover 回执的直接父进程契约
 
