@@ -1,5 +1,12 @@
 import { afterAll, expect } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
@@ -16,6 +23,7 @@ const installBytes = (): Buffer | undefined =>
 const originalInstall = installBytes();
 afterAll(async () => {
   for (const r of roots.splice(0)) await removeTempTree(r);
+  repoTemplate = undefined;
   expect(existsSync(callerInstall)).toBe(originalInstall !== undefined);
   if (originalInstall) expect(installBytes()?.equals(originalInstall)).toBe(true);
 });
@@ -37,11 +45,25 @@ export const sh = (cmd: string, cwd: string, env: Record<string, string> = {}): 
 };
 
 /** main 分支上一个提交的 repo，外加 bare origin（--branch 需要 origin；不 push）。 */
+let repoTemplate: string | undefined;
 export function gitRepo(root: string): string {
+  if (!repoTemplate) {
+    const seed = tmp();
+    sh(
+      `git init -q -b main repo && echo hi > repo/README.md && git -C repo add README.md && git -C repo -c user.name=t -c user.email=t@l commit -qm init && git clone -q --bare repo origin.git && git -C repo remote add origin "${seed}/origin.git" && git -C repo fetch -q origin`,
+      seed
+    );
+    repoTemplate = seed;
+  }
+  // Copy the read-only seed, including objects and refs: every caller owns all
+  // mutable files and its origin; no shared worktrees or writable hard links.
   const repo = join(root, 'repo');
-  sh(
-    `git init -q -b main repo && echo hi > repo/README.md && git -C repo add README.md && git -C repo -c user.name=t -c user.email=t@l commit -qm init && git clone -q --bare repo origin.git && git -C repo remote add origin "${root}/origin.git" && git -C repo fetch -q origin`,
-    root
+  cpSync(join(repoTemplate, 'repo'), repo, { recursive: true });
+  cpSync(join(repoTemplate, 'origin.git'), join(root, 'origin.git'), { recursive: true });
+  const config = join(repo, '.git/config');
+  writeFileSync(
+    config,
+    readFileSync(config, 'utf8').replace(`${repoTemplate}/origin.git`, `${root}/origin.git`)
   );
   return repo;
 }

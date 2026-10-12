@@ -1478,7 +1478,7 @@ const supervisorPy = (): string =>
   process.env.SA_SUPERVISOR ??
   join(homedir(), '.ai-agent-shared', 'skills', 'agent-supervisor', 'scripts', 'supervisor.py');
 
-function supervisor(args: string[]): string {
+export function supervisor(args: string[]): string {
   const p = Bun.spawnSync(['python3', supervisorPy(), ...args], {
     stdout: 'pipe',
     stderr: 'pipe',

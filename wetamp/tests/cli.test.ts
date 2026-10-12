@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
 import * as relay from '../src/relay-quota';
 import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
@@ -20,6 +20,7 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import * as fs from 'node:fs';
 import * as archonMod from '../src/archon';
+import * as cliMod from '../src/cli';
 import * as configMod from '../src/config';
 import type { RunView } from '../src/archon';
 import {
@@ -57,8 +58,10 @@ import { loadPlan, milestones, type Plan } from '../src/plan';
 import { detailOf, redact as boardRedact } from '../src/board/detail';
 import { rowOf } from '../src/board/data';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
+const supervisorTransport = cliMod.supervisor;
 const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | null = null) => ({
   kind,
   reason,
@@ -66,7 +69,24 @@ const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | 
   debt: [],
 });
 let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
+const originalMemory = process.env.SUPERAGENT_MEMORY;
+const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
+beforeEach(() => {
+  // Scratch commits must not execute the operator's unrelated global Git hooks
+  // or signing setup. Repository-local configuration still applies.
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+});
+const fixtureSpies: { mockRestore(): void }[] = [];
+let fixtureCaller: ReturnType<typeof coordModule.caller> | undefined;
+const restoreFixtures = (): void => {
+  for (const spy of fixtureSpies.splice(0).reverse()) spy.mockRestore();
+};
 afterEach(() => {
+  restoreFixtures();
+  if (originalMemory === undefined) delete process.env.SUPERAGENT_MEMORY;
+  else process.env.SUPERAGENT_MEMORY = originalMemory;
+  if (originalGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+  else process.env.GIT_CONFIG_GLOBAL = originalGitConfig;
   engineBoundary?.mockRestore();
   engineBoundary = undefined;
 });
@@ -308,6 +328,7 @@ function stub(responses: RunView[]): {
   ledger: Ledger;
   calls: () => string[];
 } {
+  restoreFixtures();
   const root = tmp();
   sh('git init -q -b fixture', root);
   // These tests isolate recovery calls; cleanEngine itself has real dirty/committed fixtures in coord.test.ts.
@@ -321,37 +342,38 @@ function stub(responses: RunView[]): {
   const bin = join(dir, 'archon');
   writeFileSync(
     bin,
-    `#!/usr/bin/env bash
-echo "$*" >> "${dir}/calls"
-if [ "$1 $2" = "workflow get" ]; then
-  f=$(ls "${dir}"/get-*.json | head -1); cat "$f"
-  [ "$(ls "${dir}"/get-*.json | wc -l)" -gt 1 ] && mv "$f" "${dir}/used/"
-  exit 0
-fi
-[ "$1 $2" = "workflow run" ] && {
-  for arg in "$@"; do [ "$arg" = "--adopt" ] && { echo '{"ok":true,"runId":"r2"}'; exit 0; }; done
-  echo '{"ok":true,"runId":"r"}'; exit 0;
-}
-cur=$(ls "${dir}"/get-*.json 2>/dev/null | head -1)
-if [ "$1 $2" = "workflow resume" ]; then
-  bun -e 'const f=process.argv[1], r=JSON.parse(await Bun.file(f).text());
-    if (r.status !== "completed") {r.metadata={...r.metadata, execution_owner:{host: ${JSON.stringify(hostname())}, pid: 4194305 + Date.now() % 1000000}};
-      r.started_at=new Date().toISOString(); await Bun.write(f, JSON.stringify(r));}' "$cur"
-fi
-st=$([ -n "$cur" ] && grep -o '"status":"[a-z]*"' "$cur" | head -1 | cut -d'"' -f4)
-case "$1 $2:$st" in
-  "workflow cancel:running") ;;
-  "workflow cancel:"*) echo "{\\"ok\\":false,\\"action\\":\\"cancel\\",\\"error\\":\\"Cannot cancel run with status '$st'. Only a running run has live work to stop; abandon a paused or failed run instead.\\"}"; exit 0;;
-  "workflow abandon:completed"|"workflow abandon:cancelled") echo "{\\"ok\\":false,\\"action\\":\\"abandon\\",\\"error\\":\\"Cannot abandon run with status '$st'.\\"}"; exit 0;;
-esac
-echo '{"ok":true}'
-`
+    `#!/usr/bin/env bash\nexec '${process.execPath}' '${join(import.meta.dir, 'fixtures/archon-stub.ts')}' '${dir}' "$@"\n`
   );
   chmodSync(bin, 0o755);
+  fixtureSpies.push(
+    spyOn(coordModule, 'caller').mockReturnValue((fixtureCaller ??= coordModule.caller())),
+    spyOn(archonMod, 'archon').mockImplementation((args, _cwd, intent) => {
+      if (intent) {
+        // The stub launch has no surviving executor, just like its executable entry.
+        const reservation = JSON.parse(readFileSync(intent.path, 'utf8'));
+        writeFileSync(
+          intent.path,
+          JSON.stringify({
+            ...reservation,
+            pid: 2 ** 22 + 1,
+            pid_start: 'fixture',
+            host: hostname(),
+          })
+        );
+      }
+      return fixtureArchon(dir, args);
+    }),
+    spyOn(archonMod, 'archonDetached').mockImplementation(args => {
+      fixtureArchon(dir, args);
+      return process.pid;
+    })
+  );
   const home = join(root, 'home');
   mkdirSync(join(home, 'runs'), { recursive: true });
   mkdirSync(join(home, 'archon'), { recursive: true });
   Object.assign(process.env, {
+    // Memory selection/reflection has its own tests; it must not run in CLI control fixtures.
+    SUPERAGENT_MEMORY: 'off',
     SA_ARCHON_BIN: bin,
     SUPERAGENT_HOME: home,
     ARCHON_HOME: join(home, 'archon'),
@@ -617,18 +639,13 @@ describe('HF3 latest-engine recovery', () => {
   });
   test('an unconfirmed adoption does not publish its engine or consume a recovery; repeat launch is held', () => {
     const s = setup('old');
-    const bin = join(s.dir, 'archon');
-    const original = readFileSync(bin, 'utf8');
-    writeFileSync(
-      bin,
-      original.replace('{"ok":true,"runId":"r2"}', '{"ok":false,"error":"fixture refusal"}')
-    );
+    fixtureOptions(s.dir, { adoptionReply: { ok: false, error: 'fixture refusal' } });
     const before = readFileSync(ledgerPath('sa1'), 'utf8');
     expect(captured(() => main(['resume', 'sa1'])).code).toBe(EXIT.held);
     const { intervention_events, ...unchanged } = loadLedger('sa1');
     expect(unchanged).toEqual(JSON.parse(before));
     expect(intervention_events).toMatchObject([{ action: 'resume', ok: false }]);
-    writeFileSync(bin, original);
+    fixtureOptions(s.dir, {});
     expect(captured(() => main(['resume', 'sa1'])).code).toBe(EXIT.held);
     expect(loadLedger('sa1').archon_run_id).toBe('r');
     expect(loadLedger('sa1').recoveries).toHaveLength(0);
@@ -648,6 +665,18 @@ function supervisor(root: string, answer: string): () => string[] {
   );
   writeFileSync(join(root, 'answer'), answer);
   process.env.SA_SUPERVISOR = py;
+  const source = readFileSync(py, 'utf8');
+  fixtureSpies.push(
+    spyOn(cliMod, 'supervisor').mockImplementation(args => {
+      // Custom failure/snapshot scripts still exercise the native subprocess boundary.
+      if (process.env.SA_SUPERVISOR !== py || readFileSync(py, 'utf8') !== source)
+        return supervisorTransport(args);
+      appendFileSync(join(root, 'sup-calls'), args.join(' ') + '\n');
+      if (args[0] === 'ask') return 'ask-1';
+      if (args[0] === 'ask-status') return readFileSync(join(root, 'answer'), 'utf8').trim();
+      throw new Error(`unexpected fixture supervisor command: ${args[0]}`);
+    })
+  );
   return () =>
     existsSync(join(root, 'sup-calls'))
       ? readFileSync(join(root, 'sup-calls'), 'utf8').trim().split('\n')
@@ -1071,10 +1100,7 @@ describe('run (archon stub)', () => {
     const s = stub([]),
       repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
-    writeFileSync(
-      process.env.SA_ARCHON_BIN!,
-      '#!/usr/bin/env bash\necho \'{"ok":false,"error":"fixture_launch_rejected"}\'\n'
-    );
+    fixtureOptions(s.dir, { launchReply: { ok: false, error: 'fixture_launch_rejected' } });
     const result = captured(() =>
       main(['run', fixturePlan(s.root, repo), '--fake', '--skip-selftest'])
     );
@@ -1997,14 +2023,7 @@ spyOn(config,'writeAtomic').mockImplementation((path,body)=>{
 process.exit(main(['supervise-tick']));`
     );
     // The fake engine persists cancellation before acknowledging it, independently of asks.json.
-    const bin = join(s.dir, 'archon');
-    writeFileSync(
-      bin,
-      readFileSync(bin, 'utf8').replace(
-        'echo \'{"ok":true}\'',
-        `if [ "$2" = abandon ]; then printf '%s' '${JSON.stringify(run('cancelled'))}' > "$cur"; fi\necho '{\"ok\":true}'`
-      )
-    );
+    fixtureOptions(s.dir, { persistCancellation: true });
     const child = Bun.spawnSync([process.execPath, script], {
       env: process.env,
       stdout: 'pipe',
@@ -2983,22 +3002,14 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const { s } = scenes.budget();
     supervisor(s.root, 'yes');
     tick();
-    const bin = join(s.dir, 'archon');
-    const original = readFileSync(bin, 'utf8');
-    writeFileSync(
-      bin,
-      original.replace(
-        'cur=$(ls',
-        `if [ "$1 $2" = "workflow resume" ]; then echo '{"ok":false,"executed":false}'; exit 0; fi\ncur=$(ls`
-      )
-    );
+    fixtureOptions(s.dir, { resumeReply: { ok: false, executed: false } });
     expect(tick(1)[0]).toMatchObject({ action: 'retry', ok: false });
     const grant = readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8');
     expect(tick(1)[0]).toMatchObject({ action: 'retry', ok: false });
     expect(readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8')).toBe(grant);
     expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
     expect(loadLedger('sa1').budget_grants).toHaveLength(1);
-    writeFileSync(bin, original);
+    fixtureOptions(s.dir, {});
     expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
     expect(loadLedger('sa1').budget_grants).toHaveLength(1);
   });
@@ -3165,6 +3176,7 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
     SUPERAGENT_WRITE_ROOTS: root,
     SA_ARCHON_BIN: '',
     SA_SUPERVISOR: py,
+    SUPERAGENT_MEMORY: 'off',
     AGENT_SUPERVISOR_STATE: join(root, 'supervisor'),
     XDG_STATE_HOME: join(root, 'state'),
     SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
@@ -4013,6 +4025,7 @@ test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
       // Admission belongs to the caller's home; the scratch engine claims its own scope.
       SA_COORD_ADMISSION: '',
       SA_ARCHON_BIN: '',
+      SUPERAGENT_MEMORY: 'off',
       XDG_STATE_HOME: join(root, 'state'),
       SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
       SA_SKIP_DOCTOR: '1',
@@ -4173,15 +4186,7 @@ describe('launch intents (run + supervise-tick reconcile)', () => {
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     const plan = fixturePlan(s.root, repo);
     const dir = join(s.root, 'home', 'intents');
-    // archon 桩在被调用时把意图目录拍下来
-    const bin = String(process.env.SA_ARCHON_BIN);
-    writeFileSync(
-      bin,
-      readFileSync(bin, 'utf8').replace(
-        'echo "$*" >>',
-        `ls "${dir}" > "${s.root}/at-run"; echo "$*" >>`
-      )
-    );
+    fixtureOptions(s.dir, { snapshotIntents: dir });
     expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
     expect(readFileSync(join(s.root, 'at-run'), 'utf8').trim()).toMatch(
       /^\d{8}-\d{6}-[0-9a-f]{4}\.json$/
