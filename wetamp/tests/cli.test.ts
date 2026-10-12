@@ -1183,8 +1183,12 @@ describe('run (archon stub)', () => {
       expect(attempt({ ...good, fingerprint: 'x' })).toContain(
         'selftest exit 7; log tail:\nfailure-tail'
       );
-      writeFileSync(bin, 'echo timeout-tail >&2\nexec sleep 10\n');
+      const pidfile = join(s.root, 'grandchild.pid');
+      writeFileSync(bin, `echo timeout-tail >&2\nsleep 300 & echo $! > '${pidfile}'\nwait\n`);
       expect(attempt({ ...good, fingerprint: 'x' })).toMatch(/timed out; log tail:\ntimeout-tail/);
+      const pid = Number(readFileSync(pidfile, 'utf8'));
+      expect(pid).toBeGreaterThan(0);
+      expect(() => process.kill(pid, 0)).toThrow();
       const lease = archonMod.lock(join(s.root, 'home', 'selftest.lock'));
       expect(lease.ok).toBe(true);
       if (lease.ok) lease.release();

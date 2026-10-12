@@ -789,17 +789,22 @@ function preflight(skipSelftest: boolean): void {
         console.error('preflight: runtime drift; running real selftest synchronously');
         let bin = join(WETAMP, 'scripts/selftest.sh');
         if (process.env.NODE_ENV === 'test') bin = process.env.SA_SELFTEST_BIN ?? bin;
-        // Bun kills the direct child on timeout; grandchildren may survive without group cleanup.
-        const p = Bun.spawnSync(['bash', bin], {
+        const timeout =
+          (process.env.NODE_ENV === 'test' && Number(process.env.SA_SELFTEST_TIMEOUT_MS)) ||
+          SELFTEST_TIMEOUT_MS;
+        // The supervisor stays outside the child's group so it can kill descendants and reap bash.
+        const supervisor = `use Time::HiRes qw(alarm); my $ms = shift; my $pid = fork // die "fork: $!";
+          if (!$pid) { setpgrp(0, 0) or die "setpgrp: $!"; exec "bash", @ARGV; die "exec: $!"; }
+          $SIG{ALRM} = sub { kill 'KILL', -$pid; waitpid($pid, 0); exit 124; };
+          alarm($ms / 1000); waitpid($pid, 0); exit($? & 127 ? 128 + ($? & 127) : $? >> 8);`;
+        const p = Bun.spawnSync(['perl', '-e', supervisor, String(timeout), bin], {
           env: process.env,
-          timeout:
-            (process.env.NODE_ENV === 'test' && Number(process.env.SA_SELFTEST_TIMEOUT_MS)) ||
-            SELFTEST_TIMEOUT_MS,
+          timeout: timeout + 1000,
           killSignal: 'SIGKILL',
         });
         const log = redact(p.stdout.toString() + p.stderr.toString());
         if (p.exitedDueToTimeout || p.exitCode !== 0)
-          why.message += `; selftest ${p.exitedDueToTimeout ? 'timed out' : `exit ${String(p.exitCode)}`}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
+          why.message += `; selftest ${p.exitedDueToTimeout || p.exitCode === 124 ? 'timed out' : `exit ${String(p.exitCode)}`}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
         else why = issue();
       }
     } finally {
