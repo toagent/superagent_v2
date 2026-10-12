@@ -1309,12 +1309,33 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
         )
       );
   if (!selected.length || selected.some(c => !c)) throw new Error('accept: missing acceptance evidence');
+  // Reuse engine hydration and binding semantics without making the synchronous CLI async.
+  const authority = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo);
+  const resolved = Bun.spawnSync([process.execPath, '-e', `
+    const root = ${JSON.stringify(join(import.meta.dir, '../../packages/workflows/src'))};
+    const { foldDagResumeSnapshot } = await import(root + '/dag-resume-snapshot.ts');
+    const { resolveNodeBindings } = await import(root + '/dag-executor.ts');
+    const { canonicalValueText } = await import(root + '/output-ref.ts');
+    const { run, contracts, art } = await Bun.stdin.json();
+    if (!Array.isArray(run.events)) throw new Error('accept: missing authoritative run events');
+    const snapshot = await foldDagResumeSnapshot(run.events, run.id);
+    const nodeOutputs = new Map([...snapshot.completedNodeOutputs].map(([id, out]) =>
+      [id, { ...out, state: 'completed' }]));
+    const ctx = { workflowRun: run, artifactsDir: art, stateDir: '', baseBranch: '', docsDir: '', nodeOutputs };
+    console.log(JSON.stringify(contracts.map(inputs => Object.fromEntries(Object.entries(
+      resolveNodeBindings(inputs.tag, inputs, ctx, undefined)
+    ).map(([key, value]) => [key, canonicalValueText(value)])))));
+  `], {
+    stdin: Buffer.from(JSON.stringify({ run: authority, contracts: selected, art })),
+    stdout: 'pipe', stderr: 'pipe',
+  });
+  if (resolved.exitCode !== 0)
+    throw new Error(`accept: input resolution failed: ${resolved.stderr.toString()}`);
+  const resolvedInputs = JSON.parse(resolved.stdout.toString()) as Record<string, string>[];
   mkdirSync(art, { recursive: true });
   let code = 0;
-  for (const inputs of selected) {
+  for (const inputs of resolvedInputs) {
     if (!inputs) continue;
-    const base = evidenceJson(l, art, `${inputs.base.slice(1).split('.')[0]}.json`) as { head?: string };
-    if (!base?.head) throw new Error('accept: missing generated baseline evidence');
     const prior = evidenceJson(l, art, `${inputs.tag}.json`) as Accept | undefined;
     const gate = evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.json`);
     const p = Bun.spawnSync(
@@ -1324,7 +1345,6 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
         env: {
           ...process.env,
           ...Object.fromEntries(Object.entries(inputs).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])),
-          INPUTS_BASE: base.head,
           INPUTS_TAG: `accept-${inputs.tag}`,
           ARTIFACTS_DIR: art,
         },

@@ -1,3 +1,4 @@
+import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
 import { admitExecution, resumeExecution } from '../../packages/workflows/src/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
@@ -1541,7 +1542,7 @@ describe('brief / land (archon stub)', () => {
   });
 });
 
-test('generated CLI acceptance and land preserve only approved non-product debt', () => {
+test.each([1, 2, 3])('generated CLI acceptance and land preserve only approved non-product debt R%i', round => {
   const s = stub([]), wt = gitRepo(s.root);
   const plan = JSON.parse(readFileSync(fixturePlan(s.root, wt), 'utf8')) as Plan;
   plan.packages = [plan.packages[0]!];
@@ -1564,13 +1565,21 @@ test('generated CLI acceptance and land preserve only approved non-product debt'
     working_path: wt, output_root: join(s.root, 'home'), nodes: [{ nodeId: 'land', state: 'completed' }],
   })));
   const contracts = JSON.parse(readFileSync(join(gen.dir, 'accept-inputs.json'), 'utf8')) as Record<string, string>[];
-  const input = contracts.find(c => c.tag.startsWith('diff-'))!;
+  const input = contracts.find(c => c.tag.startsWith('diff-') && c.tag.endsWith(`-r${round}`))!;
+  const producerOutput = { head: base, reviewed_head: base, diff_hash: 'previous', status: 'done', error_class: null, needs: [] };
+  const producerIds = new Set(contracts.flatMap(c => Object.values(c).map(v => parseWholeOutputRef(v)?.nodeId).filter((id): id is string => !!id)));
+  const authority = { ...run('completed', { working_path: wt, output_root: join(s.root, 'home'), nodes: [{ nodeId: 'land', state: 'completed' }] }),
+    events: [...producerIds].map(step_name => ({ step_name, event_type: 'node_completed', data: { node_output: JSON.stringify(producerOutput), structured_output: producerOutput } })),
+  };
+  const saveAuthority = () => writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(authority));
+  saveAuthority();
   const start = input.base.slice(1).split('.')[0]!;
   writeFileSync(join(art, `${start}.json`), JSON.stringify({ head: base }));
   const execute = () => {
     const p = Bun.spawnSync([process.execPath, join(gen.dir, '.archon/scripts/sa-check.ts')], {
       cwd: wt, env: { ...process.env, ...Object.fromEntries(Object.entries(input).map(([k, v]) =>
-        [`INPUTS_${k.toUpperCase()}`, v])), INPUTS_BASE: base, ARTIFACTS_DIR: art }, stdout: 'pipe', stderr: 'pipe',
+        [`INPUTS_${k.toUpperCase()}`, v])), INPUTS_BASE: base, INPUTS_PREV: 'previous',
+        INPUTS_CODER: JSON.stringify(producerOutput), INPUTS_DELTA_BASE: base, ARTIFACTS_DIR: art }, stdout: 'pipe', stderr: 'pipe',
     });
     expect({ code: p.exitCode, stderr: p.stderr.toString(), out: archonMod.lastJson(p.stdout.toString()) }).toMatchObject({ code: 0 });
     return archonMod.lastJson(p.stdout.toString())!;
@@ -1580,6 +1589,11 @@ test('generated CLI acceptance and land preserve only approved non-product debt'
   writeFileSync(join(art, `${gate}.review.json`), JSON.stringify({ status: 'PASS', findings: [], debt: [] }));
   writeFileSync(join(art, 'land.json'), JSON.stringify({ repo: wt, target: 'main', branch: 'sa/sa1', head }));
   expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
+  const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;
+  const savedEvents = authority.events;
+  authority.events = savedEvents.filter(e => e.step_name !== missing); saveAuthority();
+  expect(() => main(['accept', 'sa1'])).toThrow(/input resolution failed/);
+  authority.events = savedEvents; saveAuthority();
   writeFileSync(join(art, `${input.tag}.json`), JSON.stringify({ ...first, failures: undefined }));
   expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
   writeFileSync(join(art, `${input.tag}.json`), JSON.stringify(first));
