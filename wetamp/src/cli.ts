@@ -789,7 +789,7 @@ export function quickPlan(a: Args): string {
         accept: a.flags.accept.map(cmd => ({
           cmd,
           timeout_s: 180,
-          ...(a.flags['no-cache'] ? {} : { cache: true }),
+          cache: !a.flags['no-cache'],
         })),
         ...(a.flags.review ? { review: true } : {}),
       },

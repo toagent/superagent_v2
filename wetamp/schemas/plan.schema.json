@@ -2,13 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "repo",
-    "base_ref",
-    "deadline",
-    "budget",
-    "packages"
-  ],
+  "required": ["repo", "base_ref", "deadline", "budget", "packages"],
   "properties": {
     "repo": {
       "type": "string",
@@ -30,9 +24,7 @@
     "budget": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "weighted_tokens"
-      ],
+      "required": ["weighted_tokens"],
       "properties": {
         "weighted_tokens": {
           "type": "integer",
@@ -68,15 +60,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "id",
-          "title",
-          "goal",
-          "scope",
-          "accept",
-          "risk",
-          "size"
-        ],
+        "required": ["id", "title", "goal", "scope", "accept", "risk", "size"],
         "properties": {
           "id": {
             "type": "string",
@@ -94,9 +78,7 @@
           "scope": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "write"
-            ],
+            "required": ["write"],
             "properties": {
               "write": {
                 "type": "array",
@@ -117,19 +99,10 @@
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": [
-                    "repo_role",
-                    "path",
-                    "purpose"
-                  ],
+                  "required": ["repo_role", "path", "purpose"],
                   "properties": {
                     "repo_role": {
-                      "enum": [
-                        "target_main",
-                        "attempt",
-                        "engine",
-                        "temp"
-                      ]
+                      "enum": ["target_main", "attempt", "engine", "temp"]
                     },
                     "path": {
                       "type": "string",
@@ -178,10 +151,7 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": [
-                "path",
-                "purpose"
-              ],
+              "required": ["path", "purpose"],
               "properties": {
                 "path": {
                   "type": "string",
@@ -196,36 +166,22 @@
             }
           },
           "risk": {
-            "enum": [
-              "G0",
-              "G1",
-              "G2"
-            ]
+            "enum": ["G0", "G1", "G2"]
           },
           "size": {
-            "enum": [
-              "S",
-              "M",
-              "L"
-            ]
+            "enum": ["S", "M", "L"]
           },
           "signoff": {
-            "enum": [
-              "auto",
-              "human"
-            ],
+            "enum": ["auto", "human"],
             "default": "auto",
             "description": "G2 qualified PASS integrates automatically unless human signoff is requested"
           },
-          "review": { "type": "boolean", "description": "Request milestone review; G2 and strict always require review" },
+          "review": {
+            "type": "boolean",
+            "description": "Request milestone review; G2 and strict always require review"
+          },
           "effort": {
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ],
+            "enum": ["low", "medium", "high", "xhigh", "max"],
             "description": "Legacy input accepted; dispatch follows policy.effort"
           },
           "notes": {
@@ -244,10 +200,7 @@
       }
     },
     "console": {
-      "enum": [
-        "claude",
-        "codex"
-      ],
+      "enum": ["claude", "codex"],
       "description": "Selects the reviewer pool (tiers.json routing.reviewer.by_console); default claude"
     },
     "caps": {
@@ -259,10 +212,7 @@
     "check": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "cmd",
-        "timeout_s"
-      ],
+      "required": ["cmd", "timeout_s"],
       "properties": {
         "cmd": {
           "type": "string",
@@ -274,8 +224,8 @@
         },
         "cache": {
           "type": "boolean",
-          "default": false,
-          "description": "Reuse a pass from the same tree, command and environment within the run (F-21); only for commands that write nothing external and do not depend on time or randomness"
+          "default": true,
+          "description": "Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused."
         }
       }
     },
@@ -299,16 +249,10 @@
           "type": "boolean"
         },
         "read": {
-          "enum": [
-            "any",
-            "scope"
-          ]
+          "enum": ["any", "scope"]
         },
         "git": {
-          "enum": [
-            "branch",
-            "commit"
-          ]
+          "enum": ["branch", "commit"]
         },
         "mcp": {
           "type": "array",

@@ -1821,7 +1821,7 @@ describe('sa-check script', () => {
       reason: 'repair_exhausted:acceptance_failed',
     });
   });
-  test('F-21: cache:true reuses a pass on the same tree; uncached commands always run', () => {
+  test('F-21: omitted cache reuses a pass on the same tree; cache:false always runs; new trees rerun', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const p = join(root, 'plan.json');
@@ -1833,8 +1833,8 @@ describe('sa-check script', () => {
           {
             id: 'a',
             accept: [
-              { cmd: `echo c >> ${counter}`, timeout_s: 5, cache: true },
-              { cmd: `echo u >> ${counter}`, timeout_s: 5 },
+              { cmd: `echo c >> ${counter}`, timeout_s: 5 },
+              { cmd: `echo u >> ${counter}`, timeout_s: 5, cache: false },
             ],
           },
         ],

@@ -149,8 +149,8 @@ const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
 
 /**
- * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。plan 声明 cache:true 的检查在同一 tree、命令、超时与环境下
- * 复用本 run 的结果；未声明的（可能外写、依赖时间或随机性）每次实跑。候选变化后才重新执行缓存检查。
+ * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
+ * 复用本 run 的结果；外写、依赖时间或随机性的命令须声明 cache:false，每次实跑。
  */
 function run(
   checks: Check[],
@@ -175,7 +175,7 @@ function run(
   const tree = envKey && git('rev-parse', 'HEAD^{tree}').trim();
   for (const c of checks) {
     const hit =
-      tree && c.cache
+      tree && c.cache !== false
         ? join(artifacts, 'accept-cache', sha(JSON.stringify([tree, c.cmd, c.timeout_s, envKey])))
         : '';
     if (hit && existsSync(hit)) {

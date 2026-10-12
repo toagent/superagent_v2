@@ -165,7 +165,7 @@ describe('quick', () => {
         review: true,
         scope: { write: ['src/**', 'tests/**'] },
       });
-      expect(explicit.packages[0].accept[0]).not.toHaveProperty('cache');
+      expect(explicit.packages[0].accept[0]).toHaveProperty('cache', false);
     } finally {
       process.chdir(cwd);
       keys.forEach((k, i) => {

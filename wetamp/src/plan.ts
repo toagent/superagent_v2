@@ -8,7 +8,7 @@ import { WETAMP, assertSQLite, type Console } from './config';
 export interface Check {
   cmd: string;
   timeout_s: number;
-  /** 同一 tree/命令/环境下复用本 run 的验收结果；只给不外写、不依赖时间或随机性的命令开。 */
+  /** 默认在同一 tree/命令/超时/环境下复用本 run 的验收结果；外写、依赖时间或随机性的命令须设 false。environment 检查不复用。 */
   cache?: boolean;
 }
 export interface Pkg {
