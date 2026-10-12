@@ -156,6 +156,32 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: &delivery-decision
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -238,6 +264,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: repair-core
     bash: |-
@@ -359,6 +386,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -441,6 +469,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: diff-m1-r1
     script: sa-check
@@ -461,6 +490,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -543,6 +573,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: attempt-review-m1-r1
     always_run: true
@@ -791,6 +822,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -873,6 +905,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: attempt-review-m1-r2
     always_run: true
@@ -1125,6 +1158,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -1207,6 +1241,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: attempt-review-m1-r3
     always_run: true
@@ -1500,6 +1535,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -1582,6 +1618,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: repair-api
     bash: |-
@@ -1703,6 +1740,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -1785,6 +1823,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: diff-m2-r1
     script: sa-check
@@ -1805,6 +1844,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -1887,6 +1927,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: attempt-review-m2-r1
     always_run: true
@@ -2134,6 +2175,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -2216,6 +2258,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: attempt-review-m2-r2
     always_run: true
@@ -2467,6 +2510,7 @@ nodes:
     output_format:
       type: object
       properties:
+        decision: *delivery-decision
         workspace_clean:
           type: boolean
         failures:
@@ -2549,6 +2593,7 @@ nodes:
         - delta
         - risk
         - out_of_scope
+        - decision
     timeout: 155000
   - id: attempt-review-m2-r3
     always_run: true

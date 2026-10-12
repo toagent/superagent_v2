@@ -9,7 +9,7 @@ import {
   independence,
   ledgerOf,
   scopeRisk,
-  SUSPEND_CLASSES,
+  deliveryDecision,
   readAttempt,
   CHECK_AUX_COUNTS,
   CHECK_AUX_TIMEOUT_MS,
@@ -19,7 +19,7 @@ import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
 
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
-type Rv = NonNullable<Parameters<typeof decide>[0]['reviews'][number]>;
+type Rv = NonNullable<NonNullable<Parameters<typeof decide>[0]['reviews']>[number]>;
 type F = Rv['findings'][number];
 const f = (severity: F['severity'], extra: Partial<F> = {}): F => ({
   id: `x-${severity}`,
@@ -603,137 +603,84 @@ describe('gate rules', () => {
     expect(ids([null, R('FAIL', [f('high', { id: 'R2-1' })])])).toEqual(['R2-1']);
   });
   test('no review is a wiring error', () => {
-    expect(() => decide({ reviews: [], rechecks: [], risk: 'G1' })).toThrow(/no review/);
+    expect(decide({ reviews: [], rechecks: [], risk: 'G1' }).decision).toMatchObject({
+      kind: 'block',
+      reason: 'engine_suspect',
+    });
     expect(() => decide({ reviews: [null], rechecks: [C('a')], risk: 'G1' })).toThrow(/no review/);
   });
 });
 
-describe('F-18 disposition', () => {
-  const c = (o: Record<string, unknown>): string =>
-    JSON.stringify({ status: 'done', error_class: null, needs: [], ...o });
-  test('green acceptance advances despite blocked needs', () => {
-    expect(disposition(c({}), true)).toEqual({ disposition: 'advance', reason: null });
-    expect(disposition(c({}), false)).toEqual({
-      disposition: 'repair',
-      reason: 'acceptance_failed',
+describe('single delivery decision', () => {
+  test('permission evidence and retry boundaries survive the real acceptance node', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      archon = join(root, 'archon'),
+      policy = join(root, 'policy.json');
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+    const inputs = { kind: 'accept', pkgs: 'a', tag: 'verify-permission', archon, policy };
+    const event = (attemptId: string, permissionDenied?: true) => ({
+      event_type: 'provider_event',
+      step_name: 'code-a',
+      data: { attemptId, event: { type: 'warning', code: 'x', message: 'x', permissionDenied } },
     });
-    expect(disposition('', true).disposition).toBe('advance');
-    const blocked = c({ status: 'blocked', needs: [{ cap: 'network' }] });
-    expect(disposition(blocked, true)).toEqual({
-      disposition: 'advance',
-      reason: null,
-      self_report_conflict: true,
+    const start = { event_type: 'node_started', step_name: 'code-a' };
+    const counter = (step_name: string, attempt = '1') => ({
+      event_type: 'node_completed',
+      step_name,
+      data: { structured_output: { attempt } },
     });
-    expect(disposition(blocked, false)).toEqual({ disposition: 'suspend', reason: 'coder_needs' });
-  });
-  test('every coder failure kind has an explicit repair or suspend path', () => {
-    const d = (o: Record<string, unknown>, ok = true): string | null => {
-      const r = disposition(c(o), ok);
-      return `${r.disposition}:${r.reason ?? ''}`;
-    };
-    expect(disposition(c({ status: 'partial' }), true)).toEqual({
-      disposition: 'advance',
-      reason: null,
-      coder_partial: true,
-      self_report_conflict: true,
-    });
-    expect(d({ status: 'partial' }, false)).toBe('repair:coder_partial');
-    expect(d({ status: 'blocked' })).toBe('advance:');
-    expect(d({ status: 'blocked', needs: [{ cap: 'network' }] })).toBe('advance:');
-    expect(d({ status: 'blocked', error_class: 'redline' })).toBe('advance:');
-    expect(d({ status: 'blocked', error_class: 'redline' }, false)).toBe('suspend:coder_redline');
-    expect(d({ status: 'partial', error_class: 'env' }, false)).toBe('suspend:coder_error:env');
-    expect(d({ status: 'partial', error_class: 'timeout' }, false)).toBe('repair:coder_partial');
-    expect(disposition('not json', true)).toEqual({
-      disposition: 'suspend',
-      reason: 'coder_output_invalid',
-    });
-  });
-  test('HF1: done uses acceptance evidence, including self-reported redline', () => {
-    for (const error_class of [
-      'task',
-      'env',
-      'timeout',
-      'sandbox_denied',
-      'permission_denied',
-      'vendor_unavailable_all',
-      'budget_exhausted',
-      'plan_invalid',
-      'scope_violation',
-    ]) {
-      expect(disposition(c({ error_class }), true)).toEqual({
-        disposition: 'advance',
-        reason: null,
-        error_class_ignored: true,
-        self_report_conflict: true,
+    const repair = { ...event('old', true), step_name: 'repair-a' };
+    const fix = { ...repair, step_name: 'fix-m1-r2' };
+    for (const [events, reason] of [
+      [[repair, counter('package-attempt-a'), start, event('new')], null],
+      [[fix, counter('attempt-m1'), start, event('new')], null],
+      [[counter('package-attempt-a'), repair, counter('package-attempt-a')], 'coder_redline'],
+      [[repair, counter('package-attempt-a'), start, event('new', true)], 'coder_redline'],
+      [[], 'environment'],
+    ] as const) {
+      writeFileSync(archon, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ events })}'\n`, {
+        mode: 0o755,
       });
-      expect(disposition(c({ error_class }), false)).toEqual({
-        disposition: SUSPEND_CLASSES.includes(error_class) ? 'suspend' : 'repair',
-        reason: SUSPEND_CLASSES.includes(error_class)
-          ? `coder_error:${error_class}`
-          : 'acceptance_failed',
+      const cmd =
+        reason === 'environment'
+          ? `printf '%s' '{"failure_class":"test_env","evidence":"environment unavailable"}'; exit 1`
+          : 'true';
+      const plan = fixturePlan(root, repo, p => {
+        p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5 }] }];
+      });
+      const result = runScript(repo, { ...inputs, plan }, SCRIPT, { WORKFLOW_ID: 'fixture' });
+      expect(result.code, result.err).toBe(reason ? 1 : 0);
+      expect(result.out).toMatchObject({
+        ok: reason !== 'environment',
+        decision: { kind: reason ? 'block' : 'advance', reason },
       });
     }
-    expect(disposition(c({ error_class: 'redline' }), true)).toEqual({
-      disposition: 'advance',
-      reason: null,
-      self_report_conflict: true,
-      error_class_ignored: true,
-    });
-    expect(disposition(c({ error_class: 'redline' }), false)).toEqual({
-      disposition: 'suspend',
-      reason: 'coder_redline',
-    });
   });
-});
-
-describe('HF4 I1 exhaustive disposition table', () => {
-  // 每行定义红验收的判定；绿验收始终推进，自报冲突保留标记。
-  const rows: { error_class: string | null; red: ReturnType<typeof disposition> | null }[] = [
-    ...SUSPEND_CLASSES.map(error_class => ({
-      error_class,
-      red: { disposition: 'suspend' as const, reason: `coder_error:${error_class}` },
-    })),
-    { error_class: 'redline', red: { disposition: 'suspend', reason: 'coder_redline' } },
-    ...['task', null, 'unknown'].map(error_class => ({ error_class, red: null })),
-  ];
-  for (const status of ['done', 'partial', 'blocked', 'unknown'])
-    for (const { error_class, red } of rows)
+  test('self-reports do not change control state, including malformed output', () => {
+    for (const raw of [
+      '{',
+      JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [{ cap: 'network' }] }),
+    ])
       for (const ok of [true, false])
-        for (const needs of [[], [{ cap: 'network' }]])
-          test(`${status}/${String(error_class)}/ok=${String(ok)}/needs=${String(needs.length)}`, () => {
-            const expected: ReturnType<typeof disposition> =
-              !ok && status === 'blocked' && needs.length > 0
-                ? { disposition: 'suspend', reason: 'coder_needs' }
-                : ok
-                  ? {
-                      disposition: 'advance',
-                      reason: null,
-                      ...(status !== 'done' || error_class ? { self_report_conflict: true } : {}),
-                      ...(status === 'partial' ? { coder_partial: true } : {}),
-                      ...(error_class ? { error_class_ignored: true } : {}),
-                    }
-                  : (red ?? {
-                      disposition: 'repair',
-                      reason: status === 'done' ? 'acceptance_failed' : 'coder_partial',
-                    });
-            expect(disposition(JSON.stringify({ status, error_class, needs }), ok)).toEqual(
-              expected
-            );
-          });
-  test('invalid JSON suspends before green or red acceptance', () => {
-    for (const ok of [true, false])
-      expect(disposition('{', ok)).toEqual({
-        disposition: 'suspend',
-        reason: 'coder_output_invalid',
-      });
+        expect(disposition(raw, ok).decision.kind).toBe(ok ? 'advance' : 'repair');
+  });
+  test('non-critical failures become debt', () => {
+    const check = {
+      ...C('a', false),
+      failed: ['check'],
+      failures: [
+        { command: 'check', failure_class: 'fixture' as const, evidence: '/tmp/accept.log' },
+      ],
+    };
+    expect(deliveryDecision({ rechecks: [check] }).decision.kind).toBe('debt');
   });
   test('E7: partial + env + green checks advances with all audit markers', () => {
     // 原始 node_completed 事件的 structured_output，仅将 notes 置空脱敏。
     const coder: unknown = JSON.parse(
       readFileSync(join(import.meta.dir, 'incidents/e7-coder.json'), 'utf8')
     );
-    expect(disposition(JSON.stringify(coder), true)).toEqual({
+    expect(disposition(JSON.stringify(coder), true)).toMatchObject({
       disposition: 'advance',
       reason: null,
       self_report_conflict: true,
@@ -960,8 +907,8 @@ for (const kind of ['accept', 'settle', 'env'])
     const r = auxiliaryFixture(kind);
     const auxiliary = r.calls.filter(c => c.cmd[0] !== 'bash');
     const count = CHECK_AUX_COUNTS[kind === 'env' ? 'env' : 'accept'];
-    // Failed settle suspends before budget(), so its probe path omits the events query.
-    expect(auxiliary).toHaveLength(count - (kind === 'settle' ? 1 : 0));
+    // Permission evidence is queried even when failed settle suspends before budget().
+    expect(auxiliary).toHaveLength(count);
     expect(auxiliary.every(c => c.timeout === CHECK_AUX_TIMEOUT_MS)).toBe(true);
     if (kind === 'env') expect(r.code).toBe(0);
     else {
@@ -1568,7 +1515,7 @@ describe('sa-check script', () => {
     expect(preexisting.out).toMatchObject({ ok: false, base_pass: false });
     expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
   });
-  test('RA: probe records each base result and exposes mixed failures in the held log', () => {
+  test('RA: probe records each base result without letting self-report suppress repair', () => {
     const root = tmp(),
       repo = gitRepo(root);
     const base = sh('git rev-parse HEAD', repo).trim();
@@ -1591,11 +1538,11 @@ describe('sa-check script', () => {
       { cmd: commands[1], pass: false },
     ];
     expect(r).toMatchObject({
-      code: 1,
+      code: 0,
       out: {
         ok: false,
         base_pass: true,
-        disposition: 'suspend',
+        disposition: 'repair',
         base_results,
         failures: commands.map(command => ({ command, failure_class: 'product' })),
       },
@@ -1735,7 +1682,7 @@ describe('sa-check script', () => {
       debt: ['m1 debt', 'm2 debt'],
     });
   });
-  test('F-18: coder redline suspends failed acceptance with exit 1 and a stable reason', () => {
+  test('self-reported redline does not suppress product repair', () => {
     const root = tmp();
     const r = runScript(gitRepo(root), {
       kind: 'accept',
@@ -1744,17 +1691,17 @@ describe('sa-check script', () => {
       tag: 'verify-a',
       coder: JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [] }),
     });
-    expect(r.code).toBe(1);
-    expect(r.out).toMatchObject({ ok: false, disposition: 'suspend', reason: 'coder_redline' });
+    expect(r.code).toBe(0);
+    expect(r.out).toMatchObject({ ok: false, disposition: 'repair', reason: 'acceptance_failed' });
   });
-  test('HF1: accept preserves ignored error_class in the coder archive only on green', () => {
+  test('HF1: self-report error_class stays diagnostic in the coder archive', () => {
     const root = tmp();
     const repo = gitRepo(root);
     for (const [error_class, acceptance, disposition, reason, code] of [
       ['task', 'true', 'advance', null, 0],
       ['task', 'false', 'repair', 'acceptance_failed', 0],
       ['redline', 'true', 'advance', null, 0],
-      ['redline', 'false', 'suspend', 'coder_redline', 1],
+      ['redline', 'false', 'repair', 'acceptance_failed', 0],
     ] as const) {
       const tag = `verify-${error_class}-${acceptance}`;
       const r = runScript(repo, {
@@ -1770,7 +1717,7 @@ describe('sa-check script', () => {
         expect(r.out).toMatchObject({ self_report_conflict: true, error_class_ignored: true });
       const saved = JSON.parse(readFileSync(join(r.art, `${tag}.coder.json`), 'utf8'));
       expect(saved).toMatchObject({ status: 'done', error_class });
-      expect(saved.error_class_ignored).toBe(disposition === 'advance' ? true : undefined);
+      expect(saved.error_class_ignored).toBe(true);
     }
   });
   test('HF1: settle advances a green done repair even when error_class is task', () => {

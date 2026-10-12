@@ -50,12 +50,12 @@ import {
   type RunView,
 } from './archon';
 import {
-  openBlocking,
   budgetUsage,
   effectiveBudget,
   readAttempt,
   attemptPath,
-  type Review,
+  type DeliveryDecision,
+  type Ledger as ReviewLedger,
   type Accept,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
@@ -72,7 +72,7 @@ import {
   type Receipt,
 } from './config';
 import { engineHash, generate, newRunId } from './generate';
-import { loadPlan, milestones, type Plan } from './plan';
+import { loadPlan, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport } from './report';
 import { jobCli } from './jobs';
@@ -367,31 +367,69 @@ export const evidenceGates = (l: Ledger, art: string): string[] => {
   const path = confined(l, art);
   return path ? gatesOf(path).filter(f => confined(l, join(path, f))) : [];
 };
-/** 将军输出存档（sa-check accept 写的 `<tag>.coder.json`），可按里程碑过滤。 */
-interface CoderOut {
-  tag: string;
-  milestone?: string;
-  error_class?: string | null;
-  needs?: { cap: string; why: string; minimal_ask: string }[];
-}
-const codersOf = (art: string, m?: string, l?: Ledger): CoderOut[] =>
-  (existsSync(art) ? readdirSync(art).filter(f => f.endsWith('.coder.json')) : [])
-    .map(f => ({
-      ...((l ? evidenceJson(l, art, f) : readJson(join(art, f))) as CoderOut),
-      tag: f.slice(0, -'.coder.json'.length),
-    }))
-    .filter(c => m === undefined || c.milestone === m);
-/** 只聚合未推进检查的 needs[]；已推进节点的自报保留在原始 coder 存档。 */
-export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
-  codersOf(art, m, l)
-    .filter(c => {
-      const file = `${c.tag}.json`;
-      const check = (l ? evidenceJson(l, art, file) : readJson(join(art, file))) as
-        | { disposition?: string }
+/** Old artifacts have unknown delivery coverage; never reconstruct a decision from self-report. */
+export const decisionOf = (value: unknown): DeliveryDecision | undefined => {
+  const d = (value as { decision?: DeliveryDecision } | null)?.decision;
+  return d &&
+    ['advance', 'debt', 'repair', 'block'].includes(d.kind) &&
+    (d.reason === null || typeof d.reason === 'string') &&
+    Array.isArray(d.evidence) &&
+    d.evidence.every(e => typeof e === 'string') &&
+    Array.isArray(d.debt) &&
+    d.debt.every(e => typeof e === 'string')
+    ? d
+    : undefined;
+};
+export const decisionVerdict = (d: DeliveryDecision | undefined): string =>
+  d ? (d.kind === 'block' ? 'escalate' : d.kind === 'repair' ? 'fix' : 'pass') : 'unknown';
+export const decisionsOf = (art: string, m?: string, l?: Ledger) =>
+  (existsSync(art)
+    ? readdirSync(art).filter(
+        f =>
+          f.endsWith('.json') &&
+          ['verify-', 'settle-', 'diff-', 'gate-'].some(prefix => f.startsWith(prefix)) &&
+          !['.coder.json', '.review.json', '.ledger.json'].some(suffix => f.endsWith(suffix))
+      )
+    : []
+  )
+    .sort()
+    .map(file => {
+      const out = (l ? evidenceJson(l, art, file) : readJson(join(art, file))) as
+        | { milestone?: string }
         | undefined;
-      return check?.disposition !== 'advance';
+      return { tag: file.slice(0, -5), milestone: out?.milestone, decision: decisionOf(out) };
     })
-    .flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
+    .filter(d => m === undefined || d.milestone === m);
+export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
+  decisionsOf(art, m, l)
+    .filter(
+      (d, _, all) =>
+        !all.some(
+          other =>
+            other !== d &&
+            ((d.tag.startsWith('verify-') && other.tag === d.tag.replace('verify-', 'settle-')) ||
+              (d.milestone &&
+                other.milestone === d.milestone &&
+                (other.tag.startsWith('gate-') || other.tag.startsWith('diff-')) &&
+                ((!d.tag.startsWith('gate-') && !d.tag.startsWith('diff-')) ||
+                  Number(other.tag.slice(other.tag.lastIndexOf('-r') + 2)) >
+                    Number(d.tag.slice(d.tag.lastIndexOf('-r') + 2)) ||
+                  (other.tag.startsWith('gate-') &&
+                    d.tag === other.tag.replace('gate-', 'diff-')))))
+        )
+    )
+    .flatMap(({ tag, decision }) =>
+      decision?.kind === 'block' && decision.reason === 'coder_redline'
+        ? [
+            {
+              tag,
+              cap: 'permission',
+              why: decision.evidence.join(', '),
+              minimal_ask: '检查记录的权限拒绝事件并明确授权或调整任务范围。',
+            },
+          ]
+        : []
+    );
 
 /** 登记过的 run id（runs/*.json 去掉扩展名）。 */
 export const ledgerIds = (): string[] => {
@@ -430,7 +468,13 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(nodes.length)} completed`,
     ...(c.node ? { node: c.node } : {}),
     ...(c.event ? { event: c.event } : {}),
-    ...(c.node?.startsWith('gate-') ? { gate: evidenceJson(l, art, `${c.node}.json`) } : {}),
+    ...(c.node?.startsWith('gate-')
+      ? {
+          gate: {
+            decision: decisionOf(evidenceJson(l, art, `${c.node}.json`)) ?? 'unknown',
+          },
+        }
+      : {}),
     ...(c.state === 'failed' ? failure(l, run, c.node) : {}),
     ...(c.state === 'completed'
       ? {
@@ -439,6 +483,10 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
         }
       : {}),
     evidence: art,
+    delivery: decisionsOf(art, undefined, l).map(d => ({
+      tag: d.tag,
+      decision: d.decision ?? 'unknown',
+    })),
     ...(c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown'
       ? {
           action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.`,
@@ -498,31 +546,10 @@ const adoptsRun = (l: Ledger, run: RunView): boolean =>
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
-    const reason = nodeReason(l, run, c);
-    const pkg = c.node.replace(/^(verify|settle|code|repair)-/, '');
-    // settle 是修复后的复验；其红证据不能被首次 verify 的旧绿证据覆盖。
-    const evidence = join(
-      artifactsOf(run),
-      `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`
-    );
-    const verify = evidenceJson(
-      l,
-      artifactsOf(run),
-      `${c.node.startsWith('settle-') ? c.node : `verify-${pkg}`}.json`
-    ) as { ok?: boolean } | null;
-    const started = run.nodes?.find(n => n.nodeId === c.node)?.startedAt;
-    const current =
-      !started ||
-      !/^(code|repair)-/.test(c.node) ||
-      (existsSync(evidence) && statSync(evidence).mtimeMs >= Date.parse(started));
-    const deliberate = ['needs', 'redline', 'budget', 'coder_blocked'].includes(reasonHold(reason));
+    const decision = decisionOf(evidenceJson(l, artifactsOf(run), `${c.node}.json`));
     if (
-      (reason && !reasonOf(reason)) ||
-      (/^(verify|settle)-/.test(c.node) && !reason) ||
-      (/^(verify|settle|code|repair)-/.test(c.node) &&
-        current &&
-        verify?.ok === true &&
-        !deliberate)
+      /^(verify|settle|gate)-/.test(c.node) &&
+      (!decision || decision.kind === 'advance' || decision.kind === 'debt')
     )
       return { ...c, state: 'held:engine_suspect', exit: EXIT.held };
   }
@@ -627,8 +654,8 @@ function recoverRun(
                 | { disposition?: unknown; head?: unknown }
                 | undefined;
               return (
-                evidence?.disposition === 'advance' &&
-                typeof evidence.head === 'string' &&
+                ['advance', 'debt'].includes(decisionOf(evidence)?.kind ?? '') &&
+                typeof evidence?.head === 'string' &&
                 Bun.spawnSync(['git', 'merge-base', '--is-ancestor', '--', evidence.head, 'HEAD'], {
                   cwd: run.working_path,
                   stdout: 'pipe',
@@ -1177,7 +1204,7 @@ function retryGate(
 
 const scopedRetry = (l: Ledger, c: Classified, node: string): boolean =>
   c.state === 'held:gate' ||
-  /^(verify|settle)-/.test(node) ||
+  /^(gate|verify|settle)-/.test(node) ||
   (/^(code|repair)-/.test(node) && retryScope(l, node).startsWith('pkg/'));
 
 /** Package holds bump their own count; gates bump the milestone; old coder nodes resume. */
@@ -1298,9 +1325,9 @@ function brief(l: Ledger): number {
     lines.push(`asks: ${tail((e as Error).message, 120)}`);
   }
   for (const f of evidenceGates(l, art)) {
-    const g = evidenceJson(l, art, f) as Gate;
+    const d = decisionOf(evidenceJson(l, art, f));
     lines.push(
-      `${f.slice(0, -5)}: ${g.verdict}${g.reason ? ` (${g.reason})` : ''} debt=${String(g.debt.length)}`
+      `${f.slice(0, -5)}: ${decisionVerdict(d)}${d?.reason ? ` (${d.reason})` : ''} debt=${String(d?.debt.length ?? 0)}`
     );
   }
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
@@ -1903,7 +1930,14 @@ const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
   const out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as {
     reason?: unknown;
   } | null;
-  return typeof out?.reason === 'string' ? out.reason : '';
+  return (
+    decisionOf(out)?.reason ??
+    (/^(verify|settle|gate)-/.test(c.node ?? '')
+      ? ''
+      : typeof out?.reason === 'string'
+        ? out.reason
+        : '')
+  );
 };
 export const reasonHold = (reason: string): Hold => reasonOf(reason)?.hold ?? 'engine_suspect';
 
@@ -2002,23 +2036,19 @@ export function decisionQuestion(
   };
   const out = read(`${node}.json`),
     pkg = plan.packages.find(p => p.id === node.replace(/^(verify|settle|code|repair)-/, ''));
-  const reason =
-    typeof out.reason === 'string'
-      ? (reasonOf(out.reason)?.description ?? '未注册原因（证据缺失）')
-      : '证据缺失';
+  const reason = reasonOf(decisionOf(out)?.reason ?? '')?.description ?? '证据缺失';
   const names = [basename(l.repo), pkg?.title ?? m, node];
   const progress = `已完成${String((run.nodes ?? []).filter(n => n.state === 'completed').length)}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
   let detail = reason,
     compact = reason;
   if (hold === 'needs') {
-    let coders: CoderOut[] = [];
+    let needs: Record<string, string>[] = [];
     try {
-      coders = codersOf(artifactsOf(run), m, l);
+      needs = needsOf(artifactsOf(run), m, l).filter(x => x.tag === node);
     } catch {
-      /* 展示证据缺失 */
+      /* Missing display evidence does not block an operator question. */
     }
-    const needs = coders.find(x => x.tag === node)?.needs;
-    detail = Array.isArray(needs) ? `能力请求${String(needs.length)}项` : '证据缺失';
+    detail = needs.length ? `能力请求${String(needs.length)}项` : '证据缺失';
   } else if (hold === 'budget') {
     detail = '证据缺失';
     try {
@@ -2064,9 +2094,11 @@ export function decisionQuestion(
     } catch {
       /* 展示证据缺失 */
     }
-    const verdict = read(
-      files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json'
-    ).verdict;
+    const verdict = decisionVerdict(
+      decisionOf(
+        read(files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json')
+      )
+    );
     detail = `验收/评审${verdict === 'pass' ? '通过' : verdict === 'fix' ? '需修复' : verdict === 'escalate' ? '需升级处理' : '证据缺失'}`;
   } else if (hold !== 'redline' && hold !== 'coder_blocked') {
     const check = Array.isArray(out.failed)
@@ -2243,7 +2275,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   let gate: (Gate & { milestone?: string }) | undefined;
   if (c.state === 'held:gate') {
     gate = readJson(join(art, `${node}.json`)) as typeof gate;
-    [kind, m, reason] = ['gate', gateMilestone(node), `gate:${gate?.reason ?? '?'}`];
+    [kind, m, reason] = ['gate', gateMilestone(node), `gate:${decisionOf(gate)?.reason ?? '?'}`];
   } else if (c.state === 'held:environment') {
     [kind, m, reason] = ['environment', 'environment', 'environment'];
   } else {
@@ -2308,7 +2340,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   };
   let r: RecoverResult;
   if (kind === 'gate') {
-    const text = gateHint(plan, art, node, gate, tries.length + 1);
+    const text = gateHint(art, node, gate, tries.length + 1);
     for (const p of plan.packages.filter(x => (x.milestone ?? 'm1') === m))
       appendFileSync(join(l.gen_dir, 'hints', `${p.id}.md`), text);
     r = retryGate(l, node, false, auto);
@@ -2335,40 +2367,25 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   };
 }
 
-/** 追加到 hints/<包>.md 的提示：失败的验收命令与日志尾、基线预存说明、未关闭的阻塞发现、gate 原因。 */
-function gateHint(plan: Plan, art: string, node: string, g: Gate | undefined, n: number): string {
-  const m = gateMilestone(node);
+/** Retry guidance projects the recorded decision and its evidence. */
+function gateHint(art: string, node: string, g: Gate | undefined, n: number): string {
   const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as Accept | undefined;
-  const out = [`\n## 自动重试 ${String(n)}：${node} escalate（${g?.reason ?? '?'}）\n`];
+  const out = [`\n## 自动重试 ${String(n)}：${node} escalate（${decisionOf(g)?.reason ?? '?'}）\n`];
   if (acc?.failed?.length) {
     out.push('失败的验收命令：', ...acc.failed.map(x => `- \`${x}\``), '');
-    if (acc.base_pass == null) out.push('基线状态未知。', '');
-    else
-      for (const cmd of acc.failed)
-        out.push(
-          acc.base_results?.some(r => r.cmd === cmd && !r.pass)
-            ? `\`${cmd}\`：此失败在基线已存在，与本包无关就记 deviations 并继续。`
-            : `\`${cmd}\`：未证明基线同样失败，按本包引入处理。`,
-          ''
-        );
+    out.push(
+      `交付判定：${decisionOf(acc)?.kind ?? 'unknown'}；基线状态未知时查阅 probe 证据。`,
+      ''
+    );
     const log = acc.log && existsSync(acc.log) ? readFileSync(acc.log, 'utf8').trimEnd() : '';
     if (log) out.push('验收日志尾：', '```', ...log.split('\n').slice(-60), '```', '');
   }
-  const rounds = gatesOf(art)
-    .filter(f => gateMilestone(f.slice(0, -5)) === m && f.slice(0, -5) <= node)
-    .map(f => readJson(join(art, f.replace(/\.json$/, '.review.json'))) as Review | null)
-    .filter((r): r is Review => r != null);
-  const risk = milestones(plan).find(x => x.id === m)?.risk ?? 'G1';
-  const open = openBlocking(rounds, risk);
-  const last = new Map(rounds.flatMap(r => r.findings).map(f => [f.id, f]));
-  const findings = [...open].flatMap(id => {
-    const f = last.get(id);
-    return f
-      ? [`- ${id} [${f.severity}] ${f.file}:${String(f.line)} ${tail(f.evidence, 200)}`]
-      : [];
-  });
+  const ledger = readJson(join(art, `${node}.ledger.json`)) as ReviewLedger | undefined;
+  const findings = (ledger?.blocking ?? []).map(
+    f => `- ${f.id} [${f.severity}] ${f.file}:${String(f.line)} ${tail(f.evidence ?? '', 200)}`
+  );
   if (findings.length) out.push('未关闭的阻塞发现：', ...findings, '');
-  out.push(`gate reason：${g?.reason ?? '?'}`, '');
+  out.push(`gate reason：${decisionOf(g)?.reason ?? '?'}`, '');
   return out.join('\n');
 }
 
@@ -2398,16 +2415,17 @@ export function summarize(pairs: Pair[]): Record<string, unknown> {
         bump(n, `node_s:${x.nodeId.split('-')[0]}`, Math.round((x.durationMs ?? 0) / 1e3));
       if (run.status === 'failed' && !c.node?.startsWith('gate-'))
         bump(n, `failed:${c.node?.split('-')[0] ?? '?'}`);
-      const last = new Map<string, Gate & { round: string }>();
+      const last = new Map<string, { decision: DeliveryDecision | undefined; round: string }>();
       for (const f of evidenceGates(l, artifactsOf(run))) {
         const [, m, round] = /^gate-(.+)-r(\d+)\.json$/.exec(f) ?? [];
-        last.set(m, { ...(evidenceJson(l, artifactsOf(run), f) as Gate), round });
-        if (round === '1' && last.get(m)?.verdict === 'pass') bump(n, 'first_pass');
+        last.set(m, { decision: decisionOf(evidenceJson(l, artifactsOf(run), f)), round });
+        if (round === '1' && decisionVerdict(last.get(m)?.decision) === 'pass')
+          bump(n, 'first_pass');
       }
       for (const g of last.values()) {
         bump(n, `rounds:${g.round}`);
-        bump(n, 'debt', g.debt.length);
-        if (g.verdict === 'escalate') bump(n, `escalate:${g.reason ?? '?'}`);
+        bump(n, 'debt', g.decision?.debt.length ?? 0);
+        if (g.decision?.kind === 'block') bump(n, `escalate:${g.decision.reason ?? '?'}`);
       }
     } catch (e) {
       unreadable.push(`${l.run_id}: ${tail((e as Error).message, 200)}`);

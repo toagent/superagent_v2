@@ -197,6 +197,16 @@
     "accept": {
       "type": "object",
       "properties": {
+        "decision": {
+          "type": "object",
+          "properties": {
+            "kind": { "enum": ["advance", "debt", "repair", "block"] },
+            "reason": { "type": ["string", "null"] },
+            "evidence": { "type": "array", "items": { "type": "string" } },
+            "debt": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["kind", "reason", "evidence", "debt"]
+        },
         "workspace_clean": { "type": "boolean" },
         "failures": {
           "type": "array",
@@ -275,7 +285,8 @@
         "reason",
         "delta",
         "risk",
-        "out_of_scope"
+        "out_of_scope",
+        "decision"
       ]
     },
     "head": {

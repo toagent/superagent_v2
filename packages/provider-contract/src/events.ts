@@ -118,7 +118,11 @@ export const providerWarningSchema = z.object({
 });
 export type ProviderWarning = z.infer<typeof providerWarningSchema>;
 
-export const warningSchema = providerWarningSchema.extend({ type: z.literal('warning') });
+export const warningSchema = providerWarningSchema.extend({
+  type: z.literal('warning'),
+  /** Only structured provider permission responses may set this; never inferred from prose. */
+  permissionDenied: z.literal(true).optional(),
+});
 
 /**
  * Archon addition (ACP has no MCP status update): the state of one MCP server the turn
