@@ -45,7 +45,7 @@ nodes:
   - id: code-core
     command: sa-code
     model: '@sa-coder'
-    effort: high
+    effort: medium
     with:
       pkg: core
       brief: /GEN/briefs/core.md
@@ -1405,7 +1405,7 @@ nodes:
   - id: code-api
     command: sa-code
     model: '@sa-coder'
-    effort: high
+    effort: medium
     with:
       pkg: api
       brief: /GEN/briefs/api.md
@@ -1854,7 +1854,7 @@ nodes:
     command: sa-review
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
-    effort: xhigh
+    effort: high
     idle_timeout: 900000
     with:
       milestone: m2

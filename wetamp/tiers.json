@@ -4,9 +4,9 @@
     "budget_floor": { "S": 200000, "M": 600000, "L": 1500000 },
     "effort": {
       "G0": "medium",
-      "coder": { "first": "high", "repair": "medium" },
+      "coder": { "first": "medium", "repair": "medium" },
       "reviewer": { "R1": "high", "R2": "medium", "R3": "medium" },
-      "G2_reviewer": { "R1": "xhigh", "R2": "high", "R3": "high" }
+      "G2_reviewer": { "R1": "high", "R2": "high", "R3": "high" }
     },
     "stop_gate": "off",
     "context": {
