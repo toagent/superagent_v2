@@ -27,7 +27,6 @@ sys.exit(0 if d.get("ok") else 2)' "$OUT" "$SHA" && exit 0
   [ $? = 2 ] && exit 1
   return 1
 }
-cached || true
 
 BUN=""
 for d in ${BUN_INSTALL:+"$BUN_INSTALL/bin"} "$HOME/.bun/bin" /opt/homebrew/bin; do
@@ -37,10 +36,29 @@ done
 
 # 每个提交只跑一次：mkdir 锁；持锁进程已不在时视为陈旧锁。拿到锁后再查一次缓存（可能刚被别人跑完）。
 LOCK="$SA_HOME/verify/lock"
+recover() {
+  local old common status
+  old="$(cat "$LOCK/tmp" 2>/dev/null || true)"
+  case "$old" in /*/sa-verify.*) ;; *) return;; esac
+  [ ! -L "$old" ] && [ ! -L "$old/wt" ] || return
+  if [ -d "$old/wt" ]; then
+    [ "$(git -C "$old/wt" rev-parse --show-toplevel 2>/dev/null)" = "$old/wt" ] || return
+    common="$(git -C "$old/wt" rev-parse --path-format=absolute --git-common-dir)"
+    [ "$common" = "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)" ] || return
+    status="$(git -C "$old/wt" status --porcelain=v1 --untracked-files=all)" || return
+    [ -z "$status" ] || { echo "verify-local: retained dirty orphan $old" >&2; return; }
+    git -C "$REPO" worktree remove "$old/wt" || return
+  fi
+  rmdir "$old" 2>/dev/null || true
+}
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 until mkdir "$LOCK" 2>/dev/null; do
   pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && python3 -I -c 'import os, sys
+try: os.kill(int(sys.argv[1]), 0)
+except ProcessLookupError: sys.exit(0)
+except OSError: pass
+sys.exit(1)' "$pid"; then recover; rm -rf "$LOCK"; continue; fi
   [ "$(date +%s)" -lt "$DEADLINE" ] || { echo "verify-local: lock $LOCK held by ${pid:-?}" >&2; exit 1; }
   sleep 2
 done
@@ -48,6 +66,8 @@ echo $$ > "$LOCK/pid"
 # 等锁另计：步骤预算从拿到锁起算，并发排队不吃掉后续 bun test 的时间。
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/sa-verify.XXXXXX")"
+TMP="$(cd -P "$TMP" && pwd)"
+echo "$TMP" > "$LOCK/tmp"
 WT="$TMP/wt"
 cleanup() {
   if [ -d "$WT" ]; then

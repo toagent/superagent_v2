@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, expect, spyOn, test } from 'bun:test';
 import {
   existsSync,
   mkdirSync,
@@ -13,11 +13,15 @@ import * as archon from '../src/archon';
 import { executionAdmissionLock } from '../../packages/workflows/src/execution-lifecycle';
 import * as coordination from '../src/coord';
 import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
-import { gc } from '../src/gc';
+import { gc as collect } from '../src/gc';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_WRITE_ROOTS', 'TMPDIR'] as const;
 const originalEnv = keys.map(k => process.env[k]);
+const gc = (dryRun = false) => collect(dryRun, [process.env.TMPDIR!]);
+const realTrees = () => Bun.spawnSync(['git', 'worktree', 'list', '--porcelain']).stdout.toString();
+const initialTrees = realTrees();
+afterAll(() => expect(realTrees()).toBe(initialTrees));
 const views = new Map<string, archon.RunView>();
 let query: ReturnType<typeof spyOn<typeof archon, 'getRun'>> | undefined;
 afterEach(() => {
@@ -450,7 +454,7 @@ test('probe dry-run lists artifacts and stale legacy worktrees without deleting 
     fresh = join(process.env.TMPDIR!, 'sa-probe-fresh');
   f.git('worktree', 'add', '--detach', stale, 'HEAD');
   f.git('worktree', 'add', '--detach', fresh, 'HEAD');
-  writeFileSync(join(stale, 'dirty'), 'disposable');
+  rmSync(join(stale, 'README.md'));
   const old = new Date(Date.now() - 25 * 60 * 60_000);
   utimesSync(stale, old, old);
   const before = f.git('worktree', 'list', '--porcelain');
@@ -465,3 +469,31 @@ test('probe dry-run lists artifacts and stale legacy worktrees without deleting 
   expect(existsSync(fresh)).toBe(true);
   expect(f.git('worktree', 'list', '--porcelain')).not.toContain(stale);
 });
+
+test.each(['clean', 'deleted', 'modified', 'untracked', 'staged', 'symlink'])(
+  'legacy probe collection retains unsafe state: %s',
+  state => {
+    const f = fixture();
+    const alternate = join(f.root, 'alternate');
+    mkdirSync(alternate);
+    const path = join(alternate, 'sa-probe-case');
+    f.git('worktree', 'add', '--detach', path, 'HEAD');
+    if (state === 'deleted') rmSync(join(path, 'README.md'));
+    if (state === 'modified') writeFileSync(join(path, 'README.md'), 'changed');
+    if (state === 'untracked' || state === 'staged') writeFileSync(join(path, 'new'), 'keep');
+    if (state === 'staged') f.git('-C', path, 'add', 'new');
+    const old = new Date(Date.now() - 25 * 60 * 60_000);
+    utimesSync(path, old, old);
+    if (state === 'symlink') symlinkSync(path, join(alternate, 'sa-probe-link'));
+    const roots = [process.env.TMPDIR!, alternate, alternate];
+    const safe = state === 'clean' || state === 'deleted' || state === 'symlink';
+    expect(collect(true, roots).find(e => e.path === path)?.action).toBe(
+      safe ? 'would_remove' : 'skipped'
+    );
+    expect(collect(false, roots).filter(e => e.path === path)).toHaveLength(1);
+    expect(existsSync(path)).toBe(!safe);
+    expect(f.git('worktree', 'list', '--porcelain').includes(path)).toBe(!safe);
+    if (state === 'symlink')
+      expect(collect(true, roots).some(e => e.path?.endsWith('sa-probe-link'))).toBe(false);
+  }
+);
