@@ -8,10 +8,11 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { basename, dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan } from '../../../src/plan';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
@@ -83,7 +84,7 @@ interface Policy {
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
-// accept/settle: status, tree, full/delta patch, scope, probe add/remove, HEAD, events.
+// accept/settle: status, tree, full/delta patch, scope, probe add/prune, HEAD, events.
 // env: HEAD only. The worst-path subprocess trace test enforces these counts.
 export const CHECK_AUX_COUNTS = { accept: 9, env: 1 } as const;
 // The watchdog owns separate pipes, so even an escaped descendant cannot hold this caller open.
@@ -531,7 +532,7 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
     setup = environmentChecks(plan());
   writeFileSync(log, setup.length ? '' : '# baseline unknown: no environment commands declared\n');
   if (!setup.length) return [];
-  const dir = mkdtempSync(join(tmpdir(), 'sa-probe-'));
+  const dir = mkdtempSync(join(artifacts, `probe-${tag}-`));
   try {
     git('worktree', 'add', '--detach', '-q', dir, base);
     if (run(setup, log, dir).length) {
@@ -543,15 +544,37 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
       pass: run([c], log, dir).length === 0,
     }));
   } finally {
-    // 不加 --force：验收命令在工作树里留下的文件不替人丢弃；删不掉就保留并报路径
-    const rm = auxiliary(['git', 'worktree', 'remove', dir]);
-    if (rm.signalCode || rm.exitCode === 124)
-      // eslint-disable-next-line no-unsafe-finally -- 清理被杀/超时必须覆盖探针结论，不能当作基线结论返回
-      throw new Error(
-        `probe: kept worktree ${dir}: ${rm.stderr.toString().trim()} (signal ${rm.signalCode ?? 'timeout'})`
-      );
-    if (rm.exitCode !== 0)
-      console.error(`probe: kept worktree ${dir}: ${rm.stderr.toString().trim()}`);
+    let retained = dir;
+    const warn = (e: unknown): void => {
+      const message = `probe: kept worktree ${retained}: ${String(e)}`;
+      console.error(message);
+      try {
+        appendFileSync(log, `${message}\n`);
+      } catch {
+        /* stderr retains the evidence. */
+      }
+    };
+    try {
+      const trash = join(artifacts, '.trash');
+      mkdirSync(trash, { recursive: true });
+      const target = join(trash, basename(dir));
+      renameSync(dir, target);
+      retained = target;
+      try {
+        git('worktree', 'prune', '--expire', 'now');
+      } catch (e) {
+        warn(e);
+      }
+      // Engine-owned probe output is disposable; deletion must not delay the node.
+      spawn('rm', ['-rf', '--', target], { detached: true, stdio: 'ignore' })
+        .on('error', warn)
+        .on('exit', code => {
+          if (code) warn(`background delete exit ${String(code)}`);
+        })
+        .unref();
+    } catch (e) {
+      warn(e);
+    }
   }
 }
 

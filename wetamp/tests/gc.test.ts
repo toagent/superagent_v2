@@ -1,13 +1,21 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import * as archon from '../src/archon';
 import * as coordination from '../src/coord';
-import { ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
+import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
 import { gc } from '../src/gc';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
-const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_WRITE_ROOTS'] as const;
+const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_WRITE_ROOTS', 'TMPDIR'] as const;
 const originalEnv = keys.map(k => process.env[k]);
 const views = new Map<string, archon.RunView>();
 let query: ReturnType<typeof spyOn<typeof archon, 'getRun'>> | undefined;
@@ -30,6 +38,8 @@ function fixture(
   const root = tmp(),
     repo = gitRepo(root),
     id = 'gc-fixture';
+  process.env.TMPDIR = join(root, 'tmp');
+  mkdirSync(process.env.TMPDIR);
   process.env.SUPERAGENT_HOME = join(root, 'sa');
   process.env.ARCHON_HOME = join(root, 'archon');
   process.env.SUPERAGENT_WRITE_ROOTS = root;
@@ -76,7 +86,12 @@ function fixture(
   };
   const save = (): void => writeFileSync(ledgerPath(id), JSON.stringify(ledger));
   save();
-  const view: archon.RunView = { id: ledger.archon_run_id, status, working_path: path };
+  const view: archon.RunView = {
+    id: ledger.archon_run_id,
+    status,
+    working_path: path,
+    output_root: join(root, 'output'),
+  };
   views.set(view.id, view);
   query = spyOn(archon, 'getRun').mockImplementation(id => {
     const run = views.get(id);
@@ -100,9 +115,8 @@ test('merged completed run removes only its worktree and branch; second GC is id
   expect(existsSync(join(f.gen, 'plan.json'))).toBe(true);
   const bytes = readFileSync(ledgerPath(f.id), 'utf8');
   query?.mockClear();
-  views.clear();
   expect(gc()).toEqual([]);
-  expect(query).not.toHaveBeenCalled();
+  expect(query).toHaveBeenCalled();
   expect(readFileSync(ledgerPath(f.id), 'utf8')).toBe(bytes);
   expect(loadLedger(f.id).gc).toHaveLength(2);
 });
@@ -390,4 +404,63 @@ test('successful decide reject records engine identity; cancelled alone remains 
   }
   expect(loadLedger(f.id).rejected).toBe(f.view.id);
   expect(gc().map(e => e.action)).toEqual(['removed', 'skipped']);
+});
+
+function probes(f: ReturnType<typeof fixture>) {
+  const art = artifactsOf(f.view),
+    probe = join(art, 'probe-leftover'),
+    trash = join(art, '.trash');
+  mkdirSync(trash, { recursive: true });
+  f.git('worktree', 'add', '--detach', probe, 'HEAD');
+  writeFileSync(join(probe, 'generated.txt'), 'disposable');
+  f.git('worktree', 'add', '--detach', join(trash, 'probe-registered'), 'HEAD');
+  mkdirSync(join(trash, 'probe-renamed'));
+  return { art, probe, trash };
+}
+
+test.each(['completed', 'failed', 'cancelled'] as const)(
+  'terminal %s probe output is collected even with an unmerged run branch',
+  status => {
+    const f = fixture(status, false),
+      p = probes(f);
+    const result = gc();
+    expect(
+      result.filter(e => e.reason === 'terminal probe').every(e => e.action === 'removed')
+    ).toBe(true);
+    expect(existsSync(p.probe)).toBe(false);
+    expect(existsSync(p.trash)).toBe(false);
+    expect(existsSync(f.path)).toBe(true);
+    expect(f.git('worktree', 'list', '--porcelain')).not.toContain(p.art);
+  }
+);
+
+test.each(['running', 'paused', 'pending'] as const)('%s probe output is retained', status => {
+  const f = fixture(status),
+    p = probes(f);
+  gc();
+  expect(existsSync(p.probe)).toBe(true);
+  expect(existsSync(p.trash)).toBe(true);
+});
+
+test('probe dry-run lists artifacts and stale legacy worktrees without deleting or unregistering them', () => {
+  const f = fixture(),
+    p = probes(f);
+  const stale = join(process.env.TMPDIR!, 'sa-probe-stale'),
+    fresh = join(process.env.TMPDIR!, 'sa-probe-fresh');
+  f.git('worktree', 'add', '--detach', stale, 'HEAD');
+  f.git('worktree', 'add', '--detach', fresh, 'HEAD');
+  writeFileSync(join(stale, 'dirty'), 'disposable');
+  const old = new Date(Date.now() - 25 * 60 * 60_000);
+  utimesSync(stale, old, old);
+  const before = f.git('worktree', 'list', '--porcelain');
+  const dry = gc(true);
+  expect(dry.find(e => e.path === stale)?.action).toBe('would_remove');
+  expect(dry.some(e => e.path === fresh)).toBe(false);
+  expect(existsSync(p.probe)).toBe(true);
+  expect(existsSync(p.trash)).toBe(true);
+  expect(f.git('worktree', 'list', '--porcelain')).toBe(before);
+  gc();
+  expect(existsSync(stale)).toBe(false);
+  expect(existsSync(fresh)).toBe(true);
+  expect(f.git('worktree', 'list', '--porcelain')).not.toContain(stale);
 });
