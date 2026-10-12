@@ -81,7 +81,9 @@ export function newRunId(now = new Date()): string {
   return `${ts}-${crypto.getRandomValues(new Uint16Array(1))[0].toString(16).padStart(4, '0')}`;
 }
 
-const outputSchema = (kind: 'coder' | 'reviewer' | 'accept' | 'head' | 'attempt'): unknown =>
+const outputSchema = (
+  kind: 'coder' | 'reviewer' | 'accept' | 'delivery' | 'head' | 'attempt'
+): unknown =>
   (
     JSON.parse(readFileSync(join(WETAMP, 'schemas', 'output.schema.json'), 'utf8')) as {
       $defs: Record<string, unknown>;
@@ -226,8 +228,7 @@ export function buildWorkflow(
       ...after,
       output_format: outputSchema('head'),
     });
-    // 自动重试与 decide retry 给 <gen>/attempts/<m> 加一：always_run 的输出一变，依赖它的编码、验收、修复节点在
-    // resume 时失去缓存，整个里程碑重跑（评审与 gate 随 diff 输出变化重跑）
+    // Milestone retries invalidate only cumulative acceptance and review/fix rounds.
     const attempt = `attempt-${m.id}`;
     nodes.push({
       id: attempt,
@@ -272,7 +273,7 @@ export function buildWorkflow(
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
-        depends_on: [prev, attempt, pkgAttempt],
+        depends_on: [prev, pkgAttempt],
         ...(carry ? { when: `$${pkgAttempt}.output.attempt != '0'` } : {}),
         output_format: outputSchema('coder'),
       });
@@ -291,7 +292,7 @@ export function buildWorkflow(
       nodes.push(
         check(
           verify,
-          [`code-${p.id}`, attempt, pkgAttempt],
+          [`code-${p.id}`, pkgAttempt],
           {
             ...accept,
             tag: verify,
@@ -323,14 +324,14 @@ export function buildWorkflow(
                 accept_log: `$${verify}.output.log`,
               },
             }),
-        depends_on: [verify, attempt, pkgAttempt],
+        depends_on: [verify, pkgAttempt],
         when: `$${verify}.output.disposition == 'repair'`,
         output_format: outputSchema('coder'),
       });
       nodes.push(
         check(
           `settle-${p.id}`,
-          [verify, `repair-${p.id}`, attempt, pkgAttempt],
+          [verify, `repair-${p.id}`, pkgAttempt],
           {
             ...accept,
             kind: 'settle',
@@ -340,7 +341,7 @@ export function buildWorkflow(
           },
           {
             trigger_rule: 'none_failed_min_one_success',
-            output_format: outputSchema('accept'),
+            output_format: outputSchema('delivery'),
             ...acceptTimeout([p], plan),
           }
         )

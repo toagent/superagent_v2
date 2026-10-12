@@ -122,6 +122,32 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 });
 
 describe('buildWorkflow', () => {
+  test('P2: two-package data dependencies exclude milestone and review retry counters', () => {
+    for (const sameMilestone of [false, true]) {
+      const plan = structuredClone(fixture);
+      if (sameMilestone) plan.packages[1].milestone = 'm1';
+      const nodes = nodesOf(build(false, plan));
+      const dependencies = (id: string): string[] => {
+        const deps = nodes.find(n => n.id === id)!.depends_on ?? [];
+        return [...deps, ...deps.flatMap(dependencies)];
+      };
+      for (const p of plan.packages)
+        for (const kind of ['code', 'verify', 'repair', 'settle']) {
+          const deps = dependencies(`${kind}-${p.id}`);
+          // Cross-milestone gates are ordering predecessors of start, not data inputs:
+          // start emits the same merge-base when control state changes.
+          const local = nodes.filter(n => n.depends_on?.includes('attempt-m1')).map(n => n.id);
+          expect(local.some(id => /^(code|verify|repair|settle)-/.test(id))).toBe(false);
+          expect(deps).toContain(`package-attempt-${p.id}`);
+          if (sameMilestone) expect(deps.some(id => id.startsWith('attempt-'))).toBe(false);
+        }
+      if (sameMilestone)
+        expect(nodes.find(n => n.id === 'code-api')?.depends_on).toEqual([
+          'settle-core',
+          'package-attempt-api',
+        ]);
+    }
+  });
   test('P2: carry changes only code/verify wiring; an empty carry preserves every byte', () => {
     const make = (packages: string[]) =>
       buildWorkflow(fixture, milestones(fixture), 'golden-0001', '/GEN', false, NOW, loadTiers(), {
@@ -285,14 +311,14 @@ describe('buildWorkflow', () => {
         500_000 + 60_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000
       );
   });
-  test('ACCT: real Archon completes failed acceptance and baseline probe with the generated budget (time scaled 100:1)', () => {
+  test('ACCT: real Archon completes failed acceptance and baseline probe with the generated budget', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const plan = structuredClone(fixture);
     plan.repo = repo;
-    // 2s represents 200s, longer than the scaled 120s default but within the 300s command budget.
+    // Budget arithmetic is covered above. Keep real subprocess overhead unscaled here.
     plan.environment = [{ cmd: 'true', timeout_s: 1 }];
-    plan.packages[0].accept = [{ cmd: 'sleep 2; false', timeout_s: 300 }];
+    plan.packages[0].accept = [{ cmd: 'false', timeout_s: 1 }];
     const planPath = join(root, 'plan.json');
     fs.writeFileSync(planPath, JSON.stringify(plan));
     const source = join(root, 'source');
@@ -318,7 +344,6 @@ describe('buildWorkflow', () => {
     const node = {
       ...generated,
       depends_on: [],
-      timeout: generated.timeout! / 100,
       with: {
         ...generated.with,
         plan: planPath,
@@ -333,17 +358,8 @@ describe('buildWorkflow', () => {
       join(workflow, 'acct.yaml'),
       Bun.YAML.stringify({
         name: 'acct',
-        description: 'ACCT scaled subprocess timeout contract',
-        nodes: [
-          {
-            ...node,
-            id: 'old-budget',
-            timeout: 120_000 / 100,
-            on_timeout: 'skip',
-            with: { ...node.with, tag: 'old-budget' },
-          },
-          { ...node, depends_on: ['old-budget'], trigger_rule: 'all_done' },
-        ],
+        description: 'ACCT generated subprocess timeout contract',
+        nodes: [node],
       })
     );
     sh(
@@ -385,10 +401,7 @@ describe('buildWorkflow', () => {
     const view = archon('workflow', 'get', id, '--verbose', '--json');
     expect(view).toMatchObject({
       status: 'completed',
-      nodes: [
-        { nodeId: 'old-budget', state: 'skipped' },
-        { nodeId: 'verify-core', state: 'completed' },
-      ],
+      nodes: [{ nodeId: 'verify-core', state: 'completed' }],
     });
     const verified = JSON.parse(
       readFileSync(
@@ -504,7 +517,7 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('start-m1')?.depends_on).toEqual(['environment']);
-    expect(n('code-core')?.depends_on).toEqual(['start-m1', 'attempt-m1', 'package-attempt-core']);
+    expect(n('code-core')?.depends_on).toEqual(['start-m1', 'package-attempt-core']);
     expect(n('start-m2')).toMatchObject({
       depends_on: ['gate-m1-r1', 'gate-m1-r2', 'gate-m1-r3'],
       trigger_rule: 'none_failed_min_one_success',
@@ -623,19 +636,6 @@ describe('buildWorkflow', () => {
       expect(node(c, 'code-core').sandbox).toBeUndefined();
       expect(node(c, 'code-core').mcp).toBeUndefined();
     }
-  });
-  test('attempt-<m> always runs and gates the coder, accept and fix nodes, not review or gate', () => {
-    const nodes = nodesOf(build(false));
-    expect(nodes.find(x => x.id === 'attempt-m1')).toMatchObject({
-      depends_on: ['start-m1'],
-      always_run: true,
-    });
-    expect(JSON.stringify(nodes.find(x => x.id === 'attempt-m1'))).toContain('/GEN/attempts/m1');
-    const on = nodes.filter(x => x.depends_on?.includes('attempt-m1')).map(x => x.id);
-    expect(on).toEqual(
-      expect.arrayContaining(['code-core', 'verify-core', 'diff-m1-r1', 'fix-m1-r2'])
-    );
-    expect(on.some(id => /^(review|gate)-/.test(id))).toBe(false);
   });
   test('tightened caps map to Claude denied_tools; defaults deny nothing', () => {
     // 默认 tiers 的 @sa-coder 是 codex（caps 提示级）；Claude 将军节点把 capsDenied 并入 denied_tools

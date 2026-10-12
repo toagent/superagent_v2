@@ -289,6 +289,13 @@
         "decision"
       ]
     },
+    "delivery": {
+      "type": "object",
+      "properties": {
+        "diff_hash": { "type": "string" }
+      },
+      "required": ["diff_hash"]
+    },
     "head": {
       "type": "object",
       "properties": {

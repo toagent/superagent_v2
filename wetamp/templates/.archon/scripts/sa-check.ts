@@ -150,7 +150,7 @@ const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
 
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。plan 声明 cache:true 的检查在同一 tree、命令、超时与环境下
- * 复用本 run 已通过的结果（F-21）；未声明的（可能外写、依赖时间或随机性）每次实跑。只缓存通过，失败永远重跑。
+ * 复用本 run 的结果；未声明的（可能外写、依赖时间或随机性）每次实跑。候选变化后才重新执行缓存检查。
  */
 function run(
   checks: Check[],
@@ -179,7 +179,18 @@ function run(
         ? join(artifacts, 'accept-cache', sha(JSON.stringify([tree, c.cmd, c.timeout_s, envKey])))
         : '';
     if (hit && existsSync(hit)) {
-      appendFileSync(log, `$ ${c.cmd}\n# reused pass from ${readFileSync(hit, 'utf8')}\n\n`);
+      const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
+        tag: string;
+        failure: CheckFailure | null;
+      };
+      appendFileSync(
+        log,
+        `$ ${c.cmd}\n# reused ${saved.failure ? 'failure' : 'pass'} from ${saved.tag}\n\n`
+      );
+      if (saved.failure) {
+        failed.push(c.cmd);
+        failures.push(saved.failure);
+      }
       continue;
     }
     const t0 = Date.now();
@@ -214,10 +225,24 @@ function run(
       } catch {
         /* Unstructured output fails closed. */
       }
-      failures.push({ command: c.cmd, failure_class: failureClass(classification), evidence: log });
-    } else if (hit) {
+      failures.push({
+        command: c.cmd,
+        failure_class: failureClass(classification),
+        evidence: hit || log,
+      });
+    }
+    if (hit) {
       mkdirSync(dirname(hit), { recursive: true });
-      writeFileSync(hit, env('TAG'));
+      writeFileSync(
+        hit,
+        JSON.stringify({
+          tag: env('TAG'),
+          failure: code === 0 ? null : failures.at(-1),
+          exit: code,
+          stdout: p.stdout.toString(),
+          stderr: p.stderr.toString(),
+        })
+      );
     }
   }
   return failed;
@@ -330,7 +355,7 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   const covered = p.packages.filter(k => scopeIds.includes(k.id));
   const checks = pkgs.flatMap(k => k.accept);
   // 缓存目录在本 run 的 ARTIFACTS_DIR 下，进程环境由同一 engine 给出；键里只放 plan 声明的环境检查
-  const envKey = sha(JSON.stringify([p.environment, pkgs.map(k => k.environment)]));
+  const envKey = sha(JSON.stringify(environmentChecks(p)));
   const dirty = git('status', '--porcelain').trim();
   const failures: CheckFailure[] = [];
   const failed = run(checks, log, undefined, dirty ? '' : envKey, failures);
@@ -454,7 +479,10 @@ function finish(tag: string, out: Record<string, unknown> & Accept): void {
       });
   }
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
-  emit(out);
+  // Audit/control evidence stays in the artifact; downstream packages consume only delivered data.
+  emit(
+    env('KIND') === 'settle' && out.disposition !== 'suspend' ? { diff_hash: out.diff_hash } : out
+  );
   if (out.disposition === 'suspend') {
     console.error(`${tag}: suspend (${out.reason ?? ''})`);
     process.exit(1);

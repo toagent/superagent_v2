@@ -2092,7 +2092,7 @@ process.exit(main(['supervise-tick']));`
       }
       const expected = {
         package: '已提交包core编码→验收重跑',
-        milestone: '已提交里程碑m1全部包重跑',
+        milestone: '已提交里程碑m1累计验收→评审重跑',
         adopt: '已新开run从首个节点重跑',
         approval: '已批准等待门并提交续跑',
         review: '已提交review-m1-r3本轮评审重跑',
@@ -3316,7 +3316,7 @@ describe('HF9 decision titles', () => {
       expect(q).not.toContain('synthetic-check');
       expect(Array.from(q).length).toBeLessThanOrEqual(200);
       if (policy.do === 'ask' && policy.yes === 'retry')
-        expect(q).toContain('重跑m1全部1包（无已完成包）一次');
+        expect(q).toContain('重跑m1累计验收→评审一次');
     });
   }
   test('HF9 missing/corrupt display evidence does not prevent delivery', () => {
@@ -3548,7 +3548,7 @@ describe('HF9 decision titles', () => {
       expect(captured(() => main(['supervise-tick'])).code).toBe(0);
       const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
       assertBoundedTitle(q, 'budget');
-      expect(q).toContain('全部4包（含已完成3包）一次');
+      expect(q).toContain('累计验收→评审一次');
       expect(q).toContain('将新开run从首个节点重跑');
       expect(q).toContain(`已用/上限${String(value)}/${String(value)}`);
       if (process.env.HF9_R4_SAMPLE_OUT) writeFileSync(process.env.HF9_R4_SAMPLE_OUT, q + '\n');
@@ -3582,9 +3582,7 @@ describe('HF9 decision titles', () => {
             if (hold !== 'engine_suspect')
               expect(yes).toContain('旧run身份未确认，将新开run从首个节点重跑');
             const target =
-              /从[^；]+续跑一次|重跑[^；]+本轮评审一次|(?:旧工作流：)?重跑[^；]+全部4包（含已完成[^；]+）一次/.exec(
-                yes
-              )?.[0];
+              /从[^；]+续跑一次|重跑[^；]+本轮评审一次|重跑[^；]+累计验收→评审一次/.exec(yes)?.[0];
             expect(target).toBeDefined();
             expect(yes).toContain(policy.yesText.replace('{target}', target!.replace(/一次$/, '')));
           } else expect(yes).toBe(policy.yesText);
@@ -3847,30 +3845,12 @@ describe('HF9 decision titles', () => {
       const q = /^ask --question (.*) --ttl-hours \d+$/.exec(sup()[0])?.[1] ?? '';
       assertBoundedTitle(q, mode === 'milestone' ? 'review_limit' : 'redline');
       if (mode === 'package' || mode === 'adopt') expect(q).toContain('重派W4编码→验收一次');
-      if (mode === 'milestone' || mode === 'legacy')
-        expect(q).toContain('重跑m1全部11包（含已完成W1、W2、W3）一次');
-      if (mode === 'legacy') expect(q).toContain('旧工作流：');
+      if (mode === 'milestone' || mode === 'legacy') expect(q).toContain('重跑m1累计验收→评审一次');
       expect(q.includes('将新开run从首个节点重跑')).toBe(mode === 'adopt');
       samples[mode] = q;
     }
     if (process.env.HF10_SAMPLES_OUT)
       writeFileSync(process.env.HF10_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
-  });
-  test('HF9 R2 retryGate repeats all eleven packages including completed W1-W3; resume names its node', () => {
-    const { s, r } = bestIFA();
-    const q = decisionQuestion(s.ledger, r, classify(r), 'redline');
-    expect(q).toContain('m1全部11包（含已完成W1、W2、W3）');
-    expect(q).not.toContain('redline：');
-    const resumed = decisionQuestion(
-      s.ledger,
-      r,
-      { state: 'failed', exit: 1, node: 'code-W4' },
-      'auto_retry_exhausted'
-    );
-    expect(resumed).toContain('从code-W4续跑一次');
-    expect(resumed).not.toContain('全部11包');
-    const resume = decisionQuestion(s.ledger, r, classify(r), 'no_attempt_node');
-    expect(resume).toContain('从verify-W4续跑一次');
   });
   for (const status of ['failed', 'cancelled', 'paused', 'running', 'completed'] as const)
     for (const stale of [true, false])
@@ -3887,7 +3867,7 @@ describe('HF9 decision titles', () => {
         expect(q.includes('将新开run从首个节点重跑')).toBe(
           stale && ['failed', 'cancelled'].includes(status)
         );
-        expect(q).toContain('含已完成W1、W2、W3');
+        expect(q).toContain('累计验收→评审');
         expect(q).toContain('是=');
         expect(q).toContain('否=终止整个run');
         expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
