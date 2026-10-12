@@ -35,6 +35,7 @@ const request = (path: string, method = 'GET', headers: Record<string, string> =
     method,
     headers: { host: '127.0.0.1:39890', ...headers },
   });
+// prettier-ignore
 test('proxy retains Host/token gates; all mutations return 403 without reaching Archon', async () => {
   let calls = 0;
   const forward: typeof fetch = Object.assign(
@@ -66,6 +67,7 @@ test('proxy retains Host/token gates; all mutations return 403 without reaching 
   expect((await get(request('/api/overview?t=fixture'))).status).toBe(404);
   expect(await (await get(request('/sa?t=fixture', 'HEAD'))).text()).toBe('');
 });
+// prettier-ignore
 test('SSE stays streamed and forwarding drops proxy token, cookies and arbitrary headers', async () => {
   let seenUrl = '',
     seenHeaders = new Headers();
@@ -100,6 +102,7 @@ test('SSE stays streamed and forwarding drops proxy token, cookies and arbitrary
   expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: ready\n\n');
   await reader.cancel();
 });
+// prettier-ignore
 test('whitelisted child environment rejects unsupported DSN, keeps native home and discards adapters/runtime injection', () => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root;
@@ -119,6 +122,7 @@ test('whitelisted child environment rejects unsupported DSN, keeps native home a
   for (const key of ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'NODE_OPTIONS'])
     expect(key in env).toBe(false);
 });
+// prettier-ignore
 test('observer loader blocks native dotenv reload, including override:true in ARCHON_HOME', async () => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root;
@@ -184,6 +188,7 @@ test('M2-07 fingerprint drift restarts the launchd console; current engine stays
   expect(await refreshConsole(restart, 'new')).toMatchObject({ engine_hash: 'new' });
   expect(count).toBe(1);
 });
+// prettier-ignore
 test('M2-07 previous PID state requires migration; incomplete owner identity is refused', async () => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root;
@@ -216,6 +221,7 @@ test('M2-07 previous PID state requires migration; incomplete owner identity is 
 });
 
 // Same keys as the production record: no uid, label or socket.
+// prettier-ignore
 function legacyFixture() {
   const s = {
     port: 39890,
@@ -254,6 +260,7 @@ function legacyFixture() {
   };
   return { s, rows, living, ps, live: (pid: number) => living.has(pid) };
 }
+// prettier-ignore
 test('HF5c production-shaped record migrates only after both processes exit and clears its state', async () => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root;
@@ -306,6 +313,7 @@ test('HF5c accepts recorded UID and earlier web serve argv, but rejects server a
   rows.get(s.server_pid)!.command += ' extra';
   expect(() => legacyPids(s, ps, live)).toThrow('argv');
 });
+// prettier-ignore
 test('HF5c skips dead PIDs and checks PPID only while both are alive; two dead PIDs are a no-op', async () => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root;
@@ -328,6 +336,7 @@ test('HF5c skips dead PIDs and checks PPID only while both are alive; two dead P
   });
   expect(existsSync(join(root, 'web.json'))).toBe(false);
 });
+// prettier-ignore
 test('HF5c times out after 15 seconds of polling without escalating SIGTERM or removing state', async () => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root;
@@ -382,6 +391,7 @@ test('HF5c rechecks identity before each signal and preserves a replacement stat
   });
   expect(existsSync(join(root, 'web.json'))).toBe(true);
 });
+// prettier-ignore
 test('HF5c status exposes legacy ownership when launchd is absent, including orphaned server', () => {
   const { s, living, live } = legacyFixture();
   expect(consoleStatus(s, false, live)).toEqual({

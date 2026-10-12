@@ -215,6 +215,7 @@ export const html = (s: string | number): string =>
     /[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c
   );
+// prettier-ignore
 export function panel(d: Partial<ReturnType<typeof overview>>, body?: string): string {
   const rows = d.tokenRows,
     models = [...new Set(rows?.flatMap(r => Object.keys(r.models)) ?? [])].sort();
@@ -236,6 +237,7 @@ const same = (a: string, b: string): boolean => {
     y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 };
+// prettier-ignore
 export function handler(
   port: number,
   token: string,
@@ -274,11 +276,7 @@ export function handler(
     if (supplied && same(supplied, token))
       headers['Set-Cookie'] = `sa_web=${token}; HttpOnly; SameSite=Strict; Path=/`;
     if (['/sa', '/sa/data', '/sa/memory'].includes(url.pathname)) {
-      try {
-        await update();
-      } catch {
-        return respond('Snapshot unavailable', 503);
-      }
+      try { await update(); } catch { return respond('Snapshot unavailable', 503); }
     }
     if (url.pathname === '/sa') return respond(panel(get()), 200, 'text/html');
     if (url.pathname === '/sa/memory') {
@@ -385,6 +383,7 @@ export function createDemandSnapshot(
       })),
   };
 }
+// prettier-ignore
 async function serve(): Promise<void> {
   mkdirSync(home().sa, { recursive: true });
   const held = lock(join(home().sa, 'web.lock'));
@@ -464,6 +463,7 @@ export async function stopWeb(s = webState()): Promise<void> {
   if (existsSync(join(home().sa, 'console/archon.sock')) || (s && alive(s.pid)))
     throw new Error('console still stopping');
 }
+// prettier-ignore
 export async function startWeb(): Promise<WebState> {
   mkdirSync(home().sa, { recursive: true });
   const guard = lock(join(home().sa, 'web-start.lock'));
