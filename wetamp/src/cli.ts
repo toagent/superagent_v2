@@ -263,7 +263,7 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
       }
     }
     if (i >= 100) throw new Error(`ledger ${l.run_id}: ${path} busy`);
-    Bun.sleepSync(100);
+    waitClock.sleep(100);
   }
 }
 
@@ -706,9 +706,17 @@ function recoverRun(
   );
 }
 
+/** Clock seam for deterministic ledger/recovery waits; production uses wall time. */
+export const waitClock = {
+  now: (): number => Date.now(),
+  sleep: (ms: number): void => {
+    Bun.sleepSync(ms);
+  },
+};
+
 /** 每秒重查 inbox 和事件门；可证实 owner-lost 时校验归属后恢复。 */
 export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
-  const deadline = Date.now() + timeoutS * 1000;
+  const deadline = waitClock.now() + timeoutS * 1000;
   for (;;) {
     const inbox = coord().surfaced(caller(true));
     if (inbox.length) return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox };
@@ -724,8 +732,8 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
       if (r.ok) continue;
       // 另一进程正在恢复：稍候重读状态；到期仍是 owner_lost 则按运行中返回（exit 4），不报失败
       if (r.busy) {
-        if (Date.now() >= deadline) return { ...summary(l, run, c), reason: r.reason };
-        Bun.sleepSync(1000);
+        if (waitClock.now() >= deadline) return { ...summary(l, run, c), reason: r.reason };
+        waitClock.sleep(1000);
         continue;
       }
       const held = r.held ?? r.reason === 'recover_no_progress';
@@ -739,7 +747,7 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
         ...(r.held ? { action: r.action, snapshot: r.snapshot, nodes: r.nodes } : {}),
       };
     }
-    const left = Math.ceil((deadline - Date.now()) / 1000);
+    const left = Math.ceil((deadline - waitClock.now()) / 1000);
     if (c.exit !== EXIT.running || left <= 0) return summary(l, run, c);
     archon(
       ['workflow', 'wait', l.archon_run_id, '--json', '--timeout', String(Math.min(1, left))],
@@ -1441,7 +1449,7 @@ const supervisorPy = (): string =>
   process.env.SA_SUPERVISOR ??
   join(homedir(), '.ai-agent-shared', 'skills', 'agent-supervisor', 'scripts', 'supervisor.py');
 
-function supervisor(args: string[]): string {
+export function supervisor(args: string[]): string {
   const p = Bun.spawnSync(['python3', supervisorPy(), ...args], {
     stdout: 'pipe',
     stderr: 'pipe',
