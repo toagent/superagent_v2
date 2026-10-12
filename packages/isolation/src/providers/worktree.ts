@@ -971,6 +971,21 @@ export class WorktreeProvider implements IIsolationProvider {
         request.taskBranch.branch,
         setupLockReason
       );
+    } else if (
+      request.workflowType === 'task' &&
+      request.taskBranch?.kind === 'new' &&
+      request.taskBranch.fromBranch
+    ) {
+      // An explicit local start-point needs neither remote discovery nor workspace sync.
+      // Git resolves it during branch creation and fails if it cannot be resolved.
+      cutFromCommit = await this.createNewBranch(
+        request,
+        repoPath,
+        worktreePath,
+        branchName,
+        request.taskBranch.fromBranch,
+        setupLockReason
+      );
     } else {
       // Resolve git remote name: explicit config > auto-detect > actionable error
       const remote = await this.resolveRemote(repoPath, worktreeConfig?.remote);
