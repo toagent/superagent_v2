@@ -22,6 +22,7 @@ import * as fs from 'node:fs';
 import * as archonMod from '../src/archon';
 import * as cliMod from '../src/cli';
 import * as configMod from '../src/config';
+import * as gcMod from '../src/gc';
 import type { RunView } from '../src/archon';
 import {
   classify,
@@ -345,9 +346,18 @@ function stub(responses: RunView[]): {
     `#!/usr/bin/env bash\nexec '${process.execPath}' '${join(import.meta.dir, 'fixtures/archon-stub.ts')}' '${dir}' "$@"\n`
   );
   chmodSync(bin, 0o755);
+  let elapsed = 0;
   fixtureSpies.push(
+    // Scratch cleanup has dedicated real-process coverage in scratch.test.ts.
+    // Control fixtures must not scan or clean unrelated operator sessions.
+    spyOn(gcMod, 'scratchClean').mockReturnValue([]),
+    spyOn(cliMod.waitClock, 'now').mockImplementation(() => Date.now() + elapsed),
+    spyOn(cliMod.waitClock, 'sleep').mockImplementation(ms => {
+      elapsed += ms;
+    }),
     spyOn(coordModule, 'caller').mockReturnValue((fixtureCaller ??= coordModule.caller())),
     spyOn(archonMod, 'archon').mockImplementation((args, _cwd, intent) => {
+      if (args[1] === 'wait') elapsed += Number(args[args.indexOf('--timeout') + 1]) * 1000;
       if (intent) {
         // The stub launch has no surviving executor, just like its executable entry.
         const reservation = JSON.parse(readFileSync(intent.path, 'utf8'));
@@ -4010,7 +4020,7 @@ describe('HF9 decision titles', () => {
   });
 });
 
-// verify-local runs selftest as its own step; this ~110s end-to-end copy only runs outside that gate.
+// verify-local runs selftest as its own step; this end-to-end copy only runs outside that gate.
 test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
   'REC-R1-01: selftest formal receipt admits run without skip; fake workflow fixes, approves and lands',
   () => {
@@ -4064,6 +4074,19 @@ test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
       driver,
       `import {readFileSync, writeFileSync, appendFileSync} from 'node:fs';
     const args=process.argv.slice(2);
+    // Hold the deterministic node until selftest kills its owner, then let its
+    // real recovery complete immediately instead of sleeping another 20 seconds.
+    if(args[0]==='workflow' && args[1]==='run' && args[2]==='sa-smoke') {
+      const gen=args[args.indexOf('--workflow-source')+1];
+      const file=gen+'/.archon/workflows/sa-smoke/sa-smoke.yaml';
+      const wf=Bun.YAML.parse(readFileSync(file,'utf8'));
+      wf.nodes.find(n=>n.id==='think').bash=\`while [ ! -f '${join(root, 'release-smoke')}' ]; do sleep 0.02; done; echo '{"answer":"pong"}'\`;
+      writeFileSync(file,Bun.YAML.stringify(wf));
+      for(const cmd of [['git','-C',gen,'add',file],['git','-C',gen,'-c','user.name=t','-c','user.email=t@l','commit','-qm','recovery barrier fixture']]) {
+        if(Bun.spawnSync(cmd).exitCode!==0) process.exit(1);
+      }
+    }
+    if(args[0]==='workflow' && args[1]==='resume') writeFileSync(${JSON.stringify(join(root, 'release-smoke'))},'ready');
     if(args[0]==='workflow' && args[1]==='run' && args[2]==='sa-provider') {
       const gen=args[args.indexOf('--workflow-source')+1];
       const file=gen+'/.archon/workflows/sa-smoke/sa-provider.yaml';
