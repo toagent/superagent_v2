@@ -769,9 +769,15 @@ function startRun(planPath: string, a: Args): number {
     mode = installMode();
     preflight(a.flags['skip-selftest'] ?? false);
     const plan = loadPlan(planPath);
-    const scope = repoScope(plan.repo);
+    const repo = repoScope(plan.repo),
+      scope = runScope({ run_id: run, repo: plan.repo });
+    const who = caller();
+    const default_contact = coord().scoped(repo, () => {
+      if (!coord().owner(repo).owner && !coord().owner(repo).conflicts.length)
+        coord().claim(repo, who);
+      return coord().owner(repo).owner;
+    });
     return coord().scoped(scope, () => {
-      const who = caller();
       const controller = coord().claim(scope, who).controller;
       return coord().mutate(scope, who, () => {
         plan_lint = lintPlan(plan, a.flags['lint-override']);
@@ -825,6 +831,36 @@ function startRun(planPath: string, a: Args): number {
           print(failure);
           return EXIT_ALIAS_DRIFT;
         }
+        const overlap_warnings = ledgers().flatMap(l => {
+          try {
+            if (
+              'error' in l ||
+              repoScope(l.repo).id !== repo.id ||
+              ['completed', 'failed', 'cancelled'].includes(getRun(l.archon_run_id, l.repo).status)
+            )
+              return [];
+            const previous = loadPlan(l.plan).packages.flatMap(p => p.scope.write);
+            const prefix = (glob: string) => glob.split(/[*?{[]/, 1)[0];
+            const paths = plan.packages
+              .flatMap(p => p.scope.write)
+              .filter(path =>
+                previous.some(
+                  other =>
+                    path === other ||
+                    new Bun.Glob(other).match(path) ||
+                    new Bun.Glob(path).match(other) ||
+                    (prefix(path) !== path &&
+                      prefix(other) !== other &&
+                      (prefix(path).startsWith(prefix(other)) ||
+                        prefix(other).startsWith(prefix(path))))
+                )
+              );
+            return paths.length ? [{ run_id: l.run_id, paths: [...new Set(paths)] }] : [];
+          } catch (error) {
+            console.error(`run: overlap check ${l.run_id}: ${String(error)}`);
+            return [];
+          }
+        });
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
@@ -883,6 +919,8 @@ function startRun(planPath: string, a: Args): number {
           branch,
           gen_dir: gen.dir,
           mode: 'controller',
+          default_contact,
+          overlap_warnings,
           plan_lint,
           ...quota,
         });

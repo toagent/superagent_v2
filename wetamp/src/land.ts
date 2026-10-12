@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
   closeSync,
@@ -64,6 +65,12 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   };
   const git = (...args: string[]): string => gitAt(repo, ...args);
   const targetCheckout = () => git('worktree', 'list', '--porcelain', '-z').split('\0\0').find(record => record.split('\0').includes(`branch refs/heads/${target}`))?.split('\0').find(line => line.startsWith('worktree '))?.slice(9);
+  const lockfile = join(git('rev-parse', '--path-format=absolute', '--git-common-dir'), `sa-land-${createHash('sha256').update(target).digest('hex')}.lock`);
+  let lease = lock(lockfile);
+  const deadline = Date.now() + selftestTimeout();
+  while (!lease.ok && Date.now() < deadline) { Bun.sleepSync(50); lease = lock(lockfile); }
+  if (!lease.ok) throw new Error('land: timed out waiting for integration lock');
+  try {
   const checkout = targetCheckout();
   const clean = () => { if (checkout && gitAt(checkout, 'status', '--porcelain', '--untracked-files=all')) throw new Error('land: target checkout is dirty'); };
   clean();
@@ -73,18 +80,28 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   };
   sameTree();
   const fingerprint = runtimeFingerprint();
+  for (let attempt = 0; ; attempt++) {
   const tip = git('rev-parse', `refs/heads/${target}`), root = mkdtempSync(join(tmpdir(), 'sa-land-')), candidate = join(root, 'wt');
   const links: string[] = [];
   try {
     git('worktree', 'add', '--detach', candidate, tip);
     const ff = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', tip, land.head], { stdout: 'pipe', stderr: 'pipe' });
     if (ff.exitCode > 1) throw new Error(`land: ${ff.stderr.toString().trim()}`);
-    try { gitAt(candidate, 'merge', ff.exitCode === 0 ? '--ff-only' : '--no-ff', '-m', `Merge ${land.branch} (sa/${run.id})`, land.head); }
+    try { gitAt(candidate, 'merge', ff.exitCode === 0 ? '--ff-only' : '--no-ff', '-m', `Merge ${land.branch}`, land.head); }
     catch (e) {
       const conflicts = gitAt(candidate, 'diff', '--name-only', '--diff-filter=U');
       if (!conflicts) throw e;
-      gitAt(candidate, 'merge', '--abort');
-      throw new Error(`land: merge conflicts:\n${conflicts}\nnext: git -C ${repo} merge --no-ff ${land.branch}`);
+      const solver = Bun.which('mergiraf', { PATH: process.env.PATH });
+      if (solver) for (const file of conflicts.split('\n')) {
+        const solved = Bun.spawnSync([solver, 'solve', file], { cwd: candidate, stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+        if (solved.exitCode === 0) gitAt(candidate, 'add', '--', file);
+      }
+      const remaining = gitAt(candidate, 'diff', '--name-only', '--diff-filter=U');
+      if (remaining) {
+        gitAt(candidate, 'merge', '--abort');
+        throw new Error(`land: merge conflicts:\n${remaining}\nnext: git -C ${repo} merge --no-ff ${land.branch}`);
+      }
+      gitAt(candidate, 'commit', '--no-edit');
     }
     const accepted = gitAt(candidate, 'rev-parse', 'HEAD');
     // Reuse installed dependencies only when their owning lockfile matches.
@@ -104,14 +121,19 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new Error('land: acceptance changed candidate checkout');
     sameTree(); clean();
     if (targetCheckout() !== checkout) throw new Error('land: target checkout changed during acceptance; retry land --apply');
-    if (git('rev-parse', `refs/heads/${target}`) !== tip) throw new Error('land: target advanced during acceptance; retry land --apply');
+    if (git('rev-parse', `refs/heads/${target}`) !== tip) {
+      if (attempt < 2) continue;
+      throw new Error('land: target advanced during acceptance after 2 retries');
+    }
     if (checkout) gitAt(checkout, 'merge', '--ff-only', accepted);
     else git('update-ref', `refs/heads/${target}`, accepted, tip);
     console.log(`land: integrated ${accepted} in ${checkout ?? repo}`);
+    break;
   } finally {
     for (const link of links) rmSync(link, { force: true });
     try { if (existsSync(candidate)) git('worktree', 'remove', '--force', candidate); }
     finally { rmSync(root, { recursive: true, force: true }); }
+  }
   }
   for (const args of [...(run.working_path ? [['worktree', 'remove', run.working_path]] : []), ['branch', '-d', land.branch]]) {
     try { git(...args); } catch (e) { console.error(`land: kept ${String(args.at(-1))}: ${(e as Error).message}`); }
@@ -122,5 +144,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     finally { closeSync(fd); }
     console.log(`land: background selftest log ${log}`);
   }
+  } finally { lease.release(); }
 }
 if (import.meta.main) selftest(false);

@@ -1,6 +1,8 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { lock } from '../src/archon';
 import { applyLand, selftest } from '../src/land';
 import * as config from '../src/config';
 import type { Land } from '../templates/.archon/scripts/sa-check';
@@ -42,7 +44,7 @@ test.each(['current', 'legacy-ref', 'legacy-hash'])('%s apply checks the accepte
   expect(sh('git branch --list sa/land', f.repo).trim()).toBe('');
 });
 // prettier-ignore
-test.each(['pass', 'accept-fail', 'conflict', 'target-race'])('diverged target: %s preserves branches until verified and removes temporary worktree', kind => {
+test.each(['pass', 'accept-fail', 'conflict', 'target-race', 'retry-success'])('diverged target: %s preserves branches until verified and removes temporary worktree', kind => {
   const f = fixture(); f.land.ff = false;
   sh('echo target > README.md && git add README.md && git commit -qm target', f.repo);
   if (kind === 'conflict') {
@@ -53,24 +55,24 @@ test.each(['pass', 'accept-fail', 'conflict', 'target-race'])('diverged target: 
   let candidate = '', accepted = '', calls = 0, targetAfter = before;
   const verify = (cwd: string) => {
     candidate = cwd; calls++;
-    expect(sh('git rev-parse main', f.repo)).toBe(before);
+    expect(sh('git rev-parse main', f.repo)).toBe(targetAfter);
     expect(sh('git symbolic-ref --short HEAD', f.repo).trim()).toBe('main');
     accepted = sh('git rev-parse HEAD', cwd);
-    expect(sh('git rev-list --parents -n 1 HEAD', cwd).trim().split(' ')).toEqual([accepted.trim(), before.trim(), worker.trim()]);
+    expect(sh('git rev-list --parents -n 1 HEAD', cwd).trim().split(' ')).toEqual([accepted.trim(), targetAfter.trim(), worker.trim()]);
     expect(readFileSync(join(cwd, 'delivery.txt'), 'utf8')).toBe('delivery\n');
     expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('target\n');
-    if (kind === 'target-race') { sh('git commit --allow-empty -qm concurrent', f.repo); targetAfter = sh('git rev-parse HEAD', f.repo); }
+    if (kind === 'target-race' || (kind === 'retry-success' && calls === 1)) { sh('git commit --allow-empty -qm concurrent', f.repo); targetAfter = sh('git rev-parse HEAD', f.repo); }
     return kind === 'accept-fail' ? 1 : 0;
   };
   const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
   try {
-    if (kind === 'pass') applyLand(f.run, f.land, verify);
+    if (kind === 'pass' || kind === 'retry-success') applyLand(f.run, f.land, verify);
     else expect(() => applyLand(f.run, f.land, verify)).toThrow(kind === 'conflict' ? 'README.md' : kind === 'target-race' ? 'target advanced' : 'acceptance failed');
   } finally { probe.mockRestore(); }
-  expect(calls).toBe(kind === 'conflict' ? 0 : 1);
+  expect(calls).toBe(kind === 'conflict' ? 0 : kind === 'target-race' ? 3 : kind === 'retry-success' ? 2 : 1);
   if (candidate) expect(existsSync(candidate)).toBe(false);
-  expect(sh('git rev-parse main', f.repo)).toBe(kind === 'pass' ? accepted : targetAfter);
-  if (kind !== 'pass') {
+  expect(sh('git rev-parse main', f.repo)).toBe(kind === 'pass' || kind === 'retry-success' ? accepted : targetAfter);
+  if (kind !== 'pass' && kind !== 'retry-success') {
     expect(sh('git rev-parse sa/land', f.repo)).toBe(worker);
     expect(sh('git worktree list --porcelain', f.repo)).toBe(kind === 'target-race' ? worktrees.replace(`HEAD ${before.trim()}`, `HEAD ${targetAfter.trim()}`) : worktrees);
   }
@@ -110,4 +112,53 @@ test.each([true, false])('selftest wait=%s refreshes the latest fingerprint afte
   try { selftest(wait); } finally { probe.mockRestore(); }
   expect(await child.exited).toBe(0);
   expect(JSON.parse(readFileSync(join(root, 'selftest.json'), 'utf8')).fingerprint).toBe('fixture');
+});
+
+// prettier-ignore
+test.each([true, false])('conflicts use PATH mergiraf only in the candidate; available=%s', available => {
+  const f = fixture(), bin = join(f.root, 'bin'); mkdirSync(bin);
+  sh('echo target > README.md && git add README.md && git commit -qm target', f.repo);
+  sh('echo worker > README.md && git add README.md && git commit -qm worker', f.worktree);
+  f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
+  const before = sh('git rev-parse HEAD', f.repo);
+  const solver = join(bin, 'mergiraf');
+  writeFileSync(solver, '#!/bin/sh\nprintf "resolved\\n" > "$2"\n', { mode: 0o755 });
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+  const lookup = available ? undefined : spyOn(Bun, 'which').mockReturnValue(null);
+  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  let candidate = '';
+  try {
+    const apply = () => applyLand(f.run, f.land, cwd => {
+      candidate = cwd;
+      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('resolved\n');
+      expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
+      expect(sh('git log -1 --format=%s', cwd).trim()).toBe('Merge sa/land');
+      return 0;
+    });
+    if (available) apply(); else expect(apply).toThrow('merge conflicts:\nREADME.md');
+  } finally { lookup?.mockRestore(); probe.mockRestore(); }
+  if (candidate) expect(existsSync(candidate)).toBe(false);
+  expect(readFileSync(join(f.repo, 'README.md'), 'utf8')).toBe(available ? 'resolved\n' : 'target\n');
+});
+
+test('land holds the common repository/target lease through verification and releases on failure', () => {
+  const f = fixture();
+  const common = sh('git rev-parse --path-format=absolute --git-common-dir', f.worktree).trim();
+  const file = join(common, `sa-land-${createHash('sha256').update('main').digest('hex')}.lock`);
+  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  try {
+    expect(() =>
+      applyLand(f.run, f.land, () => {
+        const competing = lock(file);
+        if (competing.ok) competing.release();
+        expect(competing.ok).toBe(false);
+        return 1;
+      })
+    ).toThrow('acceptance failed');
+    const next = lock(file);
+    expect(next.ok).toBe(true);
+    if (next.ok) next.release();
+  } finally {
+    probe.mockRestore();
+  }
 });

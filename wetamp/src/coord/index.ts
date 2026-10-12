@@ -313,16 +313,14 @@ export class Coordination {
     next: string;
   } {
     const repo: Scope = scope.kind === 'run' ? { kind: 'repo', id: scope.repo } : scope;
-    const claims = [
-      this.claimOf(scope),
-      ...(scope.kind === 'run' ? [this.claimOf(repo)] : []),
-    ].filter((c): c is Claim => !!c);
+    const claims = [this.claimOf(scope)].filter((c): c is Claim => !!c);
     const runs = claims.length
       ? []
       : this.d
           .runs()
           .filter(l => {
             // A ledger whose repository no longer resolves cannot share a live repository's scope.
+            if (scope.kind === 'run') return l.run_id === scope.id;
             if (shared.repoScope(l.repo)?.id !== repo.id || l.state === 'failed') return false;
             try {
               return !['completed', 'cancelled'].includes(this.d.status(l));
@@ -331,7 +329,7 @@ export class Coordination {
             } // Unverifiable ownership remains evidence.
           })
           .map(l => ({
-            scope: repoScope(l.repo),
+            scope: runScope(l),
             owner: l.controller ?? l.launcher,
             generation: l.controller?.generation ?? 0,
             evidence: `nonterminal run ${l.run_id} ${l.controller ? 'controller' : 'legacy launcher'}`,
@@ -663,7 +661,6 @@ export function control<T>(
 ): T {
   const c = coord(),
     scope = runScope(l);
-  if (!c.owner(scope).owner && expected === undefined)
-    c.claim({ kind: 'repo', id: scope.repo }, who);
+  if (!c.owner(scope).owner && expected === undefined) c.claim(scope, who);
   return c.mutate(scope, who, f, expected);
 }

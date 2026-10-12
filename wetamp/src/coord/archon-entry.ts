@@ -108,6 +108,14 @@ export async function archonEntry(args: string[]): Promise<number> {
   const context = token ? c.consume(token) : undefined;
   delete process.env.SA_COORD_ADMISSION;
   if (
+    context?.scope.kind === 'run' &&
+    verb === 'run' &&
+    !target &&
+    scope.kind === 'repo' &&
+    scope.id === context.scope.repo
+  )
+    scope = context.scope;
+  if (
     context &&
     (context.scope.kind === 'run'
       ? context.scope.id !== (scope.kind === 'run' ? scope.id : '')

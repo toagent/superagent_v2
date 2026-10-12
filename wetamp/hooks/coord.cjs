@@ -40,7 +40,7 @@ function refusal(action, owner, state = 'unknown') {
   return `已拒绝：${action}\n原因：这个仓库由 ${label(owner)} 负责（${status}）\n可以：superagent handoff --to <path|run> … 或经用户同意 superagent claim --takeover --reason "<原话>"`;
 }
 // The CLI supplies verified run states; hooks use a read-only database snapshot, never a subprocess.
-function candidates(home, archon = path.join(home, 'archon')) {
+function candidates(home, archon = path.join(home, 'archon'), scope) {
   let db;
   try {
     db = process.versions.bun ? new (require('bun:sqlite').Database)(path.join(archon, 'archon.db'), {readonly: true}) :
@@ -50,21 +50,22 @@ function candidates(home, archon = path.join(home, 'archon')) {
     const dir = path.join(home, 'runs');
     const names = fs.existsSync(dir) ? fs.readdirSync(dir).filter(n => n.endsWith('.json')) : [];
     return names.map(n => read(path.join(dir, n))).filter(l => {
+      if (scope?.kind === 'run') return l.run_id === scope.id;
       if (l.state === 'failed') return false;
       let status;
       try { const sql = 'select status from remote_agent_workflow_runs where id=?';
         status = (process.versions.bun ? db.query(sql) : db.prepare(sql)).get(l.archon_run_id)?.status; } catch {}
       return !['completed', 'cancelled'].includes(status);
-    }).map(l => ({scope: repoScope(l.repo), owner: l.controller || l.launcher,
+    }).map(l => ({scope: runScope(l), owner: l.controller || l.launcher,
       generation: l.controller?.generation || 0, evidence: `nonterminal run ${l.run_id} ${l.controller ? 'controller' : 'legacy launcher'}`}));
   } finally { db?.close(); }
 }
 function resolveOwner(scope, claims, runs) {
   const repo = scope.kind === 'run' ? {kind: 'repo', id: scope.repo} : scope;
-  const c = claims.find(c => hash(c.scope) === hash(scope)) || claims.find(c => hash(c.scope) === hash(repo));
+  const c = claims.find(c => hash(c.scope) === hash(scope));
   if (c) return {owner: c.owner, generation: c.generation, conflicts: [],
     evidence: [`explicit claim ${hash(c.scope)} generation=${c.generation}${c.owner ? '' : ' released'}`]};
-  const matches = (typeof runs === 'function' ? runs() : runs).filter(r => r.scope?.id === repo.id && r.owner);
+  const matches = (typeof runs === 'function' ? runs(scope) : runs).filter(r => (scope.kind === 'run' ? r.scope?.kind === 'run' && r.scope.id === scope.id : (r.scope?.repo || r.scope?.id) === repo.id) && r.owner);
   const distinct = matches.filter((r, i) => matches.findIndex(x => same(x.owner, r.owner)) === i);
   return {owner: distinct.length === 1 ? distinct[0].owner : null,
     generation: Math.max(0, ...distinct.map(r => r.generation)),
@@ -92,9 +93,8 @@ function targetScope(home, target, cwd) {
 }
 function admission(home, scope, who, expected, archon, resolved) {
   if (!scope) throw new Error('coord: cannot resolve mutation scope');
-  const claims = files(home, 'claims'), view = resolved || resolveOwner(scope, claims, () => candidates(home, archon));
-  const owned = claims.find(c => hash(c.scope) === hash(scope))?.scope ||
-    (scope.kind === 'run' ? {kind: 'repo', id: scope.repo} : scope);
+  const claims = files(home, 'claims'), view = resolved || resolveOwner(scope, claims, () => candidates(home, archon, scope));
+  const owned = scope;
   const lease = read(path.join(home, 'coord', 'leases', hash([owned, require('./identity.cjs').key(who || {})]) + '.json'));
   if (!same(view.owner, who) || (expected !== undefined && expected !== view.generation) ||
       (claims.some(c => hash(c.scope) === hash(owned)) && lease?.generation !== view.generation))
@@ -108,7 +108,7 @@ function archonMutation(argv) {
     (['list', 'status', 'capacity'].includes(argv[1]) || ['alias', 'tier'].includes(argv[1]) && argv[2] === 'list'));
 }
 function unread(home, who, seen = [], archon) {
-  const claims = files(home, 'claims'), runs = () => candidates(home, archon);
+  const claims = files(home, 'claims'), runs = scope => candidates(home, archon, scope);
   return files(home, 'inbox').filter(m => !seen.includes(m.id) &&
     (m.type === 'receipt' || m.type === 'takeover' ? same(m.recipient, who) :
       ['queued', 'surfaced', 'accepted', 'escalated'].includes(m.state) && same(resolveOwner(m.scope, claims, runs).owner, who)));
@@ -119,7 +119,7 @@ function notifications(messages) {
 function writeReason(payload, client, env, shell, readonly) {
   const home = env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
   const cwd = payload.cwd || process.cwd(), name = String(payload.tool_name || ''), input = payload.tool_input || {};
-  const claims = files(home, 'claims'), runs = () => candidates(home, env.ARCHON_HOME);
+  const claims = files(home, 'claims'), runs = scope => candidates(home, env.ARCHON_HOME, scope);
   const beats = (() => { try { return fs.readdirSync(path.join(home, 'live')).map(n => read(path.join(home, 'live', n))); } catch { return []; } })();
   const who = beats.find(b => b?.client === client && b.session_id === payload.session_id && b.host === os.hostname());
   const check = (file, dir) => {

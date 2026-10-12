@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import {
   chmodSync,
@@ -25,7 +25,7 @@ import {
 } from '../src/coord';
 import { ownerLost } from '../src/archon';
 import { main, waitRun, type Ledger } from '../src/cli';
-import { gitRepo, sh, tmp } from './helpers';
+import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const req = createRequire(import.meta.url);
 const ids = req('../hooks/identity.cjs') as {
@@ -388,6 +388,7 @@ test('CLI mutation obeys owner fencing before invoking engine; read-only owner r
     JSON.stringify({
       run_id: 'r',
       archon_run_id: 'provider',
+      controller: { ...a, generation: 1 },
       repo: s.repo,
       gen_dir: s.root,
       branch: 'feature',
@@ -450,7 +451,11 @@ test('hook legacy fallback, repository backlog after takeover, and released tomb
   const runScope = c.scope('old');
   c.handoff(runScope, b, input);
   c.claim(s.scope, b, true, 'takeover');
+  expect(c.owner(runScope).owner).toEqual(l.launcher);
+  expect(hooks.unread(s.sa, a, []).filter(m => !m.type)).toHaveLength(1);
+  c.claim(runScope, b, true, 'run takeover');
   expect(hooks.unread(s.sa, b, []).filter(m => !m.type)).toHaveLength(1);
+  c.release(runScope, b);
   c.release(s.scope, b);
   expect(c.owner(runScope).owner).toBeNull();
   expect(hooks.unread(s.sa, a, []).filter(m => !m.type)).toHaveLength(0);
@@ -1070,6 +1075,7 @@ test('INT3: ledger scope wins over same-named paths; executor death does not tra
   isolated(s);
   const controller = s.c.claim(s.scope, caller()).controller;
   const l = registered(s, controller);
+  s.c.claim(runScope(l), controller);
   mkdirSync(join(s.repo, l.run_id));
   for (const target of [l.run_id, l.archon_run_id, 'archon']) {
     expect(s.c.scope(target)).toEqual(runScope(l));
@@ -1099,4 +1105,83 @@ test('INT3: ledger scope wins over same-named paths; executor death does not tra
     )
   ).toThrow('fencing');
   expect(recovered).toBe(false);
+});
+
+test('parallel runs claim independently of the online repository contact and fence takeovers', () => {
+  const s = setup();
+  s.c.claim(s.scope, b);
+  const first = runScope({ run_id: 'first', repo: s.repo });
+  const second = runScope({ run_id: 'second', repo: s.repo });
+  const controller = s.c.claim(first, a).controller;
+  s.c.claim(second, b);
+  expect(s.c.mutate(first, a, () => 'dispatched', controller.generation)).toBe('dispatched');
+  expect(s.c.owner(s.scope).owner).toEqual(b);
+  expect(() => s.c.claim(first, b)).toThrow('普通认领');
+  s.c.claim(first, b, true, 'operator request');
+  expect(() => s.c.mutate(first, a, () => true, controller.generation)).toThrow('fencing');
+  expect(s.c.mutate(second, b, () => true)).toBe(true);
+});
+
+test('run launches under its own claim while another online owner remains repository contact', () => {
+  const s = setup();
+  isolated(s);
+  process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+  process.env.SUPERAGENT_MEMORY = 'off';
+  const contact = s.c.claim(s.scope, b).controller;
+  const plan = fixturePlan(s.root, s.repo);
+  const l = registered(s, contact);
+  l.plan = plan;
+  writeFileSync(join(s.sa, 'runs', l.run_id + '.json'), JSON.stringify(l));
+  const native = req('../src/archon.ts') as typeof import('../src/archon');
+  const coordination = req('../src/coord/index.ts') as typeof import('../src/coord');
+  const relay = req('../src/relay-quota.ts') as typeof import('../src/relay-quota');
+  const launch = spyOn(native, 'archonJson').mockImplementation(args =>
+    args[1] === 'get'
+      ? { id: l.archon_run_id, status: 'running' }
+      : { ok: true, runId: 'new-engine-run' }
+  );
+  const identity = spyOn(coordination, 'caller').mockReturnValue(a);
+  const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'fixture' });
+  const outputs: string[] = [],
+    output = spyOn(console, 'log').mockImplementation(value => outputs.push(String(value)));
+  try {
+    expect(main(['run', plan, '--fake', '--skip-selftest'])).toBe(0);
+    const result = JSON.parse(outputs.at(-1)!);
+    expect(result.default_contact).toMatchObject(b);
+    expect(result.overlap_warnings).toMatchObject([{ run_id: l.run_id, paths: expect.any(Array) }]);
+    expect(s.c.owner(runScope({ run_id: result.run_id, repo: s.repo })).owner).toEqual(a);
+    expect(s.c.owner(s.scope).owner).toEqual(b);
+  } finally {
+    launch.mockRestore();
+    identity.mockRestore();
+    quota.mockRestore();
+    output.mockRestore();
+  }
+});
+
+test('Archon launch consumes the new run admission instead of the foreign repository contact', async () => {
+  const s = setup();
+  isolated(s);
+  const { coord } = await import('../src/coord');
+  const { archonEntry } = await import('../src/coord/archon-entry');
+  const c = coord(),
+    scope = runScope({ run_id: 'launch-intent', repo: s.repo });
+  c.claim(s.scope, b);
+  c.claim(scope, a);
+  Object.assign(
+    process.env,
+    c.mutate(scope, a, () => c.admissionEnv())
+  );
+  const live = spyOn(c.d, 'presence').mockReturnValue(online);
+  const invoke = spyOn(Bun, 'spawnSync').mockReturnValue({ exitCode: 0 } as ReturnType<
+    typeof Bun.spawnSync
+  >);
+  try {
+    expect(await archonEntry(['workflow', 'run', 'fixture', '--cwd', s.repo])).toBe(0);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(c.owner(s.scope).owner).toEqual(b);
+  } finally {
+    invoke.mockRestore();
+    live.mockRestore();
+  }
 });
