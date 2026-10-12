@@ -449,8 +449,7 @@ describe('gate rules', () => {
       f('medium', { id: 'D1' }),
       f('low', { id: 'D2' }),
     ]);
-    const fold = (r2: Rv) =>
-      decide({ reviews: [r1, r2], rechecks: [C('a'), C('b')], risk: 'G1' });
+    const fold = (r2: Rv) => decide({ reviews: [r1, r2], rechecks: [C('a'), C('b')], risk: 'G1' });
     const d = fold(R('PASS', [fixed('B1', 'blocker'), fixed('D1', 'medium')]));
     expect(d).toMatchObject({ verdict: 'pass', debt: ['D2 low a.ts:1'] });
     expect(d.ledger.blocking).toEqual([]);
@@ -878,6 +877,7 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
   const base = sh('git rev-parse HEAD', repo).trim();
   const plan = fixturePlan(root, repo);
   const p = JSON.parse(readFileSync(plan, 'utf8'));
+  p.environment = [{ cmd: 'true', timeout_s: 1 }];
   p.packages[0].accept = [{ cmd: 'false', timeout_s: 1, cache: true }];
   writeFileSync(plan, JSON.stringify(p));
   const policy = join(root, 'policy.json'),
@@ -967,7 +967,7 @@ for (const kind of ['accept', 'settle', 'env'])
     else {
       expect(r.out).toMatchObject({ ok: false, base_pass: false });
       expect(r.code).toBe(kind === 'settle' ? 1 : 0);
-      expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(2);
+      expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(3);
     }
   });
 
@@ -1314,7 +1314,9 @@ describe('sa-check script', () => {
       repo,
       {
         kind: 'accept',
-        plan: planFile(root, kind === 'probe' ? `${command} && test -f README.md` : command),
+        plan: planFile(root, kind === 'probe' ? `${command} && test -f README.md` : command, [
+          'true',
+        ]),
         pkgs: 'a',
         tag: 'verify-a',
         ...(kind === 'probe' ? { base } : {}),
@@ -1476,6 +1478,72 @@ describe('sa-check script', () => {
       reason: 'deadline',
     });
   });
+  test.each([{ setup: [] }, { setup: ['false'] }])(
+    'probe: untrusted environment %j yields unknown without rerunning checks',
+    ({ setup }) => {
+      const root = tmp(),
+        repo = gitRepo(root);
+      const base = sh('git rev-parse HEAD', repo).trim();
+      const trace = join(root, 'checks.txt');
+      const command = `printf '%s\\n' "$PWD" >> '${trace}'; false`;
+      const r = runScript(repo, {
+        kind: 'accept',
+        plan: planFile(root, command, [...setup]),
+        pkgs: 'a',
+        tag: 'unknown',
+        base,
+      });
+      expect(r.out).toMatchObject({
+        ok: false,
+        failed: [command],
+        base_pass: null,
+        base_results: [],
+        disposition: 'repair',
+      });
+      expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([repo]);
+      const log = readFileSync(join(r.art, 'unknown.probe.log'), 'utf8');
+      expect(log).toContain(
+        setup.length ? 'environment preparation failed' : 'no environment commands declared'
+      );
+      expect(log).not.toContain(`$ ${command}`);
+      expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
+    }
+  );
+  test('probe: prepares plan and every package environment in order only inside its worktree', () => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    const base = sh('git rev-parse HEAD', repo).trim();
+    const command =
+      'if [ "$(cat .probe-dependency 2>/dev/null)" = plan-package-other ]; then rm .probe-dependency; echo prepared; fi; false';
+    const plan = fixturePlan(root, repo, p => {
+      p.environment = [{ cmd: 'printf plan > .probe-dependency', timeout_s: 5 }];
+      p.packages = [
+        {
+          id: 'a',
+          environment: [{ cmd: 'printf -- -package >> .probe-dependency', timeout_s: 5 }],
+          accept: [{ cmd: command, timeout_s: 5 }],
+        },
+        {
+          id: 'unselected',
+          environment: [{ cmd: 'printf -- -other >> .probe-dependency', timeout_s: 5 }],
+          accept: [],
+        },
+      ];
+    });
+    const r = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'prepared', base });
+    expect(r.out).toMatchObject({
+      ok: false,
+      base_pass: false,
+      base_results: [{ cmd: command, pass: false }],
+      disposition: 'repair',
+    });
+    expect(readFileSync(join(r.art, 'prepared.probe.log'), 'utf8')).toContain(
+      '\nprepared\n# exit=1'
+    );
+    expect(readFileSync(join(r.art, 'prepared.log'), 'utf8')).not.toContain('\nprepared\n');
+    expect(sh('git status --porcelain', repo)).toBe('');
+    expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
+  });
   test('accept with base: failing command is probed at base (pre-existing vs introduced)', () => {
     const root = tmp();
     const repo = gitRepo(root);
@@ -1483,7 +1551,7 @@ describe('sa-check script', () => {
     sh('git rm -q README.md && git -c user.name=t -c user.email=t@l commit -qm rm', repo);
     const introduced = runScript(repo, {
       kind: 'accept',
-      plan: planFile(root, 'test -f README.md'),
+      plan: planFile(root, 'test -f README.md', ['true']),
       pkgs: 'a',
       tag: 'v1',
       base,
@@ -1492,7 +1560,7 @@ describe('sa-check script', () => {
     expect(readFileSync(join(introduced.art, 'v1.probe.log'), 'utf8')).toContain('exit=0');
     const preexisting = runScript(repo, {
       kind: 'accept',
-      plan: planFile(root, 'test -f nope'),
+      plan: planFile(root, 'test -f nope', ['true']),
       pkgs: 'a',
       tag: 'v2',
       base,
@@ -1507,6 +1575,7 @@ describe('sa-check script', () => {
     sh('git rm -q README.md && git -c user.name=t -c user.email=t@l commit -qm rm', repo);
     const commands = ['test -f README.md', 'test -f nope'];
     const plan = fixturePlan(root, repo, p => {
+      p.environment = [{ cmd: 'true', timeout_s: 5 }];
       p.packages = [{ id: 'a', accept: commands.map(cmd => ({ cmd, timeout_s: 5 })) }];
     });
     const r = runScript(repo, {
@@ -1525,7 +1594,7 @@ describe('sa-check script', () => {
       code: 1,
       out: {
         ok: false,
-        base_pass: false,
+        base_pass: true,
         disposition: 'suspend',
         base_results,
         failures: commands.map(command => ({ command, failure_class: 'product' })),
@@ -1544,7 +1613,7 @@ describe('sa-check script', () => {
     const base = sh('git rev-parse HEAD', repo).trim();
     const r = runScript(repo, {
       kind: 'accept',
-      plan: planFile(root, 'echo x > junk.txt; false'),
+      plan: planFile(root, 'echo x > junk.txt; false', ['true']),
       pkgs: 'a',
       tag: 'v3',
       base,
@@ -1579,39 +1648,53 @@ describe('sa-check script', () => {
   });
   for (const base of ['main', 'origin/main', 'refs/heads/main', 'sha'] as const)
     test(`LAND: ${base} uses a verified local branch without changing the comparison base`, () => {
-      const root = tmp(), repo = gitRepo(root);
+      const root = tmp(),
+        repo = gitRepo(root);
       const sha = sh('git rev-parse HEAD', repo).trim();
       const plan = fixturePlan(root, repo);
       const ledger = join(root, 'ledger.json');
       writeFileSync(ledger, JSON.stringify({ launch_branch: base === 'sha' ? 'main' : 'wrong' }));
       sh('git switch -qc sa/land', repo);
       const result = runScript(repo, {
-        kind: 'land', base_ref: base === 'sha' ? sha : base, plan, operator_ledger: ledger,
+        kind: 'land',
+        base_ref: base === 'sha' ? sha : base,
+        plan,
+        operator_ledger: ledger,
       });
       expect(result.code, result.err).toBe(0);
-      expect(result.out).toMatchObject({ commands: [
-        `git -C '${repo}' switch 'main'`, `git -C '${repo}' merge --ff-only 'sa/land'`,
-      ] });
+      expect(result.out).toMatchObject({
+        commands: [`git -C '${repo}' switch 'main'`, `git -C '${repo}' merge --ff-only 'sa/land'`],
+      });
       expect(sh('git branch --show-current', repo).trim()).toBe('sa/land');
     });
 
   for (const sample of ['missing-ledger', 'old-ledger', 'missing-branch', 'missing-base'] as const)
     test(`LAND: ${sample} records why manual target selection is needed and emits no commands`, () => {
-      const root = tmp(), repo = gitRepo(root);
+      const root = tmp(),
+        repo = gitRepo(root);
       const sha = sh('git rev-parse HEAD', repo).trim();
       const plan = fixturePlan(root, repo);
       const ledger = join(root, 'ledger.json');
-      if (sample !== 'missing-ledger') writeFileSync(ledger, JSON.stringify(
-        sample === 'old-ledger' ? {} : { launch_branch: sample === 'missing-base' ? 'main' : 'deleted' }
-      ));
+      if (sample !== 'missing-ledger')
+        writeFileSync(
+          ledger,
+          JSON.stringify(
+            sample === 'old-ledger'
+              ? {}
+              : { launch_branch: sample === 'missing-base' ? 'main' : 'deleted' }
+          )
+        );
       sh('git switch -qc sa/land', repo);
       const result = runScript(repo, {
-        kind: 'land', base_ref: sample === 'missing-base' ? 'missing' : sha,
-        plan, operator_ledger: ledger,
+        kind: 'land',
+        base_ref: sample === 'missing-base' ? 'missing' : sha,
+        plan,
+        operator_ledger: ledger,
       });
       expect(result.code).toBe(1);
       expect(result.out).toMatchObject({
-        reason: 'land_target_unknown', commands: [],
+        reason: 'land_target_unknown',
+        commands: [],
         error: expect.stringContaining('No existing local merge target'),
         action: expect.stringContaining('git show-ref --verify refs/heads/<branch>'),
       });

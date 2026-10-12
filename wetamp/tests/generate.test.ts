@@ -278,6 +278,12 @@ describe('buildWorkflow', () => {
       500_000 + CHECK_AUX_COUNTS.env * CHECK_AUX_TIMEOUT_MS + 5_000
     );
     expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBeUndefined();
+    for (const node of nodesOf(build(false, plan)).filter(
+      n => n.with?.kind === 'accept' || n.with?.kind === 'settle'
+    ))
+      expect(node.timeout).toBe(
+        500_000 + 60_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000
+      );
   });
   test('ACCT: real Archon completes failed acceptance and baseline probe with the generated budget (time scaled 100:1)', () => {
     const root = tmp();
@@ -285,6 +291,7 @@ describe('buildWorkflow', () => {
     const plan = structuredClone(fixture);
     plan.repo = repo;
     // 2s represents 200s, longer than the scaled 120s default but within the 300s command budget.
+    plan.environment = [{ cmd: 'true', timeout_s: 1 }];
     plan.packages[0].accept = [{ cmd: 'sleep 2; false', timeout_s: 300 }];
     const planPath = join(root, 'plan.json');
     fs.writeFileSync(planPath, JSON.stringify(plan));
@@ -717,6 +724,11 @@ test('generate writes a committed gen repo that archon validates', () => {
     const prompt = readFileSync(join(g.dir, '.archon', 'commands', `${n.command}.md`), 'utf8');
     expect(prompt.startsWith(principles + '\n')).toBe(true);
     expect(prompt.split(principles)).toHaveLength(2);
+    if (n.command === 'sa-code') {
+      expect(prompt).toContain('拒绝须附工具调用证据');
+      expect(prompt).toContain('在 `needs[].why` 引用该工具调用及原始返回');
+      expect(prompt).toContain('status=done、error_class=null');
+    }
   }
   for (const n of nodesOf(generated).filter(n => n.script || n.bash)) {
     expect(n.bash ?? '').not.toContain(principles);

@@ -40,8 +40,14 @@ import {
   type Policy,
 } from '../src/cli';
 import {
-  configHash, gitHead, receiptProblem, runtimeFingerprint,
-  renderAliases, loadTiers, resolveRoute, WETAMP,
+  configHash,
+  gitHead,
+  receiptProblem,
+  runtimeFingerprint,
+  renderAliases,
+  loadTiers,
+  resolveRoute,
+  WETAMP,
 } from '../src/config';
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate } from '../src/generate';
@@ -997,18 +1003,23 @@ describe('verbs (archon stub)', () => {
 describe('run (archon stub)', () => {
   for (const detached of [false, true])
     test(`LAND run records plan.repo launch branch, detached=${String(detached)}, with a SHA comparison base`, () => {
-      const s = stub([]), repo = gitRepo(s.root);
+      const s = stub([]),
+        repo = gitRepo(s.root);
       process.env.SUPERAGENT_WRITE_ROOTS = s.root;
       const sha = sh('git rev-parse HEAD', repo).trim();
       sh(detached ? 'git switch -q --detach HEAD' : 'git switch -qc feature/launch', repo);
-      const plan = fixturePlan(s.root, repo, p => { p.base_ref = sha; });
+      const plan = fixturePlan(s.root, repo, p => {
+        p.base_ref = sha;
+      });
       const result = captured(() => main(['run', plan, '--fake', '--skip-selftest']));
       expect(result.code, result.out).toBe(0);
       const id = JSON.parse(result.out).run_id as string;
       const ledger = loadLedger(id);
       expect(ledger.intervention_events).toEqual([]);
       expect(ledger.launch_branch).toBe(detached ? undefined : 'feature/launch');
-      expect(JSON.parse(readFileSync(join(ledger.gen_dir, 'plan.json'), 'utf8')).base_ref).toBe(sha);
+      expect(JSON.parse(readFileSync(join(ledger.gen_dir, 'plan.json'), 'utf8')).base_ref).toBe(
+        sha
+      );
       expect(s.calls().find(c => c.startsWith('workflow run'))).toContain(`--from ${sha}`);
     });
   test('E5 run preflight refuses before engine launch and failure ledger records the phase', () => {
@@ -1063,11 +1074,16 @@ describe('run (archon stub)', () => {
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
   test('selftest fingerprint: documentation and tests preserve receipts; runtime commits and dirty files invalidate them', () => {
-    const s = stub([]), repo = gitRepo(s.root);
+    const s = stub([]),
+      repo = gitRepo(s.root);
     const now = Date.now();
     const receipt = () => ({
-      ok: true, fake: false, head: gitHead(repo), config_hash: configHash(),
-      expires_at: new Date(now + 3600e3).toISOString(), fingerprint: runtimeFingerprint(repo),
+      ok: true,
+      fake: false,
+      head: gitHead(repo),
+      config_hash: configHash(),
+      expires_at: new Date(now + 3600e3).toISOString(),
+      fingerprint: runtimeFingerprint(repo),
     });
     const put = (path: string, text = 'fixture\n'): void => {
       mkdirSync(join(repo, path, '..'), { recursive: true });
@@ -1080,9 +1096,13 @@ describe('run (archon stub)', () => {
     const legacy = { ...good, fingerprint: undefined };
     expect(receiptProblem(legacy, now, repo)).toBeNull();
     for (const path of [
-      'wetamp/tests/x.test.ts', 'wetamp/docs/guide.md', 'PROGRESS.md',
-      'packages/docs-web/src/index.ts', '.github/workflows/ci.yml',
-      'packages/core/tests/fixture.ts', 'packages/core/__tests__/fixture.ts',
+      'wetamp/tests/x.test.ts',
+      'wetamp/docs/guide.md',
+      'PROGRESS.md',
+      'packages/docs-web/src/index.ts',
+      '.github/workflows/ci.yml',
+      'packages/core/tests/fixture.ts',
+      'packages/core/__tests__/fixture.ts',
       'packages/core/src/index.test.ts',
     ]) {
       put(path);
@@ -1092,8 +1112,11 @@ describe('run (archon stub)', () => {
     }
     expect(receiptProblem(legacy, now, repo)).toContain('HEAD drift (legacy receipt');
     for (const path of [
-      'wetamp/src/runtime.ts', 'wetamp/templates/nested/prompt.md',
-      'packages/core/src/runtime.ts', 'wetamp/bin/worker', 'wetamp/hooks/runtime.cjs',
+      'wetamp/src/runtime.ts',
+      'wetamp/templates/nested/prompt.md',
+      'packages/core/src/runtime.ts',
+      'wetamp/bin/worker',
+      'wetamp/hooks/runtime.cjs',
       'wetamp/schemas/runtime.json',
     ]) {
       put(path);
@@ -1107,7 +1130,9 @@ describe('run (archon stub)', () => {
     }
     put('wetamp/src/runtime.ts', 'edited\n');
     expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
-    expect(receiptProblem({ ...good, fingerprint: undefined }, now, repo)).toContain('runtime worktree drift');
+    expect(receiptProblem({ ...good, fingerprint: undefined }, now, repo)).toContain(
+      'runtime worktree drift'
+    );
     commit('wetamp/src/runtime.ts');
     good = receipt();
     // Rename folding must not hide removal of runtime code behind a documentation destination.
@@ -1145,7 +1170,9 @@ describe('run (archon stub)', () => {
     expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
     expect(attempt({ ...good, head: '0'.repeat(40) })).toBe('0');
     expect(attempt({ ...good, fingerprint: 'x' })).toContain('runtime fingerprint drift');
-    expect(attempt({ ...good, fingerprint: undefined, head: '0'.repeat(40) })).toContain('HEAD drift');
+    expect(attempt({ ...good, fingerprint: undefined, head: '0'.repeat(40) })).toContain(
+      'HEAD drift'
+    );
     expect(attempt({ ...good, config_hash: 'x' })).toContain('config drift');
     expect(attempt(good)).toBe('0');
     writeFileSync(join(s.root, 'home', 'archon', 'config.yaml'), 'edited: true\n');
@@ -1346,7 +1373,7 @@ describe('brief / land (archon stub)', () => {
     expect(result.code).toBe(1);
     expect(JSON.parse(result.out)).toMatchObject({ commands: [], reason: 'land_target_unknown' });
   });
-  test('land displays needs from advanced nodes without asking the operator', () => {
+  test('land omits needs from advanced nodes without asking the operator', () => {
     const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };
     const art = withArtifacts('completed', {
       'land.json': { commands: ['c'] },
@@ -1354,12 +1381,11 @@ describe('brief / land (archon stub)', () => {
       'verify-core.coder.json': { status: 'blocked', needs: [need], milestone: 'm1' },
     });
     const sup = supervisor(join(art, '..', '..', '..', '..'), 'pending');
-    expect(captured(() => main(['land', 'sa1'])).out).toContain(
+    expect(captured(() => main(['land', 'sa1'])).out).not.toContain(
       'need approval (verify-core): check process deviation'
     );
     expect(JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out)).toEqual({
       commands: ['c'],
-      needs: [{ tag: 'verify-core', ...need }],
     });
     expect(captured(() => main(['supervise-tick'])).code).toBe(0);
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
@@ -1512,10 +1538,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
     expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
     expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
-    expect(sup()).toEqual([
-      expect.stringMatching(/^ask /),
-      'ask-status ask-1',
-    ]);
+    expect(sup()).toEqual([expect.stringMatching(/^ask /), 'ask-status ask-1']);
     expect(s.calls()).not.toContain('workflow wake --json');
   });
   test('pending keeps waiting; no abandons the paused run', () => {
@@ -1838,8 +1861,14 @@ describe('RCPT consumed decision receipts', () => {
     const s = stub([run('completed')]);
     const receipt = (body: string, at?: string) => ({ key: body, body, ...(at ? { at } : {}) });
     const saved = {
-      'sa1:latest': { status: 'approved', receipt: receipt('最新答复', '2026-10-11T12:00:00.000Z') },
-      'other:signoff': { status: 'approved', receipt: receipt('其他run', '2026-10-12T12:00:00.000Z') },
+      'sa1:latest': {
+        status: 'approved',
+        receipt: receipt('最新答复', '2026-10-11T12:00:00.000Z'),
+      },
+      'other:signoff': {
+        status: 'approved',
+        receipt: receipt('其他run', '2026-10-12T12:00:00.000Z'),
+      },
       'sa1:older': { status: 'approved', receipt: receipt('较早答复', '2026-10-11T11:00:00.000Z') },
       'sa1:legacy': { status: 'approved', receipt: receipt('旧版答复') },
       'sa1:pending': { status: 'pending' },
@@ -2262,7 +2291,12 @@ describe('auto retry (supervise-tick, archon stub)', () => {
           { id: 'R1-1', severity: 'high', file: 'a.ts', line: 3, status: 'open', evidence: 'boom' },
         ],
       },
-      'diff-m1-r3.json': { failed: ['bun test'], base_pass: false, log },
+      'diff-m1-r3.json': {
+        failed: ['bun test'],
+        base_pass: false,
+        base_results: [{ cmd: 'bun test', pass: false }],
+        log,
+      },
     });
     expect(tick()[0]).toMatchObject({
       action: 'auto_retry',
@@ -2306,6 +2340,36 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const { out } = captured(() => main(['status', 'sa1']));
     expect(JSON.parse(out)).toMatchObject({ auto_retries: 2 });
   });
+  test('held:gate: unknown baseline does not claim a pre-existing failure', () => {
+    const s = held('gate-m1-r3', {
+      'gate-m1-r3.json': gate('invalid_review'),
+      'diff-m1-r3.json': { failed: ['bun test'], base_pass: null, base_results: [] },
+    });
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
+    const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
+    expect(hint).toContain('基线状态未知');
+    expect(hint).not.toContain('基线已存在');
+  });
+  test('held:gate: mixed baseline failures name only the proven pre-existing command', () => {
+    const s = held('gate-m1-r3', {
+      'gate-m1-r3.json': gate('invalid_review'),
+      'diff-m1-r3.json': {
+        failed: ['bun test regression', 'bun test old'],
+        base_pass: true,
+        base_results: [
+          { cmd: 'bun test regression', pass: true },
+          { cmd: 'bun test old', pass: false },
+        ],
+      },
+    });
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
+    const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
+    const preexisting = hint.split('\n').filter(line => line.includes('基线已存在'));
+    expect(preexisting).toEqual([
+      '`bun test old`：此失败在基线已存在，与本包无关就记 deviations 并继续。',
+    ]);
+    expect(hint).toContain('`bun test regression`：未证明基线同样失败，按本包引入处理。');
+  });
   test('two no_change gates in a row stop retrying', () => {
     const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_change' });
@@ -2315,6 +2379,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const need = { cap: 'network', why: 'registry', minimal_ask: 'allow npm registry' };
     const s = held('gate-m1-r1', {
       'gate-m1-r1.json': gate('acceptance_failed'),
+      'verify-core.json': { disposition: 'suspend' },
       'verify-core.coder.json': {
         status: 'blocked',
         error_class: 'env',
@@ -2329,6 +2394,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     });
     const { out } = captured(() => main(['brief', 'sa1']));
     expect(out).toContain('need network (verify-core): allow npm registry');
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).needs).toEqual([
+      { tag: 'verify-core', ...need },
+    ]);
     expect(resumes(s.calls())).toBe(0);
     const r = held('gate-m1-r1', {
       'gate-m1-r1.json': gate('coder_redline'),
@@ -2347,15 +2415,24 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const s = held('gate-m1-r1', {
       'gate-m1-r1.json': gate('invalid_review'),
       'verify-core.json': { ok: true, disposition: 'advance' },
-      'verify-core.coder.json': { status: 'blocked', needs: [need], milestone: 'm1' },
+      'verify-core.coder.json': {
+        status: 'blocked',
+        error_class: 'redline',
+        needs: [need],
+        milestone: 'm1',
+      },
     });
+    const archive = join(s.art, 'verify-core.coder.json');
+    const original = readFileSync(archive, 'utf8');
     const sup = supervisor(s.root, 'pending');
     expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'gate:invalid_review' });
     expect(resumes(s.calls())).toBe(1);
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
-    expect(captured(() => main(['brief', 'sa1'])).out).toContain(
+    expect(captured(() => main(['brief', 'sa1'])).out).not.toContain(
       'need approval (verify-core): check process deviation'
     );
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).needs).toBeUndefined();
+    expect(readFileSync(archive, 'utf8')).toBe(original);
   });
   test.each(['acceptance_failed', 'invalid_review'])(
     'held gate %s keeps its structured reason despite a coder redline self-report',
@@ -2585,16 +2662,23 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     action => {
       const s = stub([run('completed')]);
       const before = readFileSync(ledgerPath('sa1'), 'utf8');
-      const args = ['resume', 'recover'].includes(action) ? [action, 'sa1'] : ['decide', 'sa1', action];
+      const args = ['resume', 'recover'].includes(action)
+        ? [action, 'sa1']
+        : ['decide', 'sa1', action];
       expect(captured(() => main(args)).code).toBe(1);
       expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
-      expect(s.calls().some(c => /workflow (resume|run|cancel|abandon|signal)/.test(c))).toBe(false);
+      expect(s.calls().some(c => /workflow (resume|run|cancel|abandon|signal)/.test(c))).toBe(
+        false
+      );
     }
   );
 
   test('intervene refuses approve past deadline without recording an event', () => {
     const { s } = scenes.signoff();
-    writeFileSync(join(s.root, 'gen', 'plan.json'), JSON.stringify({ deadline: '2020-01-01T00:00:00Z' }));
+    writeFileSync(
+      join(s.root, 'gen', 'plan.json'),
+      JSON.stringify({ deadline: '2020-01-01T00:00:00Z' })
+    );
     const before = readFileSync(ledgerPath('sa1'), 'utf8');
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(1);
     expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
@@ -2629,7 +2713,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
     expect(loadLedger('sa1').intervention_events).toHaveLength(1);
     expect(loadLedger('sa1').intervention_events![0]).toMatchObject({
-      action: 'answer', source: 'superagent', ask_id: 'ask-1', ok: true,
+      action: 'answer',
+      source: 'superagent',
+      ask_id: 'ask-1',
+      ok: true,
     });
     tick();
     expect(loadLedger('sa1').intervention_events).toHaveLength(1);

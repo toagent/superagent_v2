@@ -21,6 +21,7 @@ import {
   attemptPath,
   CHECK_AUX_TIMEOUT_MS,
   CHECK_AUX_COUNTS,
+  environmentChecks,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import {
@@ -117,22 +118,24 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
 const ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS = 120_000;
 // 子进程均有独立上界；额外 5s 仅供 Bun 启动、hash 和本地文件操作。
 const CHECK_OVERHEAD_MS = 5_000;
-const commandTimeout = (checks: Pkg['accept'], passes: number): Node =>
+const commandTimeout = (checks: Pkg['accept'], passes: number, setup: Pkg['accept'] = []): Node =>
   checks.length
     ? {
         timeout: Math.max(
           ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS,
           checks.reduce((n, c) => n + c.timeout_s, 0) * passes * 1000 +
+            setup.reduce((n, c) => n + c.timeout_s, 0) * 1000 +
             CHECK_AUX_COUNTS[passes === 1 ? 'env' : 'accept'] * CHECK_AUX_TIMEOUT_MS +
             CHECK_OVERHEAD_MS
         ),
       }
     : {};
-// acceptOnce 串行跑全部命令，再于基线 probe 失败命令；settle 修复后也跑 acceptOnce。
-const acceptTimeout = (pkgs: Pkg[]): Node =>
+// acceptOnce 串行跑全部命令，再于基线准备环境并 probe 失败命令；settle 修复后也跑 acceptOnce。
+const acceptTimeout = (pkgs: Pkg[], plan: Plan): Node =>
   commandTimeout(
     pkgs.flatMap(p => p.accept),
-    2
+    2,
+    environmentChecks(plan)
   );
 
 /**
@@ -299,7 +302,7 @@ export function buildWorkflow(
           {
             ...(carry ? { trigger_rule: 'none_failed_min_one_success' } : {}),
             output_format: outputSchema('accept'),
-            ...acceptTimeout([p]),
+            ...acceptTimeout([p], plan),
           }
         )
       );
@@ -338,7 +341,7 @@ export function buildWorkflow(
           {
             trigger_rule: 'none_failed_min_one_success',
             output_format: outputSchema('accept'),
-            ...acceptTimeout([p]),
+            ...acceptTimeout([p], plan),
           }
         )
       );
@@ -398,7 +401,7 @@ export function buildWorkflow(
                 }
               : {}),
           },
-          { output_format: outputSchema('accept'), ...acceptTimeout(m.packages) }
+          { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
         )
       );
       const reviewAttempt = `attempt-review-${t}`;
@@ -500,9 +503,8 @@ export function buildWorkflow(
     } else after = gates;
   }
   const operator_ledger = join(gen, '..', '..', 'runs', `${run}.json`);
-  nodes.push(
-    check('land', [], { kind: 'land', base_ref: plan.base_ref, plan: planPath, operator_ledger }, after)
-  );
+  const landInputs = { kind: 'land', base_ref: plan.base_ref, plan: planPath, operator_ledger };
+  nodes.push(check('land', [], landInputs, after));
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,

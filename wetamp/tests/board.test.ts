@@ -125,14 +125,20 @@ describe('data rows', () => {
   test('interventions use explicit events, never automatic asks or legacy booleans', () => {
     const run: RunView = { id: 'a-sa1', status: 'failed' };
     const l = ledger('sa1', run, {
-      intervened: true, recoveries: ['a'],
+      intervened: true,
+      recoveries: ['a'],
       dispositions: [{ at: '2026-10-12T00:00:00Z', action: 'ask', reason: 'needs', ok: true }],
     });
     const count = () => cockpit(snapshotOf([{ ledger: l, run }])).runs[0]?.interventions;
     expect(count()).toBeUndefined();
     l.intervention_events = [];
     expect(count()).toBe(0);
-    l.intervention_events.push({ at: '2026-10-12T00:00:00Z', action: 'cancel', source: 'cli', ok: false });
+    l.intervention_events.push({
+      at: '2026-10-12T00:00:00Z',
+      action: 'cancel',
+      source: 'cli',
+      ok: false,
+    });
     expect(count()).toBe(1);
   });
   test('normal row: progress, current node and role from the generated workflow, elapsed, held', () => {
@@ -622,6 +628,14 @@ describe('detail', () => {
       join(art, 'a.coder.json'),
       JSON.stringify({ needs: [{ cap: 'services', why: 'pg', minimal_ask: '起本机 postgres' }] })
     );
+    writeFileSync(join(art, 'a.json'), JSON.stringify({ disposition: 'suspend' }));
+    const old = JSON.stringify({
+      status: 'blocked',
+      error_class: 'redline',
+      needs: [{ cap: 'approval', why: 'historical', minimal_ask: 'obsolete request' }],
+    });
+    writeFileSync(join(art, 'old.coder.json'), old);
+    writeFileSync(join(art, 'old.json'), JSON.stringify({ disposition: 'advance' }));
     const ev = (i: number): string =>
       JSON.stringify({ type: 'node_start', step: `n${String(i)}`, ts: 't' });
     writeFileSync(
@@ -660,6 +674,9 @@ describe('detail', () => {
     expect(last?.out).toEndWith('secret: ***');
     expect(d.next[0]).toBe('superagent decide sa1 approve|reject|retry [--pkg id]');
     expect(detailLines(d, Date.now())).toContain('need services (a): 起本机 postgres');
+    expect(d.needs).toEqual([{ tag: 'a', cap: 'services', minimal_ask: '起本机 postgres' }]);
+    expect(detailLines(d, Date.now()).join('\n')).not.toContain('obsolete request');
+    expect(readFileSync(join(art, 'old.coder.json'), 'utf8')).toBe(old);
     expect(d.errors).toEqual([]);
   });
 });

@@ -56,6 +56,7 @@ import {
   readAttempt,
   attemptPath,
   type Review,
+  type Accept,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
 import {
@@ -379,9 +380,17 @@ const codersOf = (art: string, m?: string, l?: Ledger): CoderOut[] =>
       tag: f.slice(0, -'.coder.json'.length),
     }))
     .filter(c => m === undefined || c.milestone === m);
-/** 聚合 needs[]（每条带来源 tag）：status/brief/board 展示，自动重试据此保持 held。 */
+/** 只聚合未推进检查的 needs[]；已推进节点的自报保留在原始 coder 存档。 */
 export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
-  codersOf(art, m, l).flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
+  codersOf(art, m, l)
+    .filter(c => {
+      const file = `${c.tag}.json`;
+      const check = (l ? evidenceJson(l, art, file) : readJson(join(art, file))) as
+        | { disposition?: string }
+        | undefined;
+      return check?.disposition !== 'advance';
+    })
+    .flatMap(c => (c.needs ?? []).map(n => ({ tag: c.tag, ...n })));
 
 /** 登记过的 run id（runs/*.json 去掉扩展名）。 */
 export const ledgerIds = (): string[] => {
@@ -1155,21 +1164,12 @@ function retryAllHeld(): number {
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
-      return [
-        control(l, () =>
-          intervention(
-            l,
-            'decide',
-            () => ({
-              run_id: l.run_id,
-              state: c.state,
-              ...retry(l, c, () => (started = true)),
-            }),
-            undefined,
-            () => started
-          )
-        ),
-      ];
+      const execute = () => ({
+        run_id: l.run_id,
+        state: c.state,
+        ...retry(l, c, () => (started = true)),
+      });
+      return [control(l, () => intervention(l, 'decide', execute, undefined, () => started))];
     } catch (e) {
       return [{ run_id: l.run_id, ok: false, reason: tail((e as Error).message, 200) }];
     }
@@ -1270,7 +1270,7 @@ function brief(l: Ledger): number {
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
   if (Array.isArray(s.land)) lines.push(...(s.land as string[]));
-  for (const n of needsOf(art).slice(0, 3))
+  for (const n of needsOf(art, undefined, l).slice(0, 3))
     lines.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
   lines.push(
     `evidence: ${art}`,
@@ -2219,11 +2219,7 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
   const tries = (l.auto_retries ?? []).filter(
     r => r.milestone === m && r.reason.split(':')[0] === kind
   );
-  // 已推进节点的 needs 留在报告中，不为它们发起能力请求。
-  const needs = needsOf(art, m).filter(n => {
-    const check = evidenceJson(l, art, `${n.tag}.json`) as { disposition?: string } | undefined;
-    return check?.disposition !== 'advance';
-  });
+  const needs = needsOf(art, m, l);
   const hold = (h: Hold): Held => [
     h,
     { auto_retries: tries.length, ...(needs.length ? { needs } : {}) },
@@ -2306,14 +2302,19 @@ function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
 /** 追加到 hints/<包>.md 的提示：失败的验收命令与日志尾、基线预存说明、未关闭的阻塞发现、gate 原因。 */
 function gateHint(plan: Plan, art: string, node: string, g: Gate | undefined, n: number): string {
   const m = gateMilestone(node);
-  const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as
-    | { failed?: string[]; base_pass?: boolean | null; log?: string }
-    | undefined;
+  const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as Accept | undefined;
   const out = [`\n## 自动重试 ${String(n)}：${node} escalate（${g?.reason ?? '?'}）\n`];
   if (acc?.failed?.length) {
     out.push('失败的验收命令：', ...acc.failed.map(x => `- \`${x}\``), '');
-    if (acc.base_pass === false)
-      out.push('此失败在基线已存在，不是你引入的，与本包无关就记 deviations 并继续。', '');
+    if (acc.base_pass == null) out.push('基线状态未知。', '');
+    else
+      for (const cmd of acc.failed)
+        out.push(
+          acc.base_results?.some(r => r.cmd === cmd && !r.pass)
+            ? `\`${cmd}\`：此失败在基线已存在，与本包无关就记 deviations 并继续。`
+            : `\`${cmd}\`：未证明基线同样失败，按本包引入处理。`,
+          ''
+        );
     const log = acc.log && existsSync(acc.log) ? readFileSync(acc.log, 'utf8').trimEnd() : '';
     if (log) out.push('验收日志尾：', '```', ...log.split('\n').slice(-60), '```', '');
   }
