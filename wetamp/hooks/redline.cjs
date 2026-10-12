@@ -105,12 +105,13 @@ function safeGitDelete(sub, rest, query, dir, env, deletions) {
   try {
     if (branch) {
       const remote = short('r') || rest.includes('--remotes');
+      const forced = force || remote; // Git deletes remote-tracking branches without a merge check.
       const refs = rest.filter(v => !v.startsWith('-')).map(v => `refs/${remote ? 'remotes' : 'heads'}/${v}`);
       const common = query(['rev-parse', '--path-format=absolute', '--git-common-dir']);
-      if (!common) return force ? message('删除分支', 'Git 安全查询失败') : null;
+      if (!common) return forced ? message('删除分支', 'Git 安全查询失败') : null;
       const excluded = deletions.get(common) || new Set(); // R1-3: prior commands have not executed yet.
       refs.forEach(ref => excluded.add(ref)); deletions.set(common, excluded);
-      if (!force || refs.length && refs.every(ref => reachable(ref, [...excluded]))) return null;
+      if (!forced || refs.length && refs.every(ref => reachable(ref, [...excluded]))) return null;
       return message('删除分支', '分支有未合并提交，删除会丢失（或 Git 查询失败）');
     }
     if (rest[0] === 'prune') return null;

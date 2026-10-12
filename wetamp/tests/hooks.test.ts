@@ -1359,6 +1359,15 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     git('tag', 'tag-only', 'unmerged');
     expect(check('git branch -D unmerged same-tip')).toContain('已拦截：');
     git('update-ref', 'refs/remotes/origin/saved', 'unmerged');
+    for (const flags of ['-dr', '--delete --remotes']) {
+      expect(check(`git branch ${flags} origin/saved`)).toBeNull();
+      expect(
+        check(`git branch -D unmerged same-tip && git branch ${flags} origin/saved`)
+      ).toContain('已拦截：');
+      expect(check(`git -C /nonexistent-sa-delete-query branch ${flags} origin/saved`)).toContain(
+        '已拦截：'
+      );
+    }
     expect(check('git branch -D unmerged same-tip')).toBeNull();
     expect(check('git branch -D unmerged && git branch -D same-tip')).toBeNull();
     expect(
