@@ -264,7 +264,7 @@ export interface Route {
 }
 /** Only fresh, same-day local observations affect auto routing; never fetch during resolution. */
 // prettier-ignore
-export function budgetState(t: Tiers, mode = 'auto', now = Date.now()): { degraded: boolean; notice: string } {
+export function budgetState(t: Tiers, mode = 'auto', now = Date.now()): { degraded: boolean; notice: string; unknown?: true } {
   if (mode !== 'auto') return { degraded: false, notice: '' };
   try {
     if (!process.env.SUPERAGENT_HOME) throw new Error('no cache home');
@@ -272,7 +272,7 @@ export function budgetState(t: Tiers, mode = 'auto', now = Date.now()): { degrad
     if (!Number.isFinite(c.at) || c.at > now || now - c.at > 3600e3 || new Date(c.at).toDateString() !== new Date(now).toDateString() || !Number.isFinite(c.claude_daily_usd) || c.claude_daily_usd < 0) throw new Error('invalid cache');
     const degraded = c.claude_daily_usd >= t.routing.budget.claude_daily_usd;
     return { degraded, notice: degraded ? '已降级到 Codex' : '' };
-  } catch { return { degraded: false, notice: '预算状态未知' }; }
+  } catch { return { degraded: false, notice: '预算状态未知', unknown: true }; }
 }
 /** One resolver owns role/risk/round and mode filtering; no vendor inference at execution time. */
 // prettier-ignore

@@ -1,7 +1,13 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadTiers, writeAtomic } from './config';
+import { budgetState, loadTiers, writeAtomic } from './config';
+export function refreshBudgetQuota(): void {
+  const tiers = loadTiers();
+  if (!budgetState(tiers).unknown) return;
+  relayQuota();
+  if (budgetState(tiers).unknown) console.error('预算状态未知');
+}
 // prettier-ignore
 interface Pool { today?: { cost?: number }; level?: string; accounts_available?: number; accounts_total?: number; five_hour?: { remaining_pct?: number }; seven_day?: { remaining_pct?: number } }
 const unknown = (why: string) => ({ quota: `中转余量：未知（${why}）` });

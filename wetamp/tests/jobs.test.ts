@@ -8,7 +8,8 @@ import { loadTiers } from '../src/config';
 import { gitRepo, sh, tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
-const ENV_KEYS = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const;
+// prettier-ignore
+const ENV_KEYS = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_RELAY_QUOTA_URL', 'SUPERAGENT_RELAY_QUOTA'] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
 afterAll(() => {
   for (const k of ENV_KEYS) {
@@ -22,6 +23,8 @@ beforeEach(() => {
   Object.assign(process.env, {
     SUPERAGENT_HOME: join(root, 'home'),
     ARCHON_HOME: join(root, 'home', 'archon'),
+    SUPERAGENT_RELAY_QUOTA_URL: '',
+    SUPERAGENT_RELAY_QUOTA: '',
   });
   jobsDir = join(root, 'home', 'jobs');
 });
@@ -175,10 +178,11 @@ describe('job registry', () => {
 });
 
 describe('job exec', () => {
-  const run = (args: string[], role = '', cwd = WETAMP): ReturnType<typeof Bun.spawn> =>
+  // prettier-ignore
+  const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}): ReturnType<typeof Bun.spawn> =>
     Bun.spawn(['bun', join(WETAMP, 'src/cli.ts'), ...args], {
       cwd,
-      env: { ...process.env, SUPERAGENT_ROLE: role, SA_ADMIT: 'off' },
+      env: { ...process.env, SUPERAGENT_ROLE: role, SA_ADMIT: 'off', ...extraEnv },
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -199,6 +203,20 @@ describe('job exec', () => {
     }
     return j;
   };
+  // prettier-ignore
+  test('budget-refresh: stale jobs and missing models cache refresh; failures do not block dispatch', async () => {
+    const root = tmp(), cache = join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'); let calls = 0, status = 200;
+    for (const name of ['security', 'codex']) { const path = join(root, name); writeFileSync(path, `#!/bin/sh\nprintf '%s' '${name === 'security' ? 'synthetic' : 'dispatched'}'\n`); chmodSync(path, 0o755); }
+    const server = Bun.serve({ port: 0, fetch() { calls++; return Response.json({ platforms: { anthropic: { today: { cost: loadTiers().routing.budget.claude_daily_usd } } } }, { status }); } });
+    const env = { PATH: `${root}:${process.env.PATH!}`, SUPERAGENT_RELAY_QUOTA_URL: server.url.origin, SUPERAGENT_RELAY_QUOTA: '' }; mkdirSync(process.env.SUPERAGENT_HOME!, { recursive: true });
+    try {
+      writeFileSync(cache, JSON.stringify({ at: Date.now() - 3600e3 - 1, claude_daily_usd: 0 }));
+      const job = run(['job', 'exec', '--title', 'refresh', '--role', 'commander', '--', join(root, 'codex'), 'exec'], '', WETAMP, env); expect(await job.exited).toBe(0); expect(await new Response(job.stdout as ReadableStream).text()).toBe('dispatched'); expect(calls, await new Response(job.stderr as ReadableStream).text()).toBe(1);
+      unlinkSync(cache); const models = run(['models', '--json'], '', WETAMP, env); expect(await models.exited).toBe(0); expect(JSON.parse(await new Response(models.stdout as ReadableStream).text()).budget.degraded).toBe(true); expect(calls).toBe(2);
+      expect(await run(['models', '--json'], '', WETAMP, env).exited).toBe(0); expect(calls).toBe(2);
+      status = 503; unlinkSync(cache); const failed = run(['job', 'exec', '--title', 'advisory', '--', 'true'], '', WETAMP, env); expect(await failed.exited).toBe(0); expect(await new Response(failed.stderr as ReadableStream).text()).toContain('预算状态未知'); expect(calls).toBe(3);
+    } finally { server.stop(true); }
+  });
   // prettier-ignore
   test('explicit role injects the models route and rejects mismatched or empty vendor routes', async () => {
     const root = tmp(), codex = join(root, 'codex'), claude = join(root, 'claude');

@@ -15,6 +15,7 @@ import { freemem, totalmem } from 'node:os';
 import { setImmediate as yieldEventLoop, setTimeout as delay } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
 import { home, loadTiers, resolveRoute } from './config';
+import { refreshBudgetQuota } from './relay-quota';
 import { jobDuration } from './board/eta';
 import { QUERY_TIMEOUT_MS } from './archon';
 import { newRunId } from './generate';
@@ -394,6 +395,7 @@ export async function jobCli(
     console.error(USAGE);
     return EXIT_USAGE;
   }
+  refreshBudgetQuota();
   if (isTier(role) && ['codex', 'claude'].includes(kindOf(cmd[0]))) {
     const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
     const candidates = resolveRoute(loadTiers(), c, a.flags.mode, ROUTE_ROLE[role]).candidates;

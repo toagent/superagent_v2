@@ -81,7 +81,7 @@ import { jobCli } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
-import { relayQuota } from './relay-quota';
+import { refreshBudgetQuota, relayQuota } from './relay-quota';
 
 const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
 if (
@@ -2511,6 +2511,7 @@ export function main(argv: string[]): number {
     });
   switch (verb) {
     case 'models': {
+      refreshBudgetQuota();
       const tiers = loadTiers(),
         mode = a.flags.mode ?? 'auto';
       // prettier-ignore
