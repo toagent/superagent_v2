@@ -1,5 +1,15 @@
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS, type RunView } from './archon';
 import { home, receiptIssue, runtimeFingerprint, WETAMP, type Receipt } from './config';
@@ -43,32 +53,66 @@ export function selftest(wait: boolean): void {
 }
 // prettier-ignore
 export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string }): void {
-  if (run.status !== 'completed' || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed') || land.ff === false)
-    throw new Error('land: run is not ready for fast-forward integration');
+  if (run.status !== 'completed' || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed'))
+    throw new Error('land: run is not ready for integration');
   const repo = land.repo ?? context?.repo; if (!repo) throw new Error('land: missing repository');
   const target = land.target ?? (context && landTarget(repo, context.base_ref, () => context.launch_branch)); if (!target) throw new Error('land: missing integration target');
-  const git = (...args: string[]): string => {
-    const p = Bun.spawnSync(['git', '-C', repo, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+  const gitAt = (cwd: string, ...args: string[]): string => {
+    const p = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
     if (p.exitCode !== 0) throw new Error(`land: ${p.stderr.toString().trim()}`);
     return p.stdout.toString().trim();
   };
-  if (git('status', '--porcelain', '--untracked-files=all')) throw new Error('land: target checkout is dirty');
+  const git = (...args: string[]): string => gitAt(repo, ...args);
+  const targetCheckout = () => git('worktree', 'list', '--porcelain', '-z').split('\0\0').find(record => record.split('\0').includes(`branch refs/heads/${target}`))?.split('\0').find(line => line.startsWith('worktree '))?.slice(9);
+  const checkout = targetCheckout();
+  const clean = () => { if (checkout && gitAt(checkout, 'status', '--porcelain', '--untracked-files=all')) throw new Error('land: target checkout is dirty'); };
+  clean();
   const tree = git('rev-parse', `${land.head}^{tree}`);
   const sameTree = () => {
     if (git('rev-parse', `${land.branch}^{tree}`) !== tree) throw new Error('land: branch tree differs from accepted tree');
   };
   sameTree();
   const fingerprint = runtimeFingerprint();
-  const original = git('symbolic-ref', '--short', 'HEAD');
-  // Check the accepted tree in the target checkout without advancing the integration branch.
-  git('switch', '--detach', land.head);
-  try { if (verify(repo) !== 0) throw new Error('land: acceptance failed'); }
-  finally { git('switch', original); }
-  if (git('status', '--porcelain', '--untracked-files=all')) throw new Error('land: acceptance dirtied target checkout');
-  sameTree();
-  git('switch', target);
-  git('merge', '--ff-only', land.branch);
-  console.log(`land: integrated ${git('rev-parse', 'HEAD')} in ${repo}`);
+  const tip = git('rev-parse', `refs/heads/${target}`), root = mkdtempSync(join(tmpdir(), 'sa-land-')), candidate = join(root, 'wt');
+  const links: string[] = [];
+  try {
+    git('worktree', 'add', '--detach', candidate, tip);
+    const ff = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', tip, land.head], { stdout: 'pipe', stderr: 'pipe' });
+    if (ff.exitCode > 1) throw new Error(`land: ${ff.stderr.toString().trim()}`);
+    try { gitAt(candidate, 'merge', ff.exitCode === 0 ? '--ff-only' : '--no-ff', '-m', `Merge ${land.branch} (sa/${run.id})`, land.head); }
+    catch (e) {
+      const conflicts = gitAt(candidate, 'diff', '--name-only', '--diff-filter=U');
+      if (!conflicts) throw e;
+      gitAt(candidate, 'merge', '--abort');
+      throw new Error(`land: merge conflicts:\n${conflicts}\nnext: git -C ${repo} merge --no-ff ${land.branch}`);
+    }
+    const accepted = gitAt(candidate, 'rev-parse', 'HEAD');
+    // Reuse installed dependencies only when their owning lockfile matches.
+    for (const rel of ['.', 'wetamp']) {
+      const dir = join(candidate, rel), source = join(repo, rel), lockfile = join(dir, 'bun.lock');
+      if (!existsSync(lockfile)) continue;
+      if (existsSync(join(source, 'bun.lock')) && readFileSync(lockfile).equals(readFileSync(join(source, 'bun.lock'))) && existsSync(join(source, 'node_modules'))) {
+        const deps = ['node_modules', ...(rel === '.' && existsSync(join(source, 'packages')) ? readdirSync(join(source, 'packages')).map(p => `packages/${p}/node_modules`) : [])];
+        for (const dep of deps) if (existsSync(join(source, dep)) && existsSync(join(dir, dep, '..')) && !existsSync(join(dir, dep))) { symlinkSync(join(source, dep), join(dir, dep)); links.push(join(dir, dep)); }
+      } else {
+        const p = Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+        if (p.exitCode !== 0) throw new Error(`land: dependency install failed: ${p.stderr.toString().trim()}`);
+      }
+    }
+    if (verify(candidate) !== 0) throw new Error('land: acceptance failed');
+    for (const link of links.splice(0)) rmSync(link);
+    if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new Error('land: acceptance changed candidate checkout');
+    sameTree(); clean();
+    if (targetCheckout() !== checkout) throw new Error('land: target checkout changed during acceptance; retry land --apply');
+    if (git('rev-parse', `refs/heads/${target}`) !== tip) throw new Error('land: target advanced during acceptance; retry land --apply');
+    if (checkout) gitAt(checkout, 'merge', '--ff-only', accepted);
+    else git('update-ref', `refs/heads/${target}`, accepted, tip);
+    console.log(`land: integrated ${accepted} in ${checkout ?? repo}`);
+  } finally {
+    for (const link of links) rmSync(link, { force: true });
+    try { if (existsSync(candidate)) git('worktree', 'remove', '--force', candidate); }
+    finally { rmSync(root, { recursive: true, force: true }); }
+  }
   for (const args of [...(run.working_path ? [['worktree', 'remove', run.working_path]] : []), ['branch', '-d', land.branch]]) {
     try { git(...args); } catch (e) { console.error(`land: kept ${String(args.at(-1))}: ${(e as Error).message}`); }
   }
