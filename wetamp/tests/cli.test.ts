@@ -1541,34 +1541,90 @@ describe('brief / land (archon stub)', () => {
   });
 });
 
-test('accept runs the plan acceptance in the run worktree; --pkg narrows it', () => {
-  const s = stub([]);
-  const wt = gitRepo(s.root);
-  writeFileSync(
-    join(s.dir, 'get-000.json'),
-    JSON.stringify(run('completed', { working_path: wt }))
-  );
-  const scripts = join(s.root, 'gen', '.archon', 'scripts');
-  cpSync(join(import.meta.dir, '..', 'templates', '.archon', 'scripts'), scripts, {
-    recursive: true,
-  });
-  cpSync(
-    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
-    join(scripts, 'policy-attempts.ts')
-  );
-  const check = (cmd: string): unknown => [{ cmd, timeout_s: 10 }];
-  writeFileSync(
-    join(s.root, 'gen', 'plan.json'),
-    JSON.stringify({
-      packages: [
-        { id: 'core', accept: check('test -f README.md') },
-        { id: 'api', accept: check('false') },
-      ],
-    })
-  );
-  expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
+test('generated CLI acceptance and land preserve only approved non-product debt', () => {
+  const s = stub([]), wt = gitRepo(s.root);
+  const plan = JSON.parse(readFileSync(fixturePlan(s.root, wt), 'utf8')) as Plan;
+  plan.packages = [plan.packages[0]!];
+  plan.environment = [{ cmd: 'true', timeout_s: 5 }];
+  const marker = join(s.root, 'home', 'failure.json');
+  writeFileSync(marker, JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' }));
+  const command = `cat '${marker}'; exit 1`, newFailure = join(s.root, 'home', 'new-failure');
+  plan.packages[0]!.accept = [{ cmd: command, timeout_s: 5, cache: false }, {
+    cmd: `test ! -f '${newFailure}' || { printf '%s\\n' '{"failure_class":"fixture","evidence":"new debt"}'; exit 1; }`,
+    timeout_s: 5, cache: false,
+  }];
+  const gen = generate(plan, 'sa1', true);
+  s.ledger.gen_dir = gen.dir; s.ledger.repo = wt;
+  writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+  sh('git switch -qc sa/sa1 && echo change > core.txt && git add core.txt && git -c user.name=t -c user.email=t@l commit -qm change', wt);
+  const head = sh('git rev-parse HEAD', wt).trim(), base = sh('git rev-parse main', wt).trim();
+  const art = join(s.root, 'home', 'artifacts', 'runs', 'r');
+  mkdirSync(art, { recursive: true });
+  writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('completed', {
+    working_path: wt, output_root: join(s.root, 'home'), nodes: [{ nodeId: 'land', state: 'completed' }],
+  })));
+  const contracts = JSON.parse(readFileSync(join(gen.dir, 'accept-inputs.json'), 'utf8')) as Record<string, string>[];
+  const input = contracts.find(c => c.tag.startsWith('diff-'))!;
+  const start = input.base.slice(1).split('.')[0]!;
+  writeFileSync(join(art, `${start}.json`), JSON.stringify({ head: base }));
+  const execute = () => {
+    const p = Bun.spawnSync([process.execPath, join(gen.dir, '.archon/scripts/sa-check.ts')], {
+      cwd: wt, env: { ...process.env, ...Object.fromEntries(Object.entries(input).map(([k, v]) =>
+        [`INPUTS_${k.toUpperCase()}`, v])), INPUTS_BASE: base, ARTIFACTS_DIR: art }, stdout: 'pipe', stderr: 'pipe',
+    });
+    expect({ code: p.exitCode, stderr: p.stderr.toString(), out: archonMod.lastJson(p.stdout.toString()) }).toMatchObject({ code: 0 });
+    return archonMod.lastJson(p.stdout.toString())!;
+  };
+  const first = execute(), gate = input.tag.replace('diff-', 'gate-');
+  writeFileSync(join(art, `${gate}.json`), JSON.stringify({ decision: first.decision }));
+  writeFileSync(join(art, `${gate}.review.json`), JSON.stringify({ status: 'PASS', findings: [], debt: [] }));
+  writeFileSync(join(art, 'land.json'), JSON.stringify({ repo: wt, target: 'main', branch: 'sa/sa1', head }));
+  expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
+  writeFileSync(join(art, `${input.tag}.json`), JSON.stringify({ ...first, failures: undefined }));
   expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+  writeFileSync(join(art, `${input.tag}.json`), JSON.stringify(first));
+  expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(1);
   expect(() => main(['accept', 'sa1', '--pkg', 'nope'])).toThrow(/unknown package/);
+  process.env.SA_LAND_ENV_DRIFT = 'changed';
+  try { expect(captured(() => main(['accept', 'sa1'])).code).toBe(1); }
+  finally { delete process.env.SA_LAND_ENV_DRIFT; }
+  for (const classification of ['product', 'unknown']) {
+    writeFileSync(marker, JSON.stringify({ failure_class: classification, evidence: 'new failure' }));
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+  }
+  writeFileSync(marker, JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' }));
+  writeFileSync(newFailure, 'new');
+  expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+  rmSync(newFailure);
+  writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, environment: [] }));
+  expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+  for (const mode of ['strict', plan.mode]) {
+    writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, mode }));
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(mode === 'strict' ? 1 : 0);
+  }
+  input.risk = 'G2';
+  writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify([input]));
+  expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+  input.risk = 'G1';
+  writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify(contracts));
+  expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
+  expect(sh('git rev-parse main^{tree}', wt)).toBe(sh('git rev-parse sa/sa1^{tree}', wt));
+  writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, packages: [{ ...plan.packages[0]!, accept: [{ cmd: 'true', timeout_s: 5 }] }] }));
+  expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
+});
+
+test.each([['completed', 1], ['completed', 100], ['cancelled', 1], ['cancelled', 100]] as const)(
+  'terminal-only admitted ledgers status=%s N=%i perform zero wakes', (status, n) => {
+  const s = stub([run(status)]);
+  for (let i = 1; i < n; i++) {
+    writeFileSync(ledgerPath(`sa${i + 1}`), JSON.stringify({ ...s.ledger, run_id: `sa${i + 1}` }));
+  }
+  const snapshot = spyOn(archonMod, 'getRun').mockReturnValue(run(status));
+  try {
+    expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+    expect(s.calls().filter(c => c.startsWith('workflow wake'))).toHaveLength(0);
+    expect(snapshot).toHaveBeenCalledTimes(n);
+  } finally { snapshot.mockRestore(); }
 });
 
 describe('supervise-tick (archon + supervisor stubs)', () => {

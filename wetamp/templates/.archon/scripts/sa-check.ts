@@ -172,6 +172,16 @@ function cacheKey(): Buffer {
   return key;
 }
 
+const commandEnvironmentKey = (k: string): boolean =>
+  !k.startsWith('INPUTS_') &&
+  !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k);
+const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
+  createHmac('sha256', cacheKey())
+    .update(JSON.stringify(
+      Object.keys(values).filter(commandEnvironmentKey).sort().map(k => [k, values[k]])
+    ))
+    .digest('hex');
+
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
  * 复用本 run 的结果；身份仅证明传入环境，外部可变资源须声明 cache:false，每次实跑。
@@ -186,28 +196,13 @@ function run(
   const failed: string[] = [];
   // These variables belong to the engine node, not the project acceptance command (including probes).
   // Environment nodes keep their existing inherited environment.
-  const commandEnv =
-    env('KIND') === 'env'
-      ? process.env
-      : Object.fromEntries(
-          Object.entries(process.env).filter(
-            ([k]) =>
-              !k.startsWith('INPUTS_') &&
-              !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k)
-          )
-        );
+  const commandEnv = env('KIND') === 'env'
+    ? process.env
+    : Object.fromEntries(Object.entries(process.env).filter(([k]) => commandEnvironmentKey(k)));
   const tree = artifacts && envKey && git('rev-parse', 'HEAD^{tree}').trim();
   const environment =
     tree && checks.some(c => c.cache !== false)
-      ? createHmac('sha256', cacheKey())
-          .update(
-            JSON.stringify(
-              Object.keys(commandEnv)
-                .sort()
-                .map(k => [k, commandEnv[k]])
-            )
-          )
-          .digest('hex')
+      ? environmentIdentity(commandEnv)
       : '';
   for (const c of checks) {
     const hit =
@@ -501,6 +496,7 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
         scopeIds,
         base,
         env('RISK'),
+        environmentIdentity(process.env),
         env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null,
       ])
     ),
@@ -786,6 +782,7 @@ type Verdict = 'pass' | 'fix' | 'escalate';
 
 /** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，自报只有 environment needs 可阻断失败验收。 */
 export function deliveryDecision(input: {
+  approved?: { check?: Accept; decision?: DeliveryDecision };
   selfReport?: string;
   selfReportPath?: string;
   reviews?: (Review | null)[];
@@ -850,6 +847,16 @@ export function deliveryDecision(input: {
       f.failure_class === 'test_env' || (f.failure_class === 'baseline' && check.base_pass === null)
   );
   if (unknown) return out('block', 'environment');
+  if (input.approved && !check.ok && (
+    input.strict || input.risk === 'G2' || input.approved.decision?.kind !== 'debt' ||
+    !check.contract_hash || check.contract_hash !== input.approved.check?.contract_hash ||
+    !check.diff_hash || check.diff_hash !== input.approved.check?.diff_hash ||
+    !input.approved.check?.failed?.every(command => input.approved?.check?.failures?.some(f =>
+      f.command === command && f.evidence.trim() &&
+      ['baseline', 'fixture', 'test_data', 'test_env'].includes(f.failure_class)
+    )) ||
+    check.failed?.some(command => !input.approved?.check?.failed?.includes(command))
+  )) return out('block', 'acceptance_failed');
   const accepted =
     check.workspace_clean !== false &&
     (check.ok ||

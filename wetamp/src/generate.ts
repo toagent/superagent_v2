@@ -674,6 +674,10 @@ export function generate(
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
+  writeFileSync(join(dir, 'accept-inputs.json'), JSON.stringify(
+    (definition.nodes as Node[]).filter(n => (n.with as Node | undefined)?.kind === 'accept')
+      .map(n => n.with)
+  ));
   for (const sub of ['commands', 'scripts']) {
     cpSync(join(WETAMP, 'templates', '.archon', sub), join(dir, '.archon', sub), {
       recursive: true,

@@ -55,6 +55,9 @@ import {
   type RunView,
 } from './archon';
 import {
+  deliveryDecision,
+  type Accept,
+  type Review,
   budgetUsage,
   effectiveBudget,
   readAttempt,
@@ -1293,31 +1296,59 @@ function brief(l: Ledger): number {
 function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: string): number {
   const run = getRun(l.archon_run_id, l.repo);
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
-  const ids = planOf(l)
-    .packages.map(p => p.id)
-    .filter(id => pkg === undefined || id === pkg);
-  if (!ids.length) throw new Error(`accept: unknown package ${String(pkg)}`);
-  const art = cacheArt ?? join(home().sa, 'accept', l.run_id);
+  const plan = planOf(l);
+  if (pkg && !plan.packages.some(p => p.id === pkg)) throw new Error(`accept: unknown package ${pkg}`);
+  const art = cacheArt ?? artifactsOf(run);
+  const contracts = readJson(join(l.gen_dir, 'accept-inputs.json')) as Record<string, string>[];
+  if (!Array.isArray(contracts)) throw new Error('accept: missing generated acceptance contract');
+  const selected = pkg
+    ? contracts.filter(c => c.tag === `verify-${pkg}`)
+    : [...new Set(contracts.map(c => c.milestone))].map(m =>
+        [...contracts].reverse().find(c =>
+          c.milestone === m && c.tag.startsWith('diff-') && evidenceJson(l, art, `${c.tag}.json`)
+        )
+      );
+  if (!selected.length || selected.some(c => !c)) throw new Error('accept: missing acceptance evidence');
   mkdirSync(art, { recursive: true });
-  const p = Bun.spawnSync(
-    [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
-    {
-      cwd: cwd ?? run.working_path,
-      env: {
-        ...process.env,
-        INPUTS_KIND: 'accept',
-        INPUTS_PLAN: join(l.gen_dir, 'plan.json'),
-        INPUTS_PKGS: ids.join(','),
-        INPUTS_TAG: 'accept',
-        ARTIFACTS_DIR: art,
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }
-  );
-  const out = lastJson(p.stdout.toString());
-  print(out ?? { ok: false, error: tail(p.stderr.toString()) });
-  return out?.ok === true ? 0 : 1;
+  let code = 0;
+  for (const inputs of selected) {
+    if (!inputs) continue;
+    const base = evidenceJson(l, art, `${inputs.base.slice(1).split('.')[0]}.json`) as { head?: string };
+    if (!base?.head) throw new Error('accept: missing generated baseline evidence');
+    const prior = evidenceJson(l, art, `${inputs.tag}.json`) as Accept | undefined;
+    const gate = evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.json`);
+    const p = Bun.spawnSync(
+      [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
+      {
+        cwd: cwd ?? run.working_path,
+        env: {
+          ...process.env,
+          ...Object.fromEntries(Object.entries(inputs).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])),
+          INPUTS_BASE: base.head,
+          INPUTS_TAG: `accept-${inputs.tag}`,
+          ARTIFACTS_DIR: art,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+    const out = lastJson(p.stdout.toString()) as (Record<string, unknown> & Accept) | undefined;
+    const same = !!out?.contract_hash && out.contract_hash === prior?.contract_hash &&
+      !!out.diff_hash && out.diff_hash === prior.diff_hash && decisionOf(gate)?.kind === 'debt';
+    const reviews = same
+      ? evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.review.json`) as Review | undefined
+      : undefined;
+    const { decision } = deliveryDecision({
+      rechecks: out ? [out] : [],
+      approved: { check: prior, decision: decisionOf(gate) },
+      risk: out?.risk ?? inputs.risk,
+      strict: plan.mode === 'strict',
+      ...(reviews ? { reviews: [reviews] } : {}),
+    });
+    print(out ? { ...out, decision } : { ok: false, error: tail(p.stderr.toString()) });
+    if (!['advance', 'debt'].includes(decision.kind)) code = 1;
+  }
+  return code;
 }
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
@@ -1775,13 +1806,15 @@ function tick(
       const x = control(
         l,
         controller => {
-          archonDetached(
-            ['workflow', 'wake', l.archon_run_id, '--json'],
-            join(sa, 'wake.log'),
-            l.repo
-          );
+          const run = getRun(l.archon_run_id, l.repo);
+          if (!['completed', 'cancelled'].includes(run.status))
+            archonDetached(
+              ['workflow', 'wake', l.archon_run_id, '--json'],
+              join(sa, 'wake.log'),
+              l.repo
+            );
           if (!(asks instanceof Error) && reconcileAnswers(l, asks, out)) return undefined;
-          const action = dispose(l, asks, observed);
+          const action = dispose(l, asks, observed, run);
           return action ? { ...action, controller, generation: controller.generation } : undefined;
         },
         actor,
@@ -2051,8 +2084,7 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
   );
 }
 /** 只投影引擎状态与明确决定；owner-lost 保留证据，恢复必须由操作员发起。 */
-function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action | undefined {
-  const run = getRun(l.archon_run_id, l.repo);
+function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[], run: RunView): Action | undefined {
   const c = classifyRun(l, run);
   const row: HoldSignal = {
     run_id: l.run_id,
