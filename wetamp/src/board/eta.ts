@@ -90,16 +90,20 @@ const median = (xs: number[]): number => {
     i = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[i] : (sorted[i - 1] + sorted[i]) / 2;
 };
-export function jobProgress(job: Job, history: Job[], now: number): Progress {
-  if (!job.role) return unknownProgress();
+// prettier-ignore
+export function jobDuration(job: Job, history: Job[]): number | null {
+  if (!job.role) return null;
   const samples = history
-    .filter(j => j.pid !== 0 && j.role === job.role && ['done', 'failed'].includes(j.state))
+    .filter(j => j.pid !== 0 && j.role === job.role && j.kind === job.kind && ['done', 'failed'].includes(j.state))
     .map(j => (Date.parse(j.ended_at ?? '') - Date.parse(j.started_at)) / 1000)
     .filter(s => Number.isFinite(s) && s > 0);
+  return samples.length ? median(samples) : null;
+}
+export function jobProgress(job: Job, history: Job[], now: number): Progress {
+  const expected = jobDuration(job, history);
   const spent = (now - Date.parse(job.started_at)) / 1000;
-  if (!samples.length || !Number.isFinite(spent)) return unknownProgress();
-  const expected = median(samples),
-    elapsed = Math.max(0, spent);
+  if (expected === null || !Number.isFinite(spent)) return unknownProgress();
+  const elapsed = Math.max(0, spent);
   return {
     pct: Math.min(100, Math.round((elapsed / expected) * 100)),
     eta_s: Math.ceil(Math.max(0, expected - elapsed)),

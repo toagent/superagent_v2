@@ -1,9 +1,11 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+// prettier-ignore
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
-import { modelOf, readJobs, recent, roleOf, type Job } from '../src/jobs';
-import { tmp } from './helpers';
+import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
+import { loadTiers } from '../src/config';
+import { gitRepo, sh, tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
 const ENV_KEYS = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const;
@@ -119,6 +121,18 @@ describe('job registry', () => {
   };
   const NOW = Date.parse('2026-10-10T12:00:00Z');
 
+  // prettier-ignore
+  test('stalled and ETA are read-only projections using role and kind history', () => {
+    const log = join(tmp(), 'output'); writeFileSync(log, ''); utimesSync(log, NOW / 1000 - 601, NOW / 1000 - 601);
+    const file = put({ id: 'live', log, role: 'general', started_at: new Date(NOW - 700_000).toISOString() });
+    const bytes = readFileSync(file, 'utf8'), j = readJobs(NOW, true).jobs[0];
+    const history = [100, 300, 900].map(s => ({ ...j, log: null, state: 'done' as const, ended_at: new Date(Date.parse(j.started_at) + s * 1000).toISOString() }));
+    expect(projectJob(j, [...history, { ...history[2], kind: 'codex' }], NOW)).toMatchObject({ state: 'running', stalled: true, eta: new Date(NOW - 400_000).toISOString() });
+    utimesSync(log, NOW / 1000, NOW / 1000);
+    expect(projectJob(j, [], NOW)).toMatchObject({ stalled: false });
+    expect(projectJob(j, [], NOW).eta).toBeUndefined(); expect(readFileSync(file, 'utf8')).toBe(bytes);
+  });
+
   test('read-only reads expose lost state without rewriting or deleting records', () => {
     const old = put({ id: 'old-readonly', state: 'done', ended_at: '2026-10-09T11:00:00Z' });
     const lost = put({ id: 'lost-readonly', pid: 99999999, wrapper_pid: 99999999 });
@@ -161,9 +175,9 @@ describe('job registry', () => {
 });
 
 describe('job exec', () => {
-  const run = (args: string[], role = ''): ReturnType<typeof Bun.spawn> =>
-    Bun.spawn(['bun', 'src/cli.ts', ...args], {
-      cwd: WETAMP,
+  const run = (args: string[], role = '', cwd = WETAMP): ReturnType<typeof Bun.spawn> =>
+    Bun.spawn(['bun', join(WETAMP, 'src/cli.ts'), ...args], {
+      cwd,
       env: { ...process.env, SUPERAGENT_ROLE: role, SA_ADMIT: 'off' },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -185,6 +199,39 @@ describe('job exec', () => {
     }
     return j;
   };
+  // prettier-ignore
+  test('explicit role injects the models route and rejects mismatched or empty vendor routes', async () => {
+    const root = tmp(), codex = join(root, 'codex'), claude = join(root, 'claude');
+    for (const path of [codex, claude]) { writeFileSync(path, '#!/usr/bin/env bun\nconsole.log(JSON.stringify(process.argv.slice(2)));\n'); chmodSync(path, 0o755); }
+    const models = run(['models', '--json']); expect(await models.exited).toBe(0);
+    const routes = JSON.parse(await new Response(models.stdout as ReadableStream).text());
+    for (const role of ['general', 'strategist']) {
+      const p = run(['job', 'exec', '--title', role, '--role', role, '--', codex, 'exec', 'prompt']);
+      expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
+      expect(args[args.indexOf('-m') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
+      expect(routes.codex[role]).toContain(args[args.indexOf('-m') + 1]);
+    }
+    for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
+      const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
+      expect(await p.exited).not.toBe(0); expect(await new Response(p.stderr as ReadableStream).text()).toContain('candidates:');
+    }
+    const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
+    expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
+  });
+  // prettier-ignore
+  test('clean refuses dirty or unintegrated worktrees and removes only integrated registered work', async () => {
+    const repo = gitRepo(tmp());
+    expect(await run(['job', 'exec', '--title', 'tree', '--worktree', 'task/entry', '--base', 'main', '--', 'pwd'], '', repo).exited).toBe(0);
+    const j = only(), w = j.worktree!; expect(j.cwd).toBe(w.path); expect(existsSync(w.path)).toBe(true);
+    const clean = () => run(['job', 'clean', j.id]);
+    writeFileSync(join(w.path, 'new'), 'patch'); expect(await clean().exited).not.toBe(0);
+    sh('git add new && git -c user.name=t -c user.email=t@l commit -qm patch', w.path);
+    expect(await clean().exited).not.toBe(0); expect(existsSync(w.path)).toBe(true);
+    writeFileSync(join(repo, 'other'), 'base'); sh('git add other && git -c user.name=t -c user.email=t@l commit -qm base && git -c user.name=t -c user.email=t@l cherry-pick task/entry', repo);
+    writeFileSync(join(w.path, 'dirty'), 'dirty'); expect(await clean().exited).not.toBe(0); unlinkSync(join(w.path, 'dirty'));
+    expect(await clean().exited).toBe(0); expect(existsSync(w.path)).toBe(false);
+    expect(sh('git branch --list task/entry', repo).trim()).toBe(''); expect(only().worktree).toBeUndefined();
+  });
 
   test('passes the child exit code through and records it without argv', async () => {
     const p = run(['job', 'exec', '--title', 'three', '--', 'sh', '-c', `exit 3 # ${SECRET}`]);

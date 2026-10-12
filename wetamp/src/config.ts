@@ -184,6 +184,7 @@ export function runCapacity(t = loadTiers()): number {
 export interface Tiers {
   tiers: Record<string, { pools: Record<string, string[]> }>;
   routing: {
+    commander: { by_console: Record<Console, string[]> };
     coder: { models: string[] };
     reviewer: {
       by_console: Record<Console, string[]>;
@@ -239,8 +240,15 @@ export function effortFor(
   return v;
 }
 
+// prettier-ignore
 export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
-  return JSON.parse(readFileSync(path, 'utf8')) as Tiers;
+  const t = JSON.parse(readFileSync(path, 'utf8')) as Tiers;
+  for (const c of ['claude', 'codex'] as const) {
+    const models = obj(obj(obj(t.routing).commander).by_console)[c];
+    if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))
+      throw new Error(`tiers.routing.commander.by_console.${c}: expected models for ${c}`);
+  }
+  return t;
 }
 
 export interface Route {
@@ -248,11 +256,12 @@ export interface Route {
   effort: string;
 }
 /** One resolver owns role/risk/round and mode filtering; no vendor inference at execution time. */
+// prettier-ignore
 export function resolveRoute(
   t: Tiers,
   console: Console,
   mode = 'auto',
-  role: 'code' | 'repair' | 'review' = 'code',
+  role: 'code' | 'repair' | 'review' | 'command' = 'code',
   risk: Pkg['risk'] = 'G1',
   round = 1,
   authors: string[] = []
@@ -261,16 +270,16 @@ export function resolveRoute(
     throw new Error(`unsupported routing mode: ${mode}`);
   const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
   const models =
-    role === 'review'
+    role === 'command' ? t.routing.commander.by_console[console] : role === 'review'
       ? (t.routing.reviewer.by_risk?.[risk] ?? t.routing.reviewer.by_console[console])
       : t.routing.coder.models;
-  const effort = effortFor(t, role, risk, round);
+  const effort = effortFor(t, role === 'command' ? 'code' : role, risk, round);
   const candidates = [...new Set(models)]
     .map(model => ({ model, provider: providerOf(model), effort }))
     // Code and repair default to Codex; Claude requires an explicit single:claude mode.
-    .filter(a => vendor || role === 'review' || a.provider === 'codex')
+    .filter(a => vendor !== null || role === 'review' || role === 'command' || a.provider === 'codex')
     .filter(
-      a => (!vendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
+      a => (role === 'command' || !vendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
   if (!candidates.length)
     throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);
