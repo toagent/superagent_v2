@@ -71,8 +71,10 @@ describe('FC failure classification', () => {
         nodes: { id: string; output_format?: unknown; bash?: string }[];
       };
       for (const node of snapshot.nodes) {
-        if (/^(verify|settle|diff)-/.test(node.id))
+        if (/^(verify|diff)-/.test(node.id))
           expect(node.output_format).toEqual(outputSchema.$defs.accept);
+        if (node.id.startsWith('settle-'))
+          expect(node.output_format).toEqual(outputSchema.$defs.delivery);
         if (/^review-/.test(node.id)) {
           expect(node.output_format).toEqual(outputSchema.$defs.reviewer);
           if (node.bash) expect(node.bash).toContain('"failure_class":"product","command":null');
@@ -1731,7 +1733,12 @@ describe('sa-check script', () => {
       repaired: JSON.stringify({ status: 'done', error_class: 'task', needs: [] }),
     });
     expect(r.code).toBe(0);
-    expect(r.out).toMatchObject({ ok: true, disposition: 'advance', reason: null });
+    expect(r.out).toEqual({ diff_hash: '' });
+    expect(JSON.parse(readFileSync(join(r.art, 'settle-a.json'), 'utf8'))).toMatchObject({
+      ok: true,
+      disposition: 'advance',
+      reason: null,
+    });
     expect(JSON.parse(readFileSync(join(r.art, 'settle-a.coder.json'), 'utf8'))).toMatchObject({
       status: 'done',
       error_class: 'task',
@@ -1741,7 +1748,13 @@ describe('sa-check script', () => {
   test('F-18 settle: advance passes through; a repair that stays red suspends repair_exhausted', () => {
     const root = tmp();
     const repo = gitRepo(root);
-    const first = { ok: true, disposition: 'advance', reason: null, diff_hash: '', same: false };
+    const first = {
+      ok: true,
+      disposition: 'advance',
+      reason: null,
+      diff_hash: 'delivered',
+      same: false,
+    };
     const pass = runScript(repo, {
       kind: 'settle',
       plan: planFile(root, 'false'),
@@ -1751,7 +1764,21 @@ describe('sa-check script', () => {
       repaired: 'null',
     });
     expect(pass.code).toBe(0);
-    expect(pass.out).toMatchObject({ ok: true, disposition: 'advance' });
+    expect(pass.out).toEqual({ diff_hash: 'delivered' });
+    const auditChanged = runScript(repo, {
+      kind: 'settle',
+      plan: planFile(root, 'false'),
+      pkgs: 'a',
+      tag: 'settle-a',
+      first: JSON.stringify({
+        ...first,
+        log: '/changed.log',
+        head: 'changed',
+        decision: { kind: 'debt', reason: null, evidence: ['/changed.log'], debt: ['fixture'] },
+      }),
+      repaired: 'null',
+    });
+    expect(auditChanged.out).toEqual(pass.out);
     const red = runScript(repo, {
       kind: 'settle',
       plan: planFile(root, 'false'),
@@ -1798,6 +1825,48 @@ describe('sa-check script', () => {
     );
     go('diff-m1-r2');
     expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\nc\nu\n');
+  });
+  test('P2: cached failures survive cumulative checks; contract and environment changes rerun', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      p = join(root, 'plan.json'),
+      counter = join(root, 'n');
+    const check = {
+      cmd: `echo x >> ${counter}; echo '{"failure_class":"fixture","evidence":"fixture"}'; exit 1`,
+      timeout_s: 5,
+      cache: true,
+    };
+    const plan = {
+      packages: [
+        { id: 'a', accept: [check] },
+        { id: 'b', accept: [check] },
+      ],
+      environment: [] as { cmd: string; timeout_s: number }[],
+    };
+    const go = (tag: string, pkgs = 'a') => {
+      writeFileSync(p, JSON.stringify(plan));
+      return runScript(repo, { kind: 'accept', plan: p, pkgs, tag });
+    };
+    const first = go('verify-a');
+    const evidence = (first.out as { failures: { evidence: string }[] }).failures[0].evidence;
+    const cumulative = go('diff-m1-r1', 'a,b');
+    expect(readFileSync(counter, 'utf8')).toBe('x\n');
+    expect(cumulative.out).toMatchObject({
+      failed: [check.cmd, check.cmd],
+      failures: [
+        { failure_class: 'fixture', evidence },
+        { failure_class: 'fixture', evidence },
+      ],
+    });
+    expect(JSON.parse(readFileSync(evidence, 'utf8'))).toMatchObject({
+      exit: 1,
+      stdout: '{"failure_class":"fixture","evidence":"fixture"}\n',
+    });
+    plan.environment = [{ cmd: 'true', timeout_s: 5 }];
+    go('environment-change');
+    check.timeout_s++;
+    go('contract-change');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
   });
   test('F-20/F-13: delta patch against delta_base; out-of-scope and risk paths raise the risk', () => {
     const root = tmp();

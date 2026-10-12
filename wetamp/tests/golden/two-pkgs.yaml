@@ -52,7 +52,6 @@ nodes:
       hint: /GEN/hints/core.md
     depends_on:
       - start-m1
-      - attempt-m1
       - package-attempt-core
     output_format:
       type: object
@@ -143,7 +142,6 @@ nodes:
     runtime: bun
     depends_on:
       - code-core
-      - attempt-m1
       - package-attempt-core
     with:
       kind: accept
@@ -282,7 +280,6 @@ nodes:
       accept_log: $verify-core.output.log
     depends_on:
       - verify-core
-      - attempt-m1
       - package-attempt-core
     when: $verify-core.output.disposition == 'repair'
     output_format:
@@ -375,7 +372,6 @@ nodes:
     depends_on:
       - verify-core
       - repair-core
-      - attempt-m1
       - package-attempt-core
     with:
       kind: settle
@@ -396,90 +392,10 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
-        workspace_clean:
-          type: boolean
-        failures:
-          type: array
-          items:
-            type: object
-            properties:
-              command:
-                type: string
-              failure_class:
-                type: string
-                enum:
-                  - product
-                  - test_env
-                  - fixture
-                  - baseline
-                  - test_data
-              evidence:
-                type: string
-            required:
-              - command
-              - failure_class
-              - evidence
-        coder_partial:
-          type: boolean
-        self_report_conflict:
-          type: boolean
-        error_class_ignored:
-          type: boolean
-        ok:
-          type: boolean
-        failed:
-          type: array
-          items:
-            type: string
-        log:
-          type: string
-        patch:
-          type: string
         diff_hash:
           type: string
-        same:
-          type: boolean
-        base_pass:
-          type:
-            - boolean
-            - 'null'
-        head:
-          type: string
-        disposition:
-          enum:
-            - advance
-            - repair
-            - suspend
-        reason:
-          type:
-            - string
-            - 'null'
-        delta:
-          type: string
-        risk:
-          type:
-            - string
-            - 'null'
-        out_of_scope:
-          type: array
-          items:
-            type: string
       required:
-        - ok
-        - failed
-        - log
-        - patch
         - diff_hash
-        - same
-        - base_pass
-        - head
-        - disposition
-        - reason
-        - delta
-        - risk
-        - out_of_scope
-        - decision
     timeout: 155000
   - id: diff-m1-r1
     script: sa-check
@@ -1496,7 +1412,6 @@ nodes:
       hint: /GEN/hints/api.md
     depends_on:
       - start-m2
-      - attempt-m2
       - package-attempt-api
     output_format:
       type: object
@@ -1587,7 +1502,6 @@ nodes:
     runtime: bun
     depends_on:
       - code-api
-      - attempt-m2
       - package-attempt-api
     with:
       kind: accept
@@ -1701,7 +1615,6 @@ nodes:
       accept_log: $verify-api.output.log
     depends_on:
       - verify-api
-      - attempt-m2
       - package-attempt-api
     when: $verify-api.output.disposition == 'repair'
     output_format:
@@ -1794,7 +1707,6 @@ nodes:
     depends_on:
       - verify-api
       - repair-api
-      - attempt-m2
       - package-attempt-api
     with:
       kind: settle
@@ -1815,90 +1727,10 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
-        workspace_clean:
-          type: boolean
-        failures:
-          type: array
-          items:
-            type: object
-            properties:
-              command:
-                type: string
-              failure_class:
-                type: string
-                enum:
-                  - product
-                  - test_env
-                  - fixture
-                  - baseline
-                  - test_data
-              evidence:
-                type: string
-            required:
-              - command
-              - failure_class
-              - evidence
-        coder_partial:
-          type: boolean
-        self_report_conflict:
-          type: boolean
-        error_class_ignored:
-          type: boolean
-        ok:
-          type: boolean
-        failed:
-          type: array
-          items:
-            type: string
-        log:
-          type: string
-        patch:
-          type: string
         diff_hash:
           type: string
-        same:
-          type: boolean
-        base_pass:
-          type:
-            - boolean
-            - 'null'
-        head:
-          type: string
-        disposition:
-          enum:
-            - advance
-            - repair
-            - suspend
-        reason:
-          type:
-            - string
-            - 'null'
-        delta:
-          type: string
-        risk:
-          type:
-            - string
-            - 'null'
-        out_of_scope:
-          type: array
-          items:
-            type: string
       required:
-        - ok
-        - failed
-        - log
-        - patch
         - diff_hash
-        - same
-        - base_pass
-        - head
-        - disposition
-        - reason
-        - delta
-        - risk
-        - out_of_scope
-        - decision
     timeout: 155000
   - id: diff-m2-r1
     script: sa-check

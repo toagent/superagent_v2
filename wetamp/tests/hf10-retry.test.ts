@@ -21,6 +21,13 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
       scope: { write: [`W${i + 1}.txt`] },
       accept: [{ cmd: `test -f W${i + 1}.txt`, timeout_s: 5 }],
     }));
+    if (scope === 'package')
+      plan.packages[2].accept = [
+        {
+          cmd: `if test -f '${ready}'; then test -f W3.txt; else echo '{"failure_class":"test_env","evidence":"fixture not ready"}'; exit 1; fi`,
+          timeout_s: 5,
+        },
+      ];
     if (scope === 'budget') plan.budget.launches = 3;
     // FC permits repair-limit debt in non-strict G1; this fixture needs a held gate.
     if (scope === 'milestone') plan.mode = 'strict';
@@ -62,19 +69,6 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
       if (scope === 'budget' && node.id === 'verify-W3')
         node.with!.archon = join(WETAMP, 'bin/archon');
       if (node.id.startsWith('code-')) {
-        if (scope === 'package' && node.id === 'code-W3') {
-          const blocked = {
-            status: 'blocked',
-            changed_files: [],
-            quick_checks: [],
-            notes: 'fixture',
-            blockers: [],
-            error_class: 'redline',
-            deviations: [],
-            needs: [],
-          };
-          node.bash = `if test -f '${ready}'; then\n${node.bash}\nelse\necho '${JSON.stringify(blocked)}'\nfi`;
-        }
         node.bash = `echo '${node.id}' >> '${trace}'\n${node.bash}`;
       }
       if (scope === 'milestone' && /^review-m1-r[23]$/.test(node.id)) {
@@ -185,25 +179,34 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
         ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 0 }
         : { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 1 }
     );
-    expect(sa('supervise-tick').code).toBe(0);
-    const question = readFileSync(join(root, 'questions'), 'utf8');
-    expect(question).toContain(scope !== 'milestone' ? '重派W3编码→验收一次' : '重跑m1全部4包');
-    writeFileSync(ready, 'ready');
-    writeFileSync(join(root, 'answer'), 'yes');
-    expect(sa('supervise-tick').code).toBe(0);
-    const asks = JSON.parse(
-      readFileSync(join(env.SUPERAGENT_HOME, 'asks.json'), 'utf8')
-    ) as Record<string, { receipt?: { body: string } }>;
-    const receipt = Object.entries(asks).find(
-      ([key, ask]) => key.startsWith(`${id}:`) && ask.receipt
-    )?.[1].receipt?.body;
-    expect(receipt).toContain(
-      scope !== 'milestone' ? '已提交包W3编码→验收重跑' : '已提交里程碑m1全部包重跑'
-    );
-    expect(receipt).toContain(`去向=${String(ack.runId)}`);
-    expect(
-      readFileSync(join(root, 'questions'), 'utf8').split('\n').some(line => line.startsWith('notify '))
-    ).toBe(false);
+    if (scope === 'package') {
+      writeFileSync(ready, 'ready');
+      expect(sa('decide', id, 'retry', '--pkg', 'W3', '--hint', 'fixture ready').code).toBe(0);
+    } else {
+      expect(sa('supervise-tick').code).toBe(0);
+      const question = readFileSync(join(root, 'questions'), 'utf8');
+      expect(question).toContain(
+        scope !== 'milestone' ? '重派W3编码→验收一次' : '重跑m1累计验收→评审'
+      );
+      writeFileSync(ready, 'ready');
+      writeFileSync(join(root, 'answer'), 'yes');
+      expect(sa('supervise-tick').code).toBe(0);
+      const asks = JSON.parse(
+        readFileSync(join(env.SUPERAGENT_HOME, 'asks.json'), 'utf8')
+      ) as Record<string, { receipt?: { body: string } }>;
+      const receipt = Object.entries(asks).find(
+        ([key, ask]) => key.startsWith(`${id}:`) && ask.receipt
+      )?.[1].receipt?.body;
+      expect(receipt).toContain(
+        scope !== 'milestone' ? '已提交包W3编码→验收重跑' : '已提交里程碑m1累计验收→评审重跑'
+      );
+      expect(receipt).toContain(`去向=${String(ack.runId)}`);
+      expect(
+        readFileSync(join(root, 'questions'), 'utf8')
+          .split('\n')
+          .some(line => line.startsWith('notify '))
+      ).toBe(false);
+    }
     if (scope === 'budget') {
       const grant = JSON.parse(readFileSync(join(gen.dir, 'budget-extra'), 'utf8'));
       expect(grant.attempt).toBe(0);
@@ -216,7 +219,7 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
     const expected =
       scope !== 'milestone'
         ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 2, 'code-W4': 1 }
-        : { 'code-W1': 2, 'code-W2': 2, 'code-W3': 2, 'code-W4': 2 };
+        : { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 1 };
     expect(counts()).toEqual(expected);
     const ledger = JSON.parse(readFileSync(join(env.SUPERAGENT_HOME, `runs/${id}.json`), 'utf8'));
     expect(ledger.archon_run_id).toBe(ack.runId);

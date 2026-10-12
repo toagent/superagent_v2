@@ -1407,7 +1407,7 @@ function decisionReceipt(
       action = `已提交包${name(effect.target)}编码→验收重跑`;
       break;
     case 'retry_milestone':
-      action = `已提交里程碑${name(effect.target)}全部包重跑`;
+      action = `已提交里程碑${name(effect.target)}累计验收→评审重跑`;
       break;
     case 'review':
       action = `已提交${name(effect.target)}本轮评审重跑`;
@@ -1980,8 +1980,7 @@ function decisionRecovery(
   run: RunView,
   c: Classified,
   hold: Hold,
-  limit: number,
-  stage: number
+  limit: number
 ): [string, string] {
   const p = HOLD_POLICY[hold],
     node = c.node ?? run.metadata?.wait?.nodeId ?? '恢复节点';
@@ -1995,17 +1994,7 @@ function decisionRecovery(
     if (p.yes === 'review') target = `重跑${askName(m, limit)}本轮评审`;
     else if (retryScope(l, node) !== m)
       target = `重派${askName(node.replace(/^(verify|settle|code|repair)-/, ''), limit)}编码→验收`;
-    else {
-      const pkgs = planOf(l).packages.filter(p => (p.milestone ?? 'm1') === m);
-      const done = pkgs.filter(p =>
-        run.nodes?.some(n => n.nodeId === `settle-${p.id}` && n.state === 'completed')
-      );
-      const names =
-        done.length <= 3 && stage === 0
-          ? done.map(p => askName(p.id, Math.min(8, limit))).join('、')
-          : `${String(done.length)}包`;
-      target = `${/^(verify|settle|code|repair)-/.test(node) && !adoptsRun(l, run) ? '旧工作流：' : ''}重跑${askName(m, limit)}全部${String(pkgs.length)}包（${done.length ? `含已完成${names}` : '无已完成包'}）`;
-    }
+    else target = `重跑${askName(m, limit)}累计验收→评审`;
   }
   return [
     target,
@@ -2126,7 +2115,7 @@ export function decisionQuestion(
     hold,
     names,
     [`${detail}；${progress}`, `${compact}；${progress}`],
-    (limit, stage) => decisionRecovery(l, run, c, hold, limit, stage),
+    limit => decisionRecovery(l, run, c, hold, limit),
     askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c)))
   );
 }
