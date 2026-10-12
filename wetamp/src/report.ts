@@ -8,6 +8,7 @@ import { type Ledger, type Pair } from './cli';
 import { snapshotOf } from './board/data';
 import { cockpit } from './board/cockpit';
 import type { Plan } from './plan';
+import { readJobs, type Job } from './jobs';
 
 const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 type Tokens = Partial<Record<(typeof FIELDS)[number], number>>;
@@ -59,8 +60,24 @@ function modelOf(e: Event): string {
   return m?.requested ? `${m.requested}(pinned)` : 'unknown';
 }
 
-const ms = (a?: string, b?: string): number | null =>
-  a && b ? Math.max(0, Date.parse(b) - Date.parse(a)) : null;
+const ms = (a?: string, b?: string): number | null => {
+  const delta = a && b ? Date.parse(b) - Date.parse(a) : NaN;
+  return Number.isFinite(delta) && delta >= 0 ? delta : null;
+};
+
+/** No prompt, argv or session body; policy is the resolved execution owner receipt. */
+export function jobReceipt(j: Job): Record<string, unknown> {
+  const r = j.receipt;
+  return {
+    id: j.id, role: j.role ?? 'unknown', state: j.state,
+    policy: j.execution ?? 'unknown', context_ref: j.card ?? 'unknown',
+    phases: r ?? 'unknown',
+    queue_ms: ms(r?.enqueued_at, r?.admitted_at) ?? 'unknown',
+    prepare_ms: ms(r?.admitted_at, r?.spawned_at) ?? 'unknown',
+    exec_ms: ms(r?.spawned_at, r?.settled_at) ?? 'unknown',
+    context_bytes: 'unknown', first_token_ms: 'unknown', model_calls: 'unknown', tool_calls: 'unknown',
+  };
+}
 
 export function callsOf(runId: string, events: Event[], plan: Plan | null): Call[] {
   const seen = new Map<string, number>();
@@ -124,6 +141,8 @@ export function rollup(calls: Call[]): Record<string, unknown> {
     ).size,
     queue_ms: sum(calls.map(c => c.queue_ms)),
     exec_ms: sum(calls.map(c => c.exec_ms)),
+    phase_coverage: Object.fromEntries(['queue_ms', 'exec_ms'].map(field => [field,
+      `${calls.filter(c => c[field as 'queue_ms' | 'exec_ms'] !== null).length}/${calls.length}`])),
   };
 }
 
@@ -167,6 +186,8 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
  * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
  */
 export function buildReport(ls: Ledger[]): Record<string, unknown> {
+  const jobs = readJobs(Date.now(), true);
+  const receipts = jobs.jobs.map(jobReceipt);
   const calls: Call[] = [];
   const unreadable: string[] = [];
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
@@ -196,6 +217,9 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     repo_missing,
     metrics: cockpit(snapshot).metrics,
     interventions: interventionStats(ls),
+    jobs: { receipts, unreadable: jobs.bad,
+      phase_coverage: Object.fromEntries(['queue_ms', 'prepare_ms', 'exec_ms'].map(field => [field,
+        `${receipts.filter(r => typeof r[field] === 'number').length}/${receipts.length}`])) },
     usage: {
       window: { scope: 'all_retained_events_for_recorded_generations', generated_at: snapshot.at },
       total: rollup(calls),

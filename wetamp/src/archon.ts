@@ -8,6 +8,7 @@ import { archonMutation, coord } from './coord';
 import { WETAMP, home } from './config';
 import type { Ledger } from './cli';
 import { executionOwnership, unknownEffects } from './recovery';
+import type { RunWaitResult } from '../../packages/core/src/services/run-attention-watch';
 
 export interface Exec {
   code: number;
@@ -59,7 +60,7 @@ if (birth.state !== 'online') throw new Error('launch identity unavailable');
 intent.pid = Number(pid); intent.pid_start = birth.start;
 const tmp = path + '.' + token; writeFileSync(tmp, JSON.stringify(intent)); renameSync(tmp, path);
 `;
-export function archon(args: string[], cwd?: string, intent?: LaunchIntent): Exec {
+export function archon(args: string[], cwd?: string, intent?: LaunchIntent, timeoutMs = QUERY_TIMEOUT_MS): Exec {
   // 只有 run/resume/approve --detach 拉起 worker；status/get/doctor 等查询保持调用方环境
   const launches = ['run', 'resume', 'approve'].includes(args[1]) && args.includes('--detach');
   const cmd = intent
@@ -84,10 +85,10 @@ export function archon(args: string[], cwd?: string, intent?: LaunchIntent): Exe
       ...(launches ? workerEnv() : process.env),
       ...(archonMutation(args) ? coord().admissionEnv(true) : {}),
     },
-    timeout: QUERY_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   const code = Number.isInteger(p.exitCode) ? p.exitCode : -1;
-  const err = code === -1 ? `timed out after ${String(QUERY_TIMEOUT_MS / 1000)}s` : '';
+  const err = code === -1 ? `timed out after ${String(timeoutMs / 1000)}s` : '';
   return { code, out: p.stdout.toString(), err: err || p.stderr.toString() };
 }
 
@@ -148,6 +149,21 @@ export const archonRunIds = (l: Pick<Ledger, 'archon_run_id' | 'adoptions'>): st
 /** Archon 要求 cwd 在 git 仓库内；传 run 的目标 repo，避免把别的仓库登记成 codebase。 */
 export function getRun(id: string, cwd?: string): RunView {
   return runOf(id, archonJson(['workflow', 'get', id, '--verbose'], cwd));
+}
+
+/** Native attention is a notification, not a verbose RunView: classification still needs one get.
+ * Bound the transport as well as the native deadline, leaving time for CLI shutdown. */
+export function waitNotification(id: string, cwd: string, seconds: number): RunWaitResult['kind'] {
+  const slice = Math.min(29, seconds);
+  const args = ['workflow', 'wait', id, '--json', '--timeout', String(slice)];
+  const r = archon(args, cwd, undefined, Math.min(30_000, Math.ceil(slice * 1000) + 1000));
+  const j = jsonOf(args, r);
+  const kinds: RunWaitResult['kind'][] = ['attention', 'owner_lost', 'deadline', 'aborted', 'not_found'];
+  const kind = kinds.find(k => k === j.result);
+  if (![0, 3].includes(r.code) || j.ok !== true || j.action !== 'wait' || j.runId !== id || !kind)
+    throw new Error(`workflow wait ${id}: ${tail(r.err || r.out)}`);
+  if (kind === 'aborted' || kind === 'not_found') throw new Error(`workflow wait ${id}: ${kind}`);
+  return kind;
 }
 
 function runOf(id: string, j: Json): RunView {

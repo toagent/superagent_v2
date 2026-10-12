@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Plan } from '../src/plan';
-import { buildReport, callsOf, interventionStats, rollup } from '../src/report';
+import { buildReport, callsOf, interventionStats, rollup, jobReceipt } from '../src/report';
+import type { Job } from '../src/jobs';
 import { archonRunIds } from '../src/archon';
 import type { Ledger } from '../src/cli';
 import { tmp } from './helpers';
@@ -37,6 +38,19 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('job phases require actual receipts; legacy and invalid clocks remain unknown', () => {
+    const job = { id: 'job', state: 'done', role: null, card: '/cards/current.md',
+      started_at: '2026-10-10T00:00:03Z', ended_at: '2026-10-10T00:00:10Z' } as Job;
+    expect(jobReceipt(job)).toMatchObject({ role: 'unknown', queue_ms: 'unknown', exec_ms: 'unknown', policy: 'unknown' });
+    job.receipt = { enqueued_at: '2026-10-10T00:00:00Z', admitted_at: '2026-10-10T00:00:02Z',
+      spawned_at: job.started_at, settled_at: job.ended_at };
+    expect(jobReceipt(job)).toMatchObject({ queue_ms: 2000, prepare_ms: 1000, exec_ms: 7000, context_ref: job.card,
+      first_token_ms: 'unknown', model_calls: 'unknown' });
+    job.receipt.admitted_at = 'invalid';
+    expect(jobReceipt(job)).toMatchObject({ queue_ms: 'unknown', prepare_ms: 'unknown' });
+    expect(rollup(callsOf('r', [ev('node_completed', 'code-core', { timing: undefined })], plan)))
+      .toMatchObject({ phase_coverage: { queue_ms: '1/1', exec_ms: '0/1' } });
+  });
   test('generation identities reuse adoption endpoints once in ledger order', () => {
     expect(archonRunIds({ archon_run_id: 'latest' })).toEqual(['latest']);
     const adoption = { at: '', engine_from: null, engine_to: '', reason: '' };
@@ -77,6 +91,9 @@ describe('F-22 report', () => {
     const bin = join(root, 'archon');
     writeFileSync(bin, `#!/bin/sh\nprintf '%s|%s\\n' "$3" "$(pwd -P)" >> '${root}/queries'\ncat '${root}/'"$3".json\n`, { mode: 0o755 });
     const saved = process.env.SA_ARCHON_BIN;
+    const savedHomes = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
+    process.env.SUPERAGENT_HOME = join(root, 'home');
+    process.env.ARCHON_HOME = join(root, 'home', 'archon');
     process.env.SA_ARCHON_BIN = bin;
     if (missing) rmSync(repo, { recursive: true });
     const started = Date.now();
@@ -103,6 +120,10 @@ describe('F-22 report', () => {
       expect(['ledger', 'old', 'latest'].map(id => readFileSync(join(root, `${id}.json`), 'utf8'))).toEqual(before);
       expect(ledger).toEqual(JSON.parse(before[0]));
     } finally {
+      for (const [i, key] of ['SUPERAGENT_HOME', 'ARCHON_HOME'].entries()) {
+        if (savedHomes[i] === undefined) delete process.env[key];
+        else process.env[key] = savedHomes[i];
+      }
       if (saved === undefined) delete process.env.SA_ARCHON_BIN;
       else process.env.SA_ARCHON_BIN = saved;
     }

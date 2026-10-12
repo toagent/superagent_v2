@@ -416,6 +416,17 @@ function stub(responses: RunView[]): {
     `#!/usr/bin/env bash\nexec '${process.execPath}' '${join(import.meta.dir, 'fixtures/archon-stub.ts')}' '${dir}' "$@"\n`
   );
   chmodSync(bin, 0o755);
+  const home = join(root, 'home');
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  mkdirSync(join(home, 'archon'), { recursive: true });
+  Object.assign(process.env, {
+    // Memory selection/reflection has its own tests; it must not run in CLI control fixtures.
+    SUPERAGENT_MEMORY: 'off',
+    SA_ARCHON_BIN: bin,
+    SUPERAGENT_HOME: home,
+    ARCHON_HOME: join(home, 'archon'),
+    AGENT_SUPERVISOR_STATE: join(root, 'sv-state'),
+  });
   let elapsed = 0;
   fixtureSpies.push(
     // Scratch cleanup has dedicated real-process coverage in scratch.test.ts.
@@ -448,17 +459,6 @@ function stub(responses: RunView[]): {
       return process.pid;
     })
   );
-  const home = join(root, 'home');
-  mkdirSync(join(home, 'runs'), { recursive: true });
-  mkdirSync(join(home, 'archon'), { recursive: true });
-  Object.assign(process.env, {
-    // Memory selection/reflection has its own tests; it must not run in CLI control fixtures.
-    SUPERAGENT_MEMORY: 'off',
-    SA_ARCHON_BIN: bin,
-    SUPERAGENT_HOME: home,
-    ARCHON_HOME: join(home, 'archon'),
-    AGENT_SUPERVISOR_STATE: join(root, 'sv-state'),
-  });
   const ledger: Ledger = {
     run_id: 'sa1',
     engine_hash: engineHash(),
@@ -859,6 +859,44 @@ describe('HF5 episode regressions', () => {
 });
 
 describe('waitRun (archon stub)', () => {
+  test('wait native block surfaces inbox before another get', () => {
+    const s = stub([run('running')]);
+    const message: coordModule.Message = {
+      id: 'fixture', scope: coordModule.runScope(s.ledger), sender: coordModule.caller(),
+      recipient: null, generation: 1, kind: 'question', title: 'fixture', body: '',
+      evidence: [], severity: 'normal', state: 'surfaced', at: '',
+    };
+    const inbox = spyOn(coordModule.coord(), 'surfaced').mockReturnValueOnce([]).mockReturnValue([message]);
+    try {
+      expect(waitRun(s.ledger, 60)).toMatchObject({ state: 'inbox', exit: EXIT.held });
+      expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
+      expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
+    } finally { inbox.mockRestore(); }
+  });
+  test('wait native notification preserves cancellation and human holds', () => {
+    for (const state of [run('cancelled'), humanWait()]) {
+      const s = stub([run('running'), state]);
+      expect(waitRun(s.ledger, 60)).toMatchObject({
+        state: state.status === 'cancelled' ? 'cancelled' : 'held:human',
+        exit: state.status === 'cancelled' ? EXIT.cancelled : EXIT.held,
+      });
+      expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
+    }
+  });
+  test('brief --json obtains the structured receipt summary with one get', () => {
+    const s = stub([run('completed', { nodes: [] })]);
+    const out = JSON.parse(captured(() => main(['brief', 'sa1', '--json'])).out);
+    expect(out).toMatchObject({ run_id: 'sa1', state: 'completed', execution: [] });
+    expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
+  });
+  test.each([20, 60])('wait %ss uses bounded native notifications instead of per-second get', seconds => {
+    const s = stub([run('running')]);
+    expect(waitRun(s.ledger, seconds)).toMatchObject({ state: 'running', exit: EXIT.running });
+    const waits = s.calls().filter(c => c.startsWith('workflow wait'));
+    expect(waits).toHaveLength(Math.ceil(seconds / 29));
+    expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(waits.length + 1);
+    expect(waits.every(c => Number(c.split('--timeout ')[1]) <= 29)).toBe(true);
+  });
   test('running then completed: waits in slices, returns 0 with land commands', () => {
     const s = stub([
       run('running', { nodes: [{ nodeId: 'a', state: 'running' }] }),

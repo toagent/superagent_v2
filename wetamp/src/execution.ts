@@ -6,6 +6,13 @@ import { workflowLaunchPolicy, type LaunchPolicy } from '@archon/providers/launc
 import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 
 export type ExecutionRole = Parameters<typeof resolveRoute>[3];
+/** Wrapper observations only; missing fields are unknown, never inferred from terminal state. */
+export interface ExecutionReceipt {
+  enqueued_at: string;
+  admitted_at?: string;
+  spawned_at?: string;
+  settled_at?: string;
+}
 export interface ExecutionDescriptor {
   role: NonNullable<ExecutionRole>;
   risk: Pkg['risk'];

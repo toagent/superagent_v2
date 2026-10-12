@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
-import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
+import { jobCli, modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
 import { loadTiers } from '../src/config';
 import { gitRepo, sh, tmp } from './helpers';
 
@@ -178,6 +178,26 @@ describe('job registry', () => {
 });
 
 describe('job exec', () => {
+  test('queue receipt survives admission and distinguishes preparation from child execution', async () => {
+    const admission = process.env.SA_ADMIT;
+    process.env.SA_ADMIT = 'on';
+    let probes = 0, queued: Job | undefined;
+    try {
+      expect(await jobCli(['job', 'exec', '--title', 'receipt', '--', '/bin/sleep', '0.03'],
+        () => ({ pressure: ++probes === 1 ? 2 : 1, free: 100, source: 'sysctl' }),
+        async () => { queued = only(); await Bun.sleep(25); })).toBe(0);
+      const j = only(), r = j.receipt!;
+      expect(queued?.state).toBe('queued');
+      expect(r.enqueued_at).toBe(queued!.started_at);
+      expect(Date.parse(r.admitted_at!) - Date.parse(r.enqueued_at)).toBeGreaterThanOrEqual(25);
+      expect(Date.parse(r.spawned_at!) - Date.parse(r.admitted_at!)).toBeGreaterThanOrEqual(0);
+      expect(Date.parse(r.settled_at!) - Date.parse(r.spawned_at!)).toBeGreaterThanOrEqual(25);
+      expect(j.started_at).toBe(r.spawned_at!);
+    } finally {
+      if (admission === undefined) delete process.env.SA_ADMIT;
+      else process.env.SA_ADMIT = admission;
+    }
+  });
   // prettier-ignore
   const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}): ReturnType<typeof Bun.spawn> =>
     Bun.spawn(['bun', join(WETAMP, 'src/cli.ts'), ...args], {

@@ -20,6 +20,7 @@ import {
   executionRoute,
   executionLaunch,
   type ExecutionDescriptor,
+  type ExecutionReceipt,
 } from './execution';
 import {
   prepareRoleCommand,
@@ -52,6 +53,7 @@ export interface Job {
     policy: LaunchPolicy;
   };
   session_id?: string | null;
+  receipt?: ExecutionReceipt;
   wrapper_pid: number;
   pid: number;
   started_at: string;
@@ -246,6 +248,7 @@ async function exec(
     started_at: new Date().toISOString(),
     state: 'queued',
   };
+  job.receipt = { enqueued_at: job.started_at };
   let child: ReturnType<typeof Bun.spawn> | undefined,
     identity: ReturnType<typeof setInterval> | undefined,
     code = 0;
@@ -270,6 +273,7 @@ async function exec(
   // Do not use that provisional state to trigger irreversible actions.
   const commit = async (terminal: Job): Promise<number> => {
     clearInterval(identity);
+    terminal.receipt = { ...job.receipt!, settled_at: new Date().toISOString() };
     try {
       const known = interrupted;
       if (known && terminal.exit_code !== undefined) terminal = { ...terminal, exit_code: known };
@@ -337,6 +341,8 @@ async function exec(
     // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
     if (!code) await yieldEventLoop();
     if (!code && !stop.signal.aborted) {
+      job.receipt!.admitted_at = new Date().toISOString();
+      save(job);
       // Dispatched agents are headless: an inherited, never-closed stdin makes `codex exec` wait for more prompt forever.
       if (f.execution) cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
       if (!code && !stop.signal.aborted) child = Bun.spawn(cmd, { cwd: job.cwd, stdio: ['ignore', 'inherit', 'inherit'] });
@@ -345,6 +351,7 @@ async function exec(
       job.state = 'running';
       delete job.reason;
       job.started_at = new Date().toISOString();
+      job.receipt!.spawned_at = job.started_at;
       save(job);
       identity = setInterval(() => {
         if (!job.session_id) {

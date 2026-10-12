@@ -50,6 +50,7 @@ import {
   QUERY_TIMEOUT_MS,
   recover,
   signalHuman,
+  waitNotification,
   tail,
   type RecoverResult,
   type RunView,
@@ -689,12 +690,9 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
     const c = classifyRun(l, run);
     if (c.state === 'owner_lost')
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
-    const left = Math.ceil((deadline - waitClock.now()) / 1000);
+    const left = (deadline - waitClock.now()) / 1000;
     if (c.exit !== EXIT.running || left <= 0) return summary(l, run, c);
-    archon(
-      ['workflow', 'wait', l.archon_run_id, '--json', '--timeout', String(Math.min(1, left))],
-      l.repo
-    );
+    waitNotification(l.archon_run_id, l.repo, left);
   }
 }
 
@@ -1251,11 +1249,20 @@ function decide(l: Ledger, a: Args): number {
 }
 
 /** ≤20 行纯文本：状态、各轮 gate 结论与评审债、签收提问状态、合入命令、证据路径。 */
-function brief(l: Ledger): number {
+function brief(l: Ledger, json = false): number {
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
   const s = summary(l, run, c);
   const art = artifactsOf(run);
+  if (json) {
+    print({ ...s, execution: (run.nodes ?? []).flatMap(n => n.execution
+      ? [{ node: n.nodeId, state: n.state, execution_ref: n.execution.path,
+        policy: { provider: n.execution.binding.provider, model: n.execution.binding.model,
+          effort: n.execution.binding.effort, tier: n.execution.binding.tier },
+        attempt: n.execution.attempt, timing: n.execution.timing, tokens: n.execution.spend.tokens }]
+      : []) });
+    return c.exit;
+  }
   const lines = [
     `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${l.branch}`,
   ];
@@ -2450,7 +2457,7 @@ export function main(argv: string[]): number {
         return controlled(l, () => decide(l, a), false);
       }
     case 'brief':
-      return brief(ledger());
+      return brief(ledger(), !!a.flags.json);
     case 'land': {
       const l = ledger(true);
       return controlled(l, () => {
