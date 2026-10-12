@@ -363,16 +363,6 @@ describe('FC failure classification', () => {
       repo = gitRepo(root),
       art = join(root, 'artifacts');
     mkdirSync(art);
-    for (const i of [1, 2])
-      writeFileSync(
-        join(art, `diff-m1-r${i}.json`),
-        JSON.stringify({
-          ...C(String(i), false),
-          failed: ['false'],
-          disposition: 'repair',
-          failures: [{ command: 'false', failure_class: 'product', evidence: '/tmp/fail.log' }],
-        })
-      );
     const path = planFile(root, 'false');
     for (const [mode, risk, expected] of [
       ['milestone', 'G1', 'suspend'],
@@ -382,6 +372,29 @@ describe('FC failure classification', () => {
       const p = JSON.parse(readFileSync(path, 'utf8'));
       p.mode = mode;
       writeFileSync(path, JSON.stringify(p));
+      // Exercise the real repair history; fabricated artifacts cannot prove the dispatch bound.
+      for (const round of [1, 2]) {
+        const earlier = runScript(
+          repo,
+          {
+            kind: 'accept',
+            plan: path,
+            pkgs: 'a',
+            milestone: 'm1',
+            tag: `diff-m1-r${round}`,
+            risk,
+          },
+          SCRIPT,
+          { ARTIFACTS_DIR: art }
+        );
+        expect(earlier.code).toBe(0);
+        expect(earlier.out).toMatchObject({
+          ok: false,
+          disposition: 'repair',
+          decision: { kind: 'repair' },
+          failures: [{ failure_class: 'product' }],
+        });
+      }
       const result = runScript(
         repo,
         { kind: 'accept', plan: path, pkgs: 'a', milestone: 'm1', tag: 'diff-m1-r3', risk },
