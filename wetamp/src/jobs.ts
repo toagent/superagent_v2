@@ -47,18 +47,31 @@ const USAGE =
   'usage: superagent job exec --title <t> [--card <path>] [--log <path>] [--role commander|general|strategist] -- <cmd...> | jobs [--json] [--all]';
 const DAY_MS = 86_400_000;
 export const RECENT_MS = 3_600_000;
-export interface MemoryReading { pressure: number | null; free: number; source: 'sysctl' | 'os' }
+export interface MemoryReading {
+  pressure: number | null;
+  free: number;
+  source: 'sysctl' | 'os';
+}
 /** macOS 内核信号；不可读时显式退回 os，绝不把未知压力伪装成 normal。 */
-export function memoryReading(sysctl = (): number[] => {
-  const p = Bun.spawnSync(['sysctl', '-n', 'kern.memorystatus_vm_pressure_level', 'kern.memorystatus_level'], { stderr: 'ignore' });
-  if (p.exitCode !== 0) throw new Error('sysctl unavailable');
-  return p.stdout.toString().trim().split(/\s+/).map(Number);
-}, available = (): number => freemem() / totalmem() * 100): MemoryReading {
+export function memoryReading(
+  sysctl = (): number[] => {
+    const p = Bun.spawnSync(
+      ['sysctl', '-n', 'kern.memorystatus_vm_pressure_level', 'kern.memorystatus_level'],
+      { stderr: 'ignore' }
+    );
+    if (p.exitCode !== 0) throw new Error('sysctl unavailable');
+    return p.stdout.toString().trim().split(/\s+/).map(Number);
+  },
+  available = (): number => (freemem() / totalmem()) * 100
+): MemoryReading {
   try {
     const [pressure, free] = sysctl();
-    if (![1, 2, 4].includes(pressure) || !Number.isFinite(free) || free < 0 || free > 100) throw new Error('invalid sysctl reading');
+    if (![1, 2, 4].includes(pressure) || !Number.isFinite(free) || free < 0 || free > 100)
+      throw new Error('invalid sysctl reading');
     return { pressure, free, source: 'sysctl' };
-  } catch { return { pressure: null, free: available(), source: 'os' }; }
+  } catch {
+    return { pressure: null, free: available(), source: 'os' };
+  }
 }
 type AdmissionWait = (ms: number, signal: AbortSignal) => Promise<unknown>;
 const admissionWait: AdmissionWait = (ms, signal) => delay(ms, undefined, { signal });
@@ -122,9 +135,17 @@ export function readJobs(now = Date.now(), readonly = false): { jobs: Job[]; bad
       j = load();
       if (typeof j.state !== 'string' || typeof j.started_at !== 'string')
         throw new Error('not a job record');
-      if (['queued', 'running'].includes(j.state) && !alive(j.wrapper_pid) && (j.pid === 0 || !alive(j.pid))) {
+      if (
+        ['queued', 'running'].includes(j.state) &&
+        !alive(j.wrapper_pid) &&
+        (j.pid === 0 || !alive(j.pid))
+      ) {
         const state = j.state;
-        j = { ...j, state: 'lost', ...(!readonly ? { ended_at: new Date(now).toISOString() } : {}) };
+        j = {
+          ...j,
+          state: 'lost',
+          ...(!readonly ? { ended_at: new Date(now).toISOString() } : {}),
+        };
         if (!readonly && load().state === state) save(j); // 重读一次：wrapper 可能刚写完终态才退出
       }
     } catch (e) {
@@ -148,7 +169,8 @@ export const recent = (j: Job, now: number): boolean =>
 async function exec(
   cmd: string[],
   f: { title: string; card?: string; log?: string; role: Tier | null },
-  probe: () => MemoryReading, wait: AdmissionWait
+  probe: () => MemoryReading,
+  wait: AdmissionWait
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
   const launched = launcher(home().sa);
@@ -167,14 +189,22 @@ async function exec(
     started_at: new Date().toISOString(),
     state: 'queued',
   };
-  let child: ReturnType<typeof Bun.spawn> | undefined, identity: ReturnType<typeof setInterval> | undefined, code = 0;
+  let child: ReturnType<typeof Bun.spawn> | undefined,
+    identity: ReturnType<typeof setInterval> | undefined,
+    code = 0;
   const stop = new AbortController();
   let interrupted = 0;
   const forward = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(s => {
     const h = (): void => {
-      if (!interrupted) { interrupted = 128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[s]; job.signal = s; }
+      if (!interrupted) {
+        interrupted = 128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[s];
+        job.signal = s;
+      }
       if (child) child.kill(s);
-      else { code = interrupted; stop.abort(); }
+      else {
+        code = interrupted;
+        stop.abort();
+      }
     };
     process.on(s, h);
     return () => process.off(s, h);
@@ -189,7 +219,8 @@ async function exec(
       save(terminal);
       // The delivery point after rename is the boundary, not the synchronous syscall.
       await yieldEventLoop();
-      if (interrupted !== known) save({ ...terminal, state: 'failed', signal: job.signal, exit_code: interrupted });
+      if (interrupted !== known)
+        save({ ...terminal, state: 'failed', signal: job.signal, exit_code: interrupted });
       return interrupted || code;
     } finally {
       // Later signals are excluded; removal is synchronous, with no further yield or I/O.
@@ -200,44 +231,87 @@ async function exec(
   try {
     save(job);
     let waited = false;
-    const min = Number(process.env.SA_ADMIT_MIN_FREE ?? 25), max = Number(process.env.SA_ADMIT_MAX_WAIT ?? 1800), deadline = Date.now() + max * 1000;
-    if (process.env.SA_ADMIT === 'off') console.error('job: SA_ADMIT=off; memory admission skipped');
+    const min = Number(process.env.SA_ADMIT_MIN_FREE ?? 25),
+      max = Number(process.env.SA_ADMIT_MAX_WAIT ?? 1800),
+      deadline = Date.now() + max * 1000;
+    if (process.env.SA_ADMIT === 'off')
+      console.error('job: SA_ADMIT=off; memory admission skipped');
     else {
-      if (![min, max].every(n => Number.isFinite(n) && n >= 0)) throw new Error('invalid SA_ADMIT_MIN_FREE/SA_ADMIT_MAX_WAIT');
+      if (![min, max].every(n => Number.isFinite(n) && n >= 0))
+        throw new Error('invalid SA_ADMIT_MIN_FREE/SA_ADMIT_MAX_WAIT');
       while (!stop.signal.aborted) {
-        job.memory = probe(); job.reason = 'memory'; save(job);
-        const m = job.memory, reading = `pressure=${String(m.pressure)} free=${String(m.free)}% source=${m.source}`;
-        if (m.source === 'os') console.error(`job: sysctl unavailable; fallback os.freemem()/os.totalmem(); ${reading}`);
-        if ((!waited || Date.now() < deadline) && (m.pressure === 1 || m.source === 'os') && m.free >= min) break;
-        if (Date.now() >= deadline) { code = 75; console.error(`job: memory admission timed out; ${reading}`); break; }
+        job.memory = probe();
+        job.reason = 'memory';
+        save(job);
+        const m = job.memory,
+          reading = `pressure=${String(m.pressure)} free=${String(m.free)}% source=${m.source}`;
+        if (m.source === 'os')
+          console.error(`job: sysctl unavailable; fallback os.freemem()/os.totalmem(); ${reading}`);
+        if (
+          (!waited || Date.now() < deadline) &&
+          (m.pressure === 1 || m.source === 'os') &&
+          m.free >= min
+        )
+          break;
+        if (Date.now() >= deadline) {
+          code = 75;
+          console.error(`job: memory admission timed out; ${reading}`);
+          break;
+        }
         console.error(`job: queued 等内存; ${reading}; min=${String(min)}%; retry in 15s`);
-        await wait(Math.min(15000, Math.max(0, deadline - Date.now())), stop.signal).catch((e: unknown) => { if (!stop.signal.aborted) throw e; }); waited = true;
+        await wait(Math.min(15000, Math.max(0, deadline - Date.now())), stop.signal).catch(
+          (e: unknown) => {
+            if (!stop.signal.aborted) throw e;
+          }
+        );
+        waited = true;
       }
     }
     // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
     if (!code) await yieldEventLoop();
     if (!code && !stop.signal.aborted) {
-      child = Bun.spawn(cmd, { stdio: ['inherit', 'inherit', 'inherit'] });
-      job.pid = child.pid; job.state = 'running'; delete job.reason; job.started_at = new Date().toISOString(); save(job);
-      identity = setInterval(() => { if (!job.session_id) { job.session_id = jobSession(job); if (job.session_id) save(job); } }, 5000);
+      // Dispatched agents are headless: an inherited, never-closed stdin makes `codex exec` wait for more prompt forever.
+      child = Bun.spawn(cmd, { stdio: ['ignore', 'inherit', 'inherit'] });
+      job.pid = child.pid;
+      job.state = 'running';
+      delete job.reason;
+      job.started_at = new Date().toISOString();
+      save(job);
+      identity = setInterval(() => {
+        if (!job.session_id) {
+          job.session_id = jobSession(job);
+          if (job.session_id) save(job);
+        }
+      }, 5000);
       code = await child.exited;
     }
-    const session_id = child ? job.session_id ?? jobSession(job) : null;
+    const session_id = child ? (job.session_id ?? jobSession(job)) : null;
     // Spawn/bookkeeping can outlast a short child; deliver pending signals before the provisional write.
     await yieldEventLoop();
     code = interrupted || code;
-    terminal = { ...job, session_id, state: code === 0 ? 'done' : 'failed', ended_at: new Date().toISOString(), ...(child?.signalCode ? { signal: job.signal ?? child.signalCode } : { exit_code: code }) };
+    terminal = {
+      ...job,
+      session_id,
+      state: code === 0 ? 'done' : 'failed',
+      ended_at: new Date().toISOString(),
+      ...(child?.signalCode ? { signal: job.signal ?? child.signalCode } : { exit_code: code }),
+    };
   } catch (e) {
     child?.kill('SIGTERM'); // 登记不了就不让它成为看板看不见的作业
     terminal = { ...job, state: 'failed', ended_at: new Date().toISOString(), exit_code: 1 };
-    code = 1; failure = { error: e };
+    code = 1;
+    failure = { error: e };
   }
   const result = await commit(terminal);
   if (failure && !interrupted) throw failure.error;
   return result;
 }
 
-export async function jobCli(argv: string[], probe = memoryReading, wait = admissionWait): Promise<number> {
+export async function jobCli(
+  argv: string[],
+  probe = memoryReading,
+  wait = admissionWait
+): Promise<number> {
   const cut = argv.indexOf('--');
   const cmd = cut < 0 ? [] : argv.slice(cut + 1);
   let a: ReturnType<typeof parseArgs>;

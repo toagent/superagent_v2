@@ -207,6 +207,17 @@ describe('job exec', () => {
     expect(out.jobs.map(x => x.id)).toEqual([j.id]);
   });
 
+  test('the child never inherits stdin, so a headless agent cannot block reading it', async () => {
+    const p = Bun.spawn(['bun', 'src/cli.ts', 'job', 'exec', '--title', 'stdin', '--', 'cat'], {
+      cwd: WETAMP,
+      env: { ...process.env, SUPERAGENT_ROLE: '', SA_ADMIT: 'off' },
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(await p.exited).toBe(0);
+  });
+
   test('forwards SIGTERM to the child and exits 128+15', async () => {
     const p = run(['job', 'exec', '--title', 'sleepy', '--', 'sleep', '20']);
     try {
