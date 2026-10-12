@@ -1,3 +1,5 @@
+import { executionTable, executionRoute, executionNode } from './execution';
+export { capsDenied } from './execution';
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
 // 计划文本只进 brief 文件、经绝对路径传给节点：with:/command 正文是模板，`$` 无法转义。
 import {
@@ -29,7 +31,6 @@ import {
   WETAMP,
   CODEX_WORKER,
   assertSQLite,
-  effortFor,
   home,
   loadTiers,
   runAliases,
@@ -73,7 +74,7 @@ export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
-  'src/memory.ts', 'src/board/workflow.ts',
+  'src/memory.ts', 'src/board/workflow.ts', 'src/execution.ts',
 ], policyHash);
 /** Shared by console restart and board refresh; includes their CLI/data consumers. */
 export const residentHash = (root = WETAMP): string => hashInputs(root, ['src'], engineHash(root));
@@ -163,43 +164,23 @@ export function buildWorkflow(
   const left = Date.parse(plan.deadline) - now;
   if (left <= 0) throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
-  // Claude 节点经 SDK disallowedTools 禁再派生；Codex 节点无此字段，由 bin/codex-worker 关 multi_agent 与 MCP
-  // caps 收紧项对 Claude 将军追加 denied_tools；修复节点覆盖整个里程碑，取各包限制的并集
-  const noNesting = (
-    alias: '@sa-coder' | '@sa-reviewer',
-    role: 'coder' | 'reviewer',
-    pkgs: Pkg[] = [],
-    risk: Pkg['risk'] = 'G1'
-  ): Node =>
-    (alias === '@sa-reviewer'
-      ? resolveRoute(tiers, plan.console ?? 'claude', plan.mode, 'review', risk, 1, [
-          aliases['@sa-coder'].model,
-        ]).candidates[0]
-      : aliases[alias]
-    ).provider === 'claude'
-      ? {
-          denied_tools: [
-            ...new Set([
-              ...tiers.policy.exec_profiles[role].claude.denied_tools,
-              ...pkgs.flatMap(p => capsDenied(capsOf(plan, p, tiers.policy.sandbox.mcp))),
-            ]),
-          ],
-        }
-      : {};
-  // 评审只读落在执行层：Claude 节点由 SDK sandbox 拦 Bash 写入；Codex 节点挂哨兵 MCP（见 readOnlyMcp），
-  // bin/codex-worker 的代理据此把线程与回合改成只读。
-  const readOnly = (risk: Pkg['risk']): Node =>
-    resolveRoute(tiers, plan.console ?? 'claude', plan.mode, 'review', risk, 1, [
-      aliases['@sa-coder'].model,
-    ]).candidates[0].provider === 'claude'
-      ? { sandbox: tiers.policy.exec_profiles.reviewer.claude.sandbox }
-      : { mcp: join(gen, READONLY_MCP) };
+  const executions = executionTable(plan, tiers);
+  const execution = (id: string): Node => {
+    if (fake) return {};
+    const descriptor = executions[id];
+    const candidate = executionRoute(
+      tiers,
+      plan.console ?? 'claude',
+      plan.mode,
+      descriptor,
+      descriptor.role === 'review' ? [aliases['@sa-coder'].model] : []
+    ).candidates[0];
+    return executionNode(descriptor, candidate, join(gen, READONLY_MCP));
+  };
   const planPath = join(gen, 'plan.json');
   const policyPath = join(gen, 'policy.json');
   // fake 不查执行层台账：身份记 fake、预算不检查（桩节点没有 spend/binding）
   const ledger = fake ? {} : { archon: join(gen, 'archon') };
-  const effort = (role: 'code' | 'repair' | 'review', risk: string, r = 1): Node =>
-    fake ? {} : { effort: effortFor(tiers, role, risk, r) };
   const brief = (p: Pkg): string => join(gen, 'briefs', `${p.id}.md`);
   const nodes: Node[] = [
     check(
@@ -271,8 +252,7 @@ export function buildWorkflow(
             command: 'sa-code',
             retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
             model: '@sa-coder',
-            ...effort('code', p.risk),
-            ...noNesting('@sa-coder', 'coder', [p]),
+            ...execution(`code-${p.id}`),
             with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
           };
       nodes.push({
@@ -320,8 +300,7 @@ export function buildWorkflow(
               command: 'sa-repair',
               retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
               model: '@sa-coder',
-              ...effort('repair', p.risk),
-              ...noNesting('@sa-coder', 'coder', [p]),
+              ...execution(`repair-${p.id}`),
               with: {
                 pkg: p.id,
                 brief: brief(p),
@@ -368,8 +347,7 @@ export function buildWorkflow(
                 command: 'sa-fix',
                 retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
                 model: '@sa-coder',
-                ...noNesting('@sa-coder', 'coder', m.packages),
-                ...effort('repair', m.risk),
+                ...execution(`fix-${t}`),
                 with: {
                   milestone: m.id,
                   round: r,
@@ -435,9 +413,7 @@ export function buildWorkflow(
               model: tiers.routing.reviewer.by_risk?.[m.risk]
                 ? `@sa-reviewer-${m.risk}`
                 : '@sa-reviewer',
-              ...noNesting('@sa-reviewer', 'reviewer', [], m.risk),
-              ...readOnly(m.risk),
-              ...effort('review', m.risk, r),
+              ...execution(`review-${t}`),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
@@ -516,34 +492,6 @@ export function buildWorkflow(
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
     nodes,
   };
-}
-
-/**
- * caps 收紧时能在执行层拦下的部分（Claude SDK disallowedTools，按命令前缀匹配）。
- * long_tests、read:"scope"、包级 mcp 收窄以及 Codex 节点上的全部 caps 只是提示级：写进任务书，靠评审核对。
- */
-export function capsDenied(c: Caps): string[] {
-  const bash = (...cmds: string[]): string[] => cmds.map(x => `Bash(${x})`);
-  return [
-    ...(c.network && c.web ? [] : ['WebFetch', 'WebSearch']),
-    ...(c.network ? [] : bash('curl *', 'wget *')),
-    ...(c.install
-      ? []
-      : bash(
-          'npm install *',
-          'npm i *',
-          'bun add *',
-          'pnpm add *',
-          'yarn add *',
-          'pip install *',
-          'pip3 install *',
-          'brew install *',
-          'cargo install *',
-          'go install *'
-        )),
-    ...(c.services ? [] : bash('docker *', 'docker-compose *', 'brew services *')),
-    ...(c.git === 'branch' ? [] : bash('git rebase*', 'git reset*', 'git commit --amend*')),
-  ];
 }
 
 const CAP_TEXT: Record<Exclude<keyof Caps, 'read' | 'git' | 'mcp'>, string> = {
@@ -674,10 +622,14 @@ export function generate(
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
-  writeFileSync(join(dir, 'accept-inputs.json'), JSON.stringify(
-    (definition.nodes as Node[]).filter(n => (n.with as Node | undefined)?.kind === 'accept')
-      .map(n => n.with)
-  ));
+  writeFileSync(
+    join(dir, 'accept-inputs.json'),
+    JSON.stringify(
+      (definition.nodes as Node[])
+        .filter(n => (n.with as Node | undefined)?.kind === 'accept')
+        .map(n => n.with)
+    )
+  );
   for (const sub of ['commands', 'scripts']) {
     cpSync(join(WETAMP, 'templates', '.archon', sub), join(dir, '.archon', sub), {
       recursive: true,
@@ -700,10 +652,14 @@ export function generate(
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
-  if (plan.budget.weighted_tokens < floor)
+  if (!plan.budget.unlimited_tokens && plan.budget.weighted_tokens < floor)
     throw new Error(
       `plan invalid: /budget/weighted_tokens ${String(plan.budget.weighted_tokens)} < policy.budget_floor sum ${String(floor)}`
     );
+  writeFileSync(
+    join(dir, 'execution.json'),
+    JSON.stringify(executionTable(plan, tiers), null, 2) + '\n'
+  );
   writeFileSync(join(dir, 'policy.json'), JSON.stringify(policy, null, 2) + '\n');
   // sa-check 经它查本 run 的 spend/binding（F-14/F-16）；gen 目录可脱离 wetamp 安装位置被引用
   if (!fake && !existsSync(join(dir, 'archon')))
@@ -732,6 +688,7 @@ export function generate(
       engine_commit,
       workflow_hash: engine_hash,
       policy_hash: policy.hash,
+      execution_contract: 1,
       fake,
       lessons,
     }) + '\n'
@@ -786,6 +743,7 @@ export function generate(
     'engine.json',
     'plan.json',
     'policy.json',
+    'execution.json',
     'accept-inputs.json',
     'briefs',
     '.gitignore',

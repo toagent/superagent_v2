@@ -1,3 +1,4 @@
+import { claudeLaunchPolicy, CLAUDE_EFFORTS } from '../launch-policy';
 /**
  * Claude Agent SDK wrapper
  * Provides async generator interface for streaming Claude responses
@@ -113,16 +114,6 @@ function getLog(): ReturnType<typeof createLogger> {
 
 /** Process-wide: a resume must find the totals of a session another provider instance ran. */
 const sessionSpend = new SessionSpendLedger();
-
-/** The reasoning-depth rungs `Options['effort']` accepts. Typed against the SDK
- *  so a vocabulary change upstream fails type-check here. */
-const CLAUDE_EFFORTS = [
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-] as const satisfies readonly NonNullable<Options['effort']>[];
 
 /** Coverage, which `satisfies` above cannot express — a rung the SDK gains must
  *  be added here rather than silently clamped away. See `AssertNever`. */
@@ -803,6 +794,18 @@ async function applyNodeConfig(
   // sandbox
   if (nodeConfig.sandbox !== undefined) {
     options.sandbox = nodeConfig.sandbox as Options['sandbox'];
+    if (options.sandbox?.filesystem?.denyWrite?.includes('/')) {
+      Object.assign(
+        options,
+        claudeLaunchPolicy({
+          effort: nodeConfig.effort ?? 'high',
+          readonly: true,
+          deniedTools: nodeConfig.denied_tools ?? [],
+          codex: {},
+          sandbox: options.sandbox,
+        })
+      );
+    }
   }
 
   // betas

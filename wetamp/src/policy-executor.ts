@@ -10,15 +10,15 @@ import type {
 import { isEffortRung } from '../../packages/provider-contract/src/effort';
 import { getRegistration } from '@archon/providers';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
-import { resolveRoute, type Alias, type Tiers } from './config';
-import { milestones, type Plan } from './plan';
+import { type Alias, type Tiers } from './config';
+import { readExecutionTable, executionForNode, executionRoute, executionNode } from './execution';
+import { type Plan } from './plan';
 import {
   attemptIdentity,
   budgetUsage,
   effectiveBudget,
   effectiveRisk,
   readAttempt,
-  MAX_ROUNDS,
 } from '../templates/.archon/scripts/sa-check';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 
@@ -50,32 +50,6 @@ export function executePolicy(
   );
 }
 
-/** Node ids are engine-generated identifiers, not vendor text or agent-interpreted intent. */
-function nodeRoute(
-  plan: Plan,
-  node: string
-): {
-  role: 'code' | 'repair' | 'review';
-  risk: 'G0' | 'G1' | 'G2';
-  round: number;
-  milestone: string;
-} {
-  const ms = milestones(plan);
-  for (const m of ms) {
-    for (const p of m.packages) {
-      for (const role of ['code', 'repair'] as const)
-        if (node === `${role}-${p.id}`) return { role, risk: p.risk, round: 1, milestone: m.id };
-    }
-    for (let round = 1; round <= MAX_ROUNDS; round++) {
-      if (node === `review-${m.id}-r${String(round)}`)
-        return { role: 'review', risk: m.risk, round, milestone: m.id };
-      if (node === `fix-${m.id}-r${String(round)}`)
-        return { role: 'repair', risk: m.risk, round, milestone: m.id };
-    }
-  }
-  throw new Error(`policy: node ${node} is not declared by the frozen plan`);
-}
-
 interface RunRow {
   id: string;
   output_root: string;
@@ -93,7 +67,9 @@ function runtimeExecution(
   const plan = JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8')) as Plan;
   const node = options.nodeConfig?.nodeId;
   if (!node) throw new Error('policy: node id missing');
-  const route = nodeRoute(plan, node);
+  const tiers: Tiers = { tiers: {}, policy, routing: policy.routing, health: policy.health };
+  const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
+  const route = executionForNode(table, node);
   const archonHome = process.env.ARCHON_HOME;
   if (!archonHome) throw new Error('policy: ARCHON_HOME missing');
   const db = new Database(join(archonHome, 'archon.db'), { readonly: true });
@@ -145,12 +121,13 @@ function runtimeExecution(
       ? [
           ...new Set([
             ...attempts
-              .filter(a => !a.node.startsWith('review-'))
+              .filter(a => table[a.node]?.role !== 'review')
               .flatMap(a => [a.model, ...(a.resolved ? [a.resolved] : [])]),
             ...events
               .filter(
                 e =>
-                  /^(code|repair|fix)-/.test(e.step_name ?? '') && e.event_type === 'node_completed'
+                  ['code', 'repair'].includes(table[e.step_name ?? '']?.role) &&
+                  e.event_type === 'node_completed'
               )
               .flatMap(e => {
                 const identity = attemptIdentity(attempts, e.step_name ?? '', e.data?.binding);
@@ -159,14 +136,11 @@ function runtimeExecution(
           ]),
         ]
       : [];
-  const tiers: Tiers = { tiers: {}, policy, routing: policy.routing, health: policy.health };
-  const candidates = resolveRoute(
+  const candidates = executionRoute(
     tiers,
     plan.console ?? 'claude',
     plan.mode,
-    route.role,
-    route.risk,
-    route.round,
+    route,
     authors
   ).candidates;
   const extra = join(dir, 'budget-extra');
@@ -193,7 +167,13 @@ function runtimeExecution(
         ...options,
         model: candidate.model,
         fallbackModel: undefined,
-        nodeConfig: { ...options.nodeConfig, effort: candidate.effort },
+        nodeConfig: {
+          ...options.nodeConfig,
+          denied_tools: undefined,
+          sandbox: undefined,
+          mcp: undefined,
+          ...executionNode(route, candidate, join(dir, 'reviewer-readonly.mcp.json')),
+        },
       };
     },
   };

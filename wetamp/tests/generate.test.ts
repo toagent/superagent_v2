@@ -669,6 +669,7 @@ describe('buildWorkflow', () => {
         autoAllowBashIfSandboxed: true,
         allowUnsandboxedCommands: false,
         filesystem: { denyWrite: ['/'] },
+        network: { allowedDomains: [] },
       });
       expect(node('codex', id).mcp).toBeUndefined();
     }

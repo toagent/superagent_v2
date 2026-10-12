@@ -26,6 +26,10 @@
       "additionalProperties": false,
       "required": ["weighted_tokens"],
       "properties": {
+        "unlimited_tokens": {
+          "const": true,
+          "description": "Explicitly disable only the token ceiling; launch and round bounds remain active"
+        },
         "weighted_tokens": {
           "type": "integer",
           "minimum": 0,

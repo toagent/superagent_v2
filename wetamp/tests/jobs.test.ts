@@ -206,7 +206,14 @@ describe('job exec', () => {
   // prettier-ignore
   test('budget-refresh: stale jobs and missing models cache refresh; failures do not block dispatch', async () => {
     const root = tmp(), cache = join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'); let calls = 0, status = 200;
-    const codex = join(root, 'codex'); writeFileSync(codex, "#!/bin/sh\nprintf '%s' 'dispatched'\n"); chmodSync(codex, 0o755);
+    const codex = join(root, 'codex'); writeFileSync(codex, `#!/usr/bin/env bun
+if (process.argv[2] === 'app-server') {
+  for await (const line of console) {
+    const r = JSON.parse(line);
+    if (r.id !== undefined) console.log(JSON.stringify({ id: r.id, result: r.method === 'config/read' ? { config: {} } : {} }));
+  }
+} else process.stdout.write('dispatched');
+`); chmodSync(codex, 0o755);
     const server = Bun.serve({ port: 0, fetch() { calls++; return Response.json({ platforms: { anthropic: { today: { cost: loadTiers().routing.budget.claude_daily_usd } } } }, { status }); } });
     // Stub only token lookup in the child; keep real HTTP refresh and dispatch.
     const preload = join(root, 'quota-token.ts');
@@ -223,7 +230,23 @@ describe('job exec', () => {
   // prettier-ignore
   test('explicit role injects the models route and rejects mismatched or empty vendor routes', async () => {
     const root = tmp(), codex = join(root, 'codex'), claude = join(root, 'claude');
-    for (const path of [codex, claude]) { writeFileSync(path, '#!/usr/bin/env bun\nimport { parseArgs } from "node:util";\nconst args = process.argv.slice(2); if (process.argv[1].endsWith("/claude")) parseArgs({ args, options: { model: { type: "string" }, print: { type: "boolean", short: "p" } } });\nconsole.log(JSON.stringify(args));\n'); chmodSync(path, 0o755); } // R1-2: enforce Claude option syntax.
+    for (const path of [codex, claude]) {
+      writeFileSync(path, `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+  for await (const line of console) {
+    const request = JSON.parse(line);
+    if (request.id !== undefined) console.log(JSON.stringify({ id: request.id, result:
+      request.method === 'config/read' ? { config: { mcp_servers: { ambient: {} } } } : {} }));
+  }
+} else if (args[0] === 'plugin') console.log('[]');
+else if (process.argv[1].endsWith('/claude')) {
+  console.log(JSON.stringify({ type: 'system', subtype: 'init', plugins: [] }));
+  console.log(JSON.stringify({ type: 'result', is_error: false, result: JSON.stringify(args) }));
+} else console.log(JSON.stringify(args));
+`);
+      chmodSync(path, 0o755);
+    }
     const models = run(['models', '--json']); expect(await models.exited).toBe(0);
     const routes = JSON.parse(await new Response(models.stdout as ReadableStream).text());
     for (const role of ['general', 'strategist']) {
@@ -231,6 +254,8 @@ describe('job exec', () => {
       expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
+      expect(readJobs(Date.now(), true).jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high', readonly: role === 'strategist' } });
+      expect(args).toContain('"mcp_servers"."ambient"."enabled"=false');
     }
     for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);

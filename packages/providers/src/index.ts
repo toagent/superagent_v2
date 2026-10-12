@@ -59,3 +59,6 @@ export type {
   OpencodeCredentialProvider,
   OpencodeAuthMethod,
 } from './community/opencode';
+
+export { claudeLaunchPolicy, workflowLaunchPolicy, prepareRoleCommand } from './launch-policy';
+export type { LaunchPolicy } from './launch-policy';

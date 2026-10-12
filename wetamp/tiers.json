@@ -27,7 +27,6 @@
         "codex": { "features.multi_agent": false },
         "codex_readonly_marker": "superagent-reviewer-readonly",
         "claude": {
-          "exclude_user_instructions": true,
           "denied_tools": [
             "Agent",
             "Task",
@@ -54,7 +53,6 @@
         "disable_mcp": false,
         "codex": { "features.multi_agent": false },
         "claude": {
-          "exclude_user_instructions": true,
           "denied_tools": [
             "Agent",
             "Task",

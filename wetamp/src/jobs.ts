@@ -14,7 +14,18 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
 import { setImmediate as yieldEventLoop, setTimeout as delay } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
-import { home, loadTiers, resolveRoute } from './config';
+import { home, loadTiers } from './config';
+import {
+  describeExecution,
+  executionRoute,
+  executionLaunch,
+  type ExecutionDescriptor,
+} from './execution';
+import {
+  prepareRoleCommand,
+  roleCommandArgs,
+  type LaunchPolicy,
+} from '@archon/providers/launch-policy';
 import { refreshBudgetQuota } from './relay-quota';
 import { jobDuration } from './board/eta';
 import { QUERY_TIMEOUT_MS } from './archon';
@@ -35,6 +46,11 @@ export interface Job {
   model: string | null;
   launcher?: Launcher;
   role?: Tier | null; // 旧记录没有
+  execution?: Pick<ExecutionDescriptor, 'role' | 'risk' | 'round'> & {
+    model: string;
+    provider: 'codex' | 'claude';
+    policy: LaunchPolicy;
+  };
   session_id?: string | null;
   wrapper_pid: number;
   pid: number;
@@ -49,7 +65,7 @@ export interface Job {
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--worktree <branch> --base <ref>] -- <cmd...> | job clean <id> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] -- <cmd...> | job clean <id> | jobs [--json] [--all]';
 const DAY_MS = 86_400_000;
 export const RECENT_MS = 3_600_000;
 export interface MemoryReading {
@@ -208,7 +224,7 @@ export function cleanJob(id: string): void {
 // prettier-ignore
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; log?: string; role: Tier | null; worktree?: string; base?: string },
+  f: { title: string; card?: string; log?: string; role: Tier | null; execution?: Job['execution']; worktree?: string; base?: string },
   probe: () => MemoryReading,
   wait: AdmissionWait
 ): Promise<number> {
@@ -221,8 +237,9 @@ async function exec(
     log: f.log ? resolve(f.log) : null,
     cwd: process.cwd(),
     kind: kindOf(cmd[0]),
-    model: modelOf(cmd.slice(1)),
+    model: f.execution?.model ?? modelOf(cmd.slice(1)),
     role: f.role,
+    ...(f.execution ? { execution: f.execution } : {}),
     ...(launched ? { launcher: launched } : {}),
     wrapper_pid: process.pid,
     pid: 0,
@@ -321,7 +338,9 @@ async function exec(
     if (!code) await yieldEventLoop();
     if (!code && !stop.signal.aborted) {
       // Dispatched agents are headless: an inherited, never-closed stdin makes `codex exec` wait for more prompt forever.
-      child = Bun.spawn(cmd, { cwd: job.cwd, stdio: ['ignore', 'inherit', 'inherit'] });
+      if (f.execution) cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
+      if (!code && !stop.signal.aborted) child = Bun.spawn(cmd, { cwd: job.cwd, stdio: ['ignore', 'inherit', 'inherit'] });
+      if (child) {
       job.pid = child.pid;
       job.state = 'running';
       delete job.reason;
@@ -334,6 +353,7 @@ async function exec(
         }
       }, 5000);
       code = await child.exited;
+      }
     }
     const session_id = child ? (job.session_id ?? jobSession(job)) : null;
     // Spawn/bookkeeping can outlast a short child; deliver pending signals before the provisional write.
@@ -396,16 +416,26 @@ export async function jobCli(
     return EXIT_USAGE;
   }
   refreshBudgetQuota();
+  let execution: Job['execution'];
   if (isTier(role) && ['codex', 'claude'].includes(kindOf(cmd[0]))) {
+    const tiers = loadTiers(), provider = kindOf(cmd[0]) as 'codex' | 'claude';
     const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
-    const candidates = resolveRoute(loadTiers(), c, a.flags.mode, ROUTE_ROLE[role]).candidates;
-    const eligible = candidates.filter(a => a.provider === kindOf(cmd[0])).map(a => a.model);
+    const risk = a.flags.risk ?? 'G1';
+    if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2') throw new Error('job: invalid risk');
+    const authors = a.flags['author-model'] ?? [];
+    if (role === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
+      throw new Error('job: independent review requires --author-model');
+    const descriptor = describeExecution(tiers, ROUTE_ROLE[role], risk, Number(a.flags.round ?? 1));
+    const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors).candidates;
     const model = modelOf(cmd.slice(1));
-    if (cmd.slice(1).filter(a => a === '-m' || a === '--model' || a.startsWith('--model=')).length > 1)
-      throw new Error('job: multiple model options are ambiguous');
-    if (!eligible.length || (model !== null && !eligible.includes(model)))
+    const candidate = candidates.find(a => a.provider === provider && (model === null || a.model === model));
+    if (!candidate)
       throw new Error(`job ${role}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
-    if (model === null) cmd.splice(kindOf(cmd[0]) === 'codex' && cmd[1] === 'exec' ? 2 : 1, 0, '--model', eligible[0]); // R1-2: Claude has no -m alias.
+    const policy = executionLaunch(descriptor, candidate);
+    roleCommandArgs(cmd, provider, candidate.model); // Validate before registering or creating a worktree.
+    execution = { role: descriptor.role, risk: descriptor.risk, round: descriptor.round,
+      model: candidate.model, provider, policy };
   }
-  return exec(cmd, { title, card, log, role: roleOf(role), worktree: a.flags.worktree, base: a.flags.base }, probe, wait);
+
+  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base }, probe, wait);
 }

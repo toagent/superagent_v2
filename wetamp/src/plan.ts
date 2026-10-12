@@ -29,7 +29,7 @@ export interface Pkg {
 }
 export interface Plan {
   repo: string;
-  budget: { weighted_tokens: number; cost?: number; launches?: number }; // v2 兼容：Archon 不按 token 预算调度
+  budget: { weighted_tokens: number; unlimited_tokens?: true; cost?: number; launches?: number }; // Explicit unlimited tokens preserves launch/round bounds.
   base_ref: string;
   deadline: string;
   mode?: string;

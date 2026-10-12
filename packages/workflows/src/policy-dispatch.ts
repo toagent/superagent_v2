@@ -26,7 +26,7 @@ export interface DispatchExecution<Candidate extends DispatchCandidate> {
   node: string;
   candidates: Candidate[];
   artifacts: string;
-  budget: { launches?: number; weighted_tokens: number };
+  budget: { launches?: number; weighted_tokens: number; unlimited_tokens?: true };
   usage(attempts: PolicyAttempt[]): BudgetUsage;
   provider: 'codex' | 'claude';
   sendQuery: IAgentProvider['sendQuery'];
@@ -65,8 +65,9 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
         ? used.launches >= execution.budget.launches
         : used.launches > execution.budget.launches)
         ? 'budget_launches_exceeded'
-        : used.weighted_tokens + (beforeLaunch ? used.reserve : 0) >
-            execution.budget.weighted_tokens
+        : !execution.budget.unlimited_tokens &&
+            used.weighted_tokens + (beforeLaunch ? used.reserve : 0) >
+              execution.budget.weighted_tokens
           ? 'budget_tokens_exceeded'
           : null;
     return reason

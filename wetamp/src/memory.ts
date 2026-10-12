@@ -788,7 +788,7 @@ export function lintPlan(
     duration = Math.max(duration, prior.duration.p50);
     if (prior.tokens.n >= 5) suggested += prior.tokens.p50;
   }
-  if (suggested && plan.budget.weighted_tokens < suggested / 2) {
+  if (suggested && !plan.budget.unlimited_tokens && plan.budget.weighted_tokens < suggested / 2) {
     warnings.push(`预算低于 p50 一半；建议 weighted_tokens >= ${String(Math.ceil(suggested))}`);
   }
   if (duration && Date.parse(plan.deadline) < now + duration) {

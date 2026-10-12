@@ -347,7 +347,7 @@ process.stdin.on('end', () => {
     const [s, t] = lines(worker.received);
     expect(s.params).toMatchObject({ sandbox: 'read-only' });
     expect(t.params).toMatchObject({
-      sandboxPolicy: { type: 'readOnly', networkAccess: loadTiers().policy.sandbox.network },
+      sandboxPolicy: { type: 'readOnly', networkAccess: false },
     });
     expect(worker.received).not.toContain(marker);
     const direct = appServer('', { SA_POLICY_PATH: '' }, ['node', PROXY, '', 'true']);
@@ -388,7 +388,7 @@ process.stdin.on('end', () => {
       config: { mcp_servers: { searxng: { command: 'x' } } },
     });
     expect(b.received).not.toContain(MARKER);
-    expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: true } });
+    expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } });
     expect(r.params).toMatchObject({ sandbox: 'read-only' });
   });
 

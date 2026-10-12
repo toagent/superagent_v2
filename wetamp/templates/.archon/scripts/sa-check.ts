@@ -1124,7 +1124,7 @@ export function effectiveBudget(
     grant.limits.weighted_tokens <= 0
   )
     throw new Error('budget-extra: invalid limits');
-  return grant.limits;
+  return { ...grant.limits, ...(base.unlimited_tokens ? { unlimited_tokens: true } : {}) };
 }
 function budget(nextLaunch = true): string | null {
   if (!env('ARCHON')) return null;
@@ -1139,7 +1139,7 @@ function budget(nextLaunch = true): string | null {
   const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
   if (b.launches !== undefined && (nextLaunch ? u.launches >= b.launches : u.launches > b.launches))
     return 'budget_launches_exceeded';
-  return u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
+  return !b.unlimited_tokens && u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
 }
 
 interface Ident {

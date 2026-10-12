@@ -126,6 +126,8 @@ const OPTIONS = {
   card: { type: 'string' },
   log: { type: 'string' },
   role: { type: 'string' },
+  round: { type: 'string' },
+  'author-model': { type: 'string', multiple: true },
   all: { type: 'boolean' },
   since: { type: 'string' },
   refresh: { type: 'boolean' },
@@ -2049,10 +2051,10 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
         );
         detail =
           `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
-          `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`;
+          `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens)}`;
         compact =
           out.reason === 'budget_tokens_exceeded'
-            ? `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.weighted_tokens)}`
+            ? `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens)}`
             : `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}`;
       }
     } catch {

@@ -48,7 +48,7 @@ let marker, network;
 try {
   const policy = loadPolicy(policyPath);
   marker = policy.exec_profiles.reviewer.codex_readonly_marker;
-  network = policy.sandbox.network === true;
+  network = false; // Readonly review has no network side effects or exfiltration channel.
   if (typeof marker !== 'string' || !marker) throw new Error('codex_readonly_marker missing');
 } catch (e) {
   die(`cannot read policy from ${policyPath}: ${e.message}`);
