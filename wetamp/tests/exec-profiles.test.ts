@@ -332,7 +332,7 @@ process.stdin.on('end', () => {
       params: {
         sandbox: 'danger-full-access',
         approvalPolicy: 'never',
-        config: { mcp_servers: servers },
+        config: { mcp_servers: servers, web_search: 'live' },
       },
     });
   const turn = '{"id":3,"method":"turn/start","params":{"threadId":"t","input":[]}}';
@@ -377,19 +377,23 @@ process.stdin.on('end', () => {
         start({ [MARKER]: { command: 'false', required: true }, searxng: { command: 'x' } }),
         turn,
         start({}, 'thread/resume'),
+        start({}, 'thread/fork'),
       ].join('\n')
     );
     expect(b.code).toBe(0);
-    const [i, s, t, r] = lines(b.received);
+    const [i, s, t, r, f] = lines(b.received);
     expect(b.received.split('\n')[0]).toBe(init);
     expect(i.method).toBe('initialize');
     expect(s.params).toMatchObject({
       sandbox: 'read-only',
-      config: { mcp_servers: { searxng: { command: 'x' } } },
+      config: { mcp_servers: { searxng: { command: 'x' } }, web_search: 'disabled' },
     });
     expect(b.received).not.toContain(MARKER);
     expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } });
-    expect(r.params).toMatchObject({ sandbox: 'read-only' });
+    for (const message of [r, f])
+      expect(message.params).toMatchObject({
+        sandbox: 'read-only', config: { web_search: 'disabled' },
+      });
   });
 
   test('SUPERAGENT_ROLE=reviewer makes every thread and turn read-only without a marker', () => {

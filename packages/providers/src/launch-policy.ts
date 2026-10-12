@@ -36,6 +36,7 @@ export function claudeLaunchPolicy(
       !sandbox.failIfUnavailable ||
       sandbox.allowUnsandboxedCommands !== false ||
       !sandbox.autoAllowBashIfSandboxed ||
+      sandbox.filesystem?.disabled === true ||
       !sandbox.filesystem?.denyWrite?.includes('/'))
   )
     throw new Error('execution: readonly Claude requires a fail-closed sandbox');
@@ -45,7 +46,22 @@ export function claudeLaunchPolicy(
       ...new Set([...policy.deniedTools, ...(policy.readonly ? ['WebFetch', 'WebSearch'] : [])]),
     ],
     ...(sandbox
-      ? { sandbox: policy.readonly ? { ...sandbox, network: { allowedDomains: [] } } : sandbox }
+      ? {
+          sandbox: policy.readonly
+            ? {
+                ...sandbox,
+                filesystem: { ...sandbox.filesystem, disabled: false },
+                // Domain grants merge across native settings; denials take precedence.
+                network: {
+                  allowedDomains: [],
+                  deniedDomains: ['*'],
+                  strictAllowlist: true,
+                  allowAllUnixSockets: false,
+                  allowLocalBinding: false,
+                },
+              }
+            : sandbox,
+        }
       : {}),
     // Sandboxed Bash uses the sandbox authorization path, never the auto safety model.
     permissionMode: policy.readonly ? 'default' : 'bypassPermissions',
@@ -205,6 +221,7 @@ export async function prepareRoleCommand(
       'features.multi_agent': false,
       model_reasoning_effort: policy.effort,
       sandbox_mode: policy.readonly ? 'read-only' : 'danger-full-access',
+      ...(policy.readonly ? { web_search: 'disabled' } : {}),
       approval_policy: 'never',
     };
     return [command[0], ...codexCliConfig(settings), ...args];

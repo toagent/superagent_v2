@@ -1,7 +1,9 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
+import { AppServerConnection } from './codex/app-server';
 import {
   claudeLaunchPolicy,
   codexCliConfig,
+  prepareRoleCommand,
   roleCommandArgs,
   workflowLaunchPolicy,
   type LaunchPolicy,
@@ -31,8 +33,8 @@ test('Claude readonly SDK and CLI translation keeps native guidance/auth and san
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
-      filesystem: { denyWrite: ['/'] },
-      network: { allowedDomains: [] },
+      filesystem: { denyWrite: ['/'], disabled: false },
+      network: { allowedDomains: [], deniedDomains: ['*'], strictAllowlist: true },
     },
   });
   expect(native.disallowedTools).toEqual(
@@ -53,8 +55,43 @@ test('Claude readonly SDK and CLI translation keeps native guidance/auth and san
     undefined,
     { enabled: false },
     { ...policy.sandbox, allowUnsandboxedCommands: true },
+    { ...policy.sandbox, filesystem: { denyWrite: ['/'], disabled: true } },
   ])
     expect(() => claudeLaunchPolicy({ ...policy, sandbox })).toThrow('fail-closed sandbox');
+});
+
+test('readonly policy denies native domain grants and overrides native live Codex search', async () => {
+  const native = claudeLaunchPolicy({
+    ...policy,
+    sandbox: { ...policy.sandbox, network: { allowedDomains: ['native.example'] } },
+  });
+  // SDK merges native grants, but deniedDomains always wins over allowedDomains.
+  expect(native.sandbox?.network).toMatchObject({
+    deniedDomains: ['*'],
+    strictAllowlist: true,
+  });
+  expect(native.sandbox?.filesystem?.disabled).toBe(false);
+  const inventory = spyOn(AppServerConnection, 'start').mockReturnValue({
+    request: async (method: string) =>
+      method === 'config/read' ? { config: { web_search: 'live', mcp_servers: {} } } : {},
+    notify() {},
+    async shutdown() {},
+  } as unknown as AppServerConnection);
+  try {
+    for (const readonly of [true, false]) {
+      const args = await prepareRoleCommand(
+        ['codex', 'exec', 'fixture'],
+        'codex',
+        'fixture',
+        { ...policy, readonly, codex: { web_search: 'live' } },
+        process.cwd()
+      );
+      const assignments = args.flatMap((arg, i) => arg === '-c' ? [args[i + 1]] : []);
+      expect(Bun.TOML.parse(assignments.join('\n')).web_search).toBe(readonly ? 'disabled' : 'live');
+    }
+  } finally {
+    inventory.mockRestore();
+  }
 });
 
 test('policy overrides and unsupported commands fail before native inventory or launch', () => {

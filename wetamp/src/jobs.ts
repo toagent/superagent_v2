@@ -415,6 +415,8 @@ export async function jobCli(
     console.error(USAGE);
     return EXIT_USAGE;
   }
+  if (isTier(role) && !['codex', 'claude'].includes(kindOf(cmd[0])))
+    throw new Error('job: unsupported role provider; expected codex or claude');
   refreshBudgetQuota();
   let execution: Job['execution'];
   if (isTier(role) && ['codex', 'claude'].includes(kindOf(cmd[0]))) {

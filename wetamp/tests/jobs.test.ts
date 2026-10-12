@@ -268,6 +268,24 @@ else if (process.argv[1].endsWith('/claude')) {
     expect(await downgraded.exited).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('candidates:');
   });
   // prettier-ignore
+  test('explicit role rejects unsupported providers before registration or spawn', async () => {
+    const root = tmp(), launched = join(root, 'launched');
+    for (const name of ['opencode', 'unknown-agent']) {
+      const executable = join(root, name);
+      writeFileSync(executable, `#!/bin/sh\ntouch '${launched}'\n`);
+      chmodSync(executable, 0o755);
+      const p = run(['job', 'exec', '--title', 'unsupported', '--role', 'strategist',
+        '--risk', 'G2', '--', executable, 'run', 'prompt']);
+      expect(await p.exited).not.toBe(0);
+      expect(await new Response(p.stderr as ReadableStream).text()).toContain('unsupported role provider');
+      expect(existsSync(launched)).toBe(false);
+      expect(readJobs(Date.now(), true).jobs).toEqual([]);
+    }
+    const p = run(['job', 'exec', '--title', 'ordinary', '--', join(root, 'unknown-agent')]);
+    expect(await p.exited).toBe(0);
+    expect(existsSync(launched)).toBe(true);
+  });
+  // prettier-ignore
   test('clean refuses dirty or unintegrated worktrees and removes only integrated registered work', async () => {
     const repo = gitRepo(tmp()); expect(await run(['job', 'exec', '--title', 'tree', '--worktree', 'task/entry', '--base', 'main', '--', 'pwd'], '', repo).exited).toBe(0);
     const j = only(), w = j.worktree!, clean = () => run(['job', 'clean', j.id]); expect(j.cwd).toBe(w.path); expect(existsSync(w.path)).toBe(true);

@@ -668,8 +668,14 @@ describe('buildWorkflow', () => {
         failIfUnavailable: true,
         autoAllowBashIfSandboxed: true,
         allowUnsandboxedCommands: false,
-        filesystem: { denyWrite: ['/'] },
-        network: { allowedDomains: [] },
+        filesystem: { denyWrite: ['/'], disabled: false },
+        network: {
+          allowedDomains: [],
+          deniedDomains: ['*'],
+          strictAllowlist: true,
+          allowAllUnixSockets: false,
+          allowLocalBinding: false,
+        },
       });
       expect(node('codex', id).mcp).toBeUndefined();
     }

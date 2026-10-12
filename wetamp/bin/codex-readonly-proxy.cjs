@@ -78,6 +78,9 @@ function rewrite(line) {
     }
     if (!reviewer) return null;
     p.sandbox = 'read-only';
+    // Server-side search is independent of shell sandbox network access.
+    p.config ??= {};
+    p.config.web_search = 'disabled';
   } else if (msg.method === 'turn/start') {
     if (!reviewer) return null;
     p.sandboxPolicy = { type: 'readOnly', networkAccess: network };
