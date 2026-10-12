@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
@@ -923,7 +923,6 @@ for (const kind of ['accept', 'settle', 'env'])
 for (const [kind, step, evidence] of [
   ['accept', 'status --porcelain', 'git status:'],
   ['accept', 'worktree add', 'git worktree:'],
-  ['accept', 'worktree remove', 'probe: kept worktree'],
   ['accept', 'events', 'archon workflow get fixture:'],
   ['env', 'rev-parse HEAD', 'git rev-parse:'],
 ])
@@ -941,6 +940,15 @@ for (const [kind, step, evidence] of [
       )?.timeout
     ).toBe(2000);
   });
+
+test('probe: bounded prune timeout cannot override baseline results', () => {
+  const r = auxiliaryFixture('accept', 'worktree prune', true);
+  expect(r.code).toBe(0);
+  expect(r.out).toMatchObject({ base_pass: false, base_results: [{ cmd: 'false', pass: false }] });
+  expect(r.err).toContain(`probe: kept worktree ${r.art}/.trash/probe-acct-`);
+  expect(r.err).toContain('TERM -> SIGKILL');
+  expect(readFileSync(join(r.art, 'acct.probe.log'), 'utf8')).toContain('auxiliary-stalled');
+});
 
 function expectAuxiliaryDead(path: string): void {
   const pid = readFileSync(path, 'utf8').trim();
@@ -1589,21 +1597,42 @@ describe('sa-check script', () => {
       JSON.stringify(base_results)
     );
   });
-  test('probe never force-removes: a worktree the check dirtied is kept and its path reported', () => {
-    const root = tmp();
-    const repo = gitRepo(root);
+  test('probe: dirty disposable worktree lives in artifacts and is unregistered on cleanup', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      trace = join(root, 'probe-path');
     const base = sh('git rev-parse HEAD', repo).trim();
     const r = runScript(repo, {
       kind: 'accept',
-      plan: planFile(root, 'echo x > junk.txt; false', ['true']),
+      plan: planFile(root, 'echo x > junk.txt; false', [`pwd > '${trace}'`]),
       pkgs: 'a',
       tag: 'v3',
       base,
     });
-    expect(r.out).toMatchObject({ ok: false, base_pass: false });
-    const kept = /probe: kept worktree (\S+):/.exec(r.err)?.[1] ?? '';
-    expect(readFileSync(join(kept, 'junk.txt'), 'utf8')).toBe('x\n');
-    expect(sh('git worktree list', repo)).toContain(kept);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatchObject({ ok: false, base_results: [{ pass: false }] });
+    const path = readFileSync(trace, 'utf8').trim();
+    expect(path.startsWith(join(r.art, 'probe-v3-'))).toBe(true);
+    expect(existsSync(path)).toBe(false);
+    expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
+  });
+  test('probe: rename failure preserves baseline results and logs the retained path', () => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan: planFile(root, 'false', ['touch ../.trash']),
+      pkgs: 'a',
+      tag: 'rename-fail',
+      base: sh('git rev-parse HEAD', repo).trim(),
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toMatchObject({
+      base_pass: false,
+      base_results: [{ cmd: 'false', pass: false }],
+    });
+    expect(r.err).toContain(`probe: kept worktree ${r.art}/probe-rename-fail-`);
+    expect(readFileSync(join(r.art, 'rename-fail.probe.log'), 'utf8')).toContain(r.err.trim());
   });
   test('land: fast-forward when base is an ancestor, no-ff otherwise; never pushes', () => {
     const root = tmp();

@@ -1,9 +1,18 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  lstatSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { isPathInside } from '@archon/paths';
 import { getRun, QUERY_TIMEOUT_MS } from './archon';
 import { home } from './config';
-import { ledgerIds, loadLedger, updateLedger, type Ledger } from './cli';
+import { artifactsOf, ledgerIds, loadLedger, updateLedger, type Ledger } from './cli';
 import type { Plan } from './plan';
 import { createRequire } from 'node:module';
 export interface ScratchAction {
@@ -41,6 +50,39 @@ export interface GcAction {
   path?: string;
   at?: string;
   record_error?: string;
+}
+
+// Only engine probe directories enter this path; run/user worktrees keep their existing guards.
+function collectProbe(path: string, id: string, dryRun: boolean, repo?: string): GcAction {
+  try {
+    if (lstatSync(path).isSymbolicLink()) throw new Error('probe symlink retained');
+    if (!dryRun) {
+      const options = { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS } as const;
+      const common = Bun.spawnSync(
+        ['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+        options
+      );
+      const owner = repo
+        ? ['-C', repo]
+        : common.exitCode === 0
+          ? ['--git-dir', common.stdout.toString().trim()]
+          : [];
+      if (owner.length)
+        Bun.spawnSync(['git', ...owner, 'worktree', 'remove', '--force', path], options);
+      rmSync(path, { recursive: true, force: true });
+      if (owner.length)
+        Bun.spawnSync(['git', ...owner, 'worktree', 'prune', '--expire', 'now'], options);
+    }
+    return {
+      run_id: id,
+      object: 'worktree',
+      action: dryRun ? 'would_remove' : 'removed',
+      reason: 'terminal probe',
+      path,
+    };
+  } catch (e) {
+    return { run_id: id, object: 'worktree', action: 'skipped', reason: String(e), path };
+  }
 }
 
 /** Only registered runs enter GC; the recovery lock covers observation, removal and recording. */
@@ -88,22 +130,22 @@ export function gc(dryRun = false): GcAction[] {
             .trim()
             .split('\n');
           const sha = refs.find(r => r.startsWith(`${ref} `))?.slice(ref.length + 1);
-          if (
-            !sha &&
-            l.gc?.some(
-              ({ object, action, path: p }) =>
-                object === 'worktree' &&
-                action === 'removed' &&
-                !!p &&
-                !existsSync(p) &&
-                !listed.some(t => t.includes(`worktree ${p}`))
-            )
-          )
-            return;
           const run = getRun(l.archon_run_id, plan.repo);
           if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
           if (!['completed', 'failed', 'cancelled'].includes(run.status))
             throw new Error(`run ${run.status} remains recoverable`);
+          if (run.output_root) {
+            const art = artifactsOf(run),
+              trash = join(art, '.trash');
+            const candidates = existsSync(art)
+              ? readdirSync(art, { withFileTypes: true })
+                  .filter(e => e.isDirectory() && e.name.startsWith('probe-'))
+                  .map(e => join(art, e.name))
+              : [];
+            if (existsSync(trash) && lstatSync(trash).isDirectory())
+              candidates.push(...readdirSync(trash).map(e => join(trash, e)), trash);
+            events.push(...candidates.map(p => collectProbe(p, id, dryRun, plan.repo)));
+          }
           const path = run.working_path,
             root = join(home().archon, 'workspaces');
           object = 'worktree';
@@ -156,18 +198,19 @@ export function gc(dryRun = false): GcAction[] {
           }
         } catch (e) {
           event('skipped', e instanceof Error ? e.message : String(e));
-        }
-        if (!dryRun)
-          for (const e of events) {
-            if (
-              e.action === 'skipped' &&
-              l.gc?.some(
-                p => p.action === e.action && p.object === e.object && p.reason === e.reason
+        } finally {
+          if (!dryRun)
+            for (const e of events) {
+              if (
+                e.action === 'skipped' &&
+                l.gc?.some(
+                  p => p.action === e.action && p.object === e.object && p.reason === e.reason
+                )
               )
-            )
-              continue;
-            (l.gc ??= []).push({ ...e, at: new Date().toISOString() });
-          }
+                continue;
+              (l.gc ??= []).push({ ...e, at: new Date().toISOString() });
+            }
+        }
       };
       try {
         const l = loadLedger(id);
@@ -181,6 +224,19 @@ export function gc(dryRun = false): GcAction[] {
     }
   } catch (e) {
     out.push({ run_id: '*', object: 'run', action: 'skipped', reason: String(e) });
+  }
+  try {
+    for (const entry of readdirSync(tmpdir(), { withFileTypes: true })) {
+      const path = join(tmpdir(), entry.name);
+      if (
+        entry.isDirectory() &&
+        entry.name.startsWith('sa-probe-') &&
+        Date.now() - statSync(path).mtimeMs > 24 * 60 * 60_000
+      )
+        out.push(collectProbe(path, '*', dryRun));
+    }
+  } catch (e) {
+    out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
   }
   return out;
 }
