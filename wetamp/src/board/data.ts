@@ -15,6 +15,7 @@ import {
   EXIT,
   artifactsOf,
   classifyRun,
+  holdOf,
   ledgerIds,
   ledgerPath,
   loadLedger,
@@ -26,6 +27,7 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  askReason?: ReturnType<typeof holdOf>;
   nativeState?: RunView['status'];
   lastEvent?: string | null;
   activeNodes?: { id: string; role: string | null; model: string | null }[];
@@ -183,6 +185,7 @@ export function rowOf(
     /* Missing outcome provides no reason. */
   }
   return {
+    askReason: holdOf(l, run, c),
     coordination: (() => {
       try {
         const c = coord(),

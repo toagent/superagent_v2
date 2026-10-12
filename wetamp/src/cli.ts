@@ -1805,7 +1805,7 @@ function tick(
 }
 
 /** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
-function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
+export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
   if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =

@@ -107,6 +107,8 @@ function ledger(
     recoveries: [],
     ...extra,
   };
+  mkdirSync(l.gen_dir, { recursive: true });
+  writeFileSync(join(l.gen_dir, 'plan.json'), JSON.stringify({ deadline: '2099-01-01T00:00:00Z' }));
   writeFileSync(ledgerFile(id), JSON.stringify(l));
   writeFileSync(
     join(stubDir, `get-a-${id}.json`),
@@ -806,4 +808,55 @@ test('R1-05: actual board loader projects takeover owner rather than launcher, i
     owner: null,
     inferred: false,
   });
+});
+
+test('R1-1: pending asks follow real engine hold mapping, including failed coder nodes', () => {
+  const now = Date.parse('2026-10-12T12:00:00Z');
+  for (const reason of ['budget', 'review_limit', 'approval', 'coder', 'signoff'] as const) {
+    const node =
+      reason === 'coder'
+        ? 'code-a'
+        : reason === 'approval'
+          ? 'approval-a'
+          : reason === 'signoff'
+            ? 'human-m1'
+            : 'gate-m1-r1';
+    const paused = reason === 'approval' || reason === 'signoff';
+    const run: RunView = {
+      id: `a-${reason}`,
+      status: paused ? 'paused' : 'failed',
+      nodes: [{ nodeId: node, state: paused ? 'running' : 'failed' }],
+      ...(paused ? { metadata: { approval: { nodeId: node } } } : {}),
+      output_root: join(root, 'out'),
+    };
+    const l = ledger(reason, run);
+    if (reason === 'budget' || reason === 'review_limit') {
+      const art = join(run.output_root!, 'artifacts', 'runs', run.id);
+      mkdirSync(art, { recursive: true });
+      writeFileSync(
+        join(art, `${node}.json`),
+        JSON.stringify({
+          decision: {
+            kind: 'block',
+            reason:
+              reason === 'budget' ? 'budget_launches_exceeded' : 'acceptance_failed+review_limit',
+            evidence: [],
+            debt: [],
+          },
+        })
+      );
+    }
+    const snap = snapshotOf([{ ledger: l, run }], now);
+    expect(snap.rows[0]?.askReason).toBe(reason);
+    snap.asks = { [`${reason}:${reason}`]: { status: 'pending' } };
+    expect(cockpit(snap, now).needs.map(r => r.id)).toEqual([reason]);
+    for (const status of ['completed', 'cancelled', 'running'] as const) {
+      const resumed = snapshotOf(
+        [{ ledger: l, run: { ...run, status, metadata: {}, nodes: [] } }],
+        now
+      );
+      resumed.asks = snap.asks;
+      expect(cockpit(resumed, now).needs).toEqual([]);
+    }
+  }
 });

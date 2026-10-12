@@ -83,6 +83,7 @@ export interface CockpitRun {
   round: string;
   reason: string;
   question: string;
+  decision?: { event: string; yes: string; no: string };
   waiting: string;
 }
 export interface Cockpit {
@@ -99,6 +100,8 @@ export interface Cockpit {
   active: CockpitRun[];
   runs: CockpitRun[];
 }
+const decisionText = (d: NonNullable<CockpitRun['decision']>): string =>
+  `${d.event} 是=${d.yes} 否=${d.no}`;
 /** Pure projection shared by Ink and HTTP; collection remains owned by the existing loader/cache. */
 export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
   const start = new Date(now);
@@ -144,12 +147,24 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const policy = (
       HOLD_POLICY as Partial<Record<string, (typeof HOLD_POLICY)[keyof typeof HOLD_POLICY]>>
     )[key];
-    const question =
+    const decision =
       policy && 'yes' in policy
-        ? `${reasonText(key)} 是=${{ retry: key === 'budget' ? '放宽预算再跑' : '再跑', resume: '恢复', approve: '批准', review: '重评' }[policy.yes]} 否=终止`
+        ? {
+            event: reasonText(key),
+            yes: {
+              retry: key === 'budget' ? '放宽预算再跑' : '再跑',
+              resume: '恢复',
+              approve: '批准',
+              review: '重评',
+            }[policy.yes],
+            no: '终止',
+          }
         : key === 'signoff' || r.state === 'held:human'
-          ? '等待签收 是=批准 否=终止'
-          : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
+          ? { event: '等待签收', yes: '批准', no: '终止' }
+          : undefined;
+    const question = decision
+      ? decisionText(decision)
+      : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
     return {
       ...(r.coordination ? { coordination: r.coordination } : {}),
@@ -179,6 +194,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
         : (/-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '1'),
       reason: reasonText(r.engine?.reason ?? ''),
       question,
+      decision,
       waiting: fmtElapsed(
         d?.action === 'ask'
           ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000))
@@ -290,6 +306,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       if (seen.has(`coord:${m.id}`)) return [];
       seen.add(`coord:${m.id}`);
       const repo = m.scope.kind === 'repo' ? m.scope.id : m.scope.repo;
+      const decision = { event: m.title.replace(/[\r\n]+/g, ' '), yes: '发现者接管', no: '继续等' };
       return [
         {
           progress: unknownProgress(),
@@ -307,7 +324,8 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
           role: '',
           round: '-',
           reason: m.kind,
-          question: `交接 ${fit(m.title.replace(/[\r\n]+/g, ' '), 30)} 是=交给发现者处理 否=继续等`,
+          decision,
+          question: decisionText(decision),
           waiting: fmtElapsed(Math.max(0, Math.floor((now - Date.parse(m.at)) / 1000))),
         },
       ];
@@ -318,9 +336,8 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       row = s.rows.find(r => r.run_id === id);
     const policy = (HOLD_POLICY as Partial<Record<string, { do: string }>>)[reason];
     if (!row || !policy || !['ask', 'signoff'].includes(policy.do)) return unresolved();
-    if (['completed', 'failed', 'cancelled'].includes(row.state)) return [];
-    if (row.state !== `held:${reason}` && !(reason === 'signoff' && row.state === 'held:human'))
-      return [];
+    // R1-1: the engine owns reason mapping; failed may still require a coder decision.
+    if (row.askReason !== reason) return [];
     if (seen.has(`${id}:${reason}`)) return [];
     seen.add(`${id}:${reason}`);
     const r = project(row, reason);

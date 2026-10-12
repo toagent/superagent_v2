@@ -63,7 +63,7 @@ function row(id: string, state = 'running'): BoardRow {
 }
 function snapshot(): Snapshot {
   const a = row('active'),
-    held = row('held', 'held:budget'),
+    held = { ...row('held', 'held:gate'), askReason: 'budget' as const },
     dead = row('zombie');
   dead.lastEvent = iso(-1800);
   a.activeNodes = [
@@ -450,7 +450,7 @@ test('board-v2 resolves coord wire keys, suppresses acknowledgements and dedupli
   expect(text).toContain('异常 2');
   const needs = text.split('\n').filter(line => line.startsWith('?'));
   expect(needs).toHaveLength(2);
-  for (const line of needs) expect(line).toMatch(/.+ · .+\/.+ · .+是=.+否=.+ · 已等/);
+  for (const line of needs) expect(line).toMatch(/.+·.+\/.+·.+是=.+否=.+ 已等/);
   expect(needs[0]).toContain('payments');
   expect(needs[0]).toContain('修复付款节点');
   expect(JSON.stringify(s)).toBe(before);
@@ -459,6 +459,15 @@ test('board-v2 resolves coord wire keys, suppresses acknowledgements and dedupli
     columns: 160,
   });
   expect(longTitle.split('\n').find(line => line.startsWith('? payments'))).toContain('否=继续等');
+  for (const width of [56, 62, 80]) {
+    const narrow = renderToString(createElement(Frame, { snap: s, width, height: 20, now }), {
+      columns: width,
+    });
+    const line = narrow.split('\n').find(line => line.startsWith('?'))!;
+    expect(line).toContain('是=发现者接管 否=继续等 已等2m00s');
+    expect(line).toMatch(/.+·.+\/.+·.+是=/);
+    expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
+  }
   for (const state of ['accepted', 'done', 'rejected'] as const) {
     s.coordMessages = [{ ...message, state }];
     expect(cockpit(s, ms).needs.map(r => r.id)).toEqual(['held']);

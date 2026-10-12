@@ -13,7 +13,15 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
   text(decisionHeader(c));
   if (c.needs.length) {
     text('需要你');
-    for (const r of c.needs) text(`? ${fit(r.project, 20)} · ${r.id.slice(0, 12)}/${fit(r.node ?? r.stage, 24)} · ${r.question} · 已等 ${r.waiting}`, 'yellow');
+    for (const r of c.needs) {
+      if (!r.decision) { text(r.question, 'yellow'); continue; }
+      // R1-2: reserve decisions and wait time before shortening identity/event labels.
+      const suffix = ` 是=${r.decision.yes} 否=${r.decision.no} 已等${r.waiting}`;
+      const columns = Math.max(1, Math.floor((width - Bun.stringWidth(suffix) - 4) / 3));
+      const idWidth = Math.max(1, Math.floor((columns - 1) / 2));
+      const node = `${fit(r.id, idWidth)}/${fit(r.node ?? r.stage, Math.max(1, columns - idWidth - 1))}`;
+      text(`? ${fit(r.project, columns)}·${node}·${fit(r.decision.event, columns)}${suffix}`, 'yellow');
+    }
   }
   for (const anomaly of c.anomalies) text(anomaly, 'yellow');
   if (c.active.length) {
