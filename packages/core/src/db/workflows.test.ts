@@ -1867,9 +1867,8 @@ describe('workflows database', () => {
       const [updateQuery, updateParams] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(updateQuery).toContain("status = 'running'");
       expect(updateQuery).toContain('completed_at = NULL');
-      expect(updateQuery).toContain('metadata = metadata || $3::jsonb');
-      // $1 = id, $2 = ORPHAN_RESUME_STALE_DAYS. The day param MUST be bound or the
-      // CAS predicate's `< $2 days` references an unbound placeholder (PR #1830 C1).
+      expect(updateQuery).toContain('metadata = metadata || $2::jsonb');
+      // $1 = id; $2 is the metadata patch.
       expect(updateParams).toEqual([
         'workflow-run-123',
         JSON.stringify({
@@ -1980,7 +1979,7 @@ describe('workflows database', () => {
       });
 
       const [, updateParams] = mockQuery.mock.calls[1] as [string, unknown[]];
-      expect(JSON.parse(updateParams[2] as string)).toMatchObject({
+      expect(JSON.parse(updateParams[1] as string)).toMatchObject({
         error: null,
         scheduled_resume: {
           ...scheduled,

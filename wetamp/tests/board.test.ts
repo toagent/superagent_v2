@@ -191,7 +191,7 @@ describe('data rows', () => {
     expect(byId.ok?.state).toBe('completed');
     expect(byId.broken?.state).toBe('unreadable');
     expect(byId.thin?.state).toBe('unreadable');
-    expect(byId.thin?.error).toContain('recoveries');
+    expect(byId.thin?.error).toContain('archon_run_id');
     expect(snap.summary.runs).toBe(3);
     expect((snap.summary.unreadable as string[]).length).toBe(2);
   });

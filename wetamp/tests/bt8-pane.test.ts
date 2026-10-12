@@ -122,7 +122,11 @@ for (const width of [62, 46])
     expect(frame).toContain('跑3 等你1');
     if (width >= 60) expect(frame).toContain('将军·sol6.1');
     if (width >= 60) expect(frame).toContain('军师·astra');
-    expect(frame).toContain('? xiaopan 重试已用尽 是=再跑 否=终止 1h02m');
+    expect(frame).toContain(
+      width >= 60
+        ? '? xiaopan 重试已用尽；superagent brief 查看处置 1h02m'
+        : '? … 重试已用尽；superagent brief 查看处置 1h0…'
+    );
     expect(frame).not.toMatch(/心跳|tok |今日结果|终端|预算|q退出/);
     for (const line of frame.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   });

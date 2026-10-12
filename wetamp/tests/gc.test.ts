@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import * as archon from '../src/archon';
+import { executionAdmissionLock } from '../../packages/workflows/src/execution-lifecycle';
 import * as coordination from '../src/coord';
 import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
 import { gc } from '../src/gc';
@@ -369,7 +370,7 @@ test('changed branch SHA refuses deletion and an unmerged replacement is retaine
 test('run observation and deletion hold the existing recovery lock', () => {
   const f = fixture();
   query?.mockImplementation(() => {
-    const lease = archon.lock(join(f.root, 'sa', 'runs', `${f.view.id}.lock`));
+    const lease = executionAdmissionLock(join(f.root, 'archon'), f.view.id);
     if (lease.ok) lease.release();
     expect(lease.ok).toBe(false);
     return f.view;

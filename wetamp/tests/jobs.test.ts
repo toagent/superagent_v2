@@ -206,12 +206,15 @@ describe('job exec', () => {
   // prettier-ignore
   test('budget-refresh: stale jobs and missing models cache refresh; failures do not block dispatch', async () => {
     const root = tmp(), cache = join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'); let calls = 0, status = 200;
-    for (const name of ['security', 'codex']) { const path = join(root, name); writeFileSync(path, `#!/bin/sh\nprintf '%s' '${name === 'security' ? 'synthetic' : 'dispatched'}'\n`); chmodSync(path, 0o755); }
+    const codex = join(root, 'codex'); writeFileSync(codex, "#!/bin/sh\nprintf '%s' 'dispatched'\n"); chmodSync(codex, 0o755);
     const server = Bun.serve({ port: 0, fetch() { calls++; return Response.json({ platforms: { anthropic: { today: { cost: loadTiers().routing.budget.claude_daily_usd } } } }, { status }); } });
-    const env = { PATH: `${root}:${process.env.PATH!}`, SUPERAGENT_RELAY_QUOTA_URL: server.url.origin, SUPERAGENT_RELAY_QUOTA: '' }; mkdirSync(process.env.SUPERAGENT_HOME!, { recursive: true });
+    // Stub only token lookup in the child; keep real HTTP refresh and dispatch.
+    const preload = join(root, 'quota-token.ts');
+    writeFileSync(preload, `import { mock } from 'bun:test'; import * as cp from 'node:child_process'; const real = cp.spawnSync; mock.module('node:child_process', () => ({ ...cp, spawnSync: (cmd, ...args) => cmd === 'security' ? { status: 0, output: [null, Buffer.from('synthetic'), null] } : real(cmd, ...args) }));`);
+    const env = { BUN_OPTIONS: `--preload=${preload}`, PATH: `${root}:${process.env.PATH!}`, SUPERAGENT_RELAY_QUOTA_URL: server.url.origin, SUPERAGENT_RELAY_QUOTA: '' }; mkdirSync(process.env.SUPERAGENT_HOME!, { recursive: true });
     try {
       writeFileSync(cache, JSON.stringify({ at: Date.now() - 3600e3 - 1, claude_daily_usd: 0 }));
-      const job = run(['job', 'exec', '--title', 'refresh', '--role', 'commander', '--', join(root, 'codex'), 'exec'], '', WETAMP, env); expect(await job.exited).toBe(0); expect(await new Response(job.stdout as ReadableStream).text()).toBe('dispatched'); expect(calls, await new Response(job.stderr as ReadableStream).text()).toBe(1);
+      const job = run(['job', 'exec', '--title', 'refresh', '--role', 'commander', '--', join(root, 'codex'), 'exec'], '', WETAMP, env); const exit = await job.exited; const err = await new Response(job.stderr as ReadableStream).text(); expect(exit, err).toBe(0); expect(await new Response(job.stdout as ReadableStream).text()).toBe('dispatched'); expect(calls, err).toBe(1);
       unlinkSync(cache); const models = run(['models', '--json'], '', WETAMP, env); expect(await models.exited).toBe(0); expect(JSON.parse(await new Response(models.stdout as ReadableStream).text()).budget.degraded).toBe(true); expect(calls).toBe(2);
       expect(await run(['models', '--json'], '', WETAMP, env).exited).toBe(0); expect(calls).toBe(2);
       status = 503; unlinkSync(cache); const failed = run(['job', 'exec', '--title', 'advisory', '--', 'true'], '', WETAMP, env); expect(await failed.exited).toBe(0); expect(await new Response(failed.stderr as ReadableStream).text()).toContain('预算状态未知'); expect(calls).toBe(3);
