@@ -1149,10 +1149,10 @@ describe('run (archon stub)', () => {
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     const plan = fixturePlan(s.root, repo);
     const probe = spyOn(configMod, 'runtimeFingerprint').mockReturnValue('fixture');
-    const previous = process.env.SA_SELFTEST_BIN,
+    const previous = [process.env.SA_SELFTEST_BIN, process.env.SA_SELFTEST_TIMEOUT_MS],
       bin = join(s.root, 'selftest.sh'),
       calls = join(s.root, 'selftest-calls');
-    process.env.SA_SELFTEST_BIN = bin;
+    Object.assign(process.env, { SA_SELFTEST_BIN: bin, SA_SELFTEST_TIMEOUT_MS: '100' });
     try {
       const good = {
         ok: true,
@@ -1183,10 +1183,17 @@ describe('run (archon stub)', () => {
       expect(attempt({ ...good, fingerprint: 'x' })).toContain(
         'selftest exit 7; log tail:\nfailure-tail'
       );
+      writeFileSync(bin, 'echo timeout-tail >&2\nexec sleep 10\n');
+      expect(attempt({ ...good, fingerprint: 'x' })).toMatch(/timed out; log tail:\ntimeout-tail/);
+      const lease = archonMod.lock(join(s.root, 'home', 'selftest.lock'));
+      expect(lease.ok).toBe(true);
+      if (lease.ok) lease.release();
     } finally {
       probe.mockRestore();
-      if (previous === undefined) delete process.env.SA_SELFTEST_BIN;
-      else process.env.SA_SELFTEST_BIN = previous;
+      for (const [i, key] of ['SA_SELFTEST_BIN', 'SA_SELFTEST_TIMEOUT_MS'].entries()) {
+        if (previous[i] === undefined) delete process.env[key];
+        else process.env[key] = previous[i];
+      }
     }
   });
   /** workflow run 的 --config 文件里钉住的别名。 */

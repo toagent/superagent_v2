@@ -715,6 +715,7 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 }
 
 const MIN_FREE_GB = 2;
+const SELFTEST_TIMEOUT_MS = 20 * 60_000;
 
 const QUICK_BUDGET_MULTIPLIER = 4;
 
@@ -788,10 +789,17 @@ function preflight(skipSelftest: boolean): void {
         console.error('preflight: runtime drift; running real selftest synchronously');
         let bin = join(WETAMP, 'scripts/selftest.sh');
         if (process.env.NODE_ENV === 'test') bin = process.env.SA_SELFTEST_BIN ?? bin;
-        const p = Bun.spawnSync(['bash', bin], { env: process.env });
+        // Bun kills the direct child on timeout; grandchildren may survive without group cleanup.
+        const p = Bun.spawnSync(['bash', bin], {
+          env: process.env,
+          timeout:
+            (process.env.NODE_ENV === 'test' && Number(process.env.SA_SELFTEST_TIMEOUT_MS)) ||
+            SELFTEST_TIMEOUT_MS,
+          killSignal: 'SIGKILL',
+        });
         const log = redact(p.stdout.toString() + p.stderr.toString());
-        if (p.exitCode !== 0)
-          why.message += `; selftest exit ${String(p.exitCode)}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
+        if (p.exitedDueToTimeout || p.exitCode !== 0)
+          why.message += `; selftest ${p.exitedDueToTimeout ? 'timed out' : `exit ${String(p.exitCode)}`}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
         else why = issue();
       }
     } finally {
