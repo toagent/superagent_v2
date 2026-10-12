@@ -17,5 +17,5 @@ writeFileSync(
     `export const FAILURE_CLASSES = ${JSON.stringify(failure.enum)} as const;\n` +
     'export type FailureClass = (typeof FAILURE_CLASSES)[number];\n' +
     'export const failureClass = (value: unknown): FailureClass =>\n' +
-    "  FAILURE_CLASSES.find(c => c === value) ?? 'product';\n"
+    "  FAILURE_CLASSES.find(c => c === value) ?? 'unknown';\n"
 );

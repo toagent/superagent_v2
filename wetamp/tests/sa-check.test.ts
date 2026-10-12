@@ -71,6 +71,7 @@ test('P3 budget display reports receipts while admission reserves missing spend'
   expect(budgetUsage([], 20, attempts)).toMatchObject({ launches: 2, weighted_tokens: 16 });
 });
 
+const PRODUCT_FAILURE = `printf '%s' '{"failure_class":"product","evidence":"product regression"}'; exit 1`;
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
 type Rv = NonNullable<NonNullable<Parameters<typeof decide>[0]['reviews']>[number]>;
 type F = Rv['findings'][number];
@@ -80,7 +81,8 @@ const f = (severity: F['severity'], extra: Partial<F> = {}): F => ({
   file: 'a.ts',
   line: 1,
   status: 'open',
-  evidence: '',
+  evidence: '/tmp/product.log',
+  failure_class: 'product',
   carry_over: false,
   ...extra,
 });
@@ -138,19 +140,22 @@ describe('FC failure classification', () => {
   test('product and missing/invalid/no-evidence classifications remain blocking', () => {
     for (const extra of [
       { failure_class: 'product' as const },
-      {},
-      JSON.parse('{"failure_class":"unknown"}'),
+      { failure_class: undefined },
+      JSON.parse('{"failure_class":"invalid"}'),
       { failure_class: 'fixture' as const, evidence: '' },
     ]) {
       const finding = f('high', { evidence: '/tmp/accept.log', ...extra });
       const d = decide({ reviews: [R('FAIL', [finding])], rechecks: [C('a')], risk: 'G1' });
-      expect(d.verdict).toBe('fix');
+      expect(d.verdict).toBe(extra.failure_class === 'product' ? 'fix' : 'escalate');
+      expect(d.ledger.debt).toEqual([]);
       expect(d.ledger.blocking).toHaveLength(1);
-      expect(d.ledger.blocking[0].failure_class).toBe('product');
+      expect(d.ledger.blocking[0].failure_class).toBe(
+        extra.failure_class === 'product' ? 'product' : 'unknown'
+      );
     }
   });
   test('reviewer non-product failures become observable debt without any repair round', () => {
-    for (const failure_class of FAILURE_CLASSES.filter(c => c !== 'product')) {
+    for (const failure_class of FAILURE_CLASSES.filter(c => c !== 'product' && c !== 'unknown')) {
       const d = decide({
         reviews: [R('FAIL', [f('blocker', { failure_class, evidence: '/tmp/accept.log' })])],
         rechecks: [C('a')],
@@ -193,7 +198,9 @@ describe('FC failure classification', () => {
     expect(d.verdict).toBe('pass');
     expect(d.ledger.blocking).toEqual([]);
     expect(d.ledger.debt.some(e => e.command === 'bun test')).toBe(true);
-    expect(decide({ reviews: [R('PASS')], rechecks: [check], risk: 'G1' }).verdict).toBe('fix');
+    expect(decide({ reviews: [R('PASS')], rechecks: [check], risk: 'G1' }).verdict).toBe(
+      'escalate'
+    );
     expect(
       decide({
         reviews: [R('FAIL', [finding])],
@@ -229,18 +236,20 @@ describe('FC failure classification', () => {
       ])
         for (const protection of [{ risk: 'G1', strict: true }, { risk: 'G2' }]) {
           const d = decide({ reviews: [R('FAIL', findings)], rechecks: [check], ...protection });
-          expect(d.verdict).toBe('fix');
+          expect(d.verdict).toBe(failure_class ? 'fix' : 'escalate');
           expect(d.ledger.blocking).toHaveLength(2);
           expect(d.ledger.blocking).toContainEqual(
             expect.objectContaining({
               id: 'product-id',
               command,
-              failure_class: 'product',
+              failure_class: failure_class ?? 'unknown',
               evidence: '/tmp/product.log',
             })
           );
           expect(
-            d.ledger.blocking.some(e => e.id.startsWith('check:') && e.failure_class === 'product')
+            d.ledger.blocking.some(
+              e => e.id.startsWith('check:') && e.failure_class === (failure_class ?? 'unknown')
+            )
           ).toBe(true);
           expect(d.ledger.debt).toMatchObject([
             {
@@ -251,6 +260,23 @@ describe('FC failure classification', () => {
             },
           ]);
         }
+    }
+  });
+  test('validator product and unknown cannot be hidden by reviewer fixture classification', () => {
+    for (const failure_class of ['product', 'unknown'] as const) {
+      const command = 'check';
+      const d = decide({
+        reviews: [R('FAIL', [f('blocker', { command, failure_class: 'fixture' })])],
+        rechecks: [
+          {
+            ...C('a', false),
+            failed: [command],
+            failures: [{ command, failure_class, evidence: '/tmp/validator.log' }],
+          },
+        ],
+      });
+      expect(d.verdict).toBe(failure_class === 'product' ? 'fix' : 'escalate');
+      expect(d.ledger.blocking[0].failure_class).toBe(failure_class);
     }
   });
   test('FC-R1-01: distinct non-product findings keep their own classifications and close by ID', () => {
@@ -347,23 +373,32 @@ describe('FC failure classification', () => {
     const coder = JSON.stringify({ status: 'done', error_class: null, failure_class: 'fixture' });
     const red = runScript(repo, {
       kind: 'accept',
-      plan: planFile(root, 'false'),
+      plan: planFile(root, 'sa_missing_tool_DEV_R1_02', ['true']),
       pkgs: 'a',
-      tag: 'verify-product',
+      tag: 'verify-unknown',
+      base: sh('git rev-parse HEAD', repo).trim(),
       coder,
     });
     expect(red.out).toMatchObject({
       ok: false,
-      disposition: 'repair',
-      failures: [{ failure_class: 'product' }],
+      disposition: 'suspend',
+      base_pass: false,
+      decision: {
+        kind: 'block',
+        evidence: expect.arrayContaining([
+          'diagnosis required: supply structured failure_class and evidence',
+        ]),
+      },
+      failures: [{ failure_class: 'unknown' }],
     });
+    expect(red.code).toBe(1);
   });
   test('delivery-truth: third product validation stops repairs without advancing in G1/strict/G2', () => {
     const root = tmp(),
       repo = gitRepo(root),
       art = join(root, 'artifacts');
     mkdirSync(art);
-    const path = planFile(root, 'false');
+    const path = planFile(root, PRODUCT_FAILURE);
     for (const [mode, risk, expected] of [
       ['milestone', 'G1', 'suspend'],
       ['strict', 'G1', 'suspend'],
@@ -892,7 +927,7 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
   const plan = fixturePlan(root, repo);
   const p = JSON.parse(readFileSync(plan, 'utf8'));
   p.environment = [{ cmd: 'true', timeout_s: 1 }];
-  p.packages[0].accept = [{ cmd: 'false', timeout_s: 1, cache: true }];
+  p.packages[0].accept = [{ cmd: PRODUCT_FAILURE, timeout_s: 1, cache: true }];
   writeFileSync(plan, JSON.stringify(p));
   const policy = join(root, 'policy.json'),
     archon = join(root, 'archon-stub');
@@ -1009,7 +1044,10 @@ for (const [kind, step, evidence] of [
 test('probe: bounded prune timeout cannot override baseline results', () => {
   const r = auxiliaryFixture('accept', 'worktree prune', true);
   expect(r.code).toBe(0);
-  expect(r.out).toMatchObject({ base_pass: false, base_results: [{ cmd: 'false', pass: false }] });
+  expect(r.out).toMatchObject({
+    base_pass: false,
+    base_results: [{ cmd: PRODUCT_FAILURE, pass: false }],
+  });
   expect(r.err).toContain(`probe: kept worktree ${r.art}/.trash/probe-acct-`);
   expect(r.err).toContain('TERM -> SIGKILL');
   expect(readFileSync(join(r.art, 'acct.probe.log'), 'utf8')).toContain('auxiliary-stalled');
@@ -1332,7 +1370,7 @@ describe('sa-check script', () => {
   });
   for (const [command, needs, kind, disposition, reason, code] of [
     ['false', [{ cap: 'environment' }], 'block', 'suspend', 'environment', 1],
-    ['false', [], 'repair', 'repair', 'acceptance_failed', 0],
+    [PRODUCT_FAILURE, [], 'repair', 'repair', 'acceptance_failed', 0],
     ['true', [{ cap: 'environment' }], 'advance', 'advance', null, 0],
   ] as const)
     test(`env-parity: ${command} with ${needs.length} environment needs -> ${kind}`, () => {
@@ -1386,7 +1424,7 @@ describe('sa-check script', () => {
         SA_PROBE_KEEP: '1',
       }
     );
-    expect(r.code).toBe(0);
+    expect(r.code).toBe(kind === 'probe' ? 1 : 0);
     expect(r.out).toMatchObject(kind === 'probe' ? { ok: false, base_pass: true } : { ok: true });
     expect(
       readFileSync(join(r.art, kind === 'probe' ? 'verify-a.probe.log' : 'verify-a.log'), 'utf8')
@@ -1553,7 +1591,7 @@ describe('sa-check script', () => {
         failed: [command],
         base_pass: null,
         base_results: [],
-        disposition: 'repair',
+        disposition: 'suspend',
       });
       expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([repo]);
       const log = readFileSync(join(r.art, 'unknown.probe.log'), 'utf8');
@@ -1590,7 +1628,7 @@ describe('sa-check script', () => {
       ok: false,
       base_pass: false,
       base_results: [{ cmd: command, pass: false }],
-      disposition: 'repair',
+      disposition: 'suspend',
     });
     expect(readFileSync(join(r.art, 'prepared.probe.log'), 'utf8')).toContain(
       '\nprepared\n# exit=1'
@@ -1646,13 +1684,13 @@ describe('sa-check script', () => {
       { cmd: commands[1], pass: false },
     ];
     expect(r).toMatchObject({
-      code: 0,
+      code: 1,
       out: {
         ok: false,
         base_pass: true,
-        disposition: 'repair',
+        disposition: 'suspend',
         base_results,
-        failures: commands.map(command => ({ command, failure_class: 'product' })),
+        failures: commands.map(command => ({ command, failure_class: 'unknown' })),
       },
     });
     expect(JSON.parse(readFileSync(join(r.art, 'mixed.json'), 'utf8'))).toMatchObject({
@@ -1674,7 +1712,7 @@ describe('sa-check script', () => {
       tag: 'v3',
       base,
     });
-    expect(r.code).toBe(0);
+    expect(r.code).toBe(1);
     expect(r.out).toMatchObject({ ok: false, base_results: [{ pass: false }] });
     const path = readFileSync(trace, 'utf8').trim();
     expect(path.startsWith(join(r.art, 'probe-v3-'))).toBe(true);
@@ -1686,7 +1724,7 @@ describe('sa-check script', () => {
       repo = gitRepo(root);
     const r = runScript(repo, {
       kind: 'accept',
-      plan: planFile(root, 'false', ['touch ../.trash']),
+      plan: planFile(root, PRODUCT_FAILURE, ['touch ../.trash']),
       pkgs: 'a',
       tag: 'rename-fail',
       base: sh('git rev-parse HEAD', repo).trim(),
@@ -1694,7 +1732,7 @@ describe('sa-check script', () => {
     expect(r.code).toBe(0);
     expect(r.out).toMatchObject({
       base_pass: false,
-      base_results: [{ cmd: 'false', pass: false }],
+      base_results: [{ cmd: PRODUCT_FAILURE, pass: false }],
     });
     expect(r.err).toContain(`probe: kept worktree ${r.art}/probe-rename-fail-`);
     expect(readFileSync(join(r.art, 'rename-fail.probe.log'), 'utf8')).toContain(r.err.trim());
@@ -1815,7 +1853,7 @@ describe('sa-check script', () => {
     const root = tmp();
     const r = runScript(gitRepo(root), {
       kind: 'accept',
-      plan: planFile(root, 'false'),
+      plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'verify-a',
       coder: JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [] }),
@@ -1828,9 +1866,9 @@ describe('sa-check script', () => {
     const repo = gitRepo(root);
     for (const [error_class, acceptance, disposition, reason, code] of [
       ['task', 'true', 'advance', null, 0],
-      ['task', 'false', 'repair', 'acceptance_failed', 0],
+      ['task', PRODUCT_FAILURE, 'repair', 'acceptance_failed', 0],
       ['redline', 'true', 'advance', null, 0],
-      ['redline', 'false', 'repair', 'acceptance_failed', 0],
+      ['redline', PRODUCT_FAILURE, 'repair', 'acceptance_failed', 0],
     ] as const) {
       const tag = `verify-${error_class}-${acceptance}`;
       const r = runScript(repo, {
@@ -1884,7 +1922,7 @@ describe('sa-check script', () => {
     };
     const pass = runScript(repo, {
       kind: 'settle',
-      plan: planFile(root, 'false'),
+      plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'settle-a',
       first: JSON.stringify(first),
@@ -1894,7 +1932,7 @@ describe('sa-check script', () => {
     expect(pass.out).toEqual({ diff_hash: 'delivered' });
     const auditChanged = runScript(repo, {
       kind: 'settle',
-      plan: planFile(root, 'false'),
+      plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'settle-a',
       first: JSON.stringify({
@@ -1908,7 +1946,7 @@ describe('sa-check script', () => {
     expect(auditChanged.out).toEqual(pass.out);
     const red = runScript(repo, {
       kind: 'settle',
-      plan: planFile(root, 'false'),
+      plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'settle-a',
       first: JSON.stringify({ ...first, ok: false, disposition: 'repair' }),
@@ -2049,6 +2087,38 @@ describe('sa-check script', () => {
     expect(readdirSync(cache).filter(f => f !== '.key')).toHaveLength(1);
     expect(readFileSync(join(cache, '.key')).length).toBe(32);
     expect(statSync(join(cache, '.key')).mode & 0o777).toBe(0o600);
+  });
+  test('FC legacy cache default product cannot hide an unclassified command', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      counter = join(root, 'count');
+    const command = `echo x >> '${counter}'; false`;
+    const legacy = join(root, 'legacy.ts');
+    for (const name of ['reasons.json', 'failure-class.ts'])
+      writeFileSync(
+        join(root, name),
+        readFileSync(join(import.meta.dir, '../templates/.archon/scripts', name))
+      );
+    writeFileSync(
+      join(root, 'policy-attempts.ts'),
+      readFileSync(join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'))
+    );
+    writeFileSync(
+      legacy,
+      readFileSync(SCRIPT, 'utf8')
+        .replace('                FAILURE_CLASSES,\n', '')
+        .replace('failure_class: failureClass(classification)', "failure_class: 'product'")
+    );
+    const plan = planFile(root, command, [], true);
+    expect(
+      runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'legacy' }, legacy).out
+    ).toMatchObject({ disposition: 'repair', failures: [{ failure_class: 'product' }] });
+    const current = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'current' });
+    expect(current.out).toMatchObject({
+      disposition: 'suspend',
+      failures: [{ failure_class: 'unknown' }],
+    });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
   });
   test('P2: cached failures survive cumulative checks; contract and environment changes rerun', () => {
     const root = tmp(),

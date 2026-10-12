@@ -20,7 +20,7 @@ argument-hint: (inputs bound by the generated workflow)
 
 ## 输出
 
-- 每个失败给出 `failure_class: product | test_env | fixture | baseline | test_data`，判据为“改产品代码能否修好”；非 product 必须在 `evidence` 附证据路径，涉及验收命令时 `command` 填原命令，否则填 null。不信 coder 自报；非 product 记已知问题/debt，不计入 FAIL 的阻塞发现。
+- 每个失败给出 `failure_class`（枚举以本节点 output schema 为准），判据为“改产品代码能否修好”；分类不明填 unknown，保持阻塞等待诊断；已证明非产品类别必须在 `evidence` 附证据路径，涉及验收命令时 `command` 填原命令，否则填 null。不信 coder 自报；已证明非产品类别记已知问题/debt，不计入 FAIL 的阻塞发现。
 - 每条发现给出 `id`（R1-1 起）、`severity`（blocker/high/medium/low）、`file`、`line`、`status: open`、`carry_over: false`、`evidence`（可核对的事实，不贴 secret）。
 - `status`：存在 open 的 blocker 或 high（$INPUTS.risk 为 G2 时含 medium）→ `FAIL`；否则 `PASS`；无法完成评审（diff 不可读、证据缺失）→ `INCOMPLETE` 并在 `notes` 说明。
 - 不阻塞的问题写进 `debt`（一句话一条）。`fixture_confirmations` 仅在 diff 新增测试夹具时填写，否则为空数组。

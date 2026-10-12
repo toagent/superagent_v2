@@ -3,7 +3,7 @@
   "$defs": {
     "failure_class": {
       "type": "string",
-      "enum": ["product", "test_env", "fixture", "baseline", "test_data"]
+      "enum": ["product", "test_env", "fixture", "baseline", "test_data", "unknown"]
     },
     "coder": {
       "type": "object",
@@ -141,7 +141,7 @@
               },
               "failure_class": {
                 "type": "string",
-                "enum": ["product", "test_env", "fixture", "baseline", "test_data"]
+                "enum": ["product", "test_env", "fixture", "baseline", "test_data", "unknown"]
               },
               "command": { "type": ["string", "null"] },
               "carry_over": {
@@ -216,7 +216,7 @@
               "command": { "type": "string" },
               "failure_class": {
                 "type": "string",
-                "enum": ["product", "test_env", "fixture", "baseline", "test_data"]
+                "enum": ["product", "test_env", "fixture", "baseline", "test_data", "unknown"]
               },
               "evidence": { "type": "string" }
             },

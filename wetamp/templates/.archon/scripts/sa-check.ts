@@ -19,7 +19,7 @@ import { basename, dirname, join } from 'node:path';
 import type { Check, Plan } from '../../../src/plan';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
-import { failureClass, type FailureClass } from './failure-class';
+import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
 
 export interface Finding {
   id: string;
@@ -215,7 +215,17 @@ function run(
         ? join(
             artifacts,
             'accept-cache',
-            sha(JSON.stringify(['hmac-v1', tree, c.cmd, c.timeout_s, envKey, environment]))
+            sha(
+              JSON.stringify([
+                'hmac-v1',
+                FAILURE_CLASSES,
+                tree,
+                c.cmd,
+                c.timeout_s,
+                envKey,
+                environment,
+              ])
+            )
           )
         : '';
     if (hit && existsSync(hit)) {
@@ -672,6 +682,10 @@ export function ledgerOf(
         failureClass(f.evidence.trim() ? f.failure_class : undefined)
       );
       const validated = check?.failures?.find(f => f.command === command);
+      if (validated)
+        classifications.push(
+          failureClass(validated.evidence.trim() ? validated.failure_class : undefined)
+        );
       return {
         id: `check:${sha(command).slice(0, 16)}`,
         severity: 'blocker',
@@ -681,9 +695,11 @@ export function ledgerOf(
         carry_over: i > 0,
         command,
         // A non-product finding cannot hide a product or unclassified failure in the same command.
-        failure_class: classifications.includes('product')
-          ? 'product'
-          : (classifications[0] ?? failureClass(validated?.failure_class)),
+        failure_class: classifications.includes('unknown')
+          ? 'unknown'
+          : classifications.includes('product')
+            ? 'product'
+            : (classifications[0] ?? 'unknown'),
         evidence: validated?.evidence.length
           ? validated.evidence
           : reviewed.map(f => f.evidence).join('\n'),
@@ -711,13 +727,13 @@ export function ledgerOf(
       if (f.status !== 'open') continue;
       const known = open.get(f.id);
       const classification = failureClass(f.evidence.trim() ? f.failure_class : undefined);
-      const nonProduct = classification !== 'product';
+      const nonProduct = ['test_env', 'fixture', 'baseline', 'test_data'].includes(classification);
       if (known) {
         known.eligible ||= f.severity === 'blocker';
         Object.assign(known, {
           failure_class: classification,
           evidence: f.evidence,
-          blocks: !nonProduct && known.eligible,
+          blocks: classification === 'unknown' || (!nonProduct && known.eligible),
           debt_reason: nonProduct ? 'non_product' : undefined,
         });
       } else
@@ -732,7 +748,9 @@ export function ledgerOf(
           command: f.command,
           repair_rounds: 0,
           ...(nonProduct ? { debt_reason: 'non_product' as const } : {}),
-          blocks: !nonProduct && (base ? sev.includes(f.severity) : f.severity === 'blocker'),
+          blocks:
+            classification === 'unknown' ||
+            (!nonProduct && (base ? sev.includes(f.severity) : f.severity === 'blocker')),
           eligible: base ? sev.includes(f.severity) : f.severity === 'blocker',
         });
     }
@@ -822,6 +840,10 @@ export function deliveryDecision(input: {
   ) {
     if (input.selfReportPath) evidence.push(input.selfReportPath);
     return out('block', 'environment');
+  }
+  if (ledger.blocking.some(e => e.failure_class === 'unknown')) {
+    evidence.push('diagnosis required: supply structured failure_class and evidence');
+    return out('block', 'acceptance_failed');
   }
   const unknown = check.failures?.some(
     f =>

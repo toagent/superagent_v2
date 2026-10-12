@@ -207,6 +207,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -444,6 +445,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -588,6 +590,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               command:
                 type:
                   - string
@@ -801,6 +804,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -947,6 +951,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               command:
                 type:
                   - string
@@ -1164,6 +1169,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -1310,6 +1316,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               command:
                 type:
                   - string
@@ -1563,6 +1570,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -1800,6 +1808,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -1944,6 +1953,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               command:
                 type:
                   - string
@@ -2156,6 +2166,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -2302,6 +2313,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               command:
                 type:
                   - string
@@ -2518,6 +2530,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               evidence:
                 type: string
             required:
@@ -2664,6 +2677,7 @@ nodes:
                   - fixture
                   - baseline
                   - test_data
+                  - unknown
               command:
                 type:
                   - string

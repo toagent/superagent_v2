@@ -52,6 +52,17 @@ type N = {
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
 
+test('review guidance uses the node schema for failure classes', () => {
+  for (const name of ['sa-review.md', 'sa-review-delta.md']) {
+    const guidance = readFileSync(
+      join(import.meta.dir, '../templates/.archon/commands', name),
+      'utf8'
+    );
+    expect(guidance).toContain('output schema');
+    expect(guidance).not.toContain('product | test_env');
+  }
+});
+
 test('HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
   const root = join(tmp(), 'wetamp');
   for (const path of ['templates', 'src', 'schemas', 'bin', 'scripts'])
