@@ -183,6 +183,11 @@ export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
     ))
     .digest('hex');
 
+// R1-1: compare project environments across nodes without weakening actual-env cache keys.
+export const contextEnvironmentIdentity = (values: NodeJS.ProcessEnv): string =>
+  environmentIdentity(Object.fromEntries(Object.entries(values).filter(([k]) =>
+    !['ARCHON_NODE_EXECUTION', 'TYPED_ARTIFACTS_FILE', 'PYTHONDONTWRITEBYTECODE'].includes(k))));
+
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
  * 复用本 run 的结果；身份仅证明传入环境，外部可变资源须声明 cache:false，每次实跑。
@@ -531,7 +536,7 @@ function finish(tag: string, out: Record<string, unknown> & Accept): void {
       const context = prepareContext({ gen, artifacts, node, cwd: process.cwd(),
         base: env('BASE'), head: out.head ?? '', deltaBase: env('DELTA_BASE'),
         acceptance: out, patch: String(out.patch ?? ''), delta: String(out.delta ?? ''),
-        environment: environmentIdentity(process.env) });
+        environment: contextEnvironmentIdentity(process.env) });
       writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path: context }));
     }
   }

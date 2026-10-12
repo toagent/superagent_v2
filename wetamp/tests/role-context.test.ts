@@ -6,6 +6,8 @@ import { loadTiers, WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
 import { resolveAcceptanceContext } from '../src/role-context';
 import { prepareContext } from '../templates/.archon/scripts/sa-context';
+import { buildExecNodeEnvironment } from '../../packages/workflows/src/exec-environment';
+import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/src/node-execution';
 import { gitRepo, sh, tmp } from './helpers';
 
 test('prepared R2 preserves requirements and open carry-over without closed history; immutable bytes', async () => {
@@ -39,11 +41,28 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   };
   writeFileSync(join(art, 'gate-m2-r1.ledger.json'), JSON.stringify(ledger));
   const head = sh('git rev-parse HEAD', repo).trim();
-  const reviewEnv = { ...process.env, ARTIFACTS_DIR: art, SA_CONTEXT_TEST_ENV: 'before' };
+  // R1-1: real exec nodes have distinct execution identities and artifact listings.
+  const nodeEnv = (node: string) => buildExecNodeEnvironment({
+    artifactsDir: art, stateDir: gen, logDir: gen, workflowId: 'fixture', baseBranch: 'main',
+    userMessage: '', loopUserInput: '', loopPrevOutput: '', rejectionReason: '',
+    typedArtifactsFile: join(art, `${node}.listing.json`),
+    nodeExecution: startNodeExecution({ runId: 'fixture', path: node,
+      node: { id: node, kind: 'exec', runtime: 'sh' }, invocation: newNodeInvocation() }),
+  });
+  const diffEnv = { ...process.env, ...nodeEnv('diff-m2-r2'),
+    PYTHONDONTWRITEBYTECODE: '1', SA_CONTEXT_TEST_ENV: 'before' };
+  const reviewEnv = { ...process.env, ...nodeEnv('attempt-review-m2-r2'),
+    SA_CONTEXT_TEST_ENV: 'before' };
   const fingerprint = Bun.spawnSync([process.execPath, '-e',
+    `import { contextEnvironmentIdentity, environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({context: contextEnvironmentIdentity(process.env), cache: environmentIdentity(process.env)}));`],
+    { cwd: repo, env: diffEnv, stdout: 'pipe', stderr: 'pipe' });
+  expect(fingerprint.exitCode).toBe(0);
+  const identities = JSON.parse(fingerprint.stdout.toString());
+  const reviewFingerprint = Bun.spawnSync([process.execPath, '-e',
     `import { environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(environmentIdentity(process.env));`],
     { cwd: repo, env: reviewEnv, stdout: 'pipe', stderr: 'pipe' });
-  expect(fingerprint.exitCode).toBe(0);
+  expect(reviewFingerprint.exitCode).toBe(0);
+  expect(reviewFingerprint.stdout.toString().trim()).not.toBe(identities.cache);
   const input = {
     gen,
     artifacts: art,
@@ -53,7 +72,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
     head,
     patch: '/full.patch',
     delta: '/delta.patch',
-    environment: fingerprint.stdout.toString().trim(),
+    environment: identities.context,
   };
   const path = prepareContext(input),
     bytes = readFileSync(path, 'utf8'),

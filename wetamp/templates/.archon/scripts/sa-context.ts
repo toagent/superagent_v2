@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
-import { readAttempt, environmentIdentity, type Accept, type Ledger } from './sa-check';
+import { readAttempt, contextEnvironmentIdentity, type Accept, type Ledger } from './sa-check';
 
 /** Content-addressed evidence never changes when an attempt reuses its tag. */
 export function freezeContext(dir: string, value: unknown): string {
@@ -77,14 +77,14 @@ if (import.meta.main) {
       if (context === 'unknown' || context.node !== review || context.refs.head !== git.stdout.toString().trim())
         throw new Error('context: stale review refs');
       if (context.carry_over === 'unknown') throw new Error('context: missing carry-over');
-      if (context.environment !== environmentIdentity(process.env))
+      if (context.environment !== contextEnvironmentIdentity(process.env))
         throw new Error('context: stale review environment');
     }
     for (const role of pkg ? ['code'] : []) {
       const node = `${role}-${pkg}`;
       const path = prepareContext({ gen, artifacts: process.env.ARTIFACTS_DIR!, node,
         cwd: process.cwd(), base: git.stdout.toString().trim(), head: git.stdout.toString().trim(),
-        environment: environmentIdentity(process.env) });
+        environment: contextEnvironmentIdentity(process.env) });
       writeFileSync(join(process.env.ARTIFACTS_DIR!, `${node}.context.json`), JSON.stringify({ path }));
     }
   }
