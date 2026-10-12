@@ -9,7 +9,7 @@ nodes:
       plan: /GEN/plan.json
     retry:
       max_attempts: 5
-      on_error: transient
+      on_error: all
   - id: start-m1
     bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:

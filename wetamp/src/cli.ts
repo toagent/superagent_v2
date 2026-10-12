@@ -18,7 +18,10 @@ import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
-import { advanceExecutionAttempt } from '../../packages/workflows/src/execution-lifecycle';
+import {
+  advanceExecutionAttempt,
+  executionAdmissionLock,
+} from '../../packages/workflows/src/execution-lifecycle';
 import {
   existsSync,
   mkdirSync,
@@ -243,11 +246,11 @@ export function loadLedger(run: string): Ledger {
   return o as unknown as Ledger;
 }
 
-/** ledger 的读改写与 recover 同锁（runs/<archon id>.lock），锁忙最多等 10 秒；改完同步回调用方的副本。 */
+/** Ledger/GC mutations share Archon's recovery admission lock; reload under the lock. */
 export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
-  const path = join(home().sa, 'runs', `${l.adoptions?.[0]?.from ?? l.archon_run_id}.lock`);
+  const id = l.adoptions?.[0]?.from ?? l.archon_run_id;
   for (let i = 0; ; i++) {
-    const k = lock(path);
+    const k = executionAdmissionLock(home().archon, id);
     if (k.ok) {
       try {
         const cur = loadLedger(l.run_id);
@@ -259,7 +262,7 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
         k.release();
       }
     }
-    if (i >= 100) throw new Error(`ledger ${l.run_id}: ${path} busy`);
+    if (i >= 100) throw new Error(`ledger ${l.run_id}: execution admission ${id} busy`);
     Bun.sleepSync(100);
   }
 }

@@ -58,14 +58,10 @@ export interface ExecutionRunView {
       /** attention 类等待只有这个，没有可用的 resumeAt。 */
       waitingSince?: string;
     };
-    /** Archon 审批门（approval / interactive_loop 等）暂停时的元数据。 */
     approval?: { nodeId: string; pauseId?: string; type?: string };
-    /** 引擎在节点之外失败时写的 run 级错误（executor 捕获、启动失败等）。 */
     error?: string | null;
-    /** 停止原因类别（runExitReasonSchema 枚举，如 launch_failed、process_terminated），由 run 的 owner 写。 */
     stop_reason?: { reason?: string; signal?: string } | null;
   } | null;
-  /** 终局记录（事件日志折叠而来）：error 同 metadata.error 的终局快照。resume 中的 run 没有。 */
   terminal_record?: { error?: string | null } | null;
   transcript_path?: string | null;
   nodes?: {
@@ -202,11 +198,7 @@ const LOCK_EX = 2;
 const LOCK_NB = 4;
 const EWOULDBLOCK = DARWIN ? 35 : 11;
 
-/**
- * 内核 flock(LOCK_EX|LOCK_NB)：持锁进程死亡（含 SIGKILL）时内核随 fd 一起释放，无需判死或夺锁。
- * 写入的 {pid,host,at} 仅供人工诊断，不参与判定。release 只关 fd、不删文件：删掉后别的进程可能
- * 锁住一个已脱离路径的 inode，与新建同名文件的进程同时“持锁”。
- */
+/** Kernel releases dead holders; never unlink the inode, which would split mutual exclusion. */
 export function executionLock(path: string): Lock {
   const fd = openSync(path, 'a');
   if (libc.symbols.flock(fd, LOCK_EX | LOCK_NB) !== 0) {
@@ -228,6 +220,11 @@ export function executionLock(path: string): Lock {
   };
 }
 
+export function executionAdmissionLock(root: string, id: string): Lock {
+  mkdirSync(join(root, 'execution-admissions'), { recursive: true });
+  return executionLock(join(root, 'execution-admissions', `${id}.lock`));
+}
+
 /** Explicit continuation admission; never infer permission from an elapsed timeout. */
 export function resumeExecution(
   host: ExecutionLifecycleHost,
@@ -244,9 +241,7 @@ export function resumeExecution(
   },
   reconciled?: string
 ): ResumeExecutionResult {
-  mkdirSync(join(host.root, 'execution-admissions'), { recursive: true });
-  const path = join(host.root, 'execution-admissions', `${strategy?.lockId ?? id}.lock`);
-  const l = executionLock(path);
+  const l = executionAdmissionLock(host.root, strategy?.lockId ?? id);
   if (!l.ok) return { ok: false, reason: 'recover_locked', busy: true };
   try {
     const run = host.getRun(strategy?.resolveId() ?? id, cwd);
@@ -357,12 +352,7 @@ export type Admission =
     }
   | { ok: false; capacity: number; active?: number; reason: 'admission_busy' | 'run_capacity' };
 
-/**
- * Hold the shared launch lock until Archon has persisted its pending row. Other CLIs refuse
- * immediately, before creating a worker/worktree. Paused and owner-ambiguous runs retain
- * capacity; only the engine's terminal status frees it. A durable launch reservation covers
- * the pre-pending child when the parent CLI dies; unknown effects retain admission.
- */
+/** Lock through pending-row publication; durable reservations retain ambiguous launch capacity. */
 export function admitExecution(capacity: number, host: ExecutionAdmissionHost): Admission {
   if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('invalid run capacity');
   const root = host.root;

@@ -37,6 +37,7 @@ import {
   parseArgs,
   quickPlan,
   superviseTickCli,
+  updateLedger,
   waitRun,
   type Hold,
   type Ledger,
@@ -672,6 +673,12 @@ describe('HF3 latest-engine recovery', () => {
     if (!held.ok) throw new Error('lock not taken');
     try {
       const before = readFileSync(ledgerPath('sa1'), 'utf8');
+      const sleep = spyOn(Bun, 'sleepSync').mockImplementation(() => {});
+      try {
+        expect(() => updateLedger(s.ledger, () => {})).toThrow('execution admission r busy');
+      } finally {
+        sleep.mockRestore();
+      }
       const { out } = captured(() => main(['resume', 'sa1']));
       expect(JSON.parse(out)).toMatchObject({ busy: true });
       expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);

@@ -210,7 +210,7 @@ export function buildWorkflow(
           [...(plan.environment ?? []), ...plan.packages.flatMap(p => p.environment ?? [])],
           1
         ),
-        retry: { max_attempts: tiers.policy.auto_retry.environment, on_error: 'transient' },
+        retry: { max_attempts: tiers.policy.auto_retry.environment, on_error: 'all' },
       }
     ),
   ];

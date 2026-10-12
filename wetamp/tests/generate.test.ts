@@ -319,6 +319,10 @@ describe('buildWorkflow', () => {
       500_000 + CHECK_AUX_COUNTS.env * CHECK_AUX_TIMEOUT_MS + 5_000
     );
     expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBeUndefined();
+    expect(nodesOf(build(false)).find(n => n.id === 'environment')?.retry).toEqual({
+      max_attempts: loadTiers().policy.auto_retry.environment,
+      on_error: 'all',
+    });
     for (const node of nodesOf(build(false, plan)).filter(
       n => n.with?.kind === 'accept' || n.with?.kind === 'settle'
     ))
