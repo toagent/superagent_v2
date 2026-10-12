@@ -2618,7 +2618,8 @@ export function main(argv: string[]): number {
           return 1;
         }
         if (a.flags.apply) {
-          applyLand(run, land as Land, cwd => acceptRun(l, undefined, cwd, artifactsOf(run)));
+          const verify = (cwd: string): number => acceptRun(l, undefined, cwd, artifactsOf(run));
+          applyLand(run, land as Land, verify, { ...l, base_ref: planOf(l).base_ref });
           return 0;
         }
         const needs = needsOf(artifactsOf(run), undefined, l);

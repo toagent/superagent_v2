@@ -1193,40 +1193,35 @@ function gate(): void {
   }
 }
 
-export interface Land extends Partial<Record<'reason' | 'error' | 'action', string>> {
-  branch: string;
-  head: string;
-  repo: string;
-  target?: string;
-  ff: boolean;
-  commands: string[];
-  debt: string[];
+// prettier-ignore
+export function landTarget(repo: string, base: string, launch: () => string | undefined): string | undefined {
+  const local = (name: string): boolean => {
+    const p = auxiliary(['git', '-C', repo, 'show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
+    if (p.exitCode !== 0 && p.exitCode !== 1) throw new Error(p.stderr.toString());
+    return p.exitCode === 0;
+  };
+  const target = [base.replace(/^refs\/heads\//, ''), base.replace(/^origin\//, '')].find(local);
+  const branch = !target && /^[a-f0-9]{7,64}$/i.test(base) ? launch() : undefined;
+  return target ?? (typeof branch === 'string' && local(branch) ? branch : undefined);
 }
 
 /** 打印合入命令与各里程碑末轮 gate 的评审债；plan deadline 已过则拒绝（exit 1），不给出合入命令。 */
-function land(): void {
+function land() {
   if (expired()) {
     console.error(`land: plan deadline ${plan().deadline} passed; not producing merge commands`);
     process.exit(1);
   }
   const repo = dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
   const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
-  const local = (name: string): boolean => {
-    const p = auxiliary(['git', 'show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
-    if (p.exitCode !== 0 && p.exitCode !== 1) throw new Error(p.stderr.toString());
-    return p.exitCode === 0;
-  };
   const base = env('BASE_REF');
-  let target = [base.replace(/^refs\/heads\//, ''), base.replace(/^origin\//, '')].find(local);
-  if (!target && /^[a-f0-9]{7,64}$/i.test(base)) {
+  const target = landTarget(repo, base, () => {
     const path = env('OPERATOR_LEDGER');
     const ledger =
       path && existsSync(path)
         ? (JSON.parse(readFileSync(path, 'utf8')) as Pick<OperatorLedger, 'launch_branch'>)
         : undefined;
-    if (typeof ledger?.launch_branch === 'string' && local(ledger.launch_branch))
-      target = ledger.launch_branch;
-  }
+    return ledger?.launch_branch;
+  });
   const ff =
     target !== undefined &&
     Bun.spawnSync(['git', 'merge-base', '--is-ancestor', `refs/heads/${target}`, 'HEAD'])
@@ -1247,7 +1242,7 @@ function land(): void {
       ...(g.grade === 'DEGRADED_PASS' ? [`DEGRADED_PASS ${g.reason ?? ''}`] : []),
     ]);
   }
-  const out: Land = {
+  const out = {
     branch,
     repo,
     target,
@@ -1272,7 +1267,9 @@ function land(): void {
   writeFileSync(join(artifacts, 'land.json'), JSON.stringify(out, null, 2));
   emit(out);
   if (!target) process.exit(1);
+  return out;
 }
+export type Land = ReturnType<typeof land>;
 
 if (import.meta.main) {
   const kinds: Partial<Record<string, () => void>> = {

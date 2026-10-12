@@ -20,15 +20,16 @@ const fixture = () => {
   return { root, repo, worktree, art, land, run };
 };
 // prettier-ignore
-test('apply checks the accepted tree in the target checkout, reuses cache and cleans worktree/branch', () => {
+test.each(['current', 'legacy-ref', 'legacy-hash'])('%s apply checks the accepted tree, reuses cache and cleans worktree/branch', mode => {
   const f = fixture(), counter = join(f.root, 'calls');
+  const receipt = mode === 'current' ? f.land : { branch: f.land.branch, head: f.land.head, commands: [], debt: [] };
   const plan = fixturePlan(f.root, f.repo, p => { p.packages = [{ id: 'p', accept: [{ cmd: `echo checked >> '${counter}'`, timeout_s: 2, cache: true }] }]; });
   const verify = (cwd: string) => Bun.spawnSync([process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')], {
     cwd, env: { ...process.env, INPUTS_KIND: 'accept', INPUTS_PLAN: plan, INPUTS_PKGS: 'p', INPUTS_TAG: 'land-check', ARTIFACTS_DIR: f.art }, stdout: 'pipe', stderr: 'pipe',
   }).exitCode;
   expect(verify(f.worktree)).toBe(0);
   const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
-  try { applyLand(f.run, f.land, cwd => { expect(cwd).toBe(f.repo); expect(sh('git rev-parse HEAD', cwd).trim()).toBe(f.land.head); return verify(cwd); }); }
+  try { applyLand(f.run, receipt, cwd => { expect(cwd).toBe(f.repo); expect(sh('git rev-parse HEAD', cwd).trim()).toBe(f.land.head); return verify(cwd); }, { repo: f.repo, base_ref: mode === 'legacy-hash' ? sh('git rev-parse main', f.repo).trim() : 'origin/main', launch_branch: 'main' }); }
   finally { probe.mockRestore(); }
   expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(f.land.head);
   expect(readFileSync(counter, 'utf8')).toBe('checked\n');
@@ -45,13 +46,15 @@ test.each(['dirty', 'tree'])('apply refuses %s before advancing the target', kin
   expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
 });
 // prettier-ignore
-test('preflight selftest waits for the occupied lease and rechecks its receipt', async () => {
+test.each([true, false])('selftest wait=%s refreshes the latest fingerprint after an occupied lease', async wait => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = root;
   const receipt = { ok: true, fake: false, fingerprint: 'fixture', config_hash: config.configHash(), expires_at: new Date(Date.now() + 3600e3).toISOString() };
-  const child = Bun.spawn([process.execPath, '-e', `import { lock } from ${JSON.stringify(join(import.meta.dir, '../src/archon.ts'))}; const l=lock(${JSON.stringify(join(root, 'selftest.lock'))}); if(!l.ok) process.exit(1); console.log('locked'); await Bun.sleep(200); await Bun.write(${JSON.stringify(join(root, 'selftest.json'))}, ${JSON.stringify(JSON.stringify(receipt))}); l.release();`], { stdout: 'pipe', stderr: 'pipe' });
+  const bin = join(root, 'selftest.sh'); process.env.NODE_ENV = 'test'; process.env.SA_SELFTEST_BIN = bin; writeFileSync(bin, `printf '%s' '${JSON.stringify(receipt)}' > '${join(root, 'selftest.json')}'\n`);
+  const child = Bun.spawn([process.execPath, '-e', `import { lock } from ${JSON.stringify(join(import.meta.dir, '../src/archon.ts'))}; const l=lock(${JSON.stringify(join(root, 'selftest.lock'))}); if(!l.ok) process.exit(1); console.log('locked'); await Bun.sleep(200); await Bun.write(${JSON.stringify(join(root, 'selftest.json'))}, ${JSON.stringify(JSON.stringify({ ...receipt, fingerprint: 'previous' }))}); l.release();`], { stdout: 'pipe', stderr: 'pipe' });
   await child.stdout.getReader().read();
   const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
-  try { selftest(true); } finally { probe.mockRestore(); }
+  try { selftest(wait); } finally { probe.mockRestore(); }
   expect(await child.exited).toBe(0);
+  expect(JSON.parse(readFileSync(join(root, 'selftest.json'), 'utf8')).fingerprint).toBe('fixture');
 });
