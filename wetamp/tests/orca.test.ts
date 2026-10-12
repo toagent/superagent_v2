@@ -4,6 +4,7 @@ import { cockpit, type Cockpit, type CockpitRun } from '../src/board/cockpit';
 import { unreadableRow, type Snapshot } from '../src/board/data';
 import { unknownProgress } from '../src/board/eta';
 import { orcaView, syncOrca, type OrcaDeps } from '../src/orca';
+import type { Hold } from '../src/reasons';
 
 const item = (id: string, extra: Partial<CockpitRun> = {}): CockpitRun => ({
   id,
@@ -40,6 +41,7 @@ const frame = (active: string[] = [], needs: string[] = [], why = 'review_limit'
     repo: id,
     state: active.includes(id) ? 'running' : 'held:gate',
     nativeState: active.includes(id) ? 'running' : 'failed',
+    askReason: active.includes(id) ? undefined : (why as Hold),
     lastEvent: '2026-10-11T00:00:00Z',
     nodes: { current: 'code-core', currentRole: 'coder', total: 1, done: 0 },
     engine: {
@@ -267,7 +269,7 @@ describe('syncOrca (injected only)', () => {
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     const args = s.sets().at(-1)?.args;
     expect(args).toContain('in-progress');
-    expect(args).toContain('跑 0 · 等你 0');
+    expect(args).toContain('跑 0 · 等你 0 · 僵死 1 · ETA 未知 · 异常 0');
     expect(args).not.toContain('--read');
     expect(args).not.toContain('--unread');
   });
