@@ -52,10 +52,17 @@ import {
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate } from '../src/generate';
 import { loadPlan, milestones, type Plan } from '../src/plan';
-import { redact as boardRedact } from '../src/board/detail';
+import { detailOf, redact as boardRedact } from '../src/board/detail';
+import { rowOf } from '../src/board/data';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
+const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | null = null) => ({
+  kind,
+  reason,
+  evidence: [],
+  debt: [],
+});
 let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
 afterEach(() => {
   engineBoundary?.mockRestore();
@@ -457,21 +464,28 @@ describe('HF3 latest-engine recovery', () => {
           ? '{invalid'
           : JSON.stringify({
               disposition: sample === 'repair' ? 'repair' : 'advance',
+              decision: fixtureDecision(sample === 'repair' ? 'repair' : 'advance'),
               head: sample === 'unrelated' ? unrelated : head,
             })
       );
     if (sample === 'settle' || sample === 'invalid-settle' || sample === 'settle-repair') {
-      writeFileSync(join(art, 'verify-core.json'), JSON.stringify({ disposition: 'repair', head }));
+      writeFileSync(
+        join(art, 'verify-core.json'),
+        JSON.stringify({ decision: fixtureDecision('repair'), head })
+      );
       if (sample !== 'settle')
         writeFileSync(
           join(art, 'verify-core.json'),
-          JSON.stringify({ disposition: 'advance', head })
+          JSON.stringify({ decision: fixtureDecision('advance'), head })
         );
       writeFileSync(
         join(art, 'settle-core.json'),
         sample === 'invalid-settle'
           ? '{invalid'
-          : JSON.stringify({ disposition: sample === 'settle-repair' ? 'repair' : 'advance', head })
+          : JSON.stringify({
+              decision: fixtureDecision(sample === 'settle-repair' ? 'repair' : 'advance'),
+              head,
+            })
       );
     }
     writeFileSync(
@@ -736,13 +750,13 @@ describe('waitRun (archon stub)', () => {
     const s = stub([run('running')]);
     expect(waitRun(s.ledger, 0)).toMatchObject({ state: 'running', exit: EXIT.running });
   });
-  test('held gate surfaces the gate verdict file', () => {
+  test('held gate without a delivery artifact is unknown', () => {
     const s = stub([
       run('failed', { output_root: '/x', nodes: [{ nodeId: 'gate-m1', state: 'failed' }] }),
     ]);
     const art = join('/x', 'artifacts', 'runs', 'r');
     expect(waitRun(s.ledger, 5)).toMatchObject({
-      state: 'held:gate',
+      state: 'held:engine_suspect',
       exit: EXIT.held,
       node: 'gate-m1',
       evidence: art,
@@ -1304,18 +1318,26 @@ describe('brief / land (archon stub)', () => {
     expect(code).toBe(0);
     const lines = out.split('\n');
     expect(lines[0]).toStartWith('sa1 completed');
-    expect(lines).toContain('gate-m1-r1: fix (review_failed) debt=0');
-    expect(lines).toContain('gate-m1-r2: pass debt=1');
+    expect(lines).toContain('gate-m1-r1: unknown debt=0');
+    expect(lines).toContain('gate-m1-r2: unknown debt=0');
     expect(lines).toContain('git merge --ff-only sa/sa1');
     expect(lines).toContain(`evidence: ${art}`);
     expect(lines.length).toBeLessThanOrEqual(20);
   });
   test('report: states, review rounds, first pass, escalations, node seconds, debt, recoveries', () => {
     const art = withArtifacts('failed', {
-      'gate-m1-r1.json': { verdict: 'pass', reason: null, debt: ['d1', 'd2'] },
-      'gate-m2-r1.json': { verdict: 'fix', reason: 'review_failed', debt: [] },
-      'gate-m2-r2.json': { verdict: 'fix', reason: 'review_failed', debt: [] },
-      'gate-m2-r3.json': { verdict: 'escalate', reason: 'review_failed+review_limit', debt: [] },
+      'gate-m1-r1.json': {
+        decision: { kind: 'debt', reason: null, evidence: [], debt: ['d1', 'd2'] },
+      },
+      'gate-m2-r1.json': {
+        decision: { kind: 'repair', reason: 'review_failed', evidence: [], debt: [] },
+      },
+      'gate-m2-r2.json': {
+        decision: { kind: 'repair', reason: 'review_failed', evidence: [], debt: [] },
+      },
+      'gate-m2-r3.json': {
+        decision: { kind: 'block', reason: 'review_failed+review_limit', evidence: [], debt: [] },
+      },
     });
     const nodes = [
       { nodeId: 'code-core', state: 'completed', durationMs: 61_400 },
@@ -2100,7 +2122,38 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   };
   const resumes = (calls: string[]): number =>
     calls.filter(c => c.startsWith('workflow resume')).length;
-  const gate = (reason: string) => ({ verdict: 'escalate', reason, milestone: 'm1', debt: [] });
+  const gate = (reason: string) => ({
+    verdict: 'escalate',
+    reason,
+    milestone: 'm1',
+    debt: [],
+    decision: { kind: 'block', reason, evidence: ['events:code-core:0'], debt: [] },
+  });
+
+  test('single delivery decision: green redline self-report has identical status, brief and board projections', () => {
+    const s = held('gate-m1-r1', {
+      'verify-core.coder.json': {
+        status: 'blocked',
+        error_class: 'redline',
+        needs: [{ cap: 'network' }],
+        milestone: 'm1',
+      },
+      'gate-m1-r1.json': {
+        ...gate('coder_redline'),
+        decision: saCheck.deliveryDecision({ rechecks: [{ ok: true, diff_hash: '', same: false }] })
+          .decision,
+      },
+    });
+    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    const brief = captured(() => main(['brief', 'sa1'])).out;
+    const view = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+    const board = detailOf(s.ledger, rowOf(s.ledger, view, { now: Date.now() }));
+    expect(status.needs).toBeUndefined();
+    expect(brief).not.toContain('need ');
+    expect(brief).toContain('gate-m1-r1: pass debt=0');
+    expect(board.needs).toEqual([]);
+    expect(board.gates[0]).toMatchObject({ verdict: 'pass', reason: null });
+  });
 
   const asksFile = (): string => join(process.env.SUPERAGENT_HOME ?? '', 'asks.json');
   test('M2-05 repair-p failed without green evidence enters an existing hold and accepts retry', () => {
@@ -2139,7 +2192,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   test('I5 latest settle red evidence does not inherit first verify green; unknown reasons are suspect', () => {
     const s = held('settle-core', {
       'verify-core.json': { ok: true },
-      'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' },
+      'settle-core.json': {
+        ok: false,
+        decision: gate('repair_exhausted:acceptance_failed').decision,
+      },
     });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
     expect(resumes(s.calls())).toBe(0);
@@ -2180,7 +2236,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     'I3 completed run refuses decide and resume/adopt; late %s is superseded and counted stale',
     answer => {
       const s = held('settle-core', {
-        'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' },
+        'settle-core.json': {
+          ok: false,
+          decision: gate('repair_exhausted:acceptance_failed').decision,
+        },
       });
       tick();
       setGet(s.root, run('completed'));
@@ -2216,7 +2275,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       const s = held(node, {
         [`${node}.json`]: {
           ok: node === 'code-core',
-          reason: node === 'code-core' ? 'unknown_reason' : 'repair_exhausted:acceptance_failed',
+          reason: 'unknown_reason',
+          ...(node === 'settle-core'
+            ? { decision: gate('repair_exhausted:acceptance_failed').decision }
+            : {}),
         },
       });
       patchLedger(s.root, { engine_hash: 'old-ui-hash', workflow_hash: engineHash() });
@@ -2232,7 +2294,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   );
   test('I5 changed fingerprint permits one deterministic adopt, then stops at the current engine', () => {
     const s = held('settle-core', {
-      'settle-core.json': { ok: false, reason: 'repair_exhausted:acceptance_failed' },
+      'settle-core.json': {
+        ok: false,
+        decision: gate('repair_exhausted:acceptance_failed').decision,
+      },
     });
     const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
     plan.deadline = '2099-01-01T00:00:00Z';
@@ -2245,7 +2310,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     mkdirSync(art, { recursive: true });
     writeFileSync(
       join(art, 'settle-core.json'),
-      '{"ok":false,"reason":"repair_exhausted:acceptance_failed"}'
+      JSON.stringify({ ok: false, decision: gate('repair_exhausted:acceptance_failed').decision })
     );
     setGet(s.root, {
       ...run('failed'),
@@ -2285,6 +2350,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     writeFileSync(log, Array.from({ length: 100 }, (_, i) => `line ${String(i + 1)}`).join('\n'));
     const s = held('gate-m1-r3', {
       'gate-m1-r3.json': gate('invalid_review'),
+      'gate-m1-r3.ledger.json': {
+        blocking: [{ id: 'R1-1', severity: 'high', file: 'a.ts', line: 3, evidence: 'boom' }],
+      },
       'gate-m1-r3.review.json': {
         status: 'FAIL',
         findings: [
@@ -2309,7 +2377,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
     for (const x of [
       '`bun test`',
-      '此失败在基线已存在',
+      '基线状态未知',
       '- R1-1 [high] a.ts:3 boom',
       'line 100',
       'gate reason：invalid_review',
@@ -2350,65 +2418,18 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(hint).toContain('基线状态未知');
     expect(hint).not.toContain('基线已存在');
   });
-  test('held:gate: mixed baseline failures name only the proven pre-existing command', () => {
-    const s = held('gate-m1-r3', {
-      'gate-m1-r3.json': gate('invalid_review'),
-      'diff-m1-r3.json': {
-        failed: ['bun test regression', 'bun test old'],
-        base_pass: true,
-        base_results: [
-          { cmd: 'bun test regression', pass: true },
-          { cmd: 'bun test old', pass: false },
-        ],
-      },
-    });
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
-    const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
-    const preexisting = hint.split('\n').filter(line => line.includes('基线已存在'));
-    expect(preexisting).toEqual([
-      '`bun test old`：此失败在基线已存在，与本包无关就记 deviations 并继续。',
-    ]);
-    expect(hint).toContain('`bun test regression`：未证明基线同样失败，按本包引入处理。');
-  });
   test('two no_change gates in a row stop retrying', () => {
     const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_change' });
     expect(resumes(s.calls())).toBe(0);
   });
-  test('needs[] or a red line asks instead of retrying and surfaces the needs', () => {
-    const need = { cap: 'network', why: 'registry', minimal_ask: 'allow npm registry' };
-    const s = held('gate-m1-r1', {
-      'gate-m1-r1.json': gate('acceptance_failed'),
-      'verify-core.json': { disposition: 'suspend' },
-      'verify-core.coder.json': {
-        status: 'blocked',
-        error_class: 'env',
-        needs: [need],
-        milestone: 'm1',
-      },
-    });
-    expect(tick()[0]).toMatchObject({
-      action: 'ask',
-      reason: 'needs',
-      needs: [{ tag: 'verify-core', ...need }],
-    });
-    const { out } = captured(() => main(['brief', 'sa1']));
-    expect(out).toContain('need network (verify-core): allow npm registry');
-    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).needs).toEqual([
-      { tag: 'verify-core', ...need },
-    ]);
-    expect(resumes(s.calls())).toBe(0);
-    const r = held('gate-m1-r1', {
-      'gate-m1-r1.json': gate('coder_redline'),
-      'verify-core.coder.json': {
-        status: 'blocked',
-        error_class: 'redline',
-        needs: [],
-        milestone: 'm1',
-      },
-    });
+  test('only a recorded permission decision surfaces a current need', () => {
+    const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('coder_redline') });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'redline' });
-    expect(resumes(r.calls())).toBe(0);
+    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    expect(status.needs).toMatchObject([{ tag: 'gate-m1-r1', cap: 'permission' }]);
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('need permission');
+    expect(resumes(s.calls())).toBe(0);
   });
   test('held gate ignores needs from advanced nodes when retrying', () => {
     const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };
@@ -2586,7 +2607,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     },
     needs: () => ({
       s: held('gate-m1-r1', {
-        'gate-m1-r1.json': gate('acceptance_failed'),
+        'gate-m1-r1.json': gate('coder_needs'),
         'verify-core.coder.json': {
           status: 'blocked',
           error_class: 'env',
@@ -2598,7 +2619,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     }),
     redline: () => ({
       s: held('verify-api', {
-        'verify-api.json': { reason: 'coder_redline' },
+        'verify-api.json': { milestone: 'm1', decision: gate('coder_redline').decision },
         'code-api.coder.json': {
           status: 'blocked',
           error_class: 'redline',
@@ -2609,7 +2630,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       first: {},
     }),
     coder_blocked: () => ({
-      s: held('verify-core', { 'verify-core.json': { reason: 'coder_error:sandbox_denied' } }),
+      s: held('verify-core', {
+        'verify-core.json': { decision: gate('coder_error:sandbox_denied').decision },
+      }),
       first: {},
     }),
     budget: () => {
@@ -2806,12 +2829,6 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   for (const node of ['verify-core', 'settle-core']) {
     for (const reason of [
       'coder_redline',
-      'coder_needs',
-      'coder_error:sandbox_denied',
-      'coder_error:permission_denied',
-      'coder_error:plan_invalid',
-      'coder_error:scope_violation',
-      'coder_error:budget_exhausted',
       'budget_launches_exceeded',
       'budget_tokens_exceeded',
       'future_reason',
@@ -2820,7 +2837,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       test(`${node} ${reason || 'missing'} asks without model launch`, () => {
         const s = held(
           node,
-          reason ? { [`${node}.json`]: { disposition: 'suspend', reason } } : {}
+          reason ? { [`${node}.json`]: { milestone: 'm1', decision: gate(reason).decision } } : {}
         );
         const expected =
           reason === 'coder_redline'
@@ -2837,15 +2854,13 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         expect(loadLedger('sa1').dispositions?.at(-1)?.reason).toBe(expected);
       });
     }
-    for (const reason of [
-      'coder_error:env',
-      'coder_error:vendor_unavailable_all',
-      'coder_output_invalid',
-    ]) {
+    for (const reason of ['environment']) {
       test(`${node} ${reason} reruns the milestone, preserves evidence and respects its cap`, () => {
         const log = join(tmp(), 'accept.log');
         writeFileSync(log, 'acceptance failed\npassword=synthetic\nlast evidence');
-        const s = held(node, { [`${node}.json`]: { disposition: 'suspend', reason, log } });
+        const s = held(node, {
+          [`${node}.json`]: { milestone: 'm1', decision: gate(reason).decision, log },
+        });
         const sup = supervisor(s.root, 'pending');
         expect(tick()[0]).toMatchObject({ action: 'auto_retry', milestone: 'm1', attempt: 1 });
         expect(sup()).toEqual([]);
@@ -2857,7 +2872,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).not.toContain(
           'synthetic'
         );
-        const kind = reason.startsWith('coder_error:') ? 'environment' : 'coder';
+        const kind = 'environment';
         if (kind === 'environment') {
           expect(tick()[0]).toMatchObject({ action: 'none', reason: 'backoff' });
           expect(resumes(s.calls())).toBe(1);
@@ -3059,7 +3074,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
     expect(readFileSync(asksFile(), 'utf8')).toBe(bad);
     const r = held('verify-api', {
-      'verify-api.json': { reason: 'coder_redline' },
+      'verify-api.json': { milestone: 'm1', decision: gate('coder_redline').decision },
       'code-api.coder.json': {
         status: 'blocked',
         error_class: 'redline',
@@ -3161,6 +3176,18 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
 }, 180000);
 
 describe('HF9 decision titles', () => {
+  const artifact = (file: string, data: unknown) => {
+    const out = data as { verdict?: string; reason?: string };
+    return (file.startsWith('verify-') || file.startsWith('gate-')) && file.split('.').length === 2
+      ? {
+          ...out,
+          decision: fixtureDecision(
+            out.verdict === 'pass' ? 'advance' : 'block',
+            out.reason ?? null
+          ),
+        }
+      : data;
+  };
   const setup = () => {
     const s = stub([]),
       repo = join(s.root, 'BestIFA');
@@ -3198,7 +3225,7 @@ describe('HF9 decision titles', () => {
     const art = join(repo, 'out/artifacts/runs/r');
     mkdirSync(art, { recursive: true });
     const put = (file: string, data: unknown): void =>
-      writeFileSync(join(art, file), JSON.stringify(data));
+      writeFileSync(join(art, file), JSON.stringify(artifact(file, data)));
     put('verify-W4.json', { reason: 'acceptance_failed', failed: ['synthetic-check'] });
     put('verify-W4.coder.json', {
       milestone: 'm1',
@@ -3220,7 +3247,7 @@ describe('HF9 decision titles', () => {
   };
   const details: Record<string, string> = {
     redline: '将军命中红线',
-    needs: '能力请求1项',
+    needs: '证据缺失',
     coder_blocked: '将军受执行约束阻断',
     budget: '已用/上限1/1',
     review_limit: '轮次3，未决1',
@@ -3260,8 +3287,8 @@ describe('HF9 decision titles', () => {
     });
   }
   test('HF9 missing/corrupt display evidence does not prevent delivery', () => {
-    const { s, r, art } = setup();
-    writeFileSync(join(art, 'verify-W4.json'), '{"reason":"coder_redline"}');
+    const { s, r, art, put } = setup();
+    put('verify-W4.json', { reason: 'coder_redline' });
     rmSync(join(art, 'verify-W4.coder.json'));
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
     const sup = supervisor(s.root, 'pending');
@@ -3396,7 +3423,7 @@ describe('HF9 decision titles', () => {
     cpSync(join(s.ledger.repo, 'out'), join(repo, 'out'), { recursive: true });
     r.output_root = join(repo, 'out');
     const put = (file: string, data: unknown): void =>
-      writeFileSync(join(repo, 'out/artifacts/runs/r', file), JSON.stringify(data));
+      writeFileSync(join(repo, 'out/artifacts/runs/r', file), JSON.stringify(artifact(file, data)));
     Object.assign(s.ledger, {
       repo,
       gen_dir: join(repo, 'gen'),
@@ -3476,7 +3503,7 @@ describe('HF9 decision titles', () => {
     const { s, node, value } = maximumTitle('budget');
     writeFileSync(
       join(s.ledger.repo, 'out/artifacts/runs/r', `${node}.json`),
-      JSON.stringify({ reason: 'budget_launches_exceeded' })
+      JSON.stringify({ decision: fixtureDecision('block', 'budget_launches_exceeded') })
     );
     const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({
       launches: value,

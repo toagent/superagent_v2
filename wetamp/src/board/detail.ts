@@ -6,6 +6,8 @@ import {
   asksOf,
   gatesOf,
   needsOf,
+  decisionOf,
+  decisionVerdict,
   readJson,
   type Asks,
   type Disposition,
@@ -113,12 +115,13 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
       const file = confined(l, join(art ?? '', f)); // 证据目录里的软链也可能指向外面
       if (!file) continue;
       const g = readJson(file) as Gate;
+      const decision = decisionOf(g);
       d.gates.push({
         milestone,
         round: Number(round),
-        verdict: g.verdict,
-        reason: g.reason,
-        debt: g.debt.length,
+        verdict: decisionVerdict(decision),
+        reason: decision?.reason ?? null,
+        debt: decision?.debt.length ?? 0,
       });
     }
   });

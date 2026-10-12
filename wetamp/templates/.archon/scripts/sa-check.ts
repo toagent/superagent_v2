@@ -47,8 +47,18 @@ interface Coder {
   needs?: unknown[];
 }
 type Disposition = 'advance' | 'repair' | 'suspend';
+export type DeliveryDecision = {
+  [K in 'advance' | 'debt' | 'repair' | 'block']: {
+    kind: K;
+    reason: string | null;
+    evidence: string[];
+    debt: string[];
+  };
+}['advance' | 'debt' | 'repair' | 'block'];
 export interface Accept {
   ok: boolean;
+  decision?: DeliveryDecision;
+  milestone?: string;
   diff_hash: string;
   same: boolean;
   head?: string;
@@ -221,7 +231,7 @@ function run(
 }
 
 /**
- * 存档将军输出供 supervise-tick 聚合 needs、评审核对 deviations。blocked 只在命中红线或 needs 非空时成立，
+ * 存档将军输出供评审核对 deviations；控制状态仅消费交付判定。blocked 只在命中红线或 needs 非空时成立，
  * 否则按 partial 记（照常进入修复循环）。输出不是 JSON 时原样存档，不让验收因此失败。
  */
 function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
@@ -248,53 +258,23 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
   );
 }
 
-/** 将军自己也解决不了、修复轮只会再烧一次调用的错误类：直接挂起交给处置表。 */
-export const SUSPEND_CLASSES = [
-  'env',
-  'sandbox_denied',
-  'permission_denied',
-  'vendor_unavailable_all',
-  'budget_exhausted',
-  'plan_invalid',
-  'scope_violation',
-];
-
-/**
- * I1：非法输出优先挂起；blocked needs 与自报红线一样只在验收未通过时挂起，真红线由 hooks 拦截。
- * 其余以验收证据为准，自报冲突交评审核实。
- * 仅红验收按错误类挂起或修复；保持修复原因串，供 HOLD_POLICY 消费。
- */
-export function disposition(
-  raw: string,
-  ok: boolean
-): {
-  disposition: Disposition;
-  reason: string | null;
-  error_class_ignored?: true;
-  coder_partial?: true;
-  self_report_conflict?: true;
-} {
-  const to = (d: Disposition, reason: string | null) => ({ disposition: d, reason });
-  const green = ok ? to('advance', null) : to('repair', 'acceptance_failed');
-  if (!raw || raw === 'null') return green;
-  let c: Coder;
-  try {
-    c = JSON.parse(raw) as Coder;
-  } catch {
-    return to('suspend', 'coder_output_invalid');
-  }
-  if (ok)
-    return {
-      ...green,
-      ...(c.status !== 'done' || c.error_class ? { self_report_conflict: true } : {}),
-      ...(c.status === 'partial' ? { coder_partial: true } : {}),
-      ...(c.error_class ? { error_class_ignored: true } : {}),
-    };
-  if (c.status === 'blocked' && (c.needs?.length ?? 0) > 0) return to('suspend', 'coder_needs');
-  if (c.error_class === 'redline') return to('suspend', 'coder_redline');
-  if (c.error_class && SUSPEND_CLASSES.includes(c.error_class))
-    return to('suspend', `coder_error:${c.error_class}`);
-  return to('repair', c.status === 'done' ? 'acceptance_failed' : 'coder_partial');
+/** Compatibility wiring is a projection of the delivery decision, never a second policy. */
+export function disposition(raw: string, ok: boolean, check?: Accept, permissions: string[] = []) {
+  const { decision, audit } = deliveryDecision({
+    rechecks: [check ?? { ok, diff_hash: '', same: false }],
+    permissions,
+    selfReport: raw,
+  });
+  return {
+    ...audit,
+    decision,
+    disposition: (decision.kind === 'block'
+      ? 'suspend'
+      : decision.kind === 'repair'
+        ? 'repair'
+        : 'advance') as Disposition,
+    reason: decision.reason,
+  };
 }
 
 const RISKS = ['G0', 'G1', 'G2'] as const;
@@ -411,11 +391,6 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
       if (repairs >= MAX_ROUNDS - 1)
         Object.assign(f, { repair_rounds: repairs, debt_reason: 'repair_limit' });
     }
-  const result = disposition(
-    coder,
-    !dirty && failures.every(f => f.failure_class !== 'product' || f.debt_reason === 'repair_limit')
-  );
-  saveCoder(tag, coder, result.error_class_ignored);
   const baseResults =
     base && failed.length
       ? probe(
@@ -427,9 +402,26 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   if (baseResults.length) appendFileSync(log, `# base_results: ${JSON.stringify(baseResults)}\n`);
   else if (base && failed.length)
     appendFileSync(log, `# baseline unknown: see ${join(artifacts, `${tag}.probe.log`)}\n`);
+  const result = disposition(
+    coder,
+    ok,
+    {
+      ok,
+      diff_hash: hash,
+      same: false,
+      failed,
+      failures,
+      workspace_clean: !dirty,
+      log,
+      base_pass: baseResults.length ? baseResults.some(r => r.pass) : null,
+    },
+    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : []
+  );
+  saveCoder(tag, coder, result.error_class_ignored);
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
     ok,
+    milestone: env('MILESTONE'),
     ...result,
     failed,
     failures,
@@ -461,7 +453,12 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
 function finish(tag: string, out: Record<string, unknown> & Accept): void {
   if (out.disposition !== 'suspend') {
     const over = budget();
-    if (over) Object.assign(out, { disposition: 'suspend', reason: over });
+    if (over)
+      Object.assign(out, {
+        disposition: 'suspend',
+        reason: over,
+        decision: { ...out.decision, kind: 'block', reason: over },
+      });
   }
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   emit(out);
@@ -491,7 +488,11 @@ function settle(): void {
   }
   const out = acceptOnce(tag, repaired);
   if (out.disposition === 'repair')
-    Object.assign(out, { disposition: 'suspend', reason: `repair_exhausted:${out.reason ?? ''}` });
+    Object.assign(out, {
+      disposition: 'suspend',
+      reason: `repair_exhausted:${out.reason ?? ''}`,
+      decision: { ...out.decision, kind: 'block', reason: `repair_exhausted:${out.reason ?? ''}` },
+    });
   finish(tag, out);
 }
 
@@ -679,10 +680,6 @@ export function ledgerOf(
   return { blocking: strip(true), debt: strip(false), closed };
 }
 
-/** CLI 重试提示没有完整验证/模式证据，保守保留阻塞；gate 用完整输入派生最终台账。 */
-export const openBlocking = (reviews: (Review | null)[], risk: string): Set<string> =>
-  new Set(ledgerOf(reviews, risk, { strict: true }).blocking.map(e => e.id));
-
 /** 评审债 = 末份评审员 debt[] ∪ 台账里 open 且不阻塞的条目（派生项始终并入，不信任评审员只登记部分）。 */
 const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
   ...new Set([
@@ -705,30 +702,86 @@ type Verdict = 'pass' | 'fix' | 'escalate';
  * 先判到期，再判修复无变化（same:true 时评审节点已跳过），再拒重复 id，最后才看能否 PASS。
  * 验收未 advance 时本轮评审被跳过（review 为 null）：按 diff 的 reason 直接进入修复，不烧评审调用。
  */
-export function decide(input: {
-  reviews: (Review | null)[];
+export function deliveryDecision(input: {
+  selfReport?: string;
+  reviews?: (Review | null)[];
+  permissions?: string[];
+  reviewRequired?: boolean;
   rechecks: Accept[];
-  risk: string;
+  risk?: string;
   expired?: boolean;
   qualifiedReview?: boolean;
   strict?: boolean;
-}): { verdict: Verdict; rounds: number; reason: string | null; debt: string[]; ledger: Ledger } {
-  const { reviews } = input;
+}) {
+  let coder: Coder | undefined;
+  try {
+    coder = JSON.parse(input.selfReport ?? '') as Coder;
+  } catch {
+    /* Self-report is diagnostic only. */
+  }
+  const audit = {
+    ...(coder && (coder.status !== 'done' || coder.error_class || coder.needs?.length)
+      ? { self_report_conflict: true as const }
+      : {}),
+    ...(coder?.status === 'partial' ? { coder_partial: true as const } : {}),
+    ...(coder?.error_class ? { error_class_ignored: true as const } : {}),
+  };
+  const reviews = input.reviews ?? [];
   const rounds = reviews.length;
   const check = input.rechecks.at(-1);
-  const ledger = ledgerOf(reviews, input.risk, { strict: input.strict, rechecks: input.rechecks });
-  const out = (verdict: Verdict, reason: string | null, debt: string[] = []) => ({
-    verdict,
-    rounds,
-    reason,
-    debt,
-    ledger,
+  const ledger = ledgerOf(reviews.length ? reviews : [null], input.risk ?? 'G1', {
+    strict: input.strict,
+    rechecks: input.rechecks,
   });
-  if (input.expired) return out('escalate', 'deadline');
+  const evidence = [
+    ...new Set([
+      ...(input.permissions ?? []),
+      ...input.rechecks.flatMap(c => [...(c.decision?.evidence ?? []), ...(c.log ? [c.log] : [])]),
+      ...[...ledger.blocking, ...ledger.debt].flatMap(e => (e.evidence ? [e.evidence] : [])),
+    ]),
+  ];
+  const out = (kind: DeliveryDecision['kind'], reason: string | null, debt: string[] = []) => ({
+    decision: { kind: kind === 'advance' && debt.length ? 'debt' : kind, reason, evidence, debt },
+    rounds,
+    ledger,
+    audit,
+  });
+  if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
+    return out('block', 'coder_redline');
+  if (!check) return out('block', 'engine_suspect');
+  const unknown = check.failures?.some(
+    f =>
+      f.failure_class === 'test_env' || (f.failure_class === 'baseline' && check.base_pass === null)
+  );
+  if (unknown) return out('block', 'environment');
+  const accepted =
+    check.workspace_clean !== false &&
+    (check.ok ||
+      ((check.failed?.length ?? 0) > 0 &&
+        check.failed?.every(
+          command =>
+            ledger.debt.some(e => e.command === command) ||
+            check.failures?.some(f => f.command === command && f.debt_reason === 'repair_limit')
+        )));
+  if (!input.reviews) {
+    const debt = debtOf(reviews, ledger);
+    for (const f of check.failures ?? [])
+      if (f.debt_reason === 'repair_limit') debt.push(`${f.command} [repair_limit] ${f.evidence}`);
+    return accepted ? out('advance', null, debt) : out('repair', 'acceptance_failed', debt);
+  }
+  if (input.expired) return out('block', 'deadline');
   // 同一份评审里 id 重复（含同 id 既 closed 又 open）：账本无法唯一解释，不放行也不降为债务
   if (reviews.some(r => r && new Set(r.findings.map(f => f.id)).size !== r.findings.length))
-    return out('escalate', 'invalid_review');
-  if (check?.same) {
+    return out('block', 'invalid_review');
+  if (
+    accepted &&
+    input.reviewRequired === false &&
+    reviews.every(r => r === null) &&
+    !input.strict &&
+    input.risk !== 'G2'
+  )
+    return out('advance', 'review_not_required', debtOf(reviews, ledger));
+  if (check.same) {
     const prior = reviews
       .map((r, i) => (r ? i : -1))
       .filter(i => i >= 0)
@@ -740,7 +793,7 @@ export function decide(input: {
       input.qualifiedReview === true &&
       reviews.at(-1) === null &&
       check.ok &&
-      check.disposition === 'advance' &&
+      check.decision?.kind === 'advance' &&
       review?.status === 'PASS' &&
       ledger.blocking.length === 0 &&
       ledger.debt.length === 0 &&
@@ -753,38 +806,47 @@ export function decide(input: {
       accepted.contract_hash === check.contract_hash &&
       accepted.risk === check.risk &&
       check.risk === input.risk;
-    return reusable ? out('pass', null) : out('escalate', 'no_change');
+    return reusable ? out('advance', null) : out('block', 'no_change');
   }
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
-  const accepted =
-    check?.ok === true ||
-    (check?.workspace_clean !== false &&
-      (check?.failed?.length ?? 0) > 0 &&
-      check?.disposition !== 'suspend' &&
-      check?.failed?.every(command => ledger.debt.some(e => e.command === command)));
   // A completed review's FAIL can describe only classified debt. Empty/unclassified FAIL stays a failure.
   const debtOnly =
     ledger.blocking.length === 0 &&
     ledger.debt.some(e => e.debt_reason) &&
     (last?.status === 'PASS' || (last?.status === 'FAIL' && last.findings.length > 0));
-  if (accepted && debtOnly) return out('pass', null, debt);
+  if (accepted && debtOnly) return out('advance', null, debt);
   let reason: string;
   if (!last) {
-    if (!check?.disposition || check.disposition === 'advance') throw new Error('gate: no review');
+    if (accepted) throw new Error('gate: no review');
     reason = check.reason ?? 'acceptance_failed';
   } else {
     const ok = accepted ?? false;
     if (last.status === 'PASS' && ledger.blocking.length === 0 && ok)
-      return out('pass', null, debt);
+      return out('advance', null, debt);
     reason = !ok
       ? 'acceptance_failed'
       : { PASS: 'review_inconsistent', FAIL: 'review_failed', INCOMPLETE: 'review_incomplete' }[
           last.status
         ];
   }
-  if (rounds >= MAX_ROUNDS) return out('escalate', `${reason}+review_limit`, debt);
-  return out(last?.status === 'INCOMPLETE' ? 'escalate' : 'fix', reason, debt);
+  if (rounds >= MAX_ROUNDS) return out('block', `${reason}+review_limit`, debt);
+  return out(last?.status === 'INCOMPLETE' ? 'block' : 'repair', reason, debt);
+}
+
+export function decide(input: Parameters<typeof deliveryDecision>[0]) {
+  const { decision, ...rest } = deliveryDecision(input);
+  return {
+    ...rest,
+    decision,
+    verdict: (decision.kind === 'block'
+      ? 'escalate'
+      : decision.kind === 'repair'
+        ? 'fix'
+        : 'pass') as Verdict,
+    reason: decision.reason,
+    debt: decision.debt,
+  };
 }
 
 const expired = (): boolean => Date.now() > Date.parse(plan().deadline);
@@ -797,11 +859,33 @@ interface RunEvent {
   event_type: string;
   step_name?: string;
   data?: {
+    event?: import('../../../../packages/provider-contract/src/events').ProviderEvent;
+    hook_event?: string;
+    exit_code?: number;
     binding?: Binding;
     spend?: {
       tokens?: { source: string; value?: { input: number; output: number; cacheRead?: number } };
     };
   };
+}
+/** PreToolUse exit 2 is the provider hook protocol's blocking denial, not error prose. */
+export function permissionEvidence(
+  events: RunEvent[],
+  packages: string[],
+  milestone: string
+): string[] {
+  const nodes = new Set(packages.flatMap(id => [`code-${id}`, `repair-${id}`]));
+  for (let r = 1; r <= MAX_ROUNDS; r++) nodes.add(`fix-${milestone}-r${String(r)}`);
+  return events.flatMap((e, i) => {
+    if (!nodes.has(e.step_name ?? '')) return [];
+    const hook = e.event_type === 'provider_event' ? e.data?.event : undefined;
+    const denied = hook?.type === 'hook' && hook.hookEvent === 'PreToolUse' && hook.exitCode === 2;
+    const legacy =
+      e.event_type === 'hook_activity' &&
+      e.data?.hook_event === 'PreToolUse' &&
+      e.data.exit_code === 2;
+    return denied || legacy ? [`events:${e.step_name ?? ''}:${String(i)}`] : [];
+  });
 }
 let events: RunEvent[] | undefined;
 /**
@@ -975,39 +1059,13 @@ function gate(): void {
     risk,
     strict: plan().mode === 'strict',
     expired: expired(),
+    reviewRequired: env('REVIEW') !== '0',
+    permissions: env('ARCHON')
+      ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'))
+      : [],
   };
-  const tested =
-    env('REVIEW') === '0' &&
-    !decision.strict &&
-    !decision.expired &&
-    reviews.every(r => r === null) &&
-    rechecks.at(-1)?.disposition === 'advance' &&
-    risk !== 'G2';
-  let d: ReturnType<typeof decide>;
-  if (tested) {
-    const ledger: Ledger = {
-      blocking: [],
-      closed: [],
-      debt: (rechecks.at(-1)?.failures ?? [])
-        .filter(f => f.failure_class !== 'product' || f.debt_reason)
-        .map(f => ({
-          id: `check:${sha(f.command).slice(0, 16)}`,
-          severity: 'blocker',
-          file: f.command,
-          line: 0,
-          round,
-          ...f,
-          debt_reason: f.debt_reason ?? 'non_product',
-        })),
-    };
-    d = {
-      verdict: 'pass',
-      rounds: round,
-      reason: 'review_not_required',
-      debt: debtOf(reviews, ledger),
-      ledger,
-    };
-  } else d = decide(decision);
+  let d = decide(decision);
+  const tested = d.reason === 'review_not_required';
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
     .filter(i => i >= 0)
@@ -1063,6 +1121,19 @@ function gate(): void {
   if (over) Object.assign(d, { verdict: 'escalate', reason: over });
   if (d.verdict === 'pass' && rechecks.at(-1)?.same && reviewed !== undefined)
     writeFileSync(reviewFile, JSON.stringify(reviews[reviewed], null, 2));
+  d.decision = {
+    ...d.decision,
+    kind:
+      d.verdict === 'escalate'
+        ? 'block'
+        : d.verdict === 'fix'
+          ? 'repair'
+          : d.debt.length
+            ? 'debt'
+            : 'advance',
+    reason: d.reason,
+    debt: d.debt,
+  };
   const { ledger: _, ...rest } = d;
   void _;
   const out = {

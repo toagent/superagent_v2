@@ -385,7 +385,7 @@ describe('loader robustness', () => {
     const load = createLoader();
     const states = async (): Promise<string[]> =>
       (await load(50)).rows.map(r => `${r.run_id}:${r.state}`).sort();
-    expect(await states()).toEqual(['f:held:engine_suspect', 'g:held:gate']);
+    expect(await states()).toEqual(['f:held:engine_suspect', 'g:held:engine_suspect']);
     // cancel/reject 只改 archon，不写 ledger（mtime 不变）
     for (const id of ['f', 'g'])
       writeFileSync(
@@ -598,7 +598,7 @@ describe('detail', () => {
     expect(d.packages).toEqual([]);
     expect(d.events).toEqual([]);
     expect(d.gates).toEqual([]);
-    expect(d.errors).toHaveLength(3);
+    expect(d.errors).toHaveLength(4);
     for (const e of d.errors) expect(e).toContain('（路径越界，已跳过）');
     expect(detailLines(d, Date.now()).join('\n')).not.toContain('leak');
   });
@@ -664,8 +664,8 @@ describe('detail', () => {
       'b:m2:human',
     ]);
     expect(d.gates).toEqual([
-      { milestone: 'm1', round: 1, verdict: 'fix', reason: 'review_failed', debt: 0 },
-      { milestone: 'm1', round: 2, verdict: 'pass', reason: null, debt: 1 },
+      { milestone: 'm1', round: 1, verdict: 'unknown', reason: null, debt: 0 },
+      { milestone: 'm1', round: 2, verdict: 'unknown', reason: null, debt: 0 },
     ]);
     expect(d.events).toHaveLength(8);
     const last = d.events.at(-1);
@@ -673,8 +673,8 @@ describe('detail', () => {
     expect(last?.out?.length).toBeLessThanOrEqual(120);
     expect(last?.out).toEndWith('secret: ***');
     expect(d.next[0]).toBe('superagent decide sa1 approve|reject|retry [--pkg id]');
-    expect(detailLines(d, Date.now())).toContain('need services (a): 起本机 postgres');
-    expect(d.needs).toEqual([{ tag: 'a', cap: 'services', minimal_ask: '起本机 postgres' }]);
+    expect(detailLines(d, Date.now()).join('\n')).not.toContain('need services');
+    expect(d.needs).toEqual([]);
     expect(detailLines(d, Date.now()).join('\n')).not.toContain('obsolete request');
     expect(readFileSync(join(art, 'old.coder.json'), 'utf8')).toBe(old);
     expect(d.errors).toEqual([]);
@@ -725,7 +725,7 @@ test('summarize, report and the board share one summary', async () => {
   mkdirSync(art, { recursive: true });
   writeFileSync(
     join(art, 'gate-m1-r1.json'),
-    JSON.stringify({ verdict: 'pass', reason: null, debt: ['d1'] })
+    JSON.stringify({ decision: { kind: 'debt', reason: null, evidence: [], debt: ['d1'] } })
   );
   const g = ledger(
     'g',

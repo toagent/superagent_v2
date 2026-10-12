@@ -20,6 +20,7 @@ import {
   loadLedger,
   summarize,
   evidenceJson,
+  decisionOf,
   type Ledger,
   type Pair,
 } from '../cli';
@@ -176,8 +177,7 @@ export function rowOf(
   try {
     const file = current ? confined(l, join(artifactsOf(run), current + '.json')) : null;
     const value: unknown = file ? JSON.parse(readFileSync(file, 'utf8')) : null;
-    if (value && typeof value === 'object' && 'reason' in value && typeof value.reason === 'string')
-      nodeReason = value.reason;
+    nodeReason = decisionOf(value)?.reason ?? '';
   } catch {
     /* Missing outcome provides no reason. */
   }
