@@ -5,18 +5,21 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { launcher, type Launcher } from './launcher';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
 import { setImmediate as yieldEventLoop, setTimeout as delay } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
-import { home } from './config';
+import { home, loadTiers, resolveRoute } from './config';
+import { jobDuration } from './board/eta';
+import { QUERY_TIMEOUT_MS } from './archon';
 import { newRunId } from './generate';
 import { jobSession } from './usage';
-import { isTier, type Tier } from './roles';
+import { isTier, ROUTE_ROLE, type Tier } from './roles';
 export { TIERS, isTier, type Tier } from './roles';
 
 export type Kind = 'claude' | 'codex' | 'opencode' | 'other';
@@ -41,10 +44,11 @@ export interface Job {
   ended_at?: string;
   exit_code?: number;
   signal?: string;
+  worktree?: { path: string; branch: string; base: string; repo: string };
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--card <path>] [--log <path>] [--role commander|general|strategist] -- <cmd...> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--worktree <branch> --base <ref>] -- <cmd...> | job clean <id> | jobs [--json] [--all]';
 const DAY_MS = 86_400_000;
 export const RECENT_MS = 3_600_000;
 export interface MemoryReading {
@@ -114,7 +118,7 @@ export function alive(pid: number): boolean {
 }
 
 /**
- * 全部登记作业（新的在前）。已结束超过 24h 的删除；queued/running 的子进程与 wrapper 都不在了的改记 lost 并回写
+ * 全部登记作业（新的在前）。已结束超过 24h 且无登记工作树的删除；queued/running 的子进程与 wrapper 都不在了的改记 lost 并回写
  * （ended_at=发现时刻，24h 后同样回收）。readonly 不回写/删除、不伪造 ended_at。wrapper 还在就不判；坏文件单列 bad。
  */
 export function readJobs(now = Date.now(), readonly = false): { jobs: Job[]; bad: string[] } {
@@ -152,7 +156,8 @@ export function readJobs(now = Date.now(), readonly = false): { jobs: Job[]; bad
       bad.push(`${f}: ${(e as Error).message}`);
       continue;
     }
-    if (!readonly && j.ended_at && now - Date.parse(j.ended_at) > DAY_MS) unlinkSync(file);
+    if (!readonly && !j.worktree && j.ended_at && now - Date.parse(j.ended_at) > DAY_MS)
+      unlinkSync(file);
     else jobs.push(j);
   }
   return { jobs: jobs.sort((a, b) => b.started_at.localeCompare(a.started_at)), bad };
@@ -162,13 +167,47 @@ export function readJobs(now = Date.now(), readonly = false): { jobs: Job[]; bad
 export const recent = (j: Job, now: number): boolean =>
   ['queued', 'running'].includes(j.state) || now - Date.parse(j.ended_at ?? '') <= RECENT_MS;
 
+/** Display only: neither stalled nor ETA changes the registered lifecycle. */
+// prettier-ignore
+export function projectJob(j: Job, history: Job[], now: number): Job & { stalled?: boolean; eta?: string } {
+  if (j.state !== 'running') return j;
+  let updated = Date.parse(j.started_at);
+  try { if (j.log) updated = Math.max(updated, statSync(j.log).mtimeMs); }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+  const seconds = jobDuration(j, history);
+  return { ...j, stalled: !!j.log && now - updated > 600_000,
+    ...(seconds !== null ? { eta: new Date(Date.parse(j.started_at) + seconds * 1000).toISOString() } : {}) };
+}
+
+// prettier-ignore
+const git = (cwd: string, ...args: string[]): string => {
+  const p = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+  if (p.exitCode !== 0) throw new Error(p.stderr.toString() || `git exit ${String(p.exitCode)}`);
+  return p.stdout.toString().trim();
+};
+// prettier-ignore
+export function cleanJob(id: string): void {
+  const j = readJobs(Date.now(), true).jobs.find(j => j.id === id), w = j?.worktree;
+  if (!j || !w) throw new Error('job clean: no registered worktree');
+  if (['queued', 'running'].includes(j.state) || alive(j.wrapper_pid)) throw new Error('job clean: owner is still active');
+  if (git(w.path, 'symbolic-ref', '--short', 'HEAD') !== w.branch || git(w.path, 'status', '--porcelain', '-z'))
+    throw new Error('job clean: worktree branch mismatch or dirty');
+  if (git(w.repo, 'rev-list', '--merges', `${w.base}..${w.branch}`) || git(w.repo, 'cherry', w.base, w.branch).split('\n').some(line => line && !line.startsWith('- '))) // R1-1: cherry omits merges.
+    throw new Error(`job clean: branch not integrated into ${w.base}`);
+  git(w.repo, 'worktree', 'remove', w.path);
+  git(w.repo, 'branch', '-D', w.branch);
+  delete j.worktree;
+  save(j);
+}
+
 /**
  * 继承 stdio 前台跑子进程，转发 SIGINT/SIGTERM/SIGHUP；wrapper 被中断时以首次信号的 128+n 失败，优先于子进程退出码。
  * 先登记 queued 并按内存准入；超时/信号不启动子进程，启动失败登记 failed，无边界内中断时抛错。
  */
+// prettier-ignore
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; log?: string; role: Tier | null },
+  f: { title: string; card?: string; log?: string; role: Tier | null; worktree?: string; base?: string },
   probe: () => MemoryReading,
   wait: AdmissionWait
 ): Promise<number> {
@@ -230,6 +269,16 @@ async function exec(
   let terminal: Job, failure: { error: unknown } | undefined;
   try {
     save(job);
+    if (f.worktree) {
+      const repo = git(job.cwd, 'rev-parse', '--show-toplevel'), branch = f.worktree;
+      const base = f.base ?? git(repo, 'symbolic-ref', '--short', 'HEAD');
+      git(repo, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`);
+      const path = join(dirname(repo), `sa-${branch.replaceAll('/', '-')}`);
+      git(repo, 'worktree', 'add', '-b', branch, path, base);
+      job.worktree = { repo, branch, base, path };
+      job.cwd = job.worktree.path;
+      save(job);
+    }
     let waited = false;
     const min = Number(process.env.SA_ADMIT_MIN_FREE ?? 25),
       max = Number(process.env.SA_ADMIT_MAX_WAIT ?? 1800),
@@ -271,7 +320,7 @@ async function exec(
     if (!code) await yieldEventLoop();
     if (!code && !stop.signal.aborted) {
       // Dispatched agents are headless: an inherited, never-closed stdin makes `codex exec` wait for more prompt forever.
-      child = Bun.spawn(cmd, { stdio: ['ignore', 'inherit', 'inherit'] });
+      child = Bun.spawn(cmd, { cwd: job.cwd, stdio: ['ignore', 'inherit', 'inherit'] });
       job.pid = child.pid;
       job.state = 'running';
       delete job.reason;
@@ -307,6 +356,7 @@ async function exec(
   return result;
 }
 
+// prettier-ignore
 export async function jobCli(
   argv: string[],
   probe = memoryReading,
@@ -324,15 +374,19 @@ export async function jobCli(
   if (a._[0] === 'jobs' && a._.length === 1 && !cmd.length) {
     const now = Date.now();
     const { jobs, bad } = readJobs(now);
-    const shown = a.flags.all ? jobs : jobs.filter(j => recent(j, now));
+    const shown = (a.flags.all ? jobs : jobs.filter(j => recent(j, now))).map(j => projectJob(j, jobs, now));
     if (a.flags.json) console.log(JSON.stringify({ jobs: shown, bad }, null, 2));
     else
       for (const j of shown)
         console.log(
-          `${j.id} ${j.state}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.role ?? '-'} ${j.title}`
+          `${j.id} ${j.stalled ? 'stalled' : j.state}${j.eta ? ` eta ${new Date(j.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.role ?? '-'} ${j.title}`
         );
     for (const b of bad) console.error(`jobs: unreadable ${b}`);
     return bad.length ? 1 : 0;
+  }
+  if (a._[0] === 'job' && a._[1] === 'clean' && a._.length === 3 && !cmd.length) {
+    cleanJob(a._[2]);
+    return 0;
   }
   const { title, card, log, role } = a.flags;
   const badRole = role !== undefined && !isTier(role);
@@ -340,5 +394,16 @@ export async function jobCli(
     console.error(USAGE);
     return EXIT_USAGE;
   }
-  return exec(cmd, { title, card, log, role: roleOf(role) }, probe, wait);
+  if (isTier(role) && ['codex', 'claude'].includes(kindOf(cmd[0]))) {
+    const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
+    const candidates = resolveRoute(loadTiers(), c, a.flags.mode, ROUTE_ROLE[role]).candidates;
+    const eligible = candidates.filter(a => a.provider === kindOf(cmd[0])).map(a => a.model);
+    const model = modelOf(cmd.slice(1));
+    if (cmd.slice(1).filter(a => a === '-m' || a === '--model' || a.startsWith('--model=')).length > 1)
+      throw new Error('job: multiple model options are ambiguous');
+    if (!eligible.length || (model !== null && !eligible.includes(model)))
+      throw new Error(`job ${role}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
+    if (model === null) cmd.splice(kindOf(cmd[0]) === 'codex' && cmd[1] === 'exec' ? 2 : 1, 0, '--model', eligible[0]); // R1-2: Claude has no -m alias.
+  }
+  return exec(cmd, { title, card, log, role: roleOf(role), worktree: a.flags.worktree, base: a.flags.base }, probe, wait);
 }

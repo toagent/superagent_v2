@@ -22,6 +22,16 @@ const plan = JSON.parse(
 ) as Plan;
 
 describe('B1-POLICY frozen routing', () => {
+  // prettier-ignore
+  test('commander routing follows console and validates its configured pools', () => {
+    const t = loadTiers(), path = join(tmp(), 'tiers.json');
+    for (const c of ['claude', 'codex'] as const)
+      for (const mode of ['auto', 'strict', 'single:claude', 'single:chatgpt'])
+        expect(resolveRoute(t, c, mode, 'command').candidates.map(a => a.model)).toEqual(t.routing.commander.by_console[c]);
+    t.routing.commander.by_console.codex = t.routing.commander.by_console.claude;
+    writeFileSync(path, JSON.stringify(t));
+    expect(() => loadTiers(path)).toThrow('commander.by_console.codex');
+  });
   test('auto and strict coder routes use only Codex and fail without Codex candidates', () => {
     const tiers = loadTiers();
     for (const console of ['claude', 'codex'] as const)

@@ -65,6 +65,7 @@ import {
   codexWorkerProblem,
   home,
   loadTiers,
+  resolveRoute,
   receiptIssue,
   runAliases,
   runCapacity,
@@ -76,6 +77,7 @@ import { loadPlan, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport } from './report';
 import { jobCli } from './jobs';
+import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
 import { relayQuota } from './relay-quota';
@@ -104,6 +106,8 @@ const OPTIONS = {
   review: { type: 'boolean' },
   'no-cache': { type: 'boolean' },
   base: { type: 'string' },
+  worktree: { type: 'string' },
+  mode: { type: 'string' },
   repo: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
   cwd: { type: 'string' },
@@ -2444,7 +2448,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|job exec --title t [--card p] [--log p] [--role r] -- cmd...|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2513,6 +2517,19 @@ export function main(argv: string[]): number {
       return code;
     });
   switch (verb) {
+    case 'models': {
+      const tiers = loadTiers(),
+        mode = a.flags.mode ?? 'auto';
+      // prettier-ignore
+      const models = Object.fromEntries((['claude', 'codex'] as const).map(c => [c,
+        Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r]).candidates.map(a => a.model)]))]));
+      if (a.flags.json) print(models);
+      else
+        for (const [c, roles] of Object.entries(models))
+          for (const [r, candidates] of Object.entries(roles))
+            console.log(`${c} ${r}: ${candidates.join(', ')}`);
+      return 0;
+    }
     case 'owner':
     case 'claim':
     case 'release':
