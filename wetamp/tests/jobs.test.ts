@@ -202,14 +202,14 @@ describe('job exec', () => {
   // prettier-ignore
   test('explicit role injects the models route and rejects mismatched or empty vendor routes', async () => {
     const root = tmp(), codex = join(root, 'codex'), claude = join(root, 'claude');
-    for (const path of [codex, claude]) { writeFileSync(path, '#!/usr/bin/env bun\nconsole.log(JSON.stringify(process.argv.slice(2)));\n'); chmodSync(path, 0o755); }
+    for (const path of [codex, claude]) { writeFileSync(path, '#!/usr/bin/env bun\nimport { parseArgs } from "node:util";\nconst args = process.argv.slice(2); if (process.argv[1].endsWith("/claude")) parseArgs({ args, options: { model: { type: "string" }, print: { type: "boolean", short: "p" } } });\nconsole.log(JSON.stringify(args));\n'); chmodSync(path, 0o755); } // R1-2: enforce Claude option syntax.
     const models = run(['models', '--json']); expect(await models.exited).toBe(0);
     const routes = JSON.parse(await new Response(models.stdout as ReadableStream).text());
     for (const role of ['general', 'strategist']) {
       const p = run(['job', 'exec', '--title', role, '--role', role, '--', codex, 'exec', 'prompt']);
       expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
-      expect(args[args.indexOf('-m') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
-      expect(routes.codex[role]).toContain(args[args.indexOf('-m') + 1]);
+      expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
+      expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
     }
     for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
@@ -220,15 +220,16 @@ describe('job exec', () => {
   });
   // prettier-ignore
   test('clean refuses dirty or unintegrated worktrees and removes only integrated registered work', async () => {
-    const repo = gitRepo(tmp());
-    expect(await run(['job', 'exec', '--title', 'tree', '--worktree', 'task/entry', '--base', 'main', '--', 'pwd'], '', repo).exited).toBe(0);
-    const j = only(), w = j.worktree!; expect(j.cwd).toBe(w.path); expect(existsSync(w.path)).toBe(true);
-    const clean = () => run(['job', 'clean', j.id]);
+    const repo = gitRepo(tmp()); expect(await run(['job', 'exec', '--title', 'tree', '--worktree', 'task/entry', '--base', 'main', '--', 'pwd'], '', repo).exited).toBe(0);
+    const j = only(), w = j.worktree!, clean = () => run(['job', 'clean', j.id]); expect(j.cwd).toBe(w.path); expect(existsSync(w.path)).toBe(true);
     writeFileSync(join(w.path, 'new'), 'patch'); expect(await clean().exited).not.toBe(0);
     sh('git add new && git -c user.name=t -c user.email=t@l commit -qm patch', w.path);
     expect(await clean().exited).not.toBe(0); expect(existsSync(w.path)).toBe(true);
     writeFileSync(join(repo, 'other'), 'base'); sh('git add other && git -c user.name=t -c user.email=t@l commit -qm base && git -c user.name=t -c user.email=t@l cherry-pick task/entry', repo);
     writeFileSync(join(w.path, 'dirty'), 'dirty'); expect(await clean().exited).not.toBe(0); unlinkSync(join(w.path, 'dirty'));
+    sh('git -c user.name=t -c user.email=t@l merge --no-ff --no-edit task/entry', repo); sh('git -c user.name=t -c user.email=t@l merge --no-ff --no-commit main', w.path); writeFileSync(join(w.path, 'merge-only'), 'unique'); sh('git add merge-only && git -c user.name=t -c user.email=t@l commit -qm merge', w.path); // R1-1
+    expect(sh('git cherry main task/entry', repo).trim()).toBe(''); expect(await clean().exited).not.toBe(0); expect(existsSync(w.path)).toBe(true); expect(only().worktree).toEqual(w);
+    sh('git merge --ff-only task/entry', repo);
     expect(await clean().exited).toBe(0); expect(existsSync(w.path)).toBe(false);
     expect(sh('git branch --list task/entry', repo).trim()).toBe(''); expect(only().worktree).toBeUndefined();
   });

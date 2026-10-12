@@ -192,7 +192,7 @@ export function cleanJob(id: string): void {
   if (['queued', 'running'].includes(j.state) || alive(j.wrapper_pid)) throw new Error('job clean: owner is still active');
   if (git(w.path, 'symbolic-ref', '--short', 'HEAD') !== w.branch || git(w.path, 'status', '--porcelain', '-z'))
     throw new Error('job clean: worktree branch mismatch or dirty');
-  if (git(w.repo, 'cherry', w.base, w.branch).split('\n').some(line => line && !line.startsWith('- ')))
+  if (git(w.repo, 'rev-list', '--merges', `${w.base}..${w.branch}`) || git(w.repo, 'cherry', w.base, w.branch).split('\n').some(line => line && !line.startsWith('- '))) // R1-1: cherry omits merges.
     throw new Error(`job clean: branch not integrated into ${w.base}`);
   git(w.repo, 'worktree', 'remove', w.path);
   git(w.repo, 'branch', '-D', w.branch);
@@ -403,7 +403,7 @@ export async function jobCli(
       throw new Error('job: multiple model options are ambiguous');
     if (!eligible.length || (model !== null && !eligible.includes(model)))
       throw new Error(`job ${role}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
-    if (model === null) cmd.splice(kindOf(cmd[0]) === 'codex' && cmd[1] === 'exec' ? 2 : 1, 0, '-m', eligible[0]);
+    if (model === null) cmd.splice(kindOf(cmd[0]) === 'codex' && cmd[1] === 'exec' ? 2 : 1, 0, '--model', eligible[0]); // R1-2: Claude has no -m alias.
   }
   return exec(cmd, { title, card, log, role: roleOf(role), worktree: a.flags.worktree, base: a.flags.base }, probe, wait);
 }
