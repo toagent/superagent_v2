@@ -104,7 +104,7 @@ export function readLedger(id: string): Ledger | string {
       return `ledger is not a JSON object (${l === null ? 'null' : Array.isArray(l) ? 'array' : typeof l})`;
     const o = l as Partial<Record<string, unknown>>;
     const missing: string[] = STRINGS.filter(k => typeof o[k] !== 'string');
-    if (!Array.isArray(o.recoveries)) missing.push('recoveries');
+    if (o.recoveries !== undefined && !Array.isArray(o.recoveries)) missing.push('recoveries');
     return missing.length ? `ledger missing ${missing.join(', ')}` : (l as Ledger);
   } catch (e) {
     return tail((e as Error).message, 200);
@@ -305,7 +305,7 @@ export function rowOf(
     span,
     elapsed_s: elapsedAt({ span }, opts.now),
     held: c.exit === EXIT.held ? { node: c.node ?? null, event: c.event ?? null } : null,
-    recoveries: l.recoveries.length,
+    recoveries: l.recoveries?.length ?? 0,
     auto_retries: l.auto_retries?.length ?? 0,
     console: l.console,
     repo: basename(l.repo),
@@ -326,7 +326,7 @@ export function unreadableRow(id: string, error: string, l?: Ledger): BoardRow {
     span: null,
     elapsed_s: null,
     held: null,
-    recoveries: l?.recoveries.length ?? 0,
+    recoveries: l?.recoveries?.length ?? 0,
     auto_retries: l?.auto_retries?.length ?? 0,
     console: l?.console ?? '',
     repo: l ? basename(l.repo) : '',

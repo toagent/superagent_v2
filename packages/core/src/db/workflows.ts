@@ -43,7 +43,7 @@ import {
   ensureWorkflowOriginAnchor,
   notOriginAnchor,
 } from './workflow-origin-anchor';
-import type { IDatabase, SqlDialect } from './adapters/types';
+import type { IDatabase } from './adapters/types';
 import type {
   WorkflowRun,
   WorkflowRunOutcome,
@@ -98,25 +98,8 @@ function getLog(): ReturnType<typeof createLogger> {
   return cachedLog;
 }
 
-/**
- * Days of inactivity after which a 'running' run is treated as an orphan (its
- * executor presumed dead) and becomes eligible for resume. Bound as a query
- * parameter — never interpolated — so both dialects handle it positionally.
- */
-const ORPHAN_RESUME_STALE_DAYS = 1;
-
-/**
- * SQL fragment matching a run that may be resumed: failed/paused, or a stale
- * 'running' orphan (no activity for ORPHAN_RESUME_STALE_DAYS). `dayParamIndex`
- * is the 1-based placeholder position at which the caller MUST bind
- * ORPHAN_RESUME_STALE_DAYS. Shared by findResumableRun and resumeWorkflowRun so
- * the two predicates cannot drift — a hand-duplicated copy did drift and bound
- * the wrong placeholder, breaking resume (PR #1830 review C1).
- */
-function resumableStatusClause(dialect: SqlDialect, dayParamIndex: number): string {
-  const staleOrphan = `last_activity_at IS NULL OR last_activity_at < ${dialect.nowMinusDays(dayParamIndex)}`;
-  return `(status IN ('failed', 'paused') OR (status = 'running' AND (${staleOrphan})))`;
-}
+// Interrupted running owners require explicit fenced reconciliation before continuation.
+const resumableStatusClause = (): string => "status IN ('failed', 'paused')";
 
 /**
  * `FOR UPDATE` on Postgres, empty on SQLite (which has no such syntax and does
@@ -925,23 +908,15 @@ export async function findResumableRun(
   workflowName: string,
   workingPath: string
 ): Promise<WorkflowRun | null> {
-  const dialect = getDialect();
   try {
     const result = await pool.query<WorkflowRunRow>(
       `SELECT *, CAST(origin AS TEXT) AS origin FROM remote_agent_workflow_runs
        WHERE workflow_name = $1
          AND working_path = $2
-         AND ${resumableStatusClause(dialect, 3)}
-         AND (
-           status <> 'running'
-           OR NOT EXISTS (
-             SELECT 1 FROM remote_agent_resource_start_requests q
-              WHERE q.id = remote_agent_workflow_runs.id AND q.status = 'admitted'
-           )
-         )
+         AND ${resumableStatusClause()}
        ORDER BY started_at DESC
        LIMIT 1`,
-      [workflowName, workingPath, ORPHAN_RESUME_STALE_DAYS]
+      [workflowName, workingPath]
     );
     const row = result.rows[0];
     return row ? normalizeWorkflowRun(row) : null;
@@ -1027,8 +1002,8 @@ export async function resumeWorkflowRun(
     // resumer finds the row already 'running' with fresh activity, no longer
     // matches the clause, and gets rowCount 0. Without it two callers (web
     // Resume + a chat re-dispatch, or the lock-less CLI path) could both flip
-    // the same run to 'running' and double-claim the worktree. The day param is
-    // bound at $2 (ORPHAN_RESUME_STALE_DAYS), matching findResumableRun's bind.
+    // the same run to 'running' and double-claim the worktree.
+    // Metadata is bound at $2; continuation only accepts settled failed/paused states.
     //
     // The CAS also clears `metadata.error` and `metadata.stop_reason` so a run that
     // fails, is resumed, and then completes doesn't keep rendering its old failure
@@ -1122,17 +1097,10 @@ export async function resumeWorkflowRun(
              completed_at = NULL,
              started_at = ${dialect.now()},
              last_activity_at = ${dialect.now()},
-             metadata = ${dialect.jsonMerge('metadata', 3)}
+             metadata = ${dialect.jsonMerge('metadata', 2)}
          WHERE id = $1
-           AND ${resumableStatusClause(dialect, 2)}
-           AND (
-             NOT EXISTS (
-               SELECT 1 FROM remote_agent_resource_start_requests q
-                WHERE q.id = $1 AND q.status = 'admitted'
-             )
-             OR status IN ('failed', 'paused')
-           )`,
-        [id, ORPHAN_RESUME_STALE_DAYS, JSON.stringify(metadataPatch)]
+           AND ${resumableStatusClause()}`,
+        [id, JSON.stringify(metadataPatch)]
       );
 
       const rowCount = result.rowCount;

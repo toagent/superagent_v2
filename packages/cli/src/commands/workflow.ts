@@ -1,7 +1,8 @@
 import { RUN_AI_CONFIGURATION_METADATA_KEY } from '@archon/workflows/run-ai-configuration';
 import type { Conversation } from '@archon/core/schemas/conversation';
 import { providerRegistry } from '@archon/providers';
-import { getApprovalDecisions } from '@archon/workflows/schemas/dag-node';
+import { getApprovalDecisions, isGateNode } from '@archon/workflows/schemas/dag-node';
+import { validateWorkflowClassPlacement } from '@archon/workflows/loader';
 import { withBranchLaunchSource } from '@archon/core/workflows/branch-launch-source';
 import {
   prepareRunAiConfiguration,
@@ -2304,24 +2305,17 @@ async function runWorkflowWithOwnedSource(
   // codebase lookup does happen here — see the folder-detection probe below —
   // to decide folder-vs-repo branch pinning before forking.
   if (options.detach) {
-    // Interactive-class refusal (#2707 step 2): a detached FRESH launch pauses with
-    // nobody watching and nothing to resume it — the exact #1991 hang. Checked here,
-    // synchronously, before the fork and before any worktree/clone/AI cost, mirroring
-    // the requirements gate immediately above. Two checks, like the orchestrator's
-    // shared background-dispatch gate (dispatchBackgroundWorkflowOwned): the
-    // workflow's own declared class, and a gate that arrived via `include:` in a
-    // workflow that omits `interactive: true` (the class declaration alone cannot see
-    // that case — see assertComposedGateDriveable's doc comment).
-    //
-    // Scoped to a genuinely FRESH dispatch (`!isContinuation`) — refusing this at
-    // "launch" only, per the issue's own wording. A run that has ALREADY proved it can
-    // pause (it paused once) is not launching; `resume <id> --detach` and `run --resume
-    // --detach` are legitimate continuation actions that must keep working, since the
-    // whole point of --detach on those is to drive one gate and let a background
-    // process continue to the next. If it pauses again, it sits paused again —
-    // discoverable via `workflow status`/`runs`, not a silent hang nobody knows exists.
+    // Explicit CLI launches can park at visible native approval gates: the run id
+    // is durable and `workflow approve` owns continuation. Inline interaction and
+    // hidden composed gates still require a foreground driver.
     if (!isContinuation) {
-      assertInteractiveClassNotBackgrounded(workflow);
+      const externalApproval =
+        workflow.nodes.some(isGateNode) &&
+        validateWorkflowClassPlacement(
+          workflow.nodes.filter(n => !isGateNode(n)),
+          undefined
+        ) === null;
+      if (!externalApproval) assertInteractiveClassNotBackgrounded(workflow);
       assertComposedGateDriveable(workflow.nodes);
     }
 

@@ -1,6 +1,6 @@
 # superagent on Archon：架构与自定义方案
 
-状态：设计定稿（2026-10-09）。实施计划见 `01-implementation-plan.md`，PoC 记录见 `02-poc-checklist.md`。
+状态：P3 生命周期更新（2026-10-12）；早期决策与 PoC 记录保留为历史。实施计划见 `01-implementation-plan.md`，PoC 记录见 `02-poc-checklist.md`。
 
 ## 0. 决策记录（用户拍板，不再重议）
 
@@ -11,13 +11,13 @@
 | 2026-10-09 | **不做沙箱**。Codex 直接用 Archon 原生 provider（线程以 `danger-full-access` 启动，`packages/providers/src/codex/provider.ts:1072`），Claude 用原生 provider。v2 的 `adapters/*`、`sandbox-policy`、bash 包装层全部不要。 |
 | 2026-10-08 | 评审模型 ≠ 作者模型（硬约束）；G2 合格独立评审通过即放行集成；红线问题投 iPhone 提醒事项（勾选=是、删除=否），其余决策 AI 投票过半。                                                                                      |
 | 2026-10-09 | 效率主因是拆包过细、评审过频：评审按**里程碑**一次，不按包。                                                                                                                                                              |
-| 2026-10-09 | owner-lost 恢复（状态回拨 + resume）作为 wetamp **永久 overlay** 实现，不向 upstream 提 PR；引擎事实登记进 `UPSTREAM` 由 selftest/升级脚本复测。                                                                          |
+| 2026-10-09 | 早期 owner-lost overlay 决策已由 P3 取代：恢复接纳与 fence 下沉 Archon，wetamp 不自动恢复。                                                                                                                               |
 
 ## 1. 一句话
 
-Archon 是引擎（DAG、断点续跑、detach、approval、quota 自动恢复、worktree、runs 账本），一行不改；
+Archon 拥有 DAG、run/attempt/retry/resume、detach、approval、worktree 与终态；生命周期能力位于引擎，通过注入契约使用。
 `wetamp/` 是薄胶水：把三端协议里的 `plan.json` 变成 Archon 工作流，把 `superagent run/wait/decide/...` 映射成 `archon workflow ...`，
-把 iPhone 提醒事项桥接到 `archon workflow signal/abandon`。
+把 iPhone 提醒事项桥接到原生审批（历史事件门继续兼容）。
 
 ```
 三端协议（元帅写 plan.json，调 superagent run/wait/decide/brief/report/land）
@@ -31,7 +31,7 @@ Archon CLI（bun 源码运行，packages/cli）  ──▶ ~/.superagent/archon/
         │
         ├─ prompt 节点 → 原生 codex / claude provider（无沙箱）
         ├─ bash/script 节点 → 验收命令、diff 汇总、投票计数、合入命令
-        └─ wait(event) 节点 → agent-supervisor 每 5 分钟 tick：提醒事项 ⇄ signal（是）/ abandon（否）
+        └─ approval 节点 → agent-supervisor tick：提醒事项 ⇄ approve（是）/ abandon（否）
 ```
 
 ## 2. 分层与 upstream 安全
@@ -55,8 +55,7 @@ wetamp/
 
 ### 2.2 不变量（selftest 与提交前强制）
 
-1. **仓库内 `wetamp/` 之外零改动**：`scripts/check-upstream-clean.sh` 执行
-   `git diff --stat $(git merge-base HEAD upstream/dev) HEAD -- . ':!wetamp'`，输出必须为空。
+1. **生命周期由引擎拥有**：P3 必要改动落在 `packages/workflows`、core 持久化适配与 CLI；wetamp 保留交付契约与只读投影。
 2. **不动本仓库自己的 `.archon/`**：那是 upstream 的 dogfood 配置，升级时会变。我们的运行目标是业务仓库，不是本仓库。
 3. **目标仓库零足迹**：工作流、命令、脚本全部来自 `--workflow-source <gen>`；运行配置来自 `~/.superagent/archon/config.yaml` + 每次运行的 `--config`/`--model`。
    不往任何业务仓库写 `.archon/`。
@@ -64,9 +63,7 @@ wetamp/
    `wetamp/bin/archon` 与 `wetamp/bin/superagent` 都先 `export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"`、
    `export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"`，再调引擎（PoC 已验证 detach worker 继承 `ARCHON_HOME`）。
    wetamp 代码不得出现 `~/.archon`、`~/.local/state/superagent` 字面量；测试用临时 `SUPERAGENT_HOME`。
-5. **引擎改动只走 upstream PR**（按根 `AGENTS.md`：从 `dev` 开分支、`bun run validate`、additive schema）。
-   不保留本地 patch。靠引擎内部事实（sqlite 表/列、CLI JSON 字段）实现的 overlay（目前只有 `recover`）必须：
-   只读引擎源码、只写明确的一列一行、把依赖的事实登记进 `UPSTREAM`，并由 selftest 与 `upgrade-upstream.sh` dry-run 复测。
+5. **引擎改动遵循根 `AGENTS.md`**：保持包边界、additive schema 与升级验证；不在 wetamp 复制运行状态机。
 6. **依赖隔离**：wetamp 自有依赖只允许在 `wetamp/package.json` 声明；只有 `board` 子命令通过动态 `import()` 使用它们，其余 verbs 与 hooks 保持零依赖（只用仓库现有 `bun.lock` 里的包与 bun 内置能力）。
 
 ### 2.3 分支策略
@@ -78,7 +75,7 @@ wetamp/
 | `wetamp` | 工作分支 = `dev` + `wetamp/` 提交 | 所有自定义只提交到这里；`origin` 推送由用户人工执行 |
 
 跟 upstream **`dev`**（不是 `main`）：`dev` 是活跃线，`workflow wait`、`signal`、owner-lost 检测等我们依赖的动词都先进 `dev`。
-注意 PoC 发现 `--detach` 拒绝含 `approval:` 的工作流，所以 7009a90a 的「子运行自带 approval」对无人值守无用，红线门用 `wait: {event}`（§5）。
+P3 支持显式 CLI 后台启动含顶层原生审批的工作流，暂停后由 `workflow approve` 续跑；交互循环与组合内隐藏审批仍拒绝后台派发。
 
 ### 2.4 升级 runbook（`scripts/upgrade-upstream.sh` 把它脚本化，默认 dry-run）
 
@@ -99,15 +96,11 @@ wetamp/scripts/selftest.sh                     # 见 §6
 ## 3. 运行模型：无守护进程
 
 - `superagent run plan.json` → 生成 → `archon workflow run ... --detach --json` → 立即返回 `runId`（实测 1s）。
-  detach 子进程做全部工作，跨 `wait:` 存活（暂停等待期间常驻，RSS ≈200 MB）；完成即退出。
+  detach 子进程执行 DAG；原生审批持久暂停，明确批准后由新执行者续跑。
 - `superagent wait <run> --timeout N` = `archon workflow wait <id> --json --timeout N`（`--detach` 的官方配对动词，阻塞直到终态/需要关注/owner 丢失，不轮询 `get`）。
   输出可能是多段 JSON，取最后一个对象。
-- **崩溃恢复**（PoC #8–#11）：worker 被 `kill -9` 后 run 行停在 `running`，`wait` 返回 `owner_lost`。upstream 只给 `abandon` + `run --adopt`（新 run，节点缓存全丢）。
-  wetamp 的 `recover`：校验 `execution_owner.host` 是本机且 pid 不存在 → 只把 `remote_agent_workflow_runs.status` 从 `running` 改为 `failed` → `resume --detach`；已完成节点走缓存不重跑（实测 step1 未重跑、被打断的 step2 重跑）。
-  这是 wetamp 的**永久 overlay**（用户 2026-10-09 决定：不向 upstream 提 PR）：实现只落在 `wetamp/src/archon.ts` 的 `recover()`，不改引擎；
-  它依赖的引擎事实（表 `remote_agent_workflow_runs` 的 `status` 列、`metadata` JSON 里的 `execution_owner`、`wait` 的 `owner_lost` 语义）：
-  `selftest.sh` 每次实测，`upgrade-upstream.sh` dry-run 按 `UPSTREAM` 登记的事实行在 `upstream/dev` 的具体文件中核对三者仍在、并只读核对本机 archon.db 的列，漂移即报错而不是静默失效。
-- 唯一周期任务：`install.sh` 渲染的 launchd 作业 `com.wetamp.superagent.supervise-tick`（60 秒，加载由人执行）。tick 内做三件事：`archon workflow wake --json`（唤醒到期等待与 quota 恢复）、对 `owner_lost` 的 run 执行 `recover`、桥接红线事件（§5）。
+- **崩溃恢复**：`wait` 返回 `owner_lost` 只作观察，不自动接管。明确 `recover` 通过 Archon 生命周期契约校验本机 dead owner、对账副作用、CAS 接纳后原生 `resume --detach`；live/unknown owner 拒绝，lost-ack 保留 admission fence，不重复派发。
+- 唯一周期任务：`install.sh` 渲染的 launchd 作业 `com.wetamp.superagent.supervise-tick`（60 秒，加载由人执行）。tick 唤醒引擎到期等待，观察 owner-lost，桥接人工决定；不自动恢复或重试。
 - 状态只有一份：`~/.superagent/archon/archon.db`。`~/.superagent/` 其余只放生成的源目录、plan 副本、supervisor 的 ask 账本（小 JSON）。v2 的 `~/.local/state/superagent/v3.db` 只读保留做历史。
 - 资源：每个活跃/等待中的 run 一个 bun 子进程；无运行时为 0。红线等待可长达数小时，M3 评估「等待时让 worker 退出、靠 `wake` 续跑」。
 
@@ -143,8 +136,7 @@ fix-<M>-r2      prompt(command: sa-fix)    when: $review-<M>-r1.output.verdict =
 review-<M>-r2   prompt(command: sa-review-delta)  when: 同上                                 （只核验遗留 + 本轮 diff，新发现仅 blocker 阻塞）
 fix-<M>-r3 / review-<M>-r3                 同上，第三轮
 gate-<M>        script(bun): 三轮内 pass → ok；否则输出 escalate=true，run 以失败结束（≤3 轮超限升级给用户）
-human-<M>       wait: {event: sa.human.<M>, deadline_ms: TTL}  仅当该里程碑任一包 signoff == "human"（红线）；其余里程碑没有这个节点
-                下游节点 when: $human-<M>.output.status == 'satisfied'（wait 的 output_format 固定，payload 嵌套字段不可引用）
+human-<M>       approval: {message: ...}  仅当该里程碑任一包 signoff == "human"；审批完成后 signoff 检查 plan 绝对截止时间
 land            bash: 打印合入命令（本地 merge/ff，不 push）  output_format: {branch, commands}
 ```
 
@@ -169,15 +161,15 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 
 ## 5. 门禁与无人值守
 
-| 情形                          | 机制                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| G0/G1                         | `review-*` pass → `land` 自动执行；没有人工节点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| G2 非红线                     | 同上（用户 2026-10-08：合格评审通过即放行）；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 红线（包 `signoff: "human"`） | `human-<M>` = `wait: {event: sa.human.<M>}` → run 暂停（`metadata.wait.resumeAt` 记截止）；agent-supervisor tick 调 `superagent supervise-tick`：发现暂停在 `human-*` 的 run，经 `supervisor.py ask` 投提醒事项（按 run+node 去重，账本 `~/.superagent/asks.json`）；勾选 → `archon workflow signal <id> --event sa.human.<M> --resume-at <resumeAt> --json`；删除 → `archon workflow abandon <id> --json`（引擎的 cancel 只接受 running，暂停的 run 须 abandon）；到期未答 → wait 节点 `status=expired`，下游 `when` 不满足，run 失败并由 `brief` 标红 |
-| 超 3 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 情形                          | 机制                                                                                                                                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| G0/G1                         | `review-*` pass → `land` 自动执行；没有人工节点                                                                                                                                                              |
+| G2 非红线                     | 同上（用户 2026-10-08：合格评审通过即放行）；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                                                      |
+| 红线（包 `signoff: "human"`） | `human-<M>` 原生 `approval` 持久暂停；supervisor 按 run+node 去重投提醒事项。勾选 → `workflow approve --detach --json`；删除 → `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
+| 超 3 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                                                             |
 
-Archon 约束要记住（PoC 实测）：`--detach` 拒绝含 `approval:` 的工作流（interactive-class），所以无人值守只能用 `wait: {event}`；
-`wait` 节点的 `output_format` 固定，下游只能看 `status/event/waited_ms`，"否"只能用终止 run（abandon）表达，不能把决定塞进 payload。
+显式后台启动支持顶层原生审批；交互循环与组合内隐藏审批继续拒绝后台派发。
+历史 `wait` 事件门的输出仍为 `status/event/waited_ms`，拒绝通过 abandon 表达。
 
 ### 5.1 caps、红线与自动重试（wpE）
 
@@ -186,26 +178,26 @@ Archon 约束要记住（PoC 实测）：`--detach` 拒绝含 `approval:` 的工
 - **caps**（`plan.caps`，包级 `packages[].caps` 覆盖 plan 级，`src/plan.ts` `capsOf`）：`network`、`web`、`install`、`services`、`long_tests` 默认 `true`，`read` 默认 `any`（`scope` = 只读任务书列出的路径），`git` 默认 `branch`（`commit` = 只追加提交），`mcp` 默认 `tiers.json` `policy.sandbox.mcp`。渲染进任务书「你的权限」。Claude 节点上 `network/web/install/services/git` 的收紧另由 `generate.ts` `capsDenied` 落成 `denied_tools`；`long_tests`、`read:"scope"`、包级 `mcp` 收窄与 Codex 节点上的全部 caps 只是提示级，靠评审核对。
 - **范围是预期不是围栏**：将军越出 `scope.write` 时直接改，在输出 `deviations[]` 登记 `{path, why}`；评审对未登记的越界记 `medium`。`blocked` 只在命中红线（`error_class:"redline"`）或 `needs[]` 非空（`{cap, why, minimal_ask}`）时合法，否则按 `partial` 送回修复循环。
 - **红线**（执行层，所有角色，`hooks/redline.cjs`，详见 `04-hooks-and-nesting.md`）：默认放行，命令效果集中在 `hooks/shell-effects.json`，按效果与归属拦截凭据隐私、外部写入发布、共享历史、提权、越权选择进程及销毁/覆盖范围外已有数据。worktree、临时目录、包缓存、本 run 产物可写，范围外普通新建允许；未知效果与解析/内部异常留 advisory，明确删除/覆盖未知目标拒绝。Codex 侧依赖受信任 guard hook，`codex-worker` 信任失败仍 exit 3。
-- **自动重试**（`supervise-tick` → `autoRetry`，上限 `tiers.json` `policy.auto_retry`：gate 2、environment 5、coder 1，按里程碑与种类分别计数，记在 ledger `auto_retries`）：held:gate 先给里程碑每个包的 `hints/<包>.md` 追加提示（失败的验收命令与日志尾、基线已失败说明、未关闭的阻塞发现、gate 原因），再走 `decide retry` 同一恢复入口；held:environment 首次立即 recover，之后按 120s·2^(n-1)（≤30 分钟）退避；`code-*`/`fix-*` 节点失败直接 recover。重试不了的情形转成挂起原因交处置表。
-- **挂起处置表**（`cli.ts` `HOLD_POLICY`，tick 按表分派，每行有单测）：signoff → 签收提问（§5）；deadline → `cancelRun` 终止、asks 记 expired，不提醒；gate/coder/environment → 自动重试；held:paused 非签收非审批 → 到期（`resumeAt`，或 `waitingSince`）+10 分钟仍未唤醒才 resume，最多 2 次；`auto_retry_exhausted`、`no_change`、`no_attempt_node`、`recover_no_progress`、`needs`、`redline`、Archon 审批门（`metadata.approval`）→ 经 agent-supervisor 投一条是/否提醒，问题以 `superagent <run>:<原因>:<轮次> ` 开头（≤120 字，轮次 = recoveries+auto_retries 条数，审批门用 pauseId），勾选执行表中的“是”（retry=`decide retry` 同入口、resume=清零 stall 后 resume、approve=`workflow approve --detach`），删除 → `cancelRun` 终止并保留证据，过期同签收。提问与签收共用 `pollAsk`（先落 `unknown` 再 ask、按前缀找回）。每次非 none 处置追加 ledger `dispositions`（最近 20 条，board 详情显示）。`decide --all-held retry` 对所有 held（签收门除外）逐个 retry；`status`/`brief`/`board` 显示 `needs` 与 `auto_retries`。
-- **隔离与原子写**：ledger 逐条解析校验（必备字符串字段、`recoveries` 数组、`run_id` 与文件名一致），坏记录在 tick 里报 `action:error`、在 `report` 里计入 `unreadable`，不影响其他 run；asks.json 读不出时不当空表、不覆盖，需要提问的 run 报错，自动重试照常。ledger、asks、attempts、config 一律同目录唯一临时文件 + rename；ledger 读改写与 recover 同锁（`updateLedger`）。
+- **执行生命周期**：Archon 拥有 run/attempt/retry/resume/审批与终态。环境与编码/修复/评审节点的原生 `retry` 复用 `tiers.json` `policy.auto_retry`；接纳锁与恢复 fence 在 `packages/workflows/src/execution-lifecycle.ts`，预算派发在 `policy-dispatch.ts`，通过注入契约调用。ledger 的 `recoveries/auto_retries/progress_fp/stalled` 仅供历史只读展示，不热迁移。
+- **挂起处置表**（`src/reasons.ts` `HOLD_POLICY`）：signoff 桥接 Archon 原生审批（旧 run 的事件签收仍可读）；deadline 按 plan 截止终止；paused 等待引擎唤醒；gate/coder/environment 等失败只投一条明确决定。owner live/unknown 不接管，owner-lost 仅观察；`recover` 要求副作用对账，lost-ack 留引擎 admission fence、不得重派。提问沿用 `pollAsk` 的持久化/对账，明确 retry/resume/approve 交引擎执行，dispositions 保留审计。
+- **隔离与原子写**：ledger 逐条解析校验（必备字符串字段、历史 `recoveries` 若存在须为数组、`run_id` 与文件名一致），坏记录在 tick 里报 `action:error`、在 `report` 里计入 `unreadable`，不影响其他 run；asks.json 读不出时不当空表、不覆盖，需要提问的 run 报错。ledger、asks、attempts、config 一律同目录唯一临时文件 + rename；ledger 读改写与 recover 同锁（`updateLedger`）。
 - **投送闸**：twin-toolkit 只把本机 `scripts/verify-local.sh` 通过的提交投送到 twin 机（见 `PROGRESS.md` wpE）。
 
 ## 6. 兼容 CLI（`wetamp/bin/superagent`）
 
-| 旧命令                                     | 映射                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run <plan> --json`                        | 校验 plan → 生成 → `archon workflow run sa-<slug> --workflow-source <gen> --cwd <repo> --branch sa/<run> --from <base_ref> --detach --json`；回 `{run_id, archon_run_id, gen_dir}`                                                                                                                                                                      |
-| `wait <run> --timeout N`                   | `workflow wait <id> --json --timeout N`；`owner_lost` → 自动 `recover` 后再 wait；recover 锁忙（另一进程正在恢复）稍候重读，到期按运行中返回；`N` 非正数/NaN/Infinity → 64；输出 ≤20 行摘要 + 证据路径，failed 无失败节点时给 run 级 error（脱敏）、`stop_reason`、`evidence_paths`；退出码：completed 0 / 暂停等人 3 / failed 1 / cancelled 2 / 超时 4 |
-| `status` / `brief <run>`                   | `workflow status --json` / `workflow get --json --verbose` 压缩成 ≤20 行                                                                                                                                                                                                                                                                                |
-| `decide <run> approve\|reject [--comment]` | approve → `workflow signal --event sa.human.<M> --resume-at <metadata.wait.resumeAt>`；reject → `cancelRun`（running → `workflow cancel`，paused/failed → `workflow abandon`）；comment 进 `--data`                                                                                                                                                     |
-| `resume <run>` / `cancel <run>`            | `resume` 对 owner-lost 的 run 先 `recover`；`cancel` 走 `cancelRun`                                                                                                                                                                                                                                                                                     |
-| `recover <run>`                            | §3 崩溃恢复（校验本机 + 死 pid → 状态回拨 → `resume --detach`）                                                                                                                                                                                                                                                                                         |
-| `supervise-tick`                           | 供 launchd 作业（60 秒）调用：`wake` + `recover` 全部 owner-lost + 红线提问/桥接（§5）；持锁，被占即跳过                                                                                                                                                                                                                                                |
-| `land <run>`                               | 打印 `land` 节点输出的合入命令（永不 push）                                                                                                                                                                                                                                                                                                             |
-| `report`                                   | 逐个 ledger `workflow get --verbose` 汇总状态/轮次/耗时（token 计量后置）                                                                                                                                                                                                                                                                               |
-| `health`                                   | `archon doctor` + 别名解析 + `check-upstream-clean`                                                                                                                                                                                                                                                                                                     |
-| `selftest`                                 | §2.4 契约复测 + 一条真实小工作流 detach → `kill -9` → resume                                                                                                                                                                                                                                                                                            |
+| 旧命令                                     | 映射                                                                                                                                                                               |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run <plan> --json`                        | 校验 plan → 生成 → `archon workflow run sa-<slug> --workflow-source <gen> --cwd <repo> --branch sa/<run> --from <base_ref> --detach --json`；回 `{run_id, archon_run_id, gen_dir}` |
+| `wait <run> --timeout N`                   | `workflow wait` 观察终态/暂停/owner-lost；owner-lost 不自动恢复。退出码：completed 0 / 暂停等人 3 / failed 1 / cancelled 2 / 超时 4                                                |
+| `status` / `brief <run>`                   | `workflow status --json` / `workflow get --json --verbose` 压缩成 ≤20 行                                                                                                           |
+| `decide <run> approve\|reject [--comment]` | approve → 原生 `workflow approve --detach --json`；旧事件门仍用 signal；reject → `cancelRun`，暂停/失败用 abandon                                                                  |
+| `resume <run>` / `cancel <run>`            | `resume` 对 owner-lost 的 run 先 `recover`；`cancel` 走 `cancelRun`                                                                                                                |
+| `recover <run>`                            | 明确恢复：通过引擎校验归属、副作用对账与 admission CAS 后原生 resume                                                                                                               |
+| `supervise-tick`                           | 唤醒引擎到期等待、观察 owner-lost、桥接人工决定；不自动恢复或重试                                                                                                                  |
+| `land <run>`                               | 打印 `land` 节点输出的合入命令（永不 push）                                                                                                                                        |
+| `report`                                   | 逐个 ledger `workflow get --verbose` 汇总状态/轮次/耗时（token 计量后置）                                                                                                          |
+| `health`                                   | `archon doctor` + 别名解析 + `check-upstream-clean`                                                                                                                                |
+| `selftest`                                 | §2.4 契约复测 + 一条真实小工作流 detach → `kill -9` → resume                                                                                                                       |
 
 ## 7. 安全姿态（用户决定：无沙箱）
 
@@ -229,12 +221,12 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
 - 退出码：0 completed、1 failed、2 cancelled、3 held（human/paused/environment/gate）、4 running；用法错误 64。
 - `--fake`：编码/评审/修复节点换成 bash 桩，用于测试与 selftest，零模型调用。
 - 每个里程碑以 `start-<M>` bash 节点记录基线 HEAD，评审轮次展开为固定的 `fix/diff/review/gate-<M>-rN`（N≤3，第 2、3 轮的 fix 带 `when: verdict == 'fix'`）；未走到的轮次被条件跳过，下一步以 `none_failed_min_one_success` 汇合三个 gate（fake e2e 实测：跳过沿依赖链级联后汇合仍放行）。escalate = gate 节点 exit 1，run 停在 failed，`decide retry` 对它无效（须在分支上修或新开 run）。
-- 人工签收：`human-<M>` 是 `wait: {event: sa.human.<M>}` 事件门，其后 `signoff-<M>` bash 节点检查 `status = satisfied`（而不是用 `when`：wait 到期也算节点完成，`when` 跳过会让 land 照常执行）。
+- 人工签收：`human-<M>` 是原生审批，其后 `signoff-<M>` 检查 plan 绝对截止时间；旧 run 事件门只读兼容。
 - `workflow signal` 与 `workflow wake` 会在调用进程内执行剩余 DAG：CLI 以 detached 子进程执行并把输出写到 `gen/<run>/signal-<node>.log`、`$SUPERAGENT_HOME/wake.log`；signal 以“run 离开 paused 或 resumeAt 改变”为受理确认（30 s）。
-- 状态映射：paused 且等待 `sa.human.*` → held:human；其余 paused → held:paused；environment 节点失败 → held:environment；gate 节点失败 → held:gate。
+- 状态映射：paused 在 `human-*` 原生审批或历史 `sa.human.*` 事件门 → held:human；其余 paused → held:paused；environment/gate 失败沿用对应 hold。
 - 节点输出 schema 外置到 `schemas/output.schema.json` 的 `$defs`，brief 正文外置到 `templates/brief.md`（单趟 `{{key}}` 替换，计划文本中的 `{{x}}`/`$` 原样保留）。
 - Codex 控制台的评审别名重绑：见修复轮 R1 的 H2（run-config 层），不改生成的 YAML。
-- `supervise-tick` 由 `$SUPERAGENT_HOME/supervise.lock` 串行化，owner-lost 恢复与 `wait` 共用 stall 上限（见修复轮 R1 的 M1、M4）。
+- `supervise-tick` 由 `$SUPERAGENT_HOME/supervise.lock` 串行化；owner-lost 只作观察，由明确 recover 接纳。
 - gc 不使用 `archon complete` / `isolation cleanup --merged`：二者会删除远端分支，属于对外动作。
 - M3 实现记录：
   - `sa-smoke` 不再是模板（生成器只复制 `commands/`、`scripts/`，留着即死文件），内联在 `selftest.sh`：先以真实 think 节点 `validate`，复测 `install.sh` 写入的 `config.yaml` 别名（§2.4 契约复测），`--fake` 再换成 bash 桩执行。

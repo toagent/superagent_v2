@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
+  budgetUsage,
   decide,
   disposition,
   identityOf,
@@ -17,6 +18,29 @@ import {
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
+
+test('P3 missing provider and node receipts reserve spend instead of counting zero', () => {
+  expect(budgetUsage([{ event_type: 'node_started', step_name: 'code-core' }], 20)).toMatchObject({
+    launches: 1,
+    weighted_tokens: 20,
+  });
+  expect(
+    budgetUsage([], 20, [
+      { id: 'lost', node: 'code-core', provider: 'codex', model: 'fixture', status: 'started' },
+    ])
+  ).toMatchObject({ launches: 1, weighted_tokens: 20 });
+  expect(
+    budgetUsage(
+      [
+        { event_type: 'node_started', step_name: 'code-core' },
+        { event_type: 'node_completed', step_name: 'code-core' },
+        { event_type: 'node_completed', step_name: 'code-core' },
+        { event_type: 'node_started', step_name: 'code-api' },
+      ],
+      20
+    )
+  ).toMatchObject({ launches: 2, weighted_tokens: 60 });
+});
 
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
 type Rv = NonNullable<NonNullable<Parameters<typeof decide>[0]['reviews']>[number]>;
@@ -849,7 +873,7 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
   // Runtime sibling import of sa-check.ts; type-only imports are erased and need no copy.
   writeFileSync(
     join(root, 'policy-attempts.ts'),
-    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/policy-attempts.ts'))
+    readFileSync(join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'))
   );
   writeFileSync(
     join(root, 'failure-class.ts'),

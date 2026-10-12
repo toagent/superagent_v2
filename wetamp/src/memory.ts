@@ -560,7 +560,7 @@ export function foldEpisode(
     ),
     dispositions: [
       ...(l.dispositions ?? []),
-      ...l.recoveries.map(at => ({ at, reason: 'recover', action: 'recover', ok: true })),
+      ...(l.recoveries ?? []).map(at => ({ at, reason: 'recover', action: 'recover', ok: true })),
       ...(l.adoptions ?? []).map(a => ({ at: a.at, reason: 'adopt', action: 'adopt', ok: true })),
     ].map(d => ({
       at: d.at,

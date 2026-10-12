@@ -978,9 +978,22 @@ export function budgetUsage(
     );
   const known = used.filter((n): n is number => n !== null);
   const reserve = Math.max(0, ...known) || floor;
-  const total = known.reduce((a, n) => a + n, 0) + (used.length - known.length) * reserve;
+  const starts = ev.filter(e => e.event_type === 'node_started').length;
+  const balance = new Map<string, number>();
+  for (const e of ev) {
+    const delta =
+      e.event_type === 'node_started'
+        ? 1
+        : e.event_type === 'node_completed' || e.event_type === 'node_failed'
+          ? -1
+          : 0;
+    const node = e.step_name ?? '';
+    balance.set(node, (balance.get(node) ?? 0) + delta);
+  }
+  const missing = [...balance.values()].reduce((sum, count) => sum + Math.max(0, count), 0);
+  const total = known.reduce((a, n) => a + n, 0) + (used.length - known.length + missing) * reserve;
   return {
-    launches: ev.filter(e => e.event_type === 'node_started').length + attempts.length,
+    launches: starts + attempts.length,
     weighted_tokens: total,
     reserve,
   };

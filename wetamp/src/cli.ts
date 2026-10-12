@@ -18,8 +18,8 @@ import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
+import { advanceExecutionAttempt } from '../../packages/workflows/src/execution-lifecycle';
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -55,8 +55,6 @@ import {
   readAttempt,
   attemptPath,
   type DeliveryDecision,
-  type Ledger as ReviewLedger,
-  type Accept,
   type decide as decideGate,
 } from '../templates/.archon/scripts/sa-check';
 import {
@@ -181,14 +179,15 @@ export interface Ledger {
   started_at: string;
   transcript: string;
   log: string;
-  recoveries: string[];
-  /** 最近一次 recover 时已完成节点集合的指纹，及在该指纹上连续 recover 的次数（旧 ledger 无这两项）。 */
+  /** Read-only compatibility projection for pre-P3 ledgers. */
+  recoveries?: string[];
+  /** Legacy control fields; ignored by execution admission. */
   progress_fp?: string;
   stalled?: number;
   /** supervise-tick 因 plan 截止已过取消 run 时写入。 */
   state?: 'failed';
   reason?: 'deadline';
-  /** supervise-tick 的自动重试；reason 前缀即类别（gate:<gate reason> / environment / coder:<节点> / paused）。与 stalled 互不影响。 */
+  /** Read-only compatibility for historical overlay retries. */
   auto_retries?: AutoRetry[];
   /** supervise-tick 的处置记录（最近 20 条）。 */
   dispositions?: Disposition[];
@@ -238,7 +237,7 @@ export function loadLedger(run: string): Ledger {
       `ledger ${p}: not a JSON object (${o === null ? 'null' : Array.isArray(o) ? 'array' : typeof o})`
     );
   const bad = LEDGER_STRINGS.filter(k => typeof o[k] !== 'string');
-  if (!Array.isArray(o.recoveries)) bad.push('recoveries');
+  if (o.recoveries !== undefined && !Array.isArray(o.recoveries)) bad.push('recoveries');
   if (o.run_id !== run) bad.push('run_id≠file');
   if (bad.length) throw new Error(`ledger ${p}: bad ${bad.join(',')}`);
   return o as unknown as Ledger;
@@ -332,9 +331,16 @@ export function classify(run: RunView): Classified {
       return { state: 'cancelled', exit: EXIT.cancelled };
     case 'paused': {
       const event = run.metadata?.wait?.event;
+      const approval = run.metadata?.approval;
+      if (approval?.nodeId.startsWith('human-'))
+        return { state: 'held:human', exit: EXIT.held, node: approval.nodeId };
       return event?.startsWith('sa.human.')
         ? { state: 'held:human', exit: EXIT.held, node: run.metadata?.wait?.nodeId, event }
-        : { state: 'held:paused', exit: EXIT.held, node: run.metadata?.wait?.nodeId };
+        : {
+            state: 'held:paused',
+            exit: EXIT.held,
+            node: run.metadata?.approval?.nodeId ?? run.metadata?.wait?.nodeId,
+          };
     }
     case 'failed':
       if (failed === 'environment')
@@ -496,7 +502,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
           action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.`,
         }
       : {}),
-    recoveries: l.recoveries.length,
+    recoveries: l.recoveries?.length ?? 0,
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
     ...(l.reason ? { reason: l.reason } : {}),
@@ -526,27 +532,11 @@ function failure(l: Ledger, run: RunView, node: string | undefined): Record<stri
   };
 }
 
-const MAX_STALLED_RECOVERIES = 3;
-
-const progressOf = (run: RunView): string =>
-  new Bun.CryptoHasher('sha256')
-    .update(
-      (run.nodes ?? [])
-        .filter(n => n.state === 'completed')
-        .map(n => n.nodeId)
-        .sort()
-        .join('\n')
-    )
-    .digest('hex')
-    .slice(0, 16);
-
-const stalledOut = (l: Ledger, run: RunView): boolean =>
-  l.progress_fp === progressOf(run) && (l.stalled ?? 0) >= MAX_STALLED_RECOVERIES;
 const workflowIdentity = (l: Ledger): string | undefined => l.workflow_hash ?? l.engine_hash;
 const adoptsRun = (l: Ledger, run: RunView): boolean =>
   ['failed', 'cancelled'].includes(run.status) && workflowIdentity(l) !== engineHash();
 
-/** classify + ledger：同一完成节点集合上已 recover 满 3 次的 owner-lost run 不再自动恢复，等元帅。 */
+/** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
@@ -557,26 +547,16 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     )
       return { ...c, state: 'held:engine_suspect', exit: EXIT.held };
   }
-  return c.state === 'owner_lost' && stalledOut(l, run)
-    ? { state: 'held:recover_no_progress', exit: EXIT.held }
-    : c;
+  return c;
 }
 
-/**
- * 所有恢复（wait、resume、decide retry、supervise-tick）的唯一入口。锁内重读 ledger 与 run：完成节点集合
- * 与上次相同且已连续 recover 3 次即拒绝（recover_no_progress）；fresh=true（decide retry）是元帅的显式决定，清零重计。
- * 计数、指纹、恢复时间同样在锁内写回 ledger：释放锁后才落盘会让交错的第二次 recover 读到旧计数。
- * auto（supervise-tick 自动重试）有自己的次数上限：不看也不改 stalled/recoveries，只追加 auto_retries。
- */
+/** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
   l: Ledger,
-  fresh = false,
-  auto?: AutoRetry,
   prepare?: () => void,
   onEffect?: (effect: DecisionEffect) => void,
   reconciled?: string
 ): RecoverResult {
-  let fp = '';
   let adopted:
     | { from: string; hash: string; engine_from: string | null; commit: string; carried: string[] }
     | undefined;
@@ -586,22 +566,7 @@ function recoverRun(
     run => {
       Object.assign(l, loadLedger(l.run_id));
       if (run.status === 'completed') return 'status completed is not resumable';
-      if (auto?.deterministic) {
-        if (
-          workflowIdentity(l) === engineHash() ||
-          l.auto_retries?.some(r => r.engine_hash === auto.engine_hash)
-        )
-          return 'deterministic retry already used for this engine';
-        if (!['failed', 'cancelled'].includes(run.status))
-          return 'deterministic retry requires terminal adopt';
-        // 先记一次授权的尝试：启动失败也不重复烧同一指纹的调用。
-        (l.auto_retries ??= []).push(auto);
-        saveLedger(l);
-      }
-      if (auto) return undefined;
-      if (fresh) l.stalled = 0;
-      fp = progressOf(run);
-      return stalledOut(l, run) ? 'recover_no_progress' : undefined;
+      return undefined;
     },
     ack => {
       if (adopted) {
@@ -622,14 +587,7 @@ function recoverRun(
         l.transcript = typeof ack.transcriptPath === 'string' ? ack.transcriptPath : '';
         l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
       }
-      if (auto) {
-        if (!l.auto_retries?.some(r => r.at === auto.at)) (l.auto_retries ??= []).push(auto);
-      } else {
-        l.stalled = (l.progress_fp === fp ? (l.stalled ?? 0) : 0) + 1;
-        l.progress_fp = fp;
-        l.recoveries.push(new Date().toISOString());
-      }
-      saveLedger(l);
+      if (adopted) saveLedger(l);
       onEffect?.({ action: adopted ? 'adopt' : 'resume', engine_run: l.archon_run_id });
     },
     prepare,
@@ -704,7 +662,7 @@ function recoverRun(
   );
 }
 
-/** 每秒重查 inbox 和事件门；可证实 owner-lost 时校验归属后恢复。 */
+/** Observe engine state and inbox; continuation is an explicit engine action. */
 export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
   const deadline = Date.now() + timeoutS * 1000;
   for (;;) {
@@ -712,31 +670,8 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
     if (inbox.length) return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox };
     const run = getRun(l.archon_run_id, l.repo);
     const c = classifyRun(l, run);
-    if (c.state === 'owner_lost') {
-      let r: RecoverResult;
-      try {
-        r = control(l, () => recoverRun(l));
-      } catch (e) {
-        return { ...summary(l, run, c), reason: (e as Error).message };
-      }
-      if (r.ok) continue;
-      // 另一进程正在恢复：稍候重读状态；到期仍是 owner_lost 则按运行中返回（exit 4），不报失败
-      if (r.busy) {
-        if (Date.now() >= deadline) return { ...summary(l, run, c), reason: r.reason };
-        Bun.sleepSync(1000);
-        continue;
-      }
-      const held = r.held ?? r.reason === 'recover_no_progress';
-      return {
-        ...summary(
-          l,
-          run,
-          held ? { state: `held:${r.reason}`, exit: EXIT.held } : { ...c, exit: EXIT.failed }
-        ),
-        reason: r.reason,
-        ...(r.held ? { action: r.action, snapshot: r.snapshot, nodes: r.nodes } : {}),
-      };
-    }
+    if (c.state === 'owner_lost')
+      return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
     const left = Math.ceil((deadline - Date.now()) / 1000);
     if (c.exit !== EXIT.running || left <= 0) return summary(l, run, c);
     archon(
@@ -945,7 +880,6 @@ function startRun(planPath: string, a: Args): number {
           started_at: new Date().toISOString(),
           transcript: '',
           log: '',
-          recoveries: [],
           intervention_events: [],
           launcher: launcher(home().sa),
           controller,
@@ -1092,13 +1026,13 @@ function health(cwd?: string): number {
   return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
 }
 
-function resumeRun(l: Ledger, fresh = false, reconciled?: string, action = 'recover'): number {
+function resumeRun(l: Ledger, reconciled?: string, action = 'recover'): number {
   let started = false;
   // prepare runs under the recovery lock only after admission checks have passed.
   const res = intervention(
     l,
     action,
-    () => recoverRun(l, fresh, undefined, () => (started = true), undefined, reconciled),
+    () => recoverRun(l, () => (started = true), undefined, reconciled),
     undefined,
     () => started
   );
@@ -1147,15 +1081,6 @@ const retryScope = (l: Ledger, node: string): string => {
     : '';
   return pkg && attemptable(l, `pkg/${pkg}`) ? `pkg/${pkg}` : milestoneOf(l, node);
 };
-/** always_run reads this scope count; only dependent nodes lose their resume cache. */
-function bumpAttempt(l: Ledger, m: string): number {
-  const path = attemptPath(l.gen_dir, m);
-  const n = readAttempt(path) + 1;
-  if (!Number.isSafeInteger(n)) throw new Error(`attempt counter exhausted: ${path}`);
-  mkdirSync(dirname(path), { recursive: true });
-  writeAtomic(path, String(n));
-  return n;
-}
 const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
 const milestoneOf = (l: Ledger, node: string): string =>
   /^(verify|settle|code|repair)-/.test(node)
@@ -1167,8 +1092,6 @@ const milestoneOf = (l: Ledger, node: string): string =>
 function retryGate(
   l: Ledger,
   node: string,
-  fresh: boolean,
-  auto?: AutoRetry,
   prepare?: () => void,
   key?: string,
   onEffect?: (effect: DecisionEffect) => void
@@ -1178,15 +1101,13 @@ function retryGate(
     throw new Error(`decide retry: ${node} escalated; fix on ${l.branch} or start a new run`);
   return recoverRun(
     l,
-    fresh,
-    auto,
     () => {
       if (
         key &&
         (readJson(join(l.gen_dir, 'budget-extra')) as { key?: string } | null)?.key === key
       )
         return;
-      bumpAttempt(l, m);
+      advanceExecutionAttempt(attemptPath(l.gen_dir, m));
       prepare?.();
     },
     effect =>
@@ -1220,8 +1141,8 @@ const retry = (
   onEffect?: (effect: DecisionEffect) => void
 ): RecoverResult =>
   scopedRetry(l, c, c.node ?? '')
-    ? retryGate(l, c.node ?? '', true, undefined, prepare, key, onEffect)
-    : recoverRun(l, true, undefined, prepare, onEffect);
+    ? retryGate(l, c.node ?? '', prepare, key, onEffect)
+    : recoverRun(l, prepare, onEffect);
 
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
 function retryAllHeld(): number {
@@ -1269,7 +1190,9 @@ function decide(l: Ledger, a: Args): number {
     }
     const log = join(l.gen_dir, `signal-${c.node ?? 'none'}.log`);
     return intervention(l, 'decide', () => {
-      const r = signalHuman(run, { decision: 'approve' }, log, l.repo);
+      const r = run.metadata?.approval
+        ? approveRun(l)
+        : signalHuman(run, { decision: 'approve' }, log, l.repo);
       print({ run_id: l.run_id, ...r });
       return r.ok ? 0 : 1;
     });
@@ -1341,7 +1264,7 @@ function brief(l: Ledger): number {
     lines.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
   lines.push(
     `evidence: ${art}`,
-    `recoveries: ${String(l.recoveries.length)} auto_retries: ${String(l.auto_retries?.length ?? 0)}`
+    `recoveries: ${String(l.recoveries?.length ?? 0)} auto_retries: ${String(l.auto_retries?.length ?? 0)}`
   );
   console.log(lines.slice(0, 20).join('\n'));
   return c.exit;
@@ -1434,8 +1357,6 @@ interface AnswerIntent {
 }
 type Ask = BaseAsk & { receipt?: AnswerReceipt; decision?: AnswerIntent };
 export type Asks = Partial<Record<string, Ask>>;
-
-type Held = [Hold, Record<string, unknown>];
 
 const asksPath = (): string => join(home().sa, 'asks.json');
 /** 读不出就抛错：把截断或损坏的 asks.json 当空表，会让每个挂起再投一遍提醒。 */
@@ -1640,11 +1561,15 @@ function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): A
 }
 
 function human(l: Ledger, run: RunView, asks: Asks): Action {
-  const w = run.metadata?.wait;
-  if (!w?.event) throw new Error(`run ${l.run_id}: held:human without wait metadata`);
+  const w =
+    run.metadata?.wait ??
+    (run.metadata?.approval
+      ? { nodeId: run.metadata.approval.nodeId, event: undefined, resumeAt: planOf(l).deadline }
+      : undefined);
+  if (!w) throw new Error(`run ${l.run_id}: held:human without engine gate metadata`);
   const key = askKey(l.run_id, 'signoff', holdEpisode(l, run, classifyRun(l, run)));
   const base = { run_id: l.run_id, event: w.event };
-  // 引擎的 wait.deadline_ms 从进入等待起计时，生成时无法折算成 plan 的绝对截止：由这里与 signoff 节点兜住
+  // Native approval and legacy event gates share the plan's absolute deadline.
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
   const p = pollAsk(
     key,
@@ -1662,7 +1587,9 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     if (p.a.status === 'yes') {
       beginAnswer(l, w.nodeId, p.a, 'yes', asks);
       const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
-      const r = signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
+      const r = run.metadata?.approval
+        ? approveRun(l)
+        : signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
       if (r.ok)
         consumeAnswer(
           l,
@@ -1720,7 +1647,7 @@ function askHold(
   const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
   const r = pollAsk(
     key,
-    () => decisionQuestion(l, run, c, hold, extra),
+    () => decisionQuestion(l, run, c, hold),
     ttlHours(Date.parse(planOf(l).deadline)),
     asks
   );
@@ -1742,17 +1669,9 @@ function askHold(
         p.yes === 'approve'
           ? approveRun(l)
           : p.yes === 'resume'
-            ? recoverRun(l, true, undefined, undefined, onEffect)
+            ? recoverRun(l, undefined, onEffect)
             : p.yes === 'review'
-              ? retryGate(
-                  l,
-                  `review-${(c.node ?? '').slice(5)}`,
-                  true,
-                  undefined,
-                  undefined,
-                  undefined,
-                  onEffect
-                )
+              ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, undefined, undefined, onEffect)
               : retry(
                   l,
                   c,
@@ -1916,17 +1835,15 @@ function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
       ? reasonHold(nodeReason(l, run, c))
       : c.state === 'held:environment'
         ? 'environment'
-        : c.state === 'held:recover_no_progress'
-          ? 'recover_no_progress'
-          : c.state === 'held:paused'
-            ? run.metadata?.approval
-              ? 'approval'
-              : 'paused'
-            : c.state === 'failed' && /^(verify|settle)-/.test(c.node ?? '')
-              ? reasonHold(nodeReason(l, run, c))
-              : c.state === 'failed' && /^(code|fix|repair)-/.test(c.node ?? '')
-                ? 'coder'
-                : undefined;
+        : c.state === 'held:paused'
+          ? run.metadata?.approval
+            ? 'approval'
+            : 'paused'
+          : c.state === 'failed' && /^(verify|settle)-/.test(c.node ?? '')
+            ? reasonHold(nodeReason(l, run, c))
+            : c.state === 'failed' && /^(code|fix|repair)-/.test(c.node ?? '')
+              ? 'coder'
+              : undefined;
   return h && pastDeadline(l) ? 'deadline' : h;
 }
 
@@ -2010,13 +1927,7 @@ function decisionRecovery(
   ];
 }
 /** 只展示注册原因、闭集枚举与数字；将军/评审自由文本只在 brief 中读取。 */
-export function decisionQuestion(
-  l: Ledger,
-  run: RunView,
-  c: Classified,
-  hold: Hold,
-  extra: Record<string, unknown> = {}
-): string {
+export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: Hold): string {
   const plan = planOf(l),
     node = c.node ?? run.metadata?.approval?.nodeId ?? '恢复节点';
   const m = hold === 'signoff' ? node.replace(/^human-/, '') : milestoneOf(l, node);
@@ -2110,10 +2021,6 @@ export function decisionQuestion(
           .join('、') || '证据缺失'
       }`;
     }
-    if (hold === 'auto_retry_exhausted')
-      detail += `；已重试${String(typeof extra.auto_retries === 'number' ? extra.auto_retries : (l.auto_retries?.length ?? 0))}次`;
-    if (hold === 'recover_no_progress')
-      detail = `已恢复${String(l.stalled ?? 0)}次，完成节点集合未变化`;
   }
   return askQuestion(
     hold,
@@ -2123,7 +2030,7 @@ export function decisionQuestion(
     askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c)))
   );
 }
-/** 一个 run 的处置：owner-lost 恢复，其余按 HOLD_POLICY 分派；自动处置转出的挂起原因（用尽、needs…）再查一次表。 */
+/** 只投影引擎状态与明确决定；owner-lost 保留证据，恢复必须由操作员发起。 */
 function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action | undefined {
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
@@ -2149,7 +2056,13 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
       next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.`,
     };
   if (c.state === 'owner_lost')
-    return record(l, 'owner_lost', { run_id: l.run_id, action: 'recover', ...recoverRun(l) });
+    return {
+      run_id: l.run_id,
+      action: 'none',
+      ok: false,
+      state: c.state,
+      next: `superagent recover ${l.run_id}`,
+    };
   const need = (): Asks => {
     if (asks instanceof Error) throw asks;
     return asks;
@@ -2172,12 +2085,9 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
         ? human(l, run, need())
         : p.do === 'expire'
           ? expireRun(l, run, asks, {})
-          : p.do === 'resume'
-            ? pausedHold(l, run, c)
-            : p.do === 'ask'
-              ? askHold(l, run, c, hold, p, need(), extra)
-              : autoRetry(l, run, c);
-    if (Array.isArray(x)) return act(...x);
+          : p.do === 'ask'
+            ? askHold(l, run, c, hold, p, need(), extra)
+            : undefined;
     row.disposed ||= !!x && x.action !== 'none' && x.ok;
     if (!(asks instanceof Error) && !['ask', 'signoff', 'expire'].includes(p.do))
       supersedeAsks(asks, l.run_id);
@@ -2185,13 +2095,6 @@ function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[]): Action 
   };
   const hold = holdOf(l, run, c);
   if (!hold && !(asks instanceof Error)) supersedeAsks(asks, l.run_id);
-  if (
-    hold === 'engine_suspect' &&
-    workflowIdentity(l) &&
-    workflowIdentity(l) !== engineHash() &&
-    run.status === 'failed'
-  )
-    return act('gate');
   return hold && act(hold);
 }
 
@@ -2230,158 +2133,6 @@ function record(l: Ledger, reason: string, x: Action): Action {
   }
 }
 
-const PAUSE_GRACE_MS = 10 * 60e3;
-const MAX_PAUSE_RESUMES = 2;
-/** 非签收、非审批的暂停：到期（resumeAt，或 attention 的 waitingSince）+10 分钟仍未被 wake 唤醒才自动 resume，有上限。 */
-function pausedHold(l: Ledger, run: RunView, c: Classified): Action | Held | undefined {
-  const w = run.metadata?.wait;
-  if (Date.now() < Date.parse(w?.resumeAt ?? w?.waitingSince ?? '') + PAUSE_GRACE_MS)
-    return undefined;
-  const tries = (l.auto_retries ?? []).filter(r => r.reason === 'paused').length;
-  if (tries >= MAX_PAUSE_RESUMES) return ['auto_retry_exhausted', { auto_retries: tries }];
-  const auto = { milestone: 'paused', at: new Date().toISOString(), reason: 'paused' };
-  const r = recoverRun(l, false, auto);
-  return {
-    run_id: l.run_id,
-    action: 'auto_retry',
-    state: c.state,
-    ...auto,
-    attempt: tries + 1,
-    ...r,
-  };
-}
-
-const BACKOFF_S = 120;
-const MAX_BACKOFF_S = 1800;
-/**
- * held:gate / held:environment / 编码节点失败的自动重试（docs/00「自动重试」）。重试不了时返回挂起原因交 HOLD_POLICY：
- * needs、红线、gate 截止、次数用尽、连续两次修复无变化、旧工作流无 attempt 节点。environment 首次立即重试，
- * 之后按 120s·2^(n-1)（≤30 分钟）退避，未到点返回 none/backoff。gate 重试先给里程碑每个包追加提示。
- */
-function autoRetry(l: Ledger, run: RunView, c: Classified): Action | Held {
-  const node = c.node ?? '';
-  const plan = planOf(l);
-  const art = artifactsOf(run);
-  let kind: 'gate' | 'environment' | 'coder';
-  let m: string;
-  let reason: string;
-  let gate: (Gate & { milestone?: string }) | undefined;
-  if (c.state === 'held:gate') {
-    gate = readJson(join(art, `${node}.json`)) as typeof gate;
-    [kind, m, reason] = ['gate', gateMilestone(node), `gate:${decisionOf(gate)?.reason ?? '?'}`];
-  } else if (c.state === 'held:environment') {
-    [kind, m, reason] = ['environment', 'environment', 'environment'];
-  } else {
-    m = milestoneOf(l, node);
-    const why = nodeReason(l, run, c);
-    kind = reasonHold(why) === 'environment' ? 'environment' : 'coder';
-    reason = `${kind}:${why || node}`;
-  }
-  const tries = (l.auto_retries ?? []).filter(
-    r => r.milestone === m && r.reason.split(':')[0] === kind
-  );
-  const needs = needsOf(art, m, l);
-  const hold = (h: Hold): Held => [
-    h,
-    { auto_retries: tries.length, ...(needs.length ? { needs } : {}) },
-  ];
-  if (needs.length) return hold('needs');
-  const cause = reasonOf(
-    c.state === 'held:engine_suspect' ? 'engine_suspect' : nodeReason(l, run, c) || kind
-  );
-  if (!cause) return hold('engine_suspect');
-  if (cause.hold === 'redline') return hold('redline');
-  if (cause.hold === 'deadline') return hold('deadline');
-  if (cause.hold === 'no_change') return hold('no_change');
-  if (
-    cause.determinism === 'deterministic' &&
-    (!workflowIdentity(l) || workflowIdentity(l) === engineHash())
-  )
-    return hold('auto_retry_exhausted');
-  if (
-    cause.determinism === 'deterministic' &&
-    l.auto_retries?.some(r => r.engine_hash === engineHash())
-  )
-    return hold('auto_retry_exhausted');
-  if (cause.determinism === 'deterministic' && !['failed', 'cancelled'].includes(run.status))
-    return hold('auto_retry_exhausted');
-  if (cause.determinism !== 'deterministic' && tries.length >= loadTiers().policy.auto_retry[kind])
-    return hold('auto_retry_exhausted');
-  const pkgHold = /^(verify|settle)-/.test(node);
-  if ((kind === 'gate' || pkgHold) && !attemptable(l, retryScope(l, node)))
-    return hold('no_attempt_node');
-  const last = tries.at(-1);
-  if (kind === 'environment' && last) {
-    const wait = Math.min(MAX_BACKOFF_S, BACKOFF_S * 2 ** (tries.length - 1)) * 1000;
-    const next = Date.parse(last.at) + wait;
-    if (Date.now() < next)
-      return {
-        run_id: l.run_id,
-        action: 'none',
-        ok: true,
-        state: c.state,
-        reason: 'backoff',
-        next: new Date(next).toISOString(),
-      };
-  }
-  const auto = {
-    milestone: m,
-    at: new Date().toISOString(),
-    reason,
-    engine_hash: engineHash(),
-    ...(cause.determinism === 'deterministic' ? { deterministic: true as const } : {}),
-  };
-  let r: RecoverResult;
-  if (kind === 'gate') {
-    const text = gateHint(art, node, gate, tries.length + 1);
-    for (const p of plan.packages.filter(x => (x.milestone ?? 'm1') === m))
-      appendFileSync(join(l.gen_dir, 'hints', `${p.id}.md`), text);
-    r = retryGate(l, node, false, auto);
-  } else if (pkgHold) {
-    const out = readJson(join(art, `${node}.json`)) as { log?: string } | null;
-    const log =
-      out?.log && existsSync(out.log)
-        ? readFileSync(out.log, 'utf8').split('\n').slice(-60).join('\n')
-        : '';
-    for (const p of plan.packages.filter(x => (x.milestone ?? 'm1') === m))
-      appendFileSync(
-        join(l.gen_dir, 'hints', `${p.id}.md`),
-        `\n## 自动重试 ${String(tries.length + 1)}：${node}\nreason：${reason}\n${redact(log)}\n`
-      );
-    r = retryGate(l, node, false, auto);
-  } else r = recoverRun(l, false, auto);
-  return {
-    run_id: l.run_id,
-    action: 'auto_retry',
-    state: c.state,
-    ...auto,
-    attempt: tries.length + 1,
-    ...r,
-  };
-}
-
-/** Retry guidance projects the recorded decision and its evidence. */
-function gateHint(art: string, node: string, g: Gate | undefined, n: number): string {
-  const acc = readJson(join(art, `${node.replace(/^gate-/, 'diff-')}.json`)) as Accept | undefined;
-  const out = [`\n## 自动重试 ${String(n)}：${node} escalate（${decisionOf(g)?.reason ?? '?'}）\n`];
-  if (acc?.failed?.length) {
-    out.push('失败的验收命令：', ...acc.failed.map(x => `- \`${x}\``), '');
-    out.push(
-      `交付判定：${decisionOf(acc)?.kind ?? 'unknown'}；基线状态未知时查阅 probe 证据。`,
-      ''
-    );
-    const log = acc.log && existsSync(acc.log) ? readFileSync(acc.log, 'utf8').trimEnd() : '';
-    if (log) out.push('验收日志尾：', '```', ...log.split('\n').slice(-60), '```', '');
-  }
-  const ledger = readJson(join(art, `${node}.ledger.json`)) as ReviewLedger | undefined;
-  const findings = (ledger?.blocking ?? []).map(
-    f => `- ${f.id} [${f.severity}] ${f.file}:${String(f.line)} ${tail(f.evidence ?? '', 200)}`
-  );
-  if (findings.length) out.push('未关闭的阻塞发现：', ...findings, '');
-  out.push(`gate reason：${decisionOf(g)?.reason ?? '?'}`, '');
-  return out.join('\n');
-}
-
 type Count = Partial<Record<string, number>>;
 const bump = (o: Count, k: string, n = 1): void => {
   o[k] = (o[k] ?? 0) + n;
@@ -2399,7 +2150,7 @@ export function summarize(pairs: Pair[]): Record<string, unknown> {
   const n: Count = {};
   const unreadable: string[] = [];
   for (const { ledger: l, run } of pairs) {
-    bump(n, 'recoveries', l.recoveries.length);
+    bump(n, 'recoveries', l.recoveries?.length ?? 0);
     try {
       if (run instanceof Error) throw run;
       const c = classifyRun(l, run);
@@ -2595,11 +2346,7 @@ export function main(argv: string[]): number {
         print({ run_id: id, ...res });
         return res.ok ? 0 : res.held ? EXIT.held : res.busy ? EXIT.running : 1;
       }
-      return controlled(
-        resolved,
-        () => resumeRun(resolved, false, a.flags.reconciled, verb),
-        false
-      );
+      return controlled(resolved, () => resumeRun(resolved, a.flags.reconciled, verb), false);
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);

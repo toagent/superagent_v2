@@ -338,10 +338,8 @@ const SLOW_SUCCESS =
 const SLOW_FAILURE =
   'name: wait-failure\ndescription: Detached failure fixture.\n' +
   'nodes:\n  - id: fail\n    bash: "sleep 1; echo failed >&2; exit 42"\n';
-// `interactive: true` is refused for background dispatch by design (#2738), so this
-// one runs in the foreground OF ANOTHER PROCESS — which is the property that matters:
-// the waiter is not in the process that owns the run. The warm-up node is what lets
-// the waiter attach BEFORE the gate exists, so the gate is a wake and not a read.
+// The foreground case keeps the waiter in a separate process from the gate owner.
+// The warm-up lets it attach before the gate exists, so the gate is a wake, not a read.
 const GATED =
   'name: wait-gated\ndescription: Out-of-process gate fixture.\ninteractive: true\n' +
   'nodes:\n  - id: warmup\n    bash: "sleep 3; echo ready"\n' +
@@ -896,6 +894,32 @@ describe('archon workflow wait against a detached run', () => {
     },
     90_000
   );
+
+  test('P3 detached native approval pauses before delivery and explicit approve continues once', async () => {
+    const fixture = makeFixture('archon-p3-approval-', {
+      'wait-gated':
+        GATED + '  - id: deliver\n    depends_on: [review]\n    bash: "echo delivered"\n',
+    });
+    const { runId } = await launchDetached(fixture, 'wait-gated');
+    await waitFor(
+      'native approval pause',
+      () => readRunStatus(fixture.archonHome, runId) === 'paused' || undefined,
+      30_000
+    );
+    expect(countNodeCompletions(fixture.archonHome, runId, 'deliver')).toBe(0);
+    const approved = await runCli(fixture, ['workflow', 'approve', runId, '--detach', '--json']);
+    if (approved.exitCode !== 0) throw new Error(approved.stderr || approved.stdout);
+    await waitFor(
+      'approved delivery',
+      () => readRunStatus(fixture.archonHome, runId) === 'completed' || undefined,
+      30_000
+    );
+    expect(countNodeCompletions(fixture.archonHome, runId, 'deliver')).toBe(1);
+    const repeated = await runCli(fixture, ['workflow', 'approve', runId, '--detach', '--json']);
+    expect(JSON.parse(repeated.stdout.trim())).toMatchObject({ ok: false, action: 'approve' });
+    expect(countNodeCompletions(fixture.archonHome, runId, 'deliver')).toBe(1);
+    activeRunIds.delete(runId);
+  }, 90_000);
 
   test('wakes with awaiting_response on a gate, then with cancelled when it is rejected', async () => {
     const fixture = makeFixture('archon-wait-gate-', { 'wait-gated': GATED });

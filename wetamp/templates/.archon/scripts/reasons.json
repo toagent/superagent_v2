@@ -70,32 +70,11 @@
     "description": "可恢复的暂停"
   },
   {
-    "code": "auto_retry_exhausted",
-    "hold": "auto_retry_exhausted",
-    "determinism": "deterministic",
-    "owner": "human",
-    "description": "自动重试额度已用尽"
-  },
-  {
     "code": "no_change",
     "hold": "no_change",
     "determinism": "deterministic",
     "owner": "coder",
     "description": "修复未改变交付"
-  },
-  {
-    "code": "no_attempt_node",
-    "hold": "no_attempt_node",
-    "determinism": "deterministic",
-    "owner": "engine",
-    "description": "旧工作流缺少 attempt 节点"
-  },
-  {
-    "code": "recover_no_progress",
-    "hold": "recover_no_progress",
-    "determinism": "deterministic",
-    "owner": "engine",
-    "description": "恢复未推进节点"
   },
   {
     "code": "coder_needs",
@@ -406,32 +385,11 @@
     "description": "可恢复的暂停"
   },
   {
-    "code": "auto_retry_exhausted+review_limit",
-    "hold": "review_limit",
-    "determinism": "deterministic",
-    "owner": "human",
-    "description": "自动重试额度已用尽"
-  },
-  {
     "code": "no_change+review_limit",
     "hold": "review_limit",
     "determinism": "deterministic",
     "owner": "coder",
     "description": "修复未改变交付"
-  },
-  {
-    "code": "no_attempt_node+review_limit",
-    "hold": "review_limit",
-    "determinism": "deterministic",
-    "owner": "engine",
-    "description": "旧工作流缺少 attempt 节点"
-  },
-  {
-    "code": "recover_no_progress+review_limit",
-    "hold": "review_limit",
-    "determinism": "deterministic",
-    "owner": "engine",
-    "description": "恢复未推进节点"
   },
   {
     "code": "coder_needs+review_limit",
