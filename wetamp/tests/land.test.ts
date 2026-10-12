@@ -12,6 +12,7 @@ afterEach(() => { process.env = { ...saved }; });
 const fixture = () => {
   const root = tmp(), repo = gitRepo(root), worktree = join(root, 'worker'), art = join(root, 'art');
   mkdirSync(art);
+  sh('git config user.name t && git config user.email t@l', repo);
   sh(`git worktree add -qb sa/land '${worktree}'`, repo);
   sh('echo delivery > delivery.txt && git add delivery.txt && git -c user.name=t -c user.email=t@l commit -qm delivery', worktree);
   const head = sh('git rev-parse HEAD', worktree).trim();
@@ -29,13 +30,65 @@ test.each(['current', 'legacy-ref', 'legacy-hash'])('%s apply checks the accepte
   }).exitCode;
   expect(verify(f.worktree)).toBe(0);
   const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
-  try { applyLand(f.run, receipt, cwd => { expect(cwd).toBe(f.repo); expect(sh('git rev-parse HEAD', cwd).trim()).toBe(f.land.head); return verify(cwd); }, { repo: f.repo, base_ref: mode === 'legacy-hash' ? sh('git rev-parse main', f.repo).trim() : 'origin/main', launch_branch: 'main' }); }
+  const original = sh('git rev-parse HEAD', f.repo);
+  let candidate = '';
+  try { applyLand(f.run, receipt, cwd => { candidate = cwd; expect(cwd).not.toBe(f.repo); expect(sh('git symbolic-ref --short HEAD', f.repo).trim()).toBe('main'); expect(sh('git rev-parse HEAD', f.repo)).toBe(original); expect(sh('git rev-parse HEAD', cwd).trim()).toBe(f.land.head); return verify(cwd); }, { repo: f.repo, base_ref: mode === 'legacy-hash' ? sh('git rev-parse main', f.repo).trim() : 'origin/main', launch_branch: 'main' }); }
   finally { probe.mockRestore(); }
   expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(f.land.head);
   expect(readFileSync(counter, 'utf8')).toBe('checked\n');
   expect(readFileSync(join(f.art, 'land-check.log'), 'utf8')).toContain('reused pass');
   expect(existsSync(f.worktree)).toBe(false);
+  expect(existsSync(candidate)).toBe(false);
   expect(sh('git branch --list sa/land', f.repo).trim()).toBe('');
+});
+// prettier-ignore
+test.each(['pass', 'accept-fail', 'conflict', 'target-race'])('diverged target: %s preserves branches until verified and removes temporary worktree', kind => {
+  const f = fixture(); f.land.ff = false;
+  sh('echo target > README.md && git add README.md && git commit -qm target', f.repo);
+  if (kind === 'conflict') {
+    sh('echo worker > README.md && git add README.md && git commit -qm worker', f.worktree);
+    f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
+  }
+  const before = sh('git rev-parse main', f.repo), worker = sh('git rev-parse sa/land', f.repo), worktrees = sh('git worktree list --porcelain', f.repo);
+  let candidate = '', accepted = '', calls = 0, targetAfter = before;
+  const verify = (cwd: string) => {
+    candidate = cwd; calls++;
+    expect(sh('git rev-parse main', f.repo)).toBe(before);
+    expect(sh('git symbolic-ref --short HEAD', f.repo).trim()).toBe('main');
+    accepted = sh('git rev-parse HEAD', cwd);
+    expect(sh('git rev-list --parents -n 1 HEAD', cwd).trim().split(' ')).toEqual([accepted.trim(), before.trim(), worker.trim()]);
+    expect(readFileSync(join(cwd, 'delivery.txt'), 'utf8')).toBe('delivery\n');
+    expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('target\n');
+    if (kind === 'target-race') { sh('git commit --allow-empty -qm concurrent', f.repo); targetAfter = sh('git rev-parse HEAD', f.repo); }
+    return kind === 'accept-fail' ? 1 : 0;
+  };
+  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  try {
+    if (kind === 'pass') applyLand(f.run, f.land, verify);
+    else expect(() => applyLand(f.run, f.land, verify)).toThrow(kind === 'conflict' ? 'README.md' : kind === 'target-race' ? 'target advanced' : 'acceptance failed');
+  } finally { probe.mockRestore(); }
+  expect(calls).toBe(kind === 'conflict' ? 0 : 1);
+  if (candidate) expect(existsSync(candidate)).toBe(false);
+  expect(sh('git rev-parse main', f.repo)).toBe(kind === 'pass' ? accepted : targetAfter);
+  if (kind !== 'pass') {
+    expect(sh('git rev-parse sa/land', f.repo)).toBe(worker);
+    expect(sh('git worktree list --porcelain', f.repo)).toBe(kind === 'target-race' ? worktrees.replace(`HEAD ${before.trim()}`, `HEAD ${targetAfter.trim()}`) : worktrees);
+  }
+});
+// prettier-ignore
+test('apply refuses a target checkout changed during acceptance', () => {
+  const f = fixture(), before = sh('git rev-parse main', f.repo);
+  let candidate = '';
+  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  try { expect(() => applyLand(f.run, f.land, cwd => {
+    candidate = cwd;
+    sh('git switch -qc operator', f.repo);
+    return 0;
+  })).toThrow('target checkout changed'); } finally { probe.mockRestore(); }
+  expect(sh('git rev-parse main', f.repo)).toBe(before);
+  expect(sh('git rev-parse operator', f.repo)).toBe(before);
+  expect(sh('git symbolic-ref --short HEAD', f.repo).trim()).toBe('operator');
+  expect(existsSync(candidate)).toBe(false);
 });
 // prettier-ignore
 test.each(['dirty', 'tree'])('apply refuses %s before advancing the target', kind => {
