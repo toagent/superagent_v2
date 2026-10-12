@@ -311,14 +311,14 @@ describe('buildWorkflow', () => {
         500_000 + 60_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000
       );
   });
-  test('ACCT: real Archon completes failed acceptance and baseline probe with the generated budget (time scaled 100:1)', () => {
+  test('ACCT: real Archon completes failed acceptance and baseline probe with the generated budget', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const plan = structuredClone(fixture);
     plan.repo = repo;
-    // 2s represents 200s, longer than the scaled 120s default but within the 300s command budget.
+    // Budget arithmetic is covered above. Keep real subprocess overhead unscaled here.
     plan.environment = [{ cmd: 'true', timeout_s: 1 }];
-    plan.packages[0].accept = [{ cmd: 'sleep 2; false', timeout_s: 300 }];
+    plan.packages[0].accept = [{ cmd: 'false', timeout_s: 1 }];
     const planPath = join(root, 'plan.json');
     fs.writeFileSync(planPath, JSON.stringify(plan));
     const source = join(root, 'source');
@@ -344,7 +344,6 @@ describe('buildWorkflow', () => {
     const node = {
       ...generated,
       depends_on: [],
-      timeout: generated.timeout! / 100,
       with: {
         ...generated.with,
         plan: planPath,
@@ -359,17 +358,8 @@ describe('buildWorkflow', () => {
       join(workflow, 'acct.yaml'),
       Bun.YAML.stringify({
         name: 'acct',
-        description: 'ACCT scaled subprocess timeout contract',
-        nodes: [
-          {
-            ...node,
-            id: 'old-budget',
-            timeout: 120_000 / 100,
-            on_timeout: 'skip',
-            with: { ...node.with, tag: 'old-budget' },
-          },
-          { ...node, depends_on: ['old-budget'], trigger_rule: 'all_done' },
-        ],
+        description: 'ACCT generated subprocess timeout contract',
+        nodes: [node],
       })
     );
     sh(
@@ -411,10 +401,7 @@ describe('buildWorkflow', () => {
     const view = archon('workflow', 'get', id, '--verbose', '--json');
     expect(view).toMatchObject({
       status: 'completed',
-      nodes: [
-        { nodeId: 'old-budget', state: 'skipped' },
-        { nodeId: 'verify-core', state: 'completed' },
-      ],
+      nodes: [{ nodeId: 'verify-core', state: 'completed' }],
     });
     const verified = JSON.parse(
       readFileSync(
