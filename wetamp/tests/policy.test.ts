@@ -179,7 +179,12 @@ test('same-diff reuse requires exact candidate and contract, qualified review, n
     contract_hash: 'contract',
     risk: 'G1',
   };
-  const current = { ...prior, ok: true, same: true, disposition: 'advance' as const };
+  const current = {
+    ...prior,
+    ok: true,
+    same: true,
+    decision: { kind: 'advance' as const, reason: null, evidence: [], debt: [] },
+  };
   const pass = { status: 'PASS' as const, findings: [], debt: [] };
   const input = {
     reviews: [pass, null],
