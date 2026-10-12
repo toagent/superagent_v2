@@ -70,7 +70,7 @@ exit 0
   const fail = git('rev-parse HEAD');
   const home = join(root, 'sa');
   const calls = join(root, 'calls.log');
-  const run = (rev: string, env: Record<string, string> = {}) => {
+  const run = (rev: string, env: Record<string, string> = {}, timeout = '60') => {
     const p = Bun.spawnSync(
       [
         'bash',
@@ -78,7 +78,7 @@ exit 0
         '--commit',
         rev,
         '--timeout',
-        '60',
+        timeout,
       ],
       {
         env: {
@@ -114,6 +114,28 @@ exit 0
 
 // 每个用例建临时仓库并多次 git worktree add/remove，满载（如嵌在 verify-local 里跑）时超过 bun 默认 5s。
 describe('scripts/verify-local.sh', () => {
+  test.each(['dead', 'live', 'dirty'] as const)(
+    'startup recovery respects %s lock ownership',
+    async state => {
+      const f = fixture(),
+        old = join(f.root, 'sa-verify.orphan'),
+        lock = join(f.home, 'verify/lock');
+      mkdirSync(old);
+      mkdirSync(lock, { recursive: true });
+      f.git(`worktree add --detach '${old}/wt' HEAD`);
+      const child = Bun.spawn(['true']);
+      await child.exited;
+      writeFileSync(join(lock, 'pid'), String(state === 'live' ? process.pid : child.pid));
+      writeFileSync(join(lock, 'tmp'), old);
+      if (state === 'dirty') writeFileSync(join(old, 'wt/keep'), 'keep');
+      const result = f.run(f.pass, {}, state === 'live' ? '0' : '60');
+      expect(result.code).toBe(state === 'live' ? 1 : 0);
+      expect(existsSync(join(old, 'wt'))).toBe(state !== 'dead');
+      expect(f.git('worktree list --porcelain').includes(`${old}/wt`)).toBe(state !== 'dead');
+    },
+    60000
+  );
+
   test('a passing commit writes ok verify.json; a failing one is cached with last_ok_commit kept', () => {
     const f = fixture();
     const a = f.run(f.pass);

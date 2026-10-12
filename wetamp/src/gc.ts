@@ -56,6 +56,22 @@ export interface GcAction {
 function collectProbe(path: string, id: string, dryRun: boolean, repo?: string): GcAction {
   try {
     if (lstatSync(path).isSymbolicLink()) throw new Error('probe symlink retained');
+    if (!repo) {
+      const status = Bun.spawnSync(
+        ['git', '-C', path, 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+        { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
+      );
+      // Legacy probes have no run ledger: retain anything except clean trees or tracked deletions.
+      if (
+        status.exitCode !== 0 ||
+        status.stdout
+          .toString()
+          .split('\0')
+          .filter(Boolean)
+          .some(row => ![' D ', 'D  '].includes(row.slice(0, 3)))
+      )
+        throw new Error('legacy probe is not clean or tracked-deletions-only');
+    }
     if (!dryRun) {
       const options = { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS } as const;
       const common = Bun.spawnSync(
@@ -67,11 +83,14 @@ function collectProbe(path: string, id: string, dryRun: boolean, repo?: string):
         : common.exitCode === 0
           ? ['--git-dir', common.stdout.toString().trim()]
           : [];
-      if (owner.length)
-        Bun.spawnSync(['git', ...owner, 'worktree', 'remove', '--force', path], options);
+      if (owner.length && common.exitCode === 0) {
+        const removed = Bun.spawnSync(
+          ['git', ...owner, 'worktree', 'remove', '--force', path],
+          options
+        );
+        if (removed.exitCode !== 0) throw new Error(removed.stderr.toString());
+      }
       rmSync(path, { recursive: true, force: true });
-      if (owner.length)
-        Bun.spawnSync(['git', ...owner, 'worktree', 'prune', '--expire', 'now'], options);
     }
     return {
       run_id: id,
@@ -86,7 +105,7 @@ function collectProbe(path: string, id: string, dryRun: boolean, repo?: string):
 }
 
 /** Only registered runs enter GC; the recovery lock covers observation, removal and recording. */
-export function gc(dryRun = false): GcAction[] {
+export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] {
   const out: GcAction[] = [];
   try {
     for (const id of ledgerIds()) {
@@ -226,14 +245,16 @@ export function gc(dryRun = false): GcAction[] {
     out.push({ run_id: '*', object: 'run', action: 'skipped', reason: String(e) });
   }
   try {
-    for (const entry of readdirSync(tmpdir(), { withFileTypes: true })) {
-      const path = join(tmpdir(), entry.name);
-      if (
-        entry.isDirectory() &&
-        entry.name.startsWith('sa-probe-') &&
-        Date.now() - statSync(path).mtimeMs > 24 * 60 * 60_000
-      )
-        out.push(collectProbe(path, '*', dryRun));
+    for (const root of new Set(probeRoots.filter(existsSync).map(p => realpathSync(p)))) {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        const path = join(root, entry.name);
+        if (
+          entry.isDirectory() &&
+          entry.name.startsWith('sa-probe-') &&
+          Date.now() - statSync(path).mtimeMs > 24 * 60 * 60_000
+        )
+          out.push(collectProbe(path, '*', dryRun));
+      }
     }
   } catch (e) {
     out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
