@@ -215,6 +215,7 @@ export const html = (s: string | number): string =>
     /[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c
   );
+// prettier-ignore
 export function panel(d: Partial<ReturnType<typeof overview>>, body?: string): string {
   const rows = d.tokenRows,
     models = [...new Set(rows?.flatMap(r => Object.keys(r.models)) ?? [])].sort();
@@ -236,6 +237,7 @@ const same = (a: string, b: string): boolean => {
     y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 };
+// prettier-ignore
 export function handler(
   port: number,
   token: string,
@@ -243,7 +245,8 @@ export function handler(
   upstream: string,
   forward: typeof fetch = fetch,
   unix?: string,
-  snapshot: () => Snapshot = () => ({ at: new Date().toISOString(), summary: {}, rows: [] })
+  snapshot: () => Snapshot = () => ({ at: new Date().toISOString(), summary: {}, rows: [] }),
+  update: () => Promise<void> = () => Promise.resolve()
 ): (r: Request) => Promise<Response> {
   return async r => {
     const headers: Record<string, string> = {
@@ -272,6 +275,9 @@ export function handler(
       return respond('Unauthorized', 401);
     if (supplied && same(supplied, token))
       headers['Set-Cookie'] = `sa_web=${token}; HttpOnly; SameSite=Strict; Path=/`;
+    if (['/sa', '/sa/data', '/sa/memory'].includes(url.pathname)) {
+      try { await update(); } catch { return respond('Snapshot unavailable', 503); }
+    }
     if (url.pathname === '/sa') return respond(panel(get()), 200, 'text/html');
     if (url.pathname === '/sa/memory') {
       try {
@@ -356,6 +362,28 @@ export async function ensureWebDist(hash = residentHash()): Promise<void> {
   if ((await p.exited) !== 0) throw new Error('build:web failed');
   writeFileSync(stamp, hash);
 }
+/** Only authenticated snapshot requests do work; concurrent readers share one load. */
+export function createDemandSnapshot(
+  load = createLoader(),
+  refresh = requestUsageRefresh
+): {
+  snapshot: () => Snapshot;
+  update: () => Promise<void>;
+} {
+  let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() };
+  let pending: Promise<void> | undefined;
+  return {
+    snapshot: () => snapshot,
+    update: () =>
+      (pending ??= (async () => {
+        snapshot = await load(Number.MAX_SAFE_INTEGER);
+        refresh();
+      })().finally(() => {
+        pending = undefined;
+      })),
+  };
+}
+// prettier-ignore
 async function serve(): Promise<void> {
   mkdirSync(home().sa, { recursive: true });
   const held = lock(join(home().sa, 'web.lock'));
@@ -364,23 +392,11 @@ async function serve(): Promise<void> {
     socket = join(dir, 'archon.sock');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  let server: ReturnType<typeof Bun.serve> | undefined,
-    timer: ReturnType<typeof setInterval> | undefined;
+  let server: ReturnType<typeof Bun.serve> | undefined;
   const token = randomBytes(32).toString('hex'),
     hash = residentHash(),
     load = createLoader();
-  let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() },
-    busy = false;
-  const update = async (): Promise<void> => {
-    if (busy) return;
-    busy = true;
-    try {
-      snapshot = await load(Number.MAX_SAFE_INTEGER);
-      requestUsageRefresh();
-    } finally {
-      busy = false;
-    }
-  };
+  const demand = createDemandSnapshot(load);
   const cleanup = (): void => {
     if (existsSync(socket)) unlinkSync(socket);
     if (webState()?.pid === process.pid) unlinkSync(stateFile());
@@ -398,11 +414,12 @@ async function serve(): Promise<void> {
       fetch: handler(
         port,
         token,
-        () => overview(snapshot),
+        () => overview(demand.snapshot()),
         'http://localhost',
         fetch,
         socket,
-        () => snapshot
+        () => demand.snapshot(),
+        demand.update
       ),
     });
     writeAtomic(
@@ -418,14 +435,6 @@ async function serve(): Promise<void> {
       } satisfies WebState)
     );
     if (existsSync(join(dir, 'error'))) unlinkSync(join(dir, 'error'));
-    timer = setInterval(() => {
-      void update().catch(() => {
-        /* Loader retains the last snapshot. */
-      });
-    }, 5000);
-    void update().catch(() => {
-      /* Loader retains the last snapshot. */
-    });
     await new Promise<void>(resolve => {
       process.once('SIGTERM', resolve);
       process.once('SIGINT', resolve);
@@ -434,7 +443,6 @@ async function serve(): Promise<void> {
     writeAtomic(join(dir, 'error'), (e as Error).message);
     throw e;
   } finally {
-    if (timer) clearInterval(timer);
     if (server) await server.stop(true);
     cleanup();
     held.release();
@@ -455,6 +463,7 @@ export async function stopWeb(s = webState()): Promise<void> {
   if (existsSync(join(home().sa, 'console/archon.sock')) || (s && alive(s.pid)))
     throw new Error('console still stopping');
 }
+// prettier-ignore
 export async function startWeb(): Promise<WebState> {
   mkdirSync(home().sa, { recursive: true });
   const guard = lock(join(home().sa, 'web-start.lock'));

@@ -1,22 +1,30 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { shortModel, sessionModel } from '../src/models';
-import { attribute, jobSession, parseUsage, readUsage, refreshUsage, sessionKey, usageSummary, usageText, type Owner, type UsageCache } from '../src/usage';
+// prettier-ignore
+import { attribute, jobSession, parseUsage, readUsage, refreshUsage, sessionKey, usageSummary, usageText, usageEvidence, type Owner, type UsageCache } from '../src/usage';
 import { overview } from '../src/web/server';
 import { tmp } from './helpers';
 import type { BoardRow, Snapshot } from '../src/board/data';
 
 const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'] as const;
 const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+// prettier-ignore
 afterEach(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
+// prettier-ignore
 const setup = (): string => { const r = tmp(); Object.assign(process.env, { SUPERAGENT_HOME: r, ARCHON_HOME: join(r, 'archon'), CODEX_HOME: join(r, 'codex'), CLAUDE_CONFIG_DIR: join(r, 'claude') }); return r; };
+// prettier-ignore
 const numbers = { inputTokens: 20, outputTokens: 8, reasoningOutputTokens: 3, cacheReadTokens: 10, cacheCreationTokens: 2, totalTokens: 40 };
 const uuid = '12345678-1234-1234-1234-123456789abc';
+// prettier-ignore
 const claude = { session: [{ period: uuid, modelsUsed: ['claude-opus-5-5'], ...numbers, totalCost: 2, metadata: { lastActivity: '2026-10-10T00:00:00Z' }, modelBreakdowns: [{ modelName: 'claude-opus-5-5', ...numbers }] }] };
+// prettier-ignore
 const codex = { sessions: [{ sessionId: `rollout-2026-10-10T12-00-00-${uuid}`, models: { 'gpt-6.1-sol': numbers }, ...numbers, costUSD: 1, lastActivity: '2026-10-10T00:00:00Z' }] };
+// prettier-ignore
 const owner = (kind: Owner['kind']): Owner => ({ kind, client: 'codex', role: 'general', model: 'gpt-6.1-sol', cwd: '/repo' });
 
+// prettier-ignore
 describe('WP-BT6 naming and metadata', () => {
   test('one family/version rule including unknown and compact models', () => {
     const cases = { 'claude-opus-5-5': 'opus5.5', 'claude-opus-5': 'opus5', 'claude-opus-4-8': 'opus4.8', 'claude-fable-5-1': 'fable5.1', 'gpt-6.1-sol': 'sol6.1', 'gpt-6-sol': 'sol6', 'gpt-6-astra': 'astra', 'claude-haiku-4-5': 'haiku4.5', 'claude-sonnet-4-6': 'sonnet4.6', 'qwen3.8': 'qwen3.8', 'openai/unfamiliar-model': 'unfamiliar' };
@@ -44,6 +52,7 @@ describe('WP-BT6 naming and metadata', () => {
   });
 });
 
+// prettier-ignore
 describe('WP-BT6 accounting', () => {
   test('both vendor shapes, thread suffix and duplicates', () => {
     expect(parseUsage(claude, 'claude')[0]).toMatchObject({ id: uuid, input: 20, output: 8, cacheWrite: 2, total: 40 });
@@ -77,10 +86,52 @@ describe('WP-BT6 accounting', () => {
   });
 });
 
+// prettier-ignore
 test('supplementary panel preserves role/model/token and excludes terminal details', () => {
   setup(); const row: BoardRow = { run_id: 'r', model: 'gpt-6.1-sol', state: 'running', exit: null, nodes: { done: 1, total: 3, current: 'code-a', currentRole: 'coder' }, started_at: '2026-10-10T00:00:00Z', span: null, elapsed_s: null, held: null, recoveries: 0, auto_retries: 0, console: 'codex', repo: 'repo', branch: 'branch', evidence: '', plan: '', stale: false };
   const sessions = parseUsage(codex, 'codex'); attribute(sessions, [{ id: uuid, owner: { ...owner('run'), run_id: row.run_id } }]);
   const snap: Snapshot = { summary: { prompt: 'SECRET' }, at: row.started_at, rows: [row], usage: { at: 'now', status: 'ok', sources: {}, sessions, daily: [] } };
   expect(overview(snap).runs).toMatchObject([{ role: '将军·sol6.1', tokens: '40' }]);
   expect(JSON.stringify(overview(snap))).not.toMatch(/SECRET|argv|prompt/);
+});
+
+// prettier-ignore
+test('usage refresh reuses durable historical evidence and queries only active or changed runs', () => {
+  const r = setup();
+  mkdirSync(join(r, 'runs'), { recursive: true });
+  mkdirSync(join(r, 'usage'), { recursive: true });
+  const ledger = (id: string, extra = {}) => writeFileSync(join(r, 'runs', `${id}.json`), JSON.stringify({
+    run_id: id, archon_run_id: id, repo: r, branch: 'fixture', gen_dir: r, workflow: 'test', started_at: '2026-10-10T00:00:00Z', ...extra,
+  }));
+  ledger('done');
+  ledger('live', { adoptions: [{ from: 'history', to: 'live' }] });
+  const calls: string[] = [];
+  let liveStatus = 'running';
+  const query = (args: string[]) => {
+    const id = args[2]!;
+    calls.push(id);
+    return { id, status: id === 'live' ? liveStatus : 'completed', working_path: r,
+      events: [{ step_name: 'code', event_type: 'node_completed', data: { provider: 'codex', session_id: id } }] };
+  };
+  const refresh = () => {
+    const evidence = usageEvidence(query);
+    writeFileSync(join(r, 'usage/runs.json'), JSON.stringify(evidence.runs));
+    return evidence;
+  };
+  const first = refresh();
+  expect(calls.sort()).toEqual(['done', 'history', 'live']);
+  calls.length = 0;
+  expect(refresh().claims).toEqual(first.claims);
+  expect(calls).toEqual(['live']);
+  calls.length = 0;
+  ledger('new');
+  const changed = new Date(Date.now() + 5000);
+  utimesSync(join(r, 'runs/done.json'), changed, changed);
+  refresh();
+  expect(calls.sort()).toEqual(['done', 'live', 'new']);
+  liveStatus = 'cancelled';
+  refresh();
+  calls.length = 0;
+  refresh();
+  expect(calls).toEqual([]);
 });

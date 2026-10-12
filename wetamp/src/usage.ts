@@ -1,10 +1,11 @@
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync } from 'node:fs';
+// prettier-ignore
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { archonJson, archonRunIds, lock } from './archon';
 import { home, WETAMP, writeAtomic } from './config';
-import { ledgerIds, loadLedger, parseArgs } from './cli';
+import { ledgerIds, ledgerPath, loadLedger, parseArgs } from './cli';
 import type { Job } from './jobs';
 import { isTier, type Tier } from './roles';
 import { shortModel } from './models';
@@ -16,20 +17,29 @@ import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/work
 import { workflowRoles } from './board/workflow';
 
 export type Client = 'claude' | 'codex';
+// prettier-ignore
 export interface Counts { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number; sessions: number }
+// prettier-ignore
 export interface Owner { client: Client; role: Tier | null; model: string | null; cwd: string | null; kind: 'run' | 'job' | 'interactive' | 'inferred' | 'unknown'; run_id?: string; job_id?: string }
+// prettier-ignore
 export interface UsageSession extends Counts { id: string; client: Client; model: string | null; at: string; cost: number | null; owner?: Owner; parts?: (Counts & { model: string })[] }
+// prettier-ignore
 export interface UsageCache { at: string | null; since?: string; source_at?: Partial<Record<Client, string | null>>; status: string; sources: Partial<Record<Client, string>>; sessions: UsageSession[]; today?: { day: string; status: string; sessions: UsageSession[] }; daily: (Omit<Counts, 'sessions'> & { day: string; client: Client; sessions: null })[] }
 type ObjectValue = Record<string, unknown>;
+// prettier-ignore
 const obj = (v: unknown): ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as ObjectValue : {};
-const arr = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
-const str = (v: unknown): string | null => typeof v === 'string' && v ? v : null;
-const n = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
 const root = (): string => join(home().sa, 'usage');
+// prettier-ignore
 export const sessionKey = (id: string): string => /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.exec(id)?.[0].toLowerCase() ?? id;
 const key = (client: Client, id: string): string => `${client}:${sessionKey(id)}`;
+// prettier-ignore
 const empty = (): Counts => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, sessions: 0 });
+// prettier-ignore
 const counts = (r: ObjectValue): Counts => ({ input: n(r.inputTokens), output: n(r.outputTokens), reasoning: n(r.reasoningOutputTokens), cacheRead: n(r.cacheReadTokens), cacheWrite: n(r.cacheCreationTokens), total: n(r.totalTokens), sessions: 1 });
+// prettier-ignore
 export function parseUsage(value: unknown, client: Client): UsageSession[] {
   const o = obj(value), rows = o.sessions ?? (client === 'claude' ? o.session : undefined);
   if (!Array.isArray(rows)) throw new Error('invalid_json_shape');
@@ -44,7 +54,9 @@ export function parseUsage(value: unknown, client: Client): UsageSession[] {
   }
   return [...seen.values()];
 }
+// prettier-ignore
 const priority: Record<Owner['kind'], number> = { run: 5, job: 4, interactive: 3, inferred: 2, unknown: 1 };
+// prettier-ignore
 export function attribute(sessions: UsageSession[], claims: { id: string; owner: Owner }[], prior: Partial<Record<string, Owner>> = {}): Partial<Record<string, Owner>> {
   const index = { ...prior };
   for (const { id, owner } of claims) {
@@ -55,15 +67,20 @@ export function attribute(sessions: UsageSession[], claims: { id: string; owner:
   for (const s of sessions) { const k = key(s.client, s.id); s.owner = index[k] ??= { client: s.client, role: null, model: s.model, cwd: null, kind: 'unknown' }; }
   return index;
 }
+// prettier-ignore
 const json = (file: string): unknown => { try { return JSON.parse(readFileSync(file, 'utf8')) as unknown; } catch { return null; } };
+// prettier-ignore
 function files(dir: string): string[] { try { return readdirSync(dir).map(f => join(dir, f)); } catch { return []; } }
 /** Only the bounded first JSONL line is interpreted for identity/cwd/time. */
+// prettier-ignore
 function first(file: string): ObjectValue {
   let fd: number | undefined;
   try { fd = openSync(file, 'r'); const b = Buffer.alloc(Math.min(65536, fstatSync(fd).size)); readSync(fd, b, 0, b.length, 0); return obj(JSON.parse(b.toString('utf8').split('\n')[0])); }
   catch { return {}; } finally { if (fd !== undefined) closeSync(fd); }
 }
+// prettier-ignore
 export function logSessionId(file: string | null, client: string): string | null { const r = file ? first(file) : {}, p = client === 'codex' ? obj(r.payload) : r; return str(p.id ?? p.sessionId); }
+// prettier-ignore
 export function jobSession(job: Pick<Job, 'kind' | 'cwd' | 'started_at'>, node = false): string | null {
   const start = Date.parse(job.started_at), hits = new Set<string>();
   if (!Number.isFinite(start)) return null;
@@ -77,29 +94,53 @@ export function jobSession(job: Pick<Job, 'kind' | 'cwd' | 'started_at'>, node =
   }
   return hits.size === 1 ? [...hits][0] : null;
 }
+interface RunEvidence {
+  fingerprint: string;
+  status: RunView['status'];
+  claims: { id: string; owner: Owner }[];
+  eta: EtaInput;
+}
 /** Read-only evidence collection; cache writes belong to refreshUsage. */
-export function usageEvidence(): { claims: { id: string; owner: Owner }[]; eta: EtaInput[] } {
+// prettier-ignore
+export function usageEvidence(query = archonJson): { claims: { id: string; owner: Owner }[]; eta: EtaInput[]; runs: Record<string, RunEvidence> } {
+  const prior = obj(json(join(root(), 'runs.json'))) as Partial<Record<string, RunEvidence>>;
+  const runs: Record<string, RunEvidence> = {};
   const claims: { id: string; owner: Owner }[] = [];
   const eta: EtaInput[] = [];
   for (const id of ledgerIds()) {
     try {
-      const l = loadLedger(id), j = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo);
-      // --events replaces nodes in the CLI response. Reuse its canonical fold, including retry resets and cached success.
-      const events = arr(j.events) as WorkflowEventRow[];
-      const input = etaInput(l, j as unknown as RunView, events); eta.push(input);
+      const l = loadLedger(id), stamp = statSync(ledgerPath(id));
+      const fingerprint = JSON.stringify([l.repo, stamp.mtimeMs, stamp.size]);
       const roles = workflowRoles(l);
-      const history = archonRunIds(l).filter(id => id !== l.archon_run_id).flatMap(id => { try { return [archonJson(['workflow', 'get', id, '--verbose', '--events'], l.repo)]; } catch { return []; } });
-      for (const run of [j, ...history]) for (const raw of arr(run.events)) {
-        const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
-        const client = d.binding?.provider ?? d.provider;
-        if (client !== 'codex' && client !== 'claude') continue;
-        const role = roles?.get(String(e.step_name));
-        const cwd = str(run.working_path), started = d.invocation?.startedAt;
-        // Only the latest active launch may use bounded metadata matching; terminal/history nodes require a session id.
-        const active = run === j && input.run.status === 'running' && input.run.nodes?.some(n => n.nodeId === e.step_name && n.state === 'running') && arr(run.events).slice().reverse().find(v => obj(v).step_name === e.step_name && obj(v).event_type === 'node_started') === raw;
-        const session = d.session_id ?? (active && cwd && started ? jobSession({ kind: client, cwd, started_at: started }, true) : null);
-        if (!session) continue;
-        claims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: 'run', run_id: id } });
+      for (const runId of [l.archon_run_id, ...archonRunIds(l).filter(runId => runId !== l.archon_run_id)]) {
+        const cacheKey = JSON.stringify([id, runId]), hit = prior[cacheKey];
+        if (hit?.fingerprint === fingerprint && ['completed', 'cancelled'].includes(hit.status)) {
+          runs[cacheKey] = hit;
+          claims.push(...hit.claims);
+          if (runId === l.archon_run_id) eta.push(hit.eta);
+          continue;
+        }
+        try {
+          const run = query(['workflow', 'get', runId, '--verbose', '--events'], l.repo);
+          const events = arr(run.events) as WorkflowEventRow[];
+          const input = etaInput(l, run as unknown as RunView, events);
+          const runClaims: RunEvidence['claims'] = [];
+          for (const raw of arr(run.events)) {
+            const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
+            const client = d.binding?.provider ?? d.provider;
+            if (client !== 'codex' && client !== 'claude') continue;
+            const role = roles?.get(String(e.step_name));
+            const cwd = str(run.working_path), started = d.invocation?.startedAt;
+            // Only the latest active launch may use bounded metadata matching; terminal/history nodes require a session id.
+            const active = runId === l.archon_run_id && input.run.status === 'running' && input.run.nodes?.some(n => n.nodeId === e.step_name && n.state === 'running') && arr(run.events).slice().reverse().find(v => obj(v).step_name === e.step_name && obj(v).event_type === 'node_started') === raw;
+            const session = d.session_id ?? (active && cwd && started ? jobSession({ kind: client, cwd, started_at: started }, true) : null);
+            if (!session) continue;
+            runClaims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: 'run', run_id: id } });
+          }
+          runs[cacheKey] = { fingerprint, status: input.run.status, claims: runClaims, eta: input };
+          claims.push(...runClaims);
+          if (runId === l.archon_run_id) eta.push(input);
+        } catch { /* Retry unavailable evidence next time; never freeze an unknown lifecycle. */ }
       }
     } catch { /* A missing run provides no ownership proof; existing index survives. */ }
   }
@@ -116,13 +157,16 @@ export function usageEvidence(): { claims: { id: string; owner: Owner }[]; eta: 
     const role = isTier(l.role) ? l.role : l.derived === true ? 'general' : l.derived === false ? 'commander' : null;
     claims.push({ id, owner: hits.length === 1 ? { client, role: hits[0].role ?? role, model: hits[0].model, cwd: hits[0].cwd, kind: 'inferred', job_id: hits[0].id } : { client, role, model: str(l.model) ?? sessionModel(str(l.transcript_path), client), cwd: str(l.cwd), kind: 'interactive' } });
   }
-  return { claims, eta };
+  return { claims, eta, runs };
 }
+// prettier-ignore
 export function readUsage(): UsageCache {
   const c = obj(json(join(root(), 'cache.json')));
   return Array.isArray(c.sessions) && Array.isArray(c.daily) ? c as unknown as UsageCache : { at: null, status: '用量未知（ccusage 不可用：未刷新）', sources: {}, sessions: [], daily: [] };
 }
+// prettier-ignore
 export const usageCommand = (client: Client, mode: 'session' | 'daily', since?: string): string[] => ['nice', '-n', '10', 'bunx', 'ccusage@20.0.28', client, mode, '--json', ...(since ? ['--since', since] : [])];
+// prettier-ignore
 async function capture(client: Client, mode: 'session' | 'daily', since?: string): Promise<unknown> {
   const cmd = usageCommand(client, mode, since);
   const p = Bun.spawn(cmd, { stdin: 'ignore', stdout: 'pipe', stderr: 'ignore', detached: true });
@@ -134,6 +178,7 @@ async function capture(client: Client, mode: 'session' | 'daily', since?: string
     try { return JSON.parse(out) as unknown; } catch { throw new Error('invalid_json'); }
   } finally { clearTimeout(timer); }
 }
+// prettier-ignore
 export async function refreshUsage(since?: string, collect = capture): Promise<UsageCache> {
   mkdirSync(root(), { recursive: true });
   const held = lock(join(root(), 'refresh.lock'));
@@ -163,6 +208,7 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
     }));
     if (Object.values(cache.sources).some(s => s !== 'ok')) cache.status = `用量未知（ccusage 不可用：${Object.entries(cache.sources).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}:${v}`).join(', ')}）；保留旧缓存`;
     const evidence = usageEvidence(); refreshEta(evidence.eta);
+    writeAtomic(join(root(), 'runs.json'), JSON.stringify(evidence.runs));
     const index = attribute(cache.sessions, evidence.claims, obj(json(join(root(), 'sessions.json'))) as Record<string, Owner>);
     attribute(today.sessions, [], index);
     writeAtomic(join(root(), 'sessions.json'), JSON.stringify(index));
@@ -170,12 +216,14 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
     return cache;
   } finally { held.release(); }
 }
+// prettier-ignore
 export function requestUsageRefresh(): void {
   const c = readUsage();
   if (c.at && Date.now() - Date.parse(c.at) < 300000) return;
   const p = spawn(process.execPath, [join(WETAMP, 'src/cli.ts'), 'usage', '--refresh', '--json'], { detached: true, stdio: 'ignore', env: process.env });
   p.unref();
 }
+// prettier-ignore
 export function usageSummary(c: UsageCache): Record<string, unknown> {
   const group = (f: (s: UsageSession) => string, xs = c.sessions): Partial<Record<string, Counts>> => {
     const out: Partial<Record<string, Counts>> = {};
@@ -184,12 +232,15 @@ export function usageSummary(c: UsageCache): Record<string, unknown> {
   };
   return { status: c.status, at: c.at, since: c.since, coverage: '仅本机日志；开发机 / mini 不含；会话合计覆盖筛选日期内日志，daily 为实际每日消耗，reasoning 已含在 output 中', sources: c.sources, source_at: c.source_at, total: c.status === 'ok' ? group(() => 'all').all ?? empty() : null, by_role_model: group(s => `${s.owner?.role ?? '?'}·${shortModel(s.model) || '?'}${s.owner?.kind === 'inferred' ? '?' : ''}`, c.sessions.flatMap(s => s.parts?.length ? s.parts.map(p => ({ ...s, ...p })) : [s])), by_kind: group(s => s.owner?.kind ?? 'unknown'), daily: c.daily, top: [...c.sessions].sort((a, b) => b.total - a.total).slice(0, 20).map(s => ({ id: s.id, client: s.client, model: s.model, short_model: shortModel(s.model), at: s.at, owner: s.owner, input: s.input, output: s.output, reasoning: s.reasoning, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, sessions: 1 })) };
 }
+// prettier-ignore
 export function usageText(c: UsageCache): string {
   const summary = usageSummary(c);
   const row = (k: string, v: Counts): string => [k, v.input, v.output, v.reasoning, v.cacheRead, v.cacheWrite, v.total, v.sessions].join(' ');
   return ['全量（ccusage） · 仅本机日志；开发机 / mini 不含', `${c.status} · 缓存 ${c.at ?? '无'}`, 'kind input output reasoning cacheRead cacheWrite 合计 会话数', ...Object.entries(summary.by_kind as Record<string, Counts>).map(([k, v]) => row(k, v)), '角色×模型', ...Object.entries(summary.by_role_model as Record<string, Counts>).map(([k, v]) => row(k, v)), 'Top 会话（其余汇总见 --json / Web）', ...[...c.sessions].sort((a, b) => b.total - a.total).slice(0, 5).map(s => `${s.id} ${s.owner?.kind ?? 'unknown'} ${fmtTokens(s.total)}`)].join('\n');
 }
+// prettier-ignore
 export const fmtTokens = (n: number): string => n >= 1e9 ? `${(n / 1e9).toFixed(1)}G` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
+// prettier-ignore
 export async function usageCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv), since = a.flags.since;
   const date = since ? new Date(`${since.slice(0, 4)}-${since.slice(4, 6)}-${since.slice(6, 8)}`) : null;
