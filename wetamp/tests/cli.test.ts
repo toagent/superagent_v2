@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
+import * as relay from '../src/relay-quota';
 import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
 import * as saCheck from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
@@ -724,7 +725,10 @@ describe('waitRun (archon stub)', () => {
       run('running', { nodes: [{ nodeId: 'a', state: 'running' }] }),
       run('completed', { output_root: '/none', nodes: [{ nodeId: 'a', state: 'completed' }] }),
     ]);
-    const out = waitRun(s.ledger, 60);
+    const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
+    const out = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '60'])).out);
+    expect(out.quota).toBe('relay fixture');
+    quota.mockRestore();
     expect(out).toMatchObject({
       run_id: 'sa1',
       state: 'completed',
@@ -748,6 +752,9 @@ describe('waitRun (archon stub)', () => {
       node: 'gate-m1',
       evidence: art,
     });
+    expect(
+      JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '1'])).out)
+    ).not.toHaveProperty('quota');
   });
   test('early failure without a failed node: run error (redacted) and stop reason, with evidence paths', () => {
     const s = stub([]);
@@ -1012,7 +1019,10 @@ describe('run (archon stub)', () => {
       const plan = fixturePlan(s.root, repo, p => {
         p.base_ref = sha;
       });
+      const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
       const result = captured(() => main(['run', plan, '--fake', '--skip-selftest']));
+      expect(JSON.parse(result.out).quota).toBe('relay fixture');
+      quota.mockRestore();
       expect(result.code, result.out).toBe(0);
       const id = JSON.parse(result.out).run_id as string;
       const ledger = loadLedger(id);
