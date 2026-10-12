@@ -198,7 +198,9 @@ export function buildWorkflow(
   ];
   const attemptCommand = (path: string, pkg = '', review = ''): string => {
     const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
-    return ['bun', join(gen, '.archon/scripts/sa-context.ts'), path, gen, pkg, review].map(quote).join(' ');
+    return ['bun', join(gen, '.archon/scripts/sa-context.ts'), path, gen, pkg, review]
+      .map(quote)
+      .join(' ');
   };
   let after: Node = { depends_on: ['environment'] };
   for (const m of ms) {
@@ -391,7 +393,8 @@ export function buildWorkflow(
         )
       );
       const reviewAttempt = `attempt-review-${t}`;
-      const reviewWhen = `$diff-${t}.output.disposition == 'advance'` +
+      const reviewWhen =
+        `$diff-${t}.output.disposition == 'advance'` +
         (r > 1 ? ` && $diff-${t}.output.same != 'true'` : '') +
         (m.review ? '' : ` && $diff-${t}.output.risk == 'G2'`);
       nodes.push({
