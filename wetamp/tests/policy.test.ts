@@ -22,6 +22,21 @@ const plan = JSON.parse(
 ) as Plan;
 
 describe('B1-POLICY frozen routing', () => {
+  test('auto and strict coder routes use only Codex and fail without Codex candidates', () => {
+    const tiers = loadTiers();
+    for (const console of ['claude', 'codex'] as const)
+      for (const mode of ['auto', 'strict'])
+        for (const role of ['code', 'repair'] as const)
+          expect(
+            resolveRoute(tiers, console, mode, role).candidates.every(a => a.provider === 'codex')
+          ).toBe(true);
+    const explicit = resolveRoute(tiers, 'codex', 'single:claude', 'repair').candidates;
+    expect(explicit.every(a => a.provider === 'claude')).toBe(true);
+    tiers.routing.coder.models = explicit.map(a => a.model);
+    for (const mode of ['auto', 'strict'])
+      for (const role of ['code', 'repair'] as const)
+        expect(() => resolveRoute(tiers, 'codex', mode, role)).toThrow(`no eligible ${role}`);
+  });
   test('single vendor filters both roles; risk and round use the owning policy', () => {
     const tiers = loadTiers();
     for (const [mode, provider] of [

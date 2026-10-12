@@ -267,6 +267,8 @@ export function resolveRoute(
   const effort = effortFor(t, role, risk, round);
   const candidates = [...new Set(models)]
     .map(model => ({ model, provider: providerOf(model), effort }))
+    // Code and repair default to Codex; Claude requires an explicit single:claude mode.
+    .filter(a => vendor || role === 'review' || a.provider === 'codex')
     .filter(
       a => (!vendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
