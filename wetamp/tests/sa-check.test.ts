@@ -659,7 +659,7 @@ describe('single delivery decision', () => {
       });
     }
   });
-  test('self-reports do not change control state, including malformed output', () => {
+  test('other self-reports do not change control state, including malformed output', () => {
     for (const raw of [
       '{',
       JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [{ cap: 'network' }] }),
@@ -1252,6 +1252,34 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
+  for (const [command, needs, kind, disposition, reason, code] of [
+    ['false', [{ cap: 'environment' }], 'block', 'suspend', 'environment', 1],
+    ['false', [], 'repair', 'repair', 'acceptance_failed', 0],
+    ['true', [{ cap: 'environment' }], 'advance', 'advance', null, 0],
+  ] as const)
+    test(`env-parity: ${command} with ${needs.length} environment needs -> ${kind}`, () => {
+      const root = tmp();
+      const r = runScript(gitRepo(root), {
+        kind: 'accept',
+        plan: planFile(root, command),
+        pkgs: 'a',
+        tag: 'verify-a',
+        coder: JSON.stringify({ status: 'done', error_class: null, needs }),
+      });
+      expect(r.code, r.err).toBe(code);
+      expect(r.out).toMatchObject({
+        ok: command === 'true',
+        disposition,
+        reason,
+        decision: { kind, reason },
+      });
+      if (kind === 'block') {
+        expect(r.out).toMatchObject({
+          decision: { evidence: [join(r.art, 'verify-a.log'), join(r.art, 'verify-a.coder.json')] },
+        });
+        expect(readFileSync(join(r.art, 'verify-a.coder.json'), 'utf8')).toContain('environment');
+      }
+    });
   test.each(['accept', 'probe'])('%s: acceptance commands exclude engine node variables', kind => {
     const root = tmp(),
       repo = gitRepo(root);

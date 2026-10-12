@@ -1,4 +1,4 @@
-// superagent 确定性节点（bun）：INPUTS_KIND 选择环境/验收/交付判定/合入命令；自报仅作审计，永不 push。
+// superagent 确定性节点（bun）：INPUTS_KIND 选择环境/验收/交付判定/合入命令；永不 push。
 import reasons from './reasons.json';
 import { createHash } from 'node:crypto';
 import {
@@ -277,11 +277,18 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
 }
 
 /** Compatibility wiring is a projection of the delivery decision, never a second policy. */
-export function disposition(raw: string, ok: boolean, check?: Accept, permissions: string[] = []) {
+export function disposition(
+  raw: string,
+  ok: boolean,
+  check?: Accept,
+  permissions: string[] = [],
+  selfReportPath?: string
+) {
   const { decision, audit } = deliveryDecision({
     rechecks: [check ?? { ok, diff_hash: '', same: false }],
     permissions,
     selfReport: raw,
+    selfReportPath,
   });
   return {
     ...audit,
@@ -433,7 +440,8 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
       log,
       base_pass: baseResults.length ? baseResults.some(r => r.pass) : null,
     },
-    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : []
+    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : [],
+    join(artifacts, `${tag}.coder.json`)
   );
   saveCoder(tag, coder, result.error_class_ignored);
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
@@ -718,9 +726,10 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
 export const MAX_ROUNDS = 3;
 type Verdict = 'pass' | 'fix' | 'escalate';
 
-/** reviews[i]/rechecks[i] 对应第 i+1 轮评审与验收；当前权限拒绝优先于绿色验收，自报仅作审计。 */
+/** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，自报只有 environment needs 可阻断失败验收。 */
 export function deliveryDecision(input: {
   selfReport?: string;
+  selfReportPath?: string;
   reviews?: (Review | null)[];
   permissions?: string[];
   reviewRequired?: boolean;
@@ -766,6 +775,14 @@ export function deliveryDecision(input: {
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
   if (!check) return out('block', 'engine_suspect');
+  if (
+    !check.ok &&
+    Array.isArray(coder?.needs) &&
+    coder.needs.some(n => n && typeof n === 'object' && 'cap' in n && n.cap === 'environment')
+  ) {
+    if (input.selfReportPath) evidence.push(input.selfReportPath);
+    return out('block', 'environment');
+  }
   const unknown = check.failures?.some(
     f =>
       f.failure_class === 'test_env' || (f.failure_class === 'baseline' && check.base_pass === null)
