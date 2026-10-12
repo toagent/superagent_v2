@@ -296,6 +296,8 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
     const matches = pattern => pattern && rest.some(word => new RegExp(pattern).test(word));
     const destructive = !query && (matches(gitEffects.forceFlags) || matches(gitEffects.destructiveFlags[sub])
       || destructiveRule && (!destructiveRule.pattern || matches(destructiveRule.pattern)) && !matches(destructiveRule.unless));
+    const branchReason = sub === 'branch' && gitReason(['git', sub, ...rest], base);
+    if (branchReason) return message(`执行 git ${sub}`, '会改写共享的版本历史', undefined, {kind: branchReason});
     const deletion = safeGitDelete(sub, rest, args => {
       const r = spawnSync('git', [...prefix, ...args], {cwd: dir, encoding: 'utf8', timeout: 3000, env: {...process.env, ...env, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1'}});
       return r.status === 0 ? r.stdout.trim() : null;
