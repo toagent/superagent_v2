@@ -22,7 +22,7 @@ nodes:
       required:
         - head
   - id: attempt-m1
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/m1"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/m1' '/GEN' '' ''"
     depends_on:
       - start-m1
     always_run: true
@@ -34,7 +34,7 @@ nodes:
       required:
         - attempt
   - id: package-attempt-core
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/.packages/core"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/.packages/core' '/GEN' 'core' ''"
     depends_on:
       - start-m1
     always_run: true
@@ -515,9 +515,10 @@ nodes:
     timeout: 155000
   - id: attempt-review-m1-r1
     always_run: true
+    when: "$diff-m1-r1.output.disposition == 'advance'"
     depends_on:
       - diff-m1-r1
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m1-r1"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m1-r1' '/GEN' '' 'review-m1-r1'"
     output_format:
       type: object
       properties:
@@ -536,6 +537,7 @@ nodes:
     effort: high
     idle_timeout: 900000
     with:
+      context: $ARTIFACTS_DIR/review-m1-r1.context.json
       milestone: m1
       risk: $diff-m1-r1.output.risk
       round: 1
@@ -874,9 +876,10 @@ nodes:
     timeout: 155000
   - id: attempt-review-m1-r2
     always_run: true
+    when: "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'"
     depends_on:
       - diff-m1-r2
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m1-r2"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m1-r2' '/GEN' '' 'review-m1-r2'"
     output_format:
       type: object
       properties:
@@ -895,6 +898,7 @@ nodes:
     effort: medium
     idle_timeout: 900000
     with:
+      context: $ARTIFACTS_DIR/review-m1-r2.context.json
       milestone: m1
       risk: $diff-m1-r2.output.risk
       round: 2
@@ -1239,9 +1243,10 @@ nodes:
     timeout: 155000
   - id: attempt-review-m1-r3
     always_run: true
+    when: "$diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'"
     depends_on:
       - diff-m1-r3
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m1-r3"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m1-r3' '/GEN' '' 'review-m1-r3'"
     output_format:
       type: object
       properties:
@@ -1260,6 +1265,7 @@ nodes:
     effort: medium
     idle_timeout: 900000
     with:
+      context: $ARTIFACTS_DIR/review-m1-r3.context.json
       milestone: m1
       risk: $diff-m1-r3.output.risk
       round: 3
@@ -1410,7 +1416,7 @@ nodes:
       required:
         - head
   - id: attempt-m2
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/m2"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/m2' '/GEN' '' ''"
     depends_on:
       - start-m2
     always_run: true
@@ -1422,7 +1428,7 @@ nodes:
       required:
         - attempt
   - id: package-attempt-api
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/.packages/api"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/.packages/api' '/GEN' 'api' ''"
     depends_on:
       - start-m2
     always_run: true
@@ -1878,9 +1884,10 @@ nodes:
     timeout: 155000
   - id: attempt-review-m2-r1
     always_run: true
+    when: "$diff-m2-r1.output.disposition == 'advance'"
     depends_on:
       - diff-m2-r1
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m2-r1"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m2-r1' '/GEN' '' 'review-m2-r1'"
     output_format:
       type: object
       properties:
@@ -1899,6 +1906,7 @@ nodes:
     effort: high
     idle_timeout: 900000
     with:
+      context: $ARTIFACTS_DIR/review-m2-r1.context.json
       milestone: m2
       risk: $diff-m2-r1.output.risk
       round: 1
@@ -2236,9 +2244,10 @@ nodes:
     timeout: 155000
   - id: attempt-review-m2-r2
     always_run: true
+    when: "$diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'"
     depends_on:
       - diff-m2-r2
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m2-r2"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m2-r2' '/GEN' '' 'review-m2-r2'"
     output_format:
       type: object
       properties:
@@ -2257,6 +2266,7 @@ nodes:
     effort: high
     idle_timeout: 900000
     with:
+      context: $ARTIFACTS_DIR/review-m2-r2.context.json
       milestone: m2
       risk: $diff-m2-r2.output.risk
       round: 2
@@ -2600,9 +2610,10 @@ nodes:
     timeout: 155000
   - id: attempt-review-m2-r3
     always_run: true
+    when: "$diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'"
     depends_on:
       - diff-m2-r3
-    bash: 'bun -e ''import { readAttempt } from "/GEN/.archon/scripts/sa-check.ts"; console.log(JSON.stringify({attempt: String(readAttempt("/GEN/attempts/review-m2-r3"))}));'''
+    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m2-r3' '/GEN' '' 'review-m2-r3'"
     output_format:
       type: object
       properties:
@@ -2621,6 +2632,7 @@ nodes:
     effort: high
     idle_timeout: 900000
     with:
+      context: $ARTIFACTS_DIR/review-m2-r3.context.json
       milestone: m2
       risk: $diff-m2-r3.output.risk
       round: 3

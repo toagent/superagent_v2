@@ -1296,7 +1296,7 @@ function brief(l: Ledger): number {
 
 /** 在 run 的 worktree 里跑 plan 的验收命令（同 verify 节点脚本），退出码即结果。 */
 function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: string): number {
-  const run = getRun(l.archon_run_id, l.repo);
+  const run = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as unknown as RunView;
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
   const plan = planOf(l);
   if (pkg && !plan.packages.some(p => p.id === pkg)) throw new Error(`accept: unknown package ${pkg}`);
@@ -1311,29 +1311,15 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
         )
       );
   if (!selected.length || selected.some(c => !c)) throw new Error('accept: missing acceptance evidence');
-  // Reuse engine hydration and binding semantics without making the synchronous CLI async.
-  const authority = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo);
-  const resolved = Bun.spawnSync([process.execPath, '-e', `
-    const root = ${JSON.stringify(join(import.meta.dir, '../../packages/workflows/src'))};
-    const { foldDagResumeSnapshot } = await import(root + '/dag-resume-snapshot.ts');
-    const { resolveNodeBindings } = await import(root + '/dag-executor.ts');
-    const { canonicalValueText } = await import(root + '/output-ref.ts');
-    const { run, contracts, art } = await Bun.stdin.json();
-    if (!Array.isArray(run.events)) throw new Error('accept: missing authoritative run events');
-    const snapshot = await foldDagResumeSnapshot(run.events, run.id);
-    const nodeOutputs = new Map([...snapshot.completedNodeOutputs].map(([id, out]) =>
-      [id, { ...out, state: 'completed' }]));
-    const ctx = { workflowRun: run, artifactsDir: art, stateDir: '', baseBranch: '', docsDir: '', nodeOutputs };
-    console.log(JSON.stringify(contracts.map(inputs => Object.fromEntries(Object.entries(
-      resolveNodeBindings(inputs.tag, inputs, ctx, undefined)
-    ).map(([key, value]) => [key, canonicalValueText(value)])))));
-  `], {
-    stdin: Buffer.from(JSON.stringify({ run: authority, contracts: selected, art })),
+  const resolved = Bun.spawnSync([process.execPath, join(import.meta.dir, 'role-context.ts')], {
+    stdin: Buffer.from(JSON.stringify({ run, contracts: selected, art })),
     stdout: 'pipe', stderr: 'pipe',
   });
   if (resolved.exitCode !== 0)
     throw new Error(`accept: input resolution failed: ${resolved.stderr.toString()}`);
-  const resolvedInputs = JSON.parse(resolved.stdout.toString()) as Record<string, string>[];
+  const { inputs: resolvedInputs, events_file } = JSON.parse(resolved.stdout.toString()) as {
+    inputs: Record<string, string>[]; events_file: string;
+  };
   mkdirSync(art, { recursive: true });
   let code = 0;
   for (const inputs of resolvedInputs) {
@@ -1348,6 +1334,8 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
           ...process.env,
           ...Object.fromEntries(Object.entries(inputs).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])),
           INPUTS_TAG: `accept-${inputs.tag}`,
+          INPUTS_EVENTS_FILE: events_file,
+          WORKFLOW_ID: run.id,
           ARTIFACTS_DIR: art,
         },
         stdout: 'pipe',

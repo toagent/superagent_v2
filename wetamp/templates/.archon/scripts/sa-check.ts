@@ -1,5 +1,6 @@
 // superagent 确定性节点（bun）：INPUTS_KIND 选择环境/验收/交付判定/合入命令；永不 push。
 import reasons from './reasons.json';
+import { prepareContext } from './sa-context';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import {
   appendFileSync,
@@ -175,7 +176,7 @@ function cacheKey(): Buffer {
 const commandEnvironmentKey = (k: string): boolean =>
   !k.startsWith('INPUTS_') &&
   !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k);
-const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
+export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
   createHmac('sha256', cacheKey())
     .update(JSON.stringify(
       Object.keys(values).filter(commandEnvironmentKey).sort().map(k => [k, values[k]])
@@ -520,6 +521,20 @@ function finish(tag: string, out: Record<string, unknown> & Accept): void {
         decision: { ...out.decision, kind: 'block', reason: over },
       });
   }
+  const gen = dirname(env('PLAN'));
+  if (existsSync(join(gen, 'execution.json'))) {
+    const reviewRound = Array.from({ length: MAX_ROUNDS }, (_, i) =>
+      `diff-${env('MILESTONE')}-r${i + 1}`).indexOf(tag) + 1;
+    const node = reviewRound ? `review-${env('MILESTONE')}-r${reviewRound}`
+      : tag === `verify-${env('PKGS')}` ? `repair-${env('PKGS')}` : '';
+    if (node) {
+      const context = prepareContext({ gen, artifacts, node, cwd: process.cwd(),
+        base: env('BASE'), head: out.head ?? '', deltaBase: env('DELTA_BASE'),
+        acceptance: out, patch: String(out.patch ?? ''), delta: String(out.delta ?? ''),
+        environment: environmentIdentity(process.env) });
+      writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path: context }));
+    }
+  }
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   // Audit/control evidence stays in the artifact; downstream packages consume only delivered data.
   emit(
@@ -618,7 +633,9 @@ function environment(): void {
   const log = join(artifacts, 'environment.log');
   writeFileSync(log, '');
   const failed = run(environmentChecks(plan()), log);
-  emit({ ok: failed.length === 0, failed, log, head: git('rev-parse', 'HEAD').trim() });
+  const out = { ok: failed.length === 0, failed, log, head: git('rev-parse', 'HEAD').trim() };
+  writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
+  emit(out);
   if (failed.length) process.exit(1);
 }
 
@@ -1014,6 +1031,11 @@ function runEvents(): RunEvent[] {
   if (events) return events;
   const id = process.env.WORKFLOW_ID;
   if (!id) throw new Error('sa-check: WORKFLOW_ID unset');
+  if (env('EVENTS_FILE')) {
+    const saved = JSON.parse(readFileSync(env('EVENTS_FILE'), 'utf8')) as { id: string; events?: RunEvent[] };
+    if (saved.id !== id || !Array.isArray(saved.events)) throw new Error('sa-check: invalid authoritative events');
+    return (events = saved.events);
+  }
   const p = auxiliary([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json']);
   if (p.exitCode !== 0 || p.signalCode)
     throw new Error(

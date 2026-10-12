@@ -54,7 +54,7 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
         m.risk,
         round,
         m.id,
-        [],
+        milestones(plan).slice(0, milestones(plan).findIndex(k => k.id === m.id) + 1).flatMap(k => k.packages),
         plan
       );
       if (round > 1)

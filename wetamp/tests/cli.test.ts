@@ -1588,7 +1588,9 @@ test.each([1, 2, 3])('generated CLI acceptance and land preserve only approved n
   writeFileSync(join(art, `${gate}.json`), JSON.stringify({ decision: first.decision }));
   writeFileSync(join(art, `${gate}.review.json`), JSON.stringify({ status: 'PASS', findings: [], debt: [] }));
   writeFileSync(join(art, 'land.json'), JSON.stringify({ repo: wt, target: 'main', branch: 'sa/sa1', head }));
+  const queriesBefore = s.calls().filter(c => c.startsWith('workflow get r')).length;
   expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
+  expect(s.calls().filter(c => c.startsWith('workflow get r')).length - queriesBefore).toBe(1);
   const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;
   const savedEvents = authority.events;
   authority.events = savedEvents.filter(e => e.step_name !== missing); saveAuthority();

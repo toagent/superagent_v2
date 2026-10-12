@@ -18,6 +18,7 @@ import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { CHECK_AUX_COUNTS, CHECK_AUX_TIMEOUT_MS } from '../templates/.archon/scripts/sa-check';
+import { executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
 import {
@@ -210,6 +211,9 @@ describe('buildWorkflow', () => {
       join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
       join(gen, '.archon/scripts/policy-attempts.ts')
     );
+    const repo = gitRepo(tmp());
+    fs.writeFileSync(join(gen, 'plan.json'), JSON.stringify(fixture));
+    fs.writeFileSync(join(gen, 'execution.json'), JSON.stringify(executionTable(fixture, loadTiers())));
     const nodes = nodesOf(
       buildWorkflow(fixture, milestones(fixture), 'retry', gen, false, NOW, loadTiers(), {
         from: 'old-run',
@@ -229,7 +233,7 @@ describe('buildWorkflow', () => {
       nodeOutputs: new Map(),
     };
     const enabled = (): boolean => {
-      ctx.nodeOutputs.set(attempt.id, { state: 'completed', output: sh(attempt.bash!, gen) });
+      ctx.nodeOutputs.set(attempt.id, { state: 'completed', output: sh(attempt.bash!, repo, { ARTIFACTS_DIR: gen }) });
       const result = evaluateCondition(code.when!, ctx.nodeOutputs);
       expect(result.parsed).toBe(true);
       return result.result;
@@ -470,7 +474,7 @@ describe('buildWorkflow', () => {
   test.each(reviewAttemptCases)(
     'HF10b review attempt node validates counters at execution (%j)',
     ({ fake, id, counter }) => {
-      const gen = tmp();
+      const gen = gitRepo(tmp());
       fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
       fs.copyFileSync(
         join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
@@ -488,8 +492,13 @@ describe('buildWorkflow', () => {
       } else if (counter !== 'missing') {
         fs.writeFileSync(path, counter);
       }
+      const context = join(gen, 'prepared.json');
+      fs.writeFileSync(context, JSON.stringify({ node: id.slice('attempt-'.length),
+        refs: { head: sh('git rev-parse HEAD', gen).trim() }, carry_over: null }));
+      fs.writeFileSync(join(gen, `${id.slice('attempt-'.length)}.context.json`), JSON.stringify({ path: context }));
       const result = Bun.spawnSync(['bash', '-c', node.bash!], {
         cwd: gen,
+        env: { ...process.env, ARTIFACTS_DIR: gen },
         stdout: 'pipe',
         stderr: 'pipe',
       });
@@ -814,8 +823,8 @@ test('generate writes a committed gen repo that archon validates', () => {
   ]);
   for (const n of ai) {
     const prompt = readFileSync(join(g.dir, '.archon', 'commands', `${n.command}.md`), 'utf8');
-    expect(prompt.startsWith(principles + '\n')).toBe(true);
-    expect(prompt.split(principles)).toHaveLength(2);
+    expect(prompt).not.toContain(principles);
+    expect(readFileSync(join(g.dir, '.archon/principles.md'), 'utf8')).toBe(principles);
     if (n.command === 'sa-code') {
       expect(prompt).toContain('拒绝须附工具调用证据');
       expect(prompt).toContain('在 `needs[].why` 引用该工具调用及原始返回');

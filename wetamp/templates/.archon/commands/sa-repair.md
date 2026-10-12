@@ -11,6 +11,8 @@ argument-hint: (inputs bound by the generated workflow)
 - 引擎验收日志：`$INPUTS.accept_log`（失败命令与输出；`$ARTIFACTS_DIR/verify-$INPUTS.pkg.coder.json` 是上一次编码的输出）
 - 元帅提示：`$INPUTS.hint`（存在时必须完整阅读）
 
+先读取职责证据指针 `$ARTIFACTS_DIR/repair-$INPUTS.pkg.context.json`，再读取其 `path` 指向的不可变 manifest。使用其中已解析的 cwd/refs/scope/环境结论；`unknown` 不代表通过。源码按需读。
+
 ## 要求
 
 1. 只做让本包达到“完成且验收全绿”所需的改动：补完未完成的部分、修复失败的验收命令、提交遗留的未提交改动。修复前先给每个失败分类：只修产品缺陷；测试数据、夹具、截图遮罩/基线、测试环境引起的失败不改产品代码，在 `deviations` 记为已知问题（附证据路径）。

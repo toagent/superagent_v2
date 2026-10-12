@@ -7,16 +7,15 @@ argument-hint: (inputs bound by the generated workflow)
 
 ## 里程碑 $INPUTS.milestone（风险级别 $INPUTS.risk）R1 全量评审
 
-- 工作包任务书（空格分隔，逐个完整阅读）：$INPUTS.briefs
-- 本里程碑 diff：`$INPUTS.diff`
-- 引擎复跑的验收日志：`$INPUTS.accept_log`
+先读取职责证据指针 `$INPUTS.context`，再完整读取其 `path` 指向的不可变 manifest。`tasks` 保留全部关键需求/验收不变量，`execution` 给出本轮职责和权限，`refs` 已解析，`acceptance` 与 `evidence` 是本轮结构化证据。按 `principles` 执行。
+读取 `diff` 与 `acceptance.log`，源码按需读。不要重读所有任务书、累计台账或 glob 全部历史输出。`carry_over` 在增量轮只含仍 open 的 `blocking`/`debt`；若为 `unknown`，或 refs/所需证据缺失，返回 `INCOMPLETE`，不得猜测 PASS。核验 checkout HEAD 等于 `refs.head`，陈旧候选返回 `INCOMPLETE`。全量 `full_diff` 仅在核验需要上下文时查阅。
 
 逐项核对：目标是否实现、改动范围、正确性、安全（注入、XSS、LLM 信任边界、硬编码 secret）、测试是否真的覆盖所述行为。测试有度：G0/G1 只要求主路径有测试证明，边角场景缺测试记 `low` 进 `debt`，不要求额外测试轮次；G2 或特别难的改动才要求失败模式全覆盖。
 
-读取本里程碑各包的 `$ARTIFACTS_DIR/settle-*.json` 与 `verify-*.json`；若 `coder_partial: true`，编码端自报未完成，请判断完整性，缺失按 blocker 记。
-若 `error_class_ignored: true`，从同名 `.coder.json` 读取原 `error_class`：编码端自报 <class>，请核实。
+核对 manifest 的 `evidence`；若 `coder_partial: true`，编码端自报未完成，请判断完整性，缺失按 blocker 记。
+若 `error_class_ignored: true`，从 manifest 的 `evidence[].coder` 读取原 `error_class`：编码端自报 <class>，请核实。
 
-改动范围：任务书的范围只是预期，将军越出时应在输出 `deviations[]` 登记 `{path, why}`（存于 `$ARTIFACTS_DIR/*.coder.json`）。diff 中越出预期范围又未登记的文件记一条 `medium`；已登记的核对理由是否成立。
+改动范围：任务书的范围只是预期，将军越出时应在输出 `deviations[]` 登记 `{path, why}`（存于 manifest 的 `evidence.coder`）。diff 中越出预期范围又未登记的文件记一条 `medium`；已登记的核对理由是否成立。
 
 ## 输出
 

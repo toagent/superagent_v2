@@ -9,6 +9,8 @@ argument-hint: (inputs bound by the generated workflow)
 
 先完整阅读任务书 `$INPUTS.brief`（目标、预期改动范围、建议阅读、验收命令、你的权限、红线、备注）。包括首条读取在内，所有 shell 命令遵循你的 AGENTS.md 命令规则。若文件 `$INPUTS.hint` 存在，也必须完整阅读：那是元帅对上一次失败给出的提示。
 
+先读取职责证据指针 `$ARTIFACTS_DIR/code-$INPUTS.pkg.context.json`，再读取其 `path` 指向的不可变 manifest。使用其中已解析的 cwd/refs/scope/环境结论；`unknown` 不代表通过。源码按需读。
+
 ## 要求
 
 1. 在当前工作目录（本 run 的 worktree）内修改代码。预期改动范围只是预期：为达成目标必须改范围外的文件时直接改，并在 `deviations` 逐条登记 `{path, why}`。完成后 `git add <改动文件>` 并 `git commit -m "$INPUTS.pkg: <摘要>"`，验收时工作区必须干净。

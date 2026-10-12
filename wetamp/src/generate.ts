@@ -196,9 +196,9 @@ export function buildWorkflow(
       }
     ),
   ];
-  const attemptCommand = (path: string): string => {
-    const code = `import { readAttempt } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({attempt: String(readAttempt(${JSON.stringify(path)}))}));`;
-    return `bun -e '${code.replaceAll("'", "'\\''")}'`;
+  const attemptCommand = (path: string, pkg = '', review = ''): string => {
+    const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
+    return ['bun', join(gen, '.archon/scripts/sa-context.ts'), path, gen, pkg, review].map(quote).join(' ');
   };
   let after: Node = { depends_on: ['environment'] };
   for (const m of ms) {
@@ -228,8 +228,8 @@ export function buildWorkflow(
       const pkgAttempt = `package-attempt-${p.id}`;
       nodes.push({
         id: pkgAttempt,
-        bash: attemptCommand(attemptPath(gen, `pkg/${p.id}`)),
-        depends_on: [start],
+        bash: attemptCommand(attemptPath(gen, `pkg/${p.id}`), p.id),
+        depends_on: [prev],
         always_run: true,
         output_format: outputSchema('attempt'),
       });
@@ -391,20 +391,21 @@ export function buildWorkflow(
         )
       );
       const reviewAttempt = `attempt-review-${t}`;
+      const reviewWhen = `$diff-${t}.output.disposition == 'advance'` +
+        (r > 1 ? ` && $diff-${t}.output.same != 'true'` : '') +
+        (m.review ? '' : ` && $diff-${t}.output.risk == 'G2'`);
       nodes.push({
         id: reviewAttempt,
         always_run: true,
+        when: reviewWhen,
         depends_on: [`diff-${t}`],
-        bash: attemptCommand(attemptPath(gen, `review-${t}`)),
+        bash: attemptCommand(attemptPath(gen, `review-${t}`), '', fake ? '' : `review-${t}`),
         output_format: outputSchema('attempt'),
       });
       nodes.push({
         id: `review-${t}`,
         // 验收未 advance 不烧评审调用；修复无变化（same）同样跳过，gate 直接 escalate
-        when:
-          `$diff-${t}.output.disposition == 'advance'` +
-          (r > 1 ? ` && $diff-${t}.output.same != 'true'` : '') +
-          (m.review ? '' : ` && $diff-${t}.output.risk == 'G2'`),
+        when: reviewWhen,
         ...(fake
           ? { bash: fakeReview(r) }
           : {
@@ -419,6 +420,7 @@ export function buildWorkflow(
                 milestone: m.id,
                 risk: `$diff-${t}.output.risk`,
                 round: r,
+                context: `$ARTIFACTS_DIR/review-${t}.context.json`,
                 briefs,
                 accept_log: `$diff-${t}.output.log`,
                 // 第 2/3 轮只看上次评审以来的增量与累计台账；全量 diff 只给路径（F-20）
@@ -641,14 +643,7 @@ export function generate(
     join(dir, '.archon/scripts/policy-attempts.ts')
   );
   writeFileSync(join(dir, '.archon/scripts/reasons.json'), JSON.stringify(REASONS, null, 2) + '\n');
-  // Archon loads command Markdown verbatim; include: composes workflows, not prompt text.
-  const commands = new Set(
-    (definition.nodes as Node[]).flatMap(n => (typeof n.command === 'string' ? [n.command] : []))
-  );
-  for (const command of commands) {
-    const path = join(dir, '.archon', 'commands', `${command}.md`);
-    writeFileSync(path, principles + '\n' + readFileSync(path, 'utf8'));
-  }
+  writeFileSync(join(dir, '.archon', 'principles.md'), principles);
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
@@ -668,7 +663,7 @@ export function generate(
   for (const p of plan.packages) {
     writeFileSync(
       join(dir, 'briefs', `${p.id}.md`),
-      renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p, mcp))
+      principles + '\n' + renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p, mcp))
     );
   }
   const lessons = injectMemory(
