@@ -1627,6 +1627,18 @@ test.each([['completed', 1], ['completed', 100], ['cancelled', 1], ['cancelled',
   } finally { snapshot.mockRestore(); }
 });
 
+test.each(['failed', 'running', 'paused', 'unknown'])(
+  'non-terminal exemption status=%s retains per-run wake', async status => {
+    const s = stub([run(status)]);
+    const snapshot = spyOn(archonMod, 'getRun').mockReturnValue(run(status));
+    try {
+      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+      expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+      expect(existsSync(ledgerPath('sa1'))).toBe(true);
+    } finally { snapshot.mockRestore(); }
+  }
+);
+
 describe('supervise-tick (archon + supervisor stubs)', () => {
   const tick = (): Record<string, unknown>[] => {
     const { code, out } = captured(() => main(['supervise-tick']));

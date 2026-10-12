@@ -792,6 +792,9 @@ test('generate writes a committed gen repo that archon validates', () => {
     readFileSync(join(g.dir, '.archon', 'workflows', g.workflow, `${g.workflow}.yaml`), 'utf8')
   );
   const ai = nodesOf(generated).filter(n => n.command);
+  expect(JSON.parse(readFileSync(join(g.dir, 'accept-inputs.json'), 'utf8'))).toEqual(
+    nodesOf(generated).filter(n => n.with?.kind === 'accept').map(n => n.with)
+  );
   expect(nodesOf(generated).find(n => n.id === 'land')?.with?.operator_ledger).toBe(
     join(env.SUPERAGENT_HOME, 'runs', 'gen-0001.json')
   );
