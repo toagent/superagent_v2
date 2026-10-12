@@ -48,6 +48,11 @@ import realData from './incidents/ev1b-real-data.json';
 
 const NOW = Date.parse('2026-10-10T12:00:00Z');
 const zeros = { engine_suspect: 0, dup_ask: 0, orphan_hold: 0, stale_answer: 0 };
+// Current verify artifacts carry an engine decision; the replay preserves the legacy shape.
+const portEvidence = {
+  ...replay['project-port'],
+  decision: { kind: 'repair', reason: 'acceptance_failed', evidence: [], debt: [] },
+};
 let root: string, sa: string, plan: Plan, ledger: Ledger, raw: RunView;
 const saved = new Map<string, string | undefined>();
 const keys = [
@@ -113,7 +118,7 @@ beforeEach(() => {
     nodes: [{ nodeId: 'verify-core', state: 'failed' }],
   };
   mkdirSync(artifactsOf(raw), { recursive: true });
-  writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify(replay['project-port']));
+  writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify(portEvidence));
 });
 afterEach(() => {
   for (const k of keys) {
@@ -169,10 +174,7 @@ describe('EV1 incident replay', () => {
   test('EV2 confined memory reads preserve repository-owned artifact evidence outside the memory home', () => {
     raw.output_root = join(root, 'project-output');
     mkdirSync(artifactsOf(raw), { recursive: true });
-    writeFileSync(
-      join(artifactsOf(raw), 'verify-core.json'),
-      JSON.stringify({ ok: false, reason: 'acceptance_failed' })
-    );
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify(portEvidence));
     writeFileSync(
       join(artifactsOf(raw), 'verify-core.coder.json'),
       JSON.stringify({ error_class: 'task' })
@@ -467,7 +469,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     writeFileSync(
       join(artifactsOf(raw), 'verify-core.json'),
       JSON.stringify({
-        ...replay['project-port'],
+        ...portEvidence,
         prompt: 'PRIVATE-PROMPT',
         transcript: 'PRIVATE-TRANSCRIPT',
         credentials: 'PRIVATE-CREDENTIAL',
