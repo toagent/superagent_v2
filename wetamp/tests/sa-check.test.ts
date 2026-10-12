@@ -42,6 +42,25 @@ test('P3 missing provider and node receipts reserve spend instead of counting ze
   ).toMatchObject({ launches: 2, weighted_tokens: 60 });
 });
 
+test('P3 budget display reports receipts while admission reserves missing spend', () => {
+  const attempts: Parameters<typeof budgetUsage>[2] = [
+    { id: 'lost', node: 'code-api', provider: 'codex', model: 'fixture', status: 'started' },
+    {
+      id: 'done',
+      node: 'code-core',
+      provider: 'codex',
+      model: 'fixture',
+      status: 'completed',
+      tokens: { input: 10, cacheRead: 4, output: 2 },
+    },
+  ];
+  expect(budgetUsage([], 20, attempts, 'reported')).toMatchObject({
+    launches: 2,
+    weighted_tokens: 8,
+  });
+  expect(budgetUsage([], 20, attempts)).toMatchObject({ launches: 2, weighted_tokens: 16 });
+});
+
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
 type Rv = NonNullable<NonNullable<Parameters<typeof decide>[0]['reviews']>[number]>;
 type F = Rv['findings'][number];

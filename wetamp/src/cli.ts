@@ -1964,7 +1964,8 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
         const u = budgetUsage(
           ack.events,
           loadTiers().policy.budget_floor.S,
-          readPolicyAttempts(artifactsOf(run))
+          readPolicyAttempts(artifactsOf(run)),
+          'reported'
         );
         const limits = effectiveBudget(
           plan.budget,
