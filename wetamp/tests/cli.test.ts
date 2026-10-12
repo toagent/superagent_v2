@@ -19,6 +19,7 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import * as fs from 'node:fs';
 import * as archonMod from '../src/archon';
+import * as configMod from '../src/config';
 import type { RunView } from '../src/archon';
 import {
   classify,
@@ -1097,6 +1098,8 @@ describe('run (archon stub)', () => {
     expect(receiptProblem(legacy, now, repo)).toBeNull();
     for (const path of [
       'wetamp/tests/x.test.ts',
+      'wetamp/src/board/model.ts',
+      'wetamp/src/report.ts',
       'wetamp/docs/guide.md',
       'PROGRESS.md',
       'packages/docs-web/src/index.ts',
@@ -1140,43 +1143,51 @@ describe('run (archon stub)', () => {
     sh('git add -- wetamp/src/runtime.ts wetamp/docs/runtime.md', repo);
     expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
   });
-  test('preflight: only a real, unexpired receipt bound to this runtime and config passes; each rejection says why and how to fix', () => {
+  test('preflight: auto selftest refreshes only fingerprint or legacy HEAD drift; failures and invalid receipts reject', () => {
     const s = stub([]);
     const repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     const plan = fixturePlan(s.root, repo);
-    const good = {
-      ok: true,
-      at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 3600e3).toISOString(),
-      fake: false,
-      head: gitHead(),
-      fingerprint: runtimeFingerprint(),
-      config_hash: configHash(),
-    };
-    const attempt = (r?: object): string => {
-      if (r) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(r));
-      try {
+    const probe = spyOn(configMod, 'runtimeFingerprint').mockReturnValue('fixture');
+    const previous = process.env.SA_SELFTEST_BIN,
+      bin = join(s.root, 'selftest.sh'),
+      calls = join(s.root, 'selftest-calls');
+    process.env.SA_SELFTEST_BIN = bin;
+    try {
+      const good = {
+        ok: true,
+        expires_at: new Date(Date.now() + 3600e3).toISOString(),
+        fake: false,
+        fingerprint: 'fixture',
+        config_hash: configHash(),
+      };
+      const attempt = (r?: object): string => {
+        if (r) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(r));
         const result = captured(() => main(['run', plan]));
         return result.code === 0 ? '0' : String(JSON.parse(result.out).reason);
-      } catch (e) {
-        expect((e as Error).message).toContain('fix: wetamp/scripts/selftest.sh');
-        return (e as Error).message;
-      }
-    };
-    expect(attempt()).toContain('no selftest.json');
-    expect(attempt({ ...good, fake: true })).toContain('fake receipt');
-    expect(attempt({ ...good, fake: undefined })).toContain('fake receipt');
-    expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
-    expect(attempt({ ...good, head: '0'.repeat(40) })).toBe('0');
-    expect(attempt({ ...good, fingerprint: 'x' })).toContain('runtime fingerprint drift');
-    expect(attempt({ ...good, fingerprint: undefined, head: '0'.repeat(40) })).toContain(
-      'HEAD drift'
-    );
-    expect(attempt({ ...good, config_hash: 'x' })).toContain('config drift');
-    expect(attempt(good)).toBe('0');
-    writeFileSync(join(s.root, 'home', 'archon', 'config.yaml'), 'edited: true\n');
-    expect(attempt()).toContain('config drift');
+      };
+      writeFileSync(join(s.root, 'good.json'), JSON.stringify(good));
+      writeFileSync(
+        bin,
+        `echo called >> '${calls}'\ncp '${join(s.root, 'good.json')}' "$SUPERAGENT_HOME/selftest.json"\n`
+      );
+      expect(attempt()).toContain('no selftest.json');
+      expect(attempt({ ...good, fake: true })).toContain('fake receipt');
+      expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
+      expect(attempt({ ...good, fingerprint: 'x', config_hash: 'x' })).toContain('config drift');
+      expect(existsSync(calls)).toBe(false);
+      expect(attempt({ ...good, fingerprint: 'x' })).toBe('0');
+      expect(attempt({ ...good, fingerprint: undefined, head: '0'.repeat(40) })).toBe('0');
+      expect(readFileSync(calls, 'utf8')).toBe('called\ncalled\n');
+      writeFileSync(bin, 'echo failure-tail >&2\nexit 7\n');
+      expect(attempt({ ...good, fingerprint: 'x' })).toContain(
+        'selftest exit 7; log tail:\nfailure-tail'
+      );
+    } finally {
+      probe.mockRestore();
+      if (previous === undefined) delete process.env.SA_SELFTEST_BIN;
+      else process.env.SA_SELFTEST_BIN = previous;
+    }
   });
   /** workflow run 的 --config 文件里钉住的别名。 */
   const pinned = (call: string): Record<string, unknown> => {

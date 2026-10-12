@@ -94,6 +94,7 @@ export function gitHead(repo = WETAMP): string {
 }
 /** Default to inclusion: template Markdown is executable guidance, not documentation. */
 const runtimePath = (path: string): boolean =>
+  !/^(?:wetamp\/src\/board\/|wetamp\/src\/report\.ts$)/.test(path) &&
   !/^(?:wetamp\/(?:tests|docs)\/|packages\/docs-web\/|\.github\/)/.test(path) &&
   !/(?:^|\/)(?:tests|__tests__)\//.test(path) &&
   !path.endsWith('.test.ts') &&
@@ -110,13 +111,11 @@ export function runtimeFingerprint(repo = join(WETAMP, '..')): string {
     return p.stdout.toString();
   };
   // Disable rename folding so both old and new paths pass through the same boundary filter.
-  const dirty = git(
-    '-c', 'status.renames=false', 'status', '--porcelain=v1',
-    '-z', '--untracked-files=all', '--ignore-submodules=none'
-  );
-  if (dirty.split('\0').some(entry => entry && runtimePath(entry.slice(3))))
+  const raw = git('status', '--no-renames', '--porcelain', '-z', '-u', '--ignore-submodules=none');
+  if (raw.split('\0').some(entry => entry && runtimePath(entry.slice(3))))
     throw new Error('runtime worktree drift (uncommitted runtime files)');
-  const tree = git('ls-tree', '--full-tree', '-r', '-z', 'HEAD').split('\0')
+  const tree = git('ls-tree', '--full-tree', '-r', '-z', 'HEAD')
+    .split('\0')
     .filter(entry => entry && runtimePath(entry.slice(entry.indexOf('\t') + 1)));
   return new Bun.CryptoHasher('sha256').update(tree.join('\0')).digest('hex');
 }
@@ -127,33 +126,41 @@ export function configHash(): string {
     h.update(`${existsSync(p) ? readFileSync(p, 'utf8') : ''}\0`);
   return h.digest('hex').slice(0, 16);
 }
-export function receiptProblem(
+type Issue = { kind: 'drift'; message: string } | { kind: 'invalid'; message: string };
+export function receiptIssue(
   r: Partial<Receipt> | undefined,
   now = Date.now(),
   repo = join(WETAMP, '..')
-): string | null {
-  if (!r) return 'no selftest.json';
-  if (r.ok !== true) return 'receipt is not a pass';
-  if (r.fake !== false) return 'fake receipt (selftest --fake proves only the engine contract)';
+): Issue | null {
+  const issue = (message: string, kind: Issue['kind'] = 'invalid'): Issue => ({ kind, message });
+  if (!r) return issue('no selftest.json');
+  if (r.ok !== true) return issue('receipt is not a pass');
+  if (r.fake !== false)
+    return issue('fake receipt (selftest --fake proves only the engine contract)');
   const exp = Date.parse(r.expires_at ?? '');
-  if (!(exp > now)) return `expired (expires_at ${r.expires_at ?? '?'})`;
+  if (!(exp > now)) return issue(`expired (expires_at ${r.expires_at ?? '?'})`);
+  if (r.config_hash !== configHash())
+    return issue('config drift (tiers.json or $ARCHON_HOME/config.yaml changed)');
   try {
     const fingerprint = runtimeFingerprint(repo);
     if (r.fingerprint !== undefined) {
       if (r.fingerprint !== fingerprint)
-        return 'runtime fingerprint drift (committed runtime files changed)';
+        return issue('runtime fingerprint drift (committed runtime files changed)', 'drift');
     } else {
       const head = gitHead(repo);
       if (!head || r.head !== head)
-        return `HEAD drift (legacy receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`;
+        return issue(
+          `HEAD drift (legacy receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`,
+          head ? 'drift' : 'invalid'
+        );
     }
   } catch (e) {
-    return (e as Error).message;
+    return issue((e as Error).message);
   }
-  if (r.config_hash !== configHash())
-    return 'config drift (tiers.json or $ARCHON_HOME/config.yaml changed)';
   return null;
 }
+export const receiptProblem = (...args: Parameters<typeof receiptIssue>): string | null =>
+  receiptIssue(...args)?.message ?? null;
 
 export function providerOf(model: string): Alias['provider'] {
   if (model.startsWith('gpt-')) return 'codex';

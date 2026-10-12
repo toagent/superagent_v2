@@ -65,7 +65,7 @@ import {
   codexWorkerProblem,
   home,
   loadTiers,
-  receiptProblem,
+  receiptIssue,
   runAliases,
   runCapacity,
   writeAtomic,
@@ -776,10 +776,31 @@ function preflight(skipSelftest: boolean): void {
   if ((fs.bavail * fs.bsize) / 2 ** 30 < MIN_FREE_GB)
     throw new Error(`preflight: < ${String(MIN_FREE_GB)}GB free under ${sa}`);
   if (skipSelftest) return;
-  const why = receiptProblem(readJson(join(sa, 'selftest.json')) as Partial<Receipt> | undefined);
+  const issue = () =>
+    receiptIssue(readJson(join(sa, 'selftest.json')) as Partial<Receipt> | undefined);
+  let why = issue();
+  if (why?.kind === 'drift') {
+    const lease = lock(join(sa, 'selftest.lock'));
+    if (!lease.ok) throw new Error('preflight: selftest 正在运行，稍后重试');
+    try {
+      why = issue();
+      if (why?.kind === 'drift') {
+        console.error('preflight: runtime drift; running real selftest synchronously');
+        let bin = join(WETAMP, 'scripts/selftest.sh');
+        if (process.env.NODE_ENV === 'test') bin = process.env.SA_SELFTEST_BIN ?? bin;
+        const p = Bun.spawnSync(['bash', bin], { env: process.env });
+        const log = redact(p.stdout.toString() + p.stderr.toString());
+        if (p.exitCode !== 0)
+          why.message += `; selftest exit ${String(p.exitCode)}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
+        else why = issue();
+      }
+    } finally {
+      lease.release();
+    }
+  }
   if (why)
     throw new Error(
-      `preflight: no valid selftest receipt: ${why}; fix: wetamp/scripts/selftest.sh (real, not --fake)`
+      `preflight: no valid selftest receipt: ${why.message}; fix: wetamp/scripts/selftest.sh (real, not --fake)`
     );
 }
 
