@@ -1898,6 +1898,13 @@ describe('sa-check script', () => {
     expect(readFileSync(join(cumulative.art, 'diff-m1-r1.log'), 'utf8')).toContain(
       '# reused failure from verify-a'
     );
+    // R1-1: retrying the originating tag must retain the cached failure's diagnostic.
+    const retried = go('verify-a');
+    expect(retried.out).toMatchObject({ failures: [{ failure_class: 'fixture', evidence }] });
+    expect(readFileSync(counter, 'utf8')).toBe('x\n');
+    expect(readFileSync(evidence, 'utf8')).toBe(
+      `${originalLog}$ ${check.cmd}\n# reused failure from verify-a\n\n`
+    );
     plan.environment = [{ cmd: 'true', timeout_s: 5 }];
     go('environment-change');
     check.timeout_s++;

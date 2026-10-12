@@ -353,7 +353,8 @@ export function scopeRisk(
 /** 一次验收：coder 处置 + 命令 + 干净工作区；有 BASE 时另存全量 patch、相对 DELTA_BASE 的增量 patch 与交付范围。 */
 function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accept {
   const log = join(artifacts, `${tag}.log`);
-  writeFileSync(log, '');
+  // R1-1: retries may reuse this tag; cached failures still reference its original output.
+  appendFileSync(log, '');
   const ids = env('PKGS').split(',').filter(Boolean);
   const p = plan();
   const pkgs = p.packages.filter(k => ids.includes(k.id));
