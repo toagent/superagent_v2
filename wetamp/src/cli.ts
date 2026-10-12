@@ -1,5 +1,7 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
+import { applyLand, selftest } from './land';
+import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import { saveIncident } from './incidents';
@@ -67,11 +69,9 @@ import {
   home,
   loadTiers,
   resolveRoute,
-  receiptIssue,
   runAliases,
   runCapacity,
   writeAtomic,
-  type Receipt,
 } from './config';
 import { engineHash, generate, newRunId } from './generate';
 import { loadPlan, type Plan } from './plan';
@@ -98,6 +98,7 @@ const OPTIONS = {
   pkg: { type: 'string' },
   hint: { type: 'string' },
   fake: { type: 'boolean' },
+  apply: { type: 'boolean' },
   'skip-selftest': { type: 'boolean' },
   'lint-override': { type: 'string' },
   goal: { type: 'string' },
@@ -748,7 +749,6 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 }
 
 const MIN_FREE_GB = 2;
-const SELFTEST_TIMEOUT_MS = 20 * 60_000;
 
 const QUICK_BUDGET_MULTIPLIER = 4;
 
@@ -810,44 +810,7 @@ function preflight(skipSelftest: boolean): void {
   if ((fs.bavail * fs.bsize) / 2 ** 30 < MIN_FREE_GB)
     throw new Error(`preflight: < ${String(MIN_FREE_GB)}GB free under ${sa}`);
   if (skipSelftest) return;
-  const issue = () =>
-    receiptIssue(readJson(join(sa, 'selftest.json')) as Partial<Receipt> | undefined);
-  let why = issue();
-  if (why && why.kind !== 'invalid') {
-    const lease = lock(join(sa, 'selftest.lock'));
-    if (!lease.ok) throw new Error('preflight: selftest 正在运行，稍后重试');
-    try {
-      why = issue();
-      if (why && why.kind !== 'invalid') {
-        console.error(`preflight: ${why.kind}; running real selftest synchronously`);
-        let bin = join(WETAMP, 'scripts/selftest.sh');
-        if (process.env.NODE_ENV === 'test') bin = process.env.SA_SELFTEST_BIN ?? bin;
-        const timeout =
-          (process.env.NODE_ENV === 'test' && Number(process.env.SA_SELFTEST_TIMEOUT_MS)) ||
-          SELFTEST_TIMEOUT_MS;
-        // The supervisor stays outside the child's group so it can kill descendants and reap bash.
-        const supervisor = `use Time::HiRes qw(alarm); my $ms = shift; my $pid = fork // die "fork: $!";
-          if (!$pid) { setpgrp(0, 0) or die "setpgrp: $!"; exec "bash", @ARGV; die "exec: $!"; }
-          $SIG{ALRM} = sub { kill 'KILL', -$pid; waitpid($pid, 0); exit 124; };
-          alarm($ms / 1000); waitpid($pid, 0); exit($? & 127 ? 128 + ($? & 127) : $? >> 8);`;
-        const p = Bun.spawnSync(['perl', '-e', supervisor, String(timeout), bin], {
-          env: process.env,
-          timeout: timeout + 1000,
-          killSignal: 'SIGKILL',
-        });
-        const log = redact(p.stdout.toString() + p.stderr.toString());
-        if (p.exitedDueToTimeout || p.exitCode !== 0)
-          why.message += `; selftest ${p.exitedDueToTimeout || p.exitCode === 124 ? 'timed out' : `exit ${String(p.exitCode)}`}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
-        else why = issue();
-      }
-    } finally {
-      lease.release();
-    }
-  }
-  if (why)
-    throw new Error(
-      `preflight: no valid selftest receipt: ${why.message}; fix: wetamp/scripts/selftest.sh (real, not --fake)`
-    );
+  selftest(true);
 }
 
 function startRun(planPath: string, a: Args): number {
@@ -1352,19 +1315,19 @@ function brief(l: Ledger): number {
 }
 
 /** 在 run 的 worktree 里跑 plan 的验收命令（同 verify 节点脚本），退出码即结果。 */
-function acceptRun(l: Ledger, pkg: string | undefined): number {
+function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: string): number {
   const run = getRun(l.archon_run_id, l.repo);
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
   const ids = planOf(l)
     .packages.map(p => p.id)
     .filter(id => pkg === undefined || id === pkg);
   if (!ids.length) throw new Error(`accept: unknown package ${String(pkg)}`);
-  const art = join(home().sa, 'accept', l.run_id);
+  const art = cacheArt ?? join(home().sa, 'accept', l.run_id);
   mkdirSync(art, { recursive: true });
   const p = Bun.spawnSync(
     [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
     {
-      cwd: run.working_path,
+      cwd: cwd ?? run.working_path,
       env: {
         ...process.env,
         INPUTS_KIND: 'accept',
@@ -2441,7 +2404,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2654,6 +2617,11 @@ export function main(argv: string[]): number {
         if (land === undefined) {
           console.error(`land: no land.json yet (state ${classify(run).state})`);
           return 1;
+        }
+        if (a.flags.apply) {
+          const verify = (cwd: string): number => acceptRun(l, undefined, cwd, artifactsOf(run));
+          applyLand(run, land as Land, verify, { ...l, base_ref: planOf(l).base_ref });
+          return 0;
         }
         const needs = needsOf(artifactsOf(run), undefined, l);
         print(
