@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { progressLabel, jobProgress, unknownProgress, type Progress } from './eta';
 import { HOLD_POLICY } from '../cli';
 import { shortModel } from '../models';
@@ -78,14 +78,17 @@ export interface CockpitRun {
   elapsed: string;
   tokens: string;
   stage: string;
+  node?: string;
   role: string;
   round: string;
   reason: string;
   question: string;
+  decision?: { event: string; yes: string; no: string };
   waiting: string;
 }
 export interface Cockpit {
   tree: (CockpitRun & { children: { id: string; role: string; progress: Progress }[] })[];
+  anomalies: string[];
   unfinished: number;
   zombies: number;
   reflection: Snapshot['reflection'];
@@ -97,6 +100,8 @@ export interface Cockpit {
   active: CockpitRun[];
   runs: CockpitRun[];
 }
+const decisionText = (d: NonNullable<CockpitRun['decision']>): string =>
+  `${d.event} 是=${d.yes} 否=${d.no}`;
 /** Pure projection shared by Ink and HTTP; collection remains owned by the existing loader/cache. */
 export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
   const start = new Date(now);
@@ -142,12 +147,24 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const policy = (
       HOLD_POLICY as Partial<Record<string, (typeof HOLD_POLICY)[keyof typeof HOLD_POLICY]>>
     )[key];
-    const question =
+    const decision =
       policy && 'yes' in policy
-        ? `${reasonText(key)} 是=${{ retry: key === 'budget' ? '放宽预算再跑' : '再跑', resume: '恢复', approve: '批准', review: '重评' }[policy.yes]} 否=终止`
+        ? {
+            event: reasonText(key),
+            yes: {
+              retry: key === 'budget' ? '放宽预算再跑' : '再跑',
+              resume: '恢复',
+              approve: '批准',
+              review: '重评',
+            }[policy.yes],
+            no: '终止',
+          }
         : key === 'signoff' || r.state === 'held:human'
-          ? '等待签收 是=批准 否=终止'
-          : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
+          ? { event: '等待签收', yes: '批准', no: '终止' }
+          : undefined;
+    const question = decision
+      ? decisionText(decision)
+      : `${reasonText(key || r.state.replace('held:', ''))}；superagent brief 查看处置`;
     const progress = s.eta?.[r.run_id]?.progress ?? unknownProgress();
     return {
       ...(r.coordination ? { coordination: r.coordination } : {}),
@@ -157,12 +174,13 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       progressText: progressLabel(progress),
       id: r.run_id,
       url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined,
-      project: r.repo,
+      project: basename(r.repo),
       title: r.engine?.title ?? '任务标题未知',
       state: r.state,
       elapsed: fmtElapsed(elapsedAt(r, now)),
       tokens: runTokens(r.run_id),
       stage: stages(r),
+      node: r.nodes.current ?? undefined,
       role: ['completed', 'failed', 'cancelled'].includes(r.state)
         ? roleTag(
             'coder',
@@ -173,9 +191,10 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
         : roleTag(r.nodes.currentRole, r.model),
       round: r.engine?.round
         ? String(r.engine.round)
-        : (/-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '-'),
+        : (/-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? '1'),
       reason: reasonText(r.engine?.reason ?? ''),
       question,
+      decision,
       waiting: fmtElapsed(
         d?.action === 'ask'
           ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000))
@@ -191,15 +210,14 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const age = now - Date.parse(at ?? '');
     return age >= 0 && age < 600000;
   };
-  const liveRows = s.rows.filter(
-    r => (r.nativeState ?? r.state) === 'running' && fresh(r.lastEvent)
-  );
+  const liveRows = s.rows.filter(r => r.state === 'running' && fresh(r.lastEvent));
   const liveJobs =
     s.activity?.jobs.filter(j => j.state === 'running' && j.pidAlive && fresh(j.heartbeatAt)) ?? [];
   const zombies =
     s.rows.filter(
       r =>
         (r.nativeState === 'running' || ['running', 'owner_lost'].includes(r.state)) &&
+        !r.state.startsWith('held:') &&
         !liveRows.includes(r)
     ).length +
     (s.activity?.jobs.filter(j => j.state === 'running' && !liveJobs.includes(j)).length ?? 0);
@@ -265,29 +283,63 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       children: children.map(r => ({ id: r.id, role: r.role, progress: r.progress })),
     });
   }
+  const anomalies: string[] = [],
+    seen = new Set<string>();
   const needs = Object.entries(s.asks ?? {}).flatMap(([key, ask]) => {
     if (!['pending', 'unknown'].includes(ask.status)) return [];
-    const [id, reason] = key.split(':'),
-      row = s.rows.find(r => r.run_id === id);
-    if (!row)
+    const unresolved = (): [] => {
+      anomalies.push(`无法解析：${key}`);
+      return [];
+    };
+    if (key.startsWith('coord:')) {
+      const parts = /^coord:([^:]+)(?::(\d+):(\d+))?$/.exec(key);
+      const m = s.coordMessages?.find(m => m.id === parts?.[1]);
+      if (!m || !parts) return unresolved();
+      if (m.type || ['accepted', 'done', 'rejected'].includes(m.state)) return [];
+      if (m.ask && !['pending', 'unknown'].includes(m.ask.status)) return [];
+      if (
+        parts[2] &&
+        (Number(parts[2]) !== (m.ask?.generation ?? m.generation) ||
+          Number(parts[3]) !== (m.ask_round ?? 0))
+      )
+        return [];
+      if (seen.has(`coord:${m.id}`)) return [];
+      seen.add(`coord:${m.id}`);
+      const repo = m.scope.kind === 'repo' ? m.scope.id : m.scope.repo;
+      const decision = { event: m.title.replace(/[\r\n]+/g, ' '), yes: '发现者接管', no: '继续等' };
       return [
         {
           progress: unknownProgress(),
           progressText: '—',
-          id,
-          project: id,
-          title: '',
-          state: 'unknown',
+          id: m.id,
+          project: basename(basename(repo) === '.git' ? dirname(repo) : repo),
+          title: m.title,
+          state: m.state,
           elapsed: '-',
           tokens: '未知',
-          stage: '',
+          stage:
+            m.scope.kind === 'run'
+              ? m.scope.id
+              : (m.sender.session_id?.slice(0, 8) ?? m.sender.client),
           role: '',
           round: '-',
-          reason: reasonText(reason),
-          question: `${reasonText(reason)} 是=? 否=?`,
-          waiting: '?',
+          reason: m.kind,
+          decision,
+          question: decisionText(decision),
+          waiting: fmtElapsed(Math.max(0, Math.floor((now - Date.parse(m.at)) / 1000))),
         },
       ];
+    }
+    const parts = /^([^:]+):([^:]+)(?::([^:]+))?$/.exec(key);
+    if (!parts) return unresolved();
+    const [, id, reason] = parts,
+      row = s.rows.find(r => r.run_id === id);
+    const policy = (HOLD_POLICY as Partial<Record<string, { do: string }>>)[reason];
+    if (!row || !policy || !['ask', 'signoff'].includes(policy.do)) return unresolved();
+    // R1-1: the engine owns reason mapping; failed may still require a coder decision.
+    if (row.askReason !== reason) return [];
+    if (seen.has(`${id}:${reason}`)) return [];
+    seen.add(`${id}:${reason}`);
     const r = project(row, reason);
     const asked = [...(row.engine?.dispositions ?? [])]
       .reverse()
@@ -332,6 +384,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       (s.activity?.jobs.filter(j => !['done', 'failed', 'cancelled', 'lost'].includes(j.state))
         .length ?? 0),
     tree,
+    anomalies,
     zombies,
     reflection: s.reflection,
     needs,
@@ -348,4 +401,10 @@ export function fit(s: string, width: number): string {
     out += ch;
   }
   return width > 0 ? out + '…' : '';
+}
+
+/** The soonest measured completion; unknown estimates remain unknown. */
+export function decisionHeader(c: Cockpit): string {
+  const etas = c.active.flatMap(r => (r.progress.eta_s === null ? [] : [r.progress.eta_s]));
+  return `跑 ${String(c.active.length)} · 等你 ${String(c.needs.length)} · 僵死 ${String(c.zombies)} · ETA ${etas.length ? `~${String(Math.ceil(Math.min(...etas) / 60))}m` : '未知'} · 异常 ${String(c.anomalies.length)}`;
 }

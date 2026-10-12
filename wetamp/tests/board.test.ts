@@ -107,6 +107,8 @@ function ledger(
     recoveries: [],
     ...extra,
   };
+  mkdirSync(l.gen_dir, { recursive: true });
+  writeFileSync(join(l.gen_dir, 'plan.json'), JSON.stringify({ deadline: '2099-01-01T00:00:00Z' }));
   writeFileSync(ledgerFile(id), JSON.stringify(l));
   writeFileSync(
     join(stubDir, `get-a-${id}.json`),
@@ -449,7 +451,7 @@ describe('time', () => {
     }
   });
 
-  test('running and held rows tick with the injected now; the frame clock follows it', () => {
+  test('running and held rows tick with the injected now; the header keeps decision information', () => {
     const l = ledger('live', { status: 'running' });
     const run: RunView = {
       id: 'a-live',
@@ -473,9 +475,7 @@ describe('time', () => {
         { columns: 160 }
       );
     for (const instant of ['2026-10-10T00:00:50Z', '2026-10-10T00:02:05Z'])
-      expect(text(instant).split('\n')[0]).toEndWith(
-        fmtClock(at(instant), new Date(instant)).slice(0, 5)
-      );
+      expect(text(instant).split('\n')[0]).toContain('ETA 未知');
   });
 
   test('fmtClock uses the process time zone: HH:MM:SS today, MM-DD HH:MM otherwise', () => {
@@ -695,11 +695,41 @@ describe('end to end', () => {
   test('--once renders one text frame and exits 0', () => {
     ledger('sa1', { status: 'completed', nodes: [{ nodeId: 'land', state: 'completed' }] });
     writeFileSync(ledgerFile('broken'), '{');
+    const asksPath = join(root, 'home', 'asks.json'),
+      id = 'b'.repeat(64);
+    const inboxDir = join(root, 'home', 'coord', 'inbox');
+    mkdirSync(inboxDir, { recursive: true });
+    const messagePath = join(inboxDir, `${id}.json`);
+    const message = JSON.stringify({
+      id,
+      state: 'done',
+      scope: { kind: 'repo', id: '/repo/acknowledged/.git' },
+      title: 'acknowledged event',
+      sender: { client: 'codex', pid: 1 },
+      at: new Date().toISOString(),
+    });
+    writeFileSync(messagePath, message);
+    const asks = JSON.stringify(
+      Object.fromEntries([
+        ...Array.from({ length: 30 }, (_, i) => [
+          `coord:missing-${String(i)}`,
+          { status: 'pending' },
+        ]),
+        [`coord:${id}:1:0`, { status: 'pending' }],
+      ])
+    );
+    writeFileSync(asksPath, asks);
     const r = cli(['--once']);
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
+    expect(r.out.trimEnd().split('\n').length).toBeLessThanOrEqual(20);
+    expect(r.out).toContain('异常 30');
+    expect(r.out).toContain('等你 0');
+    expect(r.out).not.toContain('acknowledged event');
+    expect(readFileSync(asksPath, 'utf8')).toBe(asks);
+    expect(readFileSync(messagePath, 'utf8')).toBe(message);
     expect(r.out).toContain('跑');
-    expect(r.out).toContain('无进行中任务');
+    expect(r.out).toContain('无法解析：coord:missing-0');
     expect(r.out).not.toContain('remote');
   });
 
@@ -778,4 +808,55 @@ test('R1-05: actual board loader projects takeover owner rather than launcher, i
     owner: null,
     inferred: false,
   });
+});
+
+test('R1-1: pending asks follow real engine hold mapping, including failed coder nodes', () => {
+  const now = Date.parse('2026-10-12T12:00:00Z');
+  for (const reason of ['budget', 'review_limit', 'approval', 'coder', 'signoff'] as const) {
+    const node =
+      reason === 'coder'
+        ? 'code-a'
+        : reason === 'approval'
+          ? 'approval-a'
+          : reason === 'signoff'
+            ? 'human-m1'
+            : 'gate-m1-r1';
+    const paused = reason === 'approval' || reason === 'signoff';
+    const run: RunView = {
+      id: `a-${reason}`,
+      status: paused ? 'paused' : 'failed',
+      nodes: [{ nodeId: node, state: paused ? 'running' : 'failed' }],
+      ...(paused ? { metadata: { approval: { nodeId: node } } } : {}),
+      output_root: join(root, 'out'),
+    };
+    const l = ledger(reason, run);
+    if (reason === 'budget' || reason === 'review_limit') {
+      const art = join(run.output_root!, 'artifacts', 'runs', run.id);
+      mkdirSync(art, { recursive: true });
+      writeFileSync(
+        join(art, `${node}.json`),
+        JSON.stringify({
+          decision: {
+            kind: 'block',
+            reason:
+              reason === 'budget' ? 'budget_launches_exceeded' : 'acceptance_failed+review_limit',
+            evidence: [],
+            debt: [],
+          },
+        })
+      );
+    }
+    const snap = snapshotOf([{ ledger: l, run }], now);
+    expect(snap.rows[0]?.askReason).toBe(reason);
+    snap.asks = { [`${reason}:${reason}`]: { status: 'pending' } };
+    expect(cockpit(snap, now).needs.map(r => r.id)).toEqual([reason]);
+    for (const status of ['completed', 'cancelled', 'running'] as const) {
+      const resumed = snapshotOf(
+        [{ ledger: l, run: { ...run, status, metadata: {}, nodes: [] } }],
+        now
+      );
+      resumed.asks = snap.asks;
+      expect(cockpit(resumed, now).needs).toEqual([]);
+    }
+  }
 });

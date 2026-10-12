@@ -1,36 +1,33 @@
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
-import { fmtClock, type Snapshot } from './data';
-import { cockpit, fit, type Cockpit } from './cockpit';
-import { ProgressBar } from './ProgressBar';
+import type { Snapshot } from './data';
+import { cockpit, decisionHeader, fit } from './cockpit';
 import { residentHash } from '../generate';
-import { fmtTokens } from '../usage';
-import { ownerLabel } from '../coord';
 
 export const ENGINE_CHANGED = 75;
 export const boardExitCode = (started: string, current = residentHash()): number => started === current ? 0 : ENGINE_CHANGED;
 export interface FrameProps { snap: Snapshot; width: number; height: number; now: Date }
 export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
   const c = cockpit(snap, now.getTime()), lines: ReactElement[] = [];
-  const text = (value: string, color?: string): void => { lines.push(<Text key={lines.length} color={color} wrap="truncate">{fit(value, width)}</Text>); };
-  const budget = c.reflection ? `${fmtTokens(c.reflection.tokens)}/${fmtTokens(c.reflection.limit)}` : '—/—';
-  text(width < 100 ? `跑${String(c.tree.length)} 等你${String(c.needs.length)} 僵死${String(c.zombies)} 今日${String(c.metrics.completed)}/${String(c.metrics.decided)} 反思${budget} ${fmtClock(now.getTime(), now).slice(0, 5)}` : `跑 ${String(c.tree.length)} · 等你 ${String(c.needs.length)} · 僵死 ${String(c.zombies)} · 今日 ${String(c.metrics.completed)}/${String(c.metrics.decided)} · 反思 token ${budget} · ${fmtClock(now.getTime(), now).slice(0, 5)}`, c.reflection?.yellow ? 'yellow' : undefined);
-  const entry = (name: string, progress: Cockpit['tree'][number]['progress']): void => {
-    const label = fit(name, Math.max(1, Math.min(36, Math.floor(width / 2))));
-    lines.push(<Text key={lines.length} wrap="truncate">{label} <ProgressBar progress={progress} width={width - Bun.stringWidth(label) - 1}/></Text>);
-  };
-  for (const r of c.tree) {
-    entry(r.project + (r.coordination ? ` · ${ownerLabel(r.coordination.owner)} ${r.coordination.presence.state} 交接${String(r.coordination.pending)}` : ""), r.progress);
-    for (const [i, child] of r.children.entries()) entry(`  ${i === r.children.length - 1 ? '└─' : '├─'} ${width < 60 ? child.role.split('·')[0] : child.role} ${child.id}`, child.progress);
-  }
-  if (!c.tree.length) text('无进行中任务');
+  const text = (value: string, color?: string): void => { lines.push(<Text key={lines.length} color={color} wrap="truncate">{fit(value.replace(/[\r\n]+/g, ' '), width)}</Text>); };
+  text(decisionHeader(c));
   if (c.needs.length) {
     text('需要你');
     for (const r of c.needs) {
-      const suffix = ` ${r.question} ${r.waiting}`;
-      text(`? ${fit(r.project, Math.max(1, width - Bun.stringWidth(suffix) - 3))}${suffix}`, 'yellow');
+      if (!r.decision) { text(r.question, 'yellow'); continue; }
+      // R1-2: reserve decisions and wait time before shortening identity/event labels.
+      const suffix = ` 是=${r.decision.yes} 否=${r.decision.no} 已等${r.waiting}`;
+      const columns = Math.max(1, Math.floor((width - Bun.stringWidth(suffix) - 4) / 3));
+      const idWidth = Math.max(1, Math.floor((columns - 1) / 2));
+      const node = `${fit(r.id, idWidth)}/${fit(r.node ?? r.stage, Math.max(1, columns - idWidth - 1))}`;
+      text(`? ${fit(r.project, columns)}·${node}·${fit(r.decision.event, columns)}${suffix}`, 'yellow');
     }
   }
+  for (const anomaly of c.anomalies) text(anomaly, 'yellow');
+  if (c.active.length) {
+    text('进行中');
+    for (const r of c.active) text(`${r.project} · ${r.title} · ${r.node ? `${r.node} (${r.stage})` : r.stage} · 已用 ${r.elapsed} · ${r.progressText} · 第${r.round}轮`);
+  } else text('无进行中任务');
   if (typeof snap.summary.load_error === 'string') text(`载入失败：${snap.summary.load_error}`);
   return <Box flexDirection="column" width={width}>{lines.slice(0, Math.max(1, height))}</Box>;
 }

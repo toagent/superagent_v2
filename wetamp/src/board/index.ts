@@ -43,8 +43,9 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     limit = Math.floor(positive(a.flags.limit, Number.MAX_SAFE_INTEGER, 'limit'));
     const base = createLoader(signal);
     let url: string | undefined;
-    load = async n => ({ ...await base(n), web_url: url });
-    const resident = webState(); if (resident) url = webUrl(resident);
+    load = async n => ({ ...(await base(n)), web_url: url });
+    const resident = webState();
+    if (resident) url = webUrl(resident);
     if (process.env.NODE_ENV !== 'test') requestUsageRefresh();
   } catch (e) {
     console.error(`${(e as Error).message}\n${USAGE}`);
@@ -92,7 +93,7 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     const frame = createElement(Frame, {
       snap: first,
       width,
-      height: Number.MAX_SAFE_INTEGER, // 一帧文本不滚动：全部行都打出来
+      height: 20, // 单帧只保留决策摘要；完整内容由详情页承载
       now: new Date(),
     });
     console.log(ink.renderToString(frame, { columns: width }));
@@ -108,6 +109,10 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
 }
 
 if (import.meta.main) {
-  try { process.exit(await board(process.argv.slice(2))); }
-  catch (e) { console.error(`superagent: ${(e as Error).message}`); process.exit(1); }
+  try {
+    process.exit(await board(process.argv.slice(2)));
+  } catch (e) {
+    console.error(`superagent: ${(e as Error).message}`);
+    process.exit(1);
+  }
 }

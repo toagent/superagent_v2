@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { home, writeAtomic } from './config';
 import { lock } from './archon';
 import { createLoader, type Snapshot } from './board/data';
-import { cockpit, REASONS, type Cockpit } from './board/cockpit';
+import { cockpit, decisionHeader, REASONS, type Cockpit } from './board/cockpit';
 
 export interface OrcaView {
   status: 'in-review' | 'in-progress' | 'completed';
@@ -26,7 +26,7 @@ export function orcaView(c: Cockpit): OrcaView {
             : '待处置'
       )
       .join('、');
-  const head = `跑 ${String(c.active.length)} · 等你 ${String(c.needs.length)}`;
+  const head = decisionHeader(c);
   const parts = [
     ...c.needs.map(
       r => `? ${r.project} ${reason(r.reason || (r.state === 'held:human' ? 'signoff' : ''))}`

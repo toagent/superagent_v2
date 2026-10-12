@@ -63,7 +63,7 @@ function row(id: string, state = 'running'): BoardRow {
 }
 function snapshot(): Snapshot {
   const a = row('active'),
-    held = row('held', 'held:budget'),
+    held = { ...row('held', 'held:gate'), askReason: 'budget' as const },
     dead = row('zombie');
   dead.lastEvent = iso(-1800);
   a.activeNodes = [
@@ -115,23 +115,25 @@ for (const width of [120, 56])
       });
     expect(c.tree.map(r => [r.project, r.children.length])).toEqual([
       ['active', 2],
-      ['held', 0],
       ['interactive', 2],
     ]);
     const frame = Frame({ snap: s, width, height: 100, now });
     const header = (frame.props as { children: { props: { color?: string } }[] }).children[0];
-    expect(header.props.color).toBe('yellow');
+    expect(header.props.color).toBeUndefined();
     expect(c.zombies).toBe(1);
     expect(c.reflection?.yellow).toBe(true);
     expect(c.needs).toHaveLength(1);
-    expect(text).toMatchSnapshot();
+    expect(text.split('\n')[0]).toContain('等你 1');
+    expect(text).not.toContain('反思');
+    expect(text).not.toContain('今日');
     expect(text).not.toContain('zombie');
     expect(text).not.toContain('?%');
-    expect(text).toContain('62% 剩~14m');
+    if (width >= 100) expect(text).toContain('62% 剩~14m');
     expect(text).toContain('需要你');
-    expect(text).toContain('12:00');
-    if (width < 60) expect(text).not.toContain('sol6.1');
-    else expect(text).toContain('将军·sol6.1');
+    if (width >= 100) {
+      expect(text).toContain('第1轮');
+      expect(text).toContain('code-a');
+    }
     for (const line of text.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   });
 test('activity projects exact bound heartbeat and observed child PID; stale/future heartbeats fail closed', () => {
@@ -402,4 +404,72 @@ test('EV-R1-04 episode JSON route reads current projection and keeps first archi
     signature: 'engine_suspect',
   });
   expect(readFileSync(join(root, 'memory/episodes/held.json'), 'utf8')).toBe(before);
+});
+
+test('board-v2 resolves coord wire keys, suppresses acknowledgements and deduplicates read-only', () => {
+  const message = {
+    id: 'a'.repeat(64),
+    scope: { kind: 'repo' as const, id: '/repo/payments/.git' },
+    sender: { client: 'codex', session_id: 'sender-session', pid: 1 },
+    recipient: null,
+    generation: 2,
+    kind: 'task' as const,
+    title: '修复付款节点',
+    body: '',
+    evidence: [],
+    severity: 'urgent' as const,
+    state: 'escalated' as const,
+    at: iso(-120),
+    ask: { status: 'pending', question: 'opaque prose', generation: 2, owner: null },
+  };
+  const s = snapshot();
+  s.coordMessages = [message];
+  s.asks = {
+    [`coord:${message.id}:2:0`]: { status: 'pending' },
+    [`coord:${message.id}`]: { status: 'unknown' },
+    [`coord:${message.id}:1:0`]: { status: 'pending' },
+    'coord:missing:2:0': { status: 'pending' },
+    unparseable: { status: 'pending' },
+    'held:budget:1': { status: 'pending' },
+    'held:budget:2': { status: 'pending' },
+  };
+  const before = JSON.stringify(s),
+    c = cockpit(s, ms);
+  expect(c.needs).toHaveLength(2);
+  expect(c.anomalies).toEqual(['无法解析：coord:missing:2:0', '无法解析：unparseable']);
+  expect(c.needs[0]).toMatchObject({
+    project: 'payments',
+    title: message.title,
+    stage: 'sender-s',
+    waiting: '2m00s',
+  });
+  const text = renderToString(createElement(Frame, { snap: s, width: 200, height: 20, now }), {
+    columns: 200,
+  });
+  expect(text).toContain('等你 2');
+  expect(text).toContain('异常 2');
+  const needs = text.split('\n').filter(line => line.startsWith('?'));
+  expect(needs).toHaveLength(2);
+  for (const line of needs) expect(line).toMatch(/.+·.+\/.+·.+是=.+否=.+ 已等/);
+  expect(needs[0]).toContain('payments');
+  expect(needs[0]).toContain('修复付款节点');
+  expect(JSON.stringify(s)).toBe(before);
+  s.coordMessages = [{ ...message, title: '修复付款节点'.repeat(30) }];
+  const longTitle = renderToString(createElement(Frame, { snap: s, width: 160, height: 20, now }), {
+    columns: 160,
+  });
+  expect(longTitle.split('\n').find(line => line.startsWith('? payments'))).toContain('否=继续等');
+  for (const width of [56, 62, 80]) {
+    const narrow = renderToString(createElement(Frame, { snap: s, width, height: 20, now }), {
+      columns: width,
+    });
+    const line = narrow.split('\n').find(line => line.startsWith('?'))!;
+    expect(line).toContain('是=发现者接管 否=继续等 已等2m00s');
+    expect(line).toMatch(/.+·.+\/.+·.+是=/);
+    expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
+  }
+  for (const state of ['accepted', 'done', 'rejected'] as const) {
+    s.coordMessages = [{ ...message, state }];
+    expect(cockpit(s, ms).needs.map(r => r.id)).toEqual(['held']);
+  }
 });
