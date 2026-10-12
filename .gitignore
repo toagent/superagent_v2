@@ -11,7 +11,7 @@ build/
 *.egg-info/
 
 # Node.js
-node_modules/
+node_modules
 dist/
 coverage/
 *.log
