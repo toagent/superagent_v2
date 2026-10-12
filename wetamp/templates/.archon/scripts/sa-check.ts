@@ -692,10 +692,7 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
 export const MAX_ROUNDS = 3;
 type Verdict = 'pass' | 'fix' | 'escalate';
 
-/**
- * reviews[i]/rechecks[i] 为第 i+1 轮评审与其前的验收复跑（rechecks[0] = 首轮 diff 节点）。
- * 当前权限拒绝优先于绿色验收；自报不驱动控制状态。
- */
+/** reviews[i]/rechecks[i] 对应第 i+1 轮评审与验收；当前权限拒绝优先于绿色验收，自报仅作审计。 */
 export function deliveryDecision(input: {
   selfReport?: string;
   reviews?: (Review | null)[];
@@ -881,12 +878,8 @@ export function permissionEvidence(
   });
   return events.flatMap((e, i) => {
     const node = e.step_name ?? '';
-    if (
-      !nodes.has(node) ||
-      i < (starts.get(node) ?? 0) ||
-      (e.data?.attemptId && e.data.attemptId !== attempts.get(node))
-    )
-      return [];
+    if (!nodes.has(node) || i < (starts.get(node) ?? 0)) return [];
+    if (e.data?.attemptId && e.data.attemptId !== attempts.get(node)) return [];
     const hook = e.event_type === 'provider_event' ? e.data?.event : undefined;
     const denied =
       (hook?.type === 'warning' && hook.permissionDenied === true) ||
