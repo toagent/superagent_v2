@@ -1,34 +1,13 @@
 import { inspectProcess } from './launcher';
 // Archon CLI 调用与崩溃恢复。全部经 wetamp/bin/archon，状态只在 $ARCHON_HOME。
-import { dlopen, FFIType, read, type Pointer } from 'bun:ffi';
 import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import {
-  closeSync,
-  existsSync,
-  ftruncateSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  unlinkSync,
-  writeSync,
-} from 'node:fs';
-import { hostname } from 'node:os';
+import { closeSync, existsSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonMutation, coord } from './coord';
-import { WETAMP, home, writeAtomic } from './config';
+import { WETAMP, home } from './config';
 import type { Ledger } from './cli';
-import type { NodeExecutionMetadata } from '../../packages/workflows/src/schemas/node-execution';
-import type { ExecutionOwnerRecord } from '../../packages/workflows/src/schemas/workflow-run';
-import {
-  ownershipUnknown,
-  executionOwnership,
-  recoveryAdmissionUnknown,
-  recoverySnapshot,
-  unknownEffects,
-  type RecoveryAdmission,
-} from './recovery';
+import { executionOwnership, unknownEffects } from './recovery';
 
 export interface Exec {
   code: number;
@@ -38,45 +17,8 @@ export interface Exec {
 export type Json = Record<string, unknown>;
 
 /** `workflow get --json --verbose` 中本层读取的字段（PoC 实测）。 */
-export interface RunView {
-  id: string;
-  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
-  working_path?: string | null;
-  output_root?: string | null;
-  started_at?: string | null;
-  completed_at?: string | null;
-  last_activity_at?: string | null;
-  metadata?: {
-    execution_owner?: ExecutionOwnerRecord;
-    superagent_recovery?: RecoveryAdmission;
-    wait?: {
-      nodeId: string;
-      kind: string;
-      event?: string;
-      resumeAt: string;
-      /** attention 类等待只有这个，没有可用的 resumeAt。 */
-      waitingSince?: string;
-    };
-    /** Archon 审批门（approval / interactive_loop 等）暂停时的元数据。 */
-    approval?: { nodeId: string; pauseId?: string; type?: string };
-    /** 引擎在节点之外失败时写的 run 级错误（executor 捕获、启动失败等）。 */
-    error?: string | null;
-    /** 停止原因类别（runExitReasonSchema 枚举，如 launch_failed、process_terminated），由 run 的 owner 写。 */
-    stop_reason?: { reason?: string; signal?: string } | null;
-  } | null;
-  /** 终局记录（事件日志折叠而来）：error 同 metadata.error 的终局快照。resume 中的 run 没有。 */
-  terminal_record?: { error?: string | null } | null;
-  transcript_path?: string | null;
-  nodes?: {
-    nodeId: string;
-    state: string;
-    startedAt?: string;
-    error?: string | null;
-    durationMs?: number;
-    execution?: NodeExecutionMetadata;
-  }[];
-}
-
+export type { ExecutionRunView as RunView } from '../../packages/workflows/src/execution-lifecycle';
+import type { ExecutionRunView as RunView } from '../../packages/workflows/src/execution-lifecycle';
 // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）
 const archonBin = (): string => {
   const stub = process.env.SA_ARCHON_BIN;
@@ -295,279 +237,61 @@ function liveOwnerAnswering(id: string): boolean | undefined {
 }
 
 /** busy：recover 锁被另一进程持有（它正在恢复同一 run）。不是业务失败：调用方重读状态再定，不计次、不记处置。 */
-export type RecoverResult =
-  | { ok: true; resumed: Json }
-  | {
-      ok: false;
-      reason: string;
-      busy?: true;
-      refused?: true;
-      held?: true;
-      action?: string;
-      snapshot?: string;
-      nodes?: string[];
-      evidence?: string;
-    };
-
-export type Lock = { ok: true; release: () => void } | { ok: false; reason: 'locked' };
-
-export type Admission =
-  | {
-      ok: true;
-      capacity: number;
-      active: number;
-      launch: (args: string[], cwd?: string) => Json;
-      release: () => void;
-    }
-  | { ok: false; capacity: number; active?: number; reason: 'admission_busy' | 'run_capacity' };
-
-/**
- * Hold the shared launch lock until Archon has persisted its pending row. Other CLIs refuse
- * immediately, before creating a worker/worktree. Paused and owner-ambiguous runs retain
- * capacity; only the engine's terminal status frees it. A durable launch reservation covers
- * the pre-pending child when the parent CLI dies; unknown effects retain admission.
- */
+export type {
+  ResumeExecutionResult as RecoverResult,
+  Lock,
+} from '../../packages/workflows/src/execution-lifecycle';
+import {
+  resumeExecution,
+  admitExecution,
+  type Admission,
+  executionLock as lock,
+} from '../../packages/workflows/src/execution-lifecycle';
+import { claimInterruptedExecution } from '../../packages/core/src/workflows/execution-lifecycle';
+export { lock };
+/** The engine owns launch reservations; the adapter supplies a read-only registry count. */
 export function admitRun(capacity: number): Admission {
-  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('invalid run capacity');
-  const root = home().archon;
-  mkdirSync(root, { recursive: true });
-  const lease = lock(join(root, 'run-admission.lock'));
-  if (!lease.ok) return { ok: false, capacity, reason: 'admission_busy' };
-  try {
-    const reservation = join(root, 'run-admission.json');
-    if (existsSync(reservation)) {
-      const old = JSON.parse(readFileSync(reservation, 'utf8')) as {
-        host?: unknown;
-        pid?: unknown;
-        pid_start?: unknown;
-      };
-      // Only confirmed death clears capacity. Missing identity, remote host and PID reuse stay conservative.
-      if (
-        old.host !== hostname() ||
-        typeof old.pid !== 'number' ||
-        !Number.isSafeInteger(old.pid) ||
-        old.pid < 1 ||
-        typeof old.pid_start !== 'string' ||
-        !old.pid_start ||
-        pidAlive(old.pid)
-      ) {
-        lease.release();
-        return { ok: false, capacity, reason: 'admission_busy' };
-      }
-      unlinkSync(reservation);
-    }
-    const path = join(root, 'archon.db');
-    let active = 0;
-    if (existsSync(path)) {
+  return admitExecution(capacity, {
+    root: home().archon,
+    inspectProcess,
+    countActive: () => {
+      const path = join(home().archon, 'archon.db');
+      if (!existsSync(path)) return 0;
       const db = new Database(path, { readonly: true });
       try {
-        const row = db
-          .query(
-            "select count(*) as n from remote_agent_workflow_runs where status not in ('completed','failed','cancelled')"
-          )
-          .get() as { n: number };
-        active = row.n;
-      } finally {
-        db.close();
-      }
-    }
-    if (active >= capacity) {
-      lease.release();
-      return { ok: false, capacity, active, reason: 'run_capacity' };
-    }
-    return {
-      ok: true,
-      capacity,
-      active,
-      release: lease.release,
-      launch: (args, cwd) => {
-        const token = randomUUID();
-        writeAtomic(reservation, JSON.stringify({ token, host: hostname() }) + '\n');
-        return archonJson(args, cwd, { path: reservation, token });
-      },
-    };
-  } catch (e) {
-    lease.release();
-    throw e;
-  }
-}
-
-const DARWIN = process.platform === 'darwin';
-const ERRNO = DARWIN ? '__error' : '__errno_location';
-const libc = dlopen(DARWIN ? 'libSystem.B.dylib' : 'libc.so.6', {
-  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-  [ERRNO]: { args: [], returns: FFIType.ptr },
-});
-const LOCK_EX = 2;
-const LOCK_NB = 4;
-const EWOULDBLOCK = DARWIN ? 35 : 11;
-
-/**
- * 内核 flock(LOCK_EX|LOCK_NB)：持锁进程死亡（含 SIGKILL）时内核随 fd 一起释放，无需判死或夺锁。
- * 写入的 {pid,host,at} 仅供人工诊断，不参与判定。release 只关 fd、不删文件：删掉后别的进程可能
- * 锁住一个已脱离路径的 inode，与新建同名文件的进程同时“持锁”。
- */
-export function lock(path: string): Lock {
-  const fd = openSync(path, 'a');
-  if (libc.symbols.flock(fd, LOCK_EX | LOCK_NB) !== 0) {
-    const errno = read.i32(libc.symbols[ERRNO]() as Pointer);
-    closeSync(fd);
-    if (errno === EWOULDBLOCK) return { ok: false, reason: 'locked' };
-    throw new Error(`flock ${path}: errno ${String(errno)}`);
-  }
-  ftruncateSync(fd, 0);
-  writeSync(
-    fd,
-    JSON.stringify({ pid: process.pid, host: hostname(), at: new Date().toISOString() })
-  );
-  return {
-    ok: true,
-    release: () => {
-      closeSync(fd);
-    },
-  };
-}
-
-/**
- * PoC #8–#11：upstream 的 resume 只接受 failed/paused。把可证实 owner-lost 的 run 由 running 回拨为 failed，
- * 再 resume --detach；已完成节点走缓存。upstream 支持后删除回拨。
- * 同一 run 的 recover 经 `$SUPERAGENT_HOME/runs/<id>.lock`（lock()）串行；回拨 SQL 绑定观察到的 owner，期间被别的进程
- * 接手（owner 变了）就不动。guard 在锁内拿到最新 run，返回非空字符串即拒绝（停滞检查用）；resume 成功后
- * done 也在锁内执行，让恢复计数在下一个 recover 拿到锁之前落盘。
- */
-export function recover(
-  id: string,
-  cwd?: string,
-  guard?: (run: RunView) => string | undefined,
-  done?: (ack: Json) => void,
-  prepare?: () => void,
-  strategy?: {
-    lockId: string;
-    operatorId?: string;
-    resolveId: () => string;
-    adopt: (run: RunView) => string[] | undefined;
-  },
-  reconciled?: string
-): RecoverResult {
-  mkdirSync(join(home().sa, 'runs'), { recursive: true });
-  const path = join(home().sa, 'runs', `${strategy?.lockId ?? id}.lock`);
-  const l = lock(path);
-  if (!l.ok) return { ok: false, reason: 'recover_locked', busy: true };
-  try {
-    const run = getRun(strategy?.resolveId() ?? id, cwd);
-    const veto = guard?.(run);
-    if (veto) return { ok: false, reason: veto };
-    const journalPath = join(home().sa, 'runs', `${run.id}.recovery`);
-    const held = (reason: string): Extract<RecoverResult, { ok: false }> => ({
-      ok: false,
-      held: true,
-      reason,
-      action: `Inspect archon workflow get ${run.id} --verbose and its exact-run owner; resolve ownership or explicitly run archon workflow abandon ${run.id}.`,
-    });
-    if (recoveryAdmissionUnknown(run)) return held('recovery_admission_unknown');
-    if (ownershipUnknown(run)) return held('owner_unknown');
-    const effects = unknownEffects(run);
-    if (effects.length && reconciled !== recoverySnapshot(run))
-      return {
-        ok: false,
-        held: true,
-        reason: 'effects_unknown',
-        nodes: effects,
-        snapshot: recoverySnapshot(run),
-        action: `Reconcile external effects and stop surviving node processes, then superagent recover ${strategy?.operatorId ?? id} --reconciled ${recoverySnapshot(run)}`,
-      };
-    if (run.status === 'running') {
-      const live = liveOwnerAnswering(run.id);
-      if (live !== false) return held(live ? 'live_owner_answering' : 'owner_probe_unknown');
-    }
-    const adoption = strategy?.adopt(run);
-    if (adoption) {
-      // Relaunching on a newer engine has the same lost-ack window as resume.
-      // Keep the old run fenced until the ledger records the new run identity.
-      writeAtomic(
-        journalPath,
-        JSON.stringify({
-          token: randomUUID(),
-          owner: run.metadata?.execution_owner,
-          started_at: run.started_at ?? null,
-        } satisfies RecoveryAdmission)
-      );
-      prepare?.();
-      const result = archon([...adoption, '--json'], cwd);
-      const ack = lastJson(result.out);
-      if (result.code !== 0 || ack?.ok !== true || typeof ack.runId !== 'string') {
-        const evidence = `${journalPath}-result`;
-        writeAtomic(evidence, JSON.stringify(result));
-        return { ...held('recovery_admission_unknown'), evidence };
-      }
-      done?.(ack);
-      return { ok: true, resumed: ack };
-    }
-    const claim: RecoveryAdmission = {
-      token: randomUUID(),
-      owner: run.metadata?.execution_owner,
-      started_at: run.started_at ?? null,
-      ...(effects.length ? { reconciled_snapshot: reconciled, reconciled_nodes: effects } : {}),
-    };
-    if (run.status === 'running') {
-      const o = run.metadata?.execution_owner;
-      if (!o || !ownerLost(run)) return { ok: false, reason: 'owner alive or on another host' };
-      const db = new Database(join(home().archon, 'archon.db'), { create: false, readwrite: true });
-      try {
-        const r = db.run(
-          `update remote_agent_workflow_runs set status='failed',
-             metadata=json_set(metadata,'$.superagent_recovery',json(?))
-             where id=? and status='running'
-             and json_extract(metadata,'$.execution_owner.pid')=?
-             and json_extract(metadata,'$.execution_owner.host')=?
-             and json_extract(metadata,'$.execution_owner.uid') is ?
-             and (started_at is ? or julianday(started_at)=julianday(?))
-             and json_extract(metadata,'$.superagent_recovery.token') is ?`,
-          [
-            JSON.stringify(claim),
-            run.id,
-            o.pid,
-            o.host,
-            o.uid ?? null,
-            run.started_at ?? null,
-            run.started_at ?? null,
-            run.metadata?.superagent_recovery?.token ?? null,
-          ]
+        return (
+          db
+            .query<
+              { n: number },
+              []
+            >("select count(*) as n from remote_agent_workflow_runs where status not in ('completed','failed','cancelled')")
+            .get()?.n ?? 0
         );
-        if (r.changes !== 1) return { ok: false, reason: 'owner_changed' };
       } finally {
         db.close();
       }
-    } else if (run.status !== 'failed' && run.status !== 'paused') {
-      return { ok: false, reason: `status ${run.status} is not resumable` };
-    }
-    // Published before launch: an interrupted caller or lost ack leaves an explicit
-    // unknown admission. Neither a second CLI nor old owner metadata can re-admit it.
-    writeAtomic(journalPath, JSON.stringify(claim));
-    prepare?.(); // 已持锁且确认可恢复；attempt/预算不得在锁忙或 owner 存活时变化
-    const result = archon(['workflow', 'resume', run.id, '--detach', '--json'], cwd);
-    const resumed = lastJson(result.out);
-    if (
-      result.code === 0 &&
-      resumed?.ok === false &&
-      resumed.executed === false &&
-      run.status !== 'running'
-    ) {
-      // A structured pre-admission refusal guarantees no worker was launched.
-      // Any other failure (including a lost acknowledgement) retains the fence.
-      unlinkSync(journalPath);
-      return { ok: false, refused: true, reason: tail(JSON.stringify(resumed)) };
-    }
-    if (result.code !== 0 || resumed?.ok !== true) {
-      const evidence = `${journalPath}-result`;
-      writeAtomic(evidence, JSON.stringify(result));
-      return { ...held('recovery_admission_unknown'), evidence };
-    }
-    done?.(resumed);
-    return { ok: true, resumed };
-  } finally {
-    l.release();
-  }
+    },
+    launch: archonJson,
+  });
+}
+
+/** Transport adapter only; Archon owns continuation fences and interrupted-run transitions. */
+export function recover(
+  ...args: Parameters<typeof resumeExecution> extends [unknown, ...infer Rest] ? Rest : never
+): ReturnType<typeof resumeExecution> {
+  return resumeExecution(
+    {
+      root: home().archon,
+      inspectProcess,
+      getRun,
+      liveOwnerAnswering,
+      reconcileEffects: unknownEffects,
+      claimInterrupted: (run, claim) => claimInterruptedExecution(home().archon, run, claim),
+      launch: archon,
+      parseAck: lastJson,
+    },
+    ...args
+  );
 }
 
 /** 脱离本进程的 archon 子进程（signal/wake 会在调用进程内执行剩余 DAG）；输出追加到 log。 */

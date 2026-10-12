@@ -44,16 +44,22 @@ type N = {
   trigger_rule?: string;
   when?: string;
   timeout?: number;
-  wait?: { event: string; deadline_ms: number };
+  approval?: { message: string };
+  retry?: { max_attempts: number; on_error: string };
   with?: Record<string, unknown>;
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
 
 test('HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
-  const root = tmp();
+  const root = join(tmp(), 'wetamp');
   for (const path of ['templates', 'src', 'schemas', 'bin', 'scripts'])
     fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
   fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
+  fs.mkdirSync(join(root, '../packages/workflows/src'), { recursive: true });
+  fs.copyFileSync(
+    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+    join(root, '../packages/workflows/src/provider-attempts.ts')
+  );
   const hash = engineHash(root);
   expect(engineHash(root)).toBe(hash);
   const script = join(root, 'templates/.archon/scripts/sa-check.ts');
@@ -101,10 +107,15 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
 });
 
 test('EV reflection and memory views are read live; lesson data is outside both identities', () => {
-  const root = tmp();
+  const root = join(tmp(), 'wetamp');
   for (const path of ['templates', 'src', 'schemas'])
     fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
   fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
+  fs.mkdirSync(join(root, '../packages/workflows/src'), { recursive: true });
+  fs.copyFileSync(
+    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+    join(root, '../packages/workflows/src/provider-attempts.ts')
+  );
   const workflow = engineHash(root),
     resident = residentHash(root);
   for (const path of ['src/memory-reflect.ts', 'src/web/memory.ts']) {
@@ -182,6 +193,10 @@ describe('buildWorkflow', () => {
   test('P2 R2: incrementing a carried package attempt enables sa-code with its hint', () => {
     const gen = tmp();
     fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
+    fs.copyFileSync(
+      join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+      join(gen, '.archon/scripts/policy-attempts.ts')
+    );
     const nodes = nodesOf(
       buildWorkflow(fixture, milestones(fixture), 'retry', gen, false, NOW, loadTiers(), {
         from: 'old-run',
@@ -304,6 +319,10 @@ describe('buildWorkflow', () => {
       500_000 + CHECK_AUX_COUNTS.env * CHECK_AUX_TIMEOUT_MS + 5_000
     );
     expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBeUndefined();
+    expect(nodesOf(build(false)).find(n => n.id === 'environment')?.retry).toEqual({
+      max_attempts: loadTiers().policy.auto_retry.environment,
+      on_error: 'all',
+    });
     for (const node of nodesOf(build(false, plan)).filter(
       n => n.with?.kind === 'accept' || n.with?.kind === 'settle'
     ))
@@ -327,6 +346,10 @@ describe('buildWorkflow', () => {
     fs.cpSync(join(WETAMP, 'templates/.archon/scripts'), join(source, '.archon/scripts'), {
       recursive: true,
     });
+    fs.copyFileSync(
+      join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+      join(source, '.archon/scripts/policy-attempts.ts')
+    );
     const base = sh('git rev-parse HEAD', repo).trim();
     const policy = join(root, 'policy.json');
     fs.writeFileSync(
@@ -431,6 +454,10 @@ describe('buildWorkflow', () => {
     ({ fake, id, counter }) => {
       const gen = tmp();
       fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
+      fs.copyFileSync(
+        join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+        join(gen, '.archon/scripts/policy-attempts.ts')
+      );
       fs.mkdirSync(join(gen, 'attempts'));
       const nodes = nodesOf(
         buildWorkflow(fixture, milestones(fixture), 'hf10b', gen, fake, NOW)
@@ -523,7 +550,7 @@ describe('buildWorkflow', () => {
       trigger_rule: 'none_failed_min_one_success',
     });
     expect(n('human-m2')).toMatchObject({
-      wait: { event: 'sa.human.m2' },
+      approval: { message: 'Approve delivery milestone m2' },
       trigger_rule: 'none_failed_min_one_success',
     });
     expect(n('signoff-m2')?.depends_on).toEqual(['human-m2']);
@@ -587,16 +614,11 @@ describe('buildWorkflow', () => {
       'gate-m2-r3',
     ]);
   });
-  test('human wait deadline is the time left to the plan deadline, no floor; a passed deadline fails generation', () => {
-    const wait = (deadline: string): number | undefined =>
-      nodesOf(build(false, { ...fixture, deadline })).find(x => x.id === 'human-m2')?.wait
-        ?.deadline_ms;
-    expect(wait('2026-10-10T00:00:00Z')).toBe(24 * 3600 * 1000);
-    expect(wait('2026-10-09T00:05:00Z')).toBe(5 * 60 * 1000);
-    expect(() => wait('2026-10-09T00:00:00Z')).toThrow(
-      /plan invalid: \/deadline .* already passed/
-    );
-    expect(() => wait('2026-10-08T00:00:00Z')).toThrow(/already passed/);
+  test('native approval owns signoff; passed plan deadlines fail generation', () => {
+    const approval = (deadline: string) =>
+      nodesOf(build(false, { ...fixture, deadline })).find(x => x.id === 'human-m2')?.approval;
+    expect(approval('2026-10-10T00:00:00Z')).toEqual({ message: 'Approve delivery milestone m2' });
+    expect(() => approval('2026-10-09T00:00:00Z')).toThrow(/already passed/);
   });
   test('claude nodes deny nested agents; codex nodes leave it to codex-worker', () => {
     const denied = (console: 'claude' | 'codex', id: string): unknown =>

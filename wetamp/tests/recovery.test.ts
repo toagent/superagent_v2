@@ -172,7 +172,7 @@ describe('recovery ownership and effects', () => {
           reason: 'recovery_admission_unknown',
         });
         expect(readFileSync(join(root, 'calls'), 'utf8').trim().split('\n')).toHaveLength(1);
-        writeFileSync(join(sa, 'runs/r.recovery'), '{broken');
+        writeFileSync(join(ah, 'execution-admissions/r.json'), '{broken');
         expect(classify(run).state).toBe('held:recovery_admission_unknown');
         expect(recover('r')).toMatchObject({ held: true, reason: 'recovery_admission_unknown' });
       } finally {

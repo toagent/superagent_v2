@@ -25,7 +25,7 @@ export const REASONS = {
   review_not_independent: '评审不独立',
   engine_suspect: '引擎嫌疑',
   approval: '等待批准',
-} satisfies Record<keyof typeof HOLD_POLICY, string>;
+} satisfies Record<keyof typeof HOLD_POLICY, string> & Record<string, string>;
 export const reasonText = (s: string): string =>
   (REASONS as Partial<Record<string, string>>)[s] ?? s;
 export const roleTag = (
@@ -186,12 +186,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
   const ended = s.rows.filter(
     r => ['completed', 'failed', 'cancelled'].includes(r.state) && today(r.span?.ended_ms ?? NaN)
   );
-  const achieved = ended.filter(
-    r =>
-      r.state === 'completed' &&
-      r.landed &&
-      r.interventions === 0
-  );
+  const achieved = ended.filter(r => r.state === 'completed' && r.landed && r.interventions === 0);
   const fresh = (at: string | null | undefined): boolean => {
     const age = now - Date.parse(at ?? '');
     return age >= 0 && age < 600000;

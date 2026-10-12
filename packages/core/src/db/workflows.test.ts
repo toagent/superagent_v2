@@ -1461,42 +1461,7 @@ describe('workflows database', () => {
       expect(query).not.toContain('conversation_id');
       expect(query).toContain('ORDER BY started_at DESC');
       expect(query).not.toMatch(/--.*\$\d/); // regression guard for #999: $N in SQL comments breaks convertPlaceholders
-      expect(params).toEqual(['feature-development', '/repo/path', 1]);
-    });
-
-    test('returns a stale running run (no activity for >1 day)', async () => {
-      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-      const staleRun = {
-        ...mockWorkflowRun,
-        status: 'running' as const,
-        working_path: '/repo/path',
-        last_activity_at: twoDaysAgo,
-      };
-      mockQuery.mockResolvedValueOnce(createQueryResult([staleRun]));
-
-      const result = await findResumableRun('feature-development', '/repo/path');
-
-      expect(result).toEqual(staleRun);
-      const [query, params] = mockQuery.mock.calls[0] as [string, unknown[]];
-      expect(query).toContain("status = 'running'");
-      expect(query).toContain('last_activity_at');
-      expect(params).toEqual(['feature-development', '/repo/path', 1]);
-    });
-
-    test('returns a running run with null last_activity_at (never recorded activity)', async () => {
-      const staleRun = {
-        ...mockWorkflowRun,
-        status: 'running' as const,
-        working_path: '/repo/path',
-        last_activity_at: null,
-      };
-      mockQuery.mockResolvedValueOnce(createQueryResult([staleRun]));
-
-      const result = await findResumableRun('feature-development', '/repo/path');
-
-      expect(result).toEqual(staleRun);
-      const [query] = mockQuery.mock.calls[0] as [string, unknown[]];
-      expect(query).toContain('last_activity_at IS NULL');
+      expect(params).toEqual(['feature-development', '/repo/path']);
     });
 
     test('returns null when no resumable run exists', async () => {
@@ -1907,7 +1872,6 @@ describe('workflows database', () => {
       // CAS predicate's `< $2 days` references an unbound placeholder (PR #1830 C1).
       expect(updateParams).toEqual([
         'workflow-run-123',
-        1,
         JSON.stringify({
           tool_call_attention: null,
           error: null,
@@ -1942,7 +1906,7 @@ describe('workflows database', () => {
 
     test('guards the UPDATE with the resumable-status CAS predicate', async () => {
       // The flip to 'running' must only match a row that is still resumable —
-      // failed/paused, or a stale 'running' orphan — so two concurrent resumers
+      // failed/paused — so two concurrent resumers
       // can't both win and double-claim the worktree.
       mockQuery.mockResolvedValueOnce(createQueryResult([{ metadata: {} }]));
       mockQuery.mockResolvedValueOnce(createQueryResult([], 1));
@@ -1954,12 +1918,11 @@ describe('workflows database', () => {
 
       const [updateQuery, updateParams] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(updateQuery).toContain("status IN ('failed', 'paused')");
-      expect(updateQuery).toContain("status = 'running' AND");
-      // The stale-orphan arm references $2 — it MUST be bound to the day count.
+      expect(updateQuery).not.toContain('last_activity_at <');
+      // Metadata is the only payload after the run id.
       expect(updateQuery).toContain('$2');
       expect(updateParams).toEqual([
         'workflow-run-123',
-        1,
         JSON.stringify({
           tool_call_attention: null,
           error: null,

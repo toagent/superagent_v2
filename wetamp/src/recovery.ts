@@ -1,88 +1,21 @@
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { hostname } from 'node:os';
-import { join } from 'node:path';
+// Compatibility imports for old callers; execution admission belongs to Archon.
 import { inspectProcess } from './launcher';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { RunView } from './archon';
-import type { ExecutionOwnerRecord } from '../../packages/workflows/src/schemas/workflow-run';
-
-/** A reconciliation is valid for exactly the observed execution and incomplete nodes. */
-export function recoverySnapshot(run: RunView): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        id: run.id,
-        status: run.status,
-        started_at: run.started_at ?? null,
-        owner: run.metadata?.execution_owner ?? null,
-        nodes: run.nodes ?? [],
-      })
-    )
-    .digest('hex');
-}
-
-export interface RecoveryAdmission {
-  token: string;
-  owner?: ExecutionOwnerRecord;
-  started_at: string | null;
-  reconciled_snapshot?: string;
-  reconciled_nodes?: string[];
-}
-
-export function sameRecoveryOwner(run: RunView, claim: RecoveryAdmission): boolean {
-  const owner = run.metadata?.execution_owner;
-  return (
-    owner?.host === claim.owner?.host &&
-    owner?.pid === claim.owner?.pid &&
-    owner?.uid === claim.owner?.uid
-  );
-}
-
-/** Both fences matter: failed/paused resume cannot atomically replace the DB marker. */
-export function recoveryAdmissionUnknown(run: RunView): boolean {
-  const recorded = run.metadata?.superagent_recovery;
-  if (recorded && sameRecoveryOwner(run, recorded)) return true;
-  // Pure callers can classify a RunView without a configured runtime home.
-  const sa = process.env.SUPERAGENT_HOME;
-  if (!sa) return false;
-  const path = join(sa, 'runs', `${run.id}.recovery`);
-  if (!existsSync(path)) return false;
-  try {
-    const claim = JSON.parse(readFileSync(path, 'utf8')) as
-      | (Omit<RecoveryAdmission, 'owner'> & { owner?: RecoveryAdmission['owner'] | null })
-      | null;
-    if (
-      !claim ||
-      typeof claim.token !== 'string' ||
-      !(claim.started_at === null || typeof claim.started_at === 'string') ||
-      (claim.owner !== undefined &&
-        (!claim.owner ||
-          typeof claim.owner.pid !== 'number' ||
-          typeof claim.owner.host !== 'string'))
-    )
-      return true;
-    return sameRecoveryOwner(run, { ...claim, owner: claim.owner ?? undefined });
-  } catch {
-    return true;
-  }
-}
-
-/** Execution liveness never determines controller presence or permission. */
-export function executionOwnership(run: RunView): {
-  state: 'online' | 'offline' | 'unknown';
-  reused?: true;
-} {
-  const owner = run.metadata?.execution_owner;
-  if (run.status === 'pending' || owner?.host !== hostname()) return { state: 'unknown' };
-  const probe = inspectProcess(owner.pid);
-  if (probe.state !== 'online') return probe;
-  if (run.started_at && Date.parse(probe.start) > Date.parse(run.started_at))
-    return { state: 'unknown', reused: true };
-  return { state: 'online' };
-}
-export function ownershipUnknown(run: RunView): boolean {
-  return ['pending', 'running'].includes(run.status) && executionOwnership(run).state === 'unknown';
-}
+import {
+  executionOwnership as ownership,
+  ownershipUnknown as unknown,
+  unknownEffects as engineUnknownEffects,
+} from '../../packages/workflows/src/execution-lifecycle';
+export {
+  recoverySnapshot,
+  recoveryAdmissionUnknown,
+  sameRecoveryOwner,
+  type RecoveryAdmission,
+} from '../../packages/workflows/src/execution-lifecycle';
+export const executionOwnership = (run: RunView) => ownership(run, inspectProcess);
+export const ownershipUnknown = (run: RunView) => unknown(run, inspectProcess);
 
 /** land produces instructions only. Its durable output must agree with the checkout. */
 function landReconciled(run: RunView): boolean {
@@ -116,11 +49,6 @@ function landReconciled(run: RunView): boolean {
   }
 }
 
-export function unknownEffects(run: RunView): string[] {
-  // Prompt, bash and script bodies can all write external state; a missing completion
-  // record is not evidence of rollback. Engine-recorded failures keep their ordinary
-  // retry contract; an interrupted execution has no such settled outcome.
-  return (run.nodes ?? [])
-    .filter(n => n.state === 'running' && !(n.nodeId === 'land' && landReconciled(run)))
-    .map(n => n.nodeId);
-}
+/** Read-only delivery reconciliation; admission and transitions stay in Archon. */
+export const unknownEffects = (run: RunView): string[] =>
+  engineUnknownEffects(run).filter(node => node !== 'land' || !landReconciled(run));

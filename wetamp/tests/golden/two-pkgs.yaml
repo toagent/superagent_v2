@@ -7,6 +7,9 @@ nodes:
     with:
       kind: env
       plan: /GEN/plan.json
+    retry:
+      max_attempts: 5
+      on_error: all
   - id: start-m1
     bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:
@@ -44,6 +47,9 @@ nodes:
         - attempt
   - id: code-core
     command: sa-code
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -270,6 +276,9 @@ nodes:
     timeout: 155000
   - id: repair-core
     command: sa-repair
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -517,6 +526,9 @@ nodes:
   - id: review-m1-r1
     when: $diff-m1-r1.output.disposition == 'advance'
     command: sa-review
+    retry:
+      max_attempts: 2
+      on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: high
@@ -648,6 +660,9 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: fix-m1-r2
     command: sa-fix
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -868,6 +883,9 @@ nodes:
   - id: review-m1-r2
     when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
     command: sa-review-delta
+    retry:
+      max_attempts: 2
+      on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: medium
@@ -1005,6 +1023,9 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: fix-m1-r3
     command: sa-fix
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -1225,6 +1246,9 @@ nodes:
   - id: review-m1-r3
     when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
     command: sa-review-delta
+    retry:
+      max_attempts: 2
+      on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: medium
@@ -1404,6 +1428,9 @@ nodes:
         - attempt
   - id: code-api
     command: sa-code
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -1605,6 +1632,9 @@ nodes:
     timeout: 155000
   - id: repair-api
     command: sa-repair
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -1852,6 +1882,9 @@ nodes:
   - id: review-m2-r1
     when: $diff-m2-r1.output.disposition == 'advance'
     command: sa-review
+    retry:
+      max_attempts: 2
+      on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: high
@@ -1982,6 +2015,9 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: fix-m2-r2
     command: sa-fix
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -2202,6 +2238,9 @@ nodes:
   - id: review-m2-r2
     when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
     command: sa-review-delta
+    retry:
+      max_attempts: 2
+      on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: high
@@ -2338,6 +2377,9 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: fix-m2-r3
     command: sa-fix
+    retry:
+      max_attempts: 1
+      on_error: transient
     model: '@sa-coder'
     effort: medium
     with:
@@ -2558,6 +2600,9 @@ nodes:
   - id: review-m2-r3
     when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
     command: sa-review-delta
+    retry:
+      max_attempts: 2
+      on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
     effort: high
@@ -2697,9 +2742,8 @@ nodes:
       archon: /GEN/archon
     trigger_rule: none_failed_min_one_success
   - id: human-m2
-    wait:
-      event: sa.human.m2
-      deadline_ms: 2279404800000
+    approval:
+      message: Approve delivery milestone m2
     depends_on:
       - gate-m2-r1
       - gate-m2-r2
@@ -2707,7 +2751,6 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: signoff-m2
     bash: |-
-      s=$human-m2.output.status; [ "$s" = satisfied ] || { echo 'signoff m2: not approved' >&2; exit 1; }
       [ "$(date +%s)" -le 4070908800 ] || { echo 'signoff m2: plan deadline 2099-01-01T00:00:00Z passed' >&2; exit 1; }
     depends_on:
       - human-m2

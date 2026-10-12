@@ -7,6 +7,9 @@ nodes:
     with:
       kind: env
       plan: /GEN/plan.json
+    retry:
+      max_attempts: 5
+      on_error: all
   - id: start-m1
     bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:
@@ -2567,9 +2570,8 @@ nodes:
       tag: gate-m2-r3
     trigger_rule: none_failed_min_one_success
   - id: human-m2
-    wait:
-      event: sa.human.m2
-      deadline_ms: 2279404800000
+    approval:
+      message: Approve delivery milestone m2
     depends_on:
       - gate-m2-r1
       - gate-m2-r2
@@ -2577,7 +2579,6 @@ nodes:
     trigger_rule: none_failed_min_one_success
   - id: signoff-m2
     bash: |-
-      s=$human-m2.output.status; [ "$s" = satisfied ] || { echo 'signoff m2: not approved' >&2; exit 1; }
       [ "$(date +%s)" -le 4070908800 ] || { echo 'signoff m2: plan deadline 2099-01-01T00:00:00Z passed' >&2; exit 1; }
     depends_on:
       - human-m2

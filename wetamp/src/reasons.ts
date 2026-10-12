@@ -1,44 +1,31 @@
 // 原因与处置的唯一注册表；generate 将 REASONS 写入冻结模板。
 export type Yes = 'retry' | 'resume' | 'approve' | 'review';
 export type Policy =
-  | { do: 'expire' | 'auto_retry' | 'backoff' | 'resume' }
+  | { do: 'expire' | 'resume' }
   | { do: 'signoff'; text: string; yesText: string }
   | { do: 'ask'; yes: Yes; text: string; yesText: string };
 /**
  * 挂起原因 → 处置：supervise-tick 对非终态 run 的唯一分派表（docs/00「挂起处置」），每行都有单测。
- * signoff 走 human()；expire 按 plan 截止终止、不提醒；auto_retry/backoff/resume 自动处置，有上限，用尽后转 ask 行；
+ * signoff 走 human()；expire 按 plan 截止终止、不提醒；paused 等待 Archon 原生 wake；失败由原生 retry 处理，停止后只接受明确决定；
  * ask 行投一条提醒（键 run:挂起类别），“是”执行 yes，“否”终止 run 并保留证据，过期不替用户决定、等 plan 截止。
  */
 export const HOLD_POLICY = {
   signoff: { do: 'signoff', text: '等待人工签收', yesText: '批准签收门并续跑（不自动合入）' },
   deadline: { do: 'expire' },
-  gate: { do: 'auto_retry' },
-  coder: { do: 'auto_retry' },
-  environment: { do: 'backoff' },
-  paused: { do: 'resume' },
-  auto_retry_exhausted: {
+  gate: { do: 'ask', yes: 'retry', text: '交付需重试', yesText: '{target}一次' },
+  coder: { do: 'ask', yes: 'retry', text: '编码节点失败', yesText: '{target}一次' },
+  environment: {
     do: 'ask',
     yes: 'retry',
-    text: '自动重试已用尽',
-    yesText: '{target}一次',
+    text: '环境检查失败',
+    yesText: '确认已处理后{target}一次',
   },
+  paused: { do: 'resume' },
   no_change: {
     do: 'ask',
     yes: 'retry',
     text: '连续两轮修复无变化',
     yesText: '{target}一次',
-  },
-  no_attempt_node: {
-    do: 'ask',
-    yes: 'resume',
-    text: '旧工作流无法重跑里程碑',
-    yesText: '清零恢复计数并{target}一次',
-  },
-  recover_no_progress: {
-    do: 'ask',
-    yes: 'resume',
-    text: '恢复3次无进展',
-    yesText: '清零恢复计数并{target}一次',
   },
   needs: {
     do: 'ask',
@@ -70,7 +57,7 @@ export const HOLD_POLICY = {
     do: 'ask',
     yes: 'resume',
     text: '引擎判定与验收矛盾或原因未注册',
-    yesText: '确认已修复引擎后清零恢复计数并{target}一次',
+    yesText: '确认已修复引擎后{target}一次',
   },
   approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
 } as const satisfies Record<string, Policy>;
@@ -144,10 +131,7 @@ const base: Reason[] = [
   entry('coder', 'coder', 'transient', 'coder', '编码节点执行失败'),
   entry('environment', 'environment', 'transient', 'env', '环境预检失败'),
   entry('paused', 'paused', 'transient', 'engine', '可恢复的暂停'),
-  deterministic('auto_retry_exhausted', 'auto_retry_exhausted', 'human', '自动重试额度已用尽'),
   deterministic('no_change', 'no_change', 'coder', '修复未改变交付'),
-  deterministic('no_attempt_node', 'no_attempt_node', 'engine', '旧工作流缺少 attempt 节点'),
-  deterministic('recover_no_progress', 'recover_no_progress', 'engine', '恢复未推进节点'),
   deterministic('coder_needs', 'needs', 'human', '编码端需要补充能力'),
   deterministic('coder_redline', 'redline', 'human', '编码端命中红线'),
   deterministic('budget_launches_exceeded', 'budget', 'human', '调用次数超过预算'),

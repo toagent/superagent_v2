@@ -57,8 +57,8 @@ superagent jobs [--all]                  # 列出登记作业（默认 running �
 ```
 
 Claude 节点上 `network`/`web`/`install`/`services`/`git` 的收紧落成禁用工具，其余（含 Codex 节点）只写进任务书「你的权限」。
-held:gate、held:environment 与编码节点失败由 `supervise-tick` 按 `tiers.json` `policy.auto_retry` 自动重试；将军在输出里写
-`needs[]` 时保持 held 交人。`superagent decide --all-held retry` 一次重试所有 held（签收门除外）。
+环境与编码/修复/评审节点通过 Archon 原生 `retry` 使用 `tiers.json` `policy.auto_retry`；原生重试结束后只接受明确决定。
+将军在输出里写 `needs[]` 时保持 held 交人。`superagent decide --all-held retry` 一次重试所有 held（签收门除外）。
 
 所有命令输出 JSON（`--json` 可加可不加）。退出码：0 completed、1 failed、2 cancelled、3 held（待决策）、4 running、
 5 别名漂移（`$ARCHON_HOME/config.yaml` 或目标 repo `.archon/config.yaml` 的 `@sa-*` 别名与 `tiers.json` 不一致，run 拒绝启动，
@@ -67,18 +67,17 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 
 `wait`/`status` 返回 held 时按 `state` 处理：
 
-| state                      | 含义                                                    | 动作                                                                                                                                         |
-| -------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `held:human`               | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                                                                           |
-| `held:environment`         | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                                                                                   |
-| `held:gate`                | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | `supervise-tick` 已自动重试过（带提示）；仍 held 时看 `needs`，`superagent decide <run> retry [--pkg <id> --hint "提示"]` 再来一轮，或手工修 |
-| `held:paused`              | 其它暂停                                                | `superagent resume <run>`                                                                                                                    |
-| `held:recover_no_progress` | owner 丢失后连续 3 次恢复都没有新完成的节点             | 查 `brief` 的证据后 `superagent decide <run> retry`（显式重置计数）或 `cancel`                                                               |
-| `failed`                   | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief）                                                      |
+| state              | 含义                                                    | 动作                                                                                      |
+| ------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `held:human`       | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                        |
+| `held:environment` | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                                |
+| `held:gate`        | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | 看 `needs`，`superagent decide <run> retry [--pkg <id> --hint "提示"]` 再来一轮，或手工修 |
+| `held:paused`      | 其它暂停                                                | `superagent resume <run>`                                                                 |
+| `failed`           | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief）   |
 
-其它动词：`status <run>`、`cancel <run>`、`recover <run>`（只恢复本机 pid 已死的 run）、`accept <run> [--pkg id]`
+其它动词：`status <run>`、`cancel <run>`、`recover <run>`（显式恢复已确认 owner 离线的 run；未知副作用须先对账）、`accept <run> [--pkg id]`
 （在 run 的 worktree 里重跑验收命令）、`report`（全部 run 的状态、评审轮次、一次通过率、失败分类、节点耗时、评审债、恢复次数）、
-`health`（doctor + 别名 + upstream 零差异）、`supervise-tick`（由单个 launchd/cron 作业调用：wake、owner-lost 恢复、签收提问桥接）。
+`health`（doctor + 别名 + upstream 零差异）、`supervise-tick`（由单个 launchd/cron 作业调用：观察、到期终止、原生审批与历史签收提问桥接）。
 
 ## 跨元帅交接
 
@@ -121,7 +120,6 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 - `preflight: no valid selftest receipt: <原因>`（无回执 / fake / 过期 / HEAD 漂移 / 配置漂移）：跑 `wetamp/scripts/selftest.sh`（不带 `--fake`；或临时 `run --skip-selftest`）。`--fake` 只写 `selftest-fake.json`，不算回执。
 - `plan invalid: repo … outside allowed roots`：把 repo 放到 `~/work` 下，或设置 `SUPERAGENT_WRITE_ROOTS`。
 - `generated workflow invalid`：`install.sh` 未跑或 `config.yaml` 缺 `@sa-coder`/`@sa-reviewer` 别名；重跑 `install.sh`。
-- `held:recover_no_progress`：worker 反复被杀且节点无进展；看 `$SUPERAGENT_HOME/runs/<run>.json` 的 `log` 指向的 detach 日志，排除原因后 `superagent decide <run> retry`（`recover`/`resume` 不重置计数）。
 - run 停在 running 但进程在别的机器：`recover` 拒绝（`owner alive or on another host`），到那台机器处理。
 - `superagent health` 的 `upstream_clean` 不是 `true`：仓库 `wetamp/` 之外有改动，用 `git checkout -- <file>` 还原。
 - 节点日志：`brief` 输出的 `evidence:` 目录；对话转录：ledger 的 `transcript`。

@@ -120,7 +120,8 @@ describe('B1-POLICY frozen routing', () => {
   test('policy is complete, detached from live tiers, validated, and part of workflow identity', () => {
     const tiers = loadTiers(),
       frozen = snapshotPolicy(tiers),
-      root = tmp();
+      root = join(tmp(), 'wetamp');
+    mkdirSync(root, { recursive: true });
     const path = join(root, 'policy.json');
     writeFileSync(path, JSON.stringify(frozen));
     expect(loadPolicy(path).exec_profiles).toEqual(tiers.policy.exec_profiles);
@@ -134,6 +135,11 @@ describe('B1-POLICY frozen routing', () => {
     for (const dir of ['src', 'templates', 'schemas'])
       cpSync(join(WETAMP, dir), join(root, dir), { recursive: true });
     copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
+    mkdirSync(join(root, '../packages/workflows/src'), { recursive: true });
+    copyFileSync(
+      join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+      join(root, '../packages/workflows/src/provider-attempts.ts')
+    );
     const before = engineHash(root);
     writeFileSync(join(root, 'tiers.json'), JSON.stringify(tiers));
     expect(engineHash(root)).not.toBe(before);

@@ -137,6 +137,16 @@ async function seed(
 }
 
 describe('resumeWorkflowRun — real SQLite (CAS + orphan recovery)', () => {
+  test('P3 old activity and missing activity never authorize running-owner takeover', async () => {
+    for (const [id, activity] of [
+      ['p3-old', "datetime('now', '-2 days')"],
+      ['p3-unknown', 'NULL'],
+    ]) {
+      await seed(id!, 'running', activity!);
+      await expect(resumeWorkflowRun(id!)).rejects.toThrow();
+      expect((await getWorkflowRun(id!))?.status).toBe('running');
+    }
+  });
   test('clears the stop reason when resuming, so a completed run stops claiming an interrupt', async () => {
     // Left behind, the reason would outlive the stop it describes: the run resumes,
     // completes, and still reports that the operator interrupted it — the #2329 defect

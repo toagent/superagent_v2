@@ -1000,7 +1000,8 @@ const AI_NODE = /^(code|repair|fix|review)-/;
 export function budgetUsage(
   events: RunEvent[],
   floor: number,
-  attempts: PolicyAttempt[] = []
+  attempts: PolicyAttempt[] = [],
+  accounting: 'reserved' | 'reported' = 'reserved'
 ): { launches: number; weighted_tokens: number; reserve: number } {
   const owned = new Set(attempts.map(a => a.node));
   const ev = events.filter(e => AI_NODE.test(e.step_name ?? '') && !owned.has(e.step_name ?? ''));
@@ -1019,9 +1020,25 @@ export function budgetUsage(
     );
   const known = used.filter((n): n is number => n !== null);
   const reserve = Math.max(0, ...known) || floor;
-  const total = known.reduce((a, n) => a + n, 0) + (used.length - known.length) * reserve;
+  const starts = ev.filter(e => e.event_type === 'node_started').length;
+  const balance = new Map<string, number>();
+  for (const e of ev) {
+    const delta =
+      e.event_type === 'node_started'
+        ? 1
+        : e.event_type === 'node_completed' || e.event_type === 'node_failed'
+          ? -1
+          : 0;
+    const node = e.step_name ?? '';
+    balance.set(node, (balance.get(node) ?? 0) + delta);
+  }
+  const missing = [...balance.values()].reduce((sum, count) => sum + Math.max(0, count), 0);
+  // Titles show reported spend; admission always includes reservations for missing receipts.
+  const total =
+    known.reduce((a, n) => a + n, 0) +
+    (accounting === 'reserved' ? (used.length - known.length + missing) * reserve : 0);
   return {
-    launches: ev.filter(e => e.event_type === 'node_started').length + attempts.length,
+    launches: starts + attempts.length,
     weighted_tokens: total,
     reserve,
   };

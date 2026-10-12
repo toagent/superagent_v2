@@ -68,6 +68,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 /** Hash generation-time snapshots; execution-time reads through WETAMP do not require adopt. */
 // prettier-ignore
 export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
+  '../packages/workflows/src/provider-attempts.ts',
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
@@ -99,7 +100,6 @@ const readOnlyMcp = (marker: string): string =>
   JSON.stringify({ [marker]: { command: 'false', required: true } }, null, 2) + '\n';
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
-const MAX_WAIT_MS = 1000 * 365 * 24 * 3600 * 1000; // Archon wait 上限 1000 年
 
 const skippable = (from: string): Node => ({ from, if_skipped: null });
 export interface Carried {
@@ -205,10 +205,13 @@ export function buildWorkflow(
       'environment',
       [],
       { kind: 'env', plan: planPath },
-      commandTimeout(
-        [...(plan.environment ?? []), ...plan.packages.flatMap(p => p.environment ?? [])],
-        1
-      )
+      {
+        ...commandTimeout(
+          [...(plan.environment ?? []), ...plan.packages.flatMap(p => p.environment ?? [])],
+          1
+        ),
+        retry: { max_attempts: tiers.policy.auto_retry.environment, on_error: 'all' },
+      }
     ),
   ];
   const attemptCommand = (path: string): string => {
@@ -265,6 +268,7 @@ export function buildWorkflow(
         ? { bash: fakeEdit(p, p.id) }
         : {
             command: 'sa-code',
+            retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
             model: '@sa-coder',
             ...effort('code', p.risk),
             ...noNesting('@sa-coder', 'coder', [p]),
@@ -313,6 +317,7 @@ export function buildWorkflow(
           ? { bash: fakeEdit(p, `repair ${p.id}`) }
           : {
               command: 'sa-repair',
+              retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
               model: '@sa-coder',
               ...effort('repair', p.risk),
               ...noNesting('@sa-coder', 'coder', [p]),
@@ -360,6 +365,7 @@ export function buildWorkflow(
             ? { bash: fakeEdit(m.packages[0], `fix ${m.id} r${String(r)}`) }
             : {
                 command: 'sa-fix',
+                retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
                 model: '@sa-coder',
                 ...noNesting('@sa-coder', 'coder', m.packages),
                 ...effort('repair', m.risk),
@@ -424,6 +430,7 @@ export function buildWorkflow(
           ? { bash: fakeReview(r) }
           : {
               command: r === 1 ? 'sa-review' : 'sa-review-delta',
+              retry: { max_attempts: tiers.policy.auto_retry.gate, on_error: 'transient' },
               model: tiers.routing.reviewer.by_risk?.[m.risk]
                 ? `@sa-reviewer-${m.risk}`
                 : '@sa-reviewer',
@@ -485,17 +492,14 @@ export function buildWorkflow(
     if (m.human) {
       nodes.push({
         id: `human-${m.id}`,
-        wait: { event: `sa.human.${m.id}`, deadline_ms: Math.min(left, MAX_WAIT_MS) },
+        approval: { message: `Approve delivery milestone ${m.id}` },
         ...gates,
       });
-      // wait 到期也算完成（status: expired）；签收失败必须让 run 停下，而不是条件跳过后照常 land。
-      // deadline_ms 只是上限：引擎从进入等待（含 recover/resume 后重新等待）起计时，生成时无法折算成 plan 的绝对
-      // deadline。真正的截止由两处执行：supervise-tick 取消过期的 held:human run，signoff 节点按绝对时刻再核验一次
+      // Native approval owns the decision; the absolute plan deadline still guards delivery.
       const until = Math.floor(Date.parse(plan.deadline) / 1000);
       nodes.push({
         id: `signoff-${m.id}`,
         bash: [
-          `s=$human-${m.id}.output.status; [ "$s" = satisfied ] || { echo 'signoff ${m.id}: not approved' >&2; exit 1; }`,
           `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${plan.deadline} passed' >&2; exit 1; }`,
         ].join('\n'),
         depends_on: [`human-${m.id}`],
@@ -671,6 +675,11 @@ export function generate(
       recursive: true,
     });
   }
+  // Freeze the engine-owned receipt reader into portable generated workflows.
+  cpSync(
+    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+    join(dir, '.archon/scripts/policy-attempts.ts')
+  );
   writeFileSync(join(dir, '.archon/scripts/reasons.json'), JSON.stringify(REASONS, null, 2) + '\n');
   // Archon loads command Markdown verbatim; include: composes workflows, not prompt text.
   const commands = new Set(

@@ -1,3 +1,4 @@
+import { admitExecution, resumeExecution } from '../../packages/workflows/src/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
 import * as relay from '../src/relay-quota';
@@ -38,6 +39,7 @@ import {
   parseArgs,
   quickPlan,
   superviseTickCli,
+  updateLedger,
   waitRun,
   type Hold,
   type Ledger,
@@ -61,6 +63,11 @@ import { rowOf } from '../src/board/data';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 
+const engineRecoverLock = () => {
+  const root = join(process.env.ARCHON_HOME ?? '', 'execution-admissions');
+  mkdirSync(root, { recursive: true });
+  return archonMod.lock(join(root, 'r.lock'));
+};
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
 const supervisorTransport = cliMod.supervisor;
 const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | null = null) => ({
@@ -98,6 +105,67 @@ const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView =
     ? { metadata: { execution_owner: { host: hostname(), pid: process.pid } } }
     : {}),
   ...extra,
+});
+
+describe('P3 engine lifecycle contracts', () => {
+  test('concurrent admission launches exactly once and pending work retains capacity', () => {
+    const root = tmp();
+    let active = 0,
+      launches = 0;
+    const host = {
+      root,
+      inspectProcess: () => ({ state: 'unknown' as const }),
+      countActive: () => active,
+      launch: () => {
+        launches++;
+        active++;
+        return { ok: true };
+      },
+    };
+    const first = admitExecution(1, host);
+    expect(first.ok).toBe(true);
+    expect(admitExecution(1, host)).toMatchObject({ ok: false, reason: 'admission_busy' });
+    if (!first.ok) throw new Error('admission refused');
+    first.launch(['workflow', 'run']);
+    first.release();
+    expect(admitExecution(1, host).ok).toBe(false);
+    expect(launches).toBe(1);
+  });
+  test('live or unknown execution owners never reach claim or dispatch', () => {
+    for (const state of ['online', 'unknown'] as const) {
+      let writes = 0;
+      const result = resumeExecution(
+        {
+          root: tmp(),
+          inspectProcess: () => (state === 'online' ? { state, start: '2026-01-01' } : { state }),
+          getRun: () =>
+            run('running', {
+              metadata: { execution_owner: { host: hostname(), pid: process.pid } },
+            }),
+          liveOwnerAnswering: () => true,
+          claimInterrupted: () => {
+            writes++;
+            return true;
+          },
+          launch: () => {
+            writes++;
+            return { code: 0, out: '{"ok":true}', err: '' };
+          },
+          parseAck: JSON.parse,
+        },
+        'r'
+      );
+      expect(result.ok).toBe(false);
+      expect(writes).toBe(0);
+    }
+  });
+  test('native delivery approval uses engine approve and preserves signoff classification', () => {
+    const s = stub([run('paused', { metadata: { approval: { nodeId: 'human-m1' } } })]);
+    writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify({ deadline: '2099-01-01' }));
+    expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
+    expect(s.calls()).toContain('workflow approve r --detach --json');
+    expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
+  });
 });
 
 describe('redact (shared redact (cli and board))', () => {
@@ -594,9 +662,8 @@ describe('HF3 latest-engine recovery', () => {
       archon_run_id: 'r2',
       branch: 'sa/sa1',
       engine_hash: engineHash(),
-      stalled: 1,
     });
-    expect(l.recoveries).toHaveLength(1);
+    expect(l.recoveries).toHaveLength(0);
     expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).toMatchObject({
       engine: 'current',
       adoption: { from: 'r', to: 'r2' },
@@ -634,10 +701,16 @@ describe('HF3 latest-engine recovery', () => {
   });
   test('busy lock leaves source, attempts, and recovery counters intact', () => {
     const s = setup('old');
-    const held = archonMod.lock(join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock'));
+    const held = engineRecoverLock();
     if (!held.ok) throw new Error('lock not taken');
     try {
       const before = readFileSync(ledgerPath('sa1'), 'utf8');
+      const sleep = spyOn(Bun, 'sleepSync').mockImplementation(() => {});
+      try {
+        expect(() => updateLedger(s.ledger, () => {})).toThrow('execution admission r busy');
+      } finally {
+        sleep.mockRestore();
+      }
       const { out } = captured(() => main(['resume', 'sa1']));
       expect(JSON.parse(out)).toMatchObject({ busy: true });
       expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
@@ -854,25 +927,31 @@ describe('waitRun (archon stub)', () => {
     expect(out).toMatchObject({ error: '' });
     expect(out.stop_reason).toBeUndefined();
   });
-  test('owner_lost: flips row to failed, resumes, records recovery, then completes', () => {
+  test('owner_lost stays observable; wait and tick do not mutate the engine or legacy controls', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
-    const s = stub([lost, lost, run('completed')]);
+    const s = stub([lost]);
     const db = runsDb(LOST);
-    const out = waitRun(s.ledger, 30);
-    expect(out).toMatchObject({ state: 'completed', recoveries: 1 });
-    expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
-      status: 'failed',
+    const before = readFileSync(ledgerPath('sa1'), 'utf8');
+    expect(waitRun(s.ledger, 30)).toMatchObject({
+      state: 'owner_lost',
+      action: 'superagent recover sa1',
     });
-    expect(s.calls()).toContain('workflow resume r --detach --json');
-    expect(loadLedger('sa1').recoveries).toHaveLength(1);
-    expect(loadLedger('sa1').stalled).toBe(1);
+    captured(() => main(['supervise-tick']));
+    expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
+      status: 'running',
+    });
+    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
+    const historical = JSON.parse(before);
+    const after = loadLedger('sa1');
+    for (const field of ['recoveries', 'auto_retries', 'progress_fp', 'stalled'] as const)
+      expect(after[field]).toEqual(historical[field]);
     db.close();
   });
-  test('owner taken over between get and flip → owner_changed, row untouched, no resume', () => {
+  test('owner changed before explicit continuation: CAS refuses with no resume', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost]);
     const db = runsDb({ host: hostname(), pid: process.pid });
-    expect(waitRun(s.ledger, 5)).toMatchObject({ reason: 'owner_changed', exit: EXIT.failed });
+    expect(archonMod.recover('r')).toMatchObject({ reason: 'owner_changed', ok: false });
     expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
       status: 'running',
     });
@@ -883,7 +962,7 @@ describe('waitRun (archon stub)', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     stub([lost]);
     const db = runsDb(LOST);
-    const held = archonMod.lock(join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock'));
+    const held = engineRecoverLock();
     if (!held.ok) throw new Error('lock not taken');
     try {
       // 锁忙不是业务失败：重读状态，按当前状态退出（仍是 owner_lost → 运行中 4）
@@ -899,7 +978,6 @@ describe('waitRun (archon stub)', () => {
       expect(waitRun(loadLedger('sa1'), 1)).toMatchObject({
         state: 'owner_lost',
         exit: EXIT.running,
-        reason: 'recover_locked',
       });
       expect(loadLedger('sa1').recoveries).toHaveLength(0);
     } finally {
@@ -913,98 +991,12 @@ describe('waitRun (archon stub)', () => {
   test('a leftover lock file nobody holds (empty, junk, or a dead pid) does not block recover', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     for (const junk of ['', '{"pid":', JSON.stringify({ ...LOST, at: '' })]) {
-      const s = stub([lost, lost, run('completed')]);
+      stub([lost, lost, run('completed')]);
       runsDb(LOST).close();
-      writeFileSync(join(s.root, 'home', 'runs', 'r.lock'), junk);
-      expect(waitRun(s.ledger, 30)).toMatchObject({ state: 'completed', recoveries: 1 });
+      mkdirSync(join(process.env.ARCHON_HOME ?? '', 'execution-admissions'), { recursive: true });
+      writeFileSync(join(process.env.ARCHON_HOME ?? '', 'execution-admissions/r.lock'), junk);
+      expect(archonMod.recover('r').ok).toBe(true);
     }
-  });
-  test('3 recoveries without new completed nodes → held:recover_no_progress, no 4th resume', () => {
-    const lost = run('running', {
-      metadata: { execution_owner: LOST },
-      nodes: [{ nodeId: 'a', state: 'completed' }],
-    });
-    // 每次 recover 后桩 DB 的行复位为 running，模拟恢复出的进程又死在同一位置
-    const s = stub([lost]);
-    const db = runsDb(LOST);
-    const again = (): void => {
-      const next = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-      db.run("update remote_agent_workflow_runs set status='running', metadata=?, started_at=?", [
-        JSON.stringify(next.metadata),
-        next.started_at ?? null,
-      ]);
-    };
-    for (let i = 0; i < 3; i++) {
-      expect(main(['resume', 'sa1'])).toBe(0);
-      again();
-    }
-    expect(loadLedger('sa1')).toMatchObject({ stalled: 3 });
-    const out = waitRun(loadLedger('sa1'), 5);
-    expect(out).toMatchObject({ state: 'held:recover_no_progress', exit: EXIT.held });
-    expect(main(['resume', 'sa1'])).toBe(1);
-    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(3);
-    // decide retry 是元帅的显式决定：清零重计，恢复一次
-    expect(main(['decide', 'sa1', 'retry'])).toBe(0);
-    expect(loadLedger('sa1')).toMatchObject({ stalled: 1 });
-    db.close();
-  });
-  test('interleaved recovers at stalled=2: the count is on disk before the lock is released, so only one resumes', () => {
-    const lost = run('running', {
-      metadata: { execution_owner: LOST },
-      nodes: [{ nodeId: 'a', state: 'completed' }],
-    });
-    const s = stub([lost]);
-    const db = runsDb(LOST);
-    const ledgerFile = join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'sa1.json');
-    expect(main(['resume', 'sa1'])).toBe(0);
-    const fp = loadLedger('sa1').progress_fp;
-    writeFileSync(ledgerFile, JSON.stringify({ ...s.ledger, progress_fp: fp, stalled: 2 }));
-    const next = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-    db.run("update remote_agent_workflow_runs set status='running', metadata=?, started_at=?", [
-      JSON.stringify(next.metadata),
-      next.started_at ?? null,
-    ]);
-    // 第二次 recover 恰在第一次释放锁之后、返回调用方之前进入
-    const real = archonMod.recover;
-    let second: unknown;
-    const spy = spyOn(archonMod, 'recover').mockImplementation((...args) => {
-      const r = real(...args);
-      if (second === undefined) {
-        second = null;
-        const next = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-        db.run("update remote_agent_workflow_runs set status='running', metadata=?, started_at=?", [
-          JSON.stringify(next.metadata),
-          next.started_at ?? null,
-        ]);
-        second = captured(() => main(['resume', 'sa1']));
-      }
-      return r;
-    });
-    try {
-      expect(main(['resume', 'sa1'])).toBe(0);
-    } finally {
-      spy.mockRestore();
-    }
-    expect(second).toMatchObject({ code: 1, out: expect.stringContaining('recover_no_progress') });
-    expect(loadLedger('sa1')).toMatchObject({ stalled: 3 });
-    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(2);
-    db.close();
-  });
-  test('progress between recoveries resets the stall count', () => {
-    const at = (done: string[]): RunView =>
-      run('running', {
-        metadata: { execution_owner: LOST },
-        nodes: done.map(nodeId => ({ nodeId, state: 'completed' })),
-      });
-    const s = stub([at(['a'])]);
-    const db = runsDb(LOST);
-    writeFileSync(
-      join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'sa1.json'),
-      JSON.stringify({ ...s.ledger, progress_fp: 'older', stalled: 3 })
-    );
-    expect(main(['resume', 'sa1'])).toBe(0);
-    expect(loadLedger('sa1')).toMatchObject({ stalled: 1 });
-    db.close();
   });
 });
 
@@ -1512,6 +1504,10 @@ test('accept runs the plan acceptance in the run worktree; --pkg narrows it', ()
   cpSync(join(import.meta.dir, '..', 'templates', '.archon', 'scripts'), scripts, {
     recursive: true,
   });
+  cpSync(
+    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+    join(scripts, 'policy-attempts.ts')
+  );
   const check = (cmd: string): unknown => [{ cmd, timeout_s: 10 }];
   writeFileSync(
     join(s.root, 'gen', 'plan.json'),
@@ -1866,31 +1862,6 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     });
     expect(sup()).toEqual(['ask-status abc']);
   });
-  test('owner_lost run is recovered and recorded', () => {
-    const lost = run('running', { metadata: { execution_owner: LOST } });
-    const s = stub([lost, run('failed')]);
-    supervisor(s.root, 'pending');
-    runsDb(LOST).close();
-    expect(tick()[0]).toMatchObject({ action: 'recover', ok: true });
-    expect(loadLedger('sa1').recoveries).toHaveLength(1);
-  });
-  test('owner_lost whose recover lock is held elsewhere: tick exits 0, records no disposition, recovers next tick', () => {
-    const lost = run('running', { metadata: { execution_owner: LOST } });
-    const s = stub([lost, lost, run('failed')]);
-    supervisor(s.root, 'pending');
-    runsDb(LOST).close();
-    const held = archonMod.lock(join(s.root, 'home', 'runs', 'r.lock'));
-    if (!held.ok) throw new Error('lock not taken');
-    try {
-      expect(tick()[0]).toMatchObject({ action: 'recover', ok: false, busy: true });
-    } finally {
-      held.release();
-    }
-    expect(loadLedger('sa1').dispositions).toBeUndefined();
-    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
-    expect(tick()[0]).toMatchObject({ action: 'recover', ok: true });
-    expect(loadLedger('sa1').recoveries).toHaveLength(1);
-  });
 });
 
 describe('RCPT consumed decision receipts', () => {
@@ -2103,7 +2074,7 @@ process.exit(main(['supervise-tick']));`
           rounds: 3,
         })
       );
-      const r = run(sample === 'approval' || resumes ? 'paused' : 'failed', {
+      const r = run(sample === 'approval' ? 'paused' : 'failed', {
         output_root: join(s.root, 'out'),
         nodes: [{ nodeId: node, state: 'failed' }],
         ...(sample === 'approval'
@@ -2111,13 +2082,11 @@ process.exit(main(['supervise-tick']));`
           : {}),
       });
       if (resumes) {
-        r.nodes = []; // two automatic pause resumes exhausted; an explicit answer authorizes resume
-        s.ledger.auto_retries = Array.from({ length: 2 }, () => ({
-          reason: 'paused',
-          milestone: 'paused',
-          at: '2020-01-01T00:00:00Z',
-        }));
-        writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+        r.nodes = [{ nodeId: 'settle-core', state: 'failed' }];
+        writeFileSync(
+          join(art, 'settle-core.json'),
+          JSON.stringify({ decision: fixtureDecision('advance') })
+        );
       }
       writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
       supervisor(s.root, 'yes');
@@ -2161,7 +2130,7 @@ process.exit(main(['supervise-tick']));`
     });
 });
 
-describe('auto retry (supervise-tick, archon stub)', () => {
+describe('explicit continuation (supervise-tick, archon stub)', () => {
   /** 失败在 failedNode 的 run；gen 带 attempt-m1 节点；artifacts 按 files 写入。 */
   const held = (failedNode: string, files: Record<string, unknown> = {}, attempt = true) => {
     const s = stub([]);
@@ -2246,7 +2215,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     patchLedger(s.root, {
       auto_retries: [{ milestone: 'm1', reason: 'coder:repair-p', at: '2026-10-10T10:00:00Z' }],
     });
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'coder' });
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
     expect(s.calls()).toContain('workflow resume r --detach --json');
   });
@@ -2278,7 +2247,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         decision: gate('repair_exhausted:acceptance_failed').decision,
       },
     });
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'coder' });
     expect(resumes(s.calls())).toBe(0);
     const u = held('gate-m1-r1', { 'gate-m1-r1.json': { reason: 'new_failure' } });
     expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'engine_suspect' });
@@ -2299,7 +2268,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       tick();
     }
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-    const key = askKey('sa1', f.hold, 'code-core@');
+    const key = askKey('sa1', 'coder', 'code-core@');
     const a = JSON.parse(readFileSync(asksFile(), 'utf8'))[key];
     const legacy = `${key}:2`;
     writeFileSync(asksFile(), JSON.stringify({ [legacy]: { status: 'unknown' } }));
@@ -2343,66 +2312,11 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         orphan_hold: 0,
       });
       expect(
-        JSON.parse(readFileSync(asksFile(), 'utf8'))[
-          askKey('sa1', 'auto_retry_exhausted', 'settle-core@')
-        ].status
+        JSON.parse(readFileSync(asksFile(), 'utf8'))[askKey('sa1', 'coder', 'settle-core@')].status
       ).toBe('superseded');
       expect(s.calls().filter(c => /workflow (resume|run|cancel|abandon)/.test(c))).toEqual([]);
     }
   );
-  test.each(['settle-core', 'code-core'])(
-    'HF10 UI drift cannot spend a deterministic retry or auto-adopt engine_suspect at %s',
-    node => {
-      const s = held(node, {
-        [`${node}.json`]: {
-          ok: node === 'code-core',
-          reason: 'unknown_reason',
-          ...(node === 'settle-core'
-            ? { decision: gate('repair_exhausted:acceptance_failed').decision }
-            : {}),
-        },
-      });
-      patchLedger(s.root, { engine_hash: 'old-ui-hash', workflow_hash: engineHash() });
-      expect(tick()[0]).toMatchObject({
-        action: 'ask',
-        reason: node === 'code-core' ? 'engine_suspect' : 'auto_retry_exhausted',
-      });
-      expect(s.calls().some(c => c.includes('--adopt') || c.startsWith('workflow resume'))).toBe(
-        false
-      );
-      expect(loadLedger('sa1').auto_retries).toBeUndefined();
-    }
-  );
-  test('I5 changed fingerprint permits one deterministic adopt, then stops at the current engine', () => {
-    const s = held('settle-core', {
-      'settle-core.json': {
-        ok: false,
-        decision: gate('repair_exhausted:acceptance_failed').decision,
-      },
-    });
-    const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
-    plan.deadline = '2099-01-01T00:00:00Z';
-    const gen = generate(plan, 'sa1', true);
-    patchLedger(s.root, { engine_hash: 'old', gen_dir: gen.dir });
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true, deterministic: true });
-    const adopted = loadLedger('sa1');
-    expect(adopted).toMatchObject({ archon_run_id: 'r2', engine_hash: engineHash() });
-    const art = join(s.root, 'out/artifacts/runs/r2');
-    mkdirSync(art, { recursive: true });
-    writeFileSync(
-      join(art, 'settle-core.json'),
-      JSON.stringify({ ok: false, decision: gate('repair_exhausted:acceptance_failed').decision })
-    );
-    setGet(s.root, {
-      ...run('failed'),
-      id: 'r2',
-      output_root: join(s.root, 'out'),
-      nodes: [{ nodeId: 'settle-core', state: 'failed' }],
-    });
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
-    expect(s.calls().filter(c => c.includes('--adopt'))).toHaveLength(1);
-    expect(loadLedger('sa1').auto_retries).toHaveLength(1);
-  });
   test('I4 id-less superseded legacy answer is reconciled read-only and counted once', () => {
     const s = held('code-core');
     setGet(s.root, run('completed'));
@@ -2423,85 +2337,6 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       stale_answer: true,
     });
     expect(sup().filter(c => c.startsWith('ask '))).toEqual([]);
-    expect(resumes(s.calls())).toBe(0);
-  });
-
-  test('held:gate: writes hints for every package of the milestone, bumps the attempt, resumes; stops after N', () => {
-    const log = join(tmp(), 'diff.log');
-    writeFileSync(log, Array.from({ length: 100 }, (_, i) => `line ${String(i + 1)}`).join('\n'));
-    const s = held('gate-m1-r3', {
-      'gate-m1-r3.json': gate('invalid_review'),
-      'gate-m1-r3.ledger.json': {
-        blocking: [{ id: 'R1-1', severity: 'high', file: 'a.ts', line: 3, evidence: 'boom' }],
-      },
-      'gate-m1-r3.review.json': {
-        status: 'FAIL',
-        findings: [
-          { id: 'R1-1', severity: 'high', file: 'a.ts', line: 3, status: 'open', evidence: 'boom' },
-        ],
-      },
-      'diff-m1-r3.json': {
-        failed: ['bun test'],
-        base_pass: false,
-        base_results: [{ cmd: 'bun test', pass: false }],
-        log,
-      },
-    });
-    expect(tick()[0]).toMatchObject({
-      action: 'auto_retry',
-      ok: true,
-      state: 'held:gate',
-      milestone: 'm1',
-      reason: 'gate:invalid_review',
-      attempt: 1,
-    });
-    const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
-    for (const x of [
-      '`bun test`',
-      '基线状态未知',
-      '- R1-1 [high] a.ts:3 boom',
-      'line 100',
-      'gate reason：invalid_review',
-    ])
-      expect(hint).toContain(x);
-    expect(hint).not.toContain('line 40\n');
-    expect(readFileSync(join(s.root, 'gen', 'hints', 'api.md'), 'utf8')).toBe(hint);
-    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
-    expect(resumes(s.calls())).toBe(1);
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 2 });
-    // 追加不覆盖
-    expect(
-      readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8').match(/## 自动重试/g)
-    ).toHaveLength(2);
-    expect(tick()[0]).toMatchObject({
-      action: 'ask',
-      reason: 'auto_retry_exhausted',
-      auto_retries: 2,
-    });
-    expect(resumes(s.calls())).toBe(2);
-    const l = loadLedger('sa1');
-    expect(l.auto_retries?.map(r => r.reason)).toEqual([
-      'gate:invalid_review',
-      'gate:invalid_review',
-    ]);
-    // 自动重试与 recover 停滞计数互不影响
-    expect([l.recoveries.length, l.stalled ?? 0]).toEqual([0, 0]);
-    const { out } = captured(() => main(['status', 'sa1']));
-    expect(JSON.parse(out)).toMatchObject({ auto_retries: 2 });
-  });
-  test('held:gate: unknown baseline does not claim a pre-existing failure', () => {
-    const s = held('gate-m1-r3', {
-      'gate-m1-r3.json': gate('invalid_review'),
-      'diff-m1-r3.json': { failed: ['bun test'], base_pass: null, base_results: [] },
-    });
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
-    const hint = readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8');
-    expect(hint).toContain('基线状态未知');
-    expect(hint).not.toContain('基线已存在');
-  });
-  test('two no_change gates in a row stop retrying', () => {
-    const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_change' });
     expect(resumes(s.calls())).toBe(0);
   });
   test('only a recorded permission decision surfaces a current need', () => {
@@ -2527,9 +2362,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     const archive = join(s.art, 'verify-core.coder.json');
     const original = readFileSync(archive, 'utf8');
     const sup = supervisor(s.root, 'pending');
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'gate:invalid_review' });
-    expect(resumes(s.calls())).toBe(1);
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
+    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'gate' });
+    expect(resumes(s.calls())).toBe(0);
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
     expect(captured(() => main(['brief', 'sa1'])).out).not.toContain(
       'need approval (verify-core): check process deviation'
     );
@@ -2550,53 +2385,9 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         },
       });
       supervisor(s.root, 'pending');
-      expect(tick()[0]).toMatchObject(
-        reason === 'acceptance_failed'
-          ? { action: 'ask', reason: 'auto_retry_exhausted' }
-          : { action: 'auto_retry', reason: 'gate:invalid_review' }
-      );
+      expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'gate' });
     }
   );
-  test('held:environment backs off exponentially up to the tier limit; a failed coder node is retried once without hints', () => {
-    const e = held('environment');
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', reason: 'environment', attempt: 1 });
-    const back = tick()[0];
-    expect(back).toMatchObject({ action: 'none', reason: 'backoff' });
-    const firstAt = Date.parse(String(loadLedger('sa1').auto_retries?.[0]?.at));
-    expect(Date.parse(String(back.next)) - firstAt).toBe(120e3);
-    // 每次把上次重试时间拨到很久以前，退避到点
-    const age = (): void => {
-      const l = loadLedger('sa1');
-      for (const r of l.auto_retries ?? []) r.at = '2020-01-01T00:00:00.000Z';
-      writeFileSync(join(e.root, 'home', 'runs', 'sa1.json'), JSON.stringify(l));
-    };
-    for (let n = 2; n <= 4; n++) {
-      age();
-      expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: n });
-      expect(tick()[0]).toMatchObject({ action: 'none', reason: 'backoff' });
-    }
-    age();
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 5 });
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
-    expect(resumes(e.calls())).toBe(5);
-    const c = held('code-api');
-    expect(tick()[0]).toMatchObject({
-      action: 'auto_retry',
-      milestone: 'm1',
-      reason: 'coder:code-api',
-    });
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
-    expect(existsSync(join(c.root, 'gen', 'hints', 'api.md'))).toBe(false);
-    // S3：包级失败无产物也有主，不自动猜原因。
-    held('verify-core');
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'engine_suspect' });
-  });
-  test('a workflow generated before attempt nodes stays held; decide retry still refuses the gate', () => {
-    const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('invalid_review') }, false);
-    expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'no_attempt_node' });
-    expect(() => main(['decide', 'sa1', 'retry'])).toThrow(/gate-m1-r3 escalated/);
-    expect(resumes(s.calls())).toBe(0);
-  });
   test('decide retry on held:gate bumps the attempt and resumes; --all-held retries every held run', () => {
     const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') });
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
@@ -2619,16 +2410,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     );
   const setGet = (root: string, r: RunView): void =>
     writeFileSync(join(root, 'stub', 'get-000.json'), JSON.stringify(r));
-  const auto = (milestone: string, reason: string) => ({
-    milestone,
-    reason,
-    at: new Date().toISOString(),
-  });
-  const EMPTY_FP = new Bun.CryptoHasher('sha256').update('').digest('hex').slice(0, 16);
-  const scenes: Record<
-    Hold,
-    () => { s: ReturnType<typeof held>; first: object; done?: () => void }
-  > = {
+  const scenes: Record<Hold, () => { s: ReturnType<typeof held>; first: object }> = {
     signoff: () => {
       const s = held('x');
       setGet(s.root, humanWait());
@@ -2645,46 +2427,20 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     },
     gate: () => {
       const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('invalid_review') });
-      return { s, first: { action: 'auto_retry', reason: 'gate:invalid_review', ok: true } };
+      return { s, first: { action: 'ask', reason: 'gate', ok: true } };
     },
     coder: () => ({
       s: held('code-api'),
-      first: { action: 'auto_retry', reason: 'coder:code-api', ok: true },
+      first: { action: 'ask', reason: 'coder', ok: true },
     }),
     environment: () => ({
       s: held('environment'),
-      first: { action: 'auto_retry', reason: 'environment', ok: true },
+      first: { action: 'ask', reason: 'environment', ok: true },
     }),
-    paused: () => {
-      const s = held('x');
-      setGet(
-        s.root,
-        run('paused', {
-          metadata: { wait: { nodeId: 'w', kind: 'time', resumeAt: '2020-01-01T00:00:00.000Z' } },
-        })
-      );
-      return { s, first: { action: 'auto_retry', reason: 'paused', ok: true } };
-    },
-    auto_retry_exhausted: () => {
-      const s = held('code-api');
-      patchLedger(s.root, { auto_retries: [auto('m1', 'coder:code-api')] });
-      return { s, first: {} };
-    },
+    paused: () => ({ s: held('x'), first: {} }),
     no_change: () => {
       const s = held('gate-m1-r2', { 'gate-m1-r2.json': gate('no_change') });
-      patchLedger(s.root, { auto_retries: [auto('m1', 'gate:no_change')] });
       return { s, first: {} };
-    },
-    no_attempt_node: () => ({
-      s: held('gate-m1-r1', { 'gate-m1-r1.json': gate('invalid_review') }, false),
-      first: {},
-    }),
-    recover_no_progress: () => {
-      const s = held('x');
-      setGet(s.root, run('running', { metadata: { execution_owner: LOST } }));
-      const db = runsDb(LOST);
-      patchLedger(s.root, { progress_fp: EMPTY_FP, stalled: 3, recoveries: ['a', 'b', 'c'] });
-      return { s, first: {}, done: () => db.close() };
     },
     needs: () => ({
       s: held('gate-m1-r1', {
@@ -2807,7 +2563,7 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     }
   });
 
-  test('intervene counts one yes decision across its automatic retry and later ticks', () => {
+  test('intervene counts one yes decision across explicit retry and later ticks', () => {
     const { s } = scenes.budget();
     patchLedger(s.root, { intervention_events: [] });
     supervisor(s.root, 'yes');
@@ -2828,9 +2584,10 @@ describe('auto retry (supervise-tick, archon stub)', () => {
   });
 
   for (const [hold, p] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
+    if (p.do === 'resume') continue;
     if (p.do !== 'ask') {
       test(`HOLD_POLICY ${hold} → ${p.do}, no reminder`, () => {
-        const { s, first, done } = scenes[hold]();
+        const { s, first } = scenes[hold]();
         const sup = supervisor(s.root, 'pending');
         const x = tick()[0];
         expect(x).toMatchObject({ run_id: 'sa1', ...first });
@@ -2845,12 +2602,11 @@ describe('auto retry (supervise-tick, archon stub)', () => {
           expect(s.calls()).toContain('workflow abandon r --json');
           expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
         }
-        done?.();
       });
       continue;
     }
     test(`HOLD_POLICY ${hold} → ask once (≤200 chars); yes runs ${p.yes}, no ends the run`, () => {
-      const { s, done } = scenes[hold]();
+      const { s } = scenes[hold]();
       const sup = supervisor(s.root, 'pending');
       expect(tick()[0]).toMatchObject({
         run_id: 'sa1',
@@ -2889,7 +2645,6 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         `${hold}/ask`,
         `${hold}/${p.yes}`,
       ]);
-      done?.();
       const n = scenes[hold]();
       supervisor(n.s.root, 'no');
       tick();
@@ -2903,7 +2658,6 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       writeFileSync(asksFile(), JSON.stringify({ [noKey]: { status: 'unknown' } }));
       expect(tick()[0]).toMatchObject({ action: 'reject', reason: hold, ok: true });
       expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(true);
-      n.done?.();
     });
   }
 
@@ -2935,40 +2689,6 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         expect(loadLedger('sa1').dispositions?.at(-1)?.reason).toBe(expected);
       });
     }
-    for (const reason of ['environment']) {
-      test(`${node} ${reason} reruns the milestone, preserves evidence and respects its cap`, () => {
-        const log = join(tmp(), 'accept.log');
-        writeFileSync(log, 'acceptance failed\npassword=synthetic\nlast evidence');
-        const s = held(node, {
-          [`${node}.json`]: { milestone: 'm1', decision: gate(reason).decision, log },
-        });
-        const sup = supervisor(s.root, 'pending');
-        expect(tick()[0]).toMatchObject({ action: 'auto_retry', milestone: 'm1', attempt: 1 });
-        expect(sup()).toEqual([]);
-        expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
-        expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).toContain(reason);
-        expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).toContain(
-          'last evidence'
-        );
-        expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).not.toContain(
-          'synthetic'
-        );
-        const kind = 'environment';
-        if (kind === 'environment') {
-          expect(tick()[0]).toMatchObject({ action: 'none', reason: 'backoff' });
-          expect(resumes(s.calls())).toBe(1);
-        }
-        patchLedger(s.root, {
-          auto_retries: Array.from({ length: loadTiers().policy.auto_retry[kind] }, () => ({
-            milestone: 'm1',
-            reason: `${kind}:${reason}`,
-            at: new Date().toISOString(),
-          })),
-        });
-        expect(tick()[0]).toMatchObject({ action: 'ask', reason: 'auto_retry_exhausted' });
-        expect(resumes(s.calls())).toBe(1);
-      });
-    }
   }
   for (const reason of [
     'budget_launches_exceeded',
@@ -2983,20 +2703,12 @@ describe('auto retry (supervise-tick, archon stub)', () => {
       expect(resumes(s.calls())).toBe(0);
     });
   }
-  for (const reason of ['invalid_review', 'review_incomplete']) {
-    test(`gate ${reason} still auto retries`, () => {
-      held('gate-m1-r1', { 'gate-m1-r1.json': gate(reason) });
-      expect(tick()[0]).toMatchObject({ action: 'auto_retry' });
-    });
-  }
   test('recover lock contention does not consume a milestone or review attempt or budget grant', () => {
     for (const hold of ['gate', 'review_not_independent', 'budget'] as const) {
       const { s } = scenes[hold]();
-      if (hold !== 'gate') {
-        supervisor(s.root, 'yes');
-        tick();
-      }
-      const l = archonMod.lock(join(process.env.SUPERAGENT_HOME ?? '', 'runs', 'r.lock'));
+      supervisor(s.root, 'yes');
+      tick();
+      const l = engineRecoverLock();
       if (!l.ok) throw new Error('test lock unavailable');
       try {
         expect(tick()[0]).toMatchObject({ busy: true, ok: false });
@@ -3098,31 +2810,15 @@ describe('auto retry (supervise-tick, archon stub)', () => {
     expect(existsSync(join(r.root, 'gen', 'attempts', 'm1'))).toBe(false);
   });
 
-  test('paused (not approval, not signoff) waits for its due time + grace, resumes at most twice, then asks', () => {
-    const { s } = scenes.paused();
-    supervisor(s.root, 'pending');
-    const wait = (resumeAt: string): RunView =>
-      run('paused', { metadata: { wait: { nodeId: 'w', kind: 'time', resumeAt } } });
-    setGet(s.root, wait(new Date(Date.now() - 60e3).toISOString()));
-    expect(tick()).toEqual([]);
-    setGet(s.root, wait('2020-01-01T00:00:00.000Z'));
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 1 });
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', attempt: 2 });
-    expect(tick()[0]).toMatchObject({
-      action: 'ask',
-      reason: 'auto_retry_exhausted',
-      auto_retries: 2,
-    });
-  });
-
   test('a corrupt ledger reports action:error; the other run is still handled and report counts it unreadable', () => {
     const s = held('environment');
+    supervisor(s.root, 'pending');
     writeFileSync(join(s.root, 'home', 'runs', 'bad.json'), '{"run_id": "bad", trunc');
     writeFileSync(join(s.root, 'home', 'runs', 'odd.json'), JSON.stringify({ run_id: 'other' }));
     const { code, out: text } = captured(() => main(['supervise-tick']));
     expect(code).toBe(1);
     const out = JSON.parse(text).actions as Record<string, unknown>[];
-    expect(out.find(x => x.run_id === 'sa1')).toMatchObject({ action: 'auto_retry', ok: true });
+    expect(out.find(x => x.run_id === 'sa1')).toMatchObject({ action: 'ask', ok: true });
     expect(out.find(x => x.run_id === 'bad')).toMatchObject({ action: 'error', ok: false });
     expect(out.find(x => x.run_id === 'odd')).toMatchObject({ action: 'error', ok: false });
     expect(readFileSync(join(s.root, 'home', 'runs', 'bad.json'), 'utf8')).toBe(
@@ -3137,35 +2833,6 @@ describe('auto retry (supervise-tick, archon stub)', () => {
         expect.stringMatching(/^odd: .*run_id/),
       ],
     });
-  });
-
-  test('a truncated asks.json is never replaced: runs needing a reminder error, auto retries go on', () => {
-    const bad = '{"sa1:needs:0": {"id": "x", "sta';
-    const asksFile = (): string => join(process.env.SUPERAGENT_HOME ?? '', 'asks.json');
-    held('environment');
-    writeFileSync(asksFile(), bad);
-    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true });
-    expect(readFileSync(asksFile(), 'utf8')).toBe(bad);
-    const r = held('verify-api', {
-      'verify-api.json': { milestone: 'm1', decision: gate('coder_redline').decision },
-      'code-api.coder.json': {
-        status: 'blocked',
-        error_class: 'redline',
-        needs: [],
-        milestone: 'm1',
-      },
-    });
-    const sup = supervisor(r.root, 'pending');
-    writeFileSync(asksFile(), bad);
-    const { code, out } = captured(() => main(['supervise-tick']));
-    expect(code).toBe(1);
-    expect((JSON.parse(out) as { actions: object[] }).actions[0]).toMatchObject({
-      action: 'error',
-      ok: false,
-      error: expect.stringContaining('asks'),
-    });
-    expect(readFileSync(asksFile(), 'utf8')).toBe(bad);
-    expect(sup()).toEqual([]);
   });
 });
 
@@ -3326,7 +2993,6 @@ describe('HF9 decision titles', () => {
     budget: '已用/上限1/1',
     review_limit: '轮次3，未决1',
     review_not_independent: 'same_model',
-    recover_no_progress: '已恢复3次',
     approval: '等待批准',
     signoff: '验收/评审通过',
   };
@@ -3350,7 +3016,6 @@ describe('HF9 decision titles', () => {
       expect(q).toContain(node);
       expect(q).toContain('已完成13/62节点');
       expect(q).toContain(details[hold] ?? '验收失败');
-      if (hold === 'auto_retry_exhausted') expect(q).toContain('W4验收#1');
       expect(q).toContain('是=');
       expect(q).toContain('否=终止整个run（保留证据）');
       expect(q).not.toContain('放行');
@@ -3813,6 +3478,10 @@ describe('HF9 decision titles', () => {
     cpSync(join(WETAMP, 'templates/.archon/scripts'), join(s.ledger.gen_dir, '.archon/scripts'), {
       recursive: true,
     });
+    cpSync(
+      join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+      join(s.ledger.gen_dir, '.archon/scripts/policy-attempts.ts')
+    );
     const attemptOutput = () =>
       sh(node.find(n => n.id === 'attempt-m1')!.bash!, s.ledger.gen_dir).trim();
     expect(attemptOutput()).toBe('{"attempt":"0"}');
