@@ -1211,62 +1211,46 @@ describe('ClaudeProvider', () => {
       ]);
     });
 
-    test('yields hook_response chunk with outcome and exit code', async () => {
-      mockQuery.mockImplementation(async function* () {
-        yield {
-          type: 'system',
-          subtype: 'hook_response',
-          hook_id: 'h-1',
-          hook_name: 'Bash',
-          hook_event: 'PreToolUse',
-          outcome: 'success',
-          exit_code: 0,
-        };
-      });
-
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace')) {
-        if (!isTurnEnd(chunk)) chunks.push(chunk);
-      }
-
-      expect(chunks).toEqual([
-        {
-          type: 'hook',
-          hookId: 'h-1',
-          hookName: 'Bash',
+    test.each(['ordinary', 'hook', 'result'])(
+      'structured permission evidence: %s',
+      async source => {
+        const stdout =
+          source === 'hook'
+            ? '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}'
+            : 'not-json';
+        mockQuery.mockImplementation(async function* () {
+          yield {
+            type: 'system',
+            subtype: 'hook_response',
+            hook_id: 'guard',
+            hook_name: 'guard',
+            hook_event: 'PreToolUse',
+            outcome: source === 'ordinary' ? 'error' : 'success',
+            exit_code: source === 'ordinary' ? undefined : 0,
+            stdout,
+          };
+          yield {
+            type: 'result',
+            subtype: 'success',
+            permission_denials: source === 'result' ? [{ tool_name: 'Bash' }] : [],
+          };
+        });
+        const chunks = [];
+        for await (const chunk of client.sendQuery('test', '/workspace')) chunks.push(chunk);
+        expect(chunks.filter(c => c.type === 'warning' && c.permissionDenied)).toHaveLength(
+          source === 'ordinary' ? 0 : 1
+        );
+        const hook = chunks.find(c => c.type === 'hook');
+        expect(hook).toMatchObject({
+          hookId: 'guard',
+          hookName: 'guard',
           hookEvent: 'PreToolUse',
-          status: 'succeeded',
-          exitCode: 0,
-        },
-      ]);
-    });
-
-    test('yields hook_response with error outcome and no exit_code', async () => {
-      mockQuery.mockImplementation(async function* () {
-        yield {
-          type: 'system',
-          subtype: 'hook_response',
-          hook_id: 'h-2',
-          hook_name: 'Edit',
-          hook_event: 'PreToolUse',
-          outcome: 'error',
-        };
-      });
-
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace')) {
-        if (!isTurnEnd(chunk)) chunks.push(chunk);
+          status: source === 'ordinary' ? 'failed' : 'succeeded',
+        });
+        if (source === 'ordinary') expect(hook).not.toHaveProperty('exitCode');
+        else expect(hook).toHaveProperty('exitCode', 0);
       }
-
-      expect(chunks[0]).toEqual({
-        type: 'hook',
-        hookId: 'h-2',
-        hookName: 'Edit',
-        hookEvent: 'PreToolUse',
-        status: 'failed',
-      });
-      expect(chunks[0]).not.toHaveProperty('exitCode');
-    });
+    );
 
     test('emits complete task lifecycle in correct order', async () => {
       mockQuery.mockImplementation(async function* () {

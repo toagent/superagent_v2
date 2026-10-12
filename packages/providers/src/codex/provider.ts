@@ -686,6 +686,13 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
             yield toolCallOf(item);
           }
           if (!completed) break;
+          if ('status' in item && item.status === 'declined')
+            yield {
+              type: 'warning',
+              code: 'codex.permission_denied',
+              permissionDenied: true,
+              message: 'Codex denied a tool call.',
+            };
           if (item.type === 'mcpToolCall' && item.status === 'failed') {
             getLog().warn(
               { server: item.server, tool: item.tool, error: item.error, itemId: item.id },

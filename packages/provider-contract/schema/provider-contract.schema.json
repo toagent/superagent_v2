@@ -404,6 +404,10 @@
             "type": {
               "type": "string",
               "const": "warning"
+            },
+            "permissionDenied": {
+              "type": "boolean",
+              "const": true
             }
           },
           "required": [

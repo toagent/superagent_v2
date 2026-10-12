@@ -10,7 +10,6 @@ import {
   ledgerOf,
   scopeRisk,
   deliveryDecision,
-  permissionEvidence,
   readAttempt,
   CHECK_AUX_COUNTS,
   CHECK_AUX_TIMEOUT_MS,
@@ -613,50 +612,53 @@ describe('gate rules', () => {
 });
 
 describe('single delivery decision', () => {
-  test('permission denial and unknown environment survive the real acceptance node', () => {
+  test('permission evidence and retry boundaries survive the real acceptance node', () => {
     const root = tmp(),
       repo = gitRepo(root),
-      archon = join(root, 'archon');
-    const event = {
+      archon = join(root, 'archon'),
+      policy = join(root, 'policy.json');
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+    const inputs = { kind: 'accept', pkgs: 'a', tag: 'verify-permission', archon, policy };
+    const event = (attemptId: string, permissionDenied?: true) => ({
       event_type: 'provider_event',
       step_name: 'code-a',
-      data: { event: { type: 'hook', hookEvent: 'PreToolUse', exitCode: 2 } },
-    };
-    writeFileSync(archon, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ events: [event] })}'\n`, {
-      mode: 0o755,
-    });
-    const denied = runScript(
-      repo,
-      {
-        kind: 'accept',
-        plan: planFile(root, 'true'),
-        pkgs: 'a',
-        tag: 'verify-denied',
-        archon,
-      },
-      SCRIPT,
-      { WORKFLOW_ID: 'fixture' }
-    );
-    expect(denied.code).toBe(1);
-    expect(denied.out).toMatchObject({
-      ok: true,
-      decision: {
-        kind: 'block',
-        reason: 'coder_redline',
-        evidence: expect.arrayContaining(['events:code-a:0']),
+      data: {
+        attemptId,
+        event: { type: 'warning', code: 'test', message: 'denied', permissionDenied },
       },
     });
-    const unknown = runScript(repo, {
-      kind: 'accept',
-      plan: planFile(
-        root,
-        `printf '%s' '{"failure_class":"test_env","evidence":"environment unavailable"}'; exit 1`
-      ),
-      pkgs: 'a',
-      tag: 'verify-unknown',
-    });
-    expect(unknown.code).toBe(1);
-    expect(unknown.out).toMatchObject({ decision: { kind: 'block', reason: 'environment' } });
+    const start = { event_type: 'node_started', step_name: 'code-a' };
+    for (const [events, reason] of [
+      [[event('old', true)], 'coder_redline'],
+      [[event('old', true), event('new')], null],
+      [[event('old', true), start], null],
+      [[event('old', true), start, event('new', true)], 'coder_redline'],
+      [[], 'environment'],
+    ] as const) {
+      writeFileSync(archon, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ events })}'\n`, {
+        mode: 0o755,
+      });
+      const cmd =
+        reason === 'environment'
+          ? `printf '%s' '{"failure_class":"test_env","evidence":"environment unavailable"}'; exit 1`
+          : 'true';
+      const result = runScript(
+        repo,
+        {
+          ...inputs,
+          plan: fixturePlan(root, repo, p => {
+            p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5 }] }];
+          }),
+        },
+        SCRIPT,
+        { WORKFLOW_ID: 'fixture' }
+      );
+      expect(result.code, result.err).toBe(reason ? 1 : 0);
+      expect(result.out).toMatchObject({
+        ok: reason !== 'environment',
+        decision: { kind: reason ? 'block' : 'advance', reason },
+      });
+    }
   });
   test('self-reports do not change control state, including malformed output', () => {
     for (const raw of [
@@ -666,49 +668,15 @@ describe('single delivery decision', () => {
       for (const ok of [true, false])
         expect(disposition(raw, ok).decision.kind).toBe(ok ? 'advance' : 'repair');
   });
-  test('provider denial blocks green acceptance; an ordinary hook error does not', () => {
-    const events = [
-      {
-        event_type: 'provider_event',
-        step_name: 'code-a',
-        data: {
-          event: {
-            type: 'hook' as const,
-            hookId: 'deny',
-            hookName: 'guard',
-            hookEvent: 'PreToolUse',
-            status: 'failed' as const,
-            exitCode: 2,
-          },
-        },
-      },
-    ];
-    const permissions = permissionEvidence(events, ['a'], 'm1');
-    expect(disposition('', true, C('a'), permissions).decision).toMatchObject({
-      kind: 'block',
-      reason: 'coder_redline',
-      evidence: ['events:code-a:0'],
-    });
-    events[0].data.event.exitCode = 1;
-    expect(permissionEvidence(events, ['a'], 'm1')).toEqual([]);
-  });
-  test('unknown environment cannot advance, non-critical failures become debt', () => {
-    for (const failure_class of ['test_env', 'fixture'] as const) {
-      const check = {
-        ...C('a', false),
-        failed: ['check'],
-        failures: [{ command: 'check', failure_class, evidence: '/tmp/accept.log' }],
-      };
-      expect(deliveryDecision({ rechecks: [check] }).decision.kind).toBe(
-        failure_class === 'test_env' ? 'block' : 'debt'
-      );
-    }
-    expect(outputSchema.$defs.accept.properties.decision.properties.kind.enum).toEqual([
-      'advance',
-      'debt',
-      'repair',
-      'block',
-    ]);
+  test('non-critical failures become debt', () => {
+    const check = {
+      ...C('a', false),
+      failed: ['check'],
+      failures: [
+        { command: 'check', failure_class: 'fixture' as const, evidence: '/tmp/accept.log' },
+      ],
+    };
+    expect(deliveryDecision({ rechecks: [check] }).decision.kind).toBe('debt');
   });
   test('E7: partial + env + green checks advances with all audit markers', () => {
     // 原始 node_completed 事件的 structured_output，仅将 notes 置空脱敏。

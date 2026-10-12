@@ -770,7 +770,8 @@ describe('CodexProvider', () => {
       const chunks = await streamOf({
         notifications: [itemCompleted(command('cmd-1', 'rm -rf /', { status: 'declined' }))],
       });
-      expect(chunks[1]).toMatchObject({ toolCallId: 'cmd-1', status: 'failed' });
+      expect(chunks[1]).toMatchObject({ type: 'warning', permissionDenied: true });
+      expect(chunks[2]).toMatchObject({ toolCallId: 'cmd-1', status: 'failed' });
     });
 
     test('command output past the contract cap is truncated and flagged', async () => {

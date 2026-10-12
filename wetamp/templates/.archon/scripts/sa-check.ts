@@ -1,11 +1,6 @@
-// superagent 生成工作流的确定性节点（script: sa-check, runtime: bun）。由 INPUTS_KIND 选择：
-//   env    plan 级与包级 environment 检查；失败即 exit 1（held:environment）
-//   accept 执行 INPUTS_PKGS 的验收命令（退出码即结果）+ 工作区必须干净；INPUTS_BASE 非空时另存 diff 并在失败时
-//          于 BASE 的临时工作树准备依赖后重跑失败命令（无可信环境则 unknown）；按将军输出与验收结果给出
-//          disposition（advance / repair / suspend + 稳定 reason，F-18），并按实际改动推断风险（F-13）
-//   settle 包级收尾：首次验收 advance 直接透传；repair 后复验，仍不 advance 即 suspend（repair_exhausted:*）
-//   gate   第 INPUTS_ROUND 轮评审后的判定：pass / fix（进入下一轮修复）/ escalate（exit 1，升级给用户）
-//   land   打印本地合入命令（永不 push）
+// superagent 确定性节点（bun），由 INPUTS_KIND 选择；env 检查声明环境，失败即 held:environment。
+//   accept 执行验收、检查权限证据与工作区；BASE 非空时保存 diff 并探测基线，自报仅作审计。
+//   settle / gate 复用交付判定；land 仅打印本地合入命令（永不 push）。
 import reasons from './reasons.json';
 import { createHash } from 'node:crypto';
 import {
@@ -699,8 +694,7 @@ type Verdict = 'pass' | 'fix' | 'escalate';
 
 /**
  * reviews[i]/rechecks[i] 为第 i+1 轮评审与其前的验收复跑（rechecks[0] = 首轮 diff 节点）。
- * 先判到期，再判修复无变化（same:true 时评审节点已跳过），再拒重复 id，最后才看能否 PASS。
- * 验收未 advance 时本轮评审被跳过（review 为 null）：按 diff 的 reason 直接进入修复，不烧评审调用。
+ * 当前权限拒绝优先于绿色验收；自报不驱动控制状态。
  */
 export function deliveryDecision(input: {
   selfReport?: string;
@@ -859,6 +853,7 @@ interface RunEvent {
   event_type: string;
   step_name?: string;
   data?: {
+    attemptId?: string;
     event?: import('../../../../packages/provider-contract/src/events').ProviderEvent;
     hook_event?: string;
     exit_code?: number;
@@ -868,7 +863,7 @@ interface RunEvent {
     };
   };
 }
-/** PreToolUse exit 2 is the provider hook protocol's blocking denial, not error prose. */
+/** Keep audit history, but only the current node attempt can block delivery. */
 export function permissionEvidence(
   events: RunEvent[],
   packages: string[],
@@ -876,10 +871,26 @@ export function permissionEvidence(
 ): string[] {
   const nodes = new Set(packages.flatMap(id => [`code-${id}`, `repair-${id}`]));
   for (let r = 1; r <= MAX_ROUNDS; r++) nodes.add(`fix-${milestone}-r${String(r)}`);
+  const starts = new Map<string, number>(),
+    attempts = new Map<string, string>();
+  events.forEach((e, i) => {
+    const node = e.step_name ?? '';
+    if (e.event_type === 'node_started') starts.set(node, i);
+    if (e.event_type === 'provider_event' && e.data?.attemptId)
+      attempts.set(node, e.data.attemptId);
+  });
   return events.flatMap((e, i) => {
-    if (!nodes.has(e.step_name ?? '')) return [];
+    const node = e.step_name ?? '';
+    if (
+      !nodes.has(node) ||
+      i < (starts.get(node) ?? 0) ||
+      (e.data?.attemptId && e.data.attemptId !== attempts.get(node))
+    )
+      return [];
     const hook = e.event_type === 'provider_event' ? e.data?.event : undefined;
-    const denied = hook?.type === 'hook' && hook.hookEvent === 'PreToolUse' && hook.exitCode === 2;
+    const denied =
+      (hook?.type === 'warning' && hook.permissionDenied === true) ||
+      (hook?.type === 'hook' && hook.hookEvent === 'PreToolUse' && hook.exitCode === 2);
     const legacy =
       e.event_type === 'hook_activity' &&
       e.data?.hook_event === 'PreToolUse' &&

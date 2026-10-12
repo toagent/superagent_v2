@@ -42,6 +42,8 @@ import {
   type SDKAssistantMessageError,
   type SDKRateLimitInfo,
   type SDKResultMessage,
+  type SDKHookResponseMessage,
+  type SyncHookJSONOutput,
   type SDKStartupFailureReason,
   type SDKStatusMessage,
   type SDKUserMessage,
@@ -1366,6 +1368,24 @@ async function* streamClaudeMessages(
           status: 'started',
         };
       } else if (subtype === 'hook_response' && sysMsg.hook_id) {
+        const response = msg as SDKHookResponseMessage;
+        if (response.hook_event === 'PreToolUse') {
+          try {
+            const output = JSON.parse(response.stdout ?? '') as SyncHookJSONOutput | null;
+            if (
+              output?.hookSpecificOutput?.hookEventName === 'PreToolUse' &&
+              output.hookSpecificOutput.permissionDecision === 'deny'
+            )
+              yield {
+                type: 'warning',
+                code: 'claude.permission_denied',
+                permissionDenied: true,
+                message: 'Claude hook denied a tool call.',
+              };
+          } catch {
+            /* Non-JSON hook output is not permission evidence. */
+          }
+        }
         const hook: ProviderEvent = {
           type: 'hook',
           hookId: sysMsg.hook_id,
@@ -1395,6 +1415,13 @@ async function* streamClaudeMessages(
       yield { type: 'state_update', state: 'running' };
     } else if (event.type === 'result') {
       const resultMsg = msg as SDKResultMessage;
+      if (resultMsg.permission_denials?.length)
+        yield {
+          type: 'warning',
+          code: 'claude.permission_denied',
+          permissionDenied: true,
+          message: 'Claude denied a tool call.',
+        };
       // The SDK's cost and per-model totals are cumulative for the session; report
       // this result's share (see session-spend.ts). Record even on an error result
       // so a later resume of this session differences against current totals.
