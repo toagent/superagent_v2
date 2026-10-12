@@ -57,29 +57,21 @@ function collectProbe(path: string, id: string, dryRun: boolean, repo?: string):
   try {
     if (lstatSync(path).isSymbolicLink()) throw new Error('probe symlink retained');
     if (!dryRun) {
+      const options = { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS } as const;
       const common = Bun.spawnSync(
         ['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-        { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
+        options
       );
       const owner = repo
         ? ['-C', repo]
         : common.exitCode === 0
           ? ['--git-dir', common.stdout.toString().trim()]
           : [];
-      if (owner.length) {
-        Bun.spawnSync(['git', ...owner, 'worktree', 'remove', '--force', path], {
-          stdout: 'pipe',
-          stderr: 'pipe',
-          timeout: QUERY_TIMEOUT_MS,
-        });
-      }
+      if (owner.length)
+        Bun.spawnSync(['git', ...owner, 'worktree', 'remove', '--force', path], options);
       rmSync(path, { recursive: true, force: true });
       if (owner.length)
-        Bun.spawnSync(['git', ...owner, 'worktree', 'prune', '--expire', 'now'], {
-          stdout: 'pipe',
-          stderr: 'pipe',
-          timeout: QUERY_TIMEOUT_MS,
-        });
+        Bun.spawnSync(['git', ...owner, 'worktree', 'prune', '--expire', 'now'], options);
     }
     return {
       run_id: id,
