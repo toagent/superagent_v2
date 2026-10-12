@@ -969,13 +969,18 @@ test('ACCT: real git hook descendant holding pipes is killed within the shared b
   expectAuxiliaryDead(r.trackedPid);
 });
 
-function planFile(root: string, accept: string, environment: string[] = []): string {
+function planFile(
+  root: string,
+  accept: string,
+  environment: string[] = [],
+  cache?: boolean
+): string {
   const p = join(root, 'plan.json');
   writeFileSync(
     p,
     JSON.stringify({
       environment: environment.map(cmd => ({ cmd, timeout_s: 5 })),
-      packages: [{ id: 'a', accept: [{ cmd: accept, timeout_s: 5 }] }],
+      packages: [{ id: 'a', accept: [{ cmd: accept, timeout_s: 5, cache }] }],
     })
   );
   return p;
@@ -987,7 +992,7 @@ describe('sa-check script', () => {
       repo = gitRepo(root);
     const command = `printf '%s' '{"failure_class":"fixture","evidence":"fixture mismatch"}'; exit 1`;
     const plan = fixturePlan(root, repo, p => {
-      p.packages = [{ id: 'a', accept: [{ cmd: command, timeout_s: 5 }] }];
+      p.packages = [{ id: 'a', accept: [{ cmd: command, timeout_s: 5, cache: false }] }];
     });
     const accepted = runScript(repo, {
       kind: 'accept',
@@ -1073,7 +1078,7 @@ describe('sa-check script', () => {
         {
           id: 'a',
           scope: { write: ['*.md'] },
-          accept: [{ cmd: `test -f '${flag}'`, timeout_s: 5 }],
+          accept: [{ cmd: `test -f '${flag}'`, timeout_s: 5, cache: false }],
         },
       ],
     };
@@ -1261,7 +1266,7 @@ describe('sa-check script', () => {
       const root = tmp();
       const r = runScript(gitRepo(root), {
         kind: 'accept',
-        plan: planFile(root, command),
+        plan: planFile(root, command, [], false),
         pkgs: 'a',
         tag: 'verify-a',
         coder: JSON.stringify({ status: 'done', error_class: null, needs }),
@@ -1886,10 +1891,13 @@ describe('sa-check script', () => {
         { failure_class: 'fixture', evidence },
       ],
     });
-    expect(JSON.parse(readFileSync(evidence, 'utf8'))).toMatchObject({
-      exit: 1,
-      stdout: '{"failure_class":"fixture","evidence":"fixture"}\n',
-    });
+    expect(evidence).toBe(join(first.art, 'verify-a.log'));
+    const originalLog = readFileSync(evidence, 'utf8');
+    expect(originalLog).toContain('{"failure_class":"fixture","evidence":"fixture"}\n');
+    expect(originalLog).toContain('# exit=1');
+    expect(readFileSync(join(cumulative.art, 'diff-m1-r1.log'), 'utf8')).toContain(
+      '# reused failure from verify-a'
+    );
     plan.environment = [{ cmd: 'true', timeout_s: 5 }];
     go('environment-change');
     check.timeout_s++;

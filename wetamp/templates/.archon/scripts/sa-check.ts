@@ -228,7 +228,7 @@ function run(
       failures.push({
         command: c.cmd,
         failure_class: failureClass(classification),
-        evidence: hit || log,
+        evidence: log,
       });
     }
     if (hit) {
