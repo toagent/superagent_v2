@@ -1193,6 +1193,16 @@ function gate(): void {
   }
 }
 
+export interface Land extends Partial<Record<'reason' | 'error' | 'action', string>> {
+  branch: string;
+  head: string;
+  repo: string;
+  target?: string;
+  ff: boolean;
+  commands: string[];
+  debt: string[];
+}
+
 /** 打印合入命令与各里程碑末轮 gate 的评审债；plan deadline 已过则拒绝（exit 1），不给出合入命令。 */
 function land(): void {
   if (expired()) {
@@ -1237,8 +1247,11 @@ function land(): void {
       ...(g.grade === 'DEGRADED_PASS' ? [`DEGRADED_PASS ${g.reason ?? ''}`] : []),
     ]);
   }
-  const out = {
+  const out: Land = {
     branch,
+    repo,
+    target,
+    ff,
     head: git('rev-parse', 'HEAD').trim(),
     ...(!target
       ? {
