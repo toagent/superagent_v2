@@ -163,7 +163,22 @@ describe('REDLINE 默认放行与危险效果', () => {
       )
     );
   });
-  test('reviewer 可以编辑临时文件，但不能提交或编辑被审仓库', () => {
+  test('delivery defaults: file ownership advises ordinary edits but rejects destructive patches', () => {
+    const { guard } = setup(),
+      foreign = gitRepo(tmp());
+    const file = join(foreign, 'README.md');
+    const payload = (body: string) => ({
+      tool_name: 'apply_patch',
+      tool_input: { input: `*** Begin Patch\n${body}\n*** End Patch` },
+    });
+    const env = { SUPERAGENT_ROLE: 'worker' };
+    const out = guard('codex', payload(`*** Update File: ${file}\n@@\n-hi\n+edited`), env);
+    expect(reason(out)).toBeUndefined();
+    expect(out?.systemMessage).toContain('advisory');
+    expect(reason(guard('codex', payload(`*** Delete File: ${file}`), env))).toContain('已拦截：');
+    expect(readFileSync(file, 'utf8')).toBe('hi\n');
+  });
+  test('reviewer 临时编辑放行、仓库编辑拒绝、Git 交原生 sandbox', () => {
     const { guard, repo } = setup();
     const env = { SUPERAGENT_ROLE: 'reviewer' };
     expect(
@@ -178,7 +193,7 @@ describe('REDLINE 默认放行与危险效果', () => {
     expect(reason(guard('claude', bash('bun test > /tmp/reviewer-test.log'), env))).toBeUndefined();
     expect(reason(guard('claude', bash(`git -C ${tmp()} init`), env))).toBeUndefined();
     humane(reason(guard('claude', edit(repo, 1), env)));
-    humane(reason(guard('claude', bash('git commit -m review'), env)));
+    expect(reason(guard('claude', bash('git commit -m review'), env))).toBeUndefined(); // Native sandbox owns Git readonly.
   });
 });
 
@@ -303,17 +318,8 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       'pgrep FAKE_SECRET | xargs kill',
       '/tmp/FAKE_SECRET/claude -p FAKE_SECRET',
       'twin-agent-FAKE_SECRET run',
-      ['git', 'push', 'origin', 'FAKE_SECRET'].join(' '),
       `git --git-dir="$FAKE_SECRET" --work-tree=. ${reset}`,
-      'git config --global user.name FAKE_SECRET',
       'git branch -D release-FAKE_SECRET',
-      'git update-ref refs/heads/release-FAKE_SECRET HEAD',
-      'git update-ref -d refs/heads/release-FAKE_SECRET',
-      'git branch -f refs/heads/release-FAKE_SECRET HEAD',
-      'git checkout -B release-FAKE_SECRET',
-      'git switch --force-create release-FAKE_SECRET',
-      'git rebase main release-FAKE_SECRET',
-      'git push origin HEAD:refs/heads/release-FAKE_SECRET',
       'git push origin :refs/heads/release-FAKE_SECRET',
       'git branch -D FAKE_SECRET',
     ];
@@ -322,11 +328,7 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       expect(out, command).toMatch(/^已拦截：.+。原因：.+。可以：.+。$/);
       expect(out, command).not.toContain('FAKE_SECRET');
     }
-    for (const command of [
-      'printf FAKE_SECRET > local',
-      'git commit -m FAKE_SECRET',
-      'git FAKE_SECRET',
-    ]) {
+    for (const command of ['printf FAKE_SECRET > local']) {
       const out = sh(command, { reviewer: true });
       expect(out).toContain('reviewer 只读');
       expect(out).not.toContain('FAKE_SECRET');
@@ -516,35 +518,21 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
           expect(check(`${prefix} ${operation}`), `${derived}: ${prefix} ${operation}`).toBeNull();
         for (const operation of [
           'reset --hard',
-          'reset --mixed',
-          'reset --soft HEAD~1',
           'clean -fdx',
           'checkout -- file',
-          'checkout other',
           'checkout -b t --force',
-          'checkout -B t',
           'switch --discard-changes other',
           'branch -D t',
-          'branch -m old new',
           'branch -C old new',
           'branch -f t HEAD',
           'tag -d t',
           'tag -f t',
-          'commit --amend -m x',
           'push --force',
-          'push origin t',
           'update-ref -d refs/heads/t',
-          'update-ref refs/heads/t HEAD',
-          'rebase other',
           'stash drop',
           'stash clear',
-          'fetch --prune',
           'fetch -f origin',
           'fetch origin +HEAD:refs/heads/t',
-          'restore --staged file',
-          'merge --abort',
-          'cherry-pick --abort',
-          'revert --abort',
         ])
           expect(check(`${prefix} ${operation}`), `${derived}: ${prefix} ${operation}`).toMatch(
             /^已拦截：/
@@ -565,7 +553,6 @@ describe('FIXC RV-C 机制回归', () => {
       'R1-05 git object',
       ['git', '--git-dir=/foreign/.git', '--work-tree=/foreign', 'reset', '--hard'].join(' '),
     ],
-    ['R1-06 git config', 'git config --global core.hooksPath /tmp/empty'],
     ['R1-07 pid provenance', 'pgrep node | xargs kill -TERM 41418'],
     ['R1-08 option spelling', 'curl --request=DELETE https://example.com/item'], // gitleaks:allow (fake fixture)
     [
@@ -631,15 +618,6 @@ describe('FIXC RV-C 机制回归', () => {
         ['GIT_DIR=/foreign/.git', 'git', 'reset', '--hard'].join(' '),
         ['GIT_DIR=/foreign/.git;', 'git', 'reset', '--hard'].join(' '),
         ['git', '--work-tree=$TREE', 'reset', '--hard'].join(' '),
-      ],
-    ],
-    [
-      'R1-06 config variants',
-      [
-        'git config --system user.name changed',
-        'git config core.hooksPath /tmp/empty',
-        'git config --file=$CFG core.hooksPath /tmp/empty',
-        'cd "$WHERE"; git config core.hooksPath /tmp/empty',
       ],
     ],
     [
@@ -862,7 +840,7 @@ describe('guard.cjs', () => {
     ).toBeNull();
   });
 
-  test('元帅会话 Agent 放行；G-2 仍生效', () => {
+  test('元帅会话 Agent 放行；派发上下文仅 advisory', () => {
     const { guard } = setup();
     expect(
       guard('claude', { tool_name: 'Agent', tool_input: { prompt: 'x', subagent_type: 'coder-1' } })
@@ -871,13 +849,31 @@ describe('guard.cjs', () => {
       reason(
         guard('claude', { tool_name: 'Agent', tool_input: { prompt: 'x', subagent_type: 'fork' } })
       )
-    ).toContain('G-2');
+    ).toBeUndefined();
   });
 
-  test('git：stash push 放行，push/force/reset --hard 被拦', () => {
+  test('delivery defaults: dispatch context is advisory without mutating inputs', () => {
+    const { guard } = setup();
+    for (const client of ['claude', 'codex']) {
+      const input =
+        client === 'claude'
+          ? { prompt: 'x'.repeat(13000), subagent_type: 'fork' }
+          : { message: 'x'.repeat(13000), fork_turns: 'all', model: 'outside-pool' };
+      const before = JSON.stringify(input);
+      const out = guard(client, {
+        tool_name: client === 'claude' ? 'Agent' : 'spawn_agent',
+        tool_input: input,
+      });
+      expect(reason(out)).toBeUndefined();
+      expect(out?.systemMessage).toContain('advisory');
+      expect(JSON.stringify(input)).toBe(before);
+    }
+  });
+
+  test('git：正常 push 放行，force/foreign reset --hard 被拦', () => {
     const { guard } = setup();
     expect(guard('claude', bash('git stash push -m wip'))).toBeNull();
-    expect(reason(guard('claude', bash('git push origin wetamp')))).toContain('git push');
+    expect(reason(guard('claude', bash('git push origin wetamp')))).toBeUndefined();
     expect(
       reason(
         guard('codex', {
@@ -955,13 +951,6 @@ describe('guard.cjs', () => {
       'rm a.ts',
       'mkdir d',
       'touch b.ts',
-      'git commit -m x',
-      'git add a.ts',
-      'git checkout -- a.ts',
-      'git stash',
-      'git branch --list --delete other',
-      'git tag changed',
-      'git remote add other https://example.com/repo',
       'sort -o a.ts a.ts',
       'find . -delete',
     ])
@@ -999,7 +988,6 @@ describe('guard.cjs', () => {
       'mktemp -d ./src/x.XXXXXX',
       't=$(mktemp -d); echo x > "$t/../../etc/mk-result"',
       'echo x > ~/.superagent/mk-result',
-      'git add src/a.ts',
     ])
       expect(reason(guard('claude', bash(cmd), reviewer)), cmd).toMatch(/^已拦截：/);
     expect(reason(guard('claude', bash('echo x > ./src/a.ts'), reviewer))).toContain(
@@ -1375,9 +1363,9 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     ).toContain('已拦截：');
     expect(check('git branch -D missing')).toContain('Git 查询失败');
     expect(check('git -C /nonexistent-sa-delete-query branch -D merged')).toContain('已拦截：');
-    expect(check('git branch -D main')).toContain('受保护分支');
-    expect(check('git branch -m merged new')).toContain('已拦截：');
-    expect(check('git branch -D merged', true)).toContain('reviewer 只读');
+    expect(check('git branch -D main')).toBeNull(); // Other branches retain its tip.
+    expect(check('git branch -m merged new')).toBeNull();
+    expect(check('git branch -D merged', true)).toBeNull();
     git('worktree', 'add', '-q', '--detach', worktree, 'main');
     expect(check(`git worktree remove "${worktree}"`)).toBeNull();
     expect(check(`git worktree remove --force "${worktree}"`)).toBeNull();
@@ -1385,7 +1373,7 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     mkdirSync(join(repo, 'clean-worktree'));
     expect(check('git worktree remove --force clean-worktree')).toBeNull();
     expect(check('git worktree prune')).toBeNull();
-    expect(check(`git worktree move "${worktree}" "${worktree}-moved"`)).toContain('已拦截：');
+    expect(check(`git worktree move "${worktree}" "${worktree}-moved"`)).toBeNull();
     writeFileSync(join(worktree, 'untracked'), 'keep');
     expect(check(`git worktree remove --force "${worktree}"`)).toContain('未提交改动');
     expect(check('git worktree remove --force clean-worktree')).toContain('未提交改动');
@@ -1436,7 +1424,7 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     for (const flag of ['-D', '-df', '--delete --force'])
       expect(check(`git branch ${flag} merged`)).toContain('已拦截：');
     for (const flag of ['-D', '-m', '-M', '-C', '--delete --force', '-df'])
-      expect(check(`git branch ${flag} old new`, '/foreign')).toContain('已拦截：');
+      expect(check(`git branch ${flag} old new`, '/foreign')).toBeNull();
   });
   const box = (): {
     home: string;
@@ -1500,15 +1488,6 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       ['gh release create v1', 'gh release view v1', 'gh'],
       ['gh pr merge 12 --squash', 'gh pr view 12', 'gh'],
       ['vercel --prod', 'vercel build', 'vercel'],
-      ['git branch -D release-1', 'git branch --list', '受保护分支'],
-      ['git branch -f main HEAD~1', 'git branch -f topic HEAD~1', '受保护分支'],
-      [
-        'git update-ref refs/heads/wetamp HEAD',
-        'git update-ref refs/heads/topic HEAD',
-        '受保护分支',
-      ],
-      ['git rebase main develop', 'git rebase main topic', '受保护分支'],
-      ['git -c x=y checkout -B master', 'git checkout -B topic', '受保护分支'],
       ['pkill -f node', 'kill $!', 'pkill'],
       ['killall bun', 'kill %1', 'killall'],
       ['lsof -ti :3000 | xargs kill', 'lsof -i :3000', 'kill'],
@@ -1520,9 +1499,9 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     }
   });
 
-  test('rebase 无分支参数时按当前分支判定', () => {
+  test('rebase 无分支参数时不按分支名阻断', () => {
     const { repo, sh } = box();
-    expect(sh('git rebase -i HEAD~2')).toContain('受保护分支'); // gitRepo 在 main 上
+    expect(sh('git rebase -i HEAD~2')).toBeNull(); // Branch names do not gate Git.
     expect(sh(`git -C ${repo} rebase --abort`)).toBeNull();
   });
 

@@ -77,62 +77,28 @@
   {
     "commands": ["git"],
     "effect": "git",
-    "read": [
-      "status",
-      "diff",
-      "log",
-      "show",
-      "rev-parse",
-      "ls-files",
-      "ls-tree",
-      "blame",
-      "grep",
-      "cat-file",
-      "describe",
-      "merge-base",
-      "rev-list",
-      "shortlog",
-      "show-ref",
-      "name-rev",
-      "for-each-ref"
-    ],
-    "queries": {
-      "branch": ["--list", "-l", "--show-current", "-a", "-r"],
-      "tag": ["--list", "-l"],
-      "remote": ["-v", "--verbose"],
-      "config": ["--get", "--get-all", "--get-regexp", "--list", "-l"],
-      "reflog": ["show"]
-    },
-    "mutationFlags": "^-[a-zA-Z]*[dDfFmMcC]$|^--(delete|force|move|copy|unset.*|add|replace-all|rename-section|remove-section)(=|$)",
-    "forceFlags": "^-[a-zA-Z]*f[a-zA-Z]*$|^--force(?:-[a-z-]+)?(?:=|$)",
     "destructive": {
-      "reset": {},
-      "restore": {},
-      "clean": {},
-      "rebase": {},
-      "update-ref": {},
-      "prune": {},
-      "gc": {},
-      "checkout": { "unless": "^-b|^--orphan(?:=|$)" },
-      "switch": { "unless": "^-c|^--create(?:=|$)" },
-      "branch": { "pattern": "^-[a-zA-Z]*[DmM][a-zA-Z]*$|^--move(?:=|$)" },
-      "tag": { "pattern": "^-[a-zA-Z]*d[a-zA-Z]*$|^--delete(?:=|$)" },
-      "commit": { "pattern": "^--amend(?:=|$)" },
-      "fetch": { "pattern": "^--prune(?:-tags)?(?:=|$)|^\\+" },
-      "pull": { "pattern": "^-[a-zA-Z]*r[a-zA-Z]*$|^--rebase(?:=|$)" },
-      "stash": { "pattern": "^(pop|drop|clear|branch)$" },
-      "merge": { "pattern": "^--abort$" },
-      "cherry-pick": { "pattern": "^--abort$" },
-      "revert": { "pattern": "^--abort$" },
-      "remote": { "pattern": "^(remove|rm|rename|set-url|prune)$" },
-      "reflog": { "pattern": "^(delete|expire)$" },
-      "worktree": { "pattern": "^(remove|move|prune)$" },
-      "notes": { "pattern": "^(remove|prune)$" }
+      "clean": {
+        "unless": "^--dry-run$|^-[^-]*n"
+      },
+      "restore": {
+        "unless": "^--staged$|^-S$"
+      },
+      "stash": {
+        "pattern": "^(drop|clear)$"
+      },
+      "update-ref": {
+        "pattern": "^-d$|^--delete$"
+      },
+      "prune": {}
     },
     "destructiveFlags": {
-      "branch": "^-C",
-      "checkout": "^-B|^--discard-changes$|^--$",
-      "switch": "^-C|^--force-create(?:=|$)|^--discard-changes$"
+      "reset": "^--(?:hard|merge|keep)(?:=|$)",
+      "checkout": "^-[^-]*f|^--(?:force|discard-changes)$|^--$",
+      "switch": "^-[^-]*f|^--(?:force|discard-changes)$",
+      "branch": "^-[^-]*[fC]|^--(?:force|force-copy)(?:=|$)",
+      "tag": "^-[^-]*[df]|^--(?:delete|force)(?:=|$)",
+      "fetch": "^-[^-]*f|^--force(?:=|$)|^\\+"
     }
   }
 ]

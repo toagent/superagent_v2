@@ -2,7 +2,7 @@
 // Read-only hook projection. Heartbeat owns the per-session seen IDs; registry writes belong to the CLI.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {same} = require('./identity.cjs');
-const {resolvePath, effects, expand, gitInvocation} = require('./redline.cjs');
+const {resolvePath, effects, expand} = require('./redline.cjs');
 const micro = require('./micro-edit.cjs');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function read(file) {
@@ -116,7 +116,7 @@ function unread(home, who, seen = [], archon) {
 function notifications(messages) {
   return messages.length ? `Superagent 交接待答复：${messages.map(m => `${m.id} (${m.type || m.kind})`).join('、')}。运行 superagent inbox；使用 inbox --ack <id> accepted|rejected|done --note <短文> 答复。` : null;
 }
-function writeReason(payload, client, env, shell, readonly) {
+function writeReason(payload, client, env, shell, onAdvisory = () => {}) {
   const home = env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
   const cwd = payload.cwd || process.cwd(), name = String(payload.tool_name || ''), input = payload.tool_input || {};
   const claims = files(home, 'claims'), runs = scope => candidates(home, env.ARCHON_HOME, scope);
@@ -127,7 +127,8 @@ function writeReason(payload, client, env, shell, readonly) {
     if (!file || /[$`*?]/.test(file)) return null;
     const scope = repoScope(path.resolve(dir, file)); if (!scope) return null;
     const view = resolveOwner(scope, claims, runs);
-    return view.owner && !same(view.owner, who) ? refusal('向其他元帅负责的仓库写文件，请改用 handoff', view.owner) : null;
+    if (view.owner && !same(view.owner, who)) onAdvisory('向其他元帅负责的仓库写文件，建议 handoff');
+    return null;
   };
   if (micro.isEdit(client, name)) {
     const edits = client === 'codex' ? micro.patchEdits(input).map(e => e.file) : [input.file_path || input.notebook_path];
@@ -146,12 +147,6 @@ function writeReason(payload, client, env, shell, readonly) {
         if (command[1] === 'wake' && !command[2]) return refusal('全局 wake 未限定 run', null);
         try { admission(home, targetScope(home, command[0] === 'workflow' ? command[1] === 'event' ? option('--run-id') : command[1] === 'run' ? option('--adopt') : command[2] : undefined, option('--cwd') ? path.resolve(dir, option('--cwd')) : dir), who, undefined, env.ARCHON_HOME); }
         catch (error) { return error.message; }
-      }
-      if (name === 'git' && !readonly([name, ...args])) {
-        const {locations, checkout, metadata} = gitInvocation(argv, dir, {...env, ...parsed.env});
-        for (const file of [...locations.map(location => location.path), checkout, metadata]) {
-          const why = check(file, dir); if (why) return why;
-        }
       }
       const inplace = name === 'sed' && args.some(a => a === '--in-place' || /^-i/.test(a)) ||
         name === 'perl' && args.some(a => /^-[^-]*i/.test(a));
