@@ -83,22 +83,50 @@ function safeGitDelete(sub, rest, query, dir, env, deletions) {
 function reason(argv, dir, root, env, deletions) {
     const {directory, prefix, sub, rest} = gitInvocation(argv, dir, env);
     if (sub === 'init') return null;
+    const options = rest.slice(0, rest.includes('--') ? rest.indexOf('--') : rest.length);
     if (sub === 'push') {
-      if (rest.some(v => /^--(?:f(?:o(?:r(?:c(?:e)?)?)?)?(?:-with-lease|-if-includes)?|d(?:e(?:l(?:e(?:t(?:e)?)?)?)?)?|mirror|prune)(?:=|$)|^-[^-]*[fd]|^\+|^:/.test(v)))
+      if (options.some(v => /^--dr(?:y(?:-(?:r(?:u(?:n)?)?)?)?)?(?:=|$)|^-[^-]*n/.test(v))) return null;
+      if (rest.some(v => v.startsWith('--') && v.length > 2
+          ? ['force', 'force-with-lease', 'force-if-includes', 'delete', 'mirror', 'prune'].some(flag => flag.startsWith(v.slice(2).split('=')[0]))
+          : /^-[^-]*[fd]|^\+|^:/.test(v)))
         return message('执行 git push', '会强制改写或删除共享远端历史');
       return null;
     }
     const gitEffects = EFFECTS.find(r => r.commands[0] === 'git');
     const destructiveRule = gitEffects.destructive[sub];
-    const matches = pattern => pattern && rest.some(word => new RegExp(pattern).test(word));
+    const matches = (pattern, words = rest) => pattern && words.some(word => new RegExp(pattern).test(word));
     const destructive = matches(gitEffects.destructiveFlags[sub])
-      || destructiveRule && (!destructiveRule.pattern || matches(destructiveRule.pattern)) && !matches(destructiveRule.unless);
-    const deletion = safeGitDelete(sub, rest, args => {
+      || destructiveRule && (!destructiveRule.pattern || matches(destructiveRule.pattern)) && !matches(destructiveRule.unless, options);
+    const query = args => {
       const r = spawnSync('git', [...prefix, ...args], {cwd: dir, encoding: 'utf8', timeout: 3000, env: {...process.env, ...env, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1'}});
       return r.status === 0 ? r.stdout.trim() : null;
-    }, directory, env, deletions);
+    };
+    let pathRestore = sub === 'checkout' && matches('^--pathspec-from-file(?:=|$)|^--patch$|^-[^-]*p');
+    if (sub === 'checkout') {
+      const operands = [];
+      for (let i = 0; i < rest.length; i++) {
+        if (['-b', '-B', '--orphan'].includes(rest[i])) { i++; continue; }
+        if (!rest[i].startsWith('-')) operands.push(rest[i]);
+      }
+      // A single commit/ref switches branches; otherwise checkout restores paths.
+      if (operands.length) {
+        const ref = operands[0];
+        const commit = query(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]);
+        const remote = !commit && !/[$`*?\[\]{}]|__sa_/.test(ref)
+          ? query(['for-each-ref', '--format=%(refname)', `refs/remotes/*/${ref}`]) : null;
+        pathRestore ||= operands.length > 1 || !commit && !(remote && remote.split('\n').length === 1);
+      }
+    }
+    const force = matches('^-[^-]*f|^--f(?:o(?:r(?:c(?:e)?)?)?)?(?:=|$)');
+    const backupOption = rest.indexOf('--original');
+    const backupRefs = backupOption < 0 ? 'refs/original' : rest[backupOption + 1];
+    const dataLoss = sub === 'gc' && rest.some((word, i) => /^--p(?:r(?:u(?:n(?:e)?)?)?)?$/.test(word) && ['now', 'all', '0'].includes(rest[i + 1]))
+      || sub === 'read-tree' && matches('^-[^-]*u') && matches('^--r(?:e(?:s(?:e(?:t)?)?)?)?$') && !matches('^-[^-]*n|^--dry-run$', options)
+      || sub === 'submodule' && rest.find(word => !word.startsWith('-')) === 'deinit' && force
+      || sub === 'filter-branch' && force && (!backupRefs || query(['for-each-ref', '--format=%(refname)', backupRefs]) !== '');
+    const deletion = safeGitDelete(sub, rest, query, directory, env, deletions);
     if (deletion) return deletion;
-    if (destructive && deletion === undefined)
+    if ((destructive || pathRestore || dataLoss) && deletion === undefined)
       return message('执行破坏性 Git 操作', '会丢弃文件改动或删除、覆盖 Git 数据');
     return null;
 }

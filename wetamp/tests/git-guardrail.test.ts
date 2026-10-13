@@ -164,3 +164,45 @@ test('compatibility wrapper shares safe deletion and reports malformed input as 
   });
   expect(native.exitCode, native.stderr.toString()).toBe(0);
 });
+
+// R1 blockers: only hook payloads execute; Git state and dirty bytes must survive.
+test.each(['claude', 'codex', 'opencode'].flatMap(client =>
+  [true, false].map(denied => ({ client, denied }))
+))('R1 $client, deny=$denied: path/ref, option prefixes and recovery data', ({ client, denied }) => {
+  const repo = gitRepo(tmp());
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(['git', '-C', repo, ...args]);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    return result.stdout.toString();
+  };
+  // --force only overwrites backups when they actually exist.
+  expect(check('git filter-branch --force', repo, client).denied).toBe(false);
+  git('update-ref', 'refs/original/refs/heads/main', 'HEAD');
+  git('update-ref', 'refs/remotes/origin/remote-only', 'HEAD');
+  writeFileSync(join(repo, 'README.md'), 'dirty tracked bytes');
+  writeFileSync(join(repo, 'untracked.txt'), 'untracked bytes');
+  const snapshot = () => [git('rev-parse', 'HEAD'), git('show-ref'), git('status', '--porcelain=v1'),
+    readFileSync(join(repo, 'README.md'), 'utf8'), readFileSync(join(repo, 'untracked.txt'), 'utf8')];
+  const before = snapshot();
+  if (denied) for (const command of [
+    'checkout .', 'checkout README.md', 'checkout HEAD README.md', 'checkout -- README.md',
+    'reset --ha', 'reset --har', 'checkout --forc', 'switch --discard-chang',
+    'push --mirro', 'push --all --prun', 'push origin main --force-with-leas',
+    'rm -rf README.md', 'checkout-index -a -f', 'read-tree -u --rese HEAD',
+    'submodule deinit --forc --all', 'submodule -q deinit --force --all', 'filter-branch --force',
+    'push --force -- --dry-run main', 'rm -f -- --cached', 'clean -f -- --dry-run',
+    'reflog delete HEAD@{0}', 'reflog expire --expire=now --all', 'gc --prune=now', 'gc --pr=now',
+  ]) expect(check(`git ${command}`, repo, client).denied, command).toBe(true);
+  if (!denied) for (const command of [
+    'checkout main', 'checkout HEAD', 'checkout origin/remote-only', 'checkout remote-only',
+    'checkout -b new main', 'checkout -B main', 'checkout --detach HEAD',
+    'clean -fd --dry-ru', 'push --force --dry-ru', 'fetch origin', 'tag new', 'branch new',
+    'rm --cached -f README.md', 'rm -f --dry-run README.md', 'checkout-index -a',
+    'read-tree --reset HEAD', 'read-tree -u --reset -n HEAD', 'update-index --force-remove README.md',
+    'repack -ad', 'maintenance run --task=gc',
+    'add -A', 'commit --amend -m x', 'config core.hooksPath /tmp/hooks', 'push origin main',
+  ]) expect(check(`git ${command}`, repo, client).denied, command).toBe(false);
+  expect(snapshot()).toEqual(before);
+  git('update-ref', 'refs/backup/main', 'HEAD');
+  expect(check('git filter-branch --force --original refs/backup', repo, client).denied).toBe(true);
+});
