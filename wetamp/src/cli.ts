@@ -9,6 +9,7 @@ import { budgetReason, readPolicyAttempts } from '../templates/.archon/scripts/p
 import type { resolveAcceptanceContext } from './role-context';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick } from './memory';
+import { publishLearning } from './learning';
 import {
   askKey,
   cockpitSignals,
@@ -2762,6 +2763,11 @@ export function main(argv: string[]): number {
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
     case 'memory':
+      if (a._[1] === 'publish') {
+        const result = publishLearning();
+        print(result);
+        return result.status === 'available' ? 0 : 1;
+      }
       print(a.flags['dry-run'] ? memoryTick(loadAsks(), Date.now(), false, true) : memoryData());
       return 0;
     case 'health':

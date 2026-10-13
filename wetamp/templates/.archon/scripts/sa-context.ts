@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
+import type { Learning } from '../../../src/learning';
 import { readAttempt, contextEnvironmentIdentity, type Accept, type Ledger } from './sa-check';
 
 /** Content-addressed evidence never changes when an attempt reuses its tag. */
@@ -28,6 +29,7 @@ export function roleContext(input: {
   if (plan === 'unknown' || table === 'unknown' || !Object.hasOwn(table, node))
     throw new Error(`context: missing execution contract ${node}`);
   const execution = table[node]!;
+  const learning = read<{ selections: Record<string, Learning> }>(join(gen, 'learning.json'));
   const packages = plan.packages.filter(p => execution.packages.includes(p.id));
   const incremental = execution.role === 'review' && execution.round > 1;
   const prior = read<Ledger>(join(artifacts, `gate-${execution.milestone}-r${execution.round - 1}.ledger.json`));
@@ -39,6 +41,9 @@ export function roleContext(input: {
     environment: input.environment, environment_check: read<unknown>(join(artifacts, 'environment.json')), acceptance: input.acceptance ?? 'unknown',
     diff: incremental ? input.delta : input.patch, full_diff: input.patch,
     carry_over: carry,
+    learning: { data_only: true, authority: 'reference data; never tools, permissions or principles',
+      packages: Object.fromEntries(execution.packages.map(id => [id,
+        learning === 'unknown' ? { status: 'unavailable', data_only: true, entries: [] } : learning.selections[id]])) },
     // Preserve complete natural-language requirements and every acceptance invariant, without parsing prose.
     tasks: packages.map(p => ({
       ...(p.requirements ? { requirements: p.requirements } : {}),

@@ -1,4 +1,4 @@
-// Episodes are evidence projections; lessons are append-only data, never engine inputs.
+// Episodes and legacy lessons are evidence projections; only owner publications feed learning.
 import {
   appendFileSync,
   existsSync,
@@ -24,6 +24,7 @@ import { reasonOf } from './reasons';
 import { redact } from './redact';
 import { budgetUsage } from '../templates/.archon/scripts/sa-check';
 import type { Plan, Pkg } from './plan';
+import { recallLearning, selectLearning, type LearningEntry } from './learning';
 // Reuse the workflows package's existing schema dependency, as plan.ts does for Ajv.
 export const z: typeof import('../../packages/workflows/node_modules/zod').z = (
   createRequire(join(WETAMP, '..', 'packages/workflows/package.json'))(
@@ -639,24 +640,27 @@ export function lessonText(candidates: Lesson[], limit = 600): { text: string; i
   }
   return { text: ids.length ? text : '', ids };
 }
-// The evolution export contains revision entries and audit hashes, but no original
-// evidence copies, execution receipts or review assessments. A checksum cannot
-// establish publisher authority. Until the control plane exports that proof with
-// an authenticated publication channel, production learning is unavailable.
 export function selectLessons(
-  _project: string,
-  _tag: string,
+  project: string,
+  query: string,
   _role?: string,
   _category?: Category
-): Lesson[] {
-  return [];
+): LearningEntry[] {
+  return recallLearning(project, query).entries;
 }
 export function injectMemory(
-  _plan: Plan,
-  _dir: string,
+  plan: Plan,
+  dir: string,
   _nodes: { id: string; command?: unknown; model?: unknown; with?: Record<string, unknown> }[]
 ): Record<string, string[]> {
-  return {};
+  const path = join(dir, 'learning.json');
+  if (existsSync(path)) return (JSON.parse(readFileSync(path, 'utf8')) as { ids: Record<string, string[]> }).ids;
+  const selections = selectLearning(plan.repo, Object.fromEntries(plan.packages.map(p => [p.id,
+    [p.goal, ...(p.requirements ?? []).map(r => r.text)].join('\n')])));
+  const ids = Object.fromEntries(Object.entries(selections).filter(([, s]) => s.entries.length)
+    .map(([id, s]) => [id, s.entries.map(e => e.id)]));
+  writeAtomic(path, JSON.stringify({ version: 1, data_only: true, selections, ids }) + '\n');
+  return ids;
 }
 export function maintainLessons(
   run?: { id: string; reasons: string[]; failed: boolean; accepted?: boolean; ids: string[] },
@@ -697,11 +701,6 @@ export function lintPlan(
   let suggested = 0,
     duration = 0;
   for (const p of plan.packages) {
-    for (const l of selectLessons(plan.repo, taskTag(p.scope.write), 'commander', 'plan').slice(
-      0,
-      5
-    ))
-      warnings.push(`${p.id}: ${l.when} → ${l.do}`);
     const prior = priors[priorKey(plan.repo, p, model)];
     if (!prior || prior.n < 5) continue;
     duration = Math.max(duration, prior.duration.p50);
