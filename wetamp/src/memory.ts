@@ -16,7 +16,7 @@ import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
 import { artifactsOf, classifyRun, ledgerIds, loadLedger, type Ledger } from './cli';
 import { cockpitSignals, type Asks } from './cockpit-signals';
 import { etaInput } from './board/eta';
-import { confined, nodeRole, workflowRoles } from './board/workflow';
+import { confined, workflowRoles } from './board/workflow';
 import { callsOf } from './report';
 import { readUsage } from './usage';
 import { readJobs } from './jobs';
@@ -95,6 +95,11 @@ interface Entry {
   hit_ids?: string[];
   scored?: string;
   reflected?: string;
+  reflection?: {
+    episode: string;
+    state: 'queued' | 'running' | 'produced' | 'rejected' | 'failed' | 'interrupted';
+    usage?: number | null;
+  };
   result?: string;
   day?: string;
   tokens?: number;
@@ -154,7 +159,7 @@ export function memoryWrite(fn: (state: ReturnType<typeof memoryState>) => Entry
   if (!held.ok) throw new Error('store busy');
   try {
     const entry = fn(memoryState());
-    if (entry.lessons.length || entry.scored || entry.reflected || entry.day)
+    if (entry.lessons.length || entry.scored || entry.reflected || entry.reflection || entry.day)
       appendFileSync(join(root(), 'lessons.jsonl'), JSON.stringify(entry) + '\n');
   } finally {
     held.release();
@@ -593,7 +598,7 @@ export function triggered(
 }
 const active = (l: Lesson): boolean => l.status === 'trial' || l.status === 'stable';
 const rank = (l: Lesson): number => l.helpful - 2 * l.harmful + Math.min(l.votes ?? 0, 1);
-export function selectLessons(
+export function selectCandidates(
   project: string,
   tag: string,
   role?: string,
@@ -634,101 +639,28 @@ export function lessonText(candidates: Lesson[], limit = 600): { text: string; i
   }
   return { text: ids.length ? text : '', ids };
 }
+// The evolution export contains revision entries and audit hashes, but no original
+// evidence copies, execution receipts or review assessments. A checksum cannot
+// establish publisher authority. Until the control plane exports that proof with
+// an authenticated publication channel, production learning is unavailable.
+export function selectLessons(
+  _project: string,
+  _tag: string,
+  _role?: string,
+  _category?: Category
+): Lesson[] {
+  return [];
+}
 export function injectMemory(
-  plan: Plan,
-  dir: string,
-  nodes: { id: string; command?: unknown; model?: unknown; with?: Record<string, unknown> }[]
+  _plan: Plan,
+  _dir: string,
+  _nodes: { id: string; command?: unknown; model?: unknown; with?: Record<string, unknown> }[]
 ): Record<string, string[]> {
-  if (!memoryOn()) return {};
-  const hits: Record<string, string[]> = {};
-  try {
-    const byPkg = new Map<string, Lesson[]>(),
-      originals = new Map<string, string>();
-    for (const p of plan.packages) {
-      const candidates = selectLessons(plan.repo, taskTag(p.scope.write));
-      byPkg.set(p.id, candidates);
-      originals.set(p.id, readFileSync(join(dir, 'briefs', `${p.id}.md`), 'utf8'));
-      appendFileSync(join(dir, 'briefs', `${p.id}.md`), lessonText(candidates).text);
-    }
-    for (const n of nodes) {
-      const pkgIds =
-        typeof n.with?.briefs === 'string'
-          ? plan.packages
-              .filter(
-                p =>
-                  n.with?.briefs ===
-                    plan.packages.map(k => join(dir, 'briefs', `${k.id}.md`)).join(' ') ||
-                  (n.with?.briefs as string).includes(join(dir, 'briefs', `${p.id}.md`))
-              )
-              .map(p => p.id)
-          : [
-              typeof n.with?.brief === 'string'
-                ? basename(n.with.brief, '.md')
-                : (plan.packages.find(p => n.id === `code-${p.id}` || n.id === `repair-${p.id}`)
-                    ?.id ?? ''),
-            ];
-      const role = nodeRole(n) === 'reviewer' ? 'strategist' : 'general',
-        candidates = [
-          ...new Map(
-            [
-              ...pkgIds.flatMap(id => byPkg.get(id) ?? []),
-              ...(typeof n.command === 'string'
-                ? selectLessons(plan.repo, '', role).filter(l => l.tier === 'role')
-                : []),
-            ].map(l => [l.id, l])
-          ).values(),
-        ];
-      const found = lessonText(candidates, 600 - Buffer.byteLength(LESSON_HEADER)),
-        chosen = candidates.filter(l => found.ids.includes(l.id)),
-        project = lessonText(chosen.filter(l => l.tier !== 'role')),
-        roles = lessonText(chosen.filter(l => l.tier === 'role'));
-      hits[n.id] = found.ids;
-      // Per-node copies prevent cumulative milestone briefs from multiplying the injection budget.
-      if (n.with && pkgIds.some(id => originals.has(id)) && project.ids.length) {
-        const copies = pkgIds.map((id, i) => {
-          const path = join(dir, 'briefs', `${id}.${n.id}.md`);
-          writeAtomic(path, (originals.get(id) ?? '') + (i === 0 ? project.text : ''));
-          return path;
-        });
-        if (typeof n.with.briefs === 'string') n.with.briefs = copies.join(' ');
-        else n.with.brief = copies[0];
-      } else if (
-        n.with &&
-        pkgIds.some(id => (byPkg.get(id)?.length ?? 0) > 0) &&
-        typeof n.command === 'string'
-      ) {
-        const copies = pkgIds.map(id => {
-          const path = join(dir, 'briefs', `${id}.${n.id}.md`);
-          writeAtomic(path, originals.get(id) ?? '');
-          return path;
-        });
-        if (typeof n.with.briefs === 'string') n.with.briefs = copies.join(' ');
-        else n.with.brief = copies[0];
-      }
-      if (roles.ids.length && typeof n.command === 'string') {
-        const name = `${n.command}-${n.id}`;
-        writeAtomic(
-          join(dir, '.archon', 'commands', `${name}.md`),
-          readFileSync(join(dir, '.archon', 'commands', `${n.command}.md`), 'utf8') + roles.text
-        );
-        n.command = name;
-      }
-    }
-    const ids = new Set(Object.values(hits).flat());
-    if (ids.size)
-      memoryWrite(s => ({
-        lessons: s.lessons
-          .filter(l => ids.has(l.id))
-          .map(l => ({ ...l, last_hit: new Date().toISOString() })),
-      }));
-  } catch {
-    memoryLog('检索失败，照常生成');
-  }
-  return hits;
+  return {};
 }
 export function maintainLessons(
-  run?: { id: string; reasons: string[]; failed: boolean; ids: string[] },
-  now = Date.now()
+  run?: { id: string; reasons: string[]; failed: boolean; accepted?: boolean; ids: string[] },
+  _now = Date.now()
 ): void {
   memoryWrite(s => {
     if (run && s.entries.some(e => e.scored === run.id)) return { lessons: [] };
@@ -737,26 +669,13 @@ export function maintainLessons(
         harmful = used && run?.failed && l.reasons.some(r => run.reasons.includes(r));
       const next = {
         ...l,
-        helpful: l.helpful + (used && !harmful ? 1 : 0),
+        helpful: l.helpful + (used && run?.accepted === true && !run.failed && !harmful ? 1 : 0),
         harmful: l.harmful + (harmful ? 1 : 0),
       };
-      if (active(next)) {
-        if (next.harmful >= 2 || now - Date.parse(next.last_hit) >= 30 * 86400000)
-          next.status = 'retired';
-        else if (next.helpful >= 2 && next.harmful === 0) next.status = 'stable';
-      }
       if (next.harmful >= 2 || next.mechanizable)
         mechanize('lesson_' + next.id, next.reasons, next.id);
       return next;
     });
-    for (const scope of new Set(lessons.map(l => `${l.tier}:${l.scope}`)))
-      lessons
-        .filter(l => active(l) && `${l.tier}:${l.scope}` === scope)
-        .sort((a, b) => rank(b) - rank(a) || b.last_hit.localeCompare(a.last_hit))
-        .slice(30)
-        .forEach(l => {
-          l.status = 'retired';
-        });
     return {
       lessons: lessons.filter(
         l => JSON.stringify(l) !== JSON.stringify(s.lessons.find(old => old.id === l.id))
@@ -808,6 +727,27 @@ export const reflectionLimit = (): number =>
     .parse(
       memoryJson<{ daily_tokens?: number }>(join(root(), 'config.json'), {}).daily_tokens ?? 5000000
     );
+export function reflectionQueue(all: Episode[], entries: Entry[], now: number): Episode[] {
+  const done = new Set(entries.map(e => e.reflected ?? e.reflection?.episode));
+  const key = (e: Episode): string => JSON.stringify([e.project, e.tag, e.category, e.signature]);
+  const attempted = new Set(all.filter(e => done.has(e.id)).map(key));
+  const seen = new Set<string>();
+  return all.filter(e => {
+    const identity = key(e);
+    if (
+      done.has(e.id) ||
+      attempted.has(identity) ||
+      seen.has(identity) ||
+      ['engine', 'transient'].includes(e.category) ||
+      privateProject(e.project) ||
+      (e.fake && !process.env.SUPERAGENT_REFLECT_CMD) ||
+      (['completed', 'done'].includes(e.status) && !triggered(e, undefined, undefined, now))
+    )
+      return false;
+    seen.add(identity);
+    return true;
+  });
+}
 export function memoryData(now = Date.now()): {
   deliveries: Record<string, Delivery>;
   lessons: Lesson[];
@@ -826,15 +766,14 @@ export function memoryData(now = Date.now()): {
     day = new Date(now).toLocaleDateString('sv-SE'),
     tokens = s.entries.filter(e => e.day === day).reduce((n, e) => n + (e.tokens ?? 0), 0),
     done = new Map(
-      s.entries.filter(e => e.reflected).map(e => [e.reflected, e.result ?? '未提炼'])
+      s.entries
+        .filter(e => e.reflected || e.reflection)
+        .map(e => [
+          e.reflected ?? e.reflection!.episode,
+          e.result ?? e.reflection?.state ?? '未提炼',
+        ])
     );
-  const queue = all.filter(
-    e =>
-      !done.has(e.id) &&
-      !['engine', 'transient'].includes(e.category) &&
-      !privateProject(e.project) &&
-      (!e.fake || !!process.env.SUPERAGENT_REFLECT_CMD)
-  );
+  const queue = reflectionQueue(all, s.entries, now);
   const categories: Record<Category, number> = {
     engine: 0,
     plan: 0,
@@ -1184,6 +1123,10 @@ export function memoryTick(
                 id: l.run_id,
                 reasons: e.reasons,
                 failed: raw.status === 'failed',
+                accepted:
+                  raw.status === 'completed' &&
+                  e.acceptance.length > 0 &&
+                  e.acceptance.every(a => a.ok === true),
                 ids: Object.values(
                   memoryJson<{ lessons?: Record<string, string[]> }>(
                     join(l.gen_dir, 'engine.json'),

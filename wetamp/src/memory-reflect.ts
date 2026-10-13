@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from './archon';
 import { reasonOf } from './reasons';
+import { readJobs } from './jobs';
 import { home, loadTiers, WETAMP } from './config';
 import {
   z,
@@ -15,8 +16,8 @@ import {
   memoryOn,
   memoryState,
   memoryWrite,
-  privateProject,
-  selectLessons,
+  selectCandidates,
+  reflectionQueue,
   type Episode,
   type Lesson,
 } from './memory';
@@ -58,7 +59,7 @@ export function reflectionInput(e: Episode): string {
         total: t.total,
       })),
     },
-    lessons = selectLessons(
+    lessons = selectCandidates(
       e.project,
       e.tag,
       e.tokens.find(t => t.role)?.role ?? (e.category === 'role' ? 'general' : undefined)
@@ -192,16 +193,10 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
   const held = lock(join(root, 'reflect.lock'));
   if (!held.ok) return false;
   let out: string | undefined;
+  let attempt: string | undefined;
   try {
     const state = memoryState(),
-      done = new Set(state.entries.map(e => e.reflected)),
-      e = episodes().find(
-        e =>
-          !done.has(e.id) &&
-          !['engine', 'transient'].includes(e.category) &&
-          !privateProject(e.project) &&
-          (!e.fake || !!process.env.SUPERAGENT_REFLECT_CMD)
-      );
+      e = reflectionQueue(episodes(), state.entries, now)[0];
     const budget = memoryData(now).reflection;
     if (!e || budget.tokens + 9216 > budget.limit) return false;
     const input = reflectionInput(e),
@@ -240,10 +235,11 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
           input,
         ];
     const day = budget.day;
+    attempt = e.id;
     memoryWrite(() => ({
       lessons: [],
-      reflected: e.id,
-      result: '处理中（中断时保留预算，不重跑）',
+      reflection: { episode: e.id, state: 'queued', usage: null },
+      result: '入队（预留预算，不自动重跑）',
       day,
       tokens: 9216,
     }));
@@ -252,8 +248,8 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
         join(WETAMP, 'bin', 'superagent'),
         'job',
         'exec',
-        '--role',
-        'general',
+        // Command fixtures use the ordinary job path; real model calls retain role routing.
+        ...(override ? [] : ['--role', 'general']),
         '--title',
         `memory-reflect:${e.id}`,
         '--',
@@ -268,7 +264,9 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
         env: { ...process.env, SUPERAGENT_ROLE: 'general' },
       }
     );
+    let interrupted = false;
     const timer = setTimeout(() => {
+      interrupted = true;
       child.kill('SIGTERM');
     }, 120000);
     let usage = 0,
@@ -302,6 +300,15 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
           /* Incomplete JSONL. */
         }
       const code = await child.exited;
+      const job = readJobs().jobs.find(
+        j => j.wrapper_pid === child.pid && j.title === `memory-reflect:${e.id}`
+      );
+      // Wrapper spawn is still queued; only the job's actual child receipt proves execution.
+      if (job?.receipt?.spawned_at)
+        memoryWrite(() => ({
+          lessons: [],
+          reflection: { episode: e.id, state: 'running', usage: null },
+        }));
       const decoded =
         code === 0 && memoryOn()
           ? curate(
@@ -314,7 +321,24 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
           : { lessons: [], result: '未提炼：反思失败或开关已关闭' };
       memoryWrite(() => ({
         ...decoded,
-        reflected: e.id,
+        ...(code === 0 && !interrupted ? { reflected: e.id } : {}),
+        reflection: {
+          episode: e.id,
+          state:
+            interrupted ||
+            !!job?.signal ||
+            !!child.signalCode ||
+            code === 143 ||
+            code === 130 ||
+            code === 129
+              ? 'interrupted'
+              : code !== 0
+                ? 'failed'
+                : decoded.lessons.length
+                  ? 'produced'
+                  : 'rejected',
+          usage: known ? usage : null,
+        },
         day,
         tokens: (known ? usage : 9216) - 9216,
       }));
@@ -322,7 +346,11 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
     } catch {
       memoryWrite(() => ({
         lessons: [],
-        reflected: e.id,
+        reflection: {
+          episode: e.id,
+          state: interrupted ? 'interrupted' : 'failed',
+          usage: known ? usage : null,
+        },
         result: '未提炼：反思输出失败',
         day,
         tokens: (known ? usage : 9216) - 9216,
@@ -330,6 +358,15 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
     } finally {
       clearTimeout(timer);
     }
+    return true;
+  } catch (error) {
+    if (!attempt) throw error;
+    const episode = attempt;
+    memoryWrite(() => ({
+      lessons: [],
+      reflection: { episode, state: 'failed', usage: null },
+      result: '未提炼：反思启动失败',
+    }));
     return true;
   } finally {
     if (out) rmSync(out, { force: true });

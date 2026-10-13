@@ -26,6 +26,8 @@ import {
   privateProject,
   saveEpisode,
   selectLessons,
+  selectCandidates,
+  reflectionQueue,
   taskTag,
   triage,
   triggered,
@@ -68,6 +70,9 @@ const keys = [
   'FAKE_EV1_RUN',
   'FAKE_MEMORY_INPUT',
   'FAKE_MEMORY_TOKENS',
+  'FAKE_MEMORY_EXIT',
+  'FAKE_MEMORY_EMPTY',
+  'FAKE_MEMORY_UNKNOWN_USAGE',
 ];
 beforeEach(() => {
   for (const k of keys) saved.set(k, process.env[k]);
@@ -82,6 +87,9 @@ beforeEach(() => {
   delete process.env.FAKE_MEMORY_OVERSIZE;
   delete process.env.FAKE_MEMORY_TOKENS;
   delete process.env.FAKE_MEMORY_INPUT;
+  delete process.env.FAKE_MEMORY_EXIT;
+  delete process.env.FAKE_MEMORY_EMPTY;
+  delete process.env.FAKE_MEMORY_UNKNOWN_USAGE;
   plan = JSON.parse(
     readFileSync(
       fixturePlan(root, root, p => {
@@ -269,7 +277,7 @@ describe('EV1 incident replay', () => {
     expect(failure.reason).toContain('worktree.baseBranch');
     expect(existsSync(join(sa, 'runs'))).toBe(false);
   });
-  test('project fake reflection enters the matching next brief, repeats retire it and request mechanism', async () => {
+  test('reflection produces candidates without authorizing production prompts or rewriting status', async () => {
     fakeValidation();
     fake();
     const e = episode();
@@ -280,9 +288,11 @@ describe('EV1 incident replay', () => {
     expect(learned.scope).toBe(root);
     expect(learned.status).toBe('trial');
     const generated = generate(plan, 'next', true);
-    expect(readFileSync(join(generated.dir, 'briefs/core.md'), 'utf8')).toContain('选取空闲端口');
+    expect(readFileSync(join(generated.dir, 'briefs/core.md'), 'utf8')).not.toContain(
+      '选取空闲端口'
+    );
     const metadata = JSON.parse(readFileSync(join(generated.dir, 'engine.json'), 'utf8'));
-    expect(metadata.lessons['code-core']).toContain(learned.id);
+    expect(metadata.lessons).toEqual({});
     const other = generate({ ...plan, repo: join(root, 'other') }, 'other', true);
     expect(readFileSync(join(other.dir, 'briefs/core.md'), 'utf8')).not.toContain('选取空闲端口');
     maintainLessons(
@@ -298,7 +308,7 @@ describe('EV1 incident replay', () => {
       { id: 'third', reasons: ['acceptance_failed'], failed: true, ids: [learned.id] },
       NOW
     );
-    expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'retired' });
+    expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'trial' });
     expect(existsSync(join(sa, 'memory/mechanize', `lesson_${learned.id}.json`))).toBe(true);
     expect(selectLessons(root, 'ts-cli')).toHaveLength(0);
   });
@@ -310,7 +320,7 @@ describe('EV1 budgets and deterministic matching', () => {
     mkdirSync(join(sa, 'memory'));
     writeFileSync(join(sa, 'memory/config.json'), JSON.stringify({ daily_tokens: 9216 }));
     saveEpisode(episode({ id: 'first' }));
-    saveEpisode(episode({ id: 'second' }));
+    saveEpisode(episode({ id: 'second', signature: 'different-problem' }));
     expect(await reflectOne(NOW)).toBe(true);
     expect(memoryData(NOW)).toMatchObject({
       reflection: { tokens: 9216, limit: 9216, yellow: true },
@@ -331,6 +341,56 @@ describe('EV1 budgets and deterministic matching', () => {
       true
     );
   });
+  test('repeat problems deduplicate and ordinary first success requires no reflection', async () => {
+    fake();
+    saveEpisode(episode({ id: 'a' }));
+    saveEpisode(episode({ id: 'b' }));
+    saveEpisode(
+      episode({
+        id: 'ordinary',
+        status: 'completed',
+        signature: 'success',
+        reasons: [],
+        findings: [],
+        asks: [],
+        dispositions: [],
+        p50_ratio: null,
+        signals: zeros,
+      })
+    );
+    expect(memoryData(NOW).queued).toBe(1);
+    expect(await reflectOne(NOW)).toBe(true);
+    expect(await reflectOne(NOW)).toBe(false);
+    expect(memoryData(NOW).queued).toBe(0);
+    expect(readFileSync(process.env.FAKE_MEMORY_STARTED!, 'utf8').trim().split('\n')).toHaveLength(
+      1
+    );
+  });
+  for (const [mode, value, state] of [
+    ['FAKE_MEMORY_EXIT', '1', 'failed'],
+    ['FAKE_MEMORY_EXIT', '143', 'interrupted'],
+    ['FAKE_MEMORY_EMPTY', '1', 'rejected'],
+    ['FAKE_MEMORY_UNKNOWN_USAGE', '1', 'produced'],
+  ] as const)
+    test(`reflection ${state} is an explicit receipt with no automatic retry`, async () => {
+      fake();
+      process.env[mode] = value;
+      saveEpisode(episode());
+      expect(await reflectOne(NOW)).toBe(true);
+      const entries = memoryState().entries;
+      expect(entries.filter(e => e.reflection).map(e => e.reflection!.state)).toEqual([
+        'queued',
+        'running',
+        state,
+      ]);
+      const last = entries.at(-1)!;
+      expect(last.reflection).toMatchObject({ state, usage: state === 'rejected' ? 9216 : null });
+      expect(memoryData(NOW).reflection.tokens).toBe(9216);
+      if (state === 'failed' || state === 'interrupted') expect(last.reflected).toBeUndefined();
+      if (state !== 'produced') expect(memoryState().lessons).toEqual([]);
+      expect(await reflectOne(NOW)).toBe(false);
+      expect(reflectionQueue(episodes(), entries, NOW)).toEqual([]);
+    });
   test('oversized reflection output is discarded but its actual usage is charged', async () => {
     fake();
     process.env.FAKE_MEMORY_OVERSIZE = '1';
@@ -363,42 +423,21 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(long.ids.length).toBeLessThan(5);
     expect(lessonText([lesson('giant', { do: '中'.repeat(240) })]).ids).toHaveLength(0);
   });
-  test('multi-package briefs plus role command jointly respect node budgets', () => {
-    const second = { ...plan.packages[0], id: 'two', scope: { write: ['docs/help.md'] } };
-    const many = { ...plan, packages: [...plan.packages, second] };
-    seed(
-      ...Array.from({ length: 5 }, (_, i) => lesson(`p${i}`, { status: 'stable' })),
-      ...Array.from({ length: 5 }, (_, i) => lesson(`d${i}`, { tag: 'docs', status: 'stable' })),
-      lesson('role-general', { tier: 'role', scope: 'general', status: 'stable' })
-    );
-    const dir = join(root, 'injection');
+  test('legacy stable and trial never mutate new briefs, commands or frozen context', () => {
+    seed(lesson('trial'), lesson('stable', { status: 'stable', helpful: 100 }));
+    const dir = join(root, 'unqualified');
     mkdirSync(join(dir, 'briefs'), { recursive: true });
-    mkdirSync(join(dir, '.archon/commands'), { recursive: true });
-    for (const p of many.packages)
-      writeFileSync(join(dir, 'briefs', `${p.id}.md`), `brief ${p.id}`);
-    writeFileSync(join(dir, '.archon/commands/sa-fix.md'), 'command');
+    writeFileSync(join(dir, 'briefs/core.md'), 'original brief');
     const nodes = [
-      {
-        id: 'fix-m1-r2',
-        command: 'sa-fix',
-        model: '@sa-coder',
-        with: { briefs: many.packages.map(p => join(dir, 'briefs', `${p.id}.md`)).join(' ') },
-      },
+      { id: 'code-core', command: 'sa-code', with: { brief: join(dir, 'briefs/core.md') } },
     ];
-    const hits = injectMemory(many, dir, nodes);
-    expect(hits['fix-m1-r2'].length).toBeLessThanOrEqual(5);
-    const text =
-      nodes[0].with.briefs
-        .split(' ')
-        .map(f => readFileSync(f, 'utf8').replace(/^brief \w+/, ''))
-        .join('') +
-      readFileSync(join(dir, '.archon/commands', nodes[0].command + '.md'), 'utf8').replace(
-        /^command/,
-        ''
-      );
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(600);
-    expect(new Set(text.match(/\[(?:p|d)\d\]/g)).size).toBeLessThanOrEqual(5);
-    expect(hits['fix-m1-r2'].every(id => text.includes(`[${id}]`))).toBe(true);
+    const frozen = JSON.stringify(nodes);
+    const before = readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8');
+    expect(injectMemory(plan, dir, nodes)).toEqual({});
+    expect(selectLessons(root, 'ts-cli')).toEqual([]);
+    expect(readFileSync(join(dir, 'briefs/core.md'), 'utf8')).toBe('original brief');
+    expect(JSON.stringify(nodes)).toBe(frozen);
+    expect(readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8')).toBe(before);
   });
   test('role experiences target their mapped role; exact tags and project prevent leakage', () => {
     seed(
@@ -406,31 +445,10 @@ describe('EV1 budgets and deterministic matching', () => {
       lesson('type', { tier: 'type', scope: 'ts-cli', status: 'stable' }),
       lesson('role', { tier: 'role', scope: 'strategist', status: 'stable' })
     );
-    expect(selectLessons('/another-project', 'ts-cli').map(l => l.id)).toEqual(['type']);
-    expect(selectLessons(root, 'docs').map(l => l.id)).toEqual([]);
-    expect(selectLessons(root, 'ts-cli', 'general').map(l => l.id)).not.toContain('role');
-    expect(selectLessons(root, 'ts-cli', 'strategist').map(l => l.id)).toContain('role');
-  });
-  test('BT9 role mapping injects reviewer and alternate-reviewer command only', () => {
-    seed(lesson('review-role', { tier: 'role', scope: 'strategist' }));
-    const dir = join(root, 'roles');
-    mkdirSync(join(dir, 'briefs'), { recursive: true });
-    mkdirSync(join(dir, '.archon/commands'), { recursive: true });
-    writeFileSync(join(dir, 'briefs/core.md'), 'brief');
-    writeFileSync(join(dir, '.archon/commands/sa-review.md'), 'principles');
-    const nodes = ['@sa-reviewer', '@sa-reviewer-alt', '@sa-coder'].map((model, i) => ({
-      id: `n${i}`,
-      command: 'sa-review',
-      model,
-    }));
-    const hits = injectMemory(plan, dir, nodes);
-    for (const n of nodes.slice(0, 2)) {
-      expect(hits[n.id]).toEqual(['review-role']);
-      expect(readFileSync(join(dir, '.archon/commands', n.command + '.md'), 'utf8')).toContain(
-        '[review-role]'
-      );
-    }
-    expect(hits.n2).toEqual([]);
+    expect(selectCandidates('/another-project', 'ts-cli').map(l => l.id)).toEqual(['type']);
+    expect(selectCandidates(root, 'docs').map(l => l.id)).toEqual([]);
+    expect(selectCandidates(root, 'ts-cli', 'general').map(l => l.id)).not.toContain('role');
+    expect(selectCandidates(root, 'ts-cli', 'strategist').map(l => l.id)).toContain('role');
   });
   test('memory off means no injection or reflection, and data does not change engine hash', async () => {
     fakeValidation();
@@ -445,13 +463,13 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(await reflectOne(NOW)).toBe(false);
     process.env.SUPERAGENT_MEMORY = 'on';
     const on = generate(plan, 'on', true);
-    expect(readFileSync(join(on.dir, 'briefs/core.md'), 'utf8')).toContain('[x]');
+    expect(readFileSync(join(on.dir, 'briefs/core.md'), 'utf8')).not.toContain('[x]');
     expect(on.engine_hash).toBe(off.engine_hash);
     expect(engineHash()).toBe(before);
     expect(JSON.parse(readFileSync(join(on.dir, 'engine.json'), 'utf8'))).toMatchObject({
       workflow_hash: on.engine_hash,
       engine_hash: on.engine_hash,
-      lessons: { 'code-core': ['x'] },
+      lessons: {},
     });
   });
   test('lesson retrieval failures are fail-open', () => {
@@ -529,23 +547,29 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(triage({ reasons: ['acceptance_failed'], signals: zeros })).toBe('project');
     expect(taskTag(['docs/a.md', 'src/b.ts', 'a.vue', 'c.ts'])).toBe('docs+ts-cli');
   });
-  test('outcomes promote, expire and cap scope deterministically', () => {
+  test('feedback ranks candidates without granting or rewriting lifecycle status', () => {
     seed(
       lesson('winner'),
       lesson('old', { last_hit: new Date(NOW - 31 * 86400000).toISOString() })
     );
     for (const id of ['win1', 'win2'])
-      maintainLessons({ id, reasons: [], failed: false, ids: ['winner'] }, NOW);
+      maintainLessons({ id, reasons: [], failed: false, accepted: true, ids: ['winner'] }, NOW);
     expect(memoryState().lessons.find(l => l.id === 'winner')).toMatchObject({
       helpful: 2,
-      status: 'stable',
+      status: 'trial',
     });
-    expect(memoryState().lessons.find(l => l.id === 'old')?.status).toBe('retired');
-    seed(...Array.from({ length: 32 }, (_, i) => lesson(`scope${i}`, { helpful: i })));
+    for (const [id, failed] of [
+      ['cancelled', false],
+      ['unaccepted', false],
+      ['failed', true],
+    ] as const)
+      maintainLessons({ id, reasons: [], failed, ids: ['winner'] }, NOW);
+    expect(memoryState().lessons.find(l => l.id === 'winner')?.helpful).toBe(2);
+    expect(memoryState().lessons.find(l => l.id === 'old')?.status).toBe('trial');
+    seed(lesson('legacy', { status: 'stable' }));
     maintainLessons(undefined, NOW);
-    const all = memoryState().lessons;
-    expect(all.filter(l => ['trial', 'stable'].includes(l.status))).toHaveLength(30);
-    expect(all.find(l => l.id === 'scope0')?.status).toBe('retired');
+    expect(memoryState().lessons.find(l => l.id === 'legacy')?.status).toBe('stable');
+    expect(selectLessons(root, 'ts-cli')).toEqual([]);
   });
   test('curator rejects oversize and foreign edits, deduplicates ADD, UPVOTE does not fake outcome success', () => {
     const e = episode(),
@@ -616,7 +640,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(lintPlan(next, undefined, NOW).rejected).toBe(false);
     expect(lintPlan(next, undefined, NOW).warnings).toEqual([]);
     seed(lesson('plan', { category: 'plan', do: '预算至少一个验收周期' }));
-    expect(lintPlan(plan, undefined, NOW).warnings.join(' ')).toContain('预算至少一个验收周期');
+    expect(lintPlan(plan, undefined, NOW).warnings.join(' ')).not.toContain('预算至少一个验收周期');
   });
   test('run admission warnings and override are recorded in the CLI ledgers with a stub engine', () => {
     const repo = gitRepo(root);
@@ -662,7 +686,9 @@ describe('EV1 lifecycle, privacy and priors', () => {
   });
   test('read-only memory API reports ten recent episodes and changes no files', () => {
     for (let i = 0; i < 12; i++)
-      saveEpisode(episode({ id: `run${i}`, at: new Date(NOW + i).toISOString() }));
+      saveEpisode(
+        episode({ id: `run${i}`, signature: `problem${i}`, at: new Date(NOW + i).toISOString() })
+      );
     seed(lesson('stable', { status: 'stable' }));
     const before = readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8');
     expect(memoryData(NOW)).toMatchObject({
@@ -730,7 +756,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     memoryTick({}, NOW + 5000, false);
     memoryTick({}, NOW + 10000, false);
     expect(readFileSync(path, 'utf8')).toBe(archive);
-    expect(memoryState().lessons[0]).toMatchObject({ helpful: 1, harmful: 0 });
+    expect(memoryState().lessons[0]).toMatchObject({ helpful: 0, harmful: 0 });
   });
   test('event CLI shape produces timeline and tick folds once, recomputes real history priors', () => {
     const model = loadTiers().tiers.general.pools.chatgpt[0],
@@ -1061,6 +1087,7 @@ describe('FIXD review regressions', () => {
     success => {
       const repo = gitRepo(tmp()),
         script = join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts');
+      // An unclassified failure must stay unknown and blocked through every producer artifact.
       const cmd = success ? 'exit 0' : 'exit 1';
       plan.packages[0].accept = [{ cmd, timeout_s: 5 }];
       plan.deadline = new Date(Date.now() + 3600000).toISOString();
@@ -1093,13 +1120,19 @@ describe('FIXD review regressions', () => {
         expect(child.exitCode).toBe(exitCode);
         return readFileSync(join(artifactsOf(raw), `${tag}.json`), 'utf8');
       };
-      const accept = runCheck('accept', 'verify-core');
+      const accept = runCheck('accept', 'verify-core', {}, success ? 0 : 1);
       expect(JSON.parse(accept)).toMatchObject({
         ok: success,
         reason: success ? null : 'acceptance_failed',
         risk: 'G1',
         base_pass: null,
       });
+      if (!success)
+        expect(JSON.parse(accept)).toMatchObject({
+          disposition: 'suspend',
+          decision: { kind: 'block' },
+          failures: [{ command: cmd, failure_class: 'unknown' }],
+        });
       const settle = runCheck(
         'settle',
         'settle-core',
@@ -1111,23 +1144,31 @@ describe('FIXD review regressions', () => {
       );
       expect(JSON.parse(settle)).toMatchObject({
         ok: success,
-        reason: success ? null : 'repair_exhausted:acceptance_failed',
+        reason: success ? null : 'acceptance_failed',
+        disposition: success ? 'advance' : 'suspend',
+        decision: { kind: success ? 'advance' : 'block' },
       });
-      const gate = runCheck('gate', 'gate-m1-r1', {
-        INPUTS_ROUND: '1',
-        INPUTS_R1: success ? JSON.stringify({ status: 'PASS', findings: [], debt: [] }) : 'null',
-        INPUTS_C1: settle,
-        INPUTS_MILESTONE: 'm1',
-        INPUTS_NEXT: '',
-      });
+      const gate = runCheck(
+        'gate',
+        'gate-m1-r1',
+        {
+          INPUTS_ROUND: '1',
+          INPUTS_R1: success ? JSON.stringify({ status: 'PASS', findings: [], debt: [] }) : 'null',
+          INPUTS_C1: settle,
+          INPUTS_MILESTONE: 'm1',
+          INPUTS_NEXT: '',
+        },
+        success ? 0 : 1
+      );
       expect(JSON.parse(gate)).toMatchObject({
-        verdict: success ? 'pass' : 'fix',
-        reason: success ? null : 'repair_exhausted:acceptance_failed',
+        verdict: success ? 'pass' : 'escalate',
+        reason: success ? null : 'acceptance_failed',
+        decision: { kind: success ? 'advance' : 'block' },
         grade: success ? 'PASS' : null,
       });
       raw.status = success ? 'completed' : 'failed';
       raw.nodes = [
-        { nodeId: 'verify-core', state: 'completed' },
+        { nodeId: 'verify-core', state: success ? 'completed' : 'failed' },
         { nodeId: 'settle-core', state: success ? 'completed' : 'failed' },
       ];
       const file = join(root, 'producer-run.json'),
@@ -1140,9 +1181,7 @@ describe('FIXD review regressions', () => {
       writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
       const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
       expect(folded.acceptance).toEqual([{ cmd, ok: success }]);
-      expect(folded.reasons).toEqual(
-        success ? [] : ['repair_exhausted:acceptance_failed', 'acceptance_failed']
-      );
+      expect(folded.reasons).toEqual(success ? [] : ['acceptance_failed']);
       expect(memoryTick({}, NOW, false).errors).toEqual([]);
       expect(
         JSON.parse(readFileSync(join(sa, 'memory/fold-index.json'), 'utf8')).terminal.incident
