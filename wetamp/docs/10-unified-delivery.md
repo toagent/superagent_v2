@@ -17,8 +17,10 @@ Run completed 仍由引擎独占写入。交付失败不改 Run 的终态，且�
 候选验收继续调用 `acceptRun` 与单一 `deliveryDecision`，G2/strict 不降级。
 
 交付使用原 `applyLand` 的 common-dir/target lease、scratch merge、mergiraf、
-候选验收和目标漂移检查。目标目录切换分支、启动后的目标 HEAD 漂移、dirty、
-source HEAD 漂移或冲突均拒绝；保留用户文件与 source worktree。
+候选验收和目标漂移检查。同分支目标 HEAD 可沿启动 HEAD 正常前进；目标目录
+或分支改变、目标 HEAD 不再是启动 HEAD 的后代、dirty、source HEAD 漂移或
+冲突均拒绝；保留用户文件与 source worktree。验收期间目标前进会重建候选并
+重新验收，最多重试两次；超过上限拒绝交付。
 `main/master/dev/develop/release-*` 不允许自动交付；`wetamp` 可正常交付。
 自动交付仅原 owner 可执行，沿真实 run 的公开 admission、intervention 审计与
 controller 落账边界；wait 不自动 claim 或接管其他负责人。
@@ -26,10 +28,12 @@ controller 落账边界；wait 不自动 claim 或接管其他负责人。
 成功回执在 run artifacts 的 `delivery.json`，绑定任务、source SHA、原目标、
 验收合同哈希、验收证据目录、候选 SHA、target tip 与实际 integrated SHA。
 `status: manual_push` 表示已验收、已本地合入、待人工 push。
-回执仅是投影，不授予权限。重复调用先核对 Git ancestry/tree；已合入不再
-merge、install 或验收。只有完整匹配实际集成点的旧回执可恢复 manual_push；
-回执丢失、损坏或目标后续改变时，报告 already integrated、acceptance unknown，
-保留实际 SHA、来源与人工 push 说明，不伪造 accepted。快进保留原 commit；
+回执仅是投影，不授予权限。重复调用先核对 Git ancestry/tree；只有已合入且
+旧回执完整匹配当前实际集成点时，才直接恢复 manual_push，跳过候选验收。
+真实 delivery 的回执丢失、损坏或失配（包括目标后续前进）时，重新走候选组合
+与依赖安装、验收路径；验收成功并确认目标稳定后才写入新回执，不伪造 accepted。
+legacy 已合入路径仍报告 already integrated、acceptance unknown 与人工 push
+说明。快进保留原 commit；
 非快进 merge message 使用任务标题及合同摘要，不调用模型生成说明。
 
 所有新编码需求统一使用 `quick`（直接需求）或 `run`（已有计划），共用验收与 landing。
