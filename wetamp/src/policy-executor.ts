@@ -95,7 +95,7 @@ function runtimeExecution(
     if (route.role === 'review') {
       const identities = readAuthorEvidence(
         { ...run, events }, readPolicyAttempts(join(run.output_root, 'artifacts', 'runs', run.id)),
-        route.packages, route.milestone, id => {
+        route.packages, plan.packages.filter(p => route.packages.includes(p.id)).map(p => p.milestone ?? 'm1'), id => {
           const prior = db.query<RunRow, [string]>(
             'SELECT id, output_root, codebase_id, adopted_from_run_id FROM remote_agent_workflow_runs WHERE id=?'
           ).get(id);

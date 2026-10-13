@@ -1304,13 +1304,13 @@ export function attemptIdentity(attempts: PolicyAttempt[], node: string, binding
 
 /** Read each generation's own receipts; ancestry grants no access to its candidate or contract. */
 export function readAuthorEvidence(
-  run: AuthorRun, attempts: PolicyAttempt[], pkgs: string[], milestone: string,
+  run: AuthorRun, attempts: PolicyAttempt[], pkgs: string[], milestone: string | string[],
   load: (id: string) => AuthorRun
 ): Ident[] {
-  const authors: Ident[] = [], seen = new Set<string>(), repo = run.codebase_id;
+  const authors: Ident[] = [], seen = new Set<string>(), covered = new Set<string>(), repo = run.codebase_id;
   const unknown: Ident = { model: null, strength: 'unknown' };
   const owns = (node: string) => pkgs.some(p => node === `code-${p}` || node === `repair-${p}`) ||
-    Array.from({ length: MAX_ROUNDS }, (_, i) => `fix-${milestone}-r${String(i + 1)}`).includes(node);
+    [milestone].flat().some(m => Array.from({ length: MAX_ROUNDS }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node));
   for (;;) {
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
     seen.add(run.id);
@@ -1318,6 +1318,9 @@ export function readAuthorEvidence(
     authors.push(...receipts.map(a => attemptIdentity([a], a.node)));
     const nodes = new Set(run.events.filter(e => owns(e.step_name ?? '') &&
       ['node_started', 'node_completed', 'node_failed'].includes(e.event_type)).map(e => e.step_name!));
+    // R1-2: evidence for one package cannot stand in for another carried package.
+    for (const p of pkgs)
+      if ([...receipts.map(a => a.node), ...nodes].some(n => n === `code-${p}` || n === `repair-${p}`)) covered.add(p);
     for (const node of nodes) {
       if (receipts.some(a => a.node === node)) continue;
       const history = run.events.filter(e => e.step_name === node &&
@@ -1328,7 +1331,7 @@ export function readAuthorEvidence(
     }
     const prior = run.adopted_from_run_id;
     if (!prior && seen.size > 1 && !receipts.length && !nodes.size) authors.push(unknown);
-    if (!prior) return authors;
+    if (!prior) return pkgs.every(p => covered.has(p)) ? authors : [...authors, unknown];
     try {
       run = load(prior);
       if (run.id !== prior || !repo || run.codebase_id !== repo || !run.output_root)
@@ -1394,9 +1397,11 @@ function gate(): void {
     const done = env('ARCHON') ? runEvents().filter(e => e.event_type === 'node_completed') : [];
     const reviewer = `review-${m}-r${String(reviewed + 1)}`;
     const attempts = readPolicyAttempts(artifacts);
+    const pkgs = (env('SCOPE_PKGS') || env('PKGS')).split(',');
+    const milestones = plan().packages.filter(p => pkgs.includes(p.id)).map(p => p.milestone ?? 'm1');
     identity = env('ARCHON')
       ? {
-          authors: readAuthorEvidence(runEvidence(), attempts, env('PKGS').split(','), m, runEvidence),
+          authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
           reviewer: attemptIdentity(
             attempts,
             reviewer,

@@ -660,6 +660,7 @@ nodes:
       - review-m1-r1
     with:
       kind: gate
+      scope_pkgs: core
       review: '1'
       round: 1
       R1:
@@ -1001,6 +1002,7 @@ nodes:
       - review-m1-r2
     with:
       kind: gate
+      scope_pkgs: core
       review: '1'
       round: 2
       R1:
@@ -1346,6 +1348,7 @@ nodes:
       - review-m1-r3
     with:
       kind: gate
+      scope_pkgs: core
       review: '1'
       round: 3
       R1:
@@ -1970,6 +1973,7 @@ nodes:
       - review-m2-r1
     with:
       kind: gate
+      scope_pkgs: core,api
       review: '1'
       round: 1
       R1:
@@ -2310,6 +2314,7 @@ nodes:
       - review-m2-r2
     with:
       kind: gate
+      scope_pkgs: core,api
       review: '1'
       round: 2
       R1:
@@ -2654,6 +2659,7 @@ nodes:
       - review-m2-r3
     with:
       kind: gate
+      scope_pkgs: core,api
       review: '1'
       round: 3
       R1:

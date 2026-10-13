@@ -37,7 +37,7 @@ import Ajv2020 from '../../packages/workflows/node_modules/ajv/dist/2020';
 
 test('author carry reads each adopted generation and refuses unknown or invalid ancestry', () => {
   type Run = Parameters<typeof readAuthorEvidence>[0];
-  const root = tmp(), oldRoot = tmp();
+  const root = tmp(), oldRoot = tmp(), art = join(oldRoot, 'artifacts/runs/old');
   const event = (model: string) => ({ event_type: 'node_completed', step_name: 'repair-core',
     data: { binding: { model: { requested: model, resolved: { source: 'unavailable', reason: 'unsupported' } } } } });
   const runs: Record<string, Run> = {
@@ -45,18 +45,17 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
     middle: { id: 'middle', codebase_id: 'repo', output_root: root, adopted_from_run_id: 'old', events: [event('repair')] },
     old: { id: 'old', codebase_id: 'repo', output_root: oldRoot, events: [] },
   };
-  const art = join(oldRoot, 'artifacts/runs/old');
   mkdirSync(art, { recursive: true });
   const attempt = { id: 'original', node: 'code-core', provider: 'codex' as const,
     model: 'author', status: 'completed' as const };
   writePolicyAttempts(art, [attempt]);
-  const read = () => readAuthorEvidence(runs.current!, [], ['core'], 'm1', id => {
-    if (!runs[id]) throw new Error('missing run');
-    return runs[id]!;
-  });
+  const read = () => readAuthorEvidence(runs.current!, [], ['core'], 'm1', id => runs[id]!);
   expect(read()).toEqual([{ model: 'repair', strength: 'pinned' }, { model: 'author', strength: 'pinned' }]);
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBeNull();
   expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
+  const cumulative = readAuthorEvidence(runs.current!, [{ ...attempt, node: 'fix-m0-r2', model: 'fix-author' }], ['core'], ['m0', 'm1'], id => runs[id]!);
+  expect(independence(cumulative, { model: 'fix-author', strength: 'pinned' })).toBe('same_model');
+  expect(independence(readAuthorEvidence(runs.current!, [], ['core', 'missing'], 'm1', id => runs[id]!), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [{ ...attempt, status: 'failed' }]);
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [attempt]);
@@ -72,9 +71,7 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   runs.old = { ...old, events: [event('unknown')] };
   runs.old.events[0]!.data!.binding = undefined;
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
-  expect(readAuthorEvidence({ ...old, events: [event('local')] }, [], ['core'], 'm1', () => {
-    throw new Error('non-carry must not load ancestry');
-  })).toEqual([{ model: 'local', strength: 'pinned' }]);
+  expect(readAuthorEvidence({ ...old, events: [event('local')] }, [], ['core'], 'm1', () => { throw new Error('unexpected ancestry'); })).toEqual([{ model: 'local', strength: 'pinned' }]);
 });
 
 test('P3 missing provider and node receipts reserve spend instead of counting zero', () => {

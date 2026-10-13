@@ -448,6 +448,7 @@ export function buildWorkflow(
           [`diff-${t}`, `review-${t}`],
           {
             kind: 'gate',
+            scope_pkgs,
             review: m.review ? '1' : '0',
             round: r,
             ...rounds,
