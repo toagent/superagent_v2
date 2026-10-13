@@ -1,5 +1,7 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
+import { createHash } from 'node:crypto';
+import { Intake, completion, intakeRoot } from './intake';
 import { applyLand, selftest } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
@@ -2300,7 +2302,7 @@ export function main(argv: string[]): number {
   }
   const [verb, target] = a._;
   if (a.flags.help || verb === 'help') {
-    console.log(USAGE);
+    console.log(USAGE + "\ncontinuous intake: intake receive|apply <payload.json> | list | show <task-id> | input <source> <session> <message> | context|resume [bytes] [--repo path]");
     return 0;
   }
   const resolveTarget = (id: string): Ledger | RunView => {
@@ -2326,6 +2328,53 @@ export function main(argv: string[]): number {
       return code;
     });
   switch (verb) {
+    case 'intake': {
+      const command = need(target, 'intake receive|apply|list|show|context|resume');
+      const argument = a._[2];
+      const raw: unknown = ['receive', 'apply'].includes(command)
+        ? JSON.parse(readFileSync(need(argument, 'intake receive|apply <payload.json>'), 'utf8')) : undefined;
+      const envelope = raw !== null && typeof raw === 'object' && 'input' in raw ? raw : undefined;
+      const input = envelope?.input;
+      const repo = resolve(input !== null && typeof input === 'object' && 'repo' in input && typeof input.repo === 'string'
+        ? input.repo : a.flags.repo ?? process.cwd());
+      if (input !== undefined && (input === null || typeof input !== 'object' || !('repo' in input) || input.repo !== repo))
+        throw new Error('intake: input.repo must be the absolute repository path');
+      const store = new Intake(intakeRoot(home().sa, repo));
+      const view = (id: string): unknown => {
+        const task = store.show(id);
+        const status = completion(task, binding => {
+          if (!binding.run_id) return undefined;
+          try {
+            const l = loadLedger(binding.run_id);
+            if (resolve(l.repo) !== task.repo || resolve(l.plan) !== resolve(binding.plan)) return undefined;
+            const digest = createHash('sha256').update(readFileSync(l.plan)).digest('hex');
+            if (digest !== binding.digest) return undefined;
+            const run = getRun(l.archon_run_id, l.repo);
+            const decisions = decisionsOf(artifactsOf(run), undefined, l).map(d => d.decision);
+            if (decisions.some(d => !d)) return undefined;
+            return { completed: classifyRun(l, run).state === 'completed',
+              decisions: decisions.flatMap(d => d ? [d] : []) };
+          } catch { return undefined; } // Missing/unreadable engine evidence is unknown, never a success.
+        });
+        return { ...task, completion: status };
+      };
+      switch (command) {
+        case 'receive': print(store.receive(input)); break;
+        case 'apply': {
+          const result = store.apply(input, envelope && 'actions' in envelope ? envelope.actions : undefined);
+          print(result);
+          return result.results?.some(r => r.status !== 'accepted') ? EXIT.held : 0;
+        }
+        case 'list': print(store.list().map(t => ({ id: t.id, revision: t.revision, repo: t.repo }))); break;
+        case 'input': print(store.input(need(argument, 'intake input <source> <session> <message>'),
+          need(a._[3], 'intake input <source> <session> <message>'), need(a._[4], 'intake input <source> <session> <message>'))); break;
+        case 'show': print(view(need(argument, 'intake show <task-id>'))); break;
+        case 'context':
+        case 'resume': print(store.context(repo, argument === undefined ? 8192 : Number(argument))); break;
+        default: throw new Error('usage: superagent intake receive|apply|list|show|context|resume');
+      }
+      return 0;
+    }
     case 'models': {
       refreshBudgetQuota();
       const tiers = loadTiers(),
