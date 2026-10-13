@@ -151,7 +151,7 @@ export class Intake {
   }
   apply(raw: unknown, actions: unknown): Received {
     const input = parseInput(raw);
-    if (!Array.isArray(actions) || actions.length < 1 || actions.length > 64) return fail('actions must contain 1..64 items');
+    if (!Array.isArray(actions) || actions.length > 64) return fail('actions must contain 0..64 items');
     return this.change(state => {
       const received = this.receiveInto(state, input);
       if (received.actions) {
@@ -269,6 +269,17 @@ export class Intake {
   input(source: string, session: string, message: string): Received {
     return this.read().inputs.find(r => key(r.input) === JSON.stringify([source, session, message])) ?? fail('unknown input');
   }
+  /** Native transport may reuse only an explicitly registered Task's session identity. */
+  nativeIdentity(repo: string, source: string, session: string): Pick<Input, 'actor' | 'owner'> | undefined {
+    const state = this.read();
+    const identities = state.inputs.filter(r => r.input.repo === repo && r.input.source === source &&
+      r.input.session === session && state.tasks.some(t => t.repo === repo &&
+        t.revisions.some(v => v.input === key(r.input))));
+    const first = identities[0]?.input;
+    if (identities.some(r => r.input.actor !== first?.actor || r.input.owner !== first?.owner))
+      fail('ambiguous native session identity; use explicit intake');
+    return first && { actor: first.actor, owner: first.owner };
+  }
   /** A byte budget, not a history-sized prompt. Full bodies remain available through show. */
   context(repo: string, maxBytes = 8192): { tasks: unknown[]; inputs: unknown[]; truncated: boolean } {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 128 || maxBytes > 65536) fail('context budget must be 128..65536');
@@ -281,7 +292,8 @@ export class Intake {
       }
     };
     for (const t of state.tasks.filter(t => t.repo === repo)) add(out.tasks, {
-      id: t.id, revision: t.revision, dependencies: t.dependencies, parent: t.parent,
+      id: t.id, owner: t.owner, brief: t.revisions.at(-1)?.brief.slice(0, 240),
+      revision: t.revision, dependencies: t.dependencies, parent: t.parent,
       questions: t.questions.map(q => ({ id: q.id, revision: q.revision, run_id: q.run_id, gate: q.gate, answer_recorded: !!q.answer })),
       runs: t.runs.filter(r => r.revision === t.revision), cancellation_intents: t.cancellations,
     });

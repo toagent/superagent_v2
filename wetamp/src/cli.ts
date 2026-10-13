@@ -2484,7 +2484,7 @@ export function main(argv: string[]): number {
       const command = need(target, 'intake receive|apply|list|show|context|resume');
       const argument = a._.at(2);
       const raw: unknown = ['receive', 'apply'].includes(command)
-        ? JSON.parse(readFileSync(need(argument, 'intake receive|apply <payload.json>'), 'utf8'))
+        ? JSON.parse(argument === '-' ? readFileSync(0, 'utf8') : readFileSync(need(argument, 'intake receive|apply <payload.json|->'), 'utf8'))
         : undefined;
       const envelope = raw !== null && typeof raw === 'object' && 'input' in raw ? raw : undefined;
       const input = envelope?.input;

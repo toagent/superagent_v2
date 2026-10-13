@@ -1,9 +1,9 @@
 import { expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, realpathSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { trackTempRoots } from '../../packages/paths/src/test-utils';
-import { Intake, completion, type Action, type Input } from '../src/intake';
+import { Intake, completion, intakeRoot, type Action, type Input } from '../src/intake';
 import type { DeliveryDecision } from '../templates/.archon/scripts/sa-check';
 
 const track = trackTempRoots();
@@ -162,4 +162,73 @@ test('actual CLI supports scratch receive/apply/list/show/resume with no model c
   expect(cli('list').exitCode).toBe(0);
   expect(JSON.parse(cli('show', id).stdout.toString()).completion).toBe('unknown');
   expect(JSON.parse(cli('resume', '1024').stdout.toString()).tasks[0].id).toBe(id);
+});
+
+test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and advisories', () => {
+  const repo = realpathSync(root()), home = root();
+  expect(Bun.spawnSync(['git', 'init', repo]).exitCode).toBe(0);
+  const store = new Intake(intakeRoot(home, repo));
+  const seed = { ...input('seed'), source: 'codex', repo };
+  const a = store.apply(seed, [create()]).results![0]!.task!;
+  store.apply({ ...seed, message: 'claude-seed', source: 'claude' }, [create('claude')]);
+  const hook = (payload: unknown, client = 'codex', extra: Record<string, string> = {}) => {
+    const r = Bun.spawnSync(['node', resolve(import.meta.dir, '../hooks/intake.cjs'), client], {
+      env: { ...process.env, SUPERAGENT_HOME: home, SUPERAGENT_ROLE: '', AI_DISPATCH_ROLE: '', TWIN_AGENT_REMOTE: '', ...extra },
+      stdin: new TextEncoder().encode(JSON.stringify(payload)), stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr.toString()).toBe('');
+    expect(r.stdout.toString()).not.toContain('PRIVATE PROMPT BODY');
+    return r.stdout.toString();
+  };
+  const p = { cwd: repo, session_id: 'session', hook_event_name: 'UserPromptSubmit', turn_id: 'turn', prompt: 'PRIVATE PROMPT BODY' };
+  const out = hook(p);
+  expect(out).toContain(a);
+  expect(out).toContain('uninterpreted');
+  expect(out).toContain('problem, value');
+  expect(Buffer.byteLength(out)).toBeLessThan(8192);
+  expect(hook(p)).toBe(out);
+  hook({ ...p, turn_id: 'turn2' });
+  expect(store.input('codex', 'session', 'turn2').input.text).toBe(p.prompt);
+  expect(hook({ ...p, hook_event_name: 'SessionStart' })).toContain('turn2');
+  expect(hook({ ...p, hook_event_name: 'SessionStart', session_id: 'new-session' })).toContain(a);
+  store.apply(store.input('codex', 'session', 'turn').input, []);
+  expect(JSON.stringify(store.context(repo))).not.toContain('[\"codex\",\"session\",\"turn\"]');
+  const before = readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8');
+  expect(hook(p, 'codex', { SUPERAGENT_ROLE: 'worker' })).toBe('');
+  expect(hook({ ...p, agent_type: 'general', agent_id: 'child' })).toBe('');
+  expect(readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8')).toBe(before);
+  expect(Bun.spawnSync(['git', '-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    'commit', '--allow-empty', '-m', 'scratch']).exitCode).toBe(0);
+  const worktree = join(root(), 'worker');
+  expect(Bun.spawnSync(['git', '-C', repo, 'worktree', 'add', '--detach', worktree]).exitCode).toBe(0);
+  const workerStore = new Intake(intakeRoot(home, realpathSync(worktree)));
+  workerStore.apply({ ...seed, repo: realpathSync(worktree) }, [create()]);
+  expect(hook({ ...p, cwd: worktree })).toBe('');
+  const unregistered = realpathSync(root());
+  Bun.spawnSync(['git', 'init', unregistered]);
+  expect(hook({ ...p, cwd: unregistered })).toBe('');
+  expect(hook({ ...p, turn_id: undefined })).toContain('advisory');
+  expect(hook({ ...p, session_id: 'unbound' })).toContain('advisory');
+  expect(hook({ ...p, prompt: 'conflicting body' })).toContain('advisory');
+  hook(p, 'claude'); hook(p, 'claude');
+  const state = JSON.parse(readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8'));
+  expect(state.inputs.filter((r: { input: Input }) => r.input.source === 'claude' && r.input.text === p.prompt)).toHaveLength(2);
+  writeFileSync(join(intakeRoot(home, repo), 'state.json'), '{corrupt');
+  expect(hook(p)).toContain('advisory');
+});
+
+test('INTAKE_NATIVE interleaved tasks keep old execution and typed answer/amend associations', () => {
+  const store = new Intake(root()), a = newTask(store);
+  apply(store, 'run-a', [launch(a), bind(a), { kind: 'question', task: a, expected_revision: 1,
+    id: 'q', run_id: 'run', gate: 'g', prompt: 'approve?' }]);
+  apply(store, 'status-a', []);
+  const b = newTask(store, 'b');
+  apply(store, 'answer-a', [{ kind: 'answer', task: a, question: 'q', value: 'yes' }]);
+  apply(store, 'amend-b', [amend(b)]);
+  expect(store.list()).toHaveLength(2);
+  expect(store.show(a).runs[0]!.run_id).toBe('run');
+  expect(store.show(a).questions[0]!.answer!.value).toBe('yes');
+  expect(store.show(b).revision).toBe(2);
+  expect(store.show(a).cancellations).toEqual([]);
 });
