@@ -294,7 +294,7 @@ export function admitRun(capacity: number): Admission {
             .query<
               { n: number },
               []
-            >("select count(*) as n from remote_agent_workflow_runs where status not in ('completed','failed','cancelled')")
+            >("select count(*) as n from remote_agent_workflow_runs where status not in ('completed','failed','cancelled','paused')")
             .get()?.n ?? 0
         );
       } finally {

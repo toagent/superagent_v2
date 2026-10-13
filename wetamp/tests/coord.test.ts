@@ -40,7 +40,7 @@ const hooks = req('../hooks/coord.cjs') as {
     client: string,
     env: NodeJS.ProcessEnv,
     shell?: string,
-    readonly?: (a: string[]) => boolean
+    onAdvisory?: (message: string) => void
   ) => string | null;
   unread: (sa: string, who: Identity, seen: string[]) => Message[];
 };
@@ -80,12 +80,14 @@ test('G1: tilde targets resolve against HOME before repository ownership checks'
   await req('../hooks/shell-ast.cjs').init();
   const payload = { cwd: s.repo, session_id: a.session_id, tool_name: 'Bash', tool_input: {} };
   const env = { HOME: home, SUPERAGENT_HOME: s.sa };
+  const notices: string[] = [];
   expect(
     hooks.writeReason(payload, 'codex', env, 'rm ~/.superagent/live/x.json', () => false)
   ).toBeNull();
-  expect(hooks.writeReason(payload, 'codex', env, 'rm README.md', () => false)).toContain(
-    'handoff'
-  );
+  expect(
+    hooks.writeReason(payload, 'codex', env, 'rm README.md', note => notices.push(note))
+  ).toBeNull();
+  expect(notices).toEqual(['向其他元帅负责的仓库写文件，建议 handoff']);
   expect(
     hooks.writeReason(
       { ...payload, tool_name: 'Write', tool_input: { file_path: '~/.superagent/live/x.json' } },
@@ -99,7 +101,7 @@ test('G1: tilde targets resolve against HOME before repository ownership checks'
       'claude',
       { ...env, HOME: s.repo }
     )
-  ).toContain('handoff');
+  ).toBeNull();
 });
 test('1: two actual processes race for one scope under flock; exactly one owner and monotonic generations', async () => {
   const s = setup();
@@ -221,7 +223,7 @@ test('6: delivery and ack are idempotent; only recipient acks; sender receives d
   expect(s.c.messages().filter(m => m.type === 'receipt')).toHaveLength(2);
   expect(() => s.c.ack(String(one.id), a, 'accepted', 'again')).toThrow(/invalid state/);
 });
-test('7: BestIFA B cannot write engine E; handoff wakes A wait before querying provider', async () => {
+test('7: file ownership is advisory; handoff wakes A wait before querying provider', async () => {
   const s = setup(),
     project = gitRepo(tmp());
   s.c.claim(s.scope, a);
@@ -235,8 +237,7 @@ test('7: BestIFA B cannot write engine E; handoff wakes A wait before querying p
     tool_input: { file_path: join(s.repo, 'engine.ts') },
   };
   const why = hooks.writeReason(payload, 'claude', { SUPERAGENT_HOME: s.sa });
-  expect(why).toContain('superagent handoff');
-  expect(why?.split('\n')).toHaveLength(3);
+  expect(why).toBeNull();
   expect(
     hooks.writeReason(
       { ...payload, tool_input: { file_path: join(project, 'app.ts') } },
@@ -253,7 +254,7 @@ test('7: BestIFA B cannot write engine E; handoff wakes A wait before querying p
       `echo bad > '${s.repo}/engine.ts'`,
       () => true
     )
-  ).toContain('handoff');
+  ).toBeNull();
   expect(
     hooks.writeReason(
       { ...payload, tool_name: 'Bash', tool_input: {} },
@@ -280,7 +281,7 @@ test('7: BestIFA B cannot write engine E; handoff wakes A wait before querying p
       `sed -i '' 's/a/b/' '${s.repo}/engine.ts'`,
       () => false
     )
-  ).toContain('handoff');
+  ).toBeNull();
   const out = s.c.handoff(s.scope, b, input);
   // Use the real CLI caller identity to deliver an inbox item, then prove wait short-circuits getRun.
   Object.assign(process.env, {
@@ -447,7 +448,7 @@ test('hook legacy fallback, repository backlog after takeover, and released tomb
     tool_name: 'Write',
     tool_input: { file_path: 'new.ts' },
   };
-  expect(hooks.writeReason(payload, 'claude', { SUPERAGENT_HOME: s.sa })).toContain('handoff');
+  expect(hooks.writeReason(payload, 'claude', { SUPERAGENT_HOME: s.sa })).toBeNull();
   const runScope = c.scope('old');
   c.handoff(runScope, b, input);
   c.claim(s.scope, b, true, 'takeover');
@@ -641,7 +642,7 @@ function isolated(s: ReturnType<typeof setup>): void {
     SA_COORD_ADMISSION: '',
   });
 }
-test('R1-01/06: actual hook rejects cd and nested-shell writes; absolute git status stays open', async () => {
+test('R1-01/06: actual hooks advise cd and nested-shell ownership; absolute git status stays open', async () => {
   const s = setup(),
     other = gitRepo(tmp());
   s.c.claim(s.scope, a);
@@ -660,19 +661,22 @@ test('R1-01/06: actual hook rejects cd and nested-shell writes; absolute git sta
     `/usr/bin/git -C '${s.repo}' status`,
   ];
   for (const [i, command] of commands.entries()) {
-    const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
-      cwd: other,
-      env: {
-        ...process.env,
-        SUPERAGENT_HOME: s.sa,
-        ARCHON_HOME: join(s.sa, 'archon'),
-        SUPERAGENT_ROLE: '',
-        SUPERAGENT_ALLOW_COMMANDER_WRITE: '1',
-      },
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
+    const p = Bun.spawn(
+      ['node', join(import.meta.dir, '../hooks/guard.cjs'), i % 2 ? 'codex' : 'claude'],
+      {
+        cwd: other,
+        env: {
+          ...process.env,
+          SUPERAGENT_HOME: s.sa,
+          ARCHON_HOME: join(s.sa, 'archon'),
+          SUPERAGENT_ROLE: '',
+          SUPERAGENT_ALLOW_COMMANDER_WRITE: '1',
+        },
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
     p.stdin.write(
       JSON.stringify({
         session_id: 'foreign',
@@ -685,11 +689,11 @@ test('R1-01/06: actual hook rejects cd and nested-shell writes; absolute git sta
     p.stdin.end();
     const out = await new Response(p.stdout).text();
     expect(await p.exited).toBe(0);
-    if (i < commands.length - 1) expect(out).toContain('已拒绝');
-    else expect(out).not.toContain('deny');
+    expect(out).not.toContain('deny');
+    if (i < commands.length - 1) expect(out).toContain('advisory');
   }
 });
-test('INT-R1-01: actual hook checks every Git location and preserves unclaimed writes', async () => {
+test('INT-R1-01: actual Claude/Codex hooks allow Git across claimed locations', async () => {
   const s = setup(),
     other = gitRepo(tmp());
   s.c.claim(s.scope, a);
@@ -706,22 +710,25 @@ test('INT-R1-01: actual hook checks every Git location and preserves unclaimed w
     `git -C '${s.repo}' status`,
   ];
   for (const [i, command] of commands.entries()) {
-    const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
-      cwd: other,
-      env: {
-        ...process.env,
-        HOME: s.root,
-        SUPERAGENT_HOME: s.sa,
-        ARCHON_HOME: join(s.sa, 'archon'),
-        SUPERAGENT_ROLE: '',
-        SUPERAGENT_ALLOW_COMMANDER_WRITE: '1',
-        GIT_DIR: i === 7 ? join(s.repo, '.git') : '',
-        GIT_WORK_TREE: i === 7 ? s.repo : '',
-      },
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
+    const p = Bun.spawn(
+      ['node', join(import.meta.dir, '../hooks/guard.cjs'), i % 2 ? 'codex' : 'claude'],
+      {
+        cwd: other,
+        env: {
+          ...process.env,
+          HOME: s.root,
+          SUPERAGENT_HOME: s.sa,
+          ARCHON_HOME: join(s.sa, 'archon'),
+          SUPERAGENT_ROLE: '',
+          SUPERAGENT_ALLOW_COMMANDER_WRITE: '1',
+          GIT_DIR: i === 7 ? join(s.repo, '.git') : '',
+          GIT_WORK_TREE: i === 7 ? s.repo : '',
+        },
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
     p.stdin.write(
       JSON.stringify({
         session_id: 'foreign',
@@ -734,10 +741,7 @@ test('INT-R1-01: actual hook checks every Git location and preserves unclaimed w
     p.stdin.end();
     const out = await new Response(p.stdout).text();
     expect(await p.exited).toBe(0);
-    if (i < 8) {
-      expect(out).toContain('deny');
-      expect(out).toContain('向其他元帅负责的仓库写文件');
-    } else expect(out).not.toContain('deny');
+    expect(out).not.toContain('deny');
   }
 });
 test('R2-01: redline shares directory transitions and subshells keep the parent cwd', async () => {

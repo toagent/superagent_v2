@@ -14,7 +14,7 @@ import {
 import { buildWorkflow, engineHash } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
 import { decide } from '../templates/.archon/scripts/sa-check';
-import { tmp } from './helpers';
+import { fixturePlan, gitRepo, tmp } from './helpers';
 const { loadPolicy } = createRequire(import.meta.url)('../bin/codex-readonly-proxy.cjs') as {
   loadPolicy(path: string): Record<string, unknown>;
 };
@@ -268,4 +268,43 @@ test('same-diff reuse requires exact candidate and contract, qualified review, n
   expect(decide({ ...input, reviews: [{ ...pass, findings: [finding] }, null] }).verdict).toBe(
     'escalate'
   );
+});
+
+test('delivery defaults: generated acceptance land check has no implicit expiry, explicit expiry still blocks', () => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    now = Date.now();
+  const clock = join(root, 'clock.ts');
+  writeFileSync(clock, `Date.now = () => ${String(now + 48 * 3600_000)};`);
+  for (const deadline of [undefined, new Date(now + 3600_000).toISOString()]) {
+    const path = fixturePlan(root, repo, p => {
+      if (deadline) p.deadline = deadline;
+      else delete p.deadline;
+    });
+    const result = Bun.spawnSync(
+      [
+        process.execPath,
+        '--no-env-file',
+        '--preload',
+        clock,
+        join(WETAMP, 'templates/.archon/scripts/sa-check.ts'),
+      ],
+      {
+        cwd: repo,
+        env: {
+          ...process.env,
+          ARTIFACTS_DIR: root,
+          INPUTS_KIND: 'land',
+          INPUTS_PLAN: path,
+          INPUTS_BASE_REF: 'main',
+          INPUTS_TARGET_CHECKOUT: repo,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+    expect(result.exitCode).toBe(deadline ? 1 : 0);
+    if (deadline) expect(result.stderr.toString()).toContain('deadline');
+    else expect(JSON.parse(readFileSync(join(root, 'land.json'), 'utf8')).target).toBe('main');
+  }
 });

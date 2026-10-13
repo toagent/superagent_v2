@@ -158,15 +158,15 @@ function decide(payload, client, env = process.env) {
   const advisory = notices.size ? {systemMessage: `SUPERAGENT advisory：本次护栏无法完整确认命令效果，已放行（${[...notices].join(', ')}）。`} : null;
   if (derived) return advisory;
   const coord = require('./coord.cjs');
-  const ownership = coord.writeReason(payload, client, env, text, redline.gitReadOnly);
+  const ownership = coord.writeReason(payload, client, env, text, code => notices.add(code));
   if (ownership) return deny(ownership);
   const context = dispatch.contextReason(client, name, input, dispatch.contextPolicy(policy.dispatch_context));
-  if (context) return deny(context);
+  if (context) notices.add(context);
   if (client === 'codex' && name === 'spawn_agent' && input.model && ![...pool('general'), ...pool('strategist')].includes(input.model))
-    return deny('G-2: spawn_agent 的显式 model 必须属于将军或军师池；缺省使用 default_subagent_model。');
+    notices.add('G-2: spawn_agent 的显式 model 建议属于将军或军师池；缺省使用 default_subagent_model。');
   const write = (edit || text !== undefined) && rootCall(payload) ? commanderWrite(payload, client, env, text) : null;
   if (write) return write;
-  return advisory;
+  return notices.size ? {systemMessage: `SUPERAGENT advisory：${[...notices].join('; ')}。已放行。`} : advisory;
 }
 
 if (require.main === module) (async () => {

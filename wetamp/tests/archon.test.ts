@@ -1,3 +1,7 @@
+import { Database } from 'bun:sqlite';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmp } from './helpers';
 import { expect, spyOn, test } from 'bun:test';
 import * as transport from '../src/archon';
 
@@ -99,5 +103,39 @@ test('wait transport allows cold startup and shutdown beyond the former one-seco
     expect(spawn).toHaveBeenCalledTimes(1);
   } finally {
     spawn.mockRestore();
+  }
+});
+
+test('delivery defaults: paused releases capacity, pending/running/unknown and reservations retain it', () => {
+  const saved = process.env.ARCHON_HOME,
+    root = tmp();
+  process.env.ARCHON_HOME = root;
+  const db = new Database(join(root, 'archon.db'));
+  db.exec('create table remote_agent_workflow_runs (status text)');
+  try {
+    for (const status of [
+      'paused',
+      'completed',
+      'failed',
+      'cancelled',
+      'pending',
+      'running',
+      'unknown',
+    ]) {
+      db.exec('delete from remote_agent_workflow_runs');
+      db.query('insert into remote_agent_workflow_runs values (?)').run(status);
+      const admission = transport.admitRun(1);
+      const active = ['pending', 'running', 'unknown'].includes(status);
+      expect(admission.ok).toBe(!active);
+      if (admission.ok) admission.release();
+      else expect(admission.reason).toBe('run_capacity');
+    }
+    db.exec('delete from remote_agent_workflow_runs');
+    writeFileSync(join(root, 'run-admission.json'), '{}');
+    expect(transport.admitRun(1)).toMatchObject({ ok: false, reason: 'admission_busy' });
+  } finally {
+    db.close();
+    if (saved === undefined) delete process.env.ARCHON_HOME;
+    else process.env.ARCHON_HOME = saved;
   }
 });

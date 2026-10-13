@@ -1,10 +1,7 @@
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import {
-  closeSync,
   existsSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   rmSync,
   realpathSync,
@@ -14,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS, type RunView } from './archon';
-import { home, receiptIssue, runtimeFingerprint, WETAMP, type Receipt } from './config';
+import { home, receiptIssue, WETAMP, type Receipt } from './config';
 import { redact } from './redact';
 import { landTarget, type Land } from '../templates/.archon/scripts/sa-check';
 export interface DeliveryTarget {
@@ -62,7 +59,7 @@ export function captureDelivery(checkout: string): DeliveryTarget {
 }
 const selftestTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_SELFTEST_TIMEOUT_MS)) || 20 * 60_000;
-/** Both preflight and the detached refresher own the same kernel lease for the entire script. */
+/** Explicit diagnostics own the kernel lease for the entire script. */
 // prettier-ignore
 export function selftest(wait: boolean): void {
   const { sa } = home(), path = join(sa, 'selftest.json');
@@ -162,7 +159,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     // Ancestry proves integration, not acceptance: reuse the candidate path below.
   }
   let receipt: DeliveryReceipt | undefined;
-  const fingerprint = runtimeFingerprint();
   for (let attempt = 0; ; attempt++) {
   const tip = git('rev-parse', `refs/heads/${target}`);
   targetHistory(tip);
@@ -222,12 +218,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   }
   for (const args of delivery ? [] : [...(run.working_path ? [['worktree', 'remove', run.working_path]] : []), ['branch', '-d', land.branch]]) {
     try { git(...args); } catch (e) { console.error(`land: kept ${String(args.at(-1))}: ${(e as Error).message}`); }
-  }
-  if (runtimeFingerprint() !== fingerprint) {
-    const log = join(home().sa, 'selftest-land.log'), fd = openSync(log, 'a');
-    try { spawn(process.execPath, [import.meta.path], { cwd: repo, detached: true, stdio: ['ignore', fd, fd] }).unref(); }
-    finally { closeSync(fd); }
-    if (!delivery) console.log(`land: background selftest log ${log}`);
   }
   return receipt;
   } finally { lease.release(); }

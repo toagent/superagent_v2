@@ -1106,7 +1106,10 @@ export function decide(input: Parameters<typeof deliveryDecision>[0]) {
   };
 }
 
-const expired = (): boolean => Date.now() > Date.parse(plan().deadline);
+const expired = (): boolean => {
+  const deadline = plan().deadline;
+  return deadline !== undefined && Date.now() > Date.parse(deadline);
+};
 
 interface Binding {
   provider?: string;
@@ -1562,7 +1565,9 @@ export function landTarget(repo: string, base: string, launch: () => string | un
 /** 打印合入命令与各里程碑末轮 gate 的评审债；plan deadline 已过则拒绝（exit 1），不给出合入命令。 */
 function land() {
   if (expired()) {
-    console.error(`land: plan deadline ${plan().deadline} passed; not producing merge commands`);
+    console.error(
+      `land: plan deadline ${String(plan().deadline)} passed; not producing merge commands`
+    );
     process.exit(1);
   }
   const repo =

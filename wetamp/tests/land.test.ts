@@ -53,7 +53,8 @@ test.each(['missing', 'corrupt', 'advanced', 'mismatch', 'interrupted', 'accept-
       } else first = applyLand(f.run, f.land, verify, f.context);
       if (kind === 'missing' || kind === 'accept-fail') unlinkSync(f.delivery.receipt);
       if (kind === 'corrupt') writeFileSync(f.delivery.receipt, '{');
-      if (kind === 'advanced') sh('echo later > later.txt && git add later.txt && git commit -qm later', f.repo);
+      if (kind === 'advanced')
+        sh('echo later > later.txt && git add later.txt && git commit -qm later', f.repo);
       if (kind === 'mismatch') f.delivery.contract = 'different-contract';
       const before = sh('git rev-parse HEAD', f.repo).trim();
       let candidate = '';
@@ -62,7 +63,8 @@ test.each(['missing', 'corrupt', 'advanced', 'mismatch', 'interrupted', 'accept-
         expect(cwd).not.toBe(f.repo);
         expect(sh('git rev-parse HEAD', cwd).trim()).toBe(before);
         expect(readFileSync(join(cwd, 'delivery.txt'), 'utf8')).toBe('delivery\n');
-        if (kind === 'advanced') expect(readFileSync(join(cwd, 'later.txt'), 'utf8')).toBe('later\n');
+        if (kind === 'advanced')
+          expect(readFileSync(join(cwd, 'later.txt'), 'utf8')).toBe('later\n');
         return kind === 'accept-fail' ? 1 : 0;
       });
       if (kind === 'accept-fail') {
@@ -75,10 +77,21 @@ test.each(['missing', 'corrupt', 'advanced', 'mismatch', 'interrupted', 'accept-
           second = applyLand(f.run, f.land, recover, f.context);
           expect(git.mock.calls.some(([cmd]) => cmd.includes('push'))).toBe(false);
           if (kind === 'valid') {
-            expect(git.mock.calls.some(([cmd]) => cmd.includes('merge') || cmd.includes('install') || cmd.includes('add'))).toBe(false);
+            expect(
+              git.mock.calls.some(
+                ([cmd]) => cmd.includes('merge') || cmd.includes('install') || cmd.includes('add')
+              )
+            ).toBe(false);
           }
-        } finally { git.mockRestore(); }
-        expect(second).toMatchObject({ accepted: before, integrated: before, status: 'manual_push', contract: f.delivery.contract });
+        } finally {
+          git.mockRestore();
+        }
+        expect(second).toMatchObject({
+          accepted: before,
+          integrated: before,
+          status: 'manual_push',
+          contract: f.delivery.contract,
+        });
         expect(JSON.parse(readFileSync(f.delivery.receipt, 'utf8'))).toEqual(second);
         expect(second?.push).toBe(`git -C '${f.delivery.target.checkout}' push origin 'wetamp'`);
         if (kind === 'valid') expect(second).toEqual(first);
@@ -93,20 +106,26 @@ test.each(['missing', 'corrupt', 'advanced', 'mismatch', 'interrupted', 'accept-
       if (candidate) expect(existsSync(candidate)).toBe(false);
       expect(verify).toHaveBeenCalledTimes(1);
       expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(before);
-    } finally { probe.mockRestore(); }
+    } finally {
+      probe.mockRestore();
+    }
   }
 );
 
 test.each(['advance', 'rewrite', 'switch', 'source-drift'])(
-  'already integrated acceptance preserves target/source guards: %s', kind => {
-    const f = deliveryFixture(), probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  'already integrated acceptance preserves target/source guards: %s',
+  kind => {
+    const f = deliveryFixture(),
+      probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
     sh('git merge --ff-only sa/land', f.repo);
-    let candidate = '', tip = sh('git rev-parse HEAD', f.repo).trim();
+    let candidate = '',
+      tip = sh('git rev-parse HEAD', f.repo).trim();
     const verify = mock((cwd: string) => {
       candidate = cwd;
       expect(sh('git rev-parse HEAD', cwd).trim()).toBe(tip);
       if (kind === 'advance') sh('git commit --allow-empty -qm concurrent', f.repo);
-      if (kind === 'rewrite') sh('git reset --hard "$(git commit-tree HEAD^{tree} -m rewritten)"', f.repo);
+      if (kind === 'rewrite')
+        sh('git reset --hard "$(git commit-tree HEAD^{tree} -m rewritten)"', f.repo);
       if (kind === 'switch') sh('git switch -qc operator', f.repo);
       if (kind === 'source-drift') sh('git commit --allow-empty -qm drift', f.worktree);
       tip = sh('git rev-parse HEAD', f.repo).trim();
@@ -114,56 +133,75 @@ test.each(['advance', 'rewrite', 'switch', 'source-drift'])(
     });
     try {
       expect(() => applyLand(f.run, f.land, verify, f.context)).toThrow(
-        kind === 'advance' ? 'target advanced' : kind === 'rewrite' ? 'not a descendant' :
-          kind === 'switch' ? 'target checkout changed' : 'source HEAD drifted'
+        kind === 'advance'
+          ? 'target advanced'
+          : kind === 'rewrite'
+            ? 'not a descendant'
+            : kind === 'switch'
+              ? 'target checkout changed'
+              : 'source HEAD drifted'
       );
       expect(verify).toHaveBeenCalledTimes(kind === 'advance' ? 3 : 1);
       expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(tip);
       expect(existsSync(f.delivery.receipt)).toBe(false);
       expect(existsSync(candidate)).toBe(false);
       expect(existsSync(f.worktree)).toBe(true);
-    } finally { probe.mockRestore(); }
+    } finally {
+      probe.mockRestore();
+    }
   }
 );
 
-test.each([
-  'protected',
-  'switched',
-  'dirty',
-  'source-dirty',
-  'source-drift',
-  'target-rewrite',
-  'missing-launch',
-  'checkout',
-].flatMap(kind => [false, true].map(integrated => ({ kind, integrated }))))('delivery rejects $kind with integrated=$integrated without changing target or discarding source', ({ kind, integrated }) => {
-  const f = deliveryFixture();
-  if (integrated) sh('git merge --ff-only sa/land', f.repo);
-  if (kind === 'protected') {
-    sh('git branch -m main', f.repo);
-    f.delivery.target.branch = 'main';
+test.each(
+  [
+    'protected',
+    'switched',
+    'dirty',
+    'source-dirty',
+    'source-drift',
+    'target-rewrite',
+    'missing-launch',
+    'checkout',
+  ].flatMap(kind => [false, true].map(integrated => ({ kind, integrated })))
+)(
+  'delivery rejects $kind with integrated=$integrated without changing target or discarding source',
+  ({ kind, integrated }) => {
+    const f = deliveryFixture();
+    if (integrated) sh('git merge --ff-only sa/land', f.repo);
+    if (kind === 'protected') {
+      sh('git branch -m main', f.repo);
+      f.delivery.target.branch = 'main';
+    }
+    if (kind === 'switched') sh('git switch -qc other', f.repo);
+    if (kind === 'dirty') writeFileSync(join(f.repo, 'user.txt'), 'keep');
+    if (kind === 'source-dirty') writeFileSync(join(f.worktree, 'user.txt'), 'keep');
+    if (kind === 'source-drift') sh('git commit --allow-empty -qm drift', f.worktree);
+    if (kind === 'target-rewrite')
+      sh('git reset --hard "$(git commit-tree HEAD^{tree} -m rewritten)"', f.repo);
+    if (kind === 'missing-launch') f.delivery.target.head = '0'.repeat(40);
+    if (kind === 'checkout') f.delivery.target.checkout = f.worktree;
+    const before = sh('git rev-parse HEAD', f.repo);
+    expect(() =>
+      applyLand(
+        f.run,
+        f.land,
+        () => {
+          throw new Error('must not verify');
+        },
+        f.context
+      )
+    ).toThrow(
+      kind === 'target-rewrite'
+        ? 'not a descendant'
+        : kind === 'missing-launch'
+          ? 'cannot verify launch HEAD ancestry'
+          : undefined
+    );
+    expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
+    expect(existsSync(f.worktree)).toBe(true);
+    expect(existsSync(f.delivery.receipt)).toBe(false);
   }
-  if (kind === 'switched') sh('git switch -qc other', f.repo);
-  if (kind === 'dirty') writeFileSync(join(f.repo, 'user.txt'), 'keep');
-  if (kind === 'source-dirty') writeFileSync(join(f.worktree, 'user.txt'), 'keep');
-  if (kind === 'source-drift') sh('git commit --allow-empty -qm drift', f.worktree);
-  if (kind === 'target-rewrite') sh('git reset --hard "$(git commit-tree HEAD^{tree} -m rewritten)"', f.repo);
-  if (kind === 'missing-launch') f.delivery.target.head = '0'.repeat(40);
-  if (kind === 'checkout') f.delivery.target.checkout = f.worktree;
-  const before = sh('git rev-parse HEAD', f.repo);
-  expect(() =>
-    applyLand(
-      f.run,
-      f.land,
-      () => {
-        throw new Error('must not verify');
-      },
-      f.context
-    )
-  ).toThrow(kind === 'target-rewrite' ? 'not a descendant' : kind === 'missing-launch' ? 'cannot verify launch HEAD ancestry' : undefined);
-  expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
-  expect(existsSync(f.worktree)).toBe(true);
-  expect(existsSync(f.delivery.receipt)).toBe(false);
-});
+);
 
 // prettier-ignore
 test.each(['pass', 'accept-fail', 'rewrite-race'])('same-base deliveries integrate serially: %s', kind => {
@@ -382,25 +420,53 @@ test.each([true, false])('conflicts use PATH mergiraf only in the candidate; ava
   expect(readFileSync(join(f.repo, 'README.md'), 'utf8')).toBe(available ? 'resolved\n' : 'target\n');
 });
 
-test.each([false, true])('land holds the common repository/target lease through verification and releases on failure; integrated=%s', integrated => {
-  const f = deliveryFixture();
-  if (integrated) sh('git merge --ff-only sa/land', f.repo);
-  const common = sh('git rev-parse --path-format=absolute --git-common-dir', f.worktree).trim();
-  const file = join(common, `sa-land-${createHash('sha256').update('wetamp').digest('hex')}.lock`);
-  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+test.each([false, true])(
+  'land holds the common repository/target lease through verification and releases on failure; integrated=%s',
+  integrated => {
+    const f = deliveryFixture();
+    if (integrated) sh('git merge --ff-only sa/land', f.repo);
+    const common = sh('git rev-parse --path-format=absolute --git-common-dir', f.worktree).trim();
+    const file = join(
+      common,
+      `sa-land-${createHash('sha256').update('wetamp').digest('hex')}.lock`
+    );
+    const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+    try {
+      expect(() =>
+        applyLand(
+          f.run,
+          f.land,
+          () => {
+            const competing = lock(file);
+            if (competing.ok) competing.release();
+            expect(competing.ok).toBe(false);
+            return 1;
+          },
+          f.context
+        )
+      ).toThrow('acceptance failed');
+      const next = lock(file);
+      expect(next.ok).toBe(true);
+      if (next.ok) next.release();
+    } finally {
+      probe.mockRestore();
+    }
+  }
+);
+
+test('delivery defaults: land needs no selftest receipt and never triggers diagnostics', () => {
+  const f = fixture();
+  process.env.SUPERAGENT_HOME = f.root;
+  const diagnosis = spyOn(config, 'runtimeFingerprint').mockImplementation(() => {
+    throw new Error('unexpected diagnosis');
+  });
   try {
-    expect(() =>
-      applyLand(f.run, f.land, () => {
-        const competing = lock(file);
-        if (competing.ok) competing.release();
-        expect(competing.ok).toBe(false);
-        return 1;
-      }, f.context)
-    ).toThrow('acceptance failed');
-    const next = lock(file);
-    expect(next.ok).toBe(true);
-    if (next.ok) next.release();
+    expect(existsSync(join(f.root, 'selftest.json'))).toBe(false);
+    applyLand(f.run, f.land, () => 0);
+    expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(f.land.head);
+    expect(diagnosis).not.toHaveBeenCalled();
+    expect(existsSync(join(f.root, 'selftest-land.log'))).toBe(false);
   } finally {
-    probe.mockRestore();
+    diagnosis.mockRestore();
   }
 });

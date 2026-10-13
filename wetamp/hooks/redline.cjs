@@ -1,7 +1,6 @@
 'use strict';
 // Default allow. Effects and ownership establish danger; uncertainty is advisory.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const {spawnSync} = require('node:child_process');
 const EFFECTS = require('./shell-effects.json');
 const microEdit = require('./micro-edit.cjs');
 
@@ -59,126 +58,6 @@ function wordKind(word, dir, env) {
   }
   return null;
 }
-
-const PROTECTED = /^(?:refs\/heads\/)?(?:main|master|develop|wetamp|release-.+)$/;
-const GIT_VALUE_OPTIONS = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'];
-function gitInvocation(argv, dir, env) {
-  // undefined = absent; {path: null} = explicitly unknown; {path} = resolved.
-  const locate = value => ({path: typeof value !== 'string' || !value || /[$`*?\[\]{}]|__sa_sub__|__sa_unknown_cwd__/.test(expand(value, env))
-    ? null : resolvePath(path.resolve(dir, expand(value, env)))});
-  let i = 1, gitDir = env.GIT_DIR, workTree = env.GIT_WORK_TREE;
-  const locations = [locate(dir)];
-  const explicit = [gitDir, workTree].filter(value => value !== undefined);
-  while (argv[i]?.startsWith('-')) {
-    const option = argv[i], value = argv[i + 1];
-    if (option === '-C' || /^-C.+/.test(option)) {
-      const location = locate(option === '-C' ? value : option.slice(2)); locations.push(location); dir = location.path || '/__sa_unknown_cwd__';
-    }
-    if (option === '--git-dir') gitDir = value ?? '';
-    if (option === '--work-tree') workTree = value ?? '';
-    if (option === '--git-dir' || option === '--work-tree') explicit.push(value ?? '');
-    i += GIT_VALUE_OPTIONS.includes(option) ? 2 : 1;
-  }
-  gitDir = gitDir === undefined ? undefined : locate(gitDir);
-  workTree = workTree === undefined ? undefined : locate(workTree);
-  const base = (workTree ?? gitDir ?? locate(dir)).path;
-  const metadata = gitDir?.path;
-  const checkout = base && (workTree || gitDir ? base : checkoutOf(base));
-  return {base: base || '/__sa_unknown_cwd__', directory: dir, checkout, metadata, locations: [...locations, ...explicit.map(locate)], prefix: argv.slice(1, i), sub: argv[i], rest: argv.slice(i + 1)};
-}
-// Delete only when another surviving branch owns the commits; tags/reflogs do not count.
-function safeGitDelete(sub, rest, query, dir, env, deletions) {
-  const short = letter => rest.some(v => /^-[A-Za-z]+$/.test(v) && v.includes(letter));
-  const force = short('f') || rest.some(v => /^--f(?:o(?:r(?:c(?:e)?)?)?)?$/.test(v)) || short('D'); // R1-1: Git accepts unique long-option prefixes.
-  const branch = sub === 'branch' && (short('d') || short('D') || rest.some(v => /^--d(?:e(?:l(?:e(?:t(?:e)?)?)?)?)?$/.test(v)));
-  const worktree = sub === 'worktree' && ['remove', 'prune'].includes(rest[0]);
-  if (!branch && !worktree) return undefined;
-  if (branch && (['m', 'M', 'c', 'C'].some(short) || rest.some(v => ['--move', '--copy'].includes(v)))) return undefined;
-  if (!force && !branch) return null; // Git itself refuses unsafe non-forced deletion.
-  const reachable = (tip, excluded = []) => {
-    const refs = query(['for-each-ref', '--format=%(refname)%09%(symref)', `--contains=${tip}`, 'refs/heads', 'refs/remotes']);
-    return refs !== null && refs.split('\n').some(line => {
-      const [ref, symbolic] = line.split('\t');
-      return ref && !symbolic && !excluded.includes(ref);
-    });
-  };
-  try {
-    if (branch) {
-      const remote = short('r') || rest.includes('--remotes');
-      const forced = force || remote; // Git deletes remote-tracking branches without a merge check.
-      const refs = rest.filter(v => !v.startsWith('-')).map(v => `refs/${remote ? 'remotes' : 'heads'}/${v}`);
-      const common = query(['rev-parse', '--path-format=absolute', '--git-common-dir']);
-      if (!common) return forced ? message('删除分支', 'Git 安全查询失败') : null;
-      const excluded = deletions.get(common) || new Set(); // R1-3: prior commands have not executed yet.
-      refs.forEach(ref => excluded.add(ref)); deletions.set(common, excluded);
-      if (!forced || refs.length && refs.every(ref => reachable(ref, [...excluded]))) return null;
-      return message('删除分支', '分支有未合并提交，删除会丢失（或 Git 查询失败）');
-    }
-    if (rest[0] === 'prune') return null;
-    const targets = rest.slice(1).filter(v => !v.startsWith('-'));
-    if (targets.length === 1 && !/[$`*?\[\]{}]|__sa_/.test(targets[0])) {
-      const operand = expand(targets[0], env), absolute = path.resolve(dir, operand);
-      const listing = query(['worktree', 'list', '--porcelain', '-z']); // R1-2: Git also accepts a unique path suffix.
-      const trees = listing?.split('\0').filter(v => v.startsWith('worktree ')).map(v => v.slice(9)) || [];
-      const matches = trees.includes(absolute) ? [absolute] : trees.filter(v => !path.isAbsolute(operand) && v.endsWith('/' + operand));
-      if (matches.length !== 1) return message('删除工作树', 'Git 查询失败（工作树目标不存在或不明确）');
-      const target = matches[0];
-      // Inspect the actual checkout, not an inherited alternate index or Git directory.
-      const cleanEnv = Object.fromEntries(Object.entries({...process.env, ...env}).filter(([key]) => !key.startsWith('GIT_')));
-      const inspect = args => {
-        const r = spawnSync('git', ['-C', target, ...args], {encoding: 'utf8', timeout: 3000, env: {...cleanEnv, GIT_OPTIONAL_LOCKS: '0'}});
-        return r.status === 0 ? r.stdout.trim() : null;
-      };
-      const status = inspect(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']);
-      const head = inspect(['rev-parse', '--verify', 'HEAD']);
-      if (status === '' && head && reachable(head)) return null;
-    }
-    return message('删除工作树', '工作树有未提交改动或未保留的提交（或 Git 查询失败）');
-  } catch { return message('删除 git 对象', 'Git 安全查询失败'); }
-}
-const currentBranch = dir => {
-  const r = spawnSync('git', ['-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], {encoding: 'utf8', timeout: 3000, env: {...process.env, GIT_OPTIONAL_LOCKS: '0'}});
-  return r.status === 0 ? r.stdout.trim() : '';
-};
-function gitQuery(sub, rest) {
-  const rules = EFFECTS.find(r => r.commands[0] === 'git');
-  return rules.read.includes(sub) || !rest.length && ['branch','tag','remote','reflog'].includes(sub)
-    || (rules.queries[sub] || []).some(flag => rest.includes(flag))
-      && !rest.some(flag => new RegExp(rules.mutationFlags).test(flag));
-}
-function gitReadOnly(argv) {
-  let i = 1;
-  while (argv[i]?.startsWith('-')) i += GIT_VALUE_OPTIONS.includes(argv[i]) ? 2 : 1;
-  return gitQuery(argv[i], argv.slice(i + 1));
-}
-function gitReason(argv, dir) {
-  let i = 1;
-  while (argv[i]?.startsWith('-')) {
-    if (argv[i] === '-C' && argv[i + 1]) dir = path.resolve(dir, argv[i + 1]);
-    i += GIT_VALUE_OPTIONS.includes(argv[i]) ? 2 : 1;
-  }
-  const [sub, ...rest] = argv.slice(i);
-  const flags = rest.filter(a => a.startsWith('-')), operands = rest.filter(a => !a.startsWith('-'));
-  const shared = operands.find(a => PROTECTED.test(a));
-  const msg = () => '受保护分支';
-  if (sub === 'branch' && shared && flags.some(f => /^-[a-zA-Z]*[fDMmC]|^--(?:force|move)$/.test(f))) return msg(shared);
-  if (sub === 'update-ref') {
-    if (shared) return msg(shared);
-    if (operands[0] === 'HEAD' && PROTECTED.test(currentBranch(dir))) return msg(currentBranch(dir));
-  }
-  if ((sub === 'checkout' && flags.includes('-B') || sub === 'switch' && flags.some(f => ['-C', '--force-create'].includes(f))) && shared) return msg(shared);
-  if (sub === 'rebase' && !flags.some(f => ['--abort', '--quit'].includes(f))) {
-    const pos = [];
-    for (let j = 0; j < rest.length; j++) {
-      if (['--onto', '-s', '--strategy', '-X', '--strategy-option', '-x', '--exec'].includes(rest[j])) j++;
-      else if (!rest[j].startsWith('-')) pos.push(rest[j]);
-    }
-    const target = pos.length >= 2 ? pos[1] : currentBranch(dir);
-    if (PROTECTED.test(target)) return msg(target);
-  }
-  return null;
-}
-
 
 // One reminder exit: call sites supply actions, categories and file targets, never command contents.
 const message = (action, consequence, alternative = '需要主控执行', target) => {
@@ -259,16 +138,20 @@ function targetReason(effect, target, dir, root, env, reviewer, advisory) {
     advisory('write_target_unknown'); return null;
   }
   const lexical = path.resolve(dir, expanded), abs = resolvePath(lexical);
+  // Whole-file replacement and deletion lose data only when the target exists.
+  // All tool and shell consumers share this fact before ownership policy runs.
+  const losesData = ['destroy','overwrite'].includes(effect) && fs.existsSync(abs);
   const task = taskOwnership(abs, dir, root, env);
   const protectedLocation = protectedKind(lexical, root, env) || protectedKind(abs, root, env);
   const packageCache = ['.bun','.npm','.cache','.m2','.gradle','.cargo'].some(d => within(abs, path.join(homeOf(env), d)));
-  if (protectedLocation && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
+  if (protectedLocation && !(protectedLocation === '非本任务的 git 检出' && !losesData) && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
     return message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: within(abs, path.join(homeOf(env), '.superagent')) ? '~/.superagent' : protectedLocation});
   if (reviewer && root && within(abs, resolvePath(root))) return message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: `本任务仓库：${abs}`});
   if (effect === 'destroy' && [root, homeOf(env), env.SUPERAGENT_HOME, '/'].filter(Boolean).some(r => within(resolvePath(r), abs)))
     return message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'});
-  if (!task && (effect === 'destroy' || fs.existsSync(abs)) && ['destroy','overwrite','write'].includes(effect))
+  if (!task && losesData)
     return message('销毁或覆盖文件', '会破坏不属于本任务的已有数据', '在 worktree 或临时目录创建副本', {kind: '任务范围外路径'});
+  if (!task || protectedLocation === '非本任务的 git 检出') advisory('file_ownership');
   return null;
 }
 function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory, names, deletions) {
@@ -296,36 +179,7 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
       return message('通过 kill 向一组进程发信号', '会选择一组进程或影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
   }
   if (effect === 'git') {
-    const {base, directory, checkout, metadata, locations, prefix, sub, rest} = gitInvocation(argv, dir, env);
-    const owned = file => taskOwnership(file, dir, root, env, true) === 'repository';
-    if (sub === 'init' && !(reviewer && root && within(resolvePath(base), resolvePath(root)))) return null;
-    if (sub === 'push') return message(`执行 git ${sub}`, '会改写共享的远端版本历史');
-    const gitEffects = EFFECTS.find(r => r.commands[0] === 'git');
-    const query = gitQuery(sub, rest);
-    const destructiveRule = gitEffects.destructive[sub];
-    const matches = pattern => pattern && rest.some(word => new RegExp(pattern).test(word));
-    const destructive = !query && (matches(gitEffects.forceFlags) || matches(gitEffects.destructiveFlags[sub])
-      || destructiveRule && (!destructiveRule.pattern || matches(destructiveRule.pattern)) && !matches(destructiveRule.unless));
-    const branchReason = sub === 'branch' && gitReason(['git', sub, ...rest], base);
-    if (branchReason) return message(`执行 git ${sub}`, '会改写共享的版本历史', undefined, {kind: branchReason});
-    const deletion = safeGitDelete(sub, rest, args => {
-      const r = spawnSync('git', [...prefix, ...args], {cwd: dir, encoding: 'utf8', timeout: 3000, env: {...process.env, ...env, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1'}});
-      return r.status === 0 ? r.stdout.trim() : null;
-    }, directory, env, deletions);
-    if (deletion) return deletion;
-    if (destructive && deletion === undefined && (locations.some(location => !owned(location.path)) || !owned(checkout || base)))
-      return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
-    if (sub === 'config' && !query) {
-      if (base.startsWith('/__sa_unknown_cwd__')) return targetReason('overwrite', '', dir, root, env, reviewer, advisory);
-      const fileIndex = rest.findIndex(v => v === '--file' || v === '-f');
-      const config = rest.includes('--global') ? path.join(homeOf(env), '.gitconfig') : rest.includes('--system') ? '/etc/gitconfig'
-        : fileIndex >= 0 ? rest[fileIndex + 1] : metadata ? path.join(metadata, 'config') : path.join(base, '.git/config');
-      return targetReason('overwrite', config || '', dir, root, env, reviewer, advisory);
-    }
-    if (reviewer && !query && (sub === 'commit' || root && within(resolvePath(base), resolvePath(root))))
-      return message('在被审仓库执行 git 写入', 'reviewer 只读，提交或修改会污染评审对象', '只查询仓库，在临时目录运行测试');
-    const why = gitReason(['git', sub, ...rest], base);
-    if (why) return message(`执行 git ${sub}`, '会改写共享的版本历史', undefined, {kind: why});
+    return require('./git-danger.cjs').reason(argv, dir, root, env, deletions);
   }
   return null;
 }
@@ -334,8 +188,20 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
   try {
     const edit = microEdit.isEdit(client, name);
     let targets = [];
+    let deletions = new Set();
+    let overwrites = new Set();
     if (edit) {
-      try { targets = client === 'codex' ? microEdit.patchEdits(input).map(e => e.file) : [input.file_path || input.notebook_path]; }
+      try {
+        const edits = client === 'codex' ? microEdit.patchEdits(input) : [{file: input.file_path || input.notebook_path}];
+        targets = edits.map(e => e.file);
+        deletions = new Set(edits.filter(e => e.kind === 'Delete File').map(e => e.file));
+        overwrites = new Set(edits.filter(e => e.kind === 'Add File').map(e => e.file));
+        // patchEdits emits each Move destination immediately after its Update source.
+        for (const [i, e] of edits.entries()) if (e.kind === 'Move') {
+          deletions.add(edits[i - 1].file);
+          overwrites.add(e.file);
+        }
+      }
       catch { onAdvisory('patch_target_unknown'); return null; }
     }
     for (const file of [...(READ_TOOLS[name] ?? []).map(k => input[k]), ...targets].filter(v => typeof v === 'string' && v)) {
@@ -343,10 +209,10 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
       if (kind) return message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
     }
     if (edit && (derived || reviewer)) for (const target of targets) {
-      const why = targetReason('overwrite', target || '', cwd, root, env, reviewer, onAdvisory); if (why) return why;
+      const why = targetReason(deletions.has(target) ? 'destroy' : name === 'Write' || overwrites.has(target) ? 'overwrite' : 'write', target || '', cwd, root, env, reviewer, onAdvisory); if (why) return why;
     }
     if (shell === undefined) return null;
-    const deletions = new Map();
+    const gitDeletions = new Map();
     return require('./shell-ast.cjs').analyze(shell, cwd, env, (parsed, dir) => {
       onCommand?.(parsed);
       const names = new Set(parsed.selections || []);
@@ -358,7 +224,7 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
         for (const action of effects(argv)) {
           if (!derived && !reviewer && action.effect === 'delegate') continue;
           if (!derived && !reviewer && ['create','destroy','overwrite','write'].includes(action.effect)) continue;
-          const why = actionReason(action, dir, root, {...env, ...parsed.env}, reviewer, onAdvisory, names, deletions); if (why) return why;
+          const why = actionReason(action, dir, root, {...env, ...parsed.env}, reviewer, onAdvisory, names, gitDeletions); if (why) return why;
         }
       }
       for (const file of parsed.reads) {
@@ -373,4 +239,4 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
   } catch { onAdvisory('redline_internal_error'); return null; }
 }
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects, gitReadOnly, gitInvocation};
+module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects, taskOwnership, checkoutOf};

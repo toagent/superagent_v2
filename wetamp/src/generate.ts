@@ -161,9 +161,9 @@ export function buildWorkflow(
   carried?: Carried,
   delivery?: import('./land').DeliveryTarget
 ): Node {
-  // 人工等待按“剩余时长”生成，不设下限；已过 deadline 的 plan 生成即失败，不起一个注定 escalate 的 run
-  const left = Date.parse(plan.deadline) - now;
-  if (left <= 0) throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
+  // 只拒绝显式 deadline 已过的 plan；缺省没有交付期限。
+  if (plan.deadline !== undefined && Date.parse(plan.deadline) <= now)
+    throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
   const executions = executionTable(plan, tiers);
   const execution = (id: string): Node => {
@@ -479,12 +479,16 @@ export function buildWorkflow(
         ...gates,
       });
       // Native approval owns the decision; the absolute plan deadline still guards delivery.
-      const until = Math.floor(Date.parse(plan.deadline) / 1000);
+      const until =
+        plan.deadline === undefined ? undefined : Math.floor(Date.parse(plan.deadline) / 1000);
       nodes.push({
         id: `signoff-${m.id}`,
-        bash: [
-          `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${plan.deadline} passed' >&2; exit 1; }`,
-        ].join('\n'),
+        bash:
+          until === undefined
+            ? 'true'
+            : [
+                `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${String(plan.deadline)} passed' >&2; exit 1; }`,
+              ].join('\n'),
         depends_on: [`human-${m.id}`],
       });
       after = { depends_on: [`signoff-${m.id}`] };

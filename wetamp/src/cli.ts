@@ -2,7 +2,7 @@
 import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
-import { applyLand, captureDelivery, selftest, type DeliveryTarget } from './land';
+import { applyLand, captureDelivery, type DeliveryTarget } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
 import { budgetReason, readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
@@ -150,7 +150,7 @@ const OPTIONS = {
   hint: { type: 'string' },
   fake: { type: 'boolean' },
   apply: { type: 'boolean' },
-  'skip-selftest': { type: 'boolean' },
+  'skip-selftest': { type: 'boolean' }, // Compatibility no-op; diagnostics are explicit.
   'lint-override': { type: 'string' },
   goal: { type: 'string' },
   accept: { type: 'string', multiple: true },
@@ -785,7 +785,6 @@ export function quickPlan(a: Args): string {
   const plan: Plan = {
     repo: git('rev-parse', '--show-toplevel'),
     base_ref: a.flags.base ?? git('symbolic-ref', '--short', 'HEAD'),
-    deadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     budget: { weighted_tokens: 0, unlimited_tokens: true },
     packages: [
       {
@@ -812,15 +811,13 @@ export function quickPlan(a: Args): string {
   return path;
 }
 
-function preflight(skipSelftest: boolean): void {
+function preflight(): void {
   if (installMode() === 'worker')
     throw new Error('preflight: mode=worker; run requires the controller install');
   const { sa } = home();
   const fs = statfsSync(sa);
   if ((fs.bavail * fs.bsize) / 2 ** 30 < MIN_FREE_GB)
     throw new Error(`preflight: < ${String(MIN_FREE_GB)}GB free under ${sa}`);
-  if (skipSelftest) return;
-  selftest(true);
 }
 
 function startRun(planPath: string, a: Args): number {
@@ -833,7 +830,7 @@ function startRun(planPath: string, a: Args): number {
   let plan_lint: ReturnType<typeof lintPlan> | undefined;
   try {
     mode = installMode();
-    preflight(a.flags['skip-selftest'] ?? false);
+    preflight();
     const plan = loadPlan(planPath);
     const repo = repoScope(plan.repo),
       scope = runScope({ run_id: run, repo: plan.repo });
@@ -1153,7 +1150,10 @@ const planOf = (l: Ledger): Plan =>
   JSON.parse(readFileSync(join(l.gen_dir, 'plan.json'), 'utf8')) as Plan;
 
 /** 过了 plan 的绝对 deadline，签收节点与 land 都会拒绝、supervise-tick 会取消 run；approve 在此提前拒绝，不发无效 signal。 */
-const pastDeadline = (l: Ledger): boolean => Date.now() > Date.parse(planOf(l).deadline);
+const pastDeadline = (l: Ledger): boolean => {
+  const deadline = planOf(l).deadline;
+  return deadline !== undefined && Date.now() > Date.parse(deadline);
+};
 const PAST_DEADLINE =
   'plan deadline passed: decide reject, or start a new run with a later deadline';
 
@@ -1845,7 +1845,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   const p = pollAsk(
     key,
     () => decisionQuestion(l, run, classifyRun(l, run), 'signoff'),
-    ttlHours(Date.parse(w.resumeAt)),
+    ttlHours(Date.parse(w.resumeAt ?? '')),
     asks
   );
   if ('conflict' in p)
@@ -1919,7 +1919,7 @@ function askHold(
   const r = pollAsk(
     key,
     () => decisionQuestion(l, run, c, hold),
-    ttlHours(Date.parse(planOf(l).deadline)),
+    ttlHours(Date.parse(planOf(l).deadline ?? '')),
     asks
   );
   if ('conflict' in r)

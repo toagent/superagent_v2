@@ -646,6 +646,8 @@ export function selectLessons(
   _role?: string,
   _category?: Category
 ): LearningEntry[] {
+  void _role;
+  void _category;
   return recallLearning(project, query).entries;
 }
 export function injectMemory(
@@ -653,12 +655,24 @@ export function injectMemory(
   dir: string,
   _nodes: { id: string; command?: unknown; model?: unknown; with?: Record<string, unknown> }[]
 ): Record<string, string[]> {
+  void _nodes;
   const path = join(dir, 'learning.json');
-  if (existsSync(path)) return (JSON.parse(readFileSync(path, 'utf8')) as { ids: Record<string, string[]> }).ids;
-  const selections = selectLearning(plan.repo, Object.fromEntries(plan.packages.map(p => [p.id,
-    [p.goal, ...(p.requirements ?? []).map(r => r.text)].join('\n')])));
-  const ids = Object.fromEntries(Object.entries(selections).filter(([, s]) => s.entries.length)
-    .map(([id, s]) => [id, s.entries.map(e => e.id)]));
+  if (existsSync(path))
+    return (JSON.parse(readFileSync(path, 'utf8')) as { ids: Record<string, string[]> }).ids;
+  const selections = selectLearning(
+    plan.repo,
+    Object.fromEntries(
+      plan.packages.map(p => [
+        p.id,
+        [p.goal, ...(p.requirements ?? []).map(r => r.text)].join('\n'),
+      ])
+    )
+  );
+  const ids = Object.fromEntries(
+    Object.entries(selections)
+      .filter(([, s]) => s.entries.length)
+      .map(([id, s]) => [id, s.entries.map(e => e.id)])
+  );
   writeAtomic(path, JSON.stringify({ version: 1, data_only: true, selections, ids }) + '\n');
   return ids;
 }
@@ -666,6 +680,7 @@ export function maintainLessons(
   run?: { id: string; reasons: string[]; failed: boolean; accepted?: boolean; ids: string[] },
   _now = Date.now()
 ): void {
+  void _now;
   memoryWrite(s => {
     if (run && s.entries.some(e => e.scored === run.id)) return { lessons: [] };
     const lessons = s.lessons.map(l => {
@@ -709,7 +724,7 @@ export function lintPlan(
   if (suggested && !plan.budget.unlimited_tokens && plan.budget.weighted_tokens < suggested / 2) {
     warnings.push(`预算低于 p50 一半；建议 weighted_tokens >= ${String(Math.ceil(suggested))}`);
   }
-  if (duration && Date.parse(plan.deadline) < now + duration) {
+  if (duration && plan.deadline !== undefined && Date.parse(plan.deadline) < now + duration) {
     warnings.push(`截止不现实；建议 deadline >= ${new Date(now + duration).toISOString()}`);
   }
   return {
@@ -766,9 +781,9 @@ export function memoryData(now = Date.now()): {
     tokens = s.entries.filter(e => e.day === day).reduce((n, e) => n + (e.tokens ?? 0), 0),
     done = new Map(
       s.entries
-        .filter(e => e.reflected || e.reflection)
+        .filter(e => Boolean(e.reflected) || Boolean(e.reflection))
         .map(e => [
-          e.reflected ?? e.reflection!.episode,
+          e.reflected ?? e.reflection?.episode ?? '',
           e.result ?? e.reflection?.state ?? '未提炼',
         ])
     );

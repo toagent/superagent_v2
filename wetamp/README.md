@@ -12,27 +12,27 @@ Archon 之上的 superagent 胶水层：把 `plan.json` 编译成 Archon 工作�
 ```bash
 wetamp/scripts/install.sh          # 幂等：写 $ARCHON_HOME/.env 与 config.yaml 的别名段（先备份），渲染 launchd plist，末尾跑 archon doctor
 ln -s "$PWD/wetamp/bin/superagent" ~/.local/bin/superagent   # PATH 接法，手动做一次
-wetamp/scripts/selftest.sh         # 真实模型跑一次契约自检；run 要求有效回执（非 fake、7 天内、HEAD 与配置未变）
+wetamp/scripts/selftest.sh         # 显式运行真实模型契约诊断；run/quick/land 不要求 selftest 回执
 ```
 
 `install.sh` 把 `launchd/com.wetamp.superagent.supervise-tick.plist.tmpl` 渲染到 `~/Library/LaunchAgents`（每 60 秒跑 `supervise-tick`，日志 `$SUPERAGENT_HOME/supervise-tick.log`；内容变了先备份再覆盖），只打印 `launchctl bootstrap/bootout` 命令，加载由人执行。
 
 状态目录 `SUPERAGENT_HOME`（默认 `~/.superagent`），Archon 状态在 `ARCHON_HOME=$SUPERAGENT_HOME/archon`。
 默认安装记录 `controller`，`install.sh --remote-hooks` 记录 `worker`；CLI `health` 与 run preflight 明确报告模式，worker 不启动 run。hook 安装保留用户其他 hooks 与未管理字段；shell hook 只是辅助检查，不是沙箱。
-模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。正式 selftest 先让真实 provider 正常完成，再对确定性 bash 节点注入故障验证恢复；不会杀掉真实 provider 后自动豁免未知效果。`selftest.sh --fake` 不调用模型，只用于测试本层。升级 HEAD 或配置后重新执行不带 `--fake` 的 selftest，旧回执不再准入；验收脚本的安装状态使用独立临时 `XDG_STATE_HOME`。
+模型池真源是 `wetamp/tiers.json`；改完重跑 `install.sh`。正式 selftest 先让真实 provider 正常完成，再对确定性 bash 节点注入故障验证恢复；不会杀掉真实 provider 后自动豁免未知效果。`selftest.sh --fake` 不调用模型，只用于测试本层。需要诊断升级或配置漂移时显式执行不带 `--fake` 的 selftest；验收脚本的安装状态使用独立临时 `XDG_STATE_HOME`。
 
 ## 日常：run → wait → land
 
 plan 的目标 repo 必须位于 `SUPERAGENT_WRITE_ROOTS`（冒号分隔，默认 `~/work`）下，格式见 `schemas/plan.schema.json`
-（示例 `tests/fixtures/plan-two-pkgs.json`：`repo`、`base_ref`、`deadline`、`budget`、`packages[]`，包可带 `milestone`、
+（示例 `tests/fixtures/plan-two-pkgs.json`：`repo`、`base_ref`、`packages[]`，可选 `deadline`、`budget`，包可带 `milestone`、
 `signoff: "human"`；可选 `console: "codex"`）。
 包可设 `review: true` 请求里程碑评审；G2、strict 或验收有效风险升到 G2 必须评审，其余默认主控实测，gate 标记 `TESTED`。
 
 小活用 `superagent quick --goal "修复启动错误" --accept "bun test tests/start.test.ts" --scope "src/**" --scope "tests/**"`，
-`--accept` 与 `--scope` 可重复；默认单包、单里程碑、size S、risk G1，预算为 S 的 `budget_floor` × 4，deadline 为创建后 24 小时，单条验收超时 180 秒。
+`--accept` 与 `--scope` 可重复；默认单包、单里程碑、size S、risk G1，预算默认 observe、无 token 上限，不附加 deadline，单条验收超时 180 秒。
 repo 默认 cwd 所在 git 根，base 默认当前分支，可用 `--repo <path>`、`--base <ref>` 覆盖；默认写范围 `**/*`，建议显式收窄 scope。
 验收默认 `cache:true`，依赖时间、随机性或外部写入的命令须加 `--no-cache`；`--risk G0|G1|G2` 声明风险，`--review` 请求评审，`--json` 输出与 run 同形。
-生成的 plan 先校验，保存在 `$SUPERAGENT_HOME/plans/quick-<ts>.json`，再走 run 的同一启动路径；p50 预算与 deadline 预测不足只警告，预算 floor 合计校验仍拒绝非法计划。
+生成的 plan 先校验，保存在 `$SUPERAGENT_HOME/plans/quick-<ts>.json`，再走 run 的同一启动路径；p50 预算与 deadline 预测不足只警告，仅显式 hard 预算执行 budget floor 合计校验。
 默认单包；多包只在可独立验收且可并行或风险不同时拆；不按文件或步骤拆；小活用 quick。
 
 ```bash
@@ -119,7 +119,7 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 
 ## 故障排查
 
-- `preflight: no valid selftest receipt: <原因>`（无回执 / fake / 过期 / HEAD 漂移 / 配置漂移）：跑 `wetamp/scripts/selftest.sh`（不带 `--fake`；或临时 `run --skip-selftest`）。`--fake` 只写 `selftest-fake.json`，不算回执。
+- `preflight: no valid selftest receipt: <原因>`（无回执 / fake / 过期 / HEAD 漂移 / 配置漂移）：跑 `wetamp/scripts/selftest.sh`（不带 `--fake`；这是显式诊断错误，不阻断普通 run）。`--fake` 只写 `selftest-fake.json`，不算回执。
 - `plan invalid: repo … outside allowed roots`：把 repo 放到 `~/work` 下，或设置 `SUPERAGENT_WRITE_ROOTS`。
 - `generated workflow invalid`：`install.sh` 未跑或 `config.yaml` 缺 `@sa-coder`/`@sa-reviewer` 别名；重跑 `install.sh`。
 - run 停在 running 但进程在别的机器：`recover` 拒绝（`owner alive or on another host`），到那台机器处理。

@@ -20,8 +20,8 @@ export interface Plan {
    * Only 1 is supported: packages share one worktree and run serially
    */
   concurrency?: number;
-  deadline: string;
-  budget: {
+  deadline?: string;
+  budget?: {
     /**
      * Defaults to observe; only explicit hard budgets block delivery
      */
