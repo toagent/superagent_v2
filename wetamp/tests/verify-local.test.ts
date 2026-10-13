@@ -144,7 +144,6 @@ describe('scripts/verify-local.sh', () => {
     expect(a.v).toMatchObject({ commit: f.pass, ok: true, last_ok_commit: f.pass });
     expect(a.v?.steps.map(s => [s.name, s.exit])).toEqual([
       ['install', 0],
-      ['install:wetamp', 0],
       ['tsc', 0],
       ['test', 0],
       ['selftest', 0],
@@ -181,8 +180,6 @@ describe('scripts/verify-local.sh', () => {
     expect(a.v?.steps.map(s => s.name)).toEqual([
       'install',
       'install:linked',
-      'install:wetamp',
-      'install:wetamp:linked',
       'tsc',
       'test',
       'selftest',
