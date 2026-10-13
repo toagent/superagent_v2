@@ -698,8 +698,6 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 
 const MIN_FREE_GB = 2;
 
-const QUICK_BUDGET_MULTIPLIER = 4;
-
 /** Materialize and validate the ordinary plan contract before using the run launcher. */
 export function quickPlan(a: Args): string {
   const goal = a.flags.goal;
@@ -724,7 +722,7 @@ export function quickPlan(a: Args): string {
     repo: git('rev-parse', '--show-toplevel'),
     base_ref: a.flags.base ?? git('symbolic-ref', '--short', 'HEAD'),
     deadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    budget: { weighted_tokens: loadTiers().policy.budget_floor[size] * QUICK_BUDGET_MULTIPLIER },
+    budget: { weighted_tokens: 0, unlimited_tokens: true },
     packages: [
       {
         id: 'quick',
@@ -1950,6 +1948,8 @@ function grantBudget(l: Ledger, node: string, key: string): void {
       ...grant,
       key,
       limits: {
+        enforcement: plan.budget.enforcement ?? 'observe',
+        ...(plan.budget.unlimited_tokens ? { unlimited_tokens: true } : {}),
         launches: Math.max(plan.budget.launches ?? 0, usage.launches) + launches,
         weighted_tokens:
           Math.max(plan.budget.weighted_tokens, usage.weighted_tokens) + weighted_tokens,

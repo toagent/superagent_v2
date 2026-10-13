@@ -43,7 +43,11 @@ export function executePolicy(
   resume?: string
 ): AsyncGenerator<MessageChunk> {
   return dispatchPolicy(
-    { ...execution, usage: attempts => budgetUsage(execution.events(), execution.floor, attempts) },
+    {
+      ...execution,
+      budget: { ...execution.budget, enforcement: execution.budget.enforcement ?? 'observe' },
+      usage: attempts => budgetUsage(execution.events(), execution.floor, attempts),
+    },
     prompt,
     cwd,
     resume

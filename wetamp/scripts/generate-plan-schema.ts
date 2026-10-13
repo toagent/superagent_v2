@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { requirementsSchema, requestRefSchema } from '../src/plan';
+import { requirementsSchema, requestRefSchema, budgetEnforcementSchema } from '../src/plan';
 import { WETAMP } from '../src/config';
 
 const path = join(WETAMP, 'schemas/plan.schema.json');
@@ -19,5 +19,14 @@ updated = updated.replace(/^    "request_ref": .*\n/m, '');
 updated = updated.replace(
   '  "properties": {',
   '  "properties": {\n    "request_ref": ' + JSON.stringify(requestRefSchema) + ','
+);
+updated = updated.replace(/^        "enforcement": .*\n/m, '');
+updated = updated.replace(
+  '        "unlimited_tokens": {',
+  '        "enforcement": ' + JSON.stringify(budgetEnforcementSchema) + ',\n        "unlimited_tokens": {'
+);
+updated = updated.replace(
+  'Run budget must cover the sum of policy.budget_floor for all package sizes',
+  'Observed by default; hard token budgets must cover the package budget_floor sum'
 );
 writeFileSync(path, updated);

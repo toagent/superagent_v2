@@ -59,3 +59,23 @@ export function writePolicyAttempts(artifacts: string, attempts: PolicyAttempt[]
   writeFileSync(tmp, JSON.stringify(attempts) + '\n', { flag: 'wx' });
   renameSync(tmp, file);
 }
+
+/** Shared by dispatch admission and the portable delivery gate. Callers own the default mode. */
+export interface PolicyBudget {
+  launches?: number;
+  weighted_tokens: number;
+  unlimited_tokens?: true;
+  enforcement?: 'observe' | 'hard';
+}
+export function budgetReason(
+  limits: PolicyBudget,
+  used: { launches: number; weighted_tokens: number; reserve: number },
+  beforeLaunch: boolean
+): 'budget_launches_exceeded' | 'budget_tokens_exceeded' | null {
+  if (limits.launches !== undefined &&
+      (beforeLaunch ? used.launches >= limits.launches : used.launches > limits.launches))
+    return 'budget_launches_exceeded';
+  return !limits.unlimited_tokens &&
+    used.weighted_tokens + (beforeLaunch ? used.reserve : 0) > limits.weighted_tokens
+    ? 'budget_tokens_exceeded' : null;
+}

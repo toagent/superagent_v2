@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { WETAMP, assertSQLite, type Console } from './config';
+import type { PolicyBudget } from '../../packages/workflows/src/provider-attempts';
 import type { JSONSchemaType } from '../../packages/workflows/node_modules/ajv';
 
 export interface Requirement {
@@ -58,7 +59,7 @@ export interface Pkg {
 export interface Plan {
   request_ref?: string;
   repo: string;
-  budget: { weighted_tokens: number; unlimited_tokens?: true; cost?: number; launches?: number }; // Explicit unlimited tokens preserves launch/round bounds.
+  budget: PolicyBudget & { cost?: number };
   base_ref: string;
   deadline: string;
   mode?: string;
@@ -68,6 +69,11 @@ export interface Plan {
   caps?: Partial<Caps>;
   packages: Pkg[];
 }
+export const budgetEnforcementSchema = {
+  type: 'string',
+  enum: ['observe', 'hard'],
+  description: 'Defaults to observe; only explicit hard budgets block delivery',
+} as const satisfies JSONSchemaType<NonNullable<Plan['budget']['enforcement']>>;
 export const requestRefSchema = {
   type: 'string',
   minLength: 1,

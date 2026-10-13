@@ -7,6 +7,7 @@ import {
   milestones,
   requirementsSchema,
   requestRefSchema,
+  budgetEnforcementSchema,
   type Plan,
 } from '../src/plan';
 import { fixturePlan, gitRepo, tmp } from './helpers';
@@ -211,4 +212,14 @@ describe('milestones', () => {
     ]);
     expect(() => milestones(p)).toThrow(/milestone dependency cycle/);
   });
+});
+
+test('budget enforcement schema agrees with its typed owner and validates explicit modes', () => {
+  const schema = JSON.parse(readFileSync(join(import.meta.dir, '../schemas/plan.schema.json'), 'utf8'));
+  expect(schema.properties.budget.properties.enforcement).toEqual(budgetEnforcementSchema);
+  for (const enforcement of [undefined, 'observe', 'hard', 'invalid'] as const) {
+    const { path, root } = setup(p => (p.budget = { weighted_tokens: 0, enforcement }));
+    if (enforcement === 'invalid') expect(() => loadPlan(path, [root])).toThrow('plan invalid');
+    else expect(loadPlan(path, [root]).budget.enforcement).toBe(enforcement);
+  }
 });

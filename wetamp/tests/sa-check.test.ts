@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   budgetUsage,
+  effectiveBudget,
   decide,
   disposition,
   identityOf,
@@ -1358,7 +1359,7 @@ describe('sa-check script', () => {
     writeFileSync(archon, '#!/usr/bin/env node\nprocess.exit(1);\n');
     expect(gate(current).out).toMatchObject({ verdict: 'escalate', reason: 'deadline' });
   }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
-  test('POLICY-R1-03: final review exceeding its reservation cannot PASS or reach land', () => {
+  test('budget enforcement: hard final review blocks while observe preserves PASS', () => {
     const root = tmp(),
       repo = gitRepo(root),
       p = join(root, 'plan.json');
@@ -1367,7 +1368,7 @@ describe('sa-check script', () => {
       JSON.stringify({
         deadline: '2099-01-01T00:00:00Z',
         mode: 'strict',
-        budget: { launches: 2, weighted_tokens: 30 },
+        budget: { launches: 2, weighted_tokens: 30, enforcement: 'hard' },
         packages: [],
       })
     );
@@ -1426,6 +1427,12 @@ describe('sa-check script', () => {
       risk: 'G2',
       reason: 'budget_tokens_exceeded',
     });
+    const observed = JSON.parse(readFileSync(p, 'utf8'));
+    delete observed.budget.enforcement;
+    writeFileSync(p, JSON.stringify(observed));
+    expect(gate()).toMatchObject({ code: 0, out: { verdict: 'pass', grade: 'PASS' } });
+    observed.budget.enforcement = 'hard';
+    writeFileSync(p, JSON.stringify(observed));
     // Exactly the allowed final launch count is legal once actual tokens are within budget.
     events[3]!.data!.spend.tokens.value = { input: 5, output: 5 };
     writeFileSync(eventsFile, JSON.stringify({ events }));
@@ -2347,4 +2354,13 @@ describe('sa-check script', () => {
     const root = tmp();
     expect(runScript(gitRepo(root), { kind: 'bogus' }).code).not.toBe(0);
   });
+});
+
+test('budget grants inherit enforcement and token exemption from the plan, including old grants', () => {
+  const grant = { milestone: 'm1', attempt: 0, limits: { launches: 4, weighted_tokens: 100 } };
+  for (const enforcement of [undefined, 'observe', 'hard'] as const) {
+    const base = { weighted_tokens: 0, enforcement, unlimited_tokens: true as const };
+    expect(effectiveBudget(base, grant, 'm1', 0)).toMatchObject({ enforcement: enforcement ?? 'observe', unlimited_tokens: true });
+    expect(effectiveBudget(base, { ...grant, limits: { ...grant.limits, enforcement: 'observe' } }, 'm1', 0).enforcement).toBe(enforcement ?? 'observe');
+  }
 });

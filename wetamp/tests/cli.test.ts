@@ -210,7 +210,7 @@ describe('quick', () => {
       const plan = loadPlan(path);
       expect(plan.repo).toBe(repo);
       expect(plan.base_ref).toBe('main');
-      expect(plan.budget.weighted_tokens).toBe(4 * loadTiers().policy.budget_floor.S);
+      expect(plan.budget).toEqual({ weighted_tokens: 0, unlimited_tokens: true });
       expect(Date.parse(plan.deadline)).toBeGreaterThan(Date.now());
       expect(plan.packages).toHaveLength(1);
       expect(plan.packages[0]).toMatchObject({

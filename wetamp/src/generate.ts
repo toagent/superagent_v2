@@ -653,7 +653,7 @@ export function generate(
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
   const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
-  if (!plan.budget.unlimited_tokens && plan.budget.weighted_tokens < floor)
+  if (plan.budget.enforcement === 'hard' && !plan.budget.unlimited_tokens && plan.budget.weighted_tokens < floor)
     throw new Error(
       `plan invalid: /budget/weighted_tokens ${String(plan.budget.weighted_tokens)} < policy.budget_floor sum ${String(floor)}`
     );
