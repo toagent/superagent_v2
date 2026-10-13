@@ -1,7 +1,7 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
-import { Intake, completion, intakeRoot } from './intake';
+import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import { applyLand, captureDelivery, selftest, type DeliveryTarget } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
@@ -256,7 +256,9 @@ export function loadLedger(run: string): Ledger {
   }
   if (o === null || typeof o !== 'object' || Array.isArray(o))
     throw new Error(
-      `ledger ${p}: not a JSON object (${o === null ? 'null' : Array.isArray(o) ? 'array' : typeof o})`
+      `ledger ${p}: not a JSON object (${
+        o === null ? 'null' : Array.isArray(o) ? 'array' : typeof o
+      })`
     );
   const bad = LEDGER_STRINGS.filter(k => typeof o[k] !== 'string');
   if (o.recoveries !== undefined && !Array.isArray(o.recoveries)) bad.push('recoveries');
@@ -497,7 +499,9 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     adoption: l.adoptions?.at(-1) ?? null,
     state: c.state,
     exit: c.exit,
-    nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(nodes.length)} completed`,
+    nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
+      nodes.length
+    )} completed`,
     ...(c.node ? { node: c.node } : {}),
     ...(c.event ? { event: c.event } : {}),
     ...(c.node?.startsWith('gate-')
@@ -1299,11 +1303,15 @@ function brief(l: Ledger, json = false): number {
     return c.exit;
   }
   const lines = [
-    `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${l.branch}`,
+    `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${
+      l.branch
+    }`,
   ];
   const ownership = coord().owner(runScope(l));
   lines.push(
-    `controller: ${JSON.stringify(ownership.owner)} ${ownership.presence.state}; inbox: ${String(coord().pending(ownership.scope))}`
+    `controller: ${JSON.stringify(ownership.owner)} ${ownership.presence.state}; inbox: ${String(
+      coord().pending(ownership.scope)
+    )}`
   );
   const inbox = coord().inbox(caller(true));
   if (inbox.length) lines.push(`inbox: ${inbox.map(m => m.id).join(' ')}; superagent inbox`);
@@ -1320,7 +1328,9 @@ function brief(l: Ledger, json = false): number {
   for (const f of evidenceGates(l, art)) {
     const d = decisionOf(evidenceJson(l, art, f));
     lines.push(
-      `${f.slice(0, -5)}: ${decisionVerdict(d)}${d?.reason ? ` (${d.reason})` : ''} debt=${String(d?.debt.length ?? 0)}`
+      `${f.slice(0, -5)}: ${decisionVerdict(d)}${d?.reason ? ` (${d.reason})` : ''} debt=${String(
+        d?.debt.length ?? 0
+      )}`
     );
   }
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
@@ -1330,7 +1340,9 @@ function brief(l: Ledger, json = false): number {
     lines.push(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
   lines.push(
     `evidence: ${art}`,
-    `recoveries: ${String(l.recoveries?.length ?? 0)} auto_retries: ${String(l.auto_retries?.length ?? 0)}`
+    `recoveries: ${String(l.recoveries?.length ?? 0)} auto_retries: ${String(
+      l.auto_retries?.length ?? 0
+    )}`
   );
   console.log(lines.slice(0, 20).join('\n'));
   return c.exit;
@@ -1552,7 +1564,9 @@ function decisionReceipt(
       action = `已提交${name(effect.target)}本轮评审重跑`;
       break;
   }
-  return `run=${name(run)}；节点=${name(node) || '未指定'}；答复=${answer === 'yes' ? '是' : '否'}；${action}；去向=${name(effect.engine_run)}；结果=动作已受理（不代表后续验收通过）`;
+  return `run=${name(run)}；节点=${name(node) || '未指定'}；答复=${
+    answer === 'yes' ? '是' : '否'
+  }；${action}；去向=${name(effect.engine_run)}；结果=动作已受理（不代表后续验收通过）`;
 }
 interface AnswerReceipt {
   key: string;
@@ -1737,7 +1751,9 @@ function pollAsk(
     );
     if (found.length > 1)
       return {
-        conflict: `ask ${key}: ${String(found.length)} supervisor asks match${note ? `; ${note}` : ''}`,
+        conflict: `ask ${key}: ${String(found.length)} supervisor asks match${
+          note ? `; ${note}` : ''
+        }`,
       };
     a = asks[key] = found.length ? { ...a, id: found[0].id, status: 'pending' } : undefined;
   }
@@ -2109,7 +2125,13 @@ function grantBudget(l: Ledger, node: string, key: string): void {
 
 /** Entry timestamp is stable across polls; node distinguishes milestone signoffs. */
 function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
-  return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${run.metadata?.wait?.waitingSince ?? run.completed_at ?? run.last_activity_at ?? run.started_at ?? l.started_at}`;
+  return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${
+    run.metadata?.wait?.waitingSince ??
+    run.completed_at ??
+    run.last_activity_at ??
+    run.started_at ??
+    l.started_at
+  }`;
 }
 /** 展示与实际 retryGate/resume 分支一致；settle 是包的最终验收节点。 */
 function decisionRecovery(
@@ -2158,7 +2180,9 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
     pkg = plan.packages.find(p => p.id === node.replace(/^(verify|settle|code|repair)-/, ''));
   const reason = reasonOf(decisionOf(out)?.reason ?? '')?.description ?? '证据缺失';
   const names = [basename(l.repo), pkg?.title ?? m, node];
-  const progress = `已完成${String((run.nodes ?? []).filter(n => n.state === 'completed').length)}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
+  const progress = `已完成${String(
+    (run.nodes ?? []).filter(n => n.state === 'completed').length
+  )}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
   let detail = reason,
     compact = reason;
   if (hold === 'needs') {
@@ -2193,10 +2217,14 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
         );
         detail =
           `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
-          `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens)}`;
+          `加权token已用/上限${String(u.weighted_tokens)}/${String(
+            limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens
+          )}`;
         compact =
           out.reason === 'budget_tokens_exceeded'
-            ? `加权token已用/上限${String(u.weighted_tokens)}/${String(limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens)}`
+            ? `加权token已用/上限${String(u.weighted_tokens)}/${String(
+                limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens
+              )}`
             : `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}`;
       }
     } catch {
@@ -2206,7 +2234,9 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
     const ledger = read(`${node}.ledger.json`);
     detail =
       `轮次${typeof out.rounds === 'number' ? String(out.rounds) : '证据缺失'}，` +
-      `未决${Array.isArray(ledger.blocking) ? String(ledger.blocking.length) : '证据缺失'}；${reason}`;
+      `未决${
+        Array.isArray(ledger.blocking) ? String(ledger.blocking.length) : '证据缺失'
+      }；${reason}`;
   } else if (hold === 'approval') detail = '等待批准';
   else if (hold === 'signoff') {
     let files: string[] = [];
@@ -2220,7 +2250,15 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
         read(files.filter(f => f.startsWith(`gate-${m}-r`)).at(-1) ?? 'missing-signoff.json')
       )
     );
-    detail = `验收/评审${verdict === 'pass' ? '通过' : verdict === 'fix' ? '需修复' : verdict === 'escalate' ? '需升级处理' : '证据缺失'}`;
+    detail = `验收/评审${
+      verdict === 'pass'
+        ? '通过'
+        : verdict === 'fix'
+          ? '需修复'
+          : verdict === 'escalate'
+            ? '需升级处理'
+            : '证据缺失'
+    }`;
   } else if (hold !== 'redline' && hold !== 'coder_blocked') {
     const check = Array.isArray(out.failed)
       ? out
@@ -2454,7 +2492,7 @@ export function main(argv: string[]): number {
   if (a.flags.help || verb === 'help') {
     console.log(
       USAGE +
-        '\ncontinuous intake: intake receive|apply <payload.json> | list | show <task-id> | input <source> <session> <message> | context|resume [bytes] [--repo path]'
+        `\ncontinuous intake: ${INTAKE_USAGE} [arguments] [--repo path]; context|resume [bytes] [cursor]; backlog [parent-task]`
     );
     return 0;
   }
@@ -2482,7 +2520,7 @@ export function main(argv: string[]): number {
     });
   switch (verb) {
     case 'intake': {
-      const command = need(target, 'intake receive|apply|list|show|context|resume');
+      const command = need(target, INTAKE_USAGE);
       const argument = a._.at(2);
       const raw: unknown = ['receive', 'apply'].includes(command)
         ? JSON.parse(
@@ -2507,38 +2545,41 @@ export function main(argv: string[]): number {
       )
         throw new Error('intake: input.repo must be the absolute repository path');
       const store = new Intake(intakeRoot(home().sa, repo));
-      const view = (id: string): unknown => {
-        const task = store.show(id);
-        const status = completion(task, binding => {
-          if (!binding.run_id) return undefined;
-          try {
-            const l = loadLedger(binding.run_id);
-            if (resolve(l.repo) !== task.repo || resolve(l.plan) !== resolve(binding.plan))
-              return undefined;
-            const digest = createHash('sha256').update(readFileSync(l.plan)).digest('hex');
-            if (digest !== binding.digest) return undefined;
-            const run = getRun(l.archon_run_id, l.repo);
-            const history = decisionsOf(artifactsOf(run), undefined, l);
-            if (
-              run.nodes?.some(
-                n =>
-                  n.state === 'completed' &&
-                  n.nodeId.startsWith('gate-') &&
-                  !history.some(d => d.tag === n.nodeId && d.decision)
-              )
-            )
-              return undefined;
-            const decisions = currentDecisions(history).map(d => d.decision);
-            if (decisions.some(d => !d)) return undefined;
-            return {
-              completed: classifyRun(l, run).state === 'completed',
-              decisions: decisions.flatMap(d => (d ? [d] : [])),
-            };
-          } catch {
+      const tasks = store.list();
+      const readEvidence: EvidenceReader = binding => {
+        if (!binding.run_id) return undefined;
+        try {
+          const l = loadLedger(binding.run_id);
+          if (resolve(l.repo) !== repo || resolve(l.plan) !== resolve(binding.plan))
             return undefined;
-          } // Missing/unreadable engine evidence is unknown, never a success.
-        });
-        return { ...task, completion: status };
+          const digest = createHash('sha256').update(readFileSync(l.plan)).digest('hex');
+          if (digest !== binding.digest) return undefined;
+          const run = getRun(l.archon_run_id, l.repo);
+          const history = decisionsOf(artifactsOf(run), undefined, l);
+          if (
+            run.nodes?.some(
+              n =>
+                n.state === 'completed' &&
+                n.nodeId.startsWith('gate-') &&
+                !history.some(d => d.tag === n.nodeId && d.decision)
+            )
+          )
+            return undefined;
+          const decisions = currentDecisions(history).map(d => d.decision);
+          if (decisions.some(d => !d)) return undefined;
+          return {
+            packages: (JSON.parse(readFileSync(l.plan, 'utf8')) as Plan).packages,
+            completed: classifyRun(l, run).state === 'completed',
+            decisions: decisions.flatMap(d => (d ? [d] : [])),
+          };
+        } catch {
+          return undefined;
+        } // Missing/unreadable engine evidence is unknown, never a success.
+      };
+      const view = (id: string): unknown => {
+        const task = tasks.find(t => t.id === id);
+        if (!task) throw new Error('intake: unknown task');
+        return { ...task, completion: completion(task, readEvidence, tasks) };
       };
       switch (command) {
         case 'receive':
@@ -2567,12 +2608,15 @@ export function main(argv: string[]): number {
         case 'show':
           print(view(need(argument, 'intake show <task-id>')));
           break;
+        case 'backlog':
+          print(store.backlog(repo, readEvidence, argument));
+          break;
         case 'context':
         case 'resume':
-          print(store.context(repo, argument === undefined ? 8192 : Number(argument)));
+          print(store.context(repo, argument === undefined ? 8192 : Number(argument), a._[3]));
           break;
         default:
-          throw new Error('usage: superagent intake receive|apply|list|show|context|resume');
+          throw new Error(`usage: superagent ${INTAKE_USAGE}`);
       }
       return 0;
     }

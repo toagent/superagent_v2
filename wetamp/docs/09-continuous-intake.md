@@ -1,7 +1,7 @@
 # 持续输入：显式 typed CLI 首片
 
 元帅解释自然语言，再提交结构化动作；本模块不调用模型、不分类关键词、
-不启动或取消 run。新增 Task 不会删除或抢占旧 Task。自动终端输入 hook 尚未接入。
+不启动或取消 run。新增 Task 不会删除或抢占旧 Task。原生终端 hook 捕获已登记主检出的输入并恢复有界指针，不解释自然语言。
 
 ## 最短用法
 
@@ -59,7 +59,7 @@ state 损坏或版本不支持会报错，不重建为空。锁忙可用同一�
 输入、预分配的确定性 TaskID、actions、Task 与结果在同一个短锁下原子替换。
 进程在 rename 前退出不产生 Task，rename 后退出则重试返回已存结果，不重新 create。
 恢复无需重新解释；`resume` 是有界视图，不是引擎 resume，也不会重发未知 launch。
-context 返回指针，默认 8192 字节，允许 128..65536，超限标记 `truncated`；正文按需读取。
+context 默认 8192 字节（原生 hook 为 4096），允许 128..65536；元数据或最小指针装不下时报错。
 
 派发/取消/回答 gate 由元帅通过既有 `run/cancel/decide` 和 COORD owner/handoff 执行。
 intake 的 repo/actor/owner 是需求关联标签，不是另一个授权层。
@@ -69,9 +69,52 @@ intake 的 repo/actor/owner 是需求关联标签，不是另一个授权层。
 `request_ref` 以测量 owner 兼容字段接入为后续工作，本片只显式绑定 Task/revision/run。
 
 `show` 只读取既有引擎 ledger 与 deliveryDecision：同 repo、同 plan/digest、当前 revision、
-run completed 且所有 decision 有证据与 verified requirement 才投影 `verified`。
+run completed 且所有有效 decision 有证据与 verified requirement，并按当前 revision 的明确映射
+覆盖全部义务、所有直接及间接 children 均 verified 才投影 `verified`。
 旧版成功、证据缺失/不明、取消意图未对账均为 `unknown`。Task 不复制 Run 状态机。
 未承诺全终端自动捕获、线上效果或端到端 exactly-once 派发；不新增模型调用或依赖。
 
 聚焦验证：`rtk proxy bun test --cwd wetamp ./tests/intake.test.ts`；
 静态检查：`rtk proxy bun x --no-install tsc --noEmit -p wetamp/tsconfig.json`。
+
+
+## 追加义务与真实覆盖
+
+`create/amend` 可带 `requirements: [{"id":"A","text":"用户义务原文"}]`。
+数组非空且 ID 唯一；amend 不传则继承，传入须保留旧 ID 及其原文，只能追加。
+澄清可更新 brief/acceptance；范围缩减须显式新建任务并记录原任务取消意图，
+不允许静默改写义务。旧数据继续可读、可执行，无明确义务/映射时完成度为 unknown。
+
+`launch` 可带非空子集映射：
+
+```json
+{"requirement_map":[{"task_requirement_id":"A","package":"pkg","requirement_id":"req"}]}
+```
+
+每个 binding 内源 ID 和目标 package/id 唯一；源必须属于当前 revision。
+`bind` 不接受改映射。当前 revision 多个完成 run 的有效 DeliveryDecision 可按义务 ID
+并集，但只接受真实冻结 plan 中存在且证据匹配的目标。部分覆盖、旧 revision、
+不明证据不能证明完整交付；children 的取消意图不解除父子阻断。
+
+## 完整有界遍历与进度
+
+保留 `tasks/inputs/truncated`，新增 `coverage/next`。coverage.tasks/inputs 分别给出
+固定读取上界内的 eligible `total`、本页 `shown`、尚未遍历 `remaining`、上界后的 `later`；
+`coverage.obligations` 是当前完整 Task 集合的义务总数。过大条目降为 id/key 短指针，
+使用 show/input 查询正文。每页 JSON 严格受字节预算限制。
+
+```sh
+superagent intake context 4096 --repo /absolute/project/path
+superagent intake context 4096 '<next>' --repo /absolute/project/path
+superagent intake backlog --repo /absolute/project/path
+superagent intake backlog task-parent --repo /absolute/project/path
+```
+
+重复消费 `next` 直到 null，再处理 `later`：重新开始一次遍历。游标绑定 repo、现有
+append-only 数组上界与绝对位置；持续追加不重启遍历，条目正文仍是当前 revision。
+历史缩短/重排或无效游标会明确报错；页末不能冒称最新全体任务已完成。
+
+`backlog` 是同一 Intake 的只读进度投影，不额外持久化或调用模型；包含全部 Task、
+父子关系、当前义务/覆盖 ID、completion 与 unknown 原因、questions、取消历史、show 指针。
+可按父任务查看其整个子树。原生 hook 要求读完 continuation 后判断范围/生成进度，
+进度以 backlog 为准；status-only 继续提交 `actions: []`，不缩小旧需求集合。

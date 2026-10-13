@@ -37,7 +37,11 @@ const create = (ref = 'a'): Extract<Action, { kind: 'create' }> => ({
 const apply = (s: Intake, message: string, actions: Action[]) => s.apply(input(message), actions);
 const newTask = (s: Intake, message = 'create'): string =>
   apply(s, message, [create()]).results![0]!.task!;
-const launch = (task: string, revision = 1, launch_id = 'launch'): Action => ({
+const launch = (
+  task: string,
+  revision = 1,
+  launch_id = 'launch'
+): Extract<Action, { kind: 'launch' }> => ({
   kind: 'launch',
   task,
   expected_revision: revision,
@@ -203,8 +207,15 @@ test('unknown dispatch is not retryable; explicit binding and cancel preserve hi
 
 test('only engine evidence for current revision can project completion', () => {
   const s = new Intake(root()),
-    a = newTask(s);
-  apply(s, 'run', [launch(a), bind(a)]);
+    a = apply(s, 'create', [{ ...create(), requirements: [{ id: 'A', text: 'A' }] }]).results![0]!
+      .task!;
+  apply(s, 'run', [
+    {
+      ...launch(a),
+      requirement_map: [{ task_requirement_id: 'A', package: 'p', requirement_id: 'r' }],
+    },
+    bind(a),
+  ]);
   const decision: DeliveryDecision = {
     kind: 'advance',
     reason: null,
@@ -223,10 +234,15 @@ test('only engine evidence for current revision can project completion', () => {
       ],
     },
   };
-  const green = () => ({ completed: true, decisions: [decision] });
+  const packages = [
+    { id: 'p', requirements: [{ id: 'r', text: 'requirement', verified_by: [0] }] },
+  ];
+  const green = () => ({ completed: true, decisions: [decision], packages });
   expect(completion(s.show(a), green)).toBe('verified');
   expect(completion(s.show(a), () => undefined)).toBe('unknown');
-  expect(completion(s.show(a), () => ({ completed: true, decisions: [] }))).toBe('unknown');
+  expect(completion(s.show(a), () => ({ completed: true, decisions: [], packages }))).toBe(
+    'unknown'
+  );
   apply(s, 'revision', [amend(a)]);
   expect(completion(s.show(a), green)).toBe('unknown');
 });
@@ -254,12 +270,21 @@ test('CLI completion consumes final evidence after repair and fails closed on mi
   const oldArchonHome = process.env.ARCHON_HOME;
   mkdirSync(art, { recursive: true });
   mkdirSync(join(dir, 'runs'));
-  writeFileSync(plan, '{}');
+  const frozen = JSON.stringify({
+    packages: [{ id: 'p', requirements: [{ id: 'r', text: 'r', verified_by: [0] }] }],
+  });
+  writeFileSync(plan, frozen);
   const s = new Intake(intakeRoot(dir, repo));
-  const id = s.apply({ ...input('create'), repo }, [create()]).results![0]!.task!;
-  const receipt = { plan, digest: createHash('sha256').update('{}').digest('hex') };
+  const id = s.apply({ ...input('create'), repo }, [
+    { ...create(), requirements: [{ id: 'A', text: 'A' }] },
+  ]).results![0]!.task!;
+  const receipt = { plan, digest: createHash('sha256').update(frozen).digest('hex') };
   s.apply({ ...input('bind'), repo }, [
-    { ...launch(id), ...receipt },
+    {
+      ...launch(id),
+      ...receipt,
+      requirement_map: [{ task_requirement_id: 'A', package: 'p', requirement_id: 'r' }],
+    },
     { ...bind(id), ...receipt },
   ]);
   writeFileSync(
@@ -356,8 +381,12 @@ test('process crash before/after atomic rename releases lock and cannot duplicat
       import { spyOn } from 'bun:test'; import * as c from ${JSON.stringify(config)};
       import { Intake } from ${JSON.stringify(module)};
       const original = c.writeAtomic;
-      spyOn(c, 'writeAtomic').mockImplementation((p,t) => { ${afterCommit ? 'original(p,t);' : ''} process.exit(9); });
-      new Intake(${JSON.stringify(dir)}).apply(${JSON.stringify(payload.input)}, ${JSON.stringify(payload.actions)});
+      spyOn(c, 'writeAtomic').mockImplementation((p,t) => { ${
+        afterCommit ? 'original(p,t);' : ''
+      } process.exit(9); });
+      new Intake(${JSON.stringify(dir)}).apply(${JSON.stringify(payload.input)}, ${JSON.stringify(
+        payload.actions
+      )});
     `,
       ],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -382,7 +411,9 @@ test('concurrent writers cannot both amend expected revision 1', async () => {
         '-e',
         `
     import { Intake } from ${JSON.stringify(module)};
-    try { console.log(JSON.stringify(new Intake(${JSON.stringify(dir)}).apply(${JSON.stringify(input('cas' + n))}, ${JSON.stringify([amend(a)])}).results)); }
+    try { console.log(JSON.stringify(new Intake(${JSON.stringify(dir)}).apply(${JSON.stringify(
+      input('cas' + n)
+    )}, ${JSON.stringify([amend(a)])}).results)); }
     catch (e) { console.log(JSON.stringify({ error: e.message })); }
   `,
       ],
@@ -427,6 +458,9 @@ test('actual CLI supports scratch receive/apply/list/show/resume with no model c
   expect(cli('list').exitCode).toBe(0);
   expect(JSON.parse(cli('show', id).stdout.toString()).completion).toBe('unknown');
   expect(JSON.parse(cli('resume', '1024').stdout.toString()).tasks[0].id).toBe(id);
+  const backlog = JSON.parse(cli('backlog', id).stdout.toString());
+  expect(backlog.tasks.map((t: { id: string }) => t.id)).toEqual([id]);
+  expect(backlog.tasks[0].reason).toBe('no_requirements');
 });
 
 test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and advisories', () => {
@@ -494,6 +528,8 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
   const out = transport(p);
   expect(out).toContain(a);
   expect(out).toContain('uninterpreted');
+  expect(out).toContain('until next is null');
+  expect(out).toContain('backlog');
   expect(out).toContain('problem, value');
   expect(Buffer.byteLength(out)).toBeLessThan(8192);
   expect(hook(p)).toBe(out);
@@ -502,7 +538,7 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
   expect(hook({ ...p, hook_event_name: 'SessionStart' })).toContain('turn2');
   expect(hook({ ...p, hook_event_name: 'SessionStart', session_id: 'new-session' })).toContain(a);
   store.apply(store.input('codex', 'session', 'turn').input, []);
-  expect(JSON.stringify(store.context(repo))).not.toContain('[\"codex\",\"session\",\"turn\"]');
+  expect(JSON.stringify(store.context(repo))).not.toContain('["codex","session","turn"]');
   const before = readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8');
   expect(hook(p, 'codex', { SUPERAGENT_ROLE: 'worker' })).toBe('');
   expect(hook({ ...p, agent_type: 'general', agent_id: 'child' })).toBe('');
@@ -572,4 +608,162 @@ test('INTAKE_NATIVE interleaved tasks keep old execution and typed answer/amend 
   expect(store.show(a).questions[0]!.answer!.value).toBe('yes');
   expect(store.show(b).revision).toBe(2);
   expect(store.show(a).cancellations).toEqual([]);
+});
+
+test('explicit obligations inherit and only append; malformed maps and remapping bind reject', () => {
+  const s = new Intake(root()),
+    A = { id: 'A', text: 'original A' },
+    B = { id: 'B', text: 'B' };
+  const id = apply(s, 'create', [{ ...create(), requirements: [A] }]).results![0]!.task!;
+  apply(s, 'inherit', [amend(id)]);
+  expect(s.show(id).revisions.at(-1)!.requirements).toEqual([A]);
+  for (const requirements of [[B], [{ ...A, text: 'changed' }], [A, A], []]) {
+    expect(
+      apply(s, 'reject-' + JSON.stringify(requirements), [{ ...amend(id, 2), requirements }])
+        .results![0]!.status
+    ).toBe('rejected');
+    expect(s.show(id).revision).toBe(2);
+  }
+  apply(s, 'append', [{ ...amend(id, 2), requirements: [A, B] }]);
+  expect(s.show(id).revisions.at(-1)!.requirements).toEqual([A, B]);
+  const map = { task_requirement_id: 'A', package: 'p', requirement_id: 'r' };
+  for (const requirement_map of [
+    [],
+    [map, map],
+    [map, { ...map, task_requirement_id: 'B' }],
+    [{ ...map, task_requirement_id: 'missing' }],
+  ])
+    expect(
+      apply(s, 'badmap-' + JSON.stringify(requirement_map), [{ ...launch(id, 3), requirement_map }])
+        .results![0]!.status
+    ).toBe('rejected');
+  apply(s, 'launch', [{ ...launch(id, 3), requirement_map: [map] }]);
+  expect(
+    s.apply(input('remap-bind'), [{ ...bind(id), requirement_map: [map] }]).results![0]!.status
+  ).toBe('rejected');
+  apply(s, 'bind', [bind(id)]);
+  expect(s.show(id).runs[0]!.requirement_map).toEqual([map]);
+});
+
+test('coverage unions current revision exact targets and every descendant blocks its parent', () => {
+  const s = new Intake(root()),
+    requirements = [
+      { id: 'A', text: 'A' },
+      { id: 'B', text: 'B' },
+    ];
+  const id = apply(s, 'parent', [{ ...create(), requirements }]).results![0]!.task!;
+  const map = (id: string) => [{ task_requirement_id: id, package: 'p', requirement_id: id }];
+  const packages = [{ id: 'p', requirements: requirements.map(r => ({ ...r, verified_by: [0] })) }];
+  const decision = (id: string): DeliveryDecision => ({
+    kind: 'advance',
+    reason: null,
+    debt: [],
+    evidence: ['accept'],
+    requirements: {
+      status: 'verified',
+      items: [{ package: 'p', id, text: id, status: 'verified', evidence: ['accept'] }],
+    },
+  });
+  const evidence = (r: { launch_id: string }) => ({
+    completed: true,
+    decisions: [decision(r.launch_id)],
+    packages,
+  });
+  apply(s, 'a', [{ ...launch(id, 1, 'A'), requirement_map: map('A') }, bind(id, 'A', 'run-a')]);
+  expect(completion(s.show(id), evidence, s.list())).toBe('unknown');
+  expect(s.backlog('/repo', evidence).tasks[0]!.covered).toEqual(['A']);
+  apply(s, 'b', [{ ...launch(id, 1, 'B'), requirement_map: map('B') }, bind(id, 'B', 'run-b')]);
+  expect(completion(s.show(id), evidence, s.list())).toBe('verified');
+  expect(completion(s.show(id), r => ({ ...evidence(r), packages: [] }), s.list())).toBe('unknown');
+  expect(
+    completion(s.show(id), r => ({ ...evidence(r), decisions: [decision('wrong')] }), s.list())
+  ).toBe('unknown');
+  expect(
+    completion(
+      s.show(id),
+      () => {
+        throw new Error('unreadable');
+      },
+      s.list()
+    )
+  ).toBe('unknown');
+  const child = apply(s, 'child', [{ ...create(), parent: id, requirements: [requirements[0]!] }])
+    .results![0]!.task!;
+  expect(completion(s.show(id), evidence, s.list())).toBe('unknown');
+  apply(s, 'child-run', [
+    { ...launch(child, 1, 'A'), requirement_map: map('A') },
+    bind(child, 'A', 'child-run'),
+  ]);
+  expect(completion(s.show(id), evidence, s.list())).toBe('verified');
+  const grandchild = apply(s, 'grandchild', [{ ...create(), parent: child }]).results![0]!.task!;
+  apply(s, 'cancel-grandchild', [{ kind: 'cancel', task: grandchild, expected_revision: 1 }]);
+  expect(completion(s.show(id), evidence, s.list())).toBe('unknown');
+  const backlog = s.backlog('/repo', evidence, id);
+  expect(backlog.tasks.map(t => t.id)).toEqual([id, child, grandchild]);
+  expect(backlog.obligations).toBe(3);
+  expect(backlog.tasks[2]!.reason).toBe('cancelled_intent');
+  apply(s, 'amend-grandchild', [amend(grandchild)]);
+  expect(s.backlog('/repo', evidence, id).tasks[2]!.cancellation_intents).toHaveLength(1);
+  expect(s.backlog('/repo', evidence, id).tasks[2]!.reason).toBe('no_requirements');
+  apply(s, 'new-revision', [amend(id)]);
+  expect(s.backlog('/repo', evidence, id).tasks[0]!.covered).toEqual([]);
+  const invalid = structuredClone(s.list());
+  invalid.find(t => t.id === id)!.parent = grandchild;
+  expect(completion(invalid[0]!, evidence, invalid)).toBe('unknown');
+  expect(completion({ ...s.show(child), parent: 'missing' }, evidence, s.list())).toBe('unknown');
+  const legacy = newTask(s, 'legacy');
+  apply(s, 'legacy-run', [launch(legacy), bind(legacy, 'launch', 'legacy-run')]);
+  expect(completion(s.show(legacy), evidence, s.list())).toBe('unknown');
+});
+
+test('fixed-bound context visits all ID/key pointers once despite continuous append and detects reordered history', () => {
+  const dir = root(),
+    s = new Intake(dir),
+    ids: string[] = [],
+    keys: string[] = [];
+  for (let n = 0; n < 16; n++) {
+    const result = apply(s, 'task-' + n, [
+      { ...create(), requirements: [{ id: 'A', text: 'x'.repeat(12000) }] },
+    ]);
+    ids.push(result.results![0]!.task!);
+    const raw = input('raw-' + n);
+    s.receive(raw);
+    keys.push(JSON.stringify([raw.source, raw.session, raw.message]));
+  }
+  const seenTasks: string[] = [],
+    seenInputs: string[] = [];
+  let cursor: string | undefined,
+    pages = 0,
+    firstCursor = '';
+  do {
+    const page = s.context('/repo', 1024, cursor);
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(1024);
+    expect(page.coverage.tasks.total).toBe(16);
+    expect(page.coverage.inputs.total).toBe(16);
+    expect(page.coverage.tasks.shown).toBe(page.tasks.length);
+    expect(page.coverage.inputs.shown).toBe(page.inputs.length);
+    seenTasks.push(...page.tasks.map(t => (t as { id: string }).id));
+    seenInputs.push(...page.inputs.map(t => (t as { key: string }).key));
+    if (pages === 0) {
+      expect(JSON.stringify(page)).toContain('intake show');
+      firstCursor = page.next!;
+    } else {
+      expect(page.coverage.tasks.later).toBe(pages);
+      expect(page.coverage.inputs.later).toBe(pages);
+    }
+    cursor = page.next ?? undefined;
+    newTask(s, 'later-task-' + pages);
+    s.receive(input('later-input-' + pages));
+    expect(++pages).toBeLessThan(100);
+  } while (cursor);
+  expect(seenTasks).toEqual(ids);
+  expect(seenInputs).toEqual(keys);
+  expect(s.context('/repo', 65536).coverage.tasks.total).toBe(16 + pages);
+  expect(() => s.context('/repo', 128)).toThrow('metadata');
+  expect(() => s.context('/repo', 1024, 'not-a-cursor')).toThrow('cursor');
+  expect(() => s.context('/other', 1024, firstCursor)).toThrow('cursor');
+  const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+  state.tasks.reverse();
+  writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+  expect(() => s.context('/repo', 1024, firstCursor)).toThrow('cursor');
 });
