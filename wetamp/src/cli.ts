@@ -27,7 +27,7 @@ import { Database } from 'bun:sqlite';
 import {
   advanceExecutionAttempt,
   executionAdmissionLock,
-} from '../../packages/workflows/src/execution-lifecycle';
+} from '@archon/workflows/execution-lifecycle';
 import {
   existsSync,
   mkdirSync,
@@ -2836,8 +2836,10 @@ export function main(argv: string[]): number {
     }
     case 'memory':
       if (a._[1] === 'propose') {
-        const result = proposeLearning(loadLedger(need(a._[2], 'memory propose <run> <request-json>')),
-          JSON.parse(need(a._[3], 'memory propose <run> <request-json>')) as LearningRequest);
+        const result = proposeLearning(
+          loadLedger(need(a._[2], 'memory propose <run> <request-json>')),
+          JSON.parse(need(a._[3], 'memory propose <run> <request-json>')) as LearningRequest
+        );
         print(result);
         return result.status === 'prepared' ? 0 : 1;
       }

@@ -7,13 +7,13 @@ import {
   executionOwnership as ownership,
   ownershipUnknown as unknown,
   unknownEffects as engineUnknownEffects,
-} from '../../packages/workflows/src/execution-lifecycle';
+} from '@archon/workflows/execution-lifecycle';
 export {
   recoverySnapshot,
   recoveryAdmissionUnknown,
   sameRecoveryOwner,
   type RecoveryAdmission,
-} from '../../packages/workflows/src/execution-lifecycle';
+} from '@archon/workflows/execution-lifecycle';
 export const executionOwnership = (run: RunView) => ownership(run, inspectProcess);
 export const ownershipUnknown = (run: RunView) => unknown(run, inspectProcess);
 

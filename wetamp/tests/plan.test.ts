@@ -1,15 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  capsOf,
-  loadPlan,
-  milestones,
-  requirementsSchema,
-  requestRefSchema,
-  budgetEnforcementSchema,
-  type Plan,
-} from '../src/plan';
+import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const setup = (patch?: (p: Record<string, unknown>) => void): { path: string; root: string } => {
@@ -20,11 +12,7 @@ const pkgs = (p: Record<string, unknown>): Record<string, unknown>[] =>
   p.packages as Record<string, unknown>[];
 
 describe('loadPlan', () => {
-  test('request_ref is optional, caller-owned and generated from its owner', () => {
-    const schema = JSON.parse(
-      readFileSync(join(import.meta.dir, '../schemas/plan.schema.json'), 'utf8')
-    );
-    expect(schema.properties.request_ref).toEqual(requestRefSchema);
+  test('request_ref is optional and caller-owned', () => {
     const legacy = setup();
     expect(loadPlan(legacy.path, [legacy.root]).request_ref).toBeUndefined();
     const explicit = setup(p => {
@@ -38,11 +26,7 @@ describe('loadPlan', () => {
       expect(() => loadPlan(invalid.path, [invalid.root])).toThrow('plan invalid');
     }
   });
-  test('req-evidence: schema mirror and invalid requirement mappings', () => {
-    const schema = JSON.parse(
-      readFileSync(join(import.meta.dir, '../schemas/plan.schema.json'), 'utf8')
-    );
-    expect(schema.$defs.requirements).toEqual(requirementsSchema);
+  test('req-evidence: invalid requirement mappings', () => {
     const r = { id: 'r', text: 'Write core', verified_by: [0] };
     for (const requirements of [
       [],
@@ -60,6 +44,28 @@ describe('loadPlan', () => {
     }
     const { path, root } = setup(p => (pkgs(p)[0].requirements = [r]));
     expect(loadPlan(path, [root]).packages[0].requirements).toEqual([r]);
+  });
+  test('schema annotations do not fill defaults or coerce optional fields', () => {
+    const { path, root } = setup(p => {
+      p.deadline = '2026-01-01';
+      p.budget = { weighted_tokens: 1e20 };
+    });
+    const loaded = loadPlan(path, [root]);
+    expect(loaded.budget.weighted_tokens).toBe(1e20);
+    expect(loaded.caps).toBeUndefined();
+    expect(loaded.packages[0].signoff).toBeUndefined();
+    expect(loaded.packages[0].accept[0].cache).toBeUndefined();
+    for (const patch of [
+      (p: Record<string, unknown>) => (p.mode = null),
+      (p: Record<string, unknown>) => (pkgs(p)[0].caps = null),
+      (p: Record<string, unknown>) =>
+        (pkgs(p)[0].accept = [{ cmd: 'true', timeout_s: 1, extra: true }]),
+    ]) {
+      const invalid = setup(patch);
+      expect(() => loadPlan(invalid.path, [invalid.root])).toThrow('plan invalid');
+    }
+    const legacy = setup(p => (pkgs(p)[0].effort = 'high'));
+    expect(loadPlan(legacy.path, [legacy.root]).packages[0].effort).toBe('high');
   });
   test('valid plan loads with realpath repo', () => {
     const { path, root } = setup();
@@ -214,11 +220,7 @@ describe('milestones', () => {
   });
 });
 
-test('budget enforcement schema agrees with its typed owner and validates explicit modes', () => {
-  const schema = JSON.parse(
-    readFileSync(join(import.meta.dir, '../schemas/plan.schema.json'), 'utf8')
-  );
-  expect(schema.properties.budget.properties.enforcement).toEqual(budgetEnforcementSchema);
+test('budget enforcement validates explicit modes', () => {
   for (const enforcement of [undefined, 'observe', 'hard', 'invalid'] as const) {
     const { path, root } = setup(p => (p.budget = { weighted_tokens: 0, enforcement }));
     if (enforcement === 'invalid') expect(() => loadPlan(path, [root])).toThrow('plan invalid');

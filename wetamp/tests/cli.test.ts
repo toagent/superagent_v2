@@ -1,5 +1,5 @@
 import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
-import { admitExecution, resumeExecution } from '../../packages/workflows/src/execution-lifecycle';
+import { admitExecution, resumeExecution } from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
 import * as relay from '../src/relay-quota';

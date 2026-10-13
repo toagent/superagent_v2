@@ -18,8 +18,8 @@ export interface Exec {
 export type Json = Record<string, unknown>;
 
 /** `workflow get --json --verbose` 中本层读取的字段（PoC 实测）。 */
-export type { ExecutionRunView as RunView } from '../../packages/workflows/src/execution-lifecycle';
-import type { ExecutionRunView as RunView } from '../../packages/workflows/src/execution-lifecycle';
+export type { ExecutionRunView as RunView } from '@archon/workflows/execution-lifecycle';
+import type { ExecutionRunView as RunView } from '@archon/workflows/execution-lifecycle';
 // SA_ARCHON_BIN：测试桩；空串视同未设（子进程靠空串屏蔽继承值）
 const archonBin = (): string => {
   const stub = process.env.SA_ARCHON_BIN;
@@ -60,7 +60,12 @@ if (birth.state !== 'online') throw new Error('launch identity unavailable');
 intent.pid = Number(pid); intent.pid_start = birth.start;
 const tmp = path + '.' + token; writeFileSync(tmp, JSON.stringify(intent)); renameSync(tmp, path);
 `;
-export function archon(args: string[], cwd?: string, intent?: LaunchIntent, timeoutMs = QUERY_TIMEOUT_MS): Exec {
+export function archon(
+  args: string[],
+  cwd?: string,
+  intent?: LaunchIntent,
+  timeoutMs = QUERY_TIMEOUT_MS
+): Exec {
   // 只有 run/resume/approve --detach 拉起 worker；status/get/doctor 等查询保持调用方环境
   const launches = ['run', 'resume', 'approve'].includes(args[1]) && args.includes('--detach');
   const cmd = intent
@@ -161,7 +166,13 @@ export function waitNotification(id: string, cwd: string, seconds: number): RunW
   const args = ['workflow', 'wait', id, '--json', '--timeout', String(seconds)];
   const r = archon(args, cwd, undefined, timeoutMs);
   const j = jsonOf(args, r);
-  const kinds: RunWaitResult['kind'][] = ['attention', 'owner_lost', 'deadline', 'aborted', 'not_found'];
+  const kinds: RunWaitResult['kind'][] = [
+    'attention',
+    'owner_lost',
+    'deadline',
+    'aborted',
+    'not_found',
+  ];
   const kind = kinds.find(k => k === j.result);
   if (![0, 3].includes(r.code) || j.ok !== true || j.action !== 'wait' || j.runId !== id || !kind)
     throw new Error(`workflow wait ${id}: ${tail(r.err || r.out)}`);
@@ -259,13 +270,13 @@ function liveOwnerAnswering(id: string): boolean | undefined {
 export type {
   ResumeExecutionResult as RecoverResult,
   Lock,
-} from '../../packages/workflows/src/execution-lifecycle';
+} from '@archon/workflows/execution-lifecycle';
 import {
   resumeExecution,
   admitExecution,
   type Admission,
   executionLock as lock,
-} from '../../packages/workflows/src/execution-lifecycle';
+} from '@archon/workflows/execution-lifecycle';
 import { claimInterruptedExecution } from '../../packages/core/src/workflows/execution-lifecycle';
 export { lock };
 /** The engine owns launch reservations; the adapter supplies a read-only registry count. */

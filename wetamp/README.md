@@ -125,6 +125,7 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 - run 停在 running 但进程在别的机器：`recover` 拒绝（`owner alive or on another host`），到那台机器处理。
 - `superagent health` 的 `upstream_clean` 不是 `true`：仓库 `wetamp/` 之外有改动，用 `git checkout -- <file>` 还原。
 - 节点日志：`brief` 输出的 `evidence:` 目录；对话转录：ledger 的 `transcript`。
+
 # Native conversation intake
 
 `install-hooks` merges managed `intake.cjs` handlers into Claude Code and Codex
@@ -153,3 +154,10 @@ Claude uses a random ID per hook invocation: retransmissions across invocations 
 be precisely deduplicated. Missing fields or persistence failure produce a bounded
 advisory and allow the original prompt. Orca automatic events remain `unknown`;
 use the explicit `intake receive|apply -` stdin envelope, not private chat/transcripts.
+
+### Plan 类型
+
+`schemas/plan.schema.json` 是 wire 结构的唯一来源；运行时仍使用 Ajv 与既有后校验。
+修改 schema 后运行 `bun run --cwd wetamp generate:plan-types`，提交生成的
+`src/plan-types.generated.ts`；`bun run --cwd wetamp check:plan-types` 只读检查漂移。
+从仓库根目录执行 `bun install --frozen-lockfile --ignore-scripts`，依赖与锁文件由 root workspace 管理。

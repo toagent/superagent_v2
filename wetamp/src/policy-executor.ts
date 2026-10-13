@@ -28,8 +28,8 @@ const { loadPolicy } = createRequire(import.meta.url)('../bin/codex-readonly-pro
 import {
   executePolicy as dispatchPolicy,
   type DispatchExecution,
-} from '../../packages/workflows/src/policy-dispatch';
-export { MODEL_FAILURE_COOLDOWN_MS } from '../../packages/workflows/src/policy-dispatch';
+} from '@archon/workflows/policy-dispatch';
+export { MODEL_FAILURE_COOLDOWN_MS } from '@archon/workflows/policy-dispatch';
 type Events = Parameters<typeof budgetUsage>[0];
 interface Execution extends Omit<DispatchExecution<Alias>, 'usage'> {
   floor: number;

@@ -6,13 +6,18 @@
     "ink": "^8.0.0",
     "react": "^19.3.0",
     "web-tree-sitter": "0.27.1",
-    "tree-sitter-bash": "0.25.1"
+    "tree-sitter-bash": "0.25.1",
+    "@archon/workflows": "workspace:*"
   },
   "devDependencies": {
-    "@types/react": "^19.3.0"
+    "@types/react": "^19.3.0",
+    "json-schema-to-typescript": "16.0.0"
   },
   "scripts": {
     "generate:reasons": "bun scripts/generate-reasons.ts",
-    "generate:failure-class": "bun scripts/generate-failure-class.ts"
+    "generate:failure-class": "bun scripts/generate-failure-class.ts",
+    "type-check": "tsc --noEmit --incremental false -p tsconfig.json",
+    "generate:plan-types": "bun scripts/generate-plan-schema.ts",
+    "check:plan-types": "bun scripts/generate-plan-schema.ts --check"
   }
 }

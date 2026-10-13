@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import * as archon from '../src/archon';
-import { executionAdmissionLock } from '../../packages/workflows/src/execution-lifecycle';
+import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import * as coordination from '../src/coord';
 import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
 import { gc as collect } from '../src/gc';

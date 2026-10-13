@@ -5,91 +5,22 @@ import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { WETAMP, assertSQLite, type Console } from './config';
 import type { PolicyBudget } from '../../packages/workflows/src/provider-attempts';
-import type { JSONSchemaType } from '../../packages/workflows/node_modules/ajv';
+import type { Plan } from './plan-types.generated';
+export type { Plan } from './plan-types.generated';
+export type Pkg = Plan['packages'][number];
+export type Requirement = NonNullable<Pkg['requirements']>[number];
+export type Check = Pkg['accept'][number];
+/** Resolved capability defaults; the wire schema keeps every override optional. */
+export type Caps = Required<NonNullable<Plan['caps']>>;
 
-export interface Requirement {
-  id: string;
-  text: string;
-  verified_by: number[];
-}
-/** Owner of the new contract; the generator and drift test maintain its JSON mirror. */
-export const requirementsSchema = {
-  type: 'array',
-  minItems: 1,
-  items: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['id', 'text', 'verified_by'],
-    properties: {
-      id: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$' },
-      text: { type: 'string', minLength: 1, pattern: '\\S' },
-      verified_by: {
-        type: 'array',
-        minItems: 1,
-        uniqueItems: true,
-        items: { type: 'integer', minimum: 0 },
-      },
-    },
-  },
-} as const satisfies JSONSchemaType<Requirement[]>;
-
-export interface Check {
-  cmd: string;
-  timeout_s: number;
-  /** 默认在同一 tree/命令/超时/环境下复用本 run 的验收结果；外写、依赖时间或随机性的命令须设 false。environment 检查不复用。 */
-  cache?: boolean;
-}
-export interface Pkg {
-  id: string;
-  title: string;
-  goal: string;
-  scope: { write: string[]; read_hint?: string[] };
-  deps?: string[];
-  accept: Check[];
-  requirements?: Requirement[];
-  environment?: Check[];
-  risk: 'G0' | 'G1' | 'G2';
-  size: 'S' | 'M' | 'L';
-  signoff?: 'auto' | 'human';
-  review?: boolean;
-  notes?: string;
-  milestone?: string;
-  caps?: Partial<Caps>;
-}
-export interface Plan {
-  request_ref?: string;
-  repo: string;
-  budget: PolicyBudget & { cost?: number };
-  base_ref: string;
-  deadline: string;
-  mode?: string;
-  concurrency?: number;
-  console?: Console;
-  environment?: Check[];
-  caps?: Partial<Caps>;
-  packages: Pkg[];
-}
-export const budgetEnforcementSchema = {
-  type: 'string',
-  enum: ['observe', 'hard'],
-  description: 'Defaults to observe; only explicit hard budgets block delivery',
-} as const satisfies JSONSchemaType<NonNullable<Plan['budget']['enforcement']>>;
-export const requestRefSchema = {
-  type: 'string',
-  minLength: 1,
-  pattern: '\\S',
-} as const satisfies JSONSchemaType<NonNullable<Plan['request_ref']>>;
-/** 将军能力（docs/00 caps）：默认全开；plan 级覆盖默认、包级覆盖 plan 级。 */
-export interface Caps {
-  network: boolean;
-  web: boolean;
-  install: boolean;
-  services: boolean;
-  long_tests: boolean;
-  read: 'any' | 'scope';
-  git: 'branch' | 'commit';
-  mcp: string[];
-}
+type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type Assert<T extends true> = T;
+/** External owners stay authoritative; drift requires an explicit schema decision. */
+export type PlanOwnerContracts = [
+  Assert<Equal<Omit<Plan['budget'], 'cost'>, PolicyBudget>>,
+  Assert<Equal<NonNullable<Plan['console']>, Console>>,
+  Assert<Equal<NonNullable<Pkg['caps']>, NonNullable<Plan['caps']>>>,
+];
 export const capsOf = (plan: Plan, p: Pkg, mcp: string[]): Caps => ({
   network: true,
   web: true,

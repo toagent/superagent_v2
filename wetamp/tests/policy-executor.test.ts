@@ -17,7 +17,7 @@ import {
 } from '../src/policy-executor';
 import { loadTiers, snapshotPolicy, type Alias } from '../src/config';
 import type { Plan } from '../src/plan';
-import { executePolicy as dispatchPolicy } from '../../packages/workflows/src/policy-dispatch';
+import { executePolicy as dispatchPolicy } from '@archon/workflows/policy-dispatch';
 import { attemptIdentity, budgetUsage } from '../templates/.archon/scripts/sa-check';
 import {
   readPolicyAttempts,
