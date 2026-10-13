@@ -949,11 +949,13 @@ test('generate writes a committed gen repo that archon validates', () => {
     const model = (n as N & { model: string }).model;
     expect(singleConfig.aliases[model].provider).toBe('claude');
   }
-  // F-16：预算低于各包 size 的 budget_floor 之和（S+M）时在生成期拒绝，不等到运行中途挂起
+  // Only explicit hard budgets enforce the package floor.
   const thin = loadPlan(
     fixturePlan(root, plan.repo, p => (p.budget = { weighted_tokens: 700000 })),
     [root]
   );
+  expect(() => generate(thin, 'gen-observe')).not.toThrow();
+  thin.budget.enforcement = 'hard';
   expect(() => generate(thin, 'gen-0003')).toThrow(/budget_floor sum 800000/);
   const fake = generate(plan, 'gen-fake', true);
   for (const command of new Set(ai.map(n => n.command))) {

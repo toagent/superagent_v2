@@ -17,6 +17,7 @@ import {
 } from '../src/policy-executor';
 import { loadTiers, snapshotPolicy, type Alias } from '../src/config';
 import type { Plan } from '../src/plan';
+import { executePolicy as dispatchPolicy } from '../../packages/workflows/src/policy-dispatch';
 import { attemptIdentity, budgetUsage } from '../templates/.archon/scripts/sa-check';
 import {
   readPolicyAttempts,
@@ -48,7 +49,10 @@ async function collect(stream: AsyncGenerator<MessageChunk>): Promise<MessageChu
   for await (const chunk of stream) chunks.push(chunk);
   return chunks;
 }
-function setup(first: ResultChunk, budget = { launches: 10, weighted_tokens: 1000 }) {
+function setup(
+  first: ResultChunk,
+  budget: Plan['budget'] = { launches: 10, weighted_tokens: 1000 }
+) {
   const artifacts = tmp(),
     calls: string[] = [],
     sessions: (string | undefined)[] = [];
@@ -202,7 +206,7 @@ for (const budget of [
   test(`fallback fails when total budget is exhausted: ${JSON.stringify(budget)}`, async () => {
     const s = setup(
       { type: 'result', isError: true, failure: { class: 'quota_exhausted', evidence: 'typed' } },
-      budget
+      { ...budget, enforcement: 'hard' }
     );
     const chunks = await collect(executePolicy(s.execution, 'p', '/scratch'));
     expect(s.calls).toEqual([pool[0].model]);
@@ -412,10 +416,10 @@ test('POLICY-R1-04: fallback session is withheld and the next node starts a fres
   expect(s.sessions.at(-1)).toBeUndefined();
 });
 
-test('POLICY-R1-03: successful final call settles actual usage before returning success', async () => {
+test('hard budget: successful final call settles actual usage before returning success', async () => {
   const s = setup(
     { ...success, tokens: { input: 25, output: 20 } },
-    { launches: 1, weighted_tokens: 30 }
+    { launches: 1, weighted_tokens: 30, enforcement: 'hard' }
   );
   const chunks = await collect(executePolicy(s.execution, 'p', '/scratch'));
   expect(chunks.at(-2)).toMatchObject({
@@ -561,4 +565,50 @@ test('advisory threshold key reaches its consumer and produces only an advisory'
     advise({ hook_event_name: 'UserPromptSubmit' }, 124, {}, false, 123).messages[0]
   ).toContain('advisory');
   expect(loadTiers().policy.context.advisory_tokens.general).toBe(240000);
+});
+
+for (const enforcement of [undefined, 'observe'] as const)
+  test(`observe budget ${enforcement}: exhausted limits allow fallback and preserve receipts`, async () => {
+    const s = setup(
+      {
+        type: 'result',
+        isError: true,
+        failure: { class: 'quota_exhausted', evidence: 'typed' },
+        tokens: { input: 8, output: 2 },
+      },
+      { launches: 0, weighted_tokens: 0, enforcement }
+    );
+    const out = await collect(executePolicy(s.execution, 'p', '/scratch'));
+    expect(s.calls).toHaveLength(2);
+    expect(out.at(-2)).toEqual({ ...success, tokens: { input: 13, output: 7 } });
+    expect(out).toContainEqual(
+      expect.objectContaining({ type: 'warning', code: 'superagent.budget_observed' })
+    );
+    const attempts = readPolicyAttempts(s.artifacts);
+    expect(attempts[1].status).toBe('completed');
+    expect(budgetUsage([], 20, attempts)).toMatchObject({ launches: 2, weighted_tokens: 20 });
+  });
+test('hard budget unlimited tokens still blocks launches before dispatch', async () => {
+  const s = setup(success, {
+    launches: 0,
+    weighted_tokens: 0,
+    unlimited_tokens: true,
+    enforcement: 'hard',
+  });
+  const out = await collect(executePolicy(s.execution, 'p', '/scratch'));
+  expect(s.calls).toHaveLength(0);
+  expect(out.at(-2)).toMatchObject({ failure: { class: 'budget_exceeded' } });
+});
+
+test('budget default for generic Archon dispatch remains hard', async () => {
+  const s = setup(success, { launches: 0, weighted_tokens: 0 });
+  const out = await collect(
+    dispatchPolicy(
+      { ...s.execution, usage: attempts => budgetUsage([], 20, attempts) },
+      'p',
+      '/scratch'
+    )
+  );
+  expect(s.calls).toHaveLength(0);
+  expect(out.at(-2)).toMatchObject({ failure: { class: 'budget_exceeded' } });
 });

@@ -19,7 +19,7 @@ import { basename, dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan, Pkg } from '../../../src/plan';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
-import { readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
+import { budgetReason, readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
 
 export interface Finding {
@@ -1291,7 +1291,11 @@ export function effectiveBudget(
     grant.limits.weighted_tokens <= 0
   )
     throw new Error('budget-extra: invalid limits');
-  return { ...grant.limits, ...(base.unlimited_tokens ? { unlimited_tokens: true } : {}) };
+  return {
+    ...grant.limits,
+    enforcement: base.enforcement ?? 'observe',
+    ...(base.unlimited_tokens ? { unlimited_tokens: true } : {}),
+  };
 }
 function budget(nextLaunch = true): string | null {
   if (!env('ARCHON')) return null;
@@ -1304,11 +1308,14 @@ function budget(nextLaunch = true): string | null {
   const attempt = join(dir, 'attempts', m);
   const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
   const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
-  if (b.launches !== undefined && (nextLaunch ? u.launches >= b.launches : u.launches > b.launches))
-    return 'budget_launches_exceeded';
-  return !b.unlimited_tokens && u.weighted_tokens > b.weighted_tokens
-    ? 'budget_tokens_exceeded'
-    : null;
+  const reason = budgetReason(b, u, nextLaunch);
+  if (reason && b.enforcement !== 'hard') {
+    console.warn(
+      JSON.stringify({ code: 'superagent.budget_observed', reason, used: u, limits: b })
+    );
+    return null;
+  }
+  return reason;
 }
 
 interface Ident {

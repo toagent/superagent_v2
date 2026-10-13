@@ -43,7 +43,11 @@ export function executePolicy(
   resume?: string
 ): AsyncGenerator<MessageChunk> {
   return dispatchPolicy(
-    { ...execution, usage: attempts => budgetUsage(execution.events(), execution.floor, attempts) },
+    {
+      ...execution,
+      budget: { ...execution.budget, enforcement: execution.budget.enforcement ?? 'observe' },
+      usage: attempts => budgetUsage(execution.events(), execution.floor, attempts),
+    },
     prompt,
     cwd,
     resume
@@ -69,6 +73,7 @@ function runtimeExecution(
   if (!node) throw new Error('policy: node id missing');
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing, health: policy.health };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
+  const indexedTable: Partial<typeof table> = table;
   const route = executionForNode(table, node);
   const archonHome = process.env.ARCHON_HOME;
   if (!archonHome) throw new Error('policy: ARCHON_HOME missing');
@@ -121,12 +126,12 @@ function runtimeExecution(
       ? [
           ...new Set([
             ...attempts
-              .filter(a => table[a.node]?.role !== 'review')
+              .filter(a => indexedTable[a.node]?.role !== 'review')
               .flatMap(a => [a.model, ...(a.resolved ? [a.resolved] : [])]),
             ...events
               .filter(
                 e =>
-                  ['code', 'repair'].includes(table[e.step_name ?? '']?.role) &&
+                  ['code', 'repair'].includes(indexedTable[e.step_name ?? '']?.role ?? '') &&
                   e.event_type === 'node_completed'
               )
               .flatMap(e => {

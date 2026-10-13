@@ -5,7 +5,13 @@ import type {
   SendQueryOptions,
 } from '@archon/provider-contract';
 import { mergeTokenUsage, type TokenUsage } from '@archon/provider-contract';
-import { readPolicyAttempts, writePolicyAttempts, type PolicyAttempt } from './provider-attempts';
+import {
+  readPolicyAttempts,
+  writePolicyAttempts,
+  budgetReason,
+  type PolicyAttempt,
+  type PolicyBudget,
+} from './provider-attempts';
 /** These are execution constants, not a second set of operator configuration knobs. */
 export const MODEL_FAILURE_COOLDOWN_MS = {
   misconfigured: 24 * 3600_000,
@@ -26,7 +32,7 @@ export interface DispatchExecution<Candidate extends DispatchCandidate> {
   node: string;
   candidates: Candidate[];
   artifacts: string;
-  budget: { launches?: number; weighted_tokens: number; unlimited_tokens?: true };
+  budget: PolicyBudget;
   usage(attempts: PolicyAttempt[]): BudgetUsage;
   provider: 'codex' | 'claude';
   sendQuery: IAgentProvider['sendQuery'];
@@ -57,19 +63,11 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     }
     return out;
   };
-  const budgetFailure = (beforeLaunch: boolean): ResultChunk | undefined => {
+  const budgetFailure = (
+    beforeLaunch: boolean
+  ): (ResultChunk & { failure: NonNullable<ResultChunk['failure']> }) | undefined => {
     const used = execution.usage(attempts);
-    const reason =
-      execution.budget.launches !== undefined &&
-      (beforeLaunch
-        ? used.launches >= execution.budget.launches
-        : used.launches > execution.budget.launches)
-        ? 'budget_launches_exceeded'
-        : !execution.budget.unlimited_tokens &&
-            used.weighted_tokens + (beforeLaunch ? used.reserve : 0) >
-              execution.budget.weighted_tokens
-          ? 'budget_tokens_exceeded'
-          : null;
+    const reason = budgetReason(execution.budget, used, beforeLaunch);
     return reason
       ? {
           type: 'result',
@@ -94,7 +92,9 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     if (attempts.some(a => a.model === candidate.model && (a.cooldown_until ?? 0) > now()))
       continue;
     const over = budgetFailure(true);
-    if (over) {
+    if (over && execution.budget.enforcement === 'observe')
+      yield { type: 'warning', code: 'superagent.budget_observed', message: over.failure.evidence };
+    if (over && execution.budget.enforcement !== 'observe') {
       yield accounted(over);
       yield { type: 'settled' };
       return;
@@ -145,7 +145,14 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     writePolicyAttempts(execution.artifacts, attempts);
     if (!settled || !result)
       throw new Error('policy provider stream ended without result and settled');
-    const exceeded = budgetFailure(false);
+    const observed = budgetFailure(false);
+    if (observed && execution.budget.enforcement === 'observe')
+      yield {
+        type: 'warning',
+        code: 'superagent.budget_observed',
+        message: observed.failure.evidence,
+      };
+    const exceeded = execution.budget.enforcement === 'observe' ? undefined : observed;
     if (exceeded) {
       attempt.status = 'failed';
       attempt.failure = 'budget_exceeded';

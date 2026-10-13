@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": ["repo", "base_ref", "deadline", "budget", "packages"],
   "properties": {
-    "request_ref": {"type":"string","minLength":1,"pattern":"\\S"},
+    "request_ref": { "type": "string", "minLength": 1, "pattern": "\\S" },
     "repo": {
       "type": "string",
       "minLength": 1
@@ -27,6 +27,11 @@
       "additionalProperties": false,
       "required": ["weighted_tokens"],
       "properties": {
+        "enforcement": {
+          "type": "string",
+          "enum": ["observe", "hard"],
+          "description": "Defaults to observe; only explicit hard budgets block delivery"
+        },
         "unlimited_tokens": {
           "const": true,
           "description": "Explicitly disable only the token ceiling; launch and round bounds remain active"
@@ -34,7 +39,7 @@
         "weighted_tokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Run budget must cover the sum of policy.budget_floor for all package sizes"
+          "description": "Observed by default; hard token budgets must cover the package budget_floor sum"
         },
         "cost": {
           "type": "number",
@@ -215,7 +220,25 @@
     }
   },
   "$defs": {
-    "requirements": {"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["id","text","verified_by"],"properties":{"id":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},"text":{"type":"string","minLength":1,"pattern":"\\S"},"verified_by":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"integer","minimum":0}}}}},
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text", "verified_by"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+          "text": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "verified_by": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
     "check": {
       "type": "object",
       "additionalProperties": false,
