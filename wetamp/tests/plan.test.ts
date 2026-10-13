@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
+import { capsOf, loadPlan, milestones, requirementsSchema, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const setup = (patch?: (p: Record<string, unknown>) => void): { path: string; root: string } => {
@@ -12,6 +12,29 @@ const pkgs = (p: Record<string, unknown>): Record<string, unknown>[] =>
   p.packages as Record<string, unknown>[];
 
 describe('loadPlan', () => {
+  test('req-evidence: schema mirror and invalid requirement mappings', () => {
+    const schema = JSON.parse(
+      readFileSync(join(import.meta.dir, '../schemas/plan.schema.json'), 'utf8')
+    );
+    expect(schema.$defs.requirements).toEqual(requirementsSchema);
+    const r = { id: 'r', text: 'Write core', verified_by: [0] };
+    for (const requirements of [
+      [],
+      [{ ...r, text: ' ' }],
+      [{ ...r, id: '' }],
+      [{ id: 'r', text: 'missing mapping' }],
+      [{ ...r, verified_by: [] }],
+      [{ ...r, verified_by: [0, 0] }],
+      [{ ...r, verified_by: [1] }],
+      [{ ...r, verified_by: [-1] }],
+      [r, r],
+    ]) {
+      const { path, root } = setup(p => (pkgs(p)[0].requirements = requirements));
+      expect(() => loadPlan(path, [root])).toThrow('plan invalid');
+    }
+    const { path, root } = setup(p => (pkgs(p)[0].requirements = [r]));
+    expect(loadPlan(path, [root]).packages[0].requirements).toEqual([r]);
+  });
   test('valid plan loads with realpath repo', () => {
     const { path, root } = setup();
     expect(loadPlan(path, [root]).repo).toBe(join(root, 'repo'));

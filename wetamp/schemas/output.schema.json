@@ -203,7 +203,28 @@
             "kind": { "enum": ["advance", "debt", "repair", "block"] },
             "reason": { "type": ["string", "null"] },
             "evidence": { "type": "array", "items": { "type": "string" } },
-            "debt": { "type": "array", "items": { "type": "string" } }
+            "debt": { "type": "array", "items": { "type": "string" } },
+            "requirements": {
+              "type": "object",
+              "required": ["status", "items"],
+              "properties": {
+                "status": { "enum": ["legacy", "verified", "unmet", "unknown"] },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["package", "id", "text", "status", "evidence"],
+                    "properties": {
+                      "package": { "type": "string" },
+                      "id": { "type": "string" },
+                      "text": { "type": "string" },
+                      "status": { "enum": ["verified", "unmet", "unknown"] },
+                      "evidence": { "type": "array", "items": { "type": "string" } }
+                    }
+                  }
+                }
+              }
+            }
           },
           "required": ["kind", "reason", "evidence", "debt"]
         },

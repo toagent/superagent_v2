@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -24,10 +25,12 @@ import {
   readAttempt,
   CHECK_AUX_COUNTS,
   CHECK_AUX_TIMEOUT_MS,
+  type Accept,
 } from '../templates/.archon/scripts/sa-check';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
+import Ajv2020 from '../../packages/workflows/node_modules/ajv/dist/2020';
 
 test('P3 missing provider and node receipts reserve spend instead of counting zero', () => {
   expect(budgetUsage([{ event_type: 'node_started', step_name: 'code-core' }], 20)).toMatchObject({
@@ -946,6 +949,10 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
     join(root, 'reasons.json'),
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/reasons.json'))
   );
+  writeFileSync(
+    join(root, 'sa-context.ts'),
+    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/sa-context.ts'))
+  );
   // Runtime sibling import of sa-check.ts; type-only imports are erased and need no copy.
   writeFileSync(
     join(root, 'policy-attempts.ts'),
@@ -1098,6 +1105,79 @@ function planFile(
 }
 
 describe('sa-check script', () => {
+  test('req-evidence: mapped evidence, cache identity, legacy and portable installed runtime', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'true');
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    p.packages[0].accept = [
+      { cmd: 'true', timeout_s: 5 },
+      { cmd: 'true', timeout_s: 6 },
+    ];
+    p.packages[0].requirements = [{ id: 'r', text: 'two checks', verified_by: [0, 1] }];
+    writeFileSync(path, JSON.stringify(p));
+    const portable = join(root, 'installed');
+    cpSync(join(import.meta.dir, '../templates/.archon/scripts'), portable, { recursive: true });
+    cpSync(
+      join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'),
+      join(portable, 'policy-attempts.ts')
+    );
+    const accept = () =>
+      runScript(
+        repo,
+        {
+          kind: 'accept',
+          plan: path,
+          pkgs: 'a',
+          tag: 'verify-a',
+          coder: '{"status":"partial","error_class":"task"}',
+        },
+        join(portable, 'sa-check.ts')
+      );
+    const first = accept();
+    expect(first).toMatchObject({
+      code: 0,
+      out: {
+        disposition: 'advance',
+        coder_partial: true,
+        decision: { requirements: { status: 'verified' } },
+      },
+    });
+    const check = first.out as Accept;
+    const decide = (c: Accept) => deliveryDecision({ rechecks: [c] }).decision.requirements;
+    expect(
+      decide({ ...check, command_results: check.command_results?.slice(0, 1) })?.items[0].status
+    ).toBe('unknown');
+    const results = check.command_results!.map(c => ({ ...c }));
+    results[1].pass = false;
+    expect(decide({ ...check, command_results: results })?.status).toBe('unmet');
+    results[1] = { ...results[1], pass: true, check: { cmd: 'unrelated', timeout_s: 6 } };
+    expect(decide({ ...check, command_results: results })?.status).toBe('unknown');
+    expect(decide({ ok: true, same: false, diff_hash: '' })?.status).toBe('legacy');
+    expect(accept().code).toBe(0);
+    expect(readFileSync(join(first.art, 'verify-a.log'), 'utf8')).toContain('# reused pass');
+    p.packages[0].requirements[0].verified_by = [1, 0];
+    writeFileSync(path, JSON.stringify(p));
+    const changed = accept().out as Accept;
+    expect(changed.contract_hash).not.toBe(check.contract_hash);
+    expect(readdirSync(join(first.art, 'accept-cache')).filter(f => f !== '.key').length).toBe(4);
+    const validate = new Ajv2020().compile(outputSchema.$defs.accept.properties.decision);
+    for (const c of [
+      check,
+      { ...check, command_results: [] },
+      { ...check, command_results: check.command_results!.map(c => ({ ...c, pass: false })) },
+      { ok: true, same: false, diff_hash: '' },
+    ]) {
+      expect(validate(deliveryDecision({ rechecks: [c] }).decision)).toBe(true);
+    }
+    expect(
+      deliveryDecision({ rechecks: [check], packages: changed.requirement_contract }).decision
+        .requirements?.status
+    ).toBe('unknown');
+    expect(
+      outputSchema.$defs.accept.properties.decision.properties.requirements.properties.status.enum
+    ).toEqual(['legacy', 'verified', 'unmet', 'unknown']);
+  });
   test('RA: non-product advance passes TESTED with command debt visible in land', () => {
     const root = tmp(),
       repo = gitRepo(root);

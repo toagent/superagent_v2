@@ -40,10 +40,13 @@ export function roleContext(input: {
     diff: incremental ? input.delta : input.patch, full_diff: input.patch,
     carry_over: carry,
     // Preserve complete natural-language requirements and every acceptance invariant, without parsing prose.
-    tasks: packages.map(p => execution.role === 'review'
+    tasks: packages.map(p => ({
+      ...(p.requirements ? { requirements: p.requirements } : {}),
+      ...(execution.role === 'review'
       ? { id: p.id, title: p.title, goal: p.goal, notes: p.notes, scope: p.scope,
           accept: p.accept, environment: p.environment }
       : { id: p.id, brief: join(gen, 'briefs', `${p.id}.md`), hint: join(gen, 'hints', `${p.id}.md`) }),
+    })),
     coder: input.acceptance?.log
       ? read<unknown>(join(artifacts, `${basename(input.acceptance.log, '.log')}.coder.json`)) : 'unknown',
     evidence: incremental ? [] : packages.map(p => ({ id: p.id,
@@ -64,7 +67,10 @@ export function prepareContext(input: Parameters<typeof roleContext>[0]): string
 }
 
 if (import.meta.main) {
-  const [counter, gen, pkg, review] = process.argv.slice(2);
+  // Native script nodes use the engine's input channel; frozen CLI callers keep positional args.
+  const [counter, gen, pkg, review] = process.env.INPUTS_COUNTER !== undefined
+    ? ['COUNTER', 'GEN', 'PKG', 'REVIEW'].map(k => process.env[`INPUTS_${k}`] ?? '')
+    : process.argv.slice(2);
   if (!counter || !gen) throw new Error('context: attempt arguments missing');
   const attempt = String(readAttempt(counter));
   if (pkg || review) {

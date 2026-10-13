@@ -4,6 +4,33 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { WETAMP, assertSQLite, type Console } from './config';
+import type { JSONSchemaType } from '../../packages/workflows/node_modules/ajv';
+
+export interface Requirement {
+  id: string;
+  text: string;
+  verified_by: number[];
+}
+/** Owner of the new contract; the generator and drift test maintain its JSON mirror. */
+export const requirementsSchema = {
+  type: 'array',
+  minItems: 1,
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'text', 'verified_by'],
+    properties: {
+      id: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$' },
+      text: { type: 'string', minLength: 1, pattern: '\\S' },
+      verified_by: {
+        type: 'array',
+        minItems: 1,
+        uniqueItems: true,
+        items: { type: 'integer', minimum: 0 },
+      },
+    },
+  },
+} as const satisfies JSONSchemaType<Requirement[]>;
 
 export interface Check {
   cmd: string;
@@ -18,6 +45,7 @@ export interface Pkg {
   scope: { write: string[]; read_hint?: string[] };
   deps?: string[];
   accept: Check[];
+  requirements?: Requirement[];
   environment?: Check[];
   risk: 'G0' | 'G1' | 'G2';
   size: 'S' | 'M' | 'L';
@@ -102,6 +130,15 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
     throw new Error(`plan invalid: ${errs.join('; ')}`);
   }
   const plan = data as Plan;
+  for (const p of plan.packages) {
+    const ids = new Set<string>();
+    for (const r of p.requirements ?? []) {
+      if (ids.has(r.id)) throw new Error(`plan invalid: duplicate requirement id ${p.id}/${r.id}`);
+      ids.add(r.id);
+      if (r.verified_by.some(i => i >= p.accept.length))
+        throw new Error(`plan invalid: ${p.id}/${r.id} verified_by outside accept`);
+    }
+  }
   if (Number.isNaN(Date.parse(plan.deadline)))
     throw new Error('plan invalid: /deadline not date-time');
   if (!existsSync(plan.repo)) throw new Error(`plan invalid: repo ${plan.repo} does not exist`);
