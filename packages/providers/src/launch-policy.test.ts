@@ -90,7 +90,7 @@ test('readonly policy denies native domain grants and overrides native live Code
         ['codex', 'exec', 'fixture'],
         'codex',
         'fixture',
-        { ...policy, readonly, codex: { web_search: 'live' } },
+        { ...policy, readonly, codex: { ...policy.codex, web_search: 'live' } },
         process.cwd()
       );
       const assignments = args.flatMap((arg, i) => (arg === '-c' ? [args[i + 1]] : []));
@@ -99,7 +99,9 @@ test('readonly policy denies native domain grants and overrides native live Code
       expect(assignments).toContain(
         `sandbox_mode="${readonly ? 'read-only' : 'danger-full-access'}"`
       );
-      expect(assignments).toContain('features.multi_agent=false');
+      // R1-1: the production profile's early dotted key still needs a final role override.
+      expect(assignments[0]).toBe('features.multi_agent=false');
+      expect(assignments.at(-1)).toBe('features.multi_agent=false');
       expect(assignments.every(a => /^[A-Za-z0-9_.-]+=/.test(a))).toBe(true);
       // Each -c is applied separately; a TOML document cannot extend an inline table.
       const tables = assignments.filter(a => !a.startsWith('features.multi_agent='));

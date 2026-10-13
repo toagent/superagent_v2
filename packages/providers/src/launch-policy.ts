@@ -218,13 +218,18 @@ export async function prepareRoleCommand(
     const settings = {
       ...policy.codex,
       ...config,
-      'features.multi_agent': false,
       model_reasoning_effort: policy.effort,
       sandbox_mode: policy.readonly ? 'read-only' : 'danger-full-access',
       ...(policy.readonly ? { web_search: 'disabled' } : {}),
       approval_policy: 'never',
     };
-    return [command[0], ...codexCliConfig(settings), ...args];
+    // R1-1: an existing dotted key keeps its position; enforce it after the features table.
+    return [
+      command[0],
+      ...codexCliConfig(settings),
+      ...codexCliConfig({ 'features.multi_agent': false }),
+      ...args,
+    ];
   } finally {
     clearTimeout(timer);
     await connection.shutdown(250);
