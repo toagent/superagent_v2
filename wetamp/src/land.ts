@@ -144,10 +144,9 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     const integrated = git('rev-parse', `refs/heads/${target}`);
     if (!delivery) { console.log(`land: already integrated ${integrated}; acceptance unknown; manual push: ${push}`); return; }
     let prior: unknown;
-    let reason = 'already integrated; acceptance unknown: no matching receipt';
     if (existsSync(delivery.receipt)) {
       try { prior = JSON.parse(readFileSync(delivery.receipt, 'utf8')); }
-      catch (e) { reason += ` (${e instanceof Error ? e.message : String(e)})`; }
+      catch { /* An unreadable receipt requires fresh acceptance below. */ }
     }
     if (prior && typeof prior === 'object' && 'target' in prior && prior.target && typeof prior.target === 'object' &&
       'checkout' in prior.target && prior.target.checkout === delivery.target.checkout &&
@@ -160,7 +159,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', prior.target_tip, integrated], { stdout: 'pipe', stderr: 'pipe' }).exitCode === 0) {
       return { task: delivery.task, source: land.head, target: delivery.target, contract: delivery.contract, evidence: delivery.evidence, accepted: integrated, integrated, target_tip: prior.target_tip, status: 'manual_push', push };
     }
-    return { task: delivery.task, source: land.head, target: delivery.target, contract: delivery.contract, evidence: delivery.evidence, integrated, status: 'unknown', reason, push };
+    // Ancestry proves integration, not acceptance: reuse the candidate path below.
   }
   let receipt: DeliveryReceipt | undefined;
   const fingerprint = runtimeFingerprint();
