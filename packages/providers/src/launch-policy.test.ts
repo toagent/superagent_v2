@@ -73,7 +73,14 @@ test('readonly policy denies native domain grants and overrides native live Code
   expect(native.sandbox?.filesystem?.disabled).toBe(false);
   const inventory = spyOn(AppServerConnection, 'start').mockReturnValue({
     request: async (method: string) =>
-      method === 'config/read' ? { config: { web_search: 'live', mcp_servers: {} } } : {},
+      method === 'config/read'
+        ? {
+            config: {
+              web_search: 'live',
+              mcp_servers: { 'ambient.with.dots@fixture/path name': {} },
+            },
+          }
+        : {},
     notify() {},
     async shutdown() {},
   } as unknown as AppServerConnection);
@@ -83,13 +90,29 @@ test('readonly policy denies native domain grants and overrides native live Code
         ['codex', 'exec', 'fixture'],
         'codex',
         'fixture',
-        { ...policy, readonly, codex: { web_search: 'live' } },
+        { ...policy, readonly, codex: { ...policy.codex, web_search: 'live' } },
         process.cwd()
       );
-      const assignments = args.flatMap((arg, i) => arg === '-c' ? [args[i + 1]] : []);
-      expect(Bun.TOML.parse(assignments.join('\n'))).toMatchObject({
+      const assignments = args.flatMap((arg, i) => (arg === '-c' ? [args[i + 1]] : []));
+      // CLI paths are split on dots, not parsed as TOML: quoted paths would be ignored.
+      expect(assignments).toContain('approval_policy="never"');
+      expect(assignments).toContain(
+        `sandbox_mode="${readonly ? 'read-only' : 'danger-full-access'}"`
+      );
+      // R1-1: the production profile's early dotted key still needs a final role override.
+      expect(assignments[0]).toBe('features.multi_agent=false');
+      expect(assignments.at(-1)).toBe('features.multi_agent=false');
+      expect(assignments.every(a => /^[A-Za-z0-9_.-]+=/.test(a))).toBe(true);
+      // Each -c is applied separately; a TOML document cannot extend an inline table.
+      const tables = assignments.filter(a => !a.startsWith('features.multi_agent='));
+      expect(Bun.TOML.parse(tables.join('\n'))).toMatchObject({
         web_search: readonly ? 'disabled' : 'live',
+        features: { apps: false, plugins: false },
+        skills: { include_instructions: false },
+        mcp_servers: { 'ambient.with.dots@fixture/path name': { enabled: false } },
       });
+      expect(inventory.mock.calls.at(-1)?.[2]).toMatchObject({ HOME: process.env.HOME });
+      expect(inventory.mock.calls.at(-1)?.[2]?.CODEX_HOME).toBe(process.env.CODEX_HOME);
     }
   } finally {
     inventory.mockRestore();
@@ -121,19 +144,35 @@ test('policy overrides and unsupported commands fail before native inventory or 
   ).toEqual(['exec', '--model', 'fixture', '--json', '-o', '/tmp/result', 'prompt']);
 });
 
-test('Codex CLI scopes serialize as real TOML leaves, including quoted server identifiers', () => {
+test('Codex CLI uses bare policy paths and inline tables for literal capability identifiers', () => {
+  const id = 'ambient.with.dots@fixture/path name';
   const args = codexCliConfig({
     features: { multi_agent: false, apps: false, plugins: false },
     skills: { include_instructions: false },
-    mcp_servers: { 'ambient.with.dots': { enabled: false } },
+    mcp_servers: { [id]: { enabled: false } },
+    plugins: { [id]: { enabled: true, mcp_servers: { [id]: { enabled: false } } } },
+    values: { text: 'quote" slash\\ newline\n', list: ['literal.with.dots', true, 1.5], empty: {} },
   });
   const assignments = args.filter((_, i) => i % 2 === 1);
+  expect(assignments[0]).toBe(
+    'features={"multi_agent" = false, "apps" = false, "plugins" = false}'
+  );
+  expect(assignments[2]).toBe(`mcp_servers={"${id}" = {"enabled" = false}}`);
   const parsed = Bun.TOML.parse(assignments.join('\n'));
   expect(parsed).toEqual({
     features: { multi_agent: false, apps: false, plugins: false },
     skills: { include_instructions: false },
-    mcp_servers: { 'ambient.with.dots': { enabled: false } },
+    mcp_servers: { [id]: { enabled: false } },
+    plugins: { [id]: { enabled: true, mcp_servers: { [id]: { enabled: false } } } },
+    values: { text: 'quote" slash\\ newline\n', list: ['literal.with.dots', true, 1.5], empty: {} },
   });
+});
+
+test('Codex CLI rejects unsupported values and ambiguous CLI paths instead of falling back', () => {
+  for (const value of [null, undefined, NaN, Infinity, 2 ** 53, new Date(), () => {}, [undefined]])
+    expect(() => codexCliConfig({ value })).toThrow('unsupported Codex config value');
+  for (const key of ['"sandbox_mode"', 'plugins.name@fixture', 'mcp_servers.a/b', 'features..apps'])
+    expect(() => codexCliConfig({ [key]: false })).toThrow('unsupported Codex config path');
 });
 
 test('native CLI scope guard rejects undeclared plugins or output before init', async () => {

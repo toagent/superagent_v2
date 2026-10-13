@@ -218,35 +218,44 @@ export async function prepareRoleCommand(
     const settings = {
       ...policy.codex,
       ...config,
-      'features.multi_agent': false,
       model_reasoning_effort: policy.effort,
       sandbox_mode: policy.readonly ? 'read-only' : 'danger-full-access',
       ...(policy.readonly ? { web_search: 'disabled' } : {}),
       approval_policy: 'never',
     };
-    return [command[0], ...codexCliConfig(settings), ...args];
+    // R1-1: an existing dotted key keeps its position; enforce it after the features table.
+    return [
+      command[0],
+      ...codexCliConfig(settings),
+      ...codexCliConfig({ 'features.multi_agent': false }),
+      ...args,
+    ];
   } finally {
     clearTimeout(timer);
     await connection.shutdown(250);
   }
 }
 
-/** TOML dotted leaf assignments; JSON objects are not TOML inline tables. */
+/** CLI paths are bare dotted keys; nested table keys are literal capability identifiers. */
 export function codexCliConfig(settings: Record<string, unknown>): string[] {
-  const out: string[] = [];
-  const visit = (path: string[], value: unknown): void => {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      for (const [key, child] of Object.entries(value)) visit([...path, key], child);
-      return;
+  const literal = (value: unknown): string => {
+    if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      if (Number.isInteger(value) && !Number.isSafeInteger(value))
+        throw new Error('execution: unsupported Codex config value');
+      return Object.is(value, -0) ? '-0.0' : String(value);
     }
-    if (
-      value === null ||
-      value === undefined ||
-      (Array.isArray(value) && value.some(v => typeof v === 'object'))
-    )
-      throw new Error('execution: unsupported Codex config value');
-    out.push('-c', `${path.map(k => JSON.stringify(k)).join('.')}=${JSON.stringify(value)}`);
+    if (Array.isArray(value)) return `[${Array.from(value, literal).join(', ')}]`;
+    if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype)
+      return `{${Object.entries(value)
+        .map(([key, child]) => `${JSON.stringify(key)} = ${literal(child)}`)
+        .join(', ')}}`;
+    throw new Error('execution: unsupported Codex config value');
   };
-  for (const [key, value] of Object.entries(settings)) visit(key.split('.'), value);
-  return out;
+  return Object.entries(settings).flatMap(([key, value]) => {
+    // Codex splits the CLI path on dots without TOML key parsing. Quote IDs in the value instead.
+    if (!/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(key))
+      throw new Error('execution: unsupported Codex config path');
+    return ['-c', `${key}=${literal(value)}`];
+  });
 }
