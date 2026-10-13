@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
@@ -10,6 +11,40 @@ const setup = (patch?: (p: Record<string, unknown>) => void): { path: string; ro
 };
 const pkgs = (p: Record<string, unknown>): Record<string, unknown>[] =>
   p.packages as Record<string, unknown>[];
+
+test('owner contracts reject optional keys, types and optionality drift', () => {
+  const file = join(import.meta.dir, '../src/plan.ts');
+  const config = ts.readConfigFile(join(import.meta.dir, '../tsconfig.json'), ts.sys.readFile);
+  const { options, fileNames } = ts.parseJsonConfigFileContent(
+    config.config,
+    ts.sys,
+    join(import.meta.dir, '..')
+  );
+  const source = readFileSync(file, 'utf8');
+  const probes = [
+    "Assert<Equal<Omit<PolicyBudget, 'launches'>, Omit<Plan['budget'], 'cost'>>>",
+    "Assert<Equal<PolicyBudget & { extra?: boolean }, Omit<Plan['budget'], 'cost'>>>",
+    "Assert<Equal<Omit<PolicyBudget, 'launches'> & { launches?: string }, PolicyBudget>>",
+    "Assert<Equal<Omit<PolicyBudget, 'launches'> & { launches: number }, PolicyBudget>>",
+    "Assert<Equal<Omit<NonNullable<Pkg['caps']>, 'network'>, NonNullable<Plan['caps']>>>",
+    "Assert<Equal<NonNullable<Pkg['caps']> & { extra?: boolean }, NonNullable<Plan['caps']>>>",
+  ];
+  const host = ts.createCompilerHost(options);
+  const read = host.readFile;
+  host.readFile = path =>
+    path === file
+      ? source + probes.map((probe, i) => `\nexport type Drift${i} = ${probe};`).join('')
+      : read(path);
+  const diagnostics = ts.getPreEmitDiagnostics(
+    ts.createProgram([file, ...fileNames.filter(path => path.endsWith('.d.ts'))], options, host)
+  );
+  expect(diagnostics.map(d => d.code)).toEqual(probes.map(() => 2344));
+  expect(
+    diagnostics.every(
+      d => d.file?.fileName === file && d.start !== undefined && d.start >= source.length
+    )
+  ).toBe(true);
+}, 30000);
 
 describe('loadPlan', () => {
   test('request_ref is optional and caller-owned', () => {

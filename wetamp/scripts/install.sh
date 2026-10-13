@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 幂等安装：$ARCHON_HOME/.env 两行、config.yaml 只写 aliases/workflows/concurrency.providers（先备份）、建 gen/runs；
-# 断言 @sa-coder ≠ @sa-reviewer；装 hooks/board 的自有依赖（wetamp/package.json，按 wetamp/bun.lock 冻结，失败只警告）；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份；只打印 bootstrap 命令，不执行）；
+# 断言 @sa-coder ≠ @sa-reviewer；装 hooks/board 的自有依赖（wetamp/package.json，按 root workspace bun.lock 冻结，失败只警告）；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份；只打印 bootstrap 命令，不执行）；
 # 末尾 doctor 摘要。可重复跑。plist 目录默认 ~/Library/LaunchAgents，SA_LAUNCHD_DIR 可改（测试与 selftest 用）。
 # config.yaml 另写 assistants.codex.codexBinaryPath=wetamp/bin/codex-worker（worker 禁嵌套，见 docs/04-hooks-and-nesting.md）。
 # 单独步骤（互斥，不走上面的默认安装）：

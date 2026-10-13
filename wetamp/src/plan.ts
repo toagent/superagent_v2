@@ -13,7 +13,9 @@ export type Check = Pkg['accept'][number];
 /** Resolved capability defaults; the wire schema keeps every override optional. */
 export type Caps = Required<NonNullable<Plan['caps']>>;
 
-type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type Equal<A, B> =
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- Generic quantification detects optional-key drift that assignability misses.
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
 /** External owners stay authoritative; drift requires an explicit schema decision. */
 export type PlanOwnerContracts = [

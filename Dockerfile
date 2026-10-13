@@ -34,6 +34,7 @@ COPY packages/providers/package.json ./packages/providers/
 COPY packages/server/package.json ./packages/server/
 COPY packages/web/package.json ./packages/web/
 COPY packages/workflows/package.json ./packages/workflows/
+COPY wetamp/package.json ./wetamp/
 
 # Install ALL dependencies (including devDependencies needed for web build)
 # --linker=hoisted: Bun's default "isolated" linker stores packages in
@@ -157,6 +158,7 @@ COPY --chown=appuser:appuser packages/providers/package.json ./packages/provider
 COPY --chown=appuser:appuser packages/server/package.json ./packages/server/
 COPY --chown=appuser:appuser packages/web/package.json ./packages/web/
 COPY --chown=appuser:appuser packages/workflows/package.json ./packages/workflows/
+COPY --chown=appuser:appuser wetamp/package.json ./wetamp/
 
 # Install production dependencies only (--ignore-scripts skips husky prepare hook).
 # Cache goes to /tmp and is removed in the same layer: not baked into the image,

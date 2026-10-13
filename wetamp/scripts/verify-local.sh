@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 本机投送闸：在临时 detached worktree 里对一个提交依次跑 bun install --frozen-lockfile（根与 wetamp）→ tsc → bun test --timeout 30000 → selftest --fake，
+# 本机投送闸：在临时 detached worktree 里对一个提交依次跑 root workspace bun install --frozen-lockfile → tsc → bun test --timeout 30000 → selftest --fake，
 # 结果原子写入 $SUPERAGENT_HOME/verify.json：{commit,ok,at,steps:[{name,exit,ms}],log,last_ok_commit}。
 # 同一提交已有定论（含普通失败）时直接复用；信号中断/超时及环境错误不写缓存。twin-toolkit 只投送 ok 的提交。
 # 用法：verify-local.sh [--commit <rev>] [--timeout <s>，默认 1500，等锁与跑步骤各用一份]；退出码 0 通过、1 未通过。
@@ -99,7 +99,7 @@ step() {
   [ "$rc" -lt 128 ] || INCONCLUSIVE=1
   [ "$rc" = 0 ] || OK=0
 }
-# 冻结安装失败而该目录的 lock 与主仓一致时，软链主仓已装好的 node_modules（根目录连同 packages/*）。
+# 冻结安装失败而 root lock 与主仓一致时，软链主仓已装好的 workspace node_modules。
 install() { # <rel dir> <step name>
   local rel="$1" dir="$WT/${1#.}"
   [ "$OK" = 1 ] || return 0
@@ -110,7 +110,7 @@ install() { # <rel dir> <step name>
     echo "== $2: frozen install failed; lock matches $MAIN, linking its node_modules" >>"$LOG"
     rm -rf "$dir/node_modules"; ln -s "$MAIN/${rel#.}/node_modules" "$dir/node_modules"
     if [ "$rel" = . ]; then
-      for p in "$MAIN"/packages/*/node_modules; do
+      for p in "$MAIN"/packages/*/node_modules "$MAIN"/wetamp/node_modules; do
         [ -d "$p" ] || continue
         q="$WT/${p#"$MAIN"/}"; [ -d "$(dirname "$q")" ] && { rm -rf "$q"; ln -s "$p" "$q"; }
       done
@@ -119,7 +119,6 @@ install() { # <rel dir> <step name>
   fi
 }
 install . install
-install wetamp install:wetamp
 step tsc "$WT/wetamp" "$BUN" x tsc --noEmit
 # 显式单测时限：Bun 1.4.3 不读 bunfig 的 [test] timeout，负载下 hook 子进程用例会撞默认 5s。
 # SA_VERIFY_LOCAL=1：单测里内嵌整轮 selftest 的 REC-R1-01 跳过，下一步 selftest 已覆盖。

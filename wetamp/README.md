@@ -7,7 +7,7 @@ Archon 之上的 superagent 胶水层：把 `plan.json` 编译成 Archon 工作�
 
 ## 安装
 
-前提：`bun`、`git`、`jq`、`sqlite3`，以及在仓库根执行过 `bun install`。`install.sh` 另在 `wetamp/` 里按 `wetamp/bun.lock` 装 board 用的 ink/react（失败只警告，其余动词不依赖它们）。
+前提：`bun`、`git`、`jq`、`sqlite3`，以及在仓库根执行过 `bun install`。`install.sh` 在 root workspace 的唯一 `bun.lock` 下装 board 用的 ink/react（失败只警告，其余动词不依赖它们）。
 
 ```bash
 wetamp/scripts/install.sh          # 幂等：写 $ARCHON_HOME/.env 与 config.yaml 的别名段（先备份），渲染 launchd plist，末尾跑 archon doctor
