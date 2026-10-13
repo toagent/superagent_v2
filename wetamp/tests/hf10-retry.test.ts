@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -32,7 +32,11 @@ for (const api of [fs, fs.promises]) for (const key of Object.keys(api)) {
 }
 require('node:module').syncBuiltinESMExports();
 if (typeof Bun !== 'undefined') for (const key of ['spawn', 'spawnSync']) {
-  const spawn = Bun[key]; Bun[key] = (cmd, options = {}) => spawn(cmd, {...options, env: {...process.env, ...options.env}});
+  const spawn = Bun[key]; Bun[key] = (cmd, options = {}) => {
+    if (!Array.isArray(cmd)) { options = cmd; cmd = options.cmd; }
+    if (['bun', 'node'].includes(path.basename(cmd[0]))) { const i = cmd[1] === 'run' ? 2 : 1; cmd = [...cmd.slice(0, i), path.basename(cmd[0]) === 'bun' ? '--preload' : '--require', __filename, ...cmd.slice(i)]; }
+    return spawn(cmd, {...options, env: {...process.env, ...options.env}});
+  };
 }
 process.on('exit', () => { if (violations) process.exitCode = 1; });
 const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
@@ -42,17 +46,6 @@ module.exports = {violations: () => violations};`
 );
 mkdirSync(join(scratchRoot, 'codex-sentinel'), { recursive: true });
 writeFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'isolated');
-const options = { NODE_OPTIONS: process.env.NODE_OPTIONS, BUN_OPTIONS: process.env.BUN_OPTIONS };
-Object.assign(process.env, {
-  NODE_OPTIONS: `${options.NODE_OPTIONS || ''} --require ${scratchPreload}`,
-  BUN_OPTIONS: `${options.BUN_OPTIONS || ''} --preload ${scratchPreload}`,
-});
-afterAll(() => {
-  for (const key of ['NODE_OPTIONS', 'BUN_OPTIONS'] as const) {
-    if (options[key] === undefined) delete process.env[key];
-    else process.env[key] = options[key];
-  }
-});
 const boundary = createRequire(import.meta.url)(scratchPreload) as { violations: () => number };
 afterEach(() => expect(boundary.violations()).toBe(0));
 

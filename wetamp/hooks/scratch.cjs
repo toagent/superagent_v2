@@ -6,7 +6,7 @@ const identity = require('./identity.cjs'), live = require('./live.cjs');
 const {resolvePath, within} = require('./redline.cjs');
 const {withLock} = require('./hook-state.cjs');
 function createScratch(ROOT) {
-  if (typeof ROOT !== 'string' || !path.isAbsolute(ROOT) || path.normalize(ROOT) !== ROOT
+  if (typeof ROOT !== 'string' || !path.isAbsolute(ROOT) || path.resolve(ROOT) !== ROOT
       || ROOT === path.parse(ROOT).root) throw new Error('scratch root must be a normalized absolute child path');
   // Fix the identity from the existing parent, never by probing the production root.
   const CANONICAL = ROOT === '/tmp/sa-scratch' ? '/private/tmp/sa-scratch'
