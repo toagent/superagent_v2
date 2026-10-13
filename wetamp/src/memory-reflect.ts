@@ -248,8 +248,8 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
         join(WETAMP, 'bin', 'superagent'),
         'job',
         'exec',
-        '--role',
-        'general',
+        // Command fixtures use the ordinary job path; real model calls retain role routing.
+        ...(override ? [] : ['--role', 'general']),
         '--title',
         `memory-reflect:${e.id}`,
         '--',

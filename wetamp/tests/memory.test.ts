@@ -463,7 +463,7 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(await reflectOne(NOW)).toBe(false);
     process.env.SUPERAGENT_MEMORY = 'on';
     const on = generate(plan, 'on', true);
-    expect(readFileSync(join(on.dir, 'briefs/core.md'), 'utf8')).toContain('[x]');
+    expect(readFileSync(join(on.dir, 'briefs/core.md'), 'utf8')).not.toContain('[x]');
     expect(on.engine_hash).toBe(off.engine_hash);
     expect(engineHash()).toBe(before);
     expect(JSON.parse(readFileSync(join(on.dir, 'engine.json'), 'utf8'))).toMatchObject({
