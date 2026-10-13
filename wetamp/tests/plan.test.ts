@@ -1,7 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { capsOf, loadPlan, milestones, requirementsSchema, type Plan } from '../src/plan';
+import {
+  capsOf,
+  loadPlan,
+  milestones,
+  requirementsSchema,
+  requestRefSchema,
+  type Plan,
+} from '../src/plan';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const setup = (patch?: (p: Record<string, unknown>) => void): { path: string; root: string } => {
@@ -12,6 +19,24 @@ const pkgs = (p: Record<string, unknown>): Record<string, unknown>[] =>
   p.packages as Record<string, unknown>[];
 
 describe('loadPlan', () => {
+  test('request_ref is optional, caller-owned and generated from its owner', () => {
+    const schema = JSON.parse(
+      readFileSync(join(import.meta.dir, '../schemas/plan.schema.json'), 'utf8')
+    );
+    expect(schema.properties.request_ref).toEqual(requestRefSchema);
+    const legacy = setup();
+    expect(loadPlan(legacy.path, [legacy.root]).request_ref).toBeUndefined();
+    const explicit = setup(p => {
+      p.request_ref = 'ticket:42';
+    });
+    expect(loadPlan(explicit.path, [explicit.root]).request_ref).toBe('ticket:42');
+    for (const ref of ['', '  ', 42]) {
+      const invalid = setup(p => {
+        p.request_ref = ref;
+      });
+      expect(() => loadPlan(invalid.path, [invalid.root])).toThrow('plan invalid');
+    }
+  });
   test('req-evidence: schema mirror and invalid requirement mappings', () => {
     const schema = JSON.parse(
       readFileSync(join(import.meta.dir, '../schemas/plan.schema.json'), 'utf8')

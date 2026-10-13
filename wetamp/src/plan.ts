@@ -56,6 +56,7 @@ export interface Pkg {
   caps?: Partial<Caps>;
 }
 export interface Plan {
+  request_ref?: string;
   repo: string;
   budget: { weighted_tokens: number; unlimited_tokens?: true; cost?: number; launches?: number }; // Explicit unlimited tokens preserves launch/round bounds.
   base_ref: string;
@@ -67,6 +68,11 @@ export interface Plan {
   caps?: Partial<Caps>;
   packages: Pkg[];
 }
+export const requestRefSchema = {
+  type: 'string',
+  minLength: 1,
+  pattern: '\\S',
+} as const satisfies JSONSchemaType<NonNullable<Plan['request_ref']>>;
 /** 将军能力（docs/00 caps）：默认全开；plan 级覆盖默认、包级覆盖 plan 级。 */
 export interface Caps {
   network: boolean;

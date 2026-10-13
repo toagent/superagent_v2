@@ -9,6 +9,8 @@ import {
   rollup,
   jobReceipt,
   requirementCoverage,
+  criticalPath,
+  demandStats,
 } from '../src/report';
 import type { Job } from '../src/jobs';
 import { archonRunIds } from '../src/archon';
@@ -45,6 +47,174 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  // prettier-ignore
+  test('job cumulative snapshot overlapping engine turn is excluded once without state writes', () => {
+    const root = tmp(), bin = join(root, 'archon-stub');
+    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
+    const saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
+    try {
+      writeFileSync(join(root, 'plan.json'), JSON.stringify(plan));
+      const event = ev('node_completed', 'code-core', { ...provider('m', { input: 100, output: 10 }),
+        invocation: { id: 'turn', startedAt: '2026-10-10T00:00:00Z' }, session_id: 'thread',
+        binding: { provider: 'codex', model: { requested: 'm', resolved: { source: 'provider', value: 'm' } } } });
+      const run = { id: 'engine', status: 'completed', started_at: '2026-10-10T00:00:00Z', completed_at: '2026-10-10T00:00:10Z', output_root: root, nodes: [], events: [event] };
+      writeFileSync(bin, '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n', { mode: 0o755 });
+      mkdirSync(join(root, 'usage'));
+      const cache = { at: 'now', status: 'ok', sources: {}, daily: [], sessions: [{ id: 'thread', client: 'codex', model: 'm', at: 'now', input: 100, output: 10, total: 110, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessions: 1, cost: null, owner: { kind: 'job', job_id: 'job', client: 'codex', role: 'general', model: 'm', cwd: root } }] };
+      const path = join(root, 'usage/cache.json'), bytes = JSON.stringify(cache);
+      writeFileSync(path, bytes);
+      const ledger = { run_id: 'r', archon_run_id: 'engine', repo: root, gen_dir: root, plan: join(root, 'plan.json'), workflow: 'fixture', console: 'codex', started_at: run.started_at, branch: 'task', recoveries: [] } as unknown as Ledger;
+      const report = buildReport([ledger]);
+      expect(report.usage).toMatchObject({ investment: { input: 100, output: 10, fees: 'unknown' }, supplemental: { overlap_excluded: 1, investment: { input: 'unknown' } } });
+      expect(readFileSync(path, 'utf8')).toBe(bytes);
+    } finally {
+      keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+    }
+  });
+  test('real invocation identities deduplicate receipts; resumed turns stay per-turn and providers are explicit', () => {
+    const turn = (id: string, input: number) =>
+      ev('node_completed', 'code-core', {
+        ...provider('a-model-is-not-a-provider', { input, output: 10, cacheRead: 60 }),
+        invocation: { id, startedAt: '2026-10-10T00:00:00Z' },
+        binding: {
+          provider: 'claude',
+          model: { resolved: { source: 'provider', value: 'a-model-is-not-a-provider' } },
+        },
+        session_id: 'same-thread',
+      });
+    const first = turn('turn1', 100),
+      second = turn('turn2', 200);
+    const rows = callsOf('r', [first, first, second], plan);
+    expect(rollup(rows)).toMatchObject({
+      calls: 2,
+      input: 300,
+      cacheRead: 120,
+      identity_coverage: '2/2',
+      providers: { claude: 2 },
+    });
+    expect(
+      rollup(
+        callsOf(
+          'r',
+          [ev('node_completed', 'code-core', provider('claude-x', { input: 20, output: 5 }))],
+          plan
+        )
+      )
+    ).toMatchObject({ providers: { unknown: 1 }, identity_coverage: '0/1' });
+  });
+
+  test('parallel frozen graph accounts only the blocking path; absent clocks and repeated attempts are unknown', () => {
+    const run = {
+      id: 'r',
+      status: 'completed',
+      started_at: '2026-10-10T00:00:00Z',
+      completed_at: '2026-10-10T00:00:10Z',
+    } as Parameters<typeof criticalPath>[0];
+    const terminal = (node: string, start: number, duration: number) =>
+      ev('node_completed', node, {
+        invocation: { id: node, startedAt: `2026-10-10T00:00:0${start}Z`, loopPath: [] },
+        attempt: { id: node, startedAt: `2026-10-10T00:00:0${start}Z` },
+        timing: { startedAt: `2026-10-10T00:00:0${start}Z`, durationMs: duration },
+      });
+    const events = [
+      terminal('code-a', 0, 4000),
+      terminal('code-b', 0, 7000),
+      terminal('verify-a', 7, 3000),
+    ];
+    const graph = [
+      { id: 'code-a' },
+      { id: 'code-b' },
+      { id: 'verify-a', depends_on: ['code-a', 'code-b'] },
+    ];
+    const result = criticalPath(run, events, graph);
+    expect(result).toMatchObject({
+      status: 'measured',
+      elapsed_ms: 10000,
+      reconciled_ms: 10000,
+      path: ['code-b', 'verify-a'],
+    });
+    expect(criticalPath(run, events)).toMatchObject({ status: 'unknown' });
+    expect(criticalPath(run, [...events, events[0]], graph)).toMatchObject({ status: 'unknown' });
+    expect(
+      criticalPath(run, [terminal('code-a', 0, NaN), ...events.slice(1)], graph)
+    ).toMatchObject({ status: 'unknown' });
+  });
+
+  test('explicit demand reference includes failed and cancelled attempts; legacy is unknown and completion is engine-owned', () => {
+    const root = tmp();
+    const saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
+    process.env.SUPERAGENT_HOME = root;
+    process.env.ARCHON_HOME = root;
+    try {
+      writeFileSync(join(root, 'plan.json'), JSON.stringify({ ...plan, request_ref: 'ticket:42' }));
+      const pairs = ['failed', 'cancelled', 'completed'].map((status, i) => ({
+        ledger: {
+          run_id: `r${i}`,
+          gen_dir: root,
+          repo: root,
+          started_at: '2026-10-10T00:00:00Z',
+        } as Ledger,
+        run: { id: `r${i}`, status, output_root: root, completed_at: '2026-10-10T00:00:10Z' },
+      })) as Parameters<typeof demandStats>[0];
+      const art = join(root, 'artifacts/runs/r2');
+      mkdirSync(art, { recursive: true });
+      writeFileSync(
+        join(art, 'gate-m1-r1.json'),
+        JSON.stringify({
+          decision: {
+            kind: 'advance',
+            reason: 'accepted',
+            evidence: [],
+            debt: [],
+            requirements: { status: 'verified', items: [] },
+          },
+        })
+      );
+      // api belongs to m2 and has no decision: a completed run cannot manufacture acceptance.
+      const calls = pairs.flatMap(p =>
+        callsOf(
+          p.ledger.run_id,
+          [ev('node_completed', 'code-core', provider('m', { input: 10, output: 1 }))],
+          plan
+        )
+      );
+      const result = demandStats(pairs, calls) as {
+        denominator: number;
+        completed: number;
+        by_request: Record<
+          string,
+          {
+            attempts: unknown[];
+            investment: { input: number };
+            complete: unknown;
+            elapsed_ms: number;
+          }
+        >;
+      };
+      expect(result.denominator).toBe(1);
+      expect(result.completed).toBe(0);
+      expect(result.by_request['ticket:42']).toMatchObject({
+        complete: 'unknown',
+        elapsed_ms: 10000,
+        investment: { input: 30, fees: 'unknown' },
+      });
+      expect(result.by_request['ticket:42'].attempts).toHaveLength(3);
+      writeFileSync(join(art, 'gate-m2-r1.json'), readFileSync(join(art, 'gate-m1-r1.json')));
+      expect(demandStats(pairs, calls)).toMatchObject({ completed: 1 });
+      writeFileSync(join(root, 'plan.json'), JSON.stringify(plan));
+      expect(demandStats(pairs, calls)).toMatchObject({
+        denominator: 0,
+        completed: 0,
+        unknown_runs: ['r0', 'r1', 'r2'],
+      });
+    } finally {
+      for (const [i, key] of ['SUPERAGENT_HOME', 'ARCHON_HOME'].entries()) {
+        if (saved[i] === undefined) delete process.env[key];
+        else process.env[key] = saved[i];
+      }
+    }
+  });
   test('req-evidence: report projects the last decision without interpreting green or self-report', () => {
     const root = tmp(),
       art = join(root, 'artifacts/runs/r');
