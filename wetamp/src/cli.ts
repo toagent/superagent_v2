@@ -432,9 +432,9 @@ export const decisionsOf = (art: string, m?: string, l?: Ledger) =>
       return { tag: file.slice(0, -5), milestone: out?.milestone, decision: decisionOf(out) };
     })
     .filter(d => m === undefined || d.milestone === m);
-export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
-  decisionsOf(art, m, l)
-    .filter(
+/** Current evidence supersedes process history without removing it from decisionsOf. */
+export const currentDecisions = (decisions: ReturnType<typeof decisionsOf>) =>
+  decisions.filter(
       (d, _, all) =>
         !all.some(
           other =>
@@ -449,8 +449,9 @@ export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, str
                   (other.tag.startsWith('gate-') &&
                     d.tag === other.tag.replace('gate-', 'diff-')))))
         )
-    )
-    .flatMap(({ tag, decision }) =>
+    );
+export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
+  currentDecisions(decisionsOf(art, m, l)).flatMap(({ tag, decision }) =>
       decision?.kind === 'block' && decision.reason === 'coder_redline'
         ? [
             {
@@ -2514,7 +2515,13 @@ export function main(argv: string[]): number {
             const digest = createHash('sha256').update(readFileSync(l.plan)).digest('hex');
             if (digest !== binding.digest) return undefined;
             const run = getRun(l.archon_run_id, l.repo);
-            const decisions = decisionsOf(artifactsOf(run), undefined, l).map(d => d.decision);
+            const history = decisionsOf(artifactsOf(run), undefined, l);
+            if (
+              run.nodes?.some(n =>
+                n.state === 'completed' && n.nodeId.startsWith('gate-') &&
+                !history.some(d => d.tag === n.nodeId && d.decision))
+            ) return undefined;
+            const decisions = currentDecisions(history).map(d => d.decision);
             if (decisions.some(d => !d)) return undefined;
             return {
               completed: classifyRun(l, run).state === 'completed',
