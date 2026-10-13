@@ -4,6 +4,7 @@
   "additionalProperties": false,
   "required": ["repo", "base_ref", "deadline", "budget", "packages"],
   "properties": {
+    "request_ref": {"type":"string","minLength":1,"pattern":"\\S"},
     "repo": {
       "type": "string",
       "minLength": 1
@@ -214,25 +215,7 @@
     }
   },
   "$defs": {
-    "requirements": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "text", "verified_by"],
-        "properties": {
-          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
-          "text": { "type": "string", "minLength": 1, "pattern": "\\S" },
-          "verified_by": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": { "type": "integer", "minimum": 0 }
-          }
-        }
-      }
-    },
+    "requirements": {"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["id","text","verified_by"],"properties":{"id":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},"text":{"type":"string","minLength":1,"pattern":"\\S"},"verified_by":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"integer","minimum":0}}}}},
     "check": {
       "type": "object",
       "additionalProperties": false,

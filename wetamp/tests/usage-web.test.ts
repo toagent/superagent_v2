@@ -7,6 +7,7 @@ import { attribute, jobSession, parseUsage, readUsage, refreshUsage, sessionKey,
 import { overview } from '../src/web/server';
 import { tmp } from './helpers';
 import type { BoardRow, Snapshot } from '../src/board/data';
+import { normalizeTokens, sessionTokens, tokenTotals, tokenFees } from '../src/usage';
 
 const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'] as const;
 const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
@@ -54,6 +55,17 @@ describe('WP-BT6 naming and metadata', () => {
 
 // prettier-ignore
 describe('WP-BT6 accounting', () => {
+  test('one owner normalizes raw Claude, gross engine and Codex cached/output subsets; cumulative snapshots are not summed', () => {
+    const raw = { input: 20, output: 8, cacheRead: 10, cacheWrite: 2 };
+    expect(normalizeTokens(raw, 'claude-raw')).toMatchObject({ input: 32, output: 8 });
+    expect(normalizeTokens(raw)).toEqual(raw);
+    const c = parseUsage(claude, 'claude')[0], x = parseUsage(codex, 'codex')[0];
+    expect(tokenTotals([sessionTokens(c), sessionTokens(x)])).toMatchObject({ input: 52, output: 16 });
+    expect(tokenFees([raw])).toBe('unknown');
+    expect(tokenFees([{ ...raw, cost: 0 }])).toBe(0);
+    const later = { ...codex.sessions[0], inputTokens: 30, totalTokens: 50, lastActivity: '2026-10-11T00:00:00Z' };
+    expect(parseUsage({ sessions: [later, codex.sessions[0]] }, 'codex')).toMatchObject([{ input: 30, total: 50 }]);
+  });
   test('both vendor shapes, thread suffix and duplicates', () => {
     expect(parseUsage(claude, 'claude')[0]).toMatchObject({ id: uuid, input: 20, output: 8, cacheWrite: 2, total: 40 });
     const sessions = parseUsage({ sessions: [...codex.sessions, ...codex.sessions] }, 'codex');

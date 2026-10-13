@@ -16,8 +16,20 @@ import { snapshotOf } from './board/data';
 import { cockpit } from './board/cockpit';
 import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
+import {
+  normalizeTokens,
+  tokenTotals,
+  tokenFees,
+  sessionTokens,
+  sessionKey,
+  readUsage,
+  type ReportTokens,
+  type UsageSession,
+} from './usage';
+import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
+import type { RunView } from './archon';
+import { workflowSourceMetadataSchema } from '../../packages/workflows/src/schemas/workflow-run';
 
-const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 /** Only project engine decisions; green commands and model reports are not coverage. */
 export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsOf>[0]) {
   const art = artifactsOf(run);
@@ -33,19 +45,30 @@ export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsO
     })
   );
 }
-type Tokens = Partial<Record<(typeof FIELDS)[number], number>>;
 interface Event {
+  workflow_run_id?: string;
+  created_at?: string;
   event_type: string;
   step_name?: string | null;
   data?: {
-    invocation?: { startedAt?: string };
+    invocation?: {
+      id?: string;
+      startedAt?: string;
+      loopPath?: NonNullable<SerializedNodeData['invocation']>['loopPath'];
+    };
     attempt?: { id?: string; startedAt?: string };
     binding?: {
+      provider?: string;
       model?: { requested?: string; resolved?: { source: string; value?: string } };
       effort?: string;
     };
-    timing?: { durationMs?: number };
-    spend?: { tokens?: { source: string; value?: Tokens } };
+    timing?: { durationMs?: number; startedAt?: string };
+    spend?: {
+      tokens?: { source: string; value?: ReportTokens };
+      costUsd?: NonNullable<SerializedNodeData['spend']>['costUsd'];
+    };
+    session_id?: string;
+    provider?: string;
     provider_failure?: { class?: string };
     failure_kind?: string;
   };
@@ -60,7 +83,11 @@ export interface Call {
   attempt: number;
   model: string;
   effort: string | null;
-  tokens: Tokens | null;
+  tokens: ReportTokens | null;
+  raw: ReportTokens | null;
+  provider: string | null;
+  session: string | null;
+  identity: string | null;
   failure: string | null;
   queue_ms: number | null;
   exec_ms: number | null;
@@ -109,14 +136,25 @@ export function jobReceipt(j: Job): Record<string, unknown> {
 
 export function callsOf(runId: string, events: Event[], plan: Plan | null): Call[] {
   const seen = new Map<string, number>();
+  const identities = new Set<string>();
   const out: Call[] = [];
   for (const e of events) {
     if (e.event_type !== 'node_completed' && e.event_type !== 'node_failed') continue;
     const [node, role, rest] = AI_NODE.exec(e.step_name ?? '') ?? [];
     if (!node || !role || !e.data?.attempt?.id || !e.data.binding?.model) continue;
+    const identity = e.data.invocation?.id
+      ? JSON.stringify([e.workflow_run_id ?? runId, e.data.invocation.id, e.data.attempt.id])
+      : null;
+    if (identity && identities.has(identity)) continue;
+    if (identity) identities.add(identity);
     const n = (seen.get(node) ?? 0) + 1;
     seen.set(node, n);
     const t = e.data.spend?.tokens;
+    const fee = e.data.spend?.costUsd;
+    const raw =
+      t?.source === 'provider' && t.value
+        ? { ...t.value, ...(fee?.source === 'provider' ? { cost: fee.value } : {}) }
+        : null;
     out.push({
       run: runId,
       milestone: milestoneOf(role, rest, plan),
@@ -125,7 +163,11 @@ export function callsOf(runId: string, events: Event[], plan: Plan | null): Call
       attempt: n,
       model: modelOf(e),
       effort: e.data.binding.effort ?? null,
-      tokens: t?.source === 'provider' && t.value ? t.value : null,
+      tokens: raw ? normalizeTokens(raw) : null,
+      raw,
+      provider: e.data.binding.provider ?? e.data.provider ?? null,
+      session: e.data.session_id ?? null,
+      identity,
       failure:
         e.event_type === 'node_failed'
           ? (e.data.provider_failure?.class ?? e.data.failure_kind ?? 'unknown')
@@ -143,12 +185,7 @@ export function callsOf(runId: string, events: Event[], plan: Plan | null): Call
  */
 export function rollup(calls: Call[]): Record<string, unknown> {
   const covered = calls.filter(c => c.tokens);
-  const tokens = Object.fromEntries(
-    FIELDS.map(f => {
-      const vs = covered.map(c => c.tokens?.[f]).filter((v): v is number => typeof v === 'number');
-      return [f, vs.length ? vs.reduce((a, b) => a + b, 0) : 'unknown'];
-    })
-  );
+  const tokens = tokenTotals(covered.flatMap(c => (c.tokens ? [c.tokens] : [])));
   const tally = (xs: (string | null)[]): Record<string, number> => {
     const o: Record<string, number> = {};
     for (const x of xs) if (x) o[x] = (o[x] ?? 0) + 1;
@@ -160,6 +197,9 @@ export function rollup(calls: Call[]): Record<string, unknown> {
     calls: calls.length,
     coverage: `${String(covered.length)}/${String(calls.length)}`,
     ...tokens,
+    raw: tokenTotals(covered.flatMap(c => (c.raw ? [c.raw] : []))),
+    providers: tally(calls.map(c => c.provider ?? 'unknown')),
+    identity_coverage: `${calls.filter(c => c.identity).length}/${calls.length}`,
     models: tally(calls.map(c => c.model)),
     efforts: tally(calls.map(c => c.effort)),
     failures: tally(calls.map(c => c.failure)),
@@ -195,6 +235,114 @@ function planOf(l: Ledger): Plan | null {
   }
 }
 
+/** Only a captured executable graph can explain blocking; authoring YAML is not evidence. */
+// prettier-ignore
+export function criticalPath( run: RunView, events: Event[], graph?: { id: string; depends_on?: string[]; wait?: unknown }[] ): Record<string, unknown> {
+  const elapsed = ms(run.started_at ?? undefined, run.completed_at ?? undefined);
+  const unknown = { status: 'unknown', elapsed_ms: elapsed ?? 'unknown', reason: 'missing_graph_clock_or_attempt_mapping', };
+  if (!graph?.length || elapsed === null) return unknown;
+  const rows = new Map<string, { start: number; end: number; queue: number }>();
+  for (const e of events) {
+    if (!['node_completed', 'node_failed', 'node_skipped'].includes(e.event_type) || !e.step_name)
+      continue;
+    if (rows.has(e.step_name) || e.data?.invocation?.loopPath?.length) return unknown;
+    const skipped = e.event_type === 'node_skipped';
+    const start = Date.parse(
+      skipped
+        ? (e.created_at ?? '')
+        : (e.data?.timing?.startedAt ?? e.data?.attempt?.startedAt ?? '')
+    );
+    const end = skipped ? start : start + (e.data?.timing?.durationMs ?? NaN);
+    const queue = skipped ? 0 : ms(e.data?.invocation?.startedAt, e.data?.attempt?.startedAt);
+    if (![start, end].every(Number.isFinite) || end < start || queue === null) return unknown;
+    rows.set(e.step_name, { start, end, queue });
+  }
+  if (graph.some(n => !rows.has(n.id)) || rows.size !== graph.length) return unknown;
+  const nodes = new Map(graph.map(n => [n.id, n]));
+  const path: string[] = [],
+    visiting = new Set<string>();
+  const walk = (id: string): boolean => {
+    if (visiting.has(id)) return false;
+    visiting.add(id);
+    const n = nodes.get(id),
+      row = rows.get(id);
+    if (!n || !row) return false;
+    const deps = n.depends_on ?? [];
+    if (deps.some(d => !rows.has(d) || rows.get(d)!.end > row.start - row.queue)) return false;
+    const pred = [...deps].sort((a, b) => rows.get(b)!.end - rows.get(a)!.end)[0];
+    if (pred && !walk(pred)) return false;
+    path.push(id);
+    return true;
+  };
+  const last = [...rows].sort((a, b) => b[1].end - a[1].end)[0]![0];
+  if (!walk(last)) return unknown;
+  let cursor = Date.parse(run.started_at!);
+  const end = Date.parse(run.completed_at!);
+  const segments: { phase: string; node?: string; ms: number }[] = [];
+  for (const id of path) {
+    const row = rows.get(id)!;
+    if (row.start - row.queue < cursor || row.end > end) return unknown;
+    segments.push({ phase: 'unclassified_wait', ms: row.start - row.queue - cursor }, { phase: 'queue', node: id, ms: row.queue }, { phase: nodes.get(id)?.wait ? 'human_wait' : (/^(code|review|repair|fix|verify)-/.exec(id)?.[1] ?? 'script'), node: id, ms: row.end - row.start, } );
+    cursor = row.end;
+  }
+  segments.push({ phase: 'unclassified_wait', ms: end - cursor });
+  return { status: 'measured', elapsed_ms: elapsed, path, segments, reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
+}
+
+// prettier-ignore
+export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [] ): Record<string, unknown> {
+  const by = new Map<string, Pair[]>();
+  const unknown: string[] = [];
+  for (const pair of pairs) {
+    const ref = planOf(pair.ledger)?.request_ref;
+    if (typeof ref !== 'string' || !ref.trim()) {
+      unknown.push(pair.ledger.run_id);
+      continue;
+    }
+    by.set(ref, [...(by.get(ref) ?? []), pair]);
+  }
+  const demands = Object.fromEntries(
+    [...by].map(([ref, attempts]) => {
+      const completion = attempts.map(({ ledger, run }) =>
+        run instanceof Error ? null : requirementCoverage(ledger, run)
+      );
+      const complete = completion.some(
+        c => c && Object.keys(c).length > 0 && Object.values(c).every(v => v.status === 'verified')
+      );
+      const own = calls.filter(c => attempts.some(p => p.ledger.run_id === c.run));
+      const extra = sessions.filter(
+        s => s.owner?.kind === 'run' && attempts.some(p => p.ledger.run_id === s.owner?.run_id)
+      );
+      const inputs = [
+        ...own.flatMap(c => (c.tokens ? [c.tokens] : [])),
+        ...extra.map(sessionTokens),
+      ];
+      const starts = attempts.map(p => Date.parse(p.ledger.started_at));
+      const ends = attempts.map(p =>
+        p.run instanceof Error ? NaN : Date.parse(p.run.completed_at ?? '')
+      );
+      const elapsed = [...starts, ...ends].every(Number.isFinite)
+        ? Math.max(...ends) - Math.min(...starts)
+        : NaN;
+      return [ref, { attempts: attempts.map(({ ledger, run }) => ({ run: ledger.run_id, status: run instanceof Error ? 'unknown' : run.status, })), completion, complete: complete ? true : completion.every(c => c && Object.values(c).some(v => v.status === 'unmet')) ? false : 'unknown', elapsed_ms: elapsed >= 0 ? elapsed : 'unknown', investment: { ...rollup(own), ...tokenTotals(inputs), fees: tokenFees(inputs) }, }, ];
+    })
+  );
+  const durations = Object.values(demands)
+    .map(d => d.elapsed_ms)
+    .filter((n): n is number => typeof n === 'number')
+    .sort((a, b) => a - b);
+  return {
+    denominator: by.size,
+    completed: Object.values(demands).filter(d => d.complete === true).length,
+    unknown_runs: unknown,
+    by_request: demands,
+    elapsed: {
+      coverage: `${durations.length}/${by.size}`,
+      p50_ms: durations[Math.ceil(durations.length * 0.5) - 1] ?? 'unknown',
+      p90_ms: durations[Math.ceil(durations.length * 0.9) - 1] ?? 'unknown',
+    },
+  };
+}
 export function interventionStats(ls: Ledger[]): Record<string, unknown> {
   const by_run = Object.fromEntries(
     ls.map(l => [l.run_id, l.intervention_events?.length ?? 'unknown'])
@@ -222,6 +370,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const receipts = jobs.jobs.map(jobReceipt);
   const calls: Call[] = [];
   const unreadable: string[] = [];
+  const paths: Record<string, unknown> = {};
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
   const cwdOf = (l: Ledger): string => (repo_missing.includes(l.run_id) ? WETAMP : l.repo);
   const pairs: Pair[] = ls.map(l => {
@@ -236,14 +385,41 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     for (const id of archonRunIds(l)) {
       try {
         const j = archonJson(['workflow', 'get', id, '--verbose', '--events'], cwdOf(l));
-        events.push(...((j.events ?? []) as Event[]));
+        const rows = (j.events ?? []) as Event[];
+        events.push(...rows.map(e => ({ ...e, workflow_run_id: e.workflow_run_id ?? id })));
+        let graph;
+        const source = workflowSourceMetadataSchema.safeParse(
+          (j.metadata as Record<string, unknown> | undefined)?.workflow_source
+        );
+        try {
+          // prettier-ignore
+          if (source.success) graph = (Bun.YAML.parse(readFileSync(join(source.data.root, '.archon/workflows', l.workflow, `${l.workflow}.yaml`), 'utf8')) as { nodes?: Parameters<typeof criticalPath>[2] }).nodes;
+        } catch { /* Missing captured source leaves the path unknown. */ }
+        paths[`${l.run_id}/${id}`] = criticalPath(j as unknown as RunView, rows, graph);
       } catch (e) {
+        paths[`${l.run_id}/${id}`] = { status: 'unknown', reason: 'unreadable_generation' };
         unreadable.push(`${l.run_id}/${id}: ${tail((e as Error).message, 200)}`);
       }
     }
     calls.push(...callsOf(l.run_id, events, planOf(l)));
   }
   const snapshot = snapshotOf(pairs);
+  // ccusage snapshots are cumulative per session. Never add one to its engine turn receipts.
+  const sessions = readUsage();
+  const engineSessions = new Set(
+    calls.filter(c => c.provider && c.session).map(c => `${c.provider}:${sessionKey(c.session!)}`)
+  );
+  const supplemental = sessions.sessions.filter(s => !engineSessions.has(`${s.client}:${s.id}`));
+  const inputs = [
+    ...calls.flatMap(c => (c.tokens ? [c.tokens] : [])),
+    ...supplemental.map(sessionTokens),
+  ];
+  const dedupKnown = calls.every(c => c.provider && c.session && c.identity);
+  const learning = supplemental.filter(
+    s =>
+      s.owner?.kind === 'job' &&
+      jobs.jobs.some(j => j.id === s.owner?.job_id && j.title.startsWith('memory-reflect:'))
+  );
   return {
     ...snapshot.summary,
     repo_missing,
@@ -255,6 +431,8 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     ),
     metrics: cockpit(snapshot).metrics,
     interventions: interventionStats(ls),
+    demands: demandStats(pairs, calls, supplemental),
+    critical_path: paths,
     jobs: {
       receipts,
       unreadable: jobs.bad,
@@ -266,7 +444,17 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       ),
     },
     usage: {
+      // prettier-ignore
+      investment: { ...tokenTotals(dedupKnown ? inputs : []), fees: dedupKnown ? tokenFees(inputs) : 'unknown', deduplication: dedupKnown ? 'covered' : 'unknown' },
+      // prettier-ignore
+      supplemental: { status: sessions.status, investment: tokenTotals(supplemental.map(sessionTokens)),
+        raw: tokenTotals(supplemental.map(s => ({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite }))),
+        attribution: 'explicit run owner only; other sessions unknown', overlap_excluded: sessions.sessions.length - supplemental.length },
+      // prettier-ignore
+      learning: { ...tokenTotals(learning.map(sessionTokens)), fees: tokenFees(learning.map(sessionTokens)), policy: snapshot.reflection ?? 'unknown',
+        basis: 'explicit memory-reflect job tag; period only; no per-demand allocation' },
       window: { scope: 'all_retained_events_for_recorded_generations', generated_at: snapshot.at },
+      receipts: calls.map(({ session: _session, ...receipt }) => receipt),
       total: rollup(calls),
       by_run: group(calls, c => c.run),
       by_milestone: group(calls, c => `${c.run}/${c.milestone}`),

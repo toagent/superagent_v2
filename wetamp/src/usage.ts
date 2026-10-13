@@ -15,6 +15,32 @@ import { etaInput, refreshEta, type EtaInput } from './board/eta';
 import type { RunView } from './archon';
 import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/workflow-event';
 import { workflowRoles } from './board/workflow';
+import type { TokenUsage } from '../../packages/provider-contract/src/result';
+
+export type ReportTokens = Partial<TokenUsage>;
+export const tokenFields = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
+/** Engine receipts are already gross/per-turn; ccusage Claude input is raw. */
+// prettier-ignore
+export function normalizeTokens(raw: ReportTokens, basis: 'gross' | 'claude-raw' = 'gross'): ReportTokens {
+  return { ...raw, ...(basis === 'claude-raw' && raw.input !== undefined
+    ? { input: raw.input + (raw.cacheRead ?? 0) + (raw.cacheWrite ?? 0) } : {}) };
+}
+// prettier-ignore
+export function tokenTotals(rows: ReportTokens[]): Record<string, number | 'unknown'> {
+  return Object.fromEntries(tokenFields.map(field => {
+    const values = rows.map(r => r[field]).filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+    return [field, values.length ? values.reduce((a, b) => a + b, 0) : 'unknown'];
+  }));
+}
+// prettier-ignore
+export function sessionTokens(s: UsageSession): ReportTokens {
+  return normalizeTokens({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, ...(s.cost !== null ? { cost: s.cost } : {}) }, s.client === 'claude' ? 'claude-raw' : 'gross');
+}
+// prettier-ignore
+export function tokenFees(rows: ReportTokens[]): number | 'unknown' {
+  return rows.length && rows.every(r => typeof r.cost === 'number' && Number.isFinite(r.cost) && r.cost >= 0)
+    ? rows.reduce((sum, r) => sum + r.cost!, 0) : 'unknown';
+}
 
 export type Client = 'claude' | 'codex';
 // prettier-ignore
@@ -50,7 +76,9 @@ export function parseUsage(value: unknown, client: Client): UsageSession[] {
     const models = client === 'claude' ? arr(r.modelsUsed) : Object.keys(obj(r.models));
     const parts = client === 'claude' ? arr(r.modelBreakdowns).map(v => { const p = obj(v); return { ...counts(p), total: n(p.inputTokens) + n(p.outputTokens) + n(p.cacheReadTokens) + n(p.cacheCreationTokens), model: str(p.modelName) ?? '?' }; }) : Object.entries(obj(r.models)).map(([model, v]) => ({ ...counts(obj(v)), model }));
     const cost = r.totalCost ?? r.costUSD;
-    seen.set(key(client, id), { ...counts(r), id: sessionKey(id), client, model: str(models.at(-1)), at: str(r.lastActivity ?? obj(r.metadata).lastActivity) ?? '', cost: typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : null, parts });
+    const session = { ...counts(r), id: sessionKey(id), client, model: str(models.at(-1)), at: str(r.lastActivity ?? obj(r.metadata).lastActivity) ?? '', cost: typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : null, parts };
+    const prior = seen.get(key(client, id));
+    if (!prior || Date.parse(session.at) >= Date.parse(prior.at) || session.total >= prior.total && (!Number.isFinite(Date.parse(session.at)) || !Number.isFinite(Date.parse(prior.at)))) seen.set(key(client, id), session);
   }
   return [...seen.values()];
 }
