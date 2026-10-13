@@ -56,6 +56,20 @@ const reason = (o: Out): string | undefined =>
     : undefined;
 
 describe('REDLINE 默认放行与危险效果', () => {
+  test('M5: native Move checks source loss and destination replacement independently', () => {
+    const repo = gitRepo(tmp()), foreign = gitRepo(tmp());
+    const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as { reason: (options: object) => string | null };
+    for (const [source, target, denied, advisory] of [
+      [join(foreign, 'README.md'), join(repo, 'new.txt'), true, false],
+      [join(repo, 'README.md'), join(foreign, 'README.md'), true, false],
+      [join(repo, 'README.md'), join(foreign, 'new.txt'), false, true],
+      [join(repo, 'README.md'), join(repo, 'new.txt'), false, false],
+    ] as const) {
+      const advisories: string[] = [], input = { input: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${target}\n@@\n-hi\n+edit\n*** End Patch` };
+      expect(Boolean(redline.reason({ client: 'codex', name: 'apply_patch', input, cwd: repo, root: repo, derived: true, onAdvisory: (value: string) => advisories.push(value) }))).toBe(denied);
+      if (!denied) expect(advisories.includes('file_ownership')).toBe(advisory);
+    }
+  });
   test.each(['claude', 'codex'])(
     'M5: %s shares existing-target loss policy across tools and shell',
     client => {

@@ -196,6 +196,11 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
         targets = edits.map(e => e.file);
         deletions = new Set(edits.filter(e => e.kind === 'Delete File').map(e => e.file));
         overwrites = new Set(edits.filter(e => e.kind === 'Add File').map(e => e.file));
+        // patchEdits emits each Move destination immediately after its Update source.
+        for (const [i, e] of edits.entries()) if (e.kind === 'Move') {
+          deletions.add(edits[i - 1].file);
+          overwrites.add(e.file);
+        }
       }
       catch { onAdvisory('patch_target_unknown'); return null; }
     }
