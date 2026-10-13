@@ -949,6 +949,10 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
     join(root, 'reasons.json'),
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/reasons.json'))
   );
+  writeFileSync(
+    join(root, 'sa-context.ts'),
+    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/sa-context.ts'))
+  );
   // Runtime sibling import of sa-check.ts; type-only imports are erased and need no copy.
   writeFileSync(
     join(root, 'policy-attempts.ts'),

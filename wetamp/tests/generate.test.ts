@@ -52,6 +52,22 @@ type N = {
   with?: Record<string, unknown>;
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
+const runAttempt = (node: N, cwd: string, artifacts: string) =>
+  Bun.spawnSync(
+    [process.execPath, '--no-env-file', 'run', join(artifacts, '.archon/scripts/sa-context.ts')],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        ARTIFACTS_DIR: artifacts,
+        ...Object.fromEntries(
+          Object.entries(node.with!).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, String(v)])
+        ),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }
+  );
 
 test('review guidance uses the node schema for failure classes', () => {
   for (const name of ['sa-review.md', 'sa-review-delta.md']) {
@@ -238,7 +254,11 @@ describe('buildWorkflow', () => {
     const enabled = (): boolean => {
       ctx.nodeOutputs.set(attempt.id, {
         state: 'completed',
-        output: sh(attempt.bash!, repo, { ARTIFACTS_DIR: gen }),
+        output: (() => {
+          const result = runAttempt(attempt, repo, gen);
+          expect(result.exitCode).toBe(0);
+          return result.stdout.toString();
+        })(),
       });
       const result = evaluateCondition(code.when!, ctx.nodeOutputs);
       expect(result.parsed).toBe(true);
@@ -499,11 +519,19 @@ describe('buildWorkflow', () => {
         fs.writeFileSync(path, counter);
       }
       const context = join(gen, 'prepared.json');
-      const environment = sh(
-        `bun -e 'import { contextEnvironmentIdentity } from "./.archon/scripts/sa-check.ts"; console.log(contextEnvironmentIdentity(process.env));'`,
-        gen,
-        { ARTIFACTS_DIR: gen }
-      ).trim();
+      expect(node.script).toBe('sa-context');
+      expect(node.bash).toBeUndefined();
+      const fingerprint = Bun.spawnSync(
+        [
+          process.execPath,
+          '--no-env-file',
+          '-e',
+          'import { contextEnvironmentIdentity } from "./.archon/scripts/sa-check.ts"; console.log(contextEnvironmentIdentity(process.env));',
+        ],
+        { cwd: gen, env: { ...process.env, ARTIFACTS_DIR: gen }, stdout: 'pipe', stderr: 'pipe' }
+      );
+      expect(fingerprint.exitCode).toBe(0);
+      const environment = fingerprint.stdout.toString().trim();
       fs.writeFileSync(
         context,
         JSON.stringify({
@@ -517,12 +545,7 @@ describe('buildWorkflow', () => {
         join(gen, `${id.slice('attempt-'.length)}.context.json`),
         JSON.stringify({ path: context })
       );
-      const result = Bun.spawnSync(['bash', '-c', node.bash!], {
-        cwd: gen,
-        env: { ...process.env, ARTIFACTS_DIR: gen },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
+      const result = runAttempt(node, gen, gen);
       if (counter === 'missing' || counter === '0' || counter === '7') {
         expect(result.exitCode).toBe(0);
         expect(JSON.parse(result.stdout.toString())).toEqual({

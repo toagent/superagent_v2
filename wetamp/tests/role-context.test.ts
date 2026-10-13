@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { lastJson } from '../src/archon';
 import { executionTable } from '../src/execution';
 import { loadTiers, WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
@@ -76,6 +77,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   const fingerprint = Bun.spawnSync(
     [
       process.execPath,
+      '--no-env-file',
       '-e',
       `import { contextEnvironmentIdentity, environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({context: contextEnvironmentIdentity(process.env), cache: environmentIdentity(process.env)}));`,
     ],
@@ -86,6 +88,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   const reviewFingerprint = Bun.spawnSync(
     [
       process.execPath,
+      '--no-env-file',
       '-e',
       `import { environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(environmentIdentity(process.env));`,
     ],
@@ -131,6 +134,8 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
     Bun.spawnSync(
       [
         process.execPath,
+        '--no-env-file',
+        'run',
         join(gen, '.archon/scripts/sa-context.ts'),
         join(gen, 'attempt'),
         gen,
@@ -144,7 +149,27 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
         stderr: 'pipe',
       }
     );
+  // Typed native inputs and the positional interface used by old frozen workflows agree.
   expect(startReview().exitCode).toBe(0);
+  expect(
+    startReview({
+      INPUTS_COUNTER: join(gen, 'attempt'),
+      INPUTS_GEN: gen,
+      INPUTS_PKG: '',
+      INPUTS_REVIEW: 'review-m2-r2',
+    }).exitCode
+  ).toBe(0);
+  writeFileSync(
+    pointer.replace('r2.context', 'r3.context'),
+    JSON.stringify({ path: prepareContext({ ...input, node: 'review-m2-r3' }) })
+  );
+  const missingCarryPrepared = startReview({
+    INPUTS_COUNTER: join(gen, 'attempt'),
+    INPUTS_GEN: gen,
+    INPUTS_REVIEW: 'review-m2-r3',
+  });
+  expect(missingCarryPrepared.stderr.toString()).toContain('missing carry-over');
+  writeFileSync(pointer, JSON.stringify({ path }));
   expect(startReview({ INPUTS_ROUND: '2' }).exitCode).toBe(0);
   const drifted = startReview({ SA_CONTEXT_TEST_ENV: 'after' });
   expect(drifted.exitCode).not.toBe(0);
@@ -203,3 +228,109 @@ test('canonical owner resolves refs once from events and refuses missing produce
     resolveAcceptanceContext({ ...run, events: undefined }, contracts, art)
   ).rejects.toThrow('missing authoritative');
 });
+
+test('native Archon scripts share context identity without shell startup or .env interpretation', () => {
+  const root = tmp(),
+    repo = gitRepo(tmp()),
+    gen = join(root, 'source');
+  const scripts = join(gen, '.archon/scripts'),
+    workflows = join(gen, '.archon/workflows/native-context');
+  mkdirSync(workflows, { recursive: true });
+  cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
+  cpSync(
+    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+    join(scripts, 'policy-attempts.ts')
+  );
+  const plan = JSON.parse(
+    readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
+  ) as Plan;
+  writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(gen, 'execution.json'), JSON.stringify(executionTable(plan, loadTiers())));
+  writeFileSync(join(repo, '.env'), 'SA_CONTEXT_TEST_ENV=dotenv\n');
+  const startup = join(root, 'startup.sh');
+  writeFileSync(startup, 'export SA_CONTEXT_TEST_ENV=shell\n');
+  writeFileSync(
+    join(workflows, 'native-context.yaml'),
+    Bun.YAML.stringify({
+      name: 'native-context',
+      description: 'Controlled native producer/consumer environment',
+      nodes: [
+        {
+          id: 'diff',
+          runtime: 'bun',
+          script: `
+import { prepareContext } from ${JSON.stringify(join(scripts, 'sa-context.ts'))};
+import { contextEnvironmentIdentity } from ${JSON.stringify(join(scripts, 'sa-check.ts'))};
+import { writeFileSync } from 'node:fs';
+const env = process.env;
+if (env.SA_CONTEXT_TEST_ENV !== undefined || env.SHLVL !== '1' || env._ !== 'parent-marker' || env.PWD !== 'controlled-pwd')
+  throw new Error('native launch reinterpreted controlled environment');
+const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], {stdout: 'pipe'});
+if (git.exitCode !== 0) throw new Error('fixture HEAD unavailable');
+const head = git.stdout.toString().trim();
+const path = prepareContext({gen: ${JSON.stringify(gen)}, artifacts: env.ARTIFACTS_DIR!, node: 'review-m1-r1',
+  cwd: process.cwd(), base: head, head, environment: contextEnvironmentIdentity(env)});
+writeFileSync(env.ARTIFACTS_DIR + '/review-m1-r1.context.json', JSON.stringify({path}));
+console.log(JSON.stringify({prepared: true}));`,
+        },
+        {
+          id: 'attempt-review',
+          script: 'sa-context',
+          runtime: 'bun',
+          depends_on: ['diff'],
+          with: { counter: join(gen, 'missing-counter'), gen, pkg: '', review: 'review-m1-r1' },
+        },
+      ],
+    })
+  );
+  sh(
+    'git init -q && git add .archon plan.json execution.json && git -c user.name=t -c user.email=t@l commit -qm fixture',
+    gen
+  );
+  const env = {
+    ...process.env,
+    SUPERAGENT_HOME: join(root, 'home'),
+    ARCHON_HOME: join(root, 'home/archon'),
+    SA_CONTEXT_TEST_ENV: 'before',
+    BASH_ENV: startup,
+    SHLVL: '1',
+    _: 'parent-marker',
+    PWD: 'controlled-pwd',
+  };
+  const archon = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      [process.execPath, '--no-env-file', join(WETAMP, 'src/coord/archon-entry.ts'), ...args],
+      {
+        env,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 30_000,
+      }
+    );
+    expect(result.exitCode).toBe(0);
+    return lastJson(result.stdout.toString());
+  };
+  const ack = archon(
+    'workflow',
+    'run',
+    'native-context',
+    '--workflow-source',
+    gen,
+    '--cwd',
+    repo,
+    '--no-worktree',
+    '--detach',
+    '--json'
+  );
+  const id = String(ack?.runId);
+  const waited = archon('workflow', 'wait', id, '--timeout', '20', '--json');
+  const view = archon('workflow', 'get', id, '--verbose', '--json');
+  expect(waited).toMatchObject({ attention: { status: 'completed' } });
+  expect(view).toMatchObject({
+    status: 'completed',
+    nodes: [
+      { nodeId: 'diff', state: 'completed' },
+      { nodeId: 'attempt-review', state: 'completed' },
+    ],
+  });
+}, 40_000);

@@ -196,12 +196,11 @@ export function buildWorkflow(
       }
     ),
   ];
-  const attemptCommand = (path: string, pkg = '', review = ''): string => {
-    const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
-    return ['bun', join(gen, '.archon/scripts/sa-context.ts'), path, gen, pkg, review]
-      .map(quote)
-      .join(' ');
-  };
+  const attemptInputs = (counter: string, pkg = '', review = ''): Node => ({
+    script: 'sa-context',
+    runtime: 'bun',
+    with: { counter, gen, pkg, review },
+  });
   let after: Node = { depends_on: ['environment'] };
   for (const m of ms) {
     const covered = ms.slice(0, ms.indexOf(m) + 1).flatMap(k => k.packages);
@@ -219,7 +218,7 @@ export function buildWorkflow(
     const attempt = `attempt-${m.id}`;
     nodes.push({
       id: attempt,
-      bash: attemptCommand(attemptPath(gen, m.id)),
+      ...attemptInputs(attemptPath(gen, m.id)),
       depends_on: [start],
       always_run: true,
       output_format: outputSchema('attempt'),
@@ -230,7 +229,7 @@ export function buildWorkflow(
       const pkgAttempt = `package-attempt-${p.id}`;
       nodes.push({
         id: pkgAttempt,
-        bash: attemptCommand(attemptPath(gen, `pkg/${p.id}`), p.id),
+        ...attemptInputs(attemptPath(gen, `pkg/${p.id}`), p.id),
         depends_on: [prev],
         always_run: true,
         output_format: outputSchema('attempt'),
@@ -402,7 +401,7 @@ export function buildWorkflow(
         always_run: true,
         when: reviewWhen,
         depends_on: [`diff-${t}`],
-        bash: attemptCommand(attemptPath(gen, `review-${t}`), '', fake ? '' : `review-${t}`),
+        ...attemptInputs(attemptPath(gen, `review-${t}`), '', fake ? '' : `review-${t}`),
         output_format: outputSchema('attempt'),
       });
       nodes.push({

@@ -22,7 +22,13 @@ nodes:
       required:
         - head
   - id: attempt-m1
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/m1' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/m1
+      gen: /GEN
+      pkg: ""
+      review: ""
     depends_on:
       - start-m1
     always_run: true
@@ -34,7 +40,13 @@ nodes:
       required:
         - attempt
   - id: package-attempt-core
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/.packages/core' '/GEN' 'core' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/.packages/core
+      gen: /GEN
+      pkg: core
+      review: ""
     depends_on:
       - start-m1
     always_run: true
@@ -527,7 +539,13 @@ nodes:
     when: "$diff-m1-r1.output.disposition == 'advance'"
     depends_on:
       - diff-m1-r1
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m1-r1' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r1
+      gen: /GEN
+      pkg: ""
+      review: ""
     output_format:
       type: object
       properties:
@@ -862,7 +880,13 @@ nodes:
     when: "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'"
     depends_on:
       - diff-m1-r2
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m1-r2' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r2
+      gen: /GEN
+      pkg: ""
+      review: ""
     output_format:
       type: object
       properties:
@@ -1201,7 +1225,13 @@ nodes:
     when: "$diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'"
     depends_on:
       - diff-m1-r3
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m1-r3' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r3
+      gen: /GEN
+      pkg: ""
+      review: ""
     output_format:
       type: object
       properties:
@@ -1353,7 +1383,13 @@ nodes:
       required:
         - head
   - id: attempt-m2
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/m2' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/m2
+      gen: /GEN
+      pkg: ""
+      review: ""
     depends_on:
       - start-m2
     always_run: true
@@ -1365,7 +1401,13 @@ nodes:
       required:
         - attempt
   - id: package-attempt-api
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/.packages/api' '/GEN' 'api' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/.packages/api
+      gen: /GEN
+      pkg: api
+      review: ""
     depends_on:
       - start-m2
     always_run: true
@@ -1807,7 +1849,13 @@ nodes:
     when: "$diff-m2-r1.output.disposition == 'advance'"
     depends_on:
       - diff-m2-r1
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m2-r1' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r1
+      gen: /GEN
+      pkg: ""
+      review: ""
     output_format:
       type: object
       properties:
@@ -2141,7 +2189,13 @@ nodes:
     when: "$diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'"
     depends_on:
       - diff-m2-r2
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m2-r2' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r2
+      gen: /GEN
+      pkg: ""
+      review: ""
     output_format:
       type: object
       properties:
@@ -2479,7 +2533,13 @@ nodes:
     when: "$diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'"
     depends_on:
       - diff-m2-r3
-    bash: "'bun' '/GEN/.archon/scripts/sa-context.ts' '/GEN/attempts/review-m2-r3' '/GEN' '' ''"
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r3
+      gen: /GEN
+      pkg: ""
+      review: ""
     output_format:
       type: object
       properties:

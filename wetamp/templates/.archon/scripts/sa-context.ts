@@ -67,7 +67,10 @@ export function prepareContext(input: Parameters<typeof roleContext>[0]): string
 }
 
 if (import.meta.main) {
-  const [counter, gen, pkg, review] = process.argv.slice(2);
+  // Native script nodes use the engine's input channel; frozen CLI callers keep positional args.
+  const [counter, gen, pkg, review] = process.env.INPUTS_COUNTER !== undefined
+    ? ['COUNTER', 'GEN', 'PKG', 'REVIEW'].map(k => process.env[`INPUTS_${k}`] ?? '')
+    : process.argv.slice(2);
   if (!counter || !gen) throw new Error('context: attempt arguments missing');
   const attempt = String(readAttempt(counter));
   if (pkg || review) {
