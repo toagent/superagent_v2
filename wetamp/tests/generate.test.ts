@@ -988,3 +988,25 @@ test('generate fails clearly before writing gen when core principles are missing
     spy.mockRestore();
   }
 });
+
+test('delivery defaults: no deadline survives >24h and preserves explicit human signoff', () => {
+  const { deadline: _deadline, ...plan } = fixture;
+  const nodes = nodesOf(
+    buildWorkflow(plan, milestones(plan), 'defaults', '/GEN', false, NOW + 48 * 3600_000)
+  );
+  expect(nodes.find(n => n.id === 'human-m2')?.approval).toEqual({
+    message: 'Approve delivery milestone m2',
+  });
+  expect(nodes.find(n => n.id === 'signoff-m2')?.bash).toBe('true');
+  expect(nodes.find(n => n.id === 'land')).toBeDefined();
+  expect(() =>
+    buildWorkflow(
+      fixture,
+      milestones(fixture),
+      'defaults',
+      '/GEN',
+      false,
+      Date.parse(fixture.deadline!)
+    )
+  ).toThrow(/already passed/);
+});

@@ -23,7 +23,6 @@ import { join } from 'node:path';
 import * as fs from 'node:fs';
 import * as archonMod from '../src/archon';
 import * as cliMod from '../src/cli';
-import * as configMod from '../src/config';
 import * as gcMod from '../src/gc';
 import { captureDelivery } from '../src/land';
 import * as landMod from '../src/land';
@@ -112,7 +111,7 @@ const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView =
 });
 
 describe('P3 engine lifecycle contracts', () => {
-  test('concurrent admission launches exactly once and pending work retains capacity', () => {
+  test('delivery defaults: concurrent admission launches exactly once and pending work retains capacity', () => {
     const root = tmp();
     let active = 0,
       launches = 0;
@@ -135,7 +134,7 @@ describe('P3 engine lifecycle contracts', () => {
     expect(admitExecution(1, host).ok).toBe(false);
     expect(launches).toBe(1);
   });
-  test('live or unknown execution owners never reach claim or dispatch', () => {
+  test('delivery defaults: live or unknown execution owners never reach claim or dispatch', () => {
     for (const state of ['online', 'unknown'] as const) {
       let writes = 0;
       const result = resumeExecution(
@@ -191,7 +190,7 @@ describe('redact (shared redact (cli and board))', () => {
 });
 
 describe('quick', () => {
-  test('validated single-package plan resolves git defaults, cache and explicit options', () => {
+  test('delivery defaults: validated quick plan resolves git defaults without an implicit deadline', () => {
     const root = tmp(),
       repo = gitRepo(root);
     const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_WRITE_ROOTS'] as const;
@@ -213,7 +212,17 @@ describe('quick', () => {
       expect(plan.repo).toBe(repo);
       expect(plan.base_ref).toBe('main');
       expect(plan.budget).toEqual({ weighted_tokens: 0, unlimited_tokens: true });
-      expect(Date.parse(plan.deadline)).toBeGreaterThan(Date.now());
+      expect(plan.deadline).toBeUndefined();
+      expect(() =>
+        buildWorkflow(
+          plan,
+          milestones(plan),
+          'quick-defaults',
+          '/GEN',
+          false,
+          Date.now() + 48 * 3600_000
+        )
+      ).not.toThrow();
       expect(plan.packages).toHaveLength(1);
       expect(plan.packages[0]).toMatchObject({
         id: 'quick',
@@ -1314,82 +1323,26 @@ describe('run (archon stub)', () => {
     sh('git add -- wetamp/src/runtime.ts wetamp/docs/runtime.md', repo);
     expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
   });
-  test('preflight: auto selftest refreshes config, fingerprint or legacy HEAD drift; failures and invalid receipts reject', () => {
-    const s = stub([]);
-    const repo = gitRepo(s.root);
+  test('delivery defaults: launch ignores missing or invalid selftest receipts without diagnosis', () => {
+    const s = stub([]),
+      repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
-    const plan = fixturePlan(s.root, repo);
-    const probe = spyOn(configMod, 'runtimeFingerprint').mockReturnValue('fixture');
-    const previous = [process.env.SA_SELFTEST_BIN, process.env.SA_SELFTEST_TIMEOUT_MS],
-      bin = join(s.root, 'selftest.sh'),
-      calls = join(s.root, 'selftest-calls');
-    Object.assign(process.env, { SA_SELFTEST_BIN: bin, SA_SELFTEST_TIMEOUT_MS: '100' });
+    const plan = fixturePlan(s.root, repo, p => {
+      delete p.deadline;
+      delete p.budget;
+    });
+    const diagnosis = spyOn(landMod, 'selftest').mockImplementation(() => {
+      throw new Error('unexpected diagnosis');
+    });
     try {
-      const good = {
-        ok: true,
-        expires_at: new Date(Date.now() + 3600e3).toISOString(),
-        fake: false,
-        fingerprint: 'fixture',
-        config_hash: configHash(),
-      };
-      const attempt = (r?: object): string => {
-        if (r) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(r));
-        const result = captured(() => main(['run', plan]));
-        return result.code === 0 ? '0' : String(JSON.parse(result.out).reason);
-      };
-      writeFileSync(join(s.root, 'good.json'), JSON.stringify(good));
-      writeFileSync(
-        bin,
-        `echo called >> '${calls}'\ncp '${join(s.root, 'good.json')}' "$SUPERAGENT_HOME/selftest.json"\n`
-      );
-      expect(attempt()).toContain('no selftest.json');
-      expect(attempt({ ...good, fake: true })).toContain('fake receipt');
-      expect(attempt({ ...good, expires_at: '2020-01-01T00:00:00Z' })).toContain('expired');
-      // Admission rechecks the receipt after taking the selftest lock.
-      probe.mockImplementation(() => {
-        throw new Error('runtime worktree drift');
-      });
-      expect(attempt({ ...good, config_hash: 'x' })).toContain('runtime worktree drift');
-      probe.mockReturnValue('fixture');
-      expect(existsSync(calls)).toBe(false);
-      expect(attempt({ ...good, config_hash: 'x' })).toBe('0');
-      expect(attempt({ ...good, fingerprint: 'x', config_hash: 'x' })).toBe('0');
-      expect(attempt({ ...good, fingerprint: 'x' })).toBe('0');
-      expect(attempt({ ...good, fingerprint: undefined, head: '0'.repeat(40) })).toBe('0');
-      expect(readFileSync(calls, 'utf8')).toBe('called\ncalled\ncalled\ncalled\n');
-      writeFileSync(
-        join(s.root, 'home', 'relay-quota.json'),
-        JSON.stringify({
-          at: Date.now(),
-          claude_daily_usd: loadTiers().routing.budget.claude_daily_usd,
-        })
-      );
-      const budgetRun = captured(() => main(['run', plan]));
-      expect(budgetRun.code).toBe(0);
-      expect(JSON.parse(budgetRun.out).quota).toContain('已降级到 Codex');
-      const { aliases } = Bun.YAML.parse(
-        readFileSync(join(JSON.parse(budgetRun.out).gen_dir, 'run-config.yaml'), 'utf8')
-      ) as { aliases: Record<string, { provider: string }> };
-      expect(Object.values(aliases).every(a => a.provider === 'codex')).toBe(true);
-      writeFileSync(bin, 'echo failure-tail >&2\nexit 7\n');
-      expect(attempt({ ...good, config_hash: 'x' })).toContain(
-        'selftest exit 7; log tail:\nfailure-tail'
-      );
-      const pidfile = join(s.root, 'grandchild.pid');
-      writeFileSync(bin, `echo timeout-tail >&2\nsleep 300 & echo $! > '${pidfile}'\nwait\n`);
-      expect(attempt({ ...good, fingerprint: 'x' })).toMatch(/timed out; log tail:\ntimeout-tail/);
-      const pid = Number(readFileSync(pidfile, 'utf8'));
-      expect(pid).toBeGreaterThan(0);
-      expect(() => process.kill(pid, 0)).toThrow();
-      const lease = archonMod.lock(join(s.root, 'home', 'selftest.lock'));
-      expect(lease.ok).toBe(true);
-      if (lease.ok) lease.release();
-    } finally {
-      probe.mockRestore();
-      for (const [i, key] of ['SA_SELFTEST_BIN', 'SA_SELFTEST_TIMEOUT_MS'].entries()) {
-        if (previous[i] === undefined) delete process.env[key];
-        else process.env[key] = previous[i];
+      for (const receipt of [undefined, { fake: true }, { expires_at: '2020-01-01' }]) {
+        if (receipt) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(receipt));
+        else rmSync(join(s.root, 'home', 'selftest.json'), { force: true });
+        expect(captured(() => main(['run', plan])).code).toBe(0);
       }
+      expect(diagnosis).not.toHaveBeenCalled();
+    } finally {
+      diagnosis.mockRestore();
     }
   });
   /** workflow run 的 --config 文件里钉住的别名。 */

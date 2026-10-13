@@ -5,8 +5,9 @@ import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { WETAMP, assertSQLite, type Console } from './config';
 import type { PolicyBudget } from '../../packages/workflows/src/provider-attempts';
-import type { Plan } from './plan-types.generated';
-export type { Plan } from './plan-types.generated';
+import type { Plan as PlanInput } from './plan-types.generated';
+/** Runtime plans resolve the optional wire budget once at ingestion. */
+export type Plan = Omit<PlanInput, 'budget'> & { budget: NonNullable<PlanInput['budget']> };
 export type Pkg = Plan['packages'][number];
 export type Requirement = NonNullable<Pkg['requirements']>[number];
 export type Check = Pkg['accept'][number];
@@ -74,7 +75,11 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
     const errs = (validator.errors ?? []).map(e => `${e.instancePath || '/'} ${e.message ?? ''}`);
     throw new Error(`plan invalid: ${errs.join('; ')}`);
   }
-  const plan = data as Plan;
+  const input = data as PlanInput;
+  const plan: Plan = {
+    ...input,
+    budget: input.budget ?? { enforcement: 'observe', weighted_tokens: 0, unlimited_tokens: true },
+  };
   for (const p of plan.packages) {
     const ids = new Set<string>();
     for (const r of p.requirements ?? []) {
@@ -84,7 +89,7 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
         throw new Error(`plan invalid: ${p.id}/${r.id} verified_by outside accept`);
     }
   }
-  if (Number.isNaN(Date.parse(plan.deadline)))
+  if (plan.deadline !== undefined && Number.isNaN(Date.parse(plan.deadline)))
     throw new Error('plan invalid: /deadline not date-time');
   if (!existsSync(plan.repo)) throw new Error(`plan invalid: repo ${plan.repo} does not exist`);
   const repo = realpathSync(plan.repo);

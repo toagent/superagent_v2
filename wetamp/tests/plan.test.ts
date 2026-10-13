@@ -110,9 +110,18 @@ describe('loadPlan', () => {
     const { path, root } = setup(p => (p.surprise = 1));
     expect(() => loadPlan(path, [root])).toThrow(/additional properties/);
   });
-  test('rejects missing budget (v2 compatibility)', () => {
-    const { path, root } = setup(p => delete p.budget);
-    expect(() => loadPlan(path, [root])).toThrow(/budget/);
+  test('delivery defaults: missing budget and deadline resolve without a ceiling', () => {
+    const { path, root } = setup(p => {
+      delete p.budget;
+      delete p.deadline;
+    });
+    const plan = loadPlan(path, [root]);
+    expect(plan.deadline).toBeUndefined();
+    expect(plan.budget).toEqual({
+      enforcement: 'observe',
+      weighted_tokens: 0,
+      unlimited_tokens: true,
+    });
   });
   test('rejects unparseable deadline', () => {
     const { path, root } = setup(p => (p.deadline = 'tomorrow'));
@@ -259,6 +268,6 @@ test('budget enforcement validates explicit modes', () => {
   for (const enforcement of [undefined, 'observe', 'hard', 'invalid'] as const) {
     const { path, root } = setup(p => (p.budget = { weighted_tokens: 0, enforcement }));
     if (enforcement === 'invalid') expect(() => loadPlan(path, [root])).toThrow('plan invalid');
-    else expect(loadPlan(path, [root]).budget.enforcement).toBe(enforcement);
+    else expect(loadPlan(path, [root]).budget).toEqual({ weighted_tokens: 0, enforcement });
   }
 });

@@ -71,7 +71,7 @@ export function writeAtomic(path: string, text: string): void {
 
 /**
  * selftest 回执（$SUPERAGENT_HOME/selftest.json）：只由非 fake 的 selftest 写，绑定运行边界、配置哈希与有效期；
- * preflight 拒绝 fake、过期或漂移的回执。fake 只证明引擎契约，写 selftest-fake.json，不覆盖正式回执。
+ * 显式 selftest 拒绝 fake、过期或漂移的回执。fake 只证明引擎契约，写 selftest-fake.json，不覆盖正式回执。
  */
 export const SELFTEST_TTL_MS = 7 * 24 * 3600e3;
 export interface Receipt {
@@ -83,7 +83,7 @@ export interface Receipt {
   fingerprint?: string;
   config_hash: string;
 }
-/** wetamp 所在检出的 HEAD；不是 git 检出时为空串（回执无法绑定，preflight 视为漂移）。 */
+/** wetamp 所在检出的 HEAD；不是 git 检出时为空串（回执无法绑定，selftest 视为漂移）。 */
 export function gitHead(repo = WETAMP): string {
   const p = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], {
     stdout: 'pipe',
