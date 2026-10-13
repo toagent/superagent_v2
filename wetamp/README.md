@@ -125,3 +125,31 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 - run 停在 running 但进程在别的机器：`recover` 拒绝（`owner alive or on another host`），到那台机器处理。
 - `superagent health` 的 `upstream_clean` 不是 `true`：仓库 `wetamp/` 之外有改动，用 `git checkout -- <file>` 还原。
 - 节点日志：`brief` 输出的 `evidence:` 目录；对话转录：ledger 的 `transcript`。
+# Native conversation intake
+
+`install-hooks` merges managed `intake.cjs` handlers into Claude Code and Codex
+`UserPromptSubmit` / `SessionStart`; unrelated native settings and hooks remain intact.
+Installation is an operator action from a clean committed checkout.
+
+Opt in explicitly with `superagent intake apply <payload.json>` (or `apply -` for
+a stdin envelope `{ "input": { ... }, "actions": [ ... ] }`). Create a Task using
+the canonical realpath git main directory as `input.repo`, native client name
+(`codex` or `claude`) as `input.source`, and native `session_id` as `input.session`.
+The registered Task input binds actor/owner to that native session. Capture in an
+unbound or ambiguous session gets an advisory rather than borrowing another owner's identity;
+a new session must explicitly register its Task association. Cross-owner changes
+use the existing handoff protocol. Worktrees, derived/worker/reviewer/twin sessions,
+and projects without registered Tasks do not capture or inject intake context.
+
+Capture only persists input; it does not dispatch or cancel Runs. Hook output includes
+input keys, bounded current briefs/owners and pending pointers, never the raw prompt.
+`SessionStart` restores context without receiving a new input. The commander interprets
+with typed `apply`; status-only replies use `actions: []` to consume input without
+creating a Task. Answer/amend the associated Task and continue original work unless
+explicitly cancelled. Use `intake show` / `input` for full local bodies.
+
+Codex deduplicates by native `turn_id`; identical text in a new turn remains distinct.
+Claude uses a random ID per hook invocation: retransmissions across invocations cannot
+be precisely deduplicated. Missing fields or persistence failure produce a bounded
+advisory and allow the original prompt. Orca automatic events remain `unknown`;
+use the explicit `intake receive|apply -` stdin envelope, not private chat/transcripts.

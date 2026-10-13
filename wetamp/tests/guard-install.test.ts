@@ -20,6 +20,18 @@ const state = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
   withState: <T>(file: string, fn: (s: Record<string, unknown>) => T) => T;
 };
 
+test('INTAKE_NATIVE installer registers both native events idempotently and preserves user hooks', () => {
+  for (const client of ['claude', 'codex'] as const) {
+    const user = { hooks: [{ command: 'user-prompt-hook', timeout: 77 }], userField: true };
+    const merged = mergeHooks({ UserPromptSubmit: [user] }, client);
+    expect(merged.UserPromptSubmit).toContainEqual(user);
+    for (const event of ['UserPromptSubmit', 'SessionStart'])
+      expect(merged[event].flatMap(g => g.hooks ?? []).filter(h =>
+        h.command === `node '${WETAMP}/hooks/intake.cjs' ${client}`)).toHaveLength(1);
+    expect(mergeHooks(merged, client)).toEqual(merged);
+  }
+});
+
 test('WP-1: preflight reports matching controller/worker ledger and refuses ambiguous mode', () => {
   const old = process.env.XDG_STATE_HOME,
     root = tmp();

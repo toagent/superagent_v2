@@ -50,9 +50,11 @@ export function wanted(client: Client): [string, string][] {
   const guard = ['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop'].map(
     (e): [string, string] => [e, cmd('guard.cjs', client)]
   );
-  if (client === 'codex') return guard;
+  const intake = ['UserPromptSubmit', 'SessionStart'].map((e): [string, string] => [e, cmd('intake.cjs', client)]);
+  if (client === 'codex') return [...guard, ...intake];
   return [
     ...guard,
+    ...intake,
     ...['UserPromptSubmit', 'PreToolUse'].map((e): [string, string] => [
       e,
       cmd('context-advisory.cjs'),
