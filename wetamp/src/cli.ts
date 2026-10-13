@@ -1,6 +1,7 @@
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
-import { applyLand, selftest } from './land';
+import { createHash } from 'node:crypto';
+import { applyLand, captureDelivery, selftest, type DeliveryTarget } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
@@ -114,6 +115,8 @@ const OPTIONS = {
   'no-cache': { type: 'boolean' },
   base: { type: 'string' },
   worktree: { type: 'string' },
+  'task-kind': { type: 'string' },
+  'delivery-run': { type: 'string' },
   mode: { type: 'string' },
   repo: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
@@ -186,6 +189,7 @@ export interface Ledger {
   repo: string;
   branch: string;
   launch_branch?: string;
+  delivery?: DeliveryTarget;
   workflow: string;
   console: string;
   started_at: string;
@@ -646,7 +650,7 @@ function recoverRun(
         const gen = generate(plan, l.run_id, metadata?.fake ?? false, l.engine_hash ?? 'unknown', {
           from: run.id,
           packages: carried,
-        });
+        }, l.delivery);
         adopted = {
           from: run.id,
           hash: gen.engine_hash,
@@ -867,9 +871,10 @@ function startRun(planPath: string, a: Args): number {
           }
         });
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
+        const delivery = captureDelivery(plan.repo);
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
-        const gen = generate(plan, run, a.flags.fake ?? false);
+        const gen = generate(plan, run, a.flags.fake ?? false, undefined, undefined, delivery);
         const branch = `sa/${run}`;
         const args = [
           'workflow',
@@ -893,6 +898,7 @@ function startRun(planPath: string, a: Args): number {
           repo: plan.repo,
           branch,
           launch_branch: typeof launchBranch === 'string' ? launchBranch : undefined,
+          delivery,
           workflow: gen.workflow,
           console: plan.console ?? 'claude',
           started_at: new Date().toISOString(),
@@ -1302,7 +1308,7 @@ function brief(l: Ledger, json = false): number {
 }
 
 /** 在 run 的 worktree 里跑 plan 的验收命令（同 verify 节点脚本），退出码即结果。 */
-function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: string): number {
+function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: string, report = true): number {
   const run = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as unknown as RunView;
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
   const plan = planOf(l);
@@ -1362,10 +1368,29 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
       strict: plan.mode === 'strict',
       ...(reviews ? { reviews: [reviews] } : {}),
     });
-    print(out ? { ...out, decision } : { ok: false, error: tail(p.stderr.toString()) });
+    if (report) print(out ? { ...out, decision } : { ok: false, error: tail(p.stderr.toString()) });
     if (!['advance', 'debt'].includes(decision.kind)) code = 1;
   }
   return code;
+}
+
+/** Run admission and the actual generated acceptance path are shared by plan, quick and code jobs. */
+export function finalizeDelivery(id: string, source?: { task: string; head: string; branch: string; target: DeliveryTarget; contract: string }) {
+  const l = loadLedger(coord().resolveRun(id)?.run_id ?? id);
+  return control(l, () => {
+    if (!l.delivery) throw new Error('delivery: unknown legacy target; use a new quick/run contract');
+    const run = getRun(l.archon_run_id, l.repo), art = artifactsOf(run);
+    const land = evidenceJson(l, art, 'land.json') as Land | undefined;
+    if (!land) throw new Error('delivery: missing generated land evidence');
+    if (source && (source.head !== land.head || source.branch !== land.branch || JSON.stringify(source.target) !== JSON.stringify(l.delivery)))
+      throw new Error('delivery: job source/target differs from accepted run');
+    const contract = createHash('sha256').update(readFileSync(join(l.gen_dir, 'accept-inputs.json'))).digest('hex');
+    if (source && source.contract !== contract) throw new Error('delivery: job acceptance contract drifted');
+    return applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
+      repo: l.repo, base_ref: planOf(l).base_ref,
+      delivery: { task: source?.task ?? l.run_id, target: l.delivery, contract, evidence: art, title: planOf(l).packages.map(p => p.title).join('; '), receipt: join(art, source ? `delivery-job-${source.task}.json` : 'delivery.json') },
+    });
+  });
 }
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
@@ -2380,6 +2405,7 @@ export function main(argv: string[]): number {
       }
       const l = ledger(),
         s = waitRun(l, t);
+      if (s.state === 'completed') s.delivery = finalizeDelivery(l.run_id);
       // prettier-ignore
       print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) ? relayQuota(l.gen_dir, 'end') : {}) });
       return Number(s.exit);
@@ -2460,17 +2486,16 @@ export function main(argv: string[]): number {
       return brief(ledger(), !!a.flags.json);
     case 'land': {
       const l = ledger(true);
+      if (a.flags.apply) {
+        print(finalizeDelivery(l.run_id));
+        return 0;
+      }
       return controlled(l, () => {
         const run = getRun(l.archon_run_id, l.repo);
         const land = evidenceJson(l, artifactsOf(run), 'land.json');
         if (land === undefined) {
           console.error(`land: no land.json yet (state ${classify(run).state})`);
           return 1;
-        }
-        if (a.flags.apply) {
-          const verify = (cwd: string): number => acceptRun(l, undefined, cwd, artifactsOf(run));
-          applyLand(run, land as Land, verify, { ...l, base_ref: planOf(l).base_ref });
-          return 0;
         }
         const needs = needsOf(artifactsOf(run), undefined, l);
         print(

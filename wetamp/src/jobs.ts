@@ -10,10 +10,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { launcher, type Launcher } from './launcher';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
 import { setImmediate as yieldEventLoop, setTimeout as delay } from 'node:timers/promises';
-import { EXIT_USAGE, parseArgs } from './cli';
+import { EXIT_USAGE, parseArgs, loadLedger, finalizeDelivery } from './cli';
+import type { DeliveryTarget } from './land';
 import { home, loadTiers } from './config';
 import {
   describeExecution,
@@ -64,6 +66,7 @@ export interface Job {
   exit_code?: number;
   signal?: string;
   worktree?: { path: string; branch: string; base: string; repo: string };
+  delivery?: { kind: 'code' | 'read_only'; run?: string; target?: DeliveryTarget; branch?: string; head?: string; base_head?: string; contract?: string };
 }
 
 const USAGE =
@@ -226,7 +229,7 @@ export function cleanJob(id: string): void {
 // prettier-ignore
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; log?: string; role: Tier | null; execution?: Job['execution']; worktree?: string; base?: string },
+  f: { title: string; card?: string; log?: string; role: Tier | null; execution?: Job['execution']; worktree?: string; base?: string; delivery?: Job['delivery'] },
   probe: () => MemoryReading,
   wait: AdmissionWait
 ): Promise<number> {
@@ -241,6 +244,7 @@ async function exec(
     kind: kindOf(cmd[0]),
     model: f.execution?.model ?? modelOf(cmd.slice(1)),
     role: f.role,
+    ...(f.delivery ? { delivery: f.delivery } : {}),
     ...(f.execution ? { execution: f.execution } : {}),
     ...(launched ? { launcher: launched } : {}),
     wrapper_pid: process.pid,
@@ -373,6 +377,11 @@ async function exec(
       ended_at: new Date().toISOString(),
       ...(child?.signalCode ? { signal: job.signal ?? child.signalCode } : { exit_code: code }),
     };
+    if (code === 0 && terminal.delivery?.kind === 'code') {
+      terminal.delivery.head = git(terminal.cwd, 'rev-parse', 'HEAD');
+      if (git(terminal.cwd, 'symbolic-ref', '--short', 'HEAD') !== terminal.delivery.branch || git(terminal.cwd, 'status', '--porcelain'))
+        throw new Error('delivery: code job source changed branch or is dirty');
+    }
   } catch (e) {
     child?.kill('SIGTERM'); // 登记不了就不让它成为看板看不见的作业
     terminal = { ...job, state: 'failed', ended_at: new Date().toISOString(), exit_code: 1 };
@@ -381,7 +390,19 @@ async function exec(
   }
   const result = await commit(terminal);
   if (failure && !interrupted) throw failure.error;
+  if (result === 0 && terminal.delivery?.kind === 'code') finalizeJob(terminal.id);
   return result;
+}
+
+export function finalizeJob(id: string): void {
+  const j = readJobs(Date.now(), true).jobs.find(j => j.id === id), d = j?.delivery;
+  if (!j || j.state !== 'done' || !j.receipt?.settled_at || alive(j.wrapper_pid) && j.wrapper_pid !== process.pid)
+    throw new Error('delivery: job is not settled');
+  if (d?.kind !== 'code' || !d.run || !d.target || !d.head || !d.branch || !d.contract || !d.base_head)
+    throw new Error('delivery: unknown/read_only job; explicit code and run acceptance contract required');
+  if (git(j.cwd, 'symbolic-ref', '--short', 'HEAD') !== d.branch || git(j.cwd, 'rev-parse', 'HEAD') !== d.head || git(j.cwd, 'status', '--porcelain'))
+    throw new Error('delivery: job source drifted or is dirty');
+  console.log(JSON.stringify(finalizeDelivery(d.run, { task: j.id, head: d.head, branch: d.branch, target: d.target, contract: d.contract })));
 }
 
 // prettier-ignore
@@ -416,6 +437,10 @@ export async function jobCli(
     cleanJob(a._[2]);
     return 0;
   }
+  if (a._[0] === 'job' && a._[1] === 'finalize' && a._.length === 3 && !cmd.length) {
+    finalizeJob(a._[2]);
+    return 0;
+  }
   const { title, card, log, role } = a.flags;
   const badRole = role !== undefined && !isTier(role);
   if (a._[1] !== 'exec' || a._.length !== 2 || !title || !cmd.length || badRole) {
@@ -446,5 +471,18 @@ export async function jobCli(
       model: candidate.model, provider, policy };
   }
 
-  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base }, probe, wait);
+  const kind = a.flags['task-kind'], run = a.flags['delivery-run'];
+  if (kind !== undefined && kind !== 'code' && kind !== 'read_only') throw new Error('delivery: invalid task kind');
+  let delivery: Job['delivery'];
+  if (kind === 'code') {
+    if (!run || a.flags.worktree) throw new Error('delivery: code job requires --delivery-run and its existing run worktree; prefer quick for new code');
+    const l = loadLedger(run);
+    if (!l.delivery) throw new Error('delivery: unknown run target');
+    const branch = git(process.cwd(), 'symbolic-ref', '--short', 'HEAD');
+    if (branch !== l.branch || git(process.cwd(), 'rev-parse', '--path-format=absolute', '--git-common-dir') !== git(l.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+      throw new Error('delivery: code job must start in the associated run source checkout');
+    delivery = { kind, run, target: l.delivery, branch, base_head: git(process.cwd(), 'rev-parse', 'HEAD'), contract: createHash('sha256').update(readFileSync(join(l.gen_dir, 'accept-inputs.json'))).digest('hex') };
+  } else if (run) throw new Error('delivery: --delivery-run requires --task-kind code');
+  else if (kind) delivery = { kind };
+  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base, delivery }, probe, wait);
 }

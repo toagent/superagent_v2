@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
-import { jobCli, modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
+import { finalizeJob, jobCli, modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
 import { loadTiers } from '../src/config';
 import { gitRepo, sh, tmp } from './helpers';
 
@@ -30,6 +30,14 @@ beforeEach(() => {
 });
 
 const SECRET = 'PROMPT-SECRET-do-not-leak';
+
+test.each(['legacy', 'read_only', 'code'])('delivery: exit0 %s job without actual acceptance cannot finalize', kind => {
+  mkdirSync(jobsDir, { recursive: true });
+  const j = { id: 'delivery-test', title: 'code done', cwd: tmp(), kind: 'codex', model: null, card: null, log: null, wrapper_pid: 99999999, pid: 0, started_at: new Date().toISOString(), ended_at: new Date().toISOString(), state: 'done', exit_code: 0, receipt: { settled_at: new Date().toISOString() }, ...(kind === 'legacy' ? {} : { delivery: { kind } }) };
+  writeFileSync(join(jobsDir, `${j.id}.json`), JSON.stringify(j));
+  expect(() => finalizeJob(j.id)).toThrow('explicit code and run acceptance contract required');
+  expect(JSON.parse(readFileSync(join(jobsDir, `${j.id}.json`), 'utf8')).state).toBe('done');
+});
 
 describe('ps parsing', () => {
   const NOW = Date.parse('2026-10-10T12:00:00Z');

@@ -158,7 +158,8 @@ export function buildWorkflow(
   fake = false,
   now = Date.now(),
   tiers: Tiers = loadTiers(),
-  carried?: Carried
+  carried?: Carried,
+  delivery?: import('./land').DeliveryTarget
 ): Node {
   // 人工等待按“剩余时长”生成，不设下限；已过 deadline 的 plan 生成即失败，不起一个注定 escalate 的 run
   const left = Date.parse(plan.deadline) - now;
@@ -489,7 +490,8 @@ export function buildWorkflow(
     } else after = gates;
   }
   const operator_ledger = join(gen, '..', '..', 'runs', `${run}.json`);
-  const landInputs = { kind: 'land', base_ref: plan.base_ref, plan: planPath, operator_ledger };
+  const landInputs = { kind: 'land', base_ref: plan.base_ref, plan: planPath, operator_ledger,
+    ...(delivery ? { target_checkout: delivery.checkout, target_branch: delivery.branch } : {}) };
   nodes.push(check('land', [], landInputs, after));
   return {
     name: `sa-${run}`,
@@ -604,7 +606,8 @@ export function generate(
   run: string,
   fake = false,
   previousHash?: string,
-  carried?: Carried
+  carried?: Carried,
+  delivery?: import('./land').DeliveryTarget
 ): Gen {
   const engine_commit = cleanEngine();
   assertSQLite(plan.repo);
@@ -626,7 +629,7 @@ export function generate(
   }
   const workflow = `sa-${run}`;
   const ms = milestones(plan);
-  const definition = buildWorkflow(plan, ms, run, dir, fake, Date.now(), tiers, carried);
+  const definition = buildWorkflow(plan, ms, run, dir, fake, Date.now(), tiers, carried, delivery);
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });

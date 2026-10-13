@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { lock } from '../src/archon';
-import { applyLand, selftest } from '../src/land';
+import { applyLand, captureDelivery, selftest, type LocalDelivery } from '../src/land';
 import * as config from '../src/config';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
@@ -22,6 +22,67 @@ const fixture = () => {
   const run = { id: 'r', status: 'completed' as const, working_path: worktree, nodes: [{ nodeId: 'land', state: 'completed' }] };
   return { root, repo, worktree, art, land, run };
 };
+
+const deliveryFixture = () => {
+  const f = fixture();
+  sh('git branch -m wetamp', f.repo);
+  f.land.target = 'wetamp';
+  const delivery: LocalDelivery = { task: 'r', target: captureDelivery(f.repo), contract: 'generated-contract', title: 'Deliver feature', evidence: f.art, receipt: join(f.art, 'delivery.json') };
+  return { ...f, delivery, context: { repo: f.repo, base_ref: 'main', delivery } };
+};
+
+test('delivery binds target checkout/current work branch, recovers missing receipt and requires manual push', () => {
+  const f = deliveryFixture(), probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  let calls = 0;
+  try {
+    f.delivery.receipt = join(f.art, 'missing', 'delivery.json');
+    expect(() => applyLand(f.run, f.land, () => { calls++; return 0; }, f.context)).toThrow();
+    expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(f.land.head);
+    expect(existsSync(f.worktree)).toBe(true);
+    f.delivery.receipt = join(f.art, 'delivery.json');
+    const first = applyLand(f.run, f.land, () => { calls++; return 0; }, f.context);
+    const second = applyLand(f.run, f.land, () => { calls++; return 0; }, f.context);
+    expect(first?.integrated).toBe(f.land.head);
+    expect(second?.integrated).toBe(first?.integrated);
+    expect(second?.status).toBe('manual_push');
+    expect(second?.push).toBe(`git -C '${f.delivery.target.checkout}' push origin 'wetamp'`);
+    expect(JSON.parse(readFileSync(f.delivery.receipt, 'utf8')).contract).toBe('generated-contract');
+    expect(readFileSync(join(f.repo, 'delivery.txt'), 'utf8')).toBe('delivery\n');
+    expect(calls).toBe(3); // Recovery still consumes real acceptance, never trusts receipt JSON.
+    expect(sh('git rev-list --count HEAD', f.repo).trim()).toBe('2');
+  } finally { probe.mockRestore(); }
+});
+
+test.each(['protected', 'switched', 'dirty', 'source-dirty', 'source-drift', 'target-drift', 'checkout'])('delivery rejects %s without changing target or discarding source', kind => {
+  const f = deliveryFixture();
+  if (kind === 'protected') { sh('git branch -m main', f.repo); f.delivery.target.branch = 'main'; }
+  if (kind === 'switched') sh('git switch -qc other', f.repo);
+  if (kind === 'dirty') writeFileSync(join(f.repo, 'user.txt'), 'keep');
+  if (kind === 'source-dirty') writeFileSync(join(f.worktree, 'user.txt'), 'keep');
+  if (kind === 'source-drift') sh('git commit --allow-empty -qm drift', f.worktree);
+  if (kind === 'target-drift') sh('git commit --allow-empty -qm drift', f.repo);
+  if (kind === 'checkout') f.delivery.target.checkout = f.worktree;
+  const before = sh('git rev-parse HEAD', f.repo);
+  expect(() => applyLand(f.run, f.land, () => { throw new Error('must not verify'); }, f.context)).toThrow();
+  expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
+  expect(existsSync(f.worktree)).toBe(true);
+  expect(existsSync(f.delivery.receipt)).toBe(false);
+});
+
+test('delivery renders local merge comment and does not accept a fabricated receipt', () => {
+  const f = deliveryFixture(), probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  sh('echo target > target.txt && git add target.txt && git commit -qm target', f.repo);
+  f.delivery.target = captureDelivery(f.repo);
+  writeFileSync(f.delivery.receipt, JSON.stringify({ status: 'manual_push', integrated: f.land.head }));
+  try {
+    expect(() => applyLand(f.run, f.land, () => 1, f.context)).toThrow('acceptance failed');
+    expect(existsSync(join(f.repo, 'delivery.txt'))).toBe(false);
+    const receipt = applyLand(f.run, f.land, () => 0, f.context);
+    expect(sh('git log -1 --format=%B', f.repo)).toContain('Deliver feature\n\nTask: r');
+    expect(receipt?.accepted).toBe(receipt?.integrated);
+    expect(sh('git merge-base --is-ancestor sa/land HEAD', f.repo).trim()).toBe('');
+  } finally { probe.mockRestore(); }
+});
 // prettier-ignore
 test.each(['.', 'wetamp'])('candidate owns the %s workspace graph even with an unchanged lockfile', rel => {
   const f = fixture(), dir = join(f.repo, rel), pkg = join(dir, 'packages/provider');

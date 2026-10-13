@@ -1433,10 +1433,10 @@ function land() {
     console.error(`land: plan deadline ${plan().deadline} passed; not producing merge commands`);
     process.exit(1);
   }
-  const repo = dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
+  const repo = env('TARGET_CHECKOUT') || dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
   const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
   const base = env('BASE_REF');
-  const target = landTarget(repo, base, () => {
+  const target = env('TARGET_BRANCH') || landTarget(repo, base, () => {
     const path = env('OPERATOR_LEDGER');
     const ledger =
       path && existsSync(path)

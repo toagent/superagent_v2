@@ -25,6 +25,8 @@ import * as archonMod from '../src/archon';
 import * as cliMod from '../src/cli';
 import * as configMod from '../src/config';
 import * as gcMod from '../src/gc';
+import { captureDelivery } from '../src/land';
+import * as landMod from '../src/land';
 import type { RunView } from '../src/archon';
 import {
   classify,
@@ -1580,9 +1582,49 @@ describe('brief / land (archon stub)', () => {
   });
 });
 
+test('delivery legacy plan refuses automatic land rather than guessing a checkout', () => {
+  stub([run('completed')]);
+  expect(() => main(['land', 'sa1', '--apply'])).toThrow('unknown legacy target');
+});
+
+test.each(['claude', 'codex'] as const)('delivery %s plan/quick wait uses the shared finalizer and typed land target', consoleName => {
+  const s = stub([]), repo = gitRepo(s.root);
+  sh('git branch -m wetamp', repo);
+  const delivery = captureDelivery(repo), art = join(s.root, 'home', 'artifacts', 'runs', 'r');
+  mkdirSync(art, { recursive: true });
+  Object.assign(s.ledger, { repo, console: consoleName, delivery });
+  writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+  writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('completed', {
+    output_root: join(s.root, 'home'), nodes: [{ nodeId: 'land', state: 'completed' }],
+  })));
+  writeFileSync(join(art, 'land.json'), JSON.stringify({ repo, branch: 'sa/sa1', head: 'source' }));
+  writeFileSync(join(s.ledger.gen_dir, 'accept-inputs.json'), '[]');
+  const apply = spyOn(landMod, 'applyLand').mockImplementation((_run, _land, verify, context) => {
+    expect(context?.delivery?.target).toEqual(delivery);
+    expect(context?.delivery?.contract).toHaveLength(64);
+    expect(typeof verify).toBe('function');
+    return { task: 'sa1', source: 'source', target: delivery, target_tip: delivery.head, accepted: 'merged', integrated: 'merged', contract: context!.delivery!.contract, evidence: art, status: 'manual_push', push: `git -C '${repo}' push origin 'wetamp'` };
+  });
+  try {
+    const result = captured(() => main(['wait', 'sa1', '--timeout', '1']));
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out).delivery.status).toBe('manual_push');
+    expect(apply).toHaveBeenCalledTimes(1);
+  } finally { apply.mockRestore(); }
+  const plan = JSON.parse(readFileSync(fixturePlan(tmp(), repo), 'utf8')) as Plan;
+  plan.console = consoleName;
+  const wf = buildWorkflow(plan, milestones(plan), 'sa1', s.ledger.gen_dir, true, Date.now(), loadTiers(), undefined, delivery);
+  expect(JSON.stringify(wf)).toContain('target_checkout');
+  expect(JSON.stringify(wf)).toContain(delivery.checkout);
+  expect(JSON.stringify(wf)).toContain('target_branch');
+});
+
 test.each([1, 2, 3])('generated CLI acceptance and land preserve only approved non-product debt R%i', round => {
-  const s = stub([]), wt = gitRepo(s.root);
-  const plan = JSON.parse(readFileSync(fixturePlan(s.root, wt), 'utf8')) as Plan;
+  const s = stub([]), targetRepo = gitRepo(s.root), wt = join(s.root, 'code-worker');
+  sh('git branch -m wetamp', targetRepo);
+  const delivery = captureDelivery(targetRepo);
+  const plan = JSON.parse(readFileSync(fixturePlan(s.root, targetRepo), 'utf8')) as Plan;
+  plan.base_ref = 'wetamp';
   plan.packages = [plan.packages[0]!];
   plan.environment = [{ cmd: 'true', timeout_s: 5 }];
   const marker = join(s.root, 'home', 'failure.json');
@@ -1593,10 +1635,11 @@ test.each([1, 2, 3])('generated CLI acceptance and land preserve only approved n
     timeout_s: 5, cache: false,
   }];
   const gen = generate(plan, 'sa1', true);
-  s.ledger.gen_dir = gen.dir; s.ledger.repo = wt;
+  s.ledger.gen_dir = gen.dir; s.ledger.repo = targetRepo; s.ledger.delivery = delivery;
   writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-  sh('git switch -qc sa/sa1 && echo change > core.txt && git add core.txt && git -c user.name=t -c user.email=t@l commit -qm change', wt);
-  const head = sh('git rev-parse HEAD', wt).trim(), base = sh('git rev-parse main', wt).trim();
+  sh(`git worktree add -qb sa/sa1 '${wt}'`, targetRepo);
+  sh('echo change > core.txt && git add core.txt && git -c user.name=t -c user.email=t@l commit -qm change', wt);
+  const head = sh('git rev-parse HEAD', wt).trim(), base = sh('git rev-parse wetamp', wt).trim();
   const art = join(s.root, 'home', 'artifacts', 'runs', 'r');
   mkdirSync(art, { recursive: true });
   writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('completed', {
@@ -1662,7 +1705,7 @@ test.each([1, 2, 3])('generated CLI acceptance and land preserve only approved n
   input.risk = 'G1';
   writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify(contracts));
   expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
-  expect(sh('git rev-parse main^{tree}', wt)).toBe(sh('git rev-parse sa/sa1^{tree}', wt));
+  expect(sh('git rev-parse wetamp^{tree}', wt)).toBe(sh('git rev-parse sa/sa1^{tree}', wt));
   writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, packages: [{ ...plan.packages[0]!, accept: [{ cmd: 'true', timeout_s: 5 }] }] }));
   expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
 });
@@ -3868,6 +3911,7 @@ test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
   () => {
     const root = tmp();
     const repo = gitRepo(root);
+    sh('git branch -m wetamp', repo);
     const plan = fixturePlan(root, repo);
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
