@@ -55,7 +55,7 @@ export function tokenFees(rows: ReportTokens[]): number | 'unknown' {
     ? rows.reduce((sum, r) => sum + r.cost!, 0) : 'unknown';
 }
 
-/** Cumulative session totals replace turn receipts; unresolved identities remain visible. */
+/** Session snapshots carry no invocation watermark; overlap cannot prove coverage. */
 // prettier-ignore
 export function investmentOf(calls: { provider: string | null; session: string | null; identity: string | null; tokens: ReportTokens | null }[], sessions: UsageSession[], missing: number = 0) {
   const snapshots = new Map<string, UsageSession>();
@@ -76,7 +76,7 @@ export function investmentOf(calls: { provider: string | null; session: string |
   const rows = [...snapshots.values()].map(sessionTokens);
   let sources = rows.length + unknown;
   for (const c of receipts.values()) {
-    if (snapshots.has(key(c.provider!, c.session!))) continue;
+    if (snapshots.has(key(c.provider!, c.session!))) { sources++; unknown++; continue; }
     sources++;
     if (c.tokens) rows.push(c.tokens); else unknown++;
   }
@@ -213,7 +213,7 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
             const active = runId === l.archon_run_id && input.run.status === 'running' && input.run.nodes?.some(n => n.nodeId === e.step_name && n.state === 'running') && arr(run.events).slice().reverse().find(v => obj(v).step_name === e.step_name && obj(v).event_type === 'node_started') === raw;
             const session = d.session_id ?? (active && cwd && started ? jobSession({ kind: client, cwd, started_at: started }, true) : null);
             if (!session) continue;
-            runClaims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: 'run', run_id: id, ...(ref ? { request_ref: ref } : {}) } });
+            runClaims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: d.session_id ? 'run' : 'inferred', run_id: id, ...(ref && d.session_id ? { request_ref: ref } : {}) } });
           }
           runs[cacheKey] = { fingerprint, status: input.run.status, claims: runClaims, eta: input };
           claims.push(...runClaims);
@@ -226,7 +226,8 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
   for (const j of jobs) {
     if (j.pid === 0) continue; // 内存准入等待/失败的作业从未拥有 provider 会话。
     const id = j.session_id ?? jobSession(j);
-    if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'job', job_id: j.id, ...(j.request_ref && j.session_id ? { request_ref: j.request_ref } : {}) } });
+    // Persisted job session_id is also produced by cwd/time matching, not a provider receipt.
+    if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'inferred', job_id: j.id } });
   }
   for (const f of files(join(home().sa, 'live'))) {
     const l = obj(json(f)), client = l.client, id = str(l.session_id);
