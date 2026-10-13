@@ -33,6 +33,20 @@ owner 校验 schema、checksum、fingerprint、7 天新鲜度、scope、shareabl
 
 ## 反思
 
+控制面可显式运行 `superagent memory propose <run> '<request-json>'`，接线已有 trial 候选。
+request 字段为 `lesson`、`package`、`sha256`、`shareable:true`、`keywords`、`positive`、`negative`、`expires_at`；
+后三组检索关键词/正反探针及有效期遵循既有 owner schema。只接受候选引用该 run、
+tier 为 project 且 scope 精确等于 repo realpath；claim/适用与排除条件来自已有候选，不接受替换文本。
+原件仅为该终态 run 的 `verify-<package>.json`，位于项目或 SUPERAGENT_HOME 内，
+拒绝 symlink、逃逸、私密路径、缺失/不可解析/过大文件及 hash 不一致，不输出原文。
+sha256 由原件字节重算，与控制面预期值核对；相应 code/repair 只有一次调用且
+引擎事件含 invocation/attempt、provider 及 provider-resolved 实际模型才接受，requested/pinned 不算身份。
+重试身份歧义明确拒绝；不从候选自报作者或模型名字推断身份。
+原始字节与 provenance 冻结在 `memory/evidence/<task>/`，原件 0400；proposal 引用冻结原件。
+随后仅调用现有 `propose → evaluate`，返回 candidate、hash、实际模型与证据路径；
+prepared 仅表示待审，不是合格或晋升。两份真实独立回执及 promote 仍由可信控制面经统一队列负责。
+失败返回 unavailable，不改变主 run、旧 stable、指纹或用户记忆，不自动派评审。
+
 复用 job exec 的队列、内存准入、执行收据和既有 token 预算；无新 worker 平台。
 普通首次成功可跳过，按 project/tag/category/signature 去重，记录过的尝试不自动重派。
 追加 reflection 回执区分 queued、running、produced、rejected、failed、interrupted；

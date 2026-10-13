@@ -1,15 +1,17 @@
 import { expect, spyOn, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, statSync, rmSync, symlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { evolutionScript, publishLearning, recallLearning } from '../src/learning';
-import { injectMemory } from '../src/memory';
+import { evolutionScript, publishLearning, recallLearning, proposeLearning } from '../src/learning';
+import { injectMemory, memoryWrite, type Lesson } from '../src/memory';
+import type { Ledger } from '../src/cli';
 import { executionTable } from '../src/execution';
 import { loadTiers } from '../src/config';
 import { prepareContext } from '../templates/.archon/scripts/sa-context';
 import type { Plan } from '../src/plan';
 import { tmp } from './helpers';
 
-test('LEARNING_PUBLICATION owner schema/recall, publication transaction and frozen code/review consumption', () => {
+test('LEARNING_EVIDENCE LEARNING_PUBLICATION owner schema/recall, publication transaction and frozen code/review consumption', () => {
   const root = tmp(), gen = join(root, 'gen'), art = join(root, 'art');
   const saved = { ...process.env }, spawn = Bun.spawnSync;
   process.env.SUPERAGENT_HOME = join(root, 'sa');
@@ -78,6 +80,71 @@ v['checksum']=m.digest(v); print(json.dumps(v))`, evolutionScript, root, variant
     expect(recallLearning(root, 'contract').status).toBe('unavailable');
     injectMemory(plan, gen, []);
     expect(contexts.map(p => readFileSync(p, 'utf8'))).toEqual(bytes);
+    rmSync(publication);
+    const next = join(root, 'next'); mkdirSync(next);
+    writeFileSync(join(next, 'plan.json'), JSON.stringify(plan)); writeFileSync(join(next, 'execution.json'), JSON.stringify(table));
+    expect(Object.values(injectMemory(plan, next, [])).flat()).toEqual([]);
+    const [node] = Object.entries(table).find(([, e]) => e.role === 'code')!;
+    expect(readFileSync(prepareContext({ gen: next, artifacts: art, node, cwd: root, base: 'base', head: 'head', environment: 'fixture' }), 'utf8')).not.toContain('Preserve complete contract boundaries');
+    expect(contexts.map(p => readFileSync(p, 'utf8'))).toEqual(bytes);
+  } finally {
+    mock.mockRestore();
+    for (const k of ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_MEMORY']) {
+      if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+    }
+  }
+}, 15000);
+
+test('LEARNING_EVIDENCE freezes original bytes and actual identity, submits only to the real qualification owner', () => {
+  const root = tmp(), sa = join(root, 'sa'), store = join(root, 'owner'), art = join(sa, 'artifacts/runs/native');
+  const saved = { ...process.env }, spawn = Bun.spawnSync;
+  process.env.SUPERAGENT_HOME = sa; process.env.ARCHON_HOME = join(root, 'archon'); process.env.SUPERAGENT_MEMORY = 'on';
+  mkdirSync(art, { recursive: true });
+  const owner = (...args: string[]) => {
+    const p = spawn(['python3', evolutionScript, '--home', store, ...args], { stdout: 'pipe', stderr: 'pipe' });
+    expect(p.exitCode).toBe(0); return JSON.parse(p.stdout.toString());
+  };
+  const initial = owner('init'), file = join(art, 'verify-core.json'), bytes = Buffer.from(JSON.stringify({ ok: false, diff_hash: 'head' }));
+  writeFileSync(file, bytes);
+  const lesson = { id: 'contract-lesson', tier: 'project', scope: root, status: 'trial', when: 'When changing contract boundaries',
+    do: 'Preserve complete contract boundaries', dont: 'Unrelated isolated documentation work', why: 'Original failed execution needs a regression', evidence: ['run'] } as Lesson;
+  memoryWrite(() => ({ lessons: [lesson] }));
+  const request = { lesson: lesson.id, package: 'core', sha256: createHash('sha256').update(bytes).digest('hex'), shareable: true as const,
+    keywords: ['contract'], positive: ['contract'], negative: ['unrelated'], expires_at: new Date(Date.now() + 86400000).toISOString() };
+  const ledger = { run_id: 'run', archon_run_id: 'native', repo: root } as Ledger;
+  const event = { workflow_run_id: 'native', event_type: 'node_completed', step_name: 'code-core', data: {
+    invocation: { id: 'invocation' }, attempt: { id: 'attempt' }, binding: { provider: 'codex', model: { requested: 'untrusted-request', resolved: { source: 'provider', value: 'actual-provider-model' } } } } };
+  const run = { id: 'native', status: 'completed', working_path: root, output_root: sa, events: [event] };
+  const calls: string[] = [];
+  const mock = spyOn(Bun, 'spawnSync').mockImplementation(((...args: Parameters<typeof Bun.spawnSync>) => {
+    const argv = args[0] as string[];
+    if (argv[1] === evolutionScript) { calls.push(argv[2]!); return spawn([argv[0]!, argv[1]!, '--home', store, ...argv.slice(2)], args[1]); }
+    return { exitCode: 0, stdout: Buffer.from(JSON.stringify(run)), stderr: Buffer.from('') } as ReturnType<typeof Bun.spawnSync>;
+  }) as typeof Bun.spawnSync);
+  try {
+    const reject = () => expect(proposeLearning(ledger, request).status).toBe('unavailable');
+    rmSync(file); reject(); writeFileSync(file, '{'); reject(); writeFileSync(file, '{}'); reject(); writeFileSync(file, bytes);
+    expect(proposeLearning(ledger, { ...request, package: '../transcript' }).status).toBe('unavailable');
+    expect(proposeLearning(ledger, { ...request, sha256: '0'.repeat(64) }).status).toBe('unavailable');
+    rmSync(file); symlinkSync(join(root, 'missing'), file); reject(); rmSync(file); writeFileSync(file, bytes);
+    run.output_root = tmp(); reject(); run.output_root = sa;
+    expect(proposeLearning({ ...ledger, repo: tmp() }, request).status).toBe('unavailable');
+    expect(proposeLearning({ ...ledger, repo: join(root, '_private') }, request).status).toBe('unavailable');
+    event.data.binding.model.resolved.source = 'request'; reject(); event.data.binding.model.resolved.source = 'provider';
+    event.data.binding.model.resolved.value = 'unknown'; reject(); event.data.binding.model.resolved.value = 'actual-provider-model';
+    run.events.push(event); reject(); run.events.pop();
+    event.workflow_run_id = 'other-run'; reject(); event.workflow_run_id = 'native';
+    expect(calls).toEqual([]);
+    const result = proposeLearning(ledger, request);
+    expect(result.status).toBe('prepared'); expect(result.model).toBe('actual-provider-model'); expect(calls).toEqual(['propose', 'evaluate']);
+    expect(readFileSync(join(result.evidence as string, 'original.json'))).toEqual(bytes);
+    expect(JSON.parse(readFileSync(join(result.evidence as string, 'provenance.json'), 'utf8')).sha256).toBe(request.sha256);
+    expect(statSync(join(result.evidence as string, 'original.json')).mode & 0o777).toBe(0o400);
+    const candidate = owner('show', result.candidate as string);
+    expect(JSON.stringify(candidate)).toContain(`project:${root}`); expect(owner('verify').stable).toBe(initial.stable);
+    const denied = spawn(['python3', evolutionScript, '--home', store, 'promote', result.candidate as string], { stdout: 'pipe', stderr: 'pipe' });
+    expect(denied.exitCode).toBe(2); expect(owner('verify').stable).toBe(initial.stable);
+    expect(owner('recall', '--scope', `project:${root}`, '--domain', 'engineering', '--query', 'contract').entries).toEqual([]);
   } finally {
     mock.mockRestore();
     for (const k of ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_MEMORY']) {
