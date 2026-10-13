@@ -2265,11 +2265,7 @@ describe('sa-check script', () => {
       counter = join(root, 'count');
     const command = `echo x >> '${counter}'; false`;
     const legacy = join(root, 'legacy.ts');
-    for (const name of ['reasons.json', 'failure-class.ts'])
-      writeFileSync(
-        join(root, name),
-        readFileSync(join(import.meta.dir, '../templates/.archon/scripts', name))
-      );
+    cpSync(join(import.meta.dir, '../templates/.archon/scripts'), root, { recursive: true });
     writeFileSync(
       join(root, 'policy-attempts.ts'),
       readFileSync(join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'))
