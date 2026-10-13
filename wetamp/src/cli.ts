@@ -2546,6 +2546,8 @@ export function main(argv: string[]): number {
         throw new Error('intake: input.repo must be the absolute repository path');
       const store = new Intake(intakeRoot(home().sa, repo));
       const tasks = store.list();
+      // Cache only raw engine reads for this query; every binding still validates its identity.
+      const runs = new Map<string, RunView | undefined>();
       const readEvidence: EvidenceReader = binding => {
         if (!binding.run_id) return undefined;
         try {
@@ -2555,7 +2557,13 @@ export function main(argv: string[]): number {
             return undefined;
           const digest = createHash('sha256').update(readFileSync(frozenPlan)).digest('hex');
           if (digest !== binding.digest) return undefined;
-          const run = getRun(l.archon_run_id, l.repo);
+          const key = JSON.stringify([l.repo, l.archon_run_id]);
+          if (!runs.has(key)) {
+            runs.set(key, undefined);
+            runs.set(key, getRun(l.archon_run_id, l.repo));
+          }
+          const run = runs.get(key);
+          if (!run) return undefined;
           const history = decisionsOf(artifactsOf(run), undefined, l);
           if (
             run.nodes?.some(

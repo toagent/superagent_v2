@@ -238,13 +238,13 @@ test('only engine evidence for current revision can project completion', () => {
     { id: 'p', requirements: [{ id: 'r', text: 'requirement', verified_by: [0] }] },
   ];
   const green = () => ({ completed: true, decisions: [decision], packages });
-  expect(completion(s.show(a), green)).toBe('verified');
-  expect(completion(s.show(a), () => undefined)).toBe('unknown');
-  expect(completion(s.show(a), () => ({ completed: true, decisions: [], packages }))).toBe(
-    'unknown'
-  );
+  expect(completion(s.show(a), green, s.list())).toBe('verified');
+  expect(completion(s.show(a), () => undefined, s.list())).toBe('unknown');
+  expect(
+    completion(s.show(a), () => ({ completed: true, decisions: [], packages }), s.list())
+  ).toBe('unknown');
   apply(s, 'revision', [amend(a)]);
-  expect(completion(s.show(a), green)).toBe('unknown');
+  expect(completion(s.show(a), green, s.list())).toBe('unknown');
   const historical = structuredClone(s.show(a).runs);
   expect(
     apply(s, 'remap', [
@@ -252,7 +252,7 @@ test('only engine evidence for current revision can project completion', () => {
       bind(a, 'remap'),
     ]).results!.map(r => r.status)
   ).toEqual(['accepted', 'accepted']);
-  expect(completion(s.show(a), green)).toBe('verified');
+  expect(completion(s.show(a), green, s.list())).toBe('verified');
   expect(s.show(a).runs.slice(0, 1)).toEqual(historical);
   expect(
     apply(s, 'same-revision', [
@@ -380,6 +380,36 @@ test.each([false, true])(
         return;
       }
       expect(show()).toBe('verified');
+      const statePath = join(intakeRoot(dir, repo), 'state.json'),
+        saved = readFileSync(statePath, 'utf8');
+      const task = s.show(id),
+        parent = { ...task, id: 'parent', runs: [] };
+      const invalid = ['plan', 'digest'].map(field => ({
+        ...task,
+        id: field,
+        runs: task.runs.map(r => ({ ...r, [field]: 'wrong' })),
+      }));
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          inputs: [],
+          tasks: [parent, { ...task, parent: parent.id }, ...invalid],
+        })
+      );
+      for (let n = 0; n < 2; n++) {
+        get.mockClear();
+        main(['intake', 'backlog', '--repo', repo]);
+        const out = JSON.parse(String(log.mock.calls.at(-1)![0]));
+        expect(out.tasks.map((t: { completion: string }) => t.completion)).toEqual([
+          'unknown',
+          'verified',
+          'unknown',
+          'unknown',
+        ]);
+        expect(get).toHaveBeenCalledTimes(1);
+      }
+      writeFileSync(statePath, saved);
       writeFileSync(sourcePlan, '{"changed":true}');
       expect(show()).toBe('verified');
       expect(decisionsOf(art).filter(d => d.decision?.kind === 'repair')).toHaveLength(3);

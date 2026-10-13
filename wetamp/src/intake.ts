@@ -755,7 +755,7 @@ function coverageOf(
 export function completion(
   task: Task,
   evidence: EvidenceReader,
-  tasks: Task[] = [task]
+  tasks: Task[]
 ): 'verified' | 'unknown' {
   return coverageOf(task, evidence, tasks).completion;
 }
