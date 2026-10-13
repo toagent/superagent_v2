@@ -138,15 +138,18 @@ function targetReason(effect, target, dir, root, env, reviewer, advisory) {
     advisory('write_target_unknown'); return null;
   }
   const lexical = path.resolve(dir, expanded), abs = resolvePath(lexical);
+  // Whole-file replacement and deletion lose data only when the target exists.
+  // All tool and shell consumers share this fact before ownership policy runs.
+  const losesData = ['destroy','overwrite'].includes(effect) && fs.existsSync(abs);
   const task = taskOwnership(abs, dir, root, env);
   const protectedLocation = protectedKind(lexical, root, env) || protectedKind(abs, root, env);
   const packageCache = ['.bun','.npm','.cache','.m2','.gradle','.cargo'].some(d => within(abs, path.join(homeOf(env), d)));
-  if (protectedLocation && !(protectedLocation === '非本任务的 git 检出' && !['destroy','overwrite'].includes(effect)) && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
+  if (protectedLocation && !(protectedLocation === '非本任务的 git 检出' && !losesData) && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
     return message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: within(abs, path.join(homeOf(env), '.superagent')) ? '~/.superagent' : protectedLocation});
   if (reviewer && root && within(abs, resolvePath(root))) return message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: `本任务仓库：${abs}`});
   if (effect === 'destroy' && [root, homeOf(env), env.SUPERAGENT_HOME, '/'].filter(Boolean).some(r => within(resolvePath(r), abs)))
     return message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'});
-  if (!task && (effect === 'destroy' || effect === 'overwrite' && fs.existsSync(abs)))
+  if (!task && losesData)
     return message('销毁或覆盖文件', '会破坏不属于本任务的已有数据', '在 worktree 或临时目录创建副本', {kind: '任务范围外路径'});
   if (!task || protectedLocation === '非本任务的 git 检出') advisory('file_ownership');
   return null;
@@ -186,11 +189,13 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
     const edit = microEdit.isEdit(client, name);
     let targets = [];
     let deletions = new Set();
+    let overwrites = new Set();
     if (edit) {
       try {
         const edits = client === 'codex' ? microEdit.patchEdits(input) : [{file: input.file_path || input.notebook_path}];
         targets = edits.map(e => e.file);
         deletions = new Set(edits.filter(e => e.kind === 'Delete File').map(e => e.file));
+        overwrites = new Set(edits.filter(e => e.kind === 'Add File').map(e => e.file));
       }
       catch { onAdvisory('patch_target_unknown'); return null; }
     }
@@ -199,7 +204,7 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
       if (kind) return message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
     }
     if (edit && (derived || reviewer)) for (const target of targets) {
-      const why = targetReason(deletions.has(target) ? 'destroy' : 'write', target || '', cwd, root, env, reviewer, onAdvisory); if (why) return why;
+      const why = targetReason(deletions.has(target) ? 'destroy' : name === 'Write' || overwrites.has(target) ? 'overwrite' : 'write', target || '', cwd, root, env, reviewer, onAdvisory); if (why) return why;
     }
     if (shell === undefined) return null;
     const gitDeletions = new Map();
