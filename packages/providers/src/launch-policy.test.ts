@@ -87,7 +87,9 @@ test('readonly policy denies native domain grants and overrides native live Code
         process.cwd()
       );
       const assignments = args.flatMap((arg, i) => arg === '-c' ? [args[i + 1]] : []);
-      expect(Bun.TOML.parse(assignments.join('\n')).web_search).toBe(readonly ? 'disabled' : 'live');
+      expect(Bun.TOML.parse(assignments.join('\n'))).toMatchObject({
+        web_search: readonly ? 'disabled' : 'live',
+      });
     }
   } finally {
     inventory.mockRestore();
