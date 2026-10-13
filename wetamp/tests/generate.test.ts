@@ -829,6 +829,7 @@ test('generate writes a committed gen repo that archon validates', () => {
     JSON.parse(readFileSync(join(g.dir, 'plan.json'), 'utf8')).packages[0].requirements
   ).toEqual(plan.packages[0].requirements);
   expect(readFileSync(join(g.dir, 'briefs/core.md'), 'utf8')).toContain('"verified_by"');
+
   const principles = readFileSync(join(WETAMP, 'templates', '.archon', 'principles.md'), 'utf8');
   const generated = Bun.YAML.parse(
     readFileSync(join(g.dir, '.archon', 'workflows', g.workflow, `${g.workflow}.yaml`), 'utf8')

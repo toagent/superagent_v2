@@ -18,7 +18,6 @@ import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
 
 const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
-
 /** Only project engine decisions; green commands and model reports are not coverage. */
 export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsOf>[0]) {
   const art = artifactsOf(run);
@@ -173,7 +172,7 @@ export function rollup(calls: Call[]): Record<string, unknown> {
     phase_coverage: Object.fromEntries(
       ['queue_ms', 'exec_ms'].map(field => [
         field,
-        `${String(calls.filter(c => c[field as 'queue_ms' | 'exec_ms'] !== null).length)}/${String(calls.length)}`,
+        `${calls.filter(c => c[field as 'queue_ms' | 'exec_ms'] !== null).length}/${calls.length}`,
       ])
     ),
   };
@@ -208,7 +207,7 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
     by_run,
     known: n,
     unknown: ls.length - n,
-    median: n ? (counts[Math.floor((n - 1) / 2)] + counts[Math.floor(n / 2)]) / 2 : 'unknown',
+    median: n ? (counts[Math.floor((n - 1) / 2)]! + counts[Math.floor(n / 2)]!) / 2 : 'unknown',
     max: counts.at(-1) ?? 'unknown',
     zero_share: n ? counts.filter(c => c === 0).length / n : 'unknown',
   };
@@ -262,7 +261,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       phase_coverage: Object.fromEntries(
         ['queue_ms', 'prepare_ms', 'exec_ms'].map(field => [
           field,
-          `${String(receipts.filter(r => typeof r[field] === 'number').length)}/${String(receipts.length)}`,
+          `${receipts.filter(r => typeof r[field] === 'number').length}/${receipts.length}`,
         ])
       ),
     },
