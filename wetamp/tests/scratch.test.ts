@@ -49,7 +49,7 @@ require('node:module').syncBuiltinESMExports();
 if (typeof Bun !== 'undefined') for (const key of ['spawn', 'spawnSync']) {
   const spawn = Bun[key]; Bun[key] = (cmd, options = {}) => {
     if (!Array.isArray(cmd)) { options = cmd; cmd = options.cmd; }
-    if (['bun', 'node'].includes(path.basename(cmd[0]))) { const i = cmd[1] === 'run' ? 2 : 1; cmd = [...cmd.slice(0, i), path.basename(cmd[0]) === 'bun' ? '--preload' : '--require', __filename, ...cmd.slice(i)]; }
+    if (['bun', 'node'].includes(path.basename(cmd[0]))) { const i = cmd[1] === 'run' ? 2 : cmd[2] === 'run' ? 3 : 1; cmd = [...cmd.slice(0, i), path.basename(cmd[0]) === 'bun' ? '--preload' : '--require', __filename, ...cmd.slice(i)]; }
     return spawn(cmd, {...options, env: {...process.env, ...options.env}});
   };
 }
