@@ -1,17 +1,8 @@
 name: archon-deliver
 description: |
-  The delivery tail, autonomous on its green path: implement the work, gate on
-  green, simplify it before anything is public, open a draft PR, review it at the
-  depth its risk earns, correct the findings the owner judges worth fixing, file
-  discoveries as issues, wait for checks to clear, then flip the PR
-  ready for review. Late CI red that
-  the branch did not introduce pauses for an explicit rerun and resume. There
-  is no in-run approval gate — the human gate is PR review and merge on GitHub,
-  outside the run.
-
-  Use when: decided work should become a reviewed, ready-to-merge PR —
-  "deliver this plan", "take this to a PR", "build and ship this".
-  NOT for: deciding what to build, or merging (always human).
+  Disabled reference workflow in this fork: Git network writes require a
+  human operator. The entry node fails before agent dispatch and prints
+  manual commands. The retained upstream delivery nodes are not executed.
 
 # Review establishes the first verdict. When blockers remain, a bounded static
 # body repeats fix → light review, so every blocking correction is independently
@@ -63,7 +54,15 @@ inputs:
 returns: flip-ready
 
 nodes:
+  # Fail before any agent can push or any forge script can publish a PR.
+  - id: manual-network-only
+    bash: |
+      printf '%s\n' 'Git network writes are manual in this fork. Run these commands yourself after reviewing the branch and PR body:'
+      printf '%s\n' 'git push -u origin <reviewed-branch>' 'gh pr create --draft --base <reviewed-base> --head <reviewed-branch> --body-file <reviewed-body>'
+      exit 1
+
   - id: impl
+    depends_on: [manual-network-only]
     include: archon-implement
     with:
       work: "$INPUTS.work"
@@ -321,12 +320,9 @@ nodes:
               Accepted work order:
               $INPUTS.work
 
-              When the correction is green, push its commits to the branch this
-              run is on. Push it explicitly by name; do not let git select an
-              upstream. Do not change the PR's draft state or edit the canonical
-              review comment; the following review owns that public verdict.
-              Record the exact push target and a read-back of the remote ref in
-              implementation.md; never record credentials.
+              Commit the correction locally. Record the reviewed branch and
+              print the explicit git push command for a human operator in
+              implementation.md. Git network writes and PR edits are manual.
 
         # The same gate, same script: a correction can hit inherited or environment
         # red exactly as the first implementation can, and a
@@ -628,8 +624,8 @@ nodes:
 
         $ci-verdict.output.detail
 
-        Fix it at the cause and push the correction to the branch this run
-        is on, explicitly by name. The cause is settled: this pass either
+        Fix it at the cause and commit the correction locally. Print the
+        explicit git push command for a human operator; do not execute it. The cause is settled: this pass either
         makes the checks green or reports that it could not, and it never
         "fixes" a failure by weakening a test. Do not change the PR's draft
         state or edit the canonical review comment.

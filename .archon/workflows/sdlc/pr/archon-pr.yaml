@@ -1,13 +1,8 @@
 name: archon-pr
 description: |
-  Open a pull request for the committed work on the current branch — draft by
-  default when composed, template-aware, with the body built from the run's
-  artifacts. Verifies by reading the created PR back. Never sweeps unrelated
-  changes and never force-pushes.
-
-  Use when: committed work on a branch needs a PR — "open a PR", "create a
-  draft PR for this branch".
-  NOT for: implementing (implement), reviewing (review), or merging (always human).
+  Disabled reference workflow in this fork: Git network writes require a
+  human operator. The entry node fails before agent dispatch and prints
+  manual commands. The retained upstream delivery nodes are not executed.
 
 model: medium
 requires: [github]
@@ -20,11 +15,16 @@ inputs:
 returns: publish
 
 nodes:
-  # The agent establishes the target, writes the body, pushes, and decides
-  # whether this work already has a pull request. It performs no forge write:
-  # publish below owns that, so the same intent is published the same way
-  # whichever source the run selected.
+  # Fail before any agent can push or any forge script can publish a PR.
+  - id: manual-network-only
+    bash: |
+      printf '%s\n' 'Git network writes are manual in this fork. Run these commands yourself after reviewing the branch and PR body:'
+      printf '%s\n' 'git push -u origin <reviewed-branch>' 'gh pr create --draft --base <reviewed-base> --head <reviewed-branch> --body-file <reviewed-body>'
+      exit 1
+
+  # Retained upstream nodes stay unreachable behind the manual boundary.
   - id: pr
+    depends_on: [manual-network-only]
     command: pr
     output_type: pull-request-intent
     output_format:
