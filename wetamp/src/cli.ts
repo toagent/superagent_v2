@@ -2,10 +2,11 @@
 import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
 import { Intake, completion, intakeRoot } from './intake';
-import { applyLand, selftest } from './land';
+import { applyLand, captureDelivery, selftest, type DeliveryTarget } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
+import type { resolveAcceptanceContext } from './role-context';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick } from './memory';
 import {
@@ -116,6 +117,7 @@ const OPTIONS = {
   'no-cache': { type: 'boolean' },
   base: { type: 'string' },
   worktree: { type: 'string' },
+  'task-kind': { type: 'string' },
   mode: { type: 'string' },
   repo: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
@@ -146,6 +148,10 @@ interface Args {
 /** 严格模式：未知参数直接报错，不静默忽略。 */
 export function parseArgs(argv: string[]): Args {
   const { values, positionals } = parse({ args: argv, options: OPTIONS, allowPositionals: true });
+  if (values['task-kind'] !== undefined)
+    throw new Error(
+      'job is a support operation; use quick for coding, or land --apply for an accepted run'
+    );
   return { _: positionals, flags: values };
 }
 
@@ -188,6 +194,7 @@ export interface Ledger {
   repo: string;
   branch: string;
   launch_branch?: string;
+  delivery?: DeliveryTarget;
   workflow: string;
   console: string;
   started_at: string;
@@ -645,10 +652,17 @@ function recoverRun(
             }
           })
           .map(p => p.id);
-        const gen = generate(plan, l.run_id, metadata?.fake ?? false, l.engine_hash ?? 'unknown', {
-          from: run.id,
-          packages: carried,
-        });
+        const gen = generate(
+          plan,
+          l.run_id,
+          metadata?.fake ?? false,
+          l.engine_hash ?? 'unknown',
+          {
+            from: run.id,
+            packages: carried,
+          },
+          l.delivery
+        );
         adopted = {
           from: run.id,
           hash: gen.engine_hash,
@@ -869,9 +883,10 @@ function startRun(planPath: string, a: Args): number {
           }
         });
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
+        const delivery = captureDelivery(plan.repo);
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
-        const gen = generate(plan, run, a.flags.fake ?? false);
+        const gen = generate(plan, run, a.flags.fake ?? false, undefined, undefined, delivery);
         const branch = `sa/${run}`;
         const args = [
           'workflow',
@@ -895,6 +910,7 @@ function startRun(planPath: string, a: Args): number {
           repo: plan.repo,
           branch,
           launch_branch: typeof launchBranch === 'string' ? launchBranch : undefined,
+          delivery,
           workflow: gen.workflow,
           console: plan.console ?? 'claude',
           started_at: new Date().toISOString(),
@@ -1257,12 +1273,29 @@ function brief(l: Ledger, json = false): number {
   const s = summary(l, run, c);
   const art = artifactsOf(run);
   if (json) {
-    print({ ...s, execution: (run.nodes ?? []).flatMap(n => n.execution
-      ? [{ node: n.nodeId, state: n.state, execution_ref: n.execution.path,
-        policy: { provider: n.execution.binding.provider, model: n.execution.binding.model,
-          effort: n.execution.binding.effort, tier: n.execution.binding.tier },
-        attempt: n.execution.attempt, timing: n.execution.timing, tokens: n.execution.spend.tokens }]
-      : []) });
+    print({
+      ...s,
+      execution: (run.nodes ?? []).flatMap(n =>
+        n.execution
+          ? [
+              {
+                node: n.nodeId,
+                state: n.state,
+                execution_ref: n.execution.path,
+                policy: {
+                  provider: n.execution.binding.provider,
+                  model: n.execution.binding.model,
+                  effort: n.execution.binding.effort,
+                  tier: n.execution.binding.tier,
+                },
+                attempt: n.execution.attempt,
+                timing: n.execution.timing,
+                tokens: n.execution.spend.tokens,
+              },
+            ]
+          : []
+      ),
+    });
     return c.exit;
   }
   const lines = [
@@ -1304,35 +1337,51 @@ function brief(l: Ledger, json = false): number {
 }
 
 /** 在 run 的 worktree 里跑 plan 的验收命令（同 verify 节点脚本），退出码即结果。 */
-function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: string): number {
-  const run = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as unknown as RunView;
+function acceptRun(
+  l: Ledger,
+  pkg: string | undefined,
+  cwd?: string,
+  cacheArt?: string,
+  report = true
+): number {
+  const run = archonJson(
+    ['workflow', 'get', l.archon_run_id, '--verbose', '--events'],
+    l.repo
+  ) as unknown as RunView;
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
   const plan = planOf(l);
-  if (pkg && !plan.packages.some(p => p.id === pkg)) throw new Error(`accept: unknown package ${pkg}`);
+  if (pkg && !plan.packages.some(p => p.id === pkg))
+    throw new Error(`accept: unknown package ${pkg}`);
   const art = cacheArt ?? artifactsOf(run);
   const contracts = readJson(join(l.gen_dir, 'accept-inputs.json')) as Record<string, string>[];
   if (!Array.isArray(contracts)) throw new Error('accept: missing generated acceptance contract');
   const selected = pkg
     ? contracts.filter(c => c.tag === `verify-${pkg}`)
     : [...new Set(contracts.map(c => c.milestone))].map(m =>
-        [...contracts].reverse().find(c =>
-          c.milestone === m && c.tag.startsWith('diff-') && evidenceJson(l, art, `${c.tag}.json`)
-        )
+        [...contracts]
+          .reverse()
+          .find(
+            c =>
+              c.milestone === m &&
+              c.tag.startsWith('diff-') &&
+              evidenceJson(l, art, `${c.tag}.json`)
+          )
       );
-  if (!selected.length || selected.some(c => !c)) throw new Error('accept: missing acceptance evidence');
+  if (!selected.length || selected.some(c => !c))
+    throw new Error('accept: missing acceptance evidence');
   const resolved = Bun.spawnSync([process.execPath, join(import.meta.dir, 'role-context.ts')], {
     stdin: Buffer.from(JSON.stringify({ run, contracts: selected, art })),
-    stdout: 'pipe', stderr: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
   if (resolved.exitCode !== 0)
     throw new Error(`accept: input resolution failed: ${resolved.stderr.toString()}`);
-  const { inputs: resolvedInputs, events_file } = JSON.parse(resolved.stdout.toString()) as {
-    inputs: Record<string, string>[]; events_file: string;
-  };
+  const { inputs: resolvedInputs, events_file } = JSON.parse(resolved.stdout.toString()) as Awaited<
+    ReturnType<typeof resolveAcceptanceContext>
+  >;
   mkdirSync(art, { recursive: true });
   let code = 0;
   for (const inputs of resolvedInputs) {
-    if (!inputs) continue;
     const prior = evidenceJson(l, art, `${inputs.tag}.json`) as Accept | undefined;
     const gate = evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.json`);
     const p = Bun.spawnSync(
@@ -1341,7 +1390,9 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
         cwd: cwd ?? run.working_path,
         env: {
           ...process.env,
-          ...Object.fromEntries(Object.entries(inputs).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])),
+          ...Object.fromEntries(
+            Object.entries(inputs).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])
+          ),
           INPUTS_TAG: `accept-${inputs.tag}`,
           INPUTS_EVENTS_FILE: events_file,
           WORKFLOW_ID: run.id,
@@ -1352,10 +1403,16 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
       }
     );
     const out = lastJson(p.stdout.toString()) as (Record<string, unknown> & Accept) | undefined;
-    const same = !!out?.contract_hash && out.contract_hash === prior?.contract_hash &&
-      !!out.diff_hash && out.diff_hash === prior.diff_hash && decisionOf(gate)?.kind === 'debt';
+    const same =
+      !!out?.contract_hash &&
+      out.contract_hash === prior?.contract_hash &&
+      !!out.diff_hash &&
+      out.diff_hash === prior.diff_hash &&
+      decisionOf(gate)?.kind === 'debt';
     const reviews = same
-      ? evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.review.json`) as Review | undefined
+      ? (evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.review.json`) as
+          | Review
+          | undefined)
       : undefined;
     const { decision } = deliveryDecision({
       rechecks: out ? [out] : [],
@@ -1364,10 +1421,54 @@ function acceptRun(l: Ledger, pkg: string | undefined, cwd?: string, cacheArt?: 
       strict: plan.mode === 'strict',
       ...(reviews ? { reviews: [reviews] } : {}),
     });
-    print(out ? { ...out, decision } : { ok: false, error: tail(p.stderr.toString()) });
+    if (report) print(out ? { ...out, decision } : { ok: false, error: tail(p.stderr.toString()) });
     if (!['advance', 'debt'].includes(decision.kind)) code = 1;
   }
   return code;
+}
+
+/** Plan and quick share real acceptance and the original audited landing admission. */
+export function finalizeDelivery(id: string, automatic = false) {
+  const l = loadLedger(coord().resolveRun(id)?.run_id ?? id);
+  return control(
+    l,
+    controller => {
+      if (!l.delivery)
+        throw new Error('delivery: unknown legacy target; use a new quick/run contract');
+      const target = l.delivery;
+      const run = getRun(l.archon_run_id, l.repo),
+        art = artifactsOf(run);
+      const land = evidenceJson(l, art, 'land.json') as Land | undefined;
+      if (!land) throw new Error('delivery: missing generated land evidence');
+      const contract = createHash('sha256')
+        .update(readFileSync(join(l.gen_dir, 'accept-inputs.json')))
+        .digest('hex');
+      let receipt: ReturnType<typeof applyLand>;
+      intervention(l, 'land', () => {
+        receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
+          repo: l.repo,
+          base_ref: planOf(l).base_ref,
+          delivery: {
+            task: l.run_id,
+            target,
+            contract,
+            evidence: art,
+            title: planOf(l)
+              .packages.map(p => p.title)
+              .join('; '),
+            receipt: join(art, 'delivery.json'),
+          },
+        });
+        return 0;
+      });
+      updateLedger(l, cur => {
+        cur.controller = controller;
+      });
+      return receipt;
+    },
+    caller(),
+    automatic ? (l.controller?.generation ?? 0) : undefined
+  );
 }
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
@@ -2103,7 +2204,12 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
   );
 }
 /** 只投影引擎状态与明确决定；owner-lost 保留证据，恢复必须由操作员发起。 */
-function dispose(l: Ledger, asks: Asks | Error, observed: HoldSignal[], run: RunView): Action | undefined {
+function dispose(
+  l: Ledger,
+  asks: Asks | Error,
+  observed: HoldSignal[],
+  run: RunView
+): Action | undefined {
   const c = classifyRun(l, run);
   const row: HoldSignal = {
     run_id: l.run_id,
@@ -2302,7 +2408,10 @@ export function main(argv: string[]): number {
   }
   const [verb, target] = a._;
   if (a.flags.help || verb === 'help') {
-    console.log(USAGE + "\ncontinuous intake: intake receive|apply <payload.json> | list | show <task-id> | input <source> <session> <message> | context|resume [bytes] [--repo path]");
+    console.log(
+      USAGE +
+        '\ncontinuous intake: intake receive|apply <payload.json> | list | show <task-id> | input <source> <session> <message> | context|resume [bytes] [--repo path]'
+    );
     return 0;
   }
   const resolveTarget = (id: string): Ledger | RunView => {
@@ -2330,14 +2439,24 @@ export function main(argv: string[]): number {
   switch (verb) {
     case 'intake': {
       const command = need(target, 'intake receive|apply|list|show|context|resume');
-      const argument = a._[2];
+      const argument = a._.at(2);
       const raw: unknown = ['receive', 'apply'].includes(command)
-        ? JSON.parse(readFileSync(need(argument, 'intake receive|apply <payload.json>'), 'utf8')) : undefined;
+        ? JSON.parse(readFileSync(need(argument, 'intake receive|apply <payload.json>'), 'utf8'))
+        : undefined;
       const envelope = raw !== null && typeof raw === 'object' && 'input' in raw ? raw : undefined;
       const input = envelope?.input;
-      const repo = resolve(input !== null && typeof input === 'object' && 'repo' in input && typeof input.repo === 'string'
-        ? input.repo : a.flags.repo ?? process.cwd());
-      if (input !== undefined && (input === null || typeof input !== 'object' || !('repo' in input) || input.repo !== repo))
+      const repo = resolve(
+        input !== null &&
+          typeof input === 'object' &&
+          'repo' in input &&
+          typeof input.repo === 'string'
+          ? input.repo
+          : (a.flags.repo ?? process.cwd())
+      );
+      if (
+        input !== undefined &&
+        (input === null || typeof input !== 'object' || !('repo' in input) || input.repo !== repo)
+      )
         throw new Error('intake: input.repo must be the absolute repository path');
       const store = new Intake(intakeRoot(home().sa, repo));
       const view = (id: string): unknown => {
@@ -2346,32 +2465,56 @@ export function main(argv: string[]): number {
           if (!binding.run_id) return undefined;
           try {
             const l = loadLedger(binding.run_id);
-            if (resolve(l.repo) !== task.repo || resolve(l.plan) !== resolve(binding.plan)) return undefined;
+            if (resolve(l.repo) !== task.repo || resolve(l.plan) !== resolve(binding.plan))
+              return undefined;
             const digest = createHash('sha256').update(readFileSync(l.plan)).digest('hex');
             if (digest !== binding.digest) return undefined;
             const run = getRun(l.archon_run_id, l.repo);
             const decisions = decisionsOf(artifactsOf(run), undefined, l).map(d => d.decision);
             if (decisions.some(d => !d)) return undefined;
-            return { completed: classifyRun(l, run).state === 'completed',
-              decisions: decisions.flatMap(d => d ? [d] : []) };
-          } catch { return undefined; } // Missing/unreadable engine evidence is unknown, never a success.
+            return {
+              completed: classifyRun(l, run).state === 'completed',
+              decisions: decisions.flatMap(d => (d ? [d] : [])),
+            };
+          } catch {
+            return undefined;
+          } // Missing/unreadable engine evidence is unknown, never a success.
         });
         return { ...task, completion: status };
       };
       switch (command) {
-        case 'receive': print(store.receive(input)); break;
+        case 'receive':
+          print(store.receive(input));
+          break;
         case 'apply': {
-          const result = store.apply(input, envelope && 'actions' in envelope ? envelope.actions : undefined);
+          const result = store.apply(
+            input,
+            envelope && 'actions' in envelope ? envelope.actions : undefined
+          );
           print(result);
           return result.results?.some(r => r.status !== 'accepted') ? EXIT.held : 0;
         }
-        case 'list': print(store.list().map(t => ({ id: t.id, revision: t.revision, repo: t.repo }))); break;
-        case 'input': print(store.input(need(argument, 'intake input <source> <session> <message>'),
-          need(a._[3], 'intake input <source> <session> <message>'), need(a._[4], 'intake input <source> <session> <message>'))); break;
-        case 'show': print(view(need(argument, 'intake show <task-id>'))); break;
+        case 'list':
+          print(store.list().map(t => ({ id: t.id, revision: t.revision, repo: t.repo })));
+          break;
+        case 'input':
+          print(
+            store.input(
+              need(argument, 'intake input <source> <session> <message>'),
+              need(a._[3], 'intake input <source> <session> <message>'),
+              need(a._[4], 'intake input <source> <session> <message>')
+            )
+          );
+          break;
+        case 'show':
+          print(view(need(argument, 'intake show <task-id>')));
+          break;
         case 'context':
-        case 'resume': print(store.context(repo, argument === undefined ? 8192 : Number(argument))); break;
-        default: throw new Error('usage: superagent intake receive|apply|list|show|context|resume');
+        case 'resume':
+          print(store.context(repo, argument === undefined ? 8192 : Number(argument)));
+          break;
+        default:
+          throw new Error('usage: superagent intake receive|apply|list|show|context|resume');
       }
       return 0;
     }
@@ -2429,6 +2572,25 @@ export function main(argv: string[]): number {
       }
       const l = ledger(),
         s = waitRun(l, t);
+      if (s.state === 'completed') {
+        try {
+          const engine = readJson(join(l.gen_dir, 'engine.json'));
+          if (
+            !l.delivery ||
+            !engine ||
+            typeof engine !== 'object' ||
+            !('fake' in engine) ||
+            engine.fake !== false
+          )
+            s.delivery = {
+              status: 'unknown',
+              reason: 'legacy/fake or unverified launch; automatic delivery unavailable',
+            };
+          else s.delivery = finalizeDelivery(l.run_id, true);
+        } catch (e) {
+          s.delivery = { status: 'blocked', reason: e instanceof Error ? e.message : String(e) };
+        }
+      }
       // prettier-ignore
       print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) ? relayQuota(l.gen_dir, 'end') : {}) });
       return Number(s.exit);
@@ -2509,6 +2671,10 @@ export function main(argv: string[]): number {
       return brief(ledger(), !!a.flags.json);
     case 'land': {
       const l = ledger(true);
+      if (a.flags.apply && l.delivery) {
+        print(finalizeDelivery(l.run_id));
+        return 0;
+      }
       return controlled(l, () => {
         const run = getRun(l.archon_run_id, l.repo);
         const land = evidenceJson(l, artifactsOf(run), 'land.json');
@@ -2517,8 +2683,11 @@ export function main(argv: string[]): number {
           return 1;
         }
         if (a.flags.apply) {
-          const verify = (cwd: string): number => acceptRun(l, undefined, cwd, artifactsOf(run));
-          applyLand(run, land as Land, verify, { ...l, base_ref: planOf(l).base_ref });
+          applyLand(run, land as Land, cwd => acceptRun(l, undefined, cwd, artifactsOf(run)), {
+            repo: l.repo,
+            launch_branch: l.launch_branch,
+            base_ref: planOf(l).base_ref,
+          });
           return 0;
         }
         const needs = needsOf(artifactsOf(run), undefined, l);

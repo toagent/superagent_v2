@@ -197,15 +197,26 @@ const commandEnvironmentKey = (k: string): boolean =>
   !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k);
 export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
   createHmac('sha256', cacheKey())
-    .update(JSON.stringify(
-      Object.keys(values).filter(commandEnvironmentKey).sort().map(k => [k, values[k]])
-    ))
+    .update(
+      JSON.stringify(
+        Object.keys(values)
+          .filter(commandEnvironmentKey)
+          .sort()
+          .map(k => [k, values[k]])
+      )
+    )
     .digest('hex');
 
 // R1-1: compare project environments across nodes without weakening actual-env cache keys.
 export const contextEnvironmentIdentity = (values: NodeJS.ProcessEnv): string =>
-  environmentIdentity(Object.fromEntries(Object.entries(values).filter(([k]) =>
-    !['ARCHON_NODE_EXECUTION', 'TYPED_ARTIFACTS_FILE', 'PYTHONDONTWRITEBYTECODE'].includes(k))));
+  environmentIdentity(
+    Object.fromEntries(
+      Object.entries(values).filter(
+        ([k]) =>
+          !['ARCHON_NODE_EXECUTION', 'TYPED_ARTIFACTS_FILE', 'PYTHONDONTWRITEBYTECODE'].includes(k)
+      )
+    )
+  );
 
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
@@ -428,7 +439,10 @@ export function scopeRisk(
 }
 
 /** 一次验收：coder 处置 + 命令 + 干净工作区；有 BASE 时另存全量 patch、相对 DELTA_BASE 的增量 patch 与交付范围。 */
-function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accept {
+function acceptOnce(
+  tag: string,
+  coder: string
+): Record<string, unknown> & Accept & { patch: string; delta: string } {
   const log = join(artifacts, `${tag}.log`);
   // R1-1: retries may reuse this tag; cached failures still reference its original output.
   appendFileSync(log, '');
@@ -558,7 +572,12 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
 }
 
 /** 写 <tag>.json 并输出；挂起（含预算超限）exit 1，run 停在本节点，后续包与评审都不启动。 */
-function finish(tag: string, out: Record<string, unknown> & Accept): void {
+function finish(
+  tag: string,
+  out: Record<string, unknown> &
+    Accept &
+    Partial<Pick<ReturnType<typeof acceptOnce>, 'patch' | 'delta'>>
+): void {
   if (out.disposition !== 'suspend') {
     const over = budget();
     if (over)
@@ -570,15 +589,30 @@ function finish(tag: string, out: Record<string, unknown> & Accept): void {
   }
   const gen = dirname(env('PLAN'));
   if (existsSync(join(gen, 'execution.json'))) {
-    const reviewRound = Array.from({ length: MAX_ROUNDS }, (_, i) =>
-      `diff-${env('MILESTONE')}-r${i + 1}`).indexOf(tag) + 1;
-    const node = reviewRound ? `review-${env('MILESTONE')}-r${reviewRound}`
-      : tag === `verify-${env('PKGS')}` ? `repair-${env('PKGS')}` : '';
+    const reviewRound =
+      Array.from(
+        { length: MAX_ROUNDS },
+        (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
+      ).indexOf(tag) + 1;
+    const node = reviewRound
+      ? `review-${env('MILESTONE')}-r${String(reviewRound)}`
+      : tag === `verify-${env('PKGS')}`
+        ? `repair-${env('PKGS')}`
+        : '';
     if (node) {
-      const context = prepareContext({ gen, artifacts, node, cwd: process.cwd(),
-        base: env('BASE'), head: out.head ?? '', deltaBase: env('DELTA_BASE'),
-        acceptance: out, patch: String(out.patch ?? ''), delta: String(out.delta ?? ''),
-        environment: contextEnvironmentIdentity(process.env) });
+      const context = prepareContext({
+        gen,
+        artifacts,
+        node,
+        cwd: process.cwd(),
+        base: env('BASE'),
+        head: out.head ?? '',
+        deltaBase: env('DELTA_BASE'),
+        acceptance: out,
+        patch: out.patch ?? '',
+        delta: out.delta ?? '',
+        environment: contextEnvironmentIdentity(process.env),
+      });
       writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path: context }));
     }
   }
@@ -957,16 +991,29 @@ export function deliveryDecision(input: {
       f.failure_class === 'test_env' || (f.failure_class === 'baseline' && check.base_pass === null)
   );
   if (unknown) return out('block', 'environment');
-  if (input.approved && !check.ok && (
-    input.strict || input.risk === 'G2' || input.approved.decision?.kind !== 'debt' ||
-    !check.contract_hash || check.contract_hash !== input.approved.check?.contract_hash ||
-    !check.diff_hash || check.diff_hash !== input.approved.check?.diff_hash ||
-    !input.approved.check?.failed?.every(command => input.approved?.check?.failures?.some(f =>
-      f.command === command && f.evidence.trim() &&
-      ['baseline', 'fixture', 'test_data', 'test_env'].includes(f.failure_class)
-    )) ||
-    check.failed?.some(command => !input.approved?.check?.failed?.includes(command))
-  )) return out('block', 'acceptance_failed');
+  const approved = input.approved?.check;
+  if (
+    input.approved &&
+    !check.ok &&
+    (input.strict ||
+      input.risk === 'G2' ||
+      input.approved.decision?.kind !== 'debt' ||
+      !approved ||
+      !check.contract_hash ||
+      check.contract_hash !== approved.contract_hash ||
+      !check.diff_hash ||
+      check.diff_hash !== approved.diff_hash ||
+      !approved.failed?.every(command =>
+        approved.failures?.some(
+          f =>
+            f.command === command &&
+            f.evidence.trim() &&
+            ['baseline', 'fixture', 'test_data', 'test_env'].includes(f.failure_class)
+        )
+      ) ||
+      check.failed?.some(command => !approved.failed?.includes(command)))
+  )
+    return out('block', 'acceptance_failed');
   const accepted =
     completion.status !== 'unmet' &&
     check.workspace_clean !== false &&
@@ -1126,8 +1173,12 @@ function runEvents(): RunEvent[] {
   const id = process.env.WORKFLOW_ID;
   if (!id) throw new Error('sa-check: WORKFLOW_ID unset');
   if (env('EVENTS_FILE')) {
-    const saved = JSON.parse(readFileSync(env('EVENTS_FILE'), 'utf8')) as { id: string; events?: RunEvent[] };
-    if (saved.id !== id || !Array.isArray(saved.events)) throw new Error('sa-check: invalid authoritative events');
+    const saved = JSON.parse(readFileSync(env('EVENTS_FILE'), 'utf8')) as {
+      id: string;
+      events?: RunEvent[];
+    };
+    if (saved.id !== id || !Array.isArray(saved.events))
+      throw new Error('sa-check: invalid authoritative events');
     return (events = saved.events);
   }
   const p = auxiliary([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json']);
@@ -1255,7 +1306,9 @@ function budget(nextLaunch = true): string | null {
   const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
   if (b.launches !== undefined && (nextLaunch ? u.launches >= b.launches : u.launches > b.launches))
     return 'budget_launches_exceeded';
-  return !b.unlimited_tokens && u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
+  return !b.unlimited_tokens && u.weighted_tokens > b.weighted_tokens
+    ? 'budget_tokens_exceeded'
+    : null;
 }
 
 interface Ident {
@@ -1433,17 +1486,21 @@ function land() {
     console.error(`land: plan deadline ${plan().deadline} passed; not producing merge commands`);
     process.exit(1);
   }
-  const repo = dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
+  const repo =
+    env('TARGET_CHECKOUT') ||
+    dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim());
   const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
   const base = env('BASE_REF');
-  const target = landTarget(repo, base, () => {
-    const path = env('OPERATOR_LEDGER');
-    const ledger =
-      path && existsSync(path)
-        ? (JSON.parse(readFileSync(path, 'utf8')) as Pick<OperatorLedger, 'launch_branch'>)
-        : undefined;
-    return ledger?.launch_branch;
-  });
+  const target =
+    env('TARGET_BRANCH') ||
+    landTarget(repo, base, () => {
+      const path = env('OPERATOR_LEDGER');
+      const ledger =
+        path && existsSync(path)
+          ? (JSON.parse(readFileSync(path, 'utf8')) as Pick<OperatorLedger, 'launch_branch'>)
+          : undefined;
+      return ledger?.launch_branch;
+    });
   const ff =
     target !== undefined &&
     Bun.spawnSync(['git', 'merge-base', '--is-ancestor', `refs/heads/${target}`, 'HEAD'])

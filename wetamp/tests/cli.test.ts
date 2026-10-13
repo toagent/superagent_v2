@@ -25,6 +25,8 @@ import * as archonMod from '../src/archon';
 import * as cliMod from '../src/cli';
 import * as configMod from '../src/config';
 import * as gcMod from '../src/gc';
+import { captureDelivery } from '../src/land';
+import * as landMod from '../src/land';
 import type { RunView } from '../src/archon';
 import {
   classify,
@@ -862,16 +864,29 @@ describe('waitRun (archon stub)', () => {
   test('wait native block surfaces inbox before another get', () => {
     const s = stub([run('running')]);
     const message: coordModule.Message = {
-      id: 'fixture', scope: coordModule.runScope(s.ledger), sender: coordModule.caller(),
-      recipient: null, generation: 1, kind: 'question', title: 'fixture', body: '',
-      evidence: [], severity: 'normal', state: 'surfaced', at: '',
+      id: 'fixture',
+      scope: coordModule.runScope(s.ledger),
+      sender: coordModule.caller(),
+      recipient: null,
+      generation: 1,
+      kind: 'question',
+      title: 'fixture',
+      body: '',
+      evidence: [],
+      severity: 'normal',
+      state: 'surfaced',
+      at: '',
     };
-    const inbox = spyOn(coordModule.coord(), 'surfaced').mockReturnValueOnce([]).mockReturnValue([message]);
+    const inbox = spyOn(coordModule.coord(), 'surfaced')
+      .mockReturnValueOnce([])
+      .mockReturnValue([message]);
     try {
       expect(waitRun(s.ledger, 60)).toMatchObject({ state: 'inbox', exit: EXIT.held });
       expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
       expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
-    } finally { inbox.mockRestore(); }
+    } finally {
+      inbox.mockRestore();
+    }
   });
   test('wait native notification preserves cancellation and human holds', () => {
     for (const state of [run('cancelled'), humanWait()]) {
@@ -889,15 +904,18 @@ describe('waitRun (archon stub)', () => {
     expect(out).toMatchObject({ run_id: 'sa1', state: 'completed', execution: [] });
     expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
   });
-  test.each([20, 60, 0.125])('wait %ss uses one native notification for the remaining deadline', seconds => {
-    const s = stub([run('running')]);
-    expect(waitRun(s.ledger, seconds)).toMatchObject({ state: 'running', exit: EXIT.running });
-    const waits = s.calls().filter(c => c.startsWith('workflow wait'));
-    expect(waits).toHaveLength(1);
-    expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(2);
-    expect(Number(waits[0]!.split('--timeout ')[1])).toBeLessThanOrEqual(seconds);
-    expect(Number(waits[0]!.split('--timeout ')[1])).toBeGreaterThan(0);
-  });
+  test.each([20, 60, 0.125])(
+    'wait %ss uses one native notification for the remaining deadline',
+    seconds => {
+      const s = stub([run('running')]);
+      expect(waitRun(s.ledger, seconds)).toMatchObject({ state: 'running', exit: EXIT.running });
+      const waits = s.calls().filter(c => c.startsWith('workflow wait'));
+      expect(waits).toHaveLength(1);
+      expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(2);
+      expect(Number(waits[0]!.split('--timeout ')[1])).toBeLessThanOrEqual(seconds);
+      expect(Number(waits[0]!.split('--timeout ')[1])).toBeGreaterThan(0);
+    }
+  );
   test('running then completed: native wait returns 0 with land commands', () => {
     const s = stub([
       run('running', { nodes: [{ nodeId: 'a', state: 'running' }] }),
@@ -930,7 +948,9 @@ describe('waitRun (archon stub)', () => {
       expect(wait).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(s.ledger)).toBe(before);
       expect(s.calls().every(c => c.startsWith('workflow get'))).toBe(true);
-    } finally { wait.mockRestore(); }
+    } finally {
+      wait.mockRestore();
+    }
   });
   test('held gate without a delivery artifact is unknown', () => {
     const s = stub([
@@ -1594,95 +1614,285 @@ describe('brief / land (archon stub)', () => {
   });
 });
 
-test.each([1, 2, 3])('generated CLI acceptance and land preserve only approved non-product debt R%i', round => {
-  const s = stub([]), wt = gitRepo(s.root);
-  const plan = JSON.parse(readFileSync(fixturePlan(s.root, wt), 'utf8')) as Plan;
-  plan.packages = [plan.packages[0]!];
-  plan.environment = [{ cmd: 'true', timeout_s: 5 }];
-  const marker = join(s.root, 'home', 'failure.json');
-  writeFileSync(marker, JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' }));
-  const command = `cat '${marker}'; exit 1`, newFailure = join(s.root, 'home', 'new-failure');
-  plan.packages[0]!.accept = [{ cmd: command, timeout_s: 5, cache: false }, {
-    cmd: `test ! -f '${newFailure}' || { printf '%s\\n' '{"failure_class":"fixture","evidence":"new debt"}'; exit 1; }`,
-    timeout_s: 5, cache: false,
-  }];
-  const gen = generate(plan, 'sa1', true);
-  s.ledger.gen_dir = gen.dir; s.ledger.repo = wt;
-  writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-  sh('git switch -qc sa/sa1 && echo change > core.txt && git add core.txt && git -c user.name=t -c user.email=t@l commit -qm change', wt);
-  const head = sh('git rev-parse HEAD', wt).trim(), base = sh('git rev-parse main', wt).trim();
-  const art = join(s.root, 'home', 'artifacts', 'runs', 'r');
-  mkdirSync(art, { recursive: true });
-  writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('completed', {
-    working_path: wt, output_root: join(s.root, 'home'), nodes: [{ nodeId: 'land', state: 'completed' }],
-  })));
-  const contracts = JSON.parse(readFileSync(join(gen.dir, 'accept-inputs.json'), 'utf8')) as Record<string, string>[];
-  const input = contracts.find(c => c.tag.startsWith('diff-') && c.tag.endsWith(`-r${round}`))!;
-  const producerOutput = { head: base, reviewed_head: base, diff_hash: 'previous', status: 'done', error_class: null, needs: [] };
-  const producerIds = new Set(contracts.flatMap(c => Object.values(c).map(v => parseWholeOutputRef(v)?.nodeId).filter((id): id is string => !!id)));
-  const authority = { ...run('completed', { working_path: wt, output_root: join(s.root, 'home'), nodes: [{ nodeId: 'land', state: 'completed' }] }),
-    events: [...producerIds].map(step_name => ({ step_name, event_type: 'node_completed', data: { node_output: JSON.stringify(producerOutput), structured_output: producerOutput } })),
-  };
-  const saveAuthority = () => writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(authority));
-  saveAuthority();
-  const start = input.base.slice(1).split('.')[0]!;
-  writeFileSync(join(art, `${start}.json`), JSON.stringify({ head: base }));
-  const execute = () => {
-    const p = Bun.spawnSync([process.execPath, join(gen.dir, '.archon/scripts/sa-check.ts')], {
-      cwd: wt, env: { ...process.env, ...Object.fromEntries(Object.entries(input).map(([k, v]) =>
-        [`INPUTS_${k.toUpperCase()}`, v])), INPUTS_BASE: base, INPUTS_PREV: 'previous',
-        INPUTS_CODER: JSON.stringify(producerOutput), INPUTS_DELTA_BASE: base, ARTIFACTS_DIR: art }, stdout: 'pipe', stderr: 'pipe',
-    });
-    expect({ code: p.exitCode, stderr: p.stderr.toString(), out: archonMod.lastJson(p.stdout.toString()) }).toMatchObject({ code: 0 });
-    return archonMod.lastJson(p.stdout.toString())!;
-  };
-  const first = execute(), gate = input.tag.replace('diff-', 'gate-');
-  writeFileSync(join(art, `${gate}.json`), JSON.stringify({ decision: first.decision }));
-  writeFileSync(join(art, `${gate}.review.json`), JSON.stringify({ status: 'PASS', findings: [], debt: [] }));
-  writeFileSync(join(art, 'land.json'), JSON.stringify({ repo: wt, target: 'main', branch: 'sa/sa1', head }));
-  const queriesBefore = s.calls().filter(c => c.startsWith('workflow get r')).length;
-  expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
-  expect(s.calls().filter(c => c.startsWith('workflow get r')).length - queriesBefore).toBe(1);
-  const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;
-  const savedEvents = authority.events;
-  authority.events = savedEvents.filter(e => e.step_name !== missing); saveAuthority();
-  expect(() => main(['accept', 'sa1'])).toThrow(/input resolution failed/);
-  authority.events = savedEvents; saveAuthority();
-  writeFileSync(join(art, `${input.tag}.json`), JSON.stringify({ ...first, failures: undefined }));
-  expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-  writeFileSync(join(art, `${input.tag}.json`), JSON.stringify(first));
-  expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(1);
-  expect(() => main(['accept', 'sa1', '--pkg', 'nope'])).toThrow(/unknown package/);
-  process.env.SA_LAND_ENV_DRIFT = 'changed';
-  try { expect(captured(() => main(['accept', 'sa1'])).code).toBe(1); }
-  finally { delete process.env.SA_LAND_ENV_DRIFT; }
-  for (const classification of ['product', 'unknown']) {
-    writeFileSync(marker, JSON.stringify({ failure_class: classification, evidence: 'new failure' }));
-    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+test.each(['claude', 'codex', 'legacy', 'fake', 'blocked', 'foreign', 'unowned', 'explicit'])(
+  'completed delivery %s preserves execution truth and original landing admission',
+  kind => {
+    const s = stub([]),
+      art = join(s.root, 'home', 'artifacts', 'runs', 'r');
+    const delivery = captureDelivery(s.root);
+    s.ledger.delivery = delivery;
+    s.ledger.console = kind === 'codex' ? 'codex' : 'claude';
+    if (kind === 'legacy' || kind === 'explicit') delete s.ledger.delivery;
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(s.dir, 'get-000.json'),
+      JSON.stringify(
+        run('completed', {
+          output_root: join(s.root, 'home'),
+          nodes: [{ nodeId: 'land', state: 'completed' }],
+        })
+      )
+    );
+    writeFileSync(join(art, 'land.json'), JSON.stringify({ branch: 'sa/sa1', head: 'source' }));
+    writeFileSync(join(s.ledger.gen_dir, 'accept-inputs.json'), '[]');
+    writeFileSync(join(s.ledger.gen_dir, 'engine.json'), JSON.stringify({ fake: kind === 'fake' }));
+    if (kind === 'foreign')
+      fixtureSpies.push(
+        spyOn(coordModule, 'caller').mockReturnValue({ client: 'other', pid: 999999 })
+      );
+    if (kind === 'unowned')
+      coordModule.coord().release(coordModule.repoScope(s.root), coordModule.caller());
+    const before = coordModule.coord().owner(coordModule.runScope(s.ledger));
+    const apply = spyOn(landMod, 'applyLand').mockImplementation(
+      (_run, _land, _verify, context) => {
+        if (kind === 'blocked') throw new Error('land: acceptance failed');
+        expect(context?.delivery?.target).toEqual(kind === 'explicit' ? undefined : delivery);
+        return undefined;
+      }
+    );
+    const claim = spyOn(coordModule.coord(), 'claim');
+    const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
+    try {
+      const result = captured(() =>
+        main(kind === 'explicit' ? ['land', 'sa1', '--apply'] : ['wait', 'sa1', '--timeout', '1'])
+      );
+      expect(result.code).toBe(0);
+      if (kind !== 'explicit') {
+        const out = JSON.parse(result.out);
+        expect(out).toMatchObject({ state: 'completed', exit: 0, quota: 'relay fixture' });
+        if (!['claude', 'codex'].includes(kind))
+          expect(out.delivery.status).toBe(
+            ['legacy', 'fake'].includes(kind) ? 'unknown' : 'blocked'
+          );
+        if (kind === 'blocked') expect(out.delivery.reason).toBe('land: acceptance failed');
+      }
+      expect(apply).toHaveBeenCalledTimes(
+        ['claude', 'codex', 'blocked', 'explicit'].includes(kind) ? 1 : 0
+      );
+      expect(claim).not.toHaveBeenCalled();
+      expect(coordModule.coord().owner(coordModule.runScope(s.ledger))).toEqual(before);
+      if (['claude', 'codex', 'blocked', 'explicit'].includes(kind)) {
+        expect(loadLedger('sa1').intervention_events).toContainEqual(
+          expect.objectContaining({ action: 'land', ok: kind !== 'blocked' })
+        );
+        expect(loadLedger('sa1').controller).toEqual(s.ledger.controller);
+      }
+    } finally {
+      apply.mockRestore();
+      claim.mockRestore();
+      quota.mockRestore();
+    }
+    if (['claude', 'codex'].includes(kind)) {
+      const plan = JSON.parse(readFileSync(fixturePlan(tmp(), s.root), 'utf8')) as Plan;
+      plan.console = kind === 'codex' ? 'codex' : 'claude';
+      const wf = buildWorkflow(
+        plan,
+        milestones(plan),
+        'sa1',
+        s.ledger.gen_dir,
+        true,
+        Date.now(),
+        loadTiers(),
+        undefined,
+        delivery
+      );
+      expect(JSON.stringify(wf)).toContain('target_checkout');
+      expect(JSON.stringify(wf)).toContain('target_branch');
+    }
   }
-  writeFileSync(marker, JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' }));
-  writeFileSync(newFailure, 'new');
-  expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-  rmSync(newFailure);
-  writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, environment: [] }));
-  expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-  for (const mode of ['strict', plan.mode]) {
-    writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, mode }));
-    expect(captured(() => main(['accept', 'sa1'])).code).toBe(mode === 'strict' ? 1 : 0);
-  }
-  input.risk = 'G2';
-  writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify([input]));
-  expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-  input.risk = 'G1';
-  writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify(contracts));
-  expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
-  expect(sh('git rev-parse main^{tree}', wt)).toBe(sh('git rev-parse sa/sa1^{tree}', wt));
-  writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, packages: [{ ...plan.packages[0]!, accept: [{ cmd: 'true', timeout_s: 5 }] }] }));
-  expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
-});
+);
 
-test.each([['completed', 1], ['completed', 100], ['cancelled', 1], ['cancelled', 100]] as const)(
-  'terminal-only admitted ledgers status=%s N=%i perform zero wakes', (status, n) => {
+test.each([1, 2, 3])(
+  'generated CLI acceptance and land preserve only approved non-product debt R%i',
+  round => {
+    const s = stub([]),
+      targetRepo = gitRepo(s.root),
+      wt = join(s.root, 'code-worker');
+    sh('git branch -m wetamp', targetRepo);
+    const delivery = captureDelivery(targetRepo);
+    const plan = JSON.parse(readFileSync(fixturePlan(s.root, targetRepo), 'utf8')) as Plan;
+    plan.base_ref = 'wetamp';
+    plan.packages = [plan.packages[0]!];
+    plan.environment = [{ cmd: 'true', timeout_s: 5 }];
+    const marker = join(s.root, 'home', 'failure.json');
+    writeFileSync(
+      marker,
+      JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' })
+    );
+    const command = `cat '${marker}'; exit 1`,
+      newFailure = join(s.root, 'home', 'new-failure');
+    plan.packages[0]!.accept = [
+      { cmd: command, timeout_s: 5, cache: false },
+      {
+        cmd: `test ! -f '${newFailure}' || { printf '%s\\n' '{"failure_class":"fixture","evidence":"new debt"}'; exit 1; }`,
+        timeout_s: 5,
+        cache: false,
+      },
+    ];
+    const gen = generate(plan, 'sa1', true);
+    s.ledger.gen_dir = gen.dir;
+    s.ledger.repo = targetRepo;
+    s.ledger.delivery = delivery;
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    sh(`git worktree add -qb sa/sa1 '${wt}'`, targetRepo);
+    sh(
+      'echo change > core.txt && git add core.txt && git -c user.name=t -c user.email=t@l commit -qm change',
+      wt
+    );
+    const head = sh('git rev-parse HEAD', wt).trim(),
+      base = sh('git rev-parse wetamp', wt).trim();
+    const art = join(s.root, 'home', 'artifacts', 'runs', 'r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(s.dir, 'get-000.json'),
+      JSON.stringify(
+        run('completed', {
+          working_path: wt,
+          output_root: join(s.root, 'home'),
+          nodes: [{ nodeId: 'land', state: 'completed' }],
+        })
+      )
+    );
+    const contracts = JSON.parse(
+      readFileSync(join(gen.dir, 'accept-inputs.json'), 'utf8')
+    ) as Record<string, string>[];
+    const input = contracts.find(c => c.tag.startsWith('diff-') && c.tag.endsWith(`-r${round}`))!;
+    const producerOutput = {
+      head: base,
+      reviewed_head: base,
+      diff_hash: 'previous',
+      status: 'done',
+      error_class: null,
+      needs: [],
+    };
+    const producerIds = new Set(
+      contracts.flatMap(c =>
+        Object.values(c)
+          .map(v => parseWholeOutputRef(v)?.nodeId)
+          .filter((id): id is string => !!id)
+      )
+    );
+    const authority = {
+      ...run('completed', {
+        working_path: wt,
+        output_root: join(s.root, 'home'),
+        nodes: [{ nodeId: 'land', state: 'completed' }],
+      }),
+      events: [...producerIds].map(step_name => ({
+        step_name,
+        event_type: 'node_completed',
+        data: { node_output: JSON.stringify(producerOutput), structured_output: producerOutput },
+      })),
+    };
+    const saveAuthority = () =>
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(authority));
+    saveAuthority();
+    const start = input.base.slice(1).split('.')[0]!;
+    writeFileSync(join(art, `${start}.json`), JSON.stringify({ head: base }));
+    const execute = () => {
+      const p = Bun.spawnSync([process.execPath, join(gen.dir, '.archon/scripts/sa-check.ts')], {
+        cwd: wt,
+        env: {
+          ...process.env,
+          ...Object.fromEntries(
+            Object.entries(input).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])
+          ),
+          INPUTS_BASE: base,
+          INPUTS_PREV: 'previous',
+          INPUTS_CODER: JSON.stringify(producerOutput),
+          INPUTS_DELTA_BASE: base,
+          ARTIFACTS_DIR: art,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect({
+        code: p.exitCode,
+        stderr: p.stderr.toString(),
+        out: archonMod.lastJson(p.stdout.toString()),
+      }).toMatchObject({ code: 0 });
+      return archonMod.lastJson(p.stdout.toString())!;
+    };
+    const first = execute(),
+      gate = input.tag.replace('diff-', 'gate-');
+    writeFileSync(join(art, `${gate}.json`), JSON.stringify({ decision: first.decision }));
+    writeFileSync(
+      join(art, `${gate}.review.json`),
+      JSON.stringify({ status: 'PASS', findings: [], debt: [] })
+    );
+    writeFileSync(
+      join(art, 'land.json'),
+      JSON.stringify({ repo: wt, target: 'main', branch: 'sa/sa1', head })
+    );
+    const queriesBefore = s.calls().filter(c => c.startsWith('workflow get r')).length;
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
+    expect(s.calls().filter(c => c.startsWith('workflow get r')).length - queriesBefore).toBe(1);
+    const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;
+    const savedEvents = authority.events;
+    authority.events = savedEvents.filter(e => e.step_name !== missing);
+    saveAuthority();
+    expect(() => main(['accept', 'sa1'])).toThrow(/input resolution failed/);
+    authority.events = savedEvents;
+    saveAuthority();
+    writeFileSync(
+      join(art, `${input.tag}.json`),
+      JSON.stringify({ ...first, failures: undefined })
+    );
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+    writeFileSync(join(art, `${input.tag}.json`), JSON.stringify(first));
+    expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(1);
+    expect(() => main(['accept', 'sa1', '--pkg', 'nope'])).toThrow(/unknown package/);
+    process.env.SA_LAND_ENV_DRIFT = 'changed';
+    try {
+      expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+    } finally {
+      delete process.env.SA_LAND_ENV_DRIFT;
+    }
+    for (const classification of ['product', 'unknown']) {
+      writeFileSync(
+        marker,
+        JSON.stringify({ failure_class: classification, evidence: 'new failure' })
+      );
+      expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+    }
+    writeFileSync(
+      marker,
+      JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' })
+    );
+    writeFileSync(newFailure, 'new');
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+    rmSync(newFailure);
+    writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, environment: [] }));
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+    for (const mode of ['strict', plan.mode]) {
+      writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, mode }));
+      expect(captured(() => main(['accept', 'sa1'])).code).toBe(mode === 'strict' ? 1 : 0);
+    }
+    input.risk = 'G2';
+    writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify([input]));
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+    input.risk = 'G1';
+    writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify(contracts));
+    expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
+    expect(sh('git rev-parse wetamp^{tree}', wt)).toBe(sh('git rev-parse sa/sa1^{tree}', wt));
+    writeFileSync(
+      join(gen.dir, 'plan.json'),
+      JSON.stringify({
+        ...plan,
+        packages: [{ ...plan.packages[0]!, accept: [{ cmd: 'true', timeout_s: 5 }] }],
+      })
+    );
+    expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
+  }
+);
+
+test.each([
+  ['completed', 1],
+  ['completed', 100],
+  ['cancelled', 1],
+  ['cancelled', 100],
+] as const)('terminal-only admitted ledgers status=%s N=%i perform zero wakes', (status, n) => {
   const s = stub([run(status)]);
   for (let i = 1; i < n; i++) {
     writeFileSync(ledgerPath(`sa${i + 1}`), JSON.stringify({ ...s.ledger, run_id: `sa${i + 1}` }));
@@ -1692,18 +1902,23 @@ test.each([['completed', 1], ['completed', 100], ['cancelled', 1], ['cancelled',
     expect(captured(() => main(['supervise-tick'])).code).toBe(0);
     expect(s.calls().filter(c => c.startsWith('workflow wake'))).toHaveLength(0);
     expect(snapshot).toHaveBeenCalledTimes(n);
-  } finally { snapshot.mockRestore(); }
+  } finally {
+    snapshot.mockRestore();
+  }
 });
 
 test.each(['failed', 'running', 'paused', 'pending'] as const)(
-  'non-terminal exemption status=%s retains per-run wake', async status => {
+  'non-terminal exemption status=%s retains per-run wake',
+  async status => {
     const s = stub([run(status)]);
     const snapshot = spyOn(archonMod, 'getRun').mockReturnValue(run(status));
     try {
       expect(captured(() => main(['supervise-tick'])).code).toBe(0);
       expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
       expect(existsSync(ledgerPath('sa1'))).toBe(true);
-    } finally { snapshot.mockRestore(); }
+    } finally {
+      snapshot.mockRestore();
+    }
   }
 );
 
@@ -3026,10 +3241,12 @@ test('S3 real Archon resume invalidates completed code after a package suspensio
     marker = join(root, 'ready');
   const plan = fixturePlan(root, repo, p => {
     const pkgs = p.packages as { id: string; accept: { cmd: string; timeout_s: number }[] }[];
-    pkgs.find(p => p.id === 'core')!.accept = [{
-      cmd: `test -f '${marker}' || { printf '%s\\n' '{"failure_class":"product","evidence":"S3 readiness marker missing"}'; exit 1; }`,
-      timeout_s: 5,
-    }];
+    pkgs.find(p => p.id === 'core')!.accept = [
+      {
+        cmd: `test -f '${marker}' || { printf '%s\\n' '{"failure_class":"product","evidence":"S3 readiness marker missing"}'; exit 1; }`,
+        timeout_s: 5,
+      },
+    ];
   });
   const py = join(root, 'supervisor.py');
   writeFileSync(py, 'raise Exception("unexpected reminder in automatic package recovery")\n');
@@ -4021,7 +4238,13 @@ test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
     expect(approved.out).toMatchObject({ ok: true });
     expect(approved.code).toBe(0);
     const waited = sa('wait', id, '--timeout', '120');
-    expect(waited.out).toMatchObject({ state: 'completed', exit: 0 });
+    expect(waited.out).toMatchObject({
+      state: 'completed',
+      exit: 0,
+      delivery: { status: 'unknown' },
+    });
+    expect(sh('git symbolic-ref --short HEAD', repo).trim()).toBe('main');
+    expect(sh('git log --format=%s main', repo)).not.toContain('fake fix m1 r2');
     expect((waited.out.land as string[])[1]).toContain(`merge --ff-only 'sa/${id}'`);
     expect(readdirSync(join(root, 'home', 'runs')).filter(f => f.endsWith('.json'))).toEqual([
       `${id}.json`,
