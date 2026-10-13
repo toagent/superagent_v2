@@ -9,7 +9,7 @@ import { budgetReason, readPolicyAttempts } from '../templates/.archon/scripts/p
 import type { resolveAcceptanceContext } from './role-context';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick } from './memory';
-import { publishLearning } from './learning';
+import { publishLearning, proposeLearning, type LearningRequest } from './learning';
 import {
   askKey,
   cockpitSignals,
@@ -2830,6 +2830,12 @@ export function main(argv: string[]): number {
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
     case 'memory':
+      if (a._[1] === 'propose') {
+        const result = proposeLearning(loadLedger(need(a._[2], 'memory propose <run> <request-json>')),
+          JSON.parse(need(a._[3], 'memory propose <run> <request-json>')) as LearningRequest);
+        print(result);
+        return result.status === 'prepared' ? 0 : 1;
+      }
       if (a._[1] === 'publish') {
         const result = publishLearning();
         print(result);
