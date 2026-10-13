@@ -8,8 +8,11 @@ import { overview } from '../src/web/server';
 import { tmp } from './helpers';
 import type { BoardRow, Snapshot } from '../src/board/data';
 import { normalizeTokens, sessionTokens, tokenTotals, tokenFees } from '../src/usage';
+import { buildReport, criticalPath } from '../src/report';
+import type { Ledger } from '../src/cli';
+import { capturedSourceRoots, DEFAULT_WORKFLOW_SOURCE_CONFIG } from '../../packages/workflows/src/workflow-source';
 
-const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'] as const;
+const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'SA_ARCHON_BIN'] as const;
 const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
 // prettier-ignore
 afterEach(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
@@ -55,16 +58,53 @@ describe('WP-BT6 naming and metadata', () => {
 
 // prettier-ignore
 describe('WP-BT6 accounting', () => {
-  test('one owner normalizes raw Claude, gross engine and Codex cached/output subsets; cumulative snapshots are not summed', () => {
+  test('METRICS_CONSISTENCY normalizes raw sessions and gross engine; cumulative snapshots are not summed', () => {
     const raw = { input: 20, output: 8, cacheRead: 10, cacheWrite: 2 };
     expect(normalizeTokens(raw, 'claude-raw')).toMatchObject({ input: 32, output: 8 });
     expect(normalizeTokens(raw)).toEqual(raw);
     const c = parseUsage(claude, 'claude')[0], x = parseUsage(codex, 'codex')[0];
-    expect(tokenTotals([sessionTokens(c), sessionTokens(x)])).toMatchObject({ input: 52, output: 16 });
+    expect(tokenTotals([sessionTokens(c), sessionTokens(x)])).toMatchObject({ input: 64, output: 16 });
     expect(tokenFees([raw])).toBe('unknown');
     expect(tokenFees([{ ...raw, cost: 0 }])).toBe(0);
     const later = { ...codex.sessions[0], inputTokens: 30, totalTokens: 50, lastActivity: '2026-10-11T00:00:00Z' };
     expect(parseUsage({ sessions: [later, codex.sessions[0]] }, 'codex')).toMatchObject([{ input: 30, total: 50 }]);
+  });
+  test('METRICS_CONSISTENCY structured equations preserve raw fields and propagate unknown', () => {
+    const s = parseUsage(codex, 'codex')[0];
+    expect(sessionTokens(s)).toMatchObject({ basis: 'raw-exclusive', input: 32, output: 8, total: 40, raw: { input: 20, cacheRead: 10, cacheWrite: 2 } });
+    expect(sessionTokens({ ...s, total: 28 })).toMatchObject({ basis: 'gross', input: 20, output: 8 });
+    expect(sessionTokens({ ...s, client: 'claude', total: 28 })).toMatchObject({ basis: 'gross', input: 20 });
+    const observed = sessionTokens({ ...s, input: 55316824, output: 8017576, cacheRead: 1186724837, cacheWrite: 8512347, total: 1258571584 });
+    expect(observed).toMatchObject({ basis: 'raw-exclusive', input: 1250554008, output: 8017576 });
+    expect(observed.input! + observed.output! - observed.cacheRead! - observed.cacheWrite!).toBe(63334400);
+    for (const bad of [{ ...s, total: 39 }, { ...s, input: -1 }, { ...s, cacheRead: NaN }, { ...s, input: 1, total: 9 }, { ...s, cacheRead: 0, cacheWrite: 0, total: 28 }]) {
+      const normalized = sessionTokens(bad);
+      expect(normalized).toMatchObject({ basis: 'unknown', raw: { total: bad.total } });
+      expect(normalized.reason).toBeDefined(); expect(normalized.input).toBeUndefined();
+      expect(tokenTotals([sessionTokens(s), normalized])).toMatchObject({ input: 'unknown', output: 'unknown', cacheRead: 'unknown', cacheWrite: 'unknown', reasons: [normalized.reason] });
+    }
+    const missing = parseUsage({ sessions: [{ ...codex.sessions[0], cacheReadTokens: undefined }] }, 'codex')[0];
+    expect(sessionTokens(missing).basis).toBe('unknown');
+    expect(tokenFees([sessionTokens({ ...s, cost: null })])).toBe('unknown');
+  });
+  test('METRICS_CONSISTENCY report uses captured owner roots; missing clocks and repeated attempts remain unknown', () => {
+    const root = setup(), capture = join(root, 'capture'), bin = join(root, 'archon-stub');
+    const anchor = { root: capture, digest: 'fixture', config: DEFAULT_WORKFLOW_SOURCE_CONFIG };
+    const project = capturedSourceRoots(anchor).project;
+    if (!project) throw new Error('missing_captured_project');
+    const dir = join(project, '.archon/workflows/fixture');
+    mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'fixture.yaml'), 'nodes:\n  - id: code-a\n');
+    const start = '2026-10-10T00:00:00Z';
+    const event = { event_type: 'node_completed', step_name: 'code-a', data: { invocation: { startedAt: start }, attempt: { startedAt: start }, timing: { startedAt: start, durationMs: 1000 } } };
+    const run = { id: 'engine', status: 'completed' as const, started_at: start, completed_at: '2026-10-10T00:00:01Z', output_root: root, nodes: [], events: [event], metadata: { workflow_source: { version: 1, root: capture, origin: root, captured_at: start, digest: anchor.digest, file_count: 1, byte_count: 1 } } };
+    writeFileSync(bin, '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n', { mode: 0o755 });
+    process.env.SA_ARCHON_BIN = bin;
+    writeFileSync(join(root, 'plan.json'), JSON.stringify({ packages: [] }));
+    const ledger = { run_id: 'r', archon_run_id: 'engine', repo: root, gen_dir: root, plan: join(root, 'plan.json'), workflow: 'fixture', console: 'codex', started_at: start, branch: 'task', recoveries: [] } as unknown as Ledger;
+    expect(buildReport([ledger]).critical_path).toMatchObject({ 'r/engine': { status: 'measured', elapsed_ms: 1000 } });
+    const graph = [{ id: 'code-a' }];
+    expect(criticalPath({ ...run, metadata: undefined }, [{ ...event, data: {} }], graph).status).toBe('unknown');
+    expect(criticalPath({ ...run, metadata: undefined }, [event, event], graph).status).toBe('unknown');
   });
   test('both vendor shapes, thread suffix and duplicates', () => {
     expect(parseUsage(claude, 'claude')[0]).toMatchObject({ id: uuid, input: 20, output: 8, cacheWrite: 2, total: 40 });
