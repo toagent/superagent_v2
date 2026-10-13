@@ -60,7 +60,7 @@ nodes:
   - id: code-core
     command: sa-code
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -316,7 +316,7 @@ nodes:
   - id: repair-core
     command: sa-repair
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -711,7 +711,7 @@ nodes:
   - id: fix-m1-r2
     command: sa-fix
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -1085,7 +1085,7 @@ nodes:
   - id: fix-m1-r3
     command: sa-fix
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -1513,7 +1513,7 @@ nodes:
   - id: code-api
     command: sa-code
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -1718,7 +1718,7 @@ nodes:
   - id: repair-api
     command: sa-repair
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -2112,7 +2112,7 @@ nodes:
   - id: fix-m2-r2
     command: sa-fix
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -2485,7 +2485,7 @@ nodes:
   - id: fix-m2-r3
     command: sa-fix
     retry:
-      max_attempts: 1
+      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
