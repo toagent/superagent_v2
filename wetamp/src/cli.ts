@@ -881,7 +881,8 @@ function startRun(planPath: string, a: Args): number {
           }
         });
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
-        const delivery = captureDelivery(plan.repo);
+        const delivery =
+          typeof launchBranch === 'string' && launchBranch ? captureDelivery(plan.repo) : undefined;
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
         const gen = generate(plan, run, a.flags.fake ?? false, undefined, undefined, delivery);

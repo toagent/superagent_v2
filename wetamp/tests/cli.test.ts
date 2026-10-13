@@ -1619,6 +1619,7 @@ test.each(['claude', 'codex', 'legacy', 'fake', 'blocked', 'foreign', 'unowned',
   kind => {
     const s = stub([]),
       art = join(s.root, 'home', 'artifacts', 'runs', 'r');
+    sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm fixture', s.root);
     const delivery = captureDelivery(s.root);
     s.ledger.delivery = delivery;
     s.ledger.console = kind === 'codex' ? 'codex' : 'claude';
