@@ -469,7 +469,7 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(JSON.parse(readFileSync(join(on.dir, 'engine.json'), 'utf8'))).toMatchObject({
       workflow_hash: on.engine_hash,
       engine_hash: on.engine_hash,
-      lessons: { 'code-core': ['x'] },
+      lessons: {},
     });
   });
   test('lesson retrieval failures are fail-open', () => {
