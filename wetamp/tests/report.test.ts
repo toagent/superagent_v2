@@ -197,7 +197,7 @@ describe('F-22 report', () => {
       expect(result.by_request['ticket:42']).toMatchObject({
         complete: 'unknown',
         elapsed_ms: 10000,
-        investment: { input: 30, fees: 'unknown' },
+        investment: { input: 'unknown', fees: 'unknown', deduplication: 'unknown', raw: { input: 30 } },
       });
       expect(result.by_request['ticket:42'].attempts).toHaveLength(3);
       writeFileSync(join(art, 'gate-m2-r1.json'), readFileSync(join(art, 'gate-m1-r1.json')));

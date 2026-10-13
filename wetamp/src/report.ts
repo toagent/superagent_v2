@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonJson, archonRunIds, getRun, tail } from './archon';
-import { WETAMP } from './config';
+import { home, WETAMP } from './config';
 import {
   type Ledger,
   type Pair,
@@ -11,13 +11,16 @@ import {
   evidenceJson,
   evidenceGates,
   decisionOf,
+  intakeEvidence,
 } from './cli';
 import { snapshotOf } from './board/data';
 import { cockpit } from './board/cockpit';
+import { Intake, intakeRoot } from './intake';
 import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
 import {
   normalizeTokens,
+  investmentOf,
   tokenTotals,
   tokenFees,
   sessionTokens,
@@ -291,7 +294,15 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
 }
 
 // prettier-ignore
-export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [] ): Record<string, unknown> {
+export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [], jobs: Job[] = [] ): Record<string, unknown> {
+  const current_tasks = Object.fromEntries([...new Set(pairs.map(p => p.ledger.repo))].map(repo => {
+    try {
+      const root = intakeRoot(home().sa, repo);
+      if (!existsSync(join(root, 'state.json'))) return [repo, 'unknown'];
+      const view = new Intake(root).backlog(repo, intakeEvidence(repo));
+      return [repo, { obligations: view.obligations, tasks: view.tasks.map(({ id, revision, requirements, completion, covered, reason, children }) => ({ id, revision, obligations: requirements.length, completion, covered, reason, children })) }];
+    } catch { return [repo, 'unknown']; }
+  }));
   const by = new Map<string, Pair[]>();
   const unknown: string[] = [];
   for (const pair of pairs) {
@@ -302,6 +313,8 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     }
     by.set(ref, [...(by.get(ref) ?? []), pair]);
   }
+  for (const ref of [...sessions.map(s => s.owner?.conflict ? undefined : s.owner?.request_ref), ...jobs.map(j => j.request_ref)])
+    if (ref && !by.has(ref)) by.set(ref, []);
   const demands = Object.fromEntries(
     [...by].map(([ref, attempts]) => {
       const completion = attempts.map(({ ledger, run }) =>
@@ -312,12 +325,10 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       );
       const own = calls.filter(c => attempts.some(p => p.ledger.run_id === c.run));
       const extra = sessions.filter(
-        s => s.owner?.kind === 'run' && attempts.some(p => p.ledger.run_id === s.owner?.run_id)
+        s => s.owner?.request_ref === ref || s.owner?.kind === 'run' && attempts.some(p => p.ledger.run_id === s.owner?.run_id) || own.some(c => c.provider === s.client && c.session && sessionKey(c.session) === sessionKey(s.id))
       );
-      const inputs = [
-        ...own.flatMap(c => (c.tokens ? [c.tokens] : [])),
-        ...extra.map(sessionTokens),
-      ];
+      const conflicting = own.some(c => c.session && calls.some(other => other.provider === c.provider && other.session && sessionKey(other.session) === sessionKey(c.session!) && [...by].some(([r, ps]) => r !== ref && ps.some(p => p.ledger.run_id === other.run))));
+      const missing = Number(conflicting) + jobs.filter(j => j.request_ref === ref && !extra.some(s => s.owner?.job_id === j.id || j.session_id && s.client === j.kind && sessionKey(s.id) === sessionKey(j.session_id)) && !own.some(c => j.session_id && c.provider === j.kind && c.session && sessionKey(c.session) === sessionKey(j.session_id))).length;
       const starts = attempts.map(p => Date.parse(p.ledger.started_at));
       const ends = attempts.map(p =>
         p.run instanceof Error ? NaN : Date.parse(p.run.completed_at ?? '')
@@ -325,7 +336,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       const elapsed = [...starts, ...ends].every(Number.isFinite)
         ? Math.max(...ends) - Math.min(...starts)
         : NaN;
-      return [ref, { attempts: attempts.map(({ ledger, run }) => ({ run: ledger.run_id, status: run instanceof Error ? 'unknown' : run.status, })), completion, complete: complete ? true : completion.every(c => c && Object.values(c).some(v => v.status === 'unmet')) ? false : 'unknown', elapsed_ms: elapsed >= 0 ? elapsed : 'unknown', investment: { ...rollup(own), ...tokenTotals(inputs), fees: tokenFees(inputs) }, }, ];
+      return [ref, { attempts: attempts.map(({ ledger, run }) => ({ run: ledger.run_id, status: run instanceof Error ? 'unknown' : run.status, })), completion, complete: complete ? true : completion.length > 0 && completion.every(c => c && Object.values(c).some(v => v.status === 'unmet')) ? false : 'unknown', elapsed_ms: elapsed >= 0 ? elapsed : 'unknown', investment: { ...rollup(own), ...investmentOf(own, extra, missing) }, }, ];
     })
   );
   const durations = Object.values(demands)
@@ -333,6 +344,8 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     .filter((n): n is number => typeof n === 'number')
     .sort((a, b) => a - b);
   return {
+    current_tasks,
+    unattributed: { ...investmentOf([], sessions.filter(s => s.owner?.conflict || !s.owner?.request_ref && ![...by.values()].some(ps => ps.some(p => p.ledger.run_id === s.owner?.run_id)))), attribution: 'unknown' },
     denominator: by.size,
     completed: Object.values(demands).filter(d => d.complete === true).length,
     unknown_runs: unknown,
@@ -433,7 +446,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     ),
     metrics: cockpit(snapshot).metrics,
     interventions: interventionStats(ls),
-    demands: demandStats(pairs, calls, supplemental),
+    demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:'))), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
     jobs: {
       receipts,

@@ -101,6 +101,48 @@ if (
 )
   delete process.env.TMPDIR;
 
+export function intakeEvidence(repo: string): EvidenceReader {
+  // Cache only raw engine reads for this query; every binding still validates its identity.
+  const runs = new Map<string, RunView | undefined>();
+  return binding => {
+    if (!binding.run_id) return undefined;
+    try {
+      const l = loadLedger(binding.run_id);
+      const frozenPlan = join(l.gen_dir, 'plan.json');
+      if (resolve(l.repo) !== repo || resolve(frozenPlan) !== resolve(binding.plan))
+        return undefined;
+      const digest = createHash('sha256').update(readFileSync(frozenPlan)).digest('hex');
+      if (digest !== binding.digest) return undefined;
+      const key = JSON.stringify([l.repo, l.archon_run_id]);
+      if (!runs.has(key)) {
+        runs.set(key, undefined);
+        runs.set(key, getRun(l.archon_run_id, l.repo));
+      }
+      const run = runs.get(key);
+      if (!run) return undefined;
+      const history = decisionsOf(artifactsOf(run), undefined, l);
+      if (
+        run.nodes?.some(
+          n =>
+            n.state === 'completed' &&
+            n.nodeId.startsWith('gate-') &&
+            !history.some(d => d.tag === n.nodeId && d.decision)
+        )
+      )
+        return undefined;
+      const decisions = currentDecisions(history).map(d => d.decision);
+      if (decisions.some(d => !d)) return undefined;
+      return {
+        packages: planOf(l).packages,
+        completed: classifyRun(l, run).state === 'completed',
+        decisions: decisions.flatMap(d => (d ? [d] : [])),
+      };
+    } catch {
+      return undefined;
+    } // Missing/unreadable engine evidence is unknown, never a success.
+  };
+}
+
 const OPTIONS = {
   ...COORD_OPTIONS,
   timeout: { type: 'string' },
@@ -129,6 +171,7 @@ const OPTIONS = {
   json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
   'all-held': { type: 'boolean' },
   title: { type: 'string' },
+  'request-ref': { type: 'string' },
   card: { type: 'string' },
   log: { type: 'string' },
   role: { type: 'string' },
@@ -2546,45 +2589,7 @@ export function main(argv: string[]): number {
         throw new Error('intake: input.repo must be the absolute repository path');
       const store = new Intake(intakeRoot(home().sa, repo));
       const tasks = store.list();
-      // Cache only raw engine reads for this query; every binding still validates its identity.
-      const runs = new Map<string, RunView | undefined>();
-      const readEvidence: EvidenceReader = binding => {
-        if (!binding.run_id) return undefined;
-        try {
-          const l = loadLedger(binding.run_id);
-          const frozenPlan = join(l.gen_dir, 'plan.json');
-          if (resolve(l.repo) !== repo || resolve(frozenPlan) !== resolve(binding.plan))
-            return undefined;
-          const digest = createHash('sha256').update(readFileSync(frozenPlan)).digest('hex');
-          if (digest !== binding.digest) return undefined;
-          const key = JSON.stringify([l.repo, l.archon_run_id]);
-          if (!runs.has(key)) {
-            runs.set(key, undefined);
-            runs.set(key, getRun(l.archon_run_id, l.repo));
-          }
-          const run = runs.get(key);
-          if (!run) return undefined;
-          const history = decisionsOf(artifactsOf(run), undefined, l);
-          if (
-            run.nodes?.some(
-              n =>
-                n.state === 'completed' &&
-                n.nodeId.startsWith('gate-') &&
-                !history.some(d => d.tag === n.nodeId && d.decision)
-            )
-          )
-            return undefined;
-          const decisions = currentDecisions(history).map(d => d.decision);
-          if (decisions.some(d => !d)) return undefined;
-          return {
-            packages: planOf(l).packages,
-            completed: classifyRun(l, run).state === 'completed',
-            decisions: decisions.flatMap(d => (d ? [d] : [])),
-          };
-        } catch {
-          return undefined;
-        } // Missing/unreadable engine evidence is unknown, never a success.
-      };
+      const readEvidence = intakeEvidence(repo);
       const view = (id: string): unknown => {
         const task = tasks.find(t => t.id === id);
         if (!task) throw new Error('intake: unknown task');
