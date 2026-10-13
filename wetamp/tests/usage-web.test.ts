@@ -7,12 +7,14 @@ import { attribute, jobSession, parseUsage, readUsage, refreshUsage, sessionKey,
 import { overview } from '../src/web/server';
 import { tmp } from './helpers';
 import type { BoardRow, Snapshot } from '../src/board/data';
-import { normalizeTokens, sessionTokens, tokenTotals, tokenFees } from '../src/usage';
-import { buildReport, criticalPath } from '../src/report';
+import { normalizeTokens, sessionTokens, tokenTotals, tokenFees, investmentOf } from '../src/usage';
+import { buildReport, criticalPath, demandStats } from '../src/report';
+import { intakeRoot } from '../src/intake';
+import { jobCli, readJobs } from '../src/jobs';
 import type { Ledger } from '../src/cli';
 import { capturedSourceRoots, DEFAULT_WORKFLOW_SOURCE_CONFIG } from '../../packages/workflows/src/workflow-source';
 
-const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'SA_ARCHON_BIN'] as const;
+const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'SA_ARCHON_BIN', 'SUPERAGENT_RELAY_QUOTA_URL', 'SUPERAGENT_RELAY_QUOTA'] as const;
 const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
 // prettier-ignore
 afterEach(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
@@ -186,4 +188,71 @@ test('usage refresh reuses durable historical evidence and queries only active o
   calls.length = 0;
   refresh();
   expect(calls).toEqual([]);
+});
+
+// prettier-ignore
+describe('DEMAND_INVESTMENT', () => {
+  test('same invocation and cumulative continuation are counted once; conflicts and missing usage stay unknown', () => {
+    setup();
+    const session = { ...parseUsage(codex, 'codex')[0], owner: { ...owner('job'), job_id: 'j', request_ref: 'ticket:42' } };
+    const call = { provider: 'codex', session: uuid, identity: 'turn-1', tokens: { input: 10, output: 1, cost: 0.5 } };
+    expect(investmentOf([call, call], [])).toMatchObject({ input: 10, fees: 0.5, coverage: '1/1' });
+    expect(investmentOf([call, call, { ...call, identity: 'turn-2' }], [session, session])).toMatchObject({ input: 'unknown', fees: 'unknown', coverage: '1/3', status: 'unknown' });
+    expect(investmentOf([call], [{ ...session, input: 30, total: 50 }, session])).toMatchObject({ input: 'unknown', known_tokens: { input: 42 }, deduplication: 'unknown' });
+    expect(investmentOf([{ ...call, tokens: { input: 200, output: 20, cost: 2 } }], [session])).toMatchObject({ status: 'unknown', input: 'unknown', fees: 'unknown', coverage: '1/2' });
+    expect(investmentOf([{ ...call, tokens: null }], [])).toMatchObject({ input: 'unknown', coverage: '0/1' });
+    expect(investmentOf([{ ...call, identity: null }], [])).toMatchObject({ deduplication: 'unknown' });
+    const index = attribute([session], [{ id: uuid, owner: session.owner }, { id: uuid, owner: { ...session.owner, request_ref: 'ticket:other' } }]);
+    expect(index[`codex:${uuid}`]?.conflict).toBe(true);
+    expect(investmentOf([], [session])).toMatchObject({ input: 'unknown', status: 'unknown' });
+  });
+  test('failed/cancelled attempts, unverified jobs and current revision obligations', () => {
+    const root = setup();
+    writeFileSync(join(root, 'plan.json'), JSON.stringify({ packages: [], request_ref: 'ticket:42' }));
+    const pairs = ['failed', 'cancelled'].map((status, i) => ({ ledger: { run_id: `r${i}`, gen_dir: root, repo: root, started_at: '2026-10-10T00:00:00Z' }, run: { id: `r${i}`, status } })) as Parameters<typeof demandStats>[0];
+    const sessions = parseUsage(codex, 'codex');
+    attribute(sessions, [{ id: uuid, owner: { ...owner('run'), run_id: 'r0', request_ref: 'ticket:42' } }]);
+    const jobs = [{ id: 'commander', request_ref: 'ticket:42', session_id: uuid, kind: 'codex' }, { id: 'support', request_ref: 'ticket:42' }] as NonNullable<Parameters<typeof demandStats>[3]>;
+    const dir = intakeRoot(root, root); mkdirSync(dir, { recursive: true });
+    const task = (id: string) => ({ id, repo: root, revision: 2, revisions: [{ requirements: [{ id: 'old', text: 'old' }] }, { requirements: [{ id: 'now', text: 'now' }, { id: 'next', text: 'next' }] }], runs: [], dependencies: [], questions: [], cancellations: [] });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({ version: 1, inputs: [], tasks: [task('a'), task('b')] }));
+    const result = demandStats(pairs, [], [...sessions, { ...sessions[0]!, id: 'unassigned', owner: owner('unknown') }], jobs);
+    expect(result).toMatchObject({ denominator: 1, completed: 0, by_request: { 'ticket:42': { attempts: [{ status: 'failed' }, { status: 'cancelled' }], complete: 'unknown', investment: { input: 'unknown', coverage: '1/3', known_tokens: { input: 32 } } } }, current_tasks: { [root]: { obligations: 4, tasks: [{ id: 'a', revision: 2, obligations: 2, completion: 'unknown' }, { id: 'b', revision: 2, obligations: 2 }] } }, unattributed: { input: 32 } });
+    expect(demandStats(pairs, [], sessions, jobs.slice(0, 1))).toMatchObject({ by_request: { 'ticket:42': { investment: { status: 'unknown', input: 'unknown', coverage: '1/2' } } } });
+    expect(demandStats(pairs, [], [{ ...sessions[0]!, owner: { ...sessions[0]!.owner!, conflict: true } }], jobs.slice(0, 1))).toMatchObject({ by_request: { 'ticket:42': { investment: { status: 'unknown' } } } });
+  });
+  test('cross-source demand conflicts and unreadable generations cannot report known investment', () => {
+    const root = setup(), other = join(root, 'other'); mkdirSync(other);
+    writeFileSync(join(root, 'plan.json'), JSON.stringify({ packages: [], request_ref: 'A' }));
+    writeFileSync(join(other, 'plan.json'), JSON.stringify({ packages: [], request_ref: 'B' }));
+    const pairs = [root, other].map((gen_dir, i) => ({ ledger: { run_id: `r${i}`, gen_dir, repo: root, started_at: '2026-10-10T00:00:00Z' }, run: { id: `r${i}`, status: 'failed' } })) as Parameters<typeof demandStats>[0];
+    const calls = [{ run: 'r0', provider: 'codex', session: uuid, identity: 'turn', tokens: { input: 200, output: 20, cost: 2 } }] as Parameters<typeof demandStats>[1];
+    const session: Parameters<typeof investmentOf>[1][number] = { ...parseUsage(codex, 'codex')[0]!, owner: { ...owner('job'), job_id: 'commander', request_ref: 'B' } };
+    const jobs = [{ id: 'commander', request_ref: 'B', session_id: uuid, kind: 'codex' }] as NonNullable<Parameters<typeof demandStats>[3]>;
+    const investment = { status: 'unknown', input: 'unknown', fees: 'unknown', known_tokens: { input: 'unknown' } };
+    expect(demandStats(pairs, calls, [session], jobs)).toMatchObject({ by_request: { A: { investment }, B: { investment } }, unattributed: { input: 32 } });
+    session.owner = { ...owner('run'), run_id: 'r0', request_ref: 'A' };
+    expect(demandStats([{ ...pairs[0]!, run: new Error('unreadable') }], [], [session])).toMatchObject({ by_request: { A: { investment: { status: 'unknown', coverage: '1/2', known_tokens: { input: 32 } } } } });
+    expect(demandStats(pairs.slice(0, 1), [], [session], [], { r0: 2 })).toMatchObject({ by_request: { A: { investment: { status: 'unknown', coverage: '1/3' } } } });
+  });
+  test('job entrance persists only explicit request reference; learning remains shared', async () => {
+    const root = setup(); process.env.SUPERAGENT_RELAY_QUOTA_URL = ''; process.env.SUPERAGENT_RELAY_QUOTA = '';
+    try {
+      expect(await jobCli(['job', 'exec', '--title', 'support', '--request-ref', 'ticket:42', '--', 'true'], () => ({ pressure: 1, free: 90, source: 'sysctl' }))).toBe(0);
+      const job = readJobs(Date.now(), true).jobs[0]!; expect(job.request_ref).toBe('ticket:42');
+      const guessed = { ...job, pid: 123, kind: 'codex' as const, role: 'commander' as const };
+      const logs = join(root, 'codex/sessions', ...new Date(job.started_at).toLocaleDateString('sv-SE').split('-')); mkdirSync(logs, { recursive: true });
+      writeFileSync(join(logs, 'unrelated.jsonl'), JSON.stringify({ type: 'session_meta', payload: { id: uuid, cwd: job.cwd, timestamp: job.started_at } }));
+      expect(jobSession(guessed)).toBe(uuid);
+      for (const session_id of [undefined, jobSession(guessed)]) {
+        writeFileSync(join(root, 'jobs', `${job.id}.json`), JSON.stringify({ ...guessed, session_id }));
+        expect(usageEvidence().claims).toContainEqual({ id: uuid, owner: { client: 'codex', role: 'commander', model: null, cwd: job.cwd, kind: 'inferred', job_id: job.id } });
+      }
+      mkdirSync(join(root, 'usage'), { recursive: true }); mkdirSync(join(root, 'jobs'), { recursive: true });
+      const session = { ...parseUsage(codex, 'codex')[0], owner: { ...owner('job'), job_id: 'learn', request_ref: 'ticket:42' } };
+      writeFileSync(join(root, 'usage/cache.json'), JSON.stringify({ at: 'now', status: 'ok', sources: {}, sessions: [session], daily: [] }));
+      writeFileSync(join(root, 'jobs/learn.json'), JSON.stringify({ id: 'learn', title: 'memory-reflect:fixture', cwd: root, kind: 'codex', pid: 0, wrapper_pid: 0, started_at: '2026-10-10T00:00:00Z', state: 'failed' }));
+      expect(buildReport([]).demands).toMatchObject({ by_request: { 'ticket:42': { investment: { input: 'unknown' } } }, shared_learning: { input: 32 } });
+    } finally { delete process.env.SUPERAGENT_RELAY_QUOTA_URL; delete process.env.SUPERAGENT_RELAY_QUOTA; }
+  });
 });

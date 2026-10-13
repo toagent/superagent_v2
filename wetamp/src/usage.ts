@@ -55,11 +55,44 @@ export function tokenFees(rows: ReportTokens[]): number | 'unknown' {
     ? rows.reduce((sum, r) => sum + r.cost!, 0) : 'unknown';
 }
 
+/** Session snapshots carry no invocation watermark; overlap cannot prove coverage. */
+// prettier-ignore
+export function investmentOf(calls: { provider: string | null; session: string | null; identity: string | null; tokens: ReportTokens | null }[], sessions: UsageSession[], missing: number = 0) {
+  const snapshots = new Map<string, UsageSession>();
+  let conflict = sessions.some(s => s.owner?.conflict);
+  for (const s of sessions) {
+    const k = key(s.client, s.id), old = snapshots.get(k);
+    if (old?.owner?.request_ref && s.owner?.request_ref && old.owner.request_ref !== s.owner.request_ref) conflict = true;
+    if (!old || s.total >= old.total) snapshots.set(k, s);
+  }
+  const receipts = new Map<string, typeof calls[number]>();
+  let unknown = missing;
+  for (const c of calls) {
+    if (!c.identity || !c.provider || !c.session) { unknown++; continue; }
+    const old = receipts.get(c.identity);
+    if (old && JSON.stringify(old) !== JSON.stringify(c)) conflict = true;
+    receipts.set(c.identity, c);
+  }
+  const rows = [...snapshots.values()].map(sessionTokens);
+  let sources = rows.length + unknown;
+  for (const c of receipts.values()) {
+    if (snapshots.has(key(c.provider!, c.session!))) { sources++; unknown++; continue; }
+    sources++;
+    if (c.tokens) rows.push(c.tokens); else unknown++;
+  }
+  const known = tokenTotals(rows);
+  const covered = rows.filter(r => r.basis !== 'unknown').length;
+  const complete = !conflict && !unknown && covered === sources;
+  return { ...tokenTotals(complete ? rows : []), fees: complete ? tokenFees(rows) : 'unknown',
+    known_tokens: known, coverage: `${covered}/${sources}`, deduplication: conflict || unknown ? 'unknown' : 'covered',
+    status: complete && sources > 0 ? 'known' : 'unknown' };
+}
+
 export type Client = 'claude' | 'codex';
 // prettier-ignore
 export interface Counts { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number; sessions: number }
 // prettier-ignore
-export interface Owner { client: Client; role: Tier | null; model: string | null; cwd: string | null; kind: 'run' | 'job' | 'interactive' | 'inferred' | 'unknown'; run_id?: string; job_id?: string }
+export interface Owner { client: Client; role: Tier | null; model: string | null; cwd: string | null; kind: 'run' | 'job' | 'interactive' | 'inferred' | 'unknown'; run_id?: string; job_id?: string; request_ref?: string; conflict?: boolean }
 // prettier-ignore
 export interface UsageSession extends Counts { id: string; client: Client; model: string | null; at: string; cost: number | null; owner?: Owner; parts?: (Counts & { model: string })[] }
 // prettier-ignore
@@ -73,7 +106,7 @@ const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) &
 const root = (): string => join(home().sa, 'usage');
 // prettier-ignore
 export const sessionKey = (id: string): string => /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.exec(id)?.[0].toLowerCase() ?? id;
-const key = (client: Client, id: string): string => `${client}:${sessionKey(id)}`;
+const key = (client: string, id: string): string => `${client}:${sessionKey(id)}`;
 // prettier-ignore
 const empty = (): Counts => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, sessions: 0 });
 // prettier-ignore
@@ -102,8 +135,11 @@ export function attribute(sessions: UsageSession[], claims: { id: string; owner:
   const index = { ...prior };
   for (const { id, owner } of claims) {
     const k = key(owner.client, id), old = index[k];
+    const conflict = old?.conflict || !!(old?.request_ref && owner.request_ref && old.request_ref !== owner.request_ref) || !!(old?.run_id && owner.run_id && old.run_id !== owner.run_id && (!old.request_ref || old.request_ref !== owner.request_ref));
+    const request_ref = owner.request_ref ?? old?.request_ref;
     if (!old || priority[owner.kind] >= priority[old.kind]) index[k] = { ...owner, role: owner.role ?? old?.role ?? null };
     else if (!old.role && owner.role) index[k] = { ...old, role: owner.role };
+    index[k] = { ...index[k]!, ...(request_ref ? { request_ref } : {}), ...(conflict ? { conflict: true } : {}) };
   }
   for (const s of sessions) { const k = key(s.client, s.id); s.owner = index[k] ??= { client: s.client, role: null, model: s.model, cwd: null, kind: 'unknown' }; }
   return index;
@@ -153,11 +189,12 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
       const l = loadLedger(id), stamp = statSync(ledgerPath(id));
       const fingerprint = JSON.stringify([l.repo, stamp.mtimeMs, stamp.size]);
       const roles = workflowRoles(l);
+      const ref = str(obj(json(join(l.gen_dir, 'plan.json'))).request_ref);
       for (const runId of [l.archon_run_id, ...archonRunIds(l).filter(runId => runId !== l.archon_run_id)]) {
         const cacheKey = JSON.stringify([id, runId]), hit = prior[cacheKey];
         if (hit?.fingerprint === fingerprint && ['completed', 'cancelled'].includes(hit.status)) {
           runs[cacheKey] = hit;
-          claims.push(...hit.claims);
+          claims.push(...hit.claims.map(c => ({ ...c, owner: { ...c.owner, ...(ref ? { request_ref: ref } : {}) } })));
           if (runId === l.archon_run_id) eta.push(hit.eta);
           continue;
         }
@@ -176,7 +213,7 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
             const active = runId === l.archon_run_id && input.run.status === 'running' && input.run.nodes?.some(n => n.nodeId === e.step_name && n.state === 'running') && arr(run.events).slice().reverse().find(v => obj(v).step_name === e.step_name && obj(v).event_type === 'node_started') === raw;
             const session = d.session_id ?? (active && cwd && started ? jobSession({ kind: client, cwd, started_at: started }, true) : null);
             if (!session) continue;
-            runClaims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: 'run', run_id: id } });
+            runClaims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: d.session_id ? 'run' : 'inferred', run_id: id, ...(ref && d.session_id ? { request_ref: ref } : {}) } });
           }
           runs[cacheKey] = { fingerprint, status: input.run.status, claims: runClaims, eta: input };
           claims.push(...runClaims);
@@ -189,7 +226,8 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
   for (const j of jobs) {
     if (j.pid === 0) continue; // 内存准入等待/失败的作业从未拥有 provider 会话。
     const id = j.session_id ?? jobSession(j);
-    if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'job', job_id: j.id } });
+    // Persisted job session_id is also produced by cwd/time matching, not a provider receipt.
+    if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'inferred', job_id: j.id } });
   }
   for (const f of files(join(home().sa, 'live'))) {
     const l = obj(json(f)), client = l.client, id = str(l.session_id);

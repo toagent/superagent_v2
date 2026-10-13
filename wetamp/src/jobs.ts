@@ -53,6 +53,7 @@ export interface Job {
     policy: LaunchPolicy;
   };
   session_id?: string | null;
+  request_ref?: string;
   receipt?: ExecutionReceipt;
   wrapper_pid: number;
   pid: number;
@@ -67,7 +68,7 @@ export interface Job {
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] -- <cmd...> | job clean <id> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] -- <cmd...> | job clean <id> | jobs [--json] [--all]';
 const DAY_MS = 86_400_000;
 export const RECENT_MS = 3_600_000;
 export interface MemoryReading {
@@ -226,7 +227,7 @@ export function cleanJob(id: string): void {
 // prettier-ignore
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; log?: string; role: Tier | null; execution?: Job['execution']; worktree?: string; base?: string },
+  f: { title: string; card?: string; log?: string; role: Tier | null; execution?: Job['execution']; worktree?: string; base?: string; request_ref?: string },
   probe: () => MemoryReading,
   wait: AdmissionWait
 ): Promise<number> {
@@ -241,6 +242,7 @@ async function exec(
     kind: kindOf(cmd[0]),
     model: f.execution?.model ?? modelOf(cmd.slice(1)),
     role: f.role,
+    ...(f.request_ref ? { request_ref: f.request_ref } : {}),
     ...(f.execution ? { execution: f.execution } : {}),
     ...(launched ? { launcher: launched } : {}),
     wrapper_pid: process.pid,
@@ -424,6 +426,7 @@ export async function jobCli(
   }
   if (isTier(role) && !['codex', 'claude'].includes(kindOf(cmd[0])))
     throw new Error('job: unsupported role provider; expected codex or claude');
+  if (a.flags['request-ref'] !== undefined && !a.flags['request-ref'].trim()) throw new Error('job: empty request-ref');
   refreshBudgetQuota();
   let execution: Job['execution'];
   if (isTier(role) && ['codex', 'claude'].includes(kindOf(cmd[0]))) {
@@ -446,5 +449,5 @@ export async function jobCli(
       model: candidate.model, provider, policy };
   }
 
-  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base }, probe, wait);
+  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'] }, probe, wait);
 }

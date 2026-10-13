@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonJson, archonRunIds, getRun, tail } from './archon';
-import { WETAMP } from './config';
+import { home, WETAMP } from './config';
 import {
   type Ledger,
   type Pair,
@@ -11,13 +11,16 @@ import {
   evidenceJson,
   evidenceGates,
   decisionOf,
+  intakeEvidence,
 } from './cli';
 import { snapshotOf } from './board/data';
 import { cockpit } from './board/cockpit';
+import { Intake, intakeRoot } from './intake';
 import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
 import {
   normalizeTokens,
+  investmentOf,
   tokenTotals,
   tokenFees,
   sessionTokens,
@@ -291,7 +294,15 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
 }
 
 // prettier-ignore
-export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [] ): Record<string, unknown> {
+export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [], jobs: Job[] = [], unreadable: Record<string, number> = {} ): Record<string, unknown> {
+  const current_tasks = Object.fromEntries([...new Set(pairs.map(p => p.ledger.repo))].map(repo => {
+    try {
+      const root = intakeRoot(home().sa, repo);
+      if (!existsSync(join(root, 'state.json'))) return [repo, 'unknown'];
+      const view = new Intake(root).backlog(repo, intakeEvidence(repo));
+      return [repo, { obligations: view.obligations, tasks: view.tasks.map(({ id, revision, requirements, completion, covered, reason, children }) => ({ id, revision, obligations: requirements.length, completion, covered, reason, children })) }];
+    } catch { return [repo, 'unknown']; }
+  }));
   const by = new Map<string, Pair[]>();
   const unknown: string[] = [];
   for (const pair of pairs) {
@@ -302,6 +313,19 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     }
     by.set(ref, [...(by.get(ref) ?? []), pair]);
   }
+  for (const ref of [...sessions.map(s => s.owner?.conflict ? undefined : s.owner?.request_ref), ...jobs.map(j => j.request_ref)])
+    if (ref && !by.has(ref)) by.set(ref, []);
+  const sessionId = (provider: string, id: string) => `${provider}:${sessionKey(id)}`;
+  const claims = new Map<string, Set<string>>();
+  const claim = (provider: string, id: string, ref: string) => { const k = sessionId(provider, id); claims.set(k, (claims.get(k) ?? new Set()).add(ref)); };
+  for (const [ref, attempts] of by) for (const c of calls)
+    if (c.provider && c.session && attempts.some(p => p.ledger.run_id === c.run)) claim(c.provider, c.session, ref);
+  for (const s of sessions) {
+    if (s.owner?.request_ref) claim(s.client, s.id, s.owner.request_ref);
+    for (const [ref, attempts] of by) if (s.owner?.kind === 'run' && attempts.some(p => p.ledger.run_id === s.owner?.run_id)) claim(s.client, s.id, ref);
+  }
+  for (const j of jobs) if (j.request_ref && j.session_id) claim(j.kind, j.session_id, j.request_ref);
+  const disputed = (provider: string, id: string) => (claims.get(sessionId(provider, id))?.size ?? 0) > 1 || sessions.some(s => sessionId(s.client, s.id) === sessionId(provider, id) && s.owner?.conflict);
   const demands = Object.fromEntries(
     [...by].map(([ref, attempts]) => {
       const completion = attempts.map(({ ledger, run }) =>
@@ -312,12 +336,12 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       );
       const own = calls.filter(c => attempts.some(p => p.ledger.run_id === c.run));
       const extra = sessions.filter(
-        s => s.owner?.kind === 'run' && attempts.some(p => p.ledger.run_id === s.owner?.run_id)
+        s => !disputed(s.client, s.id) && (s.owner?.kind === 'run' && (s.owner.request_ref === ref || attempts.some(p => p.ledger.run_id === s.owner?.run_id)) || own.some(c => c.provider === s.client && c.session && sessionKey(c.session) === sessionKey(s.id)))
       );
-      const inputs = [
-        ...own.flatMap(c => (c.tokens ? [c.tokens] : [])),
-        ...extra.map(sessionTokens),
-      ];
+      const trusted = own.filter(c => !c.provider || !c.session || !disputed(c.provider, c.session));
+      const conflicting = [...claims].some(([k, refs]) => refs.has(ref) && (refs.size > 1 || sessions.some(s => sessionId(s.client, s.id) === k && s.owner?.conflict)));
+      // Jobs have an explicit demand ref but no verified provider-session receipt.
+      const missing = Number(conflicting) + jobs.filter(j => j.request_ref === ref).length + sessions.filter(s => s.owner?.kind !== 'run' && (s.owner?.request_ref === ref || attempts.some(p => p.ledger.run_id === s.owner?.run_id)) && !jobs.some(j => j.request_ref === ref && j.id === s.owner?.job_id)).length + attempts.reduce((n, p) => n + Math.max(Number(p.run instanceof Error), unreadable[p.ledger.run_id] ?? 0), 0);
       const starts = attempts.map(p => Date.parse(p.ledger.started_at));
       const ends = attempts.map(p =>
         p.run instanceof Error ? NaN : Date.parse(p.run.completed_at ?? '')
@@ -325,7 +349,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       const elapsed = [...starts, ...ends].every(Number.isFinite)
         ? Math.max(...ends) - Math.min(...starts)
         : NaN;
-      return [ref, { attempts: attempts.map(({ ledger, run }) => ({ run: ledger.run_id, status: run instanceof Error ? 'unknown' : run.status, })), completion, complete: complete ? true : completion.every(c => c && Object.values(c).some(v => v.status === 'unmet')) ? false : 'unknown', elapsed_ms: elapsed >= 0 ? elapsed : 'unknown', investment: { ...rollup(own), ...tokenTotals(inputs), fees: tokenFees(inputs) }, }, ];
+      return [ref, { attempts: attempts.map(({ ledger, run }) => ({ run: ledger.run_id, status: run instanceof Error ? 'unknown' : run.status, })), completion, complete: complete ? true : completion.length > 0 && completion.every(c => c && Object.values(c).some(v => v.status === 'unmet')) ? false : 'unknown', elapsed_ms: elapsed >= 0 ? elapsed : 'unknown', investment: { ...rollup(own), ...investmentOf(trusted, extra, missing) }, }, ];
     })
   );
   const durations = Object.values(demands)
@@ -333,6 +357,8 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     .filter((n): n is number => typeof n === 'number')
     .sort((a, b) => a - b);
   return {
+    current_tasks,
+    unattributed: { ...investmentOf([], sessions.filter(s => disputed(s.client, s.id) || s.owner?.kind !== 'run' || !s.owner.request_ref && ![...by.values()].some(ps => ps.some(p => p.ledger.run_id === s.owner?.run_id)))), attribution: 'unknown' },
     denominator: by.size,
     completed: Object.values(demands).filter(d => d.complete === true).length,
     unknown_runs: unknown,
@@ -371,6 +397,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const receipts = jobs.jobs.map(jobReceipt);
   const calls: Call[] = [];
   const unreadable: string[] = [];
+  const missingGenerations: Record<string, number> = {};
   const paths: Record<string, unknown> = {};
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
   const cwdOf = (l: Ledger): string => (repo_missing.includes(l.run_id) ? WETAMP : l.repo);
@@ -400,6 +427,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
         paths[`${l.run_id}/${id}`] = criticalPath(j as unknown as RunView, rows, graph);
       } catch (e) {
         paths[`${l.run_id}/${id}`] = { status: 'unknown', reason: 'unreadable_generation' };
+        missingGenerations[l.run_id] = (missingGenerations[l.run_id] ?? 0) + 1;
         unreadable.push(`${l.run_id}/${id}: ${tail((e as Error).message, 200)}`);
       }
     }
@@ -433,7 +461,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     ),
     metrics: cockpit(snapshot).metrics,
     interventions: interventionStats(ls),
-    demands: demandStats(pairs, calls, supplemental),
+    demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
     jobs: {
       receipts,
