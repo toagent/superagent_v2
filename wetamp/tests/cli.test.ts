@@ -1704,6 +1704,128 @@ test.each(['claude', 'codex', 'legacy', 'fake', 'blocked', 'foreign', 'unowned',
   }
 );
 
+test.each([
+  { name: 'default observe', hard: false, exit: 1, expected: 0 },
+  { name: 'hard tokens', hard: true, exit: 1, expected: 1 },
+  { name: 'hard launches', hard: true, exit: 0, launches: 1, expected: 1 },
+  { name: 'hard matching grant', hard: true, exit: 1, grant: 0, expected: 0 },
+  { name: 'hard stale grant', hard: true, exit: 1, grant: 1, expected: 1 },
+  { name: 'product', hard: false, exit: 1, failure: 'product', expected: 1 },
+  { name: 'product zero exit', hard: false, exit: 0, failure: 'product', expected: 1 },
+  { name: 'unknown', hard: false, exit: 1, failure: 'unknown', expected: 1 },
+  { name: 'non-budget exception', hard: false, exit: 1, reason: 'unexpected', expected: 1 },
+])('BUDGET_ACCEPT $name', sample => {
+  const s = stub([]);
+  writeFileSync(
+    join(s.dir, 'get-000.json'),
+    JSON.stringify(
+      Object.assign(
+        run('completed', {
+          working_path: s.root,
+          output_root: join(s.root, 'home'),
+        }),
+        { events: [] }
+      )
+    )
+  );
+  const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
+  plan.budget = {
+    weighted_tokens: 100,
+    ...(sample.hard ? { enforcement: 'hard' } : {}),
+    ...(sample.launches ? { launches: sample.launches } : {}),
+  };
+  writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+  const art = join(s.root, 'home/artifacts/runs/r'),
+    scripts = join(s.ledger.gen_dir, '.archon/scripts');
+  mkdirSync(art, { recursive: true });
+  mkdirSync(scripts, { recursive: true });
+  writeFileSync(
+    join(s.ledger.gen_dir, 'accept-inputs.json'),
+    JSON.stringify([{ tag: 'diff-m1-r1', milestone: 'm1', risk: 'G1' }])
+  );
+  writeFileSync(
+    join(art, 'policy-attempts.json'),
+    JSON.stringify(
+      [0, 1].map(id => ({
+        id: String(id),
+        node: 'code-core',
+        provider: 'codex',
+        model: 'fixture',
+        status: 'completed',
+        tokens: { input: 60, output: 0 },
+      }))
+    )
+  );
+  if (sample.grant !== undefined)
+    writeFileSync(
+      join(s.ledger.gen_dir, 'budget-extra'),
+      JSON.stringify({
+        milestone: 'm1',
+        attempt: sample.grant,
+        limits: { launches: 2, weighted_tokens: 120 },
+      })
+    );
+  const out = {
+    ok: !sample.failure,
+    diff_hash: 'same',
+    contract_hash: 'same',
+    same: false,
+    disposition: 'suspend',
+    reason: sample.reason ?? 'budget_tokens_exceeded',
+    ...(sample.failure
+      ? {
+          failed: ['true'],
+          failures: [{ command: 'true', failure_class: sample.failure, evidence: 'real failure' }],
+        }
+      : {}),
+  };
+  const script = join(scripts, 'sa-check.ts');
+  writeFileSync(
+    script,
+    `console.log(${JSON.stringify(JSON.stringify(out))}); process.exit(${sample.exit});`
+  );
+  const frozen = ['diff-m1-r1.json', 'gate-m1-r1.json', 'gate-m1-r1.review.json'];
+  frozen.forEach(file =>
+    writeFileSync(
+      join(art, file),
+      JSON.stringify(
+        file.startsWith('diff-')
+          ? out
+          : file.endsWith('review.json')
+            ? { status: 'PASS', findings: [], debt: [] }
+            : { decision: fixtureDecision('advance') }
+      )
+    )
+  );
+  const paths = [
+    script,
+    join(s.ledger.gen_dir, 'plan.json'),
+    ...frozen.map(file => join(art, file)),
+  ];
+  const before = paths.map(path => readFileSync(path, 'utf8'));
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const result = captured(() => main(['accept', 'sa1']));
+    expect(result.code).toBe(sample.expected);
+    expect(JSON.parse(result.out).ok).toBe(sample.expected === 0);
+    if (!sample.hard)
+      expect(
+        warn.mock.calls.some(
+          ([line]) => JSON.parse(String(line)).code === 'superagent.budget_observed'
+        )
+      ).toBe(true);
+    if (!sample.expected)
+      expect(JSON.parse(result.out)).toMatchObject({
+        disposition: 'advance',
+        legacy_budget: { reason: 'budget_tokens_exceeded' },
+      });
+    expect(paths.map(path => readFileSync(path, 'utf8'))).toEqual(before);
+    expect(s.calls().every(call => call.startsWith('workflow get r'))).toBe(true);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 test.each([1, 2, 3])(
   'generated CLI acceptance and land preserve only approved non-product debt R%i',
   round => {

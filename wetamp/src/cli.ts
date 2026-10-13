@@ -5,7 +5,7 @@ import { Intake, completion, intakeRoot } from './intake';
 import { applyLand, captureDelivery, selftest, type DeliveryTarget } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
-import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
+import { budgetReason, readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import type { resolveAcceptanceContext } from './role-context';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick } from './memory';
@@ -1346,7 +1346,7 @@ function acceptRun(
   const run = archonJson(
     ['workflow', 'get', l.archon_run_id, '--verbose', '--events'],
     l.repo
-  ) as unknown as RunView;
+  ) as unknown as RunView & { events: Parameters<typeof budgetUsage>[0] };
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
   const plan = planOf(l);
   if (pkg && !plan.packages.some(p => p.id === pkg))
@@ -1413,15 +1413,57 @@ function acceptRun(
           | Review
           | undefined)
       : undefined;
-    const { decision } = deliveryDecision({
+    let { decision } = deliveryDecision({
       rechecks: out ? [out] : [],
       approved: { check: prior, decision: decisionOf(gate) },
       risk: out?.risk ?? inputs.risk,
       strict: plan.mode === 'strict',
       ...(reviews ? { reviews: [reviews] } : {}),
     });
-    if (report) print(out ? { ...out, decision } : { ok: false, error: tail(p.stderr.toString()) });
-    if (!['advance', 'debt'].includes(decision.kind)) code = 1;
+    const limits = effectiveBudget(
+      plan.budget,
+      (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<typeof effectiveBudget>[1],
+      inputs.milestone,
+      readAttempt(attemptPath(l.gen_dir, inputs.milestone))
+    );
+    const used = budgetUsage(
+      run.events,
+      loadTiers().policy.budget_floor.S,
+      readPolicyAttempts(art)
+    );
+    const reason = budgetReason(limits, used, false);
+    const legacyBudget =
+      out?.disposition === 'suspend' &&
+      (out.reason === 'budget_launches_exceeded' || out.reason === 'budget_tokens_exceeded');
+    // Only a structured budget suspension can explain a frozen check's nonzero exit.
+    if (p.exitCode !== 0 && !legacyBudget)
+      decision = { ...decision, kind: 'block', reason: 'engine_suspect' };
+    if (reason && limits.enforcement === 'hard') decision = { ...decision, kind: 'block', reason };
+    else if (reason)
+      console.warn(JSON.stringify({ code: 'superagent.budget_observed', reason, used, limits }));
+    const ok = ['advance', 'debt'].includes(decision.kind);
+    if (report)
+      print(
+        out
+          ? {
+              ...out,
+              decision,
+              ok,
+              ...(legacyBudget || (reason && limits.enforcement === 'hard')
+                ? {
+                    legacy_budget: {
+                      disposition: out.disposition,
+                      reason: out.reason,
+                      decision: out.decision,
+                    },
+                    disposition: ok ? 'advance' : 'suspend',
+                    reason: decision.reason,
+                  }
+                : {}),
+            }
+          : { ok: false, error: tail(p.stderr.toString()) }
+      );
+    if (!ok) code = 1;
   }
   return code;
 }
