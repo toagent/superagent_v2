@@ -3,7 +3,7 @@
 const path = require('node:path');
 const EFFECTS = require('./shell-effects.json');
 const {spawnSync} = require('node:child_process');
-const {resolvePath, expand, checkoutOf, message, taskOwnership} = require('./redline.cjs');
+const {resolvePath, expand, checkoutOf, message} = require('./redline.cjs');
 const GIT_VALUE_OPTIONS = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'];
 function gitInvocation(argv, dir, env) {
   // undefined = absent; {path: null} = explicitly unknown; {path} = resolved.
@@ -81,8 +81,7 @@ function safeGitDelete(sub, rest, query, dir, env, deletions) {
   } catch { return message('删除 git 对象', 'Git 安全查询失败'); }
 }
 function reason(argv, dir, root, env, deletions) {
-    const {base, directory, checkout, locations, prefix, sub, rest} = gitInvocation(argv, dir, env);
-    const owned = file => taskOwnership(file, dir, root, env, true) === 'repository';
+    const {directory, prefix, sub, rest} = gitInvocation(argv, dir, env);
     if (sub === 'init') return null;
     if (sub === 'push') {
       if (rest.some(v => /^--(?:f(?:o(?:r(?:c(?:e)?)?)?)?(?:-with-lease|-if-includes)?|d(?:e(?:l(?:e(?:t(?:e)?)?)?)?)?|mirror|prune)(?:=|$)|^-[^-]*[fd]|^\+|^:/.test(v)))
@@ -99,8 +98,8 @@ function reason(argv, dir, root, env, deletions) {
       return r.status === 0 ? r.stdout.trim() : null;
     }, directory, env, deletions);
     if (deletion) return deletion;
-    if (destructive && deletion === undefined && (locations.some(location => !owned(location.path)) || !owned(checkout || base)))
-      return message('修改未知或非本任务的 git 对象', '无法确认操作对象属于本任务');
+    if (destructive && deletion === undefined)
+      return message('执行破坏性 Git 操作', '会丢弃文件改动或删除、覆盖 Git 数据');
     return null;
 }
 module.exports = {reason, gitInvocation};

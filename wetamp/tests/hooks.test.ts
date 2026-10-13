@@ -234,7 +234,7 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       expect(sh(`cat <<EOF\n${source}\nEOF`), source).toBeNull();
     expect(sh("cat <<'EOF'\n$(case x in x) npm publish;; esac)\nEOF")).toBeNull();
   });
-  test('R1-05 Git locators retain absent, resolved and unknown independently', () => {
+  test('R1-05 destructive Git denies with unknown or resolved locators; ordinary Git passes', () => {
     const sh = box();
     for (const prefix of [
       'git --git-dir="$META" --work-tree=.',
@@ -258,7 +258,7 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       'GIT_DIR=.git GIT_WORK_TREE=. git',
       'git -C . --git-dir=.git --work-tree=.',
     ])
-      expect(sh(`${prefix} ${reset}`), prefix).toBeNull();
+      expect(sh(`${prefix} ${reset}`), prefix).toContain('会丢弃文件改动');
     expect(sh('git --git-dir="$META" --work-tree="$TREE" status --short')).toBeNull();
     expect(sh('git --git-dir "$META" --work-tree . clean -fd')).toMatch(/^已拦截：/);
     expect(sh('git --git-dir=.git --work-tree="$TREE" add a.ts')).toBeNull();
@@ -381,7 +381,7 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       'rtk proxy bash -c \'baseline_dir=$(mktemp -d /tmp/mac-presets-baseline.XXXXXX); git archive HEAD app/src-tauri | tar -x -C "$baseline_dir"; cargo test --manifest-path "$baseline_dir/app/src-tauri/Cargo.toml" --lib --locked > /tmp/mac-presets-baseline-cargo.log 2>&1; result=$?; tail -n 10 /tmp/mac-presets-baseline-cargo.log; exit "$result"\'';
     expect(sh(baseline)).toBeNull();
   });
-  test('FIXC4 temporary files and Git locators share task ownership', () => {
+  test('FIXC4 temporary Git allows ordinary commands and denies destructive payloads', () => {
     const sh = box();
     const hard = ['reset', '--hard'].join(' '),
       clean = ['clean', '-fdx'].join(' ');
@@ -392,6 +392,10 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       'git -C "$(mktemp -d)" init',
       'git -C "$UNKNOWN" init -q',
       'git -C /foreign init -q',
+      'tmp=$(mktemp -d) && git -C "$tmp" config user.name test',
+    ])
+      expect(sh(command), command).toBeNull();
+    for (const command of [
       `tmp=$(mktemp -d) && cd "$tmp" && git init -q && echo a > a.txt && git add a.txt && git commit -qm x && git ${hard} HEAD`,
       `tmp=$(mktemp -d) && mkdir "$tmp/repo" && cd "$tmp/repo" && echo a > a.txt && git add a.txt && git ${hard} HEAD && git ${clean}`,
       `tmp=$(mktemp -d) && git -C "$tmp" add a.txt && git -C "$tmp" commit -qm x && git -C "$tmp" ${hard}`,
@@ -401,10 +405,6 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       `tmp=$(mktemp -d) && cd "$tmp" && git --git-dir=.git --work-tree=. ${hard}`,
       `tmp=$(mktemp -d) && git -C"$tmp" --git-dir=.git --work-tree=. ${hard}`,
       `tmp=$(mktemp -d) && sh -c 'cd "$1" && git ${hard}' sh "$tmp"`,
-      'tmp=$(mktemp -d) && git -C "$tmp" config user.name test',
-    ])
-      expect(sh(command), command).toBeNull();
-    for (const command of [
       `git -C /foreign ${hard}`,
       ['GIT_DIR="$UNKNOWN"', 'git', 'push', '--force'].join(' '),
       `git -C "$UNKNOWN" ${clean}`,
@@ -417,7 +417,7 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
     ])
       expect(sh(command), command).toMatch(/^已拦截：/);
   });
-  test('FIXC5 Git ownership follows checkout identity, including nested metadata', () => {
+  test('FIXC5 destructive Git denies in every checkout, including nested metadata', () => {
     const root = tmp(),
       repo = gitRepo(root),
       clone = join(repo, 'clone'),
@@ -456,23 +456,25 @@ describe('FIXC2 RV-C2 遗留机制回归', () => {
       expect(check(`git --git-dir="${metadata}" --work-tree=. ${hard}`)).toMatch(/^已拦截：/);
       expect(check(`GIT_DIR="${metadata}" git commit -qm x`)).toBeNull();
       for (const prefix of ['git', `git --git-dir="${marker}"`, `git --git-dir="${metadata}"`]) {
-        expect(check(`${prefix} ${hard}`, nested), prefix).toBeNull();
+        expect(check(`${prefix} ${hard}`, nested), prefix).toContain('会丢弃文件改动');
         expect(check(`${prefix} commit -qm x`, nested), prefix).toBeNull();
       }
     }
-    for (const command of ['status --short', hard, 'commit -qm x']) {
+    for (const command of ['status --short', 'commit -qm x']) {
       expect(check(`git ${command}`)).toBeNull();
       expect(check(`git --git-dir=.git --work-tree=. ${command}`)).toBeNull();
     }
     mkdirSync(join(repo, 'src'));
-    expect(check(`git ${hard}`, repo, join(repo, 'src'))).toBeNull();
+    expect(check(`git ${hard}`)).toContain('会丢弃文件改动');
+    expect(check(`git --git-dir=.git --work-tree=. ${hard}`)).toContain('会丢弃文件改动');
+    expect(check(`git ${hard}`, repo, join(repo, 'src'))).toContain('会丢弃文件改动');
     expect(check(`git --git-dir="${join(repo, '.git')}" ${hard}`, worktree)).toMatch(/^已拦截：/);
     expect(check(`git -C "${gitRepo(tmp())}" ${hard}`)).toMatch(/^已拦截：/);
     expect(check(`git -C /foreign ${hard}`)).toMatch(/^已拦截：/);
     expect(check('echo ok > src/result')).toBeNull();
     expect(
       check('tmp=$(mktemp -d); cd "$tmp"; git init -q; git add a; git commit -qm x; git ' + hard)
-    ).toBeNull();
+    ).toContain('会丢弃文件改动');
   });
   test('FIXC6 foreign and unknown Git targets allow additive writes for both identities', () => {
     const root = tmp(),
@@ -884,7 +886,7 @@ describe('guard.cjs', () => {
     ).toContain('git push');
     expect(
       reason(guard('claude', bash(['git', '-C', '/x', 'reset', '--hard', 'HEAD~1'].join(' '))))
-    ).toContain('非本任务');
+    ).toContain('会丢弃文件改动');
   });
 
   test('删除目标拦截与 reviewer 只读', () => {
@@ -1423,8 +1425,11 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
     }
     for (const flag of ['-D', '-df', '--delete --force'])
       expect(check(`git branch ${flag} merged`)).toContain('已拦截：');
-    for (const flag of ['-D', '-m', '-M', '-C', '--delete --force', '-df'])
+    for (const flag of ['-m', '-M', '-c', '--move', '--copy'])
       expect(check(`git branch ${flag} old new`, '/foreign')).toBeNull();
+    for (const flag of ['-D', '--delete --force', '-df'])
+      expect(check(`git branch ${flag} old new`, '/foreign')).toContain('已拦截：');
+    expect(check('git branch -C old new', '/foreign')).toContain('会丢弃文件改动');
   });
   const box = (): {
     home: string;

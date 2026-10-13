@@ -92,6 +92,32 @@ test.each(
   }
 );
 
+test.each(
+  ['claude', 'codex', 'opencode'].flatMap(client =>
+    [false, true].map(derived => ({ client, derived }))
+  )
+)('actual $client hooks, derived=$derived: dirty cwd is protected at its own root', ({ client, derived }) => {
+  const repo = gitRepo(tmp());
+  writeFileSync(join(repo, 'README.md'), 'uncommitted tracked bytes');
+  writeFileSync(join(repo, 'untracked.txt'), 'untracked bytes');
+  const status = () =>
+    Bun.spawnSync(['git', '-C', repo, 'status', '--porcelain=v1']).stdout.toString();
+  const before = status();
+  expect(before).toContain(' M README.md');
+  expect(before).toContain('?? untracked.txt');
+  // Payload probes only: the destructive commands must never execute.
+  for (const command of ['git reset --hard', 'git clean -fd']) {
+    const result = check(command, repo, client, derived);
+    expect(result.denied, `${client}: ${command}`).toBe(true);
+    expect(result.out + result.err).toContain('会丢弃文件改动');
+  }
+  for (const command of ['git clean -n', 'git clean -ndf', 'git add -A', 'git commit --amend -m x'])
+    expect(check(command, repo, client, derived).denied, command).toBe(false);
+  expect(status()).toBe(before);
+  expect(readFileSync(join(repo, 'README.md'), 'utf8')).toBe('uncommitted tracked bytes');
+  expect(readFileSync(join(repo, 'untracked.txt'), 'utf8')).toBe('untracked bytes');
+});
+
 test('scratch main/release commits execute normally after hook approval', () => {
   const own = gitRepo(tmp()),
     foreign = gitRepo(tmp());
