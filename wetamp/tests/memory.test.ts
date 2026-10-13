@@ -1087,6 +1087,7 @@ describe('FIXD review regressions', () => {
     success => {
       const repo = gitRepo(tmp()),
         script = join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts');
+      // An unclassified failure must stay unknown and blocked through every producer artifact.
       const cmd = success ? 'exit 0' : 'exit 1';
       plan.packages[0].accept = [{ cmd, timeout_s: 5 }];
       plan.deadline = new Date(Date.now() + 3600000).toISOString();
@@ -1119,13 +1120,19 @@ describe('FIXD review regressions', () => {
         expect(child.exitCode).toBe(exitCode);
         return readFileSync(join(artifactsOf(raw), `${tag}.json`), 'utf8');
       };
-      const accept = runCheck('accept', 'verify-core');
+      const accept = runCheck('accept', 'verify-core', {}, success ? 0 : 1);
       expect(JSON.parse(accept)).toMatchObject({
         ok: success,
         reason: success ? null : 'acceptance_failed',
         risk: 'G1',
         base_pass: null,
       });
+      if (!success)
+        expect(JSON.parse(accept)).toMatchObject({
+          disposition: 'suspend',
+          decision: { kind: 'block' },
+          failures: [{ command: cmd, failure_class: 'unknown' }],
+        });
       const settle = runCheck(
         'settle',
         'settle-core',
@@ -1137,23 +1144,31 @@ describe('FIXD review regressions', () => {
       );
       expect(JSON.parse(settle)).toMatchObject({
         ok: success,
-        reason: success ? null : 'repair_exhausted:acceptance_failed',
+        reason: success ? null : 'acceptance_failed',
+        disposition: success ? 'advance' : 'suspend',
+        decision: { kind: success ? 'advance' : 'block' },
       });
-      const gate = runCheck('gate', 'gate-m1-r1', {
-        INPUTS_ROUND: '1',
-        INPUTS_R1: success ? JSON.stringify({ status: 'PASS', findings: [], debt: [] }) : 'null',
-        INPUTS_C1: settle,
-        INPUTS_MILESTONE: 'm1',
-        INPUTS_NEXT: '',
-      });
+      const gate = runCheck(
+        'gate',
+        'gate-m1-r1',
+        {
+          INPUTS_ROUND: '1',
+          INPUTS_R1: success ? JSON.stringify({ status: 'PASS', findings: [], debt: [] }) : 'null',
+          INPUTS_C1: settle,
+          INPUTS_MILESTONE: 'm1',
+          INPUTS_NEXT: '',
+        },
+        success ? 0 : 1
+      );
       expect(JSON.parse(gate)).toMatchObject({
-        verdict: success ? 'pass' : 'fix',
-        reason: success ? null : 'repair_exhausted:acceptance_failed',
+        verdict: success ? 'pass' : 'escalate',
+        reason: success ? null : 'acceptance_failed',
+        decision: { kind: success ? 'advance' : 'block' },
         grade: success ? 'PASS' : null,
       });
       raw.status = success ? 'completed' : 'failed';
       raw.nodes = [
-        { nodeId: 'verify-core', state: 'completed' },
+        { nodeId: 'verify-core', state: success ? 'completed' : 'failed' },
         { nodeId: 'settle-core', state: success ? 'completed' : 'failed' },
       ];
       const file = join(root, 'producer-run.json'),
@@ -1166,9 +1181,7 @@ describe('FIXD review regressions', () => {
       writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
       const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
       expect(folded.acceptance).toEqual([{ cmd, ok: success }]);
-      expect(folded.reasons).toEqual(
-        success ? [] : ['repair_exhausted:acceptance_failed', 'acceptance_failed']
-      );
+      expect(folded.reasons).toEqual(success ? [] : ['acceptance_failed']);
       expect(memoryTick({}, NOW, false).errors).toEqual([]);
       expect(
         JSON.parse(readFileSync(join(sa, 'memory/fold-index.json'), 'utf8')).terminal.incident
