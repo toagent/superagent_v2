@@ -462,7 +462,19 @@ export class Intake {
         const r = t.runs.find(r => r.launch_id === a.launch_id) ?? fail('unknown launch intent');
         if (r.plan !== a.plan || r.digest !== a.digest || (r.run_id && r.run_id !== a.run_id))
           fail('run receipt conflict');
-        if (tasks.some(other => other.runs.some(b => b !== r && b.run_id === a.run_id)))
+        if (
+          tasks.some(other =>
+            other.runs.some(
+              b =>
+                b !== r &&
+                b.run_id === a.run_id &&
+                (other.id !== t.id ||
+                  b.revision === r.revision ||
+                  b.plan !== r.plan ||
+                  b.digest !== r.digest)
+            )
+          )
+        )
           fail('run already bound');
         r.dispatch = 'accepted';
         r.run_id = a.run_id;

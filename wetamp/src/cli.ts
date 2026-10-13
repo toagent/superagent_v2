@@ -2550,9 +2550,10 @@ export function main(argv: string[]): number {
         if (!binding.run_id) return undefined;
         try {
           const l = loadLedger(binding.run_id);
-          if (resolve(l.repo) !== repo || resolve(l.plan) !== resolve(binding.plan))
+          const frozenPlan = join(l.gen_dir, 'plan.json');
+          if (resolve(l.repo) !== repo || resolve(frozenPlan) !== resolve(binding.plan))
             return undefined;
-          const digest = createHash('sha256').update(readFileSync(l.plan)).digest('hex');
+          const digest = createHash('sha256').update(readFileSync(frozenPlan)).digest('hex');
           if (digest !== binding.digest) return undefined;
           const run = getRun(l.archon_run_id, l.repo);
           const history = decisionsOf(artifactsOf(run), undefined, l);
@@ -2568,7 +2569,7 @@ export function main(argv: string[]): number {
           const decisions = currentDecisions(history).map(d => d.decision);
           if (decisions.some(d => !d)) return undefined;
           return {
-            packages: (JSON.parse(readFileSync(l.plan, 'utf8')) as Plan).packages,
+            packages: planOf(l).packages,
             completed: classifyRun(l, run).state === 'completed',
             decisions: decisions.flatMap(d => (d ? [d] : [])),
           };
