@@ -1,11 +1,53 @@
-import { expect, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { lastJson } from '../src/archon';
 import { generate } from '../src/generate';
 import { WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+
+const scratchRoot = join(tmp(), 'scratch'),
+  scratchPreload = join(tmp(), 'scratch-preload.cjs');
+writeFileSync(
+  scratchPreload,
+  `const fs = require('node:fs'), path = require('node:path');
+let violations = 0;
+const check = value => {
+  if (value instanceof URL) value = require('node:url').fileURLToPath(value);
+  if (Buffer.isBuffer(value)) value = value.toString();
+  if (typeof value !== 'string') return;
+  const p = path.resolve(value);
+  if (['/tmp/sa-scratch', '/private/tmp/sa-scratch'].some(r => p === r || p.startsWith(r + '/'))) {
+    violations++; throw new Error('production scratch access: ' + p);
+  }
+};
+const wrap = fn => function(...args) { args.forEach(check); return fn.apply(this, args); };
+for (const api of [fs, fs.promises]) for (const key of Object.keys(api)) {
+  if (typeof api[key] !== 'function' || /^[A-Z]/.test(key)) continue;
+  const fn = api[key], native = fn.native;
+  api[key] = wrap(fn);
+  if (native) api[key].native = wrap(native);
+}
+require('node:module').syncBuiltinESMExports();
+if (typeof Bun !== 'undefined') for (const key of ['spawn', 'spawnSync']) {
+  const spawn = Bun[key]; Bun[key] = (cmd, options = {}) => {
+    if (!Array.isArray(cmd)) { options = cmd; cmd = options.cmd; }
+    if (['bun', 'node'].includes(path.basename(cmd[0]))) { const i = cmd[1] === 'run' ? 2 : cmd[2] === 'run' ? 3 : 1; cmd = [...cmd.slice(0, i), path.basename(cmd[0]) === 'bun' ? '--preload' : '--require', __filename, ...cmd.slice(i)]; }
+    return spawn(cmd, {...options, env: {...process.env, ...options.env}});
+  };
+}
+process.on('exit', () => { if (violations) process.exitCode = 1; });
+const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
+if (scratch.ROOT !== '/tmp/sa-scratch') throw new Error('production default changed');
+Object.assign(scratch, scratch.createScratch(${JSON.stringify(scratchRoot)}));
+module.exports = {violations: () => violations};`
+);
+mkdirSync(join(scratchRoot, 'codex-sentinel'), { recursive: true });
+writeFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'isolated');
+const boundary = createRequire(import.meta.url)(scratchPreload) as { violations: () => number };
+afterEach(() => expect(boundary.violations()).toBe(0));
 
 for (const scope of ['package', 'milestone', 'budget'] as const)
   test(`HF10 fake retry preserves ${scope} scope`, () => {
@@ -28,7 +70,10 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
           timeout_s: 5,
         },
       ];
-    if (scope === 'budget') plan.budget.launches = 3;
+    if (scope === 'budget') {
+      plan.budget.launches = 3;
+      plan.budget.enforcement = 'hard';
+    }
     // FC permits repair-limit debt in non-strict G1; this fixture needs a held gate.
     if (scope === 'milestone') plan.mode = 'strict';
     const py = join(root, 'supervisor.py');
@@ -100,20 +145,33 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
       gen.dir
     );
     const sa = (...args: string[]) => {
-      const p = Bun.spawnSync([join(WETAMP, 'bin/superagent'), ...args], {
-        env,
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
+      const p = Bun.spawnSync(
+        [process.execPath, '--preload', scratchPreload, join(WETAMP, 'src/cli.ts'), ...args],
+        {
+          env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }
+      );
       return { code: p.exitCode, out: lastJson(p.stdout.toString()), err: p.stderr.toString() };
     };
     const archon = (...args: string[]) => {
-      const p = Bun.spawnSync([join(WETAMP, 'bin/archon'), ...args, '--json'], {
-        env,
-        cwd: repo,
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
+      const p = Bun.spawnSync(
+        [
+          process.execPath,
+          '--preload',
+          scratchPreload,
+          join(WETAMP, 'src/coord/archon-entry.ts'),
+          ...args,
+          '--json',
+        ],
+        {
+          env,
+          cwd: repo,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }
+      );
       expect(p.exitCode).toBe(0);
       return lastJson(p.stdout.toString())!;
     };
@@ -191,6 +249,8 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
       writeFileSync(ready, 'ready');
       writeFileSync(join(root, 'answer'), 'yes');
       expect(sa('supervise-tick').code).toBe(0);
+      expect(readFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'utf8')).toBe('isolated');
+      expect(readFileSync(join(scratchRoot, '.log'), 'utf8')).toContain('codex-sentinel');
       const asks = JSON.parse(
         readFileSync(join(env.SUPERAGENT_HOME, 'asks.json'), 'utf8')
       ) as Record<string, { receipt?: { body: string } }>;
