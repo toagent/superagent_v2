@@ -1,9 +1,19 @@
-import { expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync, realpathSync, readFileSync } from 'node:fs';
+import { expect, spyOn, test } from 'bun:test';
+import {
+  mkdirSync,
+  mkdtempSync,
+  unlinkSync,
+  writeFileSync,
+  realpathSync,
+  readFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { trackTempRoots } from '../../packages/paths/src/test-utils';
 import { Intake, completion, intakeRoot, type Action, type Input } from '../src/intake';
+import { decisionsOf, main, needsOf } from '../src/cli';
+import * as archon from '../src/archon';
 import { nativeIntake } from '../src/intake-hook';
 import type { DeliveryDecision } from '../templates/.archon/scripts/sa-check';
 
@@ -233,6 +243,103 @@ test('bounded restart context retains pending pointers without injecting full hi
   expect(JSON.stringify(context)).not.toContain('x'.repeat(100));
   expect(s.context('/another').tasks).toHaveLength(0);
   expect(() => s.context('/repo', 12)).toThrow('budget');
+});
+
+test('CLI completion consumes final evidence after repair and fails closed on missing or bad gates', () => {
+  const dir = root(),
+    repo = resolve(import.meta.dir, '../..'),
+    plan = join(dir, 'plan.json');
+  const art = join(dir, 'artifacts/runs/run'),
+    oldHome = process.env.SUPERAGENT_HOME;
+  const oldArchonHome = process.env.ARCHON_HOME;
+  mkdirSync(art, { recursive: true });
+  mkdirSync(join(dir, 'runs'));
+  writeFileSync(plan, '{}');
+  const s = new Intake(intakeRoot(dir, repo));
+  const id = s.apply({ ...input('create'), repo }, [create()]).results![0]!.task!;
+  const receipt = { plan, digest: createHash('sha256').update('{}').digest('hex') };
+  s.apply({ ...input('bind'), repo }, [
+    { ...launch(id), ...receipt },
+    { ...bind(id), ...receipt },
+  ]);
+  writeFileSync(
+    join(dir, 'runs/run.json'),
+    JSON.stringify({
+      run_id: 'run',
+      archon_run_id: 'run',
+      repo,
+      plan,
+      gen_dir: dir,
+      branch: 'test',
+      workflow: 'test',
+    })
+  );
+  const run = {
+    id: 'run',
+    status: 'completed',
+    output_root: dir,
+    nodes: [{ nodeId: 'gate-m1-r2', state: 'completed' }],
+  };
+  const get = spyOn(archon, 'getRun').mockImplementation(() => run as archon.RunView);
+  const log = spyOn(console, 'log').mockImplementation(() => {});
+  const green: DeliveryDecision = {
+    kind: 'advance',
+    reason: null,
+    evidence: ['accept.json'],
+    debt: [],
+    requirements: {
+      status: 'verified',
+      items: [{ package: 'p', id: 'r', text: 'r', status: 'verified', evidence: ['accept.json'] }],
+    },
+  };
+  const put = (tag: string, decision: unknown) =>
+    writeFileSync(join(art, `${tag}.json`), JSON.stringify({ milestone: 'm1', decision }));
+  const show = () => {
+    main(['intake', 'show', id, '--repo', repo]);
+    return JSON.parse(String(log.mock.calls.at(-1)![0])).completion;
+  };
+  process.env.SUPERAGENT_HOME = dir;
+  process.env.ARCHON_HOME = join(dir, 'archon');
+  try {
+    put('verify-p', { ...green, kind: 'repair' });
+    put('settle-p', green);
+    put('diff-m1-r1', { ...green, kind: 'repair' });
+    put('gate-m1-r1', { ...green, kind: 'repair' });
+    put('diff-m1-r2', green);
+    put('gate-m1-r2', green);
+    expect(show()).toBe('verified');
+    expect(decisionsOf(art).filter(d => d.decision?.kind === 'repair')).toHaveLength(3);
+    expect(needsOf(art)).toEqual([]);
+    put('gate-m1-r2', { ...green, kind: 'block', reason: 'coder_redline' });
+    expect(show()).toBe('unknown');
+    expect(needsOf(art)).toHaveLength(1);
+    for (const decision of [
+      undefined,
+      { verdict: 'pass' },
+      { ...green, requirements: undefined },
+      { ...green, requirements: { status: 'verified', items: [] } },
+    ]) {
+      put('gate-m1-r2', decision);
+      expect(show()).toBe('unknown');
+    }
+    writeFileSync(join(art, 'gate-m1-r2.json'), '{');
+    expect(show()).toBe('unknown');
+    unlinkSync(join(art, 'gate-m1-r2.json'));
+    expect(show()).toBe('unknown');
+    put('gate-m1-r2', green);
+    run.status = 'running';
+    expect(show()).toBe('unknown');
+    run.status = 'completed';
+    writeFileSync(plan, '{"changed":true}');
+    expect(show()).toBe('unknown');
+  } finally {
+    get.mockRestore();
+    log.mockRestore();
+    if (oldHome === undefined) delete process.env.SUPERAGENT_HOME;
+    else process.env.SUPERAGENT_HOME = oldHome;
+    if (oldArchonHome === undefined) delete process.env.ARCHON_HOME;
+    else process.env.ARCHON_HOME = oldArchonHome;
+  }
 });
 
 test('process crash before/after atomic rename releases lock and cannot duplicate create', () => {

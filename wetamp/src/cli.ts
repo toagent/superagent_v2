@@ -432,36 +432,36 @@ export const decisionsOf = (art: string, m?: string, l?: Ledger) =>
       return { tag: file.slice(0, -5), milestone: out?.milestone, decision: decisionOf(out) };
     })
     .filter(d => m === undefined || d.milestone === m);
+/** Current evidence supersedes process history without removing it from decisionsOf. */
+export const currentDecisions = (decisions: ReturnType<typeof decisionsOf>) =>
+  decisions.filter(
+    (d, _, all) =>
+      !all.some(
+        other =>
+          other !== d &&
+          ((d.tag.startsWith('verify-') && other.tag === d.tag.replace('verify-', 'settle-')) ||
+            (d.milestone &&
+              other.milestone === d.milestone &&
+              (other.tag.startsWith('gate-') || other.tag.startsWith('diff-')) &&
+              ((!d.tag.startsWith('gate-') && !d.tag.startsWith('diff-')) ||
+                Number(other.tag.slice(other.tag.lastIndexOf('-r') + 2)) >
+                  Number(d.tag.slice(d.tag.lastIndexOf('-r') + 2)) ||
+                (other.tag.startsWith('gate-') && d.tag === other.tag.replace('gate-', 'diff-')))))
+      )
+  );
 export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
-  decisionsOf(art, m, l)
-    .filter(
-      (d, _, all) =>
-        !all.some(
-          other =>
-            other !== d &&
-            ((d.tag.startsWith('verify-') && other.tag === d.tag.replace('verify-', 'settle-')) ||
-              (d.milestone &&
-                other.milestone === d.milestone &&
-                (other.tag.startsWith('gate-') || other.tag.startsWith('diff-')) &&
-                ((!d.tag.startsWith('gate-') && !d.tag.startsWith('diff-')) ||
-                  Number(other.tag.slice(other.tag.lastIndexOf('-r') + 2)) >
-                    Number(d.tag.slice(d.tag.lastIndexOf('-r') + 2)) ||
-                  (other.tag.startsWith('gate-') &&
-                    d.tag === other.tag.replace('gate-', 'diff-')))))
-        )
-    )
-    .flatMap(({ tag, decision }) =>
-      decision?.kind === 'block' && decision.reason === 'coder_redline'
-        ? [
-            {
-              tag,
-              cap: 'permission',
-              why: decision.evidence.join(', '),
-              minimal_ask: '检查记录的权限拒绝事件并明确授权或调整任务范围。',
-            },
-          ]
-        : []
-    );
+  currentDecisions(decisionsOf(art, m, l)).flatMap(({ tag, decision }) =>
+    decision?.kind === 'block' && decision.reason === 'coder_redline'
+      ? [
+          {
+            tag,
+            cap: 'permission',
+            why: decision.evidence.join(', '),
+            minimal_ask: '检查记录的权限拒绝事件并明确授权或调整任务范围。',
+          },
+        ]
+      : []
+  );
 
 /** 登记过的 run id（runs/*.json 去掉扩展名）。 */
 export const ledgerIds = (): string[] => {
@@ -2485,7 +2485,11 @@ export function main(argv: string[]): number {
       const command = need(target, 'intake receive|apply|list|show|context|resume');
       const argument = a._.at(2);
       const raw: unknown = ['receive', 'apply'].includes(command)
-        ? JSON.parse(argument === '-' ? readFileSync(0, 'utf8') : readFileSync(need(argument, 'intake receive|apply <payload.json|->'), 'utf8'))
+        ? JSON.parse(
+            argument === '-'
+              ? readFileSync(0, 'utf8')
+              : readFileSync(need(argument, 'intake receive|apply <payload.json|->'), 'utf8')
+          )
         : undefined;
       const envelope = raw !== null && typeof raw === 'object' && 'input' in raw ? raw : undefined;
       const input = envelope?.input;
@@ -2514,7 +2518,17 @@ export function main(argv: string[]): number {
             const digest = createHash('sha256').update(readFileSync(l.plan)).digest('hex');
             if (digest !== binding.digest) return undefined;
             const run = getRun(l.archon_run_id, l.repo);
-            const decisions = decisionsOf(artifactsOf(run), undefined, l).map(d => d.decision);
+            const history = decisionsOf(artifactsOf(run), undefined, l);
+            if (
+              run.nodes?.some(
+                n =>
+                  n.state === 'completed' &&
+                  n.nodeId.startsWith('gate-') &&
+                  !history.some(d => d.tag === n.nodeId && d.decision)
+              )
+            )
+              return undefined;
+            const decisions = currentDecisions(history).map(d => d.decision);
             if (decisions.some(d => !d)) return undefined;
             return {
               completed: classifyRun(l, run).state === 'completed',
