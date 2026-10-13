@@ -165,8 +165,11 @@ test('explicit root rejects relative paths, root symlinks and canonical parent d
   symlinkSync(target, parent);
   const drifted = scratch.createScratch(join(parent, 'scratch'));
   require('node:fs').unlinkSync(parent);
-  symlinkSync(tmp(), parent);
+  const changedTarget = tmp();
+  symlinkSync(changedTarget, parent);
   expect(() => drifted.start({ session_id: 'probe' }, 'claude')).toThrow('root invalid');
+  // R1-1: refusal must happen before mkdir can write into the changed target.
+  expect(existsSync(join(changedTarget, 'scratch'))).toBe(false);
 });
 
 test.each(['node', process.execPath])('fs boundary fails closed in %s subprocess', executable => {

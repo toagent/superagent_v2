@@ -40,6 +40,8 @@ function createScratch(ROOT) {
     if (path.dirname(dir) !== ROOT) throw new Error('scratch session path invalid');
     const who = live.owner(), probe = who && identity.inspect(who.pid);
     if (!who || probe.state !== 'online') throw new Error('scratch client process identity unavailable');
+    // R1-1: reject parent drift before creating anything through the changed alias.
+    if (path.join(fs.realpathSync(path.dirname(ROOT)), path.basename(ROOT)) !== CANONICAL) throw new Error('scratch root invalid');
     fs.mkdirSync(ROOT, {recursive: true, mode: 0o700});
     if (fs.lstatSync(ROOT).isSymbolicLink() || fs.realpathSync(ROOT) !== CANONICAL) throw new Error('scratch root invalid');
     return withLock(sessionLock(dir), () => {
