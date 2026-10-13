@@ -14,7 +14,7 @@ import { type Alias, type Tiers } from './config';
 import { readExecutionTable, executionForNode, executionRoute, executionNode } from './execution';
 import { type Plan } from './plan';
 import {
-  attemptIdentity,
+  readAuthorEvidence,
   budgetUsage,
   effectiveBudget,
   effectiveRisk,
@@ -54,10 +54,7 @@ export function executePolicy(
   );
 }
 
-interface RunRow {
-  id: string;
-  output_root: string;
-}
+type RunRow = Omit<Parameters<typeof readAuthorEvidence>[0], 'events'> & { output_root: string };
 /** Match the current engine owner exactly; never infer ownership from age or newest run. */
 function runtimeExecution(
   path: string,
@@ -78,21 +75,37 @@ function runtimeExecution(
   if (!archonHome) throw new Error('policy: ARCHON_HOME missing');
   const db = new Database(join(archonHome, 'archon.db'), { readonly: true });
   let run: RunRow, events: Events;
+  let authors: string[] = [];
   try {
     const rows = db
       .query<
         RunRow,
         [string, number]
-      >("SELECT id, output_root FROM remote_agent_workflow_runs WHERE working_path=? AND status='running' AND json_extract(metadata,'$.execution_owner.pid')=?")
+      >("SELECT id, output_root, codebase_id, adopted_from_run_id FROM remote_agent_workflow_runs WHERE working_path=? AND status='running' AND json_extract(metadata,'$.execution_owner.pid')=?")
       .all(cwd, process.pid);
     if (rows.length !== 1) throw new Error('policy: engine owner is missing or ambiguous');
     run = rows[0];
-    events = db
+    const readEvents = (id: string): Events => db
       .query<{ event_type: string; step_name: string; data: string }, [string]>(
         'SELECT event_type, step_name, data FROM remote_agent_workflow_events WHERE workflow_run_id=? ORDER BY event_order'
       )
-      .all(run.id)
+      .all(id)
       .map(e => ({ ...e, data: JSON.parse(e.data) as Events[number]['data'] }));
+    events = readEvents(run.id);
+    if (route.role === 'review') {
+      const identities = readAuthorEvidence(
+        { ...run, events }, readPolicyAttempts(join(run.output_root, 'artifacts', 'runs', run.id)),
+        route.packages, route.milestone, id => {
+          const prior = db.query<RunRow, [string]>(
+            'SELECT id, output_root, codebase_id, adopted_from_run_id FROM remote_agent_workflow_runs WHERE id=?'
+          ).get(id);
+          if (!prior) throw new Error('policy: author ancestry missing');
+          return { ...prior, events: readEvents(id) };
+        }
+      );
+      if (!identities.length || identities.some(a => !a.model)) throw new Error('policy: author_unknown');
+      authors = [...new Set(identities.flatMap(a => a.model ? [a.model] : []))];
+    }
   } finally {
     db.close();
   }
@@ -105,7 +118,6 @@ function runtimeExecution(
     started--;
   if (started >= 0) events.splice(started, 1);
   const artifacts = join(run.output_root, 'artifacts', 'runs', run.id);
-  const attempts = readPolicyAttempts(artifacts);
   if (route.role === 'review' || route.round > 1) {
     const rounds = route.role === 'review' ? route.round : route.round - 1;
     route.risk = effectiveRisk(
@@ -119,27 +131,6 @@ function runtimeExecution(
       )
     );
   }
-  // Include every author that touched this candidate, including failed/partial attempts.
-  const authors =
-    route.role === 'review'
-      ? [
-          ...new Set([
-            ...attempts
-              .filter(a => table[a.node]?.role !== 'review')
-              .flatMap(a => [a.model, ...(a.resolved ? [a.resolved] : [])]),
-            ...events
-              .filter(
-                e =>
-                  ['code', 'repair'].includes(table[e.step_name ?? '']?.role) &&
-                  e.event_type === 'node_completed'
-              )
-              .flatMap(e => {
-                const identity = attemptIdentity(attempts, e.step_name ?? '', e.data?.binding);
-                return identity.model ? [identity.model] : [];
-              }),
-          ]),
-        ]
-      : [];
   const candidates = executionRoute(
     tiers,
     plan.console ?? 'claude',

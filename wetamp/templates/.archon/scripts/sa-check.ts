@@ -1116,19 +1116,25 @@ export function permissionEvidence(events: RunEvent[], pkgs: string[], m: string
   });
   return [...denied.values()];
 }
-let events: RunEvent[] | undefined;
+interface AuthorRun {
+  id: string;
+  codebase_id?: string | null;
+  adopted_from_run_id?: string | null;
+  output_root?: string | null;
+  events: RunEvent[];
+}
+let evidence: AuthorRun | undefined;
 /**
  * 执行层台账（Archon 事件里的 spend/binding）。INPUTS_ARCHON 为空（fake 生成）时调用方不查：身份记 fake、
  * 预算不检查。输出前可能有日志行，取最后一个能整体解析的顶层 `{` 起点。
  */
-function runEvents(): RunEvent[] {
-  if (events) return events;
-  const id = process.env.WORKFLOW_ID;
+function runEvidence(id = process.env.WORKFLOW_ID): AuthorRun {
+  if (evidence && id === process.env.WORKFLOW_ID) return evidence;
   if (!id) throw new Error('sa-check: WORKFLOW_ID unset');
-  if (env('EVENTS_FILE')) {
-    const saved = JSON.parse(readFileSync(env('EVENTS_FILE'), 'utf8')) as { id: string; events?: RunEvent[] };
+  if (env('EVENTS_FILE') && id === process.env.WORKFLOW_ID) {
+    const saved = JSON.parse(readFileSync(env('EVENTS_FILE'), 'utf8')) as AuthorRun;
     if (saved.id !== id || !Array.isArray(saved.events)) throw new Error('sa-check: invalid authoritative events');
-    return (events = saved.events);
+    return (evidence = saved);
   }
   const p = auxiliary([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json']);
   if (p.exitCode !== 0 || p.signalCode)
@@ -1139,14 +1145,17 @@ function runEvents(): RunEvent[] {
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].startsWith('{')) continue;
     try {
-      return (events =
-        (JSON.parse(lines.slice(i).join('\n')) as { events?: RunEvent[] }).events ?? []);
+      const saved = JSON.parse(lines.slice(i).join('\n')) as AuthorRun;
+      if (!Array.isArray(saved.events)) throw new Error('invalid events');
+      if (id === process.env.WORKFLOW_ID) evidence = saved;
+      return saved;
     } catch {
       // 该行只是日志里的 `{`，继续向前找真正的 JSON 起点
     }
   }
   throw new Error(`archon workflow get ${id}: no JSON in output`);
 }
+const runEvents = (): RunEvent[] => runEvidence().events;
 const AI_NODE = /^(code|repair|fix|review)-/;
 
 /**
@@ -1293,6 +1302,44 @@ export function attemptIdentity(attempts: PolicyAttempt[], node: string, binding
     : { model: null, strength: 'unknown' };
 }
 
+/** Read each generation's own receipts; ancestry grants no access to its candidate or contract. */
+export function readAuthorEvidence(
+  run: AuthorRun, attempts: PolicyAttempt[], pkgs: string[], milestone: string,
+  load: (id: string) => AuthorRun
+): Ident[] {
+  const authors: Ident[] = [], seen = new Set<string>(), repo = run.codebase_id;
+  const unknown: Ident = { model: null, strength: 'unknown' };
+  const owns = (node: string) => pkgs.some(p => node === `code-${p}` || node === `repair-${p}`) ||
+    Array.from({ length: MAX_ROUNDS }, (_, i) => `fix-${milestone}-r${String(i + 1)}`).includes(node);
+  for (;;) {
+    if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
+    seen.add(run.id);
+    const receipts = attempts.filter(a => owns(a.node));
+    authors.push(...receipts.map(a => attemptIdentity([a], a.node)));
+    const nodes = new Set(run.events.filter(e => owns(e.step_name ?? '') &&
+      ['node_started', 'node_completed', 'node_failed'].includes(e.event_type)).map(e => e.step_name!));
+    for (const node of nodes) {
+      if (receipts.some(a => a.node === node)) continue;
+      const history = run.events.filter(e => e.step_name === node &&
+        ['node_started', 'node_completed', 'node_failed'].includes(e.event_type));
+      for (const e of history.filter(e => e.event_type !== 'node_started'))
+        authors.push(e.event_type === 'node_completed' ? attemptIdentity([], node, e.data?.binding) : unknown);
+      if (history.at(-1)?.event_type === 'node_started') authors.push(unknown);
+    }
+    const prior = run.adopted_from_run_id;
+    if (!prior && seen.size > 1 && !receipts.length && !nodes.size) authors.push(unknown);
+    if (!prior) return authors;
+    try {
+      run = load(prior);
+      if (run.id !== prior || !repo || run.codebase_id !== repo || !run.output_root)
+        return [...authors, unknown];
+      attempts = readPolicyAttempts(join(run.output_root, 'artifacts', 'runs', run.id));
+    } catch {
+      return [...authors, unknown];
+    }
+  }
+}
+
 /** F-14：不合格的原因；null = 合格独立评审（双方身份已知、实际模型不同）。 */
 export function independence(authors: Ident[], reviewer: Ident): string | null {
   if (reviewer.strength === 'unknown') return 'reviewer_unknown';
@@ -1345,16 +1392,11 @@ function gate(): void {
       (d.reason === 'no_change' && rechecks.at(-1)?.ok && reviews.at(-1) === null))
   ) {
     const done = env('ARCHON') ? runEvents().filter(e => e.event_type === 'node_completed') : [];
-    const author = new RegExp(
-      `^((code|repair)-(${env('PKGS').split(',').join('|')})|fix-${m}-r\\d)$`
-    );
     const reviewer = `review-${m}-r${String(reviewed + 1)}`;
     const attempts = readPolicyAttempts(artifacts);
     identity = env('ARCHON')
       ? {
-          authors: done
-            .filter(e => author.test(e.step_name ?? ''))
-            .map(e => attemptIdentity(attempts, e.step_name ?? '', e.data?.binding)),
+          authors: readAuthorEvidence(runEvidence(), attempts, env('PKGS').split(','), m, runEvidence),
           reviewer: attemptIdentity(
             attempts,
             reviewer,
