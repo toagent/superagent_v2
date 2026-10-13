@@ -17,24 +17,37 @@ import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/work
 import { workflowRoles } from './board/workflow';
 import type { TokenUsage } from '../../packages/provider-contract/src/result';
 
-export type ReportTokens = Partial<TokenUsage>;
+export type ReportTokens = Partial<TokenUsage> & { basis?: 'gross' | 'raw-exclusive' | 'unknown'; reason?: string; raw?: Partial<TokenUsage> };
 export const tokenFields = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
-/** Engine receipts are already gross/per-turn; ccusage Claude input is raw. */
+/** Engine receipts have a gross contract; cumulative sessions need a structured total equation. */
 // prettier-ignore
-export function normalizeTokens(raw: ReportTokens, basis: 'gross' | 'claude-raw' = 'gross'): ReportTokens {
-  return { ...raw, ...(basis === 'claude-raw' && raw.input !== undefined
-    ? { input: raw.input + (raw.cacheRead ?? 0) + (raw.cacheWrite ?? 0) } : {}) };
+export function normalizeTokens(raw: ReportTokens, basis: 'gross' | 'claude-raw' | 'session' = 'gross'): ReportTokens {
+  const valid = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  const unknown = (reason: string): ReportTokens => ({ cost: raw.cost, basis: 'unknown', reason, raw });
+  if (!valid(raw.input) || !valid(raw.output) || tokenFields.some(f => raw[f] !== undefined && !valid(raw[f]))) return unknown('invalid_token_fields');
+  const cache = (raw.cacheRead ?? 0) + (raw.cacheWrite ?? 0);
+  let exclusive = basis === 'claude-raw';
+  if (basis === 'session') {
+    if (![raw.total, raw.cacheRead, raw.cacheWrite].every(valid)) return unknown('missing_or_invalid_session_fields');
+    const gross = raw.total === raw.input + raw.output;
+    exclusive = raw.total === raw.input + raw.output + cache;
+    if (gross === exclusive) return unknown('ambiguous_or_inconsistent_total');
+  }
+  const input = raw.input + (exclusive ? cache : 0);
+  if (!valid(input) || cache > input) return unknown('cache_exceeds_input');
+  return { ...raw, input, ...(basis === 'session' ? { basis: exclusive ? 'raw-exclusive' as const : 'gross' as const, raw } : {}) };
 }
 // prettier-ignore
-export function tokenTotals(rows: ReportTokens[]): Record<string, number | 'unknown'> {
-  return Object.fromEntries(tokenFields.map(field => {
+export function tokenTotals(rows: ReportTokens[]): Record<string, number | 'unknown' | string[]> {
+  const reasons = [...new Set(rows.flatMap(r => r.basis === 'unknown' ? [r.reason ?? 'unknown_basis'] : []))];
+  return { ...(reasons.length ? { reasons } : {}), ...Object.fromEntries(tokenFields.map(field => {
     const values = rows.map(r => r[field]).filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0);
-    return [field, values.length ? values.reduce((a, b) => a + b, 0) : 'unknown'];
-  }));
+    return [field, rows.some(r => r.basis === 'unknown') ? 'unknown' : values.length ? values.reduce((a, b) => a + b, 0) : 'unknown'];
+  })) };
 }
 // prettier-ignore
 export function sessionTokens(s: UsageSession): ReportTokens {
-  return normalizeTokens({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, ...(s.cost !== null ? { cost: s.cost } : {}) }, s.client === 'claude' ? 'claude-raw' : 'gross');
+  return normalizeTokens({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, ...(s.cost !== null ? { cost: s.cost } : {}) }, 'session');
 }
 // prettier-ignore
 export function tokenFees(rows: ReportTokens[]): number | 'unknown' {
@@ -64,7 +77,7 @@ const key = (client: Client, id: string): string => `${client}:${sessionKey(id)}
 // prettier-ignore
 const empty = (): Counts => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, sessions: 0 });
 // prettier-ignore
-const counts = (r: ObjectValue): Counts => ({ input: n(r.inputTokens), output: n(r.outputTokens), reasoning: n(r.reasoningOutputTokens), cacheRead: n(r.cacheReadTokens), cacheWrite: n(r.cacheCreationTokens), total: n(r.totalTokens), sessions: 1 });
+const counts = (r: ObjectValue): Counts => ({ input: n(r.inputTokens), output: n(r.outputTokens), reasoning: n(r.reasoningOutputTokens), cacheRead: typeof r.cacheReadTokens === 'number' ? r.cacheReadTokens : NaN, cacheWrite: typeof r.cacheCreationTokens === 'number' ? r.cacheCreationTokens : NaN, total: n(r.totalTokens), sessions: 1 });
 // prettier-ignore
 export function parseUsage(value: unknown, client: Client): UsageSession[] {
   const o = obj(value), rows = o.sessions ?? (client === 'claude' ? o.session : undefined);

@@ -29,6 +29,7 @@ import {
 import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
 import type { RunView } from './archon';
 import { workflowSourceMetadataSchema } from '../../packages/workflows/src/schemas/workflow-run';
+import { capturedSourceRoots, DEFAULT_WORKFLOW_SOURCE_CONFIG } from '../../packages/workflows/src/workflow-source';
 
 /** Only project engine decisions; green commands and model reports are not coverage. */
 export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsOf>[0]) {
@@ -392,8 +393,9 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
           (j.metadata as Record<string, unknown> | undefined)?.workflow_source
         );
         try {
+          const project = source.success ? capturedSourceRoots({ ...source.data, config: source.data.source_config ?? DEFAULT_WORKFLOW_SOURCE_CONFIG }).project : null;
           // prettier-ignore
-          if (source.success) graph = (Bun.YAML.parse(readFileSync(join(source.data.root, '.archon/workflows', l.workflow, `${l.workflow}.yaml`), 'utf8')) as { nodes?: Parameters<typeof criticalPath>[2] }).nodes;
+          if (project) graph = (Bun.YAML.parse(readFileSync(join(project, '.archon/workflows', l.workflow, `${l.workflow}.yaml`), 'utf8')) as { nodes?: Parameters<typeof criticalPath>[2] }).nodes;
         } catch { /* Missing captured source leaves the path unknown. */ }
         paths[`${l.run_id}/${id}`] = criticalPath(j as unknown as RunView, rows, graph);
       } catch (e) {
