@@ -45,6 +45,8 @@ superagent job exec --title t -- cmd...  # 登记直接派出的后台作业，b
 superagent jobs [--all]                  # 列出登记作业（默认 running 与 1h 内结束的）；结束超过 24h 的读取时回收
 ```
 
+本地 delivery 允许目标分支沿启动 HEAD 正常前进：同 base 工作包在目标锁下按实时 tip 组合验收并串行集成，receipt 的 `target_tip` 记录实际验收基准，原启动目标身份保留；目标历史重写仍拒绝，push 始终由人执行。
+
 将军默认最大权限，只有执行层红线是硬边界；`caps` 用于收紧（plan 级，`packages[].caps` 覆盖），未写的项保持全开：
 
 ```json

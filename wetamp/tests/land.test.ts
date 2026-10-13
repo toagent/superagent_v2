@@ -94,7 +94,8 @@ test.each([
   'dirty',
   'source-dirty',
   'source-drift',
-  'target-drift',
+  'target-rewrite',
+  'missing-launch',
   'checkout',
 ])('delivery rejects %s without changing target or discarding source', kind => {
   const f = deliveryFixture();
@@ -106,7 +107,8 @@ test.each([
   if (kind === 'dirty') writeFileSync(join(f.repo, 'user.txt'), 'keep');
   if (kind === 'source-dirty') writeFileSync(join(f.worktree, 'user.txt'), 'keep');
   if (kind === 'source-drift') sh('git commit --allow-empty -qm drift', f.worktree);
-  if (kind === 'target-drift') sh('git commit --allow-empty -qm drift', f.repo);
+  if (kind === 'target-rewrite') sh('git reset --hard "$(git commit-tree HEAD^{tree} -m rewritten)"', f.repo);
+  if (kind === 'missing-launch') f.delivery.target.head = '0'.repeat(40);
   if (kind === 'checkout') f.delivery.target.checkout = f.worktree;
   const before = sh('git rev-parse HEAD', f.repo);
   expect(() =>
@@ -118,10 +120,56 @@ test.each([
       },
       f.context
     )
-  ).toThrow();
+  ).toThrow(kind === 'target-rewrite' ? 'not a descendant' : kind === 'missing-launch' ? 'cannot verify launch HEAD ancestry' : undefined);
   expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
   expect(existsSync(f.worktree)).toBe(true);
   expect(existsSync(f.delivery.receipt)).toBe(false);
+});
+
+// prettier-ignore
+test.each(['pass', 'accept-fail', 'rewrite-race'])('same-base deliveries integrate serially: %s', kind => {
+  const f = deliveryFixture(), worker = join(f.root, 'second'), launch = { ...f.delivery.target };
+  sh(`git worktree add -qb sa/second '${worker}' ${launch.head}`, f.repo);
+  sh('echo second > second.txt && git add second.txt && git commit -qm second', worker);
+  const land = { ...f.land, branch: 'sa/second', head: sh('git rev-parse HEAD', worker).trim() };
+  const delivery = { ...f.delivery, task: 'second', receipt: join(f.art, 'second.json') };
+  const context = { ...f.context, delivery }, run = { ...f.run, working_path: worker };
+  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+  let candidate = '', rewritten = '';
+  try {
+    const first = applyLand(f.run, f.land, () => 0, f.context);
+    expect(first?.status).toBe('manual_push');
+    expect(first).toHaveProperty('target_tip', launch.head);
+    const tip = sh('git rev-parse HEAD', f.repo).trim();
+    const verify = mock((cwd: string) => {
+      candidate = cwd;
+      expect(readFileSync(join(cwd, 'delivery.txt'), 'utf8')).toBe('delivery\n');
+      expect(readFileSync(join(cwd, 'second.txt'), 'utf8')).toBe('second\n');
+      expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(tip);
+      expect(sh('git rev-list --parents -n 1 HEAD', cwd).trim().split(' ').slice(1)).toEqual([tip, land.head]);
+      if (kind === 'rewrite-race') {
+        sh('git reset --hard "$(git commit-tree HEAD^{tree} -m rewritten)"', f.repo);
+        rewritten = sh('git rev-parse HEAD', f.repo).trim();
+      }
+      return kind === 'accept-fail' ? 1 : 0;
+    });
+    if (kind === 'pass') {
+      const result = applyLand(run, land, verify, context);
+      expect(result).toMatchObject({ target: launch, target_tip: tip, status: 'manual_push' });
+      expect(result?.integrated).toBe(sh('git rev-parse HEAD', f.repo).trim());
+      expect(JSON.parse(readFileSync(delivery.receipt, 'utf8'))).toEqual(result);
+      expect(readFileSync(join(f.repo, 'second.txt'), 'utf8')).toBe('second\n');
+    } else {
+      expect(() => applyLand(run, land, verify, context)).toThrow(kind === 'accept-fail' ? 'acceptance failed' : 'not a descendant');
+      expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(rewritten || tip);
+      expect(existsSync(join(f.repo, 'second.txt'))).toBe(false);
+      expect(existsSync(delivery.receipt)).toBe(false);
+    }
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(delivery.target).toEqual(launch);
+    expect(existsSync(candidate)).toBe(false);
+    expect(sh('git rev-parse sa/second', f.repo).trim()).toBe(land.head);
+  } finally { probe.mockRestore(); }
 });
 
 test('delivery renders local merge comment and does not accept a fabricated receipt', () => {

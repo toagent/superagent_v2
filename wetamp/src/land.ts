@@ -128,6 +128,13 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     if (git('rev-parse', `${land.branch}^{tree}`) !== tree) throw new Error('land: branch tree differs from accepted tree');
   };
   sameTree();
+  const targetHistory = (tip: string) => {
+    if (!delivery) return;
+    const p = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', delivery.target.head, tip], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+    if (p.exitCode === 1) throw new Error('delivery: target HEAD is not a descendant of launch HEAD');
+    if (p.exitCode !== 0) throw new Error(`delivery: cannot verify launch HEAD ancestry: ${p.stderr.toString().trim()}`);
+  };
+  targetHistory(git('rev-parse', `refs/heads/${target}`));
   const ancestor = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', land.head, `refs/heads/${target}`], { stdout: 'pipe', stderr: 'pipe' });
   if (ancestor.exitCode > 1) throw new Error(`delivery: ${ancestor.stderr.toString().trim()}`);
   // Git evidence, never a supplied receipt, determines whether integration already happened.
@@ -155,11 +162,12 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     }
     return { task: delivery.task, source: land.head, target: delivery.target, contract: delivery.contract, evidence: delivery.evidence, integrated, status: 'unknown', reason, push };
   }
-  if (delivery && ancestor.exitCode !== 0 && git('rev-parse', `refs/heads/${target}`) !== delivery.target.head) throw new Error('delivery: target HEAD drifted since launch');
   let receipt: DeliveryReceipt | undefined;
   const fingerprint = runtimeFingerprint();
   for (let attempt = 0; ; attempt++) {
-  const tip = git('rev-parse', `refs/heads/${target}`), root = mkdtempSync(join(tmpdir(), 'sa-land-')), candidate = join(root, 'wt');
+  const tip = git('rev-parse', `refs/heads/${target}`);
+  targetHistory(tip);
+  const root = mkdtempSync(join(tmpdir(), 'sa-land-')), candidate = join(root, 'wt');
   try {
     git('worktree', 'add', '--detach', candidate, tip);
     const ff = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', tip, land.head], { stdout: 'pipe', stderr: 'pipe' });
