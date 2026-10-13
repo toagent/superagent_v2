@@ -27,8 +27,8 @@ nodes:
     with:
       counter: /GEN/attempts/m1
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     depends_on:
       - start-m1
     always_run: true
@@ -46,7 +46,7 @@ nodes:
       counter: /GEN/attempts/.packages/core
       gen: /GEN
       pkg: core
-      review: ""
+      review: ''
     depends_on:
       - start-m1
     always_run: true
@@ -544,8 +544,8 @@ nodes:
     with:
       counter: /GEN/attempts/review-m1-r1
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     output_format:
       type: object
       properties:
@@ -660,6 +660,7 @@ nodes:
       - review-m1-r1
     with:
       kind: gate
+      scope_pkgs: core
       review: '1'
       round: 1
       R1:
@@ -885,8 +886,8 @@ nodes:
     with:
       counter: /GEN/attempts/review-m1-r2
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     output_format:
       type: object
       properties:
@@ -1001,6 +1002,7 @@ nodes:
       - review-m1-r2
     with:
       kind: gate
+      scope_pkgs: core
       review: '1'
       round: 2
       R1:
@@ -1230,8 +1232,8 @@ nodes:
     with:
       counter: /GEN/attempts/review-m1-r3
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     output_format:
       type: object
       properties:
@@ -1346,6 +1348,7 @@ nodes:
       - review-m1-r3
     with:
       kind: gate
+      scope_pkgs: core
       review: '1'
       round: 3
       R1:
@@ -1388,8 +1391,8 @@ nodes:
     with:
       counter: /GEN/attempts/m2
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     depends_on:
       - start-m2
     always_run: true
@@ -1407,7 +1410,7 @@ nodes:
       counter: /GEN/attempts/.packages/api
       gen: /GEN
       pkg: api
-      review: ""
+      review: ''
     depends_on:
       - start-m2
     always_run: true
@@ -1854,8 +1857,8 @@ nodes:
     with:
       counter: /GEN/attempts/review-m2-r1
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     output_format:
       type: object
       properties:
@@ -1970,6 +1973,7 @@ nodes:
       - review-m2-r1
     with:
       kind: gate
+      scope_pkgs: core,api
       review: '1'
       round: 1
       R1:
@@ -2194,8 +2198,8 @@ nodes:
     with:
       counter: /GEN/attempts/review-m2-r2
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     output_format:
       type: object
       properties:
@@ -2310,6 +2314,7 @@ nodes:
       - review-m2-r2
     with:
       kind: gate
+      scope_pkgs: core,api
       review: '1'
       round: 2
       R1:
@@ -2538,8 +2543,8 @@ nodes:
     with:
       counter: /GEN/attempts/review-m2-r3
       gen: /GEN
-      pkg: ""
-      review: ""
+      pkg: ''
+      review: ''
     output_format:
       type: object
       properties:
@@ -2654,6 +2659,7 @@ nodes:
       - review-m2-r3
     with:
       kind: gate
+      scope_pkgs: core,api
       review: '1'
       round: 3
       R1:

@@ -263,17 +263,19 @@ function runtimeFixture() {
   writeFileSync(join(root, 'plan.json'), JSON.stringify(plan));
   const db = new Database(join(root, 'archon.db'));
   db.run(
-    'CREATE TABLE remote_agent_workflow_runs (id TEXT, working_path TEXT, status TEXT, output_root TEXT, metadata TEXT)'
+    'CREATE TABLE remote_agent_workflow_runs (id TEXT, working_path TEXT, status TEXT, output_root TEXT, metadata TEXT, codebase_id TEXT, adopted_from_run_id TEXT)'
   );
   db.run(
     'CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT, event_type TEXT, step_name TEXT, data TEXT, event_order INTEGER)'
   );
-  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?)', [
+  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?, ?, ?)', [
     'run',
     root,
     'running',
     root,
     JSON.stringify({ execution_owner: { pid: process.pid } }),
+    'repo',
+    null,
   ]);
   db.close();
   return { root, artifacts, tiers, policyPath, plan };
@@ -490,7 +492,7 @@ test('POLICY-R1-05: declared G0 risk-path acceptance selects the G2 review pool 
   expect(String(calls.at(-1)?.nodeConfig?.effort)).toBe(s.tiers.policy.effort.G2_reviewer.R2);
 });
 
-test('reviewer-alt excludes actual authors within the admitted vendor and refuses a vendor change', async () => {
+test('reviewer-alt carry excludes actual authors within the admitted vendor and refuses a vendor change', async () => {
   const s = runtimeFixture(),
     calls: SendQueryOptions[] = [];
   s.plan.console = 'codex';
@@ -507,6 +509,26 @@ test('reviewer-alt excludes actual authors within the admitted vendor and refuse
       tokens: { input: 10, output: 0 },
     },
   ]);
+  const priorRoot = tmp(),
+    priorArtifacts = join(priorRoot, 'artifacts/runs/prior');
+  mkdirSync(priorArtifacts, { recursive: true });
+  writePolicyAttempts(priorArtifacts, readPolicyAttempts(s.artifacts));
+  writePolicyAttempts(s.artifacts, []);
+  const db = new Database(join(s.root, 'archon.db'));
+  db.run('UPDATE remote_agent_workflow_runs SET adopted_from_run_id=? WHERE id=?', [
+    'prior',
+    'run',
+  ]);
+  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?, ?, ?)', [
+    'prior',
+    priorRoot,
+    'completed',
+    priorRoot,
+    '{}',
+    'repo',
+    null,
+  ]);
+  db.close();
   const native = fake(options => {
     calls.push(options);
     return success;
@@ -529,6 +551,7 @@ test('reviewer-alt excludes actual authors within the admitted vendor and refuse
         node: 'repair-core',
         provider: 'claude' as const,
         model,
+        resolved: model,
         status: 'completed' as const,
         tokens: { input: 10, output: 0 },
       })),

@@ -20,6 +20,7 @@ import {
   disposition,
   identityOf,
   independence,
+  readAuthorEvidence,
   ledgerOf,
   scopeRisk,
   deliveryDecision,
@@ -31,7 +32,90 @@ import {
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
+import { writePolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import Ajv2020 from '../../packages/workflows/node_modules/ajv/dist/2020';
+
+test('author carry reads each adopted generation and refuses unknown or invalid ancestry', () => {
+  type Run = Parameters<typeof readAuthorEvidence>[0];
+  const root = tmp(),
+    oldRoot = tmp(),
+    art = join(oldRoot, 'artifacts/runs/old');
+  const event = (model: string) => ({
+    event_type: 'node_completed',
+    step_name: 'repair-core',
+    data: {
+      binding: {
+        model: { requested: model, resolved: { source: 'unavailable', reason: 'unsupported' } },
+      },
+    },
+  });
+  const runs: Record<string, Run> = {
+    current: { id: 'current', codebase_id: 'repo', adopted_from_run_id: 'middle', events: [] },
+    middle: {
+      id: 'middle',
+      codebase_id: 'repo',
+      output_root: root,
+      adopted_from_run_id: 'old',
+      events: [event('repair')],
+    },
+    old: { id: 'old', codebase_id: 'repo', output_root: oldRoot, events: [] },
+  };
+  mkdirSync(art, { recursive: true });
+  const attempt = {
+    id: 'original',
+    node: 'code-core',
+    provider: 'codex' as const,
+    model: 'author',
+    status: 'completed' as const,
+  };
+  writePolicyAttempts(art, [attempt]);
+  const read = () => readAuthorEvidence(runs.current!, [], ['core'], 'm1', id => runs[id]!);
+  expect(read()).toEqual([
+    { model: 'repair', strength: 'pinned' },
+    { model: 'author', strength: 'pinned' },
+  ]);
+  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBeNull();
+  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
+  const cumulative = readAuthorEvidence(
+    runs.current!,
+    [{ ...attempt, node: 'fix-m0-r2', model: 'fix-author' }],
+    ['core'],
+    ['m0', 'm1'],
+    id => runs[id]!
+  );
+  expect(independence(cumulative, { model: 'fix-author', strength: 'pinned' })).toBe('same_model');
+  expect(
+    independence(
+      readAuthorEvidence(runs.current!, [], ['core', 'missing'], 'm1', id => runs[id]!),
+      { model: 'reviewer', strength: 'pinned' }
+    )
+  ).toBe('author_unknown');
+  writePolicyAttempts(art, [{ ...attempt, status: 'failed' }]);
+  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
+  writePolicyAttempts(art, [attempt]);
+  const old = runs.old!;
+  for (const broken of [
+    undefined,
+    { ...old, codebase_id: 'other' },
+    { ...old, adopted_from_run_id: 'middle' },
+    { ...old, output_root: null },
+  ]) {
+    if (broken) runs.old = broken;
+    else delete runs.old;
+    expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
+  }
+  runs.old = old;
+  writePolicyAttempts(art, []);
+  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
+  runs.old = { ...old, events: [event('unknown')] };
+  runs.old.events[0]!.data!.binding = undefined;
+  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
+  expect(
+    readAuthorEvidence({ ...old, events: [event('local')] }, [], ['core'], 'm1', () => {
+      throw new Error('unexpected ancestry');
+    })
+  ).toEqual([{ model: 'local', strength: 'pinned' }]);
+});
 
 test('P3 missing provider and node receipts reserve spend instead of counting zero', () => {
   expect(budgetUsage([{ event_type: 'node_started', step_name: 'code-core' }], 20)).toMatchObject({
@@ -1257,7 +1341,7 @@ describe('sa-check script', () => {
     expect(gate('G2')).toMatchObject({ code: 1, err: expect.stringContaining('gate: no review') });
     expect(gate('G2', true)).toMatchObject({ code: 0, out: { grade: 'PASS', risk: 'G2' } });
   });
-  test('B1 same-diff reuses a qualified review after acceptance recovers; contract or identity drift refuses reuse', () => {
+  test('B1 carry same-diff reuses a qualified review after acceptance recovers; contract or identity drift refuses reuse', () => {
     const root = tmp(),
       repo = gitRepo(root),
       flag = join(root, 'ready');
@@ -1303,7 +1387,7 @@ describe('sa-check script', () => {
       archon = join(root, 'archon');
     writeFileSync(
       archon,
-      `#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8'));\n`
+      `#!/usr/bin/env node\nconst saved=JSON.parse(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8')); const prior=process.argv[4]==='ancestor'; process.stdout.write(JSON.stringify({...saved,id:prior?'ancestor':'scratch-only',codebase_id:'repo',output_root:${JSON.stringify(root)},adopted_from_run_id:prior?null:'ancestor',events:saved.events.filter(e=>prior?e.step_name==='code-a':e.step_name!=='code-a')}));\n`
     );
     chmodSync(archon, 0o755);
     const events = (reviewer: string) => ({
