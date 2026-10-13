@@ -152,11 +152,14 @@ export function getRun(id: string, cwd?: string): RunView {
 }
 
 /** Native attention is a notification, not a verbose RunView: classification still needs one get.
- * Bound the transport as well as the native deadline, leaving time for CLI shutdown. */
+ * Native wait owns the remaining business deadline; the existing query budget separately
+ * bounds CLI startup/shutdown overhead so a cold start cannot consume the wait's margin. */
 export function waitNotification(id: string, cwd: string, seconds: number): RunWaitResult['kind'] {
-  const slice = Math.min(29, seconds);
-  const args = ['workflow', 'wait', id, '--json', '--timeout', String(slice)];
-  const r = archon(args, cwd, undefined, Math.min(30_000, Math.ceil(slice * 1000) + 1000));
+  const timeoutMs = Math.ceil(seconds * 1000) + QUERY_TIMEOUT_MS;
+  if (!Number.isFinite(seconds) || seconds <= 0 || !Number.isFinite(timeoutMs))
+    throw new Error('workflow wait timeout must be a positive finite number of seconds');
+  const args = ['workflow', 'wait', id, '--json', '--timeout', String(seconds)];
+  const r = archon(args, cwd, undefined, timeoutMs);
   const j = jsonOf(args, r);
   const kinds: RunWaitResult['kind'][] = ['attention', 'owner_lost', 'deadline', 'aborted', 'not_found'];
   const kind = kinds.find(k => k === j.result);

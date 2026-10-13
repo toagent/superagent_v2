@@ -889,15 +889,16 @@ describe('waitRun (archon stub)', () => {
     expect(out).toMatchObject({ run_id: 'sa1', state: 'completed', execution: [] });
     expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
   });
-  test.each([20, 60])('wait %ss uses bounded native notifications instead of per-second get', seconds => {
+  test.each([20, 60, 0.125])('wait %ss uses one native notification for the remaining deadline', seconds => {
     const s = stub([run('running')]);
     expect(waitRun(s.ledger, seconds)).toMatchObject({ state: 'running', exit: EXIT.running });
     const waits = s.calls().filter(c => c.startsWith('workflow wait'));
-    expect(waits).toHaveLength(Math.ceil(seconds / 29));
-    expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(waits.length + 1);
-    expect(waits.every(c => Number(c.split('--timeout ')[1]) <= 29)).toBe(true);
+    expect(waits).toHaveLength(1);
+    expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(2);
+    expect(Number(waits[0]!.split('--timeout ')[1])).toBeLessThanOrEqual(seconds);
+    expect(Number(waits[0]!.split('--timeout ')[1])).toBeGreaterThan(0);
   });
-  test('running then completed: waits in slices, returns 0 with land commands', () => {
+  test('running then completed: native wait returns 0 with land commands', () => {
     const s = stub([
       run('running', { nodes: [{ nodeId: 'a', state: 'running' }] }),
       run('completed', { output_root: '/none', nodes: [{ nodeId: 'a', state: 'completed' }] }),
@@ -917,6 +918,19 @@ describe('waitRun (archon stub)', () => {
   test('timeout while running returns 4 without blocking past deadline', () => {
     const s = stub([run('running')]);
     expect(waitRun(s.ledger, 0)).toMatchObject({ state: 'running', exit: EXIT.running });
+  });
+  test('wait transport failure is reported without changing the run or retrying execution', () => {
+    const s = stub([run('running')]);
+    const before = JSON.stringify(s.ledger);
+    const wait = spyOn(archonMod, 'waitNotification').mockImplementation(() => {
+      throw new Error('workflow wait transport unavailable');
+    });
+    try {
+      expect(() => waitRun(s.ledger, 60)).toThrow('transport unavailable');
+      expect(wait).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(s.ledger)).toBe(before);
+      expect(s.calls().every(c => c.startsWith('workflow get'))).toBe(true);
+    } finally { wait.mockRestore(); }
   });
   test('held gate without a delivery artifact is unknown', () => {
     const s = stub([
