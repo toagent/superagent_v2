@@ -17,7 +17,7 @@ import {
 import { spawn } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
-import type { Check, Plan } from '../../../src/plan';
+import type { Check, Plan, Pkg } from '../../../src/plan';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
@@ -44,12 +44,29 @@ interface Coder {
   needs?: unknown[];
 }
 type Disposition = 'advance' | 'repair' | 'suspend';
+type RequirementContract = Pick<Pkg, 'id' | 'accept' | 'requirements'>;
+interface CommandResult {
+  check: Check;
+  pass: boolean | null;
+  evidence: string;
+}
+interface Completion {
+  status: 'legacy' | 'verified' | 'unmet' | 'unknown';
+  items: {
+    package: string;
+    id: string;
+    text: string;
+    status: 'verified' | 'unmet' | 'unknown';
+    evidence: string[];
+  }[];
+}
 export type DeliveryDecision = {
   [K in 'advance' | 'debt' | 'repair' | 'block']: {
     kind: K;
     reason: string | null;
     evidence: string[];
     debt: string[];
+    requirements?: Completion;
   };
 }['advance' | 'debt' | 'repair' | 'block'];
 export interface Accept {
@@ -69,6 +86,8 @@ export interface Accept {
   base_results?: { cmd: string; pass: boolean }[];
   failures?: CheckFailure[];
   workspace_clean?: boolean;
+  requirement_contract?: RequirementContract[];
+  command_results?: CommandResult[];
 }
 export interface CheckFailure {
   command: string;
@@ -178,15 +197,26 @@ const commandEnvironmentKey = (k: string): boolean =>
   !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k);
 export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
   createHmac('sha256', cacheKey())
-    .update(JSON.stringify(
-      Object.keys(values).filter(commandEnvironmentKey).sort().map(k => [k, values[k]])
-    ))
+    .update(
+      JSON.stringify(
+        Object.keys(values)
+          .filter(commandEnvironmentKey)
+          .sort()
+          .map(k => [k, values[k]])
+      )
+    )
     .digest('hex');
 
 // R1-1: compare project environments across nodes without weakening actual-env cache keys.
 export const contextEnvironmentIdentity = (values: NodeJS.ProcessEnv): string =>
-  environmentIdentity(Object.fromEntries(Object.entries(values).filter(([k]) =>
-    !['ARCHON_NODE_EXECUTION', 'TYPED_ARTIFACTS_FILE', 'PYTHONDONTWRITEBYTECODE'].includes(k))));
+  environmentIdentity(
+    Object.fromEntries(
+      Object.entries(values).filter(
+        ([k]) =>
+          !['ARCHON_NODE_EXECUTION', 'TYPED_ARTIFACTS_FILE', 'PYTHONDONTWRITEBYTECODE'].includes(k)
+      )
+    )
+  );
 
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
@@ -197,19 +227,19 @@ function run(
   log: string,
   cwd?: string,
   envKey = '',
-  failures: CheckFailure[] = []
+  failures: CheckFailure[] = [],
+  results: CommandResult[] = []
 ): string[] {
   const failed: string[] = [];
   // These variables belong to the engine node, not the project acceptance command (including probes).
   // Environment nodes keep their existing inherited environment.
-  const commandEnv = env('KIND') === 'env'
-    ? process.env
-    : Object.fromEntries(Object.entries(process.env).filter(([k]) => commandEnvironmentKey(k)));
+  const commandEnv =
+    env('KIND') === 'env'
+      ? process.env
+      : Object.fromEntries(Object.entries(process.env).filter(([k]) => commandEnvironmentKey(k)));
   const tree = artifacts && envKey && git('rev-parse', 'HEAD^{tree}').trim();
   const environment =
-    tree && checks.some(c => c.cache !== false)
-      ? environmentIdentity(commandEnv)
-      : '';
+    tree && checks.some(c => c.cache !== false) ? environmentIdentity(commandEnv) : '';
   for (const c of checks) {
     const hit =
       tree && c.cache !== false
@@ -233,6 +263,7 @@ function run(
       const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
         tag: string;
         failure: CheckFailure | null;
+        exit?: number | string;
       };
       appendFileSync(
         log,
@@ -242,6 +273,11 @@ function run(
         failed.push(c.cmd);
         failures.push(saved.failure);
       }
+      results.push({
+        check: c,
+        pass: saved.exit === undefined ? null : saved.exit === 0,
+        evidence: log,
+      });
       continue;
     }
     const t0 = Date.now();
@@ -253,6 +289,7 @@ function run(
       timeout: c.timeout_s * 1000,
     });
     const code = p.signalCode ? `signal ${p.signalCode}` : p.exitCode;
+    results.push({ check: c, pass: code === 0, evidence: log });
     appendFileSync(
       log,
       `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
@@ -413,11 +450,23 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   const scopeIds = (env('SCOPE_PKGS') || env('PKGS')).split(',');
   const covered = p.packages.filter(k => scopeIds.includes(k.id));
   const checks = pkgs.flatMap(k => k.accept);
+  const requirementContract = pkgs.map(({ id, accept, requirements }) => ({
+    id,
+    accept,
+    ...(requirements ? { requirements } : {}),
+  }));
   // 声明环境契约与实际传入环境分别绑定；缓存上下文只属于本 run 的 ARTIFACTS_DIR。
-  const envKey = sha(JSON.stringify(environmentChecks(p)));
+  const envKey = sha(
+    JSON.stringify(
+      pkgs.some(k => k.requirements)
+        ? [environmentChecks(p), requirementContract]
+        : environmentChecks(p)
+    )
+  );
   const dirty = git('status', '--porcelain').trim();
   const failures: CheckFailure[] = [];
-  const failed = run(checks, log, undefined, dirty ? '' : envKey, failures);
+  const commandResults: CommandResult[] = [];
+  const failed = run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
   if (dirty)
     appendFileSync(
       log,
@@ -465,6 +514,8 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
     ok,
     {
       ok,
+      requirement_contract: requirementContract,
+      command_results: commandResults,
       diff_hash: hash,
       same: false,
       failed,
@@ -486,6 +537,8 @@ function acceptOnce(tag: string, coder: string): Record<string, unknown> & Accep
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
     ok,
+    requirement_contract: requirementContract,
+    command_results: commandResults,
     milestone: env('MILESTONE'),
     ...result,
     failed,
@@ -528,15 +581,30 @@ function finish(tag: string, out: Record<string, unknown> & Accept): void {
   }
   const gen = dirname(env('PLAN'));
   if (existsSync(join(gen, 'execution.json'))) {
-    const reviewRound = Array.from({ length: MAX_ROUNDS }, (_, i) =>
-      `diff-${env('MILESTONE')}-r${i + 1}`).indexOf(tag) + 1;
-    const node = reviewRound ? `review-${env('MILESTONE')}-r${reviewRound}`
-      : tag === `verify-${env('PKGS')}` ? `repair-${env('PKGS')}` : '';
+    const reviewRound =
+      Array.from(
+        { length: MAX_ROUNDS },
+        (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
+      ).indexOf(tag) + 1;
+    const node = reviewRound
+      ? `review-${env('MILESTONE')}-r${String(reviewRound)}`
+      : tag === `verify-${env('PKGS')}`
+        ? `repair-${env('PKGS')}`
+        : '';
     if (node) {
-      const context = prepareContext({ gen, artifacts, node, cwd: process.cwd(),
-        base: env('BASE'), head: out.head ?? '', deltaBase: env('DELTA_BASE'),
-        acceptance: out, patch: String(out.patch ?? ''), delta: String(out.delta ?? ''),
-        environment: contextEnvironmentIdentity(process.env) });
+      const context = prepareContext({
+        gen,
+        artifacts,
+        node,
+        cwd: process.cwd(),
+        base: env('BASE'),
+        head: out.head ?? '',
+        deltaBase: env('DELTA_BASE'),
+        acceptance: out,
+        patch: typeof out.patch === 'string' ? out.patch : '',
+        delta: typeof out.delta === 'string' ? out.delta : '',
+        environment: contextEnvironmentIdentity(process.env),
+      });
       writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path: context }));
     }
   }
@@ -815,6 +883,7 @@ export function deliveryDecision(input: {
   expired?: boolean;
   qualifiedReview?: boolean;
   strict?: boolean;
+  packages?: RequirementContract[];
 }) {
   let coder: Coder | undefined;
   try {
@@ -832,6 +901,44 @@ export function deliveryDecision(input: {
   const reviews = input.reviews ?? [];
   const rounds = reviews.length;
   const check = input.rechecks.at(-1);
+  const packages = input.packages ?? check?.requirement_contract;
+  let offset = 0;
+  const items: Completion['items'] = [];
+  const matching = JSON.stringify(packages) === JSON.stringify(check?.requirement_contract);
+  for (const p of packages ?? []) {
+    for (const r of p.requirements ?? []) {
+      const results = r.verified_by.map(i => {
+        const result = check?.command_results?.[offset + i];
+        return matching &&
+          result?.evidence.trim() &&
+          JSON.stringify(result.check) === JSON.stringify(p.accept[i])
+          ? result
+          : undefined;
+      });
+      items.push({
+        package: p.id,
+        id: r.id,
+        text: r.text,
+        status: results.some(c => c?.pass === false)
+          ? 'unmet'
+          : results.length && results.every(c => c?.pass === true)
+            ? 'verified'
+            : 'unknown',
+        evidence: results.flatMap(c => (c ? [c.evidence] : [])),
+      });
+    }
+    offset += p.accept.length;
+  }
+  const completion: Completion = {
+    items,
+    status: !items.length
+      ? 'legacy'
+      : items.some(r => r.status === 'unmet')
+        ? 'unmet'
+        : items.some(r => r.status === 'unknown') || packages?.some(p => !p.requirements)
+          ? 'unknown'
+          : 'verified',
+  };
   const ledger = ledgerOf(reviews.length ? reviews : [null], input.risk ?? 'G1', {
     strict: input.strict,
     rechecks: input.rechecks,
@@ -844,7 +951,13 @@ export function deliveryDecision(input: {
     ]),
   ];
   const out = (kind: DeliveryDecision['kind'], reason: string | null, debt: string[] = []) => ({
-    decision: { kind: kind === 'advance' && debt.length ? 'debt' : kind, reason, evidence, debt },
+    decision: {
+      kind: kind === 'advance' && debt.length ? 'debt' : kind,
+      reason,
+      evidence,
+      debt,
+      requirements: completion,
+    },
     rounds,
     ledger,
     audit,
@@ -852,6 +965,7 @@ export function deliveryDecision(input: {
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
   if (!check) return out('block', 'engine_suspect');
+  if (items.some(r => r.status === 'unknown')) return out('block', 'acceptance_failed');
   if (
     !check.ok &&
     Array.isArray(coder?.needs) &&
@@ -869,17 +983,32 @@ export function deliveryDecision(input: {
       f.failure_class === 'test_env' || (f.failure_class === 'baseline' && check.base_pass === null)
   );
   if (unknown) return out('block', 'environment');
-  if (input.approved && !check.ok && (
-    input.strict || input.risk === 'G2' || input.approved.decision?.kind !== 'debt' ||
-    !check.contract_hash || check.contract_hash !== input.approved.check?.contract_hash ||
-    !check.diff_hash || check.diff_hash !== input.approved.check?.diff_hash ||
-    !input.approved.check?.failed?.every(command => input.approved?.check?.failures?.some(f =>
-      f.command === command && f.evidence.trim() &&
-      ['baseline', 'fixture', 'test_data', 'test_env'].includes(f.failure_class)
-    )) ||
-    check.failed?.some(command => !input.approved?.check?.failed?.includes(command))
-  )) return out('block', 'acceptance_failed');
+  const approved = input.approved;
+  const approvedCheck = approved?.check;
+  if (
+    approved &&
+    !check.ok &&
+    (!approvedCheck ||
+      input.strict ||
+      input.risk === 'G2' ||
+      approved.decision?.kind !== 'debt' ||
+      !check.contract_hash ||
+      check.contract_hash !== approvedCheck.contract_hash ||
+      !check.diff_hash ||
+      check.diff_hash !== approvedCheck.diff_hash ||
+      !approvedCheck.failed?.every(command =>
+        approvedCheck.failures?.some(
+          f =>
+            f.command === command &&
+            f.evidence.trim() &&
+            ['baseline', 'fixture', 'test_data', 'test_env'].includes(f.failure_class)
+        )
+      ) ||
+      check.failed?.some(command => !approvedCheck.failed?.includes(command)))
+  )
+    return out('block', 'acceptance_failed');
   const accepted =
+    completion.status !== 'unmet' &&
     check.workspace_clean !== false &&
     (check.ok ||
       ((check.failed?.length ?? 0) > 0 &&
@@ -1037,8 +1166,12 @@ function runEvents(): RunEvent[] {
   const id = process.env.WORKFLOW_ID;
   if (!id) throw new Error('sa-check: WORKFLOW_ID unset');
   if (env('EVENTS_FILE')) {
-    const saved = JSON.parse(readFileSync(env('EVENTS_FILE'), 'utf8')) as { id: string; events?: RunEvent[] };
-    if (saved.id !== id || !Array.isArray(saved.events)) throw new Error('sa-check: invalid authoritative events');
+    const saved = JSON.parse(readFileSync(env('EVENTS_FILE'), 'utf8')) as {
+      id: string;
+      events?: RunEvent[];
+    };
+    if (saved.id !== id || !Array.isArray(saved.events))
+      throw new Error('sa-check: invalid authoritative events');
     return (events = saved.events);
   }
   const p = auxiliary([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json']);
@@ -1166,7 +1299,9 @@ function budget(nextLaunch = true): string | null {
   const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
   if (b.launches !== undefined && (nextLaunch ? u.launches >= b.launches : u.launches > b.launches))
     return 'budget_launches_exceeded';
-  return !b.unlimited_tokens && u.weighted_tokens > b.weighted_tokens ? 'budget_tokens_exceeded' : null;
+  return !b.unlimited_tokens && u.weighted_tokens > b.weighted_tokens
+    ? 'budget_tokens_exceeded'
+    : null;
 }
 
 interface Ident {
@@ -1218,6 +1353,13 @@ function gate(): void {
   const decision = {
     reviews,
     rechecks,
+    packages: plan()
+      .packages.filter(p => env('PKGS').split(',').includes(p.id))
+      .map(({ id, accept, requirements }) => ({
+        id,
+        accept,
+        ...(requirements ? { requirements } : {}),
+      })),
     risk,
     strict: plan().mode === 'strict',
     expired: expired(),

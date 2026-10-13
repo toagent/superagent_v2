@@ -562,7 +562,11 @@ export function renderBrief(p: Pkg, hint: string, caps: Caps): string {
     title: p.title,
     risk: p.risk,
     size: p.size,
-    goal: p.goal,
+    goal:
+      p.goal +
+      (p.requirements
+        ? '\n\n需求与验收映射（accept 零基索引）：\n' + JSON.stringify(p.requirements, null, 2)
+        : ''),
     write: list(p.scope.write),
     read: list(p.scope.read_hint),
     accept: list(p.accept.map(c => c.cmd)),

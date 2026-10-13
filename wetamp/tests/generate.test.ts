@@ -213,7 +213,10 @@ describe('buildWorkflow', () => {
     );
     const repo = gitRepo(tmp());
     fs.writeFileSync(join(gen, 'plan.json'), JSON.stringify(fixture));
-    fs.writeFileSync(join(gen, 'execution.json'), JSON.stringify(executionTable(fixture, loadTiers())));
+    fs.writeFileSync(
+      join(gen, 'execution.json'),
+      JSON.stringify(executionTable(fixture, loadTiers()))
+    );
     const nodes = nodesOf(
       buildWorkflow(fixture, milestones(fixture), 'retry', gen, false, NOW, loadTiers(), {
         from: 'old-run',
@@ -233,7 +236,10 @@ describe('buildWorkflow', () => {
       nodeOutputs: new Map(),
     };
     const enabled = (): boolean => {
-      ctx.nodeOutputs.set(attempt.id, { state: 'completed', output: sh(attempt.bash!, repo, { ARTIFACTS_DIR: gen }) });
+      ctx.nodeOutputs.set(attempt.id, {
+        state: 'completed',
+        output: sh(attempt.bash!, repo, { ARTIFACTS_DIR: gen }),
+      });
       const result = evaluateCondition(code.when!, ctx.nodeOutputs);
       expect(result.parsed).toBe(true);
       return result.result;
@@ -493,11 +499,24 @@ describe('buildWorkflow', () => {
         fs.writeFileSync(path, counter);
       }
       const context = join(gen, 'prepared.json');
-      const environment = sh(`bun -e 'import { contextEnvironmentIdentity } from "./.archon/scripts/sa-check.ts"; console.log(contextEnvironmentIdentity(process.env));'`,
-        gen, { ARTIFACTS_DIR: gen }).trim();
-      fs.writeFileSync(context, JSON.stringify({ node: id.slice('attempt-'.length),
-        refs: { head: sh('git rev-parse HEAD', gen).trim() }, carry_over: null, environment }));
-      fs.writeFileSync(join(gen, `${id.slice('attempt-'.length)}.context.json`), JSON.stringify({ path: context }));
+      const environment = sh(
+        `bun -e 'import { contextEnvironmentIdentity } from "./.archon/scripts/sa-check.ts"; console.log(contextEnvironmentIdentity(process.env));'`,
+        gen,
+        { ARTIFACTS_DIR: gen }
+      ).trim();
+      fs.writeFileSync(
+        context,
+        JSON.stringify({
+          node: id.slice('attempt-'.length),
+          refs: { head: sh('git rev-parse HEAD', gen).trim() },
+          carry_over: null,
+          environment,
+        })
+      );
+      fs.writeFileSync(
+        join(gen, `${id.slice('attempt-'.length)}.context.json`),
+        JSON.stringify({ path: context })
+      );
       const result = Bun.spawnSync(['bash', '-c', node.bash!], {
         cwd: gen,
         env: { ...process.env, ARTIFACTS_DIR: gen },
@@ -804,14 +823,21 @@ test('generate writes a committed gen repo that archon validates', () => {
   Object.assign(process.env, env);
   install();
   const plan = loadPlan(fixturePlan(root, gitRepo(root)), [root]);
+  plan.packages[0].requirements = [{ id: 'r', text: 'core exists', verified_by: [0] }];
   const g = generate(plan, 'gen-0001');
+  expect(
+    JSON.parse(readFileSync(join(g.dir, 'plan.json'), 'utf8')).packages[0].requirements
+  ).toEqual(plan.packages[0].requirements);
+  expect(readFileSync(join(g.dir, 'briefs/core.md'), 'utf8')).toContain('"verified_by"');
   const principles = readFileSync(join(WETAMP, 'templates', '.archon', 'principles.md'), 'utf8');
   const generated = Bun.YAML.parse(
     readFileSync(join(g.dir, '.archon', 'workflows', g.workflow, `${g.workflow}.yaml`), 'utf8')
   );
   const ai = nodesOf(generated).filter(n => n.command);
   expect(JSON.parse(readFileSync(join(g.dir, 'accept-inputs.json'), 'utf8'))).toEqual(
-    nodesOf(generated).filter(n => n.with?.kind === 'accept').map(n => n.with)
+    nodesOf(generated)
+      .filter(n => n.with?.kind === 'accept')
+      .map(n => n.with)
   );
   expect(nodesOf(generated).find(n => n.id === 'land')?.with?.operator_ledger).toBe(
     join(env.SUPERAGENT_HOME, 'runs', 'gen-0001.json')

@@ -17,6 +17,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   const plan = JSON.parse(
     readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
   ) as Plan;
+  plan.packages[0].requirements = [{ id: 'core', text: 'Write core.txt', verified_by: [0] }];
   cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
   cpSync(
     join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
@@ -42,25 +43,54 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   writeFileSync(join(art, 'gate-m2-r1.ledger.json'), JSON.stringify(ledger));
   const head = sh('git rev-parse HEAD', repo).trim();
   // R1-1: real exec nodes have distinct execution identities and artifact listings.
-  const nodeEnv = (node: string) => buildExecNodeEnvironment({
-    artifactsDir: art, stateDir: gen, logDir: gen, workflowId: 'fixture', baseBranch: 'main',
-    userMessage: '', loopUserInput: '', loopPrevOutput: '', rejectionReason: '',
-    typedArtifactsFile: join(art, `${node}.listing.json`),
-    nodeExecution: startNodeExecution({ runId: 'fixture', path: node,
-      node: { id: node, kind: 'exec', runtime: 'sh', script: ':' }, invocation: newNodeInvocation() }),
-  });
-  const diffEnv = { ...process.env, ...nodeEnv('diff-m2-r2'),
-    PYTHONDONTWRITEBYTECODE: '1', SA_CONTEXT_TEST_ENV: 'before' };
-  const reviewEnv = { ...process.env, ...nodeEnv('attempt-review-m2-r2'),
-    SA_CONTEXT_TEST_ENV: 'before' };
-  const fingerprint = Bun.spawnSync([process.execPath, '-e',
-    `import { contextEnvironmentIdentity, environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({context: contextEnvironmentIdentity(process.env), cache: environmentIdentity(process.env)}));`],
-    { cwd: repo, env: diffEnv, stdout: 'pipe', stderr: 'pipe' });
+  const nodeEnv = (node: string) =>
+    buildExecNodeEnvironment({
+      artifactsDir: art,
+      stateDir: gen,
+      logDir: gen,
+      workflowId: 'fixture',
+      baseBranch: 'main',
+      userMessage: '',
+      loopUserInput: '',
+      loopPrevOutput: '',
+      rejectionReason: '',
+      typedArtifactsFile: join(art, `${node}.listing.json`),
+      nodeExecution: startNodeExecution({
+        runId: 'fixture',
+        path: node,
+        node: { id: node, kind: 'exec', runtime: 'sh', script: ':' },
+        invocation: newNodeInvocation(),
+      }),
+    });
+  const diffEnv = {
+    ...process.env,
+    ...nodeEnv('diff-m2-r2'),
+    PYTHONDONTWRITEBYTECODE: '1',
+    SA_CONTEXT_TEST_ENV: 'before',
+  };
+  const reviewEnv = {
+    ...process.env,
+    ...nodeEnv('attempt-review-m2-r2'),
+    SA_CONTEXT_TEST_ENV: 'before',
+  };
+  const fingerprint = Bun.spawnSync(
+    [
+      process.execPath,
+      '-e',
+      `import { contextEnvironmentIdentity, environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({context: contextEnvironmentIdentity(process.env), cache: environmentIdentity(process.env)}));`,
+    ],
+    { cwd: repo, env: diffEnv, stdout: 'pipe', stderr: 'pipe' }
+  );
   expect(fingerprint.exitCode).toBe(0);
   const identities = JSON.parse(fingerprint.stdout.toString());
-  const reviewFingerprint = Bun.spawnSync([process.execPath, '-e',
-    `import { environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(environmentIdentity(process.env));`],
-    { cwd: repo, env: reviewEnv, stdout: 'pipe', stderr: 'pipe' });
+  const reviewFingerprint = Bun.spawnSync(
+    [
+      process.execPath,
+      '-e',
+      `import { environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(environmentIdentity(process.env));`,
+    ],
+    { cwd: repo, env: reviewEnv, stdout: 'pipe', stderr: 'pipe' }
+  );
   expect(reviewFingerprint.exitCode).toBe(0);
   expect(reviewFingerprint.stdout.toString().trim()).not.toBe(identities.cache);
   const input = {
@@ -84,6 +114,7 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
     plan.packages.map(p => p.accept)
   );
   expect(context.carry_over).toEqual({ blocking: ledger.blocking, debt: ledger.debt });
+  expect(context.tasks[0].requirements).toEqual(plan.packages[0].requirements);
   expect(context.diff).toBe('/delta.patch');
   expect(bytes).not.toContain('old-99');
   expect(prepareContext(input)).toBe(path);
@@ -96,22 +127,23 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   expect(missing.carry_over).toBe('unknown');
   const pointer = join(art, 'review-m2-r2.context.json');
   writeFileSync(pointer, JSON.stringify({ path }));
-  const startReview = (extra: Record<string, string> = {}) => Bun.spawnSync(
-    [
-      process.execPath,
-      join(gen, '.archon/scripts/sa-context.ts'),
-      join(gen, 'attempt'),
-      gen,
-      '',
-      'review-m2-r2',
-    ],
-    {
-      cwd: repo,
-      env: { ...reviewEnv, ...extra },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }
-  );
+  const startReview = (extra: Record<string, string> = {}) =>
+    Bun.spawnSync(
+      [
+        process.execPath,
+        join(gen, '.archon/scripts/sa-context.ts'),
+        join(gen, 'attempt'),
+        gen,
+        '',
+        'review-m2-r2',
+      ],
+      {
+        cwd: repo,
+        env: { ...reviewEnv, ...extra },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
   expect(startReview().exitCode).toBe(0);
   expect(startReview({ INPUTS_ROUND: '2' }).exitCode).toBe(0);
   const drifted = startReview({ SA_CONTEXT_TEST_ENV: 'after' });

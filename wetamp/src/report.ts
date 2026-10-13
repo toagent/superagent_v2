@@ -4,13 +4,36 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonJson, archonRunIds, getRun, tail } from './archon';
 import { WETAMP } from './config';
-import { type Ledger, type Pair } from './cli';
+import {
+  type Ledger,
+  type Pair,
+  artifactsOf,
+  evidenceJson,
+  evidenceGates,
+  decisionOf,
+} from './cli';
 import { snapshotOf } from './board/data';
 import { cockpit } from './board/cockpit';
 import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
 
 const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
+
+/** Only project engine decisions; green commands and model reports are not coverage. */
+export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsOf>[0]) {
+  const art = artifactsOf(run);
+  const gates = evidenceGates(l, art);
+  return Object.fromEntries(
+    (planOf(l)?.packages ?? []).map(p => {
+      const gate = gates.filter(f => f.startsWith(`gate-${p.milestone ?? 'm1'}-r`)).at(-1);
+      const value = gate
+        ? evidenceJson(l, art, gate)
+        : (evidenceJson(l, art, `settle-${p.id}.json`) ??
+          evidenceJson(l, art, `verify-${p.id}.json`));
+      return [p.id, decisionOf(value)?.requirements ?? { status: 'legacy', items: [] }];
+    })
+  );
+}
 type Tokens = Partial<Record<(typeof FIELDS)[number], number>>;
 interface Event {
   event_type: string;
@@ -69,13 +92,19 @@ const ms = (a?: string, b?: string): number | null => {
 export function jobReceipt(j: Job): Record<string, unknown> {
   const r = j.receipt;
   return {
-    id: j.id, role: j.role ?? 'unknown', state: j.state,
-    policy: j.execution ?? 'unknown', context_ref: j.card ?? 'unknown',
+    id: j.id,
+    role: j.role ?? 'unknown',
+    state: j.state,
+    policy: j.execution ?? 'unknown',
+    context_ref: j.card ?? 'unknown',
     phases: r ?? 'unknown',
     queue_ms: ms(r?.enqueued_at, r?.admitted_at) ?? 'unknown',
     prepare_ms: ms(r?.admitted_at, r?.spawned_at) ?? 'unknown',
     exec_ms: ms(r?.spawned_at, r?.settled_at) ?? 'unknown',
-    context_bytes: 'unknown', first_token_ms: 'unknown', model_calls: 'unknown', tool_calls: 'unknown',
+    context_bytes: 'unknown',
+    first_token_ms: 'unknown',
+    model_calls: 'unknown',
+    tool_calls: 'unknown',
   };
 }
 
@@ -141,8 +170,12 @@ export function rollup(calls: Call[]): Record<string, unknown> {
     ).size,
     queue_ms: sum(calls.map(c => c.queue_ms)),
     exec_ms: sum(calls.map(c => c.exec_ms)),
-    phase_coverage: Object.fromEntries(['queue_ms', 'exec_ms'].map(field => [field,
-      `${calls.filter(c => c[field as 'queue_ms' | 'exec_ms'] !== null).length}/${calls.length}`])),
+    phase_coverage: Object.fromEntries(
+      ['queue_ms', 'exec_ms'].map(field => [
+        field,
+        `${String(calls.filter(c => c[field as 'queue_ms' | 'exec_ms'] !== null).length)}/${String(calls.length)}`,
+      ])
+    ),
   };
 }
 
@@ -175,7 +208,7 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
     by_run,
     known: n,
     unknown: ls.length - n,
-    median: n ? (counts[Math.floor((n - 1) / 2)]! + counts[Math.floor(n / 2)]!) / 2 : 'unknown',
+    median: n ? (counts[Math.floor((n - 1) / 2)] + counts[Math.floor(n / 2)]) / 2 : 'unknown',
     max: counts.at(-1) ?? 'unknown',
     zero_share: n ? counts.filter(c => c === 0).length / n : 'unknown',
   };
@@ -191,7 +224,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const calls: Call[] = [];
   const unreadable: string[] = [];
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
-  const cwdOf = (l: Ledger): string => repo_missing.includes(l.run_id) ? WETAMP : l.repo;
+  const cwdOf = (l: Ledger): string => (repo_missing.includes(l.run_id) ? WETAMP : l.repo);
   const pairs: Pair[] = ls.map(l => {
     try {
       return { ledger: l, run: getRun(l.archon_run_id, cwdOf(l)) };
@@ -215,11 +248,24 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   return {
     ...snapshot.summary,
     repo_missing,
+    requirements: Object.fromEntries(
+      pairs.map(({ ledger, run }) => [
+        ledger.run_id,
+        run instanceof Error ? 'unknown' : requirementCoverage(ledger, run),
+      ])
+    ),
     metrics: cockpit(snapshot).metrics,
     interventions: interventionStats(ls),
-    jobs: { receipts, unreadable: jobs.bad,
-      phase_coverage: Object.fromEntries(['queue_ms', 'prepare_ms', 'exec_ms'].map(field => [field,
-        `${receipts.filter(r => typeof r[field] === 'number').length}/${receipts.length}`])) },
+    jobs: {
+      receipts,
+      unreadable: jobs.bad,
+      phase_coverage: Object.fromEntries(
+        ['queue_ms', 'prepare_ms', 'exec_ms'].map(field => [
+          field,
+          `${String(receipts.filter(r => typeof r[field] === 'number').length)}/${String(receipts.length)}`,
+        ])
+      ),
+    },
     usage: {
       window: { scope: 'all_retained_events_for_recorded_generations', generated_at: snapshot.at },
       total: rollup(calls),
