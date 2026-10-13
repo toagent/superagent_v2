@@ -150,6 +150,7 @@ const logInfo = (): { size: number; mtime: number } | null => {
 };
 
 test('explicit root rejects relative paths, root symlinks and canonical parent drift', () => {
+  ownerSpy = spyOn(live, 'owner').mockReturnValue({ pid: process.pid, tty: null });
   expect(() => scratch.createScratch('relative')).toThrow('normalized absolute');
   expect(() => scratch.createScratch('/tmp/../tmp/root')).toThrow('normalized absolute');
   const root = tmp(),

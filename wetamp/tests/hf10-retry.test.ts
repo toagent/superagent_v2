@@ -70,7 +70,10 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
           timeout_s: 5,
         },
       ];
-    if (scope === 'budget') plan.budget.launches = 3;
+    if (scope === 'budget') {
+      plan.budget.launches = 3;
+      plan.budget.enforcement = 'hard';
+    }
     // FC permits repair-limit debt in non-strict G1; this fixture needs a held gate.
     if (scope === 'milestone') plan.mode = 'strict';
     const py = join(root, 'supervisor.py');
