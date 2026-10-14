@@ -183,14 +183,28 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       }
       gitAt(candidate, 'commit', '--no-edit');
     }
-    if (existsSync(join(candidate, '.gitmodules'))) {
-      // --no-fetch prevents fetching missing commits; file-only also keeps initial clones local.
-      const p = Bun.spawnSync(['git', '-C', candidate, 'submodule', 'update', '--init', '--recursive', '--no-fetch'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS, env: { ...process.env, GIT_ALLOW_PROTOCOL: 'file' } });
-      if (p.exitedDueToTimeout || p.exitCode !== 0) {
-        const paths = Bun.spawnSync(['git', '-C', candidate, 'config', '--file', '.gitmodules', '--get-regexp', '\\.path$'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }).stdout.toString().trim();
-        throw new Error(`land: submodule initialization failed (exit ${String(p.exitCode)}${p.exitedDueToTimeout ? ', timed out' : ''}); paths: ${redact(paths)}; log tail:\n${redact(p.stdout.toString() + p.stderr.toString()).split('\n').slice(-20).join('\n')}`);
+    const prepareSubmodules = (cwd: string, sources: string[]): void => {
+      if (!existsSync(join(cwd, '.gitmodules'))) return;
+      const entries = gitAt(cwd, 'config', '--file', '.gitmodules', '--list', '-z');
+      for (const entry of entries.split('\0').filter(entry => /^submodule\..*\.path\n/.test(entry))) {
+        const [key, path] = entry.split('\n'), name = key.slice(10, -5), dest = join(cwd, path);
+        const commit = gitAt(cwd, 'rev-parse', `HEAD:${path}`), url = gitAt(cwd, 'config', '--file', '.gitmodules', '--get', `submodule.${name}.url`);
+        const local = sources.flatMap(source => [join(source, path), join(gitAt(source, 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'modules', name)]);
+        const cached = local.find(source => (existsSync(join(source, '.git')) || existsSync(join(source, 'HEAD'))) && Bun.spawnSync(['git', '-C', source, 'cat-file', '-e', `${commit}^{commit}`], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }).exitCode === 0);
+        const command = (dir: string, ...args: string[]): void => {
+          const p = Bun.spawnSync(['git', '-C', dir, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: 20 * 60_000 });
+          if (p.exitedDueToTimeout || p.exitCode !== 0)
+            throw new Error(`land: submodule initialization failed (exit ${String(p.exitCode)}${p.exitedDueToTimeout ? ', timed out' : ''}); paths: ${redact(dest)}; log tail:\n${redact(p.stdout.toString() + p.stderr.toString()).split('\n').slice(-20).join('\n')}`);
+        };
+        // Standalone clones keep all configuration inside the candidate, never the shared superproject.
+        command(cwd, '-c', 'protocol.file.allow=always', 'clone', '--no-checkout', '--', cached ?? url, dest);
+        if (!cached && Bun.spawnSync(['git', '-C', dest, 'cat-file', '-e', `${commit}^{commit}`], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }).exitCode !== 0)
+          command(dest, 'fetch', 'origin', commit);
+        command(dest, 'checkout', '--detach', commit);
+        prepareSubmodules(dest, [dest, ...(cached ? [cached] : [])]);
       }
-    }
+    };
+    prepareSubmodules(candidate, [...new Set([repo, ...(run.working_path ? [run.working_path] : [])])]);
     const accepted = gitAt(candidate, 'rev-parse', 'HEAD');
     // Workspace links must resolve within the checkout being accepted.
     for (const rel of ['.', 'wetamp']) {
