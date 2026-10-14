@@ -15,6 +15,43 @@ const terminal = (type = 'node_completed', attempt = 'a') => ({
 });
 const fixture = () => [row(0, 0, message), row(1, 10, start('x')), row(2, 20, start('y')),
   row(3, 40, end('x')), row(4, 50, end('y')), row(5, 60, message)];
+const command = (id: string, status: 'started' | 'completed' | 'failed'): ProviderEventEnvelope['event'] =>
+  ({ type: 'subtask', taskId: id, taskType: 'command_execution', status });
+
+test.each(['completed', 'failed'] as const)('PROVIDER_TIMING Codex command %s merges overlap with distinct tool IDs', status => {
+  const rows = [row(0, 0, message), row(1, 10, command('x', 'started')),
+    row(2, 20, start('x')), row(3, 40, command('x', status)),
+    row(4, 50, end('x')), row(5, 60, message), terminal()];
+  expect(providerTiming('r', rows)[0]).toMatchObject({
+    tool_union_ms: 40, known_tool_union_ms: 40, non_tool_gap_ms: 20,
+    tool_intervals: [{ start: at(10), end: at(50) }], final_answer_at: at(60),
+  });
+});
+
+test('PROVIDER_TIMING Codex command pairs retain the same completeness rules', () => {
+  const valid = [row(0, 0, command('x', 'started')), row(1, 10, command('x', 'failed'))];
+  const invalid = row(3, 30, command('y', 'completed'));
+  invalid.data.observedAt = 'invalid';
+  for (const damaged of [
+    [...valid, row(2, 20, command('y', 'started'))],
+    [...valid, row(2, 20, command('x', 'started'))],
+    [valid[0]!, valid[1]!, valid[1]!],
+    [valid[0]!, row(2, 10, command('x', 'completed'))],
+    [...valid, row(2, 20, command('y', 'started')), invalid],
+    [...valid, row(2, 20, command('y', 'started')), row(3, 15, command('y', 'completed'))],
+    [row(0, 0, command('x', 'completed')), row(1, 10, command('x', 'started'))],
+  ]) {
+    expect(providerTiming('r', damaged)[0]).toMatchObject({
+      tool_union_ms: 'unknown', non_tool_gap_ms: 'unknown',
+    });
+  }
+  expect(providerTiming('r', [...valid, row(2, 20, command('y', 'started'))])[0]?.known_tool_union_ms).toBe(10);
+  const rows = [...valid, row(0, 20, command('x', 'started'), 'b'),
+    row(1, 50, command('x', 'completed'), 'b')];
+  expect(providerTiming('r', rows).map(p => p.tool_union_ms)).toEqual([10, 30]);
+  expect(providerTiming('r', [row(0, 0, { type: 'subtask', taskId: 'agent', taskType: 'local_agent',
+    status: 'started' })])[0]?.tool_union_ms).toBe(0);
+});
 
 test('PROVIDER_TIMING parallel tool union and client content clocks, never inferred request', () => {
   const projection = providerTiming('r', [...fixture().reverse(), terminal()])[0];

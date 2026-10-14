@@ -46,9 +46,17 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     const ends = new Map<string, ProviderEventEnvelope[]>();
     for (const e of unique) {
       const event = e.event;
-      if (event.type !== 'tool_call' && event.type !== 'tool_call_update') continue;
-      const map = event.type === 'tool_call' ? starts : ends;
-      map.set(event.toolCallId, [...(map.get(event.toolCallId) ?? []), e]);
+      let id: string, map: typeof starts;
+      if (event.type === 'tool_call' || event.type === 'tool_call_update') {
+        id = JSON.stringify(['tool_call', event.toolCallId]);
+        map = event.type === 'tool_call' ? starts : ends;
+      } else if (event.type === 'subtask' && event.taskType === 'command_execution') {
+        id = JSON.stringify(['subtask', event.taskId]);
+        if (event.status === 'started') map = starts;
+        else if (event.status === 'completed' || event.status === 'failed') map = ends;
+        else continue;
+      } else continue;
+      map.set(id, [...(map.get(id) ?? []), e]);
     }
     const intervals: Interval[] = [];
     let closed = true;
