@@ -1835,6 +1835,23 @@ test('CARD_Y fenced delivery retries and legacy land reconciliation agree with r
     const view = JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out);
     expect(view).toMatchObject({ status: 'integrated', integrated: receipt.integrated });
     expect(loadLedger('sa1').delivery_result).toEqual({ ...receipt, status: 'integrated' });
+    // R1-1: a historical success cannot outlive its evidence in the scratch target.
+    sh(`git checkout --detach && git branch -f fixture '${s.ledger.delivery.head}'`, s.root);
+    expect(
+      sh(`git merge-base --is-ancestor '${receipt.accepted}' fixture; echo $?`, s.root).trim()
+    ).toBe('1');
+    caller.mockReturnValue({ client: 'other', pid: 999999 });
+    const refused = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '1'])).out);
+    expect(refused.delivery.status).toBe('blocked');
+    expect(loadLedger('sa1').delivery_result).toEqual(refused.delivery);
+    updateLedger(loadLedger('sa1'), cur => {
+      cur.delivery_result = { ...receipt, status: 'integrated' };
+    });
+    caller.mockReturnValue(owner);
+    expect(JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out).status).not.toBe(
+      'integrated'
+    );
+    expect(loadLedger('sa1').delivery_result).toBeUndefined();
   } finally {
     caller.mockRestore();
     apply.mockRestore();

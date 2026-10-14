@@ -2860,8 +2860,9 @@ export function main(argv: string[]): number {
             reason: e instanceof Error ? e.message : String(e),
           };
           s.delivery = blocked;
+          // prettier-ignore
           updateLedger(l, cur => {
-            if (cur.delivery_result?.status !== 'integrated') cur.delivery_result = blocked;
+            if (cur.delivery_result?.status !== 'integrated' || !integratedReceipt({ ...cur.delivery_result, status: 'manual_push' }, cur.delivery_result.source, cur.delivery_result)) cur.delivery_result = blocked;
           });
         }
       }
@@ -3007,7 +3008,7 @@ export function main(argv: string[]): number {
           if (receipt) {
             updateLedger(l, cur => { cur.delivery_result = { ...receipt, status: 'integrated' }; });
             land = { ...(land as Land), status: 'integrated', integrated: receipt.integrated };
-          }
+          } else updateLedger(l, cur => { if (cur.delivery_result?.status === 'integrated') delete cur.delivery_result; });
         }
         const needs = needsOf(artifactsOf(run), undefined, l);
         print(
