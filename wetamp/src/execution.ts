@@ -42,7 +42,7 @@ export function describeExecution(
     milestone,
     packages: pkgs.map(p => p.id),
     scope: pkgs.flatMap(p => p.scope.write),
-    caps: plan ? pkgs.map(p => capsOf(plan, p, tiers.policy.sandbox.mcp)) : [],
+    caps: plan ? pkgs.map(p => capsOf(plan, p)) : [],
     profiles: tiers.policy.exec_profiles,
   });
 }

@@ -50,7 +50,12 @@ function run(
   expect(p.stderr.toString()).not.toContain('superagent guard:');
   expect(p.exitCode).toBe(exitCode);
   const out = p.stdout.toString().trim();
-  return out ? (JSON.parse(out) as Out) : null;
+  const result = out ? (JSON.parse(out) as Out) : null;
+  if (client === 'codex' && result?.systemMessage?.startsWith('superagent.permission.'))
+    result.superagentPermissionCategory = result.systemMessage.slice(
+      'superagent.permission.'.length
+    );
+  return result;
 }
 const reason = (o: Out): string | undefined =>
   o?.hookSpecificOutput?.permissionDecision === 'deny'
@@ -1710,4 +1715,61 @@ test('guard categories preserve structured rejection sources and physical denial
     expect(out?.superagentPermissionCategory).toBe(category);
     expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
   }
+});
+
+describe('E3-2b MCP action boundary', () => {
+  test.each(['claude', 'codex'])('%s normalizes MCP and shares privacy/effect policy', client => {
+    const { guard, home, repo } = setup();
+    const env = { SUPERAGENT_ROLE: 'worker' };
+    const mcp = (server: string, tool: string, args: object = {}, role = 'worker') =>
+      guard(
+        client,
+        client === 'claude'
+          ? { tool_name: `mcp__${server}__${tool}`, tool_input: args }
+          : { tool_name: 'mcp_tool_call', tool_input: { server, tool, arguments: args } },
+        { SUPERAGENT_ROLE: role }
+      );
+    const privatePath = join(repo, '_private', 'secret');
+    expect(
+      guard(client, { tool_name: 'Read', tool_input: { file_path: privatePath } }, env)
+        ?.superagentPermissionCategory
+    ).toBe('privacy');
+    expect(
+      mcp('unknown', 'lookup', { nested: [{ value: privatePath }] })?.superagentPermissionCategory
+    ).toBe('privacy');
+    for (const command of [
+      'superagent run p.json',
+      'superagent job exec --title test -- codex exec p',
+    ])
+      expect(
+        guard(
+          client,
+          { tool_name: client === 'claude' ? 'Bash' : 'exec_command', tool_input: { command } },
+          env
+        )?.superagentPermissionCategory
+      ).toBe('delegation');
+    expect(mcp('twin-agent', 'delegate_agent')?.superagentPermissionCategory).toBe('delegation');
+    expect(mcp('claude', 'Agent')?.superagentPermissionCategory).toBe('delegation');
+    const rules = JSON.parse(readFileSync(join(HOOKS, 'shell-effects.json'), 'utf8')) as {
+      mcp?: { server: string; tools: string[] };
+      effect: string;
+    }[];
+    for (const tool of rules.find(r => r.mcp?.server === 'github')!.mcp!.tools)
+      expect(mcp('github', tool)?.superagentPermissionCategory).toBe('external');
+    expect(reason(mcp('github', 'get_file_contents'))).toBeUndefined();
+    expect(reason(mcp('computer-use', 'screenshot'))).toBeUndefined();
+    expect(mcp('serena', 'execute_shell_command')?.superagentPermissionCategory).toBe(
+      'authorization'
+    );
+    expect(
+      mcp('serena', 'replace_symbol_body', { relative_path: 'a.ts' }, 'reviewer')
+        ?.superagentPermissionCategory
+    ).toBe('authorization');
+    for (const role of ['worker', 'reviewer', 'commander'])
+      expect(reason(mcp('new', 'tool', { value: 'DO_NOT_LOG' }, role))).toBeUndefined();
+    const events = readFileSync(join(home, 'hooks', 'events.jsonl'), 'utf8');
+    expect(events).not.toContain('DO_NOT_LOG');
+    expect(events).toContain('mcp.unregistered_tool');
+    expect(events).toContain('"role":"reviewer"');
+  });
 });

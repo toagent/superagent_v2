@@ -1,4 +1,68 @@
 [
+  { "commands": ["superagent"], "prefixes": [["run"], ["job", "exec"]], "effect": "delegate" },
+  {
+    "commands": [],
+    "mcp": { "server": "twin-agent", "tools": ["delegate_agent"] },
+    "effect": "delegate"
+  },
+  { "commands": [], "mcp": { "server": "claude", "tools": ["*"] }, "effect": "delegate" },
+  {
+    "commands": [],
+    "mcp": {
+      "server": "github",
+      "tools": [
+        "add_comment_to_pending_review",
+        "add_issue_comment",
+        "add_reply_to_pull_request_comment",
+        "create_branch",
+        "create_or_update_file",
+        "create_pull_request",
+        "create_repository",
+        "delete_file",
+        "fork_repository",
+        "issue_write",
+        "merge_pull_request",
+        "pull_request_review_write",
+        "push_files",
+        "request_copilot_review",
+        "sub_issue_write",
+        "update_issue_comment",
+        "update_pull_request",
+        "update_pull_request_branch"
+      ]
+    },
+    "effect": "external"
+  },
+  {
+    "commands": [],
+    "mcp": { "server": "serena", "tools": ["execute_shell_command"] },
+    "effect": "execute"
+  },
+  {
+    "commands": [],
+    "mcp": {
+      "server": "serena",
+      "tools": [
+        "replace_content",
+        "replace_symbol_body",
+        "insert_after_symbol",
+        "insert_before_symbol",
+        "rename_symbol",
+        "create_text_file"
+      ],
+      "paths": ["relative_path", "path", "file_path"]
+    },
+    "effect": "write"
+  },
+  {
+    "commands": [],
+    "mcp": {
+      "server": "filesystem",
+      "tools": ["write_file", "edit_file", "create_directory", "move_file"],
+      "paths": ["path", "source", "destination"]
+    },
+    "effect": "write"
+  },
   { "commands": ["rm", "rmdir"], "effect": "destroy", "targets": "operands" },
   { "commands": ["cp", "ln", "install", "rsync"], "effect": "overwrite", "targets": "last" },
   { "commands": ["mv"], "effect": "destroy", "targets": "operands" },

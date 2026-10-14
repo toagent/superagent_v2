@@ -53,8 +53,6 @@ function shellText(name, input) {
   if (Array.isArray(value)) return value.map(arg => `'${String(arg).replace(/'/g, "'\\''")}'`).join(' ');
   return typeof value === 'string' ? value : undefined;
 }
-const aiCli = name => require('./shell-effects.json').some(rule => rule.effect === 'delegate'
-  && (rule.commands.includes(name) || rule.commandPrefixes?.some(prefix => name.startsWith(prefix))));
 // N-1: a derived session must not start another agent.
 function nestedReason(name, input, normalized) {
   if (['Agent', 'Task', 'spawn_agent', 'claude.Agent'].includes(name) || name.startsWith('mcp__claude__'))
@@ -63,9 +61,9 @@ function nestedReason(name, input, normalized) {
   if (text === undefined) return null;
   let heads;
   // Unparsable text: every word counts as a possible command head (conservative).
-  try { heads = (normalized?.argvs || commands(text)).map(argv => argv[0]); } catch { heads = text.split(/[\s;&|()`$"'<>]+/); }
-  const hit = heads.map(head => path.posix.basename(head)).find(aiCli);
-  return hit ? redline.message(`派生会话再次调用 AI（${redline.commandLabel([hit])}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅') : null;
+  try { heads = (normalized?.argvs || commands(text)); } catch { heads = text.split(/[\s;&|()`$"'<>]+/).map(head => [head]); }
+  const hit = heads.find(argv => redline.effects(argv).some(rule => rule.effect === 'delegate'));
+  return hit ? redline.message(`派生会话再次调用 AI（${redline.commandLabel(hit)}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅') : null;
 }
 function shellReason(text, cwd, env, normalized) {
   const target = deletionTarget(text, cwd, normalized?.argvs.length === 1 ? normalized.argvs[0] : normalized ? [] : undefined);
@@ -144,7 +142,12 @@ function decide(payload, client, env = process.env) {
   const normalized = text !== undefined ? {argvs: [], writes: [], reads: []} : undefined;
   let category = 'diagnostic';
   const red = redline.reason({client, name, input, cwd, root: gitRoot(cwd), shell: text, derived: Boolean(derived),
-    reviewer: env.SUPERAGENT_ROLE === 'reviewer', env, onCategory: value => { category = value; }, onAdvisory: code => notices.add(code),
+    reviewer: ['reviewer', 'strategist'].includes(env.SUPERAGENT_ROLE), env,
+    onEvent: (event, data) => {
+      const dir = path.join(saHome(env), 'hooks');
+      fs.mkdirSync(dir, {recursive: true});
+      fs.appendFileSync(path.join(dir, 'events.jsonl'), JSON.stringify({event, ...data}) + '\n', {mode: 0o600});
+    }, onCategory: value => { category = value; }, onAdvisory: code => notices.add(code),
     onCommand: normalized && (parsed => { for (const key of Object.keys(normalized)) normalized[key].push(...parsed[key]); })});
   if (red) return deny(red, category);
   if (derived) {
@@ -187,6 +190,11 @@ if (require.main === module) (async () => {
     const output = context && (!result || payload.hook_event_name === 'SessionStart') ?
       {...result, hookSpecificOutput: {...result?.hookSpecificOutput, hookEventName: payload.hook_event_name,
         additionalContext: [result?.hookSpecificOutput?.additionalContext, context].filter(Boolean).join('\n')}} : result;
+    if (client === 'codex' && output?.superagentPermissionCategory) {
+      // Codex rejects unknown output properties; keep category in its native message channel.
+      output.systemMessage = `superagent.permission.${output.superagentPermissionCategory}`;
+      delete output.superagentPermissionCategory;
+    }
     if (output) process.stdout.write(JSON.stringify(output) + '\n');
   } catch { process.stdout.write(JSON.stringify({systemMessage: 'SUPERAGENT advisory：护栏内部异常，本次已放行。'}) + '\n'); }
 })();

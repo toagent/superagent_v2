@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Archon worker 的 Codex 二进制（assistants.codex.codexBinaryPath）：exec 真 codex，前置
-# policy.exec_profiles.{coder,reviewer}.codex 的 -c 覆盖，并关闭沙箱清单外的已声明 MCP server。
-# app-server 经 codex-readonly-proxy.cjs 转发（评审节点只读）。只取 config.toml 里 mcp_servers 的键名，从不输出任何值（值里可能有凭据）。
+# policy.exec_profiles.{coder,reviewer}.codex 的 -c 覆盖，原生 MCP 保持可用。
+# app-server 经 codex-readonly-proxy.cjs 转发（评审节点只读）。原生 MCP 配置由 Codex 自行加载。
 set -euo pipefail
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
@@ -21,7 +21,6 @@ fi
 resolved="$(realpath "$real" 2>/dev/null)" || { echo "codex-worker: $real does not exist" >&2; exit 2; }
 [ "$resolved" != "$self" ] || { echo "codex-worker: $real resolves to codex-worker itself" >&2; exit 2; }
 [ -f "$resolved" ] && [ -x "$resolved" ] || { echo "codex-worker: $real is not an executable file" >&2; exit 2; }
-config="${CODEX_HOME:-$HOME/.codex}/config.toml"
 # 执行层红线与 N-1 在 Codex 侧只靠用户级 hooks.json 的 guard.cjs PreToolUse；Codex 跳过定义改过但未重新
 # 信任的 hook（trusted_hash ≠ 当前定义的 hash，实测 2026-10-10），此时 worker 等于无护栏，故失败关闭。
 # hash 与 install.sh --hooks 写信任是同一份实现（scripts/codex-trust.cjs，Bun.TOML 解析，不依赖 python3 tomllib）。
@@ -35,17 +34,8 @@ elif ! bun "$WETAMP/scripts/codex-trust.cjs" check; then
   echo "codex-worker: ${CODEX_HOME:-$HOME/.codex}/hooks.json 没有受信任且启用的 guard.cjs PreToolUse hook（或无法判定），Codex 会跳过它（执行层红线与 N-1 失效）；跑 wetamp/scripts/install.sh --hooks 或在交互式 Codex 里用 /hooks 信任该条目后重试" >&2
   exit 3
 fi
-# 已声明的 MCP server 名：Bun.TOML 按 TOML 语义取 mcp_servers 的键（不输出任何值）；
-# 解析失败时记一行 stderr，由下方 node 回退到只认表头的正则。
-declared=""
-if [ -f "$config" ]; then
-  declared="$(bun -e 'const s = Bun.TOML.parse(await Bun.file(process.argv[1]).text()).mcp_servers;
-console.log(JSON.stringify(s && typeof s === "object" && !Array.isArray(s) ? Object.keys(s) : []))' "$config" 2>/dev/null)" \
-    || { echo "codex-worker: config.toml unparsable by Bun.TOML; falling back to header regex" >&2; declared=""; }
-fi
 read -r -d '' JS <<'JS' || true
-const fs = require('node:fs');
-const [snapshot, config, parsed, proxy] = process.argv.slice(1);
+const [snapshot, proxy] = process.argv.slice(1);
 const policy = require(proxy).loadPolicy(snapshot);
 const settings = {};
 for (const role of ['coder', 'reviewer'])
@@ -56,24 +46,11 @@ for (const role of ['coder', 'reviewer'])
 // 整个 worker 以 reviewer 身份运行时的进程级默认；Archon 的 thread/start 会盖掉它，节点级只读由 codex-readonly-proxy 落实。
 if (process.env.SUPERAGENT_ROLE === 'reviewer') settings.sandbox_mode = 'read-only';
 const args = Object.entries(settings).flatMap(([k, v]) => ['-c', `${k}=${JSON.stringify(v)}`]);
-let declared;
-if (parsed) declared = JSON.parse(parsed);
-else {
-  let text = '';
-  try { text = fs.readFileSync(config, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-  declared = [...text.matchAll(/^\s*\[\s*mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))/gm)].map(m => m[1] ?? m[2]);
-}
-for (const name of new Set(declared)) {
-  if (policy.sandbox.mcp.includes(name)) continue;
-  // 不能作为裸 -c 键段安全表示的名字不猜引号语义，跳过并留痕。
-  if (!/^[A-Za-z0-9_-]+$/.test(name)) { process.stderr.write(`codex-worker: skipped MCP server with unsafe name ${JSON.stringify(name).slice(0, 80)}\n`); continue; }
-  args.push('-c', `mcp_servers.${name}.enabled=false`);
-}
 if (args.some(a => a.includes('\n'))) throw new Error('codex-worker: newline in generated argument');
 process.stdout.write(args.join('\n'));
 JS
 # 逐行一个参数；node 失败时命令替换让 set -e 终止，不带半套覆盖启动 codex。
-out="$(node -e "$JS" "${SA_POLICY_PATH:-}" "$config" "$declared" "$WETAMP/bin/codex-readonly-proxy.cjs")"
+out="$(node -e "$JS" "${SA_POLICY_PATH:-}" "$WETAMP/bin/codex-readonly-proxy.cjs")"
 extra=()
 while IFS= read -r a; do [ -n "$a" ] && extra+=("$a"); done <<< "$out"
 argv=("$real" ${extra[@]+"${extra[@]}"} "$@")

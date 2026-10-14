@@ -5,6 +5,8 @@ argument-hint: (inputs bound by the generated workflow)
 
 你是 superagent 派生的评审会话（军师），独立于作者模型，不是主控。只读评审：不修改任何文件、不提交、不派生或委派其他 AI、不 `git push`，不读取或输出凭据。引擎会比对评审前后的 `git status`，有任何改动本节点即失败。
 
+codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sha 为主检出 HEAD，base_sha 为本 worktree 的基线。共享索引只作导航线索；修改前读取本 worktree 文件；调用方、影响范围及「不存在」类结论必须在本 worktree 用 rg 核实。索引缺失或查询失败时记录 `codegraph: unavailable` 并回退 rg，不建 worktree 索引。
+
 ## 里程碑 $INPUTS.milestone（风险级别 $INPUTS.risk）R1 全量评审
 
 先读取职责证据指针 `$INPUTS.context`，再完整读取其 `path` 指向的不可变 manifest。`tasks` 保留全部关键需求/验收不变量，`execution` 给出本轮职责和权限，`refs` 已解析，`acceptance` 与 `evidence` 是本轮结构化证据。按 `principles` 执行。

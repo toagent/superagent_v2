@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lastJson } from '../src/archon';
 import { executionTable } from '../src/execution';
@@ -407,3 +407,39 @@ console.log(JSON.stringify({prepared: true}));`,
     ],
   });
 }, 40_000);
+
+test('codegraph uses the main checkout index and exposes stale worktree base', () => {
+  const gen = tmp(),
+    repo = gitRepo(tmp()),
+    worker = join(tmp(), 'worker');
+  const plan = JSON.parse(
+    readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
+  ) as Plan;
+  writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(gen, 'execution.json'), JSON.stringify(executionTable(plan, loadTiers())));
+  sh(`git worktree add -qb sa/index '${worker}'`, repo);
+  const base = sh('git rev-parse HEAD', worker).trim();
+  const input = {
+    gen,
+    artifacts: gen,
+    node: 'code-core',
+    cwd: worker,
+    base,
+    head: base,
+    environment: 'unknown',
+  };
+  expect(roleContext(input).codegraph.status).toBe('unavailable');
+  mkdirSync(join(repo, '.codegraph'));
+  expect(roleContext(input).codegraph).toEqual({
+    projectPath: repo,
+    index_sha: base,
+    base_sha: base,
+    status: 'available',
+  });
+  sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm advance', repo);
+  const context = roleContext(input);
+  expect(context.codegraph.index_sha).toBe(sh('git rev-parse HEAD', repo).trim());
+  expect(context.codegraph.index_sha).not.toBe(context.codegraph.base_sha);
+  expect(context.cwd).toBe(worker);
+  expect(existsSync(join(worker, '.codegraph'))).toBe(false);
+});

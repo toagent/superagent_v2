@@ -22,7 +22,7 @@ export interface Alias {
   effort: string;
 }
 export const WETAMP = join(import.meta.dir, '..');
-/** Archon worker 的 Codex 二进制：前置 exec_profiles 的 -c 并关掉沙箱清单外的 MCP。 */
+/** Archon worker 的 Codex 二进制：前置 exec_profiles 的 -c 保留原生 MCP。 */
 export const CODEX_WORKER = join(WETAMP, 'bin', 'codex-worker');
 
 export function home(): { sa: string; archon: string } {
@@ -185,7 +185,7 @@ export interface Tiers {
   policy: {
     /** Context advisory thresholds consumed by context-advisory.cjs. */
     context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
-    sandbox: { mcp: string[]; network: boolean };
+    sandbox: { network: boolean };
     /** Environment preparation retries; AI nodes use the engine defaults. */
     auto_retry: { environment: number };
     exec_profiles: {

@@ -247,18 +247,14 @@ function declaredServers(config: ThreadConfig): JsonObject {
   return typeof servers === 'object' && servers !== null && !Array.isArray(servers) ? servers : {};
 }
 
-/**
- * Fails `misconfigured` unless every MCP server live on the thread is one the node
- * declared. Codex lists disabled servers too, so the status, not absence, is the
- * signal; a plugin's server never passes, because a declared server replaces the
- * plugin's and reports no plugin id. Runs between the thread request and `turn/start`,
- * so a failure spends nothing.
- */
+/** Native nodes inherit servers; explicitly scoped title threads validate their empty scope. */
 export async function checkThreadMcpScope(
   connection: AppServerConnection,
   threadId: string,
-  declared: readonly string[]
+  declared: readonly string[],
+  inheritNative = true
 ): Promise<void> {
+  if (inheritNative) return;
   const allowed = new Set(declared);
   const unexpected: string[] = [];
   let cursor: string | null = null;

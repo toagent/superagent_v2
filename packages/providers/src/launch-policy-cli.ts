@@ -1,9 +1,8 @@
-/** Native Claude CLI output adapter: scope verification precedes forwarding any model output. */
+/** Native Claude CLI output adapter: preserves native capabilities while forwarding model output. */
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { constants } from 'node:os';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { withPluginScopeCheck } from './claude/plugins';
 
 export async function runScopedClaude(
   command: string[],
@@ -33,7 +32,7 @@ export async function runScopedClaude(
     if (!stdout) throw new Error('execution: Claude CLI stdout pipe is missing');
     for await (const line of createInterface({ input: stdout })) {
       if (!line.trim()) continue;
-      // CLI and SDK share this native wire channel; the scope guard validates init's plugin rows.
+      // CLI and SDK share this native wire channel.
       const event = JSON.parse(line) as SDKMessage;
       if (!event || typeof event.type !== 'string')
         throw new Error('execution: invalid Claude CLI event');
@@ -51,7 +50,7 @@ export async function runScopedClaude(
         stdin.end(input, resolve);
       });
     }
-    for await (const event of withPluginScopeCheck(events(), [])) {
+    for await (const event of events()) {
       if (format === 'stream-json') process.stdout.write(JSON.stringify(event) + '\n');
       if (event.type === 'result') {
         resultSeen = true;

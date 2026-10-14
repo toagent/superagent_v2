@@ -107,12 +107,11 @@ test('readonly policy denies native domain grants and overrides native live Code
       const tables = assignments.filter(a => !a.startsWith('features.multi_agent='));
       expect(Bun.TOML.parse(tables.join('\n'))).toMatchObject({
         web_search: readonly ? 'disabled' : 'live',
-        features: { apps: false, plugins: false },
-        skills: { include_instructions: false },
-        mcp_servers: { 'ambient.with.dots@fixture/path name': { enabled: false } },
       });
-      expect(inventory.mock.calls.at(-1)?.[2]).toMatchObject({ HOME: process.env.HOME });
-      expect(inventory.mock.calls.at(-1)?.[2]?.CODEX_HOME).toBe(process.env.CODEX_HOME);
+      expect(inventory).not.toHaveBeenCalled();
+      expect(assignments.some(a => /^(mcp_servers|skills|plugins|features.apps)/.test(a))).toBe(
+        false
+      );
     }
   } finally {
     inventory.mockRestore();
@@ -175,7 +174,7 @@ test('Codex CLI rejects unsupported values and ambiguous CLI paths instead of fa
     expect(() => codexCliConfig({ [key]: false })).toThrow('unsupported Codex config path');
 });
 
-test('native CLI scope guard rejects undeclared plugins or output before init', async () => {
+test('native CLI keeps ambient plugins and forwards model output', async () => {
   const result = { type: 'result', is_error: false, result: 'model-output' };
   for (const plugins of [[], [{ name: 'ambient', source: 'ambient@fixture' }], null]) {
     const events =
@@ -200,9 +199,9 @@ test('native CLI scope guard rejects undeclared plugins or output before init', 
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    expect(exit).toBe(plugins?.length === 0 ? 0 : 1);
-    expect(stdout).toBe(plugins?.length === 0 ? 'model-output\n' : '');
-    if (exit) expect(stderr).toContain(plugins ? 'does not match' : 'before reporting');
+    expect(exit).toBe(0);
+    expect(stdout).toBe('model-output\n');
+    expect(stderr).toBe('');
   }
 });
 

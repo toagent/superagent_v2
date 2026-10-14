@@ -24,7 +24,7 @@ export type PlanOwnerContracts = [
   Assert<Equal<NonNullable<Plan['console']>, Console>>,
   Assert<Equal<NonNullable<Pkg['caps']>, NonNullable<Plan['caps']>>>,
 ];
-export const capsOf = (plan: Plan, p: Pkg, mcp: string[]): Caps => ({
+export const capsOf = (plan: Plan, p: Pkg, mcp: string[] = []): Caps => ({
   network: true,
   web: true,
   install: true,

@@ -128,8 +128,8 @@ describe('B1-POLICY frozen routing', () => {
     expect(loadPolicy(path).exec_profiles).toEqual(tiers.policy.exec_profiles);
     const reordered = Object.fromEntries(Object.entries(tiers).reverse());
     expect(snapshotPolicy(reordered as typeof tiers).hash).toBe(frozen.hash);
-    tiers.policy.sandbox.mcp.push('changed');
-    expect(frozen.sandbox.mcp).not.toContain('changed');
+    tiers.policy.sandbox.network = !tiers.policy.sandbox.network;
+    expect(frozen.sandbox.network).not.toBe(tiers.policy.sandbox.network);
     expect(snapshotPolicy(tiers).hash).not.toBe(frozen.hash);
     writeFileSync(path, JSON.stringify({ ...frozen, sandbox: tiers.policy.sandbox }));
     expect(() => loadPolicy(path)).toThrow('hash mismatch');

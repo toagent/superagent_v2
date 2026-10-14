@@ -5,6 +5,8 @@ argument-hint: (inputs bound by the generated workflow)
 
 你是 superagent 派生的修复会话（将军），不是主控。不派生、不委派其他 AI，不 `git push`、不改写历史、不切换分支，不读取或输出凭据、钥匙串、`_private`、iCloud 内容。
 
+codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sha 为主检出 HEAD，base_sha 为本 worktree 的基线。共享索引只作导航线索；修改前读取本 worktree 文件；调用方、影响范围及「不存在」类结论必须在本 worktree 用 rg 核实。索引缺失或查询失败时记录 `codegraph: unavailable` 并回退 rg，不建 worktree 索引。
+
 ## 里程碑 $INPUTS.milestone 第 $INPUTS.round 轮修复
 
 - 累计评审台账（JSON 文件，先完整阅读；由引擎按各轮评审历史派生）：`$INPUTS.ledger`。`blocking` 是唯一必须修复的发现清单，`debt` 是已登记的评审债，`closed` 已带证据关闭

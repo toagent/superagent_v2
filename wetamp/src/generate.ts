@@ -29,6 +29,7 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { cleanEngine } from './coord';
+import { excludeCodegraph } from './land';
 import {
   WETAMP,
   CODEX_WORKER,
@@ -639,7 +640,7 @@ const renderCaps = (c: Caps): string =>
     `- git：${c.git === 'branch' ? '本分支内任意提交、rebase、reset' : '只追加提交，不 rebase/reset/amend'}`,
     // Codex 把工作树根 AGENTS.md 当成更新的用户指令；项目给人工主仓的"不要提交"曾让将军提交后自报红线。
     '- 提交授权：在本 run 的 worktree 内提交是引擎要求的必需步骤；仓库 AGENTS.md/CLAUDE.md 中禁止 git commit 的条款面向人工主仓，此处不适用，不构成红线',
-    `- MCP：${c.mcp.length ? c.mcp.join('、') : '（无）'}`,
+    '- skills/plugins/MCP：继承用户原生配置；高危动作由 guard 在动作入口拦截',
   ].join('\n');
 
 const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');
@@ -734,6 +735,7 @@ export function generate(
 ): Gen {
   const engine_commit = cleanEngine();
   assertSQLite(plan.repo);
+  excludeCodegraph(plan.repo);
   const tiers = loadTiers();
   const policy = snapshotPolicy(tiers);
   const principlesPath = join(WETAMP, 'templates', '.archon', 'principles.md');
@@ -791,11 +793,10 @@ export function generate(
   // sa-check 经它查本 run 的 spend/binding（F-14/F-16）；gen 目录可脱离 wetamp 安装位置被引用
   if (!fake && !existsSync(join(dir, 'archon')))
     symlinkSync(join(WETAMP, 'bin', 'archon'), join(dir, 'archon'));
-  const mcp = tiers.policy.sandbox.mcp;
   for (const p of plan.packages) {
     writeFileSync(
       join(dir, 'briefs', `${p.id}.md`),
-      principles + '\n' + renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p, mcp))
+      principles + '\n' + renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p))
     );
   }
   const lessons = injectMemory(

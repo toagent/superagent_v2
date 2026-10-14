@@ -17,13 +17,11 @@
       "version": 1,
       "network": true,
       "web": true,
-      "caches": true,
-      "mcp": ["searxng", "context7", "codegraph", "github", "serena"]
+      "caches": true
     },
     "auto_retry": { "environment": 5 },
     "exec_profiles": {
       "reviewer": {
-        "disable_mcp": false,
         "codex": { "features.multi_agent": false },
         "codex_readonly_marker": "superagent-reviewer-readonly",
         "claude": {
@@ -50,7 +48,6 @@
         }
       },
       "coder": {
-        "disable_mcp": false,
         "codex": { "features.multi_agent": false },
         "claude": {
           "denied_tools": [

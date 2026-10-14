@@ -215,11 +215,6 @@ function buildCodexMcpServers(servers: Record<string, unknown>): CodexConfig | u
   return Object.keys(mcpServers).length > 0 ? mcpServers : undefined;
 }
 
-function isWorkflowNode(requestOptions?: SendQueryOptions): boolean {
-  const nodeId = requestOptions?.nodeConfig?.nodeId;
-  return typeof nodeId === 'string' && nodeId.trim().length > 0;
-}
-
 /**
  * The config overrides a thread starts with. Codex merges them over the user's own
  * config.toml; it never replaces it.
@@ -239,8 +234,6 @@ function buildThreadConfig(
   };
   if (codexConfig.webSearchMode) config.web_search = codexConfig.webSearchMode;
   if (mcpServers) config.mcp_servers = mcpServers;
-  // Scoped requests must not advertise ambient skills. Direct chat keeps the user's setting.
-  // An older Codex ignores the key with a config warning rather than failing.
   if (scoped) config.skills = { include_instructions: false };
   return config;
 }
@@ -530,8 +523,7 @@ interface TurnRequest {
   threadParams: Pick<ParamsOf<'thread/start'>, 'sandbox' | 'approvalPolicy' | 'model' | 'config'>;
   turnParams: Omit<ParamsOf<'turn/start'>, 'threadId'>;
   /**
-   * Declared workflow plugins, or an empty list for titles. Undefined for direct chat,
-   * which keeps the user's setup. Scoped threads also restrict MCP servers (`./scope`).
+   * Titles use an empty capability scope; workflow nodes and chat inherit native settings.
    */
   nodePlugins: readonly string[] | undefined;
   onModelRerouted?: SendQueryOptions['onModelRerouted'];
@@ -588,7 +580,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
   const threadId = idAt(threadResponse, 'thread');
   if (!threadId) throw new Error('Codex app-server returned a thread without an id');
   request.onThread(threadId);
-  if (declared) await checkThreadMcpScope(connection, threadId, declared);
+  if (declared) await checkThreadMcpScope(connection, threadId, declared, false);
   getLog().debug(
     {
       sessionIdPreview: sessionPreview(threadId),
@@ -1135,21 +1127,10 @@ export class CodexProvider implements IAgentProvider {
         codexConfig.modelReasoningEffort
       );
 
-      const workflowNode = isWorkflowNode(requestOptions);
-      const nodePlugins = titleRequest
-        ? []
-        : workflowNode
-          ? (requestOptions?.nodeConfig?.plugins ?? [])
-          : undefined;
+      const nodePlugins = titleRequest ? [] : undefined;
       connection = AppServerConnection.start(
         binary,
-        [
-          ...(apiKey ? ['-c', 'cli_auth_credentials_store="ephemeral"'] : []),
-          // A user who turned plugins off globally gets an empty `plugin/installed`, so a
-          // node that names plugins could not find them. This process serves only this
-          // node's thread, and the thread config switches off every plugin it does not name.
-          ...(nodePlugins?.length ? ['-c', 'features.plugins=true'] : []),
-        ],
+        apiKey ? ['-c', 'cli_auth_credentials_store="ephemeral"'] : [],
         env,
         this.spawner,
         requestOptions?.protectedEnvKeys

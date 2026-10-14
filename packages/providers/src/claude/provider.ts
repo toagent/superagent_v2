@@ -91,12 +91,6 @@ import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
 import { closeOpenToolCalls } from '../shared/tool-calls';
 import { ClassifiedProviderError } from '../shared/failure';
 import { diagnoseBinary } from '../shared/binary-diagnostics';
-import {
-  buildClaudePluginSettings,
-  buildPluginListCommand,
-  readClaudePluginIds,
-  withPluginScopeCheck,
-} from './plugins';
 import { clampEffort, type AssertNever } from '@archon/provider-contract';
 import {
   claudeSkillSearchRoots,
@@ -612,25 +606,12 @@ async function applyNodeConfig(
     includeProject: boolean;
     includeUser: boolean;
     isContainer: boolean;
-  },
-  listInstalledPluginIds: () => Promise<string[]>
+  }
 ): Promise<ProviderWarning[]> {
   const warnings: ProviderWarning[] = [];
   const workflowNode = isWorkflowNode(nodeConfig);
   if (workflowNode) {
-    // Workflow nodes are declared-only capability boundaries. Keep normal
-    // project/user settings (CLAUDE.md, hooks, permissions), but exclude ambient
-    // skills, MCP and plugins unless the workflow names them explicitly.
-    options.skills = nodeConfig.skills ?? [];
-    options.strictMcpConfig = true;
-    const namedPlugins = nodeConfig.plugins ?? [];
-    const installedPluginIds = await listInstalledPluginIds();
-    options.settings = buildClaudePluginSettings(installedPluginIds, namedPlugins);
-    getLog().info(
-      { nodeId: nodeConfig.nodeId, installed: installedPluginIds.length, named: namedPlugins },
-      'claude.plugin_scope_applied'
-    );
-
+    // Native skills, plugins and MCP remain available; guard owns action policy.
     if (nodeConfig.skills && nodeConfig.skills.length > 0) {
       const { missing } = resolveClaudeSkillDirectories(cwd, nodeConfig.skills, skillSearch);
       if (missing.length > 0) {
@@ -687,9 +668,7 @@ async function applyNodeConfig(
     }
   }
 
-  // allowed_tools → tools. `Skill` is re-added only on the workflow path, which
-  // is the only one that narrows `options.skills`; adding it for a non-workflow
-  // caller would expose the ambient catalog instead of a declared subset.
+  // Explicit tool lists still control which built-in tools a node can use.
   const selectsSkills = workflowNode && (nodeConfig.skills?.length ?? 0) > 0;
   if (nodeConfig.allowed_tools !== undefined) {
     options.tools = selectsSkills
@@ -1726,16 +1705,7 @@ export class ClaudeProvider implements IAgentProvider {
           options,
           requestOptions.nodeConfig,
           cwd,
-          skillSearch,
-          () =>
-            readClaudePluginIds(
-              buildPluginListCommand({
-                cliPath: resolvedCliPath,
-                cwd,
-                env,
-                execContext: requestOptions.execContext,
-              })
-            )
+          skillSearch
         );
         for (const warning of nodeConfigWarnings) {
           yield { type: 'warning', ...warning };
@@ -1789,11 +1759,8 @@ export class ClaudeProvider implements IAgentProvider {
         options.env as Record<string, string>,
         options.model
       );
-      const nodeConfig = requestOptions?.nodeConfig;
       const events = withFirstMessageTimeout(
-        isWorkflowNode(nodeConfig)
-          ? withPluginScopeCheck(rawEvents, nodeConfig.plugins ?? [])
-          : rawEvents,
+        rawEvents,
         controller,
         getFirstEventTimeoutMs(),
         diagnostics

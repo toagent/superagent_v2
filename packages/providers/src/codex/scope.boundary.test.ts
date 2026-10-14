@@ -310,7 +310,12 @@ async function writeMcp(file: string, servers: Record<string, string>): Promise<
 }
 
 /** What a node naming only `alpha@fixture` sees: alpha's skill and hook, the user's hook. */
-const ALPHA_ONLY: Seen = { tools: [], skills: ['alpha'], hooks: ['alpha', 'user'], guidance: true };
+const ALPHA_ONLY: Seen = {
+  tools: ['alpha', 'beta', 'user'],
+  skills: ['alpha', 'beta'],
+  hooks: ['alpha', 'beta', 'user'],
+  guidance: true,
+};
 
 describe('Codex capability scope on the real binary', () => {
   test(
@@ -344,11 +349,11 @@ describe('Codex capability scope on the real binary', () => {
   );
 
   test(
-    'a node that names nothing sees no plugin tool, skill or hook, and keeps the user’s hook and both AGENTS.md',
+    'a node inherits native tools, skills, hooks and guidance',
     async () => {
       const chunks = await runNode({});
       expect(resultOf(chunks).failure?.evidence).toContain('stub model');
-      expect(await seen()).toEqual({ tools: [], skills: [], hooks: ['user'], guidance: true });
+      expect(await seen()).toEqual(ALPHA_ONLY);
     },
     testTimeout(20_000)
   );
@@ -361,13 +366,13 @@ describe('Codex capability scope on the real binary', () => {
       modelRequests = [];
       await rm(hookLog, { force: true });
       await runNode({}, sessionId);
-      expect(await seen()).toEqual({ tools: [], skills: [], hooks: ['user'], guidance: true });
+      expect(await seen()).toEqual(ALPHA_ONLY);
     },
     testTimeout(20_000)
   );
 
   test(
-    'a named plugin brings its skill and hook, not its MCP server, and nothing from the other plugin',
+    'a declaration does not trim other native plugins',
     async () => {
       await runNode({ plugins: ['alpha@fixture'] });
       expect(await seen()).toEqual(ALPHA_ONLY);
@@ -420,43 +425,47 @@ describe('Codex capability scope on the real binary', () => {
   );
 
   test(
-    'a named plugin loads even when the user turned plugins off globally',
+    'native plugin settings remain authoritative',
     async () => {
       await withUserConfig('[features]\nplugins = false', () =>
         runNode({ plugins: ['alpha@fixture'] })
       );
-      expect(await seen()).toEqual(ALPHA_ONLY);
+      expect(await seen()).toEqual({
+        tools: ['user'],
+        skills: [],
+        hooks: ['user'],
+        guidance: true,
+      });
     },
     testTimeout(20_000)
   );
 
   test(
-    'a named plugin’s server reaches the node only when its mcp: file declares it',
+    'a declared plugin server coexists with native servers',
     async () => {
       await writeMcp('alpha-mcp.json', { alpha_srv: 'alpha' });
       await runNode({ plugins: ['alpha@fixture'], mcp: 'alpha-mcp.json' });
-      expect((await seen()).tools).toEqual(['alpha']);
+      expect((await seen()).tools).toEqual(['alpha', 'beta', 'user']);
     },
     testTimeout(20_000)
   );
 
   test(
-    'a node’s MCP servers are exactly its declared ones, without the user’s',
+    'a node’s declared servers supplement native servers',
     async () => {
       await writeMcp('declared-mcp.json', { declared_srv: 'declared' });
       await runNode({ mcp: 'declared-mcp.json' });
-      expect((await seen()).tools).toEqual(['declared']);
+      expect((await seen()).tools).toEqual(['alpha', 'beta', 'user', 'declared']);
     },
     testTimeout(20_000)
   );
 
   test(
-    'a named plugin that is not installed fails misconfigured before any model request',
+    'capability declarations do not cause native inventory rejection',
     async () => {
       const result = resultOf(await runNode({ plugins: ['ghost@fixture'] }));
-      expect(result.failure?.class).toBe('misconfigured');
-      expect(result.failure?.evidence).toContain('ghost@fixture');
-      expect(modelRequests).toEqual([]);
+      expect(result.failure?.evidence).toContain('stub model');
+      expect(await seen()).toEqual(ALPHA_ONLY);
     },
     testTimeout(20_000)
   );

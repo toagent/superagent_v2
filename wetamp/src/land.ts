@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  appendFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +15,17 @@ import { lock, QUERY_TIMEOUT_MS, type RunView } from './archon';
 import { home, receiptIssue, WETAMP, type Receipt } from './config';
 import { redact } from './redact';
 import { landTarget, type Land } from '../templates/.archon/scripts/sa-check';
+/** Shared Git metadata keeps the main index out of every worktree's clean checks. */
+export function excludeCodegraph(repo: string): void {
+  const result = Bun.spawnSync(
+    ['git', '-C', repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
+    { stdout: 'pipe', stderr: 'pipe' }
+  );
+  if (result.exitCode !== 0) throw new Error('codegraph: cannot resolve common info/exclude');
+  const file = result.stdout.toString().trim();
+  if (!existsSync(file) || !readFileSync(file, 'utf8').split('\n').includes('.codegraph/'))
+    appendFileSync(file, '\n.codegraph/\n');
+}
 export interface DeliveryTarget {
   checkout: string;
   branch: string;
@@ -223,6 +235,13 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     }
     if (checkout) gitAt(checkout, 'merge', '--ff-only', accepted);
     else git('update-ref', `refs/heads/${target}`, accepted, tip);
+    if (checkout && existsSync(join(checkout, '.codegraph'))) {
+      try {
+        excludeCodegraph(checkout);
+        const sync = Bun.spawnSync([Bun.which('codegraph', {PATH: process.env.PATH}) ?? 'codegraph', 'sync'], {cwd: checkout, stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS});
+        if (sync.exitCode !== 0) console.error(JSON.stringify({event: 'codegraph.sync_failed', exit: sync.exitCode}));
+      } catch { console.error(JSON.stringify({event: 'codegraph.sync_failed'})); }
+    }
     if (!delivery) console.log(`land: integrated ${accepted} in ${checkout ?? repo}`);
     if (delivery) {
       const integrated = git('rev-parse', `refs/heads/${target}`);

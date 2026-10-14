@@ -185,9 +185,37 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
   }
   return null;
 }
+// Both provider wire shapes converge before privacy or effect checks.
+function mcpCall(name, input) {
+  if (typeof input.server === 'string' && typeof input.tool === 'string')
+    return {server: input.server, tool: input.tool, args: input.arguments ?? {}};
+  const match = /^mcp__([^]+?)__(.+)$/.exec(name);
+  return match ? {server: match[1], tool: match[2], args: input} : null;
+}
+function strings(value) {
+  if (typeof value === 'string') return [value];
+  return value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
+}
+function mcpReason(call, cwd, root, env, derived, reviewer, onAdvisory, onCategory, onEvent) {
+  for (const value of strings(call.args)) {
+    const kind = wordKind(value, cwd, env);
+    if (kind) return (onCategory('privacy'), message('读写隐私文件', 'MCP 参数命中隐私路径黑名单', '使用非隐私路径', {kind}));
+  }
+  const rule = EFFECTS.find(r => r.mcp?.server === call.server && (r.mcp.tools.includes('*') || r.mcp.tools.includes(call.tool)));
+  if (!rule) { onEvent('mcp.unregistered_tool', {server: call.server, tool: call.tool, role: env.SUPERAGENT_ROLE || (derived ? 'worker' : 'commander')}); return null; }
+  if (rule.effect === 'delegate' && derived) return (onCategory('delegation'), message('MCP 再委派', '派生会话不能再次委派'));
+  if (['external', 'execute'].includes(rule.effect)) return (onCategory(rule.effect === 'external' ? 'external' : 'authorization'), message('MCP 高危动作', '对外写入或绕过 shell 执行护栏'));
+  if (rule.effect === 'write') for (const key of rule.mcp.paths) for (const target of strings(call.args?.[key])) {
+    const why = targetReason('write', target, cwd, root, env, reviewer, onAdvisory, onCategory);
+    if (why) return why;
+  }
+  return null;
+}
 const READ_TOOLS = {Read: ['file_path'], NotebookRead: ['notebook_path'], Grep: ['path'], Glob: ['path'], LS: ['path'], view_image: ['path']};
-function reason({client, name, input = {}, cwd, root, shell, derived, env = process.env, onCommand, onAdvisory = () => {}, onCategory = () => {}, reviewer = false}) {
+function reason({client, name, input = {}, cwd, root, shell, derived, env = process.env, onCommand, onAdvisory = () => {}, onCategory = () => {}, reviewer = false, onEvent = () => {}}) {
   try {
+    const mcp = mcpCall(name, input);
+    if (mcp) return mcpReason(mcp, cwd, root, env, derived, reviewer, onAdvisory, onCategory, onEvent);
     const edit = microEdit.isEdit(client, name);
     let targets = [];
     let deletions = new Set();

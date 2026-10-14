@@ -2,9 +2,6 @@ import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'node:url';
 import { clampEffort, isEffortRung } from '@archon/provider-contract';
 import type { NodeConfig } from './types';
-import { AppServerConnection } from './codex/app-server';
-import { applyNodeScope, readCodexInventory } from './codex/scope';
-import { buildClaudePluginSettings, readClaudePluginIds } from './claude/plugins';
 
 /** Non-secret policy shared by native CLI and workflow launches. Native homes stay untouched. */
 export interface LaunchPolicy {
@@ -144,21 +141,12 @@ export async function prepareRoleCommand(
   provider: 'claude' | 'codex',
   model: string,
   policy: LaunchPolicy,
-  cwd: string
+  _cwd: string
 ): Promise<string[]> {
   const args = roleCommandArgs(command, provider, model);
   if (provider === 'claude') {
     const native = claudeLaunchPolicy(policy);
-    const ids = await readClaudePluginIds({
-      command: command[0],
-      args: ['plugin', 'list', '--json'],
-      cwd,
-      env: process.env,
-    });
-    const settings = {
-      ...buildClaudePluginSettings(ids, []),
-      ...(native.sandbox ? { sandbox: native.sandbox } : {}),
-    };
+    const settings = native.sandbox ? { sandbox: native.sandbox } : {};
     let format: 'text' | 'json' | 'stream-json' = 'text';
     const index = args.indexOf('--output-format');
     if (index !== -1) {
@@ -171,15 +159,11 @@ export async function prepareRoleCommand(
     const nativeCommand = [
       command[0],
       '--effort',
-      native.effort!,
+      native.effort ?? policy.effort,
       '--permission-mode',
-      native.permissionMode!,
+      native.permissionMode ?? 'default',
       '--disallowedTools',
-      native.disallowedTools!.join(','),
-      '--strict-mcp-config',
-      '--mcp-config',
-      '{"mcpServers":{}}',
-      '--disable-slash-commands',
+      (native.disallowedTools ?? []).join(','),
       '--settings',
       JSON.stringify(settings),
       '--output-format',
@@ -195,45 +179,19 @@ export async function prepareRoleCommand(
     ];
   }
   if (!isEffortRung(policy.effort)) throw new Error('execution: unsupported effort');
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined)
-  );
-  const connection = AppServerConnection.start({ path: command[0], pathDirs: [] }, [], env);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const inventory = await Promise.race([
-      (async () => {
-        await connection.request('initialize', {
-          clientInfo: { name: 'superagent-policy', title: null, version: '1' },
-          capabilities: null,
-        });
-        connection.notify('initialized');
-        return readCodexInventory(connection, { cwd, plugins: [], codexHome: 'native' });
-      })(),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('job: native inventory timed out')), 30000);
-      }),
-    ]);
-    const { config } = applyNodeScope({ skills: { include_instructions: false } }, inventory, []);
-    const settings = {
-      ...policy.codex,
-      ...config,
-      model_reasoning_effort: policy.effort,
-      sandbox_mode: policy.readonly ? 'read-only' : 'danger-full-access',
-      ...(policy.readonly ? { web_search: 'disabled' } : {}),
-      approval_policy: 'never',
-    };
-    // R1-1: an existing dotted key keeps its position; enforce it after the features table.
-    return [
-      command[0],
-      ...codexCliConfig(settings),
-      ...codexCliConfig({ 'features.multi_agent': false }),
-      ...args,
-    ];
-  } finally {
-    clearTimeout(timer);
-    await connection.shutdown(250);
-  }
+  const settings = {
+    ...policy.codex,
+    model_reasoning_effort: policy.effort,
+    sandbox_mode: policy.readonly ? 'read-only' : 'danger-full-access',
+    ...(policy.readonly ? { web_search: 'disabled' } : {}),
+    approval_policy: 'never',
+  };
+  return [
+    command[0],
+    ...codexCliConfig(settings),
+    ...codexCliConfig({ 'features.multi_agent': false }),
+    ...args,
+  ];
 }
 
 /** CLI paths are bare dotted keys; nested table keys are literal capability identifiers. */

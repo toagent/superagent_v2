@@ -60,11 +60,39 @@ export function roleContext(input: {
       : incremental
         ? 'unknown'
         : null;
+  const git = (...args: string[]) => {
+    const p = Bun.spawnSync(['git', '-C', input.cwd, ...args], { stdout: 'pipe', stderr: 'pipe' });
+    return p.exitCode === 0 ? p.stdout.toString().trim() : 'unknown';
+  };
+  const projectPath = git('worktree', 'list', '--porcelain')
+    .split('\n')[0]
+    .replace(/^worktree /, '');
+  const indexed = existsSync(join(projectPath, '.codegraph'));
+  const head = indexed
+    ? Bun.spawnSync(['git', '-C', projectPath, 'rev-parse', 'HEAD'], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+    : null;
+  const codegraph = {
+    projectPath,
+    index_sha: head?.exitCode === 0 ? head.stdout.toString().trim() : 'unknown',
+    base_sha: input.base,
+    status: indexed ? 'available' : 'unavailable',
+  };
+  if (!indexed || codegraph.index_sha !== input.base)
+    console.error(
+      JSON.stringify({
+        event: indexed ? 'codegraph.stale_base' : 'codegraph: unavailable',
+        ...codegraph,
+      })
+    );
   const context = {
     version: 1,
     node,
     execution,
     cwd: input.cwd,
+    codegraph,
     refs: {
       base: input.base,
       head: input.head,
@@ -163,6 +191,7 @@ export function contextPack(
         {
           node: context.node,
           cwd: context.cwd,
+          codegraph: context.codegraph,
           refs: context.refs,
           scope: context.execution.scope,
           environment: context.environment,

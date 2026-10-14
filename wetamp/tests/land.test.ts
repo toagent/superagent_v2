@@ -1,9 +1,23 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { lock } from '../src/archon';
-import { applyLand, captureDelivery, selftest, type LocalDelivery } from '../src/land';
+import {
+  applyLand,
+  captureDelivery,
+  excludeCodegraph,
+  selftest,
+  type LocalDelivery,
+} from '../src/land';
 import * as config from '../src/config';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
@@ -590,4 +604,30 @@ test('delivery defaults: land needs no selftest receipt and never triggers diagn
   } finally {
     diagnosis.mockRestore();
   }
+});
+
+test.each([0, 1])('codegraph sync after ff is best effort (exit %i)', exit => {
+  const f = fixture(),
+    bin = join(f.root, 'bin'),
+    marker = join(f.root, 'synced');
+  mkdirSync(bin);
+  const command = join(bin, 'codegraph');
+  writeFileSync(command, `#!/bin/sh\nprintf '%s' "$PWD:$1" > '${marker}'\nexit ${exit}\n`);
+  chmodSync(command, 0o755);
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+  excludeCodegraph(f.worktree);
+  excludeCodegraph(f.repo);
+  mkdirSync(join(f.repo, '.codegraph'));
+  writeFileSync(join(f.repo, '.codegraph/index'), 'fixture');
+  expect(sh('git status --porcelain', f.repo)).toBe('');
+  applyLand(f.run, f.land, () => 0);
+  expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(f.land.head);
+  expect(readFileSync(marker, 'utf8')).toBe(`${f.repo}:sync`);
+  const exclude = sh('git rev-parse --path-format=absolute --git-path info/exclude', f.repo).trim();
+  expect(
+    readFileSync(exclude, 'utf8')
+      .split('\n')
+      .filter(line => line === '.codegraph/')
+  ).toHaveLength(1);
+  expect(sh('git status --porcelain', f.repo)).toBe('');
 });
