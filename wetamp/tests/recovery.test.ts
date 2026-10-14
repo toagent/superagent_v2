@@ -17,6 +17,7 @@ import { recoverySnapshot, unknownEffects } from '../src/recovery';
 import { WETAMP } from '../src/config';
 import { gitRepo, sh, tmp } from './helpers';
 import {
+  MAX_ROUNDS,
   validateRecovery,
   recoveryHash,
   ledgerOf,
@@ -27,7 +28,7 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import type { Plan } from '../src/plan';
 
-test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse', () => {
+function checkRecovery(limit: number): void {
   const root = tmp(),
     repo = gitRepo(root),
     jobs = join(root, 'jobs');
@@ -39,7 +40,7 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
     return { path, sha256: recoveryHash(path) };
   };
   const base = sh('git rev-parse HEAD', repo).trim();
-  // Protocol fixtures stay compact so the four-round chain is visible together.
+  // Protocol fixtures stay compact so the recorded-round chain is visible together.
   // prettier-ignore
   const p: Plan = { repo, base_ref: base, budget: { weighted_tokens: 100000 }, packages: [{
     id: 'pkg', title: 'pkg', goal: 'recover', risk: 'G2', size: 'S', scope: { write: ['README.md'] },
@@ -68,7 +69,7 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
     writeFileSync(path, entries.map(x => JSON.stringify(x)).join('\n'));
     return { job_id: id, job, native: { path, sha256: recoveryHash(path) } };
   };
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i <= limit; i++) {
     writeFileSync(join(repo, 'README.md'), `round ${String(i)}`);
     sh(
       `git add README.md && git -c user.name=t -c user.email=t@l commit -qm round-${String(i)}`,
@@ -76,21 +77,21 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
     );
     const head = sh('git rev-parse HEAD', repo).trim();
     // prettier-ignore
-    const raw = { conclusion: i === 3 ? 'PASS' : 'FAIL', new_blockers: [], findings: [
+    const raw = { conclusion: i === limit ? 'PASS' : 'FAIL', new_blockers: [], findings: [
       { id: 'H1', severity: 'high', disposition: i ? 'CLOSED' : 'OPEN', evidence: 'actual closure evidence' },
       { id: 'L1', severity: 'low', disposition: 'DEBT', evidence: 'retained debt' },
     ] };
     // prettier-ignore
-    const review: Review = { status: i === 3 ? 'PASS' : 'FAIL', debt: [], findings: raw.findings.map(f => ({
+    const review: Review = { status: i === limit ? 'PASS' : 'FAIL', debt: [], findings: raw.findings.map(f => ({
       id: f.id, severity: f.severity as 'high' | 'low', file: 'README.md', line: 1,
       status: f.disposition === 'CLOSED' ? 'closed' : 'open', evidence: f.evidence, carry_over: i > 0, failure_class: 'product',
     })) };
     const result = JSON.stringify(raw),
       reviewer = native(`review-${String(i)}`, 'strategist', result, 'reviewer');
     // prettier-ignore
-    e.rounds.push({ logical_round: i + 1, descriptor_round: Math.min(i + 1, 3),
+    e.rounds.push({ logical_round: i + 1, descriptor_round: Math.min(i + 1, limit),
       freeze: save(`freeze-${String(i)}.json`, { run_id: e.run_id, base, head, previous, worktree: repo,
-        ...(i === 3 ? { logical_review_round: 4, cli_descriptor_round: 3, user_exception: { reply: 'yes', scope: 'one fourth final review' } } : {}),
+        ...(i === limit ? { logical_review_round: limit + 1, cli_descriptor_round: limit, user_exception: { reply: 'yes', scope: 'one final review beyond the limit' } } : {}),
         files: { 'README.md': recoveryHash(join(repo, 'README.md')) } }),
       source: save(`review-${String(i)}.json`, raw), review, reviewer,
       provider_result: { ...save(`provider-${String(i)}.json`, { type: 'result', subtype: 'success', is_error: false, session_id: reviewer.job_id, result, modelUsage: { reviewer: {} } }), json_offset: 0, json_length: Buffer.byteLength(result) },
@@ -100,7 +101,7 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
     previous = head;
   }
   e.candidate = previous;
-  e.exception = e.rounds[3].freeze;
+  e.exception = e.rounds[limit].freeze;
   const roster: RecoveryAuthorCoverage = {
     run_id: e.run_id,
     engine_run_id: e.engine_run_id,
@@ -128,13 +129,13 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
     [x => { x.admission.kind = 'wrong' as 'owner_legacy_snapshot'; }, 'owner admission'],
     [x => { x.candidate = base; }, 'candidate drift'],
     [x => { x.plan.sha256 = 'wrong'; }, 'source drift'],
-    [x => { x.rounds.pop(); }, 'complete R1-R4'],
+    [x => { x.rounds.pop(); }, 'complete rounds'],
     [x => { x.rounds[1].coverage.base = base; }, 'incremental coverage'],
     [x => { x.rounds[1].coverage.files = []; }, 'missing coverage'],
-    [x => { x.rounds[3].review.status = 'FAIL'; }, 'non-PASS final'],
+    [x => { x.rounds[limit].review.status = 'FAIL'; }, 'non-PASS final'],
     [x => { x.rounds[1].review.findings.shift(); }, 'finding coverage'],
     [x => { x.rounds[1].review.findings[0].evidence = ''; }, 'finding interpretation'],
-    [x => { x.rounds[3].reviewer.job_id = 'wrong'; }, 'job registry binding'],
+    [x => { x.rounds[limit].reviewer.job_id = 'wrong'; }, 'job registry binding'],
     [x => { x.rounds[0].authors = []; }, 'support author coverage'],
     [x => { x.rounds[2].authors.pop(); }, 'support author coverage'],
     [x => { x.rounds[2].authors[1] = x.rounds[2].authors[0]; }, 'support author coverage'],
@@ -173,25 +174,27 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
       stderr: 'pipe',
       timeout: 15000,
     });
-  const accepted = check({ INPUTS_KIND: 'accept', INPUTS_TAG: 'diff-m1-r4' });
+  const accepted = check({ INPUTS_KIND: 'accept', INPUTS_TAG: `diff-m1-r${String(limit + 1)}` });
   expect(accepted.exitCode, accepted.stderr.toString()).toBe(0);
   const finalCheck = JSON.parse(
-    readFileSync(join(root, 'artifacts/diff-m1-r4.json'), 'utf8')
+    readFileSync(join(root, `artifacts/diff-m1-r${String(limit + 1)}.json`), 'utf8')
   ) as Accept;
   const gate = check({
     INPUTS_KIND: 'gate',
-    INPUTS_TAG: 'gate-m1-r4',
-    INPUTS_ROUND: '4',
+    INPUTS_TAG: `gate-m1-r${String(limit + 1)}`,
+    INPUTS_ROUND: String(limit + 1),
     INPUTS_OPERATOR_ID: e.run_id,
     INPUTS_RECOVERY_EVIDENCE: frozen.path,
     INPUTS_RECOVERY_SHA256: frozen.sha256,
     INPUTS_C1: 'null',
     INPUTS_C2: 'null',
     INPUTS_C3: 'null',
-    INPUTS_C4: JSON.stringify(finalCheck),
+    [`INPUTS_C${String(limit + 1)}`]: JSON.stringify(finalCheck),
   });
   expect(gate.exitCode, gate.stderr.toString()).toBe(0);
-  const result = JSON.parse(readFileSync(join(root, 'artifacts/gate-m1-r4.json'), 'utf8')) as {
+  const result = JSON.parse(
+    readFileSync(join(root, `artifacts/gate-m1-r${String(limit + 1)}.json`), 'utf8')
+  ) as {
     verdict: string;
     grade: string;
     debt: string[];
@@ -207,7 +210,7 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
       INPUTS_RECOVERY_SHA256: frozen.sha256,
     }).exitCode
   ).not.toBe(0);
-  const author = e.rounds[3].authors[0];
+  const author = e.rounds[limit].authors[0];
   const text = readFileSync(author.native.path, 'utf8').replace(
     '"model":"author"',
     '"model":"reviewer"'
@@ -215,7 +218,12 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
   writeFileSync(author.native.path, text);
   author.native.sha256 = recoveryHash(author.native.path);
   expect(() => run()).toThrow('review not independent');
-});
+}
+
+test.each([3, MAX_ROUNDS])(
+  'RECOVERY_CONTINUATION recorded limit %i binds full native history and rejects unsafe reuse',
+  checkRecovery
+);
 
 async function until(check: () => boolean, ms = 15000): Promise<void> {
   const end = Date.now() + ms;

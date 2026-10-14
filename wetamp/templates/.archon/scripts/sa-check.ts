@@ -763,7 +763,7 @@ async function environment(): Promise<void> {
 const severities = (risk: string): string[] =>
   risk === 'G2' ? ['blocker', 'high', 'medium'] : ['blocker', 'high'];
 
-/** 第 2/3 轮的有效关闭：原 id、carry_over:true、status:closed 且附 evidence；同轮同 id 另有 open 条目则 open 胜出。 */
+/** 第 2 轮及以后的有效关闭：原 id、carry_over:true、status:closed 且附 evidence；同轮同 id 另有 open 条目则 open 胜出。 */
 const closes = (r: Review, id: string): boolean =>
   r.findings.some(
     f => f.id === id && f.carry_over && f.status === 'closed' && f.evidence.trim() !== ''
@@ -915,7 +915,7 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
   ]),
 ];
 
-export const MAX_ROUNDS = 3;
+export const MAX_ROUNDS = 6;
 type Verdict = 'pass' | 'fix' | 'escalate';
 
 /** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，自报只有 environment needs 可阻断失败验收。 */
@@ -1548,7 +1548,12 @@ export function validateRecovery(
   source(e.contracts);
   require(JSON.stringify([...e.packages].sort()) ===
     JSON.stringify(p.packages.map(k => k.id).sort()), 'package coverage');
-  require(e.rounds.length === 4, 'complete R1-R4 required');
+  const limit = e.rounds.at(-1)?.descriptor_round;
+  require(typeof limit === 'number' &&
+    Number.isInteger(limit) &&
+    limit > 0 &&
+    limit <= MAX_ROUNDS &&
+    e.rounds.length === limit + 1, 'complete rounds through recorded limit + 1 required');
   require(e.author_coverage, 'support author coverage required');
   const roster = source(e.author_coverage) as Omit<RecoveryAuthorCoverage, 'rounds'> & {
     rounds?: RecoveryAuthorCoverage['rounds'];
@@ -1563,12 +1568,12 @@ export function validateRecovery(
     cli_descriptor_round: number;
     user_exception?: { reply?: string; scope?: string };
   };
-  require(e.exception.path === e.rounds[3].freeze.path &&
-    e.exception.sha256 === e.rounds[3].freeze.sha256 &&
-    exception.logical_review_round === 4 &&
-    exception.cli_descriptor_round === 3 &&
+  require(e.exception.path === e.rounds[limit].freeze.path &&
+    e.exception.sha256 === e.rounds[limit].freeze.sha256 &&
+    exception.logical_review_round === limit + 1 &&
+    exception.cli_descriptor_round === limit &&
     exception.user_exception?.reply?.trim() &&
-    exception.user_exception.scope?.trim(), 'fourth round exception');
+    exception.user_exception.scope?.trim(), 'round beyond recorded limit exception');
   const original = load(engineId);
   require(original.id === engineId && original.output_root, 'original engine binding');
   const milestones = p.packages.map(k => k.milestone ?? 'm1');
@@ -1612,7 +1617,7 @@ export function validateRecovery(
     support_permissions: { round: number; denials: unknown[] }[] = [];
   for (const [i, r] of e.rounds.entries()) {
     require(r.logical_round === i + 1 &&
-      r.descriptor_round === Math.min(i + 1, MAX_ROUNDS), 'round continuity');
+      r.descriptor_round === Math.min(i + 1, limit), 'round continuity');
     const f = source(r.freeze) as {
       run_id?: string;
       original_run?: string;
@@ -1678,7 +1683,7 @@ export function validateRecovery(
       provider.session_id === reviewer.job.session_id &&
       provider.result === reviewer.native.final &&
       JSON.stringify(Object.keys(provider.modelUsage)) === JSON.stringify(reviewer.native.models) &&
-      (i !== 3 || !provider.permission_denials?.length), 'provider binding');
+      (i !== limit || !provider.permission_denials?.length), 'provider binding');
     support_permissions.push({ round: i + 1, denials: provider.permission_denials ?? [] });
     if (r.provider_result.json_offset !== null) {
       const { json_offset: offset, json_length: length } = r.provider_result;
@@ -1699,7 +1704,7 @@ export function validateRecovery(
         r.provider_result.json_length === null, 'typed legacy interpretation only for R1');
     require(r.review.status === raw.conclusion &&
       !r.review.debt.length &&
-      (i === 3
+      (i === limit
         ? raw.conclusion === 'PASS' && Array.isArray(raw.new_blockers) && !raw.new_blockers.length
         : raw.conclusion === 'FAIL'), 'non-PASS final');
     require(r.review.findings.length === raw.findings.length &&

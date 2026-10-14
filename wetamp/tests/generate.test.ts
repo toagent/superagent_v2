@@ -19,7 +19,11 @@ import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
-import { CHECK_AUX_COUNTS, CHECK_AUX_TIMEOUT_MS } from '../templates/.archon/scripts/sa-check';
+import {
+  MAX_ROUNDS,
+  CHECK_AUX_COUNTS,
+  CHECK_AUX_TIMEOUT_MS,
+} from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
@@ -404,9 +408,13 @@ describe('buildWorkflow', () => {
       const plan = structuredClone(fixture);
       if (sameMilestone) plan.packages[1].milestone = 'm1';
       const nodes = nodesOf(build(false, plan));
+      const cache = new Map<string, string[]>();
       const dependencies = (id: string): string[] => {
-        const deps = nodes.find(n => n.id === id)!.depends_on ?? [];
-        return [...deps, ...deps.flatMap(dependencies)];
+        if (!cache.has(id)) {
+          const deps = nodes.find(n => n.id === id)!.depends_on ?? [];
+          cache.set(id, [...new Set([...deps, ...deps.flatMap(dependencies)])]);
+        }
+        return cache.get(id)!;
       };
       for (const p of plan.packages)
         for (const kind of ['code', 'verify', 'repair', 'settle']) {
@@ -451,8 +459,8 @@ describe('buildWorkflow', () => {
       deviations: [],
       needs: [],
     });
-    expect(nodes.filter(n => !['code-core', 'verify-core'].includes(n.id))).toEqual(
-      nodesOf(normal).filter(n => !['code-core', 'verify-core'].includes(n.id))
+    expect(nodes.filter(n => !['code-core', 'verify-core', 'repair-core'].includes(n.id))).toEqual(
+      nodesOf(normal).filter(n => !['code-core', 'verify-core', 'repair-core'].includes(n.id))
     );
     expect(code?.depends_on).toEqual(nodesOf(normal).find(n => n.id === 'code-core')?.depends_on);
   });
@@ -464,6 +472,12 @@ describe('buildWorkflow', () => {
       join(gen, '.archon/scripts/policy-attempts.ts')
     );
     const repo = gitRepo(tmp());
+    fs.mkdirSync(join(gen, 'briefs'));
+    for (const p of fixture.packages)
+      fs.writeFileSync(
+        join(gen, 'briefs', `${p.id}.md`),
+        renderBrief(p, '', capsOf(fixture, p, []))
+      );
     fs.writeFileSync(join(gen, 'plan.json'), JSON.stringify(fixture));
     fs.writeFileSync(
       join(gen, 'execution.json'),
@@ -492,7 +506,7 @@ describe('buildWorkflow', () => {
         state: 'completed',
         output: (() => {
           const result = runAttempt(attempt, repo, gen);
-          expect(result.exitCode).toBe(0);
+          expect(result.exitCode, result.stderr.toString()).toBe(0);
           return result.stdout.toString();
         })(),
       });
@@ -521,6 +535,7 @@ describe('buildWorkflow', () => {
       pkg: 'core',
       brief: join(gen, 'briefs/core.md'),
       hint: join(gen, 'hints/core.md'),
+      context_node: 'package-attempt-core',
     });
     const retryOutput = JSON.stringify({ status: 'done', notes: 'retried' });
     ctx.nodeOutputs.set(code.id, { state: 'completed', output: retryOutput });
@@ -554,7 +569,9 @@ describe('buildWorkflow', () => {
       const nodes = nodesOf(build(fake, plan));
       for (const n of nodes.filter(n => n.with?.kind === 'accept' || n.with?.kind === 'settle'))
         expect(n.timeout).toBe(ms);
-      for (const n of nodes.filter(n => n.with?.kind !== 'accept' && n.with?.kind !== 'settle'))
+      for (const n of nodes.filter(
+        n => n.with?.kind !== 'accept' && n.with?.kind !== 'settle' && n.id !== 'environment'
+      ))
         expect(n.timeout).toBeUndefined();
     }
   });
@@ -748,7 +765,7 @@ describe('buildWorkflow', () => {
       const nodes = nodesOf(
         buildWorkflow(fixture, milestones(fixture), 'hf10b', gen, fake, NOW)
       ).filter(n => n.id.startsWith('attempt-review-'));
-      expect(nodes).toHaveLength(6);
+      expect(nodes).toHaveLength(milestones(fixture).length * MAX_ROUNDS);
       const node = nodes.find(n => n.id === id)!;
       const path = join(gen, 'attempts', node.id.slice('attempt-'.length));
       if (counter === 'directory') {
@@ -849,13 +866,13 @@ describe('buildWorkflow', () => {
       });
     }
   });
-  test('packages run serially; milestones join their three gates; signed-off milestone waits for a human; land is last', () => {
+  test('packages run serially; milestones join every gate; signed-off milestone waits for a human; land is last', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('start-m1')?.depends_on).toEqual(['environment']);
     expect(n('code-core')?.depends_on).toEqual(['start-m1', 'package-attempt-core']);
     expect(n('start-m2')).toMatchObject({
-      depends_on: ['gate-m1-r1', 'gate-m1-r2', 'gate-m1-r3'],
+      depends_on: Array.from({ length: MAX_ROUNDS }, (_, i) => `gate-m1-r${String(i + 1)}`),
       trigger_rule: 'none_failed_min_one_success',
     });
     expect(n('human-m2')).toMatchObject({
@@ -871,7 +888,7 @@ describe('buildWorkflow', () => {
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('fix-m1-r1')).toBeUndefined();
     expect(n('fix-m1-r2')).toMatchObject({
-      depends_on: ['gate-m1-r1', 'attempt-m1'],
+      depends_on: ['gate-m1-r1', 'attempt-m1', 'handoff-m1-r2'],
       when: "$gate-m1-r1.output.verdict == 'fix'",
     });
     expect(n('diff-m1-r3')?.depends_on).toEqual(['fix-m1-r3', 'attempt-m1']);
@@ -880,6 +897,18 @@ describe('buildWorkflow', () => {
         .filter(k => /^[RC]\d$/.test(k))
         .sort()
     ).toEqual(['C1', 'C2', 'C3', 'R1', 'R2', 'R3']);
+    for (let r = 4; r <= MAX_ROUNDS; r++) {
+      const t = `m1-r${String(r)}`,
+        before = `m1-r${String(r - 1)}`;
+      expect(n(`fix-${t}`)?.when).toBe(`$gate-${before}.output.verdict == 'fix'`);
+      expect(n(`handoff-${t}`)?.when).toBe(n(`fix-${t}`)?.when);
+      expect(n(`review-${t}`)?.command).toBe('sa-review-delta');
+      expect(n(`diff-${t}`)?.depends_on).toContain(`fix-${t}`);
+      expect(Object.keys(n(`gate-${t}`)?.with ?? {}).filter(k => /^[RC]\d$/.test(k))).toHaveLength(
+        r * 2
+      );
+      expect(n(`gate-${t}`)?.trigger_rule).toBe('none_failed_min_one_success');
+    }
     expect(n('review-m1-r2')).toMatchObject({
       command: 'sa-review-delta',
       mutates_checkout: false,
@@ -917,11 +946,9 @@ describe('buildWorkflow', () => {
     };
     const nodes = nodesOf(build(false, plan));
     expect(nodes.find(x => x.id === 'human-m2')).toBeUndefined();
-    expect(nodes.find(x => x.id === 'land')?.depends_on).toEqual([
-      'gate-m2-r1',
-      'gate-m2-r2',
-      'gate-m2-r3',
-    ]);
+    expect(nodes.find(x => x.id === 'land')?.depends_on).toEqual(
+      Array.from({ length: MAX_ROUNDS }, (_, i) => `gate-m2-r${String(i + 1)}`)
+    );
   });
   test('native approval owns signoff; passed plan deadlines fail generation', () => {
     const approval = (deadline: string) =>
@@ -1180,7 +1207,20 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
   }
 });
 
-test('generate writes a committed gen repo that archon validates', () => {
+function withCleanEngine(check: () => void): () => void {
+  return () => {
+    const engine = gitRepo(tmp()),
+      clean = coord.cleanEngine;
+    const boundary = spyOn(coord, 'cleanEngine').mockImplementation(() => clean(engine));
+    try {
+      check();
+    } finally {
+      boundary.mockRestore();
+    }
+  };
+}
+
+function checkGeneratedRepo(): void {
   const root = tmp();
   const env = { SUPERAGENT_HOME: join(root, 'home'), ARCHON_HOME: join(root, 'home', 'archon') };
   Object.assign(process.env, env);
@@ -1302,9 +1342,15 @@ test('generate writes a committed gen repo that archon validates', () => {
       readFileSync(join(WETAMP, 'templates', path), 'utf8')
     );
   }
-}, 60000);
+}
 
-test('generate fails clearly before writing gen when core principles are missing', () => {
+test(
+  'generate writes a committed gen repo that archon validates',
+  withCleanEngine(checkGeneratedRepo),
+  60000
+);
+
+function checkMissingPrinciples(): void {
   const root = tmp();
   Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: join(root, 'archon') });
   const read = fs.readFileSync;
@@ -1325,7 +1371,12 @@ test('generate fails clearly before writing gen when core principles are missing
   } finally {
     spy.mockRestore();
   }
-});
+}
+
+test(
+  'generate fails clearly before writing gen when core principles are missing',
+  withCleanEngine(checkMissingPrinciples)
+);
 
 test('delivery defaults: no deadline survives >24h and preserves explicit human signoff', () => {
   const { deadline: _deadline, ...plan } = fixture;
@@ -1350,7 +1401,16 @@ test('delivery defaults: no deadline survives >24h and preserves explicit human 
 });
 
 test('role efficiency handoff resolves prior work without model calls or skipped-branch guesses', () => {
-  const gen = tmp();
+  const gen = tmp(),
+    repo = gitRepo(tmp());
+  fs.mkdirSync(join(gen, 'briefs'));
+  for (const p of fixture.packages)
+    fs.writeFileSync(join(gen, 'briefs', `${p.id}.md`), renderBrief(p, '', capsOf(fixture, p, [])));
+  fs.writeFileSync(join(gen, 'plan.json'), JSON.stringify(fixture));
+  fs.writeFileSync(
+    join(gen, 'execution.json'),
+    JSON.stringify(executionTable(fixture, loadTiers()))
+  );
   const nodes = nodesOf(buildWorkflow(fixture, milestones(fixture), 'handoff', gen, false, NOW));
   const handoff = nodes.find(n => n.id === 'handoff-m1-r2')!;
   const work = {
@@ -1397,7 +1457,7 @@ test('role efficiency handoff resolves prior work without model calls or skipped
       join(WETAMP, 'templates/.archon/scripts/sa-context.ts'),
     ],
     {
-      cwd: gen,
+      cwd: repo,
       env: {
         ...process.env,
         ARTIFACTS_DIR: gen,
@@ -1464,10 +1524,7 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
       'sa-code',
       'sa-repair',
       'sa-review',
-      'sa-fix',
-      'sa-review-delta',
-      'sa-fix',
-      'sa-review-delta',
+      ...Array.from({ length: MAX_ROUNDS - 1 }, () => ['sa-fix', 'sa-review-delta']).flat(),
     ]);
     expect(nodes.find(n => n.id === 'fix-m1-r2')?.when).toBe("$gate-m1-r1.output.verdict == 'fix'");
     expect(nodes.find(n => n.id === 'verify-core')?.with?.kind).toBe('accept');

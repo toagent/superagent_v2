@@ -29,7 +29,7 @@ export const HOLD_POLICY = {
     text: '将军受执行约束阻断',
     next: '检查执行约束并提供符合约束的操作或环境',
   },
-  review_limit: { do: 'blocked', text: '三轮评审已用尽', next: '重新确认遗留blocker和工作包范围' },
+  review_limit: { do: 'blocked', text: '评审轮次已用尽', next: '重新确认遗留blocker和工作包范围' },
   review_not_independent: {
     do: 'blocked',
     text: '评审身份不独立',

@@ -69,13 +69,13 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 
 `wait`/`status` 返回 held 时按 `state` 处理：
 
-| state              | 含义                                                    | 动作                                                                                      |
-| ------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `held:human`       | 里程碑等待人工签收                                      | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                        |
-| `held:environment` | plan 的 environment 检查失败                            | 修好环境后 `superagent decide <run> retry`                                                |
-| `held:gate`        | 3 轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | 看 `needs`，`superagent decide <run> retry [--pkg <id> --hint "提示"]` 再来一轮，或手工修 |
-| `held:paused`      | 其它暂停                                                | `superagent resume <run>`                                                                 |
-| `failed`           | 节点失败（`node`、`error`）                             | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief）   |
+| state              | 含义                                                                      | 动作                                                                                      |
+| ------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `held:human`       | 里程碑等待人工签收                                                        | `superagent decide <run> approve` 或 `reject`（reject = 终止 run）                        |
+| `held:environment` | plan 的 environment 检查失败                                              | 修好环境后 `superagent decide <run> retry`                                                |
+| `held:gate`        | MAX_ROUNDS（默认 6）轮内评审未通过（escalate，见 `gate` 字段的 `reason`） | 看 `needs`，`superagent decide <run> retry [--pkg <id> --hint "提示"]` 再来一轮，或手工修 |
+| `held:paused`      | 其它暂停                                                                  | `superagent resume <run>`                                                                 |
+| `failed`           | 节点失败（`node`、`error`）                                               | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief）   |
 
 其它动词：`status <run>`、`cancel <run>`、`recover <run>`（显式恢复已确认 owner 离线的 run；未知副作用须先对账）、`accept <run> [--pkg id]`
 （在 run 的 worktree 里重跑验收命令）、`report`（全部 run 的状态、评审轮次、一次通过率、失败分类、节点耗时、评审债、恢复次数）、

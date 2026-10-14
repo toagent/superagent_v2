@@ -56,6 +56,8 @@ nodes:
       properties:
         attempt:
           type: string
+        context_pack:
+          type: string
       required:
         - attempt
   - id: code-core
@@ -170,7 +172,7 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: &delivery-decision
+        decision:
           type: object
           properties:
             kind:
@@ -192,31 +194,43 @@ nodes:
               items:
                 type: string
             requirements:
-              {
-                'type': 'object',
-                'required': ['status', 'items'],
-                'properties':
-                  {
-                    'status': { 'enum': ['legacy', 'verified', 'unmet', 'unknown'] },
-                    'items':
-                      {
-                        'type': 'array',
-                        'items':
-                          {
-                            'type': 'object',
-                            'required': ['package', 'id', 'text', 'status', 'evidence'],
-                            'properties':
-                              {
-                                'package': { 'type': 'string' },
-                                'id': { 'type': 'string' },
-                                'text': { 'type': 'string' },
-                                'status': { 'enum': ['verified', 'unmet', 'unknown'] },
-                                'evidence': { 'type': 'array', 'items': { 'type': 'string' } },
-                              },
-                          },
-                      },
-                  },
-              }
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
           required:
             - kind
             - reason
@@ -449,7 +463,70 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -537,7 +614,7 @@ nodes:
     timeout: 155000
   - id: attempt-review-m1-r1
     always_run: true
-    when: "$diff-m1-r1.output.disposition == 'advance'"
+    when: $diff-m1-r1.output.disposition == 'advance'
     depends_on:
       - diff-m1-r1
     script: sa-context
@@ -791,7 +868,70 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -879,7 +1019,7 @@ nodes:
     timeout: 155000
   - id: attempt-review-m1-r2
     always_run: true
-    when: "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'"
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
     depends_on:
       - diff-m1-r2
     script: sa-context
@@ -1137,7 +1277,70 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -1225,7 +1428,7 @@ nodes:
     timeout: 155000
   - id: attempt-review-m1-r3
     always_run: true
-    when: "$diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'"
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
     depends_on:
       - diff-m1-r3
     script: sa-context
@@ -1372,12 +1575,1278 @@ nodes:
       tag: gate-m1-r3
       next: '1'
     trigger_rule: none_failed_min_one_success
+  - id: fix-m1-r4
+    bash: |-
+      mkdir -p "$(dirname 'core.txt')" && echo 'fix m1 r4' >> 'core.txt'
+      git add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r4'
+      echo '{"status":"done","changed_files":["core.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    depends_on:
+      - gate-m1-r3
+      - attempt-m1
+    when: $gate-m1-r3.output.verdict == 'fix'
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - redline
+            - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+        - deviations
+        - needs
+  - id: diff-m1-r4
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m1-r4
+      - attempt-m1
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      pkgs: core
+      scope_pkgs: core
+      base: $start-m1.output.head
+      risk: G1
+      milestone: m1
+      tag: diff-m1-r4
+      prev: $diff-m1-r3.output.diff_hash
+      coder: $fix-m1-r4.output
+      delta_base: $gate-m1-r3.output.reviewed_head
+    output_format:
+      type: object
+      properties:
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              evidence:
+                type: string
+            required:
+              - command
+              - failure_class
+              - evidence
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        same:
+          type: boolean
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+        disposition:
+          enum:
+            - advance
+            - repair
+            - suspend
+        reason:
+          type:
+            - string
+            - 'null'
+        delta:
+          type: string
+        risk:
+          type:
+            - string
+            - 'null'
+        out_of_scope:
+          type: array
+          items:
+            type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - same
+        - base_pass
+        - head
+        - disposition
+        - reason
+        - delta
+        - risk
+        - out_of_scope
+        - decision
+    timeout: 155000
+  - id: attempt-review-m1-r4
+    always_run: true
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true'
+    depends_on:
+      - diff-m1-r4
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r4
+      gen: /GEN
+      pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-m1-r4
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    depends_on:
+      - diff-m1-r4
+      - attempt-review-m1-r4
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              command:
+                type:
+                  - string
+                  - 'null'
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+              - failure_class
+              - command
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m1-r4
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - diff-m1-r4
+      - review-m1-r4
+    with:
+      kind: gate
+      scope_pkgs: core
+      review: '1'
+      round: 4
+      R1:
+        from: $review-m1-r1.output
+        if_skipped: null
+      C1: $diff-m1-r1.output
+      R2:
+        from: $review-m1-r2.output
+        if_skipped: null
+      C2: $diff-m1-r2.output
+      R3:
+        from: $review-m1-r3.output
+        if_skipped: null
+      C3: $diff-m1-r3.output
+      R4:
+        from: $review-m1-r4.output
+        if_skipped: null
+      C4: $diff-m1-r4.output
+      risk: G1
+      milestone: m1
+      pkgs: core
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      tag: gate-m1-r4
+      next: '1'
+    trigger_rule: none_failed_min_one_success
+  - id: fix-m1-r5
+    bash: |-
+      mkdir -p "$(dirname 'core.txt')" && echo 'fix m1 r5' >> 'core.txt'
+      git add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r5'
+      echo '{"status":"done","changed_files":["core.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    depends_on:
+      - gate-m1-r4
+      - attempt-m1
+    when: $gate-m1-r4.output.verdict == 'fix'
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - redline
+            - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+        - deviations
+        - needs
+  - id: diff-m1-r5
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m1-r5
+      - attempt-m1
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      pkgs: core
+      scope_pkgs: core
+      base: $start-m1.output.head
+      risk: G1
+      milestone: m1
+      tag: diff-m1-r5
+      prev: $diff-m1-r4.output.diff_hash
+      coder: $fix-m1-r5.output
+      delta_base: $gate-m1-r4.output.reviewed_head
+    output_format:
+      type: object
+      properties:
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              evidence:
+                type: string
+            required:
+              - command
+              - failure_class
+              - evidence
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        same:
+          type: boolean
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+        disposition:
+          enum:
+            - advance
+            - repair
+            - suspend
+        reason:
+          type:
+            - string
+            - 'null'
+        delta:
+          type: string
+        risk:
+          type:
+            - string
+            - 'null'
+        out_of_scope:
+          type: array
+          items:
+            type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - same
+        - base_pass
+        - head
+        - disposition
+        - reason
+        - delta
+        - risk
+        - out_of_scope
+        - decision
+    timeout: 155000
+  - id: attempt-review-m1-r5
+    always_run: true
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true'
+    depends_on:
+      - diff-m1-r5
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r5
+      gen: /GEN
+      pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-m1-r5
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    depends_on:
+      - diff-m1-r5
+      - attempt-review-m1-r5
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              command:
+                type:
+                  - string
+                  - 'null'
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+              - failure_class
+              - command
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m1-r5
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - diff-m1-r5
+      - review-m1-r5
+    with:
+      kind: gate
+      scope_pkgs: core
+      review: '1'
+      round: 5
+      R1:
+        from: $review-m1-r1.output
+        if_skipped: null
+      C1: $diff-m1-r1.output
+      R2:
+        from: $review-m1-r2.output
+        if_skipped: null
+      C2: $diff-m1-r2.output
+      R3:
+        from: $review-m1-r3.output
+        if_skipped: null
+      C3: $diff-m1-r3.output
+      R4:
+        from: $review-m1-r4.output
+        if_skipped: null
+      C4: $diff-m1-r4.output
+      R5:
+        from: $review-m1-r5.output
+        if_skipped: null
+      C5: $diff-m1-r5.output
+      risk: G1
+      milestone: m1
+      pkgs: core
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      tag: gate-m1-r5
+      next: '1'
+    trigger_rule: none_failed_min_one_success
+  - id: fix-m1-r6
+    bash: |-
+      mkdir -p "$(dirname 'core.txt')" && echo 'fix m1 r6' >> 'core.txt'
+      git add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m1 r6'
+      echo '{"status":"done","changed_files":["core.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    depends_on:
+      - gate-m1-r5
+      - attempt-m1
+    when: $gate-m1-r5.output.verdict == 'fix'
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - redline
+            - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+        - deviations
+        - needs
+  - id: diff-m1-r6
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m1-r6
+      - attempt-m1
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      pkgs: core
+      scope_pkgs: core
+      base: $start-m1.output.head
+      risk: G1
+      milestone: m1
+      tag: diff-m1-r6
+      prev: $diff-m1-r5.output.diff_hash
+      coder: $fix-m1-r6.output
+      delta_base: $gate-m1-r5.output.reviewed_head
+    output_format:
+      type: object
+      properties:
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              evidence:
+                type: string
+            required:
+              - command
+              - failure_class
+              - evidence
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        same:
+          type: boolean
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+        disposition:
+          enum:
+            - advance
+            - repair
+            - suspend
+        reason:
+          type:
+            - string
+            - 'null'
+        delta:
+          type: string
+        risk:
+          type:
+            - string
+            - 'null'
+        out_of_scope:
+          type: array
+          items:
+            type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - same
+        - base_pass
+        - head
+        - disposition
+        - reason
+        - delta
+        - risk
+        - out_of_scope
+        - decision
+    timeout: 155000
+  - id: attempt-review-m1-r6
+    always_run: true
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true'
+    depends_on:
+      - diff-m1-r6
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r6
+      gen: /GEN
+      pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-m1-r6
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    depends_on:
+      - diff-m1-r6
+      - attempt-review-m1-r6
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              command:
+                type:
+                  - string
+                  - 'null'
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+              - failure_class
+              - command
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m1-r6
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - diff-m1-r6
+      - review-m1-r6
+    with:
+      kind: gate
+      scope_pkgs: core
+      review: '1'
+      round: 6
+      R1:
+        from: $review-m1-r1.output
+        if_skipped: null
+      C1: $diff-m1-r1.output
+      R2:
+        from: $review-m1-r2.output
+        if_skipped: null
+      C2: $diff-m1-r2.output
+      R3:
+        from: $review-m1-r3.output
+        if_skipped: null
+      C3: $diff-m1-r3.output
+      R4:
+        from: $review-m1-r4.output
+        if_skipped: null
+      C4: $diff-m1-r4.output
+      R5:
+        from: $review-m1-r5.output
+        if_skipped: null
+      C5: $diff-m1-r5.output
+      R6:
+        from: $review-m1-r6.output
+        if_skipped: null
+      C6: $diff-m1-r6.output
+      risk: G1
+      milestone: m1
+      pkgs: core
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      tag: gate-m1-r6
+      next: '1'
+    trigger_rule: none_failed_min_one_success
   - id: start-m2
     bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:
       - gate-m1-r1
       - gate-m1-r2
       - gate-m1-r3
+      - gate-m1-r4
+      - gate-m1-r5
+      - gate-m1-r6
     trigger_rule: none_failed_min_one_success
     output_format:
       type: object
@@ -1419,6 +2888,8 @@ nodes:
       type: object
       properties:
         attempt:
+          type: string
+        context_pack:
           type: string
       required:
         - attempt
@@ -1534,7 +3005,70 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -1762,7 +3296,70 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -1850,7 +3447,7 @@ nodes:
     timeout: 155000
   - id: attempt-review-m2-r1
     always_run: true
-    when: "$diff-m2-r1.output.disposition == 'advance'"
+    when: $diff-m2-r1.output.disposition == 'advance'
     depends_on:
       - diff-m2-r1
     script: sa-context
@@ -2103,7 +3700,70 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -2191,7 +3851,7 @@ nodes:
     timeout: 155000
   - id: attempt-review-m2-r2
     always_run: true
-    when: "$diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'"
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
     depends_on:
       - diff-m2-r2
     script: sa-context
@@ -2448,7 +4108,70 @@ nodes:
     output_format:
       type: object
       properties:
-        decision: *delivery-decision
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
         workspace_clean:
           type: boolean
         failures:
@@ -2536,7 +4259,7 @@ nodes:
     timeout: 155000
   - id: attempt-review-m2-r3
     always_run: true
-    when: "$diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'"
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
     depends_on:
       - diff-m2-r3
     script: sa-context
@@ -2682,6 +4405,1266 @@ nodes:
       policy: /GEN/policy.json
       tag: gate-m2-r3
     trigger_rule: none_failed_min_one_success
+  - id: fix-m2-r4
+    bash: |-
+      mkdir -p "$(dirname 'api.txt')" && echo 'fix m2 r4' >> 'api.txt'
+      git add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r4'
+      echo '{"status":"done","changed_files":["api.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    depends_on:
+      - gate-m2-r3
+      - attempt-m2
+    when: $gate-m2-r3.output.verdict == 'fix'
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - redline
+            - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+        - deviations
+        - needs
+  - id: diff-m2-r4
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m2-r4
+      - attempt-m2
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      pkgs: api
+      scope_pkgs: core,api
+      base: $start-m2.output.head
+      risk: G2
+      milestone: m2
+      tag: diff-m2-r4
+      prev: $diff-m2-r3.output.diff_hash
+      coder: $fix-m2-r4.output
+      delta_base: $gate-m2-r3.output.reviewed_head
+    output_format:
+      type: object
+      properties:
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              evidence:
+                type: string
+            required:
+              - command
+              - failure_class
+              - evidence
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        same:
+          type: boolean
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+        disposition:
+          enum:
+            - advance
+            - repair
+            - suspend
+        reason:
+          type:
+            - string
+            - 'null'
+        delta:
+          type: string
+        risk:
+          type:
+            - string
+            - 'null'
+        out_of_scope:
+          type: array
+          items:
+            type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - same
+        - base_pass
+        - head
+        - disposition
+        - reason
+        - delta
+        - risk
+        - out_of_scope
+        - decision
+    timeout: 155000
+  - id: attempt-review-m2-r4
+    always_run: true
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true'
+    depends_on:
+      - diff-m2-r4
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r4
+      gen: /GEN
+      pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-m2-r4
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    depends_on:
+      - diff-m2-r4
+      - attempt-review-m2-r4
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              command:
+                type:
+                  - string
+                  - 'null'
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+              - failure_class
+              - command
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m2-r4
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - diff-m2-r4
+      - review-m2-r4
+    with:
+      kind: gate
+      scope_pkgs: core,api
+      review: '1'
+      round: 4
+      R1:
+        from: $review-m2-r1.output
+        if_skipped: null
+      C1: $diff-m2-r1.output
+      R2:
+        from: $review-m2-r2.output
+        if_skipped: null
+      C2: $diff-m2-r2.output
+      R3:
+        from: $review-m2-r3.output
+        if_skipped: null
+      C3: $diff-m2-r3.output
+      R4:
+        from: $review-m2-r4.output
+        if_skipped: null
+      C4: $diff-m2-r4.output
+      risk: G2
+      milestone: m2
+      pkgs: api
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      tag: gate-m2-r4
+    trigger_rule: none_failed_min_one_success
+  - id: fix-m2-r5
+    bash: |-
+      mkdir -p "$(dirname 'api.txt')" && echo 'fix m2 r5' >> 'api.txt'
+      git add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r5'
+      echo '{"status":"done","changed_files":["api.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    depends_on:
+      - gate-m2-r4
+      - attempt-m2
+    when: $gate-m2-r4.output.verdict == 'fix'
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - redline
+            - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+        - deviations
+        - needs
+  - id: diff-m2-r5
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m2-r5
+      - attempt-m2
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      pkgs: api
+      scope_pkgs: core,api
+      base: $start-m2.output.head
+      risk: G2
+      milestone: m2
+      tag: diff-m2-r5
+      prev: $diff-m2-r4.output.diff_hash
+      coder: $fix-m2-r5.output
+      delta_base: $gate-m2-r4.output.reviewed_head
+    output_format:
+      type: object
+      properties:
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              evidence:
+                type: string
+            required:
+              - command
+              - failure_class
+              - evidence
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        same:
+          type: boolean
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+        disposition:
+          enum:
+            - advance
+            - repair
+            - suspend
+        reason:
+          type:
+            - string
+            - 'null'
+        delta:
+          type: string
+        risk:
+          type:
+            - string
+            - 'null'
+        out_of_scope:
+          type: array
+          items:
+            type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - same
+        - base_pass
+        - head
+        - disposition
+        - reason
+        - delta
+        - risk
+        - out_of_scope
+        - decision
+    timeout: 155000
+  - id: attempt-review-m2-r5
+    always_run: true
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true'
+    depends_on:
+      - diff-m2-r5
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r5
+      gen: /GEN
+      pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-m2-r5
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    depends_on:
+      - diff-m2-r5
+      - attempt-review-m2-r5
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              command:
+                type:
+                  - string
+                  - 'null'
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+              - failure_class
+              - command
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m2-r5
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - diff-m2-r5
+      - review-m2-r5
+    with:
+      kind: gate
+      scope_pkgs: core,api
+      review: '1'
+      round: 5
+      R1:
+        from: $review-m2-r1.output
+        if_skipped: null
+      C1: $diff-m2-r1.output
+      R2:
+        from: $review-m2-r2.output
+        if_skipped: null
+      C2: $diff-m2-r2.output
+      R3:
+        from: $review-m2-r3.output
+        if_skipped: null
+      C3: $diff-m2-r3.output
+      R4:
+        from: $review-m2-r4.output
+        if_skipped: null
+      C4: $diff-m2-r4.output
+      R5:
+        from: $review-m2-r5.output
+        if_skipped: null
+      C5: $diff-m2-r5.output
+      risk: G2
+      milestone: m2
+      pkgs: api
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      tag: gate-m2-r5
+    trigger_rule: none_failed_min_one_success
+  - id: fix-m2-r6
+    bash: |-
+      mkdir -p "$(dirname 'api.txt')" && echo 'fix m2 r6' >> 'api.txt'
+      git add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake fix m2 r6'
+      echo '{"status":"done","changed_files":["api.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    depends_on:
+      - gate-m2-r5
+      - attempt-m2
+    when: $gate-m2-r5.output.verdict == 'fix'
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - done
+            - blocked
+            - partial
+        changed_files:
+          type: array
+          items:
+            type: string
+        quick_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              cmd:
+                type: string
+              exit:
+                type: integer
+            required:
+              - cmd
+              - exit
+        notes:
+          type: string
+        blockers:
+          type: array
+          items:
+            type: string
+        error_class:
+          description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+          type:
+            - string
+            - 'null'
+          enum:
+            - scope_violation
+            - budget_exhausted
+            - plan_invalid
+            - sandbox_denied
+            - permission_denied
+            - vendor_unavailable_all
+            - task
+            - env
+            - timeout
+            - redline
+            - null
+        deviations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              why:
+                type: string
+            required:
+              - path
+              - why
+        needs:
+          type: array
+          items:
+            type: object
+            properties:
+              cap:
+                type: string
+              why:
+                type: string
+              minimal_ask:
+                type: string
+            required:
+              - cap
+              - why
+              - minimal_ask
+      required:
+        - status
+        - changed_files
+        - quick_checks
+        - notes
+        - blockers
+        - error_class
+        - deviations
+        - needs
+  - id: diff-m2-r6
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - fix-m2-r6
+      - attempt-m2
+    with:
+      kind: accept
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      pkgs: api
+      scope_pkgs: core,api
+      base: $start-m2.output.head
+      risk: G2
+      milestone: m2
+      tag: diff-m2-r6
+      prev: $diff-m2-r5.output.diff_hash
+      coder: $fix-m2-r6.output
+      delta_base: $gate-m2-r5.output.reviewed_head
+    output_format:
+      type: object
+      properties:
+        decision:
+          type: object
+          properties:
+            kind:
+              enum:
+                - advance
+                - debt
+                - repair
+                - block
+            reason:
+              type:
+                - string
+                - 'null'
+            evidence:
+              type: array
+              items:
+                type: string
+            debt:
+              type: array
+              items:
+                type: string
+            requirements:
+              type: object
+              required:
+                - status
+                - items
+              properties:
+                status:
+                  enum:
+                    - legacy
+                    - verified
+                    - unmet
+                    - unknown
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - package
+                      - id
+                      - text
+                      - status
+                      - evidence
+                    properties:
+                      package:
+                        type: string
+                      id:
+                        type: string
+                      text:
+                        type: string
+                      status:
+                        enum:
+                          - verified
+                          - unmet
+                          - unknown
+                      evidence:
+                        type: array
+                        items:
+                          type: string
+          required:
+            - kind
+            - reason
+            - evidence
+            - debt
+        workspace_clean:
+          type: boolean
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              evidence:
+                type: string
+            required:
+              - command
+              - failure_class
+              - evidence
+        coder_partial:
+          type: boolean
+        self_report_conflict:
+          type: boolean
+        error_class_ignored:
+          type: boolean
+        ok:
+          type: boolean
+        failed:
+          type: array
+          items:
+            type: string
+        log:
+          type: string
+        patch:
+          type: string
+        diff_hash:
+          type: string
+        same:
+          type: boolean
+        base_pass:
+          type:
+            - boolean
+            - 'null'
+        head:
+          type: string
+        disposition:
+          enum:
+            - advance
+            - repair
+            - suspend
+        reason:
+          type:
+            - string
+            - 'null'
+        delta:
+          type: string
+        risk:
+          type:
+            - string
+            - 'null'
+        out_of_scope:
+          type: array
+          items:
+            type: string
+      required:
+        - ok
+        - failed
+        - log
+        - patch
+        - diff_hash
+        - same
+        - base_pass
+        - head
+        - disposition
+        - reason
+        - delta
+        - risk
+        - out_of_scope
+        - decision
+    timeout: 155000
+  - id: attempt-review-m2-r6
+    always_run: true
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true'
+    depends_on:
+      - diff-m2-r6
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r6
+      gen: /GEN
+      pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-m2-r6
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    depends_on:
+      - diff-m2-r6
+      - attempt-review-m2-r6
+    mutates_checkout: false
+    output_format:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+            - INCOMPLETE
+        notes:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - blocker
+                  - high
+                  - medium
+                  - low
+              file:
+                type: string
+              line:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - open
+                  - closed
+              evidence:
+                type: string
+              failure_class:
+                type: string
+                enum:
+                  - product
+                  - test_env
+                  - fixture
+                  - baseline
+                  - test_data
+                  - unknown
+              command:
+                type:
+                  - string
+                  - 'null'
+              carry_over:
+                type: boolean
+            required:
+              - id
+              - severity
+              - file
+              - line
+              - status
+              - evidence
+              - carry_over
+              - failure_class
+              - command
+        fixture_confirmations:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              purpose:
+                type: string
+              isolated_fixture:
+                type: boolean
+              no_data_operations:
+                type: boolean
+              evidence:
+                type: string
+            required:
+              - path
+              - purpose
+              - isolated_fixture
+              - no_data_operations
+              - evidence
+        debt:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - notes
+        - findings
+        - fixture_confirmations
+        - debt
+  - id: gate-m2-r6
+    script: sa-check
+    runtime: bun
+    depends_on:
+      - diff-m2-r6
+      - review-m2-r6
+    with:
+      kind: gate
+      scope_pkgs: core,api
+      review: '1'
+      round: 6
+      R1:
+        from: $review-m2-r1.output
+        if_skipped: null
+      C1: $diff-m2-r1.output
+      R2:
+        from: $review-m2-r2.output
+        if_skipped: null
+      C2: $diff-m2-r2.output
+      R3:
+        from: $review-m2-r3.output
+        if_skipped: null
+      C3: $diff-m2-r3.output
+      R4:
+        from: $review-m2-r4.output
+        if_skipped: null
+      C4: $diff-m2-r4.output
+      R5:
+        from: $review-m2-r5.output
+        if_skipped: null
+      C5: $diff-m2-r5.output
+      R6:
+        from: $review-m2-r6.output
+        if_skipped: null
+      C6: $diff-m2-r6.output
+      risk: G2
+      milestone: m2
+      pkgs: api
+      plan: /GEN/plan.json
+      policy: /GEN/policy.json
+      tag: gate-m2-r6
+    trigger_rule: none_failed_min_one_success
   - id: human-m2
     approval:
       message: Approve delivery milestone m2
@@ -2689,10 +5672,12 @@ nodes:
       - gate-m2-r1
       - gate-m2-r2
       - gate-m2-r3
+      - gate-m2-r4
+      - gate-m2-r5
+      - gate-m2-r6
     trigger_rule: none_failed_min_one_success
   - id: signoff-m2
-    bash: |-
-      [ "$(date +%s)" -le 4070908800 ] || { echo 'signoff m2: plan deadline 2099-01-01T00:00:00Z passed' >&2; exit 1; }
+    bash: '[ "$(date +%s)" -le 4070908800 ] || { echo ''signoff m2: plan deadline 2099-01-01T00:00:00Z passed'' >&2; exit 1; }'
     depends_on:
       - human-m2
   - id: land

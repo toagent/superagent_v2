@@ -11,6 +11,7 @@ import {
 } from '../src/execution';
 import { effortFor, loadTiers } from '../src/config';
 import type { Plan } from '../src/plan';
+import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
 import { tmp } from './helpers';
 import { executePolicy } from '../src/policy-executor';
 
@@ -22,7 +23,7 @@ const plan = JSON.parse(
 test('frozen descriptors and both entry points share risk/round effort and native profiles', () => {
   for (const risk of ['G0', 'G1', 'G2'] as const)
     for (const role of ['code', 'repair', 'review'] as const)
-      for (const round of [1, 2, 3]) {
+      for (let round = 1; round <= MAX_ROUNDS; round++) {
         const descriptor = describeExecution(tiers, role, risk, round);
         const route = executionRoute(tiers, 'codex', 'strict', descriptor, [
           tiers.routing.coder.models[0],

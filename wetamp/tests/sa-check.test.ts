@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   budgetUsage,
+  MAX_ROUNDS,
   decide,
   disposition,
   nextDisposition,
@@ -389,7 +390,7 @@ const f = (severity: F['severity'], extra: Partial<F> = {}): F => ({
   carry_over: false,
   ...extra,
 });
-/** 第 2/3 轮用原 id 关闭并附证据：gate 唯一承认的关闭方式。 */
+/** 第 2 轮及以后用原 id 关闭并附证据：gate 唯一承认的关闭方式。 */
 const fixed = (id: string, severity: F['severity'] = 'high'): F =>
   f(severity, { id, status: 'closed', carry_over: true, evidence: 'diff L3 removes it' });
 const review = (status: Rv['status'], findings: F[] = [], debt: string[] = []): Rv => ({
@@ -475,20 +476,29 @@ describe('FC failure classification', () => {
       expect(d.debt[0]).toContain('/tmp/accept.log');
     }
   });
-  test('delivery-truth: same blocker after two repairs stays blocked in G1/strict/G2', () => {
+  test('delivery-truth: same blocker at the review limit stays blocked in G1/strict/G2', () => {
     const r = R('FAIL', [
       f('blocker', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' }),
     ]);
-    const input = { reviews: [r, r, r], rechecks: [C('a'), C('b'), C('c')], risk: 'G1' };
+    const input = {
+      reviews: Array.from({ length: MAX_ROUNDS }, () => r),
+      rechecks: Array.from({ length: MAX_ROUNDS }, (_, i) => C(String(i))),
+      risk: 'G1',
+    };
     expect(decide({ ...input, reviews: [r, r], rechecks: [C('a'), C('b')] }).verdict).toBe('fix');
     for (const protectedInput of [{}, { strict: true }, { risk: 'G2' }])
       expect(decide({ ...input, ...protectedInput })).toMatchObject({
         verdict: 'escalate',
         reason: 'review_failed+review_limit',
-        ledger: { blocking: [{ id: 'stable', repair_rounds: 2 }], debt: [] },
+        ledger: { blocking: [{ id: 'stable', repair_rounds: MAX_ROUNDS - 1 }], debt: [] },
       });
     const newer = R('FAIL', [f('blocker', { id: 'new', evidence: '/tmp/new.log' })]);
-    expect(decide({ ...input, reviews: [R('PASS'), R('PASS'), newer] }).verdict).toBe('escalate');
+    expect(
+      decide({
+        ...input,
+        reviews: [...Array.from({ length: MAX_ROUNDS - 1 }, () => R('PASS')), newer],
+      }).verdict
+    ).toBe('escalate');
   });
   test('reviewer classifies exact failed commands; omitted classification fails closed', () => {
     const check = { ...C('a', false), failed: ['bun test'], disposition: 'repair' as const };
@@ -696,7 +706,7 @@ describe('FC failure classification', () => {
     });
     expect(red.code).toBe(0);
   });
-  test('delivery-truth: third product validation stops repairs without advancing in G1/strict/G2', () => {
+  test('delivery-truth: final product validation stops repairs without advancing in G1/strict/G2', () => {
     const root = tmp(),
       repo = gitRepo(root),
       art = join(root, 'artifacts');
@@ -711,7 +721,7 @@ describe('FC failure classification', () => {
       p.mode = mode;
       writeFileSync(path, JSON.stringify(p));
       // Exercise the real repair history; fabricated artifacts cannot prove the dispatch bound.
-      for (const round of [1, 2]) {
+      for (let round = 1; round < MAX_ROUNDS; round++) {
         const earlier = runScript(
           repo,
           {
@@ -735,7 +745,14 @@ describe('FC failure classification', () => {
       }
       const result = runScript(
         repo,
-        { kind: 'accept', plan: path, pkgs: 'a', milestone: 'm1', tag: 'diff-m1-r3', risk },
+        {
+          kind: 'accept',
+          plan: path,
+          pkgs: 'a',
+          milestone: 'm1',
+          tag: `diff-m1-r${String(MAX_ROUNDS)}`,
+          risk,
+        },
         SCRIPT,
         { ARTIFACTS_DIR: art }
       );
@@ -748,10 +765,13 @@ describe('FC failure classification', () => {
       });
       const check = result.out as Parameters<typeof decide>[0]['rechecks'][number];
       expect(
-        decide({ reviews: [R('PASS'), R('PASS'), R('PASS')], rechecks: [check, check, check] })
+        decide({
+          reviews: Array.from({ length: MAX_ROUNDS }, () => R('PASS')),
+          rechecks: Array.from({ length: MAX_ROUNDS }, () => check),
+        })
       ).toMatchObject({ verdict: 'escalate', reason: 'acceptance_failed+review_limit' });
     }
-  });
+  }, 30_000);
 });
 
 test('HF10 attempt counters default only missing files to zero and reject invalid contents', () => {
@@ -907,18 +927,21 @@ describe('gate rules', () => {
       decide({ reviews: [R('PASS', [f('blocker')])], rechecks: [C('a')], risk: 'G1' }).reason
     ).toBe('review_inconsistent');
   });
-  test('three failing rounds escalate at the review limit', () => {
-    const d = decide({
-      reviews: [R('FAIL'), R('FAIL'), R('FAIL')],
-      rechecks: [C('a'), C('b'), C('c')],
-      risk: 'G1',
-    });
-    expect(d).toMatchObject({
-      verdict: 'escalate',
-      rounds: 3,
-      reason: 'review_failed+review_limit',
-    });
-  });
+  test.each(Array.from({ length: MAX_ROUNDS - 2 }, (_, i) => i + 3))(
+    'failing round %i permits the next fix only below the limit',
+    rounds => {
+      const d = decide({
+        reviews: Array.from({ length: rounds }, () => R('FAIL')),
+        rechecks: Array.from({ length: rounds }, (_, i) => C(String(i))),
+        risk: 'G1',
+      });
+      expect(d).toMatchObject({
+        verdict: rounds < MAX_ROUNDS ? 'fix' : 'escalate',
+        rounds,
+        reason: rounds < MAX_ROUNDS ? 'review_failed' : 'review_failed+review_limit',
+      });
+    }
+  );
   test('a fix round whose diff is unchanged (same:true, review skipped) escalates as no_change', () => {
     expect(
       decide({ reviews: [R('FAIL'), null], rechecks: [C('h'), C('h', true, true)], risk: 'G1' })
@@ -935,7 +958,7 @@ describe('gate rules', () => {
       reason: 'review_incomplete',
     });
   });
-  test('ledger: R2 漏掉 R1 高危仍阻塞，R3 两轮修复后仍须升级', () => {
+  test('ledger: R2 漏掉 R1 高危仍阻塞，R3 保留未关闭问题并继续修复', () => {
     const r1 = R('FAIL', [f('high', { id: 'R1-1', file: 'k.ts', line: 9 })]);
     const l = ledgerOf([r1, R('PASS')], 'G1');
     expect(l.blocking).toMatchObject([
@@ -954,8 +977,8 @@ describe('gate rules', () => {
         risk: 'G1',
       })
     ).toMatchObject({
-      verdict: 'escalate',
-      reason: 'review_inconsistent+review_limit',
+      verdict: 'fix',
+      reason: 'review_inconsistent',
       ledger: { blocking: [{ id: 'R1-1' }], debt: [] },
     });
   });
@@ -1017,27 +1040,28 @@ describe('gate rules', () => {
 });
 
 describe('single delivery decision', () => {
-  test('ROOT_ACCEPT empty candidates still validate regardless of coder status', () => {
-    const root = tmp(),
-      repo = gitRepo(root),
-      marker = join(root, 'calls');
-    const base = sh('git rev-parse HEAD', repo).trim();
-    const cmd = `echo check >> '${marker}'; printf '%s' '{"failure_class":"product","evidence":"failed check"}'; exit 1`;
-    const plan = fixturePlan(root, repo, p => {
-      p.environment = [{ cmd: 'true', timeout_s: 5 }];
-      p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5, cache: false }] }];
-    });
-    const needs = [{ cap: 'environment', why: 'missing tool', minimal_ask: 'prepare tool' }];
-    for (const [status, error_class, candidate, dirty, includeBase, count, reason] of [
-      ['blocked', 'env', false, false, true, 2, 'environment'],
-      ['blocked', 'redline', false, false, true, 2, 'acceptance_failed'],
-      ['partial', 'env', false, false, true, 2, 'environment'],
-      ['done', null, false, false, true, 2, 'acceptance_failed'],
-      ['blocked', 'task', false, false, false, 1, 'acceptance_failed'],
-      ['blocked', 'env', false, false, false, 1, 'environment'],
-      ['blocked', 'env', false, true, true, 2, 'environment'],
-      ['blocked', 'env', true, false, true, 2, 'environment'],
-    ] as const) {
+  test.each([
+    ['blocked', 'env', false, false, true, 2, 'environment'],
+    ['blocked', 'redline', false, false, true, 2, 'acceptance_failed'],
+    ['partial', 'env', false, false, true, 2, 'environment'],
+    ['done', null, false, false, true, 2, 'acceptance_failed'],
+    ['blocked', 'task', false, false, false, 1, 'acceptance_failed'],
+    ['blocked', 'env', false, false, false, 1, 'environment'],
+    ['blocked', 'env', false, true, true, 2, 'environment'],
+    ['blocked', 'env', true, false, true, 2, 'environment'],
+  ] as const)(
+    'ROOT_ACCEPT empty candidates still validate regardless of coder status: %s/%s/%s/%s/%s',
+    (status, error_class, candidate, dirty, includeBase, count, reason) => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        marker = join(root, 'calls');
+      const base = sh('git rev-parse HEAD', repo).trim();
+      const cmd = `echo check >> '${marker}'; printf '%s' '{"failure_class":"product","evidence":"failed check"}'; exit 1`;
+      const plan = fixturePlan(root, repo, p => {
+        p.environment = [{ cmd: 'true', timeout_s: 5 }];
+        p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5, cache: false }] }];
+      });
+      const needs = [{ cap: 'environment', why: 'missing tool', minimal_ask: 'prepare tool' }];
       if (existsSync(marker)) unlinkSync(marker);
       if (candidate || dirty) writeFileSync(join(repo, 'README.md'), 'candidate');
       if (candidate)
@@ -1081,7 +1105,7 @@ describe('single delivery decision', () => {
         });
       if (dirty) writeFileSync(join(repo, 'README.md'), 'hi\n');
     }
-  }, 10_000);
+  );
   test('permission evidence and retry boundaries survive the real acceptance node', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -1134,7 +1158,7 @@ describe('single delivery decision', () => {
         decision: { kind: reason ? 'block' : 'advance', reason },
       });
     }
-  });
+  }, 10_000);
   test('other self-reports do not change control state, including malformed output', () => {
     for (const raw of [
       '{',
@@ -2544,7 +2568,7 @@ describe('sa-check script', () => {
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
-  });
+  }, 10_000);
   test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -2805,7 +2829,7 @@ test.each(['settle', 'accept'])('NO_HOLD %s repair exhaustion exits failed with 
     plan: planFile(root, PRODUCT_FAILURE),
     pkgs: 'a',
     milestone: 'm1',
-    tag: kind === 'settle' ? 'settle-a' : 'diff-m1-r3',
+    tag: kind === 'settle' ? 'settle-a' : `diff-m1-r${String(MAX_ROUNDS)}`,
     first: JSON.stringify({ disposition: 'repair' }),
     repaired: '{"status":"done","error_class":null}',
   });
@@ -2819,7 +2843,10 @@ test.each(['settle', 'accept'])('NO_HOLD %s repair exhaustion exits failed with 
   });
   expect(
     JSON.parse(
-      readFileSync(join(r.art, kind === 'settle' ? 'settle-a.json' : 'diff-m1-r3.json'), 'utf8')
+      readFileSync(
+        join(r.art, kind === 'settle' ? 'settle-a.json' : `diff-m1-r${String(MAX_ROUNDS)}.json`),
+        'utf8'
+      )
     )
   ).toEqual(r.out);
 });

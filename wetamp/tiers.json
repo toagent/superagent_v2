@@ -5,8 +5,22 @@
     "effort": {
       "G0": "medium",
       "coder": { "first": "medium", "repair": "medium" },
-      "reviewer": { "R1": "high", "R2": "medium", "R3": "medium" },
-      "G2_reviewer": { "R1": "high", "R2": "high", "R3": "high" }
+      "reviewer": {
+        "R1": "high",
+        "R2": "medium",
+        "R3": "medium",
+        "R4": "medium",
+        "R5": "medium",
+        "R6": "medium"
+      },
+      "G2_reviewer": {
+        "R1": "high",
+        "R2": "high",
+        "R3": "high",
+        "R4": "high",
+        "R5": "high",
+        "R6": "high"
+      }
     },
     "stop_gate": "off",
     "context": {

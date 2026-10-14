@@ -153,10 +153,10 @@ const acceptTimeout = (pkgs: Pkg[], plan: Plan): Node =>
 
 /**
  * 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果；now 固定以得到确定的 deadline_ms）。
- * 每个里程碑：start → 逐包 code/verify/[repair]/settle → 至多 3 轮 diff → review → gate（第 2、3 轮前有 when 守卫的
+ * 每个里程碑：start → 逐包 code/verify/[repair]/settle → 至多 MAX_ROUNDS 轮 diff → review → gate（后续各轮前有 when 守卫的
  * fix）。verify 不 advance 时包内修复一次（repair），settle 复验；失败（fail）即该节点失败、run 终止，后续包与
  * 评审都不启动。验收未 advance 的轮次跳过评审，gate 按验收原因直接进入修复。未走到的轮次被条件跳过，下一里程碑以
- * none_failed_min_one_success 汇合三个 gate；escalate 即 gate 失败、run 停下。
+ * none_failed_min_one_success 汇合各轮 gate；escalate 即 gate 失败、run 停下。
  * fake：AI 节点换成 bash 桩，零模型调用跑通整条 DAG——首轮评审 FAIL（一条 high），修复追加一行，第 2 轮关闭它并 PASS。
  */
 export function buildWorkflow(
@@ -554,7 +554,7 @@ export function buildWorkflow(
                 context: `$ARTIFACTS_DIR/review-${t}.context.json`,
                 briefs,
                 accept_log: `$diff-${t}.output.log`,
-                // 第 2/3 轮只看上次评审以来的增量与累计台账；全量 diff 只给路径（F-20）
+                // 第 2 轮及以后只看上次评审以来的增量与累计台账；全量 diff 只给路径（F-20）
                 ...(r > 1
                   ? {
                       diff: `$diff-${t}.output.delta`,
@@ -870,6 +870,7 @@ export function generate(
     'plan.json',
     'policy.json',
     'execution.json',
+    'learning.json',
     'accept-inputs.json',
     'briefs',
     '.gitignore',
