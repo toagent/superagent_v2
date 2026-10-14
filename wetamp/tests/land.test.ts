@@ -15,6 +15,7 @@ import {
   applyLand,
   captureDelivery,
   excludeCodegraph,
+  integratedReceipt,
   selftest,
   type LocalDelivery,
 } from '../src/land';
@@ -51,6 +52,27 @@ const deliveryFixture = () => {
   };
   return { ...f, delivery, context: { repo: f.repo, base_ref: 'main', delivery } };
 };
+
+test.each(['valid', 'unmerged', 'foreign', 'contract', 'launch', 'advanced', 'missing'])(
+  'CARD_Y integration projection requires bound receipt and Git history: %s',
+  kind => {
+    const f = deliveryFixture();
+    const receipt = applyLand(f.run, f.land, () => 0, f.context);
+    expect(receipt?.status).toBe('manual_push');
+    if (!receipt || receipt.status !== 'manual_push') throw new Error('missing fixture receipt');
+    if (kind === 'unmerged') {
+      // Move only this scratch target back; a supplied success receipt is insufficient.
+      sh(`git checkout --detach && git branch -f wetamp '${f.delivery.target.head}'`, f.repo);
+    }
+    if (kind === 'foreign') receipt.task = 'other';
+    if (kind === 'contract') receipt.contract = 'other';
+    if (kind === 'launch') f.delivery.target.head = receipt.target.head = '1'.repeat(40);
+    if (kind === 'advanced') sh('git commit --allow-empty -qm later', f.repo);
+    expect(
+      integratedReceipt(kind === 'missing' ? undefined : receipt, f.land.head, f.delivery)
+    ).toEqual(['valid', 'advanced'].includes(kind) ? receipt : undefined);
+  }
+);
 
 test.each([
   'fresh',

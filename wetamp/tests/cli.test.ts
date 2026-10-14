@@ -1770,6 +1770,94 @@ describe('brief / land (archon stub)', () => {
   });
 });
 
+test('CARD_Y fenced delivery retries and legacy land reconciliation agree with real Git integration', () => {
+  const s = stub([]),
+    art = join(s.root, 'home', 'artifacts', 'runs', 'r');
+  writeFileSync(join(s.root, '.git', 'info', 'exclude'), '*\n');
+  sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm seed', s.root);
+  sh('git config user.name t && git config user.email t@l', s.root);
+  s.ledger.delivery = captureDelivery(s.root);
+  const worker = join(tmp(), 'worker');
+  sh(`git worktree add -qb sa/sa1 '${worker}'`, s.root);
+  sh('echo feature > feature && git add -f feature && git commit -qm feature', worker);
+  const head = sh('git rev-parse HEAD', worker).trim();
+  sh('git commit --allow-empty -qm target', s.root);
+  writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+  mkdirSync(art, { recursive: true });
+  writeFileSync(
+    join(s.dir, 'get-000.json'),
+    JSON.stringify(
+      run('completed', {
+        working_path: worker,
+        output_root: join(s.root, 'home'),
+        nodes: [{ nodeId: 'land', state: 'completed' }],
+      })
+    )
+  );
+  writeFileSync(join(art, 'land.json'), JSON.stringify({ branch: 'sa/sa1', head }));
+  writeFileSync(join(s.ledger.gen_dir, 'accept-inputs.json'), '[]');
+  writeFileSync(join(s.ledger.gen_dir, 'engine.json'), '{"fake":false}');
+  // Keep real candidate creation, merge, receipt and finalization; acceptance has separate tests.
+  const realApply = landMod.applyLand;
+  const apply = spyOn(landMod, 'applyLand').mockImplementation((r, l, _verify, context) =>
+    realApply(r, l, () => 0, context)
+  );
+  const owner = coordModule.caller();
+  const caller = spyOn(coordModule, 'caller').mockReturnValue({ client: 'other', pid: 999999 });
+  try {
+    const blocked = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '1'])).out);
+    expect(blocked.delivery.status).toBe('blocked');
+    expect(loadLedger('sa1').delivery_result).toEqual(blocked.delivery);
+    expect(apply).not.toHaveBeenCalled();
+    expect(sh('git merge-base --is-ancestor sa/sa1 fixture; echo $?', s.root).trim()).toBe('1');
+    caller.mockReturnValue(owner);
+    expect(JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out).status).not.toBe(
+      'integrated'
+    );
+    expect(loadLedger('sa1').delivery_result?.status).toBe('blocked');
+    const landed = captured(() => main(['land', 'sa1', '--apply']));
+    expect(landed.code).toBe(0);
+    const receipt = JSON.parse(landed.out);
+    expect(loadLedger('sa1').delivery_result).toEqual({ ...receipt, status: 'integrated' });
+    expect(receipt.integrated).toBe(sh('git rev-parse HEAD', s.root).trim());
+    expect(sh('git rev-list --parents -n 1 HEAD', s.root).trim().split(' ')).toHaveLength(3);
+    expect(sh('git merge-base --is-ancestor sa/sa1 fixture; echo $?', s.root).trim()).toBe('0');
+    caller.mockReturnValue({ client: 'other', pid: 999999 });
+    expect(
+      JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '1'])).out).delivery.status
+    ).toBe('blocked');
+    expect(loadLedger('sa1').delivery_result).toEqual({ ...receipt, status: 'integrated' });
+    caller.mockReturnValue(owner);
+    // Historical ledgers kept the old blocked observation despite a valid durable receipt.
+    updateLedger(loadLedger('sa1'), cur => {
+      cur.delivery_result = blocked.delivery;
+    });
+    const view = JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out);
+    expect(view).toMatchObject({ status: 'integrated', integrated: receipt.integrated });
+    expect(loadLedger('sa1').delivery_result).toEqual({ ...receipt, status: 'integrated' });
+    // R1-1: a historical success cannot outlive its evidence in the scratch target.
+    sh(`git checkout --detach && git branch -f fixture '${s.ledger.delivery.head}'`, s.root);
+    expect(
+      sh(`git merge-base --is-ancestor '${receipt.accepted}' fixture; echo $?`, s.root).trim()
+    ).toBe('1');
+    caller.mockReturnValue({ client: 'other', pid: 999999 });
+    const refused = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '1'])).out);
+    expect(refused.delivery.status).toBe('blocked');
+    expect(loadLedger('sa1').delivery_result).toEqual(refused.delivery);
+    updateLedger(loadLedger('sa1'), cur => {
+      cur.delivery_result = { ...receipt, status: 'integrated' };
+    });
+    caller.mockReturnValue(owner);
+    expect(JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out).status).not.toBe(
+      'integrated'
+    );
+    expect(loadLedger('sa1').delivery_result).toBeUndefined();
+  } finally {
+    caller.mockRestore();
+    apply.mockRestore();
+  }
+});
+
 test.each(['claude', 'codex', 'legacy', 'fake', 'blocked', 'foreign', 'unowned', 'explicit'])(
   'completed delivery %s preserves execution truth and original landing admission',
   kind => {

@@ -57,6 +57,19 @@ export type DeliveryOutcome =
       status: 'unknown';
       reason: string;
     });
+/** A receipt is evidence only while both accepted commits remain in the target history. */
+// prettier-ignore
+export function integratedReceipt(receipt: DeliveryOutcome | undefined, source: string, expected: Pick<LocalDelivery, 'task' | 'target' | 'contract' | 'evidence'>): DeliveryReceipt | undefined {
+  if (!receipt || receipt.status !== 'manual_push' || receipt.task !== expected.task ||
+    receipt.source !== source || receipt.contract !== expected.contract || receipt.evidence !== expected.evidence ||
+    receipt.target.checkout !== expected.target.checkout || receipt.target.branch !== expected.target.branch || receipt.target.head !== expected.target.head ||
+    receipt.accepted !== receipt.integrated || ![source, receipt.accepted].every(sha => /^[a-f0-9]{40}$/.test(sha))) return;
+  const ancestor = (from: string, to: string) => Bun.spawnSync(
+    ['git', '-C', expected.target.checkout, 'merge-base', '--is-ancestor', from, to],
+    { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
+  ).exitCode === 0;
+  return ancestor(expected.target.head, receipt.accepted) && ancestor(source, receipt.accepted) && ancestor(receipt.accepted, `refs/heads/${expected.target.branch}`) ? receipt : undefined;
+}
 export function captureDelivery(checkout: string): DeliveryTarget {
   const git = (...args: string[]) => {
     const p = Bun.spawnSync(['git', '-C', checkout, ...args], { stdout: 'pipe', stderr: 'pipe' });
