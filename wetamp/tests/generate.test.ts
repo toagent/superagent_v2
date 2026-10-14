@@ -1151,6 +1151,7 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
       expect(commands.has(command)).toBe(true);
       const prompt = readFileSync(join(gen.dir, '.archon/commands', `${command}.md`), 'utf8');
       for (const requirement of [
+        '$$INPUTS.context_node.output.context_pack',
         '交付前运行任务书验收命令',
         '在当前 worktree、commit 前',
         '保持相同 cwd 与环境前缀',

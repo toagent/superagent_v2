@@ -9,8 +9,8 @@ argument-hint: (inputs bound by the generated workflow)
 
 上下文已在下方。内联源码是节点启动时的快照，需要更多再按需读；`unknown` 不代表通过。所有 shell 命令遵循你的 AGENTS.md 命令规则。
 
-$$
-INPUTS.context_node.output.context_pack
+<!-- prettier-ignore -->
+$$INPUTS.context_node.output.context_pack
 
 ## 要求
 
@@ -21,4 +21,5 @@ INPUTS.context_node.output.context_pack
 5. 拒绝须附工具调用证据：只有真实拒绝且满足上述必要条件才可写 `error_class: redline`；在 `needs[].why` 引用该工具调用及原始返回。任务完成时必须写 `status=done、error_class=null`。
 
 只输出符合 output_format 的 JSON。
-$$
+
+
