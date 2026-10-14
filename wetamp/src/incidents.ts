@@ -4,7 +4,11 @@ import { basename, join } from 'node:path';
 import { home, writeAtomic } from './config';
 import type { Plan } from './plan';
 import { CODER_CLASSES, reasonOf } from './reasons';
-const tokens: Partial<Record<string, readonly string[]>> = { status: ['done', 'partial', 'blocked', 'PASS', 'FAIL', 'INCOMPLETE'], error_class: CODER_CLASSES, disposition: ['advance', 'repair', 'suspend'] };
+const tokens: Partial<Record<string, readonly string[]>> = {
+  status: ['done', 'partial', 'blocked', 'PASS', 'FAIL', 'INCOMPLETE'],
+  error_class: CODER_CLASSES,
+  disposition: ['advance', 'repair', 'fail'],
+};
 const fields = [
   'ok',
   'status',
@@ -18,16 +22,20 @@ const fields = [
 ] as const;
 export const decisionFields = (value: unknown): Record<string, unknown> => {
   const v = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
-  return { ...(typeof v.reason === 'string' && !reasonOf(v.reason) ? { unregistered_reason: true } : {}), ...Object.fromEntries(
-    fields
-      .filter(
-        k =>
-          typeof v[k] === 'boolean' ||
-          v[k] === null ||
-          (typeof v[k] === 'string' && (k === 'reason' ? !!reasonOf(v[k]) : tokens[k]?.includes(v[k])))
-      )
-      .map(k => [k, v[k]])
-  ) };
+  return {
+    ...(typeof v.reason === 'string' && !reasonOf(v.reason) ? { unregistered_reason: true } : {}),
+    ...Object.fromEntries(
+      fields
+        .filter(
+          k =>
+            typeof v[k] === 'boolean' ||
+            v[k] === null ||
+            (typeof v[k] === 'string' &&
+              (k === 'reason' ? !!reasonOf(v[k]) : tokens[k]?.includes(v[k])))
+        )
+        .map(k => [k, v[k]])
+    ),
+  };
 };
 export function saveIncident(
   run: string,

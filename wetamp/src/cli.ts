@@ -389,7 +389,7 @@ export interface Classified {
   event?: string;
 }
 
-/** archon run 状态 → superagent 状态。gate/environment 失败是“待决策”而非终局失败：decide retry 可 resume。 */
+/** archon run 状态 → superagent 状态。environment 失败是“待决策”而非终局失败：decide retry 可 resume。 */
 export function classify(run: RunView): Classified {
   if (!['completed', 'cancelled'].includes(run.status) && recoveryAdmissionUnknown(run))
     return { state: 'held:recovery_admission_unknown', exit: EXIT.held };
@@ -415,7 +415,6 @@ export function classify(run: RunView): Classified {
     case 'failed':
       if (failed === 'environment')
         return { state: 'held:environment', exit: EXIT.held, node: failed };
-      if (failed?.startsWith('gate-')) return { state: 'held:gate', exit: EXIT.held, node: failed };
       return { state: 'failed', exit: EXIT.failed, node: failed };
     default:
       // A pending row is Archon's detached launch before its child claims it: no execution owner
@@ -1543,14 +1542,9 @@ function acceptRun(
       readPolicyAttempts(art)
     );
     const reason = budgetReason(limits, used, false);
-    const legacyBudget =
-      out?.disposition === 'suspend' &&
-      (out.reason === 'budget_launches_exceeded' || out.reason === 'budget_tokens_exceeded');
-    // Only a structured budget suspension can explain a frozen check's nonzero exit.
-    if (p.exitCode !== 0 && !legacyBudget)
-      decision = { ...decision, kind: 'block', reason: 'engine_suspect' };
-    if (reason && limits.enforcement === 'hard') decision = { ...decision, kind: 'block', reason };
-    else if (reason)
+    if (p.exitCode !== 0)
+      decision = { ...decision, kind: 'block', reason: out?.reason ?? 'engine_suspect' };
+    if (reason)
       console.warn(JSON.stringify({ code: 'superagent.budget_observed', reason, used, limits }));
     const ok = ['advance', 'debt'].includes(decision.kind);
     if (report)
@@ -1560,17 +1554,7 @@ function acceptRun(
               ...out,
               decision,
               ok,
-              ...(legacyBudget || (reason && limits.enforcement === 'hard')
-                ? {
-                    legacy_budget: {
-                      disposition: out.disposition,
-                      reason: out.reason,
-                      decision: out.decision,
-                    },
-                    disposition: ok ? 'advance' : 'suspend',
-                    reason: decision.reason,
-                  }
-                : {}),
+              ...(reason ? { budget_advisory: reason } : {}),
             }
           : { ok: false, error: tail(p.stderr.toString()) }
       );
@@ -2297,11 +2281,9 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
           ? run.metadata?.approval
             ? 'approval'
             : 'paused'
-          : c.state === 'failed' && /^(verify|settle)-/.test(c.node ?? '')
-            ? reasonHold(nodeReason(l, run, c))
-            : c.state === 'failed' && /^(code|fix|repair)-/.test(c.node ?? '')
-              ? 'coder'
-              : undefined;
+          : c.state === 'failed' && /^(code|fix|repair)-/.test(c.node ?? '')
+            ? 'coder'
+            : undefined;
   return h && pastDeadline(l) ? 'deadline' : h;
 }
 

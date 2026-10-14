@@ -356,7 +356,7 @@ describe('classify', () => {
       classify(run('failed', { nodes: [{ nodeId: 'environment', state: 'failed' }] })).state
     ).toBe('held:environment');
   });
-  test('failed gate → held:gate', () => {
+  test('NO_HOLD failed gate → failed', () => {
     expect(
       classify(
         run('failed', {
@@ -366,7 +366,7 @@ describe('classify', () => {
           ],
         })
       )
-    ).toEqual({ state: 'held:gate', exit: EXIT.held, node: 'gate-m1' });
+    ).toEqual({ state: 'failed', exit: EXIT.failed, node: 'gate-m1' });
   });
   test('other failure → failed with node', () => {
     expect(classify(run('failed', { nodes: [{ nodeId: 'code-a', state: 'failed' }] }))).toEqual({
@@ -1660,16 +1660,16 @@ test.each(['claude', 'codex', 'legacy', 'fake', 'blocked', 'foreign', 'unowned',
 );
 
 test.each([
-  { name: 'default observe', hard: false, exit: 1, expected: 0 },
-  { name: 'hard tokens', hard: true, exit: 1, expected: 1 },
-  { name: 'hard launches', hard: true, exit: 0, launches: 1, expected: 1 },
-  { name: 'hard matching grant', hard: true, exit: 1, grant: 0, expected: 0 },
-  { name: 'hard stale grant', hard: true, exit: 1, grant: 1, expected: 1 },
+  { name: 'default observe', hard: false, exit: 0, expected: 0 },
+  { name: 'hard tokens', hard: true, exit: 0, expected: 0 },
+  { name: 'hard launches', hard: true, exit: 0, launches: 1, expected: 0 },
+  { name: 'hard matching grant', hard: true, exit: 0, grant: 0, expected: 0 },
+  { name: 'hard stale grant', hard: true, exit: 0, grant: 1, expected: 0 },
   { name: 'product', hard: false, exit: 1, failure: 'product', expected: 1 },
   { name: 'product zero exit', hard: false, exit: 0, failure: 'product', expected: 1 },
   { name: 'unknown', hard: false, exit: 1, failure: 'unknown', expected: 1 },
   { name: 'non-budget exception', hard: false, exit: 1, reason: 'unexpected', expected: 1 },
-])('BUDGET_ACCEPT $name', sample => {
+])('NO_HOLD BUDGET_ACCEPT $name', sample => {
   const s = stub([]);
   writeFileSync(
     join(s.dir, 'get-000.json'),
@@ -1725,7 +1725,7 @@ test.each([
     diff_hash: 'same',
     contract_hash: 'same',
     same: false,
-    disposition: 'suspend',
+    disposition: sample.failure ? 'repair' : 'advance',
     reason: sample.reason ?? 'budget_tokens_exceeded',
     ...(sample.failure
       ? {
@@ -1763,17 +1763,13 @@ test.each([
     const result = captured(() => main(['accept', 'sa1']));
     expect(result.code).toBe(sample.expected);
     expect(JSON.parse(result.out).ok).toBe(sample.expected === 0);
-    if (!sample.hard)
+    if (sample.grant !== 0)
       expect(
         warn.mock.calls.some(
           ([line]) => JSON.parse(String(line)).code === 'superagent.budget_observed'
         )
       ).toBe(true);
-    if (!sample.expected)
-      expect(JSON.parse(result.out)).toMatchObject({
-        disposition: 'advance',
-        legacy_budget: { reason: 'budget_tokens_exceeded' },
-      });
+    if (!sample.expected) expect(JSON.parse(result.out)).toMatchObject({ disposition: 'advance' });
     expect(paths.map(path => readFileSync(path, 'utf8'))).toEqual(before);
     expect(s.calls().every(call => call.startsWith('workflow get r'))).toBe(true);
   } finally {
@@ -4699,3 +4695,13 @@ describe('lock (flock, real processes)', () => {
     }
   });
 });
+
+test.each(['verify-a', 'settle-a', 'diff-m1-r3', 'gate-m1-r3'])(
+  'NO_HOLD failed %s is terminal without a hold',
+  nodeId => {
+    const r = run('failed', { nodes: [{ nodeId, state: 'failed' }] });
+    const c = classify(r);
+    expect(c).toEqual({ state: 'failed', exit: EXIT.failed, node: nodeId });
+    expect(cliMod.holdOf({} as Ledger, r, c)).toBeUndefined();
+  }
+);

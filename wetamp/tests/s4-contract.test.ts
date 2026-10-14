@@ -54,7 +54,7 @@ describe('S4 reason closed set', () => {
         const d = decide({
           reviews: Array.from({ length: rounds }, () => null),
           rechecks: [
-            { ok: false, disposition: 'suspend', reason, diff_hash: 'fixture', same: false },
+            { ok: false, disposition: 'repair', reason, diff_hash: 'fixture', same: false },
           ],
           risk: 'G1',
         });

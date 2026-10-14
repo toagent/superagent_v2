@@ -47,7 +47,7 @@ interface Coder {
   error_class: string | null;
   needs?: unknown[];
 }
-type Disposition = 'advance' | 'repair' | 'suspend';
+type Disposition = 'advance' | 'repair' | 'fail';
 type RequirementContract = Pick<Pkg, 'id' | 'accept' | 'requirements'>;
 interface CommandResult {
   check: Check;
@@ -368,6 +368,17 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
   );
 }
 
+/** Route structured blocks without turning acceptance failures into human waits. */
+export function nextDisposition(decision: DeliveryDecision): Disposition {
+  const reason = reasons.find(r => r.code === decision.reason);
+  if (decision.kind === 'block')
+    return reason?.hold === 'review_limit' ||
+      (reason?.hold === 'redline' && decision.reason !== 'coder_redline')
+      ? 'fail'
+      : 'repair';
+  return decision.kind === 'repair' ? 'repair' : 'advance';
+}
+
 /** Compatibility wiring is a projection of the delivery decision, never a second policy. */
 export function disposition(
   raw: string,
@@ -376,20 +387,20 @@ export function disposition(
   permissions: string[] = [],
   selfReportPath?: string
 ) {
-  const { decision, audit } = deliveryDecision({
+  const { decision: judged, audit } = deliveryDecision({
     rechecks: [check ?? { ok, diff_hash: '', same: false }],
     permissions,
     selfReport: raw,
     selfReportPath,
   });
+  const decision =
+    check?.decision?.reason === 'coder_error:redline'
+      ? { ...judged, kind: 'block' as const, reason: check.decision.reason }
+      : judged;
   return {
     ...audit,
     decision,
-    disposition: (decision.kind === 'block'
-      ? 'suspend'
-      : decision.kind === 'repair'
-        ? 'repair'
-        : 'advance') as Disposition,
+    disposition: nextDisposition(decision),
     reason: decision.reason,
   };
 }
@@ -496,7 +507,7 @@ function acceptOnce(
       if (report?.status === 'blocked')
         blocked =
           report.error_class === 'redline'
-            ? 'coder_redline'
+            ? 'coder_error:redline'
             : Array.isArray(report.needs) && report.needs.length
               ? 'coder_needs'
               : null;
@@ -566,7 +577,7 @@ function acceptOnce(
   );
   if (reviewRound >= MAX_ROUNDS && result.disposition === 'repair')
     Object.assign(result, {
-      disposition: 'suspend',
+      disposition: 'fail',
       reason: 'acceptance_failed+review_limit',
       decision: { ...result.decision, kind: 'block', reason: 'acceptance_failed+review_limit' },
     });
@@ -605,22 +616,15 @@ function acceptOnce(
   };
 }
 
-/** 写 <tag>.json 并输出；挂起（含预算超限）exit 1，run 停在本节点，后续包与评审都不启动。 */
+/** 写 <tag>.json 并输出；失败 exit 1，run 终止在本节点，后续包与评审都不启动。 */
 function finish(
   tag: string,
   out: Record<string, unknown> &
     Accept &
     Partial<Pick<ReturnType<typeof acceptOnce>, 'patch' | 'delta'>>
 ): void {
-  if (out.disposition !== 'suspend') {
-    const over = budget();
-    if (over)
-      Object.assign(out, {
-        disposition: 'suspend',
-        reason: over,
-        decision: { ...out.decision, kind: 'block', reason: over },
-      });
-  }
+  const over = out.disposition === 'fail' ? null : budget();
+  if (over) Object.assign(out, { budget_advisory: over });
   const gen = dirname(env('PLAN'));
   if (existsSync(join(gen, 'execution.json'))) {
     const reviewRound =
@@ -652,11 +656,9 @@ function finish(
   }
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   // Audit/control evidence stays in the artifact; downstream packages consume only delivered data.
-  emit(
-    env('KIND') === 'settle' && out.disposition !== 'suspend' ? { diff_hash: out.diff_hash } : out
-  );
-  if (out.disposition === 'suspend') {
-    console.error(`${tag}: suspend (${out.reason ?? ''})`);
+  emit(env('KIND') === 'settle' && out.disposition !== 'fail' ? { diff_hash: out.diff_hash } : out);
+  if (out.disposition === 'fail') {
+    console.error(`${tag}: failed (${out.reason ?? ''})`);
     process.exit(1);
   }
 }
@@ -667,7 +669,7 @@ function accept(): void {
 
 /**
  * 包内修复后的结算：没有修复（verify 已 advance）就沿用 verify 的验收证据；修过则用修复输出重验，
- * 仍未 advance 即挂起 repair_exhausted:<原因>——每包只有一次修复机会，不在包级循环烧调用。
+ * 仍未 advance 即失败 repair_exhausted:<原因>——每包只有一次修复机会，不在包级循环烧调用。
  */
 function settle(): void {
   const tag = env('TAG');
@@ -680,12 +682,17 @@ function settle(): void {
     return;
   }
   const out = acceptOnce(tag, repaired);
-  if (out.disposition === 'repair')
+  if (out.disposition === 'repair') {
+    const reason = reasons.some(r => r.code === `repair_exhausted:${out.reason ?? ''}`)
+      ? `repair_exhausted:${out.reason ?? ''}`
+      : 'acceptance_failed+review_limit';
     Object.assign(out, {
-      disposition: 'suspend',
-      reason: `repair_exhausted:${out.reason ?? ''}`,
-      decision: { ...out.decision, kind: 'block', reason: `repair_exhausted:${out.reason ?? ''}` },
+      disposition: 'fail',
+      repair_reason: out.reason,
+      reason,
+      decision: { ...out.decision, kind: 'block', reason },
     });
+  }
   finish(tag, out);
 }
 
@@ -1376,11 +1383,10 @@ function budget(nextLaunch = true): string | null {
   const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
   const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
   const reason = budgetReason(b, u, nextLaunch);
-  if (reason && b.enforcement !== 'hard') {
+  if (reason) {
     console.warn(
       JSON.stringify({ code: 'superagent.budget_observed', reason, used: u, limits: b })
     );
-    return null;
   }
   return reason;
 }
@@ -1819,6 +1825,8 @@ function gate(): void {
         : []),
   };
   let d = decide(decision);
+  if (d.verdict === 'escalate' && !decision.expired && nextDisposition(d.decision) === 'repair')
+    Object.assign(d, { verdict: d.rounds >= MAX_ROUNDS ? 'escalate' : 'fix' });
   const tested = d.reason === 'review_not_required';
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
@@ -1871,7 +1879,7 @@ function gate(): void {
     d.verdict === 'fix' || d.verdict === 'pass'
       ? budget(d.verdict === 'fix' || Boolean(env('NEXT')))
       : null;
-  if (over) Object.assign(d, { verdict: 'escalate', reason: over });
+  if (over) Object.assign(d, { budget_advisory: over });
   if (d.verdict === 'pass' && rechecks.at(-1)?.same && reviewed !== undefined)
     writeFileSync(reviewFile, JSON.stringify(reviews[reviewed], null, 2));
   d.decision = {

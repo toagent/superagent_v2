@@ -18,6 +18,7 @@ import {
   effectiveBudget,
   decide,
   disposition,
+  nextDisposition,
   identityOf,
   independence,
   readAuthorEvidence,
@@ -668,7 +669,7 @@ describe('FC failure classification', () => {
     });
     expect(red.out).toMatchObject({
       ok: false,
-      disposition: 'suspend',
+      disposition: 'repair',
       base_pass: false,
       decision: {
         kind: 'block',
@@ -678,7 +679,7 @@ describe('FC failure classification', () => {
       },
       failures: [{ failure_class: 'unknown' }],
     });
-    expect(red.code).toBe(1);
+    expect(red.code).toBe(0);
   });
   test('delivery-truth: third product validation stops repairs without advancing in G1/strict/G2', () => {
     const root = tmp(),
@@ -687,9 +688,9 @@ describe('FC failure classification', () => {
     mkdirSync(art);
     const path = planFile(root, PRODUCT_FAILURE);
     for (const [mode, risk, expected] of [
-      ['milestone', 'G1', 'suspend'],
-      ['strict', 'G1', 'suspend'],
-      ['milestone', 'G2', 'suspend'],
+      ['milestone', 'G1', 'fail'],
+      ['strict', 'G1', 'fail'],
+      ['milestone', 'G2', 'fail'],
     ]) {
       const p = JSON.parse(readFileSync(path, 'utf8'));
       p.mode = mode;
@@ -1014,7 +1015,7 @@ describe('single delivery decision', () => {
     const needs = [{ cap: 'environment', why: 'missing tool', minimal_ask: 'prepare tool' }];
     for (const [status, error_class, candidate, dirty, includeBase, count, reason] of [
       ['blocked', 'env', false, false, true, 0, 'coder_needs'],
-      ['blocked', 'redline', false, false, true, 0, 'coder_redline'],
+      ['blocked', 'redline', false, false, true, 0, 'coder_error:redline'],
       ['partial', 'env', false, false, true, 2, 'environment'],
       ['done', null, false, false, true, 2, 'acceptance_failed'],
       ['blocked', 'task', false, false, false, 1, 'acceptance_failed'],
@@ -1042,10 +1043,10 @@ describe('single delivery decision', () => {
         delta_base: candidate ? sh('git rev-parse HEAD', repo).trim() : base,
         coder: JSON.stringify(report),
       });
-      expect(result.code, result.err).toBe(reason === 'acceptance_failed' ? 0 : 1);
+      expect(result.code, result.err).toBe(reason === 'coder_error:redline' ? 1 : 0);
       expect(result.out).toMatchObject({
         ok: false,
-        disposition: reason === 'acceptance_failed' ? 'repair' : 'suspend',
+        disposition: reason === 'coder_error:redline' ? 'fail' : 'repair',
         reason,
       });
       expect(existsSync(marker) ? readFileSync(marker, 'utf8').trim().split('\n').length : 0).toBe(
@@ -1104,7 +1105,7 @@ describe('single delivery decision', () => {
         p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5 }] }];
       });
       const result = runScript(repo, { ...inputs, plan }, SCRIPT, { WORKFLOW_ID: 'fixture' });
-      expect(result.code, result.err).toBe(reason ? 1 : 0);
+      expect(result.code, result.err).toBe(0);
       expect(result.out).toMatchObject({
         ok: reason !== 'environment',
         decision: { kind: reason ? 'block' : 'advance', reason },
@@ -1711,7 +1712,7 @@ describe('sa-check script', () => {
     writeFileSync(archon, '#!/usr/bin/env node\nprocess.exit(1);\n');
     expect(gate(current).out).toMatchObject({ verdict: 'escalate', reason: 'deadline' });
   }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
-  test('budget enforcement: hard final review blocks while observe preserves PASS', () => {
+  test('budget enforcement: NO_HOLD hard and observe final review budgets preserve PASS', () => {
     const root = tmp(),
       repo = gitRepo(root),
       p = join(root, 'plan.json');
@@ -1772,12 +1773,12 @@ describe('sa-check script', () => {
         { WORKFLOW_ID: 'scratch-only' }
       );
     const exceeded = gate();
-    expect(exceeded.code).toBe(1);
+    expect(exceeded.code).toBe(0);
     expect(exceeded.out).toMatchObject({
-      verdict: 'escalate',
-      grade: null,
+      verdict: 'pass',
+      grade: 'PASS',
       risk: 'G2',
-      reason: 'budget_tokens_exceeded',
+      budget_advisory: 'budget_tokens_exceeded',
     });
     const observed = JSON.parse(readFileSync(p, 'utf8'));
     delete observed.budget.enforcement;
@@ -1808,7 +1809,7 @@ describe('sa-check script', () => {
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
   for (const [command, needs, kind, disposition, reason, code] of [
-    ['false', [{ cap: 'environment' }], 'block', 'suspend', 'environment', 1],
+    ['false', [{ cap: 'environment' }], 'block', 'repair', 'environment', 0],
     [PRODUCT_FAILURE, [], 'repair', 'repair', 'acceptance_failed', 0],
     ['true', [{ cap: 'environment' }], 'advance', 'advance', null, 0],
   ] as const)
@@ -1863,7 +1864,7 @@ describe('sa-check script', () => {
         SA_PROBE_KEEP: '1',
       }
     );
-    expect(r.code).toBe(kind === 'probe' ? 1 : 0);
+    expect(r.code).toBe(0);
     expect(r.out).toMatchObject(kind === 'probe' ? { ok: false, base_pass: true } : { ok: true });
     expect(
       readFileSync(join(r.art, kind === 'probe' ? 'verify-a.probe.log' : 'verify-a.log'), 'utf8')
@@ -2030,7 +2031,7 @@ describe('sa-check script', () => {
         failed: [command],
         base_pass: null,
         base_results: [],
-        disposition: 'suspend',
+        disposition: 'repair',
       });
       expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([repo]);
       const log = readFileSync(join(r.art, 'unknown.probe.log'), 'utf8');
@@ -2067,7 +2068,7 @@ describe('sa-check script', () => {
       ok: false,
       base_pass: false,
       base_results: [{ cmd: command, pass: false }],
-      disposition: 'suspend',
+      disposition: 'repair',
     });
     expect(readFileSync(join(r.art, 'prepared.probe.log'), 'utf8')).toContain(
       '\nprepared\n# exit=1'
@@ -2123,11 +2124,11 @@ describe('sa-check script', () => {
       { cmd: commands[1], pass: false },
     ];
     expect(r).toMatchObject({
-      code: 1,
+      code: 0,
       out: {
         ok: false,
         base_pass: true,
-        disposition: 'suspend',
+        disposition: 'repair',
         base_results,
         failures: commands.map(command => ({ command, failure_class: 'unknown' })),
       },
@@ -2151,7 +2152,7 @@ describe('sa-check script', () => {
       tag: 'v3',
       base,
     });
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(0);
     expect(r.out).toMatchObject({ ok: false, base_results: [{ pass: false }] });
     const path = readFileSync(trace, 'utf8').trim();
     expect(path.startsWith(join(r.art, 'probe-v3-'))).toBe(true);
@@ -2349,7 +2350,7 @@ describe('sa-check script', () => {
       error_class_ignored: true,
     });
   });
-  test('F-18 settle: advance passes through; a repair that stays red suspends repair_exhausted', () => {
+  test('F-18 settle: advance passes through; a repair that stays red fails repair_exhausted', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const first = {
@@ -2393,7 +2394,7 @@ describe('sa-check script', () => {
     });
     expect(red.code).toBe(1);
     expect(red.out).toMatchObject({
-      disposition: 'suspend',
+      disposition: 'fail',
       reason: 'repair_exhausted:acceptance_failed',
     });
   });
@@ -2550,7 +2551,7 @@ describe('sa-check script', () => {
     ).toMatchObject({ disposition: 'repair', failures: [{ failure_class: 'product' }] });
     const current = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'current' });
     expect(current.out).toMatchObject({
-      disposition: 'suspend',
+      disposition: 'repair',
       failures: [{ failure_class: 'unknown' }],
     });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
@@ -2721,4 +2722,113 @@ test('budget grants inherit enforcement and token exemption from the plan, inclu
       ).enforcement
     ).toBe(enforcement ?? 'observe');
   }
+});
+
+test.each(['true', PRODUCT_FAILURE])('NO_HOLD hard budget is advisory for %s', command => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    plan = planFile(root, command);
+  const p = JSON.parse(readFileSync(plan, 'utf8'));
+  p.budget = { launches: 1, weighted_tokens: 1, enforcement: 'hard' };
+  writeFileSync(plan, JSON.stringify(p));
+  const policy = join(root, 'policy.json'),
+    archon = join(root, 'archon');
+  writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+  writeFileSync(
+    archon,
+    `#!/bin/sh\necho '{"events":[{"event_type":"node_started","step_name":"code-a"}]}'\n`,
+    { mode: 0o755 }
+  );
+  const r = runScript(
+    repo,
+    { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a', policy, archon },
+    SCRIPT,
+    { WORKFLOW_ID: 'fixture' }
+  );
+  expect(r.code, r.err).toBe(0);
+  expect(r.out).toMatchObject({
+    disposition: command === 'true' ? 'advance' : 'repair',
+    budget_advisory: 'budget_launches_exceeded',
+  });
+});
+
+test('NO_HOLD coder_redline permission audit block repairs without changing acceptance', () => {
+  const out = disposition('{}', false, undefined, ['events:code-a:1']);
+  expect(out).toMatchObject({
+    disposition: 'repair',
+    decision: { kind: 'block', reason: 'coder_redline' },
+  });
+});
+
+test.each(['settle', 'accept'])('NO_HOLD %s repair exhaustion exits failed with evidence', kind => {
+  const root = tmp(),
+    repo = gitRepo(root);
+  const r = runScript(repo, {
+    kind,
+    plan: planFile(root, PRODUCT_FAILURE),
+    pkgs: 'a',
+    milestone: 'm1',
+    tag: kind === 'settle' ? 'settle-a' : 'diff-m1-r3',
+    first: JSON.stringify({ disposition: 'repair' }),
+    repaired: '{"status":"done","error_class":null}',
+  });
+  expect(r.code, r.err).toBe(1);
+  expect(r.out).toMatchObject({
+    disposition: 'fail',
+    decision: {
+      kind: 'block',
+      evidence: expect.arrayContaining([expect.stringContaining('.log')]),
+    },
+  });
+  expect(
+    JSON.parse(
+      readFileSync(join(r.art, kind === 'settle' ? 'settle-a.json' : 'diff-m1-r3.json'), 'utf8')
+    )
+  ).toEqual(r.out);
+});
+
+test('NO_HOLD explicit high-risk redline immediately fails using a registered reason', () => {
+  const root = tmp(),
+    repo = gitRepo(root);
+  const r = runScript(repo, {
+    kind: 'accept',
+    plan: planFile(root, 'true'),
+    pkgs: 'a',
+    tag: 'verify-a',
+    base: sh('git rev-parse HEAD', repo).trim(),
+    coder: '{"status":"blocked","error_class":"redline","needs":[]}',
+  });
+  expect(r.code, r.err).toBe(1);
+  expect(r.out).toMatchObject({
+    disposition: 'fail',
+    reason: 'coder_error:redline',
+    decision: { kind: 'block', reason: 'coder_error:redline' },
+  });
+  expect(
+    nextDisposition({
+      kind: 'block',
+      reason: 'acceptance_failed+review_limit',
+      evidence: [],
+      debt: [],
+    })
+  ).toBe('fail');
+});
+
+test('NO_HOLD environment block exhausts package repair with registered terminal evidence', () => {
+  const root = tmp(),
+    repo = gitRepo(root);
+  const r = runScript(repo, {
+    kind: 'settle',
+    plan: planFile(root, 'false'),
+    pkgs: 'a',
+    tag: 'settle-a',
+    first: '{"disposition":"repair"}',
+    repaired: '{"status":"blocked","error_class":"env","needs":[{"cap":"environment"}]}',
+  });
+  expect(r.code, r.err).toBe(1);
+  expect(r.out).toMatchObject({
+    disposition: 'fail',
+    reason: 'acceptance_failed+review_limit',
+    repair_reason: 'environment',
+  });
 });

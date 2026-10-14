@@ -1426,3 +1426,20 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
     expect(nodes.find(n => n.id === 'settle-core')?.with?.kind).toBe('settle');
   }
 });
+
+test('NO_HOLD generated acceptance uses bounded repairs and no durable human wait', () => {
+  const p = structuredClone(fixture);
+  for (const pkg of p.packages) pkg.signoff = 'auto';
+  const workflow = buildWorkflow(p, milestones(p), 'no-hold', '/tmp/no-hold', true, 0);
+  const nodes = workflow.nodes as Record<string, unknown>[];
+  const acceptance = nodes.filter(n => /^(verify|settle|diff|gate)-/.test(String(n.id)));
+  expect(acceptance.length).toBeGreaterThan(0);
+  for (const node of acceptance) {
+    expect(node.wait).toBeUndefined();
+    expect(node.approval).toBeUndefined();
+    expect(node.retry).toBeUndefined();
+  }
+  expect(nodes.find(n => n.id === 'repair-core')?.when).toBe(
+    "$verify-core.output.disposition == 'repair'"
+  );
+});
