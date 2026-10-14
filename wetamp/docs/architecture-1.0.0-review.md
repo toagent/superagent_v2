@@ -6,11 +6,19 @@
 
 [设计文档](architecture-1.0.0.md)在 R2 达到双方各 ≥96 的门槛：Codex **100 / PASS**，Claude Opus 5.5 **100 / PASS**。两端均关闭全部 10 项遗留，`new_blockers` 和 `findings` 均为空；作业均以 exit 0 结束。达标即收尾，没有开启 R3。
 
-最终设计 SHA-256：
+两端实际受审版本 SHA-256：
 
 ```text
 13a964e0b4d7a07e38fa08d98e1d7a9d98cfb3f8509db5c59f8d57eff084325e
 ```
+
+提交后的设计 SHA-256：
+
+```text
+7af1acaa63ce5bdb5be55e248a91d0d10bcb819578831c1a1b9448a0eb516f98
+```
+
+首次提交 `e733966ad4dafd11fcd4bade7b4bd0dfb643e21e` 的正常 hook 用 Prettier 对齐了表格。主控从 R1 原件和 R2 patch 恢复受审字节，先验证受审 hash，再证明 `Prettier(受审字节) == 已提交字节`，仅记录确定性格式转换，不把已提交 hash 冒充两端受审 hash，也没有开启第三轮设计审查。原件和转换 diff 保留在证据目录。
 
 | 轮次 | Codex      | Claude Opus 5.5 | 范围与结论                                    |
 | ---- | ---------- | --------------- | --------------------------------------------- |
@@ -61,6 +69,6 @@ Claude provider init 记录 `claude-opus-5-5`；Codex 作业路由记录 `gpt-6-
 
 Claude R2 的四项无扣分建议保留到实施卡：AO 模型/effort 从 tiers 派生且保留 native auth；复用现有 dispatch-context hook 检查，避免重复执行；明确时间和 token 预算都为上限；AO 待定状态最晚 M4 复判。
 
-主控已核对最终文件 hash、双方量表合计、全部遗留关闭和作业 exit 0。设计的相对文件链接和 Markdown 格式检查通过；提交前另核对暂存范围与空白检查。
+主控已核对受审及提交文件 hash、格式转换等价性、双方量表合计、全部遗留关闭和作业 exit 0。相对文件链接、暂存范围和空白检查通过。首次根目录格式检查受到 `.prettierignore` 的 `docs/` 规则影响；最终使用 `prettier --ignore-path /dev/null --check` 显式覆盖两个交付文件，避免忽略文档后空检通过。
 
 **100 分表示限定设计复核范围没有遗留扣分，不表示架构已证明最优、实现完成或性能实测通过。** 本包没有运行 AO 原型、大小任务基准、故障恢复或治理兼容测试，没有安装、部署或 push。原 F01–F12、历史 A/B/C/D、旧 P4b 和整体效率目标保持未完成，不因本设计通过而关闭。
