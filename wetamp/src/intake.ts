@@ -68,7 +68,9 @@ export interface Task {
   runs: Binding[];
   cancellations: { revision: number; input: string }[];
 }
-type Target = { task: string };
+interface Target {
+  task: string;
+}
 type Versioned = Target & { expected_revision: number };
 export type Action = (
   | {
@@ -130,8 +132,9 @@ const strings = (x: unknown): string[] =>
 const key = (x: Input): string => JSON.stringify([x.source, x.session, x.message]);
 const hash = (x: string): string => createHash('sha256').update(x).digest('hex');
 const requirementsOf = (t: Task): Obligation[] => t.revisions.at(-1)?.requirements ?? [];
-const obligationCount = (tasks: Task[]): number =>
-  tasks.reduce((n, t) => n + requirementsOf(t).length, 0);
+const cancelled = (t: Task): boolean => t.cancellations.some(c => c.revision === t.revision);
+const obligationCount = (tasks: Task[], includeCancelled = false): number =>
+  tasks.reduce((n, t) => n + (includeCancelled || !cancelled(t) ? requirementsOf(t).length : 0), 0);
 const unique = (ids: string[]): void => {
   if (new Set(ids).size !== ids.length) fail('duplicate requirement mapping or id');
 };
@@ -263,7 +266,11 @@ export class Intake {
   private read(): State {
     if (!existsSync(this.path)) return { version: 1, tasks: [], inputs: [] };
     const state = JSON.parse(readFileSync(this.path, 'utf8')) as State;
-    if (state.version !== 1 || !Array.isArray(state.tasks) || !Array.isArray(state.inputs))
+    if (
+      (state as { version: number }).version !== 1 ||
+      !Array.isArray(state.tasks) ||
+      !Array.isArray(state.inputs)
+    )
       fail('unsupported state');
     return state;
   }
@@ -304,8 +311,10 @@ export class Intake {
         return received;
       }
       received.actions = structuredClone(actions);
-      received.ids = actions.map((_, index) => 'task-' + hash(JSON.stringify([key(input), index])));
-      received.results = [];
+      const ids = (received.ids = actions.map(
+        (_, index) => 'task-' + hash(JSON.stringify([key(input), index]))
+      ));
+      const receipts: Result[] = (received.results = []);
       const parsed = actions.map((x): Action | Error => {
         try {
           return parseAction(x);
@@ -331,11 +340,11 @@ export class Intake {
             group !== undefined &&
             indexes.some(i => {
               const action = parsed[i];
-              return action && !(action instanceof Error) && action.kind === 'clarify';
+              return !(action instanceof Error) && action.kind === 'clarify';
             })
           ) {
             indexes.forEach(i => {
-              received.results![i] = {
+              receipts[i] = {
                 status: 'pending',
                 reason: 'atomic group awaits clarification',
               };
@@ -343,17 +352,17 @@ export class Intake {
             continue;
           }
           const results = indexes.map(i => {
-            const action = parsed[i]!;
+            const action = parsed[i];
             if (action instanceof Error) throw action;
-            return this.execute(draft, input, action, received.ids![i]!, refs);
+            return this.execute(draft, input, action, ids[i], refs);
           });
           state.tasks = draft;
           indexes.forEach((i, j) => {
-            received.results![i] = results[j]!;
+            receipts[i] = results[j];
           });
         } catch (e) {
           indexes.forEach(i => {
-            received.results![i] = { status: 'rejected', reason: (e as Error).message };
+            receipts[i] = { status: 'rejected', reason: (e as Error).message };
           });
         }
       }
@@ -509,10 +518,11 @@ export class Intake {
         r.input.session === session &&
         state.tasks.some(t => t.repo === repo && t.revisions.some(v => v.input === key(r.input)))
     );
-    const first = identities[0]?.input;
-    if (identities.some(r => r.input.actor !== first?.actor || r.input.owner !== first?.owner))
+    const first = identities.at(0)?.input;
+    if (!first) return undefined;
+    if (identities.some(r => r.input.actor !== first.actor || r.input.owner !== first.owner))
       fail('ambiguous native session identity; use explicit intake');
-    return first && { actor: first.actor, owner: first.owner };
+    return { actor: first.actor, owner: first.owner };
   }
   /** Fixed append-only bounds let a traversal finish even while new work arrives. */
   context(repo: string, maxBytes = 8192, cursor?: string) {
@@ -544,7 +554,7 @@ export class Intake {
         bounds = pair(c.bounds);
         positions = pair(c.positions);
         if (
-          bounds.some((n, i) => n > arrays[i]!.length || positions[i]! > n) ||
+          bounds.some((n, i) => n > arrays[i].length || positions[i] > n) ||
           c.signature !== signature()
         )
           fail('invalid context cursor');
@@ -568,20 +578,21 @@ export class Intake {
         tasks: { total: 0, shown: 0, remaining: 0, later: 0 },
         inputs: { total: 0, shown: 0, remaining: 0, later: 0 },
         obligations: obligationCount(tasks),
+        total_obligations: obligationCount(tasks, true),
       },
       next: null as string | null,
     };
     const update = (): void => {
       [out.coverage.tasks, out.coverage.inputs].forEach((c, i) => {
-        const flags = eligible[i]!,
-          bound = bounds[i]!,
-          pos = positions[i]!;
+        const flags = eligible[i],
+          bound = bounds[i],
+          pos = positions[i];
         c.total = flags.slice(0, bound).filter(Boolean).length;
         c.shown = (i === 0 ? out.tasks : out.inputs).length;
         c.remaining = flags.slice(pos, bound).filter(Boolean).length;
         c.later = flags.slice(bound).filter(Boolean).length;
       });
-      out.next = positions.some((n, i) => n < bounds[i]!)
+      out.next = positions.some((n, i) => n < bounds[i])
         ? Buffer.from(JSON.stringify({ bounds, positions, signature: stamp })).toString('base64url')
         : null;
       out.truncated = !!out.next || out.coverage.tasks.later > 0 || out.coverage.inputs.later > 0;
@@ -593,12 +604,12 @@ export class Intake {
     if (!fits()) fail('context budget cannot fit coverage metadata');
     for (let i = 0; i < 2; i++) {
       const items = i === 0 ? out.tasks : out.inputs;
-      while (positions[i]! < bounds[i]!) {
-        const at = positions[i]!;
+      while (positions[i] < bounds[i]) {
+        const at = positions[i];
         positions[i] = at + 1;
-        if (!eligible[i]![at]) continue;
-        const t = state.tasks[at]!,
-          r = state.inputs[at]!;
+        if (!eligible[i][at]) continue;
+        const t = state.tasks[at],
+          r = state.inputs[at];
         const value =
           i === 0
             ? {
@@ -661,7 +672,12 @@ export class Intake {
         cancellation_intents: t.cancellations,
         pointer: `intake show ${t.id}`,
       }));
-    return { obligations: obligationCount(tasks.filter(t => selected(t))), tasks: items };
+    const selectedTasks = tasks.filter(t => selected(t));
+    return {
+      obligations: obligationCount(selectedTasks),
+      total_obligations: obligationCount(selectedTasks, true),
+      tasks: items,
+    };
   }
 }
 
@@ -696,7 +712,7 @@ function coverageOf(
         )
       )
         continue;
-      const targets = r.requirement_map!.map(m => ({
+      const targets = (r.requirement_map ?? []).map(m => ({
         m,
         requirement: e.packages
           .find(p => p.id === m.package)
@@ -716,7 +732,7 @@ function coverageOf(
               i =>
                 i.package === m.package &&
                 i.id === m.requirement_id &&
-                i.text === requirement!.text &&
+                i.text === requirement?.text &&
                 i.status === 'verified'
             )
           )
@@ -727,10 +743,6 @@ function coverageOf(
     }
   }
   let verified = obligations.length > 0 && obligations.every(r => covered.has(r.id));
-  if (task.cancellations.some(c => c.revision === task.revision)) {
-    verified = false;
-    reason = 'cancelled_intent';
-  }
   if (visiting.has(task.id) || (task.parent && !tasks.some(t => t.id === task.parent))) {
     verified = false;
     reason = 'invalid_hierarchy';
@@ -744,6 +756,10 @@ function coverageOf(
       verified = false;
       reason = 'children_unknown';
     }
+  }
+  if (cancelled(task)) {
+    verified = false;
+    reason = 'cancelled_intent';
   }
   return {
     completion: verified ? ('verified' as const) : ('unknown' as const),
