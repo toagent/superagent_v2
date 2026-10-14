@@ -268,7 +268,7 @@ function fixture(): Snapshot {
     lastEvent: at,
     run_id: id,
     archon_id: `archon-${id}`,
-    askReason: 'budget',
+    askReason: 'approval',
     repo: 'demo',
     state,
     started_at,
@@ -296,7 +296,7 @@ function fixture(): Snapshot {
       states: [],
       firstPass: false,
       reason: '',
-      dispositions: [{ at: '2026-10-10T03:55:00Z', action: 'ask', reason: 'budget', ok: true }],
+      dispositions: [{ at: '2026-10-10T03:55:00Z', action: 'ask', reason: 'approval', ok: true }],
     },
   });
   const sessions = [
@@ -323,7 +323,7 @@ function fixture(): Snapshot {
       row('a', 'completed', '2026-10-10T02:00:00Z'),
       row('b', 'running', '2026-10-10T03:00:00Z'),
     ],
-    asks: { 'b:budget:1': { status: 'pending' }, 'a:budget:1': { status: 'superseded' } },
+    asks: { 'b:approval:1': { status: 'pending' }, 'a:approval:1': { status: 'superseded' } },
     activity: {
       terms: [],
       procs: [],
@@ -381,7 +381,7 @@ test('2 runs, 1 job, pending/superseded and all four token roles render the shar
     at: '12:00',
     running: 2,
     metrics: { completed: 0, decided: 1 },
-    needs: [{ project: 'demo', question: '预算已用尽 是=放宽预算再跑 否=终止', waiting: '5m00s' }],
+    needs: [{ project: 'demo', question: '等待批准 是=批准 否=终止', waiting: '5m00s' }],
   });
   expect(d.runs.map(r => [r.id, r.role, r.state, r.url])).toEqual([
     ['b', '军师·astra', '进行中', '/console/r/archon-b'],

@@ -15,7 +15,6 @@ import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   budgetUsage,
-  effectiveBudget,
   decide,
   disposition,
   nextDisposition,
@@ -2703,25 +2702,6 @@ describe('sa-check script', () => {
     const root = tmp();
     expect(runScript(gitRepo(root), { kind: 'bogus' }).code).not.toBe(0);
   });
-});
-
-test('budget grants inherit enforcement and token exemption from the plan, including old grants', () => {
-  const grant = { milestone: 'm1', attempt: 0, limits: { launches: 4, weighted_tokens: 100 } };
-  for (const enforcement of [undefined, 'observe', 'hard'] as const) {
-    const base = { weighted_tokens: 0, enforcement, unlimited_tokens: true as const };
-    expect(effectiveBudget(base, grant, 'm1', 0)).toMatchObject({
-      enforcement: enforcement ?? 'observe',
-      unlimited_tokens: true,
-    });
-    expect(
-      effectiveBudget(
-        base,
-        { ...grant, limits: { ...grant.limits, enforcement: 'observe' } },
-        'm1',
-        0
-      ).enforcement
-    ).toBe(enforcement ?? 'observe');
-  }
 });
 
 test.each(['true', PRODUCT_FAILURE])('NO_HOLD hard budget is advisory for %s', command => {

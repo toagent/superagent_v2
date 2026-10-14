@@ -345,20 +345,18 @@ export interface ExecutionAdmissionHost {
 export type Admission =
   | {
       ok: true;
-      capacity: number;
       active: number;
       launch: (args: string[], cwd?: string) => Json;
       release: () => void;
     }
-  | { ok: false; capacity: number; active?: number; reason: 'admission_busy' | 'run_capacity' };
+  | { ok: false; reason: 'admission_busy' };
 
-/** Lock through pending-row publication; durable reservations retain ambiguous launch capacity. */
-export function admitExecution(capacity: number, host: ExecutionAdmissionHost): Admission {
-  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('invalid run capacity');
+/** Lock through pending-row publication; durable reservations retain ambiguous launch ownership. */
+export function admitExecution(host: ExecutionAdmissionHost): Admission {
   const root = host.root;
   mkdirSync(root, { recursive: true });
   const lease = executionLock(join(root, 'run-admission.lock'));
-  if (!lease.ok) return { ok: false, capacity, reason: 'admission_busy' };
+  if (!lease.ok) return { ok: false, reason: 'admission_busy' };
   try {
     const reservation = join(root, 'run-admission.json');
     if (existsSync(reservation)) {
@@ -367,7 +365,7 @@ export function admitExecution(capacity: number, host: ExecutionAdmissionHost): 
         pid?: unknown;
         pid_start?: unknown;
       };
-      // Only confirmed death clears capacity. Missing identity, remote host and PID reuse stay conservative.
+      // Only confirmed death clears a launch reservation. Missing identity, remote host and PID reuse stay conservative.
       if (
         old.host !== hostname() ||
         typeof old.pid !== 'number' ||
@@ -378,18 +376,13 @@ export function admitExecution(capacity: number, host: ExecutionAdmissionHost): 
         host.inspectProcess(old.pid).state !== 'offline'
       ) {
         lease.release();
-        return { ok: false, capacity, reason: 'admission_busy' };
+        return { ok: false, reason: 'admission_busy' };
       }
       unlinkSync(reservation);
     }
     const active = host.countActive();
-    if (active >= capacity) {
-      lease.release();
-      return { ok: false, capacity, active, reason: 'run_capacity' };
-    }
     return {
       ok: true,
-      capacity,
       active,
       release: lease.release,
       launch: (args, cwd): Json => {

@@ -66,12 +66,11 @@ export function writePolicyAttempts(artifacts: string, attempts: PolicyAttempt[]
   renameSync(tmp, file);
 }
 
-/** Shared by dispatch admission and the portable delivery gate. Callers own the default mode. */
+/** Shared observation thresholds for dispatch and the portable delivery gate. */
 export interface PolicyBudget {
   launches?: number;
   weighted_tokens: number;
   unlimited_tokens?: true;
-  enforcement?: 'observe' | 'hard';
 }
 export function budgetReason(
   limits: PolicyBudget,

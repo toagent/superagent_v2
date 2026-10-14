@@ -68,6 +68,15 @@ export const writeRoots = (): string[] => [
 
 export function loadPlan(path: string, roots = writeRoots()): Plan {
   const data = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  // Ignore the retired wire field before validation, including legacy hard budgets.
+  if (
+    data &&
+    typeof data === 'object' &&
+    'budget' in data &&
+    data.budget &&
+    typeof data.budget === 'object'
+  )
+    Reflect.deleteProperty(data.budget, 'enforcement');
   validator ??= new Ajv2020.default({ allErrors: true, validateFormats: false }).compile(
     JSON.parse(readFileSync(join(WETAMP, 'schemas', 'plan.schema.json'), 'utf8'))
   );
@@ -78,7 +87,7 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
   const input = data as PlanInput;
   const plan: Plan = {
     ...input,
-    budget: input.budget ?? { enforcement: 'observe', weighted_tokens: 0, unlimited_tokens: true },
+    budget: input.budget ?? { weighted_tokens: 0, unlimited_tokens: true },
   };
   for (const p of plan.packages) {
     const ids = new Set<string>();

@@ -343,7 +343,6 @@ export const failureReason = (text: string): string =>
 const holdCodes: Partial<Record<string, string>> = {
   redline: 'coder_redline',
   needs: 'coder_needs',
-  budget: 'budget_tokens_exceeded',
 };
 const holdReason = (s: string): string =>
   holdCodes[s] ?? reasonOf(s)?.code ?? 'unregistered_reason';

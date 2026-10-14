@@ -3,7 +3,6 @@ import { admitExecution, resumeExecution } from '@archon/workflows/execution-lif
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
 import * as relay from '../src/relay-quota';
-import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
 import * as saCheck from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
 import { Database } from 'bun:sqlite';
@@ -125,13 +124,13 @@ describe('P3 engine lifecycle contracts', () => {
         return { ok: true };
       },
     };
-    const first = admitExecution(1, host);
+    const first = admitExecution(host);
     expect(first.ok).toBe(true);
-    expect(admitExecution(1, host)).toMatchObject({ ok: false, reason: 'admission_busy' });
+    expect(admitExecution(host)).toMatchObject({ ok: false, reason: 'admission_busy' });
     if (!first.ok) throw new Error('admission refused');
     first.launch(['workflow', 'run']);
     first.release();
-    expect(admitExecution(1, host).ok).toBe(false);
+    expect(admitExecution(host).ok).toBe(false);
     expect(launches).toBe(1);
   });
   test('delivery defaults: live or unknown execution owners never reach claim or dispatch', () => {
@@ -1150,6 +1149,34 @@ describe('verbs (archon stub)', () => {
 });
 
 describe('run (archon stub)', () => {
+  test('BYPASS_CAPACITY run launches with eight active runs and observes low disk', () => {
+    const s = stub([]),
+      repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    engineBoundary!.mockImplementation(() => cleanEngine(repo));
+    const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
+    db.exec('create table remote_agent_workflow_runs (id text, status text)');
+    for (let i = 0; i < 8; i++)
+      db.query('insert into remote_agent_workflow_runs values (?, ?)').run(String(i), 'running');
+    db.close();
+    const disk = spyOn(fs, 'statfsSync').mockReturnValue({ bavail: 0, bsize: 4096 } as ReturnType<
+      typeof fs.statfsSync
+    >);
+    const warning = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = captured(() =>
+        main(['run', fixturePlan(s.root, repo), '--fake', '--skip-selftest'])
+      );
+      expect(result.code, result.out).toBe(0);
+      expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(true);
+      expect(
+        warning.mock.calls.flat().some(v => String(v).includes('superagent.disk_observed'))
+      ).toBe(true);
+    } finally {
+      disk.mockRestore();
+      warning.mockRestore();
+    }
+  });
   test.each(['dirty', 'changed'] as const)(
     'P4a failed generation publishes no ledger: %s',
     sample => {
@@ -1663,8 +1690,6 @@ test.each([
   { name: 'default observe', hard: false, exit: 0, expected: 0 },
   { name: 'hard tokens', hard: true, exit: 0, expected: 0 },
   { name: 'hard launches', hard: true, exit: 0, launches: 1, expected: 0 },
-  { name: 'hard matching grant', hard: true, exit: 0, grant: 0, expected: 0 },
-  { name: 'hard stale grant', hard: true, exit: 0, grant: 1, expected: 0 },
   { name: 'product', hard: false, exit: 1, failure: 'product', expected: 1 },
   { name: 'product zero exit', hard: false, exit: 0, failure: 'product', expected: 1 },
   { name: 'unknown', hard: false, exit: 1, failure: 'unknown', expected: 1 },
@@ -1711,15 +1736,6 @@ test.each([
       }))
     )
   );
-  if (sample.grant !== undefined)
-    writeFileSync(
-      join(s.ledger.gen_dir, 'budget-extra'),
-      JSON.stringify({
-        milestone: 'm1',
-        attempt: sample.grant,
-        limits: { launches: 2, weighted_tokens: 120 },
-      })
-    );
   const out = {
     ok: !sample.failure,
     diff_hash: 'same',
@@ -1763,12 +1779,11 @@ test.each([
     const result = captured(() => main(['accept', 'sa1']));
     expect(result.code).toBe(sample.expected);
     expect(JSON.parse(result.out).ok).toBe(sample.expected === 0);
-    if (sample.grant !== 0)
-      expect(
-        warn.mock.calls.some(
-          ([line]) => JSON.parse(String(line)).code === 'superagent.budget_observed'
-        )
-      ).toBe(true);
+    expect(
+      warn.mock.calls.some(
+        ([line]) => JSON.parse(String(line)).code === 'superagent.budget_observed'
+      )
+    ).toBe(true);
     if (!sample.expected) expect(JSON.parse(result.out)).toMatchObject({ disposition: 'advance' });
     expect(paths.map(path => readFileSync(path, 'utf8'))).toEqual(before);
     expect(s.calls().every(call => call.startsWith('workflow get r'))).toBe(true);
@@ -3088,23 +3103,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       }),
       first: {},
     }),
-    budget: () => {
-      const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('budget_launches_exceeded') });
-      const plan = JSON.parse(readFileSync(join(s.root, 'gen', 'plan.json'), 'utf8'));
-      writeFileSync(
-        join(s.root, 'gen', 'plan.json'),
-        JSON.stringify({
-          ...plan,
-          budget: { enforcement: 'hard', launches: 1, weighted_tokens: 100 },
-        })
-      );
-      const get = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8'));
-      writeFileSync(
-        join(s.dir, 'get-000.json'),
-        JSON.stringify({ ...get, events: [{ event_type: 'node_started', step_name: 'code-core' }] })
-      );
-      return { s, first: {} };
-    },
     review_limit: () => ({
       s: held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') }),
       first: {},
@@ -3180,26 +3178,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     } finally {
       signal.mockRestore();
     }
-  });
-
-  test('intervene counts one yes decision across explicit retry and later ticks', () => {
-    const { s } = scenes.budget();
-    patchLedger(s.root, { intervention_events: [] });
-    supervisor(s.root, 'yes');
-    expect(tick()[0]).toMatchObject({ action: 'ask' });
-    expect(loadLedger('sa1').intervention_events).toEqual([]);
-    expect(loadLedger('sa1').intervened).toBeUndefined();
-    expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
-    expect(loadLedger('sa1').intervention_events).toHaveLength(1);
-    expect(loadLedger('sa1').intervention_events![0]).toMatchObject({
-      action: 'answer',
-      source: 'superagent',
-      ask_id: 'ask-1',
-      ok: true,
-    });
-    tick();
-    expect(loadLedger('sa1').intervention_events).toHaveLength(1);
-    expect(resumes(s.calls())).toBe(1);
   });
 
   for (const [hold, p] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
@@ -3301,30 +3279,13 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
   }
 
   for (const node of ['verify-core', 'settle-core']) {
-    for (const reason of [
-      'coder_redline',
-      'budget_launches_exceeded',
-      'budget_tokens_exceeded',
-      'future_reason',
-      '',
-    ]) {
+    for (const reason of ['coder_redline', 'future_reason', '']) {
       test(`${node} ${reason || 'missing'} asks without model launch`, () => {
         const s = held(
           node,
           reason ? { [`${node}.json`]: { milestone: 'm1', decision: gate(reason).decision } } : {}
         );
-        if (reason.startsWith('budget_')) {
-          const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8'));
-          writeFileSync(
-            join(s.ledger.gen_dir, 'plan.json'),
-            JSON.stringify({
-              ...plan,
-              budget: { enforcement: 'hard', launches: 1, weighted_tokens: 100 },
-            })
-          );
-          const r = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8'));
-          writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
-        }
+
         const expected =
           reason === 'coder_redline'
             ? 'redline'
@@ -3332,142 +3293,27 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
               ? 'needs'
               : reason.startsWith('coder_error:')
                 ? 'coder_blocked'
-                : reason.startsWith('budget_')
-                  ? 'budget'
-                  : 'engine_suspect';
+                : 'engine_suspect';
         expect(tick()[0]).toMatchObject({
-          action: expected === 'budget' ? 'ask' : 'none',
+          action: 'none',
           reason: expect.stringContaining(expected),
         });
         expect(resumes(s.calls())).toBe(0);
-        if (expected === 'budget')
-          expect(loadLedger('sa1').dispositions?.at(-1)?.reason).toBe(expected);
       });
     }
   }
   for (const reason of [
-    'budget_launches_exceeded',
-    'budget_tokens_exceeded',
     'invalid_review+review_limit',
     'review_not_independent:reviewer_unknown',
     'review_not_independent:author_unknown',
   ]) {
     test(`gate ${reason} cannot silently auto retry`, () => {
       const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate(reason) });
-      if (reason.startsWith('budget_')) {
-        const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8'));
-        writeFileSync(
-          join(s.ledger.gen_dir, 'plan.json'),
-          JSON.stringify({
-            ...plan,
-            budget: { enforcement: 'hard', launches: 1, weighted_tokens: 100 },
-          })
-        );
-        const r = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8'));
-        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
-      }
-      expect(tick()[0].action).toBe(reason.startsWith('budget_') ? 'ask' : 'none');
+
+      expect(tick()[0].action).toBe('none');
       expect(resumes(s.calls())).toBe(0);
     });
-  }
-  test('recover lock contention does not consume a milestone or review attempt or budget grant', () => {
-    for (const hold of ['budget'] as const) {
-      const { s } = scenes[hold]();
-      supervisor(s.root, 'yes');
-      tick();
-      const l = engineRecoverLock();
-      if (!l.ok) throw new Error('test lock unavailable');
-      try {
-        expect(tick()[0]).toMatchObject({ busy: true, ok: false });
-        expect(existsSync(join(s.root, 'gen', 'attempts'))).toBe(false);
-        expect(loadLedger('sa1').budget_grants).toBeUndefined();
-        expect(resumes(s.calls())).toBe(0);
-      } finally {
-        l.release();
-      }
-    }
-  });
-  test('a budget yes with a failed resume reuses its one allowance on the next tick', () => {
-    const { s } = scenes.budget();
-    supervisor(s.root, 'yes');
-    tick();
-    fixtureOptions(s.dir, { resumeReply: { ok: false, executed: false } });
-    expect(tick(1)[0]).toMatchObject({ action: 'retry', ok: false });
-    const grant = readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8');
-    expect(tick(1)[0]).toMatchObject({ action: 'retry', ok: false });
-    expect(readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8')).toBe(grant);
-    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
-    expect(loadLedger('sa1').budget_grants).toHaveLength(1);
-    fixtureOptions(s.dir, {});
-    expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
-    expect(loadLedger('sa1').budget_grants).toHaveLength(1);
-  });
-  test('budget yes records finite explicit allowances checked by sa-check', () => {
-    const { s } = scenes.budget();
-    supervisor(s.root, 'yes');
-    tick();
-    expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
-    const grant = JSON.parse(readFileSync(join(s.root, 'gen', 'budget-extra'), 'utf8'));
-    expect(grant).toMatchObject({
-      milestone: 'm1',
-      attempt: 1,
-      launches: 9,
-      weighted_tokens: 9 * loadTiers().policy.budget_floor.S,
-    });
-    expect(loadLedger('sa1').budget_grants).toHaveLength(1);
-    // Budget checks leave this clean repository unchanged; repeated git init/clone adds unrelated I/O.
-    const repo = gitRepo(tmp());
-    const check = (attempt: string, milestone = 'm1') => {
-      writeFileSync(join(s.root, 'gen', 'attempts', 'm1'), attempt);
-      const p = Bun.spawnSync(
-        ['bun', join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts')],
-        {
-          cwd: repo,
-          env: {
-            ...process.env,
-            WORKFLOW_ID: 'r',
-            ARTIFACTS_DIR: s.art,
-            INPUTS_KIND: 'accept',
-            INPUTS_PLAN: join(s.root, 'gen', 'plan.json'),
-            INPUTS_PKGS: 'core',
-            INPUTS_TAG: 'verify-core',
-            INPUTS_MILESTONE: milestone,
-            INPUTS_ARCHON: join(s.dir, 'archon'),
-            INPUTS_POLICY: join(s.root, 'policy.json'),
-          },
-          stdout: 'pipe',
-          stderr: 'pipe',
-        }
-      );
-      return {
-        code: p.exitCode,
-        out: p.stdout.length ? JSON.parse(p.stdout.toString()) : null,
-        err: p.stderr.toString(),
-      };
-    };
-    writeFileSync(
-      join(s.root, 'policy.json'),
-      JSON.stringify({ budget_floor: { S: loadTiers().policy.budget_floor.S } })
-    );
-    expect(check('1')).toMatchObject({ code: 0, out: { disposition: 'advance' } });
-    expect(check('2')).toMatchObject({
-      code: 1,
-      out: { disposition: 'suspend', reason: 'budget_launches_exceeded' },
-    });
-    expect(check('1', 'm2')).toMatchObject({
-      code: 1,
-      out: { reason: 'budget_launches_exceeded' },
-    });
-
-    writeFileSync(
-      join(s.root, 'gen', 'budget-extra'),
-      JSON.stringify({ ...grant, limits: { launches: 1 } })
-    );
-    expect(check('1')).toMatchObject({
-      code: 1,
-      err: expect.stringContaining('budget-extra: invalid limits'),
-    });
-  }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
+  } // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
   test('non-independent review stays blocked until a qualified reviewer is configured', () => {
     const { s } = scenes.review_not_independent();
     const sup = supervisor(s.root, 'yes');
@@ -3667,7 +3513,6 @@ describe('HF9 decision titles', () => {
     redline: '将军命中红线',
     needs: '证据缺失',
     coder_blocked: '将军受执行约束阻断',
-    budget: '已用/上限1/1',
     review_limit: '轮次3，未决1',
     review_not_independent: 'same_model',
     approval: '等待批准',
@@ -3786,31 +3631,6 @@ describe('HF9 decision titles', () => {
       expect(unregistered).not.toContain(dirty);
     }
   });
-  for (const [milestone, attempt, launches] of [
-    ['m2', 1, 1],
-    ['m1', 2, 1],
-    ['m1', 1, 100],
-  ] as const)
-    test(`HF9 R3 budget title uses execution limits for ${milestone}/attempt${attempt}`, () => {
-      const { s, r } = setup();
-      const path = join(s.ledger.gen_dir, 'plan.json');
-      const plan = JSON.parse(readFileSync(path, 'utf8')) as Plan;
-      plan.packages[0].milestone = milestone;
-      writeFileSync(path, JSON.stringify(plan));
-      const grant = {
-        milestone: 'm1',
-        attempt: 1,
-        limits: { launches: 100, weighted_tokens: 10000 },
-      };
-      writeFileSync(join(s.ledger.gen_dir, 'budget-extra'), JSON.stringify(grant));
-      mkdirSync(join(s.ledger.gen_dir, 'attempts'), { recursive: true });
-      writeFileSync(join(s.ledger.gen_dir, 'attempts', milestone), String(attempt));
-      const actual = effectiveBudget(plan.budget, grant, milestone, attempt);
-      expect(actual.launches).toBe(launches);
-      const q = decisionQuestion(s.ledger, r, classify(r), 'budget');
-      expect(q).toContain(`调用已用/上限1/${String(actual.launches)}`);
-      expect(q).toContain(`加权token已用/上限0/${String(actual.weighted_tokens)}`);
-    });
   const bestIFA = () => {
     const f = setup(),
       plan = JSON.parse(readFileSync(join(f.s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
@@ -3877,7 +3697,6 @@ describe('HF9 decision titles', () => {
       needs: 'coder_needs',
       redline: 'coder_redline',
       coder_blocked: 'coder_error:sandbox_denied',
-      budget: 'budget_tokens_exceeded',
       review_limit: 'review_failed+review_limit',
       review_not_independent: 'review_not_independent:same_model',
     };
@@ -3923,30 +3742,6 @@ describe('HF9 decision titles', () => {
     expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
     expect(Array.from(q).length).toBeLessThanOrEqual(200);
   };
-  test('HF9 R4 R2-02: 16-digit budget with four maximum-name packages and adopt reaches supervisor', () => {
-    const { s, node, value } = maximumTitle('budget');
-    writeFileSync(
-      join(s.ledger.repo, 'out/artifacts/runs/r', `${node}.json`),
-      JSON.stringify({ decision: fixtureDecision('block', 'budget_launches_exceeded') })
-    );
-    const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({
-      launches: value,
-      weighted_tokens: value,
-      reserve: value,
-    });
-    try {
-      const sup = supervisor(s.root, 'pending');
-      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-      const q = /^ask --question (.*) --ttl-hours \d+ --context-json /.exec(sup()[0])?.[1] ?? '';
-      assertBoundedTitle(q, 'budget');
-      expect(q).toContain('累计验收→评审一次');
-      expect(q).toContain('将新开run从首个节点重跑');
-      expect(q).toContain(`已用/上限${String(value)}/${String(value)}`);
-      if (process.env.HF9_R4_SAMPLE_OUT) writeFileSync(process.env.HF9_R4_SAMPLE_OUT, q + '\n');
-    } finally {
-      usage.mockRestore();
-    }
-  });
   for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
     if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
     for (const value of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE])
@@ -3985,7 +3780,7 @@ describe('HF9 decision titles', () => {
   }
   test('HF9 R3 maximum identifiers and unbounded schema names preserve reasons, facts, actions and marker', () => {
     // schema: id ≤64, milestone ≤32; repo basename ≤255 on disk, title has no maximum.
-    for (const hold of ['budget', 'signoff'] as Hold[]) {
+    for (const hold of ['signoff'] as Hold[]) {
       const { s, r, put } = bestIFA();
       const oldRepo = s.ledger.repo,
         repo = join(s.root, 'R'.repeat(255));
@@ -4120,149 +3915,7 @@ describe('HF9 decision titles', () => {
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
       expect(s.calls().filter(c => c === 'workflow resume r --detach --json')).toHaveLength(2);
     });
-  test('HF10 first and second package budget yes keep milestone zero and grant usable allowances', () => {
-    const { s, r, put, art } = bestIFA();
-    const tick = () =>
-      JSON.parse(captured(() => main(['supervise-tick'])).out).actions as Record<string, unknown>[];
-    s.ledger.workflow_hash = engineHash();
-    appendFileSync(
-      join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
-      '  - id: package-attempt-W4\n'
-    );
-    put('verify-W4.json', { reason: 'budget_launches_exceeded' });
-    const planPath = join(s.ledger.gen_dir, 'plan.json');
-    const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
-    plan.budget.launches = 1;
-    plan.packages.forEach(p => {
-      p.accept = [{ cmd: 'true', timeout_s: 5 }];
-    });
-    writeFileSync(planPath, JSON.stringify(plan));
-    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-    const events = [{ event_type: 'node_started', step_name: 'code-W4' }];
-    const updateRun = (completed_at: string) =>
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, completed_at, events }));
-    updateRun('2026-10-10T00:00:00Z');
-    writeFileSync(
-      join(s.root, 'policy.json'),
-      JSON.stringify({ budget_floor: { S: loadTiers().policy.budget_floor.S } })
-    );
-    const counter = join(s.ledger.gen_dir, 'attempts/m1');
-    const wfPlan = JSON.parse(readFileSync(fixturePlan(tmp(), s.ledger.repo), 'utf8')) as Plan;
-    const node = buildWorkflow(wfPlan, milestones(wfPlan), 'sa1', s.ledger.gen_dir, true).nodes as {
-      id: string;
-      bash?: string;
-    }[];
-    // The generated bash reads its copied sa-check implementation, as a real run does.
-    mkdirSync(join(s.ledger.gen_dir, '.archon/scripts'), { recursive: true });
-    cpSync(join(WETAMP, 'templates/.archon/scripts'), join(s.ledger.gen_dir, '.archon/scripts'), {
-      recursive: true,
-    });
-    cpSync(
-      join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
-      join(s.ledger.gen_dir, '.archon/scripts/policy-attempts.ts')
-    );
-    const attemptOutput = () =>
-      sh(node.find(n => n.id === 'attempt-m1')!.bash!, s.ledger.gen_dir).trim();
-    expect(attemptOutput()).toBe('{"attempt":"0"}');
-    for (const attempt of [1, 2]) {
-      supervisor(s.root, 'yes');
-      expect(tick()[0].action).toBe('ask');
-      expect(tick()[0]).toMatchObject({ action: 'retry', ok: true });
-      const grant = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'budget-extra'), 'utf8'));
-      expect(grant.attempt).toBe(0);
-      expect(Number.isSafeInteger(grant.attempt)).toBe(true);
-      expect(existsSync(counter)).toBe(false);
-      expect(attemptOutput()).toBe('{"attempt":"0"}');
-      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe(
-        String(attempt)
-      );
-      const check = Bun.spawnSync(['bun', join(WETAMP, 'templates/.archon/scripts/sa-check.ts')], {
-        cwd: gitRepo(tmp()),
-        stdout: 'pipe',
-        stderr: 'pipe',
-        env: {
-          ...process.env,
-          WORKFLOW_ID: 'r',
-          ARTIFACTS_DIR: art,
-          INPUTS_KIND: 'accept',
-          INPUTS_PLAN: planPath,
-          INPUTS_PKGS: 'W4',
-          INPUTS_TAG: 'verify-W4',
-          INPUTS_MILESTONE: 'm1',
-          INPUTS_ARCHON: join(s.dir, 'archon'),
-          INPUTS_POLICY: join(s.root, 'policy.json'),
-        },
-      });
-      expect(check.exitCode).toBe(0);
-      expect(JSON.parse(check.stdout.toString())).toMatchObject({ disposition: 'advance' });
-      console.error(
-        `HF10 budget retry ${attempt}: grant=${JSON.stringify(grant)} package=${attempt} milestone=absent(0)`
-      );
-      // New completion evidence distinguishes the next budget hold from a replayed answer.
-      const resumed = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-      Object.assign(r, { metadata: resumed.metadata, started_at: resumed.started_at });
-      updateRun('2026-10-10T00:00:01Z');
-      put('verify-W4.json', { reason: 'budget_launches_exceeded' });
-    }
-    expect(loadLedger('sa1').budget_grants).toHaveLength(2);
-  }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
-  test('HF10 supervisor receives package, milestone, adopt and legacy scope titles', () => {
-    const samples: Record<string, string> = {};
-    for (const mode of ['package', 'milestone', 'adopt', 'legacy'] as const) {
-      const { s, r, put } = bestIFA();
-      s.ledger.workflow_hash = mode === 'adopt' ? 'changed-workflow' : engineHash();
-      if (mode !== 'legacy')
-        appendFileSync(
-          join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
-          '  - id: package-attempt-W4\n'
-        );
-      if (mode === 'milestone') {
-        r.nodes = [
-          ...(r.nodes ?? []).filter(n => n.state === 'completed'),
-          { nodeId: 'gate-m1-r3', state: 'failed' },
-        ];
-        put('gate-m1-r3.json', {
-          reason: 'budget_launches_exceeded',
-          verdict: 'escalate',
-          rounds: 3,
-        });
-      } else put('verify-W4.json', { reason: 'budget_launches_exceeded' });
-      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
-      const sup = supervisor(s.root, 'pending');
-      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-      const q = /^ask --question (.*) --ttl-hours \d+ --context-json /.exec(sup()[0])?.[1] ?? '';
-      assertBoundedTitle(q, 'budget');
-      if (mode === 'package' || mode === 'adopt') expect(q).toContain('重派W4编码→验收一次');
-      if (mode === 'milestone' || mode === 'legacy') expect(q).toContain('重跑m1累计验收→评审一次');
-      expect(q.includes('将新开run从首个节点重跑')).toBe(mode === 'adopt');
-      samples[mode] = q;
-    }
-    if (process.env.HF10_SAMPLES_OUT)
-      writeFileSync(process.env.HF10_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
-  });
-  for (const status of ['failed', 'cancelled', 'paused', 'running', 'completed'] as const)
-    for (const stale of [true, false])
-      test(`HF9 R2 adopt warning shares recovery predicate: ${status}/${stale}`, () => {
-        const { s, r } = bestIFA();
-        r.status = status;
-        if (stale) s.ledger.engine_hash = 'old-engine';
-        const q = decisionQuestion(
-          s.ledger,
-          r,
-          { state: 'failed', exit: 1, node: 'verify-W4' },
-          'budget'
-        );
-        expect(q.includes('将新开run从首个节点重跑')).toBe(
-          stale && ['failed', 'cancelled'].includes(status)
-        );
-        expect(q).toContain('累计验收→评审');
-        expect(q).toContain('是=');
-        expect(q).toContain('否=终止整个run');
-        expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
-        expect(Array.from(q).length).toBeLessThanOrEqual(200);
-      });
-  for (const hold of ['budget', 'signoff'] as Hold[])
+  for (const hold of ['signoff'] as Hold[])
     for (const answer of ['pending', 'yes', 'no'] as const)
       test(`HF9 R2 existing ${hold}/${answer} skips title evidence and events query`, () => {
         const { s, r, put, art } = setup();
@@ -4317,7 +3970,7 @@ describe('HF9 decision titles', () => {
       });
   test('HF9 supervisor stub captures five R3 titles', () => {
     const samples: Record<string, string> = {};
-    for (const sample of ['budget', 'signoff'] as string[]) {
+    for (const sample of ['signoff'] as string[]) {
       const hold = sample === 'redline-adopt' ? 'redline' : sample;
       const { s, r, put, art } = bestIFA();
       if (sample === 'redline-adopt') {

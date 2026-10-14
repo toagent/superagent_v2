@@ -171,19 +171,6 @@ export function providerOf(model: string): Alias['provider'] {
   throw new Error(`unknown vendor for model ${model}`);
 }
 
-/** Run admission shares the existing vendor budget; no second capacity setting can drift. */
-export function runCapacity(t = loadTiers()): number {
-  const caps = Object.values(t.health.vendor_concurrency);
-  const capacity = caps.reduce((sum, n) => sum + n, 0);
-  if (
-    !caps.length ||
-    caps.some(n => !Number.isSafeInteger(n) || n < 1) ||
-    !Number.isSafeInteger(capacity)
-  )
-    throw new Error('run admission: vendor_concurrency must contain positive safe integers');
-  return capacity;
-}
-
 export interface Tiers {
   tiers: Record<string, { pools: Record<string, string[]> }>;
   routing: {
@@ -195,7 +182,6 @@ export interface Tiers {
       by_risk?: Partial<Record<Pkg['risk'], string[]>>;
     };
   };
-  health: { vendor_concurrency: Record<string, number> };
   policy: {
     /** Context advisory thresholds consumed by context-advisory.cjs. */
     context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
@@ -221,7 +207,7 @@ export interface Tiers {
     risk_paths: string[];
     code_extensions: string[];
     exempt_paths: string[];
-    budget_floor: Record<'S' | 'M' | 'L', number>;
+    budget_floor: { S: number };
   };
 }
 
@@ -315,7 +301,7 @@ const { snapshotPolicy: buildPolicySnapshot } = createRequire(import.meta.url)(
 };
 export function snapshotPolicy(
   t: Tiers
-): Tiers['policy'] & { hash: string; routing: Tiers['routing']; health: Tiers['health'] } {
+): Tiers['policy'] & { hash: string; routing: Tiers['routing'] } {
   return buildPolicySnapshot(t);
 }
 
@@ -393,11 +379,15 @@ export function mergeConfig(current: unknown, t: Tiers): Obj {
   const cfg = { ...obj(current) };
   cfg.aliases = { ...obj(cfg.aliases), ...aliases };
   cfg.workflows = { ...obj(cfg.workflows), autoResumeOnQuotaReset: true, quotaMaxAttempts: 3 };
-  const providers: Record<string, number> = {};
-  for (const [v, n] of Object.entries(t.health.vendor_concurrency))
-    providers[v === 'chatgpt' ? 'codex' : v] = n;
-  const conc = obj(cfg.concurrency);
-  cfg.concurrency = { ...conc, providers: { ...obj(conc.providers), ...providers } };
+  const conc = { ...obj(cfg.concurrency) };
+  const providers = { ...obj(conc.providers) };
+  // These provider keys were managed by superagent; preserve unrelated operator settings.
+  delete providers.codex;
+  delete providers.claude;
+  if (Object.keys(providers).length) conc.providers = providers;
+  else delete conc.providers;
+  if (Object.keys(conc).length) cfg.concurrency = conc;
+  else delete cfg.concurrency;
   const assistants = obj(cfg.assistants);
   cfg.assistants = {
     ...assistants,

@@ -169,8 +169,8 @@ test('matching engine reasons and pending asks govern needs; pending asks do not
     const running = snap.rows.find(r => r.run_id === 'run-0')!;
     expect(running.state).toBe('running');
     running.lastEvent = fixture.captured_at;
-    running.askReason = 'budget';
-    snap.asks = { 'run-0:budget:1': { status: 'pending' } };
+    running.askReason = 'approval';
+    snap.asks = { 'run-0:approval:1': { status: 'pending' } };
     expect(cockpit(snap, now).needs).toHaveLength(1);
     expect(
       cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, askReason: 'coder' })) }, now).needs

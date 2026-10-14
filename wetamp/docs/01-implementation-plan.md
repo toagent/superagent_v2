@@ -24,7 +24,7 @@
 - `wetamp/scripts/check-upstream-clean.sh`：§2.2 不变量 1；无 `upstream` remote 时退化为与 `dev` 分支比较并警告。
 - `wetamp/scripts/install.sh`（幂等，可重复跑；所有路径以 `$SUPERAGENT_HOME` 为根）：
   - `$ARCHON_HOME/.env`：确保 `ARCHON_TELEMETRY_DISABLED=1`、`DO_NOT_TRACK=1` 两行存在（已存在不重复、不改其他行）。
-  - `$ARCHON_HOME/config.yaml`：用 YAML 解析后**只写** `aliases['@sa-coder'|'@sa-reviewer'|'@sa-reviewer-alt']`、`workflows.autoResumeOnQuotaReset=true`、`workflows.quotaMaxAttempts`、`concurrency.providers`（来自 `tiers.json health.vendor_concurrency`），其余键原样保留；写前备份到 `$ARCHON_HOME/config.yaml.bak-<ts>`。
+  - `$ARCHON_HOME/config.yaml`：用 YAML 解析后**只写** `aliases['@sa-coder'|'@sa-reviewer'|'@sa-reviewer-alt']`、`workflows.autoResumeOnQuotaReset=true`、`workflows.quotaMaxAttempts`；幂等清理旧的 `concurrency.providers.codex/claude`，保留其他 provider 与配置，其余键原样保留；写前备份到 `$ARCHON_HOME/config.yaml.bak-<ts>`。
   - 创建 `$SUPERAGENT_HOME/{gen,runs}`。
   - 断言 `@sa-coder` 与 `@sa-reviewer` 的 `provider/model` 不同，否则退出非 0。
   - 末尾跑 `bin/archon doctor` 并打印摘要。

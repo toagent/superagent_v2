@@ -789,15 +789,6 @@ export function generate(
   writeFileSync(join(dir, '.archon', 'principles.md'), principles);
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
-  const floor = plan.packages.reduce((n, p) => n + tiers.policy.budget_floor[p.size], 0);
-  if (
-    plan.budget.enforcement === 'hard' &&
-    !plan.budget.unlimited_tokens &&
-    plan.budget.weighted_tokens < floor
-  )
-    throw new Error(
-      `plan invalid: /budget/weighted_tokens ${String(plan.budget.weighted_tokens)} < policy.budget_floor sum ${String(floor)}`
-    );
   writeFileSync(
     join(dir, 'execution.json'),
     JSON.stringify(executionTable(plan, tiers), null, 2) + '\n'
@@ -846,7 +837,7 @@ export function generate(
     join(dir, READONLY_MCP),
     readOnlyMcp(tiers.policy.exec_profiles.reviewer.codex_readonly_marker)
   );
-  writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\nbudget-extra\n.archon.*\n');
+  writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
   for (const risk of ['G0', 'G1', 'G2'] as const) {

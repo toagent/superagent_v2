@@ -20,7 +20,6 @@ export const REASONS = {
   needs: '需要补能力',
   redline: '命中红线',
   coder_blocked: '执行约束阻断',
-  budget: '预算已用尽',
   review_limit: '三轮评审用尽',
   review_not_independent: '评审不独立',
   engine_suspect: '引擎嫌疑',
@@ -246,7 +245,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       tokens: runTokens(j.id, 'job_id'),
       stage:
         j.state === 'queued'
-          ? '等内存'
+          ? '准备启动'
           : j.tier === 'strategist'
             ? '评审'
             : j.tier === 'general'
@@ -256,7 +255,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       round: '-',
       reason: j.reason ?? '',
       question: '',
-      waiting: j.state === 'queued' ? '等内存' : '',
+      waiting: j.state === 'queued' ? '准备启动' : '',
     });
   }
   for (const cwd of new Set(liveJobs.map(j => j.cwd))) {

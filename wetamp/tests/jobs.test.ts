@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
-import { jobCli, modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
+import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
 import { loadTiers } from '../src/config';
 import { gitRepo, sh, tmp } from './helpers';
 
@@ -168,7 +168,7 @@ describe('job registry', () => {
   });
 
   test('queued remains active while its wrapper lives; only a dead owner becomes lost', () => {
-    put({ id: 'queued', state: 'queued', pid: 0, reason: 'memory' });
+    put({ id: 'queued', state: 'queued', pid: 0, reason: 'environment' });
     put({ id: 'orphan', state: 'queued', pid: 0, wrapper_pid: 99999999 });
     const jobs = readJobs(NOW).jobs;
     expect(jobs.find(j => j.id === 'queued')?.state).toBe('queued');
@@ -244,36 +244,6 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     const err = await new Response(p.stderr as ReadableStream).text();
     expect(await p.exited, err).toBe(0);
     expect(JSON.parse(await new Response(p.stdout as ReadableStream).text())).toEqual({ present: true, role: '' });
-  });
-
-  test('queue receipt survives admission and distinguishes preparation from child execution', async () => {
-    const admission = process.env.SA_ADMIT;
-    process.env.SA_ADMIT = 'on';
-    let probes = 0,
-      queued: Job | undefined;
-    try {
-      expect(
-        await jobCli(
-          ['job', 'exec', '--title', 'receipt', '--', '/bin/sleep', '0.03'],
-          () => ({ pressure: ++probes === 1 ? 2 : 1, free: 100, source: 'sysctl' }),
-          async () => {
-            queued = only();
-            await Bun.sleep(25);
-          }
-        )
-      ).toBe(0);
-      const j = only(),
-        r = j.receipt!;
-      expect(queued?.state).toBe('queued');
-      expect(r.enqueued_at).toBe(queued!.started_at);
-      expect(Date.parse(r.admitted_at!) - Date.parse(r.enqueued_at)).toBeGreaterThanOrEqual(25);
-      expect(Date.parse(r.spawned_at!) - Date.parse(r.admitted_at!)).toBeGreaterThanOrEqual(0);
-      expect(Date.parse(r.settled_at!) - Date.parse(r.spawned_at!)).toBeGreaterThanOrEqual(25);
-      expect(j.started_at).toBe(r.spawned_at!);
-    } finally {
-      if (admission === undefined) delete process.env.SA_ADMIT;
-      else process.env.SA_ADMIT = admission;
-    }
   });
   // prettier-ignore
   const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}) =>
@@ -1021,7 +991,7 @@ else {
               }
             }));
             const { jobCli } = await import('./src/jobs');
-            const code = await jobCli(['job', 'exec', '--title', 'commit-window', '--', '/bin/sleep', '0.03']);
+            const code = await jobCli(['job', 'exec', '--title', 'commit-window', '--', '/bin/sleep', '0.03'], () => { if (${JSON.stringify(outcome)} === 'catch') throw new Error('probe failure'); return { pressure: 1, free: 50, source: 'sysctl' }; });
             console.log(JSON.stringify({ code, injected, delivered, stateAtSignal,
               listeners: ['SIGINT', 'SIGTERM', 'SIGHUP'].map(s => process.listenerCount(s)) }));
             process.exit(code);

@@ -12,7 +12,7 @@ import {
 import { launcher, type Launcher } from './launcher';
 import { basename, dirname, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
-import { setImmediate as yieldEventLoop, setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
 import { home, loadTiers } from './config';
 import {
@@ -60,7 +60,7 @@ export interface Job {
   pid: number;
   started_at: string;
   state: 'queued' | 'running' | 'done' | 'failed' | 'lost';
-  reason?: 'memory' | 'environment';
+  reason?: 'environment';
   environment?: ReturnType<typeof envPrecheck>;
   provisioned?: Awaited<ReturnType<typeof provisionEnvironment>>['provisioned'];
   memory?: MemoryReading;
@@ -100,9 +100,6 @@ export function memoryReading(
     return { pressure: null, free: available(), source: 'os' };
   }
 }
-type AdmissionWait = (ms: number, signal: AbortSignal) => Promise<unknown>;
-const admissionWait: AdmissionWait = (ms, signal) => delay(ms, undefined, { signal });
-
 export const kindOf = (argv0: string): Kind => {
   const b = basename(argv0);
   return b === 'claude' || b === 'codex' || b === 'opencode' ? b : 'other';
@@ -225,14 +222,13 @@ export function cleanJob(id: string): void {
 
 /**
  * 继承 stdio 前台跑子进程，转发 SIGINT/SIGTERM/SIGHUP；wrapper 被中断时以首次信号的 128+n 失败，优先于子进程退出码。
- * 先登记 queued 并按内存准入；超时/信号不启动子进程，启动失败登记 failed，无边界内中断时抛错。
+ * 先登记 queued 与内存观测；信号不启动子进程，启动失败登记 failed，无边界内中断时抛错。
  */
 // prettier-ignore
 async function exec(
   cmd: string[],
   f: { title: string; card?: string; log?: string; role: Tier | null; execution?: Job['execution']; worktree?: string; base?: string; request_ref?: string },
-  probe: () => MemoryReading,
-  wait: AdmissionWait
+  probe: () => MemoryReading
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
   const launched = launcher(home().sa);
@@ -315,43 +311,8 @@ async function exec(
       job.cwd = job.worktree.path;
       save(job);
     }
-    let waited = false;
-    const min = Number(process.env.SA_ADMIT_MIN_FREE ?? 25),
-      max = Number(process.env.SA_ADMIT_MAX_WAIT ?? 1800),
-      deadline = Date.now() + max * 1000;
-    if (process.env.SA_ADMIT === 'off')
-      console.error('job: SA_ADMIT=off; memory admission skipped');
-    else {
-      if (![min, max].every(n => Number.isFinite(n) && n >= 0))
-        throw new Error('invalid SA_ADMIT_MIN_FREE/SA_ADMIT_MAX_WAIT');
-      while (!stop.signal.aborted) {
-        job.memory = probe();
-        job.reason = 'memory';
-        save(job);
-        const m = job.memory,
-          reading = `pressure=${String(m.pressure)} free=${String(m.free)}% source=${m.source}`;
-        if (m.source === 'os')
-          console.error(`job: sysctl unavailable; fallback os.freemem()/os.totalmem(); ${reading}`);
-        if (
-          (!waited || Date.now() < deadline) &&
-          (m.pressure === 1 || m.source === 'os') &&
-          m.free >= min
-        )
-          break;
-        if (Date.now() >= deadline) {
-          code = 75;
-          console.error(`job: memory admission timed out; ${reading}`);
-          break;
-        }
-        console.error(`job: queued 等内存; ${reading}; min=${String(min)}%; retry in 15s`);
-        await wait(Math.min(15000, Math.max(0, deadline - Date.now())), stop.signal).catch(
-          (e: unknown) => {
-            if (!stop.signal.aborted) throw e;
-          }
-        );
-        waited = true;
-      }
-    }
+    job.memory = probe();
+    save(job);
     // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
     if (!code) await yieldEventLoop();
     if (f.worktree && !code && !stop.signal.aborted) {
@@ -438,8 +399,7 @@ async function exec(
 // prettier-ignore
 export async function jobCli(
   argv: string[],
-  probe = memoryReading,
-  wait = admissionWait
+  probe = memoryReading
 ): Promise<number> {
   const cut = argv.indexOf('--');
   const cmd = cut < 0 ? [] : argv.slice(cut + 1);
@@ -498,5 +458,5 @@ export async function jobCli(
       model: candidate.model, provider, policy };
   }
 
-  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'] }, probe, wait);
+  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'] }, probe);
 }

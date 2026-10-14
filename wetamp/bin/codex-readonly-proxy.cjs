@@ -18,7 +18,7 @@ function canonicalPolicy(value) {
 }
 // generate.ts 与无快照的 worker/proxy 共用此构造与哈希，不手抄 policy 子集。
 function snapshotPolicy(tiers) {
-  const body = JSON.parse(JSON.stringify({ ...tiers.policy, routing: tiers.routing, health: tiers.health }));
+  const body = JSON.parse(JSON.stringify({ ...tiers.policy, routing: tiers.routing }));
   return { ...body, hash: createHash('sha256').update(canonicalPolicy(body)).digest('hex') };
 }
 function loadPolicy(path) {

@@ -23,15 +23,11 @@ export interface Plan {
   deadline?: string;
   budget?: {
     /**
-     * Defaults to observe; only explicit hard budgets block delivery
-     */
-    enforcement?: 'observe' | 'hard';
-    /**
-     * Explicitly disable only the token ceiling; launch and round bounds remain active
+     * Omit token threshold warnings
      */
     unlimited_tokens?: true;
     /**
-     * Observed by default; hard token budgets must cover the package budget_floor sum
+     * Observed token threshold; never blocks execution
      */
     weighted_tokens: number;
     cost?: number;

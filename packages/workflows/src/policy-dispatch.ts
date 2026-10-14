@@ -64,25 +64,11 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     }
     return out;
   };
-  const budgetFailure = (
-    beforeLaunch: boolean
-  ): (ResultChunk & { failure: NonNullable<ResultChunk['failure']> }) | undefined => {
+  const budgetObservation = (beforeLaunch: boolean): string | undefined => {
     const used = execution.usage(attempts);
     const reason = budgetReason(execution.budget, used, beforeLaunch);
     return reason
-      ? {
-          type: 'result',
-          isError: true,
-          failure: {
-            class: 'budget_exceeded',
-            evidence: JSON.stringify({
-              reason,
-              used,
-              limits: execution.budget,
-              node: execution.node,
-            }),
-          },
-        }
+      ? JSON.stringify({ reason, used, limits: execution.budget, node: execution.node })
       : undefined;
   };
   let last: ResultChunk | undefined;
@@ -120,14 +106,8 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
         : undefined;
     const options = execution.options(candidate);
     if (options.abortSignal?.aborted) throw new Error('policy execution aborted');
-    const over = budgetFailure(true);
-    if (over && execution.budget.enforcement === 'observe')
-      yield { type: 'warning', code: 'superagent.budget_observed', message: over.failure.evidence };
-    if (over && execution.budget.enforcement !== 'observe') {
-      yield accounted(over);
-      yield { type: 'settled' };
-      return;
-    }
+    const over = budgetObservation(true);
+    if (over) yield { type: 'warning', code: 'superagent.budget_observed', message: over };
     const attempt: PolicyAttempt = {
       id: crypto.randomUUID(),
       node: execution.node,
@@ -196,21 +176,15 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     writePolicyAttempts(execution.artifacts, attempts);
     if (!settled || !result)
       throw new Error('policy provider stream ended without result and settled');
-    const observed = budgetFailure(false);
-    if (observed && execution.budget.enforcement === 'observe')
+    const observed = budgetObservation(false);
+    if (observed)
       yield {
         type: 'warning',
         code: 'superagent.budget_observed',
-        message: observed.failure.evidence,
+        message: observed,
       };
-    const exceeded = execution.budget.enforcement === 'observe' ? undefined : observed;
-    if (exceeded) {
-      attempt.status = 'failed';
-      attempt.failure = 'budget_exceeded';
-      writePolicyAttempts(execution.artifacts, attempts);
-    }
-    if (exceeded || (!vendorFailure && cooldown === undefined) || options.abortSignal?.aborted) {
-      yield accounted(exceeded ?? result, candidate.model);
+    if ((!vendorFailure && cooldown === undefined) || options.abortSignal?.aborted) {
+      yield accounted(result, candidate.model);
       yield { type: 'settled' };
       return;
     }

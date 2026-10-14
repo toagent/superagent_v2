@@ -71,7 +71,7 @@ describe('install.sh', () => {
     expect(cfg.defaultAssistant).toBe('claude');
     expect(cfg.aliases['@mine'].model).toBe('opus');
     expect(cfg.aliases['@sa-coder'].provider).toBe('codex');
-    expect(cfg.concurrency).toEqual({ maxConversations: 4, providers: { codex: 5, claude: 1 } });
+    expect(cfg.concurrency).toEqual({ maxConversations: 4 });
     expect(cfg.workflows.autoResumeOnQuotaReset).toBe(true);
     expect(cfg.assistants.codex.codexBinaryPath).toBe(
       join(import.meta.dir, '..', 'bin', 'codex-worker')
@@ -574,4 +574,19 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       expect(readFileSync(join(state, 'superagent/install.json'))).toEqual(installed);
     }
   }, 60000);
+});
+
+test('BYPASS_CAPACITY mergeConfig removes managed provider limits idempotently and preserves operator keys', () => {
+  const current = {
+    concurrency: { maxConversations: 4, providers: { codex: 5, claude: 1, custom: 2 } },
+    custom: { enabled: true },
+  };
+  const merged = mergeConfig(current, loadTiers());
+  expect(merged.concurrency).toEqual({ maxConversations: 4, providers: { custom: 2 } });
+  expect(merged.custom).toEqual(current.custom);
+  expect(mergeConfig(merged, loadTiers())).toEqual(merged);
+  expect(current.concurrency.providers.codex).toBe(5);
+  expect(
+    mergeConfig({ concurrency: { providers: { codex: 5, claude: 1 } } }, loadTiers())
+  ).not.toHaveProperty('concurrency');
 });

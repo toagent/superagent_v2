@@ -177,7 +177,7 @@ test('malformed persisted attempts fail closed instead of weakening budget or mo
   }
 });
 
-test('cooldown skips the failed model across node calls and expires without resetting budget', async () => {
+test('cooldown sorts the failed model after warm candidates and expires without resetting usage', async () => {
   const s = setup({
     type: 'result',
     failure: { class: 'overloaded', evidence: 'typed' },
@@ -198,24 +198,6 @@ test('cooldown skips the failed model across node calls and expires without rese
   expect(s.calls).toEqual(pool.slice(0, 2).map(a => a.model));
   expect(readPolicyAttempts(s.artifacts)).toHaveLength(5);
 });
-
-for (const budget of [
-  { launches: 1, weighted_tokens: 1000 },
-  { launches: 10, weighted_tokens: 30 },
-])
-  test(`fallback fails when total budget is exhausted: ${JSON.stringify(budget)}`, async () => {
-    const s = setup(
-      { type: 'result', isError: true, failure: { class: 'quota_exhausted', evidence: 'typed' } },
-      { ...budget, enforcement: 'hard' }
-    );
-    const chunks = await collect(executePolicy(s.execution, 'p', '/scratch'));
-    expect(s.calls).toEqual([pool[0].model]);
-    expect(chunks.at(-2)).toMatchObject({ type: 'result', failure: { class: 'budget_exceeded' } });
-    const result = chunks.at(-2) as ResultChunk;
-    expect(JSON.parse(result.failure!.evidence)).toMatchObject({
-      used: { launches: 1, weighted_tokens: 20 },
-    });
-  });
 
 test('untyped failure, unknown/auth classes and throws never trigger fallback', async () => {
   for (const result of [
@@ -418,22 +400,21 @@ test('POLICY-R1-04: fallback session is withheld and the next node starts a fres
   expect(s.sessions.at(-1)).toBeUndefined();
 });
 
-test('hard budget: successful final call settles actual usage before returning success', async () => {
+test('BYPASS_CAPACITY final successful call retains success, receipts and budget warnings', async () => {
   const s = setup(
     { ...success, tokens: { input: 25, output: 20 } },
-    { launches: 1, weighted_tokens: 30, enforcement: 'hard' }
+    { launches: 0, weighted_tokens: 0 }
   );
   const chunks = await collect(executePolicy(s.execution, 'p', '/scratch'));
-  expect(chunks.at(-2)).toMatchObject({
-    type: 'result',
-    isError: true,
+  expect(chunks.at(-2)).toMatchObject({ type: 'result', tokens: { input: 25, output: 20 } });
+  expect(chunks.at(-2)).not.toHaveProperty('failure');
+  expect(chunks).toContainEqual(
+    expect.objectContaining({ type: 'warning', code: 'superagent.budget_observed' })
+  );
+  expect(readPolicyAttempts(s.artifacts)[0]).toMatchObject({
+    status: 'completed',
     tokens: { input: 25, output: 20 },
-    failure: { class: 'budget_exceeded' },
   });
-  expect(s.calls).toHaveLength(1);
-  expect(readPolicyAttempts(s.artifacts)[0].tokens).toEqual({ input: 25, output: 20 });
-  const exact = setup(success, { launches: 1, weighted_tokens: 20 });
-  expect((await collect(executePolicy(exact.execution, 'p', '/scratch'))).at(-2)).toEqual(success);
 });
 
 test('POLICY-R1-05: declared G0 risk-path acceptance selects the G2 review pool and effort', async () => {
@@ -590,40 +571,27 @@ test('advisory threshold key reaches its consumer and produces only an advisory'
   expect(loadTiers().policy.context.advisory_tokens.general).toBe(240000);
 });
 
-for (const enforcement of [undefined, 'observe'] as const)
-  test(`observe budget ${enforcement}: exhausted limits allow fallback and preserve receipts`, async () => {
-    const s = setup(
-      {
-        type: 'result',
-        isError: true,
-        failure: { class: 'quota_exhausted', evidence: 'typed' },
-        tokens: { input: 8, output: 2 },
-      },
-      { launches: 0, weighted_tokens: 0, enforcement }
-    );
-    const out = await collect(executePolicy(s.execution, 'p', '/scratch'));
-    expect(s.calls).toHaveLength(2);
-    expect(out.at(-2)).toEqual({ ...success, tokens: { input: 13, output: 7 } });
-    expect(out).toContainEqual(
-      expect.objectContaining({ type: 'warning', code: 'superagent.budget_observed' })
-    );
-    const attempts = readPolicyAttempts(s.artifacts);
-    expect(attempts[1].status).toBe('completed');
-    expect(budgetUsage([], 20, attempts)).toMatchObject({ launches: 2, weighted_tokens: 20 });
-  });
-test('hard budget unlimited tokens still blocks launches before dispatch', async () => {
-  const s = setup(success, {
-    launches: 0,
-    weighted_tokens: 0,
-    unlimited_tokens: true,
-    enforcement: 'hard',
-  });
+test('BYPASS_CAPACITY exhausted observation thresholds allow fallback and preserve receipts', async () => {
+  const s = setup(
+    {
+      type: 'result',
+      isError: true,
+      failure: { class: 'quota_exhausted', evidence: 'typed' },
+      tokens: { input: 8, output: 2 },
+    },
+    { launches: 0, weighted_tokens: 0 }
+  );
   const out = await collect(executePolicy(s.execution, 'p', '/scratch'));
-  expect(s.calls).toHaveLength(0);
-  expect(out.at(-2)).toMatchObject({ failure: { class: 'budget_exceeded' } });
+  expect(s.calls).toHaveLength(2);
+  expect(out.at(-2)).toEqual({ ...success, tokens: { input: 13, output: 7 } });
+  expect(out).toContainEqual(
+    expect.objectContaining({ type: 'warning', code: 'superagent.budget_observed' })
+  );
+  const attempts = readPolicyAttempts(s.artifacts);
+  expect(attempts[1].status).toBe('completed');
+  expect(budgetUsage([], 20, attempts)).toMatchObject({ launches: 2, weighted_tokens: 20 });
 });
-
-test('budget default for generic Archon dispatch remains hard', async () => {
+test('BYPASS_CAPACITY generic Archon dispatch observes exhausted budgets', async () => {
   const s = setup(success, { launches: 0, weighted_tokens: 0 });
   const out = await collect(
     dispatchPolicy(
@@ -632,8 +600,11 @@ test('budget default for generic Archon dispatch remains hard', async () => {
       '/scratch'
     )
   );
-  expect(s.calls).toHaveLength(0);
-  expect(out.at(-2)).toMatchObject({ failure: { class: 'budget_exceeded' } });
+  expect(s.calls).toHaveLength(1);
+  expect(out.at(-2)).toEqual(success);
+  expect(out).toContainEqual(
+    expect.objectContaining({ type: 'warning', code: 'superagent.budget_observed' })
+  );
 });
 
 test('VENDOR_FAILOVER runtime coder retains native role config on Claude dispatch', async () => {

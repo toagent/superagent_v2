@@ -118,7 +118,6 @@ describe('loadPlan', () => {
     const plan = loadPlan(path, [root]);
     expect(plan.deadline).toBeUndefined();
     expect(plan.budget).toEqual({
-      enforcement: 'observe',
       weighted_tokens: 0,
       unlimited_tokens: true,
     });
@@ -264,10 +263,9 @@ describe('milestones', () => {
   });
 });
 
-test('budget enforcement validates explicit modes', () => {
+test('BYPASS_CAPACITY legacy enforcement is ignored', () => {
   for (const enforcement of [undefined, 'observe', 'hard', 'invalid'] as const) {
     const { path, root } = setup(p => (p.budget = { weighted_tokens: 0, enforcement }));
-    if (enforcement === 'invalid') expect(() => loadPlan(path, [root])).toThrow('plan invalid');
-    else expect(loadPlan(path, [root]).budget).toEqual({ weighted_tokens: 0, enforcement });
+    expect(loadPlan(path, [root]).budget).toEqual({ weighted_tokens: 0 });
   }
 });

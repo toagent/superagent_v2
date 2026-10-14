@@ -106,10 +106,12 @@ test('wait transport allows cold startup and shutdown beyond the former one-seco
   }
 });
 
-test('delivery defaults: paused releases capacity, pending/running/unknown and reservations retain it', () => {
+test('BYPASS_CAPACITY run counts are observed and launch reservations remain exclusive', () => {
+  const savedSa = process.env.SUPERAGENT_HOME;
   const saved = process.env.ARCHON_HOME,
     root = tmp();
   process.env.ARCHON_HOME = root;
+  process.env.SUPERAGENT_HOME = root;
   const db = new Database(join(root, 'archon.db'));
   db.exec('create table remote_agent_workflow_runs (status text)');
   try {
@@ -124,17 +126,17 @@ test('delivery defaults: paused releases capacity, pending/running/unknown and r
     ]) {
       db.exec('delete from remote_agent_workflow_runs');
       db.query('insert into remote_agent_workflow_runs values (?)').run(status);
-      const admission = transport.admitRun(1);
-      const active = ['pending', 'running', 'unknown'].includes(status);
-      expect(admission.ok).toBe(!active);
+      const admission = transport.admitRun();
+      expect(admission.ok).toBe(true);
       if (admission.ok) admission.release();
-      else expect(admission.reason).toBe('run_capacity');
     }
     db.exec('delete from remote_agent_workflow_runs');
     writeFileSync(join(root, 'run-admission.json'), '{}');
-    expect(transport.admitRun(1)).toMatchObject({ ok: false, reason: 'admission_busy' });
+    expect(transport.admitRun()).toMatchObject({ ok: false, reason: 'admission_busy' });
   } finally {
     db.close();
+    if (savedSa === undefined) delete process.env.SUPERAGENT_HOME;
+    else process.env.SUPERAGENT_HOME = savedSa;
     if (saved === undefined) delete process.env.ARCHON_HOME;
     else process.env.ARCHON_HOME = saved;
   }

@@ -91,20 +91,6 @@
     "description": "编码端命中红线"
   },
   {
-    "code": "budget_launches_exceeded",
-    "hold": "budget",
-    "determinism": "deterministic",
-    "owner": "human",
-    "description": "调用次数超过预算"
-  },
-  {
-    "code": "budget_tokens_exceeded",
-    "hold": "budget",
-    "determinism": "deterministic",
-    "owner": "human",
-    "description": "用量超过预算"
-  },
-  {
     "code": "approval",
     "hold": "approval",
     "determinism": "deterministic",
@@ -404,20 +390,6 @@
     "determinism": "deterministic",
     "owner": "human",
     "description": "编码端命中红线"
-  },
-  {
-    "code": "budget_launches_exceeded+review_limit",
-    "hold": "review_limit",
-    "determinism": "deterministic",
-    "owner": "human",
-    "description": "调用次数超过预算"
-  },
-  {
-    "code": "budget_tokens_exceeded+review_limit",
-    "hold": "review_limit",
-    "determinism": "deterministic",
-    "owner": "human",
-    "description": "用量超过预算"
   },
   {
     "code": "approval+review_limit",

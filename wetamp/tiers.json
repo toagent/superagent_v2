@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "policy": {
-    "budget_floor": { "S": 200000, "M": 600000, "L": 1500000 },
+    "budget_floor": { "S": 200000 },
     "effort": {
       "G0": "medium",
       "coder": { "first": "medium", "repair": "medium" },
@@ -212,10 +212,6 @@
       "auth": "vendor",
       "quota": "vendor",
       "model_not_found": "model"
-    },
-    "vendor_concurrency": {
-      "chatgpt": 5,
-      "claude": 1
     }
   },
   "vendors": {

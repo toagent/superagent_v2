@@ -13,7 +13,6 @@ import { effortFor, loadTiers } from '../src/config';
 import type { Plan } from '../src/plan';
 import { tmp } from './helpers';
 import { executePolicy } from '../src/policy-executor';
-import { effectiveBudget } from '../templates/.archon/scripts/sa-check';
 
 const tiers = loadTiers();
 const plan = JSON.parse(
@@ -84,16 +83,8 @@ test('explicit unlimited tokens ignores reserves and spend while preserving laun
   };
   expect((await collect()).at(-2)).not.toHaveProperty('failure');
   expect((await collect()).at(-2)).not.toHaveProperty('failure');
-  expect((await collect()).at(-2)).toMatchObject({ failure: { class: 'budget_exceeded' } });
-  expect(calls).toBe(2);
-  expect(
-    effectiveBudget(
-      execution.budget,
-      { milestone: 'm1', attempt: 0, limits: { weighted_tokens: 10, launches: 3 } },
-      'm1',
-      0
-    ).unlimited_tokens
-  ).toBe(true);
+  expect((await collect()).at(-2)).not.toHaveProperty('failure');
+  expect(calls).toBe(3);
 });
 
 test('VENDOR_FAILOVER reviewer pool excludes authors and reapplies readonly profiles', async () => {

@@ -813,7 +813,7 @@ test('R1-05: actual board loader projects takeover owner rather than launcher, i
 
 test('R1-1: pending asks follow real engine hold mapping, including failed coder nodes', () => {
   const now = Date.parse('2026-10-12T12:00:00Z');
-  for (const reason of ['budget', 'review_limit', 'approval', 'coder', 'signoff'] as const) {
+  for (const reason of ['review_limit', 'approval', 'coder', 'signoff'] as const) {
     const node =
       reason === 'coder'
         ? 'code-a'
@@ -831,7 +831,7 @@ test('R1-1: pending asks follow real engine hold mapping, including failed coder
       output_root: join(root, 'out'),
     };
     const l = ledger(reason, run);
-    if (reason === 'budget' || reason === 'review_limit') {
+    if (reason === 'review_limit') {
       const art = join(run.output_root!, 'artifacts', 'runs', run.id);
       mkdirSync(art, { recursive: true });
       writeFileSync(
@@ -839,8 +839,7 @@ test('R1-1: pending asks follow real engine hold mapping, including failed coder
         JSON.stringify({
           decision: {
             kind: 'block',
-            reason:
-              reason === 'budget' ? 'budget_launches_exceeded' : 'acceptance_failed+review_limit',
+            reason: 'acceptance_failed+review_limit',
             evidence: [],
             debt: [],
           },

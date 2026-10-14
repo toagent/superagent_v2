@@ -96,7 +96,7 @@ const snap: Snapshot = {
   },
   asks: {
     'xiaopan-run:coder': { status: 'pending' },
-    'sinan-run:budget': { status: 'superseded' },
+    'sinan-run:approval': { status: 'superseded' },
   },
   activity: {
     jobs: [
@@ -151,7 +151,7 @@ test('needs never infer questions from held states; unanswered asks remain visib
       cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, state })) }, now.getTime()).needs
     ).toHaveLength(1);
   expect(
-    cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, askReason: 'budget' })) }, now.getTime())
+    cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, askReason: 'approval' })) }, now.getTime())
       .needs
   ).toEqual([]);
   const empty = renderToString(

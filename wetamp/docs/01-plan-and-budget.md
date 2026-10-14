@@ -1,7 +1,7 @@
 # Plan 与交付默认值
 
 `repo`、`base_ref`、`packages` 必填；`deadline` 与 `budget` 可省略。
-缺省预算由 `loadPlan` 一次归一为 `enforcement: observe`、`weighted_tokens: 0`、`unlimited_tokens: true`，保留用量统计，不限制 token。显式 `hard` 预算仍按原额度与 budget floor 执行。
+缺省预算由 `loadPlan` 一次归一为 `weighted_tokens: 0`、`unlimited_tokens: true`，保留用量统计，不限制 token。预算阈值只产生 `superagent.budget_observed` 告警；旧文件的 `enforcement` 字段会被忽略。
 
 未提供 deadline 表示没有到期时间；quick 不再自动设置 24 小时期限。显式 deadline 仍约束生成、验收、签收、合入与监督。人工提醒的有限 TTL 不构成 run 的截止时间。
 

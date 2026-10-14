@@ -63,7 +63,7 @@ function row(id: string, state = 'running'): BoardRow {
 }
 function snapshot(): Snapshot {
   const a = row('active'),
-    held = { ...row('held', 'held:gate'), askReason: 'budget' as const },
+    held = { ...row('held', 'held:gate'), askReason: 'approval' as const },
     dead = row('zombie');
   dead.lastEvent = iso(-1800);
   a.activeNodes = [
@@ -76,7 +76,10 @@ function snapshot(): Snapshot {
     summary: {},
     rows: [a, held, dead],
     reflection: { day: '2026-10-10', tokens: 5000000, limit: 5000000, yellow: true },
-    asks: { 'held:budget:1': { status: 'pending' }, 'active:budget:0': { status: 'superseded' } },
+    asks: {
+      'held:approval:1': { status: 'pending' },
+      'active:approval:0': { status: 'superseded' },
+    },
     eta: { active: { progress, weight: 1200, nodes: { 'code-a': progress } } },
     activity: {
       terms: [],
@@ -200,7 +203,7 @@ function setupMemory() {
     diff: null,
     tokens: [{ role: 'general', model: 'gpt-6.1-sol', total: (i + 1) * 100 }],
     asks: [],
-    dispositions: i === 1 ? [{ at, action: 'ask', reason: 'budget', ok: true }] : [],
+    dispositions: i === 1 ? [{ at, action: 'ask', reason: 'approval', ok: true }] : [],
     signals: { engine_suspect: 0, dup_ask: 0, orphan_hold: 0, stale_answer: 0 },
   }));
   episodes.forEach(e =>
@@ -430,8 +433,8 @@ test('board-v2 resolves coord wire keys, suppresses acknowledgements and dedupli
     [`coord:${message.id}:1:0`]: { status: 'pending' },
     'coord:missing:2:0': { status: 'pending' },
     unparseable: { status: 'pending' },
-    'held:budget:1': { status: 'pending' },
-    'held:budget:2': { status: 'pending' },
+    'held:approval:1': { status: 'pending' },
+    'held:approval:2': { status: 'pending' },
   };
   const before = JSON.stringify(s),
     c = cockpit(s, ms);

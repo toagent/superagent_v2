@@ -64,8 +64,6 @@ import {
   type Accept,
   type Review,
   budgetUsage,
-  effectiveBudget,
-  readAttempt,
   attemptPath,
   type DeliveryDecision,
   type decide as decideGate,
@@ -82,7 +80,6 @@ import {
   loadTiers,
   resolveRoute,
   runAliases,
-  runCapacity,
   writeAtomic,
 } from './config';
 import { engineHash, generate, newRunId } from './generate';
@@ -210,7 +207,7 @@ const print = (o: unknown): void => {
 export const EXIT = { completed: 0, failed: 1, cancelled: 2, held: 3, running: 4 } as const;
 /** 别名漂移：全局或目标 repo 的 @sa-* 别名与 tiers.json 渲染值不一致，run 拒绝启动。 */
 export const EXIT_ALIAS_DRIFT = 5;
-/** Temporary refusal: no run was created; the caller may retry after capacity is available. */
+/** Temporary refusal: no run was created; the caller may retry after the launch lock is released. */
 export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 
@@ -266,13 +263,6 @@ export interface Ledger {
     ask_id?: string;
     key?: string;
   })[];
-  budget_grants?: {
-    at: string;
-    milestone: string;
-    attempt: number;
-    launches: number;
-    weighted_tokens: number;
-  }[];
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
 }
@@ -807,8 +797,6 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
   }
 }
 
-const MIN_FREE_GB = 2;
-
 /** Materialize and validate the ordinary plan contract before using the run launcher. */
 export function quickPlan(a: Args): string {
   const goal = a.flags.goal;
@@ -863,8 +851,13 @@ function preflight(): void {
     throw new Error('preflight: mode=worker; run requires the controller install');
   const { sa } = home();
   const fs = statfsSync(sa);
-  if ((fs.bavail * fs.bsize) / 2 ** 30 < MIN_FREE_GB)
-    throw new Error(`preflight: < ${String(MIN_FREE_GB)}GB free under ${sa}`);
+  console.warn(
+    JSON.stringify({
+      code: 'superagent.disk_observed',
+      free_gb: (fs.bavail * fs.bsize) / 2 ** 30,
+      path: sa,
+    })
+  );
 }
 
 function startRun(planPath: string, a: Args): number {
@@ -894,7 +887,7 @@ function startRun(planPath: string, a: Args): number {
         if (plan_lint.rejected)
           throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
         phase = 'admission';
-        const admission = admitRun(runCapacity());
+        const admission = admitRun();
         if (!admission.ok) {
           print({
             ok: false,
@@ -902,8 +895,6 @@ function startRun(planPath: string, a: Args): number {
             status: 'rejected',
             exit: EXIT_ADMISSION,
             reason: admission.reason,
-            capacity: admission.capacity,
-            active: admission.active,
           });
           return EXIT_ADMISSION;
         }
@@ -1232,7 +1223,6 @@ function retryGate(
   l: Ledger,
   node: string,
   prepare?: () => void,
-  key?: string,
   onEffect?: (effect: DecisionEffect) => void
 ): RecoverResult {
   const m = retryScope(l, node);
@@ -1241,11 +1231,6 @@ function retryGate(
   return recoverRun(
     l,
     () => {
-      if (
-        key &&
-        (readJson(join(l.gen_dir, 'budget-extra')) as { key?: string } | null)?.key === key
-      )
-        return;
       advanceExecutionAttempt(attemptPath(l.gen_dir, m));
       prepare?.();
     },
@@ -1276,11 +1261,10 @@ const retry = (
   l: Ledger,
   c: Classified,
   prepare?: () => void,
-  key?: string,
   onEffect?: (effect: DecisionEffect) => void
 ): RecoverResult =>
   scopedRetry(l, c, c.node ?? '')
-    ? retryGate(l, c.node ?? '', prepare, key, onEffect)
+    ? retryGate(l, c.node ?? '', prepare, onEffect)
     : recoverRun(l, prepare, onEffect);
 
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
@@ -1530,12 +1514,7 @@ function acceptRun(
       strict: plan.mode === 'strict',
       ...(reviews ? { reviews: [reviews] } : {}),
     });
-    const limits = effectiveBudget(
-      plan.budget,
-      (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<typeof effectiveBudget>[1],
-      inputs.milestone,
-      readAttempt(attemptPath(l.gen_dir, inputs.milestone))
-    );
+    const limits = plan.budget;
     const used = budgetUsage(
       run.events,
       loadTiers().policy.budget_floor.S,
@@ -2101,18 +2080,8 @@ function askHold(
           : p.yes === 'resume'
             ? recoverRun(l, undefined, onEffect)
             : p.yes === 'review'
-              ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, undefined, undefined, onEffect)
-              : retry(
-                  l,
-                  c,
-                  hold === 'budget'
-                    ? () => {
-                        grantBudget(l, c.node ?? '', key);
-                      }
-                    : undefined,
-                  hold === 'budget' ? key : undefined,
-                  onEffect
-                );
+              ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, undefined, onEffect)
+              : retry(l, c, undefined, onEffect);
       if (res.ok) {
         if (!effect) throw new Error('decision recovery succeeded without an execution receipt');
         consumeAnswer(l, c.node ?? '', key, r.a, 'yes', effect, asks);
@@ -2302,37 +2271,6 @@ const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
 };
 export const reasonHold = (reason: string): Hold => reasonOf(reason)?.hold ?? 'engine_suspect';
 
-/** 一次明确授权覆盖本里程碑 attempt；后续里程碑恢复原预算。额度基于实际台账，不折算金额。 */
-function budgetGrant(l: Ledger, node: string) {
-  const plan = planOf(l),
-    m = milestoneOf(l, node);
-  const ack = archonJson(['workflow', 'get', l.archon_run_id, '--verbose', '--events'], l.repo) as {
-    events?: Parameters<typeof budgetUsage>[0];
-  };
-  if (!Array.isArray(ack.events)) throw new Error('budget grant: events missing');
-  const usage = budgetUsage(ack.events, loadTiers().policy.budget_floor.S);
-  const launches = 2 * plan.packages.filter(p => (p.milestone ?? 'm1') === m).length + 5;
-  const weighted_tokens = Math.max(plan.budget.weighted_tokens, launches * usage.reserve);
-  const attempt = readAttempt(join(l.gen_dir, 'attempts', m));
-  const grant = { at: new Date().toISOString(), milestone: m, attempt, launches, weighted_tokens };
-  return {
-    grant,
-    limits: {
-      enforcement: plan.budget.enforcement ?? 'observe',
-      ...(plan.budget.unlimited_tokens ? { unlimited_tokens: true } : {}),
-      launches: Math.max(plan.budget.launches ?? 0, usage.launches) + launches,
-      weighted_tokens:
-        Math.max(plan.budget.weighted_tokens, usage.weighted_tokens) + weighted_tokens,
-    },
-  };
-}
-function grantBudget(l: Ledger, node: string, key: string): void {
-  const { grant, limits } = budgetGrant(l, node);
-  writeAtomic(join(l.gen_dir, 'budget-extra'), JSON.stringify({ ...grant, key, limits }));
-  (l.budget_grants ??= []).push(grant);
-  saveLedger(l);
-}
-
 /** Entry timestamp is stable across polls; node distinguishes milestone signoffs. */
 function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
   return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${
@@ -2342,36 +2280,6 @@ function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
     run.started_at ??
     l.started_at
   }`;
-}
-/** 展示与实际 retryGate/resume 分支一致；settle 是包的最终验收节点。 */
-function decisionRecovery(
-  l: Ledger,
-  run: RunView,
-  c: Classified,
-  hold: Hold,
-  limit: number
-): [string, string] {
-  const p = HOLD_POLICY[hold],
-    node = c.node ?? run.metadata?.wait?.nodeId ?? '恢复节点';
-  if (p.do !== 'ask' || p.yes === 'approve') return ['', ''];
-  const gate = scopedRetry(l, c, node);
-  let target = `从${askName(node, limit)}续跑`;
-  if (gate) {
-    const m = milestoneOf(l, node);
-    if (!attemptable(l, retryScope(l, node)))
-      return [`重试${askName(m, limit)}（缺少attempt节点，无法重跑）`, ''];
-    if (retryScope(l, node) !== m)
-      target = `重派${askName(node.replace(/^(verify|settle|code|repair)-/, ''), limit)}编码→验收`;
-    else target = `重跑${askName(m, limit)}累计验收→评审`;
-  }
-  return [
-    target,
-    adoptsRun(l, run)
-      ? l.workflow_hash
-        ? '（引擎已升级，将新开run从首个节点重跑）'
-        : '（旧run身份未确认，将新开run从首个节点重跑）'
-      : '',
-  ];
 }
 function coordinationContext(key: string): DecisionContext {
   const message = coord()
@@ -2400,8 +2308,6 @@ function decisionContext(
 ): DecisionContext {
   const p = HOLD_POLICY[hold];
   if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not actionable: ${hold}`);
-  const [target, consequence] = decisionRecovery(l, run, c, hold, 80);
-  const grant = hold === 'budget' ? budgetGrant(l, c.node ?? '').grant : undefined;
   return {
     request_key: key,
     source: 'superagent',
@@ -2410,14 +2316,9 @@ function decisionContext(
     action: p.do === 'signoff' ? 'approve' : p.yes,
     target: `${l.repo}:${run.id}:${c.node ?? run.metadata?.approval?.nodeId ?? run.metadata?.wait?.nodeId ?? 'unknown'}`,
     reason: question,
-    recommendation: { choice: 'no', reason: '需操作员确认本次审批或预算追加；未答复保持阻断' },
+    recommendation: { choice: 'no', reason: '需操作员确认本次审批；未答复保持阻断' },
     consequences: {
-      yes:
-        p.yesText.replace('{target}', target) +
-        consequence +
-        (grant
-          ? `；追加launches=${String(grant.launches)}, weighted_tokens=${String(grant.weighted_tokens)}；milestone=${grant.milestone}, attempt=${String(grant.attempt)}`
-          : ''),
+      yes: p.yesText,
       no: '终止整个run（保留证据）',
     },
   };
@@ -2452,46 +2353,9 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
   const progress = `已完成${String(
     (run.nodes ?? []).filter(n => n.state === 'completed').length
   )}/${String(workflowRoles(l)?.size ?? run.nodes?.length ?? 0)}节点`;
-  let detail = reason,
-    compact = reason;
-  if (hold === 'budget') {
-    detail = '证据缺失';
-    try {
-      const ack = archonJson(
-        ['workflow', 'get', l.archon_run_id, '--verbose', '--events'],
-        l.repo
-      ) as { events?: Parameters<typeof budgetUsage>[0] };
-      if (Array.isArray(ack.events)) {
-        const u = budgetUsage(
-          ack.events,
-          loadTiers().policy.budget_floor.S,
-          readPolicyAttempts(artifactsOf(run)),
-          'reported'
-        );
-        const limits = effectiveBudget(
-          plan.budget,
-          (readJson(join(l.gen_dir, 'budget-extra')) ?? null) as Parameters<
-            typeof effectiveBudget
-          >[1],
-          m,
-          readAttempt(join(l.gen_dir, 'attempts', m))
-        );
-        detail =
-          `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}，` +
-          `加权token已用/上限${String(u.weighted_tokens)}/${String(
-            limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens
-          )}`;
-        compact =
-          out.reason === 'budget_tokens_exceeded'
-            ? `加权token已用/上限${String(u.weighted_tokens)}/${String(
-                limits.unlimited_tokens ? 'unlimited' : limits.weighted_tokens
-              )}`
-            : `调用已用/上限${String(u.launches)}/${String(limits.launches ?? '无限制')}`;
-      }
-    } catch {
-      /* 展示证据缺失 */
-    }
-  } else if (hold === 'approval') detail = '等待批准';
+  let detail = reason;
+  const compact = reason;
+  if (hold === 'approval') detail = '等待批准';
   else if (hold === 'signoff') {
     let files: string[] = [];
     try {
@@ -2518,7 +2382,7 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
     hold,
     names,
     [`${detail}；${progress}`, `${compact}；${progress}`],
-    limit => decisionRecovery(l, run, c, hold, limit),
+    () => ['', ''],
     askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c)))
   );
 }

@@ -280,8 +280,8 @@ import {
 import { claimInterruptedExecution } from '../../packages/core/src/workflows/execution-lifecycle';
 export { lock };
 /** The engine owns launch reservations; the adapter supplies a read-only registry count. */
-export function admitRun(capacity: number): Admission {
-  return admitExecution(capacity, {
+export function admitRun(): Admission {
+  return admitExecution({
     root: home().archon,
     inspectProcess,
     countActive: () => {

@@ -29,12 +29,6 @@ export const HOLD_POLICY = {
     text: '将军受执行约束阻断',
     next: '检查执行约束并提供符合约束的操作或环境',
   },
-  budget: {
-    do: 'ask',
-    yes: 'retry',
-    text: '预算已用尽',
-    yesText: '按台账追加本里程碑额度并{target}一次',
-  },
   review_limit: { do: 'blocked', text: '三轮评审已用尽', next: '重新确认遗留blocker和工作包范围' },
   review_not_independent: {
     do: 'blocked',
@@ -121,8 +115,6 @@ const base: Reason[] = [
   deterministic('no_change', 'no_change', 'coder', '修复未改变交付'),
   deterministic('coder_needs', 'needs', 'human', '编码端需要补充能力'),
   deterministic('coder_redline', 'redline', 'human', '编码端命中红线'),
-  deterministic('budget_launches_exceeded', 'budget', 'human', '调用次数超过预算'),
-  deterministic('budget_tokens_exceeded', 'budget', 'human', '用量超过预算'),
   deterministic('approval', 'approval', 'human', '等待 Archon 审批'),
   deterministic('engine_suspect', 'engine_suspect', 'engine', '验收与状态矛盾或原因未注册'),
   entry('coder_output_invalid', 'coder', 'transient', 'coder', '编码输出不是合法 JSON'),

@@ -1343,44 +1343,9 @@ export function readAttempt(path: string): number {
     throw new Error(`invalid attempt counter: ${path}`);
   return n;
 }
-/** 生效额度的唯一判定：grant 只覆盖同里程碑的同一次 attempt。 */
-export function effectiveBudget(
-  base: Plan['budget'],
-  grant: {
-    milestone: string;
-    attempt: number;
-    limits?: Plan['budget'];
-  } | null,
-  milestone: string,
-  attempt: number | null
-): Plan['budget'] {
-  if (grant && (!Number.isSafeInteger(grant.attempt) || grant.attempt < 0))
-    throw new Error('budget-extra: invalid attempt');
-  if (grant?.milestone !== milestone || attempt === null || attempt !== grant.attempt) return base;
-  if (
-    !grant.limits ||
-    !Number.isSafeInteger(grant.limits.launches) ||
-    (grant.limits.launches ?? 0) <= 0 ||
-    !Number.isFinite(grant.limits.weighted_tokens) ||
-    grant.limits.weighted_tokens <= 0
-  )
-    throw new Error('budget-extra: invalid limits');
-  return {
-    ...grant.limits,
-    enforcement: base.enforcement ?? 'observe',
-    ...(base.unlimited_tokens ? { unlimited_tokens: true } : {}),
-  };
-}
 function budget(nextLaunch = true): string | null {
   if (!env('ARCHON')) return null;
-  const dir = dirname(env('PLAN')),
-    m = env('MILESTONE');
-  const extra = join(dir, 'budget-extra');
-  const g = existsSync(extra)
-    ? (JSON.parse(readFileSync(extra, 'utf8')) as Parameters<typeof effectiveBudget>[1])
-    : null;
-  const attempt = join(dir, 'attempts', m);
-  const b = effectiveBudget(plan().budget, g, m, readAttempt(attempt));
+  const b = plan().budget;
   const u = budgetUsage(runEvents(), policy().budget_floor.S, readPolicyAttempts(artifacts));
   const reason = budgetReason(b, u, nextLaunch);
   if (reason) {

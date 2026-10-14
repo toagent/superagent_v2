@@ -16,9 +16,7 @@ import { type Plan } from './plan';
 import {
   readAuthorEvidence,
   budgetUsage,
-  effectiveBudget,
   effectiveRisk,
-  readAttempt,
 } from '../templates/.archon/scripts/sa-check';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 
@@ -45,7 +43,7 @@ export function executePolicy(
   return dispatchPolicy(
     {
       ...execution,
-      budget: { ...execution.budget, enforcement: execution.budget.enforcement ?? 'observe' },
+      budget: execution.budget,
       usage: attempts => budgetUsage(execution.events(), execution.floor, attempts),
     },
     prompt,
@@ -69,7 +67,7 @@ function runtimeExecution(
   const plan = JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8')) as Plan;
   const node = options.nodeConfig?.nodeId;
   if (!node) throw new Error('policy: node id missing');
-  const tiers: Tiers = { tiers: {}, policy, routing: policy.routing, health: policy.health };
+  const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
   const route = executionForNode(table, node);
   const archonHome = process.env.ARCHON_HOME;
@@ -148,19 +146,11 @@ function runtimeExecution(
     authors,
     true
   ).candidates;
-  const extra = join(dir, 'budget-extra');
-  const grant = readFileSyncIfPresent(extra);
-  const limits = effectiveBudget(
-    plan.budget,
-    grant,
-    route.milestone,
-    readAttempt(join(dir, 'attempts', route.milestone))
-  );
   return {
     node,
     candidates,
     artifacts,
-    budget: limits,
+    budget: plan.budget,
     floor: policy.budget_floor.S,
     events: () => events,
     requestedModel: options.model,
@@ -184,15 +174,6 @@ function runtimeExecution(
     },
   };
 }
-function readFileSyncIfPresent(path: string): Parameters<typeof effectiveBudget>[1] {
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as Parameters<typeof effectiveBudget>[1];
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  }
-}
-
 /** Decorate the registered factories while retaining native credential/config parsers and provider IDs. */
 export function wrapPolicyProvider(
   native: IAgentProvider,

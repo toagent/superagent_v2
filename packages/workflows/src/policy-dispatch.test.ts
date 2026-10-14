@@ -119,3 +119,51 @@ test('VENDOR_FAILOVER all cooled candidates are still attempted; warm sorts firs
   await collect(executePolicy(t.execution, 'p', '/scratch'));
   expect(t.calls.map(c => c.model)).toEqual(['codex-b', 'codex-a', 'claude-a']);
 });
+
+test('BYPASS_CAPACITY exhausted thresholds warn through fallback and successful settlement', async () => {
+  const artifacts = roots(mkdtempSync(join(tmpdir(), 'bypass-policy-')));
+  const calls: string[] = [];
+  const chunks: MessageChunk[] = [];
+  for await (const chunk of executePolicy(
+    {
+      node: 'code-fixture',
+      artifacts,
+      provider: 'codex',
+      candidates: [
+        { provider: 'codex', model: 'first' },
+        { provider: 'codex', model: 'second' },
+      ],
+      budget: { launches: 0, weighted_tokens: 0 },
+      usage: attempts => ({
+        launches: attempts.length,
+        weighted_tokens: attempts.length * 10,
+        reserve: 10,
+      }),
+      options: candidate => ({ model: candidate.model }),
+      async *sendQuery(_prompt, _cwd, _resume, options) {
+        const model = options?.model;
+        if (!model) throw new Error('missing model');
+        calls.push(model);
+        yield model === 'first'
+          ? {
+              type: 'result',
+              isError: true,
+              failure: { class: 'overloaded', evidence: 'typed failure' },
+              tokens: { input: 8, output: 2 },
+            }
+          : { type: 'result', tokens: { input: 8, output: 2 } };
+        yield { type: 'settled' };
+      },
+    },
+    'fixture',
+    artifacts
+  ))
+    chunks.push(chunk);
+  expect(calls).toEqual(['first', 'second']);
+  expect(
+    chunks.filter(c => c.type === 'warning' && c.code === 'superagent.budget_observed')
+  ).toHaveLength(4);
+  expect(chunks.at(-2)).toMatchObject({ type: 'result', tokens: { input: 16, output: 4 } });
+  expect(chunks.at(-2)).not.toHaveProperty('failure');
+  expect(readPolicyAttempts(artifacts).map(a => a.status)).toEqual(['failed', 'completed']);
+});

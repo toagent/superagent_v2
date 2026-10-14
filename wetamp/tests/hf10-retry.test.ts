@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { lastJson } from '../src/archon';
@@ -49,7 +49,7 @@ writeFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'isolated');
 const boundary = createRequire(import.meta.url)(scratchPreload) as { violations: () => number };
 afterEach(() => expect(boundary.violations()).toBe(0));
 
-for (const scope of ['package', 'milestone', 'budget'] as const)
+for (const scope of ['package', 'milestone'] as const)
   test(`HF10 fake retry preserves ${scope} scope`, () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -70,10 +70,6 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
           timeout_s: 5,
         },
       ];
-    if (scope === 'budget') {
-      plan.budget.launches = 3;
-      plan.budget.enforcement = 'hard';
-    }
     // FC permits repair-limit debt in non-strict G1; this fixture needs a held gate.
     if (scope === 'milestone') plan.mode = 'strict';
     const py = join(root, 'supervisor.py');
@@ -111,8 +107,6 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
       nodes: { id: string; bash?: string; with?: Record<string, unknown> }[];
     };
     for (const node of wf.nodes) {
-      if (scope === 'budget' && node.id === 'verify-W3')
-        node.with!.archon = join(WETAMP, 'bin/archon');
       if (node.id.startsWith('code-')) {
         node.bash = `echo '${node.id}' >> '${trace}'\n${node.bash}`;
       }
@@ -266,13 +260,6 @@ for (const scope of ['package', 'milestone', 'budget'] as const)
           .split('\n')
           .some(line => line.startsWith('notify '))
       ).toBe(false);
-    }
-    if (scope === 'budget') {
-      const grant = JSON.parse(readFileSync(join(gen.dir, 'budget-extra'), 'utf8'));
-      expect(grant.attempt).toBe(0);
-      expect(Number.isSafeInteger(grant.attempt)).toBe(true);
-      expect(existsSync(join(gen.dir, 'attempts/m1'))).toBe(false);
-      console.error(`HF10 budget E2E grant: ${JSON.stringify(grant)}`);
     }
     const finished = sa('wait', id, '--timeout', '120');
     expect(finished.out).toMatchObject({ state: 'completed' });

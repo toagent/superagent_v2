@@ -119,9 +119,9 @@ test('local-day achievement, first-pass run count, ask actions across run days a
     old = row('old', 'completed');
   old.started_at = iso(-86400000);
   old.engine!.dispositions = [
-    { at: iso(-86400000), action: 'ask', reason: 'budget', ok: true },
-    { at: iso(-1000), action: 'ask', reason: 'budget', ok: true },
-    { at: iso(-1000), action: 'retry', reason: 'budget', ok: true },
+    { at: iso(-86400000), action: 'ask', reason: 'approval', ok: true },
+    { at: iso(-1000), action: 'ask', reason: 'approval', ok: true },
+    { at: iso(-1000), action: 'retry', reason: 'approval', ok: true },
   ];
   // The answered ask behind that retry is the human intervention the ledger records.
   old.interventions = 1;
@@ -183,7 +183,7 @@ test('queued jobs without a live child stay outside the alive-only tree', () => 
       pid: 0,
       started_at: iso(-7200000),
       state: 'queued',
-      reason: 'memory',
+      reason: 'environment',
       memory: { pressure: 2, free: 80, source: 'sysctl' },
     },
   ];
