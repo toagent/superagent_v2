@@ -175,7 +175,6 @@ export function executionNode(
       candidate.provider,
       readonlyMcp
     ),
-    ...(descriptor.role === 'review' ? { env: { SUPERAGENT_ROLE: 'reviewer' } } : {}),
   };
 }
 

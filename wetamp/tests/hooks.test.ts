@@ -1718,6 +1718,19 @@ test('guard categories preserve structured rejection sources and physical denial
 });
 
 describe('E3-2b MCP action boundary', () => {
+  test.each([
+    ['claude', 'Read', { file_path: '~/.aws/credentials' }],
+    ['claude', 'Bash', { command: 'cat ~/.aws/credentials' }],
+    ['codex', 'exec_command', { cmd: 'cat ~/.aws/credentials' }],
+  ] as const)('%s %s cannot impersonate MCP with input fields', (client, tool_name, input) => {
+    const { guard } = setup();
+    const out = guard(client, {
+      tool_name,
+      tool_input: { ...input, server: 'unknown', tool: 'lookup', arguments: {} },
+    });
+    expect(out?.superagentPermissionCategory).toBe('privacy');
+    expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
   test.each(['claude', 'codex'])('%s normalizes MCP and shares privacy/effect policy', client => {
     const { guard, home, repo } = setup();
     const env = { SUPERAGENT_ROLE: 'worker' };

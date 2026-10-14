@@ -191,7 +191,7 @@ function mcpCall(name, input) {
     const match = /^mcp__([^]+?)__(.+)$/.exec(name);
     return match ? {server: match[1], tool: match[2], args: input} : null;
   }
-  if (typeof input.server === 'string' && typeof input.tool === 'string')
+  if (name === 'mcp_tool_call' && typeof input.server === 'string' && typeof input.tool === 'string')
     return {server: input.server, tool: input.tool, args: input.arguments ?? {}};
   return null;
 }
