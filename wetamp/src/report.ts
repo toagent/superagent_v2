@@ -18,7 +18,7 @@ import { cockpit } from './board/cockpit';
 import { Intake, intakeRoot } from './intake';
 import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
-import { providerTiming } from './provider-timing';
+import { providerTiming, slowNodes } from './provider-timing';
 import {
   normalizeTokens,
   investmentOf,
@@ -33,7 +33,10 @@ import {
 import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
 import type { RunView } from './archon';
 import { workflowSourceMetadataSchema } from '../../packages/workflows/src/schemas/workflow-run';
-import { capturedSourceRoots, DEFAULT_WORKFLOW_SOURCE_CONFIG } from '../../packages/workflows/src/workflow-source';
+import {
+  capturedSourceRoots,
+  DEFAULT_WORKFLOW_SOURCE_CONFIG,
+} from '../../packages/workflows/src/workflow-source';
 
 /** Only project engine decisions; green commands and model reports are not coverage. */
 export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsOf>[0]) {
@@ -205,7 +208,7 @@ export function rollup(calls: Call[]): Record<string, unknown> {
     ...tokens,
     raw: tokenTotals(covered.flatMap(c => (c.raw ? [c.raw] : []))),
     providers: tally(calls.map(c => c.provider ?? 'unknown')),
-    identity_coverage: `${calls.filter(c => c.identity).length}/${calls.length}`,
+    identity_coverage: `${String(calls.filter(c => c.identity).length)}/${String(calls.length)}`,
     models: tally(calls.map(c => c.model)),
     efforts: tally(calls.map(c => c.effort)),
     failures: tally(calls.map(c => c.failure)),
@@ -218,7 +221,7 @@ export function rollup(calls: Call[]): Record<string, unknown> {
     phase_coverage: Object.fromEntries(
       ['queue_ms', 'exec_ms'].map(field => [
         field,
-        `${calls.filter(c => c[field as 'queue_ms' | 'exec_ms'] !== null).length}/${calls.length}`,
+        `${String(calls.filter(c => c[field as 'queue_ms' | 'exec_ms'] !== null).length)}/${String(calls.length)}`,
       ])
     ),
   };
@@ -274,19 +277,20 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
       row = rows.get(id);
     if (!n || !row) return false;
     const deps = n.depends_on ?? [];
-    if (deps.some(d => !rows.has(d) || rows.get(d)!.end > row.start - row.queue)) return false;
-    const pred = [...deps].sort((a, b) => rows.get(b)!.end - rows.get(a)!.end)[0];
+    if (deps.some(d => !rows.has(d) || (rows.get(d)?.end ?? Infinity) > row.start - row.queue)) return false;
+    const pred = [...deps].sort((a, b) => (rows.get(b)?.end ?? 0) - (rows.get(a)?.end ?? 0))[0];
     if (pred && !walk(pred)) return false;
     path.push(id);
     return true;
   };
-  const last = [...rows].sort((a, b) => b[1].end - a[1].end)[0]![0];
-  if (!walk(last)) return unknown;
-  let cursor = Date.parse(run.started_at!);
-  const end = Date.parse(run.completed_at!);
+  const last = [...rows].sort((a, b) => b[1].end - a[1].end)[0]?.[0];
+  if (!last || !walk(last)) return unknown;
+  let cursor = Date.parse(run.started_at ?? '');
+  const end = Date.parse(run.completed_at ?? '');
   const segments: { phase: string; node?: string; ms: number }[] = [];
   for (const id of path) {
-    const row = rows.get(id)!;
+    const row = rows.get(id);
+    if (!row) return unknown;
     if (row.start - row.queue < cursor || row.end > end) return unknown;
     segments.push({ phase: 'unclassified_wait', ms: row.start - row.queue - cursor }, { phase: 'queue', node: id, ms: row.queue }, { phase: nodes.get(id)?.wait ? 'human_wait' : (/^(code|review|repair|fix|verify)-/.exec(id)?.[1] ?? 'script'), node: id, ms: row.end - row.start, } );
     cursor = row.end;
@@ -297,7 +301,7 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
 
 // prettier-ignore
 export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [], jobs: Job[] = [], unreadable: Record<string, number> = {} ): Record<string, unknown> {
-  const current_tasks = Object.fromEntries([...new Set(pairs.map(p => p.ledger.repo))].map(repo => {
+  const current_tasks = Object.fromEntries<unknown>([...new Set(pairs.map(p => p.ledger.repo))].map(repo => {
     try {
       const root = intakeRoot(home().sa, repo);
       if (!existsSync(join(root, 'state.json'))) return [repo, 'unknown'];
@@ -366,7 +370,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     unknown_runs: unknown,
     by_request: demands,
     elapsed: {
-      coverage: `${durations.length}/${by.size}`,
+      coverage: `${String(durations.length)}/${String(by.size)}`,
       p50_ms: durations[Math.ceil(durations.length * 0.5) - 1] ?? 'unknown',
       p90_ms: durations[Math.ceil(durations.length * 0.9) - 1] ?? 'unknown',
     },
@@ -384,7 +388,7 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
     by_run,
     known: n,
     unknown: ls.length - n,
-    median: n ? (counts[Math.floor((n - 1) / 2)]! + counts[Math.floor(n / 2)]!) / 2 : 'unknown',
+    median: n ? (counts[Math.floor((n - 1) / 2)] + counts[Math.floor(n / 2)]) / 2 : 'unknown',
     max: counts.at(-1) ?? 'unknown',
     zero_share: n ? counts.filter(c => c === 0).length / n : 'unknown',
   };
@@ -394,6 +398,7 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
  * 全部登记 run：summarize 计数 + usage（总计、按 run / 里程碑 / 角色 / 第几次调用）。`--events` 的输出不带 nodes，
  * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
  */
+// prettier-ignore
 export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const jobs = readJobs(Date.now(), true);
   const receipts = jobs.jobs.map(jobReceipt);
@@ -402,6 +407,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const missingGenerations: Record<string, number> = {};
   const paths: Record<string, unknown> = {};
   const timings: Record<string, unknown> = {};
+  const attempts: ReturnType<typeof providerTiming> = [];
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
   const cwdOf = (l: Ledger): string => (repo_missing.includes(l.run_id) ? WETAMP : l.repo);
   const pairs: Pair[] = ls.map(l => {
@@ -417,7 +423,9 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       try {
         const j = archonJson(['workflow', 'get', id, '--verbose', '--events'], cwdOf(l));
         const rows = (j.events ?? []) as Event[];
-        timings[`${l.run_id}/${id}`] = providerTiming(id, rows);
+        const timing = providerTiming(id, rows);
+        timings[`${l.run_id}/${id}`] = timing;
+        attempts.push(...timing);
         events.push(...rows.map(e => ({ ...e, workflow_run_id: e.workflow_run_id ?? id })));
         let graph;
         const source = workflowSourceMetadataSchema.safeParse(
@@ -442,7 +450,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   // ccusage snapshots are cumulative per session. Never add one to its engine turn receipts.
   const sessions = readUsage();
   const engineSessions = new Set(
-    calls.filter(c => c.provider && c.session).map(c => `${c.provider}:${sessionKey(c.session!)}`)
+    calls.flatMap(c => c.provider && c.session ? [`${c.provider}:${sessionKey(c.session)}`] : [])
   );
   const supplemental = sessions.sessions.filter(s => !engineSessions.has(`${s.client}:${s.id}`));
   const inputs = [
@@ -469,13 +477,14 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
     provider_timing: timings,
+    slow_nodes: slowNodes(attempts),
     jobs: {
       receipts,
       unreadable: jobs.bad,
       phase_coverage: Object.fromEntries(
         ['queue_ms', 'prepare_ms', 'exec_ms'].map(field => [
           field,
-          `${receipts.filter(r => typeof r[field] === 'number').length}/${receipts.length}`,
+          `${String(receipts.filter(r => typeof r[field] === 'number').length)}/${String(receipts.length)}`,
         ])
       ),
     },
@@ -490,7 +499,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       learning: { ...tokenTotals(learning.map(sessionTokens)), fees: tokenFees(learning.map(sessionTokens)), policy: snapshot.reflection ?? 'unknown',
         basis: 'explicit memory-reflect job tag; period only; no per-demand allocation' },
       window: { scope: 'all_retained_events_for_recorded_generations', generated_at: snapshot.at },
-      receipts: calls.map(({ session: _session, ...receipt }) => receipt),
+      receipts: calls.map(c => Object.fromEntries(Object.entries(c).filter(([key]) => key !== 'session'))),
       total: rollup(calls),
       by_run: group(calls, c => c.run),
       by_milestone: group(calls, c => `${c.run}/${c.milestone}`),

@@ -47,15 +47,78 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('EFFICIENCY_BUDGET buildReport ranks slow attempts across runs and limits to five', () => {
+    const root = tmp(),
+      bin = join(root, 'archon-stub');
+    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
+    const saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
+    try {
+      const events = Array.from({ length: 7 }, (_, i) =>
+        [0, 1].map(seq => ({
+          workflow_run_id: `engine-${i}`,
+          event_type: 'provider_event',
+          step_name: 'repair-core',
+          data: {
+            attemptId: `a-${i}`,
+            seq,
+            observedAt: new Date(Date.UTC(2026, 9, 14) + seq * 156000 * (i + 1)).toISOString(),
+            event:
+              seq === 0
+                ? { type: 'tool_call', toolCallId: 'x', name: 'file_change' }
+                : { type: 'tool_call_update', toolCallId: 'x', status: 'completed' },
+          },
+        }))
+      ).flat();
+      const run = { id: 'engine', status: 'completed', output_root: root, nodes: [], events };
+      writeFileSync(
+        bin,
+        '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n',
+        { mode: 0o755 }
+      );
+      const ledger = {
+        run_id: 'r',
+        archon_run_id: 'engine',
+        repo: root,
+        gen_dir: root,
+        workflow: 'fixture',
+        recoveries: [],
+      } as unknown as Ledger;
+      const report = buildReport([ledger]);
+      expect(report.slow_nodes).toEqual(
+        [6, 5, 4, 3, 2].map(i => ({
+          run: `engine-${i}`,
+          node: 'repair-core',
+          attempt: `a-${i}`,
+          over_ratio: i + 1,
+          reasons: [`wall_clock_ms ${156000 * (i + 1)} > p90 156000`],
+          duration_ms: 156000 * (i + 1),
+          model_turns: 0,
+          first_edit_ms: 0,
+          longest_gap_ms: 0,
+          longest_gap_at: '2026-10-14T00:00:00.000Z',
+        }))
+      );
+      expect(buildReport([]).slow_nodes).toEqual([]);
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+  });
+
   test('PROVIDER_TIMING buildReport consumes engine envelopes; native clocks remain unknown', () => {
-    const root = tmp(), bin = join(root, 'archon-stub');
+    const root = tmp(),
+      bin = join(root, 'archon-stub');
     const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
     const saved = keys.map(k => process.env[k]);
     Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
     try {
       writeFileSync(join(root, 'plan.json'), JSON.stringify(plan));
       const arrival = (seq: number, second: number, event: Record<string, unknown>) => ({
-        event_type: 'provider_event', step_name: 'code-core',
+        event_type: 'provider_event',
+        step_name: 'code-core',
         data: { attemptId: 'code-core-a', seq, observedAt: `2026-10-10T00:00:0${second}Z`, event },
       });
       const events = [
@@ -65,17 +128,38 @@ describe('F-22 report', () => {
         { ...ev('node_completed', 'code-core'), created_at: '2026-10-10T00:00:05Z' },
       ];
       const run = { id: 'engine', status: 'completed', output_root: root, nodes: [], events };
-      writeFileSync(bin, '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n', { mode: 0o755 });
-      const ledger = { run_id: 'r', archon_run_id: 'engine', repo: root, gen_dir: root,
-        workflow: 'fixture', recoveries: [] } as unknown as Ledger;
-      expect(buildReport([ledger]).provider_timing).toMatchObject({ 'r/engine': [{
-        run: 'engine', node: 'code-core', attempt_id: 'code-core-a',
-        tool_union_ms: 2000, non_tool_gap_ms: 1000,
-        final_answer_at: '2026-10-10T00:00:04Z', request_at: 'unknown',
-      }] });
+      writeFileSync(
+        bin,
+        '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n',
+        { mode: 0o755 }
+      );
+      const ledger = {
+        run_id: 'r',
+        archon_run_id: 'engine',
+        repo: root,
+        gen_dir: root,
+        workflow: 'fixture',
+        recoveries: [],
+      } as unknown as Ledger;
+      expect(buildReport([ledger]).provider_timing).toMatchObject({
+        'r/engine': [
+          {
+            run: 'engine',
+            node: 'code-core',
+            attempt_id: 'code-core-a',
+            tool_union_ms: 2000,
+            non_tool_gap_ms: 1000,
+            final_answer_at: '2026-10-10T00:00:04Z',
+            request_at: 'unknown',
+          },
+        ],
+      });
       expect(jobReceipt({ id: 'native', state: 'done' } as Job).provider_timing).toBe('unknown');
     } finally {
-      keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
     }
   });
   // prettier-ignore
@@ -228,7 +312,12 @@ describe('F-22 report', () => {
       expect(result.by_request['ticket:42']).toMatchObject({
         complete: 'unknown',
         elapsed_ms: 10000,
-        investment: { input: 'unknown', fees: 'unknown', deduplication: 'unknown', raw: { input: 30 } },
+        investment: {
+          input: 'unknown',
+          fees: 'unknown',
+          deduplication: 'unknown',
+          raw: { input: 30 },
+        },
       });
       expect(result.by_request['ticket:42'].attempts).toHaveLength(3);
       writeFileSync(join(art, 'gate-m2-r1.json'), readFileSync(join(art, 'gate-m1-r1.json')));
