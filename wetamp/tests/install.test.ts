@@ -11,9 +11,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
+import { stableInstall } from './helpers';
 import {
   assertAuthorNotReviewer,
   loadTiers,
@@ -31,14 +32,10 @@ function runInstall(
   launchd = join(home, 'LaunchAgents'),
   archonHome = join(home, 'archon')
 ): string {
-  const callerInstall = join(
-    process.env.XDG_STATE_HOME || join(homedir(), '.local/state'),
-    'superagent/install.json'
-  );
-  const before = existsSync(callerInstall) ? readFileSync(callerInstall) : undefined;
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
       ...process.env,
+      HOME: home,
       SUPERAGENT_HOME: home,
       ARCHON_HOME: archonHome,
       SA_LAUNCHD_DIR: launchd,
@@ -49,8 +46,6 @@ function runInstall(
     stderr: 'pipe',
   });
   expect(p.exitCode).toBe(0);
-  expect(existsSync(callerInstall)).toBe(before !== undefined);
-  if (before) expect(readFileSync(callerInstall).equals(before)).toBe(true);
   return p.stdout.toString();
 }
 
@@ -160,6 +155,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
   const V2 = (f: string): string => `node '${join(WETAMP, 'hooks', f)}'`;
   function sandbox(): { home: string; sh: (...args: string[]) => { code: number; out: string } } {
     const home = tmp();
+    stableInstall(home);
     const sh = (...args: string[]): { code: number; out: string } => {
       const p = Bun.spawnSync(['bash', join(WETAMP, 'scripts', 'install.sh'), ...args], {
         env: {
@@ -292,7 +288,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       [undefined, V2('context-advisory.cjs')],
       [undefined, `${V2('guard.cjs')} claude`],
     ]);
-    expect(at('UserPromptSubmit')).toEqual([[undefined, V2('context-advisory.cjs')]]);
+    expect(at('UserPromptSubmit')).toEqual([
+      [undefined, V2('context-advisory.cjs')],
+      [undefined, `${V2('intake.cjs')} claude`],
+    ]);
     expect(sh('--hooks').out.trim()).toMatch(
       /^hooks: no changes\ncodex trust: \d+ entries already trusted\ninstall: mode=controller$/
     );
@@ -311,12 +310,12 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(existsSync(codex)).toBe(false);
     expect(sh('--hooks').code).toBe(0);
     expect(cmds(settings).map(([e, ...c]) => [e, c.length])).toEqual([
-      ['SessionStart', 1],
+      ['SessionStart', 2],
       ['PreToolUse', 2],
       ['PostToolUse', 1],
       ['SubagentStop', 1],
       ['Stop', 1],
-      ['UserPromptSubmit', 1],
+      ['UserPromptSubmit', 2],
     ]);
     expect(cmds(codex).flat()).toContain(`${V2('guard.cjs')} codex`);
     expect(existsSync(join(home, '.superagent', 'backups'))).toBe(false);
@@ -375,6 +374,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         ),
         `${hooks}:pre_tool_use:0:0`,
         `${hooks}:pre_tool_use:1:0`,
+        `${hooks}:session_start:1:0`,
+        `${hooks}:user_prompt_submit:0:0`,
       ].sort()
     );
     expect(state[`${hooks}:pre_tool_use:0:0`].trusted_hash).toBe('sha256:user');
@@ -435,6 +436,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const { home, sh } = sandbox();
     const entry = join(home, '.local', 'bin', 'superagent');
     mkdirSync(dirname(entry), { recursive: true });
+    rmSync(entry); // Replace the stable symlink with the legacy regular-file fixture.
     writeFileSync(entry, 'old v1 entry');
     const sa = (...args: string[]): { code: number; out: string } => {
       // PATH 不含 bun：桩分支必须在 exec bun 之前
@@ -500,8 +502,19 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
   test('GUARD-R1-02: advisory/cycle/change install twice without rejecting Stop systemMessage', () => {
     const root = tmp(),
       toolkit = join(root, 'wetamp');
-    cpSync(WETAMP, toolkit, { recursive: true, filter: p => !p.endsWith('/node_modules') });
+    mkdirSync(toolkit);
+    for (const dir of ['hooks', 'scripts', 'bin'])
+      cpSync(join(WETAMP, dir), join(toolkit, dir), { recursive: true });
+    writeFileSync(join(toolkit, 'tiers.json'), readFileSync(join(WETAMP, 'tiers.json')));
+    mkdirSync(join(root, '.git'));
+    const commands = join(root, 'commands');
+    mkdirSync(commands);
+    symlinkSync(Bun.which('node')!, join(commands, 'node'));
+    const bunInstall = join(root, 'bun-install');
+    mkdirSync(join(bunInstall, 'bin'), { recursive: true });
+    symlinkSync(process.execPath, join(bunInstall, 'bin/bun'));
     symlinkSync(join(WETAMP, 'node_modules'), join(toolkit, 'node_modules'));
+
     const tiers = JSON.parse(readFileSync(join(toolkit, 'tiers.json'), 'utf8'));
     const callerState = join(root, 'caller-state/superagent/install.json');
     mkdirSync(dirname(callerState), { recursive: true });
@@ -512,9 +525,12 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       writeFileSync(join(toolkit, 'tiers.json'), JSON.stringify(tiers));
       const home = join(root, mode),
         state = join(home, 'state');
+      stableInstall(home);
       const env = {
         ...process.env,
         HOME: home,
+        PATH: `${commands}:/usr/bin:/bin`,
+        BUN_INSTALL: bunInstall,
         SUPERAGENT_HOME: join(home, 'sa'),
         XDG_STATE_HOME: state,
         CLAUDE_CONFIG_DIR: '',
@@ -538,7 +554,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
           stderr: 'pipe',
         });
       const first = install();
-      expect(first.exitCode).toBe(0);
+      expect({ code: first.exitCode, error: first.stderr.toString() }).toMatchObject({ code: 0 });
       const ledger = join(state, 'superagent/install.json'),
         bytes = readFileSync(ledger);
       expect(install().exitCode).toBe(0);

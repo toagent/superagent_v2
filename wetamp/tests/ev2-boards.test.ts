@@ -276,7 +276,7 @@ test('EV2 default/all history and evolution metrics match hand-calculated fixtur
   });
   s.rows[0].interventions = undefined;
   expect(memoryOverview(s, data).metrics.人工干预次数).toBe('未知');
-  expect(d.queued).toBe(3);
+  expect(d.queued).toBe(0);
   expect(d.reflection.yellow).toBe(true);
   const page = memoryPanel(d, false);
   expect(page).toMatchSnapshot();

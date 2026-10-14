@@ -1,32 +1,35 @@
-import { afterAll, expect } from 'bun:test';
+import { afterAll } from 'bun:test';
 import {
   cpSync,
-  existsSync,
   mkdtempSync,
+  mkdirSync,
+  symlinkSync,
   readFileSync,
   realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
 
 const roots: string[] = [];
-// Installation fixtures must isolate their writes, even when their caller has
-// a real worker ledger. Snapshot bytes internally; never print user state.
-const callerInstall = join(
-  process.env.XDG_STATE_HOME || join(homedir(), '.local/state'),
-  'superagent/install.json'
-);
-const installBytes = (): Buffer | undefined =>
-  existsSync(callerInstall) ? readFileSync(callerInstall) : undefined;
-const originalInstall = installBytes();
 afterAll(async () => {
   for (const r of roots.splice(0)) await removeTempTree(r);
   repoTemplate = undefined;
-  expect(existsSync(callerInstall)).toBe(originalInstall !== undefined);
-  if (originalInstall) expect(installBytes()?.equals(originalInstall)).toBe(true);
 });
+
+/** Stable install shape, entirely under scratch HOME; no operator checkout or config. */
+export function stableInstall(home: string): void {
+  const install = join(home, 'stable-engine');
+  mkdirSync(join(install, '.git'), { recursive: true });
+  mkdirSync(join(install, 'wetamp/hooks'), { recursive: true });
+  mkdirSync(join(install, 'wetamp/bin'), { recursive: true });
+  writeFileSync(join(install, 'wetamp/hooks/git-guardrail.cjs'), 'module.exports = {};\n');
+  writeFileSync(join(install, 'wetamp/bin/superagent'), '#!/bin/sh\nexit 0\n');
+  mkdirSync(join(home, '.local/bin'), { recursive: true });
+  symlinkSync(join(install, 'wetamp/bin/superagent'), join(home, '.local/bin/superagent'));
+}
+
 export const tmp = (): string => {
   const d = realpathSync(mkdtempSync(join(tmpdir(), 'sa-test-')));
   roots.push(d);

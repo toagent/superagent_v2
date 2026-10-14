@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { jobCli, memoryReading, type Job, type MemoryReading } from '../src/jobs';
 import { tmp } from './helpers';
@@ -7,6 +7,7 @@ import { tmp } from './helpers';
 const keys = [
   'SUPERAGENT_HOME',
   'ARCHON_HOME',
+  'SUPERAGENT_RELAY_QUOTA',
   'SA_ADMIT',
   'SA_ADMIT_MIN_FREE',
   'SA_ADMIT_MAX_WAIT',
@@ -16,8 +17,13 @@ let root: string;
 let stderr: ReturnType<typeof spyOn<typeof console, 'error'>>;
 beforeEach(() => {
   root = tmp();
+  writeFileSync(
+    join(root, 'relay-quota.json'),
+    JSON.stringify({ at: Date.now(), claude_daily_usd: 0 })
+  );
   Object.assign(process.env, {
     SUPERAGENT_HOME: root,
+    SUPERAGENT_RELAY_QUOTA: 'off',
     ARCHON_HOME: join(root, 'archon'),
     SA_ADMIT: '',
     SA_ADMIT_MIN_FREE: '25',

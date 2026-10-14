@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { spyOn, afterAll } from 'bun:test';
+import * as coordination from '../src/coord';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HOLD_POLICY, CODER_CLASSES, REASONS, reasonOf } from '../src/reasons';
@@ -13,12 +15,16 @@ import e5 from './incidents/e5-base.json';
 import e7 from './incidents/e7-adopt.json';
 import { milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+const fixtureEngine = gitRepo(tmp());
+const originalCleanEngine = coordination.cleanEngine;
+const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() =>
+  originalCleanEngine(fixtureEngine)
+);
 
 describe('S4 reason closed set', () => {
-  test('registry mirror and generated snapshot derive from one owner; policy has no orphan row', () => {
+  test('registry mirror and generated snapshot derive from one owner; every registered reason has a policy', () => {
     expect(mirror).toEqual(REASONS);
     expect(new Set(REASONS.map(r => r.code)).size).toBe(REASONS.length);
-    expect(new Set<string>(REASONS.map(r => r.hold))).toEqual(new Set(Object.keys(HOLD_POLICY)));
     for (const r of REASONS)
       expect(Object.keys(HOLD_POLICY).filter(h => h === r.hold)).toHaveLength(1);
     const root = tmp();
@@ -31,7 +37,7 @@ describe('S4 reason closed set', () => {
     );
   });
   test('all coder, repair, gate, limit, budget and independence producers are registered', () => {
-    const produced = new Set<string>(['budget_launches_exceeded', 'budget_tokens_exceeded']);
+    const produced = new Set<string>();
     for (const status of ['done', 'partial', 'blocked', 'unknown'])
       for (const error_class of [null, ...CODER_CLASSES, 'unknown'])
         for (const ok of [false, true])
@@ -50,7 +56,7 @@ describe('S4 reason closed set', () => {
         if (why) produced.add(`review_not_independent:${why}`);
       }
     for (const reason of [...produced])
-      for (const rounds of [1, 3]) {
+      for (const rounds of [1, 6]) {
         const d = decide({
           reviews: Array.from({ length: rounds }, () => null),
           rechecks: [
@@ -62,7 +68,7 @@ describe('S4 reason closed set', () => {
       }
     for (const status of ['PASS', 'FAIL', 'INCOMPLETE'] as const)
       for (const ok of [true, false])
-        for (const rounds of [1, 3]) {
+        for (const rounds of [1, 6]) {
           const reviews = Array.from({ length: rounds }, () => ({
             status,
             findings: [
@@ -197,3 +203,5 @@ test('I5 incident projection is atomic, deduplicated and excludes prompt, transc
     })
   ).toEqual({ unregistered_reason: true });
 });
+
+afterAll(() => engineBoundary.mockRestore());

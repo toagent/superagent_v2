@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
+import { spyOn, afterAll } from 'bun:test';
+import * as coordination from '../src/coord';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -6,7 +8,12 @@ import { lastJson } from '../src/archon';
 import { generate } from '../src/generate';
 import { WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
-import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { fixturePlan, gitRepo, sh, stableInstall, tmp } from './helpers';
+const fixtureEngine = gitRepo(tmp());
+const originalCleanEngine = coordination.cleanEngine;
+const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() =>
+  originalCleanEngine(fixtureEngine)
+);
 
 const scratchRoot = join(tmp(), 'scratch'),
   scratchPreload = join(tmp(), 'scratch-preload.cjs');
@@ -50,7 +57,7 @@ const boundary = createRequire(import.meta.url)(scratchPreload) as { violations:
 afterEach(() => expect(boundary.violations()).toBe(0));
 
 for (const scope of ['package', 'milestone'] as const)
-  test(`HF10 fake retry preserves ${scope} scope`, () => {
+  test(`HF10 ${scope} verification failure is terminal without an automatic retry ask`, () => {
     const root = tmp(),
       repo = gitRepo(root),
       ready = join(root, 'ready'),
@@ -70,7 +77,7 @@ for (const scope of ['package', 'milestone'] as const)
           timeout_s: 5,
         },
       ];
-    // FC permits repair-limit debt in non-strict G1; this fixture needs a held gate.
+    // FC permits repair-limit debt in non-strict G1; this fixture exhausts the strict review rounds.
     if (scope === 'milestone') plan.mode = 'strict';
     const py = join(root, 'supervisor.py');
     writeFileSync(
@@ -78,8 +85,12 @@ for (const scope of ['package', 'milestone'] as const)
       `import sys\nfrom pathlib import Path\np = Path(__file__).parent\nwith (p / 'questions').open('a') as f: f.write(' '.join(sys.argv[1:]) + '\\n')\nif sys.argv[1] not in ('ask', 'ask-status'): sys.exit(2)\nprint('ask-1' if sys.argv[1] == 'ask' else (p / 'answer').read_text())\n`
     );
     writeFileSync(join(root, 'answer'), 'pending');
+    const home = join(root, 'operator-home');
+    stableInstall(home);
     const env = {
       ...process.env,
+      HOME: home,
+      SUPERAGENT_RELAY_QUOTA: 'off',
       SUPERAGENT_HOME: join(root, 'home'),
       ARCHON_HOME: join(root, 'home/archon'),
       SUPERAGENT_WRITE_ROOTS: root,
@@ -110,7 +121,7 @@ for (const scope of ['package', 'milestone'] as const)
       if (node.id.startsWith('code-')) {
         node.bash = `echo '${node.id}' >> '${trace}'\n${node.bash}`;
       }
-      if (scope === 'milestone' && /^review-m1-r[23]$/.test(node.id)) {
+      if (scope === 'milestone' && /^review-m1-r[2-6]$/.test(node.id)) {
         const fail = {
           status: 'FAIL',
           notes: 'fixture',
@@ -213,63 +224,23 @@ for (const scope of ['package', 'milestone'] as const)
         recoveries: [],
       })
     );
-    expect(sa('wait', id, '--timeout', '120').out).toMatchObject({
-      state: scope !== 'milestone' ? 'failed' : 'held:gate',
-      node: scope !== 'milestone' ? 'verify-W3' : 'gate-m1-r3',
+    const stopped = sa('wait', id, '--timeout', '120');
+    expect(stopped.out).toMatchObject({
+      state: 'failed',
+      node: scope === 'package' ? 'settle-W3' : 'gate-m1-r6',
     });
-    const counts = () =>
-      Object.fromEntries(
-        plan.packages.map(p => [
-          `code-${p.id}`,
-          readFileSync(trace, 'utf8')
-            .split('\n')
-            .filter(n => n === `code-${p.id}`).length,
-        ])
-      );
-    expect(counts()).toEqual(
-      scope !== 'milestone'
-        ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 0 }
-        : { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 1 }
-    );
-    if (scope === 'package') {
-      writeFileSync(ready, 'ready');
-      expect(sa('decide', id, 'retry', '--pkg', 'W3', '--hint', 'fixture ready').code).toBe(0);
-    } else {
-      expect(sa('supervise-tick').code).toBe(0);
-      const question = readFileSync(join(root, 'questions'), 'utf8');
-      expect(question).toContain(
-        scope !== 'milestone' ? '重派W3编码→验收一次' : '重跑m1累计验收→评审'
-      );
-      writeFileSync(ready, 'ready');
-      writeFileSync(join(root, 'answer'), 'yes');
-      expect(sa('supervise-tick').code).toBe(0);
-      expect(readFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'utf8')).toBe('isolated');
-      expect(readFileSync(join(scratchRoot, '.log'), 'utf8')).toContain('codex-sentinel');
-      const asks = JSON.parse(
-        readFileSync(join(env.SUPERAGENT_HOME, 'asks.json'), 'utf8')
-      ) as Record<string, { receipt?: { body: string } }>;
-      const receipt = Object.entries(asks).find(
-        ([key, ask]) => key.startsWith(`${id}:`) && ask.receipt
-      )?.[1].receipt?.body;
-      expect(receipt).toContain(
-        scope !== 'milestone' ? '已提交包W3编码→验收重跑' : '已提交里程碑m1累计验收→评审重跑'
-      );
-      expect(receipt).toContain(`去向=${String(ack.runId)}`);
-      expect(
-        readFileSync(join(root, 'questions'), 'utf8')
-          .split('\n')
-          .some(line => line.startsWith('notify '))
-      ).toBe(false);
-    }
-    const finished = sa('wait', id, '--timeout', '120');
-    expect(finished.out).toMatchObject({ state: 'completed' });
-    const expected =
-      scope !== 'milestone'
-        ? { 'code-W1': 1, 'code-W2': 1, 'code-W3': 2, 'code-W4': 1 }
-        : { 'code-W1': 1, 'code-W2': 1, 'code-W3': 1, 'code-W4': 1 };
-    expect(counts()).toEqual(expected);
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
+      'code-W1',
+      'code-W2',
+      'code-W3',
+      ...(scope === 'package' ? [] : ['code-W4']),
+    ]);
+    expect(sa('supervise-tick').out).toMatchObject({ actions: [] });
+    expect(sa('decide', id, 'retry').code).toBe(1);
+    expect(readFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'utf8')).toBe('isolated');
     const ledger = JSON.parse(readFileSync(join(env.SUPERAGENT_HOME, `runs/${id}.json`), 'utf8'));
     expect(ledger.archon_run_id).toBe(ack.runId);
     expect(ledger.adoptions).toBeUndefined();
-    console.error(`HF10 ${scope} execution counts: ${JSON.stringify(counts())}`);
   }, 240000);
+
+afterAll(() => engineBoundary.mockRestore());

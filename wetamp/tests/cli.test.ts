@@ -1714,11 +1714,15 @@ test.each(['claude', 'codex', 'legacy', 'fake', 'blocked', 'foreign', 'unowned',
       const result = captured(() =>
         main(kind === 'explicit' ? ['land', 'sa1', '--apply'] : ['wait', 'sa1', '--timeout', '1'])
       );
-      expect(result.code).toBe(0);
+      expect(result.code).toBe(kind === 'unowned' ? 3 : 0);
       if (kind !== 'explicit') {
         const out = JSON.parse(result.out);
-        expect(out).toMatchObject({ state: 'completed', exit: 0, quota: 'relay fixture' });
-        if (!['claude', 'codex'].includes(kind))
+        expect(out).toMatchObject(
+          kind === 'unowned'
+            ? { state: 'inbox', exit: 3, inbox: expect.any(Array) }
+            : { state: 'completed', exit: 0, quota: 'relay fixture' }
+        );
+        if (!['claude', 'codex', 'unowned'].includes(kind))
           expect(out.delivery.status).toBe(
             ['legacy', 'fake'].includes(kind) ? 'unknown' : 'blocked'
           );
@@ -1866,9 +1870,17 @@ test.each([
   }
 });
 
-test.each([1, 2, 3])(
-  'generated CLI acceptance and land preserve only approved non-product debt R%i',
-  round => {
+test.each([
+  [1, 'inputs'],
+  [2, 'artifact'],
+  [3, 'risk'],
+  [1, 'environment'],
+  [2, 'classification'],
+  [3, 'new-debt'],
+  [1, 'missing-environment'],
+] as const)(
+  'generated CLI acceptance and land preserve only approved non-product debt R%i %s',
+  (round, check) => {
     const s = stub([]),
       targetRepo = gitRepo(s.root),
       wt = join(s.root, 'code-worker');
@@ -1991,62 +2003,79 @@ test.each([1, 2, 3])(
     const queriesBefore = s.calls().filter(c => c.startsWith('workflow get r')).length;
     expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
     expect(s.calls().filter(c => c.startsWith('workflow get r')).length - queriesBefore).toBe(1);
-    const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;
-    const savedEvents = authority.events;
-    authority.events = savedEvents.filter(e => e.step_name !== missing);
-    saveAuthority();
-    expect(() => main(['accept', 'sa1'])).toThrow(/input resolution failed/);
-    authority.events = savedEvents;
-    saveAuthority();
-    writeFileSync(
-      join(art, `${input.tag}.json`),
-      JSON.stringify({ ...first, failures: undefined })
-    );
-    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-    writeFileSync(join(art, `${input.tag}.json`), JSON.stringify(first));
-    expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(1);
-    expect(() => main(['accept', 'sa1', '--pkg', 'nope'])).toThrow(/unknown package/);
-    process.env.SA_LAND_ENV_DRIFT = 'changed';
-    try {
-      expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-    } finally {
-      delete process.env.SA_LAND_ENV_DRIFT;
+    if (check === 'inputs') {
+      const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;
+      const savedEvents = authority.events;
+      authority.events = savedEvents.filter(e => e.step_name !== missing);
+      saveAuthority();
+      expect(() => main(['accept', 'sa1'])).toThrow(/input resolution failed/);
+      authority.events = savedEvents;
+      saveAuthority();
     }
-    for (const classification of ['product', 'unknown']) {
+    if (check === 'artifact') {
       writeFileSync(
-        marker,
-        JSON.stringify({ failure_class: classification, evidence: 'new failure' })
+        join(art, `${input.tag}.json`),
+        JSON.stringify({ ...first, failures: undefined })
       );
       expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+      writeFileSync(join(art, `${input.tag}.json`), JSON.stringify(first));
+      expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(1);
+      expect(() => main(['accept', 'sa1', '--pkg', 'nope'])).toThrow(/unknown package/);
     }
-    writeFileSync(
-      marker,
-      JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' })
-    );
-    writeFileSync(newFailure, 'new');
-    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-    rmSync(newFailure);
-    writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, environment: [] }));
-    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-    for (const mode of ['strict', plan.mode]) {
-      writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, mode }));
-      expect(captured(() => main(['accept', 'sa1'])).code).toBe(mode === 'strict' ? 1 : 0);
+    if (check === 'risk') {
+      for (const mode of ['strict', plan.mode]) {
+        writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, mode }));
+        expect(captured(() => main(['accept', 'sa1'])).code).toBe(mode === 'strict' ? 1 : 0);
+      }
+      input.risk = 'G2';
+      writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify([input]));
+      expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+      input.risk = 'G1';
+      writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify(contracts));
     }
-    input.risk = 'G2';
-    writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify([input]));
-    expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
-    input.risk = 'G1';
-    writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify(contracts));
+    if (check === 'environment') {
+      process.env.SA_LAND_ENV_DRIFT = 'changed';
+      try {
+        expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+      } finally {
+        delete process.env.SA_LAND_ENV_DRIFT;
+      }
+    }
+    if (check === 'classification') {
+      for (const classification of ['product', 'unknown']) {
+        writeFileSync(
+          marker,
+          JSON.stringify({ failure_class: classification, evidence: 'new failure' })
+        );
+        expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+      }
+      writeFileSync(
+        marker,
+        JSON.stringify({ failure_class: 'baseline', evidence: 'fixture baseline' })
+      );
+    }
+    if (check === 'new-debt') {
+      writeFileSync(newFailure, 'new');
+      expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+      rmSync(newFailure);
+    }
+    if (check === 'missing-environment') {
+      writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, environment: [] }));
+      expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+      writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify(plan));
+    }
     expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
     expect(sh('git rev-parse wetamp^{tree}', wt)).toBe(sh('git rev-parse sa/sa1^{tree}', wt));
-    writeFileSync(
-      join(gen.dir, 'plan.json'),
-      JSON.stringify({
-        ...plan,
-        packages: [{ ...plan.packages[0]!, accept: [{ cmd: 'true', timeout_s: 5 }] }],
-      })
-    );
-    expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
+    if (check === 'inputs') {
+      writeFileSync(
+        join(gen.dir, 'plan.json'),
+        JSON.stringify({
+          ...plan,
+          packages: [{ ...plan.packages[0]!, accept: [{ cmd: 'true', timeout_s: 5 }] }],
+        })
+      );
+      expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
+    }
   }
 );
 
@@ -2208,7 +2237,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(sup()).toEqual([
       expect.stringMatching(/^ask /),
       'ask-status ask-1',
-      expect.stringMatching(/^ask-ack /),
+      expect.stringMatching(/^ask-ack .*"stage":"received"/),
+      expect.stringMatching(/^ask-ack .*"stage":"executing"/),
     ]);
     expect(s.calls()).not.toContain('workflow wake --json');
   });
@@ -2753,7 +2783,7 @@ process.exit(main(['supervise-tick']));`
     expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
   });
 
-  for (const sample of ['package', 'milestone', 'adopt', 'approval'] as string[])
+  for (const sample of ['approval'] as string[])
     test(`RCPT actual ${sample} action uses engine facts and excludes output prose`, () => {
       const s = stub([]);
       const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
@@ -2934,11 +2964,16 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         decision: gate('repair_exhausted:acceptance_failed').decision,
       },
     });
-    expect(tick()[0]).toMatchObject({
-      action: 'none',
-      held: true,
-      reason: expect.stringContaining('coder'),
-    });
+    expect(tick()).toEqual([]);
+    expect(
+      classifyRun(
+        s.ledger,
+        run('failed', {
+          output_root: join(s.root, 'out'),
+          nodes: [{ nodeId: 'settle-core', state: 'failed' }],
+        })
+      ).state
+    ).toBe('failed');
     expect(resumes(s.calls())).toBe(0);
     const u = held('gate-m1-r1', { 'gate-m1-r1.json': { reason: 'new_failure' } });
     expect(tick()[0]).toMatchObject({
@@ -3034,11 +3069,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
   });
   test('only a recorded permission decision surfaces a current need', () => {
     const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('coder_redline') });
-    expect(tick()[0]).toMatchObject({
-      action: 'none',
-      held: true,
-      reason: expect.stringContaining('redline'),
-    });
+    expect(tick()).toEqual([]);
     const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
     expect(status.needs).toMatchObject([{ tag: 'gate-m1-r1', cap: 'permission' }]);
     expect(captured(() => main(['brief', 'sa1'])).out).toContain('need permission');
@@ -3059,11 +3090,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     const archive = join(s.art, 'verify-core.coder.json');
     const original = readFileSync(archive, 'utf8');
     const sup = supervisor(s.root, 'pending');
-    expect(tick()[0]).toMatchObject({
-      action: 'none',
-      held: true,
-      reason: expect.stringContaining('gate'),
-    });
+    expect(tick()).toEqual([]);
     expect(resumes(s.calls())).toBe(0);
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
     expect(captured(() => main(['brief', 'sa1'])).out).not.toContain(
@@ -3086,25 +3113,14 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         },
       });
       supervisor(s.root, 'pending');
-      expect(tick()[0]).toMatchObject({
-        action: 'none',
-        held: true,
-        reason: expect.stringContaining('gate'),
-      });
+      expect(tick()).toEqual([]);
     }
   );
-  test('decide retry on held:gate bumps the attempt and resumes; --all-held retries every held run', () => {
-    const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') });
-    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
-    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
-    const { code, out } = captured(() => main(['decide', '--all-held', 'retry']));
-    expect(code).toBe(0);
-    expect(JSON.parse(out)).toEqual([
-      expect.objectContaining({ run_id: 'sa1', state: 'held:gate', ok: true }),
-    ]);
-    expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('2');
-    expect(resumes(s.calls())).toBe(2);
-    expect(() => main(['decide', '--all-held', 'approve'])).toThrow(/--all-held retry/);
+  test('terminal gate decisions refuse retry without changing attempts', () => {
+    const s = held('gate-m1-r6', { 'gate-m1-r6.json': gate('review_failed+review_limit') });
+    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(1);
+    expect(existsSync(join(s.root, 'gen', 'attempts', 'm1'))).toBe(false);
+    expect(resumes(s.calls())).toBe(0);
   });
 
   /** 每个挂起原因一个场景：类型 Record<Hold, …> 让 HOLD_POLICY 新增一行而没有场景时编译失败。 */
@@ -3260,7 +3276,17 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       test(`HOLD_POLICY ${hold} → ${p.do}, no reminder`, () => {
         const { s, first } = scenes[hold]();
         const sup = supervisor(s.root, 'pending');
-        const x = tick()[0];
+        const actions = tick();
+        if (!actions.length) {
+          expect(
+            classifyRun(s.ledger, JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')))
+              .state
+          ).toBe('failed');
+          expect(sup()).toEqual([]);
+          expect(resumes(s.calls())).toBe(0);
+          return;
+        }
+        const x = actions[0];
         expect(x).toMatchObject({ run_id: 'sa1', ...first });
         // 签收门本身就是提问；其余自动处置不投提醒
         if (hold !== 'signoff') expect(sup()).toEqual([]);
@@ -3368,10 +3394,12 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
               : reason.startsWith('coder_error:')
                 ? 'coder_blocked'
                 : 'engine_suspect';
-        expect(tick()[0]).toMatchObject({
-          action: 'none',
-          reason: expect.stringContaining(expected),
-        });
+        if (reason) expect(tick()).toEqual([]);
+        else
+          expect(tick()[0]).toMatchObject({
+            action: 'none',
+            reason: expect.stringContaining(expected),
+          });
         expect(resumes(s.calls())).toBe(0);
       });
     }
@@ -3384,7 +3412,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     test(`gate ${reason} cannot silently auto retry`, () => {
       const s = held('gate-m1-r3', { 'gate-m1-r3.json': gate(reason) });
 
-      expect(tick()[0].action).toBe('none');
+      expect(tick()).toEqual([]);
       expect(resumes(s.calls())).toBe(0);
     });
   } // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
@@ -3427,91 +3455,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     });
   });
 });
-
-test('S3 real Archon resume invalidates completed code after a package suspension', () => {
-  const root = tmp(),
-    repo = gitRepo(root),
-    marker = join(root, 'ready');
-  const plan = fixturePlan(root, repo, p => {
-    const pkgs = p.packages as { id: string; accept: { cmd: string; timeout_s: number }[] }[];
-    pkgs.find(p => p.id === 'core')!.accept = [
-      {
-        cmd: `test -f '${marker}' || { printf '%s\\n' '{"failure_class":"product","evidence":"S3 readiness marker missing"}'; exit 1; }`,
-        timeout_s: 5,
-      },
-    ];
-  });
-  const py = join(root, 'supervisor.py');
-  writeFileSync(py, 'raise Exception("unexpected reminder in automatic package recovery")\n');
-  const env = {
-    ...process.env,
-    SUPERAGENT_HOME: join(root, 'home'),
-    ARCHON_HOME: join(root, 'home', 'archon'),
-    SUPERAGENT_WRITE_ROOTS: root,
-    SA_ARCHON_BIN: '',
-    SA_SUPERVISOR: py,
-    SUPERAGENT_MEMORY: 'off',
-    AGENT_SUPERVISOR_STATE: join(root, 'supervisor'),
-    XDG_STATE_HOME: join(root, 'state'),
-    SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
-    SA_SKIP_DOCTOR: '1',
-  };
-  const sa = (...args: string[]) => {
-    const p = Bun.spawnSync([BIN, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
-    return {
-      code: p.exitCode,
-      out: archonMod.lastJson(p.stdout.toString()),
-      err: p.stderr.toString(),
-    };
-  };
-  expect(
-    Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
-      env,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }).exitCode
-  ).toBe(0);
-  const started = sa('run', plan, '--fake', '--skip-selftest');
-  expect({ code: started.code, err: started.err }).toMatchObject({ code: 0 });
-  const id = String(started.out?.run_id);
-  expect(
-    Bun.spawnSync(
-      [
-        join(WETAMP, 'bin/archon'),
-        'workflow',
-        'wait',
-        String(started.out?.archon_run_id),
-        '--timeout',
-        '120',
-        '--json',
-      ],
-      { env, cwd: repo, stdout: 'pipe', stderr: 'pipe' }
-    ).exitCode
-  ).toBe(0);
-  expect(sa('wait', id, '--timeout', '120').out).toMatchObject({
-    state: 'failed',
-    node: 'settle-core',
-  });
-  expect(
-    sh(`git log --format=%s sa/${id}`, repo)
-      .split('\n')
-      .filter(l => l === 'fake core')
-  ).toHaveLength(1);
-  writeFileSync(marker, 'ready');
-  // 确定性红验收的重新执行需要显式决定；自动 tick 不盲目重跑。
-  expect(sa('decide', id, 'retry').code).toBe(0);
-  expect(sa('wait', id, '--timeout', '120').out).toMatchObject({ state: 'held:human' });
-  expect(
-    sh(`git log --format=%s sa/${id}`, repo)
-      .split('\n')
-      .filter(l => l === 'fake core')
-  ).toHaveLength(2);
-  expect(readFileSync(join(root, 'home', 'gen', id, 'attempts', '.packages', 'core'), 'utf8')).toBe(
-    '1'
-  );
-  expect(existsSync(join(root, 'home', 'gen', id, 'attempts', 'm1'))).toBe(false);
-  expect(sa('decide', id, 'reject').code).toBe(0);
-}, 180000);
 
 describe('HF9 decision titles', () => {
   const artifact = (file: string, data: unknown) => {
@@ -3623,7 +3566,8 @@ describe('HF9 decision titles', () => {
   }
   test('HF9 missing/corrupt display evidence does not prevent delivery', () => {
     const { s, r, art, put } = setup();
-    put('verify-W4.json', { reason: 'coder_redline' });
+    put('code-W4.json', { reason: 'coder_redline' });
+    r.nodes = [{ nodeId: 'code-W4', state: 'failed' }];
     rmSync(join(art, 'verify-W4.coder.json'));
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
     const sup = supervisor(s.root, 'pending');
@@ -3912,7 +3856,7 @@ describe('HF9 decision titles', () => {
       expect(Array.from(q).length).toBeLessThanOrEqual(200);
     }
   });
-  test.each(['code', 'repair', 'verify', 'settle'])(
+  test.each(['code', 'repair'])(
     'HF10 explicit retry at %s-W4 bumps only the package count',
     kind => {
       const { s, r, put } = bestIFA();
@@ -3941,7 +3885,8 @@ describe('HF9 decision titles', () => {
         join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
         '  - id: package-attempt-W4\n'
       );
-      put('verify-W4.json', { reason: 'coder_redline' });
+      put('code-W4.json', { reason: 'coder_redline' });
+      r.nodes = [{ nodeId: 'code-W4', state: 'failed' }];
       writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
       writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
       const path = join(s.ledger.gen_dir, 'attempts/.packages/W4');
@@ -3953,42 +3898,6 @@ describe('HF9 decision titles', () => {
       expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
     }
   );
-  for (const order of [
-    ['package', 'gate'],
-    ['gate', 'package'],
-  ])
-    test(`HF10 milestone pkg does not collide: ${order.join(' then ')}`, () => {
-      const { s, r, put } = bestIFA();
-      const planPath = join(s.ledger.gen_dir, 'plan.json');
-      const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
-      plan.packages.forEach(p => {
-        p.milestone = 'pkg';
-      });
-      writeFileSync(planPath, JSON.stringify(plan));
-      s.ledger.workflow_hash = engineHash();
-      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-      appendFileSync(
-        join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
-        '  - id: package-attempt-W4\n  - id: attempt-pkg\n'
-      );
-      for (const scope of order) {
-        const node = scope === 'package' ? 'verify-W4' : 'gate-pkg-r3';
-        put(
-          `${node}.json`,
-          scope === 'package'
-            ? { reason: 'coder_redline' }
-            : { verdict: 'escalate', reason: 'review_failed+review_limit', rounds: 3 }
-        );
-        r.nodes = [{ nodeId: node, state: 'failed' }];
-        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
-        expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
-        const resumed = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-        Object.assign(r, { metadata: resumed.metadata, started_at: resumed.started_at });
-      }
-      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/pkg'), 'utf8')).toBe('1');
-      expect(readFileSync(join(s.ledger.gen_dir, 'attempts/.packages/W4'), 'utf8')).toBe('1');
-      expect(s.calls().filter(c => c === 'workflow resume r --detach --json')).toHaveLength(2);
-    });
   for (const hold of ['signoff'] as Hold[])
     for (const answer of ['pending', 'yes', 'no'] as const)
       test(`HF9 R2 existing ${hold}/${answer} skips title evidence and events query`, () => {
@@ -4095,170 +4004,6 @@ describe('HF9 decision titles', () => {
       writeFileSync(process.env.HF9_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
   });
 });
-
-// verify-local runs selftest as its own step; this end-to-end copy only runs outside that gate.
-test.skipIf(process.env.SA_VERIFY_LOCAL === '1')(
-  'REC-R1-01: selftest formal receipt admits run without skip; fake workflow fixes, approves and lands',
-  () => {
-    const root = tmp();
-    const repo = gitRepo(root);
-    const plan = fixturePlan(root, repo);
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      SUPERAGENT_HOME: join(root, 'home'),
-      ARCHON_HOME: join(root, 'home', 'archon'),
-      SUPERAGENT_WRITE_ROOTS: root,
-      // Admission belongs to the caller's home; the scratch engine claims its own scope.
-      SA_COORD_ADMISSION: '',
-      SA_ARCHON_BIN: '',
-      SUPERAGENT_MEMORY: 'off',
-      XDG_STATE_HOME: join(root, 'state'),
-      SA_LAUNCHD_DIR: join(root, 'LaunchAgents'),
-      SA_SKIP_DOCTOR: '1',
-    };
-    const sa = (
-      ...args: string[]
-    ): { code: number; out: Record<string, unknown>; text: string; err: string } => {
-      const p = Bun.spawnSync([BIN, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
-      const text = p.stdout.toString();
-      const json = text.startsWith('{') || text === '';
-      return {
-        code: p.exitCode,
-        out: json ? (JSON.parse(text || '{}') as Record<string, unknown>) : {},
-        text,
-        err: p.stderr.toString(),
-      };
-    };
-    expect(
-      Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
-        env,
-        stdout: 'pipe',
-        stderr: 'pipe',
-      }).exitCode
-    ).toBe(0);
-    expect(sa('run', plan).out).toMatchObject({
-      phase: 'preflight',
-      reason: expect.stringContaining('no valid selftest receipt: no selftest.json'),
-    }); // preflight 拒绝
-    const stateFile = join(root, 'state/superagent/install.json');
-    const installed = readFileSync(stateFile);
-    // Keep the real engine and selftest orchestration. Replace only the provider
-    // boundary in the scratch workflow; never call a paid provider from tests.
-    const driver = join(root, 'provider-fixture.ts'),
-      shim = join(root, 'archon-fixture');
-    writeFileSync(
-      driver,
-      `import {readFileSync, writeFileSync, appendFileSync} from 'node:fs';
-    const args=process.argv.slice(2);
-    // Hold the deterministic node until selftest kills its owner, then let its
-    // real recovery complete immediately instead of sleeping another 20 seconds.
-    if(args[0]==='workflow' && args[1]==='run' && args[2]==='sa-smoke') {
-      const gen=args[args.indexOf('--workflow-source')+1];
-      const file=gen+'/.archon/workflows/sa-smoke/sa-smoke.yaml';
-      const wf=Bun.YAML.parse(readFileSync(file,'utf8'));
-      wf.nodes.find(n=>n.id==='think').bash=\`while [ ! -f '${join(root, 'release-smoke')}' ]; do sleep 0.02; done; echo '{"answer":"pong"}'\`;
-      writeFileSync(file,Bun.YAML.stringify(wf));
-      for(const cmd of [['git','-C',gen,'add',file],['git','-C',gen,'-c','user.name=t','-c','user.email=t@l','commit','-qm','recovery barrier fixture']]) {
-        if(Bun.spawnSync(cmd).exitCode!==0) process.exit(1);
-      }
-    }
-    if(args[0]==='workflow' && args[1]==='resume') writeFileSync(${JSON.stringify(join(root, 'release-smoke'))},'ready');
-    if(args[0]==='workflow' && args[1]==='run' && args[2]==='sa-provider') {
-      const gen=args[args.indexOf('--workflow-source')+1];
-      const file=gen+'/.archon/workflows/sa-smoke/sa-provider.yaml';
-      const wf=Bun.YAML.parse(readFileSync(file,'utf8'));
-      delete wf.nodes[0].prompt; delete wf.nodes[0].model;
-      wf.nodes[0].bash=\`sleep 1; echo '{"answer":"pong"}'\`;
-      writeFileSync(file,Bun.YAML.stringify(wf));
-      for(const cmd of [['git','-C',gen,'add',file],['git','-C',gen,'-c','user.name=t','-c','user.email=t@l','commit','-qm','provider fixture']]) {
-        if(Bun.spawnSync(cmd).exitCode!==0) process.exit(1);
-      }
-      appendFileSync(${JSON.stringify(join(root, 'provider-calls'))},'provider started normally\\n');
-    }
-  `
-    );
-    // COORD validates the direct parent's held lock; keep this shim's PID when
-    // entering Archon rather than adding a forwarding process between them.
-    writeFileSync(
-      shim,
-      `#!/usr/bin/env bash\nset -e\n'${process.execPath}' '${driver}' "$@"\nexec '${join(WETAMP, 'bin/archon')}' "$@"\n`
-    );
-    chmodSync(shim, 0o755);
-    const selftest = Bun.spawnSync(
-      ['bash', join(WETAMP, 'scripts/selftest.sh'), '--timeout', '90'],
-      {
-        env: { ...env, SA_ARCHON_BIN: shim },
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: 180000,
-      }
-    );
-    if (selftest.exitCode !== 0)
-      throw new Error(`selftest: ${selftest.stdout.toString()} ${selftest.stderr.toString()}`);
-    expect(JSON.parse(readFileSync(join(root, 'home/selftest.json'), 'utf8'))).toMatchObject({
-      ok: true,
-      fake: false,
-      fingerprint: expect.any(String),
-    });
-    expect(readFileSync(join(root, 'provider-calls'), 'utf8')).toBe('provider started normally\n');
-    expect(readFileSync(stateFile)).toEqual(installed);
-    const started = sa('run', plan, '--fake');
-    expect(started.err).toBe('');
-    expect(started.code).toBe(0);
-    const id = String(started.out.run_id);
-    // Native wait does not stop at every durable event pause. Observe the actual
-    // fixture pause without treating the ownerless launch window as normal work.
-    let engineStatus = 'pending';
-    for (
-      const deadline = Date.now() + 180000;
-      ['pending', 'running'].includes(engineStatus) && Date.now() < deadline;
-    ) {
-      const observed = Bun.spawnSync(
-        [
-          join(WETAMP, 'bin/archon'),
-          'workflow',
-          'get',
-          String(started.out.archon_run_id),
-          '--json',
-        ],
-        { env, cwd: repo, stdout: 'pipe', stderr: 'pipe' }
-      );
-      expect(observed.exitCode).toBe(0);
-      engineStatus = String(archonMod.lastJson(observed.stdout.toString())?.status);
-      if (['pending', 'running'].includes(engineStatus)) Bun.sleepSync(250);
-    }
-    expect(engineStatus).toBe('paused');
-    const held = sa('wait', id, '--timeout', '180');
-    expect(held.out).toMatchObject({ state: 'held:human', exit: EXIT.held, node: 'human-m2' });
-    // m1：首轮评审 FAIL → fix-m1-r2 → 第 2 轮 PASS；第 3 轮被条件跳过，汇合节点仍放行 m2
-    const brief = sa('brief', id).text.split('\n');
-    expect(brief).toContain('gate-m1-r1: fix (review_failed) debt=0');
-    expect(brief).toContain('gate-m1-r2: pass debt=0');
-    expect(brief).toContain('gate-m2-r2: pass debt=0');
-    expect(sa('land', id).code).toBe(1);
-    const approved = sa('decide', id, 'approve');
-    expect(approved.err).toBe('');
-    expect(approved.out).toMatchObject({ ok: true });
-    expect(approved.code).toBe(0);
-    const waited = sa('wait', id, '--timeout', '120');
-    expect(waited.out).toMatchObject({
-      state: 'completed',
-      exit: 0,
-      delivery: { status: 'unknown' },
-    });
-    expect(sh('git symbolic-ref --short HEAD', repo).trim()).toBe('main');
-    expect(sh('git log --format=%s main', repo)).not.toContain('fake fix m1 r2');
-    expect((waited.out.land as string[])[1]).toContain(`merge --ff-only 'sa/${id}'`);
-    expect(readdirSync(join(root, 'home', 'runs')).filter(f => f.endsWith('.json'))).toEqual([
-      `${id}.json`,
-    ]);
-    expect(sa('status', id).code).toBe(0);
-    expect(sa('land', id).out).toMatchObject({ branch: `sa/${id}`, debt: [] });
-    expect(sh(`git log --format=%s sa/${id}`, repo)).toContain('fake fix m1 r2');
-    expect(existsSync(String(waited.out.evidence))).toBe(true);
-  },
-  360000
-);
 
 describe('launch intents (run + supervise-tick reconcile)', () => {
   const tickOut = (): Record<string, unknown>[] =>

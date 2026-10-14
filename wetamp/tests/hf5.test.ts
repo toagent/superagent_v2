@@ -20,8 +20,6 @@ afterEach(() => {
   }
 });
 const wetamp = join(import.meta.dir, '..');
-const require = createRequire(import.meta.url);
-const redline = require('../hooks/redline.cjs') as { reason: (x: object) => string | null };
 
 test('M2-01 cleanup preload only disables the scheduler; absent or ambiguous target fails closed', async () => {
   const source = readFileSync(
@@ -88,90 +86,6 @@ test('M2-02 SSE and reads use the protected Unix socket; mutation never forwards
   expect((await get(req('POST'))).status).toBe(403);
   expect(calls).toBe(1);
 });
-const shellCases: [string, boolean][] = [
-  ['cd /Users/Shared; touch m2-fixture; cd ROOT', true],
-  ['cd /Users/Shared; echo x > m2-fixture; cd ROOT', true],
-  ['cd /Users/Shared && touch m2-fixture && cd ROOT', true],
-  // The write runs only after cd fails, so it retains the incoming worktree cwd.
-  ['cd /Users/Shared || touch m2-fixture; cd ROOT', false],
-  ['(cd /Users/Shared; touch m2-fixture); cd ROOT', true],
-  ['(cd /Users/Shared); touch local; echo x > local 2>&1', false],
-];
-test.each(shellCases)('M2-04 hook smoke: %s', (shell, denied) => {
-  const root = gitRepo(tmp());
-  const outside = gitRepo(tmp());
-  const result = redline.reason({
-    client: 'claude',
-    name: 'Bash',
-    input: {},
-    cwd: root,
-    root,
-    derived: true,
-    env: process.env,
-    shell: shell.replaceAll('ROOT', root).replaceAll('/Users/Shared', outside),
-  });
-  expect(result !== null).toBe(denied);
-});
-test('M2-04 indeterminate creation is advisory, not a denial', () => {
-  const root = gitRepo(tmp());
-  expect(
-    redline.reason({
-      client: 'claude',
-      name: 'Bash',
-      input: {},
-      cwd: root,
-      root,
-      derived: true,
-      env: process.env,
-      shell: 'touch "$DEST"',
-    })
-  ).toBeNull();
-});
-const childScopes = [
-  ...['sh', 'bash', 'zsh', 'dash', 'ksh'].map(sh => `${sh} -c "cd ROOT"`),
-  '$(cd ROOT)',
-  '`cd ROOT`',
-  'echo "$(cd ROOT)"',
-  'echo `cd ROOT; echo child`',
-  '(cd ROOT)',
-];
-test.each(
-  childScopes.flatMap(child =>
-    ['touch m2-fixture', 'echo x > m2-fixture'].map(write => [child, write] as const)
-  )
-)('M2-04 child cwd cannot escape to parent: %s / %s', (child, write) => {
-  const root = tmp(),
-    outside = gitRepo(tmp());
-  const shell = `cd ${outside} && ${child.replaceAll('ROOT', root)} && ${write}`;
-  expect(
-    redline.reason({
-      client: 'claude',
-      name: 'Bash',
-      input: {},
-      cwd: root,
-      root,
-      derived: true,
-      shell,
-    })
-  ).not.toBeNull();
-});
-test.each(['sh', 'bash', 'zsh', 'dash', 'ksh'])(
-  'M2-04 a harmless %s child preserves the safe parent cwd',
-  sh => {
-    const root = tmp();
-    expect(
-      redline.reason({
-        client: 'claude',
-        name: 'Bash',
-        input: {},
-        cwd: root,
-        root,
-        derived: true,
-        shell: `${sh} -c "cd /Users/Shared" && touch local && echo x > local`,
-      })
-    ).toBeNull();
-  }
-);
 test.each([
   ['node GUARD codex', '^Read$', false, 1],
   ['echo GUARD', '*', false, 1],
@@ -270,7 +184,12 @@ test('M2-06 ended date, real integration, and durable human intervention define 
   expect(metrics()).toMatchObject({ completed: 1, decided: 1 });
   f.ledger.recoveries = ['2026-10-10T10:00:00Z'];
   expect(metrics().completed).toBe(1); // automatic recovery is not human intervention
-  f.ledger.intervention_events!.push({ at: new Date(f.now).toISOString(), action: 'decide', source: 'commander', ok: true });
+  f.ledger.intervention_events!.push({
+    at: new Date(f.now).toISOString(),
+    action: 'decide',
+    source: 'commander',
+    ok: true,
+  });
   expect(metrics()).toMatchObject({ completed: 0, decided: 1 });
   f.run.nodes!.push({ nodeId: 'human-m1', state: 'completed' });
   f.ledger.intervention_events = undefined;

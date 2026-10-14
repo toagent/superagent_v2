@@ -1,5 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { spyOn, afterAll } from 'bun:test';
+import * as coordination from '../src/coord';
 import {
   chmodSync,
   existsSync,
@@ -43,6 +45,12 @@ import { type Plan } from '../src/plan';
 import { inspectBase } from '../src/preflight';
 import { cockpitSignals, type Asks } from '../src/cockpit-signals';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+const fixtureEngine = gitRepo(tmp());
+const originalCleanEngine = coordination.cleanEngine;
+const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() =>
+  originalCleanEngine(fixtureEngine)
+);
+
 import e1 from './incidents/e1-settle.json';
 import e2 from './incidents/e2-asks.json';
 import replay from './incidents/ev1-memory.json';
@@ -539,7 +547,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
       expect(triggered(e, undefined, undefined, NOW)).toBe(true);
     expect(triggered(base, new Date(NOW - 1800001).toISOString(), undefined, NOW)).toBe(true);
     expect(triggered(base, undefined, 30000, NOW)).toBe(true);
-    expect(triage({ reasons: ['budget_tokens_exceeded'], signals: zeros })).toBe('plan');
+    expect(triage({ reasons: ['budget_tokens_exceeded'], signals: zeros })).toBe('engine');
     expect(triage({ reasons: ['review_failed'], signals: zeros })).toBe('role');
     expect(triage({ reasons: ['coder_output_invalid'], signals: zeros })).toBe('role');
     expect(triage({ reasons: ['coder_error:env'], signals: zeros })).toBe('engine');
@@ -1087,7 +1095,7 @@ describe('FIXD review regressions', () => {
     success => {
       const repo = gitRepo(tmp()),
         script = join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts');
-      // An unclassified failure must stay unknown and blocked through every producer artifact.
+      // Preserve unknown failure evidence while the producer consumes its one repair attempt.
       const cmd = success ? 'exit 0' : 'exit 1';
       plan.packages[0].accept = [{ cmd, timeout_s: 5 }];
       plan.deadline = new Date(Date.now() + 3600000).toISOString();
@@ -1120,7 +1128,7 @@ describe('FIXD review regressions', () => {
         expect(child.exitCode).toBe(exitCode);
         return readFileSync(join(artifactsOf(raw), `${tag}.json`), 'utf8');
       };
-      const accept = runCheck('accept', 'verify-core', {}, success ? 0 : 1);
+      const accept = runCheck('accept', 'verify-core');
       expect(JSON.parse(accept)).toMatchObject({
         ok: success,
         reason: success ? null : 'acceptance_failed',
@@ -1129,7 +1137,7 @@ describe('FIXD review regressions', () => {
       });
       if (!success)
         expect(JSON.parse(accept)).toMatchObject({
-          disposition: 'suspend',
+          disposition: 'repair',
           decision: { kind: 'block' },
           failures: [{ command: cmd, failure_class: 'unknown' }],
         });
@@ -1144,8 +1152,8 @@ describe('FIXD review regressions', () => {
       );
       expect(JSON.parse(settle)).toMatchObject({
         ok: success,
-        reason: success ? null : 'acceptance_failed',
-        disposition: success ? 'advance' : 'suspend',
+        reason: success ? null : 'repair_exhausted:acceptance_failed',
+        disposition: success ? 'advance' : 'fail',
         decision: { kind: success ? 'advance' : 'block' },
       });
       const gate = runCheck(
@@ -1158,12 +1166,12 @@ describe('FIXD review regressions', () => {
           INPUTS_MILESTONE: 'm1',
           INPUTS_NEXT: '',
         },
-        success ? 0 : 1
+        0
       );
       expect(JSON.parse(gate)).toMatchObject({
-        verdict: success ? 'pass' : 'escalate',
+        verdict: success ? 'pass' : 'fix',
         reason: success ? null : 'acceptance_failed',
-        decision: { kind: success ? 'advance' : 'block' },
+        decision: { kind: success ? 'advance' : 'repair' },
         grade: success ? 'PASS' : null,
       });
       raw.status = success ? 'completed' : 'failed';
@@ -1181,7 +1189,9 @@ describe('FIXD review regressions', () => {
       writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
       const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
       expect(folded.acceptance).toEqual([{ cmd, ok: success }]);
-      expect(folded.reasons).toEqual(success ? [] : ['acceptance_failed']);
+      expect(folded.reasons).toEqual(
+        success ? [] : ['acceptance_failed', 'repair_exhausted:acceptance_failed']
+      );
       expect(memoryTick({}, NOW, false).errors).toEqual([]);
       expect(
         JSON.parse(readFileSync(join(sa, 'memory/fold-index.json'), 'utf8')).terminal.incident
@@ -1409,3 +1419,5 @@ describe('FIXD review regressions', () => {
     );
   });
 });
+
+afterAll(() => engineBoundary.mockRestore());

@@ -95,7 +95,7 @@ const snap: Snapshot = {
     },
   },
   asks: {
-    'xiaopan-run:coder': { status: 'pending' },
+    'xiaopan-run:approval': { status: 'pending' },
     'sinan-run:approval': { status: 'superseded' },
   },
   activity: {
@@ -109,8 +109,10 @@ const snap: Snapshot = {
     notes: [],
   },
 };
-snap.rows[1].askReason = 'coder';
-snap.rows[1].engine!.dispositions = [{ at: iso(-3720), reason: 'coder', action: 'ask', ok: true }];
+snap.rows[1].askReason = 'approval';
+snap.rows[1].engine!.dispositions = [
+  { at: iso(-3720), reason: 'approval', action: 'ask', ok: true },
+];
 for (const width of [62, 46])
   test(`${String(width)} columns: 2 runs + job + pending/superseded ask snapshot`, () => {
     const frame = renderToString(createElement(Frame, { snap, width, height: 100, now }), {
@@ -122,8 +124,8 @@ for (const width of [62, 46])
     const roles = cockpit(snap, now.getTime()).active.map(r => r.role);
     expect(roles).toContain('将军·sol6.1');
     expect(roles).toContain('军师·astra');
-    expect(frame).toContain('是=再跑 否=终止 已等1h02m');
-    expect(frame).toContain(width >= 60 ? '编码未通过' : '编码…');
+    expect(frame).toContain('是=批准 否=终止 已等1h02m');
+    expect(frame).toContain(width >= 60 ? '等待批准' : '等待…');
     expect(frame).not.toMatch(/心跳|tok |今日结果|终端|预算|q退出/);
     for (const line of frame.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   });
@@ -151,7 +153,7 @@ test('needs never infer questions from held states; unanswered asks remain visib
       cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, state })) }, now.getTime()).needs
     ).toHaveLength(1);
   expect(
-    cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, askReason: 'approval' })) }, now.getTime())
+    cockpit({ ...snap, rows: snap.rows.map(r => ({ ...r, askReason: 'coder' })) }, now.getTime())
       .needs
   ).toEqual([]);
   const empty = renderToString(

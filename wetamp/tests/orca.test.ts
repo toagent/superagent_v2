@@ -33,7 +33,7 @@ const view = (active: CockpitRun[] = [], needs: CockpitRun[] = []): Cockpit => (
   tokenRows: null,
   metrics: { completed: 0, decided: 0, firstPass: 0, asks: 0, debt: 0 },
 });
-const frame = (active: string[] = [], needs: string[] = [], why = 'review_limit'): Snapshot => ({
+const frame = (active: string[] = [], needs: string[] = [], why = 'approval'): Snapshot => ({
   at: '2026-10-11T00:00:00Z',
   summary: {},
   rows: [...new Set([...active, ...needs])].map(id => ({
@@ -122,12 +122,12 @@ describe('orcaView', () => {
     const v = orcaView(
       view(
         [item('BestIFA'), item('wt-hf10', { stage: '评审' })],
-        [item('xiaopan-translator', { reason: '三轮评审用尽' })]
+        [item('xiaopan-translator', { reason: '评审轮次用尽' })]
       )
     );
     expect(v.status).toBe('in-review');
     expect(v.comment).toBe(
-      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? xiaopan-translator 三轮评审用尽｜BestIFA 编码 m1/1｜wt-hf10 评审'
+      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? xiaopan-translator 评审轮次用尽｜BestIFA 编码 m1/1｜wt-hf10 评审'
     );
     expect(v.comment).not.toMatch(/%|12m05s|99K|private question|3h/);
   });
@@ -140,7 +140,7 @@ describe('orcaView', () => {
     );
     expect(v.comment.length).toBeLessThanOrEqual(200);
     expect(v.comment).toStartWith(
-      '跑 6 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? need 三轮评审用尽｜p0-'
+      '跑 6 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? need 评审轮次用尽｜p0-'
     );
     expect(v.comment).toEndWith('｜…+5');
     expect(orcaView(view([item('项'.repeat(300))])).comment).toBe(
@@ -160,7 +160,7 @@ describe('orcaView', () => {
     );
     expect(v.comment).not.toContain('secret-node-summary');
     expect(v.comment).toContain('待处置');
-    expect(v.needs).toEqual(['["a","三轮评审用尽"]', '["b","待处置"]']);
+    expect(v.needs).toEqual(['["a","评审轮次用尽"]', '["b","待处置"]']);
   });
 });
 
@@ -311,7 +311,7 @@ describe('syncOrca (injected only)', () => {
   test('same run with a new registered need marks unread', async () => {
     const s = harness(frame([], ['held']));
     await syncOrca(s.deps);
-    s.h.snapshot = frame([], ['held'], 'budget');
+    s.h.snapshot = frame([], ['held'], 'signoff');
     await syncOrca(s.deps);
     expect(s.sets().at(-1)?.args).toContain('--unread');
   });

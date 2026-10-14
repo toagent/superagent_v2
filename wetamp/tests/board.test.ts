@@ -768,7 +768,33 @@ test('summarize, report and the board share one summary', async () => {
   );
   const f = ledger('f', { status: 'failed', nodes: [{ nodeId: 'verify-a', state: 'failed' }] });
   // Report-only metadata is separate from the shared summarize/board counters.
-  const { usage, metrics, interventions, repo_missing, ...expected } = report();
+  const {
+    usage,
+    metrics,
+    interventions,
+    repo_missing,
+    decisions,
+    requirements,
+    cancellations,
+    demands,
+    critical_path,
+    measurement,
+    provider_timing,
+    slow_nodes,
+    jobs,
+    recorded_blockers,
+    ...expected
+  } = report();
+  expect(decisions).toEqual({});
+  expect(requirements).toEqual({ g: {}, f: {} });
+  expect(measurement).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
+  expect(provider_timing).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
+  expect(slow_nodes).toEqual([]);
+  expect(recorded_blockers).toEqual([]);
+  expect(cancellations).toBeDefined();
+  expect(demands).toBeDefined();
+  expect(critical_path).toBeDefined();
+  expect(jobs).toBeDefined();
   expect(repo_missing).toEqual([]);
   expect(interventions).toMatchObject({ by_run: { g: 'unknown', f: 'unknown' }, unknown: 2 });
   expect(usage).toMatchObject({ total: { calls: 0, coverage: '0/0', input: 'unknown' } });
@@ -785,7 +811,8 @@ test('summarize, report and the board share one summary', async () => {
   }));
   expect(summarize(runs)).toEqual(expected);
   expect((await createLoader()(50)).summary).toEqual(expected);
-  expect(metrics).toEqual(cockpit(await createLoader()(50)).metrics);
+  expect(metrics).toMatchObject({ completed: 1, decided: 'unknown', asks: 'unknown', debt: 1 });
+  expect(cockpit(await createLoader()(50)).metrics).toMatchObject({ decided: 0, asks: 0 });
 });
 
 test('R1-05: actual board loader projects takeover owner rather than launcher, including cross-host unknown', async () => {
@@ -847,9 +874,10 @@ test('R1-1: pending asks follow real engine hold mapping, including failed coder
       );
     }
     const snap = snapshotOf([{ ledger: l, run }], now);
-    expect(snap.rows[0]?.askReason).toBe(reason);
+    const asks = paused;
+    expect(snap.rows[0]?.askReason).toBe(reason === 'coder' ? 'coder' : asks ? reason : undefined);
     snap.asks = { [`${reason}:${reason}`]: { status: 'pending' } };
-    expect(cockpit(snap, now).needs.map(r => r.id)).toEqual([reason]);
+    expect(cockpit(snap, now).needs.map(r => r.id)).toEqual(asks ? [reason] : []);
     for (const status of ['completed', 'cancelled', 'running'] as const) {
       const resumed = snapshotOf(
         [{ ledger: l, run: { ...run, status, metadata: {}, nodes: [] } }],

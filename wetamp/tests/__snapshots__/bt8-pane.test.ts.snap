@@ -3,7 +3,7 @@
 exports[`62 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
 "跑 3 · 等你 1 · 僵死 0 · ETA ~14m · 异常 0
 需要你
-? xiaopan·xia…/revi…·编码未通过 是=再跑 否=终止 已等1h02m
+? xiaopan·xia…/revi…·等待批准 是=批准 否=终止 已等1h02m
 进行中
 sinan · IIQE 题目清单报告 · code-a (编码 m2/3) · 已用 1h00m ·…
 xiaopan · 启动配置烘焙 · review-m2-r1 (评审 r1) · 已用 1h00m …
@@ -13,7 +13,7 @@ xiaopan · 启动配置烘焙 · 编码 · 已用 10m00s · 33% 剩~20m · 第�
 exports[`46 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
 "跑 3 · 等你 1 · 僵死 0 · ETA ~14m · 异常 0
 需要你
-? xiao…·x…/r…·编码… 是=再跑 否=终止 已等1h02m
+? xiao…·x…/r…·等待… 是=批准 否=终止 已等1h02m
 进行中
 sinan · IIQE 题目清单报告 · code-a (编码 m2/3…
 xiaopan · 启动配置烘焙 · review-m2-r1 (评审 r…

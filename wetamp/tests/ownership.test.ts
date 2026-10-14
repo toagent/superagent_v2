@@ -219,6 +219,10 @@ test('job exec persists launcher metadata from matching heartbeat; no prompt/arg
   mkdirSync(bin);
   mkdirSync(join(home, 'live'), { recursive: true });
   writeFileSync(
+    join(home, 'relay-quota.json'),
+    JSON.stringify({ at: Date.now(), claude_daily_usd: 0 })
+  );
+  writeFileSync(
     join(home, 'live', 'claude.json'),
     JSON.stringify({
       pid: process.pid,
@@ -245,6 +249,7 @@ test('job exec persists launcher metadata from matching heartbeat; no prompt/arg
       env: {
         ...process.env,
         SUPERAGENT_HOME: home,
+        SUPERAGENT_RELAY_QUOTA: 'off',
         ARCHON_HOME: join(home, 'archon'),
         PATH: `${bin}:${process.env.PATH}`,
       },

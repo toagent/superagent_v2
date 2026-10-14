@@ -228,9 +228,9 @@ test('EFFICIENCY_BUDGET parallel batches, edit clock and longest gap include win
     first_edit_ms: null,
   });
   expect(providerTiming('r', [row(0, 0, message), row(1, 180000, message)])[0]).toMatchObject({
-    model_turns: 0,
     longest_gap_ms: 180000,
-    budget: { over: false },
+    model_turns: 'unknown',
+    budget: { over: false, reasons: [] },
   });
 });
 

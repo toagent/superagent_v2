@@ -202,7 +202,7 @@ test('current and adopted Archon, explicit job and interactive ownership survive
   expect(sessions.map(s => [s.owner?.kind, s.owner?.role, s.owner?.model])).toEqual([
     ['run', 'general', 'gpt-6.1-sol'],
     ['run', 'strategist', 'gpt-6-astra'],
-    ['job', 'strategist', 'gpt-6-astra'],
+    ['inferred', 'strategist', 'gpt-6-astra'],
     ['interactive', null, 'gpt-6-astra'],
   ]);
   const c = await refreshUsage('20261010', (client, mode) =>
@@ -252,7 +252,7 @@ test('active node matches unique exact worktree/start metadata, terminal and amb
   const file = join(root, 'new.json');
   writeFileSync(file, JSON.stringify(run));
   expect(usageEvidence().claims.find(c => c.id === 'inflight')?.owner).toMatchObject({
-    kind: 'run',
+    kind: 'inferred',
     role: 'general',
     model: 'gpt-6.1-sol',
     cwd: root,

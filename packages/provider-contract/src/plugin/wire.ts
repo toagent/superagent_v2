@@ -40,6 +40,7 @@ export type ProviderPluginDescriptor = z.infer<typeof providerPluginDescriptorSc
 export const HOST_ONLY_REQUEST_KEYS = [
   'abortSignal',
   'onAdmission',
+  'onModelRerouted',
 ] as const satisfies readonly (keyof SendQueryOptions)[];
 const configSchema = z.record(z.string(), z.json());
 export const nativeToolSpecSchema = z.object({

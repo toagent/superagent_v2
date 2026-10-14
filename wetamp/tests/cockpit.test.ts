@@ -205,18 +205,18 @@ test('every S3 reason translates, unknown reason survives unchanged, needs requi
   for (const k of Object.keys(REASONS)) expect(reasonText(k)).not.toBe(k);
   expect(reasonText('coder_error:task')).toBe('coder_error:task');
   const r = row('pending', 'failed', 'code-a');
-  r.askReason = 'coder';
-  r.engine!.dispositions = [{ at: iso(-180000), reason: 'coder', action: 'ask', ok: true }];
+  r.askReason = 'approval';
+  r.engine!.dispositions = [{ at: iso(-180000), reason: 'approval', action: 'ask', ok: true }];
   const c = cockpit(
     {
       ...snapshot([r, row('held', 'held:human')]),
-      asks: { 'pending:coder': { status: 'pending' } },
+      asks: { 'pending:approval': { status: 'pending' } },
     },
     now
   );
   expect(c.needs).toHaveLength(1);
   expect(c.active).toHaveLength(0);
-  expect(c.needs[0].question).toBe('编码未通过 是=再跑 否=终止');
+  expect(c.needs[0].question).toBe('等待批准 是=批准 否=终止');
   expect(c.needs[0].waiting).toBe('3m00s');
   expect(render(snapshot())).not.toContain('需要你');
 });
