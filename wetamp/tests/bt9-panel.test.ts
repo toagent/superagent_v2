@@ -380,7 +380,14 @@ test('2 runs, 1 job, pending/superseded and all four token roles render the shar
   expect(d).toMatchObject({
     at: '12:00',
     running: 2,
-    metrics: { completed: 0, decided: 1 },
+    metrics: {
+      completed: 'unknown',
+      decided: 1,
+      asks: 2,
+      debt: 'unknown',
+      firstPass: 0,
+      firstPass_unknown: 0,
+    },
     needs: [{ project: 'demo', question: '等待批准 是=批准 否=终止', waiting: '5m00s' }],
   });
   expect(d.runs.map(r => [r.id, r.role, r.state, r.url])).toEqual([

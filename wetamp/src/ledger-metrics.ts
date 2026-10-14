@@ -214,8 +214,9 @@ export function metricsOf(rows: readonly BoardRow[], summary: Record<string, unk
   const terminal = (r: BoardRow) => ['completed', 'failed', 'cancelled'].includes(r.nativeState ?? r.state) || r.state.startsWith('failed:');
   const end = (r: BoardRow) => r.completed_at ? clock(r.completed_at) : r.span?.ended_ms ?? NaN;
   const ended = rows.filter(r => terminal(r) && today(end(r)));
-  const achieved = ended.filter(r => r.state === 'completed' && r.landed && r.interventions === 0);
-  return { completed: unreadable || ended.some(r => r.state === 'completed' && (r.landed === undefined || r.interventions === undefined)) ? 'unknown' : achieved.length, decided: unreadable || rows.some(r => terminal(r) && !Number.isFinite(end(r))) ? 'unknown' : ended.length,
+  const intervened = (r: BoardRow) => r.intervened === true || (r.interventions ?? 0) > 0;
+  const achieved = ended.filter(r => r.state === 'completed' && r.landed && !intervened(r) && r.interventions === 0);
+  return { completed: unreadable || ended.some(r => r.state === 'completed' && r.landed !== false && !intervened(r) && (r.landed === undefined || r.interventions === undefined)) ? 'unknown' : achieved.length, decided: unreadable || rows.some(r => terminal(r) && !Number.isFinite(end(r))) ? 'unknown' : ended.length,
     firstPass: unreadable || achieved.some(r => !r.engine || r.engine.firstPass === 'unknown') ? 'unknown' : achieved.filter(r => r.engine?.firstPass === true).length,
     firstPass_unknown: achieved.filter(r => !r.engine || r.engine.firstPass === 'unknown').length,
     asks: unreadable || rows.some(r => !r.engine) ? 'unknown' : rows.reduce((n,r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(clock(d.at))).length ?? 0), 0),

@@ -253,7 +253,7 @@ describe('EFFICIENCY_CONSTITUTION', () => {
         { attempt_id: 'claude', invocation_id: 'claude', cmds: 1, explore_ratio: 1, mcp_calls: 0, model_turns: 0, think_gap_ms: 0 },
         { attempt_id: 'codex', invocation_id: 'codex', cmds: 1, explore_ratio: 1, mcp_calls: 0, model_turns: 0, think_gap_ms: 0 },
       ] });
-      expect(report.measurement).toMatchObject({ engine: { cumulative_ms: 6000, critical_path_ms: 100000, hold_ms: 'unknown', idle_ms: 'unknown', nodes: [
+      expect(report.measurement).toMatchObject({ engine: { cumulative_ms: 6000, wall_clock_ms: 100000, hold_ms: 'unknown', idle_ms: 'unknown', nodes: [
         { cumulative_ms: 3000, cmds: 1, execution: 'multiple' }, { cumulative_ms: 3000, cmds: 1, execution: 'multiple' },
       ] }, missing: { cumulative_ms: 'unknown', nodes: [{ execution: 'unknown', invocation: 'unknown', attempt: 'unknown', cumulative_ms: 'unknown', cmds: 'unknown', explore_ratio: 'unknown', mcp_calls: 'unknown', model_turns: 'unknown', think_gap_ms: 'unknown' }] } });
     } finally {

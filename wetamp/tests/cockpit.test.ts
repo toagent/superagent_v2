@@ -384,6 +384,15 @@ test('missing achievement, first-pass and debt evidence remains unknown', () => 
   const s = snapshot([done]);
   s.summary = {};
   expect(cockpit(s, now).metrics).toMatchObject({ completed: 'unknown', debt: 'unknown' });
+  done.landed = false;
+  expect(cockpit(s, now).metrics.completed).toBe(0);
+  delete done.landed;
+  done.intervened = true;
+  expect(cockpit(s, now).metrics.completed).toBe(0);
+  delete done.intervened;
+  done.interventions = 1;
+  expect(cockpit(s, now).metrics.completed).toBe(0);
+  done.landed = true;
   done.interventions = 0;
   done.engine!.firstPass = 'unknown';
   expect(cockpit(s, now).metrics).toMatchObject({ firstPass: 'unknown', firstPass_unknown: 1 });

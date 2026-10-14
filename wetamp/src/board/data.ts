@@ -249,7 +249,11 @@ export function rowOf(
       );
     })(),
     interventions: l.intervention_events?.length,
-    intervened: l.intervention_events ? l.intervention_events.length > 0 : undefined,
+    intervened: nodes.some(n => n.nodeId.startsWith('human-') && n.state === 'completed')
+      ? true
+      : l.intervention_events
+        ? l.intervention_events.length > 0
+        : undefined,
     nativeState: run.status,
     completed_at: run.completed_at,
     lastEvent: run.last_activity_at,

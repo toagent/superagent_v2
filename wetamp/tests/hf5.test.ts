@@ -194,6 +194,13 @@ test('M2-06 ended date, real integration, and durable human intervention define 
   f.run.nodes!.push({ nodeId: 'human-m1', state: 'completed' });
   f.ledger.intervention_events = undefined;
   expect(metrics().completed).toBe(0);
+  expect(rowOf(f.ledger, f.run, { now: f.now }).interventions).toBeUndefined();
+  f.ledger.intervention_events = [];
+  expect(metrics().completed).toBe(0); // a completed human node outweighs an empty event list
+  f.run.nodes!.at(-1)!.state = 'skipped';
+  expect(metrics().completed).toBe(1);
+  f.ledger.intervention_events = undefined;
+  expect(metrics().completed).toBe('unknown');
   f.run.status = 'cancelled';
   expect(metrics().decided).toBe(1);
 });
