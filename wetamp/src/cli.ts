@@ -1771,6 +1771,8 @@ function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks
     at: new Date().toISOString(),
   };
   saveAsks(asks);
+  const key = Object.entries(asks).find(([, value]) => value === a)?.[0];
+  if (key) deliverReceipt(l, key, a, asks);
 }
 
 /** Cancellation has a terminal engine fact. Other unacknowledged effects remain explicitly unknown. */
@@ -1854,7 +1856,7 @@ function deliverReceipt(l: Ledger, key: string, a: Ask, asks: Asks): void {
   const r = a.receipt;
   if (!r?.stage || !a.id) return; // Legacy receipts have no execution binding.
   try {
-    if (r.effect && r.stage === 'executing' && r.delivery === 'sent') {
+    if (r.effect && r.stage === 'executing') {
       const run = getRun(r.effect.engine_run, l.repo);
       if (run.id !== r.effect.engine_run) throw new Error('receipt execution identity mismatch');
       const stage =

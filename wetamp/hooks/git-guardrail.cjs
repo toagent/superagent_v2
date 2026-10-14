@@ -13,14 +13,8 @@ const redline = require('./redline.cjs'), git = require('./git-danger.cjs');
   const advisory = new Set();
   const reason = require('./shell-ast.cjs').analyze(shell, cwd, process.env, (parsed, dir) => {
     for (const argv of parsed.argvs) if (path.basename(argv[0] || '') === 'git') {
-      // Preserve the legacy adapter's manual-only policy while sharing its parser.
-      const {sub, rest} = git.gitInvocation(argv, dir, {...process.env, ...parsed.env});
-      if (sub === 'push') return redline.message('执行 git push', 'git push 须人工执行');
-      const options = rest.slice(0, rest.includes('--') ? rest.indexOf('--') : rest.length);
-      if (sub === 'commit' && options.some(v => v === '--no-verify' || /^-[^-]*n/.test(v)))
-        return redline.message('跳过 Git 提交检查', '会绕过提交护栏');
-      if (sub === 'add' && options.some(v => v === '--all' || /^-[^-]*A/.test(v)))
-        return redline.message('暂存整个工作区', '请明确指定文件或目录');
+      const manual = git.manualReason(argv, dir, {...process.env, ...parsed.env});
+      if (manual) return manual;
       const why = git.reason(argv, dir, redline.checkoutOf(cwd) || cwd, {...process.env, ...parsed.env}, deletions);
       if (why) return why;
     }

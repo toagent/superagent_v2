@@ -7,12 +7,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
+  statSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { WETAMP } from './config';
 import { createRequire } from 'node:module';
 const { withLock, atomicWrite } = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
@@ -189,11 +191,23 @@ export const GitGuardrailPlugin = async (context = {}) => ({
       tool_name: input.tool, tool_input: { ...args, command } };
     await new Promise((resolve, reject) => {
       const child = spawn('node', [${JSON.stringify(guard)}]);
-      let error = '';
+      let error = '', stdout = '';
+      child.stdout.on('data', data => { stdout += data; });
       child.stderr.on('data', data => { error += data; });
       child.on('error', reject);
       child.stdin.on('error', reject);
-      child.on('close', code => code === 0 ? resolve() : reject(new Error(error.trim() || 'Git guard unavailable')));
+      child.on('close', async code => {
+        if (code !== 0) return reject(new Error(error.trim() || 'Git guard unavailable'));
+        try {
+          if (stdout.trim()) {
+            const notice = JSON.parse(stdout);
+            if (typeof notice.systemMessage !== 'string') throw new Error('Invalid Git guard advisory');
+            if (!context.client?.app?.log) throw new Error('Git guard advisory channel unavailable');
+            await context.client.app.log({ body: { service: 'superagent', level: 'warn', message: notice.systemMessage } });
+          }
+          resolve();
+        } catch { reject(new Error('Git guard advisory unavailable or invalid')); }
+      });
       child.stdin.end(JSON.stringify(payload));
     });
   }
@@ -202,8 +216,25 @@ export default GitGuardrailPlugin;
 `;
 }
 
+/** Resolve the existing installation, never publish a temporary worktree path. */
+export function installedOpenCodeGuard(): string {
+  const entry = join(homedir(), '.local/bin/superagent');
+  try {
+    const wetamp = dirname(dirname(realpathSync(entry)));
+    const guard = join(wetamp, 'hooks/git-guardrail.cjs');
+    if (!statSync(join(wetamp, '../.git')).isDirectory() || !statSync(guard).isFile())
+      throw new Error('unstable checkout');
+    return guard;
+  } catch {
+    throw new Error(
+      'OpenCode guard needs a stable installation: run wetamp/scripts/install.sh from the permanent checkout first'
+    );
+  }
+}
+
 function installOpenCode(dryRun: boolean, stamp: string): string {
   const home = homedir();
+  const guard = installedOpenCodeGuard();
   const files = [
     [
       join(
@@ -213,11 +244,11 @@ function installOpenCode(dryRun: boolean, stamp: string): string {
         ),
         'plugins/git-guardrail.js'
       ),
-      openCodeGuard(),
+      openCodeGuard(guard),
     ],
     [
       join(home, '.wetamp/bin/git-guardrail.sh'),
-      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(V2_HOOKS + 'git-guardrail.cjs')} "$@"\n`,
+      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(guard)} "$@"\n`,
     ],
   ];
   let out = '';
@@ -256,6 +287,7 @@ function installOpenCode(dryRun: boolean, stamp: string): string {
 export function installHooks(dryRun: boolean, purge = false): string {
   let out = '';
   const stamp = utc();
+  if (!purge) installedOpenCodeGuard();
   for (const [client, file] of Object.entries(paths()) as [Client, string][]) {
     const update = (): void => {
       const exists = existsSync(file);

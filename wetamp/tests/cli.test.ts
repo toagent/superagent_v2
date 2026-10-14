@@ -2436,6 +2436,43 @@ describe('RCPT consumed decision receipts', () => {
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
   });
 
+  test('R1 received is delivered before the effect; failed executing delivery cannot suppress terminal', () => {
+    const s = stub([humanWait()]),
+      sup = supervisor(s.root, 'yes');
+    tick();
+    const signal = spyOn(archonMod, 'signalHuman').mockImplementation(() => {
+      expect(sup().some(c => c.includes('"stage":"received"'))).toBe(true);
+      return { ok: true, pid: 0, log: '' };
+    });
+    const fail = spyOn(cliMod, 'supervisor').mockImplementation(args => {
+      if (args[0] === 'ask-ack' && args.at(-1)?.includes('"stage":"executing"'))
+        throw new Error('fixture executing notification unavailable');
+      return supervisorTransport(args);
+    });
+    try {
+      tick();
+      expect(Object.values(asks(s.root))[0].receipt).toMatchObject({
+        stage: 'executing',
+        delivery: 'failed',
+      });
+      writeFileSync(
+        join(s.dir, 'get-000.json'),
+        JSON.stringify(run('completed', { completed_at: new Date().toISOString() }))
+      );
+      tick();
+      tick();
+      expect(Object.values(asks(s.root))[0].receipt).toMatchObject({
+        stage: 'succeeded',
+        delivery: 'sent',
+      });
+      expect(signal).toHaveBeenCalledTimes(1);
+      expect(sup().filter(c => c.includes('"stage":"succeeded"'))).toHaveLength(1);
+    } finally {
+      fail.mockRestore();
+      signal.mockRestore();
+    }
+  });
+
   test.each(['failed', 'completed'] as const)(
     'efficiency adopted execution %s owns the outcome; stale source failure is ignored',
     status => {
