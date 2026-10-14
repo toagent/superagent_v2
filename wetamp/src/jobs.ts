@@ -250,7 +250,7 @@ async function exec(
     started_at: new Date().toISOString(),
     state: 'queued',
   };
-  job.receipt = { enqueued_at: job.started_at };
+  const receipt = job.receipt = { enqueued_at: job.started_at };
   let child: ReturnType<typeof Bun.spawn> | undefined,
     identity: ReturnType<typeof setInterval> | undefined,
     code = 0;
@@ -275,7 +275,7 @@ async function exec(
   // Do not use that provisional state to trigger irreversible actions.
   const commit = async (terminal: Job): Promise<number> => {
     clearInterval(identity);
-    terminal.receipt = { ...job.receipt!, settled_at: new Date().toISOString() };
+    terminal.receipt = { ...receipt, settled_at: new Date().toISOString() };
     try {
       const known = interrupted;
       if (known && terminal.exit_code !== undefined) terminal = { ...terminal, exit_code: known };
@@ -295,6 +295,11 @@ async function exec(
     save(job);
     // Resolve the input before creating a checkout or spending an agent invocation.
     if (job.card && !statSync(job.card).isFile()) throw new Error('job: card must be a file');
+    // Snapshot registered input before checkout/admission; never depend on native shell env visibility.
+    const input = f.execution && job.card ? new Blob([
+      `Registered job input: ${JSON.stringify({ id: job.id, card: job.card, request_ref: job.request_ref ?? null })}\n\n`,
+      readFileSync(job.card),
+    ]) : undefined;
     if (f.worktree) {
       const repo = git(job.cwd, 'rev-parse', '--show-toplevel'), branch = f.worktree;
       const base = f.base ?? git(repo, 'symbolic-ref', '--short', 'HEAD');
@@ -345,28 +350,37 @@ async function exec(
     // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
     if (!code) await yieldEventLoop();
     if (!code && !stop.signal.aborted) {
-      job.receipt!.admitted_at = new Date().toISOString();
+      job.receipt.admitted_at = new Date().toISOString();
       save(job);
-      // Dispatched agents are headless: an inherited, never-closed stdin makes `codex exec` wait for more prompt forever.
+      // Headless jobs receive finite registered input or EOF, never an inherited terminal.
       if (f.execution) cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
-      if (!code && !stop.signal.aborted) child = Bun.spawn(cmd, {
+      // Only the scoped Claude wrapper consumes this flag; native provider args stay intact.
+      if (input && f.execution?.provider === 'claude') cmd.push('--job-input');
+      const launchSignal = stop.signal;
+      if (!launchSignal.aborted) child = Bun.spawn(cmd, {
         cwd: job.cwd,
         // Structured launch identity lets tools read the registered input directly.
         // Empty values clear a parent job's binding, including Bun's .env fallback.
         env: {
           ...process.env,
+          // Derived roles cannot be relaxed by a requested role; strategist is the native reviewer.
+          SUPERAGENT_ROLE: process.env.SUPERAGENT_ROLE && process.env.SUPERAGENT_ROLE !== 'commander'
+            ? process.env.SUPERAGENT_ROLE
+            : job.role === 'strategist' ? 'reviewer' : job.role ?? process.env.SUPERAGENT_ROLE ?? '',
           SA_JOB_ID: job.id,
           SA_JOB_CARD: job.card ?? '',
           SA_JOB_REQUEST_REF: job.request_ref ?? '',
         },
-        stdio: ['ignore', 'inherit', 'inherit'],
+        stdin: input ?? 'ignore',
+        stdout: 'inherit',
+        stderr: 'inherit',
       });
       if (child) {
       job.pid = child.pid;
       job.state = 'running';
       delete job.reason;
       job.started_at = new Date().toISOString();
-      job.receipt!.spawned_at = job.started_at;
+      job.receipt.spawned_at = job.started_at;
       save(job);
       identity = setInterval(() => {
         if (!job.session_id) {

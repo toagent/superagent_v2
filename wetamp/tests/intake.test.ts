@@ -301,11 +301,13 @@ test.each([false, true])(
     mkdirSync(art, { recursive: true });
     mkdirSync(join(dir, 'runs'));
     const frozen = JSON.stringify({
-      packages: [{
-        id: 'p',
-        accept: [{ cmd: 'old-check', timeout_s: 1 }],
-        requirements: [{ id: 'r', text: 'r', verified_by: [0] }],
-      }],
+      packages: [
+        {
+          id: 'p',
+          accept: [{ cmd: 'old-check', timeout_s: 1 }],
+          requirements: [{ id: 'r', text: 'r', verified_by: [0] }],
+        },
+      ],
     });
     const original = frozen.replace('old-check', 'new-check-not-run');
     writeFileSync(plan, frozen);
@@ -620,9 +622,27 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
   store.apply(store.input('codex', 'session', 'turn').input, []);
   expect(JSON.stringify(store.context(repo))).not.toContain('["codex","session","turn"]');
   const before = readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8');
+  for (const role of ['general', 'reviewer']) {
+    const env = { SUPERAGENT_ROLE: role };
+    expect(transport({ ...p, hook_event_name: 'SessionStart' }, 'codex', env)).toBe('');
+    expect(transport({ ...p, turn_id: `derived-${role}` }, 'codex', env)).toBe('');
+  }
+  expect(readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8')).toBe(before);
+  expect(
+    transport({ ...p, hook_event_name: 'SessionStart' }, 'codex', {
+      SUPERAGENT_ROLE: 'commander',
+    })
+  ).toContain(a);
+  expect(
+    transport({ ...p, turn_id: 'commander-turn' }, 'codex', {
+      SUPERAGENT_ROLE: 'commander',
+    })
+  ).toContain('commander-turn');
+  expect(store.input('codex', 'session', 'commander-turn').input.text).toBe(p.prompt);
+  const afterCommander = readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8');
   expect(hook(p, 'codex', { SUPERAGENT_ROLE: 'worker' })).toBe('');
   expect(hook({ ...p, agent_type: 'general', agent_id: 'child' })).toBe('');
-  expect(readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8')).toBe(before);
+  expect(readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8')).toBe(afterCommander);
   expect(
     Bun.spawnSync([
       'git',
