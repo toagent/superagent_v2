@@ -181,8 +181,14 @@ describe('job exec', () => {
   test.each([
     ['general', '', 'general'],
     ['strategist', '', 'reviewer'],
-    ['commander', 'general', 'commander'],
-    ['commander', 'reviewer', 'commander'],
+    ['commander', 'general', 'general'],
+    ['commander', 'reviewer', 'reviewer'],
+    ['commander', 'worker', 'worker'],
+    ['general', 'reviewer', 'reviewer'],
+    ['general', 'worker', 'worker'],
+    ['general', 'commander', 'general'],
+    ['strategist', 'commander', 'reviewer'],
+    ['commander', 'commander', 'commander'],
     [undefined, 'general', 'general'],
     [undefined, 'reviewer', 'reviewer'],
     [undefined, 'worker', 'worker'],
@@ -221,6 +227,22 @@ if (process.argv[2] === 'app-server') {
     const child = JSON.parse(await new Response(p.stdout as ReadableStream).text());
     expect(child.role).toBe(expected);
     if (flag === 'strategist') expect(child.args).toContain('sandbox_mode="read-only"');
+  });
+
+  test('unset parent and no requested role explicitly suppress child .env role', async () => {
+    const root = tmp(), child = join(tmp(), 'child');
+    writeFileSync(join(root, '.env'), 'SUPERAGENT_ROLE=commander\n');
+    writeFileSync(child, 'console.log(JSON.stringify({ present: "SUPERAGENT_ROLE" in process.env, role: process.env.SUPERAGENT_ROLE }));');
+    const script = `import { jobCli } from ${JSON.stringify(join(WETAMP, 'src/jobs.ts'))};
+delete process.env.SUPERAGENT_ROLE;
+process.chdir(${JSON.stringify(root)});
+process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', ${JSON.stringify(child)}]));`;
+    const p = Bun.spawn(['bun', '-e', script], {
+      cwd: WETAMP, env: { ...process.env, SA_ADMIT: 'off' }, stdout: 'pipe', stderr: 'pipe',
+    });
+    const err = await new Response(p.stderr as ReadableStream).text();
+    expect(await p.exited, err).toBe(0);
+    expect(JSON.parse(await new Response(p.stdout as ReadableStream).text())).toEqual({ present: true, role: '' });
   });
 
   test('queue receipt survives admission and distinguishes preparation from child execution', async () => {

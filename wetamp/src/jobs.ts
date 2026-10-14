@@ -356,8 +356,10 @@ async function exec(
         // Empty values clear a parent job's binding, including Bun's .env fallback.
         env: {
           ...process.env,
-          // Job identity overrides the parent; strategist is the native read-only reviewer.
-          SUPERAGENT_ROLE: job.role === 'strategist' ? 'reviewer' : job.role ?? process.env.SUPERAGENT_ROLE,
+          // Derived roles cannot be relaxed by a requested role; strategist is the native reviewer.
+          SUPERAGENT_ROLE: process.env.SUPERAGENT_ROLE && process.env.SUPERAGENT_ROLE !== 'commander'
+            ? process.env.SUPERAGENT_ROLE
+            : job.role === 'strategist' ? 'reviewer' : job.role ?? process.env.SUPERAGENT_ROLE ?? '',
           SA_JOB_ID: job.id,
           SA_JOB_CARD: job.card ?? '',
           SA_JOB_REQUEST_REF: job.request_ref ?? '',
