@@ -276,8 +276,8 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     }
   });
   // prettier-ignore
-  const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}): ReturnType<typeof Bun.spawn> =>
-    Bun.spawn(['bun', join(WETAMP, 'src/cli.ts'), ...args], {
+  const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}) =>
+    Bun.spawn([process.execPath, join(WETAMP, 'src/cli.ts'), ...args], {
       cwd,
       env: { ...process.env, SUPERAGENT_ROLE: role, SA_ADMIT: 'off', ...extraEnv },
       stdout: 'pipe',
@@ -288,37 +288,246 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     expect(files).toHaveLength(1);
     return JSON.parse(readFileSync(join(jobsDir, files[0]), 'utf8')) as Job;
   };
-  test.each(['dependencies', 'hook'])('ENV_PRECHECK worktree missing %s blocks before worker spawn', async missing => {
-    const root = tmp(), repo = gitRepo(root), marker = join(root, 'worker');
-    writeFileSync(join(repo, 'package.json'), JSON.stringify({ packageManager: 'bun@1.4.3',
-      ...(missing === 'dependencies' ? { dependencies: { example: '1' } } : {}),
-      scripts: { prepare: 'setup-hooks' } }));
-    if (missing === 'dependencies') writeFileSync(join(repo, 'bun.lock'), 'declared');
-    else {
+  const recoveryStub = (root: string, body: string): { PATH: string } => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'bun'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return { PATH: `${bin}:${process.env.PATH}` };
+  };
+  test.each(['dependencies', 'hook'])(
+    'ENV_PRECHECK worktree missing %s blocks before worker spawn',
+    async missing => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        marker = join(root, 'worker');
+      writeFileSync(
+        join(repo, 'package.json'),
+        JSON.stringify({
+          packageManager: 'bun@1.4.3',
+          ...(missing === 'dependencies' ? { dependencies: { example: '1' } } : {}),
+          scripts: { prepare: 'setup-hooks' },
+        })
+      );
+      if (missing === 'dependencies') writeFileSync(join(repo, 'bun.lock'), 'declared');
+      else {
+        mkdirSync(join(repo, '.hooks'));
+        writeFileSync(join(repo, '.hooks/pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      }
+      sh('git add package.json . && git -c user.name=t -c user.email=t@l commit -qm fixture', repo);
+      if (missing === 'hook') sh('git config core.hooksPath .hooks/_', repo);
+      const p = run(
+        [
+          'job',
+          'exec',
+          '--title',
+          'precheck',
+          '--worktree',
+          'task/env',
+          '--base',
+          'main',
+          '--',
+          'sh',
+          '-c',
+          `touch '${marker}'`,
+        ],
+        '',
+        repo,
+        recoveryStub(root, 'exit 0')
+      );
+      expect(await p.exited).toBe(78);
+      const j = only();
+      expect(j).toMatchObject({
+        state: 'failed',
+        reason: 'environment',
+        environment: { ok: false, failures: [{ failure_class: 'test_env' }] },
+      });
+      expect(j.receipt?.spawned_at).toBeUndefined();
+      expect(existsSync(marker)).toBe(false);
+      expect(j.environment?.failures[0]?.recovery).toEqual([
+        missing === 'dependencies' ? 'bun install --frozen-lockfile' : 'bun run prepare',
+      ]);
+    }
+  );
+  test.each([0, 9])(
+    'JOB_PROVISION recovery exit %s records evidence and gates worker',
+    async status => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        marker = join(root, 'worker');
+      writeFileSync(
+        join(repo, 'package.json'),
+        JSON.stringify({
+          packageManager: 'bun@1.4.3',
+          dependencies: { example: '1' },
+          scripts: { prepare: 'setup-hooks' },
+        })
+      );
+      writeFileSync(join(repo, 'bun.lock'), 'declared');
       mkdirSync(join(repo, '.hooks'));
       writeFileSync(join(repo, '.hooks/pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      sh('git add . && git -c user.name=t -c user.email=t@l commit -qm fixture', repo);
+      sh('git config core.hooksPath .hooks/_', repo);
+      const env = recoveryStub(
+        root,
+        status
+          ? `echo recovery-failed >&2\nexit ${status}`
+          : `
+test -z "$(cat)" || exit 20
+case "$*" in
+  'install --frozen-lockfile') mkdir node_modules ;;
+  'run prepare') test -d node_modules || exit 21
+    mkdir .hooks/_; cp .hooks/pre-commit .hooks/_/pre-commit ;;
+  *) exit 22 ;;
+esac`
+      );
+      const p = run(
+        [
+          'job',
+          'exec',
+          '--title',
+          'provision',
+          '--worktree',
+          'task/provision',
+          '--base',
+          'main',
+          '--',
+          'sh',
+          '-c',
+          `touch '${marker}'`,
+        ],
+        '',
+        repo,
+        env
+      );
+      expect(await p.exited).toBe(status ? 78 : 0);
+      const stderr = await new Response(p.stderr).text(),
+        j = only();
+      expect(j.provisioned?.[0]).toMatchObject({
+        cmd: 'bun install --frozen-lockfile',
+        exit: status,
+      });
+      expect(j.provisioned?.[0]?.ms).toBeGreaterThanOrEqual(0);
+      expect(existsSync(join(repo, 'node_modules'))).toBe(false);
+      expect(existsSync(join(repo, '.hooks/_'))).toBe(false);
+      expect(existsSync(marker)).toBe(!status);
+      if (status) {
+        expect(j).toMatchObject({ state: 'failed', reason: 'environment', exit_code: 78 });
+        expect(j.receipt?.spawned_at).toBeUndefined();
+        expect(j.provisioned).toHaveLength(1);
+        expect(JSON.stringify(j.environment)).toContain(
+          'recovery bun install --frozen-lockfile; exit=9'
+        );
+        expect(stderr).toContain('recovery-failed');
+        expect(stderr).toContain('exit=9');
+      } else {
+        expect(j.environment?.ok).toBe(true);
+        expect(j.receipt?.spawned_at).toBeString();
+        expect(j.provisioned?.map(p => p.cmd)).toEqual([
+          'bun install --frozen-lockfile',
+          'bun run prepare',
+        ]);
+      }
     }
-    sh('git add package.json . && git -c user.name=t -c user.email=t@l commit -qm fixture', repo);
-    if (missing === 'hook') sh('git config core.hooksPath .hooks/_', repo);
-    const p = run(['job', 'exec', '--title', 'precheck', '--worktree', 'task/env', '--base', 'main',
-      '--', 'sh', '-c', `touch '${marker}'`], '', repo);
+  );
+  test('JOB_PROVISION missing recovery leaves the new checkout untouched', async () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      marker = join(root, 'recovery');
+    writeFileSync(
+      join(repo, 'package.json'),
+      JSON.stringify({
+        packageManager: 'sh',
+        dependencies: { example: '1' },
+        scripts: { prepare: 'setup-hooks' },
+      })
+    );
+    writeFileSync(join(repo, 'bun.lock'), 'declared');
+    mkdirSync(join(repo, '.hooks'));
+    writeFileSync(join(repo, '.hooks/pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    sh('git add . && git -c user.name=t -c user.email=t@l commit -qm fixture', repo);
+    sh('git config core.hooksPath .hooks/_', repo);
+    const p = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'no recovery',
+        '--worktree',
+        'task/unknown',
+        '--base',
+        'main',
+        '--',
+        'true',
+      ],
+      '',
+      repo,
+      recoveryStub(root, `touch '${marker}'`)
+    );
     expect(await p.exited).toBe(78);
-    const j = only();
-    expect(j).toMatchObject({ state: 'failed', reason: 'environment', environment: { ok: false,
-      failures: [{ failure_class: 'test_env' }] } });
-    expect(j.receipt?.spawned_at).toBeUndefined();
+    expect(only().environment?.failures[0]?.recovery).toEqual([]);
+    expect(only().provisioned).toBeUndefined();
+    expect(only().receipt?.spawned_at).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
-    expect(j.environment?.failures[0]?.recovery).toEqual([
-      missing === 'dependencies' ? 'bun install --frozen-lockfile' : 'bun run prepare',
-    ]);
+  });
+  test('JOB_PROVISION existing checkout is never provisioned', async () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      marker = join(root, 'recovery');
+    const checkout = join(root, 'sa-task-existing');
+    sh(`git worktree add -b task/existing '${checkout}' main`, repo);
+    writeFileSync(join(checkout, 'package.json'), '{"dependencies":{"example":"1"}}');
+    const p = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'existing',
+        '--worktree',
+        'task/existing',
+        '--base',
+        'main',
+        '--',
+        'true',
+      ],
+      '',
+      repo,
+      recoveryStub(root, `touch '${marker}'`)
+    );
+    expect(await p.exited).not.toBe(0);
+    expect(only().provisioned).toBeUndefined();
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(join(checkout, 'package.json'), 'utf8')).toBe(
+      '{"dependencies":{"example":"1"}}'
+    );
   });
   test('ENV_PRECHECK worktree without dependencies or configured hooks starts worker', async () => {
-    const root = tmp(), repo = gitRepo(root), marker = join(root, 'worker');
+    const root = tmp(),
+      repo = gitRepo(root),
+      marker = join(root, 'worker');
     sh("git config core.hooksPath ''", repo);
-    const p = run(['job', 'exec', '--title', 'ready', '--worktree', 'task/ready', '--base', 'main',
-      '--', 'sh', '-c', `touch '${marker}'`], '', repo);
+    const p = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'ready',
+        '--worktree',
+        'task/ready',
+        '--base',
+        'main',
+        '--',
+        'sh',
+        '-c',
+        `touch '${marker}'`,
+      ],
+      '',
+      repo
+    );
     expect(await p.exited).toBe(0);
-    expect(only()).toMatchObject({ state: 'done', environment: { ok: true, dependencies: 'not_required' } });
+    expect(only()).toMatchObject({
+      state: 'done',
+      environment: { ok: true, dependencies: 'not_required' },
+    });
     expect(only().receipt?.spawned_at).toBeString();
     expect(existsSync(marker)).toBe(true);
   });
