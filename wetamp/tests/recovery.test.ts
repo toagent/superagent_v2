@@ -16,6 +16,176 @@ import { classify, EXIT } from '../src/cli';
 import { recoverySnapshot, unknownEffects } from '../src/recovery';
 import { WETAMP } from '../src/config';
 import { gitRepo, sh, tmp } from './helpers';
+import {
+  validateRecovery,
+  recoveryHash,
+  ledgerOf,
+  type RecoveryEvidence,
+  type Review,
+  type Accept,
+} from '../templates/.archon/scripts/sa-check';
+import type { Plan } from '../src/plan';
+
+test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse', () => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    jobs = join(root, 'jobs');
+  mkdirSync(jobs);
+  mkdirSync(join(root, 'artifacts/runs/old'), { recursive: true });
+  const save = (name: string, value: unknown) => {
+    const path = join(root, name);
+    writeFileSync(path, JSON.stringify(value));
+    return { path, sha256: recoveryHash(path) };
+  };
+  const base = sh('git rev-parse HEAD', repo).trim();
+  // Protocol fixtures stay compact so the four-round chain is visible together.
+  // prettier-ignore
+  const p: Plan = { repo, base_ref: base, budget: { weighted_tokens: 100000 }, packages: [{
+    id: 'pkg', title: 'pkg', goal: 'recover', risk: 'G2', size: 'S', scope: { write: ['README.md'] },
+    accept: [{ cmd: 'test -f README.md', timeout_s: 5 }],
+  }] };
+  // prettier-ignore
+  const original = { id: 'old', output_root: root, events: [{ event_type: 'node_completed', step_name: 'code-pkg',
+    data: { binding: { model: { requested: 'author', resolved: { source: 'provider' as const, value: 'author' } } } },
+  }] };
+  // prettier-ignore
+  const e: RecoveryEvidence = { run_id: 'operator', engine_run_id: 'old', base, candidate: '', packages: ['pkg'],
+    admission: { kind: 'owner_legacy_snapshot', reason: 'Owner admits current snapshots, not historical input hashes' },
+    plan: save('plan.json', p), policy: save('policy.json', { risk_paths: [], code_extensions: [], exempt_paths: [], budget_floor: { S: 1000 } }),
+    contracts: save('accept-inputs.json', []), exception: save('exception.json', {}), rounds: [],
+  };
+  let previous = base;
+  const native = (id: string, role: 'general' | 'strategist', result: string, model: string) => {
+    const card = join(root, `${id}.md`);
+    writeFileSync(card, 'frozen card');
+    // prettier-ignore
+    const job = save(`jobs/${id}.json`, { id, state: 'done', exit_code: 0, role, session_id: id, card, kind: 'claude', cwd: repo });
+    const path = join(root, `${id}.jsonl`);
+    // prettier-ignore
+    const entries = [ { type: 'user', sessionId: id, message: { content: card } },
+      { type: 'assistant', sessionId: id, message: { model, content: [{ type: 'text', text: result }] } } ];
+    writeFileSync(path, entries.map(x => JSON.stringify(x)).join('\n'));
+    return { job_id: id, job, native: { path, sha256: recoveryHash(path) } };
+  };
+  for (let i = 0; i < 4; i++) {
+    writeFileSync(join(repo, 'README.md'), `round ${String(i)}`);
+    sh(
+      `git add README.md && git -c user.name=t -c user.email=t@l commit -qm round-${String(i)}`,
+      repo
+    );
+    const head = sh('git rev-parse HEAD', repo).trim();
+    // prettier-ignore
+    const raw = { conclusion: i === 3 ? 'PASS' : 'FAIL', new_blockers: [], findings: [
+      { id: 'H1', severity: 'high', disposition: i ? 'CLOSED' : 'OPEN', evidence: 'actual closure evidence' },
+      { id: 'L1', severity: 'low', disposition: 'DEBT', evidence: 'retained debt' },
+    ] };
+    // prettier-ignore
+    const review: Review = { status: i === 3 ? 'PASS' : 'FAIL', debt: [], findings: raw.findings.map(f => ({
+      id: f.id, severity: f.severity as 'high' | 'low', file: 'README.md', line: 1,
+      status: f.disposition === 'CLOSED' ? 'closed' : 'open', evidence: f.evidence, carry_over: i > 0, failure_class: 'product',
+    })) };
+    const result = JSON.stringify(raw),
+      reviewer = native(`review-${String(i)}`, 'strategist', result, 'reviewer');
+    // prettier-ignore
+    e.rounds.push({ logical_round: i + 1, descriptor_round: Math.min(i + 1, 3),
+      freeze: save(`freeze-${String(i)}.json`, { run_id: e.run_id, base, head, previous, worktree: repo,
+        ...(i === 3 ? { logical_review_round: 4, cli_descriptor_round: 3, user_exception: { reply: 'yes', scope: 'one fourth final review' } } : {}),
+        files: { 'README.md': recoveryHash(join(repo, 'README.md')) } }),
+      source: save(`review-${String(i)}.json`, raw), review, reviewer,
+      provider_result: { ...save(`provider-${String(i)}.json`, { type: 'result', subtype: 'success', is_error: false, session_id: reviewer.job_id, result, modelUsage: { reviewer: {} } }), json_offset: 0, json_length: Buffer.byteLength(result) },
+      authors: [native(`author-${String(i)}`, 'general', 'implemented', 'author')], coverage: { base: previous, head, files: ['README.md'] },
+    });
+    previous = head;
+  }
+  e.candidate = previous;
+  e.exception = e.rounds[3].freeze;
+  const run = (value = e) =>
+    validateRecovery(value, p, repo, 'operator', 'old', () => original, jobs);
+  const out = run();
+  expect(ledgerOf(out.reviews, 'G2').debt.map(x => x.id)).toEqual(['L1']);
+  const invalid = (change: (x: RecoveryEvidence) => void, reason: string) => {
+    const copy = structuredClone(e);
+    change(copy);
+    expect(() => run(copy)).toThrow(reason);
+  };
+  // prettier-ignore
+  const cases: [(x: RecoveryEvidence) => void, string][] = [
+    [x => { x.engine_run_id = 'wrong'; }, 'run binding'],
+    [x => { x.admission.kind = 'wrong' as 'owner_legacy_snapshot'; }, 'owner admission'],
+    [x => { x.candidate = base; }, 'candidate drift'],
+    [x => { x.plan.sha256 = 'wrong'; }, 'source drift'],
+    [x => { x.rounds.pop(); }, 'complete R1-R4'],
+    [x => { x.rounds[1].coverage.base = base; }, 'incremental coverage'],
+    [x => { x.rounds[1].coverage.files = []; }, 'missing coverage'],
+    [x => { x.rounds[3].review.status = 'FAIL'; }, 'non-PASS final'],
+    [x => { x.rounds[1].review.findings.shift(); }, 'finding coverage'],
+    [x => { x.rounds[1].review.findings[0].evidence = ''; }, 'finding interpretation'],
+    [x => { x.rounds[3].reviewer.job_id = 'wrong'; }, 'job registry binding'],
+    [x => { x.rounds[0].authors = []; }, 'support author coverage'],
+  ];
+  for (const [change, reason] of cases) invalid(change, reason);
+  const frozen = save('recovery.json', e),
+    current = save('current.json', { id: 'new', adopted_from_run_id: 'old', events: [] });
+  const bin = join(root, 'archon');
+  const old = save('original.json', original);
+  writeFileSync(bin, `#!/bin/sh\ncat '${old.path}'\n`);
+  chmodSync(bin, 0o755);
+  // prettier-ignore
+  const env = { ...process.env, WORKFLOW_ID: 'new', ARTIFACTS_DIR: join(root, 'artifacts'), SUPERAGENT_HOME: root,
+    INPUTS_ARCHON: bin, INPUTS_EVENTS_FILE: current.path, INPUTS_PLAN: e.plan.path, INPUTS_POLICY: e.policy.path,
+    INPUTS_BASE: base, INPUTS_PKGS: 'pkg', INPUTS_SCOPE_PKGS: 'pkg', INPUTS_RISK: 'G2', INPUTS_MILESTONE: 'm1',
+  };
+  const check = (input: Record<string, string>) =>
+    Bun.spawnSync([process.execPath, join(WETAMP, 'templates/.archon/scripts/sa-check.ts')], {
+      cwd: repo,
+      env: { ...env, ...input },
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 15000,
+    });
+  const accepted = check({ INPUTS_KIND: 'accept', INPUTS_TAG: 'diff-m1-r4' });
+  expect(accepted.exitCode, accepted.stderr.toString()).toBe(0);
+  const finalCheck = JSON.parse(
+    readFileSync(join(root, 'artifacts/diff-m1-r4.json'), 'utf8')
+  ) as Accept;
+  const gate = check({
+    INPUTS_KIND: 'gate',
+    INPUTS_TAG: 'gate-m1-r4',
+    INPUTS_ROUND: '4',
+    INPUTS_OPERATOR_ID: e.run_id,
+    INPUTS_RECOVERY_EVIDENCE: frozen.path,
+    INPUTS_RECOVERY_SHA256: frozen.sha256,
+    INPUTS_C1: 'null',
+    INPUTS_C2: 'null',
+    INPUTS_C3: 'null',
+    INPUTS_C4: JSON.stringify(finalCheck),
+  });
+  expect(gate.exitCode, gate.stderr.toString()).toBe(0);
+  const result = JSON.parse(readFileSync(join(root, 'artifacts/gate-m1-r4.json'), 'utf8')) as {
+    verdict: string;
+    grade: string;
+    debt: string[];
+  };
+  expect(result.verdict).toBe('pass');
+  expect(result.grade).toBe('PASS');
+  expect(result.debt.length).toBeGreaterThan(0);
+  writeFileSync(frozen.path, '{}');
+  expect(
+    check({
+      INPUTS_KIND: 'gate',
+      INPUTS_RECOVERY_EVIDENCE: frozen.path,
+      INPUTS_RECOVERY_SHA256: frozen.sha256,
+    }).exitCode
+  ).not.toBe(0);
+  const author = e.rounds[3].authors[0];
+  const text = readFileSync(author.native.path, 'utf8').replace(
+    '"model":"author"',
+    '"model":"reviewer"'
+  );
+  writeFileSync(author.native.path, text);
+  author.native.sha256 = recoveryHash(author.native.path);
+  expect(() => run()).toThrow('review not independent');
+});
 
 async function until(check: () => boolean, ms = 15000): Promise<void> {
   const end = Date.now() + ms;

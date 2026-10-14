@@ -69,6 +69,9 @@ import {
   attemptPath,
   type DeliveryDecision,
   type decide as decideGate,
+  validateRecovery,
+  type RecoveryEvidence,
+  type AuthorRun,
 } from '../templates/.archon/scripts/sa-check';
 import {
   WETAMP,
@@ -624,10 +627,18 @@ function recoverRun(
   l: Ledger,
   prepare?: () => void,
   onEffect?: (effect: DecisionEffect) => void,
-  reconciled?: string
+  reconciled?: string,
+  evidenceFile?: string
 ): RecoverResult {
   let adopted:
-    | { from: string; hash: string; engine_from: string | null; commit: string; carried: string[] }
+    | {
+        from: string;
+        hash: string;
+        engine_from: string | null;
+        commit: string;
+        carried: string[];
+        dir: string;
+      }
     | undefined;
   return recover(
     l.archon_run_id,
@@ -646,7 +657,7 @@ function recoverRun(
           to,
           engine_from: adopted.engine_from,
           engine_to: adopted.hash,
-          reason: 'engine_stale',
+          reason: evidenceFile ? 'acceptance_continuation' : 'engine_stale',
           engine_commit: adopted.commit,
           carried: adopted.carried,
         });
@@ -654,6 +665,7 @@ function recoverRun(
         l.engine_hash = adopted.hash;
         l.engine_commit = adopted.commit;
         l.workflow_hash = adopted.hash;
+        l.gen_dir = adopted.dir;
         l.transcript = typeof ack.transcriptPath === 'string' ? ack.transcriptPath : '';
         l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
       }
@@ -670,9 +682,31 @@ function recoverRun(
       },
       adopt: run => {
         // Live and paused owners retain their snapshot; terminal recovery may change source.
-        if (!adoptsRun(l, run)) return undefined;
+        if (!adoptsRun(l, run) && !(evidenceFile && ['failed', 'cancelled'].includes(run.status))) {
+          if (evidenceFile) throw new Error('recovery: evidence requires terminal execution');
+          return undefined;
+        }
         const metadata = readJson(join(l.gen_dir, 'engine.json')) as { fake?: boolean } | null;
         const plan = planOf(l);
+        const recovery = evidenceFile
+          ? (JSON.parse(readFileSync(evidenceFile, 'utf8')) as RecoveryEvidence)
+          : undefined;
+        if (recovery) {
+          for (const [s, name] of [
+            [recovery.plan, 'plan.json'],
+            [recovery.policy, 'policy.json'],
+            [recovery.contracts, 'accept-inputs.json'],
+          ] as const)
+            if (s.path !== join(l.gen_dir, name))
+              throw new Error('recovery: frozen contract binding');
+          if (!run.working_path) throw new Error('recovery: missing worktree');
+          const load = (id: string) =>
+            archonJson(
+              ['workflow', 'get', id, '--verbose', '--events'],
+              l.repo
+            ) as unknown as AuthorRun;
+          validateRecovery(recovery, plan, run.working_path, l.run_id, run.id, load);
+        }
         const carried = plan.packages
           .filter(p => {
             if (!run.working_path || !run.output_root) return false;
@@ -708,6 +742,15 @@ function recoverRun(
           {
             from: run.id,
             packages: carried,
+            ...(recovery
+              ? {
+                  recovery: {
+                    ...recovery,
+                    admitted_by: caller(),
+                    admitted_at: new Date().toISOString(),
+                  },
+                }
+              : {}),
           },
           l.delivery
         );
@@ -717,6 +760,7 @@ function recoverRun(
           engine_from: l.engine_hash ?? null,
           commit: gen.engine_commit,
           carried,
+          dir: gen.dir,
         };
         return [
           'workflow',
@@ -1110,13 +1154,18 @@ function health(cwd?: string): number {
   return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
 }
 
-function resumeRun(l: Ledger, reconciled?: string, action = 'recover'): number {
+function resumeRun(
+  l: Ledger,
+  reconciled?: string,
+  action = 'recover',
+  evidenceFile?: string
+): number {
   let started = false;
   // prepare runs under the recovery lock only after admission checks have passed.
   const res = intervention(
     l,
     action,
-    () => recoverRun(l, () => (started = true), undefined, reconciled),
+    () => recoverRun(l, () => (started = true), undefined, reconciled, evidenceFile),
     undefined,
     () => started
   );
@@ -2490,7 +2539,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel|recover <run>|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2728,6 +2777,8 @@ export function main(argv: string[]): number {
       const id = need(target, `${verb} <run>`);
       const resolved = resolveTarget(id);
       if (!('run_id' in resolved)) {
+        if (a.flags.evidence)
+          throw new Error('recovery: evidence requires registered operator run');
         const run = resolved;
         if (!run.working_path)
           throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
@@ -2745,7 +2796,15 @@ export function main(argv: string[]): number {
         print({ run_id: id, ...res });
         return res.ok ? 0 : res.held ? EXIT.held : res.busy ? EXIT.running : 1;
       }
-      return controlled(resolved, () => resumeRun(resolved, a.flags.reconciled, verb), false);
+      if (a.flags.evidence && a.flags.evidence.length !== 1)
+        throw new Error('recovery: exactly one evidence file required');
+      if (a.flags.evidence && verb !== 'recover')
+        throw new Error('recovery: use recover --evidence');
+      return controlled(
+        resolved,
+        () => resumeRun(resolved, a.flags.reconciled, verb, a.flags.evidence?.[0]),
+        false
+      );
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);

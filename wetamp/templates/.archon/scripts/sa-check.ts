@@ -21,6 +21,7 @@ import type { Check, Plan, Pkg } from '../../../src/plan';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { budgetReason, readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
+import { nativeEvidence } from '../../../src/models';
 
 export interface Finding {
   id: string;
@@ -397,8 +398,8 @@ const maxRisk = (...rs: (string | null | undefined)[]): Plan['packages'][number]
 /** Routing and the gate consume the same structured acceptance risks, never infer them twice. */
 export const effectiveRisk = (
   declared: string,
-  rechecks: Pick<Accept, 'risk'>[]
-): Plan['packages'][number]['risk'] => maxRisk(declared, ...rechecks.map(c => c.risk));
+  rechecks: (Pick<Accept, 'risk'> | null)[]
+): Plan['packages'][number]['risk'] => maxRisk(declared, ...rechecks.map(c => c?.risk));
 
 /** `git diff --raw -z -M` 的逐项：状态、两侧 mode、路径（重命名/复制为源与目标）。 */
 function changes(base: string): { modes: string[]; paths: string[] }[] {
@@ -759,7 +760,7 @@ export function ledgerOf(
   risk: string,
   options: {
     strict?: boolean;
-    rechecks?: Accept[];
+    rechecks?: (Accept | null)[];
   } = {}
 ): Ledger {
   const sev = severities(risk);
@@ -886,7 +887,7 @@ export function deliveryDecision(input: {
   reviews?: (Review | null)[];
   permissions?: string[];
   reviewRequired?: boolean;
-  rechecks: Accept[];
+  rechecks: (Accept | null)[];
   risk?: string;
   expired?: boolean;
   qualifiedReview?: boolean;
@@ -954,7 +955,7 @@ export function deliveryDecision(input: {
   const evidence = [
     ...new Set([
       ...(input.permissions ?? []),
-      ...input.rechecks.flatMap(c => [...(c.decision?.evidence ?? []), ...(c.log ? [c.log] : [])]),
+      ...input.rechecks.flatMap(c => [...(c?.decision?.evidence ?? []), ...(c?.log ? [c.log] : [])]),
       ...[...ledger.blocking, ...ledger.debt].flatMap(e => (e.evidence ? [e.evidence] : [])),
     ]),
   ];
@@ -1166,7 +1167,7 @@ export function permissionEvidence(events: RunEvent[], pkgs: string[], m: string
   });
   return [...denied.values()];
 }
-interface AuthorRun {
+export interface AuthorRun {
   id: string;
   codebase_id?: string | null;
   adopted_from_run_id?: string | null;
@@ -1430,12 +1431,106 @@ export function independence(authors: Ident[], reviewer: Ident): string | null {
   return null;
 }
 
+type RecoverySource = { path: string; sha256: string };
+type RecoveryActor = { job_id: string; job: RecoverySource; native: RecoverySource };
+export interface RecoveryEvidence {
+  run_id: string; engine_run_id: string; base: string; candidate: string; packages: string[];
+  admission: { kind: 'owner_legacy_snapshot'; reason: string };
+  plan: RecoverySource; policy: RecoverySource; contracts: RecoverySource;
+  exception: RecoverySource;
+  rounds: { logical_round: number; descriptor_round: number; freeze: RecoverySource;
+    source: RecoverySource; review: Review; reviewer: RecoveryActor;
+    provider_result: RecoverySource & { json_offset: number | null; json_length: number | null };
+    authors: RecoveryActor[]; coverage: { base: string; head: string; files: string[] } }[];
+}
+export const recoveryHash = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
+/** Owner interpretation is a present admission, not a claim of historical input immutability. */
+export function validateRecovery(e: RecoveryEvidence, p: Plan, cwd: string, runId: string, engineId: string,
+  load: (id: string) => AuthorRun, jobs = join(process.env.SUPERAGENT_HOME ?? '', 'jobs')) {
+  const require = (ok: unknown, why: string): void => { if (!ok) throw new Error(`recovery: ${why}`); };
+  const bytes = (s: RecoverySource): string => {
+    const text = readFileSync(s.path, 'utf8');
+    require(sha(text) === s.sha256, 'source drift'); return text;
+  };
+  const source = <T>(s: RecoverySource): T => JSON.parse(bytes(s)) as T;
+  const command = (...args: string[]): string => {
+    const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe', timeout: CHECK_AUX_TIMEOUT_MS });
+    require(r.exitCode === 0, 'git evidence unavailable'); return r.stdout.toString().trim();
+  };
+  require(e.admission?.kind === 'owner_legacy_snapshot' && e.admission.reason.trim(), 'owner admission required');
+  require(e.run_id === runId && e.engine_run_id === engineId, 'run binding');
+  require(/^[a-f0-9]{40}$/.test(e.base) && /^[a-f0-9]{40}$/.test(e.candidate), 'invalid refs');
+  require(command('rev-parse', 'HEAD') === e.candidate && !command('status', '--porcelain'), 'candidate drift');
+  require(command('rev-parse', p.base_ref) === e.base && command('merge-base', e.base, e.candidate) === e.base, 'base drift');
+  require(JSON.stringify(source<Plan>(e.plan)) === JSON.stringify(p), 'plan drift');
+  source<unknown>(e.policy); source<unknown>(e.contracts);
+  require(JSON.stringify([...e.packages].sort()) === JSON.stringify(p.packages.map(k => k.id).sort()), 'package coverage');
+  require(e.rounds.length === 4, 'complete R1-R4 required');
+  const exception = source<{ logical_review_round: number; cli_descriptor_round: number; user_exception: { reply: string; scope: string } }>(e.exception);
+  require(e.exception.path === e.rounds[3].freeze.path && e.exception.sha256 === e.rounds[3].freeze.sha256 && exception.logical_review_round === 4 && exception.cli_descriptor_round === 3 && exception.user_exception?.reply?.trim() && exception.user_exception.scope?.trim(), 'fourth round exception');
+  const original = load(engineId);
+  require(original.id === engineId && original.output_root, 'original engine binding');
+  const milestones = p.packages.map(k => k.milestone ?? 'm1');
+  require(new Set(milestones).size === 1, 'single milestone required');
+  const authors = readAuthorEvidence(original, readPolicyAttempts(join(original.output_root!, 'artifacts', 'runs', engineId)), e.packages, milestones, load);
+  const permissions = [...new Set(milestones.flatMap(m => permissionEvidence(original.events, e.packages, m)))];
+  const actor = (a: RecoveryActor, role: 'general' | 'strategist') => {
+    require(a.job.path === join(jobs, `${a.job_id}.json`), 'job registry binding');
+    const j = source<import('../../../src/jobs').Job>(a.job);
+    require(j.id === a.job_id && j.state === 'done' && j.exit_code === 0 && j.role === role && j.session_id && j.card, 'job not qualified');
+    const n = nativeEvidence(bytes(a.native), j.kind);
+    require(n.sessions.length === 1 && n.sessions[0] === j.session_id && n.models.length === 1 && n.inputs.includes(j.card!), 'native identity binding');
+    return { native: n, job: j, identity: { model: n.models[0], strength: j.kind === 'codex' ? 'pinned' as const : 'provider' as const } };
+  };
+  let previous = e.base;
+  const reviews: Review[] = [], reviewers: Ident[] = [], support_permissions: { round: number; denials: unknown[] }[] = [];
+  for (const [i, r] of e.rounds.entries()) {
+    require(r.logical_round === i + 1 && r.descriptor_round === Math.min(i + 1, MAX_ROUNDS), 'round continuity');
+    const f = source<{ run_id?: string; original_run?: string; base: string; head: string; previous?: string; worktree: string; files: Record<string, string> | { path: string; sha256: string }[] }>(r.freeze);
+    require((f.run_id ?? f.original_run) === runId && f.base === e.base && (i === 0 || f.previous === previous), 'freeze binding');
+    require(r.coverage.base === previous && r.coverage.head === f.head, 'incremental coverage');
+    const files = Array.isArray(f.files) ? f.files : Object.entries(f.files).map(([path, sha256]) => ({ path, sha256 }));
+    const changed = command('diff', '--name-only', previous, f.head).split('\n').filter(Boolean).sort();
+    require(JSON.stringify(changed) === JSON.stringify([...r.coverage.files].sort()) && JSON.stringify(changed) === JSON.stringify(files.map(x => x.path).sort()), 'missing coverage');
+    for (const s of files) require(sha(Bun.spawnSync(['git', 'show', `${f.head}:${s.path}`], { cwd }).stdout.toString()) === s.sha256, 'blob drift');
+    const raw = source<{ conclusion: string; findings: { id: string; severity: string; disposition?: string; evidence?: string }[]; new_blockers?: unknown[] }>(r.source);
+    const reviewer = actor(r.reviewer, 'strategist');
+    require(reviewer.job.cwd === f.worktree, 'review worktree binding');
+    const provider = source<{ type: string; subtype: string; is_error: boolean; session_id: string; result: string; modelUsage: Record<string, unknown>; permission_denials?: unknown[] }>(r.provider_result);
+    require(provider.type === 'result' && provider.subtype === 'success' && !provider.is_error && provider.session_id === reviewer.job.session_id && provider.result === reviewer.native.final && JSON.stringify(Object.keys(provider.modelUsage)) === JSON.stringify(reviewer.native.models) && (i !== 3 || !provider.permission_denials?.length), 'provider binding');
+    support_permissions.push({ round: i + 1, denials: provider.permission_denials ?? [] });
+    if (r.provider_result.json_offset !== null) {
+      const { json_offset: offset, json_length: length } = r.provider_result;
+      require(Number.isSafeInteger(offset) && offset! >= 0 && Number.isSafeInteger(length) && length! > 0, 'JSON boundary');
+      require(JSON.stringify(JSON.parse(Buffer.from(provider.result).subarray(offset!, offset! + length!).toString())) === JSON.stringify(raw), 'provider JSON drift');
+    } else require(i === 0 && r.provider_result.json_length === null, 'typed legacy interpretation only for R1');
+    require(r.review.status === raw.conclusion && !r.review.debt.length && (i === 3 ? raw.conclusion === 'PASS' && Array.isArray(raw.new_blockers) && !raw.new_blockers.length : raw.conclusion === 'FAIL'), 'non-PASS final');
+    require(r.review.findings.length === raw.findings.length && new Set(raw.findings.map(x => x.id)).size === raw.findings.length, 'finding coverage');
+    for (const [n, finding] of r.review.findings.entries()) {
+      const old = raw.findings[n], closed = ['CLOSED', 'NOT_A_DEFECT'].includes(old.disposition ?? '');
+      require(finding.failure_class === 'product' && finding.id === old.id && finding.severity === old.severity && ['blocker', 'high', 'medium', 'low'].includes(finding.severity) && finding.status === (closed ? 'closed' : 'open') && finding.carry_over === (i > 0) && finding.evidence.trim() && (!old.evidence || finding.evidence === old.evidence), 'finding interpretation');
+    }
+    require(r.authors.length, 'support author coverage');
+    authors.push(...r.authors.map(a => { const author = actor(a, 'general'); require(author.job.cwd === f.worktree, 'author worktree binding'); return author.identity; }));
+    reviewers.push(reviewer.identity); reviews.push(r.review); previous = f.head;
+  }
+  require(previous === e.candidate && !ledgerOf(reviews, 'G2', { strict: p.mode === 'strict' }).blocking.length, 'unclosed findings');
+  for (const reviewer of reviewers) require(independence(authors, reviewer) === null, 'review not independent');
+  require(command('rev-parse', 'HEAD') === e.candidate && !command('status', '--porcelain'), 'candidate drift');
+  return { reviews, identity: { authors, reviewer: reviewers.at(-1)! }, permissions, support_permissions, legacy_input_binding: e.admission };
+}
+
 function gate(): void {
   const round = Number(env('ROUND'));
   const pick = (k: string): unknown[] =>
     Array.from({ length: round }, (_, i) => json(`${k}${String(i + 1)}`));
-  const reviews = pick('R') as (Review | null)[];
+  if (env('RECOVERY_EVIDENCE') && recoveryHash(env('RECOVERY_EVIDENCE')) !== env('RECOVERY_SHA256')) throw new Error('recovery: admission drift');
+  const recovery = env('RECOVERY_EVIDENCE') ? JSON.parse(readFileSync(env('RECOVERY_EVIDENCE'), 'utf8')) as RecoveryEvidence : null;
+  if (recovery && runEvidence().adopted_from_run_id !== recovery.engine_run_id) throw new Error('recovery: execution adoption binding');
+  const reused = recovery ? validateRecovery(recovery, plan(), process.cwd(), env('OPERATOR_ID'), recovery.engine_run_id, runEvidence) : null;
+  const reviews = reused?.reviews ?? pick('R') as (Review | null)[];
   const rechecks = pick('C') as Accept[];
+  if (recovery && rechecks.at(-1)?.head !== recovery.candidate) throw new Error('recovery: acceptance candidate drift');
   const tag = env('TAG');
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
@@ -1454,10 +1549,10 @@ function gate(): void {
     strict: plan().mode === 'strict',
     expired: expired(),
     reviewRequired: env('REVIEW') !== '0',
-    permissions:
+    permissions: reused?.permissions ?? (
       env('ARCHON') && !expired()
         ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'))
-        : [],
+        : []),
   };
   let d = decide(decision);
   const tested = d.reason === 'review_not_required';
@@ -1480,7 +1575,7 @@ function gate(): void {
     const milestones = plan()
       .packages.filter(p => pkgs.includes(p.id))
       .map(p => p.milestone ?? 'm1');
-    identity = env('ARCHON')
+    identity = reused?.identity ?? (env('ARCHON')
       ? {
           authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
           reviewer: attemptIdentity(
@@ -1489,7 +1584,7 @@ function gate(): void {
             done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding
           ),
         }
-      : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } };
+      : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } });
   }
   const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';
   if (identity && rechecks.at(-1)?.same) d = decide({ ...decision, qualifiedReview: why === null });
@@ -1533,11 +1628,12 @@ function gate(): void {
     grade: d.verdict === 'pass' ? grade : null,
     risk,
     identity,
+    ...(reused ? { legacy_input_binding: reused.legacy_input_binding, support_permissions: reused.support_permissions, recovery_evidence: env('RECOVERY_EVIDENCE') } : {}),
     milestone: env('MILESTONE'),
     review_file: reviewFile,
     ledger_file: ledgerFile,
     // 末份非空评审所见的 HEAD：下一轮 diff 以它为增量起点（F-20）；尚无评审为空，下一轮评审做全量
-    reviewed_head: reviewed === undefined ? '' : (rechecks[reviewed].head ?? ''),
+    reviewed_head: reviewed === undefined ? '' : (rechecks[reviewed]?.head ?? ''),
     head: git('rev-parse', 'HEAD').trim(),
   };
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));

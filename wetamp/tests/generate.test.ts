@@ -69,6 +69,36 @@ const runAttempt = (node: N, cwd: string, artifacts: string) =>
     }
   );
 
+test('RECOVERY_CONTINUATION generates acceptance, gate and land without AI nodes', () => {
+  const p = structuredClone(fixture);
+  p.packages = [p.packages[0]];
+  p.packages[0].signoff = 'human';
+  const recovery = {
+    base: 'a'.repeat(40),
+    policy: { path: '/ORIGINAL/policy.json' },
+    rounds: Array.from({ length: 4 }, () => ({})),
+  } as import('../templates/.archon/scripts/sa-check').RecoveryEvidence;
+  const nodes = nodesOf(
+    buildWorkflow(p, milestones(p), 'original-id', '/GEN', false, NOW, loadTiers(), {
+      from: 'old-failed',
+      packages: [],
+      recovery: { ...recovery, admitted_by: 'owner', admitted_at: 'now' },
+    })
+  );
+  expect(nodes.some(n => /^(code|repair|fix|review)-/.test(n.id))).toBe(false);
+  expect(nodes.some(n => n.command)).toBe(false);
+  const accept = nodes.find(n => n.with?.kind === 'accept')!;
+  expect(accept.with?.policy).toBe('/ORIGINAL/policy.json');
+  expect(nodes.find(n => n.id.startsWith('start-'))?.bash).toContain(recovery.base);
+  const gate = nodes.find(n => n.with?.kind === 'gate')!;
+  expect(gate.with?.round).toBe(4);
+  expect(gate.with?.C3).toBe('null');
+  expect(gate.with?.C4).toBe(`$${accept.id}.output`);
+  expect(gate.with?.operator_id).toBe('original-id');
+  expect(nodes.find(n => n.id.startsWith('human-'))?.depends_on).toEqual([gate.id]);
+  expect(nodes.at(-1)?.with?.kind).toBe('land');
+});
+
 test('review guidance uses the node schema for failure classes', () => {
   for (const name of ['sa-review.md', 'sa-review-delta.md']) {
     const guidance = readFileSync(

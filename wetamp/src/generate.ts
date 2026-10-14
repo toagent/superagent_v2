@@ -24,6 +24,7 @@ import {
   CHECK_AUX_TIMEOUT_MS,
   CHECK_AUX_COUNTS,
   environmentChecks,
+  type RecoveryEvidence,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { cleanEngine } from './coord';
@@ -72,7 +73,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
   '../packages/workflows/src/provider-attempts.ts',
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
-  'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
+  'schemas/output.schema.json', 'templates/brief.md', 'tiers.json', 'src/models.ts',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
   'src/memory.ts', 'src/board/workflow.ts', 'src/execution.ts',
 ], policyHash);
@@ -107,6 +108,7 @@ const skippable = (from: string): Node => ({ from, if_skipped: null });
 export interface Carried {
   from: string;
   packages: string[];
+  recovery?: RecoveryEvidence & { admitted_by: unknown; admitted_at: string };
 }
 
 const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node => ({
@@ -203,15 +205,40 @@ export function buildWorkflow(
     with: { counter, gen, pkg, review },
   });
   let after: Node = { depends_on: ['environment'] };
+  const signoff = (m: Milestone, gates: Node): Node => {
+    if (m.human) {
+      nodes.push({
+        id: `human-${m.id}`,
+        approval: { message: `Approve delivery milestone ${m.id}` },
+        ...gates,
+      });
+      // Native approval owns the decision; the absolute plan deadline still guards delivery.
+      const until =
+        plan.deadline === undefined ? undefined : Math.floor(Date.parse(plan.deadline) / 1000);
+      nodes.push({
+        id: `signoff-${m.id}`,
+        bash:
+          until === undefined
+            ? 'true'
+            : [
+                `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${String(plan.deadline)} passed' >&2; exit 1; }`,
+              ].join('\n'),
+        depends_on: [`human-${m.id}`],
+      });
+      return { depends_on: [`signoff-${m.id}`] };
+    }
+    return gates;
+  };
   for (const m of ms) {
     const covered = ms.slice(0, ms.indexOf(m) + 1).flatMap(k => k.packages);
     const scope_pkgs = covered.map(p => p.id).join(',');
     const start = `start-${m.id}`;
+    const startRef = carried?.recovery?.base ?? plan.base_ref;
     const base = `$${start}.output.head`;
     nodes.push({
       id: start,
       // adopt 从已有提交起跑；共同祖先保留此前交付，不能把当前 HEAD 当评审基线。
-      bash: `base=$(git merge-base '${plan.base_ref.replaceAll("'", "'\\''")}' HEAD) || exit $?; printf '{"head":"%s"}' "$base"`,
+      bash: `base=$(git merge-base '${startRef.replaceAll("'", "'\\''")}' HEAD) || exit $?; printf '{"head":"%s"}' "$base"`,
       ...after,
       output_format: outputSchema('head'),
     });
@@ -224,6 +251,49 @@ export function buildWorkflow(
       always_run: true,
       output_format: outputSchema('attempt'),
     });
+    if (carried?.recovery) {
+      const e = carried.recovery,
+        r = e.rounds.length,
+        tag = `${m.id}-r${String(r)}`;
+      const ids = m.packages.map(p => p.id).join(',');
+      const rounds = Object.fromEntries(
+        e.rounds.flatMap((_, i) => [
+          [`R${String(i + 1)}`, 'null'],
+          [`C${String(i + 1)}`, i + 1 === r ? `$diff-${tag}.output` : 'null'],
+        ])
+      );
+      const common = {
+        plan: planPath,
+        policy: e.policy.path,
+        pkgs: ids,
+        scope_pkgs,
+        risk: m.risk,
+        milestone: m.id,
+        ...ledger,
+      };
+      nodes.push(
+        check(
+          `diff-${tag}`,
+          [start, attempt],
+          { ...common, kind: 'accept', base, tag: `diff-${tag}` },
+          { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
+        )
+      );
+      nodes.push(
+        check(`gate-${tag}`, [`diff-${tag}`], {
+          ...common,
+          kind: 'gate',
+          round: r,
+          tag: `gate-${tag}`,
+          ...rounds,
+          recovery_evidence: join(gen, 'recovery-evidence.json'),
+          recovery_sha256: new Bun.CryptoHasher('sha256').update(JSON.stringify(e)).digest('hex'),
+          operator_id: run,
+        })
+      );
+      after = signoff(m, { depends_on: [`gate-${tag}`] });
+      continue;
+    }
     let prev = start;
     const last = ms.at(-1) === m;
     for (const p of m.packages) {
@@ -472,29 +542,14 @@ export function buildWorkflow(
       depends_on: Array.from({ length: MAX_ROUNDS }, (_, i) => `gate-${m.id}-r${String(i + 1)}`),
       trigger_rule: 'none_failed_min_one_success',
     };
-    if (m.human) {
-      nodes.push({
-        id: `human-${m.id}`,
-        approval: { message: `Approve delivery milestone ${m.id}` },
-        ...gates,
-      });
-      // Native approval owns the decision; the absolute plan deadline still guards delivery.
-      const until =
-        plan.deadline === undefined ? undefined : Math.floor(Date.parse(plan.deadline) / 1000);
-      nodes.push({
-        id: `signoff-${m.id}`,
-        bash:
-          until === undefined
-            ? 'true'
-            : [
-                `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${String(plan.deadline)} passed' >&2; exit 1; }`,
-              ].join('\n'),
-        depends_on: [`human-${m.id}`],
-      });
-      after = { depends_on: [`signoff-${m.id}`] };
-    } else after = gates;
+    after = signoff(m, gates);
   }
-  const operator_ledger = join(gen, '..', '..', 'runs', `${run}.json`);
+  const operator_ledger = join(
+    gen,
+    ...(carried?.recovery ? ['..', '..', '..', '..'] : ['..', '..']),
+    'runs',
+    `${run}.json`
+  );
   const landInputs = {
     kind: 'land',
     base_ref: plan.base_ref,
@@ -630,7 +685,12 @@ export function generate(
   } catch (cause) {
     throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
   }
-  const dir = join(home().sa, 'gen', run);
+  const suffix = carried?.recovery ? `continuations/${crypto.randomUUID()}` : '.';
+  const dir = join(home().sa, 'gen', run, suffix);
+  if (carried?.recovery) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'recovery-evidence.json'), JSON.stringify(carried.recovery));
+  }
   const engine_hash = engineHash(WETAMP, policy.hash);
   if (previousHash !== undefined && existsSync(join(dir, '.archon'))) {
     let backup = join(dir, `.archon.${previousHash.slice(0, 8) || 'unknown'}`);
@@ -656,6 +716,12 @@ export function generate(
       recursive: true,
     });
   }
+  cpSync(join(WETAMP, 'src/models.ts'), join(dir, '.archon/scripts/native-models.ts'));
+  const checker = join(dir, '.archon/scripts/sa-check.ts');
+  writeFileSync(
+    checker,
+    readFileSync(checker, 'utf8').replace("from '../../../src/models'", "from './native-models'")
+  );
   // Freeze the engine-owned receipt reader into portable generated workflows.
   cpSync(
     join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
