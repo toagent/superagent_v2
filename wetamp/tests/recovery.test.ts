@@ -21,6 +21,7 @@ import {
   recoveryHash,
   ledgerOf,
   type RecoveryEvidence,
+  type RecoveryAuthorCoverage,
   type Review,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
@@ -52,7 +53,7 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
   const e: RecoveryEvidence = { run_id: 'operator', engine_run_id: 'old', base, candidate: '', packages: ['pkg'],
     admission: { kind: 'owner_legacy_snapshot', reason: 'Owner admits current snapshots, not historical input hashes' },
     plan: save('plan.json', p), policy: save('policy.json', { risk_paths: [], code_extensions: [], exempt_paths: [], budget_floor: { S: 1000 } }),
-    contracts: save('accept-inputs.json', []), exception: save('exception.json', {}), rounds: [],
+    contracts: save('accept-inputs.json', []), exception: save('exception.json', {}), author_coverage: save('authors.json', {}), rounds: [],
   };
   let previous = base;
   const native = (id: string, role: 'general' | 'strategist', result: string, model: string) => {
@@ -93,12 +94,25 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
         files: { 'README.md': recoveryHash(join(repo, 'README.md')) } }),
       source: save(`review-${String(i)}.json`, raw), review, reviewer,
       provider_result: { ...save(`provider-${String(i)}.json`, { type: 'result', subtype: 'success', is_error: false, session_id: reviewer.job_id, result, modelUsage: { reviewer: {} } }), json_offset: 0, json_length: Buffer.byteLength(result) },
-      authors: [native(`author-${String(i)}`, 'general', 'implemented', 'author')], coverage: { base: previous, head, files: ['README.md'] },
+      authors: [native(`author-${String(i)}`, 'general', 'implemented', 'author'),
+        ...(i === 2 ? [native('author-2-extra', 'general', 'implemented', 'author')] : [])], coverage: { base: previous, head, files: ['README.md'] },
     });
     previous = head;
   }
   e.candidate = previous;
   e.exception = e.rounds[3].freeze;
+  const roster: RecoveryAuthorCoverage = {
+    run_id: e.run_id,
+    engine_run_id: e.engine_run_id,
+    base,
+    candidate: e.candidate,
+    rounds: e.rounds.map(r => ({
+      logical_round: r.logical_round,
+      freeze: r.freeze,
+      job_ids: r.authors.map(a => a.job_id),
+    })),
+  };
+  e.author_coverage = save('authors.json', roster);
   const run = (value = e) =>
     validateRecovery(value, p, repo, 'operator', 'old', () => original, jobs);
   const out = run();
@@ -122,8 +136,24 @@ test('RECOVERY_CONTINUATION binds full native history and rejects unsafe reuse',
     [x => { x.rounds[1].review.findings[0].evidence = ''; }, 'finding interpretation'],
     [x => { x.rounds[3].reviewer.job_id = 'wrong'; }, 'job registry binding'],
     [x => { x.rounds[0].authors = []; }, 'support author coverage'],
+    [x => { x.rounds[2].authors.pop(); }, 'support author coverage'],
+    [x => { x.rounds[2].authors[1] = x.rounds[2].authors[0]; }, 'support author coverage'],
+    [x => { x.rounds[2].authors[1] = x.rounds[1].authors[0]; }, 'support author coverage'],
+    [x => { x.author_coverage.sha256 = 'wrong'; }, 'source drift'],
+    [x => { delete (x as Partial<RecoveryEvidence>).author_coverage; }, 'support author coverage required'],
   ];
   for (const [change, reason] of cases) invalid(change, reason);
+  // A ref-shaped option must fail before Git can write its --output destination.
+  const destination = join(root, 'injected-diff');
+  for (const head of [`--output=${destination}`, '--stat', 'HEAD']) {
+    invalid(x => {
+      const f = JSON.parse(readFileSync(x.rounds[1].freeze.path, 'utf8')) as { head: string };
+      f.head = head;
+      x.rounds[1].freeze = save('invalid-freeze.json', f);
+      x.rounds[1].coverage.head = head;
+    }, 'invalid freeze refs');
+    expect(existsSync(destination)).toBe(false);
+  }
   const frozen = save('recovery.json', e),
     current = save('current.json', { id: 'new', adopted_from_run_id: 'old', events: [] });
   const bin = join(root, 'archon');

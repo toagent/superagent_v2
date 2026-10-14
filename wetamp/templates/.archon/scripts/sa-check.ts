@@ -1433,11 +1433,17 @@ export function independence(authors: Ident[], reviewer: Ident): string | null {
 
 type RecoverySource = { path: string; sha256: string };
 type RecoveryActor = { job_id: string; job: RecoverySource; native: RecoverySource };
+/** Present owner admission of the complete legacy roster, not historical launch evidence. */
+export interface RecoveryAuthorCoverage {
+  run_id: string; engine_run_id: string; base: string; candidate: string;
+  rounds: { logical_round: number; freeze: RecoverySource; job_ids: string[] }[];
+}
 export interface RecoveryEvidence {
   run_id: string; engine_run_id: string; base: string; candidate: string; packages: string[];
   admission: { kind: 'owner_legacy_snapshot'; reason: string };
   plan: RecoverySource; policy: RecoverySource; contracts: RecoverySource;
   exception: RecoverySource;
+  author_coverage: RecoverySource;
   rounds: { logical_round: number; descriptor_round: number; freeze: RecoverySource;
     source: RecoverySource; review: Review; reviewer: RecoveryActor;
     provider_result: RecoverySource & { json_offset: number | null; json_length: number | null };
@@ -1466,6 +1472,9 @@ export function validateRecovery(e: RecoveryEvidence, p: Plan, cwd: string, runI
   source<unknown>(e.policy); source<unknown>(e.contracts);
   require(JSON.stringify([...e.packages].sort()) === JSON.stringify(p.packages.map(k => k.id).sort()), 'package coverage');
   require(e.rounds.length === 4, 'complete R1-R4 required');
+  require(e.author_coverage, 'support author coverage required');
+  const roster = source<RecoveryAuthorCoverage>(e.author_coverage);
+  require(roster.run_id === runId && roster.engine_run_id === engineId && roster.base === e.base && roster.candidate === e.candidate && roster.rounds?.length === e.rounds.length, 'support author coverage binding');
   const exception = source<{ logical_review_round: number; cli_descriptor_round: number; user_exception: { reply: string; scope: string } }>(e.exception);
   require(e.exception.path === e.rounds[3].freeze.path && e.exception.sha256 === e.rounds[3].freeze.sha256 && exception.logical_review_round === 4 && exception.cli_descriptor_round === 3 && exception.user_exception?.reply?.trim() && exception.user_exception.scope?.trim(), 'fourth round exception');
   const original = load(engineId);
@@ -1487,12 +1496,16 @@ export function validateRecovery(e: RecoveryEvidence, p: Plan, cwd: string, runI
   for (const [i, r] of e.rounds.entries()) {
     require(r.logical_round === i + 1 && r.descriptor_round === Math.min(i + 1, MAX_ROUNDS), 'round continuity');
     const f = source<{ run_id?: string; original_run?: string; base: string; head: string; previous?: string; worktree: string; files: Record<string, string> | { path: string; sha256: string }[] }>(r.freeze);
+    require(/^[a-f0-9]{40}$/.test(f.head) && (f.previous === undefined || /^[a-f0-9]{40}$/.test(f.previous)), 'invalid freeze refs');
     require((f.run_id ?? f.original_run) === runId && f.base === e.base && (i === 0 || f.previous === previous), 'freeze binding');
+    // Actor selection must equal the separately frozen roster admitted by the owner.
+    const expected = roster.rounds[i], selected = r.authors.map(a => a.job_id);
+    require(expected.logical_round === r.logical_round && expected.freeze.path === r.freeze.path && expected.freeze.sha256 === r.freeze.sha256 && expected.job_ids?.length && new Set(expected.job_ids).size === expected.job_ids.length && new Set(selected).size === selected.length && JSON.stringify([...expected.job_ids].sort()) === JSON.stringify(selected.sort()), 'support author coverage');
     require(r.coverage.base === previous && r.coverage.head === f.head, 'incremental coverage');
     const files = Array.isArray(f.files) ? f.files : Object.entries(f.files).map(([path, sha256]) => ({ path, sha256 }));
-    const changed = command('diff', '--name-only', previous, f.head).split('\n').filter(Boolean).sort();
+    const changed = command('diff', '--name-only', '--end-of-options', previous, f.head).split('\n').filter(Boolean).sort();
     require(JSON.stringify(changed) === JSON.stringify([...r.coverage.files].sort()) && JSON.stringify(changed) === JSON.stringify(files.map(x => x.path).sort()), 'missing coverage');
-    for (const s of files) require(sha(Bun.spawnSync(['git', 'show', `${f.head}:${s.path}`], { cwd }).stdout.toString()) === s.sha256, 'blob drift');
+    for (const s of files) require(sha(Bun.spawnSync(['git', 'show', '--end-of-options', `${f.head}:${s.path}`], { cwd }).stdout.toString()) === s.sha256, 'blob drift');
     const raw = source<{ conclusion: string; findings: { id: string; severity: string; disposition?: string; evidence?: string }[]; new_blockers?: unknown[] }>(r.source);
     const reviewer = actor(r.reviewer, 'strategist');
     require(reviewer.job.cwd === f.worktree, 'review worktree binding');
