@@ -16,6 +16,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import { REASONS } from './reasons';
 import { injectMemory } from './memory';
 import {
@@ -195,12 +196,15 @@ export function buildWorkflow(
     check(
       'environment',
       [],
-      { kind: 'env', plan: planPath },
+      { kind: 'env', plan: planPath, ...ledger },
       {
-        ...commandTimeout(
-          [...(plan.environment ?? []), ...plan.packages.flatMap(p => p.environment ?? [])],
-          1
-        ),
+        // Precheck can prescribe one install and one prepare command, each with its own limit.
+        timeout:
+          Number(
+            commandTimeout(environmentChecks(plan), 1).timeout ??
+              ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS
+          ) +
+          2 * RECOVERY_TIMEOUT_MS,
         retry: { max_attempts: tiers.policy.auto_retry.environment, on_error: 'all' },
       }
     ),

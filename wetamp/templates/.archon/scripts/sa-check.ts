@@ -10,6 +10,7 @@ import {
   unlinkSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   writeFileSync,
@@ -22,7 +23,8 @@ import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { budgetReason, readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
 import { nativeEvidence } from '../../../src/models';
-import { envPrecheck } from './env-precheck';
+import type { OwnedWorktree } from '@archon/workflows/schemas/workflow-run';
+import { envPrecheck, provisionEnvironment } from './env-precheck';
 
 export interface Finding {
   id: string;
@@ -742,16 +744,54 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
 export const environmentChecks = (p: Plan): Check[] =>
   (p.environment ?? []).concat(p.packages.flatMap(k => k.environment ?? []));
 
-function environment(): void {
+async function environment(): Promise<void> {
   const log = join(artifacts, 'environment.log');
   writeFileSync(log, '');
-  const precheck = envPrecheck(process.cwd());
+  const notes: string[] = [];
+  let owned = false;
+  try {
+    const current = runEvidence(),
+      receipt = current.metadata?.owned_worktree,
+      source = plan().repo;
+    owned =
+      current.id === process.env.WORKFLOW_ID &&
+      !!receipt?.envId &&
+      !!receipt.creationId &&
+      !!current.working_path &&
+      realpathSync(current.working_path) === process.cwd() &&
+      !!source &&
+      realpathSync(source) !== process.cwd() &&
+      realpathSync(git('rev-parse', '--git-dir').trim()) !==
+        realpathSync(git('rev-parse', '--git-common-dir').trim());
+  } catch (e) {
+    notes.push(`worktree ownership unavailable: ${String(e)}`);
+  }
+  if (!owned)
+    notes.push(
+      'Recovery skipped: current checkout is not proven to be created and owned by this run.'
+    );
+  const { environment: precheck, provisioned } = owned
+    ? await provisionEnvironment(process.cwd())
+    : { environment: envPrecheck(process.cwd()), provisioned: [] };
   appendFileSync(log, `${JSON.stringify(precheck)}\n`);
   const failures: CheckFailure[] = precheck.failures.map(f => ({
-    command: 'env-precheck', failure_class: f.failure_class, evidence: log,
+    command: 'env-precheck',
+    failure_class: f.failure_class,
+    evidence: log,
   }));
-  const failed = precheck.ok ? run(environmentChecks(plan()), log, undefined, '', failures) : ['env-precheck'];
-  const out = { ok: failed.length === 0, failed, failures, precheck, log, head: git('rev-parse', 'HEAD').trim() };
+  const failed = precheck.ok
+    ? run(environmentChecks(plan()), log, undefined, '', failures)
+    : ['env-precheck'];
+  const out = {
+    ok: failed.length === 0,
+    failed,
+    failures,
+    precheck,
+    provisioned,
+    notes,
+    log,
+    head: git('rev-parse', 'HEAD').trim(),
+  };
   writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
   emit(out);
   if (failed.length) process.exit(1);
@@ -1214,6 +1254,8 @@ export interface AuthorRun {
   adopted_from_run_id?: string | null;
   output_root?: string | null;
   events: RunEvent[];
+  working_path?: string | null;
+  metadata?: { owned_worktree?: OwnedWorktree };
 }
 let evidence: AuthorRun | undefined;
 /**
@@ -1987,7 +2029,7 @@ function land() {
 export type Land = ReturnType<typeof land>;
 
 if (import.meta.main) {
-  const kinds: Partial<Record<string, () => void>> = {
+  const kinds: Partial<Record<string, () => void | Promise<void>>> = {
     env: environment,
     accept,
     settle,
@@ -1996,5 +2038,5 @@ if (import.meta.main) {
   };
   const fn = kinds[env('KIND')];
   if (!fn) throw new Error(`sa-check: unknown INPUTS_KIND ${env('KIND')}`);
-  fn();
+  await fn();
 }

@@ -17,6 +17,7 @@ import * as archon from '../src/archon';
 import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import { CHECK_AUX_COUNTS, CHECK_AUX_TIMEOUT_MS } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
@@ -513,14 +514,16 @@ describe('buildWorkflow', () => {
       expect(n?.timeout).toBe(1_895_000);
     }
   });
-  test('ACCT: environment commands run once and empty environment has no timeout', () => {
+  test('RUN_PROVISION: environment budget includes install and prepare even without declared checks', () => {
     const plan = structuredClone(fixture);
     plan.environment = [{ cmd: 'plan-env', timeout_s: 200 }];
     plan.packages[0].environment = [{ cmd: 'pkg-env', timeout_s: 300 }];
     expect(nodesOf(build(false, plan)).find(n => n.id === 'environment')?.timeout).toBe(
-      500_000 + CHECK_AUX_COUNTS.env * CHECK_AUX_TIMEOUT_MS + 5_000
+      500_000 + CHECK_AUX_COUNTS.env * CHECK_AUX_TIMEOUT_MS + 5_000 + 2 * RECOVERY_TIMEOUT_MS
     );
-    expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBeUndefined();
+    expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBe(
+      120_000 + 2 * RECOVERY_TIMEOUT_MS
+    );
     expect(nodesOf(build(false)).find(n => n.id === 'environment')?.retry).toEqual({
       max_attempts: loadTiers().policy.auto_retry.environment,
       on_error: 'all',

@@ -7,6 +7,8 @@ nodes:
     with:
       kind: env
       plan: /GEN/plan.json
+      archon: /GEN/archon
+    timeout: 360000
     retry:
       max_attempts: 5
       on_error: all
@@ -318,7 +320,7 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       pkg: core
@@ -715,7 +717,7 @@ nodes:
     with:
       counter: /GEN/attempts/m1
       gen: /GEN
-      handoff: "1"
+      handoff: '1'
       work_keys:
         - code_core
         - repair_core
@@ -734,7 +736,7 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       prior_work: $handoff-m1-r2.output.handoff
@@ -1111,7 +1113,7 @@ nodes:
     with:
       counter: /GEN/attempts/m1
       gen: /GEN
-      handoff: "1"
+      handoff: '1'
       work_keys:
         - fix
       work_fix: $fix-m1-r2.output
@@ -1124,7 +1126,7 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       prior_work: $handoff-m1-r3.output.handoff
@@ -1759,7 +1761,7 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       pkg: api
@@ -2155,7 +2157,7 @@ nodes:
     with:
       counter: /GEN/attempts/m2
       gen: /GEN
-      handoff: "1"
+      handoff: '1'
       work_keys:
         - code_api
         - repair_api
@@ -2174,7 +2176,7 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       prior_work: $handoff-m2-r2.output.handoff
@@ -2550,7 +2552,7 @@ nodes:
     with:
       counter: /GEN/attempts/m2
       gen: /GEN
-      handoff: "1"
+      handoff: '1'
       work_keys:
         - fix
       work_fix: $fix-m2-r2.output
@@ -2563,7 +2565,7 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: "@sa-coder"
+    model: '@sa-coder'
     effort: medium
     with:
       prior_work: $handoff-m2-r3.output.handoff

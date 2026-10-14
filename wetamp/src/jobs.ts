@@ -33,7 +33,7 @@ import { QUERY_TIMEOUT_MS } from './archon';
 import { newRunId } from './generate';
 import { jobSession } from './usage';
 import { isTier, ROUTE_ROLE, type Tier } from './roles';
-import { envPrecheck } from '../templates/.archon/scripts/env-precheck';
+import { envPrecheck, provisionEnvironment } from '../templates/.archon/scripts/env-precheck';
 export { TIERS, isTier, type Tier } from './roles';
 
 export type Kind = 'claude' | 'codex' | 'opencode' | 'other';
@@ -62,7 +62,7 @@ export interface Job {
   state: 'queued' | 'running' | 'done' | 'failed' | 'lost';
   reason?: 'memory' | 'environment';
   environment?: ReturnType<typeof envPrecheck>;
-  provisioned?: { cmd: string; exit: number; ms: number; output: string }[];
+  provisioned?: Awaited<ReturnType<typeof provisionEnvironment>>['provisioned'];
   memory?: MemoryReading;
   ended_at?: string;
   exit_code?: number;
@@ -355,35 +355,15 @@ async function exec(
     // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
     if (!code) await yieldEventLoop();
     if (f.worktree && !code && !stop.signal.aborted) {
-      job.environment = envPrecheck(job.cwd);
-      if (createdWorktree && !job.environment.ok && job.environment.failures.every(f =>
-        f.recovery.length > 0 && f.recovery.every(cmd => cmd.trim()))) {
-        job.provisioned = [];
-        for (const cmd of new Set(job.environment.failures.flatMap(f => f.recovery))) {
-          const start = Date.now();
-          let exit = -1, output = '';
-          try {
-            const p = Bun.spawn(['sh', '-c', cmd], { cwd: job.cwd, stdin: 'ignore',
-              stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS, signal: stop.signal });
-            const [status, stdout, stderr] = await Promise.all([
-              p.exited, new Response(p.stdout).text(), new Response(p.stderr).text(),
-            ]);
-            exit = status;
-            output = (stdout + stderr).slice(-4000);
-            stop.signal.throwIfAborted();
-          } catch (e) { exit = -1; output = String(e).slice(-4000); }
-          job.provisioned.push({ cmd, exit, ms: Date.now() - start, output });
+      if (createdWorktree) {
+        const result = await provisionEnvironment(job.cwd, stop.signal, (entry, environment) => {
+          job.environment = environment;
+          (job.provisioned ??= []).push(entry);
           save(job);
-          if (exit !== 0) {
-            job.environment.failures.push({ failure_class: 'test_env', recovery: [cmd],
-              evidence: `recovery ${cmd}; exit=${String(exit)}; ${output}` });
-            break;
-          }
-        }
-        if (job.provisioned.every(p => p.exit === 0))
-          job.environment = envPrecheck(job.cwd);
-        console.error(`job: environment recovery; ${JSON.stringify(job.provisioned)}`);
-      }
+        });
+        job.environment = result.environment;
+        if (job.provisioned) console.error(`job: environment recovery; ${JSON.stringify(job.provisioned)}`);
+      } else job.environment = envPrecheck(job.cwd);
       if (!job.environment.ok) {
         job.reason = 'environment';
         code = 78;

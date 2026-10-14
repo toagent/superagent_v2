@@ -7,6 +7,7 @@ nodes:
     with:
       kind: env
       plan: /GEN/plan.json
+    timeout: 360000
     retry:
       max_attempts: 5
       on_error: all

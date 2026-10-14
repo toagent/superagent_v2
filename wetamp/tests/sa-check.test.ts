@@ -36,29 +36,50 @@ import { envPrecheck } from '../templates/.archon/scripts/env-precheck';
 import { writePolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import Ajv2020 from '../../packages/workflows/node_modules/ajv/dist/2020';
 
-test.each(['relative', 'absolute'])('ENV_PRECHECK tracked hooks resolve %s paths and only require declared hooks', mode => {
-  const repo = gitRepo(tmp()), hooks = join(repo, '.hooks'), hook = join(hooks, 'pre-commit');
-  mkdirSync(hooks);
-  writeFileSync(hook, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  writeFileSync(join(hooks, 'README.md'), 'hook documentation');
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ packageManager: 'bun@1.4.3', scripts: { prepare: 'setup-hooks' } }));
-  sh('git add .hooks', repo);
-  sh(`git config core.hooksPath '${mode === 'relative' ? '.hooks' : hooks}'`, repo);
-  expect(envPrecheck(repo)).toMatchObject({ ok: true });
-  chmodSync(hook, 0o644);
-  expect(envPrecheck(repo).failures[0]).toMatchObject({ failure_class: 'test_env', recovery: ['bun run prepare'] });
-  unlinkSync(hook);
-  expect(envPrecheck(repo)).toMatchObject({ ok: false });
-});
+test.each(['relative', 'absolute'])(
+  'ENV_PRECHECK tracked hooks resolve %s paths and only require declared hooks',
+  mode => {
+    const repo = gitRepo(tmp()),
+      hooks = join(repo, '.hooks'),
+      hook = join(hooks, 'pre-commit');
+    mkdirSync(hooks);
+    writeFileSync(hook, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(hooks, 'README.md'), 'hook documentation');
+    writeFileSync(
+      join(repo, 'package.json'),
+      JSON.stringify({ packageManager: 'bun@1.4.3', scripts: { prepare: 'setup-hooks' } })
+    );
+    sh('git add .hooks', repo);
+    sh(`git config core.hooksPath '${mode === 'relative' ? '.hooks' : hooks}'`, repo);
+    expect(envPrecheck(repo)).toMatchObject({ ok: true });
+    chmodSync(hook, 0o644);
+    expect(envPrecheck(repo).failures[0]).toMatchObject({
+      failure_class: 'test_env',
+      recovery: ['bun run prepare'],
+    });
+    unlinkSync(hook);
+    expect(envPrecheck(repo)).toMatchObject({ ok: false });
+  }
+);
 
 test('ENV_PRECHECK missing dependencies block; installed consistency stays unknown with no writes', () => {
   const repo = gitRepo(tmp());
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ dependencies: { example: '1' }, packageManager: 'bun@1.4.3' }));
+  writeFileSync(
+    join(repo, 'package.json'),
+    JSON.stringify({ dependencies: { example: '1' }, packageManager: 'bun@1.4.3' })
+  );
   writeFileSync(join(repo, 'bun.lock'), 'declared lock');
   const before = sh('git status --porcelain', repo);
-  expect(envPrecheck(repo)).toMatchObject({ ok: false, dependencies: 'unknown', failures: [{
-    failure_class: 'test_env', recovery: ['bun install --frozen-lockfile'],
-  }] });
+  expect(envPrecheck(repo)).toMatchObject({
+    ok: false,
+    dependencies: 'unknown',
+    failures: [
+      {
+        failure_class: 'test_env',
+        recovery: ['bun install --frozen-lockfile'],
+      },
+    ],
+  });
   expect(existsSync(join(repo, 'node_modules'))).toBe(false);
   expect(sh('git status --porcelain', repo)).toBe(before);
   expect(readFileSync(join(repo, 'bun.lock'), 'utf8')).toBe('declared lock');
@@ -69,24 +90,41 @@ test('ENV_PRECHECK missing dependencies block; installed consistency stays unkno
 test('ENV_PRECHECK unset hooks and empty dependency repo pass; missing declared tools block', () => {
   const repo = gitRepo(tmp());
   sh("git config core.hooksPath ''", repo);
-  expect(envPrecheck(repo)).toMatchObject({ ok: true, dependencies: 'not_required', hooks: 'not_configured' });
+  expect(envPrecheck(repo)).toMatchObject({
+    ok: true,
+    dependencies: 'not_required',
+    hooks: 'not_configured',
+  });
   writeFileSync(join(repo, 'package.json'), '{}');
   writeFileSync(join(repo, 'bun.lock'), 'empty');
   expect(envPrecheck(repo)).toMatchObject({ ok: true, dependencies: 'not_required' });
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ packageManager: 'sa-nonexistent-tool@1' }));
-  expect(envPrecheck(repo).failures[0]?.evidence).toBe('missing declared tool: sa-nonexistent-tool');
+  writeFileSync(
+    join(repo, 'package.json'),
+    JSON.stringify({ packageManager: 'sa-nonexistent-tool@1' })
+  );
+  expect(envPrecheck(repo).failures[0]?.evidence).toBe(
+    'missing declared tool: sa-nonexistent-tool'
+  );
 });
 
 test('ENV_PRECHECK environment emits typed evidence and skips commands until checkout ready', () => {
-  const root = tmp(), repo = gitRepo(root), marker = join(root, 'executed');
+  const root = tmp(),
+    repo = gitRepo(root),
+    marker = join(root, 'executed');
   writeFileSync(join(repo, 'package.json'), '{"dependencies":{"example":"1"}}');
   writeFileSync(join(repo, 'bun.lock'), 'declared');
   const p = planFile(root, 'true', [`touch '${marker}'`]);
   const r = runScript(repo, { kind: 'env', plan: p });
   expect(r.code, r.err).toBe(1);
-  expect(r.out).toMatchObject({ ok: false, failed: ['env-precheck'], failures: [{ failure_class: 'test_env' }] });
+  expect(r.out).toMatchObject({
+    ok: false,
+    failed: ['env-precheck'],
+    failures: [{ failure_class: 'test_env' }],
+  });
   expect(existsSync(marker)).toBe(false);
-  expect(readFileSync(join(r.art, 'environment.log'), 'utf8')).toContain('bun install --frozen-lockfile');
+  expect(readFileSync(join(r.art, 'environment.log'), 'utf8')).toContain(
+    'bun install --frozen-lockfile'
+  );
   mkdirSync(join(repo, 'node_modules'));
   const ready = runScript(repo, { kind: 'env', plan: p });
   expect(ready.code, ready.err).toBe(0);
@@ -95,13 +133,106 @@ test('ENV_PRECHECK environment emits typed evidence and skips commands until che
 });
 
 test('ENV_PRECHECK environment retains command typed failure classification', () => {
-  const root = tmp(), repo = gitRepo(root);
-  const r = runScript(repo, { kind: 'env', plan: planFile(root, 'true', [
-    `printf '%s' '{"failure_class":"test_env","evidence":"missing fixture resource"}'; exit 1`,
-  ]) });
+  const root = tmp(),
+    repo = gitRepo(root);
+  const r = runScript(repo, {
+    kind: 'env',
+    plan: planFile(root, 'true', [
+      `printf '%s' '{"failure_class":"test_env","evidence":"missing fixture resource"}'; exit 1`,
+    ]),
+  });
   expect(r.code, r.err).toBe(1);
   expect(r.out).toMatchObject({ failures: [{ failure_class: 'test_env' }] });
 });
+
+test.each([
+  ['owned', 0],
+  ['owned', 9],
+  ['unowned', 0],
+  ['wrong-path', 0],
+  ['wrong-run', 0],
+  ['main', 0],
+] as const)(
+  'RUN_PROVISION %s recovery exit %s respects run ownership and records artifacts',
+  (mode, status) => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      worktree = join(root, 'run-worktree');
+    writeFileSync(
+      join(repo, 'package.json'),
+      JSON.stringify({
+        packageManager: 'bun@1.4.3',
+        dependencies: { example: '1' },
+        scripts: { prepare: 'setup-hooks' },
+      })
+    );
+    writeFileSync(join(repo, 'bun.lock'), 'declared');
+    mkdirSync(join(repo, '.hooks'));
+    writeFileSync(join(repo, '.hooks/pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    sh('git add . && git -c user.name=t -c user.email=t@l commit -qm fixture', repo);
+    sh(`git worktree add -b sa/provision '${worktree}'`, repo);
+    sh('git config core.hooksPath .hooks/_', repo);
+    const cwd = mode === 'main' ? repo : worktree,
+      bin = join(root, 'bin'),
+      marker = join(root, 'recovery');
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, 'bun'),
+      `#!/bin/sh
+case "$*" in
+  'install --frozen-lockfile'|'run prepare')
+    echo "$*" >> '${marker}'
+    echo recovery-output
+    ${status ? `exit ${status}` : `if [ "$1" = install ]; then mkdir node_modules; else mkdir .hooks/_; cp .hooks/pre-commit .hooks/_/pre-commit; fi`}
+    ;;
+  *) exec '${process.execPath}' "$@" ;;
+esac
+`,
+      { mode: 0o755 }
+    );
+    const events = join(root, 'events.json');
+    writeFileSync(
+      events,
+      JSON.stringify({
+        id: mode === 'wrong-run' ? 'other-run' : 'current-run',
+        events: [],
+        working_path: mode === 'wrong-path' ? repo : cwd,
+        metadata:
+          mode === 'unowned' ? {} : { owned_worktree: { envId: 'env', creationId: 'creation' } },
+      })
+    );
+    const path = planFile(root, 'true');
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), repo }));
+    const r = runScript(cwd, { kind: 'env', plan: path, events_file: events }, SCRIPT, {
+      WORKFLOW_ID: 'current-run',
+      PATH: `${bin}:${process.env.PATH}`,
+    });
+    const artifact = JSON.parse(readFileSync(join(r.art, 'environment.json'), 'utf8'));
+    expect(r.out).toEqual(artifact);
+    expect(r.code, r.err).toBe(mode === 'owned' && status === 0 ? 0 : 1);
+    expect(artifact.precheck.ok).toBe(mode === 'owned' && status === 0);
+    expect(existsSync(marker)).toBe(mode === 'owned');
+    expect(existsSync(join(repo, 'node_modules'))).toBe(false);
+    expect(existsSync(join(repo, '.hooks/_'))).toBe(false);
+    if (mode === 'owned') {
+      expect(artifact.provisioned[0]).toMatchObject({
+        cmd: 'bun install --frozen-lockfile',
+        exit: status,
+        output: 'recovery-output\n',
+      });
+      expect(artifact.provisioned[0].ms).toBeGreaterThanOrEqual(0);
+      expect(artifact.provisioned.map((p: { cmd: string }) => p.cmd)).toEqual(
+        status
+          ? ['bun install --frozen-lockfile']
+          : ['bun install --frozen-lockfile', 'bun run prepare']
+      );
+      if (status) expect(JSON.stringify(artifact.precheck.failures)).toContain('exit=9');
+    } else {
+      expect(artifact.provisioned).toEqual([]);
+      expect(artifact.notes.join(' ')).toContain('Recovery skipped');
+    }
+  }
+);
 
 test('author carry reads each adopted generation and refuses unknown or invalid ancestry', () => {
   type Run = Parameters<typeof readAuthorEvidence>[0];
@@ -1180,7 +1311,10 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
     join(root, 'failure-class.ts'),
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/failure-class.ts'))
   );
-  cpSync(join(import.meta.dir, '../templates/.archon/scripts/env-precheck.ts'), join(root, 'env-precheck.ts'));
+  cpSync(
+    join(import.meta.dir, '../templates/.archon/scripts/env-precheck.ts'),
+    join(root, 'env-precheck.ts')
+  );
   if (hook) sh(`git config core.hooksPath '${join(repo, '.git/hooks')}'`, repo);
   if (hook)
     writeFileSync(
