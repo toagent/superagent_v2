@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { lock } from '../src/archon';
@@ -37,6 +37,80 @@ const deliveryFixture = () => {
   };
   return { ...f, delivery, context: { repo: f.repo, base_ref: 'main', delivery } };
 };
+
+test.each(['fresh', 'integrated', 'missing'])(
+  'LAND_SUBMODULE initializes local candidate before acceptance: %s',
+  kind => {
+    const f = deliveryFixture();
+    const upstream = gitRepo(tmp());
+    const path = 'upstream/agent-zero';
+    sh(`git -c protocol.file.allow=always submodule add '${upstream}' '${path}'`, f.worktree);
+    if (kind === 'missing')
+      sh(`git update-index --cacheinfo 160000,${'1'.repeat(40)},${path}`, f.worktree);
+    sh('git add .gitmodules && git commit -qm submodule', f.worktree);
+    f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
+    if (kind === 'missing') {
+      // An uninitialized author checkout stays clean despite the unavailable gitlink commit.
+      rmSync(join(f.worktree, path), { recursive: true, force: true });
+      mkdirSync(join(f.worktree, path));
+    }
+    if (kind === 'integrated') sh('git merge --ff-only sa/land', f.repo);
+    const targetBefore = sh('git rev-parse HEAD', f.repo);
+    const sourceBefore = sh('git status --porcelain', f.worktree);
+    const sourceSubmodule = sh('git rev-parse HEAD', upstream);
+    const worktreesBefore = sh('git worktree list --porcelain', f.repo);
+    const plan = fixturePlan(f.root, f.repo, p => {
+      p.packages = [{ id: 'p', accept: [{ cmd: `test -f ${path}/README.md`, timeout_s: 2 }] }];
+    });
+    const verify = mock((cwd: string) => {
+      expect(sh('git rev-parse HEAD', join(cwd, path))).toBe(sourceSubmodule);
+      expect(sh('git status --porcelain', cwd)).toBe('');
+      const result = Bun.spawnSync(
+        [process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')],
+        {
+          cwd,
+          env: {
+            ...process.env,
+            INPUTS_KIND: 'accept',
+            INPUTS_PLAN: plan,
+            INPUTS_PKGS: 'p',
+            INPUTS_TAG: 'land-submodule',
+            ARTIFACTS_DIR: f.art,
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }
+      );
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(join(f.art, 'land-submodule.json'), 'utf8'))).toHaveProperty(
+        'workspace_clean',
+        true
+      );
+      return result.exitCode;
+    });
+    const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+    try {
+      if (kind === 'missing') {
+        expect(() => applyLand(f.run, f.land, verify, f.context)).toThrow(
+          /submodule initialization failed \(exit \d+\); paths: .*upstream\/agent-zero; log tail:/
+        );
+        expect(verify).not.toHaveBeenCalled();
+        expect(sh('git rev-parse HEAD', f.repo)).toBe(targetBefore);
+        expect(sh('git worktree list --porcelain', f.repo)).toBe(worktreesBefore);
+        expect(existsSync(f.delivery.receipt)).toBe(false);
+      } else {
+        expect(applyLand(f.run, f.land, verify, f.context)?.status).toBe('manual_push');
+        expect(verify).toHaveBeenCalledTimes(1);
+      }
+      expect(sh('git status --porcelain', f.worktree)).toBe(sourceBefore);
+      if (kind !== 'missing')
+        expect(sh('git rev-parse HEAD', join(f.worktree, path))).toBe(sourceSubmodule);
+      expect(existsSync(join(f.repo, path, 'README.md'))).toBe(false);
+    } finally {
+      probe.mockRestore();
+    }
+  }
+);
 
 test.each(['missing', 'corrupt', 'advanced', 'mismatch', 'interrupted', 'accept-fail', 'valid'])(
   'delivery already integrated recovery: %s requires current acceptance or a matching receipt',

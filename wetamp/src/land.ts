@@ -183,6 +183,14 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       }
       gitAt(candidate, 'commit', '--no-edit');
     }
+    if (existsSync(join(candidate, '.gitmodules'))) {
+      // --no-fetch prevents fetching missing commits; file-only also keeps initial clones local.
+      const p = Bun.spawnSync(['git', '-C', candidate, 'submodule', 'update', '--init', '--recursive', '--no-fetch'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS, env: { ...process.env, GIT_ALLOW_PROTOCOL: 'file' } });
+      if (p.exitedDueToTimeout || p.exitCode !== 0) {
+        const paths = Bun.spawnSync(['git', '-C', candidate, 'config', '--file', '.gitmodules', '--get-regexp', '\\.path$'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }).stdout.toString().trim();
+        throw new Error(`land: submodule initialization failed (exit ${String(p.exitCode)}${p.exitedDueToTimeout ? ', timed out' : ''}); paths: ${redact(paths)}; log tail:\n${redact(p.stdout.toString() + p.stderr.toString()).split('\n').slice(-20).join('\n')}`);
+      }
+    }
     const accepted = gitAt(candidate, 'rev-parse', 'HEAD');
     // Workspace links must resolve within the checkout being accepted.
     for (const rel of ['.', 'wetamp']) {
