@@ -6,7 +6,8 @@
 ## 五条不变量
 
 1. 合法等待是以下三类闭集：
-   高危六类：鉴权、凭据、沙箱、计费、迁移/删除、部署发布，可能需要人工执行。
+   高危六类：销毁任务范围外数据、改写共享历史、对外不可撤回（push/发布/部署/外部消息）、
+   凭据与隐私、越权（按名或端口杀进程、改护栏/配置）、派生会话再委派。
    操作者显式声明：paused / held:paused、cancelled_source，尊重暂停或取消决定；
    plan 中工作包声明 signoff:"human" 时才允许 held:human / signoff / approval。
    自动补环境后仍缺外部资源的 held:environment，等价于带 needs 的 blocked。

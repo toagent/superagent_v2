@@ -12,14 +12,21 @@ import { buildReport } from '../src/report';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 // Closed policy set: adding a seventh category requires a constitutional decision.
-const HIGH_RISK = ['鉴权', '凭据', '沙箱', '计费', '迁移/删除', '部署发布'] as const;
+const HIGH_RISK = [
+  '销毁范围外数据',
+  '改写共享历史',
+  '对外不可撤回',
+  '凭据与隐私',
+  '越权',
+  '再委派',
+] as const;
 const HIGH_RISK_HOLDS: Record<(typeof HIGH_RISK)[number], readonly string[]> = {
-  鉴权: ['redline'],
-  凭据: ['redline'],
-  沙箱: ['redline'],
-  计费: ['redline'],
-  '迁移/删除': ['redline'],
-  部署发布: ['redline'],
+  销毁范围外数据: ['redline'],
+  改写共享历史: ['redline'],
+  对外不可撤回: ['redline'],
+  凭据与隐私: ['redline'],
+  越权: ['redline'],
+  再委派: ['redline'],
 };
 // 高危操作可能需要人工执行；六类风险共享 redline 处置，不增加风险类别。
 const highRiskHolds = Object.values(HIGH_RISK_HOLDS).flat();
