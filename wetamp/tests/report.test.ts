@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Plan } from '../src/plan';
 import {
   buildReport,
+  measurementOf,
   callsOf,
   interventionStats,
   rollup,
@@ -47,6 +49,45 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  // prettier-ignore
+  test('attempt receipts sum retries; registered holds exclude inter-node idle and review reasons stay explicit', () => {
+    const clock = (s: number) => new Date(Date.UTC(2026,9,14) + s*1000).toISOString();
+    const terminal = (attempt: string, start: number, duration: number) => ({ ...ev('node_completed', 'code-core', { invocation: { id: 'i' }, attempt: { id: attempt, startedAt: clock(start) }, timing: { startedAt: clock(start), durationMs: duration } }), created_at: clock(start + (Number.isFinite(duration) ? duration/1000 : 0)) });
+    const run = { id: 'r', status: 'failed', started_at: clock(0), completed_at: clock(20) } as Parameters<typeof measurementOf>[0];
+    const events = [terminal('a', 0, 3000), terminal('b', 8, 2000),
+      { event_type: 'wait_started', step_name: 'wait', created_at: clock(3) }, { event_type: 'wait_completed', step_name: 'wait', created_at: clock(6) }];
+    expect(measurementOf(run, [...events, events[0]], null)).toMatchObject({ cumulative_ms: 5000, critical_path_ms: 20000, hold_ms: 3000, idle_ms: 2000, nodes: [{ execution: 'multiple' }, { execution: 'multiple' }] });
+    expect(measurementOf({ ...run, started_at: clock(8) }, events, null).critical_path_ms).toBe('unknown');
+    expect(measurementOf(run, events.slice(0,3), null).hold_ms).toBe('unknown');
+    expect(measurementOf(run, [...events, { event_type: 'wait_started', step_name: 'parallel', created_at: clock(2) }, { event_type: 'wait_completed', step_name: 'parallel', created_at: clock(8) }], null)).toMatchObject({ hold_ms: 6000, idle_ms: 0 });
+    expect(measurementOf(run, [terminal('a', 0, Infinity)], null).cumulative_ms).toBe('unknown');
+    const reviewPlan = { mode: 'strict', packages: [{ id: 'core', risk: 'G2', review: true }] } as Plan;
+    const reviews = measurementOf(run, [ev('node_completed', 'review-m1-r1'), ev('node_completed', 'diff-m1-r1', { structured_output: { risk: 'G2', out_of_scope: ['outside'] } })], reviewPlan);
+    expect(reviews.nodes[0].review_trigger).toEqual({ reasons: ['plan G2', 'strict', 'review:true'], glob: 'unknown', symlink: 'unknown', gitlink: 'unknown' });
+    expect(measurementOf(run, [ev('node_completed', 'review-m1-r1'), ev('node_completed', 'diff-m1-r1', { structured_output: { risk: 'G2', out_of_scope: ['outside'] } })], { packages: [{ id: 'core', risk: 'G1' }] } as Plan).nodes[0].review_trigger?.reasons).toEqual(['runtime:out_of_scope']);
+  });
+  // prettier-ignore
+  test('readonly report processes 300 runs / 51000 events in under five seconds', () => {
+    const root = tmp(), keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const, saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: '' });
+    const db = new Database(join(root, 'archon.db'));
+    db.run('CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, started_at TEXT, completed_at TEXT, metadata TEXT)');
+    db.run('CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT, event_type TEXT, step_name TEXT, created_at TEXT, event_order INTEGER, data TEXT)');
+    const run = db.prepare('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?)'), event = db.prepare('INSERT INTO remote_agent_workflow_events VALUES (?, ?, ?, ?, ?, ?)');
+    db.transaction(() => { for (let r = 0; r < 300; r++) {
+      run.run(String(r), ['completed', 'failed', 'cancelled'][r % 3], '2026-10-10T00:00:00Z', '2026-10-10T00:10:00Z', '{}');
+      for (let seq = 0; seq < 170; seq++) event.run(String(r), 'provider_event', 'code-core', '2026-10-10T00:00:00Z', seq, JSON.stringify({ attemptId: 'a', seq, observedAt: new Date(Date.UTC(2026,9,10) + seq*1000).toISOString(), event: seq % 2 ? { type: 'tool_call_update', toolCallId: String(seq-1), status: 'completed' } : { type: 'tool_call', toolCallId: String(seq), name: 'Bash', rawInput: { command: 'cat file' } } }));
+    } })(); db.close();
+    const before = readFileSync(join(root, 'archon.db'));
+    try {
+      const start = performance.now(), report = buildReport([]);
+      expect(performance.now() - start).toBeLessThan(5000);
+      expect(Object.keys(report.measurement as object)).toHaveLength(300);
+      expect(readFileSync(join(root, 'archon.db'))).toEqual(before);
+      expect(report.provider_timing).toMatchObject({ '0': [{ cmds: 85, explore_ratio: 1, model_turns: 84 }] });
+    } finally { keys.forEach((k,i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; }); }
+  });
+
   test('EFFICIENCY_BUDGET buildReport ranks slow attempts across runs and limits to five', () => {
     const root = tmp(),
       bin = join(root, 'archon-stub');
@@ -498,10 +539,19 @@ describe('F-22 report', () => {
           unreadable: [],
           repo_missing: missing ? ['sa1'] : [],
           usage: {
-            total: { calls: 4, output: 165, coverage: '3/4', infra_retries: 1 },
-            by_run: { sa1: { calls: 4, output: 165 } },
-            by_role: { code: { calls: 2, output: 155 }, review: { calls: 1, output: 10 } },
-            by_attempt: { 'attempt:2': { calls: 1, output: 100 } },
+            total: {
+              calls: 4,
+              raw: { output: 165 },
+              output: 'unknown',
+              coverage: '3/4',
+              infra_retries: 1,
+            },
+            by_run: { sa1: { calls: 4, raw: { output: 165 } } },
+            by_role: {
+              code: { calls: 2, raw: { output: 155 } },
+              review: { calls: 1, raw: { output: 10 } },
+            },
+            by_attempt: { 'attempt:2': { calls: 1, raw: { output: 100 } } },
             window: { scope: 'all_retained_events_for_recorded_generations' },
             unreadable: [],
           },

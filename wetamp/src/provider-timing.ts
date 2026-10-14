@@ -144,6 +144,21 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     const edit = unique.find(e => editAction(e.event) !== false);
     const firstEdit = complete ? (edit ? editAction(edit.event) === true
       ? Date.parse(edit.observedAt) - Date.parse(first.observedAt) : 'unknown' : null) : 'unknown';
+    const actions = unique.flatMap<{ name: string; title?: string; rawInput?: unknown }>(e => e.event.type === 'tool_call' ? [e.event] :
+      e.event.type === 'subtask' && e.event.taskType === 'command_execution' && e.event.status === 'started'
+        ? [{ name: 'command_execution', title: e.event.description }] : []);
+    const commands = actions.filter(e => ['Bash', 'shell', 'exec_command', 'command_execution'].includes(e.name));
+    const reads = new Set(['rg', 'grep', 'cat', 'sed', 'head', 'tail', 'ls', 'find', 'pwd', 'git', 'codegraph']);
+    let explore = actions.filter(e => ['Read', 'Glob', 'Grep'].includes(e.name)).length, classified = true;
+    for (const command of commands) {
+      const input = 'rawInput' in command ? object(command.rawInput) : undefined;
+      const text = input?.command ?? input?.cmd ?? command.title;
+      if (typeof text !== 'string') { classified = false; continue; }
+      try { const parsed = shell.parse(text), argvs = parsed.argvs; explore += Number(!parsed.writes.length && argvs.length > 0 && argvs.every(a => reads.has(a[0]) && (a[0] !== 'git' || ['status', 'diff', 'show', 'log'].includes(a[1])) && (a[0] !== 'sed' || !a.slice(1).some(v => /^-[^-]*i|^--in-place/.test(v))))); }
+      catch { classified = false; }
+    }
+    const recognized = complete && actions.length > 0 && actions.every(e => ['Bash', 'shell', 'exec_command', 'command_execution', 'Read', 'Glob', 'Grep', 'file_change', 'fileChange', 'apply_patch'].includes(e.name) || e.name.startsWith('mcp__'));
+    const invocation = object(object(terminal?.data)?.invocation)?.id;
     const limits = baseline(group.node), reasons: string[] = [];
     if (limits && typeof window === 'object' && window.duration_ms > limits[0])
       reasons.push(`wall_clock_ms ${String(window.duration_ms)} > p90 ${String(limits[0])}`);
@@ -152,6 +167,12 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     if (longest && longest.ms > 180000) reasons.push(`longest_gap_ms ${String(longest.ms)} > 180000`);
     return {
       run: group.run, node: group.node, attempt_id: group.attempt,
+      invocation_id: typeof invocation === 'string' ? invocation : 'unknown',
+      cmds: recognized ? commands.length : 'unknown',
+      explore_ratio: recognized && classified ? explore / actions.length : 'unknown',
+      mcp_calls: recognized ? actions.filter(e => e.name.startsWith('mcp__')).length : 'unknown',
+      // Arrival gaps include transport; they are not native server reasoning clocks.
+      think_gap_ms: recognized ? (typeof window === 'object' && closed ? window.duration_ms - knownMs : 'unknown') : 'unknown',
       window, request_at: 'unknown', first_token_ms: 'unknown',
       first_content_at: complete ? messages[0]?.observedAt ?? 'unknown' : 'unknown',
       final_answer_at: complete && closed && terminalClock && terminal?.event_type === 'node_completed'
@@ -161,7 +182,7 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       tool_intervals: union, known_tool_union_ms: knownMs,
       tool_union_ms: complete && closed ? knownMs : 'unknown',
       non_tool_gap_ms: typeof window === 'object' && closed ? window.duration_ms - knownMs : 'unknown',
-      model_turns: turns, first_edit_ms: firstEdit,
+      model_turns: recognized ? turns : 'unknown', first_edit_ms: firstEdit,
       longest_gap_ms: longest?.ms ?? 'unknown', longest_gap_at: longest?.start ?? 'unknown',
       budget: { over: reasons.length > 0, reasons },
     };

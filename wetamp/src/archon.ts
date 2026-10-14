@@ -144,6 +144,32 @@ export function runRevision(id: string): string | null {
   }
 }
 
+/** Report snapshot: read-only SQLite, complete histories of runs selected by started_at.
+ * No provider/CLI processes, and no truncation of attempts crossing the window boundary. */
+// prettier-ignore
+export function reportRuns(since: string, until: string) {
+  const db = new Database(join(home().archon, 'archon.db'), { readonly: true });
+  try {
+    return db.transaction(() => {
+      const runs = db.query<Omit<RunView, 'metadata'> & { metadata: string | null }, [string, string]>(
+        'SELECT * FROM remote_agent_workflow_runs WHERE julianday(started_at) >= julianday(?) AND julianday(started_at) < julianday(?)'
+      ).all(since || '0001-01-01', until);
+      const rows = db.query<Omit<import('../../packages/workflows/src/schemas/workflow-event').WorkflowEventRow, 'data'> & { data: string }, [string, string]>(
+        `SELECT e.* FROM remote_agent_workflow_events e JOIN remote_agent_workflow_runs r
+         ON r.id = e.workflow_run_id WHERE julianday(r.started_at) >= julianday(?) AND julianday(r.started_at) < julianday(?)
+         ORDER BY e.workflow_run_id, e.event_order, e.created_at, e.rowid`
+      ).all(since || '0001-01-01', until);
+      const by = new Map<string, import('../../packages/workflows/src/schemas/workflow-event').WorkflowEventRow[]>();
+      for (const row of rows) {
+        const events = by.get(row.workflow_run_id) ?? [];
+        if (!by.has(row.workflow_run_id)) by.set(row.workflow_run_id, events);
+        events.push({ ...row, data: JSON.parse(row.data) as import('../../packages/workflows/src/schemas/workflow-event').WorkflowEventRow['data'] });
+      }
+      return new Map(runs.map(row => [row.id, { ...row, metadata: JSON.parse(row.metadata ?? '{}') as RunView['metadata'], events: by.get(row.id) ?? [] }]));
+    })();
+  } finally { db.close(); }
+}
+
 export const tail = (s: string, n = 400): string => s.trim().slice(-n);
 
 /** Ledger order preserves generation chronology; each engine run contributes once. */

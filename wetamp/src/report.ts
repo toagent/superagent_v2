@@ -2,7 +2,8 @@
 // 未回执的用量记 unknown，从不当 0；不折算金额。
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { archonJson, archonRunIds, getRun, tail } from './archon';
+import { archonJson, archonRunIds, getRun, tail, reportRuns } from './archon';
+import { readNodeRecordEvent } from '../../packages/workflows/src/node-record-reader';
 import { home, WETAMP } from './config';
 import {
   type Ledger,
@@ -12,9 +13,8 @@ import {
   evidenceGates,
   decisionOf,
   intakeEvidence,
+  summarize,
 } from './cli';
-import { snapshotOf } from './board/data';
-import { cockpit } from './board/cockpit';
 import { Intake, intakeRoot } from './intake';
 import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
@@ -321,17 +321,26 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
   }
   for (const ref of [...sessions.map(s => s.owner?.conflict ? undefined : s.owner?.request_ref), ...jobs.map(j => j.request_ref)])
     if (ref && !by.has(ref)) by.set(ref, []);
-  const sessionId = (provider: string, id: string) => `${provider}:${sessionKey(id)}`;
+  const sessionKeys = new Map<string, string>();
+  const sessionId = (provider: string, id: string) => { const key = `${provider}:${id}`, cached = sessionKeys.get(key); if (cached !== undefined) return cached; const value = `${provider}:${sessionKey(id)}`; sessionKeys.set(key, value); return value; };
   const claims = new Map<string, Set<string>>();
   const claim = (provider: string, id: string, ref: string) => { const k = sessionId(provider, id); claims.set(k, (claims.get(k) ?? new Set()).add(ref)); };
   for (const [ref, attempts] of by) for (const c of calls)
     if (c.provider && c.session && attempts.some(p => p.ledger.run_id === c.run)) claim(c.provider, c.session, ref);
+  const refsByRun = new Map<string, string>();
+  for (const [ref, attempts] of by) for (const p of attempts) refsByRun.set(p.ledger.run_id, ref);
+  const sessionIndex = new Map<string, UsageSession[]>();
   for (const s of sessions) {
     if (s.owner?.request_ref) claim(s.client, s.id, s.owner.request_ref);
-    for (const [ref, attempts] of by) if (s.owner?.kind === 'run' && attempts.some(p => p.ledger.run_id === s.owner?.run_id)) claim(s.client, s.id, ref);
+    const ref = s.owner?.kind === 'run' && s.owner.run_id ? refsByRun.get(s.owner.run_id) : undefined;
+    if (ref) claim(s.client, s.id, ref);
+    for (const key of [s.owner?.request_ref && `ref:${s.owner.request_ref}`, s.owner?.run_id && `run:${s.owner.run_id}`, `session:${sessionId(s.client, s.id)}`]) {
+      if (key) { const rows = sessionIndex.get(key) ?? []; rows.push(s); sessionIndex.set(key, rows); }
+    }
   }
   for (const j of jobs) if (j.request_ref && j.session_id) claim(j.kind, j.session_id, j.request_ref);
-  const disputed = (provider: string, id: string) => (claims.get(sessionId(provider, id))?.size ?? 0) > 1 || sessions.some(s => sessionId(s.client, s.id) === sessionId(provider, id) && s.owner?.conflict);
+  const conflicts = new Set(sessions.filter(s => s.owner?.conflict).map(s => sessionId(s.client, s.id)));
+  const disputed = (provider: string, id: string) => (claims.get(sessionId(provider, id))?.size ?? 0) > 1 || conflicts.has(sessionId(provider, id));
   const demands = Object.fromEntries(
     [...by].map(([ref, attempts]) => {
       const completion = attempts.map(({ ledger, run }) =>
@@ -340,14 +349,17 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       const complete = completion.some(
         c => c && Object.keys(c).length > 0 && Object.values(c).every(v => v.status === 'verified')
       );
-      const own = calls.filter(c => attempts.some(p => p.ledger.run_id === c.run));
-      const extra = sessions.filter(
-        s => !disputed(s.client, s.id) && (s.owner?.kind === 'run' && (s.owner.request_ref === ref || attempts.some(p => p.ledger.run_id === s.owner?.run_id)) || own.some(c => c.provider === s.client && c.session && sessionKey(c.session) === sessionKey(s.id)))
+      const runIds = new Set(attempts.map(p => p.ledger.run_id));
+      const own = calls.filter(c => runIds.has(c.run));
+      const ownedSessions = new Set(own.flatMap(c => c.provider && c.session ? [sessionId(c.provider, c.session)] : []));
+      const candidates = [...new Set([`ref:${ref}`, ...[...runIds].map(id => `run:${id}`), ...[...ownedSessions].map(id => `session:${id}`)].flatMap(key => sessionIndex.get(key) ?? []))];
+      const extra = candidates.filter(
+        s => !disputed(s.client, s.id) && (s.owner?.kind === 'run' && (s.owner.request_ref === ref || (!!s.owner.run_id && runIds.has(s.owner.run_id))) || ownedSessions.has(sessionId(s.client, s.id)))
       );
       const trusted = own.filter(c => !c.provider || !c.session || !disputed(c.provider, c.session));
-      const conflicting = [...claims].some(([k, refs]) => refs.has(ref) && (refs.size > 1 || sessions.some(s => sessionId(s.client, s.id) === k && s.owner?.conflict)));
+      const conflicting = [...claims].some(([k, refs]) => refs.has(ref) && (refs.size > 1 || conflicts.has(k)));
       // Jobs have an explicit demand ref but no verified provider-session receipt.
-      const missing = Number(conflicting) + jobs.filter(j => j.request_ref === ref).length + sessions.filter(s => s.owner?.kind !== 'run' && (s.owner?.request_ref === ref || attempts.some(p => p.ledger.run_id === s.owner?.run_id)) && !jobs.some(j => j.request_ref === ref && j.id === s.owner?.job_id)).length + attempts.reduce((n, p) => n + Math.max(Number(p.run instanceof Error), unreadable[p.ledger.run_id] ?? 0), 0);
+      const missing = Number(conflicting) + jobs.filter(j => j.request_ref === ref).length + candidates.filter(s => s.owner?.kind !== 'run' && (s.owner?.request_ref === ref || (!!s.owner?.run_id && runIds.has(s.owner.run_id))) && !jobs.some(j => j.request_ref === ref && j.id === s.owner?.job_id)).length + attempts.reduce((n, p) => n + Math.max(Number(p.run instanceof Error), unreadable[p.ledger.run_id] ?? 0), 0);
       const starts = attempts.map(p => Date.parse(p.ledger.started_at));
       const ends = attempts.map(p =>
         p.run instanceof Error ? NaN : Date.parse(p.run.completed_at ?? '')
@@ -394,12 +406,87 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
   };
 }
 
+/** Cumulative sums explicit attempt receipts, never min-start/max-end pairing.
+ * Critical wall clock is the run lifecycle (parallel work counted once), not engine overhead.
+ * Hold is only engine-recorded wait/approval pairs; idle is uncovered inter-node time.
+ * Missing wait history cannot prove zero holds; external dispatch is outside this boundary. */
+// prettier-ignore
+export function measurementOf(run: RunView, events: Event[], plan: Plan | null, timings: ReturnType<typeof providerTiming> = providerTiming(run.id, events)) {
+  const terminals = events.filter(e => ['node_completed', 'node_failed'].includes(e.event_type) && (e.data as SerializedNodeData | undefined)?.reason !== 'prior_success');
+  const seen = new Set<string>(), intervals: { start: number; end: number }[] = [];
+  const nodes = terminals.flatMap(e => {
+    const d = e.data, identity = d?.invocation?.id && d.attempt?.id ? JSON.stringify([e.workflow_run_id ?? run.id, e.step_name, d.invocation.id, d.attempt.id]) : null;
+    if (identity && seen.has(identity)) return [];
+    if (identity) seen.add(identity);
+    const duration = d?.timing?.durationMs, start = Date.parse(d?.timing?.startedAt ?? d?.attempt?.startedAt ?? '');
+    const measured = !!identity && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && Number.isFinite(start);
+    if (measured) intervals.push({ start, end: start + duration });
+    const timing = timings.find(t => t.run === (e.workflow_run_id ?? run.id) && t.node === e.step_name && t.attempt_id === d?.attempt?.id && t.invocation_id === d.invocation?.id);
+    const node = e.step_name ?? 'unknown', milestone = node.replace(/^review-/, '').replace(/-r\d+$/, '');
+    const packages = plan?.packages.filter(p => (p.milestone ?? 'm1') === milestone);
+    const check = events.filter(x => x.step_name === `diff-${milestone}-r1` && x.event_type === 'node_completed').at(-1)?.data as (Event['data'] & { structured_output?: { risk?: string; out_of_scope?: string[] } }) | undefined;
+    const triggers = node.startsWith('review-') ? [
+      ...(packages?.some(p => p.risk === 'G2') ? ['plan G2'] : []), ...(plan?.mode === 'strict' ? ['strict'] : []),
+      ...(packages?.some(p => p.review) ? ['review:true'] : []),
+      ...(check?.structured_output?.risk === 'G2' && packages && !packages.some(p => p.risk === 'G2') ? [check.structured_output.out_of_scope?.length ? 'runtime:out_of_scope' : 'runtime:other'] : [])] : [];
+    return [{ node, type: node.split('-')[0], invocation: (d?.invocation?.id ?? '').length ? d?.invocation?.id : 'unknown', attempt: (d?.attempt?.id ?? '').length ? d?.attempt?.id : 'unknown', terminal: e.event_type,
+      cumulative_ms: measured ? duration : 'unknown', cmds: timing?.cmds ?? 'unknown', explore_ratio: timing?.explore_ratio ?? 'unknown', mcp_calls: timing?.mcp_calls ?? 'unknown', model_turns: timing?.model_turns ?? 'unknown', think_gap_ms: timing?.think_gap_ms ?? 'unknown',
+      review_trigger: node.startsWith('review-') ? { reasons: triggers.length ? triggers : ['unknown'], glob: 'unknown', symlink: 'unknown', gitlink: 'unknown' } : undefined }];
+  });
+  const counts = new Map<string, number>();
+  for (const n of nodes) counts.set(n.node, (counts.get(n.node) ?? 0) + 1);
+  const union: typeof intervals = [];
+  for (const i of intervals.sort((a,b) => a.start - b.start)) {
+    const last = union.at(-1); if (last && i.start <= last.end) last.end = Math.max(last.end, i.end); else union.push({ ...i });
+  }
+  const waits = new Map<string, Event>(), holds: typeof intervals = [];
+  let waitUnknown = false;
+  for (const e of events) {
+    const kind = e.event_type.startsWith('approval_') ? 'approval' : e.event_type.startsWith('wait_') ? 'wait' : null;
+    if (!kind) continue;
+    const key = JSON.stringify([kind, e.step_name]);
+    if (['approval_requested', 'wait_started'].includes(e.event_type)) { if (waits.has(key)) waitUnknown = true; waits.set(key, e); }
+    else if (['approval_received', 'wait_completed', 'wait_expired'].includes(e.event_type)) {
+      const start = waits.get(key)?.created_at, end = e.created_at, duration = ms(start, end); if (duration === null || !start || !end) waitUnknown = true; else holds.push({ start: Date.parse(start), end: Date.parse(end) }); waits.delete(key);
+    }
+  }
+  const holdUnion: typeof intervals = [];
+  for (const i of holds.sort((a,b) => a.start - b.start)) {
+    const last = holdUnion.at(-1); if (last && i.start <= last.end) last.end = Math.max(last.end, i.end); else holdUnion.push({ ...i });
+  }
+  const hold = !waitUnknown && !waits.size && holds.length ? holdUnion.reduce((sum,i) => sum + i.end - i.start, 0) : 'unknown';
+  return { k1: run.started_at && Number.isFinite(Date.parse(run.started_at)) ? (Date.parse(run.started_at) < Date.parse('2026-10-14T16:01:23+08:00') ? 'pre' : 'post') : 'unknown', status: run.status,
+    cumulative_ms: nodes.length && nodes.every(n => typeof n.cumulative_ms === 'number') ? nodes.reduce((a,n) => a + Number(n.cumulative_ms), 0) : 'unknown',
+    critical_path_ms: intervals.some(i => i.start < Date.parse(run.started_at ?? '') || i.end > Date.parse(run.completed_at ?? '')) ? 'unknown' : ms(run.started_at ?? undefined, run.completed_at ?? undefined) ?? 'unknown', hold_ms: hold,
+    idle_ms: nodes.length && intervals.length === nodes.length && typeof hold === 'number' ? union.slice(1).reduce((sum,i,k) => sum + i.start - union[k].end - holdUnion.reduce((covered,h) => covered + Math.max(0, Math.min(i.start,h.end) - Math.max(union[k].end,h.start)), 0), 0) : 'unknown',
+    nodes: nodes.map(n => ({ ...n, execution: n.attempt === 'unknown' || n.invocation === 'unknown' ? 'unknown' : (counts.get(n.node) ?? 0) > 1 ? 'multiple' : 'single' })) };
+}
+
 /**
  * 全部登记 run：summarize 计数 + usage（总计、按 run / 里程碑 / 角色 / 第几次调用）。`--events` 的输出不带 nodes，
  * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
  */
 // prettier-ignore
 export function buildReport(ls: Ledger[]): Record<string, unknown> {
+  const flag = process.argv.find(a => a.startsWith('--since='))?.slice(8) ?? process.argv[process.argv.indexOf('--since') + 1];
+  const since = process.argv.some(a => a === '--since' || a.startsWith('--since=')) ? (/^\d{8}$/.test(flag) ? `${flag.slice(0,4)}-${flag.slice(4,6)}-${flag.slice(6,8)}T00:00:00.000Z` : flag) : '';
+  if (since && !Number.isFinite(Date.parse(since))) throw new Error('--since must be YYYYMMDD or an ISO timestamp');
+  const batch = process.env.SA_ARCHON_BIN && process.env.SA_ARCHON_BIN !== '' ? null : reportRuns(since, '9999-12-31T23:59:59.999Z');
+  if (batch && since) ls = ls.filter(l => archonRunIds(l).some(id => batch.has(id)));
+  const views = new Map<string, RunView & { events: Event[] }>();
+  const view = (id: string) => {
+    const cached = views.get(id); if (cached) return cached;
+    const run = batch?.get(id);
+    if (!run) throw new Error(`run ${id} outside report window or missing`);
+    const nodes = new Map<string, NonNullable<RunView['nodes']>[number]>();
+    for (const e of run.events) {
+      const record = readNodeRecordEvent(e);
+      if (!record) continue;
+      const state = ({ node_started: 'running', node_suspended: 'running', node_completed: 'completed', node_failed: 'failed', node_skipped: 'skipped', node_skipped_prior_success: 'completed', node_always_run_reset: 'pending', node_prior_cache_invalidated: 'pending' } as Record<string, string>)[e.event_type];
+      if (state) nodes.set(record.path, { nodeId: record.path, state, execution: record.metadata, durationMs: record.metadata?.timing.durationMs, error: record.data.error });
+    }
+    const result = { ...run, nodes: [...nodes.values()] }; views.set(id, result); return result;
+  };
   const jobs = readJobs(Date.now(), true);
   const receipts = jobs.jobs.map(jobReceipt);
   const calls: Call[] = [];
@@ -407,12 +494,13 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const missingGenerations: Record<string, number> = {};
   const paths: Record<string, unknown> = {};
   const timings: Record<string, unknown> = {};
+  const measurement: Record<string, unknown> = {};
   const attempts: ReturnType<typeof providerTiming> = [];
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
   const cwdOf = (l: Ledger): string => (repo_missing.includes(l.run_id) ? WETAMP : l.repo);
   const pairs: Pair[] = ls.map(l => {
     try {
-      return { ledger: l, run: getRun(l.archon_run_id, cwdOf(l)) };
+      return { ledger: l, run: batch ? view(l.archon_run_id) : getRun(l.archon_run_id, cwdOf(l)) };
     } catch (e) {
       return { ledger: l, run: e as Error };
     }
@@ -421,7 +509,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     const events: Event[] = [];
     for (const id of archonRunIds(l)) {
       try {
-        const j = archonJson(['workflow', 'get', id, '--verbose', '--events'], cwdOf(l));
+        const j = batch ? view(id) : archonJson(['workflow', 'get', id, '--verbose', '--events'], cwdOf(l));
         const rows = (j.events ?? []) as Event[];
         const timing = providerTiming(id, rows);
         timings[`${l.run_id}/${id}`] = timing;
@@ -437,6 +525,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
           if (project) graph = (Bun.YAML.parse(readFileSync(join(project, '.archon/workflows', l.workflow, `${l.workflow}.yaml`), 'utf8')) as { nodes?: Parameters<typeof criticalPath>[2] }).nodes;
         } catch { /* Missing captured source leaves the path unknown. */ }
         paths[`${l.run_id}/${id}`] = criticalPath(j as unknown as RunView, rows, graph);
+        measurement[`${l.run_id}/${id}`] = measurementOf(j as RunView, rows, planOf(l), timing);
       } catch (e) {
         timings[`${l.run_id}/${id}`] = 'unknown';
         paths[`${l.run_id}/${id}`] = { status: 'unknown', reason: 'unreadable_generation' };
@@ -446,7 +535,11 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     }
     calls.push(...callsOf(l.run_id, events, planOf(l)));
   }
-  const snapshot = snapshotOf(pairs);
+  for (const [id, run] of batch ?? []) if (!Object.keys(measurement).some(k => k.endsWith(`/${id}`))) {
+    const timing = providerTiming(id, run.events); timings[id] = timing; attempts.push(...timing);
+    measurement[id] = measurementOf(run, run.events, null, timing);
+  }
+  const snapshot = { summary: summarize(pairs), at: new Date().toISOString(), reflection: 'unknown' };
   // ccusage snapshots are cumulative per session. Never add one to its engine turn receipts.
   const sessions = readUsage();
   const engineSessions = new Set(
@@ -472,10 +565,12 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
         run instanceof Error ? 'unknown' : requirementCoverage(ledger, run),
       ])
     ),
-    metrics: cockpit(snapshot).metrics,
+    // Board-only metrics need live coordination/ancestry probes; this snapshot does not claim them.
+    metrics: { completed: snapshot.summary['state:completed'] ?? 0, decided: 'unknown', firstPass: 'unknown', asks: 'unknown', debt: snapshot.summary.debt ?? 'unknown' },
     interventions: interventionStats(ls),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
+    measurement,
     provider_timing: timings,
     slow_nodes: slowNodes(attempts),
     jobs: {
@@ -496,7 +591,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
         raw: tokenTotals(supplemental.map(s => ({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite }))),
         attribution: 'explicit run owner only; other sessions unknown', overlap_excluded: sessions.sessions.length - supplemental.length },
       // prettier-ignore
-      learning: { ...tokenTotals(learning.map(sessionTokens)), fees: tokenFees(learning.map(sessionTokens)), policy: snapshot.reflection ?? 'unknown',
+      learning: { ...tokenTotals(learning.map(sessionTokens)), fees: tokenFees(learning.map(sessionTokens)), policy: snapshot.reflection,
         basis: 'explicit memory-reflect job tag; period only; no per-demand allocation' },
       window: { scope: 'all_retained_events_for_recorded_generations', generated_at: snapshot.at },
       receipts: calls.map(c => Object.fromEntries(Object.entries(c).filter(([key]) => key !== 'session'))),

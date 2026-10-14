@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { Database } from 'bun:sqlite';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadTiers, WETAMP } from '../src/config';
 import { classify, holdOf, reasonHold, type Ledger } from '../src/cli';
@@ -224,56 +225,39 @@ describe('EFFICIENCY_CONSTITUTION', () => {
     }
   });
 
-  test('⑤ report exposes slow_nodes and an efficiency budget for each measured attempt', () => {
-    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
-    const saved = keys.map(key => process.env[key]);
-    const bin = join(root, 'report-stub');
-    const events = [0, 1].map(seq => ({
-      event_type: 'provider_event',
-      step_name: 'code-core',
-      data: {
-        attemptId: 'a',
-        seq,
-        observedAt: new Date(seq * 2000000).toISOString(),
-        event:
-          seq === 0
-            ? { type: 'tool_call', toolCallId: 'x', name: 'file_change' }
-            : { type: 'tool_call_update', toolCallId: 'x', status: 'completed' },
-      },
-    }));
-    writeFileSync(
-      bin,
-      `#!${process.execPath}\nconsole.log(${JSON.stringify(
-        JSON.stringify({
-          id: 'engine',
-          status: 'completed',
-          nodes: [],
-          events,
-        })
-      )});\n`,
-      { mode: 0o755 }
-    );
-    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
+  // prettier-ignore
+  test('⑤ real report pairs Claude/Codex attempts and preserves unknown measurements', () => {
+    const saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME, process.env.SA_ARCHON_BIN];
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: '' });
+    const db = new Database(join(root, 'archon.db'));
+    db.run('CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, started_at TEXT, completed_at TEXT, metadata TEXT)');
+    db.run('CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT, event_type TEXT, step_name TEXT, created_at TEXT, event_order INTEGER, data TEXT)');
+    const clock = (s: number) => new Date(Date.UTC(2026, 9, 14) + s * 1000).toISOString();
+    db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?)', ['engine', 'failed', clock(0), clock(100), '{}']);
+    const insert = (type: string, data: unknown) => db.run('INSERT INTO remote_agent_workflow_events VALUES (?, ?, ?, ?, ?, ?)', ['engine', type, 'code-core', clock(100), 0, JSON.stringify(data)]);
+    for (const [attempt, offset, event] of [
+      ['claude', 0, { type: 'tool_call', toolCallId: 'x', name: 'Bash', rawInput: { command: 'cat file' } }],
+      ['codex', 90, { type: 'subtask', taskId: 'x', taskType: 'command_execution', status: 'started', description: 'rg pattern file' }],
+    ] as const) {
+      insert('provider_event', { attemptId: attempt, seq: 0, observedAt: clock(offset), event });
+      insert('provider_event', { attemptId: attempt, seq: 1, observedAt: clock(offset + 2), event: attempt === 'claude' ? { type: 'tool_call_update', toolCallId: 'x', status: 'completed' } : { ...event, status: 'completed' } });
+      insert('node_failed', { invocation: { id: attempt }, attempt: { id: attempt, startedAt: clock(offset) }, timing: { startedAt: clock(offset), durationMs: 3000 } });
+    }
+    db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?)', ['missing', 'cancelled', clock(0), clock(100), '{}']);
+    db.run('INSERT INTO remote_agent_workflow_events VALUES (?, ?, ?, ?, ?, ?)', ['missing', 'node_failed', 'code-core', clock(100), 0, '{}']);
+    db.close();
     try {
-      const ledger = {
-        run_id: 'r',
-        archon_run_id: 'engine',
-        repo: plan.repo,
-        gen_dir: root,
-        workflow: 'fixture',
-        recoveries: [],
-      } as unknown as Ledger;
-      const report = buildReport([ledger]);
-      expect(report.slow_nodes).toBeArray();
-      expect((report.slow_nodes as unknown[]).length).toBeGreaterThan(0);
-      expect(report.provider_timing).toMatchObject({
-        'r/engine': [{ budget: { over: true, reasons: expect.any(Array) } }],
-      });
+      // Unregistered engine runs remain in measurement, with no invented plan or identity.
+      const report = buildReport([]);
+      expect(report.provider_timing).toMatchObject({ engine: [
+        { attempt_id: 'claude', invocation_id: 'claude', cmds: 1, explore_ratio: 1, mcp_calls: 0, model_turns: 0, think_gap_ms: 0 },
+        { attempt_id: 'codex', invocation_id: 'codex', cmds: 1, explore_ratio: 1, mcp_calls: 0, model_turns: 0, think_gap_ms: 0 },
+      ] });
+      expect(report.measurement).toMatchObject({ engine: { cumulative_ms: 6000, critical_path_ms: 100000, hold_ms: 'unknown', idle_ms: 'unknown', nodes: [
+        { cumulative_ms: 3000, cmds: 1, execution: 'multiple' }, { cumulative_ms: 3000, cmds: 1, execution: 'multiple' },
+      ] }, missing: { cumulative_ms: 'unknown', nodes: [{ execution: 'unknown', invocation: 'unknown', attempt: 'unknown', cumulative_ms: 'unknown', cmds: 'unknown', explore_ratio: 'unknown', mcp_calls: 'unknown', model_turns: 'unknown', think_gap_ms: 'unknown' }] } });
     } finally {
-      keys.forEach((key, i) => {
-        if (saved[i] === undefined) delete process.env[key];
-        else process.env[key] = saved[i];
-      });
+      ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'].forEach((k,i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
     }
   });
 });
