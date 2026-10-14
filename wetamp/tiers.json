@@ -20,7 +20,7 @@
       "caches": true,
       "mcp": ["searxng", "context7", "codegraph", "github", "serena"]
     },
-    "auto_retry": { "gate": 2, "environment": 5, "coder": 3 },
+    "auto_retry": { "environment": 5 },
     "exec_profiles": {
       "reviewer": {
         "disable_mcp": false,

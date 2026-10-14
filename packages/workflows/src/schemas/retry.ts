@@ -3,13 +3,16 @@
  */
 import { z } from '@hono/zod-openapi';
 
+export const DEFAULT_NODE_MAX_RETRIES = 2;
+
 export const stepRetryConfigSchema = z.object({
-  /** Maximum retry attempts (not including the initial attempt). 1–5. */
+  /** Maximum retry attempts (not including the initial attempt). 1–5, default 2. */
   max_attempts: z
     .number()
     .int()
     .min(1, "'retry.max_attempts' must be between 1 and 5")
-    .max(5, "'retry.max_attempts' must be between 1 and 5"),
+    .max(5, "'retry.max_attempts' must be between 1 and 5")
+    .default(DEFAULT_NODE_MAX_RETRIES),
   /** Initial delay in ms, doubled on each attempt. 1000–60000. */
   delay_ms: z
     .number()

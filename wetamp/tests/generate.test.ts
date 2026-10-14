@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test';
+import { stepRetryConfigSchema } from '@archon/workflows/schemas/retry';
 import * as fs from 'node:fs';
 import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -175,10 +176,90 @@ type N = {
   when?: string;
   timeout?: number;
   approval?: { message: string };
-  retry?: { max_attempts: number; on_error: string };
+  retry?: { max_attempts?: number; on_error: string };
   with?: Record<string, unknown>;
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
+test('NO_QUOTA AI nodes have no cost caps, use engine transient defaults, and land never retries', () => {
+  for (const console of ['codex', 'claude'] as const) {
+    const plan = { ...fixture, console };
+    const workflow = buildWorkflow(plan, milestones(plan), 'no-quota', '/GEN', false, NOW);
+    const nodes = nodesOf(workflow);
+    const ai = nodes.filter(node => node.command && /^(code|repair|fix|review)-/.test(node.id));
+    expect(ai.length).toBeGreaterThan(0);
+    for (const prefix of ['code', 'repair', 'fix', 'review'])
+      expect(ai.some(node => node.id.startsWith(`${prefix}-`))).toBe(true);
+    for (const node of ai) {
+      expect(node.retry).toEqual({ on_error: 'transient' });
+      expect(stepRetryConfigSchema.parse(node.retry)).toEqual({
+        max_attempts: 2,
+        on_error: 'transient',
+      });
+    }
+    expect(JSON.stringify(workflow)).not.toContain('maxBudgetUsd');
+    const land = nodes.filter(node => node.id.startsWith('land'));
+    expect(land.length).toBeGreaterThan(0);
+    for (const node of land) expect(node.retry).toBeUndefined();
+    for (const node of nodes.filter(node => node.bash)) expect(node.retry).toBeUndefined();
+  }
+});
+
+test('NO_QUOTA bash nodes ignore inherited BASH_ENV startup failures', () => {
+  const root = tmp();
+  const repo = gitRepo(join(root, 'repo'));
+  const startup = join(root, 'startup.sh');
+  const marker = join(root, 'rc-loaded');
+  fs.writeFileSync(startup, `touch '${marker}'\nexit 91\n`);
+  const workflows = join(repo, '.archon', 'workflows');
+  fs.mkdirSync(workflows, { recursive: true });
+  fs.writeFileSync(
+    join(workflows, 'no-quota.yaml'),
+    Bun.YAML.stringify({
+      name: 'no-quota',
+      description: 'Bash startup isolation regression',
+      nodes: [{ id: 'probe', bash: 'printf success' }],
+    })
+  );
+  sh('git add .archon && git commit -qm fixture', repo);
+  const env = {
+    ...process.env,
+    BASH_ENV: startup,
+    SUPERAGENT_HOME: join(root, 'home'),
+    ARCHON_HOME: join(root, 'home/archon'),
+  };
+  const invoke = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      [process.execPath, '--no-env-file', join(WETAMP, 'src/coord/archon-entry.ts'), ...args],
+      {
+        cwd: repo,
+        env,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 30_000,
+      }
+    );
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    return lastJson(result.stdout.toString());
+  };
+  const ack = invoke(
+    'workflow',
+    'run',
+    'no-quota',
+    '--workflow-source',
+    repo,
+    '--cwd',
+    repo,
+    '--no-worktree',
+    '--detach',
+    '--json'
+  );
+  const waited = invoke('workflow', 'wait', String(ack?.runId), '--timeout', '20', '--json');
+  expect(waited).toMatchObject({ attention: { status: 'completed' } });
+  const view = invoke('workflow', 'get', String(ack?.runId), '--json');
+  expect(view).toMatchObject({ status: 'completed' });
+  expect(existsSync(marker)).toBe(false);
+});
+
 const runAttempt = (node: N, cwd: string, artifacts: string) =>
   Bun.spawnSync(
     [process.execPath, '--no-env-file', 'run', join(artifacts, '.archon/scripts/sa-context.ts')],

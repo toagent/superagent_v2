@@ -200,8 +200,8 @@ export interface Tiers {
     /** Context advisory thresholds consumed by context-advisory.cjs. */
     context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
     sandbox: { mcp: string[]; network: boolean };
-    /** held:gate / held:environment / coder 节点失败各自的自动重试上限（docs/00 自动重试）。 */
-    auto_retry: { gate: number; environment: number; coder: number };
+    /** Environment preparation retries; AI nodes use the engine defaults. */
+    auto_retry: { environment: number };
     exec_profiles: {
       coder: { codex?: Record<string, unknown>; claude: { denied_tools: string[] } };
       reviewer: {

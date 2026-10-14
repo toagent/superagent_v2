@@ -62,7 +62,6 @@ nodes:
   - id: code-core
     command: sa-code
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -318,7 +317,6 @@ nodes:
   - id: repair-core
     command: sa-repair
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -577,7 +575,6 @@ nodes:
     when: $diff-m1-r1.output.disposition == 'advance'
     command: sa-review
     retry:
-      max_attempts: 2
       on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
@@ -734,7 +731,6 @@ nodes:
   - id: fix-m1-r2
     command: sa-fix
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -967,7 +963,6 @@ nodes:
     when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
     command: sa-review-delta
     retry:
-      max_attempts: 2
       on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
@@ -1124,7 +1119,6 @@ nodes:
   - id: fix-m1-r3
     command: sa-fix
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -1357,7 +1351,6 @@ nodes:
     when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
     command: sa-review-delta
     retry:
-      max_attempts: 2
       on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
@@ -1554,7 +1547,6 @@ nodes:
   - id: code-api
     command: sa-code
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -1759,7 +1751,6 @@ nodes:
   - id: repair-api
     command: sa-repair
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -2018,7 +2009,6 @@ nodes:
     when: $diff-m2-r1.output.disposition == 'advance'
     command: sa-review
     retry:
-      max_attempts: 2
       on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
@@ -2174,7 +2164,6 @@ nodes:
   - id: fix-m2-r2
     command: sa-fix
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -2407,7 +2396,6 @@ nodes:
     when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
     command: sa-review-delta
     retry:
-      max_attempts: 2
       on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json
@@ -2563,7 +2551,6 @@ nodes:
   - id: fix-m2-r3
     command: sa-fix
     retry:
-      max_attempts: 3
       on_error: transient
     model: '@sa-coder'
     effort: medium
@@ -2796,7 +2783,6 @@ nodes:
     when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
     command: sa-review-delta
     retry:
-      max_attempts: 2
       on_error: transient
     model: '@sa-reviewer'
     mcp: /GEN/reviewer-readonly.mcp.json

@@ -332,7 +332,7 @@ export function buildWorkflow(
         ? { bash: fakeEdit(p, p.id) }
         : {
             command: 'sa-code',
-            retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
+            retry: { on_error: 'transient' },
             model: '@sa-coder',
             ...execution(`code-${p.id}`),
             // Defer pack expansion to the prompt's output-ref pass so source refs remain literal.
@@ -396,7 +396,7 @@ export function buildWorkflow(
           ? { bash: fakeEdit(p, `repair ${p.id}`) }
           : {
               command: 'sa-repair',
-              retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
+              retry: { on_error: 'transient' },
               model: '@sa-coder',
               ...execution(`repair-${p.id}`),
               with: {
@@ -473,7 +473,7 @@ export function buildWorkflow(
             ? { bash: fakeEdit(m.packages[0], `fix ${m.id} r${String(r)}`) }
             : {
                 command: 'sa-fix',
-                retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
+                retry: { on_error: 'transient' },
                 model: '@sa-coder',
                 ...execution(`fix-${t}`),
                 with: {
@@ -541,7 +541,7 @@ export function buildWorkflow(
           ? { bash: fakeReview(r) }
           : {
               command: r === 1 ? 'sa-review' : 'sa-review-delta',
-              retry: { max_attempts: tiers.policy.auto_retry.gate, on_error: 'transient' },
+              retry: { on_error: 'transient' },
               model: tiers.routing.reviewer.by_risk?.[m.risk]
                 ? `@sa-reviewer-${m.risk}`
                 : '@sa-reviewer',

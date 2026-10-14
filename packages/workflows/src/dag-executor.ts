@@ -1,4 +1,5 @@
 import { createRunToolCallAttention } from './tool-call-attention';
+import { DEFAULT_NODE_MAX_RETRIES } from './schemas/retry';
 import { DEFAULT_TOOL_CALL_ATTENTION_MS } from './schemas/run-config';
 import { type ProviderRegistry, requireProvider } from '@archon/provider-contract';
 import { randomUUID } from 'node:crypto';
@@ -908,7 +909,6 @@ const lastNodeActivityUpdate = new Map<string, number>();
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 60_000;
 
 /** Default DAG node retry for TRANSIENT errors */
-const DEFAULT_NODE_MAX_RETRIES = 2;
 const DEFAULT_NODE_RETRY_DELAY_MS = 3000;
 
 /**
@@ -3537,7 +3537,8 @@ async function executeBashNode(
       {
         cwd,
         timeout,
-        env: subprocessEnv,
+        // Non-interactive bash still sources BASH_ENV unless explicitly cleared.
+        env: { ...subprocessEnv, BASH_ENV: '' },
         protectedEnvKeys,
         protectedCredentialValues,
         retention: {

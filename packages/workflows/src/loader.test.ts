@@ -3999,13 +3999,13 @@ nodes:
       });
     });
 
-    it('should reject retry with missing max_attempts', async () => {
+    it('NO_QUOTA retry with missing max_attempts uses engine default', async () => {
       await writeWorkflowFile(
         testDir,
-        'bad-retry.yaml',
+        'default-retry.yaml',
         `
-name: bad-retry
-description: Missing required field
+name: default-retry
+description: Engine default retries
 nodes:
   - id: my-cmd
     command: my-cmd
@@ -4015,10 +4015,11 @@ nodes:
       );
 
       const result = await discoverWorkflows(testDir, { loadDefaults: false });
-      expect(result.errors).toHaveLength(1);
-      // zod v4 reports a missing required field as "expected number, received undefined"
-      // (v3 said "Required"); the field path is the stable part.
-      expect(result.errors[0].error).toMatch(/max_attempts.*(required|expected number)/i);
+      expect(result.errors).toHaveLength(0);
+      expect((result.workflows[0].workflow.nodes as DagNode[])[0].retry).toEqual({
+        max_attempts: 2,
+        delay_ms: 5000,
+      });
     });
 
     it('should reject retry with max_attempts out of range', async () => {
