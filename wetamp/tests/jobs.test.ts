@@ -128,12 +128,34 @@ describe('job registry', () => {
   test('stalled and ETA are read-only projections using role and kind history', () => {
     const log = join(tmp(), 'output'); writeFileSync(log, ''); utimesSync(log, NOW / 1000 - 601, NOW / 1000 - 601);
     const file = put({ id: 'live', log, role: 'general', started_at: new Date(NOW - 700_000).toISOString() });
-    const bytes = readFileSync(file, 'utf8'), j = readJobs(NOW, true).jobs[0];
+    const bytes = readFileSync(file, 'utf8'), j = { ...readJobs(NOW, true).jobs[0], pid: 99999999, wrapper_pid: 99999999 };
     const history = [100, 300, 900].map(s => ({ ...j, log: null, state: 'done' as const, ended_at: new Date(Date.parse(j.started_at) + s * 1000).toISOString() }));
     expect(projectJob(j, [...history, { ...history[2], kind: 'codex' }], NOW)).toMatchObject({ state: 'running', stalled: true, eta: new Date(NOW - 400_000).toISOString() });
     utimesSync(log, NOW / 1000, NOW / 1000);
     expect(projectJob(j, [], NOW)).toMatchObject({ stalled: false });
     expect(projectJob(j, [], NOW).eta).toBeUndefined(); expect(readFileSync(file, 'utf8')).toBe(bytes);
+  });
+
+  // Dispatch/output paths are not registered; the owning process is the activity signal.
+  // prettier-ignore
+  test('fresh dispatch or a live child/wrapper prevents stalled despite an old log', () => {
+    const root = tmp(), log = join(root, 'log'), dispatch = join(root, 'dispatch');
+    writeFileSync(log, ''); utimesSync(log, NOW / 1000 - 601, NOW / 1000 - 601);
+    writeFileSync(dispatch, '{}'); utimesSync(dispatch, NOW / 1000, NOW / 1000);
+    const file = put({ id: 'dispatch', log, started_at: new Date(NOW - 700_000).toISOString() });
+    const j = JSON.parse(readFileSync(file, 'utf8')) as Job;
+    expect(projectJob({ ...j, wrapper_pid: 99999999 }, [], NOW).stalled).toBe(false);
+    utimesSync(dispatch, NOW / 1000 - 601, NOW / 1000 - 601);
+    expect(projectJob({ ...j, wrapper_pid: 99999999 }, [], NOW).stalled).toBe(false);
+    expect(projectJob({ ...j, pid: 99999999 }, [], NOW).stalled).toBe(false);
+    expect(projectJob({ ...j, pid: 99999999, wrapper_pid: 99999999 }, [], NOW)).toMatchObject({ state: 'running', stalled: true });
+    for (const state of ['queued', 'done', 'failed', 'lost'] as const) {
+      const terminal = { ...j, state }; expect(projectJob(terminal, [], NOW)).toBe(terminal);
+    }
+    const legacy = { ...j, pid: undefined, wrapper_pid: undefined } as unknown as Job;
+    expect(projectJob(legacy, [], NOW).stalled).toBe(true);
+    expect(projectJob({ ...legacy, log: join(root, 'missing') }, [], NOW).stalled).toBe(true);
+    expect(() => projectJob({ ...legacy, log: join(log, 'invalid') }, [], NOW)).toThrow();
   });
 
   test('read-only reads expose lost state without rewriting or deleting records', () => {

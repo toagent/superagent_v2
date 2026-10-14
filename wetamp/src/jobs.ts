@@ -195,7 +195,8 @@ export function projectJob(j: Job, history: Job[], now: number): Job & { stalled
   try { if (j.log) updated = Math.max(updated, statSync(j.log).mtimeMs); }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   const seconds = jobDuration(j, history);
-  return { ...j, stalled: !!j.log && now - updated > 600_000,
+  return { ...j, stalled: now - updated > 600_000 &&
+    ![j.pid, j.wrapper_pid].some(pid => pid > 0 && alive(pid)),
     ...(seconds !== null ? { eta: new Date(Date.parse(j.started_at) + seconds * 1000).toISOString() } : {}) };
 }
 
