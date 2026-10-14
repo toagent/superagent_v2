@@ -2,7 +2,7 @@
 'use strict';
 // superagent V2 guard for Claude Code / Codex hooks: `node guard.cjs claude|codex`.
 // Unknown effects and parser/internal failures are visible advisories, never a hold.
-const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
+const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {tiers, policy} = require('../tiers.json');
 const {parse} = require('./shell.cjs');
@@ -11,9 +11,8 @@ const stopGate = require('./stop-gate.cjs');
 const {withState, once} = require('./hook-state.cjs');
 const dispatch = require('./dispatch-context.cjs');
 const redline = require('./redline.cjs');
-const {resolvePath, within} = redline;
+const {resolvePath, within, saHome} = redline;
 
-const saHome = env => env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
 const pool = tier => tiers[tier].pools.chatgpt;
 const deny = (reason, superagentPermissionCategory = 'authorization') => ({superagentPermissionCategory, hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason}});
 // Only two nonempty strings establish a child (subagent) call.

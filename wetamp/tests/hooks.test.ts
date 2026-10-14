@@ -240,10 +240,13 @@ describe('两条底线', () => {
       `rm -rf "${home}"`,
       `rm -fr "${repo}"`,
       'rm -rf /',
+      'rm -rf $SUPERAGENT_HOME',
+      'rm -rf ~/.superagent/gen',
       `rm --recursive --force ${repo}`,
       `rm -rf /tmp/file ${repo}`,
       'cd . && rm -rf .',
     ];
+    Object.assign(env, { SUPERAGENT_HOME: join(home, '.superagent') });
     const file = join(repo, 'commands.txt');
     writeFileSync(file, commands.join('\n'));
     expect(redline.reason({ name: 'Read', input: { file_path: file }, cwd: repo, env })).toBeNull();
@@ -272,6 +275,8 @@ describe('两条底线', () => {
       'git gc --prune=now',
       'rm -rf /other/repo/src',
       'rm -rf $UNKNOWN',
+      'rm -rf ~/.superagent/scratch/x',
+      'rm -rf ~/.superagent/gen/x',
       `rm -rf ${repo}/build`,
       'rm /etc/file',
       'find . -delete',

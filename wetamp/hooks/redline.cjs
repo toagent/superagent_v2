@@ -15,6 +15,7 @@ function resolvePath(file) {
   return path.join(fs.realpathSync(cursor), ...tail);
 }
 const homeOf = env => env.HOME || os.homedir();
+const saHome = env => env.SUPERAGENT_HOME || path.join(homeOf(env), '.superagent');
 const expand = (word, env) => word.replace(/^~(?=\/|$)/, homeOf(env)).replace(/\$\{HOME\}|\$HOME\b/g, homeOf(env));
 
 const SSH_PUBLIC = ['known_hosts', 'known_hosts.old', 'config'];
@@ -89,14 +90,14 @@ function deletionReason(argv, dir, root, env) {
     } else targets.push(arg);
   }
   if (!recursive || !force) return null;
-  const roots = ['/', homeOf(env), root, checkoutOf(dir)].filter(Boolean).map(resolvePath);
+  const roots = ['/', homeOf(env), saHome(env), path.join(saHome(env), 'gen'), root, checkoutOf(dir)].filter(Boolean).map(resolvePath);
   for (const target of targets) {
-    const expanded = expand(target, env);
+    const expanded = expand(target, env).replace(/\$\{SUPERAGENT_HOME\}|\$SUPERAGENT_HOME\b/g, value => env.SUPERAGENT_HOME || value);
     // Unknown targets do not establish a protected directory.
     if (/[$`*?\[\]{}]|__sa_/.test(expanded)) continue;
     const lexical = path.resolve(dir, expanded), resolved = resolvePath(lexical);
     if (roots.some(root => within(root, lexical) || within(root, resolved)))
-      return message('删除目录', '它是或包含家目录、仓库根或 /', '只删除明确的产物文件', {kind: '受保护目录'});
+      return message('删除目录', '它是或包含家目录、引擎根、gen、仓库根或 /', '只删除明确的产物文件', {kind: '受保护目录'});
   }
   return null;
 }
@@ -142,4 +143,4 @@ function reason({client, name, input = {}, cwd, root, shell, env = process.env, 
   } catch { onAdvisory('redline_internal_error'); return null; }
 }
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, expand, resolvePath, within, secretKind, message, checkoutOf};
+module.exports = {init, reason, expand, resolvePath, within, secretKind, message, checkoutOf, saHome};

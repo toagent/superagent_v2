@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 契约自检：真实 provider 正常完成（不注入故障）；确定性 sa-smoke detach → think 运行中 kill -9 → recover → 事件门 → completed；
 # sa-abandon 暂停在事件门 → 原生 abandon 完整回执 → cancelled；清理不明则保留树。
-# 另对 hooks/guard.cjs 喂两个 payload（元帅 31 行写入、worker 会话 Agent）断言均被拒，结果记入 selftest.json 的 hooks 段。
+# 另对 hooks/guard.cjs 喂两个 payload（元帅 31 行写入只提示、worker Read 凭据路径被拦截），结果记入 selftest.json 的 hooks 段。
 # 在临时 SUPERAGENT_HOME 里跑；通过后写调用方的 $SUPERAGENT_HOME/selftest.json（--fake 写 selftest-fake.json），绑定运行边界、配置哈希与有效期。用法：selftest.sh [--repo <path>] [--timeout <s>] [--fake]
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
@@ -38,7 +38,7 @@ if [ -z "$REPO" ]; then
   git clone -q --bare "$REPO" "$TMPH/origin.git"; git -C "$REPO" remote add origin "$TMPH/origin.git"; git -C "$REPO" fetch -q origin
 fi
 BASE="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
-# hooks：元帅会话 31 行写入（*.md 豁免，故用 .txt）只得 G-1 advisory、不拦；worker 会话 Agent 被 N-1 拦（只判定、不落盘到 repo）
+# hooks：元帅会话 31 行写入（*.md 豁免，故用 .txt）只得 G-1 advisory、不拦；worker Read 凭据路径被隐私底线拦截（只判定、不落盘到 repo）
 hook() { # <SUPERAGENT_ROLE> <tool_name> <tool_input JSON> → 拒绝原因，无拒绝时为 systemMessage
   node -e 'process.stdout.write(JSON.stringify({hook_event_name: "PreToolUse", session_id: "selftest", cwd: process.argv[1], tool_name: process.argv[2], tool_input: JSON.parse(process.argv[3])}))' "$REPO" "$2" "$3" \
     | env -u AI_DISPATCH_ROLE -u TWIN_AGENT_REMOTE -u SUPERAGENT_ALLOW_COMMANDER_WRITE SUPERAGENT_ROLE="$1" node "$WETAMP/hooks/guard.cjs" claude \
@@ -46,8 +46,8 @@ hook() { # <SUPERAGENT_ROLE> <tool_name> <tool_input JSON> → 拒绝原因，�
 }
 G1="$(hook '' Edit "$(node -e 'console.log(JSON.stringify({file_path: process.argv[1], old_string: "selftest", new_string: "x\n".repeat(31)}))' "$REPO/selftest.txt")")"
 case "$G1" in "SUPERAGENT advisory G-1:"*) ;; *) fail "hooks: commander 31-line edit not advised (or denied): $G1";; esac
-N1="$(hook worker Agent '{"prompt":"x"}')"
-case "$N1" in 已拦截：*。原因：*。可以：*。) ;; *) fail "hooks: worker Agent not denied: $N1";; esac
+PRIVACY="$(hook worker Read '{"file_path":"~/.ssh/id_rsa"}')"
+case "$PRIVACY" in 已拦截：*) ;; *) fail "hooks: worker credential Read not denied: $PRIVACY";; esac
 # 工作流内联在此（不进 templates/：生成器只复制 commands/ 与 scripts/）。先以真实 think 节点 validate：
 # 复测 install.sh 写入的 config.yaml aliases 键（§2.4）；--fake 再换成 bash 桩。
 GEN="$TMPH/gen/selftest" WF="$TMPH/gen/selftest/.archon/workflows/sa-smoke"; mkdir -p "$WF"
@@ -223,7 +223,7 @@ SA_UPSTREAM="$(head -1 "$WETAMP/UPSTREAM")" bun -e "
 import { SELFTEST_TTL_MS, writeAtomic, runtimeFingerprint } from '$WETAMP/src/config.ts';
 const e = process.env, at = new Date();
 const r = { ok: true, at: at.toISOString(), expires_at: new Date(at.getTime() + SELFTEST_TTL_MS).toISOString(), fake: e.SA_FAKE === '1',
-  ...JSON.parse(e.SA_KEY), ...JSON.parse(e.SA_METRICS), hooks: { g1_commander_31_lines: 'advise', n1_worker_agent: 'deny' }, upstream: e.SA_UPSTREAM };
+  ...JSON.parse(e.SA_KEY), ...JSON.parse(e.SA_METRICS), hooks: { g1_commander_31_lines: 'advise' }, upstream: e.SA_UPSTREAM };
 if (runtimeFingerprint() !== r.fingerprint) throw new Error('runtime fingerprint drift during selftest');
 writeAtomic(e.SA_OUT, JSON.stringify(r) + '\\n');
 console.log(JSON.stringify(r));"
