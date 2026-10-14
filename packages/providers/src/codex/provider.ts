@@ -534,6 +534,7 @@ interface TurnRequest {
    * which keeps the user's setup. Scoped threads also restrict MCP servers (`./scope`).
    */
   nodePlugins: readonly string[] | undefined;
+  onModelRerouted?: SendQueryOptions['onModelRerouted'];
   hasOutputFormat: boolean;
   model: string | undefined;
   /** Receives the thread id as soon as it exists, so a failure can still carry it. */
@@ -550,6 +551,7 @@ const STALL_MS = 180_000;
  */
 async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
   const { connection, nodePlugins } = request;
+  request.onModelRerouted?.();
   const initialized = await connection.request('initialize', {
     clientInfo: { name: 'archon', title: 'Archon', version: BUNDLED_VERSION },
     capabilities: null,
@@ -674,6 +676,11 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
       case 'item/reasoning/textDelta':
         if (notification.params.threadId === threadId && notification.params.turnId === turnId)
           lastProgressAt = Date.now();
+        break;
+
+      case 'model/rerouted':
+        if (notification.params.threadId === threadId && notification.params.turnId === turnId)
+          request.onModelRerouted?.(notification.params.toModel);
         break;
 
       case 'account/rateLimits/updated':
@@ -1171,6 +1178,7 @@ export class CodexProvider implements IAgentProvider {
         },
         nodePlugins,
         hasOutputFormat,
+        onModelRerouted: requestOptions?.onModelRerouted,
         model,
         onThread: id => {
           threadId = id;

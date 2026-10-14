@@ -1372,9 +1372,8 @@ export function attemptIdentity(
   if (!attempt) return identityOf(binding);
   if (attempt.status !== 'completed' && !author) return { model: null, strength: 'unknown' };
   if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
-  // Codex pins the thread model; policy fallback reserves a separate attempt before dispatch.
-  // Claude can use native fallback/aliases, so an absent provider receipt stays unknown.
-  return attempt.provider === 'codex' && attempt.model
+  return attempt.provider === 'codex' &&
+    (attempt.status === 'completed' || attempt.rerouted_models !== undefined)
     ? { model: attempt.model, strength: 'pinned' }
     : { model: null, strength: 'unknown' };
 }
@@ -1403,7 +1402,16 @@ export function readAuthorEvidence(
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
     seen.add(run.id);
     const receipts = attempts.filter(a => owns(a.node));
-    authors.push(...receipts.map(a => attemptIdentity([a], a.node, undefined, true)));
+    authors.push(
+      ...receipts.flatMap(a =>
+        a.provider === 'codex' && a.rerouted_models !== undefined
+          ? [...new Set([a.resolved ?? a.model, a.model, ...a.rerouted_models])].map(model => ({
+              model,
+              strength: 'pinned' as const,
+            }))
+          : [attemptIdentity([a], a.node, undefined, true)]
+      )
+    );
     const nodes = new Set(
       run.events
         .filter(

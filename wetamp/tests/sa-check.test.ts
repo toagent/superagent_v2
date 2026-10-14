@@ -268,6 +268,7 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   };
   mkdirSync(art, { recursive: true });
   const attempt = {
+    rerouted_models: [] as string[],
     id: 'original',
     node: 'code-core',
     provider: 'codex' as const,
@@ -282,6 +283,9 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   ]);
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBeNull();
   expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
+  writePolicyAttempts(art, [{ ...attempt, rerouted_models: ['rerouted'] }]);
+  expect(read().map(a => a.model)).toEqual(['repair', 'author', 'rerouted']);
+  expect(independence(read(), { model: 'rerouted', strength: 'pinned' })).toBe('same_model');
   const cumulative = readAuthorEvidence(
     runs.current!,
     [{ ...attempt, node: 'fix-m0-r2', model: 'fix-author' }],
@@ -299,6 +303,8 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   writePolicyAttempts(art, [{ ...attempt, status: 'failed' }]);
   expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
   expect(attemptIdentity([attempt], attempt.node).strength).toBe('unknown');
+  writePolicyAttempts(art, [{ ...attempt, rerouted_models: undefined }]);
+  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [{ ...attempt, provider: 'claude' }]);
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [attempt]);

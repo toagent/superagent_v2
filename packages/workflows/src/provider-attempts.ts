@@ -10,6 +10,7 @@ export interface PolicyAttempt {
   provider: 'codex' | 'claude';
   model: string;
   resolved?: string;
+  rerouted_models?: string[]; // Present only once the provider has enabled native reroute tracking.
   status: 'started' | 'completed' | 'failed';
   tokens?: TokenUsage;
   failure?: ProviderFailureClass;
@@ -38,6 +39,9 @@ function validAttempt(value: unknown): value is PolicyAttempt {
     !['codex', 'claude'].includes(String(value.provider)) ||
     !['started', 'completed', 'failed'].includes(String(value.status)) ||
     (value.resolved !== undefined && (typeof value.resolved !== 'string' || !value.resolved)) ||
+    (value.rerouted_models !== undefined &&
+      (!Array.isArray(value.rerouted_models) ||
+        !value.rerouted_models.every(m => typeof m === 'string' && m.length > 0))) ||
     (value.cooldown_until !== undefined && !amount(value.cooldown_until))
   )
     return false;

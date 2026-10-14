@@ -126,6 +126,11 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       };
       previousProvider = candidate.provider;
     }
+    options.onModelRerouted = (model): void => {
+      attempt.rerouted_models ??= [];
+      if (model && !attempt.rerouted_models.includes(model)) attempt.rerouted_models.push(model);
+      writePolicyAttempts(execution.artifacts, attempts);
+    };
     let result: ResultChunk | undefined,
       settled = false;
     const turnUsage: TokenUsage[] = [];

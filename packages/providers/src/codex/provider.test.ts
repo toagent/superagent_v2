@@ -4,6 +4,7 @@ import { overStreams } from '../test/plugin';
 import { createProvider, descriptor } from './index';
 import { describe, test, expect, mock, beforeEach, beforeAll, afterAll } from 'bun:test';
 import { mkdtemp, writeFile } from 'fs/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { MessageChunk, SendQueryOptions } from '../types';
@@ -71,6 +72,31 @@ async function run(
   }
   return chunks;
 }
+
+test('native reroutes persist before the next streamed event, including interrupted turns', async () => {
+  const root = trackTempRoot(await mkdtemp(join(tmpdir(), 'codex-reroute-')));
+  const file = join(root, 'policy-attempts.json');
+  const rerouted_models: string[] = [];
+  const params = {
+    threadId: THREAD_ID,
+    turnId: TURN_ID,
+    fromModel: 'A',
+    toModel: 'B',
+    reason: 'highRiskCyberActivity' as const,
+  };
+  const { provider } = providerWith({
+    notifications: [{ method: 'model/rerouted', params }, agentMessage('code')],
+    exitCode: 1,
+  });
+  for await (const _chunk of provider.sendQuery('p', '/workspace', undefined, {
+    onModelRerouted: model => {
+      if (model) rerouted_models.push(model);
+      writeFileSync(file, JSON.stringify({ rerouted_models }));
+    },
+  })) {
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ rerouted_models: ['B'] });
+  }
+});
 
 /** The chunks before `settled`, which has its own checks. */
 async function streamOf(

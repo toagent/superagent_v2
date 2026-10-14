@@ -108,6 +108,8 @@ export const CONTAINER_ENV_DENYLIST: ReadonlySet<string> = new Set([
  * Provider-specific fields go through `nodeConfig` and `assistantConfig` in SendQueryOptions.
  */
 export interface AgentRequestOptions {
+  /** Synchronously persist tracking readiness (undefined) or a native reroute before streaming on. */
+  onModelRerouted?: (model?: string) => void;
   model?: string;
   abortSignal?: AbortSignal;
   systemPrompt?: SystemPromptInput;
