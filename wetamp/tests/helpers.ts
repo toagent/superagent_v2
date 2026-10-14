@@ -46,6 +46,23 @@ export function codexFixtureEnv(): { BUN_OPTIONS: string } {
   return { BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`.trim() };
 }
 
+/** Semantic tests keep real commands/deadlines; ACCT tests own process-group supervision. */
+export function directAuxiliaryPreload(): string {
+  const preload = join(tmp(), 'direct-auxiliary.ts');
+  writeFileSync(
+    preload,
+    `
+const spawn = Bun.spawnSync;
+Bun.spawnSync = (command, options) => {
+  const args = Array.isArray(command) && command[0] === 'python3' && command[1] === '-c'
+    ? command.slice(4) : command;
+  return spawn(args, options);
+};
+`
+  );
+  return preload;
+}
+
 export const sh = (cmd: string, cwd: string, env: Record<string, string> = {}): string => {
   const p = Bun.spawnSync(['bash', '-c', cmd], {
     cwd,

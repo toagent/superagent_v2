@@ -31,7 +31,7 @@ import {
   CHECK_AUX_TIMEOUT_MS,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
-import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { directAuxiliaryPreload, fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
 import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
@@ -1312,18 +1312,7 @@ describe('F-14 model identity', () => {
 // These checks exercise delivery/classification/cache semantics. Process-group
 // supervision has separate ACCT/probe tests below; avoid starting Python for
 // each ordinary Git query here while retaining the real commands and deadlines.
-const directAuxiliary = join(tmp(), 'direct-auxiliary.ts');
-writeFileSync(
-  directAuxiliary,
-  `
-const spawn = Bun.spawnSync;
-Bun.spawnSync = (command, options) => {
-  const args = Array.isArray(command) && command[0] === 'python3' && command[1] === '-c'
-    ? command.slice(4) : command;
-  return spawn(args, options);
-};
-`
-);
+const directAuxiliary = directAuxiliaryPreload();
 
 function runScript(
   cwd: string,

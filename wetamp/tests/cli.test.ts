@@ -62,7 +62,7 @@ import { buildWorkflow, engineHash, generate, renderBrief } from '../src/generat
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { detailOf, redact as boardRedact } from '../src/board/detail';
 import { rowOf } from '../src/board/data';
-import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { directAuxiliaryPreload, fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 
 const engineRecoverLock = () => {
@@ -80,6 +80,7 @@ const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | 
 });
 let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
 const cleanEngine = coordModule.cleanEngine;
+const originalBunOptions = process.env.BUN_OPTIONS;
 const originalRole = process.env.SUPERAGENT_ROLE;
 const originalJob = process.env.SA_JOB_ID;
 const originalMemory = process.env.SUPERAGENT_MEMORY;
@@ -98,6 +99,8 @@ const restoreFixtures = (): void => {
 };
 afterEach(() => {
   restoreFixtures();
+  if (originalBunOptions === undefined) delete process.env.BUN_OPTIONS;
+  else process.env.BUN_OPTIONS = originalBunOptions;
   if (originalRole === undefined) delete process.env.SUPERAGENT_ROLE;
   else process.env.SUPERAGENT_ROLE = originalRole;
   if (originalJob === undefined) delete process.env.SA_JOB_ID;
@@ -1903,6 +1906,9 @@ test.each([
 ] as const)(
   'generated CLI acceptance and land preserve only approved non-product debt R%i %s',
   (round, check) => {
+    // check:1b1504b9cd7d70de: watchdog supervision is covered by ACCT tests.
+    process.env.BUN_OPTIONS =
+      `${process.env.BUN_OPTIONS ?? ''} --preload=${directAuxiliaryPreload()}`.trim();
     const s = stub([]),
       targetRepo = gitRepo(s.root),
       wt = join(s.root, 'code-worker');
@@ -2099,7 +2105,7 @@ test.each([
       expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
     }
   },
-  // Multiple real accept/land passes include bounded Python watchdogs around Git evidence.
+  // Real accept/land passes retain command deadlines without repeated watchdog startup.
   20_000
 );
 
