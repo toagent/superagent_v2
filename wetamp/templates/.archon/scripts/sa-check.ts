@@ -1,5 +1,6 @@
 // superagent 确定性节点（bun）：INPUTS_KIND 选择环境/验收/交付判定/合入命令；永不 push。
 import reasons from './reasons.json';
+import { checkoutFingerprint } from './checkout-integrity';
 import { prepareContext } from './sa-context';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import {
@@ -80,6 +81,7 @@ export interface Accept {
   diff_hash: string;
   same: boolean;
   head?: string;
+  checkout_fingerprint?: string;
   contract_hash?: string;
   risk?: string | null;
   disposition?: Disposition;
@@ -110,9 +112,9 @@ interface Policy {
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
-// accept/settle: status, tree, full/delta patch, scope, probe add/prune, HEAD, events.
+// accept/settle: status, tree, full/delta patch, scope, probe add/prune, HEAD, events, integrity.
 // env: events, optional worktree ownership and HEAD; precheck owns its timeout. The worst-path subprocess trace test enforces these counts.
-export const CHECK_AUX_COUNTS = { accept: 9, env: 4 } as const;
+export const CHECK_AUX_COUNTS = { accept: 13, env: 4 } as const;
 // The watchdog owns separate pipes, so even an escaped descendant cannot hold this caller open.
 // The shared budget includes TERM grace, KILL, pipe destruction and watchdog startup.
 const AUX_WATCHDOG = `
@@ -592,6 +594,7 @@ function acceptOnce(
     base_pass: baseResults.length ? baseResults.some(r => r.pass) : null,
     ...scope,
     head: git('rev-parse', 'HEAD').trim(),
+    checkout_fingerprint: checkoutFingerprint(args => auxiliary(['git', ...args])),
   };
 }
 
@@ -1848,6 +1851,17 @@ function gate(): void {
           : { reason: `review_not_independent:${why}` }
       );
   }
+  try {
+    if (
+      !rechecks.at(-1)?.checkout_fingerprint ||
+      checkoutFingerprint(args => auxiliary(['git', ...args])) !==
+        rechecks.at(-1)?.checkout_fingerprint
+    )
+      throw new Error('tracked checkout changed or review fingerprint missing');
+  } catch (error) {
+    Object.assign(d, { verdict: 'escalate', reason: 'review_modified_checkout' });
+    d.decision.evidence.push(String(error));
+  }
   const over =
     d.verdict === 'fix' || d.verdict === 'pass'
       ? budget(d.verdict === 'fix' || Boolean(env('NEXT')))
@@ -1887,7 +1901,7 @@ function gate(): void {
     ledger_file: ledgerFile,
     // 末份非空评审所见的 HEAD：下一轮 diff 以它为增量起点（F-20）；尚无评审为空，下一轮评审做全量
     reviewed_head: reviewed === undefined ? '' : (rechecks[reviewed]?.head ?? ''),
-    head: git('rev-parse', 'HEAD').trim(),
+    head: d.reason === 'review_modified_checkout' ? '' : git('rev-parse', 'HEAD').trim(),
   };
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   emit(out);

@@ -14,6 +14,7 @@
     "json-schema-to-typescript": "16.0.0"
   },
   "scripts": {
+    "generate:golden": "bun scripts/generate-golden.ts",
     "generate:reasons": "bun scripts/generate-reasons.ts",
     "generate:failure-class": "bun scripts/generate-failure-class.ts",
     "type-check": "tsc --noEmit --incremental false -p tsconfig.json",

@@ -121,6 +121,7 @@ const base: Reason[] = [
   deterministic('coder_partial', 'coder', 'coder', '编码未完成且验收失败'),
   deterministic('acceptance_failed', 'gate', 'coder', '验收失败'),
   deterministic('review_failed', 'gate', 'coder', '评审未通过'),
+  deterministic('review_modified_checkout', 'gate', 'human', '评审修改工作区或完整性证据不可用'),
   deterministic('review_inconsistent', 'gate', 'engine', '评审结论与发现矛盾'),
   entry('invalid_review', 'gate', 'transient', 'engine', '评审发现标识重复'),
   entry('review_incomplete', 'gate', 'transient', 'env', '评审未完成'),

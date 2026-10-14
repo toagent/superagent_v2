@@ -304,6 +304,23 @@ else {
     }
   );
 
+  test.each(['no-repo', 'unborn'])('strategist launches in %s cwd', async mode => {
+    const root = tmp(),
+      codex = join(tmp(), 'codex');
+    if (mode === 'unborn') sh('git init -q', root);
+    writeFileSync(codex, '#!/bin/sh\nprintf reviewer-started');
+    chmodSync(codex, 0o755);
+    const p = run(
+      ['job', 'exec', '--title', mode, '--role', 'strategist', '--', codex, 'exec', 'test'],
+      '',
+      root
+    );
+    const err = await new Response(p.stderr as ReadableStream).text();
+    expect(await p.exited, err).toBe(0);
+    expect(await new Response(p.stdout as ReadableStream).text()).toBe('reviewer-started');
+    expect(readJobs(Date.now(), true).jobs.find(j => j.title === mode)?.state).toBe('done');
+  });
+
   // prettier-ignore
   test('unset parent and no requested role explicitly suppress child .env role', async () => {
     const root = tmp(), child = join(tmp(), 'child');

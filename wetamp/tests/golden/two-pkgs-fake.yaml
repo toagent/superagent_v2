@@ -284,6 +284,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -314,13 +316,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: repair-core
     bash: |-
       mkdir -p "$(dirname 'core.txt')" && echo 'repair core' >> 'core.txt'
@@ -443,7 +446,7 @@ nodes:
           type: string
       required:
         - diff_hash
-    timeout: 155000
+    timeout: 195000
   - id: diff-m1-r1
     script: sa-check
     runtime: bun
@@ -575,6 +578,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -605,13 +610,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m1-r1
     always_run: true
     when: $diff-m1-r1.output.disposition == 'advance'
@@ -637,7 +643,6 @@ nodes:
     depends_on:
       - diff-m1-r1
       - attempt-review-m1-r1
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -980,6 +985,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -1010,13 +1017,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m1-r2
     always_run: true
     when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
@@ -1042,7 +1050,6 @@ nodes:
     depends_on:
       - diff-m1-r2
       - attempt-review-m1-r2
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -1389,6 +1396,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -1419,13 +1428,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m1-r3
     always_run: true
     when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
@@ -1451,7 +1461,6 @@ nodes:
     depends_on:
       - diff-m1-r3
       - attempt-review-m1-r3
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -1802,6 +1811,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -1832,13 +1843,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m1-r4
     always_run: true
     when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true'
@@ -1864,7 +1876,6 @@ nodes:
     depends_on:
       - diff-m1-r4
       - attempt-review-m1-r4
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -2219,6 +2230,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -2249,13 +2262,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m1-r5
     always_run: true
     when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true'
@@ -2281,7 +2295,6 @@ nodes:
     depends_on:
       - diff-m1-r5
       - attempt-review-m1-r5
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -2640,6 +2653,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -2670,13 +2685,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m1-r6
     always_run: true
     when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true'
@@ -2702,7 +2718,6 @@ nodes:
     depends_on:
       - diff-m1-r6
       - attempt-review-m1-r6
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -3117,6 +3132,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -3147,13 +3164,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: repair-api
     bash: |-
       mkdir -p "$(dirname 'api.txt')" && echo 'repair api' >> 'api.txt'
@@ -3276,7 +3294,7 @@ nodes:
           type: string
       required:
         - diff_hash
-    timeout: 155000
+    timeout: 195000
   - id: diff-m2-r1
     script: sa-check
     runtime: bun
@@ -3408,6 +3426,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -3438,13 +3458,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m2-r1
     always_run: true
     when: $diff-m2-r1.output.disposition == 'advance'
@@ -3470,7 +3491,6 @@ nodes:
     depends_on:
       - diff-m2-r1
       - attempt-review-m2-r1
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -3812,6 +3832,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -3842,13 +3864,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m2-r2
     always_run: true
     when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
@@ -3874,7 +3897,6 @@ nodes:
     depends_on:
       - diff-m2-r2
       - attempt-review-m2-r2
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -4220,6 +4242,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -4250,13 +4274,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m2-r3
     always_run: true
     when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
@@ -4282,7 +4307,6 @@ nodes:
     depends_on:
       - diff-m2-r3
       - attempt-review-m2-r3
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -4632,6 +4656,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -4662,13 +4688,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m2-r4
     always_run: true
     when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true'
@@ -4694,7 +4721,6 @@ nodes:
     depends_on:
       - diff-m2-r4
       - attempt-review-m2-r4
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -5048,6 +5074,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -5078,13 +5106,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m2-r5
     always_run: true
     when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true'
@@ -5110,7 +5139,6 @@ nodes:
     depends_on:
       - diff-m2-r5
       - attempt-review-m2-r5
-    mutates_checkout: false
     output_format:
       type: object
       properties:
@@ -5468,6 +5496,8 @@ nodes:
           type:
             - boolean
             - 'null'
+        checkout_fingerprint:
+          type: string
         head:
           type: string
         disposition:
@@ -5498,13 +5528,14 @@ nodes:
         - same
         - base_pass
         - head
+        - checkout_fingerprint
         - disposition
         - reason
         - delta
         - risk
         - out_of_scope
         - decision
-    timeout: 155000
+    timeout: 195000
   - id: attempt-review-m2-r6
     always_run: true
     when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true'
@@ -5530,7 +5561,6 @@ nodes:
     depends_on:
       - diff-m2-r6
       - attempt-review-m2-r6
-    mutates_checkout: false
     output_format:
       type: object
       properties:

@@ -7,7 +7,6 @@ import type { NodeConfig } from './types';
 export interface LaunchPolicy {
   effort: string;
   codex: Record<string, unknown>;
-  sandbox?: Options['sandbox'];
 }
 export const CLAUDE_EFFORTS = [
   'low',
@@ -19,11 +18,10 @@ export const CLAUDE_EFFORTS = [
 
 export function claudeLaunchPolicy(
   policy: LaunchPolicy
-): Pick<Options, 'effort' | 'sandbox' | 'permissionMode' | 'allowDangerouslySkipPermissions'> {
+): Pick<Options, 'effort' | 'permissionMode' | 'allowDangerouslySkipPermissions'> {
   if (!isEffortRung(policy.effort)) throw new Error('execution: unsupported effort');
   return {
     effort: clampEffort(policy.effort, CLAUDE_EFFORTS),
-    ...(policy.sandbox ? { sandbox: policy.sandbox } : {}),
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
   };
@@ -32,7 +30,7 @@ export function claudeLaunchPolicy(
 export function workflowLaunchPolicy(
   policy: LaunchPolicy,
   provider: 'claude' | 'codex'
-): Pick<NodeConfig, 'effort' | 'sandbox'> {
+): Pick<NodeConfig, 'effort'> {
   if (!isEffortRung(policy.effort)) throw new Error('execution: unsupported effort');
   if (provider === 'codex')
     return {
@@ -41,7 +39,6 @@ export function workflowLaunchPolicy(
   const native = claudeLaunchPolicy(policy);
   return {
     effort: native.effort,
-    ...(native.sandbox ? { sandbox: native.sandbox } : {}),
   };
 }
 
@@ -106,7 +103,7 @@ export async function prepareRoleCommand(
   const args = roleCommandArgs(command, provider, model);
   if (provider === 'claude') {
     const native = claudeLaunchPolicy(policy);
-    const settings = native.sandbox ? { sandbox: native.sandbox } : {};
+    const settings = {};
     let format: 'text' | 'json' | 'stream-json' = 'text';
     const index = args.indexOf('--output-format');
     if (index !== -1) {

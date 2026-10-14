@@ -154,9 +154,6 @@ export function executionLaunch(descriptor: ExecutionDescriptor, candidate: Alia
   return {
     effort: candidate.effort,
     codex: profile.codex ?? {},
-    ...('sandbox' in profile.claude
-      ? { sandbox: profile.claude.sandbox as LaunchPolicy['sandbox'] }
-      : {}),
   };
 }
 

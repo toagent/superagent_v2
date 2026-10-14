@@ -44,11 +44,6 @@ test('review CLI and workflow allow test writes without replacing native guidanc
   expect(args.some(a => /^(mcp_servers|skills|plugins|features.apps)=/.test(a))).toBe(false);
 });
 
-test('explicit native sandbox configuration is preserved', () => {
-  const sandbox = { enabled: true, filesystem: { denyWrite: ['/fixture'] } };
-  expect(claudeLaunchPolicy({ ...policy, sandbox }).sandbox).toEqual(sandbox);
-});
-
 test('policy overrides and unsupported commands fail before native inventory or launch', () => {
   for (const args of [
     ['exec', '-c', 'features.multi_agent=true'],

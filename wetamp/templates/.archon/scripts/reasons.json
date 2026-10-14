@@ -133,6 +133,13 @@
     "description": "评审未通过"
   },
   {
+    "code": "review_modified_checkout",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "评审修改工作区或完整性证据不可用"
+  },
+  {
     "code": "review_inconsistent",
     "hold": "gate",
     "determinism": "deterministic",
@@ -306,6 +313,13 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "评审未通过"
+  },
+  {
+    "code": "review_modified_checkout+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "评审修改工作区或完整性证据不可用"
   },
   {
     "code": "review_inconsistent+review_limit",

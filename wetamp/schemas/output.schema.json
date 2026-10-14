@@ -271,6 +271,9 @@
         "base_pass": {
           "type": ["boolean", "null"]
         },
+        "checkout_fingerprint": {
+          "type": "string"
+        },
         "head": {
           "type": "string"
         },
@@ -302,6 +305,7 @@
         "same",
         "base_pass",
         "head",
+        "checkout_fingerprint",
         "disposition",
         "reason",
         "delta",

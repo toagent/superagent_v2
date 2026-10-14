@@ -35,6 +35,7 @@ import {
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
+import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 import { envPrecheck } from '../templates/.archon/scripts/env-precheck';
 import { writePolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import Ajv2020 from '../../packages/workflows/node_modules/ajv/dist/2020';
@@ -1344,7 +1345,19 @@ function runScript(
     ARTIFACTS_DIR: art,
     ...extraEnv,
   };
-  for (const [k, v] of Object.entries(inputs)) env[`INPUTS_${k.toUpperCase()}`] = v;
+  for (const [k, v] of Object.entries(inputs)) {
+    // Synthetic gate fixtures bind the real checkout just like accept artifacts do.
+    let value = v;
+    if (inputs.kind === 'gate' && /^c\d+$/.test(k)) {
+      const check = JSON.parse(v);
+      if (check && !Object.hasOwn(check, 'checkout_fingerprint'))
+        check.checkout_fingerprint = checkoutFingerprint(args =>
+          Bun.spawnSync(['git', '-C', cwd, ...args])
+        );
+      value = JSON.stringify(check);
+    }
+    env[`INPUTS_${k.toUpperCase()}`] = value;
+  }
   const p = Bun.spawnSync(
     directQueries
       ? [process.execPath, '--preload', directAuxiliary, script]
@@ -1390,6 +1403,10 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
     })
   );
   writeFileSync(archon, '#!/bin/sh\necho \'{"events":[]}\'\n', { mode: 0o755 });
+  cpSync(
+    join(import.meta.dir, '../templates/.archon/scripts/checkout-integrity.ts'),
+    join(root, 'checkout-integrity.ts')
+  );
   const script = join(root, 'sa-check.ts');
   writeFileSync(
     join(root, 'reasons.json'),
@@ -2090,6 +2107,66 @@ describe('sa-check script', () => {
     });
     expect(again.out).toMatchObject({ diff_hash: out.diff_hash, same: true });
   });
+  test.each(['unchanged', 'dirty-content', 'commit', 'missing', 'git-failure', 'probe-failure'])(
+    'gate checkout integrity: %s',
+    mode => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        plan = fixturePlan(root, repo);
+      if (mode === 'dirty-content') writeFileSync(join(repo, 'README.md'), 'before');
+      const accepted = runScript(repo, { kind: 'accept', plan, pkgs: 'core', tag: 'diff-m1-r1' });
+      const check = accepted.out as Accept;
+      if (mode === 'dirty-content') writeFileSync(join(repo, 'README.md'), 'after');
+      if (mode === 'commit') sh('git commit --allow-empty -qm reviewer', repo);
+      if (mode === 'missing') check.checkout_fingerprint = '';
+      const before = sh('git status --porcelain', repo);
+      const head = sh('git rev-parse HEAD', repo);
+      const extraEnv: Record<string, string> = {};
+      if (mode === 'git-failure' || mode === 'probe-failure') {
+        const bin = join(root, 'bin');
+        mkdirSync(bin);
+        writeFileSync(
+          join(bin, 'git'),
+          `#!/bin/sh\nif [ "$1" = ${mode === 'probe-failure' ? 'rev-parse' : 'status'} ] ${mode === 'probe-failure' ? '&& [ "$2" = --is-inside-work-tree ]' : ''}; then echo evidence-unavailable >&2; exit 1; fi\nexec /usr/bin/git "$@"\n`,
+          { mode: 0o755 }
+        );
+        extraEnv.PATH = `${bin}:${process.env.PATH}`;
+      }
+      const gated = runScript(
+        repo,
+        {
+          kind: 'gate',
+          plan,
+          round: '1',
+          risk: 'G2',
+          milestone: 'm1',
+          pkgs: 'core',
+          tag: 'gate-m1-r1',
+          r1: JSON.stringify(R('PASS')),
+          c1: JSON.stringify({
+            ...check,
+            ok: true,
+            failed: [],
+            failures: [],
+            command_results: [],
+            disposition: 'advance',
+            decision: undefined,
+          }),
+        },
+        SCRIPT,
+        extraEnv
+      );
+      expect(gated.code, gated.err).toBe(mode === 'unchanged' ? 0 : 1);
+      expect(gated.out).toMatchObject(
+        mode === 'unchanged'
+          ? { verdict: 'pass' }
+          : { verdict: 'escalate', reason: 'review_modified_checkout', decision: { kind: 'block' } }
+      );
+      expect(sh('git status --porcelain', repo)).toBe(before);
+      expect(sh('git rev-parse HEAD', repo)).toBe(head);
+    }
+  );
+
   test('gate: fix verdict writes review file and gate json; deadline passed escalates with exit 1', () => {
     const root = tmp();
     const repo = gitRepo(root);

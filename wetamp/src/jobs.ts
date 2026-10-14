@@ -32,6 +32,7 @@ import { refreshBudgetQuota } from './relay-quota';
 import { jobDuration } from './board/eta';
 import { QUERY_TIMEOUT_MS } from './archon';
 import { newRunId } from './generate';
+import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 import { jobSession } from './usage';
 import { isTier, ROUTE_ROLE, type Tier } from './roles';
 import { envPrecheck, provisionEnvironment } from '../templates/.archon/scripts/env-precheck';
@@ -301,12 +302,10 @@ async function exec(
   };
   let createdWorktree = false;
   let reviewBefore: string | undefined;
-  // Include content and HEAD: porcelain alone misses edits to an already-dirty file or commits.
-  const reviewTree = (): string => JSON.stringify([
-    git(job.cwd, 'rev-parse', 'HEAD'),
-    git(job.cwd, 'status', '--porcelain', '-z', '--untracked-files=no'),
-    git(job.cwd, 'diff', '--binary', 'HEAD'),
-  ]);
+  const reviewTree = (): string => checkoutFingerprint(args =>
+    Bun.spawnSync(['git', '-C', job.cwd, ...args], {
+      stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS,
+    }), true);
   let terminal: Job, failure: { error: unknown } | undefined;
   try {
     save(job);

@@ -556,7 +556,6 @@ export function buildWorkflow(
               },
             }),
         depends_on: [`diff-${t}`, reviewAttempt],
-        mutates_checkout: false,
         output_format: outputSchema('reviewer'),
       });
       rounds[`R${String(r)}`] = skippable(`$review-${t}.output`);

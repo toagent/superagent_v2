@@ -566,7 +566,9 @@ describe('buildWorkflow', () => {
     for (const fake of [false, true]) {
       const nodes = nodesOf(build(fake, plan));
       for (const n of nodes.filter(n => n.with?.kind === 'accept' || n.with?.kind === 'settle'))
-        expect(n.timeout).toBe(ms);
+        expect(n.timeout).toBe(
+          Math.max(ms, 20_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000)
+        );
       for (const n of nodes.filter(
         n => n.with?.kind !== 'accept' && n.with?.kind !== 'settle' && n.id !== 'environment'
       ))
@@ -597,12 +599,16 @@ describe('buildWorkflow', () => {
       accept: [{ cmd: 'third', timeout_s: 600 }],
     });
     const nodes = nodesOf(build(false, plan));
-    expect(nodes.find(n => n.id === 'verify-api')?.timeout).toBe(695_000);
-    expect(nodes.find(n => n.id === 'settle-web')?.timeout).toBe(1_295_000);
+    expect(nodes.find(n => n.id === 'verify-api')?.timeout).toBe(
+      600_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000
+    );
+    expect(nodes.find(n => n.id === 'settle-web')?.timeout).toBe(
+      1_200_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000
+    );
     for (const r of [1, 2, 3]) {
       const n = nodes.find(n => n.id === `diff-m2-r${r}`);
       expect(n?.with).toMatchObject({ pkgs: 'api,web', scope_pkgs: 'core,api,web' });
-      expect(n?.timeout).toBe(1_895_000);
+      expect(n?.timeout).toBe(1_800_000 + CHECK_AUX_COUNTS.accept * CHECK_AUX_TIMEOUT_MS + 5_000);
     }
   });
   test('RUN_PROVISION: environment budget includes install and prepare even without declared checks', () => {
@@ -909,7 +915,6 @@ describe('buildWorkflow', () => {
     }
     expect(n('review-m1-r2')).toMatchObject({
       command: 'sa-review-delta',
-      mutates_checkout: false,
     });
   });
   test('unchanged fix diff: diff-rN compares with the previous hash, review is skipped, gate still runs', () => {
@@ -967,18 +972,17 @@ describe('buildWorkflow', () => {
     expect(denied('codex', 'code-core')).toBeUndefined();
     expect(denied('claude', 'review-m1-r1')).toBeUndefined();
   });
-  test('reviewer nodes are read-only at the execution layer in both consoles', () => {
+  test('reviewer integrity belongs to the deterministic gate in both consoles', () => {
     const node = (console: 'claude' | 'codex', id: string): Record<string, unknown> =>
       nodesOf(build(false, { ...fixture, console })).find(x => x.id === id) as Record<
         string,
         unknown
       >;
-    // console=claude：@sa-reviewer 是 codex，挂哨兵 MCP 交给 codex-worker 的代理；console=codex：claude 走 SDK 沙箱
     for (const id of ['review-m1-r1', 'review-m2-r3']) {
       for (const c of ['claude', 'codex'] as const) {
         expect(node(c, id).mcp).toBeUndefined();
         expect(node(c, id).sandbox).toBeUndefined();
-        expect(node(c, id).mutates_checkout).toBe(false);
+        expect(node(c, id).mutates_checkout).toBeUndefined();
       }
     }
     for (const c of ['claude', 'codex'] as const) {
