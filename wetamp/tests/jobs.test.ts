@@ -461,6 +461,44 @@ esac`
     expect(only().receipt?.spawned_at).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
   });
+  // prettier-ignore
+  test.each(['new', 'branch', 'checkout'])('worktree %s creates or reuses without changing existing state', async mode => {
+    const root = tmp(), repo = gitRepo(root), path = join(root, 'sa-task-reuse');
+    const head = sh('git rev-parse HEAD', repo).trim();
+    if (mode !== 'new') {
+      sh('git branch task/reuse', repo);
+      sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm advance', repo);
+    }
+    if (mode === 'checkout') {
+      sh(`git worktree add '${path}' task/reuse`, repo);
+      writeFileSync(join(path, 'dirty'), 'keep');
+    }
+    const p = run(['job', 'exec', '--title', 'reuse', '--worktree', 'task/reuse', '--base', 'main', '--', 'pwd'], '', repo);
+    const err = await new Response(p.stderr as ReadableStream).text();
+    expect(await p.exited, err).toBe(0);
+    expect((await new Response(p.stdout as ReadableStream).text()).trim()).toBe(path);
+    expect(only().worktree).toMatchObject({ path, base: mode === 'new' ? 'main' : head, created: mode !== 'checkout', branchCreated: mode === 'new' });
+    expect(sh('git rev-parse HEAD', path).trim()).toBe(head);
+    if (mode !== 'new') expect(err).toContain('differs from existing branch');
+    if (mode === 'checkout') {
+      expect(readFileSync(join(path, 'dirty'), 'utf8')).toBe('keep');
+      unlinkSync(join(path, 'dirty'));
+      expect(await run(['job', 'clean', only().id]).exited).not.toBe(0);
+      expect(existsSync(path)).toBe(true);
+    } else if (mode === 'branch') {
+      expect(await run(['job', 'clean', only().id]).exited).toBe(0);
+      expect(sh('git rev-parse task/reuse', repo).trim()).toBe(head);
+    }
+  });
+  // prettier-ignore
+  test('worktree branch checked out elsewhere fails with the owning path', async () => {
+    const root = tmp(), repo = gitRepo(root), path = join(root, 'other');
+    sh(`git worktree add -b task/reuse '${path}' main`, repo);
+    const p = run(['job', 'exec', '--title', 'conflict', '--worktree', 'task/reuse', '--base', 'main', '--', 'true'], '', repo);
+    expect(await p.exited).not.toBe(0);
+    expect(await new Response(p.stderr as ReadableStream).text()).toContain(`checked out at ${path}`);
+    expect(only().receipt?.spawned_at).toBeUndefined(); expect(existsSync(join(root, 'sa-task-reuse'))).toBe(false);
+  });
   test('JOB_PROVISION existing checkout is never provisioned', async () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -468,6 +506,7 @@ esac`
     const checkout = join(root, 'sa-task-existing');
     sh(`git worktree add -b task/existing '${checkout}' main`, repo);
     writeFileSync(join(checkout, 'package.json'), '{"dependencies":{"example":"1"}}');
+    writeFileSync(join(checkout, 'bun.lock'), 'declared');
     const p = run(
       [
         'job',
@@ -485,7 +524,8 @@ esac`
       repo,
       recoveryStub(root, `touch '${marker}'`)
     );
-    expect(await p.exited).not.toBe(0);
+    expect(await p.exited).toBe(78);
+    expect(only().worktree?.created).toBe(false);
     expect(only().provisioned).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
     expect(readFileSync(join(checkout, 'package.json'), 'utf8')).toBe(

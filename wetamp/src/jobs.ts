@@ -1,6 +1,7 @@
 // `superagent job exec` / `superagent jobs`：登记不经 superagent run、直接派出的作业（后台 `claude -p`、`codex exec`…），
 // 让 board 看得见。只记标题、可执行文件种类与 --model，不记完整 argv/prompt。
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -67,7 +68,14 @@ export interface Job {
   ended_at?: string;
   exit_code?: number;
   signal?: string;
-  worktree?: { path: string; branch: string; base: string; repo: string };
+  worktree?: {
+    path: string;
+    branch: string;
+    base: string;
+    repo: string;
+    created?: boolean;
+    branchCreated?: boolean;
+  };
 }
 
 const USAGE =
@@ -210,13 +218,14 @@ const git = (cwd: string, ...args: string[]): string => {
 export function cleanJob(id: string): void {
   const j = readJobs(Date.now(), true).jobs.find(j => j.id === id), w = j?.worktree;
   if (!j || !w) throw new Error('job clean: no registered worktree');
+  if (w.created === false) throw new Error('job clean: worktree was reused; not owned by this job');
   if (['queued', 'running'].includes(j.state) || alive(j.wrapper_pid)) throw new Error('job clean: owner is still active');
   if (git(w.path, 'symbolic-ref', '--short', 'HEAD') !== w.branch || git(w.path, 'status', '--porcelain', '-z'))
     throw new Error('job clean: worktree branch mismatch or dirty');
   if (git(w.repo, 'rev-list', '--merges', `${w.base}..${w.branch}`) || git(w.repo, 'cherry', w.base, w.branch).split('\n').some(line => line && !line.startsWith('- '))) // R1-1: cherry omits merges.
     throw new Error(`job clean: branch not integrated into ${w.base}`);
   git(w.repo, 'worktree', 'remove', w.path);
-  git(w.repo, 'branch', '-D', w.branch);
+  if (w.branchCreated !== false) git(w.repo, 'branch', '-D', w.branch);
   delete j.worktree;
   save(j);
 }
@@ -303,12 +312,23 @@ async function exec(
     ]) : undefined;
     if (f.worktree) {
       const repo = git(job.cwd, 'rev-parse', '--show-toplevel'), branch = f.worktree;
-      const base = f.base ?? git(repo, 'symbolic-ref', '--short', 'HEAD');
-      git(repo, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`);
+      let base = f.base ?? git(repo, 'symbolic-ref', '--short', 'HEAD');
+      const requestedHead = git(repo, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`);
       const path = join(dirname(repo), `sa-${branch.replaceAll('/', '-')}`);
-      git(repo, 'worktree', 'add', '-b', branch, path, base);
-      createdWorktree = true;
-      job.worktree = { repo, branch, base, path };
+      const branchCreated = !git(repo, 'for-each-ref', '--format=%(refname)', 'refs/heads').split('\n').includes(`refs/heads/${branch}`);
+      const registered = git(repo, 'worktree', 'list', '--porcelain', '-z').split('\0\0')
+        .map(record => record.split('\0')).find(fields => fields.includes(`branch refs/heads/${branch}`));
+      const checkout = registered?.find(field => field.startsWith('worktree '))?.slice(9);
+      if (checkout && checkout !== path) throw new Error(`job: branch ${branch} is checked out at ${checkout}`);
+      if (!branchCreated) {
+        base = git(repo, 'rev-parse', '--verify', '--end-of-options', `refs/heads/${branch}^{commit}`);
+        if (f.base && base !== requestedHead) console.error(`job: --base ${f.base} differs from existing branch ${branch}; using HEAD ${base}`);
+      }
+      if (checkout !== path || !existsSync(path)) {
+        git(repo, 'worktree', 'add', ...(branchCreated ? ['-b', branch, path, base] : [path, branch]));
+        createdWorktree = true;
+      }
+      job.worktree = { repo, branch, base, path, created: createdWorktree, branchCreated };
       job.cwd = job.worktree.path;
       save(job);
     }
