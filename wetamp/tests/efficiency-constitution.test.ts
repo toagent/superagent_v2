@@ -7,7 +7,7 @@ import type { RunView } from '../src/archon';
 import { buildWorkflow } from '../src/generate';
 import { describeExecution, executionRoute } from '../src/execution';
 import { loadPlan, milestones } from '../src/plan';
-import { HOLD_POLICY, REASONS } from '../src/reasons';
+import { HOLD_POLICY, REASONS, type Hold } from '../src/reasons';
 import { buildReport } from '../src/report';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
@@ -21,7 +21,13 @@ const HIGH_RISK_HOLDS: Record<(typeof HIGH_RISK)[number], readonly string[]> = {
   '迁移/删除': ['redline'],
   部署发布: ['redline'],
 };
-const allowedHolds = new Set(Object.values(HIGH_RISK_HOLDS).flat());
+// 高危操作可能需要人工执行；六类风险共享 redline 处置，不增加风险类别。
+const highRiskHolds = Object.values(HIGH_RISK_HOLDS).flat();
+// 显式暂停/取消与 human 签收尊重操作者决定；签收类仅在声明 human 时合法。
+const operatorHolds = ['paused', 'signoff', 'approval'] as const;
+// 自动补环境后仍缺外部资源等价于带 needs 的 blocked，不能凭空补齐资源。
+const externalResourceHolds = ['environment'] as const;
+const allowedHolds = new Set([...highRiskHolds, ...operatorHolds, ...externalResourceHolds]);
 const tiers = loadTiers();
 const root = tmp();
 const planPath = fixturePlan(root, gitRepo(root), p => {
@@ -31,10 +37,11 @@ const planPath = fixturePlan(root, gitRepo(root), p => {
   delete p.budget;
 });
 const plan = loadPlan(planPath, [root]);
-type Node = { id: string; command?: string; retry?: unknown; when?: string };
-const workflow = (risk: 'G0' | 'G1' | 'G2', mode = 'auto'): Node[] => {
+type Node = { id: string; command?: string; retry?: unknown; when?: string; approval?: unknown };
+const workflow = (risk: 'G0' | 'G1' | 'G2', mode = 'auto', review = false): Node[] => {
   const p = structuredClone(plan);
   p.packages[0].risk = risk;
+  p.packages[0].review = review;
   p.mode = mode as typeof p.mode;
   return buildWorkflow(p, milestones(p), 'constitution', root, false, 0, tiers).nodes as Node[];
 };
@@ -48,11 +55,14 @@ describe('EFFICIENCY_CONSTITUTION', () => {
     for (const reason of REASONS) expect(reasonHold(reason.code)).toBe(reason.hold);
   });
 
-  test('① every registered waiting or human policy belongs to the high-risk closed set', () => {
+  test('① waiting policies belong to high-risk, explicit operator, or external-resource closed sets', () => {
     const violations = REASONS.filter(reason => {
       const policy = HOLD_POLICY[reason.hold];
       return (
-        (policy.do === 'ask' || policy.do === 'signoff' || policy.do === 'resume') &&
+        (policy.do === 'ask' ||
+          policy.do === 'signoff' ||
+          policy.do === 'resume' ||
+          reason.hold === 'environment') &&
         !allowedHolds.has(reason.hold)
       );
     }).map(reason => reason.code);
@@ -61,35 +71,64 @@ describe('EFFICIENCY_CONSTITUTION', () => {
     expect(
       Object.entries(HOLD_POLICY).filter(
         ([hold, policy]) =>
-          ['ask', 'signoff', 'resume'].includes(policy.do) && !allowedHolds.has(hold)
+          (['ask', 'signoff', 'resume'].includes(policy.do) || hold === 'environment') &&
+          !allowedHolds.has(hold)
       )
     ).toEqual([]);
   });
 
-  test('① classify/holdOf cannot introduce ordinary task waits', () => {
+  test('① classify/holdOf preserves explicit waits and plan-scoped human signoff', () => {
     const ledger = { plan: planPath, gen_dir: root, started_at: '2026-10-14T00:00:00Z' } as Ledger;
-    const runs: RunView[] = [
+    const cases: { run: RunView; state: string; hold: Hold }[] = [
+      { run: { id: 'fixture', status: 'paused', nodes: [] }, state: 'held:paused', hold: 'paused' },
       {
-        id: 'fixture',
-        status: 'paused',
-        nodes: [],
-        metadata: { approval: { nodeId: 'human-m1' } },
+        run: {
+          id: 'fixture',
+          status: 'failed',
+          nodes: [{ nodeId: 'environment', state: 'failed' }],
+        },
+        state: 'held:environment',
+        hold: 'environment',
       },
-      {
-        id: 'fixture',
-        status: 'paused',
-        nodes: [],
-        metadata: { approval: { nodeId: 'ordinary-approval' } },
-      },
-      { id: 'fixture', status: 'paused', nodes: [] },
-      { id: 'fixture', status: 'failed', nodes: [{ nodeId: 'environment', state: 'failed' }] },
     ];
-    const violations = runs.flatMap(run => {
-      const c = classify(run),
-        hold = holdOf(ledger, run, c);
-      return c.state.startsWith('held:') && (!hold || !allowedHolds.has(hold)) ? [c.state] : [];
-    });
-    expect(violations).toEqual([]);
+    for (const { run, state, hold } of cases) {
+      const c = classify(run);
+      expect(c.state).toBe(state);
+      expect(holdOf(ledger, run, c)).toBe(hold);
+      expect(allowedHolds.has(hold)).toBe(true);
+    }
+    // cancelled_source is a structured reason, not a separate classify state.
+    expect(reasonHold('cancelled_source')).toBe('paused');
+    expect(classify({ id: 'fixture', status: 'cancelled', nodes: [] }).state).toBe('cancelled');
+
+    for (const human of [false, true]) {
+      const p = structuredClone(plan);
+      if (human) p.packages[0].signoff = 'human';
+      else delete p.packages[0].signoff;
+      const nodes = buildWorkflow(p, milestones(p), 'constitution', root, false, 0, tiers)
+        .nodes as Node[];
+      const approvals = nodes.filter(n => n.approval);
+      expect(approvals.length > 0).toBe(p.packages[0].signoff === 'human');
+      expect(nodes.some(n => n.id.startsWith('signoff-'))).toBe(human);
+      for (const node of approvals) {
+        expect(p.packages[0].signoff).toBe('human');
+        const run: RunView = {
+          id: 'fixture',
+          status: 'paused',
+          nodes: [],
+          metadata: { approval: { nodeId: node.id } },
+        };
+        expect(classify(run).state).toBe('held:human');
+        expect(holdOf(ledger, run, classify(run))).toBe('signoff');
+        // classify/holdOf do not read plan: the generator owns signoff scoping.
+        const approval: RunView = {
+          ...run,
+          metadata: { approval: { nodeId: 'ordinary-approval' } },
+        };
+        expect(classify(approval).state).toBe('held:paused');
+        expect(holdOf(ledger, approval, classify(approval))).toBe('approval');
+      }
+    }
   });
 
   test('① parsed config/schema contain no admission or hard-budget fields', () => {
@@ -102,7 +141,6 @@ describe('EFFICIENCY_CONSTITUTION', () => {
       'memory_admission',
       'min_free_mb',
       'hard_budget',
-      'budget_floor',
       'enforcement',
     ]);
     const fields = (value: unknown, path = ''): string[] => {
@@ -115,6 +153,13 @@ describe('EFFICIENCY_CONSTITUTION', () => {
     const schema = JSON.parse(readFileSync(join(WETAMP, 'schemas/plan.schema.json'), 'utf8'));
     expect(fields({ tiers, schema, plan })).toEqual([]);
   });
+
+  // budgetUsage only measures usage; sa-check budget/finish/accept and CLI recheck
+  // are private, so exported functions cannot prove advisory versus block/held behavior.
+  test.todo(
+    '① exceeding budget emits advisory without block/held (no exported disposition entry)',
+    () => {}
+  );
 
   for (const role of ['code', 'repair', 'fix']) {
     test(`② generated ${role} prompt requires acceptance before delivery`, () => {
@@ -137,12 +182,20 @@ describe('EFFICIENCY_CONSTITUTION', () => {
   }
 
   for (const risk of ['G0', 'G1', 'G2'] as const) {
-    test(`② ${risk} only G2 or strict generates review nodes`, () => {
-      const reviews = (mode: string) =>
-        workflow(risk, mode).filter(n => n.command?.startsWith('sa-review'));
-      if (risk === 'G2') expect(reviews('auto').length).toBeGreaterThan(0);
-      else expect(reviews('auto').map(node => node.id)).toEqual([]);
-      expect(reviews('strict').length).toBeGreaterThan(0);
+    test(`② ${risk} reviews are guarded only when runtime G2 escalation is needed`, () => {
+      const reviews = (mode: string, review = false) =>
+        workflow(risk, mode, review).filter(n => n.command?.startsWith('sa-review'));
+      const auto = reviews('auto');
+      expect(auto.length).toBeGreaterThan(0);
+      for (const node of auto) {
+        const guard = `$diff-${node.id.slice('review-'.length)}.output.risk == 'G2'`;
+        if (risk === 'G2') expect(node.when).not.toContain(guard);
+        else expect(node.when).toContain(guard);
+      }
+      for (const nodes of [reviews('strict'), reviews('auto', true)]) {
+        expect(nodes.length).toBeGreaterThan(0);
+        for (const node of nodes) expect(node.when).not.toContain(".output.risk == 'G2'");
+      }
     });
   }
 

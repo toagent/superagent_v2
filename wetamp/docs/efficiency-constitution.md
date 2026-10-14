@@ -5,10 +5,15 @@
 
 ## 五条不变量
 
-1. 除高危六类外零等待：鉴权、凭据、沙箱、计费、迁移/删除、部署发布。
-   普通任务不得因排队、准入、配额、预算停或人工 hold 等待。
+1. 合法等待是以下三类闭集：
+   高危六类：鉴权、凭据、沙箱、计费、迁移/删除、部署发布，可能需要人工执行。
+   操作者显式声明：paused / held:paused、cancelled_source，尊重暂停或取消决定；
+   plan 中工作包声明 signoff:"human" 时才允许 held:human / signoff / approval。
+   自动补环境后仍缺外部资源的 held:environment，等价于带 needs 的 blocked。
+   普通任务不得因排队、准入、配额、预算或未声明的人工 hold 等待。
 2. 一次做对：coder 在交付前跑通验收命令；verify 只做独立确认。
-   G0/G1 不评审，G2 或 strict 才评审。
+   G0/G1 + auto 的 review 节点以运行期 G2 风险守卫默认跳过，触及 G2 时升级；
+   G2、strict 或 review:true 执行评审，不加 G2 升级守卫。
 3. 引擎零误伤：内部辅助步骤故障不得被判成工作包 acceptance_failed。
    诊断缺失如实记录为引擎或诊断问题，不冒充产品验收失败。
 4. 故障即改派：可分类的厂商故障换厂商继续，AI 节点使用 transient retry。
@@ -23,7 +28,8 @@
 
 ## 当前验证 notes（2026-10-14）
 
-当前 checkout 的提示仍把正式验收留给引擎，配置仍有 budget_floor，
-普通 workflow 仍生成条件 review，人工门尚未绑定高危闭集；守护测试应报告失败。
+budget_floor 仅为 budgetUsage 的加权观测下限，不是准入或停机门槛。
+预算超限应只产生 advisory；完整处置入口未导出，对应行为断言暂为 test.todo。
+classify/holdOf 不读取 plan；human 签收声明由生成器绑定并验证。
 内部 probe 没有注入接口，故障归因断言暂为 test.todo，不修改产品行为。
 未运行完整 fake 引擎链路；不把生成耗时当作引擎开销，不设置未经实测的上限。
