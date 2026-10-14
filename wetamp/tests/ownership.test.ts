@@ -105,6 +105,7 @@ test('G1: caller uses app-server PID and only lifetime-verified unambiguous hear
       })
     );
   beat('current', Date.now());
+  beat('previous', Date.now() - 120001);
   beat('smoke', Date.now() - 120001, 'old-lifetime');
   const readCaller = () => {
     const p = Bun.spawnSync(
@@ -134,6 +135,9 @@ test('G1: caller uses app-server PID and only lifetime-verified unambiguous hear
     session_id: 'current',
   });
   beat('smoke', Date.now());
+  expect(readCaller().session_id).toBeUndefined();
+  beat('current', Date.now() - 120001);
+  beat('smoke', Date.now() - 120001);
   expect(readCaller().session_id).toBeUndefined();
 });
 
