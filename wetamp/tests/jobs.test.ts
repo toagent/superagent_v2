@@ -353,6 +353,34 @@ else if (process.argv[1].endsWith('/claude')) {
     expect(await p.exited).toBe(0);
   });
 
+  test('launch binds the registered card and clears inherited job identity', async () => {
+    const root = tmp(), card = join(root, 'input.md');
+    writeFileSync(card, 'bound input');
+    const p = run(['job', 'exec', '--title', 'input', '--card', 'input.md', '--request-ref', 'request/1',
+      '--', 'bun', '-e', 'console.log(JSON.stringify([process.env.SA_JOB_ID, process.env.SA_JOB_CARD, process.env.SA_JOB_REQUEST_REF, await Bun.file(process.env.SA_JOB_CARD).text()]))'],
+      '', root, { SA_JOB_ID: 'parent', SA_JOB_CARD: '/missing-parent-card', SA_JOB_REQUEST_REF: 'parent-request' });
+    expect(await p.exited).toBe(0);
+    if (!p.stdout || typeof p.stdout === 'number') throw new Error('missing child stdout');
+    expect(JSON.parse(await new Response(p.stdout).text())).toEqual([only().id, card, 'request/1', 'bound input']);
+    const q = run(['job', 'exec', '--title', 'unbound', '--', 'bun', '-e',
+      'console.log(JSON.stringify([process.env.SA_JOB_CARD, process.env.SA_JOB_REQUEST_REF]))'],
+      '', root, { SA_JOB_CARD: card, SA_JOB_REQUEST_REF: 'parent-request' });
+    expect(await q.exited).toBe(0);
+    if (!q.stdout || typeof q.stdout === 'number') throw new Error('missing child stdout');
+    expect(JSON.parse(await new Response(q.stdout).text())).toEqual(['', '']);
+  });
+
+  test('missing card fails before checkout creation and child launch', async () => {
+    const repo = gitRepo(tmp()), marker = join(repo, 'launched');
+    const p = run(['job', 'exec', '--title', 'missing input', '--card', 'missing.md',
+      '--worktree', 'task/missing-input', '--', 'touch', marker], '', repo);
+    expect(await p.exited).not.toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(sh('git branch --list task/missing-input', repo).trim()).toBe('');
+    expect(only()).toMatchObject({ state: 'failed', pid: 0 });
+    expect(only().receipt?.spawned_at).toBeUndefined();
+  });
+
   test('forwards SIGTERM to the child and exits 128+15', async () => {
     const p = run(['job', 'exec', '--title', 'sleepy', '--', 'sleep', '20']);
     try {

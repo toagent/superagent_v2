@@ -293,6 +293,8 @@ async function exec(
   let terminal: Job, failure: { error: unknown } | undefined;
   try {
     save(job);
+    // Resolve the input before creating a checkout or spending an agent invocation.
+    if (job.card && !statSync(job.card).isFile()) throw new Error('job: card must be a file');
     if (f.worktree) {
       const repo = git(job.cwd, 'rev-parse', '--show-toplevel'), branch = f.worktree;
       const base = f.base ?? git(repo, 'symbolic-ref', '--short', 'HEAD');
@@ -347,7 +349,18 @@ async function exec(
       save(job);
       // Dispatched agents are headless: an inherited, never-closed stdin makes `codex exec` wait for more prompt forever.
       if (f.execution) cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
-      if (!code && !stop.signal.aborted) child = Bun.spawn(cmd, { cwd: job.cwd, stdio: ['ignore', 'inherit', 'inherit'] });
+      if (!code && !stop.signal.aborted) child = Bun.spawn(cmd, {
+        cwd: job.cwd,
+        // Structured launch identity lets tools read the registered input directly.
+        // Empty values clear a parent job's binding, including Bun's .env fallback.
+        env: {
+          ...process.env,
+          SA_JOB_ID: job.id,
+          SA_JOB_CARD: job.card ?? '',
+          SA_JOB_REQUEST_REF: job.request_ref ?? '',
+        },
+        stdio: ['ignore', 'inherit', 'inherit'],
+      });
       if (child) {
       job.pid = child.pid;
       job.state = 'running';
