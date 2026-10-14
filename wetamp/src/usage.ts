@@ -16,8 +16,13 @@ import type { RunView } from './archon';
 import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/workflow-event';
 import { workflowRoles } from './board/workflow';
 import type { TokenUsage } from '../../packages/provider-contract/src/result';
+import { redact } from './redact';
 
-export type ReportTokens = Partial<TokenUsage> & { basis?: 'gross' | 'raw-exclusive' | 'unknown'; reason?: string; raw?: Partial<TokenUsage> };
+export type ReportTokens = Partial<TokenUsage> & {
+  basis?: 'gross' | 'raw-exclusive' | 'unknown';
+  reason?: string;
+  raw?: Partial<TokenUsage>;
+};
 export const tokenFields = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 /** Engine receipts have a gross contract; cumulative sessions need a structured total equation. */
 // prettier-ignore
@@ -52,12 +57,12 @@ export function sessionTokens(s: UsageSession): ReportTokens {
 // prettier-ignore
 export function tokenFees(rows: ReportTokens[]): number | 'unknown' {
   return rows.length && rows.every(r => typeof r.cost === 'number' && Number.isFinite(r.cost) && r.cost >= 0)
-    ? rows.reduce((sum, r) => sum + r.cost!, 0) : 'unknown';
+    ? rows.reduce((sum, r) => sum + (r.cost ?? 0), 0) : 'unknown';
 }
 
 /** Session snapshots carry no invocation watermark; overlap cannot prove coverage. */
 // prettier-ignore
-export function investmentOf(calls: { provider: string | null; session: string | null; identity: string | null; tokens: ReportTokens | null }[], sessions: UsageSession[], missing: number = 0) {
+export function investmentOf(calls: { provider: string | null; session: string | null; identity: string | null; tokens: ReportTokens | null }[], sessions: UsageSession[], missing = 0) {
   const snapshots = new Map<string, UsageSession>();
   let conflict = sessions.some(s => s.owner?.conflict);
   for (const s of sessions) {
@@ -65,18 +70,18 @@ export function investmentOf(calls: { provider: string | null; session: string |
     if (old?.owner?.request_ref && s.owner?.request_ref && old.owner.request_ref !== s.owner.request_ref) conflict = true;
     if (!old || s.total >= old.total) snapshots.set(k, s);
   }
-  const receipts = new Map<string, typeof calls[number]>();
+  const receipts = new Map<string, typeof calls[number] & { provider: string; session: string }>();
   let unknown = missing;
   for (const c of calls) {
     if (!c.identity || !c.provider || !c.session) { unknown++; continue; }
     const old = receipts.get(c.identity);
     if (old && JSON.stringify(old) !== JSON.stringify(c)) conflict = true;
-    receipts.set(c.identity, c);
+    receipts.set(c.identity, { ...c, provider: c.provider, session: c.session });
   }
   const rows = [...snapshots.values()].map(sessionTokens);
   let sources = rows.length + unknown;
   for (const c of receipts.values()) {
-    if (snapshots.has(key(c.provider!, c.session!))) { sources++; unknown++; continue; }
+    if (snapshots.has(key(c.provider, c.session))) { sources++; unknown++; continue; }
     sources++;
     if (c.tokens) rows.push(c.tokens); else unknown++;
   }
@@ -84,7 +89,7 @@ export function investmentOf(calls: { provider: string | null; session: string |
   const covered = rows.filter(r => r.basis !== 'unknown').length;
   const complete = !conflict && !unknown && covered === sources;
   return { ...tokenTotals(complete ? rows : []), fees: complete ? tokenFees(rows) : 'unknown',
-    known_tokens: known, coverage: `${covered}/${sources}`, deduplication: conflict || unknown ? 'unknown' : 'covered',
+    known_tokens: known, coverage: `${String(covered)}/${String(sources)}`, deduplication: conflict || unknown ? 'unknown' : 'covered',
     status: complete && sources > 0 ? 'known' : 'unknown' };
 }
 
@@ -135,11 +140,11 @@ export function attribute(sessions: UsageSession[], claims: { id: string; owner:
   const index = { ...prior };
   for (const { id, owner } of claims) {
     const k = key(owner.client, id), old = index[k];
-    const conflict = old?.conflict || !!(old?.request_ref && owner.request_ref && old.request_ref !== owner.request_ref) || !!(old?.run_id && owner.run_id && old.run_id !== owner.run_id && (!old.request_ref || old.request_ref !== owner.request_ref));
+    const conflict = (old?.conflict ?? false) || !!(old?.request_ref && owner.request_ref && old.request_ref !== owner.request_ref) || !!(old?.run_id && owner.run_id && old.run_id !== owner.run_id && (!old.request_ref || old.request_ref !== owner.request_ref));
     const request_ref = owner.request_ref ?? old?.request_ref;
-    if (!old || priority[owner.kind] >= priority[old.kind]) index[k] = { ...owner, role: owner.role ?? old?.role ?? null };
-    else if (!old.role && owner.role) index[k] = { ...old, role: owner.role };
-    index[k] = { ...index[k]!, ...(request_ref ? { request_ref } : {}), ...(conflict ? { conflict: true } : {}) };
+    const next = !old || priority[owner.kind] >= priority[old.kind] ? { ...owner, role: owner.role ?? old?.role ?? null }
+      : !old.role && owner.role ? { ...old, role: owner.role } : old;
+    index[k] = { ...next, ...(request_ref ? { request_ref } : {}), ...(conflict ? { conflict: true } : {}) };
   }
   for (const s of sessions) { const k = key(s.client, s.id); s.owner = index[k] ??= { client: s.client, role: null, model: s.model, cwd: null, kind: 'unknown' }; }
   return index;
@@ -246,14 +251,13 @@ export function readUsage(): UsageCache {
 // prettier-ignore
 export const usageCommand = (client: Client, mode: 'session' | 'daily', since?: string): string[] => ['nice', '-n', '10', 'bunx', 'ccusage@20.0.28', client, mode, '--json', ...(since ? ['--since', since] : [])];
 // prettier-ignore
-async function capture(client: Client, mode: 'session' | 'daily', since?: string): Promise<unknown> {
-  const cmd = usageCommand(client, mode, since);
-  const p = Bun.spawn(cmd, { stdin: 'ignore', stdout: 'pipe', stderr: 'ignore', detached: true });
+export async function capture(client: Client, mode: 'session' | 'daily', since?: string, cmd = usageCommand(client, mode, since)): Promise<unknown> {
+  const p = Bun.spawn(cmd, { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', detached: true });
   const timeout = { expired: false };
   const timer = setTimeout(() => { timeout.expired = true; try { process.kill(-p.pid, 'SIGKILL'); } catch { /* Child already exited. */ } }, 120000);
   try {
-    const [out, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
-    if (code !== 0) throw new Error(timeout.expired ? 'timeout' : 'exit_nonzero');
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    if (code !== 0) throw new Error(`${timeout.expired ? 'timeout' : `exit_nonzero:${String(code)}`}${err ? `\n${redact(err)}` : ''}`);
     try { return JSON.parse(out) as unknown; } catch { throw new Error('invalid_json'); }
   } finally { clearTimeout(timer); }
 }
@@ -275,8 +279,7 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
         cache.sources[client] = 'ok';
         cache.source_at = { ...cache.source_at, [client]: new Date().toISOString() };
       } catch (e) {
-        const reason = (e as Error).message;
-        cache.sources[client] = ['timeout', 'exit_nonzero', 'invalid_json', 'invalid_json_shape'].includes(reason) ? reason : 'unavailable';
+        cache.sources[client] = e instanceof Error ? redact(e.message) : 'unavailable';
         cache.source_at = { ...cache.source_at, [client]: old.source_at?.[client] ?? old.at };
         cache.sessions = cache.sessions.filter(s => s.client !== client).concat(old.sessions.filter(s => s.client === client));
         cache.daily.push(...old.daily.filter(d => d.client === client));

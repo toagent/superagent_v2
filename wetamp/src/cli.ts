@@ -262,6 +262,7 @@ export interface Ledger {
     source: 'superagent' | 'cli' | 'commander';
     ask_id?: string;
     key?: string;
+    reason?: string;
   })[];
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
@@ -331,7 +332,8 @@ function intervention<
   action: string,
   execute: () => T,
   ask?: { key: string; id?: string },
-  started: () => boolean = () => true
+  started: () => boolean = () => true,
+  reason?: string
 ): T {
   let ok = false;
   let skipped = false;
@@ -356,6 +358,7 @@ function intervention<
           source: ask ? 'superagent' : caller(true).client === 'shell' ? 'cli' : 'commander',
           ...(ask ? { key: ask.key, ask_id: ask.id } : {}),
           ok,
+          ...(reason ? { reason } : {}),
           ...(!ok ? { error } : {}),
         });
       });
@@ -2571,7 +2574,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2846,17 +2849,27 @@ export function main(argv: string[]): number {
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);
+      const reason = a.flags.reason;
+      // Operational labels only: do not persist free-text messages or credentials.
+      if (reason !== undefined && !/^[a-z][a-z0-9_-]{0,63}$/.test(reason))
+        throw new Error('cancel --reason must be a lowercase operational label (1-64 characters)');
       // 未登记：按 archon run id 处理（selftest 用）
       const resolved = resolveTarget(id);
       const ok =
         'run_id' in resolved
           ? control(resolved, () =>
-              intervention(resolved, 'cancel', () =>
-                cancelRun(
-                  resolved.archon_run_id,
-                  getRun(resolved.archon_run_id, resolved.repo).status,
-                  resolved.repo
-                )
+              intervention(
+                resolved,
+                'cancel',
+                () =>
+                  cancelRun(
+                    resolved.archon_run_id,
+                    getRun(resolved.archon_run_id, resolved.repo).status,
+                    resolved.repo
+                  ),
+                undefined,
+                undefined,
+                reason
               )
             )
           : (() => {
@@ -2865,7 +2878,18 @@ export function main(argv: string[]): number {
                 throw new Error('coord: 未登记 run 缺 working_path，无法验证仓库归属');
               return control(
                 { run_id: run.id, archon_run_id: run.id, repo: run.working_path },
-                () => cancelRun(run.id, run.status, run.working_path ?? undefined)
+                () => {
+                  const cancelled = cancelRun(run.id, run.status, run.working_path ?? undefined);
+                  if (cancelled && reason) {
+                    const dir = join(home().sa, 'cancellations');
+                    mkdirSync(dir, { recursive: true });
+                    writeAtomic(
+                      join(dir, `${encodeURIComponent(run.id)}.json`),
+                      JSON.stringify({ reason })
+                    );
+                  }
+                  return cancelled;
+                }
               );
             })();
       print({ run_id: id, ok });

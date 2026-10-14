@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { shortModel, sessionModel } from '../src/models';
@@ -7,14 +8,32 @@ import { attribute, jobSession, parseUsage, readUsage, refreshUsage, sessionKey,
 import { overview } from '../src/web/server';
 import { tmp } from './helpers';
 import type { BoardRow, Snapshot } from '../src/board/data';
-import { normalizeTokens, sessionTokens, tokenTotals, tokenFees, investmentOf } from '../src/usage';
+import {
+  normalizeTokens,
+  sessionTokens,
+  tokenTotals,
+  tokenFees,
+  investmentOf,
+  capture,
+} from '../src/usage';
 import { buildReport, criticalPath, demandStats } from '../src/report';
 import { intakeRoot } from '../src/intake';
 import { jobCli, readJobs } from '../src/jobs';
 import type { Ledger } from '../src/cli';
-import { capturedSourceRoots, DEFAULT_WORKFLOW_SOURCE_CONFIG } from '../../packages/workflows/src/workflow-source';
+import {
+  capturedSourceRoots,
+  DEFAULT_WORKFLOW_SOURCE_CONFIG,
+} from '../../packages/workflows/src/workflow-source';
 
-const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'SA_ARCHON_BIN', 'SUPERAGENT_RELAY_QUOTA_URL', 'SUPERAGENT_RELAY_QUOTA'] as const;
+const keys = [
+  'SUPERAGENT_HOME',
+  'ARCHON_HOME',
+  'CODEX_HOME',
+  'CLAUDE_CONFIG_DIR',
+  'SA_ARCHON_BIN',
+  'SUPERAGENT_RELAY_QUOTA_URL',
+  'SUPERAGENT_RELAY_QUOTA',
+] as const;
 const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
 // prettier-ignore
 afterEach(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
@@ -32,6 +51,17 @@ const owner = (kind: Owner['kind']): Owner => ({ kind, client: 'codex', role: 'g
 
 // prettier-ignore
 describe('WP-BT6 naming and metadata', () => {
+  test('collector failure preserves stderr and exit status without persisting credentials', async () => {
+    setup();
+    let diagnostic = '';
+    try { await capture('codex', 'session', undefined, ['/bin/sh', '-c', 'echo "collector diagnostic: missing log; token=secret" >&2; exit 23']); }
+    catch (e) { diagnostic = (e as Error).message; }
+    expect(diagnostic).toContain('exit_nonzero:23');
+    expect(diagnostic).toContain('collector diagnostic: missing log; token=***');
+    expect(diagnostic).not.toContain('token=secret');
+    const cache = await refreshUsage(undefined, () => Promise.reject(new Error(diagnostic)));
+    expect(cache.sources.codex).toBe(diagnostic);
+  });
   test('one family/version rule including unknown and compact models', () => {
     const cases = { 'claude-opus-5-5': 'opus5.5', 'claude-opus-5': 'opus5', 'claude-opus-4-8': 'opus4.8', 'claude-fable-5-1': 'fable5.1', 'gpt-6.1-sol': 'sol6.1', 'gpt-6-sol': 'sol6', 'gpt-6-astra': 'astra', 'claude-haiku-4-5': 'haiku4.5', 'claude-sonnet-4-6': 'sonnet4.6', 'qwen3.8': 'qwen3.8', 'openai/unfamiliar-model': 'unfamiliar' };
     for (const [a, b] of Object.entries(cases)) expect(shortModel(a)).toBe(b);
@@ -252,6 +282,11 @@ describe('DEMAND_INVESTMENT', () => {
       const session = { ...parseUsage(codex, 'codex')[0], owner: { ...owner('job'), job_id: 'learn', request_ref: 'ticket:42' } };
       writeFileSync(join(root, 'usage/cache.json'), JSON.stringify({ at: 'now', status: 'ok', sources: {}, sessions: [session], daily: [] }));
       writeFileSync(join(root, 'jobs/learn.json'), JSON.stringify({ id: 'learn', title: 'memory-reflect:fixture', cwd: root, kind: 'codex', pid: 0, wrapper_pid: 0, started_at: '2026-10-10T00:00:00Z', state: 'failed' }));
+      mkdirSync(join(root, 'archon'), { recursive: true });
+      const db = new Database(join(root, 'archon/archon.db'));
+      db.run('CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, started_at TEXT, completed_at TEXT, metadata TEXT)');
+      db.run('CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT, event_type TEXT, step_name TEXT, created_at TEXT, event_order INTEGER, data TEXT)');
+      db.close();
       expect(buildReport([]).demands).toMatchObject({ by_request: { 'ticket:42': { investment: { input: 'unknown' } } }, shared_learning: { input: 32 } });
     } finally { delete process.env.SUPERAGENT_RELAY_QUOTA_URL; delete process.env.SUPERAGENT_RELAY_QUOTA; }
   });

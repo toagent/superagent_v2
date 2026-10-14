@@ -13,6 +13,8 @@ import {
   requirementCoverage,
   criticalPath,
   demandStats,
+  firstPassOf,
+  cancellationStats,
 } from '../src/report';
 import type { Job } from '../src/jobs';
 import { archonRunIds } from '../src/archon';
@@ -49,6 +51,109 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('measure UTC SQL clocks, millisecond skips and overlapping dispatch without counting parallel branches', () => {
+    const run = {
+      id: 'r',
+      status: 'completed',
+      started_at: '2026-10-10 00:00:00',
+      completed_at: '2026-10-10 00:00:04',
+    } as Parameters<typeof criticalPath>[0];
+    const terminal = (id: string, start: number, duration: number, skipped = false) =>
+      ev(skipped ? 'node_skipped' : 'node_completed', id, {
+        invocation: { startedAt: new Date(Date.UTC(2026, 9, 10) + start - 20).toISOString() },
+        attempt: { startedAt: new Date(Date.UTC(2026, 9, 10) + start).toISOString() },
+        timing: {
+          startedAt: new Date(Date.UTC(2026, 9, 10) + start).toISOString(),
+          durationMs: duration,
+        },
+      });
+    const events = [
+      terminal('code-a', 20, 2000),
+      terminal('code-b', 20, 3000),
+      terminal('skip', 3020, 0, true),
+      terminal('verify', 3020, 1100),
+    ];
+    const graph = [
+      { id: 'code-a' },
+      { id: 'code-b' },
+      { id: 'skip', depends_on: ['code-b'] },
+      { id: 'verify', depends_on: ['code-a', 'skip'] },
+    ];
+    expect(criticalPath(run, events, graph)).toMatchObject({
+      status: 'measured',
+      elapsed_ms: 4120,
+      critical_path_ms: 4120,
+      reconciled_ms: 4120,
+      path: ['code-b', 'skip', 'verify'],
+    });
+    expect(
+      criticalPath({ ...run, completed_at: '2026-10-10T00:00:04Z' }, events, graph).status
+    ).toBe('unknown');
+    expect(criticalPath(run, [...events, events[0]], graph).status).toBe('unknown');
+  });
+
+  test('firstPass is a run count; missing gates stay unknown and repairs cannot pass', () => {
+    const root = tmp();
+    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const,
+      saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root });
+    try {
+      writeFileSync(
+        join(root, 'plan.json'),
+        JSON.stringify({ packages: [{ id: 'core', risk: 'G1' }] })
+      );
+      const ledger = { gen_dir: root, repo: root, run_id: 'r' } as Ledger;
+      const run = {
+        id: 'r',
+        status: 'completed',
+        output_root: root,
+        nodes: [{ nodeId: 'code-core', state: 'completed' }],
+      } as Parameters<typeof criticalPath>[0];
+      expect(firstPassOf({ ledger, run })).toBe('unknown');
+      expect(firstPassOf({ ledger, run: { ...run, status: 'failed' } })).toBe(false);
+      expect(
+        firstPassOf({
+          ledger,
+          run: { ...run, nodes: [{ nodeId: 'fix-m1-r2', state: 'completed' }] },
+        })
+      ).toBe(false);
+      const art = join(root, 'artifacts/runs/r');
+      mkdirSync(art, { recursive: true });
+      writeFileSync(
+        join(art, 'gate-m1-r1.json'),
+        JSON.stringify({
+          decision: { kind: 'advance', reason: 'accepted', evidence: [], debt: [] },
+        })
+      );
+      expect(firstPassOf({ ledger, run })).toBe(true);
+      expect(firstPassOf({ ledger: { ...ledger, auto_retries: [{}] } as Ledger, run })).toBe(false);
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+  });
+
+  test('cancel summaries use only successful explicit reasons; historical errors are unrecorded', () => {
+    const pair = (status: string, events?: Ledger['intervention_events']) =>
+      ({
+        ledger: { intervention_events: events, reason: 'deadline' },
+        run: { status },
+      }) as Parameters<typeof cancellationStats>[0][number];
+    expect(
+      cancellationStats([
+        pair('cancelled'),
+        pair('cancelled', [
+          { action: 'cancel', ok: true, reason: 'superseded', at: '', source: 'cli' },
+        ]),
+        pair('cancelled', [
+          { action: 'cancel', ok: false, reason: 'replaced', at: '', source: 'cli' },
+        ]),
+        pair('completed'),
+      ])
+    ).toEqual({ unrecorded: 2, superseded: 1 });
+  });
   // prettier-ignore
   test('attempt receipts sum retries; registered holds exclude inter-node idle and review reasons stay explicit', () => {
     const clock = (s: number) => new Date(Date.UTC(2026,9,14) + s*1000).toISOString();
@@ -224,6 +329,10 @@ describe('F-22 report', () => {
       const report = buildReport([ledger]);
       expect(report.usage).toMatchObject({ investment: { input: 100, output: 10, fees: 'unknown' }, supplemental: { overlap_excluded: 1, investment: { input: 'unknown' } } });
       expect(readFileSync(path, 'utf8')).toBe(bytes);
+      const receipt = { ...event, data: { ...event.data, session_id: undefined } };
+      writeFileSync(bin, '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify({ ...run, events: [receipt, receipt] })) + ');\n');
+      writeFileSync(path, JSON.stringify({ ...cache, status: 'exit_nonzero' }));
+      expect(buildReport([ledger]).usage).toMatchObject({ investment: { input: 100, output: 10, deduplication: 'covered', source: 'provider_attempt_receipts', coverage: '1/1' } });
     } finally {
       keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
     }

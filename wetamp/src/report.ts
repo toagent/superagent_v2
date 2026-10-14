@@ -16,7 +16,7 @@ import {
   summarize,
 } from './cli';
 import { Intake, intakeRoot } from './intake';
-import type { Plan } from './plan';
+import { milestones, type Plan } from './plan';
 import { readJobs, type Job } from './jobs';
 import { providerTiming, slowNodes } from './provider-timing';
 import {
@@ -117,8 +117,13 @@ function modelOf(e: Event): string {
   return m?.requested ? `${m.requested}(pinned)` : 'unknown';
 }
 
+// SQLite CURRENT_TIMESTAMP is UTC, despite carrying no zone suffix.
+const clock = (value = ''): number =>
+  Date.parse(
+    /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value) ? value.replace(' ', 'T') + 'Z' : value
+  );
 const ms = (a?: string, b?: string): number | null => {
-  const delta = a && b ? Date.parse(b) - Date.parse(a) : NaN;
+  const delta = a && b ? clock(b) - clock(a) : NaN;
   return Number.isFinite(delta) && delta >= 0 ? delta : null;
 };
 
@@ -256,11 +261,7 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
       continue;
     if (rows.has(e.step_name) || e.data?.invocation?.loopPath?.length) return unknown;
     const skipped = e.event_type === 'node_skipped';
-    const start = Date.parse(
-      skipped
-        ? (e.created_at ?? '')
-        : (e.data?.timing?.startedAt ?? e.data?.attempt?.startedAt ?? '')
-    );
+    const start = clock(e.data?.timing?.startedAt ?? e.data?.attempt?.startedAt ?? (skipped ? e.created_at : '') ?? '');
     const end = skipped ? start : start + (e.data?.timing?.durationMs ?? NaN);
     const queue = skipped ? 0 : ms(e.data?.invocation?.startedAt, e.data?.attempt?.startedAt);
     if (![start, end].every(Number.isFinite) || end < start || queue === null) return unknown;
@@ -277,7 +278,7 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
       row = rows.get(id);
     if (!n || !row) return false;
     const deps = n.depends_on ?? [];
-    if (deps.some(d => !rows.has(d) || (rows.get(d)?.end ?? Infinity) > row.start - row.queue)) return false;
+    if (deps.some(d => !rows.has(d) || (row.end > row.start && (rows.get(d)?.end ?? Infinity) > row.start + 1000))) return false;
     const pred = [...deps].sort((a, b) => (rows.get(b)?.end ?? 0) - (rows.get(a)?.end ?? 0))[0];
     if (pred && !walk(pred)) return false;
     path.push(id);
@@ -285,18 +286,94 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
   };
   const last = [...rows].sort((a, b) => b[1].end - a[1].end)[0]?.[0];
   if (!last || !walk(last)) return unknown;
-  let cursor = Date.parse(run.started_at ?? '');
-  const end = Date.parse(run.completed_at ?? '');
+  let cursor = clock(run.started_at ?? '');
+  const recordedEnd = clock(run.completed_at ?? '');
+  // SQL terminal clocks truncate milliseconds; node persistence may finish after dispatch.
+  const precision = run.completed_at?.includes(' ') ? 1000 : 0;
+  const end = Math.max(recordedEnd, ...[...rows.values()].map(r => r.end));
+  if (end > recordedEnd + precision) return unknown;
   const segments: { phase: string; node?: string; ms: number }[] = [];
   for (const id of path) {
     const row = rows.get(id);
     if (!row) return unknown;
-    if (row.start - row.queue < cursor || row.end > end) return unknown;
-    segments.push({ phase: 'unclassified_wait', ms: row.start - row.queue - cursor }, { phase: 'queue', node: id, ms: row.queue }, { phase: nodes.get(id)?.wait ? 'human_wait' : (/^(code|review|repair|fix|verify)-/.exec(id)?.[1] ?? 'script'), node: id, ms: row.end - row.start, } );
-    cursor = row.end;
+    if (row.start < clock(run.started_at ?? '')) return unknown;
+    const queued = Math.max(cursor, row.start - row.queue), started = Math.max(queued, row.start);
+    segments.push({ phase: 'unclassified_wait', ms: queued - cursor }, { phase: 'queue', node: id, ms: started - queued }, { phase: nodes.get(id)?.wait ? 'human_wait' : (/^(code|review|repair|fix|verify)-/.exec(id)?.[1] ?? 'script'), node: id, ms: Math.max(0, row.end - started), } );
+    cursor = Math.max(cursor, row.end);
   }
   segments.push({ phase: 'unclassified_wait', ms: end - cursor });
-  return { status: 'measured', elapsed_ms: elapsed, path, segments, reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
+  return { status: 'measured', elapsed_ms: end - clock(run.started_at ?? ''), recorded_elapsed_ms: elapsed, clock_precision_ms: precision, path, segments, critical_path_ms: segments.filter(s => s.phase !== 'unclassified_wait').reduce((s,r) => s + r.ms, 0), reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
+}
+
+function capturedGraph(run: RunView, workflow: string): Parameters<typeof criticalPath>[2] {
+  const source = workflowSourceMetadataSchema.safeParse(
+    (run.metadata as Record<string, unknown> | undefined)?.workflow_source
+  );
+  if (!source.success) return undefined;
+  try {
+    const project = capturedSourceRoots({
+      ...source.data,
+      config: source.data.source_config ?? DEFAULT_WORKFLOW_SOURCE_CONFIG,
+    }).project;
+    if (project)
+      return (
+        Bun.YAML.parse(
+          readFileSync(join(project, '.archon/workflows', workflow, `${workflow}.yaml`), 'utf8')
+        ) as { nodes?: Parameters<typeof criticalPath>[2] }
+      ).nodes;
+  } catch {
+    /* Missing frozen graph stays unknown. */
+  }
+  return undefined;
+}
+
+export function firstPassOf(pair: Pair): boolean | 'unknown' {
+  const { ledger, run } = pair;
+  if (run instanceof Error) return 'unknown';
+  if (run.status !== 'completed') return false;
+  if (
+    ledger.auto_retries?.length ||
+    ledger.recoveries?.length ||
+    archonRunIds(ledger).length > 1 ||
+    (run.nodes ?? []).some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped')
+  )
+    return false;
+  const plan = planOf(ledger);
+  if (!plan || !run.nodes?.length) return 'unknown';
+  let count: number;
+  try {
+    count = milestones(plan).length;
+  } catch {
+    return 'unknown';
+  }
+  const stats = summarize([pair]);
+  try {
+    const art = artifactsOf(run);
+    if (evidenceGates(ledger, art).some(g => !decisionOf(evidenceJson(ledger, art, g))))
+      return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+  const gates = Object.entries(stats).filter(([k]) => k.startsWith('rounds:'));
+  if (
+    !count ||
+    (stats.unreadable as string[]).length ||
+    gates.reduce((sum, [, n]) => sum + Number(n), 0) !== count
+  )
+    return 'unknown';
+  return stats.first_pass === count;
+}
+
+export function cancellationStats(pairs: Pair[]): Record<string, number> {
+  const reasons: Record<string, number> = {};
+  for (const { ledger, run } of pairs) {
+    if (run instanceof Error || run.status !== 'cancelled') continue;
+    const reason =
+      ledger.intervention_events?.filter(e => e.action === 'cancel' && e.ok).at(-1)?.reason ??
+      'unrecorded';
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+  }
+  return reasons;
 }
 
 // prettier-ignore
@@ -515,15 +592,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
         timings[`${l.run_id}/${id}`] = timing;
         attempts.push(...timing);
         events.push(...rows.map(e => ({ ...e, workflow_run_id: e.workflow_run_id ?? id })));
-        let graph;
-        const source = workflowSourceMetadataSchema.safeParse(
-          (j.metadata as Record<string, unknown> | undefined)?.workflow_source
-        );
-        try {
-          const project = source.success ? capturedSourceRoots({ ...source.data, config: source.data.source_config ?? DEFAULT_WORKFLOW_SOURCE_CONFIG }).project : null;
-          // prettier-ignore
-          if (project) graph = (Bun.YAML.parse(readFileSync(join(project, '.archon/workflows', l.workflow, `${l.workflow}.yaml`), 'utf8')) as { nodes?: Parameters<typeof criticalPath>[2] }).nodes;
-        } catch { /* Missing captured source leaves the path unknown. */ }
+        const graph = capturedGraph(j as RunView, l.workflow);
         paths[`${l.run_id}/${id}`] = criticalPath(j as unknown as RunView, rows, graph);
         measurement[`${l.run_id}/${id}`] = measurementOf(j as RunView, rows, planOf(l), timing);
       } catch (e) {
@@ -538,6 +607,8 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   for (const [id, run] of batch ?? []) if (!Object.keys(measurement).some(k => k.endsWith(`/${id}`))) {
     const timing = providerTiming(id, run.events); timings[id] = timing; attempts.push(...timing);
     measurement[id] = measurementOf(run, run.events, null, timing);
+    paths[id] = criticalPath(run, run.events, capturedGraph(run, run.workflow_name));
+    calls.push(...callsOf(id, run.events, null));
   }
   const snapshot = { summary: summarize(pairs), at: new Date().toISOString(), reflection: 'unknown' };
   // ccusage snapshots are cumulative per session. Never add one to its engine turn receipts.
@@ -546,11 +617,20 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     calls.flatMap(c => c.provider && c.session ? [`${c.provider}:${sessionKey(c.session)}`] : [])
   );
   const supplemental = sessions.sessions.filter(s => !engineSessions.has(`${s.client}:${s.id}`));
-  const inputs = [
-    ...calls.flatMap(c => (c.tokens ? [c.tokens] : [])),
-    ...supplemental.map(sessionTokens),
-  ];
-  const dedupKnown = calls.every(c => c.provider && c.session && c.identity);
+  // Per-attempt provider receipts are primary. Session snapshots have no turn watermark.
+  const inputs = calls.flatMap(c => c.tokens ? [c.tokens] : []);
+  const dedupKnown = calls.every(c => c.identity);
+  const firstPass = pairs.map(firstPassOf);
+  const cancellations = cancellationStats(pairs);
+  for (const [id, run] of batch ?? []) {
+    if (run.status !== 'cancelled' || pairs.some(p => !(p.run instanceof Error) && p.run.id === id)) continue;
+    let reason = 'unrecorded';
+    try {
+      const receipt = JSON.parse(readFileSync(join(home().sa, 'cancellations', `${encodeURIComponent(id)}.json`), 'utf8')) as { reason?: string };
+      if (typeof receipt.reason === 'string') reason = receipt.reason;
+    } catch { /* No historical reason is inferred from provider errors or run titles. */ }
+    cancellations[reason] = (cancellations[reason] ?? 0) + 1;
+  }
   const learning = supplemental.filter(
     s =>
       s.owner?.kind === 'job' &&
@@ -566,7 +646,8 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       ])
     ),
     // Board-only metrics need live coordination/ancestry probes; this snapshot does not claim them.
-    metrics: { completed: snapshot.summary['state:completed'] ?? 0, decided: 'unknown', firstPass: 'unknown', asks: 'unknown', debt: snapshot.summary.debt ?? 'unknown' },
+    metrics: { completed: snapshot.summary['state:completed'] ?? 0, decided: 'unknown', firstPass: firstPass.filter(v => v === true).length, firstPass_unknown: firstPass.filter(v => v === 'unknown').length, asks: 'unknown', debt: snapshot.summary.debt ?? 'unknown' },
+    cancellations,
     interventions: interventionStats(ls),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
@@ -585,7 +666,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     },
     usage: {
       // prettier-ignore
-      investment: { ...tokenTotals(dedupKnown ? inputs : []), fees: dedupKnown ? tokenFees(inputs) : 'unknown', deduplication: dedupKnown ? 'covered' : 'unknown' },
+      investment: { ...tokenTotals(dedupKnown ? inputs : []), fees: dedupKnown ? tokenFees(inputs) : 'unknown', deduplication: dedupKnown ? 'covered' : 'unknown', source: 'provider_attempt_receipts', coverage: `${String(inputs.length)}/${String(calls.length)}`, completeness: unreadable.length || inputs.length !== calls.length ? 'partial' : 'complete' },
       // prettier-ignore
       supplemental: { status: sessions.status, investment: tokenTotals(supplemental.map(sessionTokens)),
         raw: tokenTotals(supplemental.map(s => ({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite }))),

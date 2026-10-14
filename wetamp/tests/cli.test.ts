@@ -1096,6 +1096,20 @@ describe('waitRun (archon stub)', () => {
 });
 
 describe('verbs (archon stub)', () => {
+  test('cancel records an operational reason on its append-only receipt', () => {
+    stub([run('running')]);
+    expect(captured(() => main(['cancel', 'sa1', '--reason', 'superseded'])).code).toBe(0);
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+      action: 'cancel',
+      ok: true,
+      reason: 'superseded',
+    });
+  });
+  test('cancel rejects free text and credential-shaped reasons before any action', () => {
+    const s = stub([run('running')]);
+    expect(() => main(['cancel', 'sa1', '--reason', 'token=secret'])).toThrow('operational label');
+    expect(s.calls()).toHaveLength(0);
+  });
   test('status prints summary and exits with the classified code', () => {
     stub([
       run('paused', {
@@ -1551,14 +1565,12 @@ describe('brief / land (archon stub)', () => {
       recoveries: 1,
       'rounds:1': 1,
       'rounds:3': 1,
-      'state:held:gate': 1,
+      'state:failed': 1,
+      metrics: { firstPass: 0, firstPass_unknown: 0 },
       unreadable: [],
     });
-    // 读不到的 run 单列并以 1 退出，不吞错
-    writeFileSync(
-      join(home, 'runs', 'gone.json'),
-      JSON.stringify({ ...l, run_id: 'gone', repo: join(root, 'nope') })
-    );
+    // An unreadable ledger is reported explicitly rather than inferred from a missing repo.
+    writeFileSync(join(home, 'runs', 'gone.json'), '{"run_id":"gone"');
     const bad = captured(() => main(['report']));
     expect(bad.code).toBe(1);
     expect((JSON.parse(bad.out) as { unreadable: string[] }).unreadable[0]).toStartWith('gone: ');

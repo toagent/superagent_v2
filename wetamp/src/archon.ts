@@ -151,7 +151,7 @@ export function reportRuns(since: string, until: string) {
   const db = new Database(join(home().archon, 'archon.db'), { readonly: true });
   try {
     return db.transaction(() => {
-      const runs = db.query<Omit<RunView, 'metadata'> & { metadata: string | null }, [string, string]>(
+      const runs = db.query<Omit<RunView, 'metadata'> & Pick<import('../../packages/workflows/src/schemas/workflow-run').WorkflowRun, 'workflow_name'> & { metadata: string | null }, [string, string]>(
         'SELECT * FROM remote_agent_workflow_runs WHERE julianday(started_at) >= julianday(?) AND julianday(started_at) < julianday(?)'
       ).all(since || '0001-01-01', until);
       const rows = db.query<Omit<import('../../packages/workflows/src/schemas/workflow-event').WorkflowEventRow, 'data'> & { data: string }, [string, string]>(
