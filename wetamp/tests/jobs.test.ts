@@ -364,7 +364,7 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
   const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}) =>
     Bun.spawn([process.execPath, join(WETAMP, 'src/cli.ts'), ...args], {
       cwd,
-      env: { ...process.env, ...launcherEnv, SUPERAGENT_ROLE: role, SA_ADMIT: 'off', ...extraEnv },
+      env: { ...process.env, ...launcherEnv, SUPERAGENT_ROLE: role, SA_ADMIT: 'off', SA_JOB_REQUEST_REF: '', ...extraEnv },
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -373,6 +373,29 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     expect(files).toHaveLength(1);
     return JSON.parse(readFileSync(join(jobsDir, files[0]), 'utf8')) as Job;
   };
+  test.each([
+    [undefined, '', 'plan-external'],
+    [undefined, '   ', 'plan-external'],
+    [undefined, 'request/current', 'request/current'],
+    ['request/explicit', 'request/current', 'request/explicit'],
+  ])('request reference %s with current %s resolves to %s', async (explicit, current, expected) => {
+    const p = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'attribution',
+        ...(explicit ? ['--request-ref', explicit] : []),
+        '--',
+        'true',
+      ],
+      '',
+      WETAMP,
+      { SA_JOB_REQUEST_REF: current }
+    );
+    expect(await p.exited).toBe(0);
+    expect(only().request_ref).toBe(expected);
+  });
   const recoveryStub = (root: string, body: string): { PATH: string } => {
     const bin = join(root, 'bin');
     mkdirSync(bin);
@@ -902,7 +925,7 @@ else {
     );
     expect(await q.exited).toBe(0);
     if (!q.stdout || typeof q.stdout === 'number') throw new Error('missing child stdout');
-    expect(JSON.parse(await new Response(q.stdout).text())).toEqual(['', '']);
+    expect(JSON.parse(await new Response(q.stdout).text())).toEqual(['', 'parent-request']);
   });
 
   test('missing card fails before checkout creation and child launch', async () => {
