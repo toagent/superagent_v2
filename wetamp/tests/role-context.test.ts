@@ -13,7 +13,7 @@ import {
 } from '../../packages/workflows/src/exec-environment';
 import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/src/node-execution';
 import { NODE_CONTRACT_ENV } from '../templates/.archon/scripts/sa-check';
-import { gitRepo, sh, tmp } from './helpers';
+import { gitRepo, fixtureEnv, sh, tmp } from './helpers';
 
 test('CONTEXT_PACK blocks outside/private symlink targets and preserves byte/range boundaries', () => {
   const gen = tmp(),
@@ -115,7 +115,7 @@ test('ROOT_ACCEPT prepared R2 preserves requirements and open carry-over without
   };
   writeFileSync(join(art, 'gate-m2-r1.ledger.json'), JSON.stringify(ledger));
   const head = sh('git rev-parse HEAD', repo).trim();
-  // R1-1: real exec nodes have distinct execution identities and artifact listings.
+  // real exec nodes have distinct execution identities and artifact listings.
   const nodeEnv = (node: string) =>
     buildExecNodeEnvironment({
       artifactsDir: art,
@@ -365,7 +365,7 @@ console.log(JSON.stringify({prepared: true}));`,
     gen
   );
   const env = {
-    ...process.env,
+    ...fixtureEnv(),
     SUPERAGENT_HOME: join(root, 'home'),
     ARCHON_HOME: join(root, 'home/archon'),
     SA_CONTEXT_TEST_ENV: 'before',

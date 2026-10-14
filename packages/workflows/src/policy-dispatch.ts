@@ -115,7 +115,7 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       ...(reassignment ? { reassignment } : {}),
       model: candidate.model,
       status: 'started',
-      // R1-1: persist tracking with the reservation, before any provider code can execute.
+      // persist tracking with the reservation, before any provider code can execute.
       ...(candidate.provider === 'codex' ? { rerouted_models: [] } : {}),
     };
     attempts.push(attempt);

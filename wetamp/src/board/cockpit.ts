@@ -329,7 +329,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       row = s.rows.find(r => r.run_id === id);
     const policy = (HOLD_POLICY as Partial<Record<string, { do: string }>>)[reason];
     if (!row || !policy || !['ask', 'signoff'].includes(policy.do)) return unresolved();
-    // R1-1: the engine owns reason mapping; failed may still require a coder decision.
+    // the engine owns reason mapping; failed may still require a coder decision.
     if (row.askReason !== reason) return [];
     if (seen.has(`${id}:${reason}`)) return [];
     seen.add(`${id}:${reason}`);

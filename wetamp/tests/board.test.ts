@@ -874,7 +874,7 @@ test('R1-05: actual board loader projects takeover owner rather than launcher, i
   });
 });
 
-test('R1-1: pending asks follow real engine hold mapping, including failed coder nodes', () => {
+test('pending asks follow real engine hold mapping, including failed coder nodes', () => {
   const now = Date.parse('2026-10-12T12:00:00Z');
   for (const [reason, expectedReason, expectedNeeds] of [
     ['review_limit', undefined, []],

@@ -19,7 +19,7 @@ import { lastJson, recover, reusedOwnerPid, type RunView } from '../src/archon';
 import { classify, EXIT, main, loadLedger, type Ledger } from '../src/cli';
 import { recoverySnapshot, unknownEffects } from '../src/recovery';
 import { WETAMP } from '../src/config';
-import { gitRepo, sh, tmp } from './helpers';
+import { gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import {
   MAX_ROUNDS,
   validateRecovery,
@@ -54,7 +54,11 @@ test.each([false, true])(
       launchReply: { ok: true, runId: 'new', logPath: 'new-log', transcriptPath: 'new-transcript' },
     });
     const env = { ...process.env };
-    Object.assign(process.env, { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+    Object.assign(process.env, {
+      ...fixtureEnv(),
+      SUPERAGENT_HOME: home,
+      ARCHON_HOME: join(home, 'archon'),
+    });
     const transport = spyOn(archonModule, 'archon').mockImplementation(args =>
       fixtureArchon(dir, args)
     );
@@ -246,7 +250,7 @@ function checkRecovery(limit: number): void {
   writeFileSync(bin, `#!/bin/sh\ncat '${old.path}'\n`);
   chmodSync(bin, 0o755);
   // prettier-ignore
-  const env = { ...process.env, WORKFLOW_ID: 'new', ARTIFACTS_DIR: join(root, 'artifacts'), SUPERAGENT_HOME: root,
+  const env = { ...fixtureEnv(), WORKFLOW_ID: 'new', ARTIFACTS_DIR: join(root, 'artifacts'), SUPERAGENT_HOME: root,
     INPUTS_ARCHON: bin, INPUTS_EVENTS_FILE: current.path, INPUTS_PLAN: e.plan.path, INPUTS_POLICY: e.policy.path,
     INPUTS_BASE: base, INPUTS_PKGS: 'pkg', INPUTS_SCOPE_PKGS: 'pkg', INPUTS_RISK: 'G2', INPUTS_MILESTONE: 'm1',
   };
@@ -396,7 +400,12 @@ describe('recovery ownership and effects', () => {
       JSON.stringify(run.metadata),
     ]);
     const env = { ...process.env };
-    Object.assign(process.env, { SUPERAGENT_HOME: sa, ARCHON_HOME: ah, SA_ARCHON_BIN: bin });
+    Object.assign(process.env, {
+      ...fixtureEnv(),
+      SUPERAGENT_HOME: sa,
+      ARCHON_HOME: ah,
+      SA_ARCHON_BIN: bin,
+    });
     try {
       expect(recover('r')).toMatchObject({
         held: true,
@@ -446,7 +455,12 @@ describe('recovery ownership and effects', () => {
       );
       chmodSync(bin, 0o755);
       const env = { ...process.env };
-      Object.assign(process.env, { SUPERAGENT_HOME: sa, ARCHON_HOME: ah, SA_ARCHON_BIN: bin });
+      Object.assign(process.env, {
+        ...fixtureEnv(),
+        SUPERAGENT_HOME: sa,
+        ARCHON_HOME: ah,
+        SA_ARCHON_BIN: bin,
+      });
       try {
         const strategy = adopt
           ? {
@@ -569,7 +583,7 @@ test('real Archon CAS/new-owner barrier fences two complete recover CLI processe
   writeFileSync(shim, `#!/usr/bin/env bash\nexec '${process.execPath}' '${driver}' "$@"\n`);
   chmodSync(shim, 0o755);
   const env = {
-    ...process.env,
+    ...fixtureEnv(),
     SUPERAGENT_HOME: sa,
     ARCHON_HOME: join(sa, 'archon'),
     SA_ARCHON_BIN: shim,

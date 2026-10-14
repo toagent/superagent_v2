@@ -22,6 +22,8 @@ const keys = [
   'SUPERAGENT_WRITE_ROOTS',
   'TMPDIR',
   'SA_ARCHON_BIN',
+  'SUPERAGENT_ROLE',
+  'SA_JOB_ID',
 ] as const;
 const originalEnv = keys.map(k => process.env[k]);
 const gc = (dryRun = false) => collect(dryRun, [process.env.TMPDIR!]);
@@ -49,6 +51,8 @@ function fixture(
   const root = tmp(),
     repo = gitRepo(root),
     id = 'gc-fixture';
+  process.env.SUPERAGENT_ROLE = '';
+  process.env.SA_JOB_ID = '';
   process.env.TMPDIR = join(root, 'tmp');
   mkdirSync(process.env.TMPDIR);
   process.env.SUPERAGENT_HOME = join(root, 'sa');

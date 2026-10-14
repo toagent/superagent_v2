@@ -168,7 +168,7 @@ test('explicit root rejects relative paths, root symlinks and canonical parent d
   const changedTarget = tmp();
   symlinkSync(changedTarget, parent);
   expect(() => drifted.start({ session_id: 'probe' }, 'claude')).toThrow('root invalid');
-  // R1-1: refusal must happen before mkdir can write into the changed target.
+  // refusal must happen before mkdir can write into the changed target.
   expect(existsSync(join(changedTarget, 'scratch'))).toBe(false);
 });
 

@@ -8,7 +8,7 @@ import { lastJson } from '../src/archon';
 import { generate } from '../src/generate';
 import { WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
-import { fixturePlan, gitRepo, sh, stableInstall, tmp } from './helpers';
+import { fixturePlan, gitRepo, fixtureEnv, sh, stableInstall, tmp } from './helpers';
 const fixtureEngine = gitRepo(tmp());
 const originalCleanEngine = coordination.cleanEngine;
 const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() =>
@@ -89,7 +89,7 @@ for (const scope of ['package', 'milestone'] as const)
     const home = join(root, 'operator-home');
     stableInstall(home);
     const env = {
-      ...process.env,
+      ...fixtureEnv(),
       HOME: home,
       SUPERAGENT_RELAY_QUOTA: 'off',
       SUPERAGENT_HOME: join(root, 'home'),

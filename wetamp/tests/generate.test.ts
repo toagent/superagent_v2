@@ -16,7 +16,7 @@ import * as coord from '../src/coord';
 import * as archon from '../src/archon';
 import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
-import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { fixturePlan, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import { MAX_ROUNDS, CHECK_AUX_BUDGET_MS } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
@@ -214,7 +214,7 @@ test('NO_QUOTA bash nodes ignore inherited BASH_ENV startup failures', () => {
   );
   sh('git add .archon && git commit -qm fixture', repo);
   const env = {
-    ...process.env,
+    ...fixtureEnv(),
     BASH_ENV: startup,
     SUPERAGENT_HOME: join(root, 'home'),
     ARCHON_HOME: join(root, 'home/archon'),
@@ -687,7 +687,7 @@ describe('buildWorkflow', () => {
       source
     );
     const env = {
-      ...process.env,
+      ...fixtureEnv(),
       SUPERAGENT_HOME: join(root, 'home'),
       ARCHON_HOME: join(root, 'home/archon'),
     };

@@ -223,7 +223,7 @@ export function cleanJob(id: string): void {
   if (['queued', 'running'].includes(j.state) || alive(j.wrapper_pid)) throw new Error('job clean: owner is still active');
   if (git(w.path, 'symbolic-ref', '--short', 'HEAD') !== w.branch || git(w.path, 'status', '--porcelain', '-z'))
     throw new Error('job clean: worktree branch mismatch or dirty');
-  if (git(w.repo, 'rev-list', '--merges', `${w.base}..${w.branch}`) || git(w.repo, 'cherry', w.base, w.branch).split('\n').some(line => line && !line.startsWith('- '))) // R1-1: cherry omits merges.
+  if (git(w.repo, 'rev-list', '--merges', `${w.base}..${w.branch}`) || git(w.repo, 'cherry', w.base, w.branch).split('\n').some(line => line && !line.startsWith('- '))) // cherry omits merges.
     throw new Error(`job clean: branch not integrated into ${w.base}`);
   git(w.repo, 'worktree', 'remove', w.path);
   if (w.branchCreated !== false) git(w.repo, 'branch', '-D', w.branch);

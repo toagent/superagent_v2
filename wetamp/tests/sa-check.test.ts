@@ -369,7 +369,7 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
   expect(attemptIdentity([attempt], attempt.node).strength).toBe('unknown');
   writePolicyAttempts(art, [{ ...attempt, rerouted_models: undefined }]);
-  // R1-1: old executors could execute and reroute without ever writing this marker.
+  // old executors could execute and reroute without ever writing this marker.
   expect(read()).toEqual([
     { model: 'repair', strength: 'pinned' },
     { model: null, strength: 'unknown' },
@@ -2981,7 +2981,7 @@ describe('sa-check script', () => {
     expect(readFileSync(join(cumulative.art, 'diff-m1-r1.log'), 'utf8')).toContain(
       '# reused failure from verify-a'
     );
-    // R1-1: retrying the originating tag must retain the cached failure's diagnostic.
+    // retrying the originating tag must retain the cached failure's diagnostic.
     const retried = go('verify-a');
     expect(retried.out).toMatchObject({ failures: [{ failure_class: 'fixture', evidence }] });
     expect(readFileSync(counter, 'utf8')).toBe('x\n');

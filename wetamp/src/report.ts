@@ -1,4 +1,4 @@
-import { ms, planOf, criticalPath, measurementOf, metricsOf } from './ledger-metrics';
+import { clock, ms, planOf, criticalPath, measurementOf, metricsOf } from './ledger-metrics';
 export {
   clock,
   ms,
@@ -335,9 +335,9 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       const conflicting = [...claims].some(([k, refs]) => refs.has(ref) && (refs.size > 1 || conflicts.has(k)));
       // Jobs have an explicit demand ref but no verified provider-session receipt.
       const missing = Number(conflicting) + jobs.filter(j => j.request_ref === ref).length + candidates.filter(s => s.owner?.kind !== 'run' && (s.owner?.request_ref === ref || (!!s.owner?.run_id && runIds.has(s.owner.run_id))) && !jobs.some(j => j.request_ref === ref && j.id === s.owner?.job_id)).length + attempts.reduce((n, p) => n + Math.max(Number(p.run instanceof Error), unreadable[p.ledger.run_id] ?? 0), 0);
-      const starts = attempts.map(p => Date.parse(p.ledger.started_at));
+      const starts = attempts.map(p => clock(p.ledger.started_at));
       const ends = attempts.map(p =>
-        p.run instanceof Error ? NaN : Date.parse(p.run.completed_at ?? '')
+        p.run instanceof Error ? NaN : clock(p.run.completed_at ?? '')
       );
       const elapsed = [...starts, ...ends].every(Number.isFinite)
         ? Math.max(...ends) - Math.min(...starts)

@@ -448,9 +448,10 @@ describe('F-22 report', () => {
 
   test('explicit demand reference includes failed and cancelled attempts; legacy is unknown and completion is engine-owned', () => {
     const root = tmp();
-    const saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
+    const saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME, process.env.TZ];
     process.env.SUPERAGENT_HOME = root;
     process.env.ARCHON_HOME = root;
+    process.env.TZ = 'Asia/Taipei';
     try {
       writeFileSync(join(root, 'plan.json'), JSON.stringify({ ...plan, request_ref: 'ticket:42' }));
       const pairs = ['failed', 'cancelled', 'completed'].map((status, i) => ({
@@ -510,6 +511,15 @@ describe('F-22 report', () => {
         },
       });
       expect(result.by_request['ticket:42'].attempts).toHaveLength(3);
+      for (const p of pairs) p.ledger.started_at = '2026-10-10 00:00:00';
+      expect(demandStats(pairs, calls)).toMatchObject({
+        by_request: { 'ticket:42': { elapsed_ms: 10000 } },
+      });
+      for (const p of pairs)
+        if (!(p.run instanceof Error)) p.run.completed_at = '2026-10-10 00:00:10';
+      expect(demandStats(pairs, calls)).toMatchObject({
+        by_request: { 'ticket:42': { elapsed_ms: 10000 } },
+      });
       writeFileSync(join(art, 'gate-m2-r1.json'), readFileSync(join(art, 'gate-m1-r1.json')));
       expect(demandStats(pairs, calls)).toMatchObject({ completed: 1 });
       writeFileSync(join(root, 'plan.json'), JSON.stringify(plan));
@@ -519,7 +529,7 @@ describe('F-22 report', () => {
         unknown_runs: ['r0', 'r1', 'r2'],
       });
     } finally {
-      for (const [i, key] of ['SUPERAGENT_HOME', 'ARCHON_HOME'].entries()) {
+      for (const [i, key] of ['SUPERAGENT_HOME', 'ARCHON_HOME', 'TZ'].entries()) {
         if (saved[i] === undefined) delete process.env[key];
         else process.env[key] = saved[i];
       }

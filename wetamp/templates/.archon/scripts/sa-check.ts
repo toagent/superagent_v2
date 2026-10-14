@@ -488,7 +488,7 @@ function acceptOnce(
   coder: string
 ): Record<string, unknown> & Accept & { patch: string; delta: string } {
   const log = join(artifacts, `${tag}.log`);
-  // R1-1: retries may reuse this tag; cached failures still reference its original output.
+  // retries may reuse this tag; cached failures still reference its original output.
   appendFileSync(log, '');
   const ids = env('PKGS').split(',').filter(Boolean);
   const p = plan();
@@ -1396,7 +1396,7 @@ export function attemptIdentity(
   if (!attempt) return identityOf(binding);
   if (attempt.status !== 'completed' && !author) return { model: null, strength: 'unknown' };
   if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
-  // R1-1: absent tracking on an interrupted legacy attempt cannot prove its author model.
+  // absent tracking on an interrupted legacy attempt cannot prove its author model.
   return attempt.provider === 'codex' &&
     (attempt.status === 'completed' || attempt.rerouted_models !== undefined)
     ? { model: attempt.model, strength: 'pinned' }
