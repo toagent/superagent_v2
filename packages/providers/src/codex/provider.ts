@@ -624,13 +624,17 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
 
   let stallInterrupts = 0;
   let interrupting = false;
-  let lastNotificationAt = Date.now();
+  let lastProgressAt = Date.now();
   const notifications = connection.notifications();
   let next = notifications.next();
   while (true) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const observed = await (async (): Promise<IteratorResult<ServerNotification> | null> => {
       try {
+        // Metadata notifications must neither renew the deadline nor starve an expired timer.
+        const remaining = STALL_MS - (Date.now() - lastProgressAt);
+        if (!parentCompleted && activeToolIds.size === 0 && liveTasks.size === 0 && remaining <= 0)
+          return null;
         return parentCompleted || activeToolIds.size > 0 || liveTasks.size > 0
           ? await next
           : await Promise.race([
@@ -638,7 +642,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
               new Promise<null>(resolve => {
                 timer = setTimeout(() => {
                   resolve(null);
-                }, STALL_MS);
+                }, remaining);
               }),
             ]);
       } finally {
@@ -653,18 +657,25 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
       yield {
         type: 'warning',
         code: 'codex.stall_interrupt',
-        message: `Codex model stream silent for ${String(Date.now() - lastNotificationAt)} ms; interrupting to continue (attempt ${String(stallInterrupts)}/2)`,
+        message: `Codex model stream silent for ${String(Date.now() - lastProgressAt)} ms; interrupting to continue (attempt ${String(stallInterrupts)}/2)`,
       };
       const interrupt = connection.request('turn/interrupt', { threadId, turnId });
       if (!(await settlesWithin(interrupt, STALL_MS)))
         throw new Error('Codex stall interrupt was not answered');
       await interrupt;
+      lastProgressAt = Date.now();
       continue;
     }
     if (observed.done) break;
     const notification = observed.value;
-    lastNotificationAt = Date.now();
     switch (notification.method) {
+      case 'item/agentMessage/delta':
+      case 'item/reasoning/summaryTextDelta':
+      case 'item/reasoning/textDelta':
+        if (notification.params.threadId === threadId && notification.params.turnId === turnId)
+          lastProgressAt = Date.now();
+        break;
+
       case 'account/rateLimits/updated':
         rateLimits = notification.params.rateLimits;
         break;
@@ -706,6 +717,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
         const { item, threadId: itemThreadId, turnId: itemTurnId } = notification.params;
         const parentItem = itemThreadId === threadId && itemTurnId === turnId;
         if (!parentItem && !agentThreads.has(itemThreadId)) break;
+        lastProgressAt = Date.now();
         const completed = notification.method === 'item/completed';
         // Unified exec is a process lifecycle, not a foreground tool call: its end may
         // arrive after the result, which closes foreground tool calls in the contract.
@@ -760,6 +772,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
       case 'turn/completed': {
         const { turn, threadId: completedThreadId } = notification.params;
         if (completedThreadId !== threadId || turn.id !== turnId || parentCompleted) break;
+        lastProgressAt = Date.now();
         if (interrupting && turn.status === 'interrupted') {
           const resumed = await connection.request('turn/start', {
             ...request.turnParams,
@@ -776,6 +789,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
           if (!turnId) throw new Error('Codex app-server returned a turn without an id');
           request.onTurn(turnId);
           interrupting = false;
+          lastProgressAt = Date.now();
           lastAgentMessage = '';
           break;
         }

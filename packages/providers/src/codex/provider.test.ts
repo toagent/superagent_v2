@@ -167,13 +167,14 @@ function stallClock() {
   const realSetTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
   let now = 0;
-  const pending = new Map<ReturnType<typeof setTimeout>, () => void>();
+  const pending = new Map<ReturnType<typeof setTimeout>, { at: number; fire: () => void }>();
   const date = spyOn(Date, 'now').mockImplementation(() => now);
   const timers = spyOn(globalThis, 'setTimeout').mockImplementation(
     Object.assign(
       (...[callback, ms, ...args]: Parameters<typeof realSetTimeout>) => {
         const timer = realSetTimeout(callback, ms, ...args);
-        if (ms === 180_000) pending.set(timer, () => callback(...args));
+        if (ms !== undefined && ms >= 0 && ms <= 180_000 && ms !== 3000)
+          pending.set(timer, { at: now + ms, fire: () => callback(...args) });
         return timer;
       },
       { __promisify__: realSetTimeout.__promisify__ }
@@ -184,13 +185,14 @@ function stallClock() {
     realClearTimeout(timer as Parameters<typeof realClearTimeout>[0]);
   });
   return {
-    async advance() {
+    async advance(ms = 180_001) {
       await new Promise<void>(resolve => setImmediate(resolve));
-      now += 180_001;
+      now += ms;
       for (const [timer, callback] of pending) {
+        if (callback.at > now) continue;
         realClearTimeout(timer);
         pending.delete(timer);
-        callback();
+        callback.fire();
       }
       await new Promise<void>(resolve => setImmediate(resolve));
     },
@@ -204,6 +206,75 @@ function stallClock() {
 }
 
 describe('CodexProvider', () => {
+  test('STALL_PROGRESS interrupts despite periodic metadata notifications', async () => {
+    const clock = stallClock();
+    const script: FakeTurnScript = { completion: null };
+    const { provider, server } = providerWith(script);
+    const chunks: MessageChunk[] = [];
+    const running = (async () => {
+      for await (const chunk of provider.sendQuery('p', '/workspace')) {
+        chunks.push(chunk);
+        if (chunk.type === 'warning' && chunk.code === 'codex.stall_interrupt') {
+          script.notifications = [agentMessage('Finished')];
+          script.completion = { status: 'completed' };
+        }
+      }
+    })();
+    try {
+      for (let i = 0; i < 3; i += 1) {
+        await clock.advance(60_000);
+        if (i < 2) expect(server.processes[0].methods).not.toContain('turn/interrupt');
+        server.processes[0].send(rateLimits(null));
+        server.processes[0].send(tokenUsage({ input: 1, output: 1 }));
+      }
+      await clock.advance(1);
+      expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(1);
+      await running;
+      expect(server.processes[0].methods.filter(m => m === 'turn/start')).toHaveLength(2);
+      expect(resultOf(chunks).failure).toBeUndefined();
+      expect(chunks.at(-1)).toEqual({ type: 'settled' });
+    } finally {
+      server.processes[0]?.send(turnCompleted('completed'));
+      await running;
+      clock.restore();
+    }
+  });
+
+  test.each([
+    'item/agentMessage/delta',
+    'item/reasoning/summaryTextDelta',
+    'item/reasoning/textDelta',
+  ] as const)('STALL_PROGRESS counts %s only for the current turn', async method => {
+    const clock = stallClock();
+    const { provider, server } = providerWith({ completion: null });
+    const running = run(provider);
+    try {
+      await clock.advance(120_000);
+      const delta = {
+        method,
+        params: {
+          threadId: THREAD_ID,
+          turnId: TURN_ID,
+          itemId: 'item-1',
+          delta: 'progress',
+          contentIndex: 0,
+          summaryIndex: 0,
+        },
+      };
+      server.processes[0].send(delta);
+      await clock.advance(120_000);
+      expect(server.processes[0].methods).not.toContain('turn/interrupt');
+      server.processes[0].send({ ...delta, params: { ...delta.params, turnId: 'other-turn' } });
+      server.processes[0].send(itemStarted(command('unrelated', 'test'), 'other-thread'));
+      await clock.advance(60_000);
+      expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(1);
+    } finally {
+      server.processes[0]?.send(turnCompleted('completed'));
+      await running;
+      clock.restore();
+    }
+  });
+
   test('STALL_INTERRUPT resumes the same thread after the last command ends', async () => {
     const clock = stallClock();
     const script: FakeTurnScript = {
