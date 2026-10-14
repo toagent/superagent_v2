@@ -74,7 +74,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
   '../packages/workflows/src/provider-attempts.ts',
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
-  'schemas/output.schema.json', 'templates/brief.md', 'tiers.json', 'src/models.ts',
+  'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
   'src/memory.ts', 'src/board/workflow.ts', 'src/execution.ts',
 ], policyHash);
@@ -774,12 +774,6 @@ export function generate(
       recursive: true,
     });
   }
-  cpSync(join(WETAMP, 'src/models.ts'), join(dir, '.archon/scripts/native-models.ts'));
-  const checker = join(dir, '.archon/scripts/sa-check.ts');
-  writeFileSync(
-    checker,
-    readFileSync(checker, 'utf8').replace("from '../../../src/models'", "from './native-models'")
-  );
   // Freeze the engine-owned receipt reader into portable generated workflows.
   cpSync(
     join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),

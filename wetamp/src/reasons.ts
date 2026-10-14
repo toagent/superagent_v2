@@ -124,21 +124,6 @@ const base: Reason[] = [
   deterministic('review_inconsistent', 'gate', 'engine', '评审结论与发现矛盾'),
   entry('invalid_review', 'gate', 'transient', 'engine', '评审发现标识重复'),
   entry('review_incomplete', 'gate', 'transient', 'env', '评审未完成'),
-  ...CODER_CLASSES.map(c =>
-    entry(
-      `coder_error:${c}`,
-      c === 'env' || c === 'vendor_unavailable_all'
-        ? 'environment'
-        : c === 'task'
-          ? 'coder'
-          : c === 'redline'
-            ? 'redline'
-            : 'coder_blocked',
-      c === 'env' || c === 'vendor_unavailable_all' ? 'transient' : 'deterministic',
-      c === 'env' || c === 'vendor_unavailable_all' ? 'env' : 'coder',
-      `编码端报告 ${c}`
-    )
-  ),
   ...['reviewer_unknown', 'author_unknown', 'same_model'].map(c =>
     deterministic(
       `review_not_independent:${c}`,
@@ -149,12 +134,7 @@ const base: Reason[] = [
   ),
 ];
 const repaired = base
-  .filter(
-    r =>
-      r.code === 'acceptance_failed' ||
-      r.code === 'coder_partial' ||
-      CODER_CLASSES.some(c => r.code === `coder_error:${c}`)
-  )
+  .filter(r => r.code === 'acceptance_failed' || r.code === 'coder_partial')
   .map(r => ({
     ...r,
     code: `repair_exhausted:${r.code}`,

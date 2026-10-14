@@ -18,6 +18,7 @@ import {
   decide,
   disposition,
   nextDisposition,
+  permissionEvidence,
   identityOf,
   independence,
   readAuthorEvidence,
@@ -1001,7 +1002,7 @@ describe('gate rules', () => {
 });
 
 describe('single delivery decision', () => {
-  test('blocked without a candidate skips checks and probe; other deliveries still validate', () => {
+  test('ROOT_ACCEPT empty candidates still validate regardless of coder status', () => {
     const root = tmp(),
       repo = gitRepo(root),
       marker = join(root, 'calls');
@@ -1013,8 +1014,8 @@ describe('single delivery decision', () => {
     });
     const needs = [{ cap: 'environment', why: 'missing tool', minimal_ask: 'prepare tool' }];
     for (const [status, error_class, candidate, dirty, includeBase, count, reason] of [
-      ['blocked', 'env', false, false, true, 0, 'coder_needs'],
-      ['blocked', 'redline', false, false, true, 0, 'coder_error:redline'],
+      ['blocked', 'env', false, false, true, 2, 'environment'],
+      ['blocked', 'redline', false, false, true, 2, 'acceptance_failed'],
       ['partial', 'env', false, false, true, 2, 'environment'],
       ['done', null, false, false, true, 2, 'acceptance_failed'],
       ['blocked', 'task', false, false, false, 1, 'acceptance_failed'],
@@ -1042,10 +1043,10 @@ describe('single delivery decision', () => {
         delta_base: candidate ? sh('git rev-parse HEAD', repo).trim() : base,
         coder: JSON.stringify(report),
       });
-      expect(result.code, result.err).toBe(reason === 'coder_error:redline' ? 1 : 0);
+      expect(result.code, result.err).toBe(0);
       expect(result.out).toMatchObject({
         ok: false,
-        disposition: reason === 'coder_error:redline' ? 'fail' : 'repair',
+        disposition: 'repair',
         reason,
       });
       expect(existsSync(marker) ? readFileSync(marker, 'utf8').trim().split('\n').length : 0).toBe(
@@ -1076,7 +1077,15 @@ describe('single delivery decision', () => {
     const event = (attemptId: string, permissionDenied?: true) => ({
       event_type: 'provider_event',
       step_name: 'code-a',
-      data: { attemptId, event: { type: 'warning', code: 'x', message: 'x', permissionDenied } },
+      data: {
+        attemptId,
+        event: {
+          type: 'warning',
+          code: 'superagent.permission.authorization',
+          message: 'x',
+          permissionDenied,
+        },
+      },
     });
     const start = { event_type: 'node_started', step_name: 'code-a' };
     const counter = (step_name: string, attempt = '1') => ({
@@ -1104,7 +1113,7 @@ describe('single delivery decision', () => {
         p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5 }] }];
       });
       const result = runScript(repo, { ...inputs, plan }, SCRIPT, { WORKFLOW_ID: 'fixture' });
-      expect(result.code, result.err).toBe(0);
+      expect(result.code, result.err).toBe(reason === 'coder_redline' ? 1 : 0);
       expect(result.out).toMatchObject({
         ok: reason !== 'environment',
         decision: { kind: reason ? 'block' : 'advance', reason },
@@ -1302,6 +1311,10 @@ function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = fa
     join(root, 'sa-context.ts'),
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/sa-context.ts'))
   );
+  cpSync(
+    join(import.meta.dir, '../templates/.archon/scripts/native-models.ts'),
+    join(root, 'native-models.ts')
+  );
   // Runtime sibling import of sa-check.ts; type-only imports are erased and need no copy.
   writeFileSync(
     join(root, 'policy-attempts.ts'),
@@ -1328,7 +1341,7 @@ const spawn = Bun.spawnSync;
 Bun.spawnSync = (actual, opts) => {
   const wrapped = actual[0] === 'python3' && actual[1] === '-c';
   const cmd = wrapped ? actual.slice(4) : actual;
-  appendFileSync(${JSON.stringify(trace)}, JSON.stringify({cmd, timeout: opts?.timeout}) + '\\n');
+  appendFileSync(${JSON.stringify(trace)}, JSON.stringify({cmd, timeout: opts?.timeout, watchdog: wrapped}) + '\\n');
   const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
   if (key === ${JSON.stringify(hang)})
     return spawn([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
@@ -1360,17 +1373,19 @@ Bun.spawnSync = (actual, opts) => {
   const calls = readFileSync(trace, 'utf8')
     .trim()
     .split('\n')
-    .map(line => JSON.parse(line) as { cmd: string[]; timeout?: number });
+    .map(line => JSON.parse(line) as { cmd: string[]; timeout?: number; watchdog: boolean });
   return { ...r, calls, trackedPid };
 }
 
 for (const kind of ['accept', 'settle', 'env'])
   test(`ACCT: ${kind} traced worst path enforces shared auxiliary count and timeout`, () => {
     const r = auxiliaryFixture(kind);
-    const auxiliary = r.calls.filter(c => c.cmd[0] !== 'bash');
+    const auxiliary = r.calls.filter(c => c.watchdog);
     const count = CHECK_AUX_COUNTS[kind === 'env' ? 'env' : 'accept'];
     // Permission evidence is queried even when failed settle suspends before budget().
-    expect(auxiliary).toHaveLength(count);
+    // This fixture has no ownership receipt: env queries events and HEAD only.
+    expect(auxiliary).toHaveLength(kind === 'env' ? 2 : count);
+    expect(auxiliary.length).toBeLessThanOrEqual(count);
     expect(auxiliary.every(c => c.timeout === CHECK_AUX_TIMEOUT_MS)).toBe(true);
     if (kind === 'env') expect(r.code).toBe(0);
     else {
@@ -1382,7 +1397,6 @@ for (const kind of ['accept', 'settle', 'env'])
 
 for (const [kind, step, evidence] of [
   ['accept', 'status --porcelain', 'git status:'],
-  ['accept', 'worktree add', 'git worktree:'],
   ['accept', 'events', 'archon workflow get fixture:'],
   ['env', 'rev-parse HEAD', 'git rev-parse:'],
 ])
@@ -1429,14 +1443,15 @@ test('ACCT: TERM-ignoring auxiliary is killed within the shared budget with evid
   expectAuxiliaryDead(r.trackedPid);
 });
 
-test('ACCT: real git hook descendant holding pipes is killed within the shared budget', () => {
+test('ROOT_ACCEPT diagnostic probe hook timeout preserves acceptance failure', () => {
   const r = auxiliaryFixture('accept', '', true, false, true);
   // Fixture setup and other auxiliary calls are outside this watchdog's budget.
   expect(r.calls.find(c => c.cmd.slice(0, 3).join(' ') === 'git worktree add')?.timeout).toBe(2000);
-  expect(r.code).toBe(1);
-  expect(r.err).toContain('git worktree:');
-  expect(r.err).toContain('hook-descendant');
-  expect(r.err).toContain('TERM -> SIGKILL; output pipes reclaimed');
+  expect(r.code, r.err).toBe(0);
+  expect(r.out).toMatchObject({ ok: false, disposition: 'repair', base_pass: null });
+  const diagnostic = readFileSync(join(r.art, 'acct.probe.log'), 'utf8');
+  expect(diagnostic).toContain('hook-descendant');
+  expect(diagnostic).toContain('TERM -> SIGKILL; output pipes reclaimed');
   expectAuxiliaryDead(r.trackedPid);
 });
 
@@ -2732,10 +2747,10 @@ test.each(['true', PRODUCT_FAILURE])('NO_HOLD hard budget is advisory for %s', c
   });
 });
 
-test('NO_HOLD coder_redline permission audit block repairs without changing acceptance', () => {
+test('ROOT_ACCEPT high-risk boundary evidence fails without changing acceptance', () => {
   const out = disposition('{}', false, undefined, ['events:code-a:1']);
   expect(out).toMatchObject({
-    disposition: 'repair',
+    disposition: 'fail',
     decision: { kind: 'block', reason: 'coder_redline' },
   });
 });
@@ -2767,7 +2782,7 @@ test.each(['settle', 'accept'])('NO_HOLD %s repair exhaustion exits failed with 
   ).toEqual(r.out);
 });
 
-test('NO_HOLD explicit high-risk redline immediately fails using a registered reason', () => {
+test('ROOT_ACCEPT coder redline with green empty diff advances', () => {
   const root = tmp(),
     repo = gitRepo(root);
   const r = runScript(repo, {
@@ -2778,12 +2793,8 @@ test('NO_HOLD explicit high-risk redline immediately fails using a registered re
     base: sh('git rev-parse HEAD', repo).trim(),
     coder: '{"status":"blocked","error_class":"redline","needs":[]}',
   });
-  expect(r.code, r.err).toBe(1);
-  expect(r.out).toMatchObject({
-    disposition: 'fail',
-    reason: 'coder_error:redline',
-    decision: { kind: 'block', reason: 'coder_error:redline' },
-  });
+  expect(r.code, r.err).toBe(0);
+  expect(r.out).toMatchObject({ ok: true, disposition: 'advance', reason: null });
   expect(
     nextDisposition({
       kind: 'block',
@@ -2811,4 +2822,106 @@ test('NO_HOLD environment block exhausts package repair with registered terminal
     reason: 'acceptance_failed+review_limit',
     repair_reason: 'environment',
   });
+});
+
+test.each([
+  'destruction',
+  'shared_history',
+  'external',
+  'privacy',
+  'authorization',
+  'delegation',
+  'diagnostic',
+  null,
+])('ROOT_ACCEPT boundary category %s alone decides whether refusal is redline', category => {
+  const events = [
+    {
+      event_type: 'provider_event',
+      step_name: 'code-a',
+      data: {
+        event: {
+          type: 'warning' as const,
+          permissionDenied: true as const,
+          code: category ? `superagent.permission.${category}` : 'claude.permission_denied',
+          message: 'diagnostic',
+        },
+      },
+    },
+  ];
+  const permissions = permissionEvidence(events, ['a'], 'm1');
+  const high = category !== null && category !== 'diagnostic';
+  expect(permissions.length).toBe(high ? 1 : 0);
+  expect(disposition('{}', true, undefined, permissions).disposition).toBe(
+    high ? 'fail' : 'advance'
+  );
+});
+
+test('ROOT_ACCEPT HEAD filename does not make patch or scope git diff ambiguous', () => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    base = sh('git rev-parse HEAD', repo).trim();
+  writeFileSync(join(repo, 'HEAD'), 'a path, not a revision');
+  sh('git add -- HEAD && git -c user.name=t -c user.email=t@l commit -qm head-path', repo);
+  const external = join(root, 'external-diff');
+  const called = join(root, 'external-called');
+  writeFileSync(external, `#!/bin/sh\ntouch '${called}'\nexit 1\n`, { mode: 0o755 });
+  sh(`git config diff.external '${external}'`, repo);
+  const policy = join(root, 'policy.json');
+  writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+  const plan = planFile(root, 'true');
+  const p = JSON.parse(readFileSync(plan, 'utf8'));
+  p.packages[0].scope = { write: ['HEAD'] };
+  writeFileSync(plan, JSON.stringify(p));
+  const r = runScript(repo, {
+    kind: 'accept',
+    plan,
+    pkgs: 'a',
+    tag: 'head-path',
+    base,
+    risk: 'G1',
+    policy,
+  });
+  expect(r.code, r.err).toBe(0);
+  expect(r.out).toMatchObject({ ok: true, disposition: 'advance' });
+  expect(readFileSync(join(r.art, 'head-path.patch'), 'utf8')).toContain('a/HEAD');
+  expect(existsSync(called)).toBe(false);
+});
+
+test('ROOT_ACCEPT necessary diff timeout reports engine evidence instead of a repair verdict', () => {
+  const r = auxiliaryFixture('accept', 'diff --no-ext-diff', true);
+  expect(r.code).toBe(1);
+  expect(r.out).toMatchObject({
+    ok: false,
+    reason: 'engine_suspect',
+    disposition: 'fail',
+    engine_error: expect.stringContaining('auxiliary-stalled'),
+  });
+  expect(r.err).not.toContain('at git (');
+});
+
+test('ROOT_ACCEPT diagnostic probe creation timeout preserves failed command and unknown baseline', () => {
+  const r = auxiliaryFixture('accept', 'worktree add', true);
+  expect(r.code, r.err).toBe(0);
+  expect(r.out).toMatchObject({
+    ok: false,
+    disposition: 'repair',
+    failed: [PRODUCT_FAILURE],
+    base_pass: null,
+  });
+  expect(readFileSync(join(r.art, 'acct.probe.log'), 'utf8')).toContain('auxiliary-stalled');
+});
+
+test('ROOT_ACCEPT malformed plan is an engine fault with original evidence and no TypeScript stack', () => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    plan = join(root, 'plan.json');
+  writeFileSync(plan, '{');
+  const r = runScript(repo, { kind: 'accept', plan, tag: 'invalid-plan' });
+  expect(r.code).toBe(1);
+  expect(r.out).toMatchObject({
+    reason: 'engine_suspect',
+    disposition: 'fail',
+    engine_error: expect.any(String),
+  });
+  expect(r.err).not.toContain('at plan (');
 });

@@ -44,12 +44,6 @@ test('CONTEXT_PACK runtime code/repair/fix inline fresh bounded source without r
     join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
     join(gen, '.archon/scripts/policy-attempts.ts')
   );
-  fs.copyFileSync(join(WETAMP, 'src/models.ts'), join(gen, '.archon/scripts/native-models.ts'));
-  const checker = join(gen, '.archon/scripts/sa-check.ts');
-  fs.writeFileSync(
-    checker,
-    readFileSync(checker, 'utf8').replace("from '../../../src/models'", "from './native-models'")
-  );
   fs.writeFileSync(join(gen, 'plan.json'), JSON.stringify(p));
   fs.writeFileSync(join(gen, 'execution.json'), JSON.stringify(executionTable(p, loadTiers())));
   fs.mkdirSync(join(gen, 'briefs'));
@@ -180,7 +174,7 @@ type N = {
   with?: Record<string, unknown>;
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
-test('NO_QUOTA AI nodes have no cost caps, use engine transient defaults, and land never retries', () => {
+test('ROOT_ACCEPT NO_QUOTA AI nodes have no cost caps, use engine transient defaults, and land never retries', () => {
   for (const console of ['codex', 'claude'] as const) {
     const plan = { ...fixture, console };
     const workflow = buildWorkflow(plan, milestones(plan), 'no-quota', '/GEN', false, NOW);

@@ -31,15 +31,15 @@ function gitInvocation(argv, dir, env) {
   return {base: base || '/__sa_unknown_cwd__', directory: dir, checkout, locations: [...locations, ...explicit.map(locate)], prefix: argv.slice(1, i), sub: argv[i], rest: argv.slice(i + 1)};
 }
 // Manual-only adapter policy uses Git option semantics, before the shared danger policy.
-function manualReason(argv, dir, env) {
+function manualReason(argv, dir, env, onCategory = () => {}) {
   const {sub, rest} = gitInvocation(argv, dir, env);
   const options = rest.slice(0, rest.includes('--') ? rest.indexOf('--') : rest.length);
   const long = (word, flag) => word.startsWith('--') && word.length > 2 && flag.startsWith(word.slice(2).split('=')[0]);
-  if (sub === 'push') return message('执行 git push', 'git push 须人工执行');
+  if (sub === 'push') { onCategory('external'); return message('执行 git push', 'git push 须人工执行'); }
   if (sub === 'commit' && options.some(v => long(v, 'no-verify') || /^-[^-]*n/.test(v)))
-    return message('跳过 Git 提交检查', '会绕过提交护栏');
+    { onCategory('authorization'); return message('跳过 Git 提交检查', '会绕过提交护栏'); }
   if (sub === 'add' && options.some(v => long(v, 'all') || long(v, 'no-ignore-removal') || /^-[^-]*A/.test(v)))
-    return message('暂存整个工作区', '请明确指定文件或目录');
+    { onCategory('diagnostic'); return message('暂存整个工作区', '请明确指定文件或目录'); }
   return null;
 }
 // Delete only when another surviving branch owns the commits; tags/reflogs do not count.

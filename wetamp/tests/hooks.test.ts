@@ -24,6 +24,7 @@ const baseEnv = Object.fromEntries(
 ) as Record<string, string>;
 
 type Out = {
+  superagentPermissionCategory?: string;
   hookSpecificOutput?: {
     permissionDecision?: string;
     permissionDecisionReason?: string;
@@ -57,16 +58,34 @@ const reason = (o: Out): string | undefined =>
 
 describe('REDLINE 默认放行与危险效果', () => {
   test('M5: native Move checks source loss and destination replacement independently', () => {
-    const repo = gitRepo(tmp()), foreign = gitRepo(tmp());
-    const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as { reason: (options: object) => string | null };
+    const repo = gitRepo(tmp()),
+      foreign = gitRepo(tmp());
+    const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as {
+      reason: (options: object) => string | null;
+    };
     for (const [source, target, denied, advisory] of [
       [join(foreign, 'README.md'), join(repo, 'new.txt'), true, false],
       [join(repo, 'README.md'), join(foreign, 'README.md'), true, false],
       [join(repo, 'README.md'), join(foreign, 'new.txt'), false, true],
       [join(repo, 'README.md'), join(repo, 'new.txt'), false, false],
     ] as const) {
-      const advisories: string[] = [], input = { input: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${target}\n@@\n-hi\n+edit\n*** End Patch` };
-      expect(Boolean(redline.reason({ client: 'codex', name: 'apply_patch', input, cwd: repo, root: repo, derived: true, onAdvisory: (value: string) => advisories.push(value) }))).toBe(denied);
+      const advisories: string[] = [],
+        input = {
+          input: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${target}\n@@\n-hi\n+edit\n*** End Patch`,
+        };
+      expect(
+        Boolean(
+          redline.reason({
+            client: 'codex',
+            name: 'apply_patch',
+            input,
+            cwd: repo,
+            root: repo,
+            derived: true,
+            onAdvisory: (value: string) => advisories.push(value),
+          })
+        )
+      ).toBe(denied);
       if (!denied) expect(advisories.includes('file_ownership')).toBe(advisory);
     }
   });
@@ -88,8 +107,15 @@ describe('REDLINE 默认放行与危险效果', () => {
         check('Write', { file_path: fresh, content: 'new\n' }, false);
         check('Edit', { file_path: file, old_string: 'hi', new_string: 'edit' }, false);
       } else {
-        for (const [target, denied] of [[file, true], [fresh, false]] as const)
-          check('apply_patch', { input: `*** Begin Patch\n*** Add File: ${target}\n+replacement\n*** End Patch` }, denied);
+        for (const [target, denied] of [
+          [file, true],
+          [fresh, false],
+        ] as const)
+          check(
+            'apply_patch',
+            { input: `*** Begin Patch\n*** Add File: ${target}\n+replacement\n*** End Patch` },
+            denied
+          );
         check(
           'apply_patch',
           { input: `*** Begin Patch\n*** Update File: ${file}\n@@\n-hi\n+edit\n*** End Patch` },
@@ -1651,4 +1677,16 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
       reason(guard('codex', { tool_name: 'exec_command', tool_input: { cmd: 'npm publish' } }))
     ).toContain('已拦截：');
   });
+});
+
+test('ROOT_ACCEPT hook rejection supplies a machine category while retaining the physical denial', () => {
+  const repo = gitRepo(tmp());
+  const out = run(
+    'guard.cjs',
+    'claude',
+    { cwd: repo, hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: {} },
+    { SUPERAGENT_ROLE: 'general' }
+  );
+  expect(out?.superagentPermissionCategory).toBe('delegation');
+  expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
 });

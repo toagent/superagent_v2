@@ -22,7 +22,7 @@ import type { Check, Plan, Pkg } from '../../../src/plan';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { budgetReason, readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
-import { nativeEvidence } from '../../../src/models';
+import { nativeEvidence } from './native-models';
 import type { OwnedWorktree } from '@archon/workflows/schemas/workflow-run';
 import { envPrecheck, provisionEnvironment } from './env-precheck';
 
@@ -111,8 +111,8 @@ interface Policy {
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
 // accept/settle: status, tree, full/delta patch, scope, probe add/prune, HEAD, events.
-// env: HEAD only. The worst-path subprocess trace test enforces these counts.
-export const CHECK_AUX_COUNTS = { accept: 9, env: 1 } as const;
+// env: events, optional worktree ownership and HEAD; precheck owns its timeout. The worst-path subprocess trace test enforces these counts.
+export const CHECK_AUX_COUNTS = { accept: 9, env: 4 } as const;
 // The watchdog owns separate pipes, so even an escaped descendant cannot hold this caller open.
 // The shared budget includes TERM grace, KILL, pipe destruction and watchdog startup.
 const AUX_WATCHDOG = `
@@ -372,10 +372,7 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
 export function nextDisposition(decision: DeliveryDecision): Disposition {
   const reason = reasons.find(r => r.code === decision.reason);
   if (decision.kind === 'block')
-    return reason?.hold === 'review_limit' ||
-      (reason?.hold === 'redline' && decision.reason !== 'coder_redline')
-      ? 'fail'
-      : 'repair';
+    return reason?.hold === 'review_limit' || reason?.hold === 'redline' ? 'fail' : 'repair';
   return decision.kind === 'repair' ? 'repair' : 'advance';
 }
 
@@ -393,10 +390,7 @@ export function disposition(
     selfReport: raw,
     selfReportPath,
   });
-  const decision =
-    check?.decision?.reason === 'coder_error:redline'
-      ? { ...judged, kind: 'block' as const, reason: check.decision.reason }
-      : judged;
+  const decision = judged;
   return {
     ...audit,
     decision,
@@ -417,7 +411,17 @@ export const effectiveRisk = (
 
 /** `git diff --raw -z -M` 的逐项：状态、两侧 mode、路径（重命名/复制为源与目标）。 */
 function changes(base: string): { modes: string[]; paths: string[] }[] {
-  const f = git('diff', '--raw', '-z', '-M', base, 'HEAD').split('\0');
+  const f = git(
+    'diff',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--raw',
+    '-z',
+    '-M',
+    base,
+    'HEAD',
+    '--'
+  ).split('\0');
   const out: { modes: string[]; paths: string[] }[] = [];
   for (let i = 0; i + 1 < f.length; ) {
     const [om, nm, , , st] = f[i].slice(1).split(' ');
@@ -492,33 +496,16 @@ function acceptOnce(
   const base = env('BASE');
   const save = (name: string, from: string): string => {
     if (!base) return '';
-    writeFileSync(join(artifacts, name), git('diff', '--binary', from, 'HEAD'));
+    writeFileSync(
+      join(artifacts, name),
+      git('diff', '--no-ext-diff', '--no-textconv', '--binary', from, 'HEAD', '--')
+    );
     return join(artifacts, name);
   };
   const patch = save(`${tag}.patch`, base);
   const delta = env('DELTA_BASE') ? save(`${tag}.delta.patch`, env('DELTA_BASE')) : patch;
   const hash = patch ? sha(readFileSync(patch, 'utf8')).slice(0, 16) : '';
-  let blocked: string | null = null;
-  // Only the full candidate and clean worktree prove there is nothing to validate.
-  // An empty repair delta can still contain earlier delivery; an absent BASE proves nothing.
-  if (!dirty && patch && readFileSync(patch, 'utf8') === '') {
-    try {
-      const report = JSON.parse(coder) as Coder | null;
-      if (report?.status === 'blocked')
-        blocked =
-          report.error_class === 'redline'
-            ? 'coder_error:redline'
-            : Array.isArray(report.needs) && report.needs.length
-              ? 'coder_needs'
-              : null;
-    } catch {
-      /* Malformed reports must still go through real acceptance. */
-    }
-  }
-  const failed = blocked
-    ? []
-    : run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
-  if (blocked) appendFileSync(log, `# ${blocked}: no candidate; checks and probe skipped\n`);
+  const failed = run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
   const scope =
     base && env('RISK')
       ? scopeRisk(
@@ -528,7 +515,7 @@ function acceptOnce(
           env('RISK')
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
-  const ok = !blocked && failed.length === 0 && !dirty;
+  const ok = failed.length === 0 && !dirty;
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
   // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
@@ -552,16 +539,6 @@ function acceptOnce(
     ok,
     {
       ok,
-      ...(blocked
-        ? {
-            decision: {
-              kind: 'block' as const,
-              reason: blocked,
-              evidence: [patch, delta, join(artifacts, `${tag}.coder.json`)],
-              debt: [],
-            },
-          }
-        : {}),
       requirement_contract: requirementContract,
       command_results: commandResults,
       diff_hash: hash,
@@ -713,6 +690,9 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
       cmd: c.cmd,
       pass: run([c], log, dir).length === 0,
     }));
+  } catch (error) {
+    appendFileSync(log, `# baseline unknown: ${String(error)}\n`);
+    return [];
   } finally {
     let retained = dir;
     const warn = (e: unknown): void => {
@@ -1033,8 +1013,6 @@ export function deliveryDecision(input: {
   });
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
-  if (check?.decision?.kind === 'block' && check.decision.reason === 'coder_needs')
-    return out('block', 'coder_needs');
   if (!check) return out('block', 'engine_suspect');
   if (items.some(r => r.status === 'unknown')) return out('block', 'acceptance_failed');
   if (
@@ -1218,14 +1196,22 @@ export function permissionEvidence(events: RunEvent[], pkgs: string[], m: string
       denied.delete(node);
     if (attempt) attempts.set(node, attempt);
     const hook = e.event_type === 'provider_event' ? e.data?.event : undefined;
-    const refusal =
-      (hook?.type === 'warning' && hook.permissionDenied === true) ||
-      (hook?.type === 'hook' && hook.hookEvent === 'PreToolUse' && hook.exitCode === 2);
-    const legacy =
-      e.event_type === 'hook_activity' &&
-      e.data?.hook_event === 'PreToolUse' &&
-      e.data.exit_code === 2;
-    if (refusal || legacy) denied.set(node, `events:${node}:${String(i)}`);
+    // Only the boundary's machine category is redline evidence. Generic SDK denials
+    // and legacy exit codes remain in the event ledger as diagnostics.
+    const categories = [
+      'destruction',
+      'shared_history',
+      'external',
+      'privacy',
+      'authorization',
+      'delegation',
+    ];
+    if (
+      hook?.type === 'warning' &&
+      hook.permissionDenied === true &&
+      categories.some(category => hook.code === `superagent.permission.${category}`)
+    )
+      denied.set(node, `events:${node}:${String(i)}`);
   });
   return [...denied.values()];
 }
@@ -1984,6 +1970,13 @@ if (import.meta.main) {
     land,
   };
   const fn = kinds[env('KIND')];
-  if (!fn) throw new Error(`sa-check: unknown INPUTS_KIND ${env('KIND')}`);
-  await fn();
+  try {
+    if (!fn) throw new Error(`sa-check: unknown INPUTS_KIND ${env('KIND')}`);
+    await fn();
+  } catch (error) {
+    const engine_error = error instanceof Error ? error.message : String(error);
+    emit({ ok: false, disposition: 'fail', reason: 'engine_suspect', engine_error });
+    console.error(engine_error);
+    process.exitCode = 1;
+  }
 }

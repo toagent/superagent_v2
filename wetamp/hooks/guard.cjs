@@ -15,7 +15,7 @@ const {resolvePath, within} = redline;
 
 const saHome = env => env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
 const pool = tier => tiers[tier].pools.chatgpt;
-const deny = reason => ({hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason}});
+const deny = (reason, superagentPermissionCategory = 'authorization') => ({superagentPermissionCategory, hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason}});
 // Only two nonempty strings establish a child (subagent) call.
 const isChild = payload => Boolean(typeof payload.agent_type === 'string' && payload.agent_type.trim() && typeof payload.agent_id === 'string' && payload.agent_id.trim());
 const rootCall = payload => !isChild(payload);
@@ -148,11 +148,11 @@ function decide(payload, client, env = process.env) {
   if (red) return deny(red);
   if (derived) {
     const reason = nestedReason(name, input, normalized);
-    if (reason) return deny(reason);
+    if (reason) return deny(reason, 'delegation');
   }
   if (text !== undefined) {
     const reason = shellReason(text, cwd, env, normalized);
-    if (reason) return deny(reason);
+    if (reason) return deny(reason, 'destruction');
   }
   const edit = microEdit.isEdit(client, name);
   const advisory = notices.size ? {systemMessage: `SUPERAGENT advisory：本次护栏无法完整确认命令效果，已放行（${[...notices].join(', ')}）。`} : null;

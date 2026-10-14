@@ -1374,14 +1374,19 @@ async function* streamClaudeMessages(
         const response = msg as SDKHookResponseMessage;
         if (response.hook_event === 'PreToolUse') {
           try {
-            const output = JSON.parse(response.stdout ?? '') as SyncHookJSONOutput | null;
+            const output = JSON.parse(response.stdout ?? '') as
+              | (SyncHookJSONOutput & { superagentPermissionCategory?: string })
+              | null;
             if (
               output?.hookSpecificOutput?.hookEventName === 'PreToolUse' &&
               output.hookSpecificOutput.permissionDecision === 'deny'
             )
               yield {
                 type: 'warning',
-                code: 'claude.permission_denied',
+                code:
+                  typeof output.superagentPermissionCategory === 'string'
+                    ? `superagent.permission.${output.superagentPermissionCategory}`
+                    : 'claude.permission_denied',
                 permissionDenied: true,
                 message: 'Claude hook denied a tool call.',
               };

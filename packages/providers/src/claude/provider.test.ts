@@ -1400,6 +1400,40 @@ describe('ClaudeProvider', () => {
       ]);
     });
 
+    test.each(['authorization', 'delegation', 'diagnostic', undefined])(
+      'ROOT_ACCEPT forwards the boundary category %s without classifying denial prose',
+      async category => {
+        mockQuery.mockImplementation(async function* () {
+          yield {
+            type: 'system',
+            subtype: 'hook_response',
+            hook_id: 'root-accept',
+            hook_name: 'guard',
+            hook_event: 'PreToolUse',
+            outcome: 'success',
+            exit_code: 0,
+            stdout: JSON.stringify({
+              superagentPermissionCategory: category,
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: 'opaque',
+              },
+            }),
+          };
+        });
+        const chunks = [];
+        for await (const chunk of client.sendQuery('test', '/workspace')) chunks.push(chunk);
+        expect(chunks).toContainEqual(
+          expect.objectContaining({
+            type: 'warning',
+            permissionDenied: true,
+            code: category ? `superagent.permission.${category}` : 'claude.permission_denied',
+          })
+        );
+      }
+    );
+
     test('forwards a PostToolUse hook lifecycle (#2324)', async () => {
       mockQuery.mockImplementation(async function* () {
         yield {

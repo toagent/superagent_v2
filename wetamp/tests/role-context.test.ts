@@ -79,7 +79,7 @@ test('CONTEXT_PACK blocks outside/private symlink targets and preserves byte/ran
   expect(sh('git status --porcelain', repo)).toBe(before);
 });
 
-test('prepared R2 preserves requirements and open carry-over without closed history; immutable bytes', async () => {
+test('ROOT_ACCEPT prepared R2 preserves requirements and open carry-over without closed history; immutable bytes', async () => {
   const gen = tmp(),
     repo = gitRepo(tmp()),
     art = join(gen, 'artifacts');
@@ -240,9 +240,14 @@ test('prepared R2 preserves requirements and open carry-over without closed hist
   writeFileSync(pointer, JSON.stringify({ path }));
   expect(startReview({ INPUTS_ROUND: '2' }).exitCode).toBe(0);
   const drifted = startReview({ SA_CONTEXT_TEST_ENV: 'after' });
-  expect(drifted.exitCode).not.toBe(0);
-  expect(drifted.stderr.toString()).toContain('stale review environment');
-  expect(drifted.stdout.toString()).toBe('');
+  expect(drifted.exitCode, drifted.stderr.toString()).toBe(0);
+  const refreshed = JSON.parse(
+    readFileSync(JSON.parse(readFileSync(pointer, 'utf8')).path, 'utf8')
+  );
+  expect(refreshed.environment).not.toBe(context.environment);
+  expect(refreshed.refs).toEqual(context.refs);
+  expect(refreshed.carry_over).toEqual(context.carry_over);
+  expect(readFileSync(path, 'utf8')).toBe(bytes);
   sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm new', repo);
   const stale = startReview();
   expect(stale.exitCode).not.toBe(0);

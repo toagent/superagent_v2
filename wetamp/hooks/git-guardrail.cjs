@@ -11,15 +11,19 @@ const redline = require('./redline.cjs'), git = require('./git-danger.cjs');
   await redline.init();
   const cwd = input.workdir || input.directory || payload.cwd || process.cwd(), deletions = new Map();
   const advisory = new Set();
+  let superagentPermissionCategory = 'shared_history';
   const reason = require('./shell-ast.cjs').analyze(shell, cwd, process.env, (parsed, dir) => {
     for (const argv of parsed.argvs) if (path.basename(argv[0] || '') === 'git') {
-      const manual = git.manualReason(argv, dir, {...process.env, ...parsed.env});
+      const manual = git.manualReason(argv, dir, {...process.env, ...parsed.env}, category => { superagentPermissionCategory = category; });
       if (manual) return manual;
       const why = git.reason(argv, dir, redline.checkoutOf(cwd) || cwd, {...process.env, ...parsed.env}, deletions);
       if (why) return why;
     }
     return null;
   }, word => redline.expand(word, process.env), code => advisory.add(code));
-  if (reason) { process.stderr.write(reason + '\n'); process.exitCode = 2; }
+  if (reason) {
+    process.stdout.write(JSON.stringify({superagentPermissionCategory, hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason}}) + '\n');
+    process.stderr.write(reason + '\n'); process.exitCode = 2;
+  }
   else if (advisory.size) process.stdout.write(JSON.stringify({systemMessage: `SUPERAGENT advisory: ${[...advisory].join(', ')}`}) + '\n');
 })().catch(() => process.stdout.write(JSON.stringify({systemMessage: 'SUPERAGENT advisory: Git guard input unavailable; allowed'}) + '\n'));
