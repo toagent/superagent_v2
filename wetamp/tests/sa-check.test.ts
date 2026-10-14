@@ -312,7 +312,17 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
   expect(attemptIdentity([attempt], attempt.node).strength).toBe('unknown');
   writePolicyAttempts(art, [{ ...attempt, rerouted_models: undefined }]);
-  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
+  expect(read()).toEqual([
+    { model: 'repair', strength: 'pinned' },
+    { model: 'author', strength: 'pinned' },
+  ]);
+  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBeNull();
+  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
+  expect(attemptIdentity([{ ...attempt, rerouted_models: undefined }], attempt.node).strength).toBe(
+    'unknown'
+  );
+  writePolicyAttempts(art, [{ ...attempt, status: 'failed', rerouted_models: undefined }]);
+  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
   writePolicyAttempts(art, [{ ...attempt, provider: 'claude' }]);
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [attempt]);

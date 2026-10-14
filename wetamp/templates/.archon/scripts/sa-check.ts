@@ -1396,8 +1396,9 @@ export function attemptIdentity(
   if (!attempt) return identityOf(binding);
   if (attempt.status !== 'completed' && !author) return { model: null, strength: 'unknown' };
   if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
-  return attempt.provider === 'codex' &&
-    (attempt.status === 'completed' || attempt.rerouted_models !== undefined)
+  // Codex enables persisted reroute tracking before initialize/turn/start; no marker means
+  // interruption before native execution. Reserve the requested author model either way.
+  return attempt.provider === 'codex'
     ? { model: attempt.model, strength: 'pinned' }
     : { model: null, strength: 'unknown' };
 }
