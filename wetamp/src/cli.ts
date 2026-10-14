@@ -3,6 +3,7 @@ import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import { applyLand, captureDelivery, type DeliveryTarget } from './land';
+import { integratedReceipt, type DeliveryOutcome, type DeliveryReceipt } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
 import { budgetReason, readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
@@ -213,6 +214,7 @@ export const EXIT_ALIAS_DRIFT = 5;
 export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 
+type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrated' };
 export interface Ledger {
   rejected?: string;
   gc?: GcAction[];
@@ -241,6 +243,7 @@ export interface Ledger {
   branch: string;
   launch_branch?: string;
   delivery?: DeliveryTarget;
+  delivery_result?: DeliveryOutcome | IntegratedDelivery | { status: 'blocked'; reason: string };
   workflow: string;
   console: string;
   started_at: string;
@@ -1634,6 +1637,8 @@ export function finalizeDelivery(id: string, automatic = false) {
       });
       updateLedger(l, cur => {
         cur.controller = controller;
+        cur.delivery_result =
+          receipt?.status === 'manual_push' ? { ...receipt, status: 'integrated' } : receipt;
       });
       return receipt;
     },
@@ -2850,7 +2855,14 @@ export function main(argv: string[]): number {
             };
           else s.delivery = finalizeDelivery(l.run_id, true);
         } catch (e) {
-          s.delivery = { status: 'blocked', reason: e instanceof Error ? e.message : String(e) };
+          const blocked = {
+            status: 'blocked' as const,
+            reason: e instanceof Error ? e.message : String(e),
+          };
+          s.delivery = blocked;
+          updateLedger(l, cur => {
+            if (cur.delivery_result?.status !== 'integrated') cur.delivery_result = blocked;
+          });
         }
       }
       // prettier-ignore
@@ -2972,7 +2984,7 @@ export function main(argv: string[]): number {
       }
       return controlled(l, () => {
         const run = getRun(l.archon_run_id, l.repo);
-        const land = evidenceJson(l, artifactsOf(run), 'land.json');
+        let land = evidenceJson(l, artifactsOf(run), 'land.json');
         if (land === undefined) {
           console.error(`land: no land.json yet (state ${classify(run).state})`);
           return 1;
@@ -2984,6 +2996,18 @@ export function main(argv: string[]): number {
             base_ref: planOf(l).base_ref,
           });
           return 0;
+        }
+        const inputs = join(l.gen_dir, 'accept-inputs.json');
+        // prettier-ignore
+        if (l.delivery && existsSync(inputs)) {
+          const receipt = integratedReceipt(evidenceJson(l, artifactsOf(run), 'delivery.json') as DeliveryOutcome | undefined, (land as Land).head, {
+            task: l.run_id, target: l.delivery, evidence: artifactsOf(run),
+            contract: createHash('sha256').update(readFileSync(inputs)).digest('hex'),
+          });
+          if (receipt) {
+            updateLedger(l, cur => { cur.delivery_result = { ...receipt, status: 'integrated' }; });
+            land = { ...(land as Land), status: 'integrated', integrated: receipt.integrated };
+          }
         }
         const needs = needsOf(artifactsOf(run), undefined, l);
         print(
