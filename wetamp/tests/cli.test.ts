@@ -2,6 +2,7 @@ import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
 import { admitExecution, resumeExecution } from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
+import * as launcherModule from '../src/launcher';
 import * as relay from '../src/relay-quota';
 import * as saCheck from '../templates/.archon/scripts/sa-check';
 import { askKey } from '../src/cockpit-signals';
@@ -472,6 +473,7 @@ function stub(responses: RunView[]): {
   calls: () => string[];
 } {
   restoreFixtures();
+  fixtureSpies.push(spyOn(launcherModule, 'launcher').mockReturnValue(undefined));
   const root = tmp();
   sh('git init -q -b fixture', root);
   // These tests isolate recovery calls; cleanEngine itself has real dirty/committed fixtures in coord.test.ts.
@@ -2076,7 +2078,9 @@ test.each([
       );
       expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
     }
-  }
+  },
+  // Multiple real accept/land passes include bounded Python watchdogs around Git evidence.
+  20_000
 );
 
 test.each([

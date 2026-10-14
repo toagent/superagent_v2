@@ -45,6 +45,7 @@ import { type Plan } from '../src/plan';
 import { inspectBase } from '../src/preflight';
 import { cockpitSignals, type Asks } from '../src/cockpit-signals';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 const fixtureEngine = gitRepo(tmp());
 const originalCleanEngine = coordination.cleanEngine;
 const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() =>
@@ -1267,6 +1268,9 @@ describe('FIXD review regressions', () => {
           diff_hash: 'x',
           same: false,
           risk: 'G1',
+          checkout_fingerprint: checkoutFingerprint(args =>
+            Bun.spawnSync(['git', ...args], { cwd: repo, stdout: 'pipe', stderr: 'pipe' })
+          ),
         }),
         INPUTS_RISK: 'G1',
         INPUTS_TAG: 'gate-m1-r1',
@@ -1279,7 +1283,7 @@ describe('FIXD review regressions', () => {
     expect(readFileSync(join(artifactsOf(raw), 'gate-m1-r1.review.json'), 'utf8').trim()).toBe(
       'null'
     );
-    expect(child.exitCode).toBe(0);
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
     expect(
       JSON.parse(readFileSync(join(artifactsOf(raw), 'gate-m1-r1.json'), 'utf8')).verdict
     ).toBe('fix');

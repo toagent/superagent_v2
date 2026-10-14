@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
 import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
 import { loadTiers } from '../src/config';
-import { gitRepo, sh, tmp } from './helpers';
+import { codexFixtureEnv, gitRepo, sh, tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
 // prettier-ignore
@@ -200,6 +200,7 @@ describe('job registry', () => {
 });
 
 describe('job exec', () => {
+  const launcherEnv = codexFixtureEnv();
   test.each([
     ['general', '', 'general'],
     ['strategist', '', 'reviewer'],
@@ -341,7 +342,7 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
   const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}) =>
     Bun.spawn([process.execPath, join(WETAMP, 'src/cli.ts'), ...args], {
       cwd,
-      env: { ...process.env, SUPERAGENT_ROLE: role, SA_ADMIT: 'off', ...extraEnv },
+      env: { ...process.env, ...launcherEnv, SUPERAGENT_ROLE: role, SA_ADMIT: 'off', ...extraEnv },
       stdout: 'pipe',
       stderr: 'pipe',
     });

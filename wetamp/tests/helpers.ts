@@ -36,6 +36,16 @@ export const tmp = (): string => {
   return d;
 };
 
+/** Codex child fixtures route from a synthetic Codex controller, never the runner's ancestors. */
+export function codexFixtureEnv(): { BUN_OPTIONS: string } {
+  const preload = join(tmp(), 'launcher.cjs');
+  writeFileSync(
+    preload,
+    `require(${JSON.stringify(join(import.meta.dir, '../hooks/live.cjs'))}).launcher = () => ({ client: 'codex', pid: process.pid, tty: null, cwd: process.cwd() });\n`
+  );
+  return { BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`.trim() };
+}
+
 export const sh = (cmd: string, cwd: string, env: Record<string, string> = {}): string => {
   const p = Bun.spawnSync(['bash', '-c', cmd], {
     cwd,
