@@ -1383,10 +1383,17 @@ async function* streamClaudeMessages(
             )
               yield {
                 type: 'warning',
-                code:
-                  typeof output.superagentPermissionCategory === 'string'
-                    ? `superagent.permission.${output.superagentPermissionCategory}`
-                    : 'claude.permission_denied',
+                code: [
+                  'destruction',
+                  'shared_history',
+                  'external',
+                  'privacy',
+                  'authorization',
+                  'delegation',
+                  'diagnostic',
+                ].includes(output.superagentPermissionCategory ?? '')
+                  ? `superagent.permission.${output.superagentPermissionCategory}`
+                  : 'superagent.permission.diagnostic',
                 permissionDenied: true,
                 message: 'Claude hook denied a tool call.',
               };

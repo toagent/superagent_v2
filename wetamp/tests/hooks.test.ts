@@ -1690,3 +1690,45 @@ test('ROOT_ACCEPT hook rejection supplies a machine category while retaining the
   expect(out?.superagentPermissionCategory).toBe('delegation');
   expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
 });
+
+test('guard categories preserve structured rejection sources and physical denial', () => {
+  const repo = gitRepo(tmp()),
+    foreign = gitRepo(tmp());
+  writeFileSync(join(foreign, 'owned.txt'), 'keep');
+  for (const [cmd, category] of [
+    [`git -C "${foreign}" reset --hard`, 'diagnostic'],
+    ['git branch -D missing', 'diagnostic'],
+    ['git worktree remove --force missing', 'diagnostic'],
+    ['git push --force', 'shared_history'],
+    ['git push origin dev', 'external'],
+    ['git commit --no-verify', 'authorization'],
+  ]) {
+    const p = Bun.spawnSync(['node', join(HOOKS, 'git-guardrail.cjs')], {
+      stdin: Buffer.from(JSON.stringify({ cwd: repo, tool_input: { command: cmd } })),
+      env: baseEnv,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(p.exitCode).toBe(2);
+    const out = JSON.parse(p.stdout.toString());
+    expect(out.superagentPermissionCategory).toBe(category);
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+  }
+  for (const [tool_name, tool_input, category] of [
+    ['Write', { file_path: join(foreign, 'owned.txt'), content: '' }, 'diagnostic'],
+    ['Read', { file_path: join(repo, '_private', 'sample') }, 'privacy'],
+    ['Bash', { command: `rm -rf "${repo}"` }, 'destruction'],
+    ['Bash', { command: 'sudo true' }, 'authorization'],
+    ['Bash', { command: 'git push --force' }, 'shared_history'],
+    ['Bash', { command: 'npm publish' }, 'external'],
+  ] as const) {
+    const out = run(
+      'guard.cjs',
+      'claude',
+      { cwd: repo, hook_event_name: 'PreToolUse', tool_name, tool_input },
+      { SUPERAGENT_ROLE: 'general' }
+    );
+    expect(out?.superagentPermissionCategory).toBe(category);
+    expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
+  }
+});

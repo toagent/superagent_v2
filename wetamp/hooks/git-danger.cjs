@@ -35,7 +35,7 @@ function manualReason(argv, dir, env, onCategory = () => {}) {
   const {sub, rest} = gitInvocation(argv, dir, env);
   const options = rest.slice(0, rest.includes('--') ? rest.indexOf('--') : rest.length);
   const long = (word, flag) => word.startsWith('--') && word.length > 2 && flag.startsWith(word.slice(2).split('=')[0]);
-  if (sub === 'push') { onCategory('external'); return message('执行 git push', 'git push 须人工执行'); }
+  if (sub === 'push') { onCategory('external'); reason(argv, dir, null, env, new Map(), onCategory); return message('执行 git push', 'git push 须人工执行'); }
   if (sub === 'commit' && options.some(v => long(v, 'no-verify') || /^-[^-]*n/.test(v)))
     { onCategory('authorization'); return message('跳过 Git 提交检查', '会绕过提交护栏'); }
   if (sub === 'add' && options.some(v => long(v, 'all') || long(v, 'no-ignore-removal') || /^-[^-]*A/.test(v)))
@@ -92,7 +92,7 @@ function safeGitDelete(sub, rest, query, dir, env, deletions) {
     return message('删除工作树', '工作树有未提交改动或未保留的提交（或 Git 查询失败）');
   } catch { return message('删除 git 对象', 'Git 安全查询失败'); }
 }
-function reason(argv, dir, root, env, deletions) {
+function reason(argv, dir, root, env, deletions, onCategory = () => {}) {
     const {directory, prefix, sub, rest} = gitInvocation(argv, dir, env);
     if (sub === 'init') return null;
     const options = rest.slice(0, rest.includes('--') ? rest.indexOf('--') : rest.length);
@@ -101,7 +101,7 @@ function reason(argv, dir, root, env, deletions) {
       if (rest.some(v => v.startsWith('--') && v.length > 2
           ? ['force', 'force-with-lease', 'force-if-includes', 'delete', 'mirror', 'prune'].some(flag => flag.startsWith(v.slice(2).split('=')[0]))
           : /^-[^-]*[fd]|^\+|^:/.test(v)))
-        return message('执行 git push', '会强制改写或删除共享远端历史');
+        { onCategory('shared_history'); return message('执行 git push', '会强制改写或删除共享远端历史'); }
       return null;
     }
     const gitEffects = EFFECTS.find(r => r.commands[0] === 'git');

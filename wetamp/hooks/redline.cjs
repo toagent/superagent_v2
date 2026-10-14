@@ -131,10 +131,11 @@ function protectedKind(abs, root, env) {
   if (checkout && root && checkout !== resolvePath(root)) return '非本任务的 git 检出';
   return null;
 }
-function targetReason(effect, target, dir, root, env, reviewer, advisory) {
+function targetReason(effect, target, dir, root, env, reviewer, advisory, onCategory) {
+  onCategory('diagnostic');
   const expanded = expand(target, env);
   if (!target || /[$`*?\[\]{}]|__sa_sub__/.test(expanded) || dir.startsWith('/__sa_unknown_cwd__') && !path.isAbsolute(expanded)) {
-    if (['destroy','overwrite'].includes(effect)) return message('销毁或覆盖目标', '无法确认目标是否属于本任务', '使用明确的本任务路径', {kind: '未知路径'});
+    if (['destroy','overwrite'].includes(effect)) return (onCategory('destruction'), message('销毁或覆盖目标', '无法确认目标是否属于本任务', '使用明确的本任务路径', {kind: '未知路径'}));
     advisory('write_target_unknown'); return null;
   }
   const lexical = path.resolve(dir, expanded), abs = resolvePath(lexical);
@@ -145,18 +146,19 @@ function targetReason(effect, target, dir, root, env, reviewer, advisory) {
   const protectedLocation = protectedKind(lexical, root, env) || protectedKind(abs, root, env);
   const packageCache = ['.bun','.npm','.cache','.m2','.gradle','.cargo'].some(d => within(abs, path.join(homeOf(env), d)));
   if (protectedLocation && !(protectedLocation === '非本任务的 git 检出' && !losesData) && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
-    return message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: within(abs, path.join(homeOf(env), '.superagent')) ? '~/.superagent' : protectedLocation});
-  if (reviewer && root && within(abs, resolvePath(root))) return message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: `本任务仓库：${abs}`});
+    return (onCategory(protectedLocation === '非本任务的 git 检出' ? 'diagnostic' : 'authorization'), message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: within(abs, path.join(homeOf(env), '.superagent')) ? '~/.superagent' : protectedLocation}));
+  if (reviewer && root && within(abs, resolvePath(root))) return (onCategory('authorization'), message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: `本任务仓库：${abs}`}));
   if (effect === 'destroy' && [root, homeOf(env), env.SUPERAGENT_HOME, '/'].filter(Boolean).some(r => within(resolvePath(r), abs)))
-    return message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'});
+    return (onCategory('destruction'), message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'}));
   if (!task && losesData)
-    return message('销毁或覆盖文件', '会破坏不属于本任务的已有数据', '在 worktree 或临时目录创建副本', {kind: '任务范围外路径'});
+    return (onCategory('destruction'), message('销毁或覆盖文件', '会破坏不属于本任务的已有数据', '在 worktree 或临时目录创建副本', {kind: '任务范围外路径'}));
   if (!task || protectedLocation === '非本任务的 git 检出') advisory('file_ownership');
   return null;
 }
-function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory, names, deletions) {
+function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory, names, deletions, onCategory) {
+  onCategory(({delegate: 'delegation', credential: 'privacy', external: 'external', elevate: 'authorization', process_selection: 'authorization', signal: 'authorization'})[effect] || 'diagnostic');
   if (effect === 'delegate') return message(`派生会话再次调用 AI（${commandLabel(argv)}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅');
-  if (['create','destroy','overwrite','write'].includes(effect)) return targetReason(effect, target, dir, root, env, reviewer, advisory);
+  if (['create','destroy','overwrite','write'].includes(effect)) return targetReason(effect, target, dir, root, env, reviewer, advisory, onCategory);
   if (effect === 'elevate') return message(`通过 ${commandLabel(argv)} 提升权限`, '会越过本任务权限边界');
   if (effect === 'credential') return message(`通过 ${commandLabel(argv)} 读取钥匙串`, '凭据内容不能交给模型');
   if (effect === 'external') {
@@ -179,12 +181,12 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
       return message('通过 kill 向一组进程发信号', '会选择一组进程或影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
   }
   if (effect === 'git') {
-    return require('./git-danger.cjs').reason(argv, dir, root, env, deletions);
+    return require('./git-danger.cjs').reason(argv, dir, root, env, deletions, onCategory);
   }
   return null;
 }
 const READ_TOOLS = {Read: ['file_path'], NotebookRead: ['notebook_path'], Grep: ['path'], Glob: ['path'], LS: ['path'], view_image: ['path']};
-function reason({client, name, input = {}, cwd, root, shell, derived, env = process.env, onCommand, onAdvisory = () => {}, reviewer = false}) {
+function reason({client, name, input = {}, cwd, root, shell, derived, env = process.env, onCommand, onAdvisory = () => {}, onCategory = () => {}, reviewer = false}) {
   try {
     const edit = microEdit.isEdit(client, name);
     let targets = [];
@@ -206,10 +208,10 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
     }
     for (const file of [...(READ_TOOLS[name] ?? []).map(k => input[k]), ...targets].filter(v => typeof v === 'string' && v)) {
       const kind = pathKind(file, cwd, env);
-      if (kind) return message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
+      if (kind) return (onCategory('privacy'), message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}));
     }
     if (edit && (derived || reviewer)) for (const target of targets) {
-      const why = targetReason(deletions.has(target) ? 'destroy' : name === 'Write' || overwrites.has(target) ? 'overwrite' : 'write', target || '', cwd, root, env, reviewer, onAdvisory); if (why) return why;
+      const why = targetReason(deletions.has(target) ? 'destroy' : name === 'Write' || overwrites.has(target) ? 'overwrite' : 'write', target || '', cwd, root, env, reviewer, onAdvisory, onCategory); if (why) return why;
     }
     if (shell === undefined) return null;
     const gitDeletions = new Map();
@@ -219,20 +221,20 @@ function reason({client, name, input = {}, cwd, root, shell, derived, env = proc
       for (const argv of parsed.argvs) {
         for (const word of argv) {
           const kind = wordKind(word, dir, env);
-          if (kind) return message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
+          if (kind) return (onCategory('privacy'), message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}));
         }
         for (const action of effects(argv)) {
           if (!derived && !reviewer && action.effect === 'delegate') continue;
           if (!derived && !reviewer && ['create','destroy','overwrite','write'].includes(action.effect)) continue;
-          const why = actionReason(action, dir, root, {...env, ...parsed.env}, reviewer, onAdvisory, names, gitDeletions); if (why) return why;
+          const why = actionReason(action, dir, root, {...env, ...parsed.env}, reviewer, onAdvisory, names, gitDeletions, onCategory); if (why) return why;
         }
       }
       for (const file of parsed.reads) {
         const kind = wordKind(file, dir, env);
-        if (kind) return message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind});
+        if (kind) return (onCategory('privacy'), message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}));
       }
       if (derived || reviewer) for (const file of parsed.writes) {
-        const why = targetReason(parsed.overwrites?.includes(file) ? 'overwrite' : 'write', file, dir, root, env, reviewer, onAdvisory); if (why) return why;
+        const why = targetReason(parsed.overwrites?.includes(file) ? 'overwrite' : 'write', file, dir, root, env, reviewer, onAdvisory, onCategory); if (why) return why;
       }
       return null;
     }, word => expand(word, env), onAdvisory);

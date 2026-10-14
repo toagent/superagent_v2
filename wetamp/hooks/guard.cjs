@@ -142,10 +142,11 @@ function decide(payload, client, env = process.env) {
   const notices = new Set();
   if (SHELL_TOOLS.includes(name) && text === undefined) notices.add('shell_text_missing');
   const normalized = text !== undefined ? {argvs: [], writes: [], reads: []} : undefined;
+  let category = 'diagnostic';
   const red = redline.reason({client, name, input, cwd, root: gitRoot(cwd), shell: text, derived: Boolean(derived),
-    reviewer: env.SUPERAGENT_ROLE === 'reviewer', env, onAdvisory: code => notices.add(code),
+    reviewer: env.SUPERAGENT_ROLE === 'reviewer', env, onCategory: value => { category = value; }, onAdvisory: code => notices.add(code),
     onCommand: normalized && (parsed => { for (const key of Object.keys(normalized)) normalized[key].push(...parsed[key]); })});
-  if (red) return deny(red);
+  if (red) return deny(red, category);
   if (derived) {
     const reason = nestedReason(name, input, normalized);
     if (reason) return deny(reason, 'delegation');

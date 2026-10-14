@@ -1400,7 +1400,20 @@ describe('ClaudeProvider', () => {
       ]);
     });
 
-    test.each(['authorization', 'delegation', 'diagnostic', undefined])(
+    test.each([
+      'destruction',
+      'shared_history',
+      'external',
+      'privacy',
+      'authorization',
+      'delegation',
+      'diagnostic',
+      undefined,
+      'unknown',
+      '',
+      7,
+      null,
+    ])(
       'ROOT_ACCEPT forwards the boundary category %s without classifying denial prose',
       async category => {
         mockQuery.mockImplementation(async function* () {
@@ -1428,7 +1441,7 @@ describe('ClaudeProvider', () => {
           expect.objectContaining({
             type: 'warning',
             permissionDenied: true,
-            code: category ? `superagent.permission.${category}` : 'claude.permission_denied',
+            code: `superagent.permission.${['destruction', 'shared_history', 'external', 'privacy', 'authorization', 'delegation', 'diagnostic'].includes(String(category)) ? category : 'diagnostic'}`,
           })
         );
       }
