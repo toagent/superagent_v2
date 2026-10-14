@@ -109,11 +109,9 @@ export function repoScope(path: string): Extract<Scope, { kind: 'repo' }> {
 }
 export const runScope = shared.runScope;
 export function caller(readonly = false): Identity {
-  if (
-    !readonly &&
-    ['general', 'strategist', 'reviewer', 'worker'].includes(process.env.SUPERAGENT_ROLE ?? '')
-  )
-    throw new Error('派生会话不参与认领或控制；请交回元帅');
+  const role = process.env.SUPERAGENT_ROLE ?? '';
+  if (!readonly && ['general', 'strategist', 'reviewer', 'worker'].includes(role))
+    throw new Error(`派生会话不参与认领或控制；请交回元帅（当前角色：${role}）`);
   const who = launcher(home().sa);
   if (who?.pid_start) return who;
   // A human shell is also an explicit local controller; use its parent lifetime, never the short-lived CLI PID.

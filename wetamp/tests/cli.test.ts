@@ -80,9 +80,13 @@ const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | 
 });
 let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
 const cleanEngine = coordModule.cleanEngine;
+const originalRole = process.env.SUPERAGENT_ROLE;
+const originalJob = process.env.SA_JOB_ID;
 const originalMemory = process.env.SUPERAGENT_MEMORY;
 const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
 beforeEach(() => {
+  process.env.SUPERAGENT_ROLE = '';
+  process.env.SA_JOB_ID = '';
   // Scratch commits must not execute the operator's unrelated global Git hooks
   // or signing setup. Repository-local configuration still applies.
   process.env.GIT_CONFIG_GLOBAL = '/dev/null';
@@ -94,6 +98,10 @@ const restoreFixtures = (): void => {
 };
 afterEach(() => {
   restoreFixtures();
+  if (originalRole === undefined) delete process.env.SUPERAGENT_ROLE;
+  else process.env.SUPERAGENT_ROLE = originalRole;
+  if (originalJob === undefined) delete process.env.SA_JOB_ID;
+  else process.env.SA_JOB_ID = originalJob;
   if (originalMemory === undefined) delete process.env.SUPERAGENT_MEMORY;
   else process.env.SUPERAGENT_MEMORY = originalMemory;
   if (originalGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;

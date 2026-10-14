@@ -806,10 +806,31 @@ test('summarize, report and the board share one summary', async () => {
   expect(provider_timing).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
   expect(slow_nodes).toEqual([]);
   expect(recorded_blockers).toEqual([]);
-  expect(cancellations).toBeDefined();
-  expect(demands).toBeDefined();
-  expect(critical_path).toBeDefined();
-  expect(jobs).toBeDefined();
+  expect(cancellations).toEqual({});
+  expect(demands).toMatchObject({
+    denominator: 0,
+    completed: 0,
+    unknown_runs: ['g', 'f'],
+    by_request: {},
+    elapsed: { coverage: '0/0', p50_ms: 'unknown', p90_ms: 'unknown' },
+  });
+  expect(critical_path).toEqual({
+    'g/a-g': {
+      status: 'unknown',
+      elapsed_ms: 'unknown',
+      reason: 'missing_graph_clock_or_attempt_mapping',
+    },
+    'f/a-f': {
+      status: 'unknown',
+      elapsed_ms: 'unknown',
+      reason: 'missing_graph_clock_or_attempt_mapping',
+    },
+  });
+  expect(jobs).toEqual({
+    receipts: [],
+    unreadable: [],
+    phase_coverage: { queue_ms: '0/0', prepare_ms: '0/0', exec_ms: '0/0' },
+  });
   expect(repo_missing).toEqual([]);
   expect(interventions).toMatchObject({ by_run: { g: 'unknown', f: 'unknown' }, unknown: 2 });
   expect(usage).toMatchObject({ total: { calls: 0, coverage: '0/0', input: 'unknown' } });
@@ -855,7 +876,12 @@ test('R1-05: actual board loader projects takeover owner rather than launcher, i
 
 test('R1-1: pending asks follow real engine hold mapping, including failed coder nodes', () => {
   const now = Date.parse('2026-10-12T12:00:00Z');
-  for (const reason of ['review_limit', 'approval', 'coder', 'signoff'] as const) {
+  for (const [reason, expectedReason, expectedNeeds] of [
+    ['review_limit', undefined, []],
+    ['approval', 'approval', ['approval']],
+    ['coder', 'coder', []],
+    ['signoff', 'signoff', ['signoff']],
+  ] as const) {
     const node =
       reason === 'coder'
         ? 'code-a'
@@ -889,10 +915,9 @@ test('R1-1: pending asks follow real engine hold mapping, including failed coder
       );
     }
     const snap = snapshotOf([{ ledger: l, run }], now);
-    const asks = paused;
-    expect(snap.rows[0]?.askReason).toBe(reason === 'coder' ? 'coder' : asks ? reason : undefined);
+    expect(snap.rows[0]?.askReason).toBe(expectedReason);
     snap.asks = { [`${reason}:${reason}`]: { status: 'pending' } };
-    expect(cockpit(snap, now).needs.map(r => r.id)).toEqual(asks ? [reason] : []);
+    expect(cockpit(snap, now).needs.map(r => r.id)).toEqual([...expectedNeeds]);
     for (const status of ['completed', 'cancelled', 'running'] as const) {
       const resumed = snapshotOf(
         [{ ledger: l, run: { ...run, status, metadata: {}, nodes: [] } }],

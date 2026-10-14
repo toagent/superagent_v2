@@ -112,9 +112,9 @@ interface Policy {
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
-// accept/settle: status, tree, full/delta patch, scope, probe add/prune, HEAD, events, integrity.
-// env: events, optional worktree ownership and HEAD; precheck owns its timeout. The worst-path subprocess trace test enforces these counts.
-export const CHECK_AUX_COUNTS = { accept: 13, env: 4 } as const;
+// Elapsed auxiliary time has one shared cap, independent of subprocess count.
+export const CHECK_AUX_BUDGET_MS = 130_000;
+let auxiliaryElapsed = 0;
 // The watchdog owns separate pipes, so even an escaped descendant cannot hold this caller open.
 // The shared budget includes TERM grace, KILL, pipe destruction and watchdog startup.
 const AUX_WATCHDOG = `
@@ -146,14 +146,21 @@ sys.exit(code)
 `;
 function auxiliary(cmd: string[]) {
   const bounded = ['accept', 'settle', 'env'].includes(env('KIND'));
-  return Bun.spawnSync(
-    bounded ? ['python3', '-c', AUX_WATCHDOG, String(CHECK_AUX_TIMEOUT_MS), ...cmd] : cmd,
+  const timeout = Math.floor(
+    Math.min(CHECK_AUX_TIMEOUT_MS, CHECK_AUX_BUDGET_MS - auxiliaryElapsed)
+  );
+  if (bounded && timeout <= 0) throw new Error('auxiliary time budget exhausted');
+  const started = performance.now();
+  const result = Bun.spawnSync(
+    bounded ? ['python3', '-c', AUX_WATCHDOG, String(timeout), ...cmd] : cmd,
     {
       stdout: 'pipe',
       stderr: 'pipe',
-      ...(bounded ? { timeout: CHECK_AUX_TIMEOUT_MS, killSignal: 'SIGKILL' as const } : {}),
+      ...(bounded ? { timeout, killSignal: 'SIGKILL' as const } : {}),
     }
   );
+  if (bounded) auxiliaryElapsed += performance.now() - started;
+  return result;
 }
 const artifacts = process.env.ARTIFACTS_DIR ?? '';
 const json = (k: string): unknown =>
@@ -1901,7 +1908,8 @@ function gate(): void {
     ledger_file: ledgerFile,
     // 末份非空评审所见的 HEAD：下一轮 diff 以它为增量起点（F-20）；尚无评审为空，下一轮评审做全量
     reviewed_head: reviewed === undefined ? '' : (rechecks[reviewed]?.head ?? ''),
-    head: d.reason === 'review_modified_checkout' ? '' : git('rev-parse', 'HEAD').trim(),
+    head: git('rev-parse', 'HEAD').trim(),
+    head_trusted: d.reason !== 'review_modified_checkout',
   };
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   emit(out);

@@ -21,8 +21,7 @@ import { injectMemory } from './memory';
 import {
   MAX_ROUNDS,
   attemptPath,
-  CHECK_AUX_TIMEOUT_MS,
-  CHECK_AUX_COUNTS,
+  CHECK_AUX_BUDGET_MS,
   environmentChecks,
   type RecoveryEvidence,
 } from '../templates/.archon/scripts/sa-check';
@@ -129,7 +128,7 @@ const commandTimeout = (checks: Pkg['accept'], passes: number, setup: Pkg['accep
           ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS,
           checks.reduce((n, c) => n + c.timeout_s, 0) * passes * 1000 +
             setup.reduce((n, c) => n + c.timeout_s, 0) * 1000 +
-            CHECK_AUX_COUNTS[passes === 1 ? 'env' : 'accept'] * CHECK_AUX_TIMEOUT_MS +
+            CHECK_AUX_BUDGET_MS +
             CHECK_OVERHEAD_MS
         ),
       }

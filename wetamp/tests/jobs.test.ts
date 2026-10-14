@@ -5,7 +5,29 @@ import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
 import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
 import { loadTiers } from '../src/config';
+import { caller } from '../src/coord';
 import { codexFixtureEnv, gitRepo, sh, tmp } from './helpers';
+
+test('shell fixtures suppress inherited role/job and dotenv values, preserving explicit overrides', () => {
+  const root = tmp();
+  writeFileSync(join(root, '.env'), 'SUPERAGENT_ROLE=reviewer\nSA_JOB_ID=dotenv-job\n');
+  const command = `bun -e 'console.log(JSON.stringify([process.env.SUPERAGENT_ROLE, process.env.SA_JOB_ID]))'`;
+  expect(JSON.parse(sh(command, root))).toEqual(['', '']);
+  expect(
+    JSON.parse(sh(command, root, { SUPERAGENT_ROLE: 'worker', SA_JOB_ID: 'fixture' }))
+  ).toEqual(['worker', 'fixture']);
+});
+
+test.each(['general', 'strategist', 'reviewer', 'worker'])('caller refusal identifies %s', role => {
+  const saved = process.env.SUPERAGENT_ROLE;
+  try {
+    process.env.SUPERAGENT_ROLE = role;
+    expect(() => caller()).toThrow(`当前角色：${role}`);
+  } finally {
+    if (saved === undefined) delete process.env.SUPERAGENT_ROLE;
+    else process.env.SUPERAGENT_ROLE = saved;
+  }
+});
 
 const WETAMP = join(import.meta.dir, '..');
 // prettier-ignore

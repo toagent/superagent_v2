@@ -67,6 +67,8 @@ const portEvidence = {
 let root: string, sa: string, plan: Plan, ledger: Ledger, raw: RunView;
 const saved = new Map<string, string | undefined>();
 const keys = [
+  'SUPERAGENT_ROLE',
+  'SA_JOB_ID',
   'SUPERAGENT_HOME',
   'ARCHON_HOME',
   'SUPERAGENT_MEMORY',
@@ -85,6 +87,8 @@ const keys = [
 ];
 beforeEach(() => {
   for (const k of keys) saved.set(k, process.env[k]);
+  process.env.SUPERAGENT_ROLE = '';
+  process.env.SA_JOB_ID = '';
   root = tmp();
   sa = join(root, 'home');
   mkdirSync(sa);

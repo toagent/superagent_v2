@@ -28,7 +28,6 @@ import {
   scopeRisk,
   deliveryDecision,
   readAttempt,
-  CHECK_AUX_COUNTS,
   CHECK_AUX_TIMEOUT_MS,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
@@ -1380,7 +1379,14 @@ function runScript(
 }
 
 // Trace real auxiliary calls through the process-group watchdog.
-function auxiliaryFixture(kind: string, hang = '', scaled = false, stubborn = false, hook = false) {
+function auxiliaryFixture(
+  kind: string,
+  hang = '',
+  scaled = false,
+  stubborn = false,
+  hook = false,
+  budget?: number
+) {
   const root = tmp(),
     repo = gitRepo(root),
     trace = join(root, 'trace.jsonl'),
@@ -1460,6 +1466,8 @@ Bun.spawnSync = (actual, opts) => {
   let source = readFileSync(SCRIPT, 'utf8').replace('const env =', `${instrument}\nconst env =`);
   if (scaled)
     source = source.replace('CHECK_AUX_TIMEOUT_MS = 10_000', 'CHECK_AUX_TIMEOUT_MS = 2000');
+  if (budget !== undefined)
+    source = source.replace('CHECK_AUX_BUDGET_MS = 130_000', `CHECK_AUX_BUDGET_MS = ${budget}`);
   writeFileSync(script, source);
   const r = runScript(
     repo,
@@ -1487,15 +1495,29 @@ Bun.spawnSync = (actual, opts) => {
 }
 
 for (const kind of ['accept', 'settle', 'env'])
-  test(`ACCT: ${kind} traced worst path enforces shared auxiliary count and timeout`, () => {
+  test(`ACCT: ${kind} traced worst path enforces allowed auxiliary categories and timeout`, () => {
     const r = auxiliaryFixture(kind);
     const auxiliary = r.calls.filter(c => c.watchdog);
-    const count = CHECK_AUX_COUNTS[kind === 'env' ? 'env' : 'accept'];
-    // Permission evidence is queried even when failed settle suspends before budget().
-    // This fixture has no ownership receipt: env queries events and HEAD only.
-    expect(auxiliary).toHaveLength(kind === 'env' ? 2 : count);
-    expect(auxiliary.length).toBeLessThanOrEqual(count);
-    expect(auxiliary.every(c => c.timeout === CHECK_AUX_TIMEOUT_MS)).toBe(true);
+    // Explicitly register subprocess categories; repetitions do not create a new contract.
+    const allowed = new Set(
+      kind === 'env'
+        ? ['workflow get', 'git rev-parse']
+        : [
+            'workflow get',
+            'git status',
+            'git write-tree',
+            'git diff',
+            'git worktree',
+            'git rev-parse',
+          ]
+    );
+    expect(auxiliary.length).toBeGreaterThan(0);
+    for (const call of auxiliary) {
+      const category =
+        call.cmd[0] === 'git' ? call.cmd.slice(0, 2).join(' ') : call.cmd.slice(1, 3).join(' ');
+      expect(allowed.has(category), category).toBe(true);
+      expect(call.timeout).toBe(CHECK_AUX_TIMEOUT_MS);
+    }
     if (kind === 'env') expect(r.code).toBe(0);
     else {
       expect(r.out).toMatchObject({ ok: false, base_pass: false });
@@ -1503,6 +1525,17 @@ for (const kind of ['accept', 'settle', 'env'])
       expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(3);
     }
   });
+
+test('ACCT: auxiliary timeout uses the remaining shared elapsed budget', () => {
+  const r = auxiliaryFixture('accept', '', false, false, false, CHECK_AUX_TIMEOUT_MS);
+  expect(r.code, r.err).toBe(0);
+  const timeouts = r.calls.filter(c => c.watchdog).map(c => c.timeout!);
+  expect(timeouts.length).toBeGreaterThan(1);
+  expect(timeouts.every(ms => Number.isInteger(ms) && ms > 0 && ms <= CHECK_AUX_TIMEOUT_MS)).toBe(
+    true
+  );
+  expect(timeouts.at(-1)!).toBeLessThan(timeouts[0]);
+});
 
 for (const [kind, step, evidence] of [
   ['accept', 'status --porcelain', 'git status:'],
@@ -2162,6 +2195,7 @@ describe('sa-check script', () => {
           ? { verdict: 'pass' }
           : { verdict: 'escalate', reason: 'review_modified_checkout', decision: { kind: 'block' } }
       );
+      expect(gated.out).toMatchObject({ head: head.trim(), head_trusted: mode === 'unchanged' });
       expect(sh('git status --porcelain', repo)).toBe(before);
       expect(sh('git rev-parse HEAD', repo)).toBe(head);
     }

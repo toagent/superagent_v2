@@ -49,7 +49,7 @@ export function codexFixtureEnv(): { BUN_OPTIONS: string } {
 export const sh = (cmd: string, cwd: string, env: Record<string, string> = {}): string => {
   const p = Bun.spawnSync(['bash', '-c', cmd], {
     cwd,
-    env: { ...process.env, ...env },
+    env: { ...process.env, SUPERAGENT_ROLE: '', SA_JOB_ID: '', ...env },
     stdout: 'pipe',
     stderr: 'pipe',
   });
