@@ -1457,7 +1457,8 @@ test('role efficiency handoff resolves prior work without model calls or skipped
       stderr: 'pipe',
     }
   );
-  expect(result.stderr.toString()).toBe('');
+  const diagnostics = result.stderr.toString().trim().split('\n').filter(Boolean);
+  expect(diagnostics.map(line => JSON.parse(line).event)).toEqual(['codegraph: unavailable']);
   expect(result.exitCode).toBe(0);
   const path = JSON.parse(result.stdout.toString()).handoff;
   expect(JSON.parse(readFileSync(path, 'utf8')).work).toEqual({

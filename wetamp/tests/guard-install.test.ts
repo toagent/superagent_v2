@@ -14,8 +14,7 @@ import { join } from 'node:path';
 import { WETAMP } from '../src/config';
 import { installMode } from '../src/install-mode';
 import { mergeHooks, openCodeGuard } from '../src/install-hooks';
-import { Coordination, caller, repoScope } from '../src/coord';
-import { fixturePlan, gitRepo, tmp } from './helpers';
+import { tmp } from './helpers';
 const state = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
   withLock: <T>(file: string, fn: () => T) => T;
   withState: <T>(file: string, fn: (s: Record<string, unknown>) => T) => T;
@@ -383,26 +382,18 @@ test('WP-1: direct CLI worker run reports preflight mode and never starts the en
   expect(readdirSync(join(root, 'sa'))).toEqual(['launch-failures']);
 });
 
-test('WP-1: plan parsing and foreign-owner failures retain JSON launch-failure evidence', () => {
+test('WP-1: plan parsing failures retain JSON launch-failure evidence', () => {
   const root = tmp(),
-    sa = join(root, 'sa'),
-    repo = gitRepo(root);
+    sa = join(root, 'sa');
   mkdirSync(sa);
   const badJson = join(root, 'bad-json.json'),
     badSchema = join(root, 'bad-schema.json');
   writeFileSync(badJson, '{invalid');
   writeFileSync(badSchema, '{}');
-  const ownedPlan = fixturePlan(root, repo);
-  new Coordination({ sa, runs: () => [] }).claim(repoScope(repo), {
-    ...caller(),
-    client: 'claude',
-    session_id: 'foreign-owner',
-  });
   for (const [plan, reason] of [
     [join(root, 'missing-plan.json'), 'ENOENT'],
     [badJson, 'JSON'],
     [badSchema, 'plan invalid'],
-    [ownedPlan, '普通认领'],
   ] as const) {
     const p = Bun.spawnSync(
       [process.execPath, join(WETAMP, 'src/cli.ts'), 'run', plan, '--skip-selftest', '--json'],

@@ -496,7 +496,7 @@ test('wait already blocking returns inbox after a new message arrives, before ti
   // The wait boundary itself is the subject: its stub deposits mail during the first wait slice.
   writeFileSync(
     bin,
-    `#!/usr/bin/env python3\nimport sys,json\nif sys.argv[2]=='get': print(json.dumps({'id':'p','status':'running','metadata':{'execution_owner':{'host':${JSON.stringify(hostname())},'pid':${String(process.pid)}}}}))\nelse:\n open(${JSON.stringify(file)},'w').write(${JSON.stringify(JSON.stringify(message))})\n print('{}')\n`
+    `#!/usr/bin/env python3\nimport sys,json\nif sys.argv[2]=='get': print(json.dumps({'id':'p','status':'running','metadata':{'execution_owner':{'host':${JSON.stringify(hostname())},'pid':${String(process.pid)}}}}))\nelse:\n open(${JSON.stringify(file)},'w').write(${JSON.stringify(JSON.stringify(message))})\n print(json.dumps({'ok':True,'action':'wait','runId':'p','result':'deadline'}))\n`
   );
   sh(`chmod +x '${bin}'`, s.root);
   process.env.SA_ARCHON_BIN = bin;
@@ -1040,12 +1040,14 @@ test('run launches under its own claim while another online owner remains reposi
       ? { id: l.archon_run_id, status: 'running' }
       : { ok: true, runId: 'new-engine-run' }
   );
+  const clean = coordination.cleanEngine;
+  const engine = spyOn(coordination, 'cleanEngine').mockImplementation(() => clean(s.repo));
   const identity = spyOn(coordination, 'caller').mockReturnValue(a);
   const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'fixture' });
   const outputs: string[] = [],
     output = spyOn(console, 'log').mockImplementation(value => outputs.push(String(value)));
   try {
-    expect(main(['run', plan, '--fake', '--skip-selftest'])).toBe(0);
+    expect(main(['run', plan, '--fake', '--skip-selftest']), outputs.join('\n')).toBe(0);
     const result = JSON.parse(outputs.at(-1)!);
     expect(result.default_contact).toMatchObject(b);
     expect(result.overlap_warnings).toMatchObject([{ run_id: l.run_id, paths: expect.any(Array) }]);
@@ -1055,6 +1057,7 @@ test('run launches under its own claim while another online owner remains reposi
   } finally {
     db.close();
     launch.mockRestore();
+    engine.mockRestore();
     identity.mockRestore();
     quota.mockRestore();
     output.mockRestore();

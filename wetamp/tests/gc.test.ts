@@ -16,7 +16,13 @@ import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/c
 import { gc as collect } from '../src/gc';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
-const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_WRITE_ROOTS', 'TMPDIR'] as const;
+const keys = [
+  'SUPERAGENT_HOME',
+  'ARCHON_HOME',
+  'SUPERAGENT_WRITE_ROOTS',
+  'TMPDIR',
+  'SA_ARCHON_BIN',
+] as const;
 const originalEnv = keys.map(k => process.env[k]);
 const gc = (dryRun = false) => collect(dryRun, [process.env.TMPDIR!]);
 const realTrees = () => Bun.spawnSync(['git', 'worktree', 'list', '--porcelain']).stdout.toString();
@@ -95,7 +101,7 @@ function fixture(
     id: ledger.archon_run_id,
     status,
     working_path: path,
-    output_root: join(root, 'output'),
+    output_root: join(root, 'sa', 'output'),
   };
   views.set(view.id, view);
   query = spyOn(archon, 'getRun').mockImplementation(id => {
@@ -199,12 +205,27 @@ test.each(['full', 'partial', 'failed'] as const)(
       .coord()
       .claim(coordination.repoScope(f.repo), coordination.caller()).controller;
     f.save();
+    const contracts = ['verify-core', 'diff-m1-r1'].map(tag => ({
+      kind: 'accept',
+      tag,
+      milestone: 'm1',
+      pkgs: mode === 'partial' ? 'core' : 'core,web',
+      plan: join(f.gen, 'plan.json'),
+      risk: 'G1',
+    }));
+    writeFileSync(join(f.gen, 'accept-inputs.json'), JSON.stringify(contracts));
+    const art = artifactsOf(f.view);
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'diff-m1-r1.json'), '{}');
+    // Manual accept reads an authoritative verbose event snapshot, not getRun.
+    const snapshot = spyOn(archon, 'archonJson').mockReturnValue({ ...f.view, events: [] });
     const log = spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       expect(main(['accept', f.id, ...(mode === 'partial' ? ['--pkg', 'core'] : [])])).toBe(
         mode === 'failed' ? 1 : 0
       );
     } finally {
+      snapshot.mockRestore();
       log.mockRestore();
     }
     expect(readFileSync(ledgerPath(f.id), 'utf8')).not.toContain('accepted');
@@ -303,10 +324,11 @@ test('CLI --dry-run --json changes neither git objects nor ledger bytes', () => 
   try {
     expect(main(['gc', '--dry-run', '--json'])).toBe(0);
     const output = JSON.parse(String(log.mock.calls[0][0]));
-    expect(output.gc.map((e: { action: string }) => e.action)).toEqual([
-      'would_remove',
-      'would_remove',
-    ]);
+    expect(
+      output.gc
+        .filter((e: { run_id: string }) => e.run_id === f.id)
+        .map((e: { action: string }) => e.action)
+    ).toEqual(['would_remove', 'would_remove']);
   } finally {
     log.mockRestore();
   }

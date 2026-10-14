@@ -1309,11 +1309,28 @@ describe('F-14 model identity', () => {
   });
 });
 
+// These checks exercise delivery/classification/cache semantics. Process-group
+// supervision has separate ACCT/probe tests below; avoid starting Python for
+// each ordinary Git query here while retaining the real commands and deadlines.
+const directAuxiliary = join(tmp(), 'direct-auxiliary.ts');
+writeFileSync(
+  directAuxiliary,
+  `
+const spawn = Bun.spawnSync;
+Bun.spawnSync = (command, options) => {
+  const args = Array.isArray(command) && command[0] === 'python3' && command[1] === '-c'
+    ? command.slice(4) : command;
+  return spawn(args, options);
+};
+`
+);
+
 function runScript(
   cwd: string,
   inputs: Record<string, string>,
   script = SCRIPT,
-  extraEnv: Record<string, string> = {}
+  extraEnv: Record<string, string> = {},
+  directQueries = script === SCRIPT
 ): { code: number; out: unknown; err: string; art: string } {
   const art = join(cwd, '..', 'art');
   mkdirSync(art, { recursive: true });
@@ -1328,13 +1345,18 @@ function runScript(
     ...extraEnv,
   };
   for (const [k, v] of Object.entries(inputs)) env[`INPUTS_${k.toUpperCase()}`] = v;
-  const p = Bun.spawnSync(['bun', script], {
-    cwd,
-    env,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: 10_000,
-  });
+  const p = Bun.spawnSync(
+    directQueries
+      ? [process.execPath, '--preload', directAuxiliary, script]
+      : [process.execPath, script],
+    {
+      cwd,
+      env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 10_000,
+    }
+  );
   const out = p.stdout.toString().trim();
   return {
     code: p.exitCode,
@@ -1411,6 +1433,10 @@ Bun.spawnSync = (actual, opts) => {
   const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
   if (key === ${JSON.stringify(hang)})
     return spawn([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
+  // Only the stalled auxiliary (or the hook-bearing checkout) needs a real
+  // process-group watchdog. Keep every production request in the trace.
+  if (wrapped && key !== ${JSON.stringify(hang)} && !(${JSON.stringify(hook)} && key === 'worktree add'))
+    return spawn(cmd, opts);
   return spawn(actual, opts);
 };
 `;
@@ -1566,7 +1592,9 @@ describe('sa-check script', () => {
           tag: 'verify-a',
           coder: '{"status":"partial","error_class":"task"}',
         },
-        join(portable, 'sa-check.ts')
+        join(portable, 'sa-check.ts'),
+        {},
+        true
       );
     const first = accept();
     expect(first).toMatchObject({

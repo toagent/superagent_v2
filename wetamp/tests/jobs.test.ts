@@ -627,7 +627,7 @@ else if (process.argv[1].endsWith('/claude')) {
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
       expect(readJobs(Date.now(), true).jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high', readonly: role === 'strategist' } });
-      expect(args).toContain('mcp_servers={"ambient" = {"enabled" = false}}');
+      expect(args).not.toContain('mcp_servers={"ambient" = {"enabled" = false}}');
     }
     for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
