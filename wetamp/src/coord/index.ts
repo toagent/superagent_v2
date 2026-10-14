@@ -83,7 +83,7 @@ const shared = createRequire(import.meta.url)('../../hooks/coord.cjs') as {
   ) => Controller;
   hash: (value: unknown) => string;
   read: (file: string) => unknown;
-  files: (home: string, dir: string) => Message[];
+  files: <T = Message>(home: string, dir: string) => T[];
   refusal: (action: string, owner: Identity | null, state: Presence['state']) => string;
   resolveOwner: (
     scope: Scope,
@@ -352,7 +352,7 @@ export class Coordination {
   private leaseKey(scope: Scope, who: Identity): string {
     return shared.hash([scope, identity.key(who)]);
   }
-  private transfer(scope: Scope, who: Identity | null, reason: string): Claim {
+  private transfer(scope: Scope, who: Identity | null, reason: string, renewal = false): Claim {
     const old = this.claimOf(scope),
       view = this.owner(scope),
       at = new Date(this.d.now()).toISOString();
@@ -366,10 +366,12 @@ export class Coordination {
       reason,
       history: [...(old?.history ?? []), { owner: who, generation, at, reason }],
     };
+    if (renewal && !old && view.owner)
+      c.history.unshift({ owner: view.owner, generation: view.generation, at, reason });
     this.save('claims', shared.hash(scope), c);
     if (who) this.save('leases', this.leaseKey(scope, who), { generation: c.generation });
     for (const previous of view.owner ? [view.owner] : view.conflicts)
-      if (!same(previous, who))
+      if (!renewal && !same(previous, who))
         this.notice('takeover', scope, who ?? previous, previous, c.generation, reason);
     return c;
   }
@@ -402,16 +404,42 @@ export class Coordination {
     });
   }
   admit(scope: Scope, who: Identity, expected?: number): Controller {
-    return this.locked(() =>
-      shared.admission(
-        this.d.sa,
-        scope,
-        who,
-        expected,
-        join(this.d.sa, 'archon'),
-        this.owner(scope)
-      )
-    );
+    const admit = (): Controller =>
+      this.locked(() => {
+        let view = this.owner(scope);
+        const previous = view.owner;
+        // Only the native launcher evidence can authorize a process-lifetime change.
+        if (
+          this.scopes.has(this.scopeLock(scope)) &&
+          previous &&
+          !same(previous, who) &&
+          previous.session_id &&
+          previous.pid_start &&
+          previous.session_id === who.session_id &&
+          previous.client === who.client &&
+          previous.host === who.host &&
+          who.host === hostname() &&
+          who.pid_start &&
+          same(launcher(this.d.sa), who) &&
+          view.presence.state === 'offline' &&
+          inspectProcess(who.pid).start === who.pid_start &&
+          (expected === undefined || expected === view.generation) &&
+          !shared
+            .files<Claim>(this.d.sa, 'claims')
+            .some(
+              c =>
+                c.owner?.client === who.client &&
+                c.owner.session_id === who.session_id &&
+                !same(c.owner, who) &&
+                this.d.presence(c.owner).state !== 'offline'
+            )
+        ) {
+          expected = this.transfer(scope, who, 'same-session-renewal', true).generation;
+          view = this.owner(scope);
+        }
+        return shared.admission(this.d.sa, scope, who, expected, join(this.d.sa, 'archon'), view);
+      });
+    return same(this.owner(scope).owner, who) ? admit() : this.scoped(scope, admit);
   }
   inherited(a: Admission): boolean {
     if (a.parent?.pid !== process.ppid || a.parent.start !== inspectProcess(a.parent.pid).start)

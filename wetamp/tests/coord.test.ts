@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
+import * as launchers from '../src/launcher';
 import { join } from 'node:path';
 import {
   Coordination,
@@ -24,7 +25,9 @@ import {
   type Presence,
 } from '../src/coord';
 import { ownerLost } from '../src/archon';
-import { main, waitRun, type Ledger } from '../src/cli';
+import * as native from '../src/archon';
+import * as landing from '../src/land';
+import { finalizeDelivery, main, waitRun, type Ledger } from '../src/cli';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const req = createRequire(import.meta.url);
@@ -1166,3 +1169,245 @@ test('Archon launch consumes the new run admission instead of the foreign reposi
     live.mockRestore();
   }
 });
+
+function renewalFixture() {
+  const s = setup();
+  const old = { ...a, pid: 99999999, pid_start: 'exited-lifetime' };
+  s.c.claim(s.scope, old);
+  process.env.SUPERAGENT_HOME = s.sa;
+  const evidence = spyOn(launchers, 'launcher').mockReturnValue({
+    ...a,
+    client: 'codex',
+    tty: null,
+    cwd: s.repo,
+  });
+  return { ...s, old, evidence, actual: new Coordination({ sa: s.sa, runs: () => [] }) };
+}
+
+test('same-session renewal writes a new lease and history without takeover; stale leases stay fenced', () => {
+  const s = renewalFixture();
+  try {
+    const next = s.actual.mutate(s.scope, a, controller => controller, 1);
+    expect(next).toEqual({ ...a, generation: 2 });
+    expect(req('../hooks/coord.cjs').admission(s.sa, s.scope, a, 2)).toEqual(next);
+    expect(s.actual.inbox(s.old)).toEqual([]);
+    expect(s.actual.messages()).toEqual([]);
+    const claim = JSON.parse(
+      readFileSync(join(s.sa, 'coord/claims', hooks.hash(s.scope) + '.json'), 'utf8')
+    );
+    expect(claim.history).toMatchObject([
+      { owner: s.old, generation: 1 },
+      { owner: a, generation: 2, reason: 'same-session-renewal' },
+    ]);
+    expect(() => s.actual.mutate(s.scope, s.old, () => true, 1)).toThrow('fencing');
+    expect(() => s.actual.mutate(s.scope, a, () => true, 1)).toThrow('fencing');
+    expect(s.actual.mutate(s.scope, a, () => true, 2)).toBe(true);
+  } finally {
+    s.evidence.mockRestore();
+  }
+});
+
+test('same-session PID reuse renews, including legacy owner history', () => {
+  const s = renewalFixture();
+  try {
+    const old = { ...a, pid_start: 'previous-lifetime' };
+    const c = new Coordination({
+      sa: s.sa,
+      runs: () => [
+        {
+          run_id: 'legacy',
+          archon_run_id: 'engine',
+          repo: s.repo,
+          controller: { ...old, generation: 7 },
+        },
+      ],
+    });
+    const scope = runScope({ run_id: 'legacy', repo: s.repo });
+    expect(c.mutate(scope, a, x => x.generation, 7)).toBe(8);
+    const claim = JSON.parse(
+      readFileSync(join(s.sa, 'coord/claims', hooks.hash(scope) + '.json'), 'utf8')
+    );
+    expect(claim.history.map((entry: { owner: Identity }) => entry.owner)).toMatchObject([old, a]);
+    expect(c.messages()).toEqual([]);
+  } finally {
+    s.evidence.mockRestore();
+  }
+});
+
+for (const mode of [
+  'host',
+  'session',
+  'client',
+  'missing-session',
+  'missing-start',
+  'unknown',
+  'live',
+  'unverified',
+  'self-reported',
+  'stale',
+  'double-live',
+]) {
+  test(`same-session renewal refuses ${mode} without executing or changing generation`, () => {
+    const s = renewalFixture();
+    try {
+      const old: Identity = { ...s.old };
+      if (mode === 'host') old.host = 'remote-host';
+      if (mode === 'session') old.session_id = 'other-session';
+      if (mode === 'client') old.client = 'claude';
+      if (mode === 'missing-session') delete old.session_id;
+      if (mode === 'missing-start') delete old.pid_start;
+      if (mode === 'live')
+        Object.assign(old, a, { pid: process.ppid, pid_start: ids.inspect(process.ppid).start });
+      // Replace only the scratch claim; the original lease remains generation 1.
+      const file = join(s.sa, 'coord/claims', hooks.hash(s.scope) + '.json');
+      const claim = JSON.parse(readFileSync(file, 'utf8'));
+      writeFileSync(file, JSON.stringify({ ...claim, owner: old }));
+      let c = s.actual;
+      if (mode === 'unknown')
+        c = new Coordination({ sa: s.sa, runs: () => [], presence: () => ({ state: 'unknown' }) });
+      if (mode === 'double-live')
+        s.c.claim(runScope({ run_id: 'other', repo: s.repo }), {
+          ...a,
+          pid: process.ppid,
+          pid_start: ids.inspect(process.ppid).start,
+        });
+      const who = mode === 'unverified' ? { ...a, pid_start: 'invented-lifetime' } : a;
+      if (mode === 'unverified')
+        s.evidence.mockReturnValue({ ...who, client: 'codex', tty: null, cwd: s.repo });
+      if (mode === 'self-reported') {
+        s.evidence.mockReturnValue(undefined);
+        process.env.SUPERAGENT_SESSION_ID = a.session_id;
+      }
+      let executed = false;
+      expect(() =>
+        c.mutate(
+          s.scope,
+          who,
+          () => {
+            executed = true;
+          },
+          mode === 'stale' ? 0 : 1
+        )
+      ).toThrow('fencing');
+      expect(executed).toBe(false);
+      expect(c.owner(s.scope).generation).toBe(1);
+      expect(c.messages()).toEqual([]);
+    } finally {
+      s.evidence.mockRestore();
+    }
+  });
+}
+
+for (const failure of ['none', 'repo', 'run']) {
+  test(`finalizeDelivery renews both scopes before applyLand (failure=${failure})`, () => {
+    const s = renewalFixture();
+    process.env.ARCHON_HOME = join(s.sa, 'archon');
+    process.env.SUPERAGENT_ROLE = '';
+    const run = runScope({ run_id: 'target', repo: s.repo });
+    const controller = s.c.claim(run, failure === 'run' ? b : s.old).controller;
+    if (failure === 'repo') s.c.claim(s.scope, b, true, 'fixture conflict');
+    mkdirSync(join(s.sa, 'runs'));
+    writeFileSync(
+      join(s.sa, 'runs/target.json'),
+      JSON.stringify({
+        run_id: 'target',
+        archon_run_id: 'engine',
+        repo: s.repo,
+        controller,
+        gen_dir: s.sa,
+        branch: 'feature',
+        workflow: 'fixture',
+        delivery: {},
+      })
+    );
+    writeFileSync(join(s.sa, 'plan.json'), JSON.stringify({ base_ref: 'main', packages: [] }));
+    writeFileSync(join(s.sa, 'accept-inputs.json'), '{}');
+    const art = join(s.sa, 'artifacts/runs/engine');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'land.json'), '{}');
+    const get = spyOn(native, 'getRun').mockReturnValue({
+      id: 'engine',
+      status: 'completed',
+      output_root: s.sa,
+    });
+    const apply = spyOn(landing, 'applyLand').mockImplementation(() => {
+      expect(s.actual.owner(s.scope)).toMatchObject({ owner: a, generation: 2 });
+      expect(s.actual.owner(run)).toMatchObject({ owner: a, generation: 2 });
+      return undefined;
+    });
+    try {
+      const action = () => finalizeDelivery('target', true);
+      if (failure !== 'none')
+        expect(action).toThrow(failure === 'repo' ? `repo:${s.scope.id}` : `run:${run.id}`);
+      else action();
+      expect(apply).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
+      expect(get).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
+      expect(s.actual.owner(s.scope).generation).toBe(2);
+      expect(s.actual.owner(run).generation).toBe(failure === 'none' ? 2 : 1);
+      expect(s.actual.owner(s.scope).owner).toMatchObject(failure === 'repo' ? b : a);
+    } finally {
+      apply.mockRestore();
+      get.mockRestore();
+      s.evidence.mockRestore();
+    }
+  });
+}
+
+// Keep both native launcher parents alive until both contenders have reported.
+test('two real same-session processes race to renew; only one acquires the lease', async () => {
+  const s = setup();
+  s.c.claim(s.scope, { ...a, client: 'claude', pid: 99999999, pid_start: 'exited' });
+  const parent = join(s.root, 'claude');
+  const child = join(s.root, 'renew.ts');
+  writeFileSync(
+    child,
+    `
+import {Coordination,caller} from ${JSON.stringify(join(import.meta.dir, '../src/coord/index.ts'))};
+import {existsSync,writeFileSync} from 'node:fs';
+const c=new Coordination({sa:process.env.SUPERAGENT_HOME,runs:()=>[]});
+const who=caller();
+while(!existsSync(${JSON.stringify(join(s.root, 'go'))})) await Bun.sleep(10);
+let ok=false; try { c.mutate(${JSON.stringify(s.scope)},who,()=>{ok=true;},1); } catch {}
+writeFileSync(process.argv[2],JSON.stringify({ok,who}));
+`
+  );
+  writeFileSync(
+    parent,
+    `
+import {mkdirSync,writeFileSync,existsSync} from 'node:fs';
+import {hostname} from 'node:os';
+import {inspectProcess} from ${JSON.stringify(join(import.meta.dir, '../src/launcher.ts'))};
+const id=process.argv[2],root=${JSON.stringify(s.root)},sa=process.env.SUPERAGENT_HOME;
+mkdirSync(sa+'/live',{recursive:true});
+writeFileSync(sa+'/live/'+id+'.json',JSON.stringify({client:'claude',session_id:'A',pid:process.pid,pid_start:inspectProcess(process.pid).start,host:hostname(),cwd:${JSON.stringify(s.repo)},at:new Date().toISOString()}));
+const p=Bun.spawn([process.execPath,${JSON.stringify(child)},root+'/'+id+'.json'],{env:{...process.env,SUPERAGENT_ROLE:''},stdout:'ignore',stderr:'inherit'});
+await p.exited;
+while(!existsSync(root+'/release')) await Bun.sleep(10);
+`
+  );
+  const procs = ['one', 'two'].map(id =>
+    Bun.spawn([process.execPath, parent, id], {
+      env: { ...process.env, SUPERAGENT_HOME: s.sa, ARCHON_HOME: join(s.sa, 'archon') },
+      stdout: 'ignore',
+      stderr: 'pipe',
+    })
+  );
+  try {
+    writeFileSync(join(s.root, 'go'), '');
+    const deadline = Date.now() + 10000;
+    while (
+      !['one', 'two'].every(id => existsSync(join(s.root, id + '.json'))) &&
+      Date.now() < deadline
+    )
+      await Bun.sleep(20);
+    const results = ['one', 'two'].map(id =>
+      JSON.parse(readFileSync(join(s.root, id + '.json'), 'utf8'))
+    );
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(s.c.owner(s.scope)).toMatchObject({ owner: results.find(r => r.ok).who, generation: 2 });
+    expect(s.c.messages()).toEqual([]);
+  } finally {
+    writeFileSync(join(s.root, 'release'), '');
+    await Promise.all(procs.map(p => p.exited));
+  }
+}, 20000);

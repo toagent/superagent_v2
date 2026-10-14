@@ -97,7 +97,7 @@ function admission(home, scope, who, expected, archon, resolved) {
   const lease = read(path.join(home, 'coord', 'leases', hash([owned, require('./identity.cjs').key(who || {})]) + '.json'));
   if (!same(view.owner, who) || (expected !== undefined && expected !== view.generation) ||
       (claims.some(c => hash(c.scope) === hash(owned)) && lease?.generation !== view.generation))
-    throw new Error(refusal('变更动作（owner/generation fencing）', view.owner));
+    throw new Error(refusal(`变更动作（owner/generation fencing ${scope.kind}:${scope.id}）`, view.owner));
   return {...who, generation: view.generation};
 }
 function archonMutation(argv) {
