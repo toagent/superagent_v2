@@ -10,14 +10,31 @@
 ```json
 {
   "input": {
-    "source": "codex", "session": "session-id", "message": "stable-message-id",
-    "text": "本条项目需求", "repo": "/absolute/project/path",
-    "actor": "operator", "owner": "commander"
+    "source": "codex",
+    "session": "session-id",
+    "message": "stable-message-id",
+    "text": "本条项目需求",
+    "repo": "/absolute/project/path",
+    "actor": "operator",
+    "owner": "commander"
   },
   "actions": [
-    {"kind": "create", "ref": "a", "brief": "问题、价值、为什么现在、结果、不变量", "acceptance": "验收", "group": "g"},
-    {"kind": "amend", "task": "$a", "expected_revision": 1, "brief": "更新后的完整合同", "acceptance": "新验收", "group": "g"},
-    {"kind": "clarify", "fragment": "另一个片段需要确定目标"}
+    {
+      "kind": "create",
+      "ref": "a",
+      "brief": "问题、价值、为什么现在、结果、不变量",
+      "acceptance": "验收",
+      "group": "g"
+    },
+    {
+      "kind": "amend",
+      "task": "$a",
+      "expected_revision": 1,
+      "brief": "更新后的完整合同",
+      "acceptance": "新验收",
+      "group": "g"
+    },
+    { "kind": "clarify", "fragment": "另一个片段需要确定目标" }
   ]
 }
 ```
@@ -77,7 +94,6 @@ run completed 且所有有效 decision 有证据与 verified requirement，并�
 聚焦验证：`rtk proxy bun test --cwd wetamp ./tests/intake.test.ts`；
 静态检查：`rtk proxy bun x --no-install tsc --noEmit -p wetamp/tsconfig.json`。
 
-
 ## 追加义务与真实覆盖
 
 `create/amend` 可带 `requirements: [{"id":"A","text":"用户义务原文"}]`。
@@ -88,7 +104,7 @@ run completed 且所有有效 decision 有证据与 verified requirement，并�
 `launch` 可带非空子集映射：
 
 ```json
-{"requirement_map":[{"task_requirement_id":"A","package":"pkg","requirement_id":"req"}]}
+{ "requirement_map": [{ "task_requirement_id": "A", "package": "pkg", "requirement_id": "req" }] }
 ```
 
 每个 binding 内源 ID 和目标 package/id 唯一；源必须属于当前 revision。
@@ -100,7 +116,8 @@ run completed 且所有有效 decision 有证据与 verified requirement，并�
 
 保留 `tasks/inputs/truncated`，新增 `coverage/next`。coverage.tasks/inputs 分别给出
 固定读取上界内的 eligible `total`、本页 `shown`、尚未遍历 `remaining`、上界后的 `later`；
-`coverage.obligations` 是当前完整 Task 集合的义务总数。过大条目降为 id/key 短指针，
+`coverage.obligations` 是当前 revision 未撤销 Task 的义务数，`coverage.total_obligations`
+包含已撤销 Task 的义务。过大条目降为 id/key 短指针，
 使用 show/input 查询正文。每页 JSON 严格受字节预算限制。
 
 ```sh
@@ -116,5 +133,7 @@ append-only 数组上界与绝对位置；持续追加不重启遍历，条目�
 
 `backlog` 是同一 Intake 的只读进度投影，不额外持久化或调用模型；包含全部 Task、
 父子关系、当前义务/覆盖 ID、completion 与 unknown 原因、questions、取消历史、show 指针。
+摘要的 `obligations` 只统计当前 revision 未撤销 Task，`total_obligations` 包含已撤销 Task；
+任务自身的当前撤销意图优先显示为 `cancelled_intent`，不被子任务的 unknown 状态覆盖。
 可按父任务查看其整个子树。原生 hook 要求读完 continuation 后判断范围/生成进度，
 进度以 backlog 为准；status-only 继续提交 `actions: []`，不缩小旧需求集合。

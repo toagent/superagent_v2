@@ -810,6 +810,44 @@ test('coverage unions current revision exact targets and every descendant blocks
   expect(completion(s.show(legacy), evidence, s.list())).toBe('unknown');
 });
 
+test('backlog excludes current cancellation intents from obligations and preserves total obligations', () => {
+  const s = new Intake(root()),
+    requirements = [{ id: 'A', text: 'A' }],
+    evidence = () => undefined;
+  const parent = apply(s, 'parent', [{ ...create(), requirements }]).results![0]!.task!;
+  const child = apply(s, 'child', [{ ...create(), parent, requirements }]).results![0]!.task!;
+  const other = apply(s, 'other', [{ ...create(), requirements }]).results![0]!.task!;
+  expect(s.backlog('/repo', evidence)).toMatchObject({ obligations: 3, total_obligations: 3 });
+  expect(s.backlog('/repo', evidence).tasks[0]!.reason).toBe('children_unknown');
+  apply(s, 'cancel-parent', [{ kind: 'cancel', task: parent, expected_revision: 1 }]);
+  apply(s, 'cancel-other', [{ kind: 'cancel', task: other, expected_revision: 1 }]);
+  const before = s.list();
+  const backlog = s.backlog('/repo', evidence);
+  expect(backlog).toMatchObject({ obligations: 1, total_obligations: 3 });
+  expect(backlog.tasks.map(t => t.reason)).toEqual([
+    'cancelled_intent',
+    'no_mapping',
+    'cancelled_intent',
+  ]);
+  expect(backlog.tasks[0]!.completion).toBe('unknown');
+  expect(s.backlog('/repo', evidence, parent)).toMatchObject({
+    obligations: 1,
+    total_obligations: 2,
+    tasks: [{ id: parent }, { id: child }],
+  });
+  expect(s.context('/repo').coverage).toMatchObject({ obligations: 1, total_obligations: 3 });
+  expect(s.list()).toEqual(before);
+  apply(s, 'amend-parent', [amend(parent)]);
+  expect(s.backlog('/repo', evidence)).toMatchObject({ obligations: 2, total_obligations: 3 });
+  expect(s.backlog('/repo', evidence).tasks[0]!.reason).toBe('children_unknown');
+  apply(s, 'cancel-child', [{ kind: 'cancel', task: child, expected_revision: 1 }]);
+  expect(s.backlog('/repo', evidence, child)).toMatchObject({
+    obligations: 0,
+    total_obligations: 1,
+    tasks: [{ reason: 'cancelled_intent' }],
+  });
+});
+
 test('fixed-bound context visits all ID/key pointers once despite continuous append and detects reordered history', () => {
   const dir = root(),
     s = new Intake(dir),
