@@ -1630,7 +1630,12 @@ describe('decide (archon stub)', () => {
     expect(s.calls()).toContain('workflow abandon r --json');
   });
   test('retry --hint writes the package hint, then resumes', () => {
-    const failed = run('failed', { nodes: [{ nodeId: 'code-core', state: 'failed' }] });
+    const failed = run('failed', {
+      nodes: [
+        { nodeId: 'start-m1', state: 'completed' },
+        { nodeId: 'code-core', state: 'failed' },
+      ],
+    });
     const s = stub([failed, failed]);
     expect(
       captured(() => main(['decide', 'sa1', 'retry', '--pkg', 'core', '--hint', 'use X'])).code
@@ -3088,6 +3093,9 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
   const asksFile = (): string => join(process.env.SUPERAGENT_HOME ?? '', 'asks.json');
   test('M2-05 repair-p failed without green evidence enters an existing hold and accepts retry', () => {
     const s = held('repair-p');
+    const r = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+    r.nodes = [{ nodeId: 'start-m1', state: 'completed' }, ...(r.nodes ?? [])];
+    setGet(s.root, r);
     const planFile = join(s.root, 'gen', 'plan.json');
     const plan = JSON.parse(readFileSync(planFile, 'utf8')) as { packages: { id: string }[] };
     plan.packages[0].id = 'p';
@@ -4038,7 +4046,10 @@ describe('HF9 decision titles', () => {
         '  - id: package-attempt-W4\n'
       );
       put(`${node}.json`, { reason: 'coder_redline' });
-      r.nodes = [{ nodeId: node, state: 'failed' }];
+      r.nodes = [
+        { nodeId: 'start-m1', state: 'completed' },
+        { nodeId: node, state: 'failed' },
+      ];
       writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
       writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
       expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
