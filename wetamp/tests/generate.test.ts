@@ -775,7 +775,7 @@ describe('buildWorkflow', () => {
           process.execPath,
           '--no-env-file',
           '-e',
-          'import { contextEnvironmentIdentity } from "./.archon/scripts/sa-check.ts"; console.log(contextEnvironmentIdentity(process.env));',
+          'import { environmentIdentity, projectEnvironment } from "./.archon/scripts/sa-check.ts"; console.log(environmentIdentity(projectEnvironment(process.env)));',
         ],
         { cwd: gen, env: { ...process.env, ARTIFACTS_DIR: gen }, stdout: 'pipe', stderr: 'pipe' }
       );

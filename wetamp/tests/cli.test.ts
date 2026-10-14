@@ -62,7 +62,15 @@ import { buildWorkflow, engineHash, generate, renderBrief } from '../src/generat
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { detailOf, redact as boardRedact } from '../src/board/detail';
 import { rowOf } from '../src/board/data';
-import { directAuxiliaryPreload, fixturePlan, gitRepo, sh, tmp } from './helpers';
+import {
+  acceptanceNodeEnvironment,
+  directAuxiliaryPreload,
+  fixturePlan,
+  gitRepo,
+  sh,
+  tmp,
+} from './helpers';
+import { resolveAcceptanceContext } from '../src/role-context';
 import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 
 const engineRecoverLock = () => {
@@ -1956,6 +1964,74 @@ test.each([
     warn.mockRestore();
   }
 });
+
+test.each([true, false])(
+  'U5: CLI accept reuses real node cache without caller Python settings; cache=%s',
+  async cache => {
+    process.env.BUN_OPTIONS =
+      `${process.env.BUN_OPTIONS ?? ''} --preload=${directAuxiliaryPreload()}`.trim();
+    const s = stub([]),
+      repo = gitRepo(s.root),
+      counter = join(s.root, 'executions');
+    const plan = JSON.parse(readFileSync(fixturePlan(s.root, repo), 'utf8')) as Plan;
+    plan.packages = [plan.packages[0]!];
+    plan.packages[0]!.accept = [{ cmd: `echo executed >> '${counter}'`, timeout_s: 5, cache }];
+    const gen = generate(plan, 'sa1', true);
+    s.ledger.gen_dir = gen.dir;
+    s.ledger.repo = repo;
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const art = join(s.root, 'home/artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    const contracts = JSON.parse(
+      readFileSync(join(gen.dir, 'accept-inputs.json'), 'utf8')
+    ) as Record<string, string>[];
+    const contract = contracts.find(c => c.tag === 'diff-m1-r1')!;
+    const head = sh('git rev-parse HEAD', repo).trim();
+    const output = {
+      head,
+      reviewed_head: head,
+      diff_hash: 'previous',
+      status: 'done',
+      error_class: null,
+      needs: [],
+    };
+    const producerIds = new Set(
+      Object.values(contract)
+        .map(v => parseWholeOutputRef(v)?.nodeId)
+        .filter((id): id is string => !!id)
+    );
+    const authority = {
+      ...run('completed', { working_path: repo, output_root: join(s.root, 'home') }),
+      user_message: '',
+      metadata: {},
+      events: [...producerIds].map(step_name => ({
+        step_name,
+        event_type: 'node_completed',
+        data: { node_output: JSON.stringify(output), structured_output: output },
+      })),
+    };
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(authority));
+    const resolved = await resolveAcceptanceContext(authority, [contract], art);
+    const warm = Bun.spawnSync([process.execPath, join(gen.dir, '.archon/scripts/sa-check.ts')], {
+      cwd: repo,
+      env: {
+        ...process.env,
+        ...acceptanceNodeEnvironment(art, contract.tag!),
+        ...Object.fromEntries(
+          Object.entries(resolved.inputs[0]!).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])
+        ),
+        INPUTS_EVENTS_FILE: resolved.events_file,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(warm.exitCode, warm.stderr.toString()).toBe(0);
+    expect(readFileSync(counter, 'utf8')).toBe('executed\n');
+    const result = captured(() => main(['accept', 'sa1']));
+    expect(result.code, result.out).toBe(0);
+    expect(readFileSync(counter, 'utf8')).toBe(cache ? 'executed\n' : 'executed\nexecuted\n');
+  }
+);
 
 test.each([
   [1, 'inputs'],

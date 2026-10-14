@@ -10,6 +10,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { buildExecNodeEnvironment } from '../../packages/workflows/src/exec-environment';
+import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/src/node-execution';
 import { removeTempTree } from '@archon/paths/test-utils';
 
 const roots: string[] = [];
@@ -111,4 +113,26 @@ export function fixturePlan(
   const p = join(root, 'plan.json');
   writeFileSync(p, JSON.stringify(plan));
   return p;
+}
+
+/** Real engine contract with a fresh invocation/attempt for each acceptance node. */
+export function acceptanceNodeEnvironment(art: string, node: string): Record<string, string> {
+  return buildExecNodeEnvironment({
+    artifactsDir: art,
+    stateDir: join(art, 'state'),
+    logDir: join(art, node),
+    workflowId: 'fixture',
+    baseBranch: 'main',
+    userMessage: 'fixture request',
+    loopUserInput: '',
+    loopPrevOutput: '',
+    rejectionReason: '',
+    typedArtifactsFile: join(art, `${node}.listing.json`),
+    nodeExecution: startNodeExecution({
+      runId: 'fixture',
+      path: node,
+      node: { id: node, kind: 'exec', runtime: 'sh', script: ':' },
+      invocation: newNodeInvocation(),
+    }),
+  }) as Record<string, string>;
 }

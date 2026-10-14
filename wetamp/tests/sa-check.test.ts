@@ -31,7 +31,14 @@ import {
   CHECK_AUX_TIMEOUT_MS,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
-import { directAuxiliaryPreload, fixturePlan, gitRepo, sh, tmp } from './helpers';
+import {
+  acceptanceNodeEnvironment,
+  directAuxiliaryPreload,
+  fixturePlan,
+  gitRepo,
+  sh,
+  tmp,
+} from './helpers';
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
 import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
@@ -1325,9 +1332,10 @@ function runScript(
   mkdirSync(art, { recursive: true });
   // An engine accept node runs this suite with its own INPUTS_*/WORKFLOW_ID; inheriting them points
   // the script at the live run's Archon instead of the fixture.
-  const inherited = Object.entries(process.env as Record<string, string>).filter(
-    ([k]) => !k.startsWith('INPUTS_') && k !== 'WORKFLOW_ID'
-  );
+  const inherited = Object.entries(process.env as Record<string, string>).map(([k, v]) => [
+    k,
+    k.startsWith('INPUTS_') || k === 'WORKFLOW_ID' ? '' : v,
+  ]);
   const env: Record<string, string> = {
     ...Object.fromEntries(inherited),
     ARTIFACTS_DIR: art,
@@ -2646,7 +2654,7 @@ describe('sa-check script', () => {
     const counter = join(root, 'n'),
       art = join(root, 'art'),
       cache = join(art, 'accept-cache');
-    const cmd = `echo x >> ${counter}; test "$SA_REVIEW_MODE" = good`;
+    const cmd = `echo x >> ${counter}; test "$SA_REVIEW_MODE" = good && bun -e 'if (Object.keys(process.env).some(k => k.startsWith("INPUTS_") || ["ARCHON_NODE_EXECUTION", "TYPED_ARTIFACTS_FILE", "STATE_DIR", "LOG_DIR", "BASE_BRANCH", "USER_MESSAGE", "CONTEXT"].includes(k))) process.exit(1)'`;
     const check = { cmd, timeout_s: 5, cache: true };
     writeFileSync(p, JSON.stringify({ packages: [{ id: 'a', accept: [check] }] }));
     const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -2670,6 +2678,13 @@ describe('sa-check script', () => {
         WORKFLOW_ID: 'changed',
         SA_COORD_ADMISSION: 'changed',
         SUPERAGENT_ROLE: 'changed',
+        ARCHON_NODE_EXECUTION: 'changed',
+        TYPED_ARTIFACTS_FILE: 'changed',
+        STATE_DIR: 'changed',
+        LOG_DIR: 'changed',
+        BASE_BRANCH: 'changed',
+        USER_MESSAGE: 'changed',
+        CONTEXT: 'changed',
       }).out
     ).toMatchObject({ ok: true });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
@@ -2697,6 +2712,101 @@ describe('sa-check script', () => {
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
   }, 10_000);
+  test('U5: hmac-v1 cache entries cannot satisfy the new identity version', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      art = join(root, 'art');
+    const counter = join(root, 'executions');
+    const p = planFile(root, `echo executed >> '${counter}'`, [], true);
+    const scripts = join(root, 'scripts');
+    cpSync(join(import.meta.dir, '../templates/.archon/scripts'), scripts, { recursive: true });
+    cpSync(
+      join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'),
+      join(scripts, 'policy-attempts.ts')
+    );
+    const legacy = join(scripts, 'sa-check.ts');
+    writeFileSync(legacy, readFileSync(legacy, 'utf8').replace("'hmac-v2'", "'hmac-v1'"));
+    const inputs = { kind: 'accept', plan: p, pkgs: 'a', tag: 'old-version' };
+    const node = acceptanceNodeEnvironment(art, 'old-version');
+    expect(runScript(repo, inputs, legacy, node, true).code).toBe(0);
+    expect(runScript(repo, { ...inputs, tag: 'current-version' }, SCRIPT, node).code).toBe(0);
+    expect(readFileSync(counter, 'utf8')).toBe('executed\nexecuted\n');
+    expect(runScript(repo, { ...inputs, tag: 'current-reuse' }, SCRIPT, node).code).toBe(0);
+    expect(readFileSync(counter, 'utf8')).toBe('executed\nexecuted\n');
+  });
+  test('U5: real node environments reuse output and contract; identity changes execute again', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      art = join(root, 'art');
+    const counter = join(root, 'executions'),
+      p = join(root, 'plan.json');
+    const check = {
+      cmd: `echo executed >> '${counter}'; echo original-stdout; echo original-stderr >&2`,
+      timeout_s: 5,
+      cache: true,
+    };
+    const plan = {
+      packages: [{ id: 'a', accept: [check] }],
+      environment: [] as { cmd: string; timeout_s: number }[],
+    };
+    const go = (tag: string, extra: Record<string, string> = {}) => {
+      writeFileSync(p, JSON.stringify(plan));
+      const result = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag }, SCRIPT, {
+        ...acceptanceNodeEnvironment(art, tag),
+        ...extra,
+      });
+      expect(result.code, result.err).toBe(0);
+      return result.out as Accept;
+    };
+    const count = () => readFileSync(counter, 'utf8').trim().split('\n').length;
+    const first = go('verify-a'),
+      second = go('diff-m1-r1');
+    expect(count()).toBe(1);
+    expect(second.contract_hash).toBe(first.contract_hash);
+    const replay = readFileSync(join(art, 'diff-m1-r1.log'), 'utf8');
+    expect(replay).toContain('# reused pass from verify-a');
+    expect(replay).toContain('original-stdout\noriginal-stderr\n');
+    for (const [tag, path] of [
+      ['tracked', 'README.md'],
+      ['untracked', 'new.txt'],
+    ]) {
+      const file = join(repo, path!);
+      const original = existsSync(file) ? readFileSync(file) : null;
+      writeFileSync(file, 'changed');
+      const before = count();
+      for (let i = 0; i < 2; i++) {
+        const result = runScript(
+          repo,
+          { kind: 'accept', plan: p, pkgs: 'a', tag: `${tag}-${i}` },
+          SCRIPT,
+          acceptanceNodeEnvironment(art, tag!)
+        );
+        expect(result.out).toMatchObject({ workspace_clean: false, ok: false });
+      }
+      expect(count()).toBe(before + 2);
+      if (original) writeFileSync(file, original);
+      else unlinkSync(file);
+    }
+    check.cache = false;
+    go('uncached-1');
+    go('uncached-2');
+    expect(count()).toBe(7);
+    check.cache = true;
+    go('project-changed', { SA_U5_PROJECT: 'changed' });
+    expect(count()).toBe(8);
+    plan.environment = [{ cmd: 'true', timeout_s: 5 }];
+    go('env-key-changed');
+    expect(count()).toBe(9);
+    check.timeout_s++;
+    go('timeout-changed');
+    expect(count()).toBe(10);
+    sh(
+      'echo changed > README.md && git add README.md && git -c user.name=t -c user.email=t@l commit -qm changed',
+      repo
+    );
+    go('tree-changed');
+    expect(count()).toBe(11);
+  });
   test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -2808,7 +2918,7 @@ describe('sa-check script', () => {
     expect(retried.out).toMatchObject({ failures: [{ failure_class: 'fixture', evidence }] });
     expect(readFileSync(counter, 'utf8')).toBe('x\n');
     expect(readFileSync(evidence, 'utf8')).toBe(
-      `${originalLog}$ ${check.cmd}\n# reused failure from verify-a\n\n`
+      `${originalLog}$ ${check.cmd}\n# reused failure from verify-a\n${JSON.stringify({ failure_class: 'fixture', evidence: 'fixture' })}\n\n`
     );
     plan.environment = [{ cmd: 'true', timeout_s: 5 }];
     go('environment-change');

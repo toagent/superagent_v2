@@ -11,7 +11,13 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
 import type { Learning } from '../../../src/learning';
-import { readAttempt, contextEnvironmentIdentity, type Accept, type Ledger } from './sa-check';
+import {
+  readAttempt,
+  environmentIdentity,
+  projectEnvironment,
+  type Accept,
+  type Ledger,
+} from './sa-check';
 
 /** Content-addressed evidence never changes when an attempt reuses its tag. */
 export function freezeContext(dir: string, value: unknown): string {
@@ -291,7 +297,7 @@ if (import.meta.main) {
         )
           throw new Error('context: stale review refs');
         if (context.carry_over === 'unknown') throw new Error('context: missing carry-over');
-        const environment = contextEnvironmentIdentity(process.env);
+        const environment = environmentIdentity(projectEnvironment(process.env));
         if (context.environment !== environment) {
           // Rebuild reference data from its owners; preserve the immutable old snapshot.
           // Acceptance remains the original evidence, never a synthetic green result.
@@ -334,7 +340,7 @@ if (import.meta.main) {
                 cwd: process.cwd(),
                 base: git.stdout.toString().trim(),
                 head: git.stdout.toString().trim(),
-                environment: contextEnvironmentIdentity(process.env),
+                environment: environmentIdentity(projectEnvironment(process.env)),
               });
         pack = contextPack(
           gen,
@@ -353,7 +359,7 @@ if (import.meta.main) {
           cwd: process.cwd(),
           base: git.stdout.toString().trim(),
           head: git.stdout.toString().trim(),
-          environment: contextEnvironmentIdentity(process.env),
+          environment: environmentIdentity(projectEnvironment(process.env)),
         });
         writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path }));
       }

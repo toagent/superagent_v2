@@ -205,31 +205,46 @@ function cacheKey(): Buffer {
   return key;
 }
 
-const commandEnvironmentKey = (k: string): boolean =>
-  !k.startsWith('INPUTS_') &&
-  !['WORKFLOW_ID', 'ARTIFACTS_DIR', 'SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k);
+// Pack scripts cannot import the engine; tests enforce this copy against its owner.
+export const NODE_CONTRACT_ENV: readonly string[] = [
+  'ARTIFACTS_DIR',
+  'STATE_DIR',
+  'LOG_DIR',
+  'ADOPTED_RUN_DIR',
+  'WORKFLOW_ID',
+  'BASE_BRANCH',
+  'USER_MESSAGE',
+  'ARGUMENTS',
+  'LOOP_USER_INPUT',
+  'LOOP_PREV_OUTPUT',
+  'REJECTION_REASON',
+  'CONTEXT',
+  'EXTERNAL_CONTEXT',
+  'ISSUE_CONTEXT',
+  'TYPED_ARTIFACTS_FILE',
+  'ARCHON_NODE_EXECUTION',
+];
+export const projectEnvironment = (values: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(
+    Object.entries(values).filter(
+      ([k]) =>
+        !k.startsWith('INPUTS_') &&
+        !NODE_CONTRACT_ENV.includes(k) &&
+        !['SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k)
+    )
+  ),
+  PYTHONDONTWRITEBYTECODE: '1',
+});
 export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
   createHmac('sha256', cacheKey())
     .update(
       JSON.stringify(
         Object.keys(values)
-          .filter(commandEnvironmentKey)
           .sort()
           .map(k => [k, values[k]])
       )
     )
     .digest('hex');
-
-// R1-1: compare project environments across nodes without weakening actual-env cache keys.
-export const contextEnvironmentIdentity = (values: NodeJS.ProcessEnv): string =>
-  environmentIdentity(
-    Object.fromEntries(
-      Object.entries(values).filter(
-        ([k]) =>
-          !['ARCHON_NODE_EXECUTION', 'TYPED_ARTIFACTS_FILE', 'PYTHONDONTWRITEBYTECODE'].includes(k)
-      )
-    )
-  );
 
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
@@ -246,10 +261,7 @@ function run(
   const failed: string[] = [];
   // These variables belong to the engine node, not the project acceptance command (including probes).
   // Environment nodes keep their existing inherited environment.
-  const commandEnv =
-    env('KIND') === 'env'
-      ? process.env
-      : Object.fromEntries(Object.entries(process.env).filter(([k]) => commandEnvironmentKey(k)));
+  const commandEnv = env('KIND') === 'env' ? process.env : projectEnvironment(process.env);
   const tree = artifacts && envKey && git('rev-parse', 'HEAD^{tree}').trim();
   const environment =
     tree && checks.some(c => c.cache !== false) ? environmentIdentity(commandEnv) : '';
@@ -261,7 +273,7 @@ function run(
             'accept-cache',
             sha(
               JSON.stringify([
-                'hmac-v1',
+                'hmac-v2',
                 FAILURE_CLASSES,
                 tree,
                 c.cmd,
@@ -277,10 +289,12 @@ function run(
         tag: string;
         failure: CheckFailure | null;
         exit?: number | string;
+        stdout?: string;
+        stderr?: string;
       };
       appendFileSync(
         log,
-        `$ ${c.cmd}\n# reused ${saved.failure ? 'failure' : 'pass'} from ${saved.tag}\n\n`
+        `$ ${c.cmd}\n# reused ${saved.failure ? 'failure' : 'pass'} from ${saved.tag}\n${saved.stdout ?? ''}${saved.stderr ?? ''}\n`
       );
       if (saved.failure) {
         failed.push(c.cmd);
@@ -591,7 +605,7 @@ function acceptOnce(
         scopeIds,
         base,
         env('RISK'),
-        environmentIdentity(process.env),
+        environmentIdentity(projectEnvironment(process.env)),
         env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null,
       ])
     ),
@@ -638,7 +652,7 @@ function finish(
         acceptance: out,
         patch: out.patch ?? '',
         delta: out.delta ?? '',
-        environment: contextEnvironmentIdentity(process.env),
+        environment: environmentIdentity(projectEnvironment(process.env)),
       });
       writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path: context }));
     }

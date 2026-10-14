@@ -7,8 +7,12 @@ import { loadTiers, WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
 import { resolveAcceptanceContext } from '../src/role-context';
 import { contextPack, prepareContext, roleContext } from '../templates/.archon/scripts/sa-context';
-import { buildExecNodeEnvironment } from '../../packages/workflows/src/exec-environment';
+import {
+  buildExecNodeEnvironment,
+  EXEC_NODE_ENVIRONMENT_NAMES,
+} from '../../packages/workflows/src/exec-environment';
 import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/src/node-execution';
+import { NODE_CONTRACT_ENV } from '../templates/.archon/scripts/sa-check';
 import { gitRepo, sh, tmp } from './helpers';
 
 test('CONTEXT_PACK blocks outside/private symlink targets and preserves byte/range boundaries', () => {
@@ -147,7 +151,7 @@ test('ROOT_ACCEPT prepared R2 preserves requirements and open carry-over without
       process.execPath,
       '--no-env-file',
       '-e',
-      `import { contextEnvironmentIdentity, environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({context: contextEnvironmentIdentity(process.env), cache: environmentIdentity(process.env)}));`,
+      `import { projectEnvironment, environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(JSON.stringify({context: environmentIdentity(projectEnvironment(process.env)), cache: environmentIdentity(projectEnvironment(process.env))}));`,
     ],
     { cwd: repo, env: diffEnv, stdout: 'pipe', stderr: 'pipe' }
   );
@@ -158,12 +162,12 @@ test('ROOT_ACCEPT prepared R2 preserves requirements and open carry-over without
       process.execPath,
       '--no-env-file',
       '-e',
-      `import { environmentIdentity } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(environmentIdentity(process.env));`,
+      `import { environmentIdentity, projectEnvironment } from ${JSON.stringify(join(gen, '.archon/scripts/sa-check.ts'))}; console.log(environmentIdentity(projectEnvironment(process.env)));`,
     ],
     { cwd: repo, env: reviewEnv, stdout: 'pipe', stderr: 'pipe' }
   );
   expect(reviewFingerprint.exitCode).toBe(0);
-  expect(reviewFingerprint.stdout.toString().trim()).not.toBe(identities.cache);
+  expect(reviewFingerprint.stdout.toString().trim()).toBe(identities.cache);
   const input = {
     gen,
     artifacts: art,
@@ -333,7 +337,7 @@ test('native Archon scripts share context identity without shell startup or .env
           runtime: 'bun',
           script: `
 import { prepareContext } from ${JSON.stringify(join(scripts, 'sa-context.ts'))};
-import { contextEnvironmentIdentity } from ${JSON.stringify(join(scripts, 'sa-check.ts'))};
+import { environmentIdentity, projectEnvironment } from ${JSON.stringify(join(scripts, 'sa-check.ts'))};
 import { writeFileSync } from 'node:fs';
 const env = process.env;
 if (env.SA_CONTEXT_TEST_ENV !== undefined || env.SHLVL !== '1' || env._ !== 'parent-marker' || env.PWD !== 'controlled-pwd')
@@ -342,7 +346,7 @@ const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], {stdout: 'pipe'});
 if (git.exitCode !== 0) throw new Error('fixture HEAD unavailable');
 const head = git.stdout.toString().trim();
 const path = prepareContext({gen: ${JSON.stringify(gen)}, artifacts: env.ARTIFACTS_DIR!, node: 'review-m1-r1',
-  cwd: process.cwd(), base: head, head, environment: contextEnvironmentIdentity(env)});
+  cwd: process.cwd(), base: head, head, environment: environmentIdentity(projectEnvironment(env))});
 writeFileSync(env.ARTIFACTS_DIR + '/review-m1-r1.context.json', JSON.stringify({path}));
 console.log(JSON.stringify({prepared: true}));`,
         },
@@ -442,4 +446,8 @@ test('codegraph uses the main checkout index and exposes stale worktree base', (
   expect(context.codegraph.index_sha).not.toBe(context.codegraph.base_sha);
   expect(context.cwd).toBe(worker);
   expect(existsSync(join(worker, '.codegraph'))).toBe(false);
+});
+
+test('U5: pack node-contract environment conforms to the engine owner', () => {
+  expect([...NODE_CONTRACT_ENV].sort()).toEqual([...EXEC_NODE_ENVIRONMENT_NAMES].sort());
 });
