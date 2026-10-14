@@ -288,6 +288,40 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     expect(files).toHaveLength(1);
     return JSON.parse(readFileSync(join(jobsDir, files[0]), 'utf8')) as Job;
   };
+  test.each(['dependencies', 'hook'])('ENV_PRECHECK worktree missing %s blocks before worker spawn', async missing => {
+    const root = tmp(), repo = gitRepo(root), marker = join(root, 'worker');
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ packageManager: 'bun@1.4.3',
+      ...(missing === 'dependencies' ? { dependencies: { example: '1' } } : {}),
+      scripts: { prepare: 'setup-hooks' } }));
+    if (missing === 'dependencies') writeFileSync(join(repo, 'bun.lock'), 'declared');
+    else {
+      mkdirSync(join(repo, '.hooks'));
+      writeFileSync(join(repo, '.hooks/pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    }
+    sh('git add package.json . && git -c user.name=t -c user.email=t@l commit -qm fixture', repo);
+    if (missing === 'hook') sh('git config core.hooksPath .hooks/_', repo);
+    const p = run(['job', 'exec', '--title', 'precheck', '--worktree', 'task/env', '--base', 'main',
+      '--', 'sh', '-c', `touch '${marker}'`], '', repo);
+    expect(await p.exited).toBe(78);
+    const j = only();
+    expect(j).toMatchObject({ state: 'failed', reason: 'environment', environment: { ok: false,
+      failures: [{ failure_class: 'test_env' }] } });
+    expect(j.receipt?.spawned_at).toBeUndefined();
+    expect(existsSync(marker)).toBe(false);
+    expect(j.environment?.failures[0]?.recovery).toEqual([
+      missing === 'dependencies' ? 'bun install --frozen-lockfile' : 'bun run prepare',
+    ]);
+  });
+  test('ENV_PRECHECK worktree without dependencies or configured hooks starts worker', async () => {
+    const root = tmp(), repo = gitRepo(root), marker = join(root, 'worker');
+    sh("git config core.hooksPath ''", repo);
+    const p = run(['job', 'exec', '--title', 'ready', '--worktree', 'task/ready', '--base', 'main',
+      '--', 'sh', '-c', `touch '${marker}'`], '', repo);
+    expect(await p.exited).toBe(0);
+    expect(only()).toMatchObject({ state: 'done', environment: { ok: true, dependencies: 'not_required' } });
+    expect(only().receipt?.spawned_at).toBeString();
+    expect(existsSync(marker)).toBe(true);
+  });
   const running = async (): Promise<Job | undefined> => {
     let j: Job | undefined;
     const deadline = Date.now() + 5000;

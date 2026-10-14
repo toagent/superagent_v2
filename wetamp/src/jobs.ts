@@ -33,6 +33,7 @@ import { QUERY_TIMEOUT_MS } from './archon';
 import { newRunId } from './generate';
 import { jobSession } from './usage';
 import { isTier, ROUTE_ROLE, type Tier } from './roles';
+import { envPrecheck } from '../templates/.archon/scripts/env-precheck';
 export { TIERS, isTier, type Tier } from './roles';
 
 export type Kind = 'claude' | 'codex' | 'opencode' | 'other';
@@ -59,7 +60,8 @@ export interface Job {
   pid: number;
   started_at: string;
   state: 'queued' | 'running' | 'done' | 'failed' | 'lost';
-  reason?: 'memory';
+  reason?: 'memory' | 'environment';
+  environment?: ReturnType<typeof envPrecheck>;
   memory?: MemoryReading;
   ended_at?: string;
   exit_code?: number;
@@ -349,6 +351,15 @@ async function exec(
     }
     // Deliver OS signals deferred by the synchronous probe before handing queued work to a child.
     if (!code) await yieldEventLoop();
+    if (f.worktree && !code && !stop.signal.aborted) {
+      job.environment = envPrecheck(job.cwd);
+      if (!job.environment.ok) {
+        job.reason = 'environment';
+        code = 78;
+        console.error(`job: environment blocked; ${JSON.stringify(job.environment)}`);
+      }
+      save(job);
+    }
     if (!code && !stop.signal.aborted) {
       job.receipt.admitted_at = new Date().toISOString();
       save(job);

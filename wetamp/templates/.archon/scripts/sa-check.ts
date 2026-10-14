@@ -22,6 +22,7 @@ import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { budgetReason, readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
 import { nativeEvidence } from '../../../src/models';
+import { envPrecheck } from './env-precheck';
 
 export interface Finding {
   id: string;
@@ -744,8 +745,13 @@ export const environmentChecks = (p: Plan): Check[] =>
 function environment(): void {
   const log = join(artifacts, 'environment.log');
   writeFileSync(log, '');
-  const failed = run(environmentChecks(plan()), log);
-  const out = { ok: failed.length === 0, failed, log, head: git('rev-parse', 'HEAD').trim() };
+  const precheck = envPrecheck(process.cwd());
+  appendFileSync(log, `${JSON.stringify(precheck)}\n`);
+  const failures: CheckFailure[] = precheck.failures.map(f => ({
+    command: 'env-precheck', failure_class: f.failure_class, evidence: log,
+  }));
+  const failed = precheck.ok ? run(environmentChecks(plan()), log, undefined, '', failures) : ['env-precheck'];
+  const out = { ok: failed.length === 0, failed, failures, precheck, log, head: git('rev-parse', 'HEAD').trim() };
   writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
   emit(out);
   if (failed.length) process.exit(1);

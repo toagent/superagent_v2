@@ -870,6 +870,30 @@ test.each(['stable', 'dirty-before', 'dirty-during', 'commit-during', 'invalid']
   }
 );
 
+test('ENV_PRECHECK generated helper runs independently with no source checkout imports', () => {
+  const root = tmp();
+  const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const, saved = keys.map(k => process.env[k]);
+  try {
+    Object.assign(process.env, { SUPERAGENT_HOME: join(root, 'home'), ARCHON_HOME: join(root, 'home/archon') });
+    install();
+    const repo = gitRepo(root), plan = loadPlan(fixturePlan(root, repo), [root]);
+    const engine = gitRepo(tmp()), clean = coord.cleanEngine;
+    const boundary = spyOn(coord, 'cleanEngine').mockImplementation(() => clean(engine));
+    const validation = spyOn(archon, 'archon').mockReturnValue({ code: 0, out: '', err: '' });
+    let gen: ReturnType<typeof generate>;
+    try { gen = generate(plan, 'env-precheck'); } finally { validation.mockRestore(); boundary.mockRestore(); }
+    const source = readFileSync(join(gen.dir, '.archon/scripts/env-precheck.ts'), 'utf8');
+    expect(source).not.toContain('../../../src');
+    const p = Bun.spawnSync([process.execPath, '--no-env-file', '-e',
+      `import { envPrecheck } from './.archon/scripts/env-precheck.ts'; console.log(JSON.stringify(envPrecheck(${JSON.stringify(repo)})));`],
+      { cwd: gen.dir, stdout: 'pipe', stderr: 'pipe' });
+    expect(p.exitCode, p.stderr.toString()).toBe(0);
+    expect(JSON.parse(p.stdout.toString())).toMatchObject({ ok: true, dependencies: 'not_required' });
+  } finally {
+    keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+  }
+});
+
 test('generate writes a committed gen repo that archon validates', () => {
   const root = tmp();
   const env = { SUPERAGENT_HOME: join(root, 'home'), ARCHON_HOME: join(root, 'home', 'archon') };
