@@ -1,0 +1,21 @@
+# The prepared work reaches delivery, whose entry guard refuses network writes.
+# Keep the pre-delivery route coverage; no delivery-tail stubs are supplied.
+triage__triage:
+  contract: READY
+  route: deliver
+  design_first: false
+  complexity: small
+  item: { repo: { host: "", path: "" }, number: 0 }
+  area_labels: []
+  proposed_edits: { title: "", body: "" }
+  blocked_reason: ""
+  blocked_by: []
+  summary: "stub: current code confirms a complete work order"
+  report: { type: archon_artifact, run_id: "fixture-run", path: "triage.md" }
+fixture:
+  expect: failed
+  fail-node: deliver__manual-network-only
+  reached: [triage__triage, gate-direct]
+  resolved-text-contains:
+    triage__triage: "target):\n\n\n\nThe operator's request"
+exec-code: true

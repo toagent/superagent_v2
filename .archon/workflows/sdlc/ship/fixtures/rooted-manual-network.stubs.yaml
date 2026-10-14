@@ -1,0 +1,27 @@
+# The prepared work reaches delivery, whose entry guard refuses network writes.
+# Keep the pre-delivery route coverage; no delivery-tail stubs are supplied.
+triage__triage:
+  contract: READY
+  route: investigate
+  design_first: false
+  complexity: risky
+  item: { repo: { host: "", path: "" }, number: 0 }
+  area_labels: []
+  proposed_edits: { title: "", body: "" }
+  blocked_reason: ""
+  blocked_by: []
+  summary: "stub: current evidence leaves the causal chain unresolved"
+  report: { type: archon_artifact, run_id: "fixture-run", path: "triage.md" }
+inv__investigate:
+  rooted: true
+  summary: "stub: cause established — report at investigation.md"
+  report: { type: archon_artifact, run_id: "fixture-run", path: "investigation.md" }
+fixture:
+  expect: failed
+  fail-node: deliver__manual-network-only
+  reached: [triage__triage, inv__investigate, gate-rooted]
+  inputs:
+    target: "issue #3031"
+  resolved-text-contains:
+    triage__triage: "target):\n\nissue #3031\n\nThe operator's request"
+exec-code: true
