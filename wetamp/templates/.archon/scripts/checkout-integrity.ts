@@ -1,13 +1,6 @@
-interface GitResult {
-  exitCode: number | null;
-  signalCode?: string | null;
-  stdout: { toString(): string };
-  stderr: { toString(): string };
-}
-
 /** Shared raw evidence; untracked test output is intentionally outside review integrity. */
 export function checkoutFingerprint(
-  run: (args: string[]) => GitResult,
+  run: (args: string[]) => ReturnType<typeof Bun.spawnSync>,
   allowNonRepo = false
 ): string {
   const probe = run(['rev-parse', '--is-inside-work-tree']);
