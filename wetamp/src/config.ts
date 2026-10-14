@@ -283,7 +283,8 @@ export function resolveRoute(
   role: 'code' | 'repair' | 'review' | 'command' = 'code',
   risk: Pkg['risk'] = 'G1',
   round = 1,
-  authors: string[] = []
+  authors: string[] = [],
+  vendorFailover = false
 ): Route {
   if (!['auto', 'strict', 'single:claude', 'single:chatgpt'].includes(mode))
     throw new Error(`unsupported routing mode: ${mode}`);
@@ -296,8 +297,8 @@ export function resolveRoute(
   const effort = effortFor(t, role === 'command' ? 'code' : role, risk, round);
   const candidates = [...new Set(models)]
     .map(model => ({ model, provider: providerOf(model), effort }))
-    // Code and repair default to Codex; Claude requires an explicit single:claude mode.
-    .filter(a => vendor !== null || role === 'review' || role === 'command' || a.provider === 'codex')
+    // Initial code/repair routing stays Codex; dispatch may retain the failover pool.
+    .filter(a => vendorFailover || vendor !== null || role === 'review' || role === 'command' || a.provider === 'codex')
     .filter(
       a => (role === 'command' || !vendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );

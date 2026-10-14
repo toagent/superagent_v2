@@ -55,7 +55,7 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
       for (const role of ['code', 'repair'] as const)
         table[`${role}-${p.id}`] = describeExecution(tiers, role, p.risk, 1, m.id, [p], plan);
     for (let round = 1; round <= MAX_ROUNDS; round++) {
-      table[`review-${m.id}-r${round}`] = describeExecution(
+      table[`review-${m.id}-r${String(round)}`] = describeExecution(
         tiers,
         'review',
         m.risk,
@@ -67,7 +67,7 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
         plan
       );
       if (round > 1)
-        table[`fix-${m.id}-r${round}`] = describeExecution(
+        table[`fix-${m.id}-r${String(round)}`] = describeExecution(
           tiers,
           'repair',
           m.risk,
@@ -92,11 +92,13 @@ export function readExecutionTable(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     const metadata = join(dirname(path), 'engine.json');
-    if (
-      existsSync(metadata) &&
-      JSON.parse(readFileSync(metadata, 'utf8')).execution_contract !== undefined
-    )
-      throw new Error('policy: execution table missing from a contract run');
+    if (existsSync(metadata)) {
+      const recorded: unknown = JSON.parse(readFileSync(metadata, 'utf8'));
+      if (typeof recorded !== 'object' || recorded === null || Array.isArray(recorded))
+        throw new Error('policy: invalid engine metadata');
+      if ('execution_contract' in recorded && recorded.execution_contract !== undefined)
+        throw new Error('policy: execution table missing from a contract run');
+    }
     // The sole pre-contract adapter; all newly generated sources persist the table.
     table = executionTable(plan, tiers);
   }
@@ -132,7 +134,8 @@ export function executionRoute(
   console: Console,
   mode: string | undefined,
   descriptor: ExecutionDescriptor,
-  authors: string[] = []
+  authors: string[] = [],
+  vendorFailover = false
 ) {
   return resolveRoute(
     tiers,
@@ -141,7 +144,8 @@ export function executionRoute(
     descriptor.role,
     descriptor.risk,
     descriptor.round,
-    authors
+    authors,
+    vendorFailover
   );
 }
 

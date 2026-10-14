@@ -24,7 +24,7 @@ interface BudgetUsage {
   reserve: number;
 }
 export interface DispatchCandidate {
-  provider: string;
+  provider: 'codex' | 'claude';
   model: string;
 }
 
@@ -36,6 +36,7 @@ export interface DispatchExecution<Candidate extends DispatchCandidate> {
   usage(attempts: PolicyAttempt[]): BudgetUsage;
   provider: 'codex' | 'claude';
   sendQuery: IAgentProvider['sendQuery'];
+  sendQueryFor?(candidate: Candidate): IAgentProvider['sendQuery'];
   options(candidate: Candidate): SendQueryOptions;
   now?: () => number;
   requestedModel?: string;
@@ -85,12 +86,40 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       : undefined;
   };
   let last: ResultChunk | undefined;
-  // The outer admission slot belongs to this provider for the entire stream.
-  for (const candidate of execution.candidates.filter(a => a.provider === execution.provider)) {
+  const cooling = (candidate: Candidate): number =>
+    Number(
+      attempts.some(
+        a =>
+          a.provider === candidate.provider &&
+          a.model === candidate.model &&
+          (a.cooldown_until ?? 0) > now()
+      )
+    );
+  const candidates = [...execution.candidates].sort(
+    (a, b) =>
+      Number(a.provider !== execution.provider) - Number(b.provider !== execution.provider) ||
+      cooling(a) - cooling(b)
+  );
+  let vendorFailed = true;
+  let previousProvider = execution.provider;
+  for (const candidate of candidates) {
+    const priorFailure = last?.failure?.class;
+    if (
+      candidate.provider !== execution.provider &&
+      (!priorFailure || !vendorFailed || !execution.sendQueryFor)
+    )
+      break;
+    const reassignment =
+      candidate.provider !== previousProvider && priorFailure
+        ? {
+            node: execution.node,
+            from: previousProvider,
+            to: candidate.provider,
+            failure: priorFailure,
+          }
+        : undefined;
     const options = execution.options(candidate);
     if (options.abortSignal?.aborted) throw new Error('policy execution aborted');
-    if (attempts.some(a => a.model === candidate.model && (a.cooldown_until ?? 0) > now()))
-      continue;
     const over = budgetFailure(true);
     if (over && execution.budget.enforcement === 'observe')
       yield { type: 'warning', code: 'superagent.budget_observed', message: over.failure.evidence };
@@ -102,19 +131,38 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     const attempt: PolicyAttempt = {
       id: crypto.randomUUID(),
       node: execution.node,
-      provider: execution.provider,
+      provider: candidate.provider,
+      ...(reassignment ? { reassignment } : {}),
       model: candidate.model,
       status: 'started',
     };
     attempts.push(attempt);
     writePolicyAttempts(execution.artifacts, attempts); // Reserve even if the process dies mid-turn.
+    if (reassignment) {
+      yield {
+        type: 'warning',
+        code: 'superagent.vendor_failover',
+        message: JSON.stringify(reassignment),
+      };
+      previousProvider = candidate.provider;
+    }
     let result: ResultChunk | undefined,
       settled = false;
     const turnUsage: TokenUsage[] = [];
     try {
       // Never pass a session from a different model or vendor to the fallback.
-      const session = !last && candidate.model === execution.requestedModel ? resume : undefined;
-      for await (const chunk of execution.sendQuery(prompt, cwd, session, options)) {
+      const session =
+        !last &&
+        candidate.provider === execution.provider &&
+        candidate.model === execution.requestedModel
+          ? resume
+          : undefined;
+      const sendQuery =
+        candidate.provider === execution.provider
+          ? execution.sendQuery
+          : execution.sendQueryFor?.(candidate);
+      if (!sendQuery) throw new Error('policy: native failover sender missing');
+      for await (const chunk of sendQuery(prompt, cwd, session, options)) {
         if (chunk.type === 'result') {
           result = chunk;
           if (chunk.tokens) {
@@ -137,6 +185,9 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     attempt.resolved = result?.resolvedModel?.id;
     attempt.failure = result?.failure?.class;
     const failure = result?.failure?.class;
+    const vendorFailure =
+      failure === 'overloaded' || failure === 'quota_exhausted' || failure === 'transient';
+    vendorFailed &&= vendorFailure;
     const cooldown =
       failure && Object.hasOwn(MODEL_FAILURE_COOLDOWN_MS, failure)
         ? MODEL_FAILURE_COOLDOWN_MS[failure as keyof typeof MODEL_FAILURE_COOLDOWN_MS]
@@ -158,7 +209,7 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       attempt.failure = 'budget_exceeded';
       writePolicyAttempts(execution.artifacts, attempts);
     }
-    if (exceeded || cooldown === undefined || options.abortSignal?.aborted) {
+    if (exceeded || (!vendorFailure && cooldown === undefined) || options.abortSignal?.aborted) {
       yield accounted(exceeded ?? result, candidate.model);
       yield { type: 'settled' };
       return;
@@ -181,7 +232,7 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       isError: true,
       failure: {
         class: 'misconfigured',
-        evidence: `policy: no eligible ${execution.provider} model outside cooldown for ${execution.node}; vendor reassignment belongs to engine`,
+        evidence: `policy: no eligible ${execution.provider} model for ${execution.node}`,
       },
     }
   );

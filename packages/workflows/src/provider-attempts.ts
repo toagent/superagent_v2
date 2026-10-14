@@ -14,6 +14,12 @@ export interface PolicyAttempt {
   tokens?: TokenUsage;
   failure?: ProviderFailureClass;
   cooldown_until?: number;
+  reassignment?: {
+    node: string;
+    from: 'codex' | 'claude';
+    to: 'codex' | 'claude';
+    failure: ProviderFailureClass;
+  };
 }
 const attemptFile = (artifacts: string): string => join(artifacts, 'policy-attempts.json');
 const record = (value: unknown): value is Record<string, unknown> =>

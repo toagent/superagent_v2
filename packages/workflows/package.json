@@ -73,6 +73,9 @@
   },
   "testGroups": [
     [
+      "src/policy-dispatch.test.ts"
+    ],
+    [
       "src/dag-executor.test.ts"
     ],
     [

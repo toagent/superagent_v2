@@ -217,10 +217,10 @@ for (const budget of [
     });
   });
 
-test('untyped failure, unknown/auth/transient classes and throws never trigger fallback', async () => {
+test('untyped failure, unknown/auth classes and throws never trigger fallback', async () => {
   for (const result of [
     { type: 'result', isError: true, errors: ['model not found: quota exhausted'] },
-    ...(['unknown', 'auth', 'transient'] as const).map(failure => ({
+    ...(['unknown', 'auth'] as const).map(failure => ({
       type: 'result' as const,
       isError: true,
       failure: { class: failure, evidence: 'model_not_found quota overloaded' },
@@ -634,4 +634,40 @@ test('budget default for generic Archon dispatch remains hard', async () => {
   );
   expect(s.calls).toHaveLength(0);
   expect(out.at(-2)).toMatchObject({ failure: { class: 'budget_exceeded' } });
+});
+
+test('VENDOR_FAILOVER runtime coder retains native role config on Claude dispatch', async () => {
+  const s = runtimeFixture();
+  s.tiers.routing.coder.models = pool.map(c => c.model);
+  writeFileSync(s.policyPath, JSON.stringify(snapshotPolicy(s.tiers)));
+  const calls: SendQueryOptions[] = [];
+  const native = fake(() => ({
+    type: 'result',
+    isError: true,
+    failure: { class: 'overloaded', evidence: 'typed' },
+  }));
+  const provider = wrapPolicyProvider(native, 'codex', candidate => {
+    expect(candidate.provider).toBe('claude');
+    return fake((options, session) => {
+      expect(session).toBeUndefined();
+      calls.push(options);
+      return success;
+    }).sendQuery;
+  });
+  const chunks = await inRuntime(s.root, () =>
+    collect(
+      provider.sendQuery('p', s.root, 'original', {
+        model: pool[0].model,
+        env: { SA_POLICY_PATH: s.policyPath },
+        nodeConfig: { nodeId: 'code-core' },
+      })
+    )
+  );
+  expect(calls).toHaveLength(1);
+  expect(calls[0].nodeConfig?.denied_tools).toEqual(
+    expect.arrayContaining(s.tiers.policy.exec_profiles.coder.claude.denied_tools)
+  );
+  expect(chunks.some(c => c.type === 'warning' && c.code === 'superagent.vendor_failover')).toBe(
+    true
+  );
 });

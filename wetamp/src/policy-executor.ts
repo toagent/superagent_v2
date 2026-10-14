@@ -61,7 +61,8 @@ function runtimeExecution(
   cwd: string,
   options: SendQueryOptions,
   sendQuery: IAgentProvider['sendQuery'],
-  provider: Alias['provider']
+  provider: Alias['provider'],
+  sendQueryFor: NonNullable<Execution['sendQueryFor']>
 ): Execution {
   const policy = loadPolicy(path),
     dir = dirname(path);
@@ -144,7 +145,8 @@ function runtimeExecution(
     plan.console ?? 'claude',
     plan.mode,
     route,
-    authors
+    authors,
+    true
   ).candidates;
   const extra = join(dir, 'budget-extra');
   const grant = readFileSyncIfPresent(extra);
@@ -164,6 +166,7 @@ function runtimeExecution(
     requestedModel: options.model,
     provider,
     sendQuery,
+    sendQueryFor,
     options: candidate => {
       if (!isEffortRung(candidate.effort)) throw new Error('policy: unsupported effort');
       return {
@@ -193,22 +196,34 @@ function readFileSyncIfPresent(path: string): Parameters<typeof effectiveBudget>
 /** Decorate the registered factories while retaining native credential/config parsers and provider IDs. */
 export function wrapPolicyProvider(
   native: IAgentProvider,
-  provider: Alias['provider']
+  provider: Alias['provider'],
+  sendQueryFor: NonNullable<Execution['sendQueryFor']> = candidate => {
+    const native = nativeFactories[candidate.provider]?.();
+    if (!native) throw new Error('policy: native failover factory missing');
+    return native.sendQuery.bind(native);
+  }
 ): IAgentProvider {
   const send = native.sendQuery.bind(native);
   native.sendQuery = (prompt, cwd, resume, options) => {
     const path = options?.env?.SA_POLICY_PATH;
     if (!path || !options.nodeConfig?.nodeId || options.purpose === 'title-generation')
       return send(prompt, cwd, resume, options);
-    return executePolicy(runtimeExecution(path, cwd, options, send, provider), prompt, cwd, resume);
+    return executePolicy(
+      runtimeExecution(path, cwd, options, send, provider, sendQueryFor),
+      prompt,
+      cwd,
+      resume
+    );
   };
   return native;
 }
+const nativeFactories: Partial<Record<Alias['provider'], () => IAgentProvider>> = {};
 export function installPolicyExecutor(): void {
   registerBuiltinProviders();
   for (const provider of ['codex', 'claude'] as const) {
     const registration = getRegistration(provider),
-      factory = registration.factory;
+      factory = nativeFactories[provider] ?? registration.factory;
+    nativeFactories[provider] = factory;
     registration.factory = () => wrapPolicyProvider(factory(), provider);
   }
 }

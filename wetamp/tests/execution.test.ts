@@ -95,3 +95,62 @@ test('explicit unlimited tokens ignores reserves and spend while preserving laun
     ).unlimited_tokens
   ).toBe(true);
 });
+
+test('VENDOR_FAILOVER reviewer pool excludes authors and reapplies readonly profiles', async () => {
+  const author = 'claude-opus-5';
+  const t = structuredClone(tiers);
+  t.routing.reviewer.by_risk = { G1: ['gpt-6.1-sol', author, 'claude-sonnet-5'] };
+  const descriptor = describeExecution(t, 'review', 'G1');
+  const candidates = executionRoute(t, 'codex', 'auto', descriptor, [author], true).candidates;
+  const called: string[] = [];
+  const chunks = [];
+  const sendQuery = async function* () {
+    yield {
+      type: 'result' as const,
+      isError: true,
+      failure: { class: 'overloaded' as const, evidence: 'typed' },
+    };
+    yield { type: 'settled' as const };
+  };
+  for await (const chunk of executePolicy(
+    {
+      node: 'review-m1-r1',
+      candidates,
+      artifacts: tmp(),
+      provider: 'codex',
+      requestedModel: candidates[0].model,
+      budget: { weighted_tokens: 100000 },
+      floor: 0,
+      events: () => [],
+      options: candidate => {
+        called.push(candidate.model);
+        return {
+          model: candidate.model,
+          nodeConfig: executionNode(descriptor, candidate, '/readonly.json'),
+        };
+      },
+      sendQuery,
+      sendQueryFor: candidate =>
+        async function* (_p, _cwd, session, options) {
+          expect(candidate.model).not.toBe(author);
+          expect(session).toBeUndefined();
+          expect(options?.nodeConfig?.sandbox).toMatchObject({
+            enabled: true,
+            failIfUnavailable: true,
+            filesystem: { denyWrite: ['/'] },
+          });
+          expect(options?.nodeConfig?.denied_tools).toEqual(
+            expect.arrayContaining(t.policy.exec_profiles.reviewer.claude.denied_tools)
+          );
+          yield { type: 'result', text: 'reviewed' };
+          yield { type: 'settled' };
+        },
+    },
+    'p',
+    '/scratch',
+    'author-session'
+  ))
+    chunks.push(chunk);
+  expect(called).toEqual(['gpt-6.1-sol', 'claude-sonnet-5']);
+  expect(chunks.at(-2)).toMatchObject({ text: 'reviewed' });
+});
