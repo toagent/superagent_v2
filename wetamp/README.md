@@ -80,7 +80,7 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 | `failed`           | 节点失败（`node`、`error`）                                               | `superagent decide <run> retry [--pkg <id> --hint "提示"]`（hint 写入下次编码的 brief）   |
 
 其它动词：`status <run>`、`cancel <run>`、`recover <run>`（显式恢复已确认 owner 离线的 run；未知副作用须先对账）、`accept <run> [--pkg id]`
-（在 run 的 worktree 里重跑验收命令）、`report`（全部 run 的状态、评审轮次、一次通过率、失败分类、节点耗时、评审债、恢复次数）、
+（在 run 的 worktree 里重跑验收命令）、`report`（默认摘要：总体指标、unknown/unreadable 计数与下一步；`--json` 同样默认摘要，`--full` 获取全部明细）、
 `health`（doctor + 别名 + upstream 零差异）、`supervise-tick`（由单个 launchd/cron 作业调用：观察、到期终止、原生审批与历史签收提问桥接）。
 
 ## 跨元帅交接

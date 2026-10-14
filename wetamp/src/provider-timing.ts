@@ -46,6 +46,13 @@ interface Interval {
 }
 const object = (x: unknown): Record<string, unknown> | undefined =>
   typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : undefined;
+/** Only an explicit executable descriptor proves provider metrics do not apply. */
+// prettier-ignore
+export function providerMetricMissing(data: unknown): 'n/a' | 'unknown' {
+  const d = object(data), node = object(d?.node), binding = object(d?.binding);
+  if (binding?.provider || binding?.model || d?.provider || d?.model) return 'unknown';
+  return (node ? node.kind === 'exec' : d?.type === 'bash' || d?.type === 'script') ? 'n/a' : 'unknown';
+}
 const clock = (x: unknown): string =>
   typeof x === 'string' && Number.isFinite(utcClock(x)) ? x : 'unknown';
 
@@ -75,6 +82,7 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     const complete = raw.length > 0 && parsed.every(p => p.success) && ordered;
     const terminals = group.rows.filter(r => r.event_type !== 'provider_event');
     const terminal = terminals.length === 1 ? terminals[0] : undefined;
+    const missing = raw.length ? 'unknown' : providerMetricMissing(terminal?.data);
     const settled = clock(terminal?.created_at);
     const starts = new Map<string, ProviderEventEnvelope[]>();
     const ends = new Map<string, ProviderEventEnvelope[]>();
@@ -170,22 +178,22 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     return {
       run: group.run, node: group.node, attempt_id: group.attempt,
       invocation_id: typeof invocation === 'string' ? invocation : 'unknown',
-      cmds: recognized ? commands.length : 'unknown',
-      explore_ratio: recognized ? explore / actions.length : 'unknown', unrecognized_actions: complete ? unrecognized : 'unknown',
-      mcp_calls: recognized ? actions.filter(e => e.name.startsWith('mcp__')).length : 'unknown',
+      cmds: recognized ? commands.length : missing,
+      explore_ratio: recognized ? explore / actions.length : missing, unrecognized_actions: complete ? unrecognized : missing,
+      mcp_calls: recognized ? actions.filter(e => e.name.startsWith('mcp__')).length : missing,
       // Arrival gaps include transport; they are not native server reasoning clocks.
-      think_gap_ms: recognized ? (typeof window === 'object' && closed ? window.duration_ms - knownMs : 'unknown') : 'unknown',
-      window, request_at: 'unknown', first_token_ms: 'unknown',
-      first_content_at: complete ? messages[0]?.observedAt ?? 'unknown' : 'unknown',
+      think_gap_ms: recognized ? (typeof window === 'object' && closed ? window.duration_ms - knownMs : 'unknown') : missing,
+      window: missing === 'n/a' ? missing : window, request_at: missing, first_token_ms: missing,
+      first_content_at: complete ? messages[0]?.observedAt ?? 'unknown' : missing,
       final_answer_at: complete && closed && terminalClock && terminal?.event_type === 'node_completed'
-        ? messages.at(-1)?.observedAt ?? 'unknown' : 'unknown',
+        ? messages.at(-1)?.observedAt ?? 'unknown' : missing,
       node_settled_at: terminalClock ? settled : 'unknown',
       terminal: terminal?.event_type ?? 'unknown',
-      tool_intervals: union, known_tool_union_ms: knownMs,
-      tool_union_ms: complete && closed ? knownMs : 'unknown',
-      non_tool_gap_ms: typeof window === 'object' && closed ? window.duration_ms - knownMs : 'unknown',
-      model_turns: recognized ? turns : 'unknown', first_edit_ms: firstEdit,
-      longest_gap_ms: longest?.ms ?? 'unknown', longest_gap_at: longest?.start ?? 'unknown',
+      tool_intervals: union, known_tool_union_ms: missing === 'n/a' ? missing : knownMs,
+      tool_union_ms: complete && closed ? knownMs : missing,
+      non_tool_gap_ms: typeof window === 'object' && closed ? window.duration_ms - knownMs : missing,
+      model_turns: recognized ? turns : missing, first_edit_ms: missing === 'n/a' ? missing : firstEdit,
+      longest_gap_ms: longest?.ms ?? missing, longest_gap_at: longest?.start ?? missing,
       budget: { over: reasons.length > 0, reasons },
     };
   });

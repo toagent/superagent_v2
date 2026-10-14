@@ -69,6 +69,8 @@ export interface Event {
   event_type: string;
   step_name?: string | null;
   data?: {
+    node?: SerializedNodeData['node'];
+    type?: SerializedNodeData['type'];
     invocation?: {
       id?: string;
       startedAt?: string;
@@ -89,6 +91,35 @@ export interface Event {
     provider?: string;
     provider_failure?: { class?: string };
     failure_kind?: string;
+  };
+}
+
+/** Compact CLI projection; internal consumers keep the complete report contract. */
+// prettier-ignore
+export function reportSummary(report: Record<string, unknown>): Record<string, unknown> {
+  const unknown_counts: Record<string, number> = {};
+  const maps = new Set(['measurement', 'provider_timing', 'critical_path', 'requirements', 'by_run', 'by_milestone', 'by_role', 'by_attempt', 'by_request', 'current_tasks']);
+  const count = (value: unknown, path: string, field = ''): void => {
+    if (value === 'unknown') unknown_counts[path] = (unknown_counts[path] ?? 0) + 1;
+    else if (Array.isArray(value)) value.forEach(v => { count(v, `${path}[]`); });
+    else if (value && typeof value === 'object')
+      for (const [key, v] of Object.entries(value)) count(v, path ? `${path}.${maps.has(field) ? '*' : key}` : key, key);
+  };
+  count(report, '');
+  const usage = report.usage as Record<string, unknown>;
+  const jobs = report.jobs as { unreadable: unknown[]; phase_coverage: unknown };
+  const interventions = Object.fromEntries(Object.entries(report.interventions as Record<string, unknown>).filter(([k]) => k !== 'by_run'));
+  const demands = report.demands as Record<string, unknown>;
+  return {
+    ...Object.fromEntries(Object.entries(report).filter(([, v]) => typeof v === 'number' || typeof v === 'string')),
+    metrics: report.metrics, cancellations: report.cancellations, interventions,
+    demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length },
+    usage: Object.fromEntries(['total', 'investment', 'supplemental', 'learning', 'window'].map(k => [k, usage[k]])),
+    jobs: { phase_coverage: jobs.phase_coverage }, repo_missing: (report.repo_missing as unknown[]).length,
+    ...(report.full_usage ? { full_usage: Object.fromEntries(Object.entries(report.full_usage as Record<string, unknown>).filter(([k]) => ['label', 'status', 'at', 'since', 'coverage', 'total'].includes(k))) } : {}),
+    unknown_counts,
+    unreadable: { runs: (report.unreadable as unknown[]).length, usage: (usage.unreadable as unknown[]).length, jobs: jobs.unreadable.length },
+    next_steps: ['superagent report --full --json: inspect details and unreadable evidence', 'For missing AI measurements, inspect provider event capture; n/a is excluded from unknown counts'],
   };
 }
 /** 一次 AI 节点调用（node_completed/node_failed 各一条；条件跳过与 resume 沿用的 prior_success 不算调用）。 */

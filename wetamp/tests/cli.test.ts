@@ -1710,7 +1710,7 @@ describe('brief / land (archon stub)', () => {
     const home = process.env.SUPERAGENT_HOME ?? '';
     const l = JSON.parse(readFileSync(join(home, 'runs', 'sa1.json'), 'utf8')) as Ledger;
     writeFileSync(join(home, 'runs', 'sa1.json'), JSON.stringify({ ...l, recoveries: ['t'] }));
-    const { code, out } = captured(() => main(['report']));
+    const { code, out } = captured(() => main(['report', '--full']));
     expect(code).toBe(0);
     const { usage, full_usage, ...counts } = JSON.parse(out) as Record<string, unknown>;
     expect(full_usage).toMatchObject({ label: '全量（ccusage）', total: null });
@@ -1733,7 +1733,7 @@ describe('brief / land (archon stub)', () => {
     });
     // An unreadable ledger is reported explicitly rather than inferred from a missing repo.
     writeFileSync(join(home, 'runs', 'gone.json'), '{"run_id":"gone"');
-    const bad = captured(() => main(['report']));
+    const bad = captured(() => main(['report', '--full']));
     expect(bad.code).toBe(1);
     expect((JSON.parse(bad.out) as { unreadable: string[] }).unreadable[0]).toStartWith('gone: ');
   });
@@ -3623,7 +3623,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     expect(readFileSync(join(s.root, 'home', 'runs', 'bad.json'), 'utf8')).toBe(
       '{"run_id": "bad", trunc'
     );
-    const rep = captured(() => main(['report']));
+    const rep = captured(() => main(['report', '--full']));
     expect(rep.code).toBe(1);
     expect(JSON.parse(rep.out)).toMatchObject({
       runs: 3,

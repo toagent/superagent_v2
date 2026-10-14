@@ -85,7 +85,7 @@ import {
 import { engineHash, generate, newRunId } from './generate';
 import { loadPlan, type Plan } from './plan';
 import { redact } from './redact';
-import { buildReport } from './report';
+import { buildReport, reportSummary } from './report';
 import { jobCli } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
@@ -171,6 +171,7 @@ const OPTIONS = {
   interval: { type: 'string' },
   limit: { type: 'string' },
   json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
+  full: { type: 'boolean' },
   'all-held': { type: 'boolean' },
   title: { type: 'string' },
   'request-ref': { type: 'string' },
@@ -3009,7 +3010,8 @@ export function main(argv: string[]): number {
     case 'report': {
       const r = report();
       const full = readUsage();
-      print({ ...r, full_usage: { label: '全量（ccusage）', ...usageSummary(full) } });
+      const output = { ...r, full_usage: { label: '全量（ccusage）', ...usageSummary(full) } };
+      print(a.flags.full ? output : reportSummary(output));
       const usage = r.usage as { unreadable: string[] };
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }

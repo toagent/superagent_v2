@@ -14,9 +14,9 @@ The deterministic running fixture in `tests/cli.test.ts` compares the same obser
 window with the old one-second loop. Counts exclude model execution (none occurs):
 
 | Window | Before wait/get | After wait/get | Before/after transport launches |
-| --- | --- | --- | --- |
-| 20s | 20 / 21 | 1 / 2 | 41 / 3 |
-| 60s | 60 / 61 | 3 / 4 | 121 / 7 |
+| ------ | --------------- | -------------- | ------------------------------- |
+| 20s    | 20 / 21         | 1 / 2          | 41 / 3                          |
+| 60s    | 60 / 61         | 3 / 4          | 121 / 7                         |
 
 These are CLI transport launches; wrappers may spawn another child. Physical child
 counts, native wall-clock savings and first-token latency require the controller's
@@ -32,7 +32,14 @@ workflow phase coverage. Legacy records never infer queue duration from timestam
 `brief --json` returns the existing structured summary and node execution metadata
 with one `get`, without transcript exploration.
 
-Readonly history reproduction reuses `superagent report --json`: its usage window
+`superagent report` and `report --json` default to aggregate metrics, unreadable
+counts and next steps. `unknown_counts` counts literal unknown occurrences by field
+path in the full report; `*` and `[]` collapse map keys and array entries. These are
+field-occurrence counts, not unique attempts. Explicit exec nodes (legacy bash/script)
+without provider evidence use `n/a` for provider metrics and do not enter unknown
+counts. Absent node types or missing AI streams remain `unknown`.
+
+Readonly history reproduction reuses `superagent report --full --json`: its usage window
 contains all retained generations, not an implied seven-day deployment cohort.
 Filter the resulting metadata by UTC run timestamps to freeze a seven-day sample;
 preserve `usage.unreadable`, token/phase coverage and unknown roles. The pre-change

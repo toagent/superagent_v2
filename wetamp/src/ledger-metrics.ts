@@ -13,7 +13,7 @@ import {
   type Pair,
 } from './cli';
 import { milestones, type Plan } from './plan';
-import { providerTiming } from './provider-timing';
+import { providerTiming, providerMetricMissing } from './provider-timing';
 import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
 import type { Event } from './report';
 import type { BoardRow } from './board/data';
@@ -163,7 +163,9 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
     const duration = d?.timing?.durationMs, start = clock(d?.timing?.startedAt ?? d?.attempt?.startedAt ?? '');
     const measured = !!identity && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && Number.isFinite(start);
     if (measured) intervals.push({ start, end: start + duration });
-    const timing = timings.find(t => t.run === (e.workflow_run_id ?? run.id) && t.node === e.step_name && t.attempt_id === d?.attempt?.id && t.invocation_id === d.invocation?.id);
+    const candidate = timings.find(t => t.run === (e.workflow_run_id ?? run.id) && t.node === e.step_name && t.attempt_id === d?.attempt?.id);
+    const timing = candidate?.invocation_id === d?.invocation?.id ? candidate : undefined;
+    const missing = candidate && candidate.explore_ratio !== 'n/a' ? 'unknown' : providerMetricMissing(d);
     const node = e.step_name ?? 'unknown', milestone = node.replace(/^review-/, '').replace(/-r\d+$/, '');
     const packages = plan?.packages.filter(p => (p.milestone ?? 'm1') === milestone);
     const check = events.filter(x => x.step_name === `diff-${milestone}-r1` && x.event_type === 'node_completed').at(-1)?.data as (Event['data'] & { structured_output?: { risk?: string; out_of_scope?: string[] } }) | undefined;
@@ -172,7 +174,7 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
       ...(packages?.some(p => p.review) ? ['review:true'] : []),
       ...(check?.structured_output?.risk === 'G2' && packages && !packages.some(p => p.risk === 'G2') ? [check.structured_output.out_of_scope?.length ? 'runtime:out_of_scope' : 'runtime:other'] : [])] : [];
     return [{ node, type: node.split('-')[0], invocation: (d?.invocation?.id ?? '').length ? d?.invocation?.id : 'unknown', attempt: (d?.attempt?.id ?? '').length ? d?.attempt?.id : 'unknown', terminal: e.event_type,
-      cumulative_ms: measured ? duration : 'unknown', cmds: timing?.cmds ?? 'unknown', explore_ratio: timing?.explore_ratio ?? 'unknown', mcp_calls: timing?.mcp_calls ?? 'unknown', model_turns: timing?.model_turns ?? 'unknown', think_gap_ms: timing?.think_gap_ms ?? 'unknown',
+      cumulative_ms: measured ? duration : 'unknown', cmds: timing?.cmds ?? missing, explore_ratio: timing?.explore_ratio ?? missing, mcp_calls: timing?.mcp_calls ?? missing, model_turns: timing?.model_turns ?? missing, think_gap_ms: timing?.think_gap_ms ?? missing,
       review_trigger: node.startsWith('review-') ? { reasons: triggers.length ? triggers : ['unknown'], glob: 'unknown', symlink: 'unknown', gitlink: 'unknown' } : undefined }];
   });
   const counts = new Map<string, number>();

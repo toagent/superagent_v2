@@ -6,6 +6,8 @@
 
 改动前：`SUPERAGENT_RELAY_QUOTA=off superagent report --json`，输出 `/tmp/u1-before.json`。
 改动后：`SUPERAGENT_RELAY_QUOTA=off wetamp/bin/superagent report --json`，输出 `/tmp/u1-after.json`。
+
+以上为当时命令；当前复现明细时添加 `--full`，默认 `report --json` 仅输出摘要。
 同一保留数据集合：325 个 run、4081 个节点；分母为全部节点或全部 run，未剔除失败/取消。输出仅用于本地聚合，不提交原始生产数据。两个采样命令分别使用已安装 CLI 与本 worktree CLI；不是冻结数据库的离线回放，不据此宣称运行提速。
 
 | unknown 字段             | 改动前             | 改动后             |

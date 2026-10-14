@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Plan } from '../src/plan';
 import {
   buildReport,
+  reportSummary,
   measurementOf,
   callsOf,
   interventionStats,
@@ -18,7 +19,7 @@ import {
 } from '../src/report';
 import type { Job } from '../src/jobs';
 import { archonRunIds } from '../src/archon';
-import type { Ledger } from '../src/cli';
+import { main, type Ledger } from '../src/cli';
 import { tmp } from './helpers';
 import { WETAMP } from '../src/config';
 
@@ -54,6 +55,108 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('report CLI defaults to summary with or without --json; --full preserves details', () => {
+    const root = tmp(),
+      keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
+    const saved = keys.map(k => process.env[k]),
+      log = console.log;
+    Object.assign(process.env, {
+      SUPERAGENT_HOME: root,
+      ARCHON_HOME: root,
+      SA_ARCHON_BIN: '/usr/bin/true',
+    });
+    try {
+      for (const flags of [[], ['--json'], ['--full'], ['--full', '--json']]) {
+        let output = '';
+        console.log = (...args: unknown[]) => {
+          output += args.join('');
+        };
+        expect(main(['report', ...flags])).toBe(0);
+        const report = JSON.parse(output) as Record<string, unknown>;
+        for (const key of [
+          'measurement',
+          'provider_timing',
+          'critical_path',
+          'requirements',
+          'decisions',
+          'slow_nodes',
+        ])
+          expect(key in report).toBe(flags.includes('--full'));
+        expect('receipts' in (report.usage as Record<string, unknown>)).toBe(
+          flags.includes('--full')
+        );
+        if (!flags.includes('--full'))
+          expect(report).toMatchObject({
+            unreadable: { runs: 0, usage: 0, jobs: 0 },
+            next_steps: expect.any(Array),
+          });
+      }
+      mkdirSync(join(root, 'runs'));
+      writeFileSync(join(root, 'runs', 'broken.json'), '{');
+      for (const flags of [[], ['--full']]) expect(main(['report', ...flags])).toBe(1);
+    } finally {
+      console.log = log;
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+  });
+
+  test('summary counts unknown by normalized field, excluding n/a and preserving unreadable counts', () => {
+    const report = {
+      runs: 2,
+      metrics: {},
+      cancellations: {},
+      interventions: { by_run: {} },
+      demands: { unknown_runs: ['missing'] },
+      repo_missing: [],
+      unreadable: ['bad'],
+      jobs: { unreadable: ['job'], phase_coverage: {} },
+      usage: { total: { input: 'unknown' }, unreadable: ['generation'] },
+      measurement: { r: { nodes: [{ explore_ratio: 'n/a' }, { explore_ratio: 'unknown' }] } },
+    };
+    expect(reportSummary(report)).toMatchObject({
+      unknown_counts: { 'measurement.*.nodes[].explore_ratio': 1, 'usage.total.input': 1 },
+      unreadable: { runs: 1, usage: 1, jobs: 1 },
+      demands: { unknown_runs: 1 },
+    });
+  });
+
+  test('measurement uses explicit node types, never names or missing provider evidence, for n/a', () => {
+    const run = { id: 'r', status: 'completed' } as Parameters<typeof measurementOf>[0];
+    const rows = [
+      ev('node_completed', 'code-looking-script', {
+        node: { id: 'script', kind: 'exec', runtime: 'bun' },
+        binding: {},
+      }),
+      ev('node_completed', 'verify-looking-agent', {
+        node: { id: 'ai', kind: 'agent', source: { kind: 'inline' } },
+      }),
+      ev('node_completed', 'environment', { binding: {} }),
+      ev('node_failed', 'legacy', { type: 'bash', binding: {}, attempt: undefined }),
+    ];
+    const nodes = measurementOf(run, rows, null).nodes;
+    for (const key of [
+      'cmds',
+      'explore_ratio',
+      'mcp_calls',
+      'model_turns',
+      'think_gap_ms',
+    ] as const)
+      expect(nodes.map(n => n[key])).toEqual(['n/a', 'unknown', 'unknown', 'n/a']);
+    expect(nodes[0]?.cumulative_ms).toBe('unknown');
+    const contradictory = ev('provider_event', 'code-looking-script', {
+      attemptId: 'code-looking-script-a',
+      seq: 1,
+      observedAt: '2026-10-10T00:00:00Z',
+      event: { type: 'agent_message_chunk', text: 'fixture' },
+    });
+    expect(measurementOf(run, [rows[0]!, contradictory], null).nodes[0]?.explore_ratio).toBe(
+      'unknown'
+    );
+  });
+
   test('measure UTC SQL clocks, millisecond skips and overlapping dispatch without counting parallel branches', () => {
     const run = {
       id: 'r',

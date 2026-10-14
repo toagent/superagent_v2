@@ -41,6 +41,37 @@ const fixture = () => [
   row(4, 50, end('y')),
   row(5, 60, message),
 ];
+test('PROVIDER_TIMING explicit scripts are n/a; AI or absent types and contradictory receipts stay unknown', () => {
+  const script = {
+    ...terminal(),
+    data: { ...terminal().data, node: { id: 'p', kind: 'exec', runtime: 'bun' } },
+  };
+  expect(providerTiming('r', [script])[0]).toMatchObject({
+    cmds: 'n/a',
+    explore_ratio: 'n/a',
+    mcp_calls: 'n/a',
+    model_turns: 'n/a',
+    think_gap_ms: 'n/a',
+    window: 'n/a',
+    first_token_ms: 'n/a',
+    tool_union_ms: 'n/a',
+  });
+  for (const data of [
+    {
+      ...terminal().data,
+      node: { id: 'p', kind: 'agent', source: { kind: 'inline' } },
+      type: 'script',
+    },
+    { ...script.data, binding: { provider: 'codex' } },
+    terminal().data,
+  ])
+    expect(providerTiming('r', [{ ...terminal(), data }])[0]?.explore_ratio).toBe('unknown');
+  expect(
+    providerTiming('r', [{ ...terminal(), data: { ...terminal().data, type: 'bash' } }])[0]
+      ?.explore_ratio
+  ).toBe('n/a');
+  expect(providerTiming('r', [script, row(1, 10, message)])[0]?.explore_ratio).toBe('unknown');
+});
 const command = (
   id: string,
   status: 'started' | 'completed' | 'failed'
