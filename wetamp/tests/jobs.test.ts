@@ -178,15 +178,69 @@ describe('job registry', () => {
 });
 
 describe('job exec', () => {
+  test.each([
+    ['general', '', 'general'],
+    ['strategist', '', 'reviewer'],
+    ['commander', 'general', 'commander'],
+    ['commander', 'reviewer', 'commander'],
+    [undefined, 'general', 'general'],
+    [undefined, 'reviewer', 'reviewer'],
+    [undefined, 'worker', 'worker'],
+    [undefined, '', ''],
+  ] as const)('child launch role %s from parent %s becomes %s', async (flag, parent, expected) => {
+    const root = tmp(),
+      codex = join(root, 'codex');
+    writeFileSync(
+      codex,
+      `#!/usr/bin/env bun
+if (process.argv[2] === 'app-server') {
+  for await (const line of console) {
+    const r = JSON.parse(line);
+    if (r.id !== undefined) console.log(JSON.stringify({ id: r.id, result: r.method === 'config/read' ? { config: {} } : {} }));
+  }
+} else console.log(JSON.stringify({ role: process.env.SUPERAGENT_ROLE, args: process.argv.slice(2) }));
+`
+    );
+    chmodSync(codex, 0o755);
+    const p = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'native-role',
+        ...(flag ? ['--role', flag] : []),
+        '--',
+        codex,
+        'exec',
+        'prompt',
+      ],
+      parent
+    );
+    const err = await new Response(p.stderr as ReadableStream).text();
+    expect(await p.exited, err).toBe(0);
+    const child = JSON.parse(await new Response(p.stdout as ReadableStream).text());
+    expect(child.role).toBe(expected);
+    if (flag === 'strategist') expect(child.args).toContain('sandbox_mode="read-only"');
+  });
+
   test('queue receipt survives admission and distinguishes preparation from child execution', async () => {
     const admission = process.env.SA_ADMIT;
     process.env.SA_ADMIT = 'on';
-    let probes = 0, queued: Job | undefined;
+    let probes = 0,
+      queued: Job | undefined;
     try {
-      expect(await jobCli(['job', 'exec', '--title', 'receipt', '--', '/bin/sleep', '0.03'],
-        () => ({ pressure: ++probes === 1 ? 2 : 1, free: 100, source: 'sysctl' }),
-        async () => { queued = only(); await Bun.sleep(25); })).toBe(0);
-      const j = only(), r = j.receipt!;
+      expect(
+        await jobCli(
+          ['job', 'exec', '--title', 'receipt', '--', '/bin/sleep', '0.03'],
+          () => ({ pressure: ++probes === 1 ? 2 : 1, free: 100, source: 'sysctl' }),
+          async () => {
+            queued = only();
+            await Bun.sleep(25);
+          }
+        )
+      ).toBe(0);
+      const j = only(),
+        r = j.receipt!;
       expect(queued?.state).toBe('queued');
       expect(r.enqueued_at).toBe(queued!.started_at);
       expect(Date.parse(r.admitted_at!) - Date.parse(r.enqueued_at)).toBeGreaterThanOrEqual(25);
@@ -354,26 +408,80 @@ else if (process.argv[1].endsWith('/claude')) {
   });
 
   test('launch binds the registered card and clears inherited job identity', async () => {
-    const root = tmp(), card = join(root, 'input.md');
+    const root = tmp(),
+      card = join(root, 'input.md');
     writeFileSync(card, 'bound input');
-    const p = run(['job', 'exec', '--title', 'input', '--card', 'input.md', '--request-ref', 'request/1',
-      '--', 'bun', '-e', 'console.log(JSON.stringify([process.env.SA_JOB_ID, process.env.SA_JOB_CARD, process.env.SA_JOB_REQUEST_REF, await Bun.file(process.env.SA_JOB_CARD).text()]))'],
-      '', root, { SA_JOB_ID: 'parent', SA_JOB_CARD: '/missing-parent-card', SA_JOB_REQUEST_REF: 'parent-request' });
+    const p = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'input',
+        '--card',
+        'input.md',
+        '--request-ref',
+        'request/1',
+        '--',
+        'bun',
+        '-e',
+        'console.log(JSON.stringify([process.env.SA_JOB_ID, process.env.SA_JOB_CARD, process.env.SA_JOB_REQUEST_REF, await Bun.file(process.env.SA_JOB_CARD).text()]))',
+      ],
+      '',
+      root,
+      {
+        SA_JOB_ID: 'parent',
+        SA_JOB_CARD: '/missing-parent-card',
+        SA_JOB_REQUEST_REF: 'parent-request',
+      }
+    );
     expect(await p.exited).toBe(0);
     if (!p.stdout || typeof p.stdout === 'number') throw new Error('missing child stdout');
-    expect(JSON.parse(await new Response(p.stdout).text())).toEqual([only().id, card, 'request/1', 'bound input']);
-    const q = run(['job', 'exec', '--title', 'unbound', '--', 'bun', '-e',
-      'console.log(JSON.stringify([process.env.SA_JOB_CARD, process.env.SA_JOB_REQUEST_REF]))'],
-      '', root, { SA_JOB_CARD: card, SA_JOB_REQUEST_REF: 'parent-request' });
+    expect(JSON.parse(await new Response(p.stdout).text())).toEqual([
+      only().id,
+      card,
+      'request/1',
+      'bound input',
+    ]);
+    const q = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'unbound',
+        '--',
+        'bun',
+        '-e',
+        'console.log(JSON.stringify([process.env.SA_JOB_CARD, process.env.SA_JOB_REQUEST_REF]))',
+      ],
+      '',
+      root,
+      { SA_JOB_CARD: card, SA_JOB_REQUEST_REF: 'parent-request' }
+    );
     expect(await q.exited).toBe(0);
     if (!q.stdout || typeof q.stdout === 'number') throw new Error('missing child stdout');
     expect(JSON.parse(await new Response(q.stdout).text())).toEqual(['', '']);
   });
 
   test('missing card fails before checkout creation and child launch', async () => {
-    const repo = gitRepo(tmp()), marker = join(repo, 'launched');
-    const p = run(['job', 'exec', '--title', 'missing input', '--card', 'missing.md',
-      '--worktree', 'task/missing-input', '--', 'touch', marker], '', repo);
+    const repo = gitRepo(tmp()),
+      marker = join(repo, 'launched');
+    const p = run(
+      [
+        'job',
+        'exec',
+        '--title',
+        'missing input',
+        '--card',
+        'missing.md',
+        '--worktree',
+        'task/missing-input',
+        '--',
+        'touch',
+        marker,
+      ],
+      '',
+      repo
+    );
     expect(await p.exited).not.toBe(0);
     expect(existsSync(marker)).toBe(false);
     expect(sh('git branch --list task/missing-input', repo).trim()).toBe('');
