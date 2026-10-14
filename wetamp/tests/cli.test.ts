@@ -1960,6 +1960,7 @@ test.each([
 test.each([
   [1, 'inputs'],
   [2, 'artifact'],
+  [3, 'strict'],
   [3, 'risk'],
   [1, 'environment'],
   [2, 'classification'],
@@ -2112,11 +2113,12 @@ test.each([
       expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(1);
       expect(() => main(['accept', 'sa1', '--pkg', 'nope'])).toThrow(/unknown package/);
     }
+    if (check === 'strict') {
+      writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, mode: 'strict' }));
+      expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
+      writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify(plan));
+    }
     if (check === 'risk') {
-      for (const mode of ['strict', plan.mode]) {
-        writeFileSync(join(gen.dir, 'plan.json'), JSON.stringify({ ...plan, mode }));
-        expect(captured(() => main(['accept', 'sa1'])).code).toBe(mode === 'strict' ? 1 : 0);
-      }
       input.risk = 'G2';
       writeFileSync(join(gen.dir, 'accept-inputs.json'), JSON.stringify([input]));
       expect(captured(() => main(['accept', 'sa1'])).code).toBe(1);
