@@ -321,7 +321,7 @@ test('review guidance uses the node schema for failure classes', () => {
   }
 });
 
-test('HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
+test('SHIFT_LEFT_ACCEPT HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
   const root = join(tmp(), 'wetamp');
   for (const path of ['templates', 'src', 'schemas', 'bin', 'scripts'])
     fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
@@ -341,7 +341,8 @@ test('HF3 fingerprint is stable and changes with template bytes or generation lo
   for (const command of ['sa-code', 'sa-fix', 'sa-repair']) {
     const file = join(root, `templates/.archon/commands/${command}.md`);
     const original = fs.readFileSync(file, 'utf8');
-    expect(original).toContain('包括首条读取在内，所有 shell 命令遵循你的 AGENTS.md 命令规则');
+    expect(original).toContain('所有 shell 命令遵循你的 AGENTS.md 命令规则');
+    expect(original).toContain('交付前运行任务书验收命令');
     fs.writeFileSync(file, original + '\nchanged command guidance\n');
     expect(engineHash(root)).not.toBe(hash);
     fs.writeFileSync(file, original);
@@ -1127,6 +1128,60 @@ test('ENV_PRECHECK generated helper runs independently with no source checkout i
       if (saved[i] === undefined) delete process.env[k];
       else process.env[k] = saved[i];
     });
+  }
+});
+
+test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before delivery', () => {
+  const root = tmp();
+  Object.assign(process.env, {
+    SUPERAGENT_HOME: join(root, 'home'),
+    ARCHON_HOME: join(root, 'archon'),
+  });
+  const engine = gitRepo(tmp());
+  const clean = coord.cleanEngine;
+  const boundary = spyOn(coord, 'cleanEngine').mockImplementation(() => clean(engine));
+  try {
+    const plan = loadPlan(fixturePlan(root, gitRepo(root)), [root]);
+    const gen = generate(plan, 'shift-left');
+    const workflow = Bun.YAML.parse(
+      readFileSync(join(gen.dir, '.archon/workflows', gen.workflow, `${gen.workflow}.yaml`), 'utf8')
+    );
+    const commands = new Set(nodesOf(workflow).map(n => n.command));
+    for (const command of ['sa-code', 'sa-repair', 'sa-fix']) {
+      expect(commands.has(command)).toBe(true);
+      const prompt = readFileSync(join(gen.dir, '.archon/commands', `${command}.md`), 'utf8');
+      for (const requirement of [
+        '交付前运行任务书验收命令',
+        '在当前 worktree、commit 前',
+        '保持相同 cwd 与环境前缀',
+        '失败就在本会话继续修，直到全部通过',
+        '把实际命令与退出码写进 `quick_checks`',
+        '引擎的 verify 照常独立复跑，是唯一的放行依据',
+        'coder 自报永远不作为验收证据',
+        '基线上就失败且与本次工作无关',
+        '"cap":"environment"',
+        '改用等价路径完成任务，并在 `deviations` 记录',
+        '只有任务目标本身必须执行被拒绝的高危操作时',
+        '`blocked`、`error_class: redline` 和非空 `needs`',
+      ])
+        expect(prompt).toContain(requirement);
+      for (const stale of [
+        '正式验收由引擎独占执行',
+        '不要求交付前',
+        '省事验证或跳过',
+        '命中红线',
+        '复验仍不通过即挂起',
+        '不重跑前序里程碑验收',
+      ])
+        expect(prompt).not.toContain(stale);
+      expect(prompt).toContain(
+        command === 'sa-code'
+          ? '按任务书原样运行全部 `accept` 命令'
+          : '失败的验收命令及受影响的其余验收命令'
+      );
+    }
+  } finally {
+    boundary.mockRestore();
   }
 });
 
