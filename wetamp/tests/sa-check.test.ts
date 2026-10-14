@@ -20,6 +20,7 @@ import {
   nextDisposition,
   permissionEvidence,
   identityOf,
+  attemptIdentity,
   independence,
   readAuthorEvidence,
   ledgerOf,
@@ -258,7 +259,12 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
       adopted_from_run_id: 'old',
       events: [event('repair')],
     },
-    old: { id: 'old', codebase_id: 'repo', output_root: oldRoot, events: [] },
+    old: {
+      id: 'old',
+      codebase_id: 'repo',
+      output_root: oldRoot,
+      events: [{ event_type: 'node_started', step_name: 'code-core' }],
+    },
   };
   mkdirSync(art, { recursive: true });
   const attempt = {
@@ -266,7 +272,7 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
     node: 'code-core',
     provider: 'codex' as const,
     model: 'author',
-    status: 'completed' as const,
+    status: 'started' as const,
   };
   writePolicyAttempts(art, [attempt]);
   const read = () => readAuthorEvidence(runs.current!, [], ['core'], 'm1', id => runs[id]!);
@@ -291,6 +297,9 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
     )
   ).toBe('author_unknown');
   writePolicyAttempts(art, [{ ...attempt, status: 'failed' }]);
+  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
+  expect(attemptIdentity([attempt], attempt.node).strength).toBe('unknown');
+  writePolicyAttempts(art, [{ ...attempt, provider: 'claude' }]);
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [attempt]);
   const old = runs.old!;

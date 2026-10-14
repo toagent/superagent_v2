@@ -1361,13 +1361,20 @@ export const identityOf = (b: Binding | undefined): Ident => {
   return { model: null, strength: 'unknown' };
 };
 
-/** Provider receipts remain strongest; a fallback's pinned model must replace the original request. */
-export function attemptIdentity(attempts: PolicyAttempt[], node: string, binding?: Binding): Ident {
+/** Author reservations survive interruption; reviewers still require a completed attempt. */
+export function attemptIdentity(
+  attempts: PolicyAttempt[],
+  node: string,
+  binding?: Binding,
+  author = false
+): Ident {
   const attempt = attempts.filter(a => a.node === node).at(-1);
   if (!attempt) return identityOf(binding);
-  if (attempt.status !== 'completed') return { model: null, strength: 'unknown' };
+  if (attempt.status !== 'completed' && !author) return { model: null, strength: 'unknown' };
   if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
-  return attempt.provider === 'codex'
+  // Codex pins the thread model; policy fallback reserves a separate attempt before dispatch.
+  // Claude can use native fallback/aliases, so an absent provider receipt stays unknown.
+  return attempt.provider === 'codex' && attempt.model
     ? { model: attempt.model, strength: 'pinned' }
     : { model: null, strength: 'unknown' };
 }
@@ -1396,7 +1403,7 @@ export function readAuthorEvidence(
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
     seen.add(run.id);
     const receipts = attempts.filter(a => owns(a.node));
-    authors.push(...receipts.map(a => attemptIdentity([a], a.node)));
+    authors.push(...receipts.map(a => attemptIdentity([a], a.node, undefined, true)));
     const nodes = new Set(
       run.events
         .filter(
