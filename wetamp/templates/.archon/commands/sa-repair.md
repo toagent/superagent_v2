@@ -9,8 +9,7 @@ argument-hint: (inputs bound by the generated workflow)
 
 上下文已在下方。内联源码是节点启动时的快照，需要更多再按需读；`unknown` 不代表通过。所有 shell 命令遵循你的 AGENTS.md 命令规则。
 
-<!-- prettier-ignore -->
-$$INPUTS.context_node.output.context_pack
+上下文：$$INPUTS.context_node.output.context_pack
 
 引擎验收日志：`$INPUTS.accept_log`（失败命令与输出，按需读取）。
 
@@ -30,5 +29,3 @@ $INPUTS.prior_work
 正常完成时 `status` 填 `done`、`error_class` 填 null；`deviations`/`needs` 没有就填空数组。
 
 只输出符合 output_format 的 JSON。
-
-
