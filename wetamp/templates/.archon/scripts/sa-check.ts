@@ -470,7 +470,6 @@ function acceptOnce(
   const dirty = git('status', '--porcelain').trim();
   const failures: CheckFailure[] = [];
   const commandResults: CommandResult[] = [];
-  const failed = run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
   if (dirty)
     appendFileSync(
       log,
@@ -485,6 +484,27 @@ function acceptOnce(
   const patch = save(`${tag}.patch`, base);
   const delta = env('DELTA_BASE') ? save(`${tag}.delta.patch`, env('DELTA_BASE')) : patch;
   const hash = patch ? sha(readFileSync(patch, 'utf8')).slice(0, 16) : '';
+  let blocked: string | null = null;
+  // Only the full candidate and clean worktree prove there is nothing to validate.
+  // An empty repair delta can still contain earlier delivery; an absent BASE proves nothing.
+  if (!dirty && patch && readFileSync(patch, 'utf8') === '') {
+    try {
+      const report = JSON.parse(coder) as Coder;
+      if (report?.status === 'blocked')
+        blocked =
+          report.error_class === 'redline'
+            ? 'coder_redline'
+            : Array.isArray(report.needs) && report.needs.length
+              ? 'coder_needs'
+              : null;
+    } catch {
+      /* Malformed reports must still go through real acceptance. */
+    }
+  }
+  const failed = blocked
+    ? []
+    : run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
+  if (blocked) appendFileSync(log, `# ${blocked}: no candidate; checks and probe skipped\n`);
   const scope =
     base && env('RISK')
       ? scopeRisk(
@@ -494,7 +514,7 @@ function acceptOnce(
           env('RISK')
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
-  const ok = failed.length === 0 && !dirty;
+  const ok = !blocked && failed.length === 0 && !dirty;
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
   // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
@@ -518,6 +538,16 @@ function acceptOnce(
     ok,
     {
       ok,
+      ...(blocked
+        ? {
+            decision: {
+              kind: 'block' as const,
+              reason: blocked,
+              evidence: [patch, delta, join(artifacts, `${tag}.coder.json`)],
+              debt: [],
+            },
+          }
+        : {}),
       requirement_contract: requirementContract,
       command_results: commandResults,
       diff_hash: hash,
@@ -973,6 +1003,8 @@ export function deliveryDecision(input: {
   });
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
+  if (check?.decision?.kind === 'block' && check.decision.reason === 'coder_needs')
+    return out('block', 'coder_needs');
   if (!check) return out('block', 'engine_suspect');
   if (items.some(r => r.status === 'unknown')) return out('block', 'acceptance_failed');
   if (
