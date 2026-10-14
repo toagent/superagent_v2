@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
 import {
@@ -78,7 +79,7 @@ test('G1: API app-server owns tools through short-lived shells; exec and MCP can
   expect(owner(false, pid => fixture.get(pid) ?? null, 50)).toEqual({ pid: 40, tty: null });
 });
 
-test('G1: caller uses app-server PID and only fresh unambiguous heartbeat sessions', () => {
+test('G1: caller uses app-server PID and only lifetime-verified unambiguous heartbeat sessions', () => {
   const root = tmp(),
     bin = join(root, 'bin'),
     home = join(root, 'sa');
@@ -90,11 +91,13 @@ test('G1: caller uses app-server PID and only fresh unambiguous heartbeat sessio
     { mode: 0o755 }
   );
   writeFileSync(join(bin, 'lsof'), '#!/bin/sh\nprintf "fcwd\\nn/w/fixture\\n"\n', { mode: 0o755 });
-  const beat = (session: string, at: number) =>
+  const beat = (session: string, at: number, start = 'fixture-start') =>
     writeFileSync(
       join(home, 'live', `${session}.json`),
       JSON.stringify({
         pid: process.pid,
+        host: hostname(),
+        pid_start: start,
         client: 'codex',
         session_id: session,
         cwd: '/w/fixture',
@@ -102,7 +105,8 @@ test('G1: caller uses app-server PID and only fresh unambiguous heartbeat sessio
       })
     );
   beat('current', Date.now());
-  beat('smoke', Date.now() - 120001);
+  beat('previous', Date.now() - 120001);
+  beat('smoke', Date.now() - 120001, 'old-lifetime');
   const readCaller = () => {
     const p = Bun.spawnSync(
       [
@@ -131,6 +135,9 @@ test('G1: caller uses app-server PID and only fresh unambiguous heartbeat sessio
     session_id: 'current',
   });
   beat('smoke', Date.now());
+  expect(readCaller().session_id).toBeUndefined();
+  beat('current', Date.now() - 120001);
+  beat('smoke', Date.now() - 120001);
   expect(readCaller().session_id).toBeUndefined();
 });
 
@@ -227,12 +234,18 @@ test('job exec persists launcher metadata from matching heartbeat; no prompt/arg
     JSON.stringify({
       pid: process.pid,
       client: 'claude',
+      host: hostname(),
+      pid_start: 'fixture-start',
       session_id: 'session-fixture',
       cwd: '/w/sinan',
       at: new Date().toISOString(),
     })
   );
-  writeFileSync(join(bin, 'ps'), '#!/bin/sh\nprintf "1 ttys001 claude\\n"\n', { mode: 0o755 });
+  writeFileSync(
+    join(bin, 'ps'),
+    '#!/bin/sh\ncase "$*" in *lstart*) echo fixture-start;; *) echo "1 ttys001 claude";; esac\n',
+    { mode: 0o755 }
+  );
   writeFileSync(join(bin, 'lsof'), '#!/bin/sh\nprintf "fcwd\\nn/w/sinan\\n"\n', { mode: 0o755 });
   const p = Bun.spawn(
     [

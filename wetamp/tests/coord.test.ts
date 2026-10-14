@@ -285,6 +285,90 @@ test('presence active/idle/offline/unknown comes from one verifier, not heartbea
   expect(presence({ ...a, pid: 99999999 }, s.sa)).toEqual({ state: 'offline' });
   expect(presence({ ...a, pid_start: undefined }, s.sa)).toEqual({ state: 'unknown' });
 });
+test('automatic delivery verifies the live owner through background children after heartbeat expiry', async () => {
+  const s = setup();
+  const module = (file: string) => JSON.stringify(join(import.meta.dir, '../src', file));
+  const child = join(s.root, 'deliver.ts');
+  writeFileSync(
+    child,
+    `import {spyOn} from 'bun:test';
+import * as native from ${module('archon.ts')};
+import * as land from ${module('land.ts')};
+import {caller} from ${module('coord/index.ts')};
+import {finalizeDelivery} from ${module('cli.ts')};
+let landed = false;
+spyOn(native, 'getRun').mockReturnValue({id:'engine',status:'completed',output_root:process.env.SUPERAGENT_HOME});
+spyOn(land, 'applyLand').mockImplementation(() => { landed = true; return {status:'manual_push'}; });
+try {
+  const receipt = finalizeDelivery('background', true);
+  console.log(JSON.stringify({ok:landed && receipt.status === 'manual_push',who:caller()}));
+} catch (e) { console.log(JSON.stringify({ok:false,error:e.message,landed})); }
+`
+  );
+  const parent = join(s.root, 'claude');
+  writeFileSync(
+    parent,
+    `import {writeFileSync,mkdirSync} from 'node:fs';
+import {hostname} from 'node:os';
+import {join} from 'node:path';
+import {Coordination,runScope,presence} from ${module('coord/index.ts')};
+import {inspectProcess} from ${module('launcher.ts')};
+const sa=process.env.SUPERAGENT_HOME, repo=${JSON.stringify(s.repo)};
+mkdirSync(join(sa,'live'),{recursive:true}); mkdirSync(join(sa,'runs'),{recursive:true});
+const who={client:'claude',session_id:'owner-session',host:hostname(),pid:process.pid,pid_start:inspectProcess(process.pid).start};
+const c=new Coordination({sa,runs:()=>[]});
+const controller=c.claim(runScope({run_id:'background',repo}),who).controller;
+const ledger={run_id:'background',archon_run_id:'engine',repo,controller,gen_dir:sa,branch:'feature',workflow:'fixture',delivery:{}};
+writeFileSync(join(sa,'runs/background.json'),JSON.stringify(ledger));
+writeFileSync(join(sa,'plan.json'),JSON.stringify({base_ref:'main',packages:[]}));
+writeFileSync(join(sa,'accept-inputs.json'),'{}');
+const art=join(sa,'artifacts/runs/engine'); mkdirSync(art,{recursive:true});
+writeFileSync(join(art,'land.json'),'{}');
+const results={};
+for (const mode of ['fresh','expired','foreign','reused','remote','unverified','ambiguous','generation','general','strategist','reviewer','worker']) {
+  const beat={...who,at:new Date(mode==='fresh'?Date.now():Date.now()-120001).toISOString()};
+  if(mode==='foreign') beat.session_id='other-session';
+  if(mode==='reused') beat.pid_start='old-lifetime';
+  if(mode==='remote') beat.host='other-host';
+  if(mode==='unverified') delete beat.pid_start;
+  writeFileSync(join(sa,'live/owner.json'),JSON.stringify(beat));
+  writeFileSync(join(sa,'live/other.json'),JSON.stringify({...beat,session_id:mode==='ambiguous'?'second-session':beat.session_id}));
+  writeFileSync(join(sa,'runs/background.json'),JSON.stringify({...ledger,controller:{...controller,generation:mode==='generation'?controller.generation+1:controller.generation}}));
+  const p=Bun.spawn(['bash','-c','"$1" "$2" & wait $!', '_',process.execPath,${JSON.stringify(child)}],{
+    env:{...process.env,SUPERAGENT_ROLE:['general','strategist','reviewer','worker'].includes(mode)?mode:''},stdout:'pipe',stderr:'pipe'});
+  const out=await new Response(p.stdout).text(), err=await new Response(p.stderr).text();
+  if(await p.exited!==0) throw new Error(err);
+  results[mode]=JSON.parse(out);
+}
+console.log(JSON.stringify({results,presence:presence(who,sa),who}));
+`
+  );
+  const p = Bun.spawn([process.execPath, parent], {
+    env: {
+      ...process.env,
+      SUPERAGENT_HOME: s.sa,
+      ARCHON_HOME: join(s.sa, 'archon'),
+      SUPERAGENT_ROLE: '',
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const out = await new Response(p.stdout).text();
+  const err = await new Response(p.stderr).text();
+  expect({ code: await p.exited, err }).toEqual({ code: 0, err: '' });
+  const result = JSON.parse(out);
+  expect(result.presence.state).toBe('online');
+  expect(result.results.fresh).toMatchObject({ ok: true, who: result.who });
+  expect(result.results.expired).toMatchObject({ ok: true, who: result.who });
+  for (const mode of ['foreign', 'reused', 'remote', 'unverified', 'ambiguous', 'generation']) {
+    expect(result.results[mode]).toMatchObject({ ok: false, landed: false });
+    expect(result.results[mode].error).toContain('fencing');
+  }
+  for (const mode of ['general', 'strategist', 'reviewer', 'worker']) {
+    expect(result.results[mode]).toMatchObject({ ok: false, landed: false });
+    expect(result.results[mode].error).toContain('派生会话');
+  }
+}, 30000);
 test('CLI mutation obeys owner fencing before invoking engine; read-only owner remains available', () => {
   const s = setup();
   s.c.claim(s.scope, a);

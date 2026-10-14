@@ -55,21 +55,26 @@ function launcher(home) {
     if (!who) return undefined;
     const cli = cliOf(inspectPid(who.pid)?.[3]?.trim().split(/\s+/) || [], true);
     if (!cli || cli.headless) return undefined;
+    const p = identity.inspect(who.pid);
     let beats = [];
     try {
       for (const name of fs.readdirSync(path.join(home, 'live')).filter(n => n.endsWith('.json'))) {
         try {
           const b = JSON.parse(fs.readFileSync(path.join(home, 'live', name), 'utf8'));
-          if (b.pid === who.pid && b.client === cli.kind && Date.now() - Date.parse(b.at) < identity.FRESH_MS) beats.push(b);
+          // Expired identity is usable only within the verified process lifetime.
+          if (p.state === 'online' && b.pid === who.pid && b.client === cli.kind &&
+              b.host === os.hostname() && b.pid_start === p.start) beats.push(b);
         } catch {}
       }
     } catch {}
+    // Shared app-server processes retain old sessions; prefer current activity over stale history.
+    const fresh = beats.filter(b => Date.now() - Date.parse(b.at) < identity.FRESH_MS);
+    if (fresh.length) beats = fresh;
     beats.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
     const out = spawnSync('lsof', ['-a', '-p', String(who.pid), '-d', 'cwd', '-Fn'], {encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore']});
     const cwd = out.stdout?.split('\n').find(l => l.startsWith('n'))?.slice(1) || str(beats[0]?.cwd);
     if (!cwd) return undefined;
     const session = new Set(beats.map(b => str(b.session_id)).filter(Boolean));
-    const p = identity.inspect(who.pid);
     return {client: cli.kind, ...who, cwd, host: os.hostname(), pid_start: p.start,
       ...(session.size === 1 ? {session_id: [...session][0]} : {})};
   } catch { return undefined; }
