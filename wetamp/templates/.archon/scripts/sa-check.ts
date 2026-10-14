@@ -446,9 +446,11 @@ export function scopeRisk(
     pol.exempt_paths.some(g => glob(g, p)) ||
     write.some(w => p === w || p.startsWith(w.replace(/\/*$/, '/')) || glob(w, p));
   const out_of_scope = [...new Set(ch.flatMap(c => c.paths).filter(p => !inScope(p)))];
+  const riskGlob = (g: string, p: string): boolean =>
+    glob(g.toLowerCase(), (g.includes('/') ? p : basename(p)).toLowerCase());
   const inferred = ch.map(c =>
     c.modes.some(m => m === '160000' || m === '120000') ||
-    c.paths.some(p => pol.risk_paths.some(g => glob(g, p)))
+    c.paths.some(p => pol.risk_paths.some(g => riskGlob(g, p)))
       ? 'G2'
       : c.paths.some(p => pol.code_extensions.some(e => p.endsWith(e)))
         ? 'G1'

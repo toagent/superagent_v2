@@ -1206,6 +1206,33 @@ describe('F-13 delivery scope', () => {
     );
     expect(scopeRisk([ch(['src/l'], ['100644', '120000'])], ['src'], pol, 'G0').risk).toBe('G2');
   });
+  test.each([
+    ['ci/Jenkinsfile', 'G2'],
+    ['app/Dockerfile', 'G2'],
+    ['db/X.SQL', 'G2'],
+    ['keys/server.PEM', 'G2'],
+    ['src/UserCredential.ts', 'G2'],
+    ['src/styles/theme/tokens.css', 'G2'],
+    ['src/a.ts', 'G1'],
+  ])('E3-3: gate and micro-edit risk matching agree for %s', (file, expected) => {
+    const micro = require('../hooks/micro-edit.cjs');
+    const root = process.cwd();
+    const edit = micro.plan(
+      'codex',
+      {
+        cwd: root,
+        tool_input: {
+          input: `*** Begin Patch\n*** Update File: ${file}\n-old\n+new\n*** End Patch`,
+        },
+      },
+      root,
+      (p: string) => p,
+      root
+    );
+    const risk = scopeRisk([ch([file])], ['**'], loadTiers().policy, 'G1').risk;
+    expect(risk).toBe(expected);
+    expect(edit.risk.length > 0).toBe(risk === 'G2');
+  });
 });
 
 describe('F-14 model identity', () => {
