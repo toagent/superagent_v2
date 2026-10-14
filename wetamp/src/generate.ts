@@ -100,14 +100,6 @@ const contextOutputSchema = (): unknown => {
   return { ...schema, properties: { ...schema.properties, context_pack: { type: 'string' } } };
 };
 
-const READONLY_MCP = 'reviewer-readonly.mcp.json';
-/**
- * Codex 评审节点的 mcp: 文件：只有一个以 tiers 哨兵命名、required 且命令必败的 server。
- * codex-readonly-proxy 认出后删掉它并收紧沙箱；不经代理时 Codex 因 required server 起不来，线程启动失败。
- */
-const readOnlyMcp = (marker: string): string =>
-  JSON.stringify({ [marker]: { command: 'false', required: true } }, null, 2) + '\n';
-
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 
 const skippable = (from: string): Node => ({ from, if_skipped: null });
@@ -184,7 +176,7 @@ export function buildWorkflow(
       descriptor,
       descriptor.role === 'review' ? [aliases['@sa-coder'].model] : []
     ).candidates[0];
-    return executionNode(descriptor, candidate, join(gen, READONLY_MCP));
+    return executionNode(descriptor, candidate);
   };
   const planPath = join(gen, 'plan.json');
   const policyPath = join(gen, 'policy.json');
@@ -825,10 +817,6 @@ export function generate(
       aliasDuplicateObjects: false,
     })
   );
-  writeFileSync(
-    join(dir, READONLY_MCP),
-    readOnlyMcp(tiers.policy.exec_profiles.reviewer.codex_readonly_marker)
-  );
   writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
@@ -876,7 +864,7 @@ export function generate(
     'run-config.yaml',
     'codex-worker',
   ];
-  git(dir, 'add', ...files, READONLY_MCP, ...(fake ? [] : ['archon']));
+  git(dir, 'add', ...files, ...(fake ? [] : ['archon']));
   const staged = Bun.spawnSync(['git', 'diff', '--cached', '--quiet'], {
     cwd: dir,
     timeout: QUERY_TIMEOUT_MS,

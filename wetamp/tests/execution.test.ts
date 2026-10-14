@@ -30,10 +30,8 @@ test('frozen descriptors and both entry points share risk/round effort and nativ
         ]);
         for (const candidate of route.candidates) {
           expect(candidate.effort).toBe(effortFor(tiers, role, risk, round));
-          expect(executionLaunch(descriptor, candidate).readonly).toBe(role === 'review');
-          expect(String(executionNode(descriptor, candidate, '/readonly.json').effort)).toBe(
-            candidate.effort
-          );
+          expect(executionLaunch(descriptor, candidate)).not.toHaveProperty('readonly');
+          expect(String(executionNode(descriptor, candidate).effort)).toBe(candidate.effort);
         }
       }
   const descriptor = describeExecution(tiers, 'review', 'G2');
@@ -88,7 +86,7 @@ test('explicit unlimited tokens ignores reserves and spend while preserving laun
   expect(calls).toBe(3);
 });
 
-test('VENDOR_FAILOVER reviewer pool excludes authors and reapplies readonly profiles', async () => {
+test('VENDOR_FAILOVER reviewer pool excludes authors and preserves write-capable profiles', async () => {
   const author = 'claude-opus-5';
   const t = structuredClone(tiers);
   t.routing.reviewer.by_risk = { G1: ['gpt-6.1-sol', author, 'claude-sonnet-5'] };
@@ -118,7 +116,7 @@ test('VENDOR_FAILOVER reviewer pool excludes authors and reapplies readonly prof
         called.push(candidate.model);
         return {
           model: candidate.model,
-          nodeConfig: executionNode(descriptor, candidate, '/readonly.json'),
+          nodeConfig: executionNode(descriptor, candidate),
         };
       },
       sendQuery,
@@ -126,11 +124,7 @@ test('VENDOR_FAILOVER reviewer pool excludes authors and reapplies readonly prof
         async function* (_p, _cwd, session, options) {
           expect(candidate.model).not.toBe(author);
           expect(session).toBeUndefined();
-          expect(options?.nodeConfig?.sandbox).toMatchObject({
-            enabled: true,
-            failIfUnavailable: true,
-            filesystem: { denyWrite: ['/'] },
-          });
+          expect(options?.nodeConfig?.sandbox).toBeUndefined();
           expect(options?.nodeConfig?.denied_tools).toBeUndefined();
           yield { type: 'result', text: 'reviewed' };
           yield { type: 'settled' };

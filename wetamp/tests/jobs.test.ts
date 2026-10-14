@@ -248,8 +248,61 @@ if (process.argv[2] === 'app-server') {
     expect(await p.exited, err).toBe(0);
     const child = JSON.parse(await new Response(p.stdout as ReadableStream).text());
     expect(child.role).toBe(expected);
-    if (flag === 'strategist') expect(child.args).toContain('sandbox_mode="read-only"');
+    if (flag === 'strategist') expect(child.args).toContain('sandbox_mode="danger-full-access"');
   });
+
+  test.each(['ignored', 'untracked', 'tracked', 'staged', 'already-dirty', 'commit'] as const)(
+    'strategist checkout integrity: %s',
+    async mode => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        codex = join(root, 'codex');
+      writeFileSync(join(repo, '.gitignore'), 'test-output/\n');
+      sh('git add .gitignore && git commit -qm ignore', repo);
+      if (mode === 'already-dirty') writeFileSync(join(repo, 'README.md'), 'before');
+      writeFileSync(
+        codex,
+        `#!/usr/bin/env bun
+import { mkdirSync, writeFileSync } from 'node:fs';
+const mode = ${JSON.stringify(mode)};
+if (mode === 'ignored') { mkdirSync('test-output'); writeFileSync('test-output/cache', 'ok'); }
+else if (mode === 'untracked') writeFileSync('new-file', 'ok');
+else {
+  writeFileSync('README.md', 'review edit');
+  if (mode === 'staged' || mode === 'commit') Bun.spawnSync(['git', 'add', 'README.md']);
+  if (mode === 'commit') Bun.spawnSync(['git', 'commit', '-qm', 'review commit']);
+}
+`
+      );
+      chmodSync(codex, 0o755);
+      const p = run(
+        [
+          'job',
+          'exec',
+          '--title',
+          'integrity',
+          '--role',
+          'strategist',
+          '--',
+          codex,
+          'exec',
+          'test',
+        ],
+        '',
+        repo
+      );
+      const err = await new Response(p.stderr as ReadableStream).text();
+      const invalid = !['ignored', 'untracked'].includes(mode);
+      expect(await p.exited, err).toBe(invalid ? 1 : 0);
+      const job = readJobs(Date.now(), true).jobs.find(j => j.title === 'integrity');
+      expect(job?.state).toBe(invalid ? 'failed' : 'done');
+      expect(job?.reason).toBe(invalid ? 'review_modified_checkout' : undefined);
+      if (invalid) {
+        expect(err).toContain('review invalid');
+        expect(readFileSync(join(repo, 'README.md'), 'utf8')).toBe('review edit');
+      }
+    }
+  );
 
   // prettier-ignore
   test('unset parent and no requested role explicitly suppress child .env role', async () => {
@@ -626,8 +679,8 @@ else if (process.argv[1].endsWith('/claude')) {
       expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
-      expect(readJobs(Date.now(), true).jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high', readonly: role === 'strategist' } });
-      expect(args).not.toContain('mcp_servers={"ambient" = {"enabled" = false}}');
+      expect(readJobs(Date.now(), true).jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high' } });
+      expect(args.some((a: string) => a.startsWith('mcp_servers='))).toBe(false);
     }
     for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);

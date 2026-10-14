@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Archon worker 的 Codex 二进制（assistants.codex.codexBinaryPath）：exec 真 codex，前置
 # policy.exec_profiles.{coder,reviewer}.codex 的 -c 覆盖，原生 MCP 保持可用。
-# app-server 经 codex-readonly-proxy.cjs 转发（评审节点只读）。原生 MCP 配置由 Codex 自行加载。
+# 原生 MCP 配置由 Codex 自行加载；评审可写测试临时目录与缓存。
 set -euo pipefail
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
@@ -43,14 +43,12 @@ for (const role of ['coder', 'reviewer'])
     if (k in settings && JSON.stringify(settings[k]) !== JSON.stringify(v)) throw new Error(`exec_profiles coder/reviewer disagree on codex ${k}`);
     settings[k] = v;
   }
-// 整个 worker 以 reviewer 身份运行时的进程级默认；Archon 的 thread/start 会盖掉它，节点级只读由 codex-readonly-proxy 落实。
-if (process.env.SUPERAGENT_ROLE === 'reviewer') settings.sandbox_mode = 'read-only';
 const args = Object.entries(settings).flatMap(([k, v]) => ['-c', `${k}=${JSON.stringify(v)}`]);
 if (args.some(a => a.includes('\n'))) throw new Error('codex-worker: newline in generated argument');
 process.stdout.write(args.join('\n'));
 JS
 # 逐行一个参数；node 失败时命令替换让 set -e 终止，不带半套覆盖启动 codex。
-out="$(node -e "$JS" "${SA_POLICY_PATH:-}" "$WETAMP/bin/codex-readonly-proxy.cjs")"
+out="$(node -e "$JS" "${SA_POLICY_PATH:-}" "$WETAMP/bin/policy-snapshot.cjs")"
 extra=()
 while IFS= read -r a; do [ -n "$a" ] && extra+=("$a"); done <<< "$out"
 argv=("$real" ${extra[@]+"${extra[@]}"} "$@")
@@ -69,6 +67,4 @@ const argv = caller.map(a => {
 });
 process.stderr.write(JSON.stringify({policy, argv}) + "\n");' -- "${#extra[@]}" ${extra[@]+"${extra[@]}"} "$@"
 fi
-# Archon 只以 app-server 调用本包装器；评审节点的只读由代理改写 thread/turn 参数落实。
-[ "${1:-}" = app-server ] && exec node "$WETAMP/bin/codex-readonly-proxy.cjs" "${SA_POLICY_PATH:-}" "${argv[@]}"
 exec "${argv[@]}"

@@ -352,7 +352,7 @@ test('SHIFT_LEFT_ACCEPT HF3 fingerprint is stable and changes with template byte
   }
   for (const path of [
     'bin/codex-worker',
-    'bin/codex-readonly-proxy.cjs',
+    'bin/policy-snapshot.cjs',
     'scripts/codex-trust.cjs',
     'src/archon.ts',
   ]) {
@@ -975,23 +975,11 @@ describe('buildWorkflow', () => {
       >;
     // console=claude：@sa-reviewer 是 codex，挂哨兵 MCP 交给 codex-worker 的代理；console=codex：claude 走 SDK 沙箱
     for (const id of ['review-m1-r1', 'review-m2-r3']) {
-      expect(node('claude', id)).toMatchObject({ mcp: '/GEN/reviewer-readonly.mcp.json' });
-      expect(node('claude', id).sandbox).toBeUndefined();
-      expect(node('codex', id).sandbox).toEqual({
-        enabled: true,
-        failIfUnavailable: true,
-        autoAllowBashIfSandboxed: true,
-        allowUnsandboxedCommands: false,
-        filesystem: { denyWrite: ['/'], disabled: false },
-        network: {
-          allowedDomains: [],
-          deniedDomains: ['*'],
-          strictAllowlist: true,
-          allowAllUnixSockets: false,
-          allowLocalBinding: false,
-        },
-      });
-      expect(node('codex', id).mcp).toBeUndefined();
+      for (const c of ['claude', 'codex'] as const) {
+        expect(node(c, id).mcp).toBeUndefined();
+        expect(node(c, id).sandbox).toBeUndefined();
+        expect(node(c, id).mutates_checkout).toBe(false);
+      }
     }
     for (const c of ['claude', 'codex'] as const) {
       expect(node(c, 'code-core').sandbox).toBeUndefined();
@@ -1267,11 +1255,8 @@ function checkGeneratedRepo(): void {
   ])
     expect(existsSync(join(g.dir, f))).toBe(true);
   expect(sh('git status --porcelain', g.dir)).toBe('');
-  // 哨兵 required 且命令必败：不经 codex-readonly-proxy 时 Codex 线程起不来
-  expect(JSON.parse(readFileSync(join(g.dir, 'reviewer-readonly.mcp.json'), 'utf8'))).toEqual({
-    'superagent-reviewer-readonly': { command: 'false', required: true },
-  });
-  // console=codex 的评审节点带 sandbox，Archon 校验同样通过
+  expect(existsSync(join(g.dir, 'reviewer-readonly.mcp.json'))).toBe(false);
+  // console=codex 的评审节点允许测试写入，Archon 校验同样通过
   const codex = loadPlan(
     fixturePlan(root, plan.repo, p => (p.console = 'codex')),
     [root]

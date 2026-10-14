@@ -20,7 +20,7 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 
-const { loadPolicy } = createRequire(import.meta.url)('../bin/codex-readonly-proxy.cjs') as {
+const { loadPolicy } = createRequire(import.meta.url)('../bin/policy-snapshot.cjs') as {
   loadPolicy: (path: string) => ReturnType<typeof import('./config').snapshotPolicy>;
 };
 import {
@@ -168,7 +168,7 @@ function runtimeExecution(
           denied_tools: undefined,
           sandbox: undefined,
           mcp: undefined,
-          ...executionNode(route, candidate, join(dir, 'reviewer-readonly.mcp.json')),
+          ...executionNode(route, candidate),
         },
       };
     },

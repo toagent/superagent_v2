@@ -61,6 +61,9 @@
   },
   "testGroups": [
     [
+      "src/launch-policy.test.ts"
+    ],
+    [
       "src/claude/provider.test.ts"
     ],
     [

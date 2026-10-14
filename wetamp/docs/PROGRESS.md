@@ -1109,3 +1109,7 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - 用户选择“只留 2 条底线”，取代前述日期快照中的禁委派、发布、进程选择、提权、写入归属与 reviewer hook 拦截。保留原隐私路径黑名单/钥匙串和 force push、reset --hard、根目录 rm -rf。
 - 删除 shell-effects 表、MCP 登记/归一、safeGitDelete 与手工 Git 门禁；原生配置和 provider reviewer 沙箱保留。盘点与基线/最终日志保存在 `/private/tmp/sa-1.0.0-impl-20261014/`。本包只编码与本地自检，真实 provider 验收及集成由主控执行。
 - 验证：两条底线 26 用例通过；hooks 全量遗留的撤拦提示断言经 `-t` 修正复测通过，sa-check/providers 通过，generate/jobs 仅出现基线同名失败。补充执行策略测试撤拦断言已清理；lint 与 CJS/Bash 语法检查通过。TypeScript 仍报未改动的 provider-contract SDK 类型不匹配；补充测试的脏引擎检出、旧 wait 夹具及环境变量限制单列在任务证据中。
+
+## 2026-10-14 B：评审测试写权限
+
+撤销历史 H-02/H-02a/H-02b 的 reviewer 写沙箱与 MCP 哨兵；`codex-readonly-proxy.cjs` 的策略哈希/读取职责迁到 `policy-snapshot.cjs`，worker 原样启动 app-server。workflow 保留 `mutates_checkout:false` 污染检查，独立 strategist job 增加 tracked diff/status 与 HEAD 结束检查。两条底线 hooks 和原生认证/配置继承不变。

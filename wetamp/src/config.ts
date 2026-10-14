@@ -192,8 +192,7 @@ export interface Tiers {
       coder: { codex?: Record<string, unknown>; claude: Record<string, unknown> };
       reviewer: {
         codex?: Record<string, unknown>;
-        codex_readonly_marker: string;
-        claude: { sandbox: Record<string, unknown> };
+        claude: Record<string, unknown>;
       };
     };
     /** 按角色、风险与轮次的推理深度；generate 写到每个 AI 节点的 effort:，覆盖别名的 high（F-17）。 */
@@ -295,7 +294,7 @@ export function resolveRoute(
 
 /** JSON key order never changes the policy's content identity. */
 const { snapshotPolicy: buildPolicySnapshot } = createRequire(import.meta.url)(
-  '../bin/codex-readonly-proxy.cjs'
+  '../bin/policy-snapshot.cjs'
 ) as {
   snapshotPolicy: (tiers: Tiers) => ReturnType<typeof snapshotPolicy>;
 };

@@ -1,5 +1,4 @@
-import { expect, spyOn, test } from 'bun:test';
-import { AppServerConnection } from './codex/app-server';
+import { expect, test } from 'bun:test';
 import {
   claudeLaunchPolicy,
   codexCliConfig,
@@ -9,107 +8,45 @@ import {
   type LaunchPolicy,
 } from './launch-policy';
 
-const policy: LaunchPolicy = {
-  effort: 'high',
-  readonly: true,
-  codex: {},
-  sandbox: {
-    enabled: true,
-    failIfUnavailable: true,
-    allowUnsandboxedCommands: false,
-    autoAllowBashIfSandboxed: true,
-    filesystem: { denyWrite: ['/'] },
-  },
-};
+const policy: LaunchPolicy = { effort: 'high', codex: {} };
 
-test('Claude readonly SDK and CLI translation keeps native guidance/auth and sandboxed Bash authorization', () => {
+test('review CLI and workflow allow test writes without replacing native guidance/auth', async () => {
   const native = claudeLaunchPolicy(policy);
-  expect(native).toMatchObject({
-    permissionMode: 'default',
-    allowDangerouslySkipPermissions: false,
+  expect(native).toEqual({
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
     effort: 'high',
-    sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
-      allowUnsandboxedCommands: false,
-      filesystem: { denyWrite: ['/'], disabled: false },
-      network: { allowedDomains: [], deniedDomains: ['*'], strictAllowlist: true },
-    },
   });
-  expect(native).not.toHaveProperty('disallowedTools');
-  const workflow = workflowLaunchPolicy(policy, 'claude', '/readonly.json');
-  expect(workflow.sandbox).toEqual(native.sandbox);
-  expect(workflow).not.toHaveProperty('denied_tools');
-  // No home, auth, instruction or setting-source override belongs to this contract.
+  for (const provider of ['claude', 'codex'] as const)
+    expect(workflowLaunchPolicy(policy, provider)).toEqual({ effort: 'high' });
   for (const key of ['env', 'settingSources', 'systemPrompt', 'apiKey'])
     expect(native).not.toHaveProperty(key);
-  expect(workflowLaunchPolicy(policy, 'codex', '/readonly.json')).toEqual({
-    effort: 'high',
-    mcp: '/readonly.json',
-  });
-  for (const sandbox of [
-    undefined,
-    { enabled: false },
-    { ...policy.sandbox, allowUnsandboxedCommands: true },
-    { ...policy.sandbox, filesystem: { denyWrite: ['/'], disabled: true } },
-  ])
-    expect(() => claudeLaunchPolicy({ ...policy, sandbox })).toThrow('fail-closed sandbox');
+  const claude = await prepareRoleCommand(
+    ['claude', '-p', 'fixture'],
+    'claude',
+    'fixture',
+    policy,
+    process.cwd()
+  );
+  const command = JSON.parse(claude[3]) as string[];
+  expect(command[command.indexOf('--settings') + 1]).toBe('{}');
+  expect(command[command.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
+  const args = await prepareRoleCommand(
+    ['codex', 'exec', 'fixture'],
+    'codex',
+    'fixture',
+    { ...policy, codex: { web_search: 'live' } },
+    process.cwd()
+  );
+  expect(args).toContain('sandbox_mode="danger-full-access"');
+  expect(args).toContain('web_search="live"');
+  expect(args).toContain('approval_policy="never"');
+  expect(args.some(a => /^(mcp_servers|skills|plugins|features.apps)=/.test(a))).toBe(false);
 });
 
-test('readonly policy denies native domain grants and overrides native live Codex search', async () => {
-  const native = claudeLaunchPolicy({
-    ...policy,
-    sandbox: { ...policy.sandbox, network: { allowedDomains: ['native.example'] } },
-  });
-  // SDK merges native grants, but deniedDomains always wins over allowedDomains.
-  expect(native.sandbox?.network).toMatchObject({
-    deniedDomains: ['*'],
-    strictAllowlist: true,
-  });
-  expect(native.sandbox?.filesystem?.disabled).toBe(false);
-  const inventory = spyOn(AppServerConnection, 'start').mockReturnValue({
-    request: async (method: string) =>
-      method === 'config/read'
-        ? {
-            config: {
-              web_search: 'live',
-              mcp_servers: { 'ambient.with.dots@fixture/path name': {} },
-            },
-          }
-        : {},
-    notify() {},
-    async shutdown() {},
-  } as unknown as AppServerConnection);
-  try {
-    for (const readonly of [true, false]) {
-      const args = await prepareRoleCommand(
-        ['codex', 'exec', 'fixture'],
-        'codex',
-        'fixture',
-        { ...policy, readonly, codex: { ...policy.codex, web_search: 'live' } },
-        process.cwd()
-      );
-      const assignments = args.flatMap((arg, i) => (arg === '-c' ? [args[i + 1]] : []));
-      // CLI paths are split on dots, not parsed as TOML: quoted paths would be ignored.
-      expect(assignments).toContain('approval_policy="never"');
-      expect(assignments).toContain(
-        `sandbox_mode="${readonly ? 'read-only' : 'danger-full-access'}"`
-      );
-      expect(assignments.some(a => a.startsWith('features.multi_agent='))).toBe(false);
-      expect(assignments.every(a => /^[A-Za-z0-9_.-]+=/.test(a))).toBe(true);
-      // Each -c is applied separately; a TOML document cannot extend an inline table.
-      const tables = assignments.filter(a => !a.startsWith('features.multi_agent='));
-      expect(Bun.TOML.parse(tables.join('\n'))).toMatchObject({
-        web_search: readonly ? 'disabled' : 'live',
-      });
-      expect(inventory).not.toHaveBeenCalled();
-      expect(assignments.some(a => /^(mcp_servers|skills|plugins|features.apps)/.test(a))).toBe(
-        false
-      );
-    }
-  } finally {
-    inventory.mockRestore();
-  }
+test('explicit native sandbox configuration is preserved', () => {
+  const sandbox = { enabled: true, filesystem: { denyWrite: ['/fixture'] } };
+  expect(claudeLaunchPolicy({ ...policy, sandbox }).sandbox).toEqual(sandbox);
 });
 
 test('policy overrides and unsupported commands fail before native inventory or launch', () => {

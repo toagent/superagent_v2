@@ -153,7 +153,6 @@ export function executionLaunch(descriptor: ExecutionDescriptor, candidate: Alia
   const profile = descriptor.profiles[descriptor.role === 'review' ? 'reviewer' : 'coder'];
   return {
     effort: candidate.effort,
-    readonly: descriptor.role === 'review',
     codex: profile.codex ?? {},
     ...('sandbox' in profile.claude
       ? { sandbox: profile.claude.sandbox as LaunchPolicy['sandbox'] }
@@ -161,16 +160,8 @@ export function executionLaunch(descriptor: ExecutionDescriptor, candidate: Alia
   };
 }
 
-export function executionNode(
-  descriptor: ExecutionDescriptor,
-  candidate: Alias,
-  readonlyMcp: string
-) {
+export function executionNode(descriptor: ExecutionDescriptor, candidate: Alias) {
   return {
-    ...workflowLaunchPolicy(
-      executionLaunch(descriptor, candidate),
-      candidate.provider,
-      readonlyMcp
-    ),
+    ...workflowLaunchPolicy(executionLaunch(descriptor, candidate), candidate.provider),
   };
 }

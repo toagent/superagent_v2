@@ -91,7 +91,7 @@ This file is the canonical project guidance for coding agents. Keep it short, du
 - Pi extensions are user-owned provider configuration, not Archon-managed plugins. Load them as Pi configures them; any tools or MCP clients an extension exposes are the user's responsibility.
 - Leave native prompt templates and commands under provider control unless the provider automatically advertises them to the model as a skill-like capability. They remain available through native provider configuration.
 - Preserve the selected agent provider's native authentication contract. A Claude Code subscription runs through the Claude Agent SDK; using an Anthropic model through another provider is not Claude Code subscription support. Do not reroute or relabel provider identity to reuse credentials.
-- Provider-boundary tests must prove native settings, guidance and capabilities remain visible, while guard blocks high-risk actions and readonly sentinels remain effective.
+- Provider-boundary tests must prove native settings, guidance and capabilities remain visible, while guard blocks high-risk actions and review nodes remain subject to checkout-integrity checks without blocking test writes.
 
 ## Workflow-language boundary
 

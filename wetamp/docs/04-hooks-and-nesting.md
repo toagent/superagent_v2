@@ -21,7 +21,7 @@
 
 原生 skills/plugins/MCP、guidance/settings/auth 保留；不再注入禁委派/禁写工具列表或强制 `features.multi_agent=false`。用户自己配置的工具限制仍由 provider 翻译。
 
-Claude reviewer 保留 `filesystem.denyWrite:["/"]`、`failIfUnavailable` 及原有网络沙箱；Codex reviewer 保留 read-only sandbox 与必需 MCP 哨兵/proxy。删除 reviewer hook 拦截不赋予沙箱内仓库写权限，生成文件的测试仍可能被沙箱拒绝。真实 provider 测试尚未验证，不能据此断言沙箱是既有测试故障的唯一原因。
+reviewer/strategist 不再施加 filesystem 写沙箱或 Codex read-only 模式：测试可写 TMPDIR、bun 缓存及仓库被忽略产物。两条底线仍由原有 hooks 执行，原生认证、配置、MCP 不变。workflow review 节点保留 `mutates_checkout:false`，引擎发现 Git 状态变化会将节点判失败；独立 strategist job 在结束时核对 tracked 状态、diff 与 HEAD，变化则标记 `review_modified_checkout` 并失败上报，保留现场，不自动清理或提交。范围外写入无法保证；这是用户已接受的边界。
 
 COORD 的 hook 写入/动作检查撤除；CLI/shim 的 owner/generation fencing 是引擎运行归属契约，继续保留。
 

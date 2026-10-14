@@ -61,7 +61,7 @@ export interface Job {
   pid: number;
   started_at: string;
   state: 'queued' | 'running' | 'done' | 'failed' | 'lost';
-  reason?: 'environment';
+  reason?: 'environment' | 'review_modified_checkout';
   environment?: ReturnType<typeof envPrecheck>;
   provisioned?: Awaited<ReturnType<typeof provisionEnvironment>>['provisioned'];
   memory?: MemoryReading;
@@ -300,6 +300,13 @@ async function exec(
     }
   };
   let createdWorktree = false;
+  let reviewBefore: string | undefined;
+  // Include content and HEAD: porcelain alone misses edits to an already-dirty file or commits.
+  const reviewTree = (): string => JSON.stringify([
+    git(job.cwd, 'rev-parse', 'HEAD'),
+    git(job.cwd, 'status', '--porcelain', '-z', '--untracked-files=no'),
+    git(job.cwd, 'diff', '--binary', 'HEAD'),
+  ]);
   let terminal: Job, failure: { error: unknown } | undefined;
   try {
     save(job);
@@ -360,6 +367,7 @@ async function exec(
       if (f.execution) cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
       // Only the scoped Claude wrapper consumes this flag; native provider args stay intact.
       if (input && f.execution?.provider === 'claude') cmd.push('--job-input');
+      if (job.execution?.role === 'review') reviewBefore = reviewTree();
       const launchSignal = stop.signal;
       if (!launchSignal.aborted) child = Bun.spawn(cmd, {
         cwd: job.cwd,
@@ -393,6 +401,11 @@ async function exec(
         }
       }, 5000);
       code = await child.exited;
+      if (reviewBefore !== undefined && reviewTree() !== reviewBefore) {
+        job.reason = 'review_modified_checkout';
+        code = 1;
+        console.error('job: review invalid: tracked checkout changed; changes preserved for operator');
+      }
       }
     }
     const session_id = child ? (job.session_id ?? jobSession(job)) : null;

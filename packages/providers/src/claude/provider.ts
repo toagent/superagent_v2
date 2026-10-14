@@ -1,4 +1,4 @@
-import { claudeLaunchPolicy, CLAUDE_EFFORTS } from '../launch-policy';
+import { CLAUDE_EFFORTS } from '../launch-policy';
 /**
  * Claude Agent SDK wrapper
  * Provides async generator interface for streaming Claude responses
@@ -773,17 +773,6 @@ async function applyNodeConfig(
   // sandbox
   if (nodeConfig.sandbox !== undefined) {
     options.sandbox = nodeConfig.sandbox as Options['sandbox'];
-    if (options.sandbox?.filesystem?.denyWrite?.includes('/')) {
-      Object.assign(
-        options,
-        claudeLaunchPolicy({
-          effort: nodeConfig.effort ?? 'high',
-          readonly: true,
-          codex: {},
-          sandbox: options.sandbox,
-        })
-      );
-    }
   }
 
   // betas

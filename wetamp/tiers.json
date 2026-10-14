@@ -37,18 +37,7 @@
     "exec_profiles": {
       "reviewer": {
         "codex": {},
-        "codex_readonly_marker": "superagent-reviewer-readonly",
-        "claude": {
-          "sandbox": {
-            "enabled": true,
-            "failIfUnavailable": true,
-            "autoAllowBashIfSandboxed": true,
-            "allowUnsandboxedCommands": false,
-            "filesystem": {
-              "denyWrite": ["/"]
-            }
-          }
-        }
+        "claude": {}
       },
       "coder": {
         "codex": {},

@@ -15,7 +15,7 @@ import { buildWorkflow, engineHash } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
 import { decide } from '../templates/.archon/scripts/sa-check';
 import { fixturePlan, gitRepo, tmp } from './helpers';
-const { loadPolicy } = createRequire(import.meta.url)('../bin/codex-readonly-proxy.cjs') as {
+const { loadPolicy } = createRequire(import.meta.url)('../bin/policy-snapshot.cjs') as {
   loadPolicy(path: string): Record<string, unknown>;
 };
 const plan = JSON.parse(
@@ -109,8 +109,8 @@ describe('B1-POLICY frozen routing', () => {
       for (const node of workflow.nodes.filter(n => n.command)) {
         expect(aliases[node.model!].provider).toBe(provider);
         if (node.command!.startsWith('sa-review')) {
-          expect(!!node.sandbox).toBe(provider === 'claude');
-          expect(!!node.mcp).toBe(provider === 'codex');
+          expect(node.sandbox).toBeUndefined();
+          expect(node.mcp).toBeUndefined();
         }
       }
     }

@@ -217,8 +217,10 @@ describe('bin/codex-worker', () => {
       expect(run(hookHash(guard, 30), '', { PATH: `${node}:/usr/bin:/bin` }).code).toBe(3);
   });
 
-  test('reviewer role adds a read-only sandbox; TRACE prints policy and redacted caller argv only', () => {
-    expect(worker('', { SUPERAGENT_ROLE: 'reviewer' }).argv).toContain('sandbox_mode="read-only"');
+  test('reviewer role preserves write access; TRACE prints policy and redacted caller argv only', () => {
+    expect(worker('', { SUPERAGENT_ROLE: 'reviewer' }).argv.join(' ')).not.toContain(
+      'sandbox_mode'
+    );
     expect(worker('').argv.join(' ')).not.toContain('sandbox_mode');
     const r = worker('', { SA_CODEX_WORKER_TRACE: '1' }, [
       'exec',
@@ -250,10 +252,7 @@ describe('bin/codex-worker', () => {
   });
 });
 
-describe('codex-readonly-proxy (app-server via codex-worker)', () => {
-  const PROXY = join(import.meta.dir, '..', 'bin', 'codex-readonly-proxy.cjs');
-  const TIERS = join(import.meta.dir, '..', 'tiers.json');
-  const MARKER = 'superagent-reviewer-readonly';
+describe('app-server via codex-worker', () => {
   /** 真 codex 桩：把收到的 stdin 原字节写进文件，回一行响应。 */
   function appServer(
     input: string,
@@ -298,123 +297,32 @@ process.stdin.on('end', () => {
       err: p.stderr.toString(),
     };
   }
-  const lines = (s: string): Record<string, unknown>[] =>
-    s
-      .split('\n')
-      .filter(Boolean)
-      .map(l => JSON.parse(l) as Record<string, unknown>);
-  const start = (servers: Record<string, unknown>, method = 'thread/start'): string =>
-    JSON.stringify({
-      id: 2,
-      method,
-      params: {
-        sandbox: 'danger-full-access',
-        approvalPolicy: 'never',
-        config: { mcp_servers: servers, web_search: 'live' },
-      },
-    });
-  const turn = '{"id":3,"method":"turn/start","params":{"threadId":"t","input":[]}}';
-  const init = '{ "id": 1,  "method":"initialize","params":{"clientInfo":{"name":"é"}} }';
-
-  test('worker and direct proxy without a snapshot retain current reviewer restrictions', () => {
-    const marker = loadTiers().policy.exec_profiles.reviewer.codex_readonly_marker;
-    const input = [start({ [marker]: { command: 'false', required: true } }), turn].join('\n');
-    const worker = appServer(input, { SA_POLICY_PATH: '' });
-    expect(worker.code).toBe(0);
-    expect(worker.err).toContain('using current tiers.json policy (not frozen)');
-    const [s, t] = lines(worker.received);
-    expect(s.params).toMatchObject({ sandbox: 'read-only' });
-    expect(t.params).toMatchObject({
-      sandboxPolicy: { type: 'readOnly', networkAccess: false },
-    });
-    expect(worker.received).not.toContain(marker);
-    const direct = appServer('', { SA_POLICY_PATH: '' }, ['node', PROXY, '', 'true']);
-    expect(direct.code).toBe(0);
-    expect(direct.err).toContain('using current tiers.json policy (not frozen)');
-  });
-
-  test('non-reviewer bytes pass verbatim; a marker thread turns the connection read-only', () => {
-    const plain = [init, start({ searxng: { command: 'x' } }), turn, '{"id":9,"result":{}}'].join(
-      '\n'
-    );
-    const a = appServer(plain + '\n');
-    expect(a.code).toBe(0);
-    expect(a.received).toBe(plain + '\n');
-    // 服务端 stdout 与原始调用参数直通。
-    expect((JSON.parse(a.out) as { argv: string[] }).argv).toEqual([
-      'app-server',
-      '--listen',
-      'stdio://',
-    ]);
-
-    const b = appServer(
+  test('reviewer app-server preserves thread/turn bytes and native network settings', () => {
+    const input =
       [
-        init,
-        start({ [MARKER]: { command: 'false', required: true }, searxng: { command: 'x' } }),
-        turn,
-        start({}, 'thread/resume'),
-        start({}, 'thread/fork'),
-      ].join('\n')
-    );
-    expect(b.code).toBe(0);
-    const [i, s, t, r, f] = lines(b.received);
-    expect(b.received.split('\n')[0]).toBe(init);
-    expect(i.method).toBe('initialize');
-    expect(s.params).toMatchObject({
-      sandbox: 'read-only',
-      config: { mcp_servers: { searxng: { command: 'x' } }, web_search: 'disabled' },
-    });
-    expect(b.received).not.toContain(MARKER);
-    expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } });
-    for (const message of [r, f])
-      expect(message.params).toMatchObject({
-        sandbox: 'read-only',
-        config: { web_search: 'disabled' },
-      });
+        {
+          id: 1,
+          method: 'thread/start',
+          params: {
+            sandbox: 'danger-full-access',
+            config: { web_search: 'live', mcp_servers: { native: { command: 'x' } } },
+          },
+        },
+        { id: 2, method: 'turn/start', params: { threadId: 't', input: [] } },
+      ]
+        .map(x => JSON.stringify(x))
+        .join('\n') + '\n';
+    for (const role of ['', 'reviewer']) {
+      const r = appServer(input, { SUPERAGENT_ROLE: role });
+      expect(r.code).toBe(0);
+      expect(r.received).toBe(input);
+      expect(JSON.parse(r.out).argv).toEqual(['app-server', '--listen', 'stdio://']);
+    }
   });
-
-  test('SUPERAGENT_ROLE=reviewer makes every thread and turn read-only without a marker', () => {
-    const r = appServer([start({}), turn].join('\n') + '\n', { SUPERAGENT_ROLE: 'reviewer' });
-    const [s, t] = lines(r.received);
-    expect(s.params).toMatchObject({ sandbox: 'read-only' });
-    expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly' } });
-  });
-
-  test('proxy reads marker and network policy from the frozen snapshot', () => {
-    const tiers = loadTiers();
-    tiers.policy.exec_profiles.reviewer.codex_readonly_marker = 'frozen-review-marker';
-    tiers.policy.sandbox.network = false;
-    const r = appServer(
-      [start({ 'frozen-review-marker': { command: 'false', required: true } }), turn].join('\n'),
-      {
-        SA_POLICY_PATH: snapshot(tiers),
-        SUPERAGENT_ROLE: '',
-      }
-    );
-    expect(r.code).toBe(0);
-    const [s, t] = lines(r.received);
-    expect(s.params).toMatchObject({ sandbox: 'read-only' });
-    expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } });
-    expect(r.received).not.toContain('frozen-review-marker');
-  });
-
-  test('fails closed: unparsable reviewer input, a stray marker, unreadable policy', () => {
-    const marked = start({ [MARKER]: { command: 'false' } });
-    const bad = appServer([marked, '{"id":3,"method":"turn/start",'].join('\n') + '\n');
-    expect(bad.code).toBe(1);
-    expect(bad.err).toContain('codex-readonly-proxy: unparsable request');
-    expect(bad.received).not.toContain('turn/start');
-
-    const stray = appServer(`{"id":4,"method":"config/read","params":{"x":"${MARKER}"}}\n`);
-    expect(stray.code).toBe(1);
-    expect(stray.err).toContain('marker outside thread params');
-
-    const root = tmp();
-    writeFileSync(join(root, 'tiers.json'), '{"policy":{"exec_profiles":{"reviewer":{}}}}');
-    const noPolicy = appServer('', {}, ['node', PROXY, join(root, 'tiers.json'), 'true']);
-    expect(noPolicy.code).toBe(1);
-    expect(noPolicy.err).toContain('cannot read policy');
-    expect(readFileSync(TIERS, 'utf8')).toContain(`"codex_readonly_marker": "${MARKER}"`);
+  test('explicit invalid frozen policy fails before spawning', () => {
+    const r = appServer('', { SA_POLICY_PATH: '/missing-policy.json' });
+    expect(r.code).not.toBe(0);
+    expect(r.received).toBe('');
   });
 });
 

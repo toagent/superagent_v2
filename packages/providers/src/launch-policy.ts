@@ -6,7 +6,6 @@ import type { NodeConfig } from './types';
 /** Non-secret policy shared by native CLI and workflow launches. Native homes stay untouched. */
 export interface LaunchPolicy {
   effort: string;
-  readonly: boolean;
   codex: Record<string, unknown>;
   sandbox?: Options['sandbox'];
 }
@@ -22,53 +21,22 @@ export function claudeLaunchPolicy(
   policy: LaunchPolicy
 ): Pick<Options, 'effort' | 'sandbox' | 'permissionMode' | 'allowDangerouslySkipPermissions'> {
   if (!isEffortRung(policy.effort)) throw new Error('execution: unsupported effort');
-  const sandbox = policy.sandbox;
-  if (
-    policy.readonly &&
-    (!sandbox?.enabled ||
-      !sandbox.failIfUnavailable ||
-      sandbox.allowUnsandboxedCommands !== false ||
-      !sandbox.autoAllowBashIfSandboxed ||
-      sandbox.filesystem?.disabled === true ||
-      !sandbox.filesystem?.denyWrite?.includes('/'))
-  )
-    throw new Error('execution: readonly Claude requires a fail-closed sandbox');
   return {
     effort: clampEffort(policy.effort, CLAUDE_EFFORTS),
-    ...(sandbox
-      ? {
-          sandbox: policy.readonly
-            ? {
-                ...sandbox,
-                filesystem: { ...sandbox.filesystem, disabled: false },
-                // Domain grants merge across native settings; denials take precedence.
-                network: {
-                  allowedDomains: [],
-                  deniedDomains: ['*'],
-                  strictAllowlist: true,
-                  allowAllUnixSockets: false,
-                  allowLocalBinding: false,
-                },
-              }
-            : sandbox,
-        }
-      : {}),
-    // Sandboxed Bash uses the sandbox authorization path, never the auto safety model.
-    permissionMode: policy.readonly ? 'default' : 'bypassPermissions',
-    allowDangerouslySkipPermissions: !policy.readonly,
+    ...(policy.sandbox ? { sandbox: policy.sandbox } : {}),
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
   };
 }
 
 export function workflowLaunchPolicy(
   policy: LaunchPolicy,
-  provider: 'claude' | 'codex',
-  readonlyMcp: string
-): Pick<NodeConfig, 'effort' | 'sandbox' | 'mcp'> {
+  provider: 'claude' | 'codex'
+): Pick<NodeConfig, 'effort' | 'sandbox'> {
   if (!isEffortRung(policy.effort)) throw new Error('execution: unsupported effort');
   if (provider === 'codex')
     return {
       effort: policy.effort,
-      ...(policy.readonly ? { mcp: readonlyMcp } : {}),
     };
   const native = claudeLaunchPolicy(policy);
   return {
@@ -172,8 +140,7 @@ export async function prepareRoleCommand(
   const settings = {
     ...policy.codex,
     model_reasoning_effort: policy.effort,
-    sandbox_mode: policy.readonly ? 'read-only' : 'danger-full-access',
-    ...(policy.readonly ? { web_search: 'disabled' } : {}),
+    sandbox_mode: 'danger-full-access',
     approval_policy: 'never',
   };
   return [command[0], ...codexCliConfig(settings), ...args];

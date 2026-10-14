@@ -678,7 +678,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: high
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -1133,7 +1132,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: medium
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -1588,7 +1586,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: medium
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -2047,7 +2044,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: medium
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -2510,7 +2506,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: medium
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -2977,7 +2972,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: medium
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m1
@@ -3801,7 +3795,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: high
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
@@ -4256,7 +4249,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: high
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
@@ -4711,7 +4703,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: high
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
@@ -5170,7 +5161,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: high
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
@@ -5633,7 +5623,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: high
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
@@ -6100,7 +6089,6 @@ nodes:
       on_error: transient
     model: '@sa-reviewer'
     effort: high
-    mcp: /GEN/reviewer-readonly.mcp.json
     idle_timeout: 900000
     with:
       milestone: m2
