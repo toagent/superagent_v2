@@ -87,8 +87,6 @@ const keys = [
 ];
 beforeEach(() => {
   for (const k of keys) saved.set(k, process.env[k]);
-  process.env.SUPERAGENT_ROLE = '';
-  process.env.SA_JOB_ID = '';
   root = tmp();
   sa = join(root, 'home');
   mkdirSync(sa);

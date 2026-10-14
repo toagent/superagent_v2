@@ -140,8 +140,6 @@ test('HF6 R2 real hook reports advisory for missing dependencies for either role
         SUPERAGENT_HOME: dir,
         ARCHON_HOME: dir,
         SUPERAGENT_ROLE: role,
-        AI_DISPATCH_ROLE: '',
-        TWIN_AGENT_REMOTE: '',
         NODE_PATH: '',
       },
       stdin: Buffer.from(

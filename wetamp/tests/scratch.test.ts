@@ -122,7 +122,6 @@ function setup(client = 'claude') {
     SUPERAGENT_HOME: join(root, 'sa'),
     ARCHON_HOME: join(root, 'archon'),
     SUPERAGENT_WRITE_ROOTS: [root, scratchRoot].join(require('node:path').delimiter),
-    SUPERAGENT_ROLE: '',
   });
   dirs.push(dir);
   ownerSpy = spyOn(live, 'owner').mockReturnValue({ pid: process.pid, tty: null });
@@ -537,8 +536,6 @@ test.each(['claude', 'codex'])(
         env: {
           ...process.env,
           HOME: f.root,
-          AI_DISPATCH_ROLE: '',
-          TWIN_AGENT_REMOTE: '',
           CLAUDE_ENV_FILE: '',
         },
         stdout: 'pipe',

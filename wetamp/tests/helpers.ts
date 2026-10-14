@@ -65,11 +65,9 @@ Bun.spawnSync = (command, options) => {
   return preload;
 }
 
-/** Controller fixtures ignore inherited derived roles; explicit role tests may override them. */
+/** Tests inherit the preload-isolated environment; explicit role tests may override it. */
 export const fixtureEnv = (env: Record<string, string> = {}) => ({
   ...process.env,
-  SUPERAGENT_ROLE: '',
-  SA_JOB_ID: '',
   ...env,
 });
 

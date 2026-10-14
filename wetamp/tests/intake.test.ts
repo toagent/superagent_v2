@@ -558,9 +558,6 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
       env: {
         ...process.env,
         SUPERAGENT_HOME: home,
-        SUPERAGENT_ROLE: '',
-        AI_DISPATCH_ROLE: '',
-        TWIN_AGENT_REMOTE: '',
         ...extra,
       },
       stdin: new TextEncoder().encode(JSON.stringify(payload)),
@@ -580,9 +577,6 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
     const result = nativeIntake(payload, client, {
       ...process.env,
       SUPERAGENT_HOME: home,
-      SUPERAGENT_ROLE: '',
-      AI_DISPATCH_ROLE: '',
-      TWIN_AGENT_REMOTE: '',
       ...extra,
     });
     expect(result).toEqual(

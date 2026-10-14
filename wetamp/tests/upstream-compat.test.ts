@@ -54,7 +54,9 @@ for (const name of ['deliver', 'pr']) {
     });
     expect(result.exitCode).toBe(1);
     expect(result.stdout.toString()).toContain('git push -u origin <reviewed-branch>');
-    expect(result.stdout.toString()).toContain('gh pr create --draft');
+    expect(result.stdout.toString()).toContain(
+      'gh pr create --repo <reviewed-owner/reviewed-repo> --draft'
+    );
     expect(readFileSync(calls, 'utf8')).toBe('');
   });
 }

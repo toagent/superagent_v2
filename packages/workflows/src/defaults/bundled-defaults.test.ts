@@ -798,6 +798,18 @@ describe('bundled-defaults', () => {
       }
     };
 
+    it('keeps PR network writes behind the manual-only failure boundary', () => {
+      for (const name of ['archon-pr', 'archon-deliver']) {
+        const parsed = parseWorkflow(BUNDLED_WORKFLOWS[name], `${name}.yaml`, providerRegistry);
+        if (parsed.workflow === null) throw new Error(parsed.error.error);
+        const [boundary, firstWork] = parsed.workflow.nodes;
+        expect(boundary).toMatchObject({ id: 'manual-network-only', kind: 'exec' });
+        if (boundary?.kind !== 'exec') throw new Error('manual boundary is not an exec node');
+        expect(boundary.script.trim().split('\n').at(-1)).toBe('exit 1');
+        expect(firstWork?.depends_on).toContain('manual-network-only');
+      }
+    });
+
     it('every gh pr create/list/edit/ready in bundled commands pins --repo', () => {
       assertPinned(BUNDLED_COMMANDS);
     });
