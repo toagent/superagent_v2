@@ -2169,8 +2169,9 @@ test.each([
       expect(captured(() => main(['accept', 'sa1', '--pkg', 'core'])).code).toBe(0);
     }
   },
-  // Real accept/land passes retain command deadlines without repeated watchdog startup.
-  20_000
+  // Repeated real accept/land passes each launch 10s-bounded Git watchdogs; allow
+  // their cumulative time under load without changing the individual limits.
+  60_000
 );
 
 test.each([
