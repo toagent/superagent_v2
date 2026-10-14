@@ -12,7 +12,8 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 - 累计评审台账（JSON 文件，先完整阅读；由引擎按各轮评审历史派生）：`$INPUTS.ledger`。`blocking` 是唯一必须修复的发现清单，`debt` 是已登记的评审债，`closed` 已带证据关闭
 - 上一轮验收日志：`$INPUTS.accept_log`（只修复台账 `blocking` 中的失败命令，`debt` 中的失败不派修；`$ARTIFACTS_DIR/verify-*.probe.log` 存在时表示在里程碑起点复跑过同一命令，结果见该日志）
 
-上下文已在下方。内联源码是节点启动时的快照，需要更多再按需读；`unknown` 不代表通过。所有 shell 命令遵循你的 AGENTS.md 命令规则。
+先看下方 context_pack 已给出的源码与验收信息，不重复探索已内联内容；源码是节点启动时的快照，缺失或需核验时再按需读；`unknown` 不代表通过。所有 shell 命令遵循你的 AGENTS.md 命令规则。
+独立搜索、读取在同一次 shell 调用中批量执行，只读所需行段（`sed -n` / `rg -n -C`）；测试、构建、diff、日志等长输出只回看必要部分（如 `tail -n 40` 或失败用例），不整段回灌；验收命令本身仍须原样完整执行。
 
 上下文：$$INPUTS.context_node.output.context_pack
 
