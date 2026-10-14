@@ -794,7 +794,7 @@ else if (process.argv[1].endsWith('/claude')) {
     const p = Bun.spawn(['bun', 'src/cli.ts', 'job', 'exec', '--title', 'stdin',
       ...(withCard ? ['--card', card] : []), '--', 'cat'], {
       cwd: WETAMP,
-      env: { ...process.env, SUPERAGENT_ROLE: '', SA_ADMIT: 'off' },
+      env: { ...process.env, SA_ADMIT: 'off' },
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',

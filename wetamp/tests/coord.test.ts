@@ -197,7 +197,6 @@ test('7: handoff wakes A wait before querying provider', async () => {
   Object.assign(process.env, {
     SUPERAGENT_HOME: s.sa,
     ARCHON_HOME: join(s.sa, 'archon'),
-    SUPERAGENT_ROLE: '',
   });
   const { caller } = await import('../src/coord');
   const actor = caller();
@@ -348,7 +347,6 @@ console.log(JSON.stringify({results,presence:presence(who,sa),who}));
       ...process.env,
       SUPERAGENT_HOME: s.sa,
       ARCHON_HOME: join(s.sa, 'archon'),
-      SUPERAGENT_ROLE: '',
     },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -375,7 +373,6 @@ test('CLI mutation obeys owner fencing before invoking engine; read-only owner r
   Object.assign(process.env, {
     SUPERAGENT_HOME: s.sa,
     ARCHON_HOME: join(s.sa, 'archon'),
-    SUPERAGENT_ROLE: '',
   });
   mkdirSync(join(s.sa, 'runs'));
   writeFileSync(
@@ -498,7 +495,6 @@ test('real CLI urgent and unknown-timeout use only temporary supervisor state an
   Object.assign(process.env, {
     SUPERAGENT_HOME: s.sa,
     ARCHON_HOME: join(s.sa, 'archon'),
-    SUPERAGENT_ROLE: '',
     AGENT_SUPERVISOR_STATE: join(s.root, 'supervisor'),
     SA_SUPERVISOR: join(s.root, 'supervisor.py'),
   });
@@ -561,7 +557,6 @@ test('wait already blocking returns inbox after a new message arrives, before ti
   Object.assign(process.env, {
     SUPERAGENT_HOME: s.sa,
     ARCHON_HOME: join(s.sa, 'archon'),
-    SUPERAGENT_ROLE: '',
   });
   s.c.claim(s.scope, caller());
   const bin = join(s.root, 'archon');
@@ -621,7 +616,6 @@ function isolated(s: ReturnType<typeof setup>): void {
   Object.assign(process.env, {
     SUPERAGENT_HOME: s.sa,
     ARCHON_HOME: join(s.sa, 'archon'),
-    SUPERAGENT_ROLE: '',
     AGENT_SUPERVISOR_STATE: join(s.root, 'supervisor'),
     SA_SUPERVISOR: join(s.root, 'disabled-supervisor'),
     SA_ORCA: '0',
@@ -655,7 +649,6 @@ test('R1-01/06: actual hooks allow cd and nested-shell writes across owners', as
           ...process.env,
           SUPERAGENT_HOME: s.sa,
           ARCHON_HOME: join(s.sa, 'archon'),
-          SUPERAGENT_ROLE: '',
           SUPERAGENT_ALLOW_COMMANDER_WRITE: '1',
         },
         stdin: 'pipe',
@@ -704,7 +697,6 @@ test('INT-R1-01: actual Claude/Codex hooks allow Git across claimed locations', 
           HOME: s.root,
           SUPERAGENT_HOME: s.sa,
           ARCHON_HOME: join(s.sa, 'archon'),
-          SUPERAGENT_ROLE: '',
           SUPERAGENT_ALLOW_COMMANDER_WRITE: '1',
           GIT_DIR: i === 7 ? join(s.repo, '.git') : '',
           GIT_WORK_TREE: i === 7 ? s.repo : '',

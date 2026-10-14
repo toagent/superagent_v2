@@ -81,7 +81,6 @@ describe('bin/codex-worker', () => {
         ...process.env,
         HOME: home,
         CODEX_HOME: '',
-        SUPERAGENT_ROLE: '',
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
@@ -178,7 +177,6 @@ describe('bin/codex-worker', () => {
           ...process.env,
           SA_POLICY_PATH: snapshot(),
           CODEX_HOME: codexHome,
-          SUPERAGENT_ROLE: '',
           SA_CODEX_REAL: real,
           SA_CODEX_HOOK_TRUST: '',
           ...env,
@@ -279,7 +277,6 @@ process.stdin.on('end', () => {
         ...process.env,
         HOME: root,
         CODEX_HOME: '',
-        SUPERAGENT_ROLE: '',
         SA_CODEX_REAL: real,
         SA_CODEX_WORKER_TRACE: '',
         SA_CODEX_HOOK_TRUST: 'unchecked',
@@ -339,7 +336,6 @@ describe('archon worker env', () => {
       ),
       SUPERAGENT_HOME: join(root, 'sa'),
       ARCHON_HOME: join(root, 'archon'),
-      SUPERAGENT_ROLE: '',
     });
     try {
       archon(['workflow', 'run', 'wf', '--detach']);

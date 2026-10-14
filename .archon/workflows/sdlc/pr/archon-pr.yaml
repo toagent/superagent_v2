@@ -19,7 +19,7 @@ nodes:
   - id: manual-network-only
     bash: |
       printf '%s\n' 'Git network writes are manual in this fork. Run these commands yourself after reviewing the branch and PR body:'
-      printf '%s\n' 'git push -u origin <reviewed-branch>' 'gh pr create --draft --base <reviewed-base> --head <reviewed-branch> --body-file <reviewed-body>'
+      printf '%s\n' 'git push -u origin <reviewed-branch>' 'gh pr create --repo <reviewed-owner/reviewed-repo> --draft --base <reviewed-base> --head <reviewed-branch> --body-file <reviewed-body>'
       exit 1
 
   # Retained upstream nodes stay unreachable behind the manual boundary.

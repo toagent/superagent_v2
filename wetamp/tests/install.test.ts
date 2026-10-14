@@ -535,9 +535,6 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         XDG_STATE_HOME: state,
         CLAUDE_CONFIG_DIR: '',
         CODEX_HOME: '',
-        SUPERAGENT_ROLE: '',
-        AI_DISPATCH_ROLE: '',
-        TWIN_AGENT_REMOTE: '',
       };
       const probe = Bun.spawnSync(['node', join(toolkit, 'hooks/guard.cjs'), 'claude'], {
         env,

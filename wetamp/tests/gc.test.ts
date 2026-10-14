@@ -51,8 +51,6 @@ function fixture(
   const root = tmp(),
     repo = gitRepo(root),
     id = 'gc-fixture';
-  process.env.SUPERAGENT_ROLE = '';
-  process.env.SA_JOB_ID = '';
   process.env.TMPDIR = join(root, 'tmp');
   mkdirSync(process.env.TMPDIR);
   process.env.SUPERAGENT_HOME = join(root, 'sa');
