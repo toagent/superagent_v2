@@ -189,11 +189,11 @@ export interface Tiers {
     /** Environment preparation retries; AI nodes use the engine defaults. */
     auto_retry: { environment: number };
     exec_profiles: {
-      coder: { codex?: Record<string, unknown>; claude: { denied_tools: string[] } };
+      coder: { codex?: Record<string, unknown>; claude: Record<string, unknown> };
       reviewer: {
         codex?: Record<string, unknown>;
         codex_readonly_marker: string;
-        claude: { denied_tools: string[]; sandbox: Record<string, unknown> };
+        claude: { sandbox: Record<string, unknown> };
       };
     };
     /** 按角色、风险与轮次的推理深度；generate 写到每个 AI 节点的 effort:，覆盖别名的 high（F-17）。 */

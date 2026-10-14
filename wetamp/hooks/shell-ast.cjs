@@ -5,8 +5,6 @@ const {unwrap, SHELLS, parse, normalizeOptions} = require('./shell.cjs');
 const STREAM = /^\/dev\/(?:null|stdout|stderr)$/;
 const GENERATED_TEMP = '__sa_generated_temp__';
 const isTemporaryPath = file => path.normalize(file).split(path.sep).includes(GENERATED_TEMP);
-const SELECTORS = new Set(require('./shell-effects.json').filter(rule => rule.effect === 'process_query').flatMap(rule => rule.commands));
-const selections = source => { try { return parse(source).argvs.map(argv => path.posix.basename(argv[0] || '')).filter(name => SELECTORS.has(name)); } catch { return []; } };
 // Parse syntax for effects, never as a command allowlist. Unknown syntax is advisory.
 function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath} = {}) {
   let parser, pending, failure = 'initialization not completed';
@@ -39,13 +37,13 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
     };
     const fallback = source => {
       advisory('shell_parse_unavailable');
-      try { check({...parse(source), selections: selections(source)}, [cwd]); } catch (error) {
+      try { check(parse(source), [cwd]); } catch (error) {
         if (/^已(?:拦截|拒绝)：/.test(error.message)) throw error;
         advisory('shell_parse_failed');
       }
     };
     const union = (...dirs) => [...new Set(dirs.flat())];
-    const fork = (dirs, vars = new Map(), selected = [], locations = new Map()) => ({locations: new Map(locations), dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars), selected: [...selected]});
+    const fork = (dirs, vars = new Map(), locations = new Map()) => ({locations: new Map(locations), dirs: [...dirs], ok: [...dirs], fail: [...dirs], vars: new Map(vars)});
     const commandValues = new Map();
     function temporaryPath(values, state, generatedOnly = true) {
       const {argv} = unwrap(values || []);
@@ -98,26 +96,22 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (change < 0) continue;
         const option = options[change];
         const target = option.includes('=') ? option.slice(option.indexOf('=') + 1) : option.startsWith('-C') && option.length > 2 ? option.slice(2) : options[change + 1];
-        state = fork(target && !/[$`]/.test(target) ? state.dirs.map(dir => path.resolve(dir, expand(target))) : ['/__sa_unknown_cwd__'], state.vars, state.selected, state.locations);
+        state = fork(target && !/[$`]/.test(target) ? state.dirs.map(dir => path.resolve(dir, expand(target))) : ['/__sa_unknown_cwd__'], state.vars, state.locations);
         if (state.dirs.includes('/__sa_unknown_cwd__')) advisory('cwd_unknown');
         unwrapped.writes = unwrapped.writes.filter(v => v !== target);
       }
-      // Wrappers themselves may elevate privileges; inspect them before unwrapping.
+      // Inspect wrapper arguments too: their paths may contain private data.
       check({argvs: wrappers.map(i => values.slice(i)), reads: [], writes: []}, state.dirs);
-      for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars, state.selected, state.locations), depth + 1);
-      let argv = unwrapped.argv;
-      const selectedInput = wrappers.some(i => path.posix.basename(values[i]) === 'xargs') && state.selected.length ? `$(${state.selected[0]})` : '';
-      if (selectedInput) for (const replacement of unwrapped.replacements)
-        argv = replacement ? argv.map(arg => arg.split(replacement).join(selectedInput)) : [...argv, selectedInput];
+      for (const line of unwrapped.lines) script(line, fork(state.dirs, state.vars, state.locations), depth + 1);
+      const argv = unwrapped.argv;
       const name = path.posix.basename(argv[0] || '');
       if (/[$`]/.test(name)) advisory('command_head_unknown');
-      check({argvs: argv.length ? [argv] : [], reads: [], writes: [...unwrapped.writes, ...(created ? [created] : [])].filter(t => !STREAM.test(t)), env: commandEnv,
-        selections: argv.filter(v => /[$`]/.test(v)).flatMap(selections)}, state.dirs);
+      check({argvs: argv.length ? [argv] : [], reads: [], writes: [...unwrapped.writes, ...(created ? [created] : [])].filter(t => !STREAM.test(t)), env: commandEnv}, state.dirs);
       if (SHELLS.has(name)) {
         const flag = argv.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
         if (flag > 0 && argv[flag + 1]) {
           if (/\$|`/.test(argv[flag + 1]) && !values.includes(argv[flag + 1])) advisory('dynamic_shell_body');
-          const inner = fork(state.dirs, state.vars, state.selected, state.locations), args = argv.slice(flag + 3);
+          const inner = fork(state.dirs, state.vars, state.locations), args = argv.slice(flag + 3);
           inner.vars.set('0', argv[flag + 2] || '');
           args.forEach((arg, i) => inner.vars.set(String(i + 1), arg));
           inner.vars.set('@', args.join(' ')); inner.vars.set('*', args.join(' '));
@@ -129,7 +123,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         if (!['-exec','-execdir','-ok','-okdir'].includes(v)) return;
         const end = argv.findIndex((w, j) => j > i && (w === ';' || w === '+'));
         if (end < 0 || v.endsWith('dir')) advisory('find_execution_scope');
-        execute(argv.slice(i + 1, end < 0 ? undefined : end), fork(v.endsWith('dir') ? ['/__sa_unknown_cwd__'] : state.dirs, state.vars, state.selected, state.locations), depth + 1);
+        execute(argv.slice(i + 1, end < 0 ? undefined : end), fork(v.endsWith('dir') ? ['/__sa_unknown_cwd__'] : state.dirs, state.vars, state.locations), depth + 1);
       });
       if (['cd','pushd','popd'].includes(name)) {
         let at = 1, physical = false, valid = true;
@@ -183,11 +177,11 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (n.type === 'heredoc_redirect') {
         const delimiter = n.namedChildren.find(c => c.type === 'heredoc_start');
         const body = n.namedChildren.find(c => c.type === 'heredoc_body');
-        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs, state.vars, state.selected, state.locations), depth + 1); return null; }
+        if (n.parent?.text.match(/^(?:bash|sh|zsh|dash|ksh)\b/)) { script(body?.text || '', fork(state.dirs, state.vars, state.locations), depth + 1); return null; }
         // Heredoc quotes are data. Reparse as string content so the AST also sees
         // backticks (the grammar's heredoc_content otherwise leaves them opaque).
         if (!/[\\'"]/.test(delimiter?.text || '')) {
-          const inner = fork(state.dirs, state.vars, state.selected, state.locations);
+          const inner = fork(state.dirs, state.vars, state.locations);
           for (const child of body?.namedChildren || []) if (child.type === 'command_substitution') visit(child, inner, depth + 1);
           const original = body?.text || '', offsets = []; let source = '"';
           for (let i = 0; i < original.length; i++) {
@@ -202,7 +196,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         const variable = n.childForFieldName('variable')?.text, values = n.childrenForFieldName('value');
         // Numeric iteration never contributes a slash or a parent-directory component.
         const numeric = values.length && values.every(v => /^\d+$/.test(v.text) || /^\$\(seq\s+\d+(?:\s+\d+){0,2}\)$/.test(v.text));
-        const inner = fork(state.dirs, state.vars, state.selected, state.locations);
+        const inner = fork(state.dirs, state.vars, state.locations);
         if (variable) { inner.vars.delete(variable); if (numeric) inner.vars.set(variable, '1'); }
         for (const child of n.namedChildren) visit(child, inner, depth);
         for (const assignment of n.descendantsOfType('variable_assignment')) state.vars.set(assignment.childForFieldName('name')?.text, '$__sa_unknown__');
@@ -213,13 +207,13 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
         for (const child of n.namedChildren) visit(child, state, depth);
         outcome(state, state.fail, state.ok); return null;
       }
-      if (n.type === 'pipeline') state = fork(state.dirs, state.vars, union(state.selected, selections(n.text)), state.locations);
+      if (n.type === 'pipeline') state = fork(state.dirs, state.vars, state.locations);
       if (n.type === 'list') {
         const operands = n.namedChildren.filter(c => c.type !== 'comment');
         const op = n.children.find(c => c.type === '&&' || c.type === '||');
         if (operands.length === 2 && op) {
-          const left = fork(state.dirs, state.vars, state.selected, state.locations); visit(operands[0], left, depth);
-          const right = fork(op.type === '&&' ? left.ok : left.fail, left.vars, state.selected, left.locations); visit(operands[1], right, depth);
+          const left = fork(state.dirs, state.vars, state.locations); visit(operands[0], left, depth);
+          const right = fork(op.type === '&&' ? left.ok : left.fail, left.vars, left.locations); visit(operands[1], right, depth);
           outcome(state, op.type === '&&' ? right.ok : union(left.ok, right.ok), op.type === '&&' ? union(left.fail, right.fail) : right.fail);
           for (const [dir, frames] of right.locations) state.locations.set(dir, frames);
           for (const variable of union([...state.vars.keys()], [...left.vars.keys()], [...right.vars.keys()]))
@@ -227,7 +221,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
           return null;
         }
       }
-      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs, state.vars, state.selected, state.locations);
+      if (['subshell','command_substitution','process_substitution'].includes(n.type)) state = fork(state.dirs, state.vars, state.locations);
       const children = new Map();
       const ordered = n.type === 'redirected_statement' ? [...n.children].sort((a,b) => (a.type === 'command' ? 1 : 0) - (b.type === 'command' ? 1 : 0)) : n.children;
       for (const ch of ordered) children.set(ch.id, visit(ch, state, depth));
@@ -242,8 +236,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       if (['command_substitution','process_substitution'].includes(n.type)) {
         const temp = n.type === 'command_substitution' && n.namedChildren.length === 1 ? temporaryPath(commandValues.get(n.namedChildren[0].id), state) : null;
         if (temp) return temp;
-        const source = n.descendantsOfType(['simple_expansion','expansion']).flatMap(ch => selections(state.vars.get(ch.namedChildren[0]?.text) || '')).find(Boolean);
-        return source ? n.text + `$(${source})` : n.text;
+        return n.text;
       }
       if (n.type === 'variable_assignment') {
         const variable = n.childForFieldName('name')?.text, value = n.childForFieldName('value');
@@ -271,7 +264,7 @@ function createLoader({modulePath = 'web-tree-sitter', wasmPath, runtimeWasmPath
       const tree = parser.parse(source);
       const walk = n => {
         if (n.type === 'command_substitution') {
-          if (n.firstChild.type === '`') script(heredoc.original.slice(heredoc.offsets[n.firstChild.endIndex], heredoc.offsets[n.lastChild.startIndex]), fork(state.dirs, state.vars, state.selected, state.locations), depth + 1);
+          if (n.firstChild.type === '`') script(heredoc.original.slice(heredoc.offsets[n.firstChild.endIndex], heredoc.offsets[n.lastChild.startIndex]), fork(state.dirs, state.vars, state.locations), depth + 1);
         }
         else for (const child of n.namedChildren) walk(child);
       };

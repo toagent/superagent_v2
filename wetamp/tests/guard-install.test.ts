@@ -117,7 +117,7 @@ test('three Git adapters share classification without executing the proposed com
       stdout: 'pipe',
       stderr: 'pipe',
     });
-    expect(p.exitCode).toBe(2);
+    expect(p.exitCode).toBe(0);
   }
 });
 

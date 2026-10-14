@@ -1,5 +1,4 @@
 import { executionTable, executionRoute, executionNode } from './execution';
-export { capsDenied } from './execution';
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
 // 计划文本只进 brief 文件、经绝对路径传给节点：with:/command 正文是模板，`$` 无法转义。
 import {
@@ -639,7 +638,7 @@ const renderCaps = (c: Caps): string =>
     `- git：${c.git === 'branch' ? '本分支内任意提交、rebase、reset' : '只追加提交，不 rebase/reset/amend'}`,
     // Codex 把工作树根 AGENTS.md 当成更新的用户指令；项目给人工主仓的"不要提交"曾让将军提交后自报红线。
     '- 提交授权：在本 run 的 worktree 内提交是引擎要求的必需步骤；仓库 AGENTS.md/CLAUDE.md 中禁止 git commit 的条款面向人工主仓，此处不适用，不构成红线',
-    '- skills/plugins/MCP：继承用户原生配置；高危动作由 guard 在动作入口拦截',
+    '- skills/plugins/MCP：继承用户原生配置；guard 只拦凭据隐私与不可逆破坏',
   ].join('\n');
 
 const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');

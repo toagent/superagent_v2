@@ -175,9 +175,9 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 
 将军默认最大权限，只有红线是硬边界；plan 用 `caps` 收紧，而不是逐项放开。
 
-- **caps**（`plan.caps`，包级 `packages[].caps` 覆盖 plan 级，`src/plan.ts` `capsOf`）：`network`、`web`、`install`、`services`、`long_tests` 默认 `true`，`read` 默认 `any`（`scope` = 只读任务书列出的路径），`git` 默认 `branch`（`commit` = 只追加提交），`mcp` 默认 `tiers.json` `policy.sandbox.mcp`。渲染进任务书「你的权限」。Claude 节点上 `network/web/install/services/git` 的收紧另由 `generate.ts` `capsDenied` 落成 `denied_tools`；`long_tests`、`read:"scope"`、包级 `mcp` 收窄与 Codex 节点上的全部 caps 只是提示级，靠评审核对。
+- caps 默认全开、`capsOf` 包级覆盖 plan 级；各 provider 的 caps 均是任务提示，不注入工具 deny。
 - **范围是预期不是围栏**：将军越出 `scope.write` 时直接改，在输出 `deviations[]` 登记 `{path, why}`；评审对未登记的越界记 `medium`。`blocked` 只在命中红线（`error_class:"redline"`）或 `needs[]` 非空（`{cap, why, minimal_ask}`）时合法，否则按 `partial` 送回修复循环。
-- **红线**（执行层，所有角色，`hooks/redline.cjs`，详见 `04-hooks-and-nesting.md`）：默认放行，命令效果集中在 `hooks/shell-effects.json`，按效果与归属拦截凭据隐私、外部写入发布、共享历史、提权、越权选择进程及销毁/覆盖范围外已有数据。worktree、临时目录、包缓存、本 run 产物可写，范围外普通新建允许；未知效果与解析/内部异常留 advisory，明确删除/覆盖未知目标拒绝。Codex 侧依赖受信任 guard hook，`codex-worker` 信任失败仍 exit 3。
+- **两条底线**（所有角色，`hooks/redline.cjs`）：仅拒绝凭据隐私，以及 force push、reset --hard、对家目录/仓库根/`/` 的 rm -rf。其余动作放行；未知效果、解析或内部异常为 advisory。删除效果登记、MCP 名称归一、写入归属与 reviewer hook 判定；provider 沙箱另行保留，详见 `04-hooks-and-nesting.md`。Codex 仍要求底线 hook 受信任。
 - **执行生命周期**：Archon 拥有 run/attempt/retry/resume/审批与终态。环境与编码/修复/评审节点的原生 `retry` 复用 `tiers.json` `policy.auto_retry`；接纳锁与恢复 fence 在 `packages/workflows/src/execution-lifecycle.ts`，预算派发在 `policy-dispatch.ts`，通过注入契约调用。ledger 的 `recoveries/auto_retries/progress_fp/stalled` 仅供历史只读展示，不热迁移。
 - **挂起处置表**（`src/reasons.ts` `HOLD_POLICY`）：signoff 桥接 Archon 原生审批（旧 run 的事件签收仍可读）；deadline 按 plan 截止终止；paused 等待引擎唤醒；gate/coder/environment 等失败只投一条明确决定。owner live/unknown 不接管，owner-lost 仅观察；`recover` 要求副作用对账，lost-ack 留引擎 admission fence、不得重派。提问沿用 `pollAsk` 的持久化/对账，明确 retry/resume/approve 交引擎执行，dispositions 保留审计。
 - **隔离与原子写**：ledger 逐条解析校验（必备字符串字段、历史 `recoveries` 若存在须为数组、`run_id` 与文件名一致），坏记录在 tick 里报 `action:error`、在 `report` 里计入 `unreadable`，不影响其他 run；asks.json 读不出时不当空表、不覆盖，需要提问的 run 报错。ledger、asks、attempts、config 一律同目录唯一临时文件 + rename；ledger 读改写与 recover 同锁（`updateLedger`）。
@@ -263,7 +263,7 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - `install.sh` 增 `--hooks`、`--purge-v1`（均支持 `--dry-run`，实现在 `src/install-hooks.ts`）与 `--remote-hooks`；三者与默认安装互斥，默认安装不碰用户三端配置。`selftest.sh` 增 hooks 段（元帅 31 行写入被 G-1 拒、worker 会话 Agent 被 N-1 拒）。
   - agent-supervisor 删除 V1 signoff 读取（`sv_superagent.py`），`decisions-tick` 只处理 ask；twin-toolkit 的 superagent 维度指向 `superagent_v2`，回执 schema 2 校验 `install.json` 的 `installer:"superagent_v2"`。
 - wpE caps 实现记录（§5.1）：
-  - caps 默认全开、`capsOf` 包级覆盖 plan 级；`capsDenied` 只作用于 Claude 节点。Codex 没有逐节点工具开关，caps 在 Codex 侧只是提示级，靠评审核对 `deviations[]`。
+  - caps 默认全开、`capsOf` 包级覆盖 plan 级；各 provider 的 caps 均是任务提示，不注入工具 deny。
   - 执行层红线集中在 `hooks/redline.cjs`，`guard.cjs` 对所有角色调用；`shell.cjs` 的解析同时给出写入与读取目标，供红线判路径。
   - `codex-worker` 启动前校验用户级 `hooks.json` 中 guard 的 trusted_hash，不一致即 exit 3（Codex 会静默跳过不受信任的 hook）；`install.sh --hooks`/`--remote-hooks` 用同一份 `scripts/codex-trust.cjs` 为自己的条目写 trusted_hash；`SA_CODEX_HOOK_TRUST=unchecked` 临时放行并在 stderr 留痕。
   - 投送闸 `scripts/verify-local.sh`：临时 detached worktree 跑 install → tsc → test → selftest，结果写 `$SUPERAGENT_HOME/verify.json`（同一提交含失败都缓存，`last_ok_commit` 跨次保留）。

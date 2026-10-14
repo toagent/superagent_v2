@@ -131,9 +131,7 @@ test('VENDOR_FAILOVER reviewer pool excludes authors and reapplies readonly prof
             failIfUnavailable: true,
             filesystem: { denyWrite: ['/'] },
           });
-          expect(options?.nodeConfig?.denied_tools).toEqual(
-            expect.arrayContaining(t.policy.exec_profiles.reviewer.claude.denied_tools)
-          );
+          expect(options?.nodeConfig?.denied_tools).toBeUndefined();
           yield { type: 'result', text: 'reviewed' };
           yield { type: 'settled' };
         },

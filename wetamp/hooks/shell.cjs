@@ -176,31 +176,4 @@ function parse(command, depth = 0) {
   return result;
 }
 const commands = command => parse(command).argvs;
-// Parse only a complete, literal deletion command. Operators, expansion,
-// wrappers and multiple targets stay uncertain; never evaluate shell text.
-function deletionTarget(command,cwd, normalized) {
-  // An unparsable or non-string command is "not a literal deletion", never an error.
-  if (typeof command !== 'string') return null;
-  let words; try { words = normalized ? normalized.map(value => ({value})) : tokens(command); } catch { return null; }
-  if (!words.length || words.some(word => word.operator || word.dynamic || word.nested || /[()*?{}\[\]~]/.test(word.value))) return null;
-  const args = words.map(word => word.value);
-  let target;
-  if (args[0] === 'rm') {
-    let i = 1, recursive = false;
-    while (args[i]?.startsWith('-') && args[i] !== '--') {
-      if (!/^-[rf]+$/.test(args[i])) return null;
-      recursive ||= args[i].includes('r'); i++;
-    }
-    if (args[i] === '--') i++;
-    if (recursive && args.length === i+1) target = args[i];
-  } else if (args[0] === 'git') {
-    let i = 1, base = cwd;
-    if (args[i] === '-C' && args[i+1]) { base = path.resolve(cwd,args[i+1]); i += 2; }
-    if (args[i++] !== 'worktree' || args[i++] !== 'remove') return null;
-    if (args[i] === '--force' || args[i] === '-f') i++;
-    if (args[i] === '--') i++;
-    if (args.length === i+1 && !args[i].startsWith('-')) return path.resolve(base,args[i]);
-  }
-  return target ? path.resolve(cwd,target) : null;
-}
-module.exports = {tokens, commands, parse, deletionTarget, unwrap, SHELLS, normalizeOptions};
+module.exports = {tokens, commands, parse, unwrap, SHELLS, normalizeOptions};

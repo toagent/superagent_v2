@@ -779,7 +779,6 @@ async function applyNodeConfig(
         claudeLaunchPolicy({
           effort: nodeConfig.effort ?? 'high',
           readonly: true,
-          deniedTools: nodeConfig.denied_tools ?? [],
           codex: {},
           sandbox: options.sandbox,
         })

@@ -7,7 +7,6 @@ import type { NodeConfig } from './types';
 export interface LaunchPolicy {
   effort: string;
   readonly: boolean;
-  deniedTools: string[];
   codex: Record<string, unknown>;
   sandbox?: Options['sandbox'];
 }
@@ -21,10 +20,7 @@ export const CLAUDE_EFFORTS = [
 
 export function claudeLaunchPolicy(
   policy: LaunchPolicy
-): Pick<
-  Options,
-  'effort' | 'disallowedTools' | 'sandbox' | 'permissionMode' | 'allowDangerouslySkipPermissions'
-> {
+): Pick<Options, 'effort' | 'sandbox' | 'permissionMode' | 'allowDangerouslySkipPermissions'> {
   if (!isEffortRung(policy.effort)) throw new Error('execution: unsupported effort');
   const sandbox = policy.sandbox;
   if (
@@ -39,9 +35,6 @@ export function claudeLaunchPolicy(
     throw new Error('execution: readonly Claude requires a fail-closed sandbox');
   return {
     effort: clampEffort(policy.effort, CLAUDE_EFFORTS),
-    disallowedTools: [
-      ...new Set([...policy.deniedTools, ...(policy.readonly ? ['WebFetch', 'WebSearch'] : [])]),
-    ],
     ...(sandbox
       ? {
           sandbox: policy.readonly
@@ -70,7 +63,7 @@ export function workflowLaunchPolicy(
   policy: LaunchPolicy,
   provider: 'claude' | 'codex',
   readonlyMcp: string
-): Pick<NodeConfig, 'effort' | 'denied_tools' | 'sandbox' | 'mcp'> {
+): Pick<NodeConfig, 'effort' | 'sandbox' | 'mcp'> {
   if (!isEffortRung(policy.effort)) throw new Error('execution: unsupported effort');
   if (provider === 'codex')
     return {
@@ -80,7 +73,6 @@ export function workflowLaunchPolicy(
   const native = claudeLaunchPolicy(policy);
   return {
     effort: native.effort,
-    denied_tools: native.disallowedTools,
     ...(native.sandbox ? { sandbox: native.sandbox } : {}),
   };
 }
@@ -162,8 +154,6 @@ export async function prepareRoleCommand(
       native.effort ?? policy.effort,
       '--permission-mode',
       native.permissionMode ?? 'default',
-      '--disallowedTools',
-      (native.disallowedTools ?? []).join(','),
       '--settings',
       JSON.stringify(settings),
       '--output-format',
@@ -186,12 +176,7 @@ export async function prepareRoleCommand(
     ...(policy.readonly ? { web_search: 'disabled' } : {}),
     approval_policy: 'never',
   };
-  return [
-    command[0],
-    ...codexCliConfig(settings),
-    ...codexCliConfig({ 'features.multi_agent': false }),
-    ...args,
-  ];
+  return [command[0], ...codexCliConfig(settings), ...args];
 }
 
 /** CLI paths are bare dotted keys; nested table keys are literal capability identifiers. */

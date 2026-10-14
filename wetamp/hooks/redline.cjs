@@ -1,7 +1,6 @@
 'use strict';
-// Default allow. Effects and ownership establish danger; uncertainty is advisory.
+// Default allow. Only privacy and irreversible destruction establish a denial.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const EFFECTS = require('./shell-effects.json');
 const microEdit = require('./micro-edit.cjs');
 
 // child is parent itself or below it.
@@ -65,53 +64,6 @@ const message = (action, consequence, alternative = '需要主控执行', target
   if (target?.url) { try { label = new URL(target.url).hostname; } catch { label = '外部服务'; } }
   return `已拦截：${action}${label ? `（${label}）` : ''}。原因：${consequence}。可以：${alternative}。`;
 };
-const commandLabel = argv => {
-  const name = path.posix.basename(argv[0] || '');
-  return EFFECTS.flatMap(rule => [...rule.commands, ...(rule.commandPrefixes || [])]).find(command => name === command || name.startsWith(command + '-')) || '命令';
-};
-function effects(argv, ignorePrefixes = false) {
-  const name = path.posix.basename(argv[0] || ''), args = argv.slice(1), operands = args.filter(a => !a.startsWith('-'));
-  return EFFECTS.filter(rule => (rule.commands.includes(name) || rule.commandPrefixes?.some(prefix => name.startsWith(prefix)))
-    && (!rule.pattern || args.some(a => new RegExp(rule.pattern).test(a)))
-    && (ignorePrefixes === true || !rule.prefixes || rule.prefixes.some(prefix => prefix.every((v, i) => operands[i] === v))))
-    .flatMap(rule => {
-      let targets = [];
-      if (rule.targets === 'operands') targets = operands;
-      if (rule.targets === 'last') targets = operands.slice(-1);
-      if (rule.targets === 'first') targets = operands.slice(0, 1);
-      if (rule.targets === 'of') targets = args.filter(a => a.startsWith('of=')).map(a => a.slice(3));
-      if (rule.targets === 'option') {
-        for (let i = 0; i < args.length; i++) for (const option of rule.options) {
-          if (args[i] === option && args[i + 1]) targets.push(args[i + 1]);
-          else if (args[i].startsWith(option + '=') || option.length === 2 && args[i].startsWith(option) && args[i].length > 2)
-            targets.push(args[i].slice(option.length).replace(/^=/, ''));
-        }
-        if (!targets.length && rule.default) targets.push(rule.default);
-      }
-      const effect = rule.append?.some(option => args.includes(option)) ? 'write' : rule.effect;
-      return rule.targets ? targets.map(target => ({effect, target})) : [{effect, target: name, argv}];
-    });
-}
-function taskRoots(cwd, root, env) {
-  const home = homeOf(env);
-  return [root || cwd, '/tmp', '/private/tmp', env.TMPDIR, '/var/folders', '/private/var/folders', env.ARTIFACTS_DIR, env.SUPERAGENT_ARTIFACTS_DIR,
-    ...['.bun', '.npm', '.cache', 'Library/Caches', '.m2', '.gradle', '.cargo'].map(d => path.join(home, d))]
-    .filter(Boolean).map(r => resolvePath(path.resolve(r)));
-}
-function taskOwnership(file, dir, root, env, git = false) {
-  if (!file) return null;
-  if (root) {
-    const repository = resolvePath(root), marker = path.join(repository, '.git');
-    const metadata = git && fs.existsSync(marker) && fs.statSync(marker).isFile()
-      ? resolvePath(path.resolve(repository, fs.readFileSync(marker, 'utf8').trim().slice(8))) : resolvePath(marker);
-    // File scope is containment; Git scope is this checkout or its exact metadata.
-    if (git ? file === metadata || file === marker || !within(file, marker) && checkoutOf(file) === repository
-      : within(file, repository)) return 'repository';
-  }
-  if (!taskRoots(dir, root, env).some(r => within(file, r))) return null;
-  // A generated mktemp product owns its repository too; existing temp repos do not.
-  return require('./shell-ast.cjs').isTemporaryPath(file) ? 'repository' : 'artifact';
-}
 function checkoutOf(file) {
   let dir = file;
   while (path.dirname(dir) !== dir) {
@@ -120,156 +72,74 @@ function checkoutOf(file) {
   }
   return null;
 }
-function protectedKind(abs, root, env) {
-  const home = path.resolve(homeOf(env)), rel = path.relative(home, abs);
-  const own = root && within(abs, resolvePath(root));
-  const local = own ? path.relative(resolvePath(root), abs).split(path.sep) : [];
-  if (local[0] === '.git' || /^\.(?:codex|claude|opencode|agents)$/.test(local[0] || '')) return '护栏或 agent/provider 配置';
-  if (!own && within(abs, home) && rel.split(path.sep)[0].startsWith('.')) return '家目录下的配置或凭据';
-  if (['/etc','/private/etc','/System','/usr','/bin','/sbin','/Library','/Applications'].some(dir => within(abs, dir))) return '系统目录';
-  const checkout = checkoutOf(abs);
-  if (checkout && root && checkout !== resolvePath(root)) return '非本任务的 git 检出';
-  return null;
-}
-function targetReason(effect, target, dir, root, env, reviewer, advisory, onCategory) {
-  onCategory('diagnostic');
-  const expanded = expand(target, env);
-  if (!target || /[$`*?\[\]{}]|__sa_sub__/.test(expanded) || dir.startsWith('/__sa_unknown_cwd__') && !path.isAbsolute(expanded)) {
-    if (['destroy','overwrite'].includes(effect)) return (onCategory('destruction'), message('销毁或覆盖目标', '无法确认目标是否属于本任务', '使用明确的本任务路径', {kind: '未知路径'}));
-    advisory('write_target_unknown'); return null;
-  }
-  const lexical = path.resolve(dir, expanded), abs = resolvePath(lexical);
-  // Whole-file replacement and deletion lose data only when the target exists.
-  // All tool and shell consumers share this fact before ownership policy runs.
-  const losesData = ['destroy','overwrite'].includes(effect) && fs.existsSync(abs);
-  const task = taskOwnership(abs, dir, root, env);
-  const protectedLocation = protectedKind(lexical, root, env) || protectedKind(abs, root, env);
-  const packageCache = ['.bun','.npm','.cache','.m2','.gradle','.cargo'].some(d => within(abs, path.join(homeOf(env), d)));
-  if (protectedLocation && !(protectedLocation === '非本任务的 git 检出' && !losesData) && !(packageCache && protectedLocation === '家目录下的配置或凭据'))
-    return (onCategory(protectedLocation === '非本任务的 git 检出' ? 'diagnostic' : 'authorization'), message('写入文件', `会修改${protectedLocation}`, '改用 worktree 或临时目录中的文件', {kind: within(abs, path.join(homeOf(env), '.superagent')) ? '~/.superagent' : protectedLocation}));
-  if (reviewer && root && within(abs, resolvePath(root))) return (onCategory('authorization'), message('修改被审仓库', 'reviewer 只读，修改会污染评审对象', '在临时目录创建文件并运行测试或脚本', {kind: `本任务仓库：${abs}`}));
-  if (effect === 'destroy' && [root, homeOf(env), env.SUPERAGENT_HOME, '/'].filter(Boolean).some(r => within(resolvePath(r), abs)))
-    return (onCategory('destruction'), message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'}));
-  if (!task && losesData)
-    return (onCategory('destruction'), message('销毁或覆盖文件', '会破坏不属于本任务的已有数据', '在 worktree 或临时目录创建副本', {kind: '任务范围外路径'}));
-  if (!task || protectedLocation === '非本任务的 git 检出') advisory('file_ownership');
-  return null;
-}
-function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory, names, deletions, onCategory) {
-  onCategory(({delegate: 'delegation', credential: 'privacy', external: 'external', elevate: 'authorization', process_selection: 'authorization', signal: 'authorization'})[effect] || 'diagnostic');
-  if (effect === 'delegate') return message(`派生会话再次调用 AI（${commandLabel(argv)}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅');
-  if (['create','destroy','overwrite','write'].includes(effect)) return targetReason(effect, target, dir, root, env, reviewer, advisory, onCategory);
-  if (effect === 'elevate') return message(`通过 ${commandLabel(argv)} 提升权限`, '会越过本任务权限边界');
-  if (effect === 'credential') return message(`通过 ${commandLabel(argv)} 读取钥匙串`, '凭据内容不能交给模型');
-  if (effect === 'external') {
-    // Arguments are untrusted data and may contain credentials or message bodies.
-    const url = argv.find(v => /^https?:\/\//.test(v));
-    return message(`通过 ${commandLabel(argv)} 发布或写入`, '会对外发布、写入或产生不可撤回的影响', undefined, {url});
-  }
-  if (effect === 'process_selection') return message(`通过 ${commandLabel(argv)} 按名称或模式停止进程`, '可能影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
-  if (effect === 'signal') {
-    const args = argv.slice(1), operands = []; let separator = false;
-    for (let i = 0; i < args.length; i++) {
-      if (args[i] === '--') { separator = true; continue; }
-      if (!separator && ['-s','--signal','-n'].includes(args[i])) { i++; continue; }
-      if (!separator && i === 0 && /^-(?:[A-Za-z]+|\d+)$/.test(args[i])) continue;
-      operands.push(args[i]);
-    }
-    if (names.size)
-      return message('按端口或名称查询结果停止进程（kill）', '可能影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
-    if (operands.some(v => v === '0' || /^-\d+$/.test(v) || /pgrep|pidof|lsof/.test(v)))
-      return message('通过 kill 向一组进程发信号', '会选择一组进程或影响本任务以外的进程', '对自己启动且记录的明确 PID 发信号');
-  }
-  if (effect === 'git') {
-    return require('./git-danger.cjs').reason(argv, dir, root, env, deletions, onCategory);
-  }
-  return null;
-}
-// Both provider wire shapes converge before privacy or effect checks.
-function mcpCall(name, input) {
-  if (name.startsWith('mcp__')) {
-    const match = /^mcp__([^]+?)__(.+)$/.exec(name);
-    return match ? {server: match[1], tool: match[2], args: input} : null;
-  }
-  if (name === 'mcp_tool_call' && typeof input.server === 'string' && typeof input.tool === 'string')
-    return {server: input.server, tool: input.tool, args: input.arguments ?? {}};
-  return null;
-}
+// Privacy applies to every tool's arguments, including bare MCP names.
 function strings(value) {
   if (typeof value === 'string') return [value];
   return value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
 }
-function mcpReason(call, cwd, root, env, derived, reviewer, onAdvisory, onCategory, onEvent) {
-  for (const value of strings(call.args)) {
-    const kind = wordKind(value, cwd, env);
-    if (kind) return (onCategory('privacy'), message('读写隐私文件', 'MCP 参数命中隐私路径黑名单', '使用非隐私路径', {kind}));
+function deletionReason(argv, dir, root, env) {
+  if (path.basename(argv[0] || '') !== 'rm') return null;
+  let recursive = false, force = false, positional = false;
+  const targets = [];
+  for (const arg of argv.slice(1)) {
+    if (!positional && arg === '--') { positional = true; continue; }
+    if (!positional && arg.startsWith('-')) {
+      recursive ||= arg.startsWith('--') && arg.length > 2 && 'recursive'.startsWith(arg.slice(2)) || /^-[^-]*[rR]/.test(arg);
+      force ||= arg.startsWith('--') && arg.length > 2 && 'force'.startsWith(arg.slice(2)) || /^-[^-]*f/.test(arg);
+    } else targets.push(arg);
   }
-  const rule = EFFECTS.find(r => r.mcp?.server === call.server && (r.mcp.tools.includes('*') || r.mcp.tools.includes(call.tool)));
-  if (!rule) { onEvent('mcp.unregistered_tool', {server: call.server, tool: call.tool, role: env.SUPERAGENT_ROLE || (derived ? 'worker' : 'commander')}); return null; }
-  if (rule.effect === 'delegate' && derived) return (onCategory('delegation'), message('MCP 再委派', '派生会话不能再次委派'));
-  if (['external', 'execute'].includes(rule.effect)) return (onCategory(rule.effect === 'external' ? 'external' : 'authorization'), message('MCP 高危动作', '对外写入或绕过 shell 执行护栏'));
-  if (rule.effect === 'write') for (const key of rule.mcp.paths) for (const target of strings(call.args?.[key])) {
-    const why = targetReason('write', target, cwd, root, env, reviewer, onAdvisory, onCategory);
-    if (why) return why;
+  if (!recursive || !force) return null;
+  const roots = ['/', homeOf(env), root, checkoutOf(dir)].filter(Boolean).map(resolvePath);
+  for (const target of targets) {
+    const expanded = expand(target, env);
+    // Unknown targets do not establish a protected directory.
+    if (/[$`*?\[\]{}]|__sa_/.test(expanded)) continue;
+    const lexical = path.resolve(dir, expanded), resolved = resolvePath(lexical);
+    if (roots.some(root => within(root, lexical) || within(root, resolved)))
+      return message('删除目录', '它是或包含家目录、仓库根或 /', '只删除明确的产物文件', {kind: '受保护目录'});
   }
   return null;
 }
-const READ_TOOLS = {Read: ['file_path'], NotebookRead: ['notebook_path'], Grep: ['path'], Glob: ['path'], LS: ['path'], view_image: ['path']};
-function reason({client, name, input = {}, cwd, root, shell, derived, env = process.env, onCommand, onAdvisory = () => {}, onCategory = () => {}, reviewer = false, onEvent = () => {}}) {
+function reason({client, name, input = {}, cwd, root, shell, env = process.env, onAdvisory = () => {}, onCategory = () => {}}) {
+  const privacy = (values, dir, context) => {
+    for (const value of values) {
+      const kind = wordKind(value, dir, context);
+      if (kind) { onCategory('privacy'); return message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}); }
+    }
+    return null;
+  };
   try {
-    const mcp = mcpCall(name, input);
-    if (mcp) return mcpReason(mcp, cwd, root, env, derived, reviewer, onAdvisory, onCategory, onEvent);
-    const edit = microEdit.isEdit(client, name);
-    let targets = [];
-    let deletions = new Set();
-    let overwrites = new Set();
-    if (edit) {
-      try {
-        const edits = client === 'codex' ? microEdit.patchEdits(input) : [{file: input.file_path || input.notebook_path}];
-        targets = edits.map(e => e.file);
-        deletions = new Set(edits.filter(e => e.kind === 'Delete File').map(e => e.file));
-        overwrites = new Set(edits.filter(e => e.kind === 'Add File').map(e => e.file));
-        // patchEdits emits each Move destination immediately after its Update source.
-        for (const [i, e] of edits.entries()) if (e.kind === 'Move') {
-          deletions.add(edits[i - 1].file);
-          overwrites.add(e.file);
-        }
+    // Shell strings are interpreted by the parser; quoted prose is not executed.
+    if (shell === undefined) {
+      const paths = microEdit.isEdit(client, name)
+        ? client === 'codex' ? microEdit.patchEdits(input).map(edit => edit.file) : [input.file_path || input.notebook_path]
+        : ['Read', 'NotebookRead', 'Grep', 'Glob', 'LS', 'view_image'].includes(name)
+          ? [input.file_path || input.notebook_path || input.path] : null;
+      if (paths) for (const file of paths.filter(value => typeof value === 'string' && value)) {
+        const kind = pathKind(file, cwd, env);
+        if (kind) { onCategory('privacy'); return message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}); }
       }
-      catch { onAdvisory('patch_target_unknown'); return null; }
+      return paths ? null : privacy(strings(input), cwd, env);
     }
-    for (const file of [...(READ_TOOLS[name] ?? []).map(k => input[k]), ...targets].filter(v => typeof v === 'string' && v)) {
-      const kind = pathKind(file, cwd, env);
-      if (kind) return (onCategory('privacy'), message('读写隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}));
-    }
-    if (edit && (derived || reviewer)) for (const target of targets) {
-      const why = targetReason(deletions.has(target) ? 'destroy' : name === 'Write' || overwrites.has(target) ? 'overwrite' : 'write', target || '', cwd, root, env, reviewer, onAdvisory, onCategory); if (why) return why;
-    }
-    if (shell === undefined) return null;
-    const gitDeletions = new Map();
-    return require('./shell-ast.cjs').analyze(shell, cwd, env, (parsed, dir) => {
-      onCommand?.(parsed);
-      const names = new Set(parsed.selections || []);
+    return require('./shell-ast.cjs').analyze(shell, input.workdir || cwd, env, (parsed, dir) => {
+      const context = {...env, ...parsed.env};
+      const secret = privacy([...parsed.argvs.flat(), ...parsed.reads, ...parsed.writes], dir, context);
+      if (secret) return secret;
       for (const argv of parsed.argvs) {
-        for (const word of argv) {
-          const kind = wordKind(word, dir, env);
-          if (kind) return (onCategory('privacy'), message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}));
+        const command = path.basename(argv[0] || '');
+        if (command === 'security' && argv.slice(1).some(arg => /^(find-.*-password|dump-keychain|export)$/.test(arg))) {
+          onCategory('privacy'); return message('通过 security 读取钥匙串', '凭据内容不能交给模型');
         }
-        for (const action of effects(argv)) {
-          if (!derived && !reviewer && action.effect === 'delegate') continue;
-          if (!derived && !reviewer && ['create','destroy','overwrite','write'].includes(action.effect)) continue;
-          const why = actionReason(action, dir, root, {...env, ...parsed.env}, reviewer, onAdvisory, names, gitDeletions, onCategory); if (why) return why;
+        if (command === 'git') {
+          const why = require('./git-danger.cjs').reason(argv, dir, root, context, undefined, onCategory);
+          if (why) return why;
         }
-      }
-      for (const file of parsed.reads) {
-        const kind = wordKind(file, dir, env);
-        if (kind) return (onCategory('privacy'), message('读取隐私文件', '会让凭据或隐私内容进入模型上下文', '使用不含凭据或隐私的文件', {kind}));
-      }
-      if (derived || reviewer) for (const file of parsed.writes) {
-        const why = targetReason(parsed.overwrites?.includes(file) ? 'overwrite' : 'write', file, dir, root, env, reviewer, onAdvisory, onCategory); if (why) return why;
+        const deletion = deletionReason(argv, dir, root, context);
+        if (deletion) { onCategory('destruction'); return deletion; }
       }
       return null;
     }, word => expand(word, env), onAdvisory);
   } catch { onAdvisory('redline_internal_error'); return null; }
 }
 const init = () => require('./shell-ast.cjs').init();
-module.exports = {init, reason, expand, resolvePath, within, secretKind, message, commandLabel, effects, taskOwnership, checkoutOf};
+module.exports = {init, reason, expand, resolvePath, within, secretKind, message, checkoutOf};

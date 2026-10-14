@@ -9,14 +9,12 @@ const redline = require('./redline.cjs'), git = require('./git-danger.cjs');
   const shell = input.command ?? input.cmd ?? input.script ?? input.input ?? input.shellCommand;
   if (typeof shell !== 'string') return;
   await redline.init();
-  const cwd = input.workdir || input.directory || payload.cwd || process.cwd(), deletions = new Map();
+  const cwd = input.workdir || input.directory || payload.cwd || process.cwd();
   const advisory = new Set();
   let superagentPermissionCategory = 'diagnostic';
   const reason = require('./shell-ast.cjs').analyze(shell, cwd, process.env, (parsed, dir) => {
     for (const argv of parsed.argvs) if (path.basename(argv[0] || '') === 'git') {
-      const manual = git.manualReason(argv, dir, {...process.env, ...parsed.env}, category => { superagentPermissionCategory = category; });
-      if (manual) return manual;
-      const why = git.reason(argv, dir, redline.checkoutOf(cwd) || cwd, {...process.env, ...parsed.env}, deletions, category => { superagentPermissionCategory = category; });
+      const why = git.reason(argv, dir, redline.checkoutOf(cwd) || cwd, {...process.env, ...parsed.env}, undefined, category => { superagentPermissionCategory = category; });
       if (why) return why;
     }
     return null;

@@ -21,7 +21,7 @@ fi
 resolved="$(realpath "$real" 2>/dev/null)" || { echo "codex-worker: $real does not exist" >&2; exit 2; }
 [ "$resolved" != "$self" ] || { echo "codex-worker: $real resolves to codex-worker itself" >&2; exit 2; }
 [ -f "$resolved" ] && [ -x "$resolved" ] || { echo "codex-worker: $real is not an executable file" >&2; exit 2; }
-# 执行层红线与 N-1 在 Codex 侧只靠用户级 hooks.json 的 guard.cjs PreToolUse；Codex 跳过定义改过但未重新
+# 两条底线 在 Codex 侧只靠用户级 hooks.json 的 guard.cjs PreToolUse；Codex 跳过定义改过但未重新
 # 信任的 hook（trusted_hash ≠ 当前定义的 hash，实测 2026-10-10），此时 worker 等于无护栏，故失败关闭。
 # hash 与 install.sh --hooks 写信任是同一份实现（scripts/codex-trust.cjs，Bun.TOML 解析，不依赖 python3 tomllib）。
 # Codex 改了 hash 算法导致误判时，运维可设 SA_CODEX_HOOK_TRUST=unchecked 临时放行（每次在 stderr 留痕）。
@@ -31,7 +31,7 @@ if [ $# = 1 ] && [[ $1 =~ ^(--version|-V|--help|-h)$ ]]; then
 elif [ "${SA_CODEX_HOOK_TRUST:-}" = unchecked ]; then
   echo "codex-worker: SA_CODEX_HOOK_TRUST=unchecked — guard hook trust not verified" >&2
 elif ! bun "$WETAMP/scripts/codex-trust.cjs" check; then
-  echo "codex-worker: ${CODEX_HOME:-$HOME/.codex}/hooks.json 没有受信任且启用的 guard.cjs PreToolUse hook（或无法判定），Codex 会跳过它（执行层红线与 N-1 失效）；跑 wetamp/scripts/install.sh --hooks 或在交互式 Codex 里用 /hooks 信任该条目后重试" >&2
+  echo "codex-worker: ${CODEX_HOME:-$HOME/.codex}/hooks.json 没有受信任且启用的 guard.cjs PreToolUse hook（或无法判定），Codex 会跳过它（两条底线 失效）；跑 wetamp/scripts/install.sh --hooks 或在交互式 Codex 里用 /hooks 信任该条目后重试" >&2
   exit 3
 fi
 read -r -d '' JS <<'JS' || true

@@ -35,13 +35,6 @@ const ids = req('../hooks/identity.cjs') as {
 const hooks = req('../hooks/coord.cjs') as {
   hash: (v: unknown) => string;
   repoScope: typeof repoScope;
-  writeReason: (
-    p: unknown,
-    client: string,
-    env: NodeJS.ProcessEnv,
-    shell?: string,
-    onAdvisory?: (message: string) => void
-  ) => string | null;
   unread: (sa: string, who: Identity, seen: string[]) => Message[];
 };
 const a: Identity = {
@@ -72,37 +65,6 @@ function setup(probe: (who: Identity) => Presence = () => online) {
   const c = new Coordination({ sa, runs: () => [], status: () => 'running', presence: probe });
   return { root, repo, sa, c, scope: repoScope(repo) };
 }
-test('G1: tilde targets resolve against HOME before repository ownership checks', async () => {
-  const s = setup();
-  s.c.claim(s.scope, b);
-  const home = join(s.root, 'home');
-  mkdirSync(join(home, '.superagent/live'), { recursive: true });
-  await req('../hooks/shell-ast.cjs').init();
-  const payload = { cwd: s.repo, session_id: a.session_id, tool_name: 'Bash', tool_input: {} };
-  const env = { HOME: home, SUPERAGENT_HOME: s.sa };
-  const notices: string[] = [];
-  expect(
-    hooks.writeReason(payload, 'codex', env, 'rm ~/.superagent/live/x.json', () => false)
-  ).toBeNull();
-  expect(
-    hooks.writeReason(payload, 'codex', env, 'rm README.md', note => notices.push(note))
-  ).toBeNull();
-  expect(notices).toEqual(['向其他元帅负责的仓库写文件，建议 handoff']);
-  expect(
-    hooks.writeReason(
-      { ...payload, tool_name: 'Write', tool_input: { file_path: '~/.superagent/live/x.json' } },
-      'claude',
-      env
-    )
-  ).toBeNull();
-  expect(
-    hooks.writeReason(
-      { ...payload, tool_name: 'Write', tool_input: { file_path: '~/README.md' } },
-      'claude',
-      { ...env, HOME: s.repo }
-    )
-  ).toBeNull();
-});
 test('1: two actual processes race for one scope under flock; exactly one owner and monotonic generations', async () => {
   const s = setup();
   const code = `import {Coordination} from ${JSON.stringify(join(import.meta.dir, '../src/coord/index.ts'))};
@@ -223,65 +185,13 @@ test('6: delivery and ack are idempotent; only recipient acks; sender receives d
   expect(s.c.messages().filter(m => m.type === 'receipt')).toHaveLength(2);
   expect(() => s.c.ack(String(one.id), a, 'accepted', 'again')).toThrow(/invalid state/);
 });
-test('7: file ownership is advisory; handoff wakes A wait before querying provider', async () => {
+test('7: handoff wakes A wait before querying provider', async () => {
   const s = setup(),
     project = gitRepo(tmp());
   s.c.claim(s.scope, a);
   s.c.claim(repoScope(project), b);
   mkdirSync(join(s.sa, 'live'));
   writeFileSync(join(s.sa, 'live/b.json'), JSON.stringify(b));
-  const payload = {
-    cwd: project,
-    session_id: b.session_id,
-    tool_name: 'Write',
-    tool_input: { file_path: join(s.repo, 'engine.ts') },
-  };
-  const why = hooks.writeReason(payload, 'claude', { SUPERAGENT_HOME: s.sa });
-  expect(why).toBeNull();
-  expect(
-    hooks.writeReason(
-      { ...payload, tool_input: { file_path: join(project, 'app.ts') } },
-      'claude',
-      { SUPERAGENT_HOME: s.sa }
-    )
-  ).toBeNull();
-  await req('../hooks/shell-ast.cjs').init();
-  expect(
-    hooks.writeReason(
-      { ...payload, tool_name: 'Bash', tool_input: {} },
-      'claude',
-      { SUPERAGENT_HOME: s.sa },
-      `echo bad > '${s.repo}/engine.ts'`,
-      () => true
-    )
-  ).toBeNull();
-  expect(
-    hooks.writeReason(
-      { ...payload, tool_name: 'Bash', tool_input: {} },
-      'claude',
-      { SUPERAGENT_HOME: s.sa },
-      `cp '${s.repo}/README.md' '${project}/copy.md'`,
-      () => false
-    )
-  ).toBeNull();
-  expect(
-    hooks.writeReason(
-      { ...payload, cwd: s.repo, tool_name: 'Bash', tool_input: {} },
-      'claude',
-      { SUPERAGENT_HOME: s.sa },
-      'python3 -c "print(1)"',
-      () => false
-    )
-  ).toBeNull();
-  expect(
-    hooks.writeReason(
-      { ...payload, tool_name: 'Bash', tool_input: {} },
-      'claude',
-      { SUPERAGENT_HOME: s.sa },
-      `sed -i '' 's/a/b/' '${s.repo}/engine.ts'`,
-      () => false
-    )
-  ).toBeNull();
   const out = s.c.handoff(s.scope, b, input);
   // Use the real CLI caller identity to deliver an inbox item, then prove wait short-circuits getRun.
   Object.assign(process.env, {
@@ -442,13 +352,6 @@ test('hook legacy fallback, repository backlog after takeover, and released tomb
     status: () => 'running',
     presence: () => online,
   });
-  const payload = {
-    cwd: s.repo,
-    session_id: b.session_id,
-    tool_name: 'Write',
-    tool_input: { file_path: 'new.ts' },
-  };
-  expect(hooks.writeReason(payload, 'claude', { SUPERAGENT_HOME: s.sa })).toBeNull();
   const runScope = c.scope('old');
   c.handoff(runScope, b, input);
   c.claim(s.scope, b, true, 'takeover');
@@ -460,7 +363,6 @@ test('hook legacy fallback, repository backlog after takeover, and released tomb
   c.release(s.scope, b);
   expect(c.owner(runScope).owner).toBeNull();
   expect(hooks.unread(s.sa, a, []).filter(m => !m.type)).toHaveLength(0);
-  expect(hooks.writeReason(payload, 'claude', { SUPERAGENT_HOME: s.sa })).toBeNull();
 });
 test('no stops re-asking for this owner; expired re-asks after an interval with a new key; stale yes is fenced', () => {
   const s = setup();
@@ -642,7 +544,7 @@ function isolated(s: ReturnType<typeof setup>): void {
     SA_COORD_ADMISSION: '',
   });
 }
-test('R1-01/06: actual hooks advise cd and nested-shell ownership; absolute git status stays open', async () => {
+test('R1-01/06: actual hooks allow cd and nested-shell writes across owners', async () => {
   const s = setup(),
     other = gitRepo(tmp());
   s.c.claim(s.scope, a);
@@ -690,7 +592,6 @@ test('R1-01/06: actual hooks advise cd and nested-shell ownership; absolute git 
     const out = await new Response(p.stdout).text();
     expect(await p.exited).toBe(0);
     expect(out).not.toContain('deny');
-    if (i < commands.length - 1) expect(out).toContain('advisory');
   }
 });
 test('INT-R1-01: actual Claude/Codex hooks allow Git across claimed locations', async () => {
@@ -745,8 +646,7 @@ test('INT-R1-01: actual Claude/Codex hooks allow Git across claimed locations', 
   }
 });
 test('R2-01: redline shares directory transitions and subshells keep the parent cwd', async () => {
-  const s = setup(),
-    other = gitRepo(tmp());
+  const s = setup();
   const secret = join(s.root, '.ssh');
   mkdirSync(secret);
   writeFileSync(join(secret, 'id_ed25519'), 'synthetic fixture');
@@ -779,17 +679,6 @@ test('R2-01: redline shares directory transitions and subshells keep the parent 
       expect(await new Response(p.stdout).text()).toContain('deny');
       expect(await p.exited).toBe(0);
     }
-  s.c.claim(repoScope(other), a);
-  await req('../hooks/shell-ast.cjs').init();
-  expect(
-    hooks.writeReason(
-      { cwd: s.repo, tool_name: 'Bash', tool_input: {} },
-      'claude',
-      { SUPERAGENT_HOME: s.sa },
-      `(cd -- '${other}' && pwd); echo x > local.txt`,
-      () => true
-    )
-  ).toBeNull();
 });
 test('R2-02: ledger, Archon and short IDs reject before recovering a dead executor or other mutations', async () => {
   const s = setup();
@@ -858,7 +747,7 @@ test('R2-04: shim keeps run scope despite same-named directories, across two rep
       expect(await p.exited).toBe(1);
     }
 }, 15000);
-test('R1-02/03/04: both IDs and direct shim/hook reject a stale controller before any continuation', async () => {
+test('R1-02/03/04: both IDs and direct shim reject a stale controller before any continuation', async () => {
   const s = setup();
   isolated(s);
   const actor = caller();
@@ -905,24 +794,6 @@ test('R1-02/03/04: both IDs and direct shim/hook reject a stale controller befor
   mkdirSync(join(s.sa, 'live'));
   writeFileSync(join(s.sa, 'live/actor.json'), JSON.stringify(actor));
   await req('../hooks/shell-ast.cjs').init();
-  expect(
-    hooks.writeReason(
-      { cwd: s.repo, session_id: actor.session_id, tool_name: 'Bash', tool_input: {} },
-      actor.client,
-      process.env,
-      `wetamp/bin/archon workflow abandon ${l.archon_run_id}`,
-      () => false
-    )
-  ).toContain('fencing');
-  expect(
-    hooks.writeReason(
-      { cwd: s.repo, session_id: actor.session_id, tool_name: 'Bash', tool_input: {} },
-      actor.client,
-      process.env,
-      `wetamp/bin/archon --json workflow event emit --run-id=${l.archon_run_id} --type fixture`,
-      () => false
-    )
-  ).toContain('fencing');
   // A random or replayed boolean/nonce is never an admission context.
   process.env.SA_COORD_ADMISSION = '00000000-0000-0000-0000-000000000000';
   const forged = Bun.spawn(

@@ -36,44 +36,23 @@
     "auto_retry": { "environment": 5 },
     "exec_profiles": {
       "reviewer": {
-        "codex": { "features.multi_agent": false },
+        "codex": {},
         "codex_readonly_marker": "superagent-reviewer-readonly",
         "claude": {
-          "denied_tools": [
-            "Agent",
-            "Task",
-            "Bash(claude *)",
-            "Bash(codex *)",
-            "Bash(opencode *)",
-            "Bash(sol-run *)",
-            "Bash(twin-agent*)",
-            "Edit",
-            "Write",
-            "MultiEdit",
-            "NotebookEdit"
-          ],
           "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,
             "autoAllowBashIfSandboxed": true,
             "allowUnsandboxedCommands": false,
-            "filesystem": { "denyWrite": ["/"] }
+            "filesystem": {
+              "denyWrite": ["/"]
+            }
           }
         }
       },
       "coder": {
-        "codex": { "features.multi_agent": false },
-        "claude": {
-          "denied_tools": [
-            "Agent",
-            "Task",
-            "Bash(claude *)",
-            "Bash(codex *)",
-            "Bash(opencode *)",
-            "Bash(sol-run *)",
-            "Bash(twin-agent*)"
-          ]
-        }
+        "codex": {},
+        "claude": {}
       }
     },
     "dispatch_context": {

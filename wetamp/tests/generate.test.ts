@@ -5,7 +5,6 @@ import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   buildWorkflow,
-  capsDenied,
   engineHash,
   residentHash,
   generate,
@@ -163,7 +162,6 @@ const build = (fake: boolean, plan = fixture): unknown =>
   JSON.parse(
     JSON.stringify(buildWorkflow(plan, milestones(plan), 'golden-0001', '/GEN', fake, NOW))
   );
-const capsOfAll = (c: Plan['caps']) => capsOf({ ...fixture, caps: c }, fixture.packages[0], []);
 type N = {
   id: string;
   command?: string;
@@ -956,7 +954,7 @@ describe('buildWorkflow', () => {
     expect(approval('2026-10-10T00:00:00Z')).toEqual({ message: 'Approve delivery milestone m2' });
     expect(() => approval('2026-10-09T00:00:00Z')).toThrow(/already passed/);
   });
-  test('claude nodes deny nested agents; codex nodes leave it to codex-worker', () => {
+  test('all generated nodes preserve native agent tools', () => {
     const denied = (console: 'claude' | 'codex', id: string): unknown =>
       (
         nodesOf(build(false, { ...fixture, console })).find(x => x.id === id) as Record<
@@ -965,9 +963,7 @@ describe('buildWorkflow', () => {
         >
       ).denied_tools;
     // console=codex：@sa-reviewer 解析为 claude；@sa-coder 是 codex
-    expect(denied('codex', 'review-m1-r1')).toEqual(
-      expect.arrayContaining(['Agent', 'Task', 'Bash(codex *)', 'Edit', 'Write', 'MultiEdit'])
-    );
+    expect(denied('codex', 'review-m1-r1')).toBeUndefined();
     expect(denied('codex', 'code-core')).toBeUndefined();
     expect(denied('claude', 'review-m1-r1')).toBeUndefined();
   });
@@ -1001,17 +997,6 @@ describe('buildWorkflow', () => {
       expect(node(c, 'code-core').sandbox).toBeUndefined();
       expect(node(c, 'code-core').mcp).toBeUndefined();
     }
-  });
-  test('tightened caps map to Claude denied_tools; defaults deny nothing', () => {
-    // 默认 tiers 的 @sa-coder 是 codex（caps 提示级）；Claude 将军节点把 capsDenied 并入 denied_tools
-    expect(capsDenied(capsOfAll({ network: false, git: 'commit' }))).toEqual(
-      expect.arrayContaining(['WebFetch', 'WebSearch', 'Bash(curl *)', 'Bash(git rebase*)'])
-    );
-    expect(capsDenied(capsOfAll({}))).toEqual([]);
-    expect(capsDenied(capsOfAll({ web: false }))).toEqual(['WebFetch', 'WebSearch']);
-    expect(capsDenied(capsOfAll({ install: false, services: false }))).toEqual(
-      expect.arrayContaining(['Bash(npm install *)', 'Bash(bun add *)', 'Bash(docker *)'])
-    );
   });
   test('plan prose never enters the workflow text (no $ substitution hazard)', () => {
     expect(JSON.stringify(build(false))).not.toContain('$HOME');

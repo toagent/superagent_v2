@@ -2,8 +2,7 @@
 // Read-only hook projection. Heartbeat owns the per-session seen IDs; registry writes belong to the CLI.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {same} = require('./identity.cjs');
-const {resolvePath, effects, expand} = require('./redline.cjs');
-const micro = require('./micro-edit.cjs');
+const {resolvePath} = require('./redline.cjs');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function read(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -116,49 +115,4 @@ function unread(home, who, seen = [], archon) {
 function notifications(messages) {
   return messages.length ? `Superagent 交接待答复：${messages.map(m => `${m.id} (${m.type || m.kind})`).join('、')}。运行 superagent inbox；使用 inbox --ack <id> accepted|rejected|done --note <短文> 答复。` : null;
 }
-function writeReason(payload, client, env, shell, onAdvisory = () => {}) {
-  const home = env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
-  const cwd = payload.cwd || process.cwd(), name = String(payload.tool_name || ''), input = payload.tool_input || {};
-  const claims = files(home, 'claims'), runs = scope => candidates(home, env.ARCHON_HOME, scope);
-  const beats = (() => { try { return fs.readdirSync(path.join(home, 'live')).map(n => read(path.join(home, 'live', n))); } catch { return []; } })();
-  const who = beats.find(b => b?.client === client && b.session_id === payload.session_id && b.host === os.hostname());
-  const check = (file, dir) => {
-    file = file && expand(file, env);
-    if (!file || /[$`*?]/.test(file)) return null;
-    const scope = repoScope(path.resolve(dir, file)); if (!scope) return null;
-    const view = resolveOwner(scope, claims, runs);
-    if (view.owner && !same(view.owner, who)) onAdvisory('向其他元帅负责的仓库写文件，建议 handoff');
-    return null;
-  };
-  if (micro.isEdit(client, name)) {
-    const edits = client === 'codex' ? micro.patchEdits(input).map(e => e.file) : [input.file_path || input.notebook_path];
-    for (const file of edits) { const why = check(file, cwd); if (why) return why; }
-  }
-  if (shell === undefined) return null;
-  // The existing shell parser exposes literal writes and scoped cwd; read-only invocations pass.
-  const why = require('./shell-ast.cjs').analyze(shell, input.workdir || cwd, env, (parsed, dir) => {
-    for (const file of [...parsed.writes, ...parsed.argvs.flatMap(effects).filter(a => ['create','destroy','overwrite','write'].includes(a.effect)).map(a => a.target)]) { const why = check(file, dir); if (why) return why; }
-    for (const argv of parsed.argvs) {
-      const name = path.basename(argv[0] || ''), args = argv.slice(1);
-      const option = key => args.find(a => a.startsWith(key + '='))?.slice(key.length + 1) || (args.includes(key) ? args[args.indexOf(key) + 1] : undefined);
-      const command = args.filter((a, i) => !a.startsWith('-') && !['--cwd', '--run-id', '--adopt'].includes(args[i - 1]));
-      if (name === 'archon' && archonMutation(command)) {
-        if (args.includes('--help') || args.includes('-h')) continue;
-        if (command[1] === 'wake' && !command[2]) return refusal('全局 wake 未限定 run', null);
-        try { admission(home, targetScope(home, command[0] === 'workflow' ? command[1] === 'event' ? option('--run-id') : command[1] === 'run' ? option('--adopt') : command[2] : undefined, option('--cwd') ? path.resolve(dir, option('--cwd')) : dir), who, undefined, env.ARCHON_HOME); }
-        catch (error) { return error.message; }
-      }
-      const inplace = name === 'sed' && args.some(a => a === '--in-place' || /^-i/.test(a)) ||
-        name === 'perl' && args.some(a => /^-[^-]*i/.test(a));
-      if (name === 'mv' || inplace) for (const file of args.filter(a => !a.startsWith('-'))) {
-        const why = check(file, dir); if (why) return why;
-      }
-      if (['npm', 'bun', 'yarn', 'pnpm'].includes(name) && ['install', 'add', 'remove', 'update', 'upgrade'].includes(args[0])) {
-        const why = check('.', dir); if (why) return why;
-      }
-    }
-    return null;
-  }, word => expand(word, env));
-  return why?.startsWith('已拒绝：') ? why : null;
-}
-module.exports = {hash, read, files, repoScope, resolveOwner, runScope, resolveRun, targetScope, admission, archonMutation, label, refusal, unread, notifications, writeReason};
+module.exports = {hash, read, files, repoScope, resolveOwner, runScope, resolveRun, targetScope, admission, archonMutation, label, refusal, unread, notifications};

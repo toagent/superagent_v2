@@ -154,9 +154,6 @@ export function executionLaunch(descriptor: ExecutionDescriptor, candidate: Alia
   return {
     effort: candidate.effort,
     readonly: descriptor.role === 'review',
-    deniedTools: [
-      ...new Set([...profile.claude.denied_tools, ...descriptor.caps.flatMap(capsDenied)]),
-    ],
     codex: profile.codex ?? {},
     ...('sandbox' in profile.claude
       ? { sandbox: profile.claude.sandbox as LaunchPolicy['sandbox'] }
@@ -176,29 +173,4 @@ export function executionNode(
       readonlyMcp
     ),
   };
-}
-
-/** Existing capability denials shared by both entry points. */
-export function capsDenied(c: Caps): string[] {
-  const bash = (...cmds: string[]): string[] => cmds.map(x => `Bash(${x})`);
-  return [
-    ...(c.network && c.web ? [] : ['WebFetch', 'WebSearch']),
-    ...(c.network ? [] : bash('curl *', 'wget *')),
-    ...(c.install
-      ? []
-      : bash(
-          'npm install *',
-          'npm i *',
-          'bun add *',
-          'pnpm add *',
-          'yarn add *',
-          'pip install *',
-          'pip3 install *',
-          'brew install *',
-          'cargo install *',
-          'go install *'
-        )),
-    ...(c.services ? [] : bash('docker *', 'docker-compose *', 'brew services *')),
-    ...(c.git === 'branch' ? [] : bash('git rebase*', 'git reset*', 'git commit --amend*')),
-  ];
 }

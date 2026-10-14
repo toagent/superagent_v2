@@ -28,7 +28,7 @@ function stub(dir: string, name: string, body: string): string {
 }
 
 describe('bin/codex-worker', () => {
-  test('prepends exec_profiles -c and disables declared MCP servers outside the sandbox list', () => {
+  test('preserves native MCP servers without injecting delegation restrictions', () => {
     const root = tmp();
     const home = join(root, 'home');
     mkdirSync(join(home, '.codex'), { recursive: true });
@@ -56,9 +56,8 @@ describe('bin/codex-worker', () => {
     });
     expect(p.exitCode).toBe(0);
     const argv = JSON.parse(p.stdout.toString()) as string[];
-    expect(argv.slice(0, 2)).toEqual(['-c', 'features.multi_agent=false']);
-    expect(argv).toContain('mcp_servers.claude.enabled=false');
-    expect(argv).toContain('mcp_servers.twin-agent.enabled=false');
+    expect(argv.some(a => a === 'features.multi_agent=false')).toBe(false);
+    expect(argv.some(a => a.startsWith('mcp_servers'))).toBe(false);
     expect(argv.join(' ')).not.toContain('searxng');
     expect(argv.slice(-4)).toEqual(['exec', '-s', 'read-only', 'x']);
   });
@@ -99,27 +98,6 @@ describe('bin/codex-worker', () => {
       err: p.stderr.toString(),
     };
   }
-  const disabled = (argv: string[]): string[] =>
-    argv.filter(a => a.endsWith('.enabled=false')).map(a => a.split('.')[1]);
-
-  test('MCP names come from TOML keys in every table/dotted/inline form; unsafe names are skipped', () => {
-    const r = worker(
-      [
-        'mcp_servers.e.command = "x"',
-        'mcp_servers.f = { command = "x" }',
-        '[mcp_servers."b"]\ncommand = "x"',
-        '[mcp_servers.\'c\']\ncommand = "x"',
-        '[mcp_servers . d]\ncommand = "x"',
-        '[mcp_servers.a]\ncommand = "x"',
-        '[mcp_servers."we\\"ird"]\ncommand = "x"',
-        '[mcp_servers.searxng]\ncommand = "x"',
-      ].join('\n')
-    );
-    expect(r.code).toBe(0);
-    expect(disabled(r.argv).sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
-    expect(r.err).toContain('skipped MCP server with unsafe name');
-  });
-
   test('a real codex resolving to codex-worker itself or not executable exits 2', () => {
     const root = tmp();
     const link = join(root, 'codex');
@@ -256,7 +234,7 @@ describe('bin/codex-worker', () => {
       policy: string[];
       argv: string[];
     };
-    expect(trace.policy).toEqual(['-c', 'features.multi_agent=false']);
+    expect(trace.policy).toEqual([]);
     expect(trace.argv.slice(0, 7)).toEqual([
       'exec',
       '-c',
@@ -362,10 +340,8 @@ process.stdin.on('end', () => {
     const a = appServer(plain + '\n');
     expect(a.code).toBe(0);
     expect(a.received).toBe(plain + '\n');
-    // 服务端 stdout 直通；-c 策略仍在 app-server 之前
+    // 服务端 stdout 与原始调用参数直通。
     expect((JSON.parse(a.out) as { argv: string[] }).argv).toEqual([
-      '-c',
-      'features.multi_agent=false',
       'app-server',
       '--listen',
       'stdio://',
@@ -392,7 +368,8 @@ process.stdin.on('end', () => {
     expect(t.params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } });
     for (const message of [r, f])
       expect(message.params).toMatchObject({
-        sandbox: 'read-only', config: { web_search: 'disabled' },
+        sandbox: 'read-only',
+        config: { web_search: 'disabled' },
       });
   });
 

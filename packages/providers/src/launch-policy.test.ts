@@ -12,8 +12,7 @@ import {
 const policy: LaunchPolicy = {
   effort: 'high',
   readonly: true,
-  codex: { 'features.multi_agent': false },
-  deniedTools: ['Agent', 'Task', 'Write', 'Edit'],
+  codex: {},
   sandbox: {
     enabled: true,
     failIfUnavailable: true,
@@ -37,13 +36,10 @@ test('Claude readonly SDK and CLI translation keeps native guidance/auth and san
       network: { allowedDomains: [], deniedDomains: ['*'], strictAllowlist: true },
     },
   });
-  expect(native.disallowedTools).toEqual(
-    expect.arrayContaining(['Agent', 'Task', 'Write', 'Edit', 'WebFetch', 'WebSearch'])
-  );
-  expect(native.disallowedTools).not.toContain('Bash');
+  expect(native).not.toHaveProperty('disallowedTools');
   const workflow = workflowLaunchPolicy(policy, 'claude', '/readonly.json');
   expect(workflow.sandbox).toEqual(native.sandbox);
-  expect(workflow.denied_tools).toEqual(native.disallowedTools);
+  expect(workflow).not.toHaveProperty('denied_tools');
   // No home, auth, instruction or setting-source override belongs to this contract.
   for (const key of ['env', 'settingSources', 'systemPrompt', 'apiKey'])
     expect(native).not.toHaveProperty(key);
@@ -99,9 +95,7 @@ test('readonly policy denies native domain grants and overrides native live Code
       expect(assignments).toContain(
         `sandbox_mode="${readonly ? 'read-only' : 'danger-full-access'}"`
       );
-      // R1-1: the production profile's early dotted key still needs a final role override.
-      expect(assignments[0]).toBe('features.multi_agent=false');
-      expect(assignments.at(-1)).toBe('features.multi_agent=false');
+      expect(assignments.some(a => a.startsWith('features.multi_agent='))).toBe(false);
       expect(assignments.every(a => /^[A-Za-z0-9_.-]+=/.test(a))).toBe(true);
       // Each -c is applied separately; a TOML document cannot extend an inline table.
       const tables = assignments.filter(a => !a.startsWith('features.multi_agent='));

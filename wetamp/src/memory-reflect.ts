@@ -196,7 +196,7 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
   let attempt: string | undefined;
   try {
     const state = memoryState(),
-      e = reflectionQueue(episodes(), state.entries, now)[0];
+      e = reflectionQueue(episodes(), state.entries, now).at(0);
     const budget = memoryData(now).reflection;
     if (!e || budget.tokens + 9216 > budget.limit) return false;
     const input = reflectionInput(e),
@@ -228,8 +228,6 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
           'model_reasoning_effort="low"',
           '-c',
           'model_max_output_tokens=1024',
-          '-c',
-          'features.multi_agent=false',
           '-o',
           out,
           input,

@@ -1103,3 +1103,9 @@ tok 今日 742.9M  将军·sol 115.4M  军师·astra 6.1M  元帅·astra 2.1M  �
 - **改动与新语义**：复用真实 Archon、fake 编码和隔离 toolkit，先证明 `code-core` 完成、`settle-core` 失败，再提交模板变更。`decide retry` 必须返回非零，`archon_run_id` 不变、`adoptions` 未追加、原 run 状态不变。删除旧 snapshot marker、同 worktree、旧提交保留、diff-m1-r1 与完成新 run 的步骤；日志由 5 步减为 3 步，入口标题与注释同步为 refusal。事故回放就是原 HF3 失败场景，运行证据复用现有 CLI 回执与 HF3 日志，不新增监测路径。首次自检额外要求 ledger 原文不变，实测被 `decide` 既有的 `intervened=true` 记录推翻，删除该过严断言；AD 单测验证的是 `resume` 拒绝不写 ledger。
 - **验收与证据**：隔离 `bun test tests/cli.test.ts -t "AD: stale terminal runs"` 为 1 pass/0 fail（12 个断言）；最终 `bunx tsc --noEmit -p .`、HF3 独立实机段、`bash scripts/selftest.sh --fake` 均 exit 0，后者回执 `ok:true/fake:true`，recover 2684ms、signal 1002ms、abandon 623ms。shell 语法与 diff 检查通过，整体净减行数。证据 `/tmp/b1-hf3.0m8Jyu/{ad-test.log,tsc-final.log,hf3-only.log,selftest-final.log,final-home/selftest-fake.json}`；首次过严断言的失败留在 `selftest.log`，未绕过护栏。
 - **旧 run / 生产影响与遗留**：只改测试脚本和本节记录，旧 run 与生产行为不变；保留 helper 文件名以维持既有入口，不新增兼容层。不操作生产 checkout/台账、真实 supervisor、提醒事项或 launchd，不委派、push 或合并。主控集成验收与统一独立评审未覆盖。
+
+## 2026-10-14：护栏收缩到两条底线
+
+- 用户选择“只留 2 条底线”，取代前述日期快照中的禁委派、发布、进程选择、提权、写入归属与 reviewer hook 拦截。保留原隐私路径黑名单/钥匙串和 force push、reset --hard、根目录 rm -rf。
+- 删除 shell-effects 表、MCP 登记/归一、safeGitDelete 与手工 Git 门禁；原生配置和 provider reviewer 沙箱保留。盘点与基线/最终日志保存在 `/private/tmp/sa-1.0.0-impl-20261014/`。本包只编码与本地自检，真实 provider 验收及集成由主控执行。
+- 验证：两条底线 26 用例通过；hooks 全量遗留的撤拦提示断言经 `-t` 修正复测通过，sa-check/providers 通过，generate/jobs 仅出现基线同名失败。补充执行策略测试撤拦断言已清理；lint 与 CJS/Bash 语法检查通过。TypeScript 仍报未改动的 provider-contract SDK 类型不匹配；补充测试的脏引擎检出、旧 wait 夹具及环境变量限制单列在任务证据中。

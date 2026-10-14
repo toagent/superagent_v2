@@ -5,7 +5,7 @@
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const {tiers, policy} = require('../tiers.json');
-const {parse, commands, deletionTarget} = require('./shell.cjs');
+const {parse} = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 const stopGate = require('./stop-gate.cjs');
 const {withState, once} = require('./hook-state.cjs');
@@ -53,27 +53,6 @@ function shellText(name, input) {
   if (Array.isArray(value)) return value.map(arg => `'${String(arg).replace(/'/g, "'\\''")}'`).join(' ');
   return typeof value === 'string' ? value : undefined;
 }
-// N-1: a derived session must not start another agent.
-function nestedReason(name, input, normalized) {
-  if (['Agent', 'Task', 'spawn_agent', 'claude.Agent'].includes(name) || name.startsWith('mcp__claude__'))
-    return redline.message('派生会话再次调用 AI', '派生会话不能再派生或委派', '在本会话完成，或回报元帅', {kind: 'Agent 工具'});
-  const text = shellText(name, input);
-  if (text === undefined) return null;
-  let heads, unparsed = false;
-  // Unparsable or dynamic arguments: command names alone establish delegation.
-  try { heads = (normalized?.argvs.length ? normalized.argvs : commands(text)); } catch { unparsed = true; heads = text.split(/[\s;&|()`$"'<>]+/).map(head => [head]); }
-  const hit = heads.find(argv => redline.effects(argv, unparsed || argv.slice(1).some(arg => /[$`]/.test(arg))).some(rule => rule.effect === 'delegate'));
-  return hit ? redline.message(`派生会话再次调用 AI（${redline.commandLabel(hit)}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅') : null;
-}
-function shellReason(text, cwd, env, normalized) {
-  const target = deletionTarget(text, cwd, normalized?.argvs.length === 1 ? normalized.argvs[0] : normalized ? [] : undefined);
-  if (!target) return null;
-  const resolved = resolvePath(target);
-  const guarded = ['/', os.homedir(), saHome(env), gitRoot(cwd)].filter(Boolean).map(resolvePath);
-  return guarded.some(root => within(root, resolved))
-    ? redline.message('删除目录', '它是或包含受保护目录', '只删除本任务的明确产物文件', {kind: '受保护目录'}) : null;
-}
-
 const stateFile = (payload, env) => {
   const session = payload.session_id || payload.transcript_path;
   return session ? path.join(saHome(env), 'hooks', `${crypto.createHash('sha256').update(String(session)).digest('hex')}.json`) : null;
@@ -86,7 +65,7 @@ function commanderWrite(payload, client, env, text) {
   let edit;
   try {
     if (text !== undefined) {
-      const parsed = parse(text), targets = [...parsed.writes, ...parsed.argvs.flatMap(redline.effects).filter(a => ['create', 'destroy', 'overwrite', 'write'].includes(a.effect)).map(a => a.target)];
+      const parsed = parse(text), targets = parsed.writes;
       if (parsed.argvs.some(a => ['node','bun','python','python3','perl','ruby'].includes(path.posix.basename(a[0])) && a.slice(1).some(v => /^-(?:e|c|pe|pi)/.test(v))))
         throw new Error('内联脚本可能写代码，无法可靠计量；请交 superagent run');
       if (!targets.length) return null;
@@ -139,31 +118,13 @@ function decide(payload, client, env = process.env) {
   const text = shellText(name, input);
   const notices = new Set();
   if (SHELL_TOOLS.includes(name) && text === undefined) notices.add('shell_text_missing');
-  const normalized = text !== undefined ? {argvs: [], writes: [], reads: []} : undefined;
   let category = 'diagnostic';
-  const red = redline.reason({client, name, input, cwd, root: gitRoot(cwd), shell: text, derived: Boolean(derived),
-    reviewer: ['reviewer', 'strategist'].includes(env.SUPERAGENT_ROLE), env,
-    onEvent: (event, data) => {
-      const dir = path.join(saHome(env), 'hooks');
-      fs.mkdirSync(dir, {recursive: true});
-      fs.appendFileSync(path.join(dir, 'events.jsonl'), JSON.stringify({event, ...data}) + '\n', {mode: 0o600});
-    }, onCategory: value => { category = value; }, onAdvisory: code => notices.add(code),
-    onCommand: normalized && (parsed => { for (const key of Object.keys(normalized)) normalized[key].push(...parsed[key]); })});
+  const red = redline.reason({client, name, input, cwd, root: gitRoot(cwd), shell: text, env,
+    onCategory: value => { category = value; }, onAdvisory: code => notices.add(code)});
   if (red) return deny(red, category);
-  if (derived) {
-    const reason = nestedReason(name, input, normalized);
-    if (reason) return deny(reason, 'delegation');
-  }
-  if (text !== undefined) {
-    const reason = shellReason(text, cwd, env, normalized);
-    if (reason) return deny(reason, 'destruction');
-  }
   const edit = microEdit.isEdit(client, name);
   const advisory = notices.size ? {systemMessage: `SUPERAGENT advisory：本次护栏无法完整确认命令效果，已放行（${[...notices].join(', ')}）。`} : null;
   if (derived) return advisory;
-  const coord = require('./coord.cjs');
-  const ownership = coord.writeReason(payload, client, env, text, code => notices.add(code));
-  if (ownership) return deny(ownership);
   const context = dispatch.contextReason(client, name, input, dispatch.contextPolicy(policy.dispatch_context));
   if (context) notices.add(context);
   if (client === 'codex' && name === 'spawn_agent' && input.model && ![...pool('general'), ...pool('strategist')].includes(input.model))

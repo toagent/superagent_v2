@@ -635,9 +635,7 @@ test('VENDOR_FAILOVER runtime coder retains native role config on Claude dispatc
     )
   );
   expect(calls).toHaveLength(1);
-  expect(calls[0].nodeConfig?.denied_tools).toEqual(
-    expect.arrayContaining(s.tiers.policy.exec_profiles.coder.claude.denied_tools)
-  );
+  expect(calls[0].nodeConfig?.denied_tools).toBeUndefined();
   expect(chunks.some(c => c.type === 'warning' && c.code === 'superagent.vendor_failover')).toBe(
     true
   );

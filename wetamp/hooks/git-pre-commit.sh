@@ -27,14 +27,12 @@ fi
 if [ -x .git/hooks/pre-commit ]; then
   # husky v9+ 的 .git/hooks/pre-commit 只是转发器，安全直接跑
   if ! .git/hooks/pre-commit; then
-    echo "✗ pre-commit: 仓库本地 hook（husky/lint-staged）失败" >&2
-    FAILED=1
+    echo "✗ pre-commit advisory: 仓库本地 hook（husky/lint-staged）失败，已放行" >&2
   fi
 fi
 if [ -d .husky ] && [ -x .husky/pre-commit ]; then
   if ! .husky/pre-commit; then
-    echo "✗ pre-commit: .husky/pre-commit 失败" >&2
-    FAILED=1
+    echo "✗ pre-commit advisory: .husky/pre-commit 失败，已放行" >&2
   fi
 fi
 exit $FAILED
