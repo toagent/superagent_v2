@@ -1,5 +1,5 @@
 /**
- * Codex provider: one Codex turn per `sendQuery`, driven over the `codex app-server`
+ * Codex provider: a Codex query with bounded stall recovery, driven over the `codex app-server`
  * JSON-RPC protocol so a failed turn reports a typed `codexErrorInfo`.
  */
 import { z } from 'zod';
@@ -57,6 +57,7 @@ import type { RateLimitSnapshot } from './protocol/v2/RateLimitSnapshot';
 import type { ThreadTokenUsage } from './protocol/v2/ThreadTokenUsage';
 import type { TokenUsageBreakdown } from './protocol/v2/TokenUsageBreakdown';
 import type { Turn } from './protocol/v2/Turn';
+import type { ServerNotification } from './protocol/ServerNotification';
 import type { TurnError } from './protocol/v2/TurnError';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
@@ -541,6 +542,8 @@ interface TurnRequest {
   onTurn: (turnId: string) => void;
 }
 
+const STALL_MS = 180_000;
+
 /**
  * Keeps observing background work after the parent completes.
  * Lost observation is thrown for `sendQuery` to classify; it never settles.
@@ -597,11 +600,12 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
     threadId,
     ...request.turnParams,
   });
-  const turnId = idAt(turnResponse, 'turn');
+  let turnId = idAt(turnResponse, 'turn');
   if (!turnId) throw new Error('Codex app-server returned a turn without an id');
   request.onTurn(turnId);
 
   const startedToolIds = new Set<string>();
+  const activeToolIds = new Set<string>();
   const liveTasks = new Set<string>();
   const agentThreads = new Set<string>();
   let parentCompleted = false;
@@ -618,7 +622,48 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
   let rateLimits: RateLimitSnapshot | undefined;
   let retries = 0;
 
-  for await (const notification of connection.notifications()) {
+  let stallInterrupts = 0;
+  let interrupting = false;
+  let lastNotificationAt = Date.now();
+  const notifications = connection.notifications();
+  let next = notifications.next();
+  while (true) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observed = await (async (): Promise<IteratorResult<ServerNotification> | null> => {
+      try {
+        return parentCompleted || activeToolIds.size > 0 || liveTasks.size > 0
+          ? await next
+          : await Promise.race([
+              next,
+              new Promise<null>(resolve => {
+                timer = setTimeout(() => {
+                  resolve(null);
+                }, STALL_MS);
+              }),
+            ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    if (observed === null) {
+      if (interrupting || stallInterrupts >= 2)
+        throw new Error('Codex model stream stalled after interrupt recovery');
+      interrupting = true;
+      stallInterrupts += 1;
+      yield {
+        type: 'warning',
+        code: 'codex.stall_interrupt',
+        message: `Codex model stream silent for ${String(Date.now() - lastNotificationAt)} ms; interrupting to continue (attempt ${String(stallInterrupts)}/2)`,
+      };
+      const interrupt = connection.request('turn/interrupt', { threadId, turnId });
+      if (!(await settlesWithin(interrupt, STALL_MS)))
+        throw new Error('Codex stall interrupt was not answered');
+      await interrupt;
+      continue;
+    }
+    if (observed.done) break;
+    const notification = observed.value;
+    lastNotificationAt = Date.now();
     switch (notification.method) {
       case 'account/rateLimits/updated':
         rateLimits = notification.params.rateLimits;
@@ -681,6 +726,8 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
         }
         if (!parentItem) break;
         if (isToolItem(item)) {
+          if (completed) activeToolIds.delete(item.id);
+          else activeToolIds.add(item.id);
           if (!startedToolIds.has(item.id)) {
             startedToolIds.add(item.id);
             yield toolCallOf(item);
@@ -713,6 +760,25 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
       case 'turn/completed': {
         const { turn, threadId: completedThreadId } = notification.params;
         if (completedThreadId !== threadId || turn.id !== turnId || parentCompleted) break;
+        if (interrupting && turn.status === 'interrupted') {
+          const resumed = await connection.request('turn/start', {
+            ...request.turnParams,
+            threadId,
+            input: [
+              {
+                type: 'text',
+                text: 'Continue from where you were interrupted.',
+                text_elements: [],
+              },
+            ],
+          });
+          turnId = idAt(resumed, 'turn');
+          if (!turnId) throw new Error('Codex app-server returned a turn without an id');
+          request.onTurn(turnId);
+          interrupting = false;
+          lastAgentMessage = '';
+          break;
+        }
         parentCompleted = true;
         for (const chunk of completeTurn(turn.status, turn.error, request, {
           threadId,
@@ -730,6 +796,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
       default:
         break;
     }
+    next = notifications.next();
     // The lifecycle contract covers starts observed before the parent's turn/completed
     // and their descendants. After that, the parent model cannot initiate new work;
     // later starts belong to already-live work, so an empty observed set can settle.
@@ -963,7 +1030,7 @@ export class CodexProvider implements IAgentProvider {
   }
 
   /**
-   * One call is one Codex turn on its own app-server process. A failure ends in a
+   * One call runs on its own app-server process, with up to two stall continuations. A failure ends in a
    * `result` carrying a typed `failure`, and the engine decides whether to try again.
    * Observed work must drain before `settled`; lost observation never settles.
    */

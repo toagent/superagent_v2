@@ -162,7 +162,163 @@ beforeEach(() => {
   mockLogger.info.mockClear();
 });
 
+/** Advances only the model-stall clock; process shutdown timers remain real. */
+function stallClock() {
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  let now = 0;
+  const pending = new Map<ReturnType<typeof setTimeout>, () => void>();
+  const date = spyOn(Date, 'now').mockImplementation(() => now);
+  const timers = spyOn(globalThis, 'setTimeout').mockImplementation(
+    Object.assign(
+      (...[callback, ms, ...args]: Parameters<typeof realSetTimeout>) => {
+        const timer = realSetTimeout(callback, ms, ...args);
+        if (ms === 180_000) pending.set(timer, () => callback(...args));
+        return timer;
+      },
+      { __promisify__: realSetTimeout.__promisify__ }
+    ) as typeof globalThis.setTimeout
+  );
+  const clear = spyOn(globalThis, 'clearTimeout').mockImplementation(timer => {
+    if (timer !== undefined) pending.delete(timer as ReturnType<typeof setTimeout>);
+    realClearTimeout(timer as Parameters<typeof realClearTimeout>[0]);
+  });
+  return {
+    async advance() {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      now += 180_001;
+      for (const [timer, callback] of pending) {
+        realClearTimeout(timer);
+        pending.delete(timer);
+        callback();
+      }
+      await new Promise<void>(resolve => setImmediate(resolve));
+    },
+    restore() {
+      for (const timer of pending.keys()) realClearTimeout(timer);
+      clear.mockRestore();
+      timers.mockRestore();
+      date.mockRestore();
+    },
+  };
+}
+
 describe('CodexProvider', () => {
+  test('STALL_INTERRUPT resumes the same thread after the last command ends', async () => {
+    const clock = stallClock();
+    const script: FakeTurnScript = {
+      notifications: [
+        itemStarted(command('cmd-1', 'test')),
+        itemCompleted(command('cmd-1', 'test', { status: 'completed', exitCode: 0 })),
+      ],
+      completion: null,
+    };
+    const { provider, server } = providerWith(script);
+    const chunks: MessageChunk[] = [];
+    const running = (async () => {
+      for await (const chunk of provider.sendQuery('test prompt', '/workspace')) {
+        chunks.push(chunk);
+        if (chunk.type === 'warning' && chunk.code === 'codex.stall_interrupt') {
+          script.notifications = [agentMessage('Finished')];
+          script.completion = { status: 'completed' };
+        }
+      }
+    })();
+    try {
+      await clock.advance();
+      await running;
+      const requests = server.processes[0].requests;
+      expect(requests.filter(r => r.method === 'turn/interrupt')).toEqual([
+        { method: 'turn/interrupt', params: { threadId: THREAD_ID, turnId: TURN_ID } },
+      ]);
+      const starts = requests.filter(r => r.method === 'turn/start');
+      expect(starts).toHaveLength(2);
+      expect(starts[1].params.threadId).toBe(THREAD_ID);
+      expect(starts[1].params.input).toEqual([
+        { type: 'text', text: 'Continue from where you were interrupted.', text_elements: [] },
+      ]);
+      expect(chunks.filter(c => c.type === 'warning')).toEqual([
+        expect.objectContaining({
+          code: 'codex.stall_interrupt',
+          message: expect.stringContaining('180001 ms'),
+        }),
+      ]);
+      expect(resultOf(chunks).failure).toBeUndefined();
+      expect(chunks.at(-1)).toEqual({ type: 'settled' });
+    } finally {
+      clock.restore();
+    }
+  });
+
+  test.each(['command', 'subtask'] as const)(
+    'STALL_INTERRUPT does not time silence while a %s is running',
+    async kind => {
+      const clock = stallClock();
+      const { provider, server } = providerWith({
+        notifications: [
+          itemStarted(kind === 'command' ? command('cmd-1', 'test') : subAgentActivity('started')),
+        ],
+        completion: null,
+      });
+      const running = run(provider);
+      try {
+        await clock.advance();
+        await clock.advance();
+        expect(server.processes[0].methods).not.toContain('turn/interrupt');
+        server.processes[0].send(
+          itemCompleted(
+            kind === 'command'
+              ? command('cmd-1', 'test', { status: 'completed', exitCode: 0 })
+              : subAgentActivity('completed')
+          )
+        );
+        server.processes[0].send(turnCompleted('completed'));
+        const chunks = await running;
+        expect(chunks.some(c => c.type === 'warning')).toBe(false);
+        expect(resultOf(chunks).failure).toBeUndefined();
+      } finally {
+        clock.restore();
+      }
+    }
+  );
+
+  test('STALL_INTERRUPT fails through the existing path after two recoveries', async () => {
+    const clock = stallClock();
+    const { provider, server } = providerWith({ completion: null });
+    const running = run(provider);
+    try {
+      await clock.advance();
+      await clock.advance();
+      await clock.advance();
+      const chunks = await running;
+      expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(2);
+      expect(server.processes[0].methods.filter(m => m === 'turn/start')).toHaveLength(3);
+      expect(
+        chunks.filter(c => c.type === 'warning' && c.code === 'codex.stall_interrupt')
+      ).toHaveLength(2);
+      expect(resultOf(chunks).failure).toBeDefined();
+    } finally {
+      clock.restore();
+    }
+  });
+
+  test('STALL_INTERRUPT preserves an interrupt request error', async () => {
+    const clock = stallClock();
+    const { provider, server } = providerWith({
+      completion: null,
+      errors: { 'turn/interrupt': { code: -32603, message: 'interrupt failed' } },
+    });
+    const running = run(provider);
+    try {
+      await clock.advance();
+      const chunks = await running;
+      expect(server.processes[0].methods.filter(m => m === 'turn/start')).toHaveLength(1);
+      expect(resultOf(chunks).failure?.evidence).toContain('interrupt failed');
+    } finally {
+      clock.restore();
+    }
+  });
+
   test('getType returns codex', () => {
     expect(new CodexProvider().getType()).toBe('codex');
   });
