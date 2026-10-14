@@ -43,7 +43,11 @@ import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
 import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 import { envPrecheck } from '../templates/.archon/scripts/env-precheck';
-import { writePolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
+import {
+  readPolicyAttempts,
+  writePolicyAttempts,
+} from '../templates/.archon/scripts/policy-attempts';
+import { executePolicy } from '@archon/workflows/policy-dispatch';
 import Ajv2020 from '../../packages/workflows/node_modules/ajv/dist/2020';
 
 test.each(['relative', 'absolute'])(
@@ -244,6 +248,59 @@ esac
   }
 );
 
+test('R1-1 author reservation persists tracking before provider execution and survives adoption', async () => {
+  const root = tmp(),
+    art = join(root, 'artifacts/runs/prior');
+  mkdirSync(art, { recursive: true });
+  const read = () =>
+    readAuthorEvidence(
+      { id: 'current', codebase_id: 'repo', adopted_from_run_id: 'prior', events: [] },
+      [],
+      ['core'],
+      'm1',
+      () => ({
+        id: 'prior',
+        codebase_id: 'repo',
+        output_root: root,
+        events: [{ event_type: 'node_started', step_name: 'code-core' }],
+      })
+    );
+  const stream = executePolicy(
+    {
+      node: 'code-core',
+      artifacts: art,
+      candidates: [{ provider: 'codex', model: 'author' }],
+      provider: 'codex',
+      budget: { weighted_tokens: 1000 },
+      usage: () => ({ launches: 0, weighted_tokens: 0, reserve: 0 }),
+      options: candidate => ({ model: candidate.model }),
+      async *sendQuery(_prompt, _cwd, _resume, options) {
+        // No provider callback has run: the dispatch reservation must already be durable.
+        expect(readPolicyAttempts(art)[0]).toMatchObject({
+          status: 'started',
+          rerouted_models: [],
+        });
+        expect(read()).toEqual([{ model: 'author', strength: 'pinned' }]);
+        expect(independence(read(), { model: 'other', strength: 'provider' })).toBeNull();
+        expect(independence(read(), { model: 'author', strength: 'provider' })).toBe('same_model');
+        options?.onModelRerouted?.('rerouted');
+        expect(independence(read(), { model: 'rerouted', strength: 'provider' })).toBe(
+          'same_model'
+        );
+        yield { type: 'warning', code: 'fixture.interrupted', message: 'interrupted' };
+      },
+    },
+    'fixture',
+    '/scratch'
+  );
+  try {
+    await stream.next();
+    expect(readPolicyAttempts(art)[0]?.status).toBe('started');
+  } finally {
+    await stream.return(undefined);
+  }
+});
+
 test('author carry reads each adopted generation and refuses unknown or invalid ancestry', () => {
   type Run = Parameters<typeof readAuthorEvidence>[0];
   const root = tmp(),
@@ -312,17 +369,18 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
   expect(attemptIdentity([attempt], attempt.node).strength).toBe('unknown');
   writePolicyAttempts(art, [{ ...attempt, rerouted_models: undefined }]);
+  // R1-1: old executors could execute and reroute without ever writing this marker.
   expect(read()).toEqual([
     { model: 'repair', strength: 'pinned' },
-    { model: 'author', strength: 'pinned' },
+    { model: null, strength: 'unknown' },
   ]);
-  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBeNull();
-  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
+  expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
+  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('author_unknown');
   expect(attemptIdentity([{ ...attempt, rerouted_models: undefined }], attempt.node).strength).toBe(
     'unknown'
   );
   writePolicyAttempts(art, [{ ...attempt, status: 'failed', rerouted_models: undefined }]);
-  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('same_model');
+  expect(independence(read(), { model: 'author', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [{ ...attempt, provider: 'claude' }]);
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   writePolicyAttempts(art, [attempt]);

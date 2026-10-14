@@ -10,7 +10,7 @@ export interface PolicyAttempt {
   provider: 'codex' | 'claude';
   model: string;
   resolved?: string;
-  rerouted_models?: string[]; // Present only once the provider has enabled native reroute tracking.
+  rerouted_models?: string[]; // Codex tracking reservation; absent on untracked legacy attempts.
   status: 'started' | 'completed' | 'failed';
   tokens?: TokenUsage;
   failure?: ProviderFailureClass;
