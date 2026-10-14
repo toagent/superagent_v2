@@ -153,6 +153,25 @@ describe('upgrade-upstream.sh', () => {
   const upgrade = (fork: string, env: Record<string, string>, ...args: string[]) =>
     exec([join(fork, 'wetamp', 'scripts', 'upgrade-upstream.sh'), ...args], env);
 
+  // Value: protects=upstream file list covers committed/staged/unstaged/untracked changes once; seam=none; no_claim=live upstream integration.
+  test('upstream check lists file names once and excludes wetamp and untracked context', () => {
+    const { fork, env } = setup();
+    const check = () => exec([join(fork, 'wetamp', 'scripts', 'check-upstream-clean.sh')], env);
+    expect(check()).toEqual({ code: 0, out: '' });
+    writeFileSync(join(fork, 'package.json'), '{}\n');
+    sh(`${GIT} add package.json && ${GIT} commit -qm changed`, fork);
+    writeFileSync(join(fork, 'package.json'), '{"name":"changed"}\n');
+    writeFileSync(join(fork, DB_TS), createTable(COLUMNS) + '// staged\n');
+    sh(`git add ${DB_TS}`, fork);
+    writeFileSync(join(fork, 'new.txt'), 'untracked');
+    writeFileSync(join(fork, 'wetamp', 'new.txt'), 'excluded');
+    mkdirSync(join(fork, '.context'), { recursive: true });
+    writeFileSync(join(fork, '.context', 'new.txt'), 'excluded');
+    const result = check();
+    expect(result.code).toBe(0);
+    expect(result.out.trim().split('\n').sort()).toEqual([DB_TS, 'package.json', 'new.txt'].sort());
+  });
+
   test('dry-run fetches, checks engine facts and prints the plan without touching branches', () => {
     const { up, fork, env } = setup();
     const head = sh('git rev-parse HEAD', fork);

@@ -1047,7 +1047,7 @@ test('run launches under its own claim while another online owner remains reposi
   const outputs: string[] = [],
     output = spyOn(console, 'log').mockImplementation(value => outputs.push(String(value)));
   try {
-    expect(main(['run', plan, '--fake', '--skip-selftest']), outputs.join('\n')).toBe(0);
+    expect(main(['run', plan, '--fake']), outputs.join('\n')).toBe(0);
     const result = JSON.parse(outputs.at(-1)!);
     expect(result.default_contact).toMatchObject(b);
     expect(result.overlap_warnings).toMatchObject([{ run_id: l.run_id, paths: expect.any(Array) }]);

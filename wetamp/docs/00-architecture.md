@@ -1,6 +1,6 @@
 # superagent on Archon：架构与自定义方案
 
-状态：P3 生命周期更新（2026-10-12）；早期决策与 PoC 记录保留为历史。实施计划见 `01-implementation-plan.md`，PoC 记录见 `02-poc-checklist.md`。
+状态：U3 文档校准（2026-10-14）；早期决策与 PoC 记录保留为历史。实施计划见 `01-implementation-plan.md`，PoC 记录见 `02-poc-checklist.md`。
 
 ## 0. 决策记录（用户拍板，不再重议）
 
@@ -134,8 +134,8 @@ diff-<M>        bash: 汇总本里程碑所有包的 diff → $ARTIFACTS_DIR/dif
 review-<M>-r1   prompt(command: sa-review) model: @sa-reviewer output_format: reviewer-result  （R1 全量）
 fix-<M>-r2      prompt(command: sa-fix)    when: $review-<M>-r1.output.verdict == 'fail'
 review-<M>-r2   prompt(command: sa-review-delta)  when: 同上                                 （只核验遗留 + 本轮 diff，新发现仅 blocker 阻塞）
-fix-<M>-r3 / review-<M>-r3                 同上，第三轮
-gate-<M>        script(bun): 三轮内 pass → ok；否则输出 escalate=true，run 以失败结束（≤3 轮超限升级给用户）
+fix-<M>-r3 … r6 / review-<M>-r3 … r6      同上，第三至第六轮
+gate-<M>        script(bun): 六轮内 pass → ok；否则输出 escalate=true，超限升级给用户（同一工作包最多 6 轮）
 human-<M>       approval: {message: ...}  仅当该里程碑任一包 signoff == "human"；审批完成后 signoff 检查 plan 绝对截止时间
 land            bash: 打印合入命令（本地 merge/ff，不 push）  output_format: {branch, commands}
 ```
@@ -163,10 +163,10 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 
 | 情形                          | 机制                                                                                                                                                                                                         |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| G0/G1                         | `review-*` pass → `land` 自动执行；没有人工节点                                                                                                                                                              |
-| G2 非红线                     | 同上（用户 2026-10-08：合格评审通过即放行）；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                                                      |
+| G0/G1 + auto                  | 默认跳过评审，主控聚焦实测；运行期发现 G2 风险才升级；没有默认人工节点                                                                                                                                       |
+| G2 / strict / review:true     | 合格独立评审通过且主控实测后放行；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                                                                 |
 | 红线（包 `signoff: "human"`） | `human-<M>` 原生 `approval` 持久暂停；supervisor 按 run+node 去重投提醒事项。勾选 → `workflow approve --detach --json`；删除 → `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
-| 超 3 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                                                             |
+| 超 6 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                                                             |
 
 显式后台启动支持顶层原生审批；交互循环与组合内隐藏审批继续拒绝后台派发。
 历史 `wait` 事件门的输出仍为 `status/event/waited_ms`，拒绝通过 abandon 表达。
@@ -220,7 +220,7 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
 - `SUPERAGENT_WRITE_ROOTS`（冒号分隔）覆盖 repo 白名单根，测试/selftest 用临时目录。
 - 退出码：0 completed、1 failed、2 cancelled、3 held（human/paused/environment/gate）、4 running；用法错误 64。
 - `--fake`：编码/评审/修复节点换成 bash 桩，用于测试与 selftest，零模型调用。
-- 每个里程碑以 `start-<M>` bash 节点记录基线 HEAD，评审轮次展开为固定的 `fix/diff/review/gate-<M>-rN`（N≤3，第 2、3 轮的 fix 带 `when: verdict == 'fix'`）；未走到的轮次被条件跳过，下一步以 `none_failed_min_one_success` 汇合三个 gate（fake e2e 实测：跳过沿依赖链级联后汇合仍放行）。escalate = gate 节点 exit 1，run 停在 failed，`decide retry` 对它无效（须在分支上修或新开 run）。
+- 每个里程碑以 `start-<M>` bash 节点记录基线 HEAD，评审轮次展开为固定的 `fix/diff/review/gate-<M>-rN`（N≤6，第 2–6 轮的 fix 带 `when: verdict == 'fix'`）；未走到的轮次被条件跳过，下一步以 `none_failed_min_one_success` 汇合六个 gate（fake e2e 实测：跳过沿依赖链级联后汇合仍放行）。escalate = gate 节点 exit 1，run 停在 failed，`decide retry` 对它无效（须在分支上修或新开 run）。
 - 人工签收：`human-<M>` 是原生审批，其后 `signoff-<M>` 检查 plan 绝对截止时间；旧 run 事件门只读兼容。
 - `workflow signal` 与 `workflow wake` 会在调用进程内执行剩余 DAG：CLI 以 detached 子进程执行并把输出写到 `gen/<run>/signal-<node>.log`、`$SUPERAGENT_HOME/wake.log`；signal 以“run 离开 paused 或 resumeAt 改变”为受理确认（30 s）。
 - 状态映射：paused 在 `human-*` 原生审批或历史 `sa.human.*` 事件门 → held:human；其余 paused → held:paused；environment/gate 失败沿用对应 hold。
@@ -257,12 +257,12 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - H4：终止 run 只有 `cancelRun` 一个入口（`cancel`、`decide reject`、`supervise-tick` 的截止与“否”）。引擎 `cancelWorkflow` 只接受 running，否则拒绝 `not_running`；paused/failed 走 `workflow abandon`（同样记 cancelled、释放 worktree 与 slot）。cancel 被拒不解析拒绝文本，重读状态，已离开 running 即改走 abandon。测试桩按引擎契约执行 cancel/abandon；`selftest --fake` 增 sa-abandon 段（停在事件门 → `superagent cancel` → cancelled，`abandon_ms`）。
   - M4a：`lock()` 为内核 `flock(LOCK_EX|LOCK_NB)`（`bun:ffi` 调 libc），持锁进程死亡（含 SIGKILL）时内核随 fd 释放；被占返回 `{ok:false,reason:'locked'}`，没有判死、夺锁、`lock_unreadable`。锁文件内容 `{pid,host,at}` 只供诊断，`release` 只关 fd、不删文件（删除会让两个进程分别锁住新旧 inode）。recover 的 `runs/<id>.lock` 与 `supervise.lock` 共用它，tick 被占即 `{"skipped":"locked"}` 退出 0。
   - N4：`ask-status` 返回“是”后、signal 前再判 plan 截止，已过即走截止路径（终止 run、账目 expired），不批准。
-- WP-B hooks 切换实现记录（详见 `04-hooks-and-nesting.md`）：
+- WP-B hooks 切换历史实现记录（已被 2026-10-14 护栏收缩决定取代，现行行为见 `04-hooks-and-nesting.md`）：
   - V1 的 guard/context-budget/dispatch-context/micro-edit/shell 五个 hook 迁入 `wetamp/hooks/`（context-budget 后续归一为 context-advisory），策略统一读 `tiers.json` 的 `policy`；派生判定加入 `SUPERAGENT_ROLE=worker` 与 `$SUPERAGENT_HOME/archon/workspaces/` 下的 cwd。`stop_gate` 默认为 `off`，其余启用值只作 advisory（含旧 `cycle/change`），正式评审事实仅由引擎维护。
   - 禁嵌套：`src/archon.ts` 给 run/resume `--detach` 与 detached 子进程注入 `SUPERAGENT_ROLE=worker`；`policy.exec_profiles.{coder,reviewer}` 的 `claude.denied_tools` 由 `generate.ts` 写进 claude 别名的 prompt 节点，`codex` 段由 `bin/codex-worker` 包装器以 `-c` 前置（并关闭沙箱清单外 MCP）；`install.sh` 把包装器写入 `assistants.codex.codexBinaryPath`。`exclude_user_instructions` 在 Archon 无对应字段，不生成。
   - `install.sh` 增 `--hooks`、`--purge-v1`（均支持 `--dry-run`，实现在 `src/install-hooks.ts`）与 `--remote-hooks`；三者与默认安装互斥，默认安装不碰用户三端配置。`selftest.sh` 增 hooks 段（元帅 31 行写入被 G-1 拒、worker 会话 Agent 被 N-1 拒）。
   - agent-supervisor 删除 V1 signoff 读取（`sv_superagent.py`），`decisions-tick` 只处理 ask；twin-toolkit 的 superagent 维度指向 `superagent_v2`，回执 schema 2 校验 `install.json` 的 `installer:"superagent_v2"`。
-- wpE caps 实现记录（§5.1）：
+- wpE caps 历史实现记录（§5.1；旧红线范围、禁委派策略与信任旁路不代表现行行为，现行 hooks 仅守凭据隐私与不可逆破坏两条底线）：
   - caps 默认全开、`capsOf` 包级覆盖 plan 级；各 provider 的 caps 均是任务提示，不注入工具 deny。
   - 执行层红线集中在 `hooks/redline.cjs`，`guard.cjs` 对所有角色调用；`shell.cjs` 的解析同时给出写入与读取目标，供红线判路径。
   - `codex-worker` 启动前校验用户级 `hooks.json` 中 guard 的 trusted_hash，不一致即 exit 3（Codex 会静默跳过不受信任的 hook）；`install.sh --hooks`/`--remote-hooks` 用同一份 `scripts/codex-trust.cjs` 为自己的条目写 trusted_hash；`SA_CODEX_HOOK_TRUST=unchecked` 临时放行并在 stderr 留痕。

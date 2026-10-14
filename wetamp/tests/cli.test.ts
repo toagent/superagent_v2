@@ -380,6 +380,7 @@ describe('parseArgs', () => {
   });
   test('unknown flags fail instead of being ignored', () => {
     expect(() => parseArgs(['run', 'p.json', '--skip-selftests'])).toThrow(/Unknown option/);
+    expect(() => parseArgs(['run', 'p.json', '--skip-selftest'])).toThrow(/Unknown option/);
   });
   test('main: unknown flag exits 64 with usage; --json is an accepted no-op on any verb', () => {
     const err = spyOn(console, 'error').mockImplementation(() => undefined);
@@ -1265,9 +1266,7 @@ describe('run (archon stub)', () => {
     >);
     const warning = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = captured(() =>
-        main(['run', fixturePlan(s.root, repo), '--fake', '--skip-selftest'])
-      );
+      const result = captured(() => main(['run', fixturePlan(s.root, repo), '--fake']));
       expect(result.code, result.out).toBe(0);
       expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(true);
       expect(
@@ -1294,7 +1293,7 @@ describe('run (archon stub)', () => {
       });
       const before = readFileSync(ledgerPath('sa1'), 'utf8');
       try {
-        const result = captured(() => main(['run', fixturePlan(s.root, repo), '--skip-selftest']));
+        const result = captured(() => main(['run', fixturePlan(s.root, repo)]));
         expect(result.code).toBe(1);
         expect(JSON.parse(result.out).reason).toContain(
           sample === 'dirty' ? '工作树不干净' : '引擎提交在生成期间变化'
@@ -1319,7 +1318,7 @@ describe('run (archon stub)', () => {
         p.base_ref = sha;
       });
       const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
-      const result = captured(() => main(['run', plan, '--fake', '--skip-selftest']));
+      const result = captured(() => main(['run', plan, '--fake']));
       expect(JSON.parse(result.out).quota).toBe('relay fixture');
       quota.mockRestore();
       expect(result.code, result.out).toBe(0);
@@ -1342,7 +1341,7 @@ describe('run (archon stub)', () => {
     mkdirSync(repo);
     sh('git init -q -b feature/fixture', repo);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
-    const result = captured(() => main(['run', fixturePlan(s.root, repo), '--skip-selftest']));
+    const result = captured(() => main(['run', fixturePlan(s.root, repo)]));
     expect(result.code).toBe(1);
     const failure = JSON.parse(result.out);
     expect(failure).toMatchObject({
@@ -1361,9 +1360,7 @@ describe('run (archon stub)', () => {
       repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     fixtureOptions(s.dir, { launchReply: { ok: false, error: 'fixture_launch_rejected' } });
-    const result = captured(() =>
-      main(['run', fixturePlan(s.root, repo), '--fake', '--skip-selftest'])
-    );
+    const result = captured(() => main(['run', fixturePlan(s.root, repo), '--fake']));
     expect(result.code).toBe(1);
     const failure = JSON.parse(result.out);
     expect(failure).toMatchObject({
@@ -1381,7 +1378,7 @@ describe('run (archon stub)', () => {
     const repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     const plan = fixturePlan(s.root, repo, p => (console ? (p.console = console) : undefined));
-    expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
+    expect(captured(() => main(['run', plan])).code).toBe(0);
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
   test('selftest fingerprint: documentation and tests preserve receipts; runtime commits and dirty files invalidate them', () => {
@@ -1512,7 +1509,7 @@ describe('run (archon stub)', () => {
       join(dir, 'config.yaml'),
       Bun.YAML.stringify({ aliases: { '@sa-reviewer': alias } })
     );
-    const r = captured(() => main(['run', fixturePlan(s.root, repo), '--skip-selftest']));
+    const r = captured(() => main(['run', fixturePlan(s.root, repo)]));
     return { ...r, calls: s.calls() };
   };
   test('a target repo @sa-* alias that differs from tiers refuses to start with exit 5', () => {
@@ -1528,6 +1525,71 @@ describe('run (archon stub)', () => {
     expect(h.code).toBe(EXIT_ALIAS_DRIFT);
     expect((JSON.parse(h.out) as { alias_drift: string[] }).alias_drift).toHaveLength(1);
   }, 30000);
+});
+
+// Value: protects=health JSON summary/verbose and check failures; seam=native subprocess fixture; no_claim=live provider acceptance.
+describe('health upstream reporting', () => {
+  const check = (files: string[], exitCode = 0, verbose = false) => {
+    stub([]);
+    const spawnSync = Bun.spawnSync;
+    const checkSpawn = <
+      const In extends Bun.SpawnOptions.Writable = 'ignore',
+      const Out extends Bun.SpawnOptions.Readable = 'pipe',
+      const Err extends Bun.SpawnOptions.Readable = 'pipe',
+    >(
+      cmd: string[] | (Bun.SpawnOptions.SpawnSyncOptions<In, Out, Err> & { cmd: string[] }),
+      options?: Bun.SpawnOptions.SpawnSyncOptions<In, Out, Err>
+    ): Bun.SyncSubprocess<Out, Err> => {
+      const command = Array.isArray(cmd) ? cmd : cmd.cmd;
+      return spawnSync(
+        command[0] === join(WETAMP, 'scripts', 'check-upstream-clean.sh')
+          ? [
+              process.execPath,
+              '-e',
+              `process.stdout.write(${JSON.stringify(files.join('\n'))}); process.exit(${String(exitCode)})`,
+            ]
+          : command,
+        Array.isArray(cmd) ? options : cmd
+      );
+    };
+    const spy = spyOn(Bun, 'spawnSync').mockImplementation(checkSpawn);
+    try {
+      const result = captured(() => main(['health', ...(verbose ? ['--verbose'] : [])]));
+      return { code: result.code, json: JSON.parse(result.out) };
+    } finally {
+      spy.mockRestore();
+    }
+  };
+  test('dirty upstream gives a reason and count, expanding files only with --verbose', () => {
+    const files = Array.from({ length: 45 }, (_, i) => `packages/file-${String(i)}.ts`);
+    const summary = check(files);
+    expect(summary.code).toBe(1);
+    expect(summary.json).toMatchObject({
+      ok: false,
+      reason: 'upstream_dirty',
+      upstream_clean: false,
+      upstream_file_count: 45,
+    });
+    expect(summary.json).not.toHaveProperty('upstream_files');
+    expect(JSON.stringify(summary.json)).not.toContain(files[0]);
+    const detail = check(files, 0, true);
+    expect(detail.code).toBe(1);
+    expect(detail.json.upstream_files).toEqual(files);
+  });
+  test('empty successful upstream check reports zero files without a dirty reason', () => {
+    const result = check([]);
+    expect(result.json).toMatchObject({ upstream_clean: true, upstream_file_count: 0 });
+    expect(result.json).not.toHaveProperty('reason');
+  });
+  test('failed upstream check with empty output cannot report clean', () => {
+    const result = check([], 1);
+    expect(result.code).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      upstream_clean: false,
+      reason: 'upstream_check_failed',
+    });
+  });
 });
 
 describe('decide (archon stub)', () => {
@@ -4067,7 +4129,7 @@ describe('launch intents (run + supervise-tick reconcile)', () => {
     const plan = fixturePlan(s.root, repo);
     const dir = join(s.root, 'home', 'intents');
     fixtureOptions(s.dir, { snapshotIntents: dir });
-    expect(captured(() => main(['run', plan, '--skip-selftest'])).code).toBe(0);
+    expect(captured(() => main(['run', plan])).code).toBe(0);
     expect(readFileSync(join(s.root, 'at-run'), 'utf8').trim()).toMatch(
       /^\d{8}-\d{6}-[0-9a-f]{4}\.json$/
     );

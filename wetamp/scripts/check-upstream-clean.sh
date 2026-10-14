@@ -4,5 +4,5 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 if git rev-parse --verify -q upstream/dev >/dev/null; then base="$(git merge-base HEAD upstream/dev)"
 else echo "warning: no upstream/dev, comparing with dev" >&2; base="$(git merge-base HEAD dev)"; fi
-git diff --stat "$base" -- . ':!wetamp'
-git status --porcelain --untracked-files=all -- . ':!wetamp' ':!.context'
+git diff --name-only "$base" -- . ':!wetamp'
+git ls-files --others --exclude-standard -- . ':!wetamp' ':!.context'

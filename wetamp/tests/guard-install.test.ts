@@ -357,13 +357,7 @@ test('WP-1: direct CLI worker run reports preflight mode and never starts the en
   mkdirSync(join(root, 'state/superagent'), { recursive: true });
   writeFileSync(file, JSON.stringify({ wetamp: WETAMP, role: 'worker' }));
   const p = Bun.spawnSync(
-    [
-      process.execPath,
-      join(WETAMP, 'src/cli.ts'),
-      'run',
-      join(root, 'missing-plan.json'),
-      '--skip-selftest',
-    ],
+    [process.execPath, join(WETAMP, 'src/cli.ts'), 'run', join(root, 'missing-plan.json')],
     {
       env: {
         ...process.env,
@@ -395,21 +389,18 @@ test('WP-1: plan parsing failures retain JSON launch-failure evidence', () => {
     [badJson, 'JSON'],
     [badSchema, 'plan invalid'],
   ] as const) {
-    const p = Bun.spawnSync(
-      [process.execPath, join(WETAMP, 'src/cli.ts'), 'run', plan, '--skip-selftest', '--json'],
-      {
-        env: {
-          ...process.env,
-          HOME: root,
-          XDG_STATE_HOME: join(root, 'state'),
-          SUPERAGENT_HOME: sa,
-          ARCHON_HOME: join(sa, 'archon'),
-          SUPERAGENT_WRITE_ROOTS: root,
-        },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      }
-    );
+    const p = Bun.spawnSync([process.execPath, join(WETAMP, 'src/cli.ts'), 'run', plan, '--json'], {
+      env: {
+        ...process.env,
+        HOME: root,
+        XDG_STATE_HOME: join(root, 'state'),
+        SUPERAGENT_HOME: sa,
+        ARCHON_HOME: join(sa, 'archon'),
+        SUPERAGENT_WRITE_ROOTS: root,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
     expect(p.exitCode).toBe(1);
     const out = JSON.parse(p.stdout.toString()) as {
       run_id: string;

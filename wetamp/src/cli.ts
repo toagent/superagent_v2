@@ -150,7 +150,6 @@ const OPTIONS = {
   hint: { type: 'string' },
   fake: { type: 'boolean' },
   apply: { type: 'boolean' },
-  'skip-selftest': { type: 'boolean' }, // Compatibility no-op; diagnostics are explicit.
   'lint-override': { type: 'string' },
   goal: { type: 'string' },
   'accept-timeout': { type: 'string' },
@@ -167,6 +166,7 @@ const OPTIONS = {
   repo: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
   cwd: { type: 'string' },
+  verbose: { type: 'boolean' },
   once: { type: 'boolean' },
   interval: { type: 'string' },
   limit: { type: 'string' },
@@ -819,8 +819,8 @@ export function quickPlan(a: Args): string {
   const acceptTimeout = Number(a.flags['accept-timeout'] ?? 180);
   if (!Number.isSafeInteger(acceptTimeout) || acceptTimeout <= 0)
     throw new Error('quick --accept-timeout must be a positive integer of seconds');
-  const console = a.flags.console;
-  if (console !== undefined && console !== 'codex' && console !== 'claude')
+  const consoleClient = a.flags.console;
+  if (consoleClient !== undefined && consoleClient !== 'codex' && consoleClient !== 'claude')
     throw new Error('quick --console must be codex|claude');
   const risk = a.flags.risk ?? 'G1';
   if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2')
@@ -839,7 +839,7 @@ export function quickPlan(a: Args): string {
   const plan: Plan = {
     repo: git('rev-parse', '--show-toplevel'),
     base_ref: a.flags.base ?? git('symbolic-ref', '--short', 'HEAD'),
-    ...(console !== undefined ? { console } : {}),
+    ...(consoleClient !== undefined ? { console: consoleClient } : {}),
     // An explicitly requested independent review must never land as DEGRADED_PASS.
     ...(a.flags.review ? { mode: 'strict' as const } : {}),
     budget: { weighted_tokens: 0, unlimited_tokens: true },
@@ -1145,7 +1145,7 @@ function reconcileIntents(): Action[] {
   return out;
 }
 
-function health(cwd?: string): number {
+function health(cwd?: string, verbose = false): number {
   const mode = installMode();
   const aliases = runAliases('claude');
   const drift = aliasDrift(cwd);
@@ -1156,16 +1156,22 @@ function health(cwd?: string): number {
     timeout: QUERY_TIMEOUT_MS,
   });
   const upstreamDiff = clean.stdout.toString().trim();
+  const upstreamFiles = upstreamDiff ? upstreamDiff.split('\n') : [];
+  const upstreamClean = clean.exitCode === 0 && upstreamFiles.length === 0;
   const worker = codexWorkerProblem();
-  const ok =
-    doctor.code === 0 && clean.exitCode === 0 && upstreamDiff === '' && !drift.length && !worker;
+  const ok = doctor.code === 0 && upstreamClean && !drift.length && !worker;
   print({
     ok,
     mode,
     doctor: doctor.code === 0 ? 'ok' : tail(doctor.out),
     aliases,
     alias_drift: drift,
-    upstream_clean: upstreamDiff === '' ? true : upstreamDiff,
+    upstream_clean: upstreamClean,
+    upstream_file_count: upstreamFiles.length,
+    ...(!upstreamClean
+      ? { reason: clean.exitCode === 0 ? 'upstream_dirty' : 'upstream_check_failed' }
+      : {}),
+    ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
   });
   return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
@@ -2594,7 +2600,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2994,7 +3000,7 @@ export function main(argv: string[]): number {
       print(a.flags['dry-run'] ? memoryTick(loadAsks(), Date.now(), false, true) : memoryData());
       return 0;
     case 'health':
-      return health(a.flags.cwd);
+      return health(a.flags.cwd, a.flags.verbose);
     case 'board':
     case 'job':
     case 'jobs':

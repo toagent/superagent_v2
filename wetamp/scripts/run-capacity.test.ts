@@ -117,20 +117,17 @@ writeFileSync(${JSON.stringify(done)},'done');console.log(JSON.stringify({ok:tru
     );
     const plan = fixturePlan(root, repo);
     const invoke = () =>
-      Bun.spawn(
-        [process.execPath, join(WETAMP, 'src/cli.ts'), 'run', plan, '--fake', '--skip-selftest'],
-        {
-          env: {
-            ...process.env,
-            SUPERAGENT_HOME: join(root, 'sa'),
-            ARCHON_HOME: ah,
-            SUPERAGENT_WRITE_ROOTS: root,
-            SA_ARCHON_BIN: bin,
-          },
-          stdout: 'ignore',
-          stderr: 'ignore',
-        }
-      );
+      Bun.spawn([process.execPath, join(WETAMP, 'src/cli.ts'), 'run', plan, '--fake'], {
+        env: {
+          ...process.env,
+          SUPERAGENT_HOME: join(root, 'sa'),
+          ARCHON_HOME: ah,
+          SUPERAGENT_WRITE_ROOTS: root,
+          SA_ARCHON_BIN: bin,
+        },
+        stdout: 'ignore',
+        stderr: 'ignore',
+      });
     const until = async (check: () => boolean): Promise<void> => {
       for (const deadline = Date.now() + 5000; !check(); ) {
         expect(Date.now()).toBeLessThan(deadline);
