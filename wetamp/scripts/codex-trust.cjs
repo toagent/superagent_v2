@@ -21,9 +21,15 @@ const OURS = path.join(fs.realpathSync(path.join(__dirname, '..')), 'hooks') + '
 
 const snake = e => e.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
 const sorted = v =>
-  Array.isArray(v) ? v.map(sorted)
-  : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sorted(v[k])]))
-  : v;
+  Array.isArray(v)
+    ? v.map(sorted)
+    : v && typeof v === 'object'
+      ? Object.fromEntries(
+          Object.keys(v)
+            .sort()
+            .map(k => [k, sorted(v[k])])
+        )
+      : v;
 
 /** hooks.json 每个 command 条目：state 键与 Codex 会核对的 trusted_hash。 */
 function entries() {
@@ -33,12 +39,29 @@ function entries() {
     (groups || []).forEach((g, gi) =>
       (g.hooks || []).forEach((h, hi) => {
         if (h.type !== 'command' || typeof h.command !== 'string') return;
-        const hook = { type: 'command', command: h.command, timeout: Math.max(1, h.timeout ?? 600), async: Boolean(h.async ?? false) };
+        const hook = {
+          type: 'command',
+          command: h.command,
+          timeout: Math.max(1, h.timeout ?? 600),
+          async: Boolean(h.async ?? false),
+        };
         if (h.statusMessage != null) hook.statusMessage = h.statusMessage;
         const ident = { event_name: snake(event), hooks: [hook] };
         if (g.matcher != null) ident.matcher = g.matcher;
-        const hash = 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(sorted(ident))).digest('hex');
-        out.push({ key: `${hooksFile}:${snake(event)}:${gi}:${hi}`, event, command: h.command, matcher: g.matcher, async: hook.async, hash });
+        const hash =
+          'sha256:' +
+          crypto
+            .createHash('sha256')
+            .update(JSON.stringify(sorted(ident)))
+            .digest('hex');
+        out.push({
+          key: `${hooksFile}:${snake(event)}:${gi}:${hi}`,
+          event,
+          command: h.command,
+          matcher: g.matcher,
+          async: hook.async,
+          hash,
+        });
       })
     );
   return out;
@@ -50,12 +73,18 @@ const lit = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** 文本级改写：已有 [hooks.state."key"] 表则替换/补 trusted_hash，没有则末尾追加；键以其他写法出现时拒绝（不制造重复键）。 */
 function setTrust(text, key, hash) {
   const lines = text.split('\n');
-  const header = new RegExp(`^\\s*\\[\\s*hooks\\s*\\.\\s*state\\s*\\.\\s*${lit(tomlStr(key))}\\s*\\]\\s*(#.*)?$`);
+  const header = new RegExp(
+    `^\\s*\\[\\s*hooks\\s*\\.\\s*state\\s*\\.\\s*${lit(tomlStr(key))}\\s*\\]\\s*(#.*)?$`
+  );
   const at = lines.flatMap((l, i) => (header.test(l) ? [i] : []));
   const mentions = text.split(tomlStr(key)).length - 1;
-  if (at.length > 1 || mentions !== at.length) throw new Error(`${configFile}: ${key} is written in a form this installer does not edit; trust it with /hooks in Codex`);
+  if (at.length > 1 || mentions !== at.length)
+    throw new Error(
+      `${configFile}: ${key} is written in a form this installer does not edit; trust it with /hooks in Codex`
+    );
   const want = `trusted_hash = ${tomlStr(hash)}`;
-  if (!at.length) return `${text}${text && !text.endsWith('\n') ? '\n' : ''}${text ? '\n' : ''}[hooks.state.${tomlStr(key)}]\n${want}\n`;
+  if (!at.length)
+    return `${text}${text && !text.endsWith('\n') ? '\n' : ''}${text ? '\n' : ''}[hooks.state.${tomlStr(key)}]\n${want}\n`;
   let end = at[0] + 1;
   while (end < lines.length && !/^\s*\[/.test(lines[end])) end++;
   const i = lines.slice(at[0] + 1, end).findIndex(l => /^\s*trusted_hash\s*=/.test(l));
@@ -73,8 +102,11 @@ function write(dry) {
   if (text === raw) return `codex trust: ${mine.length} entries already trusted\n`;
   if (dry) return `codex trust: would trust ${mine.length} entries in ${configFile}\n`;
   if (raw) {
-    const dir = path.join(envOr('SUPERAGENT_HOME', path.join(os.homedir(), '.superagent')), 'backups',
-      `codex-trust-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '')}`);
+    const dir = path.join(
+      envOr('SUPERAGENT_HOME', path.join(os.homedir(), '.superagent')),
+      'backups',
+      `codex-trust-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '')}`
+    );
     fs.mkdirSync(dir, { recursive: true });
     fs.copyFileSync(configFile, path.join(dir, 'config.toml'));
   }
@@ -99,14 +131,25 @@ try {
   else if (cmd === 'check') {
     const s = state();
     const expected = `node '${OURS}guard.cjs' codex`;
-    const ok = entries().some(e => e.event === 'PreToolUse' && e.command === expected && !e.async
-      && [undefined, '', '*'].includes(e.matcher)
-      && s[e.key]?.enabled !== false && s[e.key]?.trusted_hash === e.hash);
+    const ok = entries().some(
+      e =>
+        e.event === 'PreToolUse' &&
+        e.command === expected &&
+        !e.async &&
+        [undefined, '', '*'].includes(e.matcher) &&
+        s[e.key]?.enabled !== false &&
+        s[e.key]?.trusted_hash === e.hash
+    );
     process.exit(ok ? 0 : 1);
   } else if (cmd === 'verify') {
     const s = state();
     const had = entries().filter(e => s[e.key]?.trusted_hash);
-    console.log(JSON.stringify({ trusted: had.length, match: had.filter(e => s[e.key].trusted_hash === e.hash).length }));
+    console.log(
+      JSON.stringify({
+        trusted: had.length,
+        match: had.filter(e => s[e.key].trusted_hash === e.hash).length,
+      })
+    );
   } else {
     console.error('usage: codex-trust.cjs write [--dry-run] | check | verify');
     process.exit(64);

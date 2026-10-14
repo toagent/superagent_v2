@@ -1,5 +1,11 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": { "noEmit": true, "jsx": "react-jsx" },
-  "include": ["src/**/*", "tests/**/*", "scripts/**/*.ts", "templates/.archon/scripts/**/*", "../packages/workflows/src/defaults/text-imports.d.ts"]
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "scripts/**/*.ts",
+    "templates/.archon/scripts/**/*",
+    "../packages/workflows/src/defaults/text-imports.d.ts"
+  ]
 }

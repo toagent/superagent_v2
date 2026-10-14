@@ -14,7 +14,8 @@ export interface HoldSignal {
   since: string;
   disposed: boolean;
 }
-export const askKey = (run: string, hold: string, episode?: string): string => `${run}:${hold}${episode ? ':' + createHash('sha256').update(episode).digest('hex').slice(0, 16) : ''}`;
+export const askKey = (run: string, hold: string, episode?: string): string =>
+  `${run}:${hold}${episode ? ':' + createHash('sha256').update(episode).digest('hex').slice(0, 16) : ''}`;
 export const unresolved = (a: Ask): boolean =>
   ['pending', 'unknown', 'yes', 'no'].includes(a.status);
 export function cockpitSignals(
@@ -38,7 +39,11 @@ export function cockpitSignals(
     ).length,
     dup_ask: [...counts.values()].reduce((sum, n) => sum + Math.max(0, n - 1), 0),
     engine_suspect: holds.filter(h => h.hold === 'engine_suspect').length,
-    stale_answer: new Set(Object.entries(asks).filter(([, a]) => a?.stale_answer).map(([key, a]) => a?.id ?? key)).size,
+    stale_answer: new Set(
+      Object.entries(asks)
+        .filter(([, a]) => a?.stale_answer)
+        .map(([key, a]) => a?.id ?? key)
+    ).size,
   };
 }
 /** 保留旧键的历史；只迁移一个当前提问，其余作废，不创建新的提醒。 */
@@ -48,7 +53,8 @@ export function supersedeAsks(asks: Asks, run: string, hold?: string, episode?: 
     if (!key.startsWith(`${run}:`) || !a || !unresolved(a)) continue;
     const category = key.split(':')[1];
     if (
-      !episode && current &&
+      !episode &&
+      current &&
       key !== current &&
       (category === hold || (hold === 'signoff' && !(category in HOLD_POLICY))) &&
       !asks[current]

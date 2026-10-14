@@ -1,9 +1,6 @@
 {
   "hold": "auto_retry_exhausted",
-  "attempts": [
-    2,
-    3
-  ],
+  "attempts": [2, 3],
   "dispositions": [
     {
       "at": "2026-10-10T07:01:23.035Z",

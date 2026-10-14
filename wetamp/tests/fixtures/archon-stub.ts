@@ -51,11 +51,19 @@ export function fixtureArchon(dir: string, args: string[]): Exec {
   const run: RunView | undefined = current ? JSON.parse(readFileSync(current, 'utf8')) : undefined;
   if (args[1] === 'wait') {
     const terminal = run && ['completed', 'failed', 'cancelled'].includes(run.status);
-    return { code: terminal ? 0 : 3, err: '', out: JSON.stringify({
-      ok: true, action: 'wait', runId: args[2], result: terminal ? 'attention' : 'deadline',
-      ...(terminal ? { attention: { kind: 'terminal', runId: args[2], status: run.status, at: null } }
-        : { observedStatus: run?.status ?? 'running' }),
-    }) };
+    return {
+      code: terminal ? 0 : 3,
+      err: '',
+      out: JSON.stringify({
+        ok: true,
+        action: 'wait',
+        runId: args[2],
+        result: terminal ? 'attention' : 'deadline',
+        ...(terminal
+          ? { attention: { kind: 'terminal', runId: args[2], status: run.status, at: null } }
+          : { observedStatus: run?.status ?? 'running' }),
+      }),
+    };
   }
   if (args[1] === 'resume' && run && run.status !== 'completed') {
     run.metadata = {

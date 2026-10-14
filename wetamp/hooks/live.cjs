@@ -4,8 +4,11 @@
 // Side channel only: every failure is swallowed and nothing reaches stdout/stderr, so a hook's
 // output and exit status are the same with or without it. Only the whitelisted fields below are
 // stored: never prompts, tool input/output or transcript content.
-const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
-const {spawnSync} = require('node:child_process');
+const fs = require('node:fs'),
+  os = require('node:os'),
+  path = require('node:path'),
+  crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 const identity = require('./identity.cjs');
 
 const ALWAYS = new Set(['SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit']);
@@ -25,10 +28,12 @@ function agentOf(command) {
 function cliOf(argv, controller = false) {
   const a = ['node', 'bun'].includes(path.basename(argv[0] || '')) ? argv.slice(1) : argv;
   const [k, sub] = [a.length ? path.basename(a[0]) : '', a[1] || ''];
-  if (k === 'claude' && sub !== 'mcp') return {kind: k, headless: a.some(t => t === '-p' || t === '--print')};
+  if (k === 'claude' && sub !== 'mcp')
+    return { kind: k, headless: a.some(t => t === '-p' || t === '--print') };
   // The API app-server owns tool subprocesses, but is not a board terminal.
-  if (k === 'codex' && !['mcp', 'mcp-server', ...(!controller ? ['app-server'] : [])].includes(sub)) return {kind: k, headless: sub === 'exec'};
-  if (k === 'opencode' && sub !== 'serve') return {kind: k, headless: sub === 'run'};
+  if (k === 'codex' && !['mcp', 'mcp-server', ...(!controller ? ['app-server'] : [])].includes(sub))
+    return { kind: k, headless: sub === 'exec' };
+  if (k === 'opencode' && sub !== 'serve') return { kind: k, headless: sub === 'run' };
   return null;
 }
 // Nearest agent CLI ancestor of this hook process. One `ps -p` per level: a full `ps -ax`
@@ -39,13 +44,17 @@ function owner(interactive = false, inspect = inspectPid, parent = process.ppid)
     if (!m) return null;
     const cli = cliOf(m[3].trim().split(/\s+/), true);
     if (interactive ? cli && !cli.headless : agentOf(m[3]))
-      return {pid, tty: m[2] === '??' ? null : m[2]};
+      return { pid, tty: m[2] === '??' ? null : m[2] };
     pid = Number(m[1]);
   }
   return null;
 }
 function inspectPid(pid) {
-  const r = spawnSync('ps', ['-o', 'ppid=,tty=,command=', '-p', String(pid)], {encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore']});
+  const r = spawnSync('ps', ['-o', 'ppid=,tty=,command=', '-p', String(pid)], {
+    encoding: 'utf8',
+    timeout: 1000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
   return r.status === 0 && /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(r.stdout.trim());
 }
 // Only identity metadata is returned; absent/ambiguous heartbeat identity stays absent.
@@ -62,8 +71,14 @@ function launcher(home) {
         try {
           const b = JSON.parse(fs.readFileSync(path.join(home, 'live', name), 'utf8'));
           // Expired identity is usable only within the verified process lifetime.
-          if (p.state === 'online' && b.pid === who.pid && b.client === cli.kind &&
-              b.host === os.hostname() && b.pid_start === p.start) beats.push(b);
+          if (
+            p.state === 'online' &&
+            b.pid === who.pid &&
+            b.client === cli.kind &&
+            b.host === os.hostname() &&
+            b.pid_start === p.start
+          )
+            beats.push(b);
         } catch {}
       }
     } catch {}
@@ -71,16 +86,37 @@ function launcher(home) {
     const fresh = beats.filter(b => Date.now() - Date.parse(b.at) < identity.FRESH_MS);
     if (fresh.length) beats = fresh;
     beats.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-    const out = spawnSync('lsof', ['-a', '-p', String(who.pid), '-d', 'cwd', '-Fn'], {encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore']});
-    const cwd = out.stdout?.split('\n').find(l => l.startsWith('n'))?.slice(1) || str(beats[0]?.cwd);
+    const out = spawnSync('lsof', ['-a', '-p', String(who.pid), '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8',
+      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const cwd =
+      out.stdout
+        ?.split('\n')
+        .find(l => l.startsWith('n'))
+        ?.slice(1) || str(beats[0]?.cwd);
     if (!cwd) return undefined;
     const session = new Set(beats.map(b => str(b.session_id)).filter(Boolean));
-    return {client: cli.kind, ...who, cwd, host: os.hostname(), pid_start: p.start,
-      ...(session.size === 1 ? {session_id: [...session][0]} : {})};
-  } catch { return undefined; }
+    return {
+      client: cli.kind,
+      ...who,
+      cwd,
+      host: os.hostname(),
+      pid_start: p.start,
+      ...(session.size === 1 ? { session_id: [...session][0] } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 function alive(pid) {
-  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
 }
 
 // roleOf: () => guard's sessionRole (passed in so live.cjs never requires guard.cjs); anything else is stored as null.
@@ -91,43 +127,79 @@ function beat(client, input, roleOf = () => null, env = process.env) {
     if (!session || (str(input.agent_type) && str(input.agent_id))) return;
     const event = String(input.hook_event_name || '');
     const dir = path.join(env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent'), 'live');
-    const file = path.join(dir, `${client}-${crypto.createHash('sha256').update(session).digest('hex').slice(0, 16)}.json`);
-    let prior = null, mtime = 0;
-    try { mtime = fs.statSync(file).mtimeMs; prior = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+    const file = path.join(
+      dir,
+      `${client}-${crypto.createHash('sha256').update(session).digest('hex').slice(0, 16)}.json`
+    );
+    let prior = null,
+      mtime = 0;
+    try {
+      mtime = fs.statSync(file).mtimeMs;
+      prior = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {}
     const now = Date.now();
     // Codex has no UserPromptSubmit: its turn starts with the first tool call after Stop.
-    const turn = event === 'UserPromptSubmit'
-      || (event === 'PreToolUse' && (!prior || ['Stop', 'SessionStart'].includes(prior.event)));
+    const turn =
+      event === 'UserPromptSubmit' ||
+      (event === 'PreToolUse' && (!prior || ['Stop', 'SessionStart'].includes(prior.event)));
     // Only a repeat of the same tool event is throttled: a PostToolUse right after its PreToolUse always
     // lands, so the board never keeps showing a tool that has already finished.
     const toolRun = !ALWAYS.has(event) && prior?.event === event;
     if (toolRun && !turn && now - mtime < THROTTLE_MS) return;
     // The owner is resolved once per session; a session without an agent ancestor stays null.
     const probe = prior?.pid ? identity.inspect(prior.pid) : null;
-    const keep = prior && (prior.pid === null || (probe?.state === 'online' && probe.start === prior.pid_start));
-    const who = keep ? {pid: prior.pid, tty: str(prior.tty)} : owner();
+    const keep =
+      prior &&
+      (prior.pid === null || (probe?.state === 'online' && probe.start === prior.pid_start));
+    const who = keep ? { pid: prior.pid, tty: str(prior.tty) } : owner();
     let role = null;
-    try { role = roleOf(); } catch {}
+    try {
+      role = roleOf();
+    } catch {}
     const record = {
-      client, session_id: session, pid: who?.pid ?? null, tty: who?.tty ?? null,
-      host: os.hostname(), pid_start: who?.pid ? identity.inspect(who.pid).start ?? null : null,
+      client,
+      session_id: session,
+      pid: who?.pid ?? null,
+      tty: who?.tty ?? null,
+      host: os.hostname(),
+      pid_start: who?.pid ? (identity.inspect(who.pid).start ?? null) : null,
       orca_pane: str(env.ORCA_PANE_KEY),
-      cwd: str(input.cwd), transcript_path: str(input.transcript_path), event,
+      cwd: str(input.cwd),
+      transcript_path: str(input.transcript_path),
+      event,
       tool: event.endsWith('ToolUse') ? str(input.tool_name) : null,
       turn_at: turn ? new Date(now).toISOString() : str(prior?.turn_at),
-      at: new Date(now).toISOString(), role: ROLES.includes(role) ? role : null,
+      at: new Date(now).toISOString(),
+      role: ROLES.includes(role) ? role : null,
     };
     let notifications = [];
-    if (record.role !== 'general' && record.role !== 'strategist' && ['UserPromptSubmit', 'PostToolUse'].includes(event)) {
+    if (
+      record.role !== 'general' &&
+      record.role !== 'strategist' &&
+      ['UserPromptSubmit', 'PostToolUse'].includes(event)
+    ) {
       const coord = require('./coord.cjs');
-      notifications = coord.unread(path.dirname(dir), record, prior?.coord_seen || [], env.ARCHON_HOME);
+      notifications = coord.unread(
+        path.dirname(dir),
+        record,
+        prior?.coord_seen || [],
+        env.ARCHON_HOME
+      );
     }
-    record.coord_seen = [...new Set([...(prior?.coord_seen || []), ...notifications.map(m => m.id)])];
-    fs.mkdirSync(dir, {recursive: true});
+    record.coord_seen = [
+      ...new Set([...(prior?.coord_seen || []), ...notifications.map(m => m.id)]),
+    ];
+    fs.mkdirSync(dir, { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    try { fs.writeFileSync(tmp, JSON.stringify(record)); fs.renameSync(tmp, file); }
-    catch { try { fs.unlinkSync(tmp); } catch {} }
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(record));
+      fs.renameSync(tmp, file);
+    } catch {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {}
+    }
     return notifications;
   } catch {}
 }
-module.exports = {beat, agentOf, cliOf, owner, launcher, THROTTLE_MS};
+module.exports = { beat, agentOf, cliOf, owner, launcher, THROTTLE_MS };
