@@ -1,6 +1,6 @@
 /** Shared raw evidence; untracked test output is intentionally outside review integrity. */
 export function checkoutFingerprint(
-  run: (args: string[]) => ReturnType<typeof Bun.spawnSync>,
+  run: (args: string[]) => Bun.SyncSubprocess<'pipe', 'pipe'>,
   allowNonRepo = false
 ): string {
   const probe = run(['rev-parse', '--is-inside-work-tree']);
