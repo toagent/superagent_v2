@@ -69,11 +69,11 @@ const commandLabel = argv => {
   const name = path.posix.basename(argv[0] || '');
   return EFFECTS.flatMap(rule => [...rule.commands, ...(rule.commandPrefixes || [])]).find(command => name === command || name.startsWith(command + '-')) || '命令';
 };
-function effects(argv) {
+function effects(argv, ignorePrefixes = false) {
   const name = path.posix.basename(argv[0] || ''), args = argv.slice(1), operands = args.filter(a => !a.startsWith('-'));
   return EFFECTS.filter(rule => (rule.commands.includes(name) || rule.commandPrefixes?.some(prefix => name.startsWith(prefix)))
     && (!rule.pattern || args.some(a => new RegExp(rule.pattern).test(a)))
-    && (!rule.prefixes || rule.prefixes.some(prefix => prefix.every((v, i) => operands[i] === v))))
+    && (ignorePrefixes === true || !rule.prefixes || rule.prefixes.some(prefix => prefix.every((v, i) => operands[i] === v))))
     .flatMap(rule => {
       let targets = [];
       if (rule.targets === 'operands') targets = operands;
@@ -187,10 +187,13 @@ function actionReason({effect, target, argv}, dir, root, env, reviewer, advisory
 }
 // Both provider wire shapes converge before privacy or effect checks.
 function mcpCall(name, input) {
+  if (name.startsWith('mcp__')) {
+    const match = /^mcp__([^]+?)__(.+)$/.exec(name);
+    return match ? {server: match[1], tool: match[2], args: input} : null;
+  }
   if (typeof input.server === 'string' && typeof input.tool === 'string')
     return {server: input.server, tool: input.tool, args: input.arguments ?? {}};
-  const match = /^mcp__([^]+?)__(.+)$/.exec(name);
-  return match ? {server: match[1], tool: match[2], args: input} : null;
+  return null;
 }
 function strings(value) {
   if (typeof value === 'string') return [value];

@@ -952,6 +952,8 @@ describe('buildWorkflow', () => {
       >;
     // console=claude：@sa-reviewer 是 codex，挂哨兵 MCP 交给 codex-worker 的代理；console=codex：claude 走 SDK 沙箱
     for (const id of ['review-m1-r1', 'review-m2-r3']) {
+      for (const c of ['claude', 'codex'] as const)
+        expect(node(c, id).env).toEqual({ SUPERAGENT_ROLE: 'reviewer' });
       expect(node('claude', id)).toMatchObject({ mcp: '/GEN/reviewer-readonly.mcp.json' });
       expect(node('claude', id).sandbox).toBeUndefined();
       expect(node('codex', id).sandbox).toEqual({

@@ -1,5 +1,9 @@
 [
-  { "commands": ["superagent"], "prefixes": [["run"], ["job", "exec"]], "effect": "delegate" },
+  {
+    "commands": ["superagent"],
+    "prefixes": [["run"], ["job", "exec"], ["quick"]],
+    "effect": "delegate"
+  },
   {
     "commands": [],
     "mcp": { "server": "twin-agent", "tools": ["delegate_agent"] },

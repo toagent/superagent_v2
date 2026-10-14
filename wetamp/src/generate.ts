@@ -29,7 +29,6 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { cleanEngine } from './coord';
-import { excludeCodegraph } from './land';
 import {
   WETAMP,
   CODEX_WORKER,
@@ -744,7 +743,6 @@ export function generate(
   } catch (cause) {
     throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
   }
-  excludeCodegraph(plan.repo);
   const suffix = carried?.recovery ? `continuations/${crypto.randomUUID()}` : '.';
   const dir = join(home().sa, 'gen', run, suffix);
   if (carried?.recovery) {

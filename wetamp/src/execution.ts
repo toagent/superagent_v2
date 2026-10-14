@@ -169,11 +169,14 @@ export function executionNode(
   candidate: Alias,
   readonlyMcp: string
 ) {
-  return workflowLaunchPolicy(
-    executionLaunch(descriptor, candidate),
-    candidate.provider,
-    readonlyMcp
-  );
+  return {
+    ...workflowLaunchPolicy(
+      executionLaunch(descriptor, candidate),
+      candidate.provider,
+      readonlyMcp
+    ),
+    ...(descriptor.role === 'review' ? { env: { SUPERAGENT_ROLE: 'reviewer' } } : {}),
+  };
 }
 
 /** Existing capability denials shared by both entry points. */

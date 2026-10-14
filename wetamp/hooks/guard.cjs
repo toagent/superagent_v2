@@ -59,10 +59,10 @@ function nestedReason(name, input, normalized) {
     return redline.message('派生会话再次调用 AI', '派生会话不能再派生或委派', '在本会话完成，或回报元帅', {kind: 'Agent 工具'});
   const text = shellText(name, input);
   if (text === undefined) return null;
-  let heads;
-  // Unparsable text: every word counts as a possible command head (conservative).
-  try { heads = (normalized?.argvs || commands(text)); } catch { heads = text.split(/[\s;&|()`$"'<>]+/).map(head => [head]); }
-  const hit = heads.find(argv => redline.effects(argv).some(rule => rule.effect === 'delegate'));
+  let heads, unparsed = false;
+  // Unparsable or dynamic arguments: command names alone establish delegation.
+  try { heads = (normalized?.argvs.length ? normalized.argvs : commands(text)); } catch { unparsed = true; heads = text.split(/[\s;&|()`$"'<>]+/).map(head => [head]); }
+  const hit = heads.find(argv => redline.effects(argv, unparsed || argv.slice(1).some(arg => /[$`]/.test(arg))).some(rule => rule.effect === 'delegate'));
   return hit ? redline.message(`派生会话再次调用 AI（${redline.commandLabel(hit)}）`, '派生会话不能再派生或委派', '在本会话完成，或回报元帅') : null;
 }
 function shellReason(text, cwd, env, normalized) {

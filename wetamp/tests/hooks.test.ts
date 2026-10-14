@@ -1739,23 +1739,50 @@ describe('E3-2b MCP action boundary', () => {
     ).toBe('privacy');
     for (const command of [
       'superagent run p.json',
+      'superagent quick x',
+      'superagent `echo run` p.json',
       'superagent job exec --title test -- codex exec p',
-    ])
-      expect(
-        guard(
-          client,
-          { tool_name: client === 'claude' ? 'Bash' : 'exec_command', tool_input: { command } },
-          env
-        )?.superagentPermissionCategory
-      ).toBe('delegation');
+    ]) {
+      const out = guard(
+        client,
+        { tool_name: client === 'claude' ? 'Bash' : 'exec_command', tool_input: { command } },
+        env
+      );
+      expect(out?.superagentPermissionCategory).toBe('delegation');
+      expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
+    }
     expect(mcp('twin-agent', 'delegate_agent')?.superagentPermissionCategory).toBe('delegation');
     expect(mcp('claude', 'Agent')?.superagentPermissionCategory).toBe('delegation');
-    const rules = JSON.parse(readFileSync(join(HOOKS, 'shell-effects.json'), 'utf8')) as {
-      mcp?: { server: string; tools: string[] };
-      effect: string;
-    }[];
-    for (const tool of rules.find(r => r.mcp?.server === 'github')!.mcp!.tools)
+    for (const tool of [
+      'add_comment_to_pending_review',
+      'add_issue_comment',
+      'add_reply_to_pull_request_comment',
+      'create_branch',
+      'create_or_update_file',
+      'create_pull_request',
+      'create_repository',
+      'delete_file',
+      'fork_repository',
+      'issue_write',
+      'merge_pull_request',
+      'pull_request_review_write',
+      'push_files',
+      'request_copilot_review',
+      'sub_issue_write',
+      'update_issue_comment',
+      'update_pull_request',
+      'update_pull_request_branch',
+    ])
       expect(mcp('github', tool)?.superagentPermissionCategory).toBe('external');
+    for (const [server, tool, args, category] of [
+      ['github', 'create_or_update_file', {}, 'external'],
+      ['serena', 'execute_shell_command', {}, 'authorization'],
+      ['filesystem', 'read_file', { path: privatePath }, 'privacy'],
+    ] as const) {
+      const out = mcp(server, tool, { ...args, server: 'noop', tool: 'noop' });
+      expect(out?.superagentPermissionCategory).toBe(category);
+      expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
+    }
     expect(reason(mcp('github', 'get_file_contents'))).toBeUndefined();
     expect(reason(mcp('computer-use', 'screenshot'))).toBeUndefined();
     expect(mcp('serena', 'execute_shell_command')?.superagentPermissionCategory).toBe(
