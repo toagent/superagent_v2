@@ -53,6 +53,7 @@ module.exports = {violations: () => violations};`
 );
 mkdirSync(join(scratchRoot, 'codex-sentinel'), { recursive: true });
 writeFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'isolated');
+const originalSpawn = { spawn: Bun.spawn, spawnSync: Bun.spawnSync };
 const boundary = createRequire(import.meta.url)(scratchPreload) as { violations: () => number };
 afterEach(() => expect(boundary.violations()).toBe(0));
 
@@ -243,4 +244,7 @@ for (const scope of ['package', 'milestone'] as const)
     expect(ledger.adoptions).toBeUndefined();
   }, 240000);
 
-afterAll(() => engineBoundary.mockRestore());
+afterAll(() => {
+  Object.assign(Bun, originalSpawn);
+  engineBoundary.mockRestore();
+});

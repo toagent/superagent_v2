@@ -633,11 +633,12 @@ function recoverRun(
         from: string;
         hash: string;
         engine_from: string | null;
-        commit: string;
+        commit: string | undefined;
         carried: string[];
         dir: string;
       }
     | undefined;
+  let restarted = false;
   return recover(
     l.archon_run_id,
     l.repo,
@@ -655,7 +656,11 @@ function recoverRun(
           to,
           engine_from: adopted.engine_from,
           engine_to: adopted.hash,
-          reason: evidenceFile ? 'acceptance_continuation' : 'engine_stale',
+          reason: restarted
+            ? 'zero_completed'
+            : evidenceFile
+              ? 'acceptance_continuation'
+              : 'engine_stale',
           engine_commit: adopted.commit,
           carried: adopted.carried,
         });
@@ -668,7 +673,10 @@ function recoverRun(
         l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
       }
       if (adopted) saveLedger(l);
-      onEffect?.({ action: adopted ? 'adopt' : 'resume', engine_run: l.archon_run_id });
+      onEffect?.({
+        action: restarted ? 'restart' : adopted ? 'adopt' : 'resume',
+        engine_run: l.archon_run_id,
+      });
     },
     prepare,
     {
@@ -682,6 +690,25 @@ function recoverRun(
         // Live and paused owners retain their snapshot; terminal recovery may change source.
         if (!adoptsRun(l, run) && !(evidenceFile && ['failed', 'cancelled'].includes(run.status))) {
           if (evidenceFile) throw new Error('recovery: evidence requires terminal execution');
+          // A terminal run with no completed nodes cannot resume; retain its frozen workflow.
+          if (
+            ['failed', 'cancelled'].includes(run.status) &&
+            run.nodes &&
+            !run.nodes.some(n => n.state === 'completed')
+          ) {
+            restarted = true;
+            adopted = {
+              from: run.id,
+              hash: workflowIdentity(l) ?? engineHash(),
+              engine_from: l.engine_hash ?? null,
+              commit: l.engine_commit,
+              carried: [],
+              dir: l.gen_dir,
+            };
+            // prettier-ignore
+            return ['workflow', 'run', l.workflow, '--branch', l.branch, '--supersedes', run.id,
+              '--workflow-source', l.gen_dir, '--cwd', l.repo, '--detach'];
+          }
           return undefined;
         }
         const metadata = readJson(join(l.gen_dir, 'engine.json')) as { fake?: boolean } | null;
@@ -1620,7 +1647,7 @@ export function finalizeDelivery(id: string, automatic = false) {
 export const ANSWERS = ['pending', 'yes', 'no', 'expired', 'superseded'];
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 type DecisionEffect =
-  | { action: 'approve' | 'reject' | 'resume' | 'adopt'; engine_run: string }
+  | { action: 'approve' | 'reject' | 'resume' | 'adopt' | 'restart'; engine_run: string }
   | { action: 'retry_package' | 'retry_milestone' | 'review'; engine_run: string; target: string };
 /** Only engine identifiers and the acknowledged execution branch enter a receipt. */
 function decisionReceipt(
@@ -1643,6 +1670,9 @@ function decisionReceipt(
       break;
     case 'adopt':
       action = '已新开run从首个节点重跑';
+      break;
+    case 'restart':
+      action = '已提交同分支重启（保留旧run证据）';
       break;
     case 'retry_package':
       action = `已提交包${name(effect.target)}编码→验收重跑`;

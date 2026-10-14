@@ -1,4 +1,8 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, spyOn } from 'bun:test';
+import * as archonModule from '../src/archon';
+import * as coordination from '../src/coord';
+import { engineHash } from '../src/generate';
+import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 import { Database } from 'bun:sqlite';
 import {
   chmodSync,
@@ -12,7 +16,7 @@ import {
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { lastJson, recover, reusedOwnerPid, type RunView } from '../src/archon';
-import { classify, EXIT } from '../src/cli';
+import { classify, EXIT, main, loadLedger, type Ledger } from '../src/cli';
 import { recoverySnapshot, unknownEffects } from '../src/recovery';
 import { WETAMP } from '../src/config';
 import { gitRepo, sh, tmp } from './helpers';
@@ -27,6 +31,86 @@ import {
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
 import type { Plan } from '../src/plan';
+
+test.each([false, true])(
+  'RETRY_NODE_PROGRESS completed=%s selects restart or resume',
+  completed => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      home = join(root, 'home'),
+      dir = join(root, 'stub');
+    mkdirSync(join(home, 'runs'), { recursive: true });
+    mkdirSync(join(dir, 'used'), { recursive: true });
+    const run: RunView = {
+      id: 'old',
+      status: 'failed',
+      nodes: [
+        ...(completed ? [{ nodeId: 'prepare', state: 'completed' }] : []),
+        { nodeId: 'environment', state: 'failed', error: 'environment fixture failure' },
+      ],
+    };
+    writeFileSync(join(dir, 'get-000.json'), JSON.stringify(run));
+    fixtureOptions(dir, {
+      launchReply: { ok: true, runId: 'new', logPath: 'new-log', transcriptPath: 'new-transcript' },
+    });
+    const env = { ...process.env };
+    Object.assign(process.env, { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+    const transport = spyOn(archonModule, 'archon').mockImplementation(args =>
+      fixtureArchon(dir, args)
+    );
+    const clean = spyOn(coordination, 'cleanEngine').mockReturnValue('a'.repeat(40));
+    const output = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const ledger: Ledger = {
+        run_id: 'operator',
+        archon_run_id: 'old',
+        repo,
+        branch: 'sa/operator',
+        workflow: 'sa-operator',
+        workflow_hash: engineHash(),
+        engine_hash: engineHash(),
+        gen_dir: join(root, 'gen'),
+        plan: '',
+        console: 'codex',
+        started_at: '',
+        log: 'old-log',
+        transcript: 'old-transcript',
+        controller: coordination.coord().claim(coordination.repoScope(repo), coordination.caller())
+          .controller,
+      };
+      mkdirSync(ledger.gen_dir);
+      writeFileSync(join(ledger.gen_dir, 'plan.json'), JSON.stringify({ packages: [] }));
+      writeFileSync(join(home, 'runs/operator.json'), JSON.stringify(ledger));
+      expect(main(['decide', 'operator', 'retry'])).toBe(0);
+      const calls = readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n');
+      if (completed) {
+        expect(calls).toContain('workflow resume old --detach --json');
+        expect(calls.some(c => c.startsWith('workflow run'))).toBe(false);
+        expect(loadLedger('operator').archon_run_id).toBe('old');
+      } else {
+        expect(calls).toContain(
+          `workflow run sa-operator --branch sa/operator --supersedes old --workflow-source ${ledger.gen_dir} --cwd ${repo} --detach --json`
+        );
+        expect(calls.some(c => c.startsWith('workflow resume'))).toBe(false);
+        expect(loadLedger('operator')).toMatchObject({
+          run_id: 'operator',
+          archon_run_id: 'new',
+          controller: ledger.controller,
+          gen_dir: ledger.gen_dir,
+          log: 'new-log',
+          transcript: 'new-transcript',
+          adoptions: [{ from: 'old', to: 'new', reason: 'zero_completed' }],
+        });
+        expect(JSON.parse(readFileSync(join(dir, 'get-000.json'), 'utf8'))).toEqual(run);
+      }
+    } finally {
+      transport.mockRestore();
+      clean.mockRestore();
+      output.mockRestore();
+      process.env = env;
+    }
+  }
+);
 
 function checkRecovery(limit: number): void {
   const root = tmp(),
