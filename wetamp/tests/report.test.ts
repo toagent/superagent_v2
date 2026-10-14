@@ -23,7 +23,10 @@ import { tmp } from './helpers';
 import { WETAMP } from '../src/config';
 
 const plan = {
-  packages: [{ id: 'core' }, { id: 'api', milestone: 'm2' }],
+  packages: [
+    { id: 'core', title: 'core' },
+    { id: 'api', title: 'api', milestone: 'm2' },
+  ],
 } as unknown as Plan;
 
 const ev = (
@@ -92,6 +95,43 @@ describe('F-22 report', () => {
     expect(criticalPath(run, [...events, events[0]], graph).status).toBe('unknown');
   });
 
+  test('measurement SQL and ISO UTC clocks agree under Asia/Taipei, including segment holds', () => {
+    const tz = process.env.TZ;
+    process.env.TZ = 'Asia/Taipei';
+    try {
+      const run = {
+        id: 'r',
+        status: 'completed',
+        started_at: '2026-10-14 08:02:00',
+        completed_at: '2026-10-14T08:02:06Z',
+      } as Parameters<typeof measurementOf>[0];
+      const terminal = (node: string, start: string, durationMs: number) =>
+        ev('node_completed', node, {
+          invocation: { id: node, startedAt: start },
+          attempt: { id: node, startedAt: start },
+          timing: { startedAt: start, durationMs },
+        });
+      const events = [
+        terminal('code-p', '2026-10-14T08:02:00Z', 1000),
+        terminal('wait-p', '2026-10-14 08:02:02', 3000),
+      ];
+      expect(
+        measurementOf(
+          run,
+          events,
+          null,
+          [],
+          [{ id: 'code-p' }, { id: 'wait-p', depends_on: ['code-p'], wait: true }]
+        )
+      ).toMatchObject({ k1: 'post', wall_clock_ms: 6000, hold_ms: 3000, idle_ms: 2000 });
+      expect(measurementOf({ ...run, started_at: '2026-10-14 08:00:00' }, [], null).k1).toBe('pre');
+      expect(measurementOf(run, [], null).hold_ms).toBe('unknown');
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
+  });
+
   test('firstPass is a run count; missing gates stay unknown and repairs cannot pass', () => {
     const root = tmp();
     const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const,
@@ -100,7 +140,7 @@ describe('F-22 report', () => {
     try {
       writeFileSync(
         join(root, 'plan.json'),
-        JSON.stringify({ packages: [{ id: 'core', risk: 'G1' }] })
+        JSON.stringify({ packages: [{ id: 'core', title: 'core', risk: 'G1' }] })
       );
       const ledger = { gen_dir: root, repo: root, run_id: 'r' } as Ledger;
       const run = {
@@ -161,8 +201,8 @@ describe('F-22 report', () => {
     const run = { id: 'r', status: 'failed', started_at: clock(0), completed_at: clock(20) } as Parameters<typeof measurementOf>[0];
     const events = [terminal('a', 0, 3000), terminal('b', 8, 2000),
       { event_type: 'wait_started', step_name: 'wait', created_at: clock(3) }, { event_type: 'wait_completed', step_name: 'wait', created_at: clock(6) }];
-    expect(measurementOf(run, [...events, events[0]], null)).toMatchObject({ cumulative_ms: 5000, critical_path_ms: 20000, hold_ms: 3000, idle_ms: 2000, nodes: [{ execution: 'multiple' }, { execution: 'multiple' }] });
-    expect(measurementOf({ ...run, started_at: clock(8) }, events, null).critical_path_ms).toBe('unknown');
+    expect(measurementOf(run, [...events, events[0]], null)).toMatchObject({ cumulative_ms: 5000, wall_clock_ms: 20000, hold_ms: 3000, idle_ms: 2000, nodes: [{ execution: 'multiple' }, { execution: 'multiple' }] });
+    expect(measurementOf({ ...run, started_at: clock(8) }, events, null).wall_clock_ms).toBe('unknown');
     expect(measurementOf(run, events.slice(0,3), null).hold_ms).toBe('unknown');
     expect(measurementOf(run, [...events, { event_type: 'wait_started', step_name: 'parallel', created_at: clock(2) }, { event_type: 'wait_completed', step_name: 'parallel', created_at: clock(8) }], null)).toMatchObject({ hold_ms: 6000, idle_ms: 0 });
     expect(measurementOf(run, [terminal('a', 0, Infinity)], null).cumulative_ms).toBe('unknown');

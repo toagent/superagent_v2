@@ -31,7 +31,7 @@ const view = (active: CockpitRun[] = [], needs: CockpitRun[] = []): Cockpit => (
   tokens: '99K',
   roleTokens: [],
   tokenRows: null,
-  metrics: { completed: 0, decided: 0, firstPass: 0, asks: 0, debt: 0 },
+  metrics: { completed: 0, decided: 0, firstPass: 0, firstPass_unknown: 0, asks: 0, debt: 0 },
 });
 const frame = (active: string[] = [], needs: string[] = [], why = 'approval'): Snapshot => ({
   at: '2026-10-11T00:00:00Z',

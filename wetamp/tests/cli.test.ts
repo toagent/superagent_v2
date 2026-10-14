@@ -1169,6 +1169,18 @@ describe('verbs (archon stub)', () => {
       reason: 'superseded',
     });
   });
+  test('cancel without reason records unstated and rejects labels outside the closed set', () => {
+    stub([run('running')]);
+    expect(() => main(['cancel', 'sa1', '--reason', 'invented_label'])).toThrow(
+      'operational label'
+    );
+    expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+      action: 'cancel',
+      ok: true,
+      reason: 'unstated',
+    });
+  });
   test('cancel rejects free text and credential-shaped reasons before any action', () => {
     const s = stub([run('running')]);
     expect(() => main(['cancel', 'sa1', '--reason', 'token=secret'])).toThrow('operational label');

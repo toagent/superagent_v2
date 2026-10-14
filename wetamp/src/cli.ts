@@ -2869,10 +2869,12 @@ export function main(argv: string[]): number {
     }
     case 'cancel': {
       const id = need(target, `${verb} <run>`);
-      const reason = a.flags.reason;
+      const reason = a.flags.reason ?? 'unstated';
       // Operational labels only: do not persist free-text messages or credentials.
-      if (reason !== undefined && !/^[a-z][a-z0-9_-]{0,63}$/.test(reason))
-        throw new Error('cancel --reason must be a lowercase operational label (1-64 characters)');
+      // prettier-ignore
+      const reasons = ['unstated', 'superseded', 'replaced', 'deadline', 'operator', 'test', 'duplicate', 'obsolete'];
+      if (!reasons.includes(reason))
+        throw new Error(`cancel --reason must be an operational label: ${reasons.join('|')}`);
       // 未登记：按 archon run id 处理（selftest 用）
       const resolved = resolveTarget(id);
       const ok =
@@ -2900,7 +2902,7 @@ export function main(argv: string[]): number {
                 { run_id: run.id, archon_run_id: run.id, repo: run.working_path },
                 () => {
                   const cancelled = cancelRun(run.id, run.status, run.working_path ?? undefined);
-                  if (cancelled && reason) {
+                  if (cancelled) {
                     const dir = join(home().sa, 'cancellations');
                     mkdirSync(dir, { recursive: true });
                     writeAtomic(

@@ -761,12 +761,27 @@ test('summarize, report and the board share one summary', async () => {
     'g',
     {
       status: 'completed',
+      completed_at: new Date(Date.now() - 1000).toISOString(),
       output_root: out,
       nodes: [{ nodeId: 'code-a', state: 'completed', durationMs: 4000 }],
     },
-    { recoveries: ['t'] }
+    {
+      recoveries: ['t'],
+      dispositions: [
+        {
+          at: new Date(Date.now() - 1000).toISOString(),
+          action: 'ask',
+          reason: 'approval',
+          ok: true,
+        },
+      ],
+    }
   );
-  const f = ledger('f', { status: 'failed', nodes: [{ nodeId: 'verify-a', state: 'failed' }] });
+  const f = ledger('f', {
+    status: 'failed',
+    completed_at: new Date(Date.now() - 1000).toISOString(),
+    nodes: [{ nodeId: 'verify-a', state: 'failed' }],
+  });
   // Report-only metadata is separate from the shared summarize/board counters.
   const {
     usage,
@@ -811,8 +826,8 @@ test('summarize, report and the board share one summary', async () => {
   }));
   expect(summarize(runs)).toEqual(expected);
   expect((await createLoader()(50)).summary).toEqual(expected);
-  expect(metrics).toMatchObject({ completed: 1, decided: 'unknown', asks: 'unknown', debt: 1 });
-  expect(cockpit(await createLoader()(50)).metrics).toMatchObject({ decided: 0, asks: 0 });
+  expect(metrics).toEqual(cockpit(await createLoader()(50)).metrics);
+  expect(metrics).toMatchObject({ decided: 2, asks: 1 });
 });
 
 test('R1-05: actual board loader projects takeover owner rather than launcher, including cross-host unknown', async () => {

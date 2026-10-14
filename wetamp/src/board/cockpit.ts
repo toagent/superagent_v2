@@ -1,3 +1,4 @@
+import { clock, metricsOf } from '../ledger-metrics';
 import { basename, dirname } from 'node:path';
 import { progressLabel, jobProgress, unknownProgress, type Progress } from './eta';
 import { HOLD_POLICY } from '../cli';
@@ -66,7 +67,7 @@ export function stages(r: BoardRow): string {
 export interface CockpitRun {
   coordination?: BoardRow['coordination'];
   url?: string;
-  firstPass?: boolean;
+  firstPass?: boolean | 'unknown';
   interventions?: number;
   progress: Progress;
   progressText: string;
@@ -92,7 +93,7 @@ export interface Cockpit {
   zombies: number;
   reflection: Snapshot['reflection'];
   tokenRows: { role: string; total: number; models: Record<string, number> }[] | null;
-  metrics: { completed: number; decided: number; firstPass: number; asks: number; debt: number };
+  metrics: ReturnType<typeof metricsOf>;
   tokens: string;
   roleTokens: string[];
   needs: CockpitRun[];
@@ -103,10 +104,7 @@ const decisionText = (d: NonNullable<CockpitRun['decision']>): string =>
   `${d.event} 是=${d.yes} 否=${d.no}`;
 /** Pure projection shared by Ink and HTTP; collection remains owned by the existing loader/cache. */
 export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const today = (ms: number): boolean => ms >= start.getTime() && ms <= now;
-  const day = start.toLocaleDateString('sv-SE'),
+  const day = new Date(now).toLocaleDateString('sv-SE'),
     c = s.usage;
   const daily = c?.daily.filter(d => d.day === day) ?? [];
   const known = c?.status === 'ok' && daily.length > 0;
@@ -196,17 +194,13 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       decision,
       waiting: fmtElapsed(
         d?.action === 'ask'
-          ? Math.max(0, Math.floor((now - Date.parse(d.at)) / 1000))
+          ? Math.max(0, Math.floor((now - clock(d.at)) / 1000))
           : elapsedAt(r, now)
       ),
     };
   };
-  const ended = s.rows.filter(
-    r => ['completed', 'failed', 'cancelled'].includes(r.state) && today(r.span?.ended_ms ?? NaN)
-  );
-  const achieved = ended.filter(r => r.state === 'completed' && r.landed && r.interventions === 0);
   const fresh = (at: string | null | undefined): boolean => {
-    const age = now - Date.parse(at ?? '');
+    const age = now - clock(at ?? '');
     return age >= 0 && age < 600000;
   };
   const liveRows = s.rows.filter(r => r.state === 'running' && fresh(r.lastEvent));
@@ -241,7 +235,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       project: basename(j.cwd),
       title: j.title,
       state: j.state,
-      elapsed: fmtElapsed(Math.max(0, Math.floor((now - Date.parse(j.started_at)) / 1000))),
+      elapsed: fmtElapsed(Math.max(0, Math.floor((now - clock(j.started_at)) / 1000))),
       tokens: runTokens(j.id, 'job_id'),
       stage:
         j.state === 'queued'
@@ -325,7 +319,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
           reason: m.kind,
           decision,
           question: decisionText(decision),
-          waiting: fmtElapsed(Math.max(0, Math.floor((now - Date.parse(m.at)) / 1000))),
+          waiting: fmtElapsed(Math.max(0, Math.floor((now - clock(m.at)) / 1000))),
         },
       ];
     }
@@ -347,26 +341,14 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       {
         ...r,
         waiting: asked
-          ? fmtElapsed(Math.max(0, Math.floor((now - Date.parse(asked.at)) / 1000)))
+          ? fmtElapsed(Math.max(0, Math.floor((now - clock(asked.at)) / 1000)))
           : r.waiting,
       },
     ];
   });
   return {
     tokenRows: known && todaySessions ? tokenRows.sort((a, b) => b.total - a.total) : null,
-    metrics: {
-      completed: achieved.length,
-      decided: ended.length,
-      firstPass: achieved.filter(r => r.engine?.firstPass).length,
-      asks: s.rows.reduce(
-        (n, r) =>
-          n +
-          (r.engine?.dispositions.filter(d => d.action === 'ask' && today(Date.parse(d.at)))
-            .length ?? 0),
-        0
-      ),
-      debt: typeof s.summary.debt === 'number' ? s.summary.debt : 0,
-    },
+    metrics: metricsOf(s.rows, s.summary, now),
     tokens: known ? fmtTokens(daily.reduce((n, d) => n + d.total, 0)) : '未知',
     roleTokens: byRole.size
       ? [...byRole]

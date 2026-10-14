@@ -1,3 +1,4 @@
+import { firstPassOf } from '../src/report';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -129,6 +130,7 @@ test('local-day achievement, first-pass run count, ask actions across run days a
     completed: 1,
     decided: 4,
     firstPass: 1,
+    firstPass_unknown: 0,
     asks: 1,
     debt: 22,
   });
@@ -341,7 +343,7 @@ test('row source resolves relative plan, milestone and first-pass from actual ga
       { nodeId: 'repair-b', state: 'skipped' },
     ],
   };
-  expect(rowOf(l, run, { now }).engine!.firstPass).toBe(false);
+  expect(rowOf(l, run, { now }).engine!.firstPass).toBe(firstPassOf({ ledger: l, run }));
   for (const m of ['m1', 'm2'])
     writeFileSync(
       join(art, `gate-${m}-r1.json`),
@@ -352,8 +354,10 @@ test('row source resolves relative plan, milestone and first-pass from actual ga
   expect(rowOf(l, run, { now }).engine).toMatchObject({
     title: '任务一 +1',
     milestones: ['m1', 'm2'],
-    firstPass: true,
+    firstPass: firstPassOf({ ledger: l, run }),
   });
+  expect(firstPassOf({ ledger: l, run })).toBe(true);
+  expect(rowOf({ ...l, recoveries: ['previous'] }, run, { now }).engine!.firstPass).toBe(false);
   run.nodes[1].state = 'completed';
   expect(rowOf(l, run, { now }).engine!.firstPass).toBe(false);
   expect(
@@ -372,4 +376,15 @@ test('supplementary panel projects the shared model and drops prompt/argv', () =
   expect(text).not.toMatch(/prompt|argv|SECRET/);
   expect(data.metrics).toEqual(cockpit(s, now).metrics);
   expect(data.runs).toMatchObject([{ project: 'sinan', role: '军师·astra' }]);
+});
+
+test('missing achievement, first-pass and debt evidence remains unknown', () => {
+  const done = row('legacy', 'completed');
+  delete done.interventions;
+  const s = snapshot([done]);
+  s.summary = {};
+  expect(cockpit(s, now).metrics).toMatchObject({ completed: 'unknown', debt: 'unknown' });
+  done.interventions = 0;
+  done.engine!.firstPass = 'unknown';
+  expect(cockpit(s, now).metrics).toMatchObject({ firstPass: 'unknown', firstPass_unknown: 1 });
 });

@@ -304,3 +304,25 @@ test.each([
     `wall_clock_ms ${wall + 1} > p90 ${wall}`,
   ]);
 });
+
+test('explore ratio keeps parse failures and unfamiliar tools in the denominator', () => {
+  const events = [
+    row(0, 0, { type: 'tool_call', toolCallId: 'r', name: 'Read' }),
+    row(1, 10, {
+      type: 'tool_call',
+      toolCallId: 'x',
+      name: 'shell',
+      rawInput: { command: "printf 'unterminated" },
+    }),
+    row(2, 20, { type: 'tool_call', toolCallId: 'u', name: 'other' }),
+    row(3, 30, end('r')),
+    row(4, 40, end('x')),
+    row(5, 50, end('u')),
+    terminal(),
+  ];
+  expect(providerTiming('r', events)[0]).toMatchObject({
+    explore_ratio: 1 / 3,
+    unrecognized_actions: 2,
+  });
+  expect(providerTiming('r', [terminal()])[0]?.explore_ratio).toBe('unknown');
+});

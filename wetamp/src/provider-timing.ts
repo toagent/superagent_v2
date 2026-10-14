@@ -1,3 +1,4 @@
+import { clock as utcClock } from './ledger-metrics';
 import {
   providerEventEnvelopeSchema,
   type ProviderEventEnvelope,
@@ -46,7 +47,7 @@ interface Interval {
 const object = (x: unknown): Record<string, unknown> | undefined =>
   typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : undefined;
 const clock = (x: unknown): string =>
-  typeof x === 'string' && Number.isFinite(Date.parse(x)) ? x : 'unknown';
+  typeof x === 'string' && Number.isFinite(utcClock(x)) ? x : 'unknown';
 
 /** Client arrival boundaries only: neither a request clock nor server reasoning time. */
 // prettier-ignore
@@ -70,7 +71,7 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     for (const e of events) counts.set(e.seq, (counts.get(e.seq) ?? 0) + 1);
     const unique = events.filter(e => counts.get(e.seq) === 1);
     const ordered = events.every((e, i) => e.seq === i && (i === 0 ||
-      Date.parse(e.observedAt) >= Date.parse(events[i - 1].observedAt)));
+      utcClock(e.observedAt) >= utcClock(events[i - 1].observedAt)));
     const complete = raw.length > 0 && parsed.every(p => p.success) && ordered;
     const terminals = group.rows.filter(r => r.event_type !== 'provider_event');
     const terminal = terminals.length === 1 ? terminals[0] : undefined;
@@ -100,7 +101,7 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       const span = start && end ? unique.filter(e => e.seq >= start.seq && e.seq <= end.seq) : [];
       if (a?.length !== 1 || b?.length !== 1 || !start || !end || end.seq <= start.seq ||
         span.length !== end.seq - start.seq + 1 || !span.every((e, i) => i === 0 ||
-          Date.parse(e.observedAt) >= Date.parse(span[i - 1].observedAt)) ||
+          utcClock(e.observedAt) >= utcClock(span[i - 1].observedAt)) ||
         parsed.some((p, i) => {
           if (p.success) return false;
           const seq = object(raw[i]?.data)?.seq;
@@ -112,30 +113,30 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       intervals.push({ start: start.observedAt, end: end.observedAt });
     }
     const union: Interval[] = [];
-    for (const interval of intervals.sort((a, b) => Date.parse(a.start) - Date.parse(b.start))) {
+    for (const interval of intervals.sort((a, b) => utcClock(a.start) - utcClock(b.start))) {
       const last = union.at(-1);
-      if (last && Date.parse(interval.start) <= Date.parse(last.end)) {
-        if (Date.parse(interval.end) > Date.parse(last.end)) last.end = interval.end;
+      if (last && utcClock(interval.start) <= utcClock(last.end)) {
+        if (utcClock(interval.end) > utcClock(last.end)) last.end = interval.end;
       } else union.push({ ...interval });
     }
-    const knownMs = union.reduce((sum, i) => sum + Date.parse(i.end) - Date.parse(i.start), 0);
+    const knownMs = union.reduce((sum, i) => sum + utcClock(i.end) - utcClock(i.start), 0);
     const first = events[0], last = events.at(-1);
     const window = complete && last
       ? { start: first.observedAt, end: last.observedAt,
-          duration_ms: Date.parse(last.observedAt) - Date.parse(first.observedAt),
+          duration_ms: utcClock(last.observedAt) - utcClock(first.observedAt),
           basis: 'client_provider_event_arrival' }
       : 'unknown' as const;
     const messages = unique.filter(e => e.event.type === 'agent_message_chunk');
-    const terminalClock = settled !== 'unknown' && last && Date.parse(settled) >= Date.parse(last.observedAt);
+    const terminalClock = settled !== 'unknown' && last && utcClock(settled) >= utcClock(last.observedAt);
     const measurable = typeof window === 'object' && closed;
     const gaps: { start: string; ms: number }[] = [];
     if (typeof window === 'object' && closed) {
       let cursor = window.start;
       for (const interval of union) {
-        gaps.push({ start: cursor, ms: Date.parse(interval.start) - Date.parse(cursor) });
+        gaps.push({ start: cursor, ms: utcClock(interval.start) - utcClock(cursor) });
         cursor = interval.end;
       }
-      gaps.push({ start: cursor, ms: Date.parse(window.end) - Date.parse(cursor) });
+      gaps.push({ start: cursor, ms: utcClock(window.end) - utcClock(cursor) });
     }
     const longest = gaps.reduce<{ start: string; ms: number } | undefined>((best, gap) =>
       !best || gap.ms > best.ms ? gap : best, undefined);
@@ -143,21 +144,22 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     const turns = measurable ? Math.max(0, union.length - 1) : 'unknown' as const;
     const edit = unique.find(e => editAction(e.event) !== false);
     const firstEdit = complete ? (edit ? editAction(edit.event) === true
-      ? Date.parse(edit.observedAt) - Date.parse(first.observedAt) : 'unknown' : null) : 'unknown';
+      ? utcClock(edit.observedAt) - utcClock(first.observedAt) : 'unknown' : null) : 'unknown';
     const actions = unique.flatMap<{ name: string; title?: string; rawInput?: unknown }>(e => e.event.type === 'tool_call' ? [e.event] :
       e.event.type === 'subtask' && e.event.taskType === 'command_execution' && e.event.status === 'started'
         ? [{ name: 'command_execution', title: e.event.description }] : []);
     const commands = actions.filter(e => ['Bash', 'shell', 'exec_command', 'command_execution'].includes(e.name));
     const reads = new Set(['rg', 'grep', 'cat', 'sed', 'head', 'tail', 'ls', 'find', 'pwd', 'git', 'codegraph']);
-    let explore = actions.filter(e => ['Read', 'Glob', 'Grep'].includes(e.name)).length, classified = true;
+    let explore = actions.filter(e => ['Read', 'Glob', 'Grep'].includes(e.name)).length, unrecognized = 0;
     for (const command of commands) {
       const input = 'rawInput' in command ? object(command.rawInput) : undefined;
       const text = input?.command ?? input?.cmd ?? command.title;
-      if (typeof text !== 'string') { classified = false; continue; }
+      if (typeof text !== 'string') { unrecognized++; continue; }
       try { const parsed = shell.parse(text), argvs = parsed.argvs; explore += Number(!parsed.writes.length && argvs.length > 0 && argvs.every(a => reads.has(a[0]) && (a[0] !== 'git' || ['status', 'diff', 'show', 'log'].includes(a[1])) && (a[0] !== 'sed' || !a.slice(1).some(v => /^-[^-]*i|^--in-place/.test(v))))); }
-      catch { classified = false; }
+      catch { unrecognized++; }
     }
-    const recognized = complete && actions.length > 0 && actions.every(e => ['Bash', 'shell', 'exec_command', 'command_execution', 'Read', 'Glob', 'Grep', 'file_change', 'fileChange', 'apply_patch'].includes(e.name) || e.name.startsWith('mcp__'));
+    const recognized = complete && actions.length > 0;
+    unrecognized += actions.filter(e => !['Bash', 'shell', 'exec_command', 'command_execution', 'Read', 'Glob', 'Grep', 'file_change', 'fileChange', 'apply_patch'].includes(e.name) && !e.name.startsWith('mcp__')).length;
     const invocation = object(object(terminal?.data)?.invocation)?.id;
     const limits = baseline(group.node), reasons: string[] = [];
     if (limits && typeof window === 'object' && window.duration_ms > limits[0])
@@ -169,7 +171,7 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       run: group.run, node: group.node, attempt_id: group.attempt,
       invocation_id: typeof invocation === 'string' ? invocation : 'unknown',
       cmds: recognized ? commands.length : 'unknown',
-      explore_ratio: recognized && classified ? explore / actions.length : 'unknown',
+      explore_ratio: recognized ? explore / actions.length : 'unknown', unrecognized_actions: complete ? unrecognized : 'unknown',
       mcp_calls: recognized ? actions.filter(e => e.name.startsWith('mcp__')).length : 'unknown',
       // Arrival gaps include transport; they are not native server reasoning clocks.
       think_gap_ms: recognized ? (typeof window === 'object' && closed ? window.duration_ms - knownMs : 'unknown') : 'unknown',

@@ -1,3 +1,14 @@
+import { ms, planOf, criticalPath, measurementOf, metricsOf } from './ledger-metrics';
+export {
+  clock,
+  ms,
+  planOf,
+  criticalPath,
+  firstPassOf,
+  measurementOf,
+  metricsOf,
+} from './ledger-metrics';
+import { snapshotOf } from './board/data';
 // superagent report（F-22）：run 计数摘要 + 执行层用量台账。用量只来自 Archon 事件里的 spend/binding/timing，
 // 未回执的用量记 unknown，从不当 0；不折算金额。
 import { existsSync, readFileSync } from 'node:fs';
@@ -13,10 +24,9 @@ import {
   evidenceGates,
   decisionOf,
   intakeEvidence,
-  summarize,
 } from './cli';
 import { Intake, intakeRoot } from './intake';
-import { milestones, type Plan } from './plan';
+import { type Plan } from './plan';
 import { readJobs, type Job } from './jobs';
 import { providerTiming, slowNodes } from './provider-timing';
 import {
@@ -53,7 +63,7 @@ export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsO
     })
   );
 }
-interface Event {
+export interface Event {
   workflow_run_id?: string;
   created_at?: string;
   event_type: string;
@@ -116,16 +126,6 @@ function modelOf(e: Event): string {
   if (m?.resolved?.source === 'provider' && m.resolved.value) return m.resolved.value;
   return m?.requested ? `${m.requested}(pinned)` : 'unknown';
 }
-
-// SQLite CURRENT_TIMESTAMP is UTC, despite carrying no zone suffix.
-const clock = (value = ''): number =>
-  Date.parse(
-    /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value) ? value.replace(' ', 'T') + 'Z' : value
-  );
-const ms = (a?: string, b?: string): number | null => {
-  const delta = a && b ? clock(b) - clock(a) : NaN;
-  return Number.isFinite(delta) && delta >= 0 ? delta : null;
-};
 
 /** No prompt, argv or session body; policy is the resolved execution owner receipt. */
 export function jobReceipt(j: Job): Record<string, unknown> {
@@ -240,71 +240,6 @@ const group = (calls: Call[], key: (c: Call) => string): Record<string, unknown>
   );
 };
 
-function planOf(l: Ledger): Plan | null {
-  try {
-    return JSON.parse(readFileSync(join(l.gen_dir, 'plan.json'), 'utf8')) as Plan;
-  } catch {
-    // 旧 run 的 gen 目录可能已被 gc：包级节点的里程碑记 '?'，用量照常统计
-    return null;
-  }
-}
-
-/** Only a captured executable graph can explain blocking; authoring YAML is not evidence. */
-// prettier-ignore
-export function criticalPath( run: RunView, events: Event[], graph?: { id: string; depends_on?: string[]; wait?: unknown }[] ): Record<string, unknown> {
-  const elapsed = ms(run.started_at ?? undefined, run.completed_at ?? undefined);
-  const unknown = { status: 'unknown', elapsed_ms: elapsed ?? 'unknown', reason: 'missing_graph_clock_or_attempt_mapping', };
-  if (!graph?.length || elapsed === null) return unknown;
-  const rows = new Map<string, { start: number; end: number; queue: number }>();
-  for (const e of events) {
-    if (!['node_completed', 'node_failed', 'node_skipped'].includes(e.event_type) || !e.step_name)
-      continue;
-    if (rows.has(e.step_name) || e.data?.invocation?.loopPath?.length) return unknown;
-    const skipped = e.event_type === 'node_skipped';
-    const start = clock(e.data?.timing?.startedAt ?? e.data?.attempt?.startedAt ?? (skipped ? e.created_at : '') ?? '');
-    const end = skipped ? start : start + (e.data?.timing?.durationMs ?? NaN);
-    const queue = skipped ? 0 : ms(e.data?.invocation?.startedAt, e.data?.attempt?.startedAt);
-    if (![start, end].every(Number.isFinite) || end < start || queue === null) return unknown;
-    rows.set(e.step_name, { start, end, queue });
-  }
-  if (graph.some(n => !rows.has(n.id)) || rows.size !== graph.length) return unknown;
-  const nodes = new Map(graph.map(n => [n.id, n]));
-  const path: string[] = [],
-    visiting = new Set<string>();
-  const walk = (id: string): boolean => {
-    if (visiting.has(id)) return false;
-    visiting.add(id);
-    const n = nodes.get(id),
-      row = rows.get(id);
-    if (!n || !row) return false;
-    const deps = n.depends_on ?? [];
-    if (deps.some(d => !rows.has(d) || (row.end > row.start && (rows.get(d)?.end ?? Infinity) > row.start + 1000))) return false;
-    const pred = [...deps].sort((a, b) => (rows.get(b)?.end ?? 0) - (rows.get(a)?.end ?? 0))[0];
-    if (pred && !walk(pred)) return false;
-    path.push(id);
-    return true;
-  };
-  const last = [...rows].sort((a, b) => b[1].end - a[1].end)[0]?.[0];
-  if (!last || !walk(last)) return unknown;
-  let cursor = clock(run.started_at ?? '');
-  const recordedEnd = clock(run.completed_at ?? '');
-  // SQL terminal clocks truncate milliseconds; node persistence may finish after dispatch.
-  const precision = run.completed_at?.includes(' ') ? 1000 : 0;
-  const end = Math.max(recordedEnd, ...[...rows.values()].map(r => r.end));
-  if (end > recordedEnd + precision) return unknown;
-  const segments: { phase: string; node?: string; ms: number }[] = [];
-  for (const id of path) {
-    const row = rows.get(id);
-    if (!row) return unknown;
-    if (row.start < clock(run.started_at ?? '')) return unknown;
-    const queued = Math.max(cursor, row.start - row.queue), started = Math.max(queued, row.start);
-    segments.push({ phase: 'unclassified_wait', ms: queued - cursor }, { phase: 'queue', node: id, ms: started - queued }, { phase: nodes.get(id)?.wait ? 'human_wait' : (/^(code|review|repair|fix|verify)-/.exec(id)?.[1] ?? 'script'), node: id, ms: Math.max(0, row.end - started), } );
-    cursor = Math.max(cursor, row.end);
-  }
-  segments.push({ phase: 'unclassified_wait', ms: end - cursor });
-  return { status: 'measured', elapsed_ms: end - clock(run.started_at ?? ''), recorded_elapsed_ms: elapsed, clock_precision_ms: precision, path, segments, critical_path_ms: segments.filter(s => s.phase !== 'unclassified_wait').reduce((s,r) => s + r.ms, 0), reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
-}
-
 function capturedGraph(run: RunView, workflow: string): Parameters<typeof criticalPath>[2] {
   const source = workflowSourceMetadataSchema.safeParse(
     (run.metadata as Record<string, unknown> | undefined)?.workflow_source
@@ -325,43 +260,6 @@ function capturedGraph(run: RunView, workflow: string): Parameters<typeof critic
     /* Missing frozen graph stays unknown. */
   }
   return undefined;
-}
-
-export function firstPassOf(pair: Pair): boolean | 'unknown' {
-  const { ledger, run } = pair;
-  if (run instanceof Error) return 'unknown';
-  if (run.status !== 'completed') return false;
-  if (
-    ledger.auto_retries?.length ||
-    ledger.recoveries?.length ||
-    archonRunIds(ledger).length > 1 ||
-    (run.nodes ?? []).some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped')
-  )
-    return false;
-  const plan = planOf(ledger);
-  if (!plan || !run.nodes?.length) return 'unknown';
-  let count: number;
-  try {
-    count = milestones(plan).length;
-  } catch {
-    return 'unknown';
-  }
-  const stats = summarize([pair]);
-  try {
-    const art = artifactsOf(run);
-    if (evidenceGates(ledger, art).some(g => !decisionOf(evidenceJson(ledger, art, g))))
-      return 'unknown';
-  } catch {
-    return 'unknown';
-  }
-  const gates = Object.entries(stats).filter(([k]) => k.startsWith('rounds:'));
-  if (
-    !count ||
-    (stats.unreadable as string[]).length ||
-    gates.reduce((sum, [, n]) => sum + Number(n), 0) !== count
-  )
-    return 'unknown';
-  return stats.first_pass === count;
 }
 
 export function cancellationStats(pairs: Pair[]): Record<string, number> {
@@ -483,62 +381,6 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
   };
 }
 
-/** Cumulative sums explicit attempt receipts, never min-start/max-end pairing.
- * Critical wall clock is the run lifecycle (parallel work counted once), not engine overhead.
- * Hold is only engine-recorded wait/approval pairs; idle is uncovered inter-node time.
- * Missing wait history cannot prove zero holds; external dispatch is outside this boundary. */
-// prettier-ignore
-export function measurementOf(run: RunView, events: Event[], plan: Plan | null, timings: ReturnType<typeof providerTiming> = providerTiming(run.id, events)) {
-  const terminals = events.filter(e => ['node_completed', 'node_failed'].includes(e.event_type) && (e.data as SerializedNodeData | undefined)?.reason !== 'prior_success');
-  const seen = new Set<string>(), intervals: { start: number; end: number }[] = [];
-  const nodes = terminals.flatMap(e => {
-    const d = e.data, identity = d?.invocation?.id && d.attempt?.id ? JSON.stringify([e.workflow_run_id ?? run.id, e.step_name, d.invocation.id, d.attempt.id]) : null;
-    if (identity && seen.has(identity)) return [];
-    if (identity) seen.add(identity);
-    const duration = d?.timing?.durationMs, start = Date.parse(d?.timing?.startedAt ?? d?.attempt?.startedAt ?? '');
-    const measured = !!identity && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && Number.isFinite(start);
-    if (measured) intervals.push({ start, end: start + duration });
-    const timing = timings.find(t => t.run === (e.workflow_run_id ?? run.id) && t.node === e.step_name && t.attempt_id === d?.attempt?.id && t.invocation_id === d.invocation?.id);
-    const node = e.step_name ?? 'unknown', milestone = node.replace(/^review-/, '').replace(/-r\d+$/, '');
-    const packages = plan?.packages.filter(p => (p.milestone ?? 'm1') === milestone);
-    const check = events.filter(x => x.step_name === `diff-${milestone}-r1` && x.event_type === 'node_completed').at(-1)?.data as (Event['data'] & { structured_output?: { risk?: string; out_of_scope?: string[] } }) | undefined;
-    const triggers = node.startsWith('review-') ? [
-      ...(packages?.some(p => p.risk === 'G2') ? ['plan G2'] : []), ...(plan?.mode === 'strict' ? ['strict'] : []),
-      ...(packages?.some(p => p.review) ? ['review:true'] : []),
-      ...(check?.structured_output?.risk === 'G2' && packages && !packages.some(p => p.risk === 'G2') ? [check.structured_output.out_of_scope?.length ? 'runtime:out_of_scope' : 'runtime:other'] : [])] : [];
-    return [{ node, type: node.split('-')[0], invocation: (d?.invocation?.id ?? '').length ? d?.invocation?.id : 'unknown', attempt: (d?.attempt?.id ?? '').length ? d?.attempt?.id : 'unknown', terminal: e.event_type,
-      cumulative_ms: measured ? duration : 'unknown', cmds: timing?.cmds ?? 'unknown', explore_ratio: timing?.explore_ratio ?? 'unknown', mcp_calls: timing?.mcp_calls ?? 'unknown', model_turns: timing?.model_turns ?? 'unknown', think_gap_ms: timing?.think_gap_ms ?? 'unknown',
-      review_trigger: node.startsWith('review-') ? { reasons: triggers.length ? triggers : ['unknown'], glob: 'unknown', symlink: 'unknown', gitlink: 'unknown' } : undefined }];
-  });
-  const counts = new Map<string, number>();
-  for (const n of nodes) counts.set(n.node, (counts.get(n.node) ?? 0) + 1);
-  const union: typeof intervals = [];
-  for (const i of intervals.sort((a,b) => a.start - b.start)) {
-    const last = union.at(-1); if (last && i.start <= last.end) last.end = Math.max(last.end, i.end); else union.push({ ...i });
-  }
-  const waits = new Map<string, Event>(), holds: typeof intervals = [];
-  let waitUnknown = false;
-  for (const e of events) {
-    const kind = e.event_type.startsWith('approval_') ? 'approval' : e.event_type.startsWith('wait_') ? 'wait' : null;
-    if (!kind) continue;
-    const key = JSON.stringify([kind, e.step_name]);
-    if (['approval_requested', 'wait_started'].includes(e.event_type)) { if (waits.has(key)) waitUnknown = true; waits.set(key, e); }
-    else if (['approval_received', 'wait_completed', 'wait_expired'].includes(e.event_type)) {
-      const start = waits.get(key)?.created_at, end = e.created_at, duration = ms(start, end); if (duration === null || !start || !end) waitUnknown = true; else holds.push({ start: Date.parse(start), end: Date.parse(end) }); waits.delete(key);
-    }
-  }
-  const holdUnion: typeof intervals = [];
-  for (const i of holds.sort((a,b) => a.start - b.start)) {
-    const last = holdUnion.at(-1); if (last && i.start <= last.end) last.end = Math.max(last.end, i.end); else holdUnion.push({ ...i });
-  }
-  const hold = !waitUnknown && !waits.size && holds.length ? holdUnion.reduce((sum,i) => sum + i.end - i.start, 0) : 'unknown';
-  return { k1: run.started_at && Number.isFinite(Date.parse(run.started_at)) ? (Date.parse(run.started_at) < Date.parse('2026-10-14T16:01:23+08:00') ? 'pre' : 'post') : 'unknown', status: run.status,
-    cumulative_ms: nodes.length && nodes.every(n => typeof n.cumulative_ms === 'number') ? nodes.reduce((a,n) => a + Number(n.cumulative_ms), 0) : 'unknown',
-    critical_path_ms: intervals.some(i => i.start < Date.parse(run.started_at ?? '') || i.end > Date.parse(run.completed_at ?? '')) ? 'unknown' : ms(run.started_at ?? undefined, run.completed_at ?? undefined) ?? 'unknown', hold_ms: hold,
-    idle_ms: nodes.length && intervals.length === nodes.length && typeof hold === 'number' ? union.slice(1).reduce((sum,i,k) => sum + i.start - union[k].end - holdUnion.reduce((covered,h) => covered + Math.max(0, Math.min(i.start,h.end) - Math.max(union[k].end,h.start)), 0), 0) : 'unknown',
-    nodes: nodes.map(n => ({ ...n, execution: n.attempt === 'unknown' || n.invocation === 'unknown' ? 'unknown' : (counts.get(n.node) ?? 0) > 1 ? 'multiple' : 'single' })) };
-}
-
 /**
  * 全部登记 run：summarize 计数 + usage（总计、按 run / 里程碑 / 角色 / 第几次调用）。`--events` 的输出不带 nodes，
  * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
@@ -594,7 +436,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
         events.push(...rows.map(e => ({ ...e, workflow_run_id: e.workflow_run_id ?? id })));
         const graph = capturedGraph(j as RunView, l.workflow);
         paths[`${l.run_id}/${id}`] = criticalPath(j as unknown as RunView, rows, graph);
-        measurement[`${l.run_id}/${id}`] = measurementOf(j as RunView, rows, planOf(l), timing);
+        measurement[`${l.run_id}/${id}`] = measurementOf(j as RunView, rows, planOf(l), timing, graph, paths[`${l.run_id}/${id}`] as ReturnType<typeof criticalPath>);
       } catch (e) {
         timings[`${l.run_id}/${id}`] = 'unknown';
         paths[`${l.run_id}/${id}`] = { status: 'unknown', reason: 'unreadable_generation' };
@@ -606,11 +448,12 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   }
   for (const [id, run] of batch ?? []) if (!Object.keys(measurement).some(k => k.endsWith(`/${id}`))) {
     const timing = providerTiming(id, run.events); timings[id] = timing; attempts.push(...timing);
-    measurement[id] = measurementOf(run, run.events, null, timing);
-    paths[id] = criticalPath(run, run.events, capturedGraph(run, run.workflow_name));
+    const graph = capturedGraph(run, run.workflow_name);
+    paths[id] = criticalPath(run, run.events, graph);
+    measurement[id] = measurementOf(run, run.events, null, timing, graph, paths[id] as ReturnType<typeof criticalPath>);
     calls.push(...callsOf(id, run.events, null));
   }
-  const snapshot = { summary: summarize(pairs), at: new Date().toISOString(), reflection: 'unknown' };
+  const snapshot = { ...snapshotOf(pairs), reflection: 'unknown' };
   // ccusage snapshots are cumulative per session. Never add one to its engine turn receipts.
   const sessions = readUsage();
   const engineSessions = new Set(
@@ -620,7 +463,6 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   // Per-attempt provider receipts are primary. Session snapshots have no turn watermark.
   const inputs = calls.flatMap(c => c.tokens ? [c.tokens] : []);
   const dedupKnown = calls.every(c => c.identity);
-  const firstPass = pairs.map(firstPassOf);
   const cancellations = cancellationStats(pairs);
   for (const [id, run] of batch ?? []) {
     if (run.status !== 'cancelled' || pairs.some(p => !(p.run instanceof Error) && p.run.id === id)) continue;
@@ -645,8 +487,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
         run instanceof Error ? 'unknown' : requirementCoverage(ledger, run),
       ])
     ),
-    // Board-only metrics need live coordination/ancestry probes; this snapshot does not claim them.
-    metrics: { completed: snapshot.summary['state:completed'] ?? 0, decided: 'unknown', firstPass: firstPass.filter(v => v === true).length, firstPass_unknown: firstPass.filter(v => v === 'unknown').length, asks: 'unknown', debt: snapshot.summary.debt ?? 'unknown' },
+    metrics: metricsOf(snapshot.rows, snapshot.summary, Date.now()),
     cancellations,
     interventions: interventionStats(ls),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },

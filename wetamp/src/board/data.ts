@@ -1,12 +1,13 @@
+import { clock, firstPassOf, planOf } from '../ledger-metrics';
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, join } from 'node:path';
 import { getRunAsync, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
 import { loadActivity, type Activity } from './activity';
-import { milestones, type Plan } from '../plan';
+import { milestones } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
 import { readEta, type Estimate } from './eta';
 import { confined, workflowRoles, type Role } from './workflow';
@@ -29,6 +30,7 @@ import {
 export interface BoardRow {
   askReason?: ReturnType<typeof holdOf>;
   nativeState?: RunView['status'];
+  completed_at?: RunView['completed_at'];
   lastEvent?: string | null;
   activeNodes?: { id: string; role: string | null; model: string | null }[];
   coordination?: { owner: Identity | null; presence: Presence; pending: number; error?: string };
@@ -42,7 +44,7 @@ export interface BoardRow {
     milestones: string[];
     currentMilestone: string | null;
     states: { id: string; state: string }[];
-    firstPass: boolean;
+    firstPass: boolean | 'unknown';
     round?: number;
     reason: string;
     dispositions: NonNullable<Ledger['dispositions']>;
@@ -124,41 +126,20 @@ export function rowOf(
   const c = classifyRun(l, run);
   const nodes = run.nodes ?? [];
   const current = nodes.find(n => n.state === 'running')?.nodeId ?? c.node ?? null;
-  const started = Number.isFinite(Date.parse(l.started_at))
+  const started = Number.isFinite(clock(l.started_at))
     ? l.started_at
     : (run.started_at ?? l.started_at);
-  const startedMs = Date.parse(started);
+  const startedMs = clock(started);
   // 终态缺 completed_at 时取最后活动时刻；都缺则不显示，不能随 now 无限增长
   const end =
     c.exit === EXIT.held || c.exit === EXIT.running
       ? null
-      : Date.parse(run.completed_at ?? run.last_activity_at ?? '');
+      : clock(run.completed_at ?? run.last_activity_at ?? '');
   const span =
     Number.isFinite(startedMs) && (end === null || Number.isFinite(end))
       ? { started_ms: startedMs, ended_ms: end }
       : null;
-  let plan: Plan | undefined;
-  try {
-    const file = confined(l, resolve(l.repo, l.plan)) ?? confined(l, join(l.gen_dir, 'plan.json'));
-    if (file) {
-      const value = JSON.parse(readFileSync(file, 'utf8')) as {
-        packages?: (Plan['packages'][number] | null)[];
-      };
-      if (
-        Array.isArray(value.packages) &&
-        value.packages.every(
-          p =>
-            p &&
-            typeof p.id === 'string' &&
-            typeof p.title === 'string' &&
-            (p.milestone === undefined || typeof p.milestone === 'string')
-        )
-      )
-        plan = value as Plan;
-    }
-  } catch {
-    /* Unavailable plan stays explicit. */
-  }
+  let plan = planOf(l) ?? undefined;
   let ms: string[] = [];
   try {
     if (plan) ms = milestones(plan).map(m => m.id);
@@ -231,12 +212,7 @@ export function rowOf(
             n.nodeId === `human-${currentMs}`
         )
         .map(n => ({ id: n.nodeId, state: n.state })),
-      firstPass:
-        c.state === 'completed' &&
-        ms.length > 0 &&
-        stats.first_pass === ms.length &&
-        !l.auto_retries?.length &&
-        !nodes.some(n => /^(repair|fix)-/.test(n.nodeId) && n.state !== 'skipped'),
+      firstPass: firstPassOf({ ledger: l, run }),
       round: Math.max(
         0,
         ...Object.keys(stats)
@@ -275,6 +251,7 @@ export function rowOf(
     interventions: l.intervention_events?.length,
     intervened: l.intervention_events ? l.intervention_events.length > 0 : undefined,
     nativeState: run.status,
+    completed_at: run.completed_at,
     lastEvent: run.last_activity_at,
     activeNodes: nodes
       .filter(n => n.state === 'running')
