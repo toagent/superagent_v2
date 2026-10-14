@@ -25,7 +25,9 @@ import {
   type Presence,
 } from '../src/coord';
 import { ownerLost } from '../src/archon';
-import { main, waitRun, type Ledger } from '../src/cli';
+import * as native from '../src/archon';
+import * as landing from '../src/land';
+import { finalizeDelivery, main, waitRun, type Ledger } from '../src/cli';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const req = createRequire(import.meta.url);
@@ -1296,25 +1298,56 @@ for (const mode of [
   });
 }
 
-for (const fail of [false, true]) {
-  test(`repo/run renewal admits the action only after both scopes succeed (partial failure=${fail})`, () => {
+for (const failure of ['none', 'repo', 'run']) {
+  test(`finalizeDelivery renews both scopes before applyLand (failure=${failure})`, () => {
     const s = renewalFixture();
+    process.env.ARCHON_HOME = join(s.sa, 'archon');
+    process.env.SUPERAGENT_ROLE = '';
+    const run = runScope({ run_id: 'target', repo: s.repo });
+    const controller = s.c.claim(run, failure === 'run' ? b : s.old).controller;
+    if (failure === 'repo') s.c.claim(s.scope, b, true, 'fixture conflict');
+    mkdirSync(join(s.sa, 'runs'));
+    writeFileSync(
+      join(s.sa, 'runs/target.json'),
+      JSON.stringify({
+        run_id: 'target',
+        archon_run_id: 'engine',
+        repo: s.repo,
+        controller,
+        gen_dir: s.sa,
+        branch: 'feature',
+        workflow: 'fixture',
+        delivery: {},
+      })
+    );
+    writeFileSync(join(s.sa, 'plan.json'), JSON.stringify({ base_ref: 'main', packages: [] }));
+    writeFileSync(join(s.sa, 'accept-inputs.json'), '{}');
+    const art = join(s.sa, 'artifacts/runs/engine');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'land.json'), '{}');
+    const get = spyOn(native, 'getRun').mockReturnValue({
+      id: 'engine',
+      status: 'completed',
+      output_root: s.sa,
+    });
+    const apply = spyOn(landing, 'applyLand').mockImplementation(() => {
+      expect(s.actual.owner(s.scope)).toMatchObject({ owner: a, generation: 2 });
+      expect(s.actual.owner(run)).toMatchObject({ owner: a, generation: 2 });
+      return undefined;
+    });
     try {
-      const run = runScope({ run_id: 'target', repo: s.repo });
-      s.c.claim(run, fail ? b : s.old);
-      let executed = false;
-      const action = () =>
-        s.actual.mutate(s.scope, a, () =>
-          s.actual.mutate(run, a, () => {
-            executed = true;
-          })
-        );
-      if (fail) expect(action).toThrow(`run:${run.id}`);
+      const action = () => finalizeDelivery('target', true);
+      if (failure !== 'none')
+        expect(action).toThrow(failure === 'repo' ? `repo:${s.scope.id}` : `run:${run.id}`);
       else action();
-      expect(executed).toBe(!fail);
+      expect(apply).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
+      expect(get).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
       expect(s.actual.owner(s.scope).generation).toBe(2);
-      expect(s.actual.owner(run).generation).toBe(fail ? 1 : 2);
+      expect(s.actual.owner(run).generation).toBe(failure === 'none' ? 2 : 1);
+      expect(s.actual.owner(s.scope).owner).toMatchObject(failure === 'repo' ? b : a);
     } finally {
+      apply.mockRestore();
+      get.mockRestore();
       s.evidence.mockRestore();
     }
   });

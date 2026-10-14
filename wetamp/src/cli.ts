@@ -1605,47 +1605,50 @@ function acceptRun(
 /** Plan and quick share real acceptance and the original audited landing admission. */
 export function finalizeDelivery(id: string, automatic = false) {
   const l = loadLedger(coord().resolveRun(id)?.run_id ?? id);
-  return control(
-    l,
-    controller => {
-      if (!l.delivery)
-        throw new Error('delivery: unknown legacy target; use a new quick/run contract');
-      const target = l.delivery;
-      const run = getRun(l.archon_run_id, l.repo),
-        art = artifactsOf(run);
-      const land = evidenceJson(l, art, 'land.json') as Land | undefined;
-      if (!land) throw new Error('delivery: missing generated land evidence');
-      const contract = createHash('sha256')
-        .update(readFileSync(join(l.gen_dir, 'accept-inputs.json')))
-        .digest('hex');
-      let receipt: ReturnType<typeof applyLand>;
-      intervention(l, 'land', () => {
-        receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
-          repo: l.repo,
-          base_ref: planOf(l).base_ref,
-          delivery: {
-            task: l.run_id,
-            target,
-            contract,
-            evidence: art,
-            title: planOf(l)
-              .packages.map(p => p.title)
-              .join('; '),
-            receipt: join(art, 'delivery.json'),
-          },
+  const who = caller();
+  const deliver = () =>
+    control(
+      l,
+      controller => {
+        if (!l.delivery)
+          throw new Error('delivery: unknown legacy target; use a new quick/run contract');
+        const target = l.delivery;
+        const run = getRun(l.archon_run_id, l.repo),
+          art = artifactsOf(run);
+        const land = evidenceJson(l, art, 'land.json') as Land | undefined;
+        if (!land) throw new Error('delivery: missing generated land evidence');
+        const contract = createHash('sha256')
+          .update(readFileSync(join(l.gen_dir, 'accept-inputs.json')))
+          .digest('hex');
+        let receipt: ReturnType<typeof applyLand>;
+        intervention(l, 'land', () => {
+          receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
+            repo: l.repo,
+            base_ref: planOf(l).base_ref,
+            delivery: {
+              task: l.run_id,
+              target,
+              contract,
+              evidence: art,
+              title: planOf(l)
+                .packages.map(p => p.title)
+                .join('; '),
+              receipt: join(art, 'delivery.json'),
+            },
+          });
+          return 0;
         });
-        return 0;
-      });
-      updateLedger(l, cur => {
-        cur.controller = controller;
-        cur.delivery_result =
-          receipt?.status === 'manual_push' ? { ...receipt, status: 'integrated' } : receipt;
-      });
-      return receipt;
-    },
-    caller(),
-    automatic ? (l.controller?.generation ?? 0) : undefined
-  );
+        updateLedger(l, cur => {
+          cur.controller = controller;
+          cur.delivery_result =
+            receipt?.status === 'manual_push' ? { ...receipt, status: 'integrated' } : receipt;
+        });
+        return receipt;
+      },
+      who,
+      automatic ? (l.controller?.generation ?? 0) : undefined
+    );
+  return coord().mutate(repoScope(l.repo), who, deliver);
 }
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
