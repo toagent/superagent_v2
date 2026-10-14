@@ -179,6 +179,7 @@ describe('WorktreeProvider against real git', () => {
     repoPath = join(root, 'repo');
     await mkdir(repoPath, { recursive: true });
     await git(repoPath, 'init', '-q', '-b', 'main');
+    await git(repoPath, 'config', 'core.hooksPath', join(repoPath, '.git', 'hooks'));
     await git(repoPath, 'config', 'user.email', 'test@example.com');
     await git(repoPath, 'config', 'user.name', 'Archon Test');
     await git(repoPath, 'config', 'commit.gpgsign', 'false');

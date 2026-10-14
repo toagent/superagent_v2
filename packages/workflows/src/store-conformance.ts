@@ -301,13 +301,17 @@ export function describeWorkflowStoreConformance(
         'quota_resume_triggered',
       ]);
     });
-    test('only stale running runs can resume; completed and cancelled runs refuse', async () => {
+    test('running runs refuse resume even when stale; completed and cancelled runs refuse', async () => {
       const run = await running(store);
       expect(await rejection(store.resumeWorkflowRun(run.id))).toBeInstanceOf(
         WorkflowNotResumableError
       );
       await harness.backdate(run.id, { last_activity_at: new Date(Date.now() - 2 * 86_400_000) });
-      expect((await store.resumeWorkflowRun(run.id)).status).toBe('running');
+      expect(await rejection(store.resumeWorkflowRun(run.id))).toBeInstanceOf(
+        WorkflowNotResumableError
+      );
+      expect((await store.getWorkflowRun(run.id))?.status).toBe('running');
+      expect(await types(store, run.id)).toEqual([]);
       await store.completeWorkflowRun(run.id, { duration_ms: 1 });
       expect(await rejection(store.resumeWorkflowRun(run.id))).toBeInstanceOf(
         WorkflowNotResumableError
@@ -798,7 +802,7 @@ export function describeWorkflowStoreConformance(
       await store.cancelWorkflowRun(first.id);
       expect(await store.getActiveWorkflowRunByPath(path)).toBeNull();
     });
-    test('resumable lookup chooses newest matching run and includes stale running', async () => {
+    test('resumable lookup chooses newest matching failed or paused run and excludes stale running', async () => {
       const first = await running(store, { working_path: '/resume' });
       await store.failWorkflowRun(first.id, 'old');
       await harness.backdate(first.id, { started_at: new Date(Date.now() - 600_000) });
@@ -812,7 +816,7 @@ export function describeWorkflowStoreConformance(
       await store.resumeWorkflowRun(first.id);
       expect(await store.findResumableRun('conformance', '/resume')).toBeNull();
       await harness.backdate(first.id, { last_activity_at: new Date(Date.now() - 2 * 86_400_000) });
-      expect((await store.findResumableRun('conformance', '/resume'))?.id).toBe(first.id);
+      expect(await store.findResumableRun('conformance', '/resume')).toBeNull();
     });
     test('events retain commit order, support exclusion and group requested runs', async () => {
       const first = await create(store);

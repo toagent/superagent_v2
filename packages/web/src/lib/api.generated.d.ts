@@ -4172,6 +4172,7 @@ export interface components {
       denied_tools?: string[];
       idle_timeout?: number;
       retry?: {
+        /** @default 2 */
         max_attempts: number;
         delay_ms?: number;
         /** @enum {string} */

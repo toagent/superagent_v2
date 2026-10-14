@@ -163,10 +163,7 @@ export function createInMemoryWorkflowStore(
   const newest = (rows: WorkflowRun[]): WorkflowRun[] =>
     rows.sort((a, b) => b.started_at.getTime() - a.started_at.getTime());
   const resumable = (run: WorkflowRun): boolean =>
-    run.status === 'paused' ||
-    run.status === 'failed' ||
-    (run.status === 'running' &&
-      (run.last_activity_at === null || run.last_activity_at.getTime() < Date.now() - 86_400_000));
+    run.status === 'paused' || run.status === 'failed';
   const gateOpen = (
     run: WorkflowRun,
     expected: Parameters<IWorkflowStore['resolveApprovalGate']>[3]
