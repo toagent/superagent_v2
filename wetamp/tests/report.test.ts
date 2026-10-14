@@ -18,6 +18,7 @@ import {
   cancellationStats,
 } from '../src/report';
 import type { Job } from '../src/jobs';
+import type { UsageSession } from '../src/usage';
 import { archonRunIds } from '../src/archon';
 import { main, type Ledger } from '../src/cli';
 import { tmp } from './helpers';
@@ -55,6 +56,148 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('standalone and historical jobs appear in summary with inferred usage and unknown gaps', () => {
+    const root = tmp();
+    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
+    const saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, {
+      SUPERAGENT_HOME: root,
+      ARCHON_HOME: root,
+      SA_ARCHON_BIN: '/usr/bin/true',
+    });
+    const session: UsageSession = {
+      id: 'job-session',
+      client: 'codex',
+      model: 'fixture',
+      at: '',
+      cost: 0.25,
+      input: 100,
+      output: 20,
+      cacheRead: 10,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 120,
+      sessions: 1,
+    };
+    const job = {
+      title: 'standalone',
+      card: null,
+      log: null,
+      cwd: root,
+      kind: 'codex',
+      model: 'fixture',
+      wrapper_pid: process.pid,
+      pid: process.pid,
+      started_at: new Date().toISOString(),
+      state: 'done',
+    } satisfies Omit<Job, 'id'>;
+    try {
+      mkdirSync(join(root, 'jobs'));
+      mkdirSync(join(root, 'usage'));
+      writeFileSync(
+        join(root, 'usage/cache.json'),
+        JSON.stringify({ sessions: [session], daily: [] })
+      );
+      const known = join(root, 'jobs/known.json');
+      writeFileSync(known, JSON.stringify({ ...job, id: 'known', session_id: session.id }));
+      const before = readFileSync(known, 'utf8');
+      const summary = reportSummary(buildReport([]));
+      expect(summary).toMatchObject({
+        demands: {
+          by_request: {
+            'plan-external': {
+              jobs: { inferred: 1, unknown: 0 },
+              investment: { status: 'known', input: 100, fees: 0.25 },
+            },
+          },
+        },
+      });
+      writeFileSync(join(root, 'jobs/missing.json'), JSON.stringify({ ...job, id: 'missing' }));
+      expect(reportSummary(buildReport([]))).toMatchObject({
+        demands: {
+          by_request: {
+            'plan-external': {
+              jobs: { inferred: 1, unknown: 1 },
+              investment: {
+                status: 'unknown',
+                input: 'unknown',
+                fees: 'unknown',
+                known_tokens: { input: 100 },
+                coverage: '1/2',
+              },
+            },
+          },
+        },
+      });
+      expect(readFileSync(known, 'utf8')).toBe(before);
+      expect(demandStats([], [], [], [{ ...job, id: 'missing' }])).toMatchObject({
+        by_request: {
+          'plan-external': {
+            jobs: { inferred: 0, unknown: 1 },
+            investment: { input: 'unknown', fees: 'unknown', coverage: '0/1' },
+          },
+        },
+      });
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+  });
+
+  test('cached inferred job ownership is reused and conflicting demand claims stay unknown', () => {
+    const session: UsageSession = {
+      id: 'session',
+      client: 'codex',
+      model: null,
+      at: '',
+      cost: 1,
+      input: 100,
+      output: 20,
+      cacheRead: 10,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 120,
+      sessions: 1,
+      owner: {
+        client: 'codex',
+        role: null,
+        model: null,
+        cwd: null,
+        kind: 'inferred',
+        job_id: 'old',
+      },
+    };
+    const jobs = [{ id: 'old', kind: 'codex' }] as Job[];
+    expect(demandStats([], [], [session], jobs)).toMatchObject({
+      by_request: {
+        'plan-external': {
+          jobs: { inferred: 1, unknown: 0 },
+          investment: { input: 100, fees: 1, coverage: '1/1' },
+        },
+      },
+      unattributed: { input: 'unknown' },
+    });
+    const conflict = {
+      id: 'other',
+      kind: 'codex',
+      request_ref: 'other',
+      session_id: session.id,
+    } as Job;
+    const demands = demandStats([], [], [session], [...jobs, conflict]);
+    for (const ref of ['plan-external', 'other'])
+      expect(demands).toMatchObject({
+        by_request: {
+          [ref]: {
+            jobs: { inferred: 0, unknown: 1 },
+            investment: { input: 'unknown', fees: 'unknown' },
+          },
+        },
+      });
+    expect(jobs[0]!.request_ref).toBeUndefined();
+  });
+
   test('report CLI defaults to summary with or without --json; --full preserves details', () => {
     const root = tmp(),
       keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;

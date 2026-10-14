@@ -113,7 +113,7 @@ export function reportSummary(report: Record<string, unknown>): Record<string, u
   return {
     ...Object.fromEntries(Object.entries(report).filter(([, v]) => typeof v === 'number' || typeof v === 'string')),
     metrics: report.metrics, cancellations: report.cancellations, interventions,
-    demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length },
+    demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length, by_request: demands.by_request },
     usage: Object.fromEntries(['total', 'investment', 'supplemental', 'learning', 'window'].map(k => [k, usage[k]])),
     jobs: { phase_coverage: jobs.phase_coverage }, repo_missing: (report.repo_missing as unknown[]).length,
     ...(report.full_usage ? { full_usage: Object.fromEntries(Object.entries(report.full_usage as Record<string, unknown>).filter(([k]) => ['label', 'status', 'at', 'since', 'coverage', 'total'].includes(k))) } : {}),
@@ -307,6 +307,17 @@ export function cancellationStats(pairs: Pair[]): Record<string, number> {
 
 // prettier-ignore
 export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [], jobs: Job[] = [], unreadable: Record<string, number> = {} ): Record<string, unknown> {
+  jobs = jobs.map(j => {
+    const inferred = sessions.filter(
+      s => s.client === j.kind && s.owner?.kind === 'inferred' && s.owner.job_id === j.id
+    );
+    return {
+      ...j,
+      request_ref: j.request_ref ?? 'plan-external',
+      session_id: j.session_id ?? (inferred.length === 1 ? inferred[0].id : null),
+    };
+  });
+  const allocatedJobs = new Set<UsageSession>();
   const current_tasks = Object.fromEntries<unknown>([...new Set(pairs.map(p => p.ledger.repo))].map(repo => {
     try {
       const root = intakeRoot(home().sa, repo);
@@ -358,14 +369,28 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       const runIds = new Set(attempts.map(p => p.ledger.run_id));
       const own = calls.filter(c => runIds.has(c.run));
       const ownedSessions = new Set(own.flatMap(c => c.provider && c.session ? [sessionId(c.provider, c.session)] : []));
-      const candidates = [...new Set([`ref:${ref}`, ...[...runIds].map(id => `run:${id}`), ...[...ownedSessions].map(id => `session:${id}`)].flatMap(key => sessionIndex.get(key) ?? []))];
-      const extra = candidates.filter(
-        s => !disputed(s.client, s.id) && (s.owner?.kind === 'run' && (s.owner.request_ref === ref || (!!s.owner.run_id && runIds.has(s.owner.run_id))) || ownedSessions.has(sessionId(s.client, s.id)))
+      const demandJobs = jobs.filter(j => j.request_ref === ref);
+      const jobSessions = new Set(
+        demandJobs.flatMap(j => j.session_id ? [sessionId(j.kind, j.session_id)] : [])
       );
+      const candidates = [...new Set([`ref:${ref}`, ...[...runIds].map(id => `run:${id}`), ...[...ownedSessions, ...jobSessions].map(id => `session:${id}`)].flatMap(key => sessionIndex.get(key) ?? []))];
+      const extra = candidates.filter(
+        s => !disputed(s.client, s.id) && (s.owner?.kind === 'run' && (s.owner.request_ref === ref || (!!s.owner.run_id && runIds.has(s.owner.run_id))) || ownedSessions.has(sessionId(s.client, s.id)) || s.owner?.kind !== 'run' && jobSessions.has(sessionId(s.client, s.id)))
+      );
+      for (const s of extra)
+        if (jobSessions.has(sessionId(s.client, s.id)) && s.owner?.kind !== 'run') allocatedJobs.add(s);
+      const inferred = demandJobs.filter(j => j.session_id && !disputed(j.kind, j.session_id)).length;
+      const attribution = { inferred, unknown: demandJobs.length - inferred };
       const trusted = own.filter(c => !c.provider || !c.session || !disputed(c.provider, c.session));
       const conflicting = [...claims].some(([k, refs]) => refs.has(ref) && (refs.size > 1 || conflicts.has(k)));
-      // Jobs have an explicit demand ref but no verified provider-session receipt.
-      const missing = Number(conflicting) + jobs.filter(j => j.request_ref === ref).length + candidates.filter(s => s.owner?.kind !== 'run' && (s.owner?.request_ref === ref || (!!s.owner?.run_id && runIds.has(s.owner.run_id))) && !jobs.some(j => j.request_ref === ref && j.id === s.owner?.job_id)).length + attempts.reduce((n, p) => n + Math.max(Number(p.run instanceof Error), unreadable[p.ledger.run_id] ?? 0), 0);
+      // Job session ownership remains inferred; missing snapshots and engine overlap stay unknown.
+      const missingJobs = demandJobs.filter(j => {
+        const id = j.session_id;
+        return !id || !extra.some(
+          s => s.owner?.kind !== 'run' && sessionId(s.client, s.id) === sessionId(j.kind, id)
+        );
+      }).length;
+      const missing = Number(conflicting) + missingJobs + candidates.filter(s => !allocatedJobs.has(s) && s.owner?.kind !== 'run' && (s.owner?.request_ref === ref || (!!s.owner?.run_id && runIds.has(s.owner.run_id))) && !jobs.some(j => j.request_ref === ref && j.id === s.owner?.job_id)).length + attempts.reduce((n, p) => n + Math.max(Number(p.run instanceof Error), unreadable[p.ledger.run_id] ?? 0), 0);
       const starts = attempts.map(p => clock(p.ledger.started_at));
       const ends = attempts.map(p =>
         p.run instanceof Error ? NaN : clock(p.run.completed_at ?? '')
@@ -373,7 +398,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       const elapsed = [...starts, ...ends].every(Number.isFinite)
         ? Math.max(...ends) - Math.min(...starts)
         : NaN;
-      return [ref, { attempts: attempts.map(({ ledger, run }) => ({ run: ledger.run_id, status: run instanceof Error ? 'unknown' : run.status, })), completion, complete: complete ? true : completion.length > 0 && completion.every(c => c && Object.values(c).some(v => v.status === 'unmet')) ? false : 'unknown', elapsed_ms: elapsed >= 0 ? elapsed : 'unknown', investment: { ...rollup(own), ...investmentOf(trusted, extra, missing) }, }, ];
+      return [ref, { attempts: attempts.map(({ ledger, run }) => ({ run: ledger.run_id, status: run instanceof Error ? 'unknown' : run.status, })), completion, complete: complete ? true : completion.length > 0 && completion.every(c => c && Object.values(c).some(v => v.status === 'unmet')) ? false : 'unknown', elapsed_ms: elapsed >= 0 ? elapsed : 'unknown', jobs: attribution, investment: { ...rollup(own), ...investmentOf(trusted, extra, missing) }, }, ];
     })
   );
   const durations = Object.values(demands)
@@ -382,7 +407,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     .sort((a, b) => a - b);
   return {
     current_tasks,
-    unattributed: { ...investmentOf([], sessions.filter(s => disputed(s.client, s.id) || s.owner?.kind !== 'run' || !s.owner.request_ref && ![...by.values()].some(ps => ps.some(p => p.ledger.run_id === s.owner?.run_id)))), attribution: 'unknown' },
+    unattributed: { ...investmentOf([], sessions.filter(s => !allocatedJobs.has(s) && (disputed(s.client, s.id) || s.owner?.kind !== 'run' || !s.owner.request_ref && ![...by.values()].some(ps => ps.some(p => p.ledger.run_id === s.owner?.run_id))))), attribution: 'unknown' },
     denominator: by.size,
     completed: Object.values(demands).filter(d => d.complete === true).length,
     unknown_runs: unknown,

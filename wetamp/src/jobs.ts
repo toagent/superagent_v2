@@ -243,6 +243,7 @@ async function exec(
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
   const launched = launcher(home().sa);
+  const requestRef = f.request_ref ?? process.env.SA_JOB_REQUEST_REF?.trim();
   const job: Job = {
     id: newRunId(),
     title: f.title,
@@ -252,7 +253,7 @@ async function exec(
     kind: kindOf(cmd[0]),
     model: f.execution?.model ?? modelOf(cmd.slice(1)),
     role: f.role,
-    ...(f.request_ref ? { request_ref: f.request_ref } : {}),
+    request_ref: requestRef?.length ? requestRef : 'plan-external',
     ...(f.execution ? { execution: f.execution } : {}),
     ...(launched ? { launcher: launched } : {}),
     wrapper_pid: process.pid,
