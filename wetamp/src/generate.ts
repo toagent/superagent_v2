@@ -735,7 +735,6 @@ export function generate(
 ): Gen {
   const engine_commit = cleanEngine();
   assertSQLite(plan.repo);
-  excludeCodegraph(plan.repo);
   const tiers = loadTiers();
   const policy = snapshotPolicy(tiers);
   const principlesPath = join(WETAMP, 'templates', '.archon', 'principles.md');
@@ -745,6 +744,7 @@ export function generate(
   } catch (cause) {
     throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
   }
+  excludeCodegraph(plan.repo);
   const suffix = carried?.recovery ? `continuations/${crypto.randomUUID()}` : '.';
   const dir = join(home().sa, 'gen', run, suffix);
   if (carried?.recovery) {
