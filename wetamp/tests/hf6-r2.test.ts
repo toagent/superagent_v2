@@ -163,10 +163,27 @@ test('HF6 R2 real hook reports advisory for missing dependencies for either role
   const commander = run('');
   expect(commander.exitCode).toBe(0);
   expect(JSON.parse(commander.stdout.toString()).systemMessage).toContain('advisory');
-  for (const cmd of ['sudo true', 'rm -rf "$UNKNOWN"', 'npm publish']) {
-    const out = JSON.parse(run('general', cmd).stdout.toString()).hookSpecificOutput;
-    expect(out.permissionDecision).toBe('deny');
-    expect(out.permissionDecisionReason).toMatch(/^已拦截：.+。原因：.+。可以：.+。$/);
+  const credential = ['~', '.aws', 'credentials'].join('/');
+  for (const role of ['general', '']) {
+    for (const cmd of ['sudo true', 'rm -rf "$UNKNOWN"', 'npm publish']) {
+      const result = run(role, cmd);
+      expect(result.exitCode).toBe(0);
+      const out = JSON.parse(result.stdout.toString());
+      expect(out.systemMessage).toContain('advisory');
+      expect(out.hookSpecificOutput?.permissionDecision).not.toBe('deny');
+    }
+    for (const cmd of [
+      'git push --force origin x',
+      'git reset --hard',
+      'rm -rf ~',
+      `cat ${credential}`,
+    ]) {
+      const result = run(role, cmd);
+      expect(result.exitCode).toBe(0);
+      const out = JSON.parse(result.stdout.toString()).hookSpecificOutput;
+      expect(out.permissionDecision).toBe('deny');
+      expect(out.permissionDecisionReason).toMatch(/^已拦截：.+。原因：.+。可以：.+。$/);
+    }
   }
 });
 test('REDLINE analysis exception is visible advisory without denial', async () => {
