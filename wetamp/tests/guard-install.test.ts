@@ -12,7 +12,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { WETAMP } from '../src/config';
 import { installMode } from '../src/install-mode';
-import { mergeHooks } from '../src/install-hooks';
+import { mergeHooks, openCodeGuard } from '../src/install-hooks';
 import { Coordination, caller, repoScope } from '../src/coord';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 const state = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
@@ -20,14 +20,136 @@ const state = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
   withState: <T>(file: string, fn: (s: Record<string, unknown>) => T) => T;
 };
 
+test('OpenCode adapter preserves native payload, cwd and session for both event shapes', async () => {
+  const root = tmp(),
+    captured = join(root, 'payload.json'),
+    guard = join(root, 'guard.cjs');
+  writeFileSync(
+    guard,
+    `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(captured)}, fs.readFileSync(0)); process.stderr.write('fixture denied'); process.exitCode = 2;`
+  );
+  const adapter = join(root, 'adapter.mjs');
+  writeFileSync(adapter, openCodeGuard(guard));
+  const { default: plugin } = await import(adapter);
+  const hooks = await plugin({ directory: root });
+  for (const native of [true, false]) {
+    const args = { script: 'git push', directory: root, custom: { retained: true } };
+    const input = {
+      tool: 'bash',
+      sessionID: 'session-42',
+      callID: 'call-7',
+      ...(native ? {} : { args }),
+    };
+    await expect(
+      hooks['tool.execute.before'](input, native ? { args } : undefined)
+    ).rejects.toThrow('fixture denied');
+    expect(JSON.parse(readFileSync(captured, 'utf8'))).toEqual({
+      ...input,
+      session_id: 'session-42',
+      cwd: root,
+      tool_name: 'bash',
+      tool_input: { ...args, command: 'git push' },
+    });
+  }
+});
+
+test('three Git adapters share classification without executing the proposed command', async () => {
+  const require = createRequire(import.meta.url);
+  await require('../hooks/redline.cjs').init();
+  const guard = require('../hooks/guard.cjs');
+  const root = tmp();
+  for (const command of ['git push --force', 'git reset --hard', 'git status']) {
+    const decisions = ['claude', 'codex'].map(client =>
+      Boolean(
+        guard.decide(
+          {
+            hook_event_name: 'PreToolUse',
+            cwd: root,
+            tool_name: client === 'claude' ? 'Bash' : 'exec_command',
+            tool_input: { command },
+          },
+          client,
+          { ...process.env, HOME: root, SUPERAGENT_HOME: root, SUPERAGENT_ROLE: 'general' }
+        )?.hookSpecificOutput?.permissionDecision === 'deny'
+      )
+    );
+    const p = Bun.spawnSync(['node', join(WETAMP, 'hooks/git-guardrail.cjs')], {
+      stdin: Buffer.from(
+        JSON.stringify({
+          cwd: root,
+          session_id: 'oc-session',
+          args: { script: command, directory: root },
+        })
+      ),
+      env: { ...process.env, HOME: root, SUPERAGENT_HOME: root },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(p.exitCode).toBe(command === 'git status' ? 0 : 2);
+    expect(decisions).toEqual([p.exitCode === 2, p.exitCode === 2]);
+  }
+  for (const command of ['git push', 'git -C /tmp add -A', 'git commit --no-verify']) {
+    const p = Bun.spawnSync(['node', join(WETAMP, 'hooks/git-guardrail.cjs')], {
+      stdin: Buffer.from(JSON.stringify({ cwd: root, tool_input: { command } })),
+      env: { ...process.env, HOME: root, SUPERAGENT_HOME: root },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(p.exitCode).toBe(2);
+  }
+});
+
+test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and replay are safe', () => {
+  const root = tmp(),
+    plugin = join(root, '.config/opencode/plugins/git-guardrail.js');
+  const wrapper = join(root, '.wetamp/bin/git-guardrail.sh');
+  mkdirSync(join(plugin, '..'), { recursive: true });
+  mkdirSync(join(wrapper, '..'), { recursive: true });
+  writeFileSync(plugin, '// git-guardrail.sh\nexport const GitGuardrailPlugin = 1;\n');
+  writeFileSync(wrapper, '# git-guardrail.sh\nexec python3 legacy.py\n');
+  const settings = join(root, '.claude/settings.json');
+  mkdirSync(join(settings, '..'), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ userSetting: 'native', hooks: {} }));
+  const before = readFileSync(plugin, 'utf8');
+  const install = (args: string[]) =>
+    Bun.spawnSync([process.execPath, join(WETAMP, 'src/install-hooks.ts'), ...args], {
+      env: {
+        ...process.env,
+        HOME: root,
+        SUPERAGENT_HOME: join(root, 'sa'),
+        CLAUDE_CONFIG_DIR: join(root, '.claude'),
+        CODEX_HOME: join(root, '.codex'),
+        OPENCODE_CONFIG_DIR: join(root, '.config/opencode'),
+        XDG_CONFIG_HOME: join(root, '.config'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+  expect(install(['--dry-run']).exitCode).toBe(0);
+  expect(readFileSync(plugin, 'utf8')).toBe(before);
+  expect(existsSync(join(root, 'sa/backups'))).toBe(false);
+  const installed = install([]);
+  expect(installed.stderr.toString()).toBe('');
+  expect(installed.exitCode).toBe(0);
+  expect(readFileSync(plugin, 'utf8')).toBe(openCodeGuard());
+  expect(readFileSync(wrapper, 'utf8')).toContain('git-guardrail.cjs');
+  expect(statSync(wrapper).mode & 0o100).toBe(0o100);
+  expect(JSON.parse(readFileSync(settings, 'utf8')).userSetting).toBe('native');
+  expect(install([]).stdout.toString()).toBe('hooks: no changes\n');
+  expect(install(['--dry-run']).stdout.toString()).toBe('hooks: no changes\n');
+});
+
 test('INTAKE_NATIVE installer registers both native events idempotently and preserves user hooks', () => {
   for (const client of ['claude', 'codex'] as const) {
     const user = { hooks: [{ command: 'user-prompt-hook', timeout: 77 }], userField: true };
     const merged = mergeHooks({ UserPromptSubmit: [user] }, client);
     expect(merged.UserPromptSubmit).toContainEqual(user);
     for (const event of ['UserPromptSubmit', 'SessionStart'])
-      expect(merged[event].flatMap(g => g.hooks ?? []).filter(h =>
-        h.command === `node '${WETAMP}/hooks/intake.cjs' ${client}`)).toHaveLength(1);
+      expect(
+        merged[event]
+          .flatMap(g => g.hooks ?? [])
+          .filter(h => h.command === `node '${WETAMP}/hooks/intake.cjs' ${client}`)
+      ).toHaveLength(1);
     expect(mergeHooks(merged, client)).toEqual(merged);
   }
 });

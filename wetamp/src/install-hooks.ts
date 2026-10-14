@@ -2,6 +2,7 @@
 // 真正写入/移动前先备份到 $SUPERAGENT_HOME/backups/；--dry-run 只打印统一 diff 或清单。
 import {
   cpSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -50,7 +51,10 @@ export function wanted(client: Client): [string, string][] {
   const guard = ['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop'].map(
     (e): [string, string] => [e, cmd('guard.cjs', client)]
   );
-  const intake = ['UserPromptSubmit', 'SessionStart'].map((e): [string, string] => [e, cmd('intake.cjs', client)]);
+  const intake = ['UserPromptSubmit', 'SessionStart'].map((e): [string, string] => [
+    e,
+    cmd('intake.cjs', client),
+  ]);
   if (client === 'codex') return [...guard, ...intake];
   return [
     ...guard,
@@ -170,6 +174,84 @@ function diff(file: string, before: string, after: string): string {
   }
 }
 
+/** OpenCode (including Orca) adapts transport only; Git policy stays in wetamp. */
+export function openCodeGuard(guard = V2_HOOKS + 'git-guardrail.cjs'): string {
+  return `// superagent:managed:git-guardrail
+import { spawn } from 'node:child_process';
+export const GitGuardrailPlugin = async (context = {}) => ({
+  'tool.execute.before': async (input, output) => {
+    if (!['bash', 'shell', 'run', 'exec'].includes(input.tool)) return;
+    const args = output?.args ?? input.args ?? {};
+    const command = args.command ?? args.cmd ?? args.script;
+    if (typeof command !== 'string') return;
+    const payload = { ...input, session_id: input.sessionID ?? input.session_id,
+      cwd: args.directory ?? args.workdir ?? input.cwd ?? context.directory ?? context.worktree,
+      tool_name: input.tool, tool_input: { ...args, command } };
+    await new Promise((resolve, reject) => {
+      const child = spawn('node', [${JSON.stringify(guard)}]);
+      let error = '';
+      child.stderr.on('data', data => { error += data; });
+      child.on('error', reject);
+      child.stdin.on('error', reject);
+      child.on('close', code => code === 0 ? resolve() : reject(new Error(error.trim() || 'Git guard unavailable')));
+      child.stdin.end(JSON.stringify(payload));
+    });
+  }
+});
+export default GitGuardrailPlugin;
+`;
+}
+
+function installOpenCode(dryRun: boolean, stamp: string): string {
+  const home = homedir();
+  const files = [
+    [
+      join(
+        envOr(
+          'OPENCODE_CONFIG_DIR',
+          join(envOr('XDG_CONFIG_HOME', join(home, '.config')), 'opencode')
+        ),
+        'plugins/git-guardrail.js'
+      ),
+      openCodeGuard(),
+    ],
+    [
+      join(home, '.wetamp/bin/git-guardrail.sh'),
+      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(V2_HOOKS + 'git-guardrail.cjs')} "$@"\n`,
+    ],
+  ];
+  let out = '';
+  for (const [file, next] of files) {
+    const update = (): void => {
+      const exists = existsSync(file),
+        raw = exists ? readFileSync(file, 'utf8') : '';
+      if (raw === next) return;
+      // Only replace our managed adapter or the known legacy connection.
+      if (
+        exists &&
+        !raw.includes('superagent:managed:git-guardrail') &&
+        !(
+          raw.includes('git-guardrail.sh') &&
+          (raw.includes('GitGuardrailPlugin') || raw.includes('exec python3'))
+        )
+      )
+        throw new Error(`unmanaged Git guard adapter: ${file}`);
+      out += diff(file, raw, next);
+      if (dryRun) return;
+      if (exists) {
+        const dir = join(backups(), `hooks-${stamp}`, 'opencode', basename(file));
+        mkdirSync(join(dir, '..'), { recursive: true });
+        cpSync(file, dir);
+      }
+      atomicWrite(file, next);
+      if (file.endsWith('.sh')) chmodSync(file, 0o700);
+    };
+    if (dryRun) update();
+    else withLock(file, update);
+  }
+  return out;
+}
+
 /** 返回 diff 文本（dry-run 不写）；写入前把原文件复制到 backups/hooks-<UTC>/。目标不存在时按空文件补齐并创建。 */
 export function installHooks(dryRun: boolean, purge = false): string {
   let out = '';
@@ -193,7 +275,7 @@ export function installHooks(dryRun: boolean, purge = false): string {
     if (dryRun) update();
     else withLock(file, update);
   }
-  return out;
+  return out + (purge ? '' : installOpenCode(dryRun, stamp));
 }
 
 /** V1 文件残留：带 managed 标记的子代理、release/state 目录、V1 checkout（--hooks 产生的 V2 install.json 所在目录除外）。 */
