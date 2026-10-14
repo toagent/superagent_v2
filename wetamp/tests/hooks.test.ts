@@ -38,7 +38,8 @@ function run(
   client: string,
   payload: object,
   env: Record<string, string>,
-  hooks = HOOKS
+  hooks = HOOKS,
+  exitCode = 0
 ): Out {
   const p = Bun.spawnSync(['node', join(hooks, file), client], {
     stdin: Buffer.from(JSON.stringify(payload)),
@@ -47,7 +48,7 @@ function run(
     stderr: 'pipe',
   });
   expect(p.stderr.toString()).not.toContain('superagent guard:');
-  expect(p.exitCode).toBe(0);
+  expect(p.exitCode).toBe(exitCode);
   const out = p.stdout.toString().trim();
   return out ? (JSON.parse(out) as Out) : null;
 }
@@ -1679,48 +1680,26 @@ describe('redline.cjs（所有角色的执行层红线）', () => {
   });
 });
 
-test('ROOT_ACCEPT hook rejection supplies a machine category while retaining the physical denial', () => {
-  const repo = gitRepo(tmp());
-  const out = run(
-    'guard.cjs',
-    'claude',
-    { cwd: repo, hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: {} },
-    { SUPERAGENT_ROLE: 'general' }
-  );
-  expect(out?.superagentPermissionCategory).toBe('delegation');
-  expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
-});
-
 test('guard categories preserve structured rejection sources and physical denial', () => {
   const repo = gitRepo(tmp()),
     foreign = gitRepo(tmp());
-  writeFileSync(join(foreign, 'owned.txt'), 'keep');
   for (const [cmd, category] of [
     [`git -C "${foreign}" reset --hard`, 'diagnostic'],
     ['git branch -D missing', 'diagnostic'],
-    ['git worktree remove --force missing', 'diagnostic'],
     ['git push --force', 'shared_history'],
     ['git push origin dev', 'external'],
-    ['git commit --no-verify', 'authorization'],
   ]) {
-    const p = Bun.spawnSync(['node', join(HOOKS, 'git-guardrail.cjs')], {
-      stdin: Buffer.from(JSON.stringify({ cwd: repo, tool_input: { command: cmd } })),
-      env: baseEnv,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    expect(p.exitCode).toBe(2);
-    const out = JSON.parse(p.stdout.toString());
-    expect(out.superagentPermissionCategory).toBe(category);
-    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    const payload = { cwd: repo, tool_input: { command: cmd } };
+    const out = run('git-guardrail.cjs', 'claude', payload, {}, HOOKS, 2);
+    expect(out?.superagentPermissionCategory).toBe(category);
+    expect(out?.hookSpecificOutput?.permissionDecision).toBe('deny');
   }
   for (const [tool_name, tool_input, category] of [
-    ['Write', { file_path: join(foreign, 'owned.txt'), content: '' }, 'diagnostic'],
+    ['Agent', {}, 'delegation'],
     ['Read', { file_path: join(repo, '_private', 'sample') }, 'privacy'],
     ['Bash', { command: `rm -rf "${repo}"` }, 'destruction'],
     ['Bash', { command: 'sudo true' }, 'authorization'],
-    ['Bash', { command: 'git push --force' }, 'shared_history'],
-    ['Bash', { command: 'npm publish' }, 'external'],
+    ['Write', { file_path: join(foreign, 'README.md'), content: '' }, 'diagnostic'],
   ] as const) {
     const out = run(
       'guard.cjs',

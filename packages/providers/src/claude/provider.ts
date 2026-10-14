@@ -1383,15 +1383,9 @@ async function* streamClaudeMessages(
             )
               yield {
                 type: 'warning',
-                code: [
-                  'destruction',
-                  'shared_history',
-                  'external',
-                  'privacy',
-                  'authorization',
-                  'delegation',
-                  'diagnostic',
-                ].includes(output.superagentPermissionCategory ?? '')
+                code: 'destruction shared_history external privacy authorization delegation diagnostic'
+                  .split(' ')
+                  .includes(output.superagentPermissionCategory ?? '')
                   ? `superagent.permission.${output.superagentPermissionCategory}`
                   : 'superagent.permission.diagnostic',
                 permissionDenied: true,

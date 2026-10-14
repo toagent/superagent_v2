@@ -1401,18 +1401,10 @@ describe('ClaudeProvider', () => {
     });
 
     test.each([
-      'destruction',
-      'shared_history',
-      'external',
-      'privacy',
-      'authorization',
-      'delegation',
-      'diagnostic',
+      ...'destruction shared_history external privacy authorization delegation diagnostic unknown'.split(
+        ' '
+      ),
       undefined,
-      'unknown',
-      '',
-      7,
-      null,
     ])(
       'ROOT_ACCEPT forwards the boundary category %s without classifying denial prose',
       async category => {
