@@ -191,8 +191,9 @@ test('native CLI scope guard rejects undeclared plugins or output before init', 
         new URL('./launch-policy-cli.ts', import.meta.url).pathname,
         'text',
         JSON.stringify(command),
+        '--job-input',
       ],
-      { stdout: 'pipe', stderr: 'pipe' }
+      { stdin: new Blob(['registered input']), stdout: 'pipe', stderr: 'pipe' }
     );
     const [stdout, stderr, exit] = await Promise.all([
       new Response(child.stdout).text(),
@@ -202,5 +203,42 @@ test('native CLI scope guard rejects undeclared plugins or output before init', 
     expect(exit).toBe(plugins?.length === 0 ? 0 : 1);
     expect(stdout).toBe(plugins?.length === 0 ? 'model-output\n' : '');
     if (exit) expect(stderr).toContain(plugins ? 'does not match' : 'before reporting');
+  }
+});
+
+test('Claude wrapper forwards finite input only when explicitly requested', async () => {
+  const bytes = 'registered\r\n输入\u0000without trailing newline';
+  for (const forward of [true, false]) {
+    const command = [
+      process.execPath,
+      '-e',
+      `
+      const input = await Bun.stdin.text();
+      const again = await Bun.stdin.text();
+      console.log(JSON.stringify({ type: 'system', subtype: 'init', plugins: [] }));
+      console.log(JSON.stringify({ type: 'result', result: JSON.stringify({ input, again }) }));
+    `,
+    ];
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        new URL('./launch-policy-cli.ts', import.meta.url).pathname,
+        'text',
+        JSON.stringify(command),
+        ...(forward ? ['--job-input'] : []),
+      ],
+      {
+        stdin: forward ? new Blob([bytes]) : 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exit, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ input: forward ? bytes : '', again: '' });
   }
 });

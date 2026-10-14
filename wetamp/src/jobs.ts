@@ -295,6 +295,11 @@ async function exec(
     save(job);
     // Resolve the input before creating a checkout or spending an agent invocation.
     if (job.card && !statSync(job.card).isFile()) throw new Error('job: card must be a file');
+    // Snapshot registered input before checkout/admission; never depend on native shell env visibility.
+    const input = f.execution && job.card ? new Blob([
+      `Registered job input: ${JSON.stringify({ id: job.id, card: job.card, request_ref: job.request_ref ?? null })}\n\n`,
+      readFileSync(job.card),
+    ]) : undefined;
     if (f.worktree) {
       const repo = git(job.cwd, 'rev-parse', '--show-toplevel'), branch = f.worktree;
       const base = f.base ?? git(repo, 'symbolic-ref', '--short', 'HEAD');
@@ -347,8 +352,10 @@ async function exec(
     if (!code && !stop.signal.aborted) {
       job.receipt.admitted_at = new Date().toISOString();
       save(job);
-      // Dispatched agents are headless: an inherited, never-closed stdin makes `codex exec` wait for more prompt forever.
+      // Headless jobs receive finite registered input or EOF, never an inherited terminal.
       if (f.execution) cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
+      // Only the scoped Claude wrapper consumes this flag; native provider args stay intact.
+      if (input && f.execution?.provider === 'claude') cmd.push('--job-input');
       const launchSignal = stop.signal;
       if (!launchSignal.aborted) child = Bun.spawn(cmd, {
         cwd: job.cwd,
@@ -364,7 +371,9 @@ async function exec(
           SA_JOB_CARD: job.card ?? '',
           SA_JOB_REQUEST_REF: job.request_ref ?? '',
         },
-        stdio: ['ignore', 'inherit', 'inherit'],
+        stdin: input ?? 'ignore',
+        stdout: 'inherit',
+        stderr: 'inherit',
       });
       if (child) {
       job.pid = child.pid;

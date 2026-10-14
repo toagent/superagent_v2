@@ -229,6 +229,7 @@ if (process.argv[2] === 'app-server') {
     if (flag === 'strategist') expect(child.args).toContain('sandbox_mode="read-only"');
   });
 
+  // prettier-ignore
   test('unset parent and no requested role explicitly suppress child .env role', async () => {
     const root = tmp(), child = join(tmp(), 'child');
     writeFileSync(join(root, '.env'), 'SUPERAGENT_ROLE=commander\n');
@@ -351,7 +352,7 @@ else if (process.argv[1].endsWith('/claude')) {
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
       expect(readJobs(Date.now(), true).jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high', readonly: role === 'strategist' } });
-      expect(args).toContain('"mcp_servers"."ambient"."enabled"=false');
+      expect(args).toContain('mcp_servers={"ambient" = {"enabled" = false}}');
     }
     for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
@@ -418,8 +419,12 @@ else if (process.argv[1].endsWith('/claude')) {
     expect(out.jobs.map(x => x.id)).toEqual([j.id]);
   });
 
-  test('the child never inherits stdin, so a headless agent cannot block reading it', async () => {
-    const p = Bun.spawn(['bun', 'src/cli.ts', 'job', 'exec', '--title', 'stdin', '--', 'cat'], {
+  // prettier-ignore
+  test.each([true, false])('arbitrary commands receive EOF with card=%s and never inherit stdin', async withCard => {
+    const card = join(tmp(), 'input.md');
+    writeFileSync(card, 'registered input');
+    const p = Bun.spawn(['bun', 'src/cli.ts', 'job', 'exec', '--title', 'stdin',
+      ...(withCard ? ['--card', card] : []), '--', 'cat'], {
       cwd: WETAMP,
       env: { ...process.env, SUPERAGENT_ROLE: '', SA_ADMIT: 'off' },
       stdin: 'pipe',
@@ -427,6 +432,54 @@ else if (process.argv[1].endsWith('/claude')) {
       stderr: 'pipe',
     });
     expect(await p.exited).toBe(0);
+    expect(await new Response(p.stdout).text()).toBe('');
+  });
+
+  // prettier-ignore
+  test.each(['codex', 'claude'])('registered input reaches native %s with EOF despite cleared job env', async provider => {
+    const root = tmp(), executable = join(root, provider), card = join(root, 'input.md');
+    const contents = '精确 registered input\r\n\u0000last byte without newline';
+    writeFileSync(card, contents);
+    writeFileSync(executable, `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+  for await (const line of console) {
+    const r = JSON.parse(line);
+    if (r.id !== undefined) console.log(JSON.stringify({ id: r.id, result: r.method === 'config/read' ? { config: {} } : {} }));
+  }
+} else if (args[0] === 'plugin') console.log('[]');
+else {
+  for (const key of Object.keys(process.env)) if (key.startsWith('SA_JOB_')) delete process.env[key];
+  const input = await Bun.stdin.text();
+  const again = await Bun.stdin.text();
+  const result = JSON.stringify({ input, again, args, role: process.env.SUPERAGENT_ROLE });
+  if (${JSON.stringify(provider)} === 'claude') {
+    console.log(JSON.stringify({ type: 'system', subtype: 'init', plugins: [] }));
+    console.log(JSON.stringify({ type: 'result', is_error: false, result }));
+  } else console.log(result);
+}
+`);
+    chmodSync(executable, 0o755);
+    for (const withCard of [true, false]) {
+      const p = run(['job', 'exec', '--title', `input-${withCard}`, '--role', 'general',
+        ...(provider === 'claude' ? ['--mode', 'single:claude'] : []),
+        ...(withCard ? ['--card', card, '--request-ref', 'request-123'] : []),
+        '--', executable, provider === 'codex' ? 'exec' : '-p', 'requested instruction'], 'reviewer');
+      const [stdout, stderr, exit] = await Promise.all([
+        new Response(p.stdout as ReadableStream).text(),
+        new Response(p.stderr as ReadableStream).text(), p.exited,
+      ]);
+      expect(exit, stderr).toBe(0);
+      const received = JSON.parse(stdout);
+      const job = readJobs(Date.now(), true).jobs.find(j => j.title === `input-${withCard}`)!;
+      expect(received.input).toBe(withCard
+        ? `Registered job input: ${JSON.stringify({ id: job.id, card, request_ref: 'request-123' })}\n\n${contents}` : '');
+      expect(received.again).toBe('');
+      expect(received.args.at(-1)).toBe('requested instruction');
+      expect(received.args).toContain('--model');
+      expect(received.args).toContain(provider === 'codex' ? 'sandbox_mode="danger-full-access"' : '--permission-mode');
+      expect(received.role).toBe('reviewer');
+    }
   });
 
   test('launch binds the registered card and clears inherited job identity', async () => {
