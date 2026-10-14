@@ -18,6 +18,7 @@ import { cockpit } from './board/cockpit';
 import { Intake, intakeRoot } from './intake';
 import type { Plan } from './plan';
 import { readJobs, type Job } from './jobs';
+import { providerTiming } from './provider-timing';
 import {
   normalizeTokens,
   investmentOf,
@@ -135,6 +136,7 @@ export function jobReceipt(j: Job): Record<string, unknown> {
     first_token_ms: 'unknown',
     model_calls: 'unknown',
     tool_calls: 'unknown',
+    provider_timing: 'unknown',
   };
 }
 
@@ -399,6 +401,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
   const unreadable: string[] = [];
   const missingGenerations: Record<string, number> = {};
   const paths: Record<string, unknown> = {};
+  const timings: Record<string, unknown> = {};
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
   const cwdOf = (l: Ledger): string => (repo_missing.includes(l.run_id) ? WETAMP : l.repo);
   const pairs: Pair[] = ls.map(l => {
@@ -414,6 +417,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       try {
         const j = archonJson(['workflow', 'get', id, '--verbose', '--events'], cwdOf(l));
         const rows = (j.events ?? []) as Event[];
+        timings[`${l.run_id}/${id}`] = providerTiming(id, rows);
         events.push(...rows.map(e => ({ ...e, workflow_run_id: e.workflow_run_id ?? id })));
         let graph;
         const source = workflowSourceMetadataSchema.safeParse(
@@ -426,6 +430,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
         } catch { /* Missing captured source leaves the path unknown. */ }
         paths[`${l.run_id}/${id}`] = criticalPath(j as unknown as RunView, rows, graph);
       } catch (e) {
+        timings[`${l.run_id}/${id}`] = 'unknown';
         paths[`${l.run_id}/${id}`] = { status: 'unknown', reason: 'unreadable_generation' };
         missingGenerations[l.run_id] = (missingGenerations[l.run_id] ?? 0) + 1;
         unreadable.push(`${l.run_id}/${id}: ${tail((e as Error).message, 200)}`);
@@ -463,6 +468,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
     interventions: interventionStats(ls),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
+    provider_timing: timings,
     jobs: {
       receipts,
       unreadable: jobs.bad,

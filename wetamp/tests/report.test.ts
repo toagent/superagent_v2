@@ -47,6 +47,37 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('PROVIDER_TIMING buildReport consumes engine envelopes; native clocks remain unknown', () => {
+    const root = tmp(), bin = join(root, 'archon-stub');
+    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
+    const saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
+    try {
+      writeFileSync(join(root, 'plan.json'), JSON.stringify(plan));
+      const arrival = (seq: number, second: number, event: Record<string, unknown>) => ({
+        event_type: 'provider_event', step_name: 'code-core',
+        data: { attemptId: 'code-core-a', seq, observedAt: `2026-10-10T00:00:0${second}Z`, event },
+      });
+      const events = [
+        arrival(0, 1, { type: 'tool_call', toolCallId: 'x', name: 'shell' }),
+        arrival(1, 3, { type: 'tool_call_update', toolCallId: 'x', status: 'completed' }),
+        arrival(2, 4, { type: 'agent_message_chunk', text: 'answer' }),
+        { ...ev('node_completed', 'code-core'), created_at: '2026-10-10T00:00:05Z' },
+      ];
+      const run = { id: 'engine', status: 'completed', output_root: root, nodes: [], events };
+      writeFileSync(bin, '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n', { mode: 0o755 });
+      const ledger = { run_id: 'r', archon_run_id: 'engine', repo: root, gen_dir: root,
+        workflow: 'fixture', recoveries: [] } as unknown as Ledger;
+      expect(buildReport([ledger]).provider_timing).toMatchObject({ 'r/engine': [{
+        run: 'engine', node: 'code-core', attempt_id: 'code-core-a',
+        tool_union_ms: 2000, non_tool_gap_ms: 1000,
+        final_answer_at: '2026-10-10T00:00:04Z', request_at: 'unknown',
+      }] });
+      expect(jobReceipt({ id: 'native', state: 'done' } as Job).provider_timing).toBe('unknown');
+    } finally {
+      keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+    }
+  });
   // prettier-ignore
   test('job cumulative snapshot overlapping engine turn is excluded once without state writes', () => {
     const root = tmp(), bin = join(root, 'archon-stub');
