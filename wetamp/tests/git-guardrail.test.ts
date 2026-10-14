@@ -206,3 +206,14 @@ test.each(['claude', 'codex', 'opencode'].flatMap(client =>
   git('update-ref', 'refs/backup/main', 'HEAD');
   expect(check('git filter-branch --force --original refs/backup', repo, client).denied).toBe(true);
 });
+
+test('checkout before repository exists', () => {
+  const cwd = tmp();
+  const repo = join(cwd, 'not-yet-cloned');
+  for (const command of ['checkout main', 'checkout -q 0a7cfdeec766345f21e1483d26e339f4ab10142d']) {
+    expect(check(`git -C '${repo}' ${command}`, cwd).denied, command).toBe(false);
+  }
+  for (const command of ['checkout -f main', 'checkout -- README.md']) {
+    expect(check(`git -C '${repo}' ${command}`, cwd).denied, command).toBe(true);
+  }
+}, 30_000);

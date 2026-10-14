@@ -126,7 +126,8 @@ function reason(argv, dir, root, env, deletions) {
         const commit = query(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]);
         const remote = !commit && !/[$`*?\[\]{}]|__sa_/.test(ref)
           ? query(['for-each-ref', '--format=%(refname)', `refs/remotes/*/${ref}`]) : null;
-        pathRestore ||= operands.length > 1 || !commit && !(remote && remote.split('\n').length === 1);
+        // A repository created by an earlier command (such as clone) does not exist during analysis.
+        pathRestore ||= operands.length > 1 || !commit && !(remote && remote.split('\n').length === 1) && query(['rev-parse', '--git-dir']) !== null;
       }
     }
     const force = matches('^-[^-]*f|^--f(?:o(?:r(?:c(?:e)?)?)?)?(?:=|$)');
