@@ -1,0 +1,11 @@
+# An actionable assessment reaches delivery, whose entry guard refuses network writes.
+# No delivery-tail stubs are supplied.
+assess:
+  action: update
+  summary: "stub: locked 1.2.3, target 1.2.9 admitted by the constraint, two usage sites, no breaking changes apply"
+  report: { type: archon_artifact, run_id: "fixture-run", path: "upkeep-assessment.md" }
+fixture:
+  expect: failed
+  fail-node: deliver__manual-network-only
+  reached: [assess]
+exec-code: true
