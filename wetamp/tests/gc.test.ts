@@ -497,3 +497,37 @@ test.each(['clean', 'deleted', 'modified', 'untracked', 'staged', 'symlink'])(
       expect(collect(true, roots).some(e => e.path?.endsWith('sa-probe-link'))).toBe(false);
   }
 );
+
+test.each(['old', 'fresh', 'referenced', 'alias', 'bad-ledger', 'symlink', 'root-symlink'])(
+  'gen snapshots preserve references and unsafe paths: %s',
+  state => {
+    const f = fixture('running', false),
+      root = join(f.root, 'sa', 'gen'),
+      path = join(root, 'snapshot');
+    mkdirSync(path, { recursive: true });
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60_000);
+    if (state !== 'fresh') utimesSync(path, old, old);
+    if (state === 'referenced' || state === 'alias') {
+      f.ledger.gen_dir = state === 'alias' ? join(f.root, 'alias') : path;
+      if (state === 'alias') symlinkSync(path, f.ledger.gen_dir);
+      f.save();
+    }
+    if (state === 'bad-ledger') writeFileSync(ledgerPath(f.id), '{');
+    if (state === 'symlink') symlinkSync(f.gen, join(root, 'link'));
+    if (state === 'root-symlink') {
+      rmSync(root, { recursive: true });
+      symlinkSync(f.gen, root);
+    }
+    const events = () => gc(true).filter(e => e.object === 'gen');
+    expect(events().some(e => e.action === 'would_remove')).toBe(
+      state === 'old' || state === 'symlink'
+    );
+    if (state !== 'root-symlink') expect(existsSync(path)).toBe(true);
+    expect(events().some(e => e.action === 'skipped' && e.reason.length > 0)).toBe(state !== 'old');
+    const removed = gc().filter(e => e.object === 'gen' && e.action === 'removed');
+    expect(removed.map(e => e.path)).toEqual(state === 'old' || state === 'symlink' ? [path] : []);
+    expect(gc().some(e => e.object === 'gen' && e.action === 'removed')).toBe(false);
+    expect(existsSync(join(f.gen, 'plan.json'))).toBe(true);
+    if (state === 'symlink') expect(existsSync(join(root, 'link'))).toBe(true);
+  }
+);

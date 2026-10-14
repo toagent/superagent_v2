@@ -8,7 +8,7 @@ import {
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { isPathInside } from '@archon/paths';
 import { getRun, QUERY_TIMEOUT_MS } from './archon';
 import { home } from './config';
@@ -44,7 +44,7 @@ export function scratchClean(session?: string, dryRun = false): ScratchAction[] 
 
 export interface GcAction {
   run_id: string;
-  object: 'run' | 'worktree' | 'branch';
+  object: 'run' | 'worktree' | 'branch' | 'gen';
   action: 'removed' | 'skipped' | 'would_remove';
   reason: string;
   path?: string;
@@ -104,7 +104,53 @@ function collectProbe(path: string, id: string, dryRun: boolean, repo?: string):
   }
 }
 
-/** Only registered runs enter GC; the recovery lock covers observation, removal and recording. */
+const GEN_RETENTION_MS = 30 * 24 * 60 * 60_000;
+function collectGen(dryRun: boolean): GcAction[] {
+  const out: GcAction[] = [],
+    root = resolve(home().sa, 'gen');
+  try {
+    if (!existsSync(root)) return out;
+    if (lstatSync(root).isSymbolicLink()) throw new Error('gen root symlink retained');
+    const genRoot = realpathSync(root);
+    // Every ledger remains a reader, including terminal runs used by report/usage/memory.
+    const refs = ledgerIds().flatMap(id => {
+      const path = loadLedger(id).gen_dir;
+      if (!isAbsolute(path)) throw new Error(`ambiguous gen_dir in ledger ${id}`);
+      return [resolve(path), ...(existsSync(path) ? [realpathSync(path)] : [])];
+    });
+    for (const entry of readdirSync(genRoot, { withFileTypes: true })) {
+      const path = resolve(genRoot, entry.name);
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      let action: GcAction['action'] = 'skipped',
+        reason = '';
+      try {
+        if (!isPathInside(genRoot, path)) throw new Error('gen path outside root');
+        const st = lstatSync(path);
+        if (st.isSymbolicLink()) reason = 'gen symlink retained';
+        else if (
+          refs.some(
+            ref => isPathInside(path, ref, { includeRoot: true }) || isPathInside(ref, path)
+          )
+        )
+          reason = 'ledger reference retained';
+        else if (Date.now() - st.mtimeMs <= GEN_RETENTION_MS) reason = 'gen younger than 30 days';
+        else {
+          if (!dryRun) rmSync(path, { recursive: true, force: true });
+          action = dryRun ? 'would_remove' : 'removed';
+          reason = 'unreferenced gen older than 30 days';
+        }
+      } catch (e) {
+        reason = String(e);
+      }
+      out.push({ run_id: entry.name, object: 'gen', action, reason, path });
+    }
+  } catch (e) {
+    out.push({ run_id: '*', object: 'gen', action: 'skipped', reason: String(e), path: root });
+  }
+  return out;
+}
+
+/** Registered runs use the recovery lock; unreferenced gen snapshots use age and path guards. */
 export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] {
   const out: GcAction[] = [];
   try {
@@ -259,5 +305,5 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
   } catch (e) {
     out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
   }
-  return out;
+  return [...out, ...collectGen(dryRun)];
 }
