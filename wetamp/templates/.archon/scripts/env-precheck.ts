@@ -75,12 +75,8 @@ export function envPrecheck(cwd: string) {
   return { ok: failures.length === 0, dependencies, hooks: hookStatus, failures };
 }
 export const RECOVERY_TIMEOUT_MS = 120_000;
-interface Recovery {
-  cmd: string;
-  exit: number;
-  ms: number;
-  output: string;
-}
+// prettier-ignore
+interface Recovery { cmd: string; exit: number; ms: number; output: string }
 /** Caller must establish engine ownership before authorizing recovery. */
 // prettier-ignore
 export async function provisionEnvironment(cwd: string, signal?: AbortSignal,
