@@ -2,6 +2,7 @@
 export type Yes = 'retry' | 'resume' | 'approve' | 'review';
 export type Policy =
   | { do: 'expire' | 'resume' }
+  | { do: 'blocked'; text: string; next: string }
   | { do: 'signoff'; text: string; yesText: string }
   | { do: 'ask'; yes: Yes; text: string; yesText: string };
 /**
@@ -12,33 +13,21 @@ export type Policy =
 export const HOLD_POLICY = {
   signoff: { do: 'signoff', text: '等待人工签收', yesText: '批准签收门并续跑（不自动合入）' },
   deadline: { do: 'expire' },
-  gate: { do: 'ask', yes: 'retry', text: '交付需重试', yesText: '{target}一次' },
-  coder: { do: 'ask', yes: 'retry', text: '编码节点失败', yesText: '{target}一次' },
-  environment: {
-    do: 'ask',
-    yes: 'retry',
-    text: '环境检查失败',
-    yesText: '确认已处理后{target}一次',
-  },
+  gate: { do: 'blocked', text: '交付检查失败', next: '修复验收或评审中的阻断发现' },
+  coder: { do: 'blocked', text: '编码节点失败', next: '检查编码节点证据并修复失败条件' },
+  environment: { do: 'blocked', text: '环境检查失败', next: '恢复声明的依赖和环境后再重试' },
   paused: { do: 'resume' },
-  no_change: {
-    do: 'ask',
-    yes: 'retry',
-    text: '连续两轮修复无变化',
-    yesText: '{target}一次',
+  no_change: { do: 'blocked', text: '连续两轮修复无变化', next: '重新确认根因和修复范围' },
+  needs: { do: 'blocked', text: '将军需要补能力', next: '在brief中检查needs并补齐明确能力或输入' },
+  redline: {
+    do: 'blocked',
+    text: '将军命中红线',
+    next: '改用允许的操作；需人工执行的红线操作交操作员处理',
   },
-  needs: {
-    do: 'ask',
-    yes: 'retry',
-    text: '将军需要补能力',
-    yesText: '确认已补齐后{target}一次',
-  },
-  redline: { do: 'ask', yes: 'retry', text: '将军命中红线', yesText: '{target}一次（红线不变）' },
   coder_blocked: {
-    do: 'ask',
-    yes: 'retry',
+    do: 'blocked',
     text: '将军受执行约束阻断',
-    yesText: '确认已处理后{target}一次',
+    next: '检查执行约束并提供符合约束的操作或环境',
   },
   budget: {
     do: 'ask',
@@ -46,18 +35,16 @@ export const HOLD_POLICY = {
     text: '预算已用尽',
     yesText: '按台账追加本里程碑额度并{target}一次',
   },
-  review_limit: { do: 'ask', yes: 'retry', text: '三轮评审已用尽', yesText: '{target}一次' },
+  review_limit: { do: 'blocked', text: '三轮评审已用尽', next: '重新确认遗留blocker和工作包范围' },
   review_not_independent: {
-    do: 'ask',
-    yes: 'review',
+    do: 'blocked',
     text: '评审身份不独立',
-    yesText: '确认已处理后{target}一次',
+    next: '配置与作者不同的合格评审身份',
   },
   engine_suspect: {
-    do: 'ask',
-    yes: 'resume',
+    do: 'blocked',
     text: '引擎判定与验收矛盾或原因未注册',
-    yesText: '确认已修复引擎后{target}一次',
+    next: '检查incident证据并修复引擎判定',
   },
   approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
 } as const satisfies Record<string, Policy>;

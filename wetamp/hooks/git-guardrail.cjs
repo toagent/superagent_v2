@@ -6,13 +6,15 @@ const redline = require('./redline.cjs'), git = require('./git-danger.cjs');
 (async () => {
   const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
   const input = payload.tool_input || payload.args || {};
-  const shell = input.command ?? input.cmd ?? input.input ?? input.shellCommand;
+  const shell = input.command ?? input.cmd ?? input.script ?? input.input ?? input.shellCommand;
   if (typeof shell !== 'string') return;
   await redline.init();
-  const cwd = input.workdir || payload.cwd || process.cwd(), deletions = new Map();
+  const cwd = input.workdir || input.directory || payload.cwd || process.cwd(), deletions = new Map();
   const advisory = new Set();
   const reason = require('./shell-ast.cjs').analyze(shell, cwd, process.env, (parsed, dir) => {
     for (const argv of parsed.argvs) if (path.basename(argv[0] || '') === 'git') {
+      const manual = git.manualReason(argv, dir, {...process.env, ...parsed.env});
+      if (manual) return manual;
       const why = git.reason(argv, dir, redline.checkoutOf(cwd) || cwd, {...process.env, ...parsed.env}, deletions);
       if (why) return why;
     }

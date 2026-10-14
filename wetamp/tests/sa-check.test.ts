@@ -802,6 +802,71 @@ describe('gate rules', () => {
 });
 
 describe('single delivery decision', () => {
+  test('blocked without a candidate skips checks and probe; other deliveries still validate', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      marker = join(root, 'calls');
+    const base = sh('git rev-parse HEAD', repo).trim();
+    const cmd = `echo check >> '${marker}'; printf '%s' '{"failure_class":"product","evidence":"failed check"}'; exit 1`;
+    const plan = fixturePlan(root, repo, p => {
+      p.environment = [{ cmd: 'true', timeout_s: 5 }];
+      p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5, cache: false }] }];
+    });
+    const needs = [{ cap: 'environment', why: 'missing tool', minimal_ask: 'prepare tool' }];
+    for (const [status, error_class, candidate, dirty, includeBase, count, reason] of [
+      ['blocked', 'env', false, false, true, 0, 'coder_needs'],
+      ['blocked', 'redline', false, false, true, 0, 'coder_redline'],
+      ['partial', 'env', false, false, true, 2, 'environment'],
+      ['done', null, false, false, true, 2, 'acceptance_failed'],
+      ['blocked', 'task', false, false, false, 1, 'acceptance_failed'],
+      ['blocked', 'env', false, false, false, 1, 'environment'],
+      ['blocked', 'env', false, true, true, 2, 'environment'],
+      ['blocked', 'env', true, false, true, 2, 'environment'],
+    ] as const) {
+      if (existsSync(marker)) unlinkSync(marker);
+      if (candidate || dirty) writeFileSync(join(repo, 'README.md'), 'candidate');
+      if (candidate)
+        sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+      const report = {
+        status,
+        error_class,
+        needs: error_class === 'env' ? needs : [],
+        blockers: ['original blocker'],
+        failure_class: 'test_env',
+      };
+      const result = runScript(repo, {
+        kind: 'accept',
+        plan,
+        pkgs: 'a',
+        tag: 'verify-empty',
+        base: includeBase ? base : '',
+        delta_base: candidate ? sh('git rev-parse HEAD', repo).trim() : base,
+        coder: JSON.stringify(report),
+      });
+      expect(result.code, result.err).toBe(reason === 'acceptance_failed' ? 0 : 1);
+      expect(result.out).toMatchObject({
+        ok: false,
+        disposition: reason === 'acceptance_failed' ? 'repair' : 'suspend',
+        reason,
+      });
+      expect(existsSync(marker) ? readFileSync(marker, 'utf8').trim().split('\n').length : 0).toBe(
+        count
+      );
+      expect(
+        JSON.parse(readFileSync(join(result.art, 'verify-empty.coder.json'), 'utf8'))
+      ).toMatchObject({ ...report, status: error_class === 'task' ? 'partial' : status });
+      if (!count)
+        expect(result.out).toMatchObject({
+          command_results: [],
+          failures: [],
+          decision: {
+            kind: 'block',
+            evidence: expect.arrayContaining([join(result.art, 'verify-empty.coder.json')]),
+          },
+        });
+      if (dirty) writeFileSync(join(repo, 'README.md'), 'hi\n');
+    }
+  }, 10_000);
   test('permission evidence and retry boundaries survive the real acceptance node', () => {
     const root = tmp(),
       repo = gitRepo(root),

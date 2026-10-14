@@ -470,7 +470,6 @@ function acceptOnce(
   const dirty = git('status', '--porcelain').trim();
   const failures: CheckFailure[] = [];
   const commandResults: CommandResult[] = [];
-  const failed = run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
   if (dirty)
     appendFileSync(
       log,
@@ -485,6 +484,27 @@ function acceptOnce(
   const patch = save(`${tag}.patch`, base);
   const delta = env('DELTA_BASE') ? save(`${tag}.delta.patch`, env('DELTA_BASE')) : patch;
   const hash = patch ? sha(readFileSync(patch, 'utf8')).slice(0, 16) : '';
+  let blocked: string | null = null;
+  // Only the full candidate and clean worktree prove there is nothing to validate.
+  // An empty repair delta can still contain earlier delivery; an absent BASE proves nothing.
+  if (!dirty && patch && readFileSync(patch, 'utf8') === '') {
+    try {
+      const report = JSON.parse(coder) as Coder | null;
+      if (report?.status === 'blocked')
+        blocked =
+          report.error_class === 'redline'
+            ? 'coder_redline'
+            : Array.isArray(report.needs) && report.needs.length
+              ? 'coder_needs'
+              : null;
+    } catch {
+      /* Malformed reports must still go through real acceptance. */
+    }
+  }
+  const failed = blocked
+    ? []
+    : run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
+  if (blocked) appendFileSync(log, `# ${blocked}: no candidate; checks and probe skipped\n`);
   const scope =
     base && env('RISK')
       ? scopeRisk(
@@ -494,7 +514,7 @@ function acceptOnce(
           env('RISK')
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
-  const ok = failed.length === 0 && !dirty;
+  const ok = !blocked && failed.length === 0 && !dirty;
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
   // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
@@ -518,6 +538,16 @@ function acceptOnce(
     ok,
     {
       ok,
+      ...(blocked
+        ? {
+            decision: {
+              kind: 'block' as const,
+              reason: blocked,
+              evidence: [patch, delta, join(artifacts, `${tag}.coder.json`)],
+              debt: [],
+            },
+          }
+        : {}),
       requirement_contract: requirementContract,
       command_results: commandResults,
       diff_hash: hash,
@@ -955,7 +985,10 @@ export function deliveryDecision(input: {
   const evidence = [
     ...new Set([
       ...(input.permissions ?? []),
-      ...input.rechecks.flatMap(c => [...(c?.decision?.evidence ?? []), ...(c?.log ? [c.log] : [])]),
+      ...input.rechecks.flatMap(c => [
+        ...(c?.decision?.evidence ?? []),
+        ...(c?.log ? [c.log] : []),
+      ]),
       ...[...ledger.blocking, ...ledger.debt].flatMap(e => (e.evidence ? [e.evidence] : [])),
     ]),
   ];
@@ -973,6 +1006,8 @@ export function deliveryDecision(input: {
   });
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
+  if (check?.decision?.kind === 'block' && check.decision.reason === 'coder_needs')
+    return out('block', 'coder_needs');
   if (!check) return out('block', 'engine_suspect');
   if (items.some(r => r.status === 'unknown')) return out('block', 'acceptance_failed');
   if (
@@ -1431,119 +1466,312 @@ export function independence(authors: Ident[], reviewer: Ident): string | null {
   return null;
 }
 
-type RecoverySource = { path: string; sha256: string };
-type RecoveryActor = { job_id: string; job: RecoverySource; native: RecoverySource };
+interface RecoverySource {
+  path: string;
+  sha256: string;
+}
+interface RecoveryActor {
+  job_id: string;
+  job: RecoverySource;
+  native: RecoverySource;
+}
 /** Present owner admission of the complete legacy roster, not historical launch evidence. */
 export interface RecoveryAuthorCoverage {
-  run_id: string; engine_run_id: string; base: string; candidate: string;
+  run_id: string;
+  engine_run_id: string;
+  base: string;
+  candidate: string;
   rounds: { logical_round: number; freeze: RecoverySource; job_ids: string[] }[];
 }
 export interface RecoveryEvidence {
-  run_id: string; engine_run_id: string; base: string; candidate: string; packages: string[];
+  run_id: string;
+  engine_run_id: string;
+  base: string;
+  candidate: string;
+  packages: string[];
   admission: { kind: 'owner_legacy_snapshot'; reason: string };
-  plan: RecoverySource; policy: RecoverySource; contracts: RecoverySource;
+  plan: RecoverySource;
+  policy: RecoverySource;
+  contracts: RecoverySource;
   exception: RecoverySource;
   author_coverage: RecoverySource;
-  rounds: { logical_round: number; descriptor_round: number; freeze: RecoverySource;
-    source: RecoverySource; review: Review; reviewer: RecoveryActor;
+  rounds: {
+    logical_round: number;
+    descriptor_round: number;
+    freeze: RecoverySource;
+    source: RecoverySource;
+    review: Review;
+    reviewer: RecoveryActor;
     provider_result: RecoverySource & { json_offset: number | null; json_length: number | null };
-    authors: RecoveryActor[]; coverage: { base: string; head: string; files: string[] } }[];
+    authors: RecoveryActor[];
+    coverage: { base: string; head: string; files: string[] };
+  }[];
 }
-export const recoveryHash = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
+export const recoveryHash = (path: string): string =>
+  createHash('sha256').update(readFileSync(path)).digest('hex');
 /** Owner interpretation is a present admission, not a claim of historical input immutability. */
-export function validateRecovery(e: RecoveryEvidence, p: Plan, cwd: string, runId: string, engineId: string,
-  load: (id: string) => AuthorRun, jobs = join(process.env.SUPERAGENT_HOME ?? '', 'jobs')) {
-  const require = (ok: unknown, why: string): void => { if (!ok) throw new Error(`recovery: ${why}`); };
+export function validateRecovery(
+  e: RecoveryEvidence,
+  p: Plan,
+  cwd: string,
+  runId: string,
+  engineId: string,
+  load: (id: string) => AuthorRun,
+  jobs = join(process.env.SUPERAGENT_HOME ?? '', 'jobs')
+) {
+  const require: (ok: unknown, why: string) => asserts ok = (ok, why) => {
+    if (!ok) throw new Error(`recovery: ${why}`);
+  };
   const bytes = (s: RecoverySource): string => {
     const text = readFileSync(s.path, 'utf8');
-    require(sha(text) === s.sha256, 'source drift'); return text;
+    require(sha(text) === s.sha256, 'source drift');
+    return text;
   };
-  const source = <T>(s: RecoverySource): T => JSON.parse(bytes(s)) as T;
+  const source = (s: RecoverySource): unknown => JSON.parse(bytes(s));
   const command = (...args: string[]): string => {
-    const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe', timeout: CHECK_AUX_TIMEOUT_MS });
-    require(r.exitCode === 0, 'git evidence unavailable'); return r.stdout.toString().trim();
+    const r = Bun.spawnSync(['git', ...args], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: CHECK_AUX_TIMEOUT_MS,
+    });
+    require(r.exitCode === 0, 'git evidence unavailable');
+    return r.stdout.toString().trim();
   };
-  require(e.admission?.kind === 'owner_legacy_snapshot' && e.admission.reason.trim(), 'owner admission required');
+  const admission = e.admission as { kind: string; reason: string } | undefined;
+  require(admission?.kind === 'owner_legacy_snapshot' &&
+    admission.reason.trim(), 'owner admission required');
   require(e.run_id === runId && e.engine_run_id === engineId, 'run binding');
   require(/^[a-f0-9]{40}$/.test(e.base) && /^[a-f0-9]{40}$/.test(e.candidate), 'invalid refs');
-  require(command('rev-parse', 'HEAD') === e.candidate && !command('status', '--porcelain'), 'candidate drift');
-  require(command('rev-parse', p.base_ref) === e.base && command('merge-base', e.base, e.candidate) === e.base, 'base drift');
-  require(JSON.stringify(source<Plan>(e.plan)) === JSON.stringify(p), 'plan drift');
-  source<unknown>(e.policy); source<unknown>(e.contracts);
-  require(JSON.stringify([...e.packages].sort()) === JSON.stringify(p.packages.map(k => k.id).sort()), 'package coverage');
+  require(command('rev-parse', 'HEAD') === e.candidate &&
+    !command('status', '--porcelain'), 'candidate drift');
+  require(command('rev-parse', p.base_ref) === e.base &&
+    command('merge-base', e.base, e.candidate) === e.base, 'base drift');
+  require(JSON.stringify(source(e.plan)) === JSON.stringify(p), 'plan drift');
+  source(e.policy);
+  source(e.contracts);
+  require(JSON.stringify([...e.packages].sort()) ===
+    JSON.stringify(p.packages.map(k => k.id).sort()), 'package coverage');
   require(e.rounds.length === 4, 'complete R1-R4 required');
   require(e.author_coverage, 'support author coverage required');
-  const roster = source<RecoveryAuthorCoverage>(e.author_coverage);
-  require(roster.run_id === runId && roster.engine_run_id === engineId && roster.base === e.base && roster.candidate === e.candidate && roster.rounds?.length === e.rounds.length, 'support author coverage binding');
-  const exception = source<{ logical_review_round: number; cli_descriptor_round: number; user_exception: { reply: string; scope: string } }>(e.exception);
-  require(e.exception.path === e.rounds[3].freeze.path && e.exception.sha256 === e.rounds[3].freeze.sha256 && exception.logical_review_round === 4 && exception.cli_descriptor_round === 3 && exception.user_exception?.reply?.trim() && exception.user_exception.scope?.trim(), 'fourth round exception');
+  const roster = source(e.author_coverage) as Omit<RecoveryAuthorCoverage, 'rounds'> & {
+    rounds?: RecoveryAuthorCoverage['rounds'];
+  };
+  require(roster.run_id === runId &&
+    roster.engine_run_id === engineId &&
+    roster.base === e.base &&
+    roster.candidate === e.candidate &&
+    roster.rounds?.length === e.rounds.length, 'support author coverage binding');
+  const exception = source(e.exception) as {
+    logical_review_round: number;
+    cli_descriptor_round: number;
+    user_exception?: { reply?: string; scope?: string };
+  };
+  require(e.exception.path === e.rounds[3].freeze.path &&
+    e.exception.sha256 === e.rounds[3].freeze.sha256 &&
+    exception.logical_review_round === 4 &&
+    exception.cli_descriptor_round === 3 &&
+    exception.user_exception?.reply?.trim() &&
+    exception.user_exception.scope?.trim(), 'fourth round exception');
   const original = load(engineId);
   require(original.id === engineId && original.output_root, 'original engine binding');
   const milestones = p.packages.map(k => k.milestone ?? 'm1');
   require(new Set(milestones).size === 1, 'single milestone required');
-  const authors = readAuthorEvidence(original, readPolicyAttempts(join(original.output_root!, 'artifacts', 'runs', engineId)), e.packages, milestones, load);
-  const permissions = [...new Set(milestones.flatMap(m => permissionEvidence(original.events, e.packages, m)))];
+  const authors = readAuthorEvidence(
+    original,
+    readPolicyAttempts(join(original.output_root, 'artifacts', 'runs', engineId)),
+    e.packages,
+    milestones,
+    load
+  );
+  const permissions = [
+    ...new Set(milestones.flatMap(m => permissionEvidence(original.events, e.packages, m))),
+  ];
   const actor = (a: RecoveryActor, role: 'general' | 'strategist') => {
     require(a.job.path === join(jobs, `${a.job_id}.json`), 'job registry binding');
-    const j = source<import('../../../src/jobs').Job>(a.job);
-    require(j.id === a.job_id && j.state === 'done' && j.exit_code === 0 && j.role === role && j.session_id && j.card, 'job not qualified');
+    const j = source(a.job) as import('../../../src/jobs').Job;
+    require(j.id === a.job_id &&
+      j.state === 'done' &&
+      j.exit_code === 0 &&
+      j.role === role &&
+      j.session_id &&
+      j.card, 'job not qualified');
     const n = nativeEvidence(bytes(a.native), j.kind);
-    require(n.sessions.length === 1 && n.sessions[0] === j.session_id && n.models.length === 1 && n.inputs.includes(j.card!), 'native identity binding');
-    return { native: n, job: j, identity: { model: n.models[0], strength: j.kind === 'codex' ? 'pinned' as const : 'provider' as const } };
+    require(n.sessions.length === 1 &&
+      n.sessions[0] === j.session_id &&
+      n.models.length === 1 &&
+      n.inputs.includes(j.card), 'native identity binding');
+    return {
+      native: n,
+      job: j,
+      identity: {
+        model: n.models[0],
+        strength: j.kind === 'codex' ? ('pinned' as const) : ('provider' as const),
+      },
+    };
   };
   let previous = e.base;
-  const reviews: Review[] = [], reviewers: Ident[] = [], support_permissions: { round: number; denials: unknown[] }[] = [];
+  const reviews: Review[] = [],
+    reviewers: Ident[] = [],
+    support_permissions: { round: number; denials: unknown[] }[] = [];
   for (const [i, r] of e.rounds.entries()) {
-    require(r.logical_round === i + 1 && r.descriptor_round === Math.min(i + 1, MAX_ROUNDS), 'round continuity');
-    const f = source<{ run_id?: string; original_run?: string; base: string; head: string; previous?: string; worktree: string; files: Record<string, string> | { path: string; sha256: string }[] }>(r.freeze);
-    require(/^[a-f0-9]{40}$/.test(f.head) && (f.previous === undefined || /^[a-f0-9]{40}$/.test(f.previous)), 'invalid freeze refs');
-    require((f.run_id ?? f.original_run) === runId && f.base === e.base && (i === 0 || f.previous === previous), 'freeze binding');
+    require(r.logical_round === i + 1 &&
+      r.descriptor_round === Math.min(i + 1, MAX_ROUNDS), 'round continuity');
+    const f = source(r.freeze) as {
+      run_id?: string;
+      original_run?: string;
+      base: string;
+      head: string;
+      previous?: string;
+      worktree: string;
+      files: Record<string, string> | { path: string; sha256: string }[];
+    };
+    require(/^[a-f0-9]{40}$/.test(f.head) &&
+      (f.previous === undefined || /^[a-f0-9]{40}$/.test(f.previous)), 'invalid freeze refs');
+    require((f.run_id ?? f.original_run) === runId &&
+      f.base === e.base &&
+      (i === 0 || f.previous === previous), 'freeze binding');
     // Actor selection must equal the separately frozen roster admitted by the owner.
-    const expected = roster.rounds[i], selected = r.authors.map(a => a.job_id);
-    require(expected.logical_round === r.logical_round && expected.freeze.path === r.freeze.path && expected.freeze.sha256 === r.freeze.sha256 && expected.job_ids?.length && new Set(expected.job_ids).size === expected.job_ids.length && new Set(selected).size === selected.length && JSON.stringify([...expected.job_ids].sort()) === JSON.stringify(selected.sort()), 'support author coverage');
+    const expected = roster.rounds[i],
+      selected = r.authors.map(a => a.job_id),
+      jobIds = expected.job_ids as string[] | undefined;
+    require(expected.logical_round === r.logical_round &&
+      expected.freeze.path === r.freeze.path &&
+      expected.freeze.sha256 === r.freeze.sha256 &&
+      jobIds?.length &&
+      new Set(jobIds).size === jobIds.length &&
+      new Set(selected).size === selected.length &&
+      JSON.stringify([...jobIds].sort()) ===
+        JSON.stringify(selected.sort()), 'support author coverage');
     require(r.coverage.base === previous && r.coverage.head === f.head, 'incremental coverage');
-    const files = Array.isArray(f.files) ? f.files : Object.entries(f.files).map(([path, sha256]) => ({ path, sha256 }));
-    const changed = command('diff', '--name-only', '--end-of-options', previous, f.head).split('\n').filter(Boolean).sort();
-    require(JSON.stringify(changed) === JSON.stringify([...r.coverage.files].sort()) && JSON.stringify(changed) === JSON.stringify(files.map(x => x.path).sort()), 'missing coverage');
-    for (const s of files) require(sha(Bun.spawnSync(['git', 'show', '--end-of-options', `${f.head}:${s.path}`], { cwd }).stdout.toString()) === s.sha256, 'blob drift');
-    const raw = source<{ conclusion: string; findings: { id: string; severity: string; disposition?: string; evidence?: string }[]; new_blockers?: unknown[] }>(r.source);
+    const files = Array.isArray(f.files)
+      ? f.files
+      : Object.entries(f.files).map(([path, sha256]) => ({ path, sha256 }));
+    const changed = command('diff', '--name-only', '--end-of-options', previous, f.head)
+      .split('\n')
+      .filter(Boolean)
+      .sort();
+    require(JSON.stringify(changed) === JSON.stringify([...r.coverage.files].sort()) &&
+      JSON.stringify(changed) ===
+        JSON.stringify(files.map(x => x.path).sort()), 'missing coverage');
+    for (const s of files)
+      require(sha(
+        Bun.spawnSync(['git', 'show', '--end-of-options', `${f.head}:${s.path}`], {
+          cwd,
+        }).stdout.toString()
+      ) === s.sha256, 'blob drift');
+    const raw = source(r.source) as {
+      conclusion: string;
+      findings: { id: string; severity: string; disposition?: string; evidence?: string }[];
+      new_blockers?: unknown[];
+    };
     const reviewer = actor(r.reviewer, 'strategist');
     require(reviewer.job.cwd === f.worktree, 'review worktree binding');
-    const provider = source<{ type: string; subtype: string; is_error: boolean; session_id: string; result: string; modelUsage: Record<string, unknown>; permission_denials?: unknown[] }>(r.provider_result);
-    require(provider.type === 'result' && provider.subtype === 'success' && !provider.is_error && provider.session_id === reviewer.job.session_id && provider.result === reviewer.native.final && JSON.stringify(Object.keys(provider.modelUsage)) === JSON.stringify(reviewer.native.models) && (i !== 3 || !provider.permission_denials?.length), 'provider binding');
+    const provider = source(r.provider_result) as {
+      type: string;
+      subtype: string;
+      is_error: boolean;
+      session_id: string;
+      result: string;
+      modelUsage: Record<string, unknown>;
+      permission_denials?: unknown[];
+    };
+    require(provider.type === 'result' &&
+      provider.subtype === 'success' &&
+      !provider.is_error &&
+      provider.session_id === reviewer.job.session_id &&
+      provider.result === reviewer.native.final &&
+      JSON.stringify(Object.keys(provider.modelUsage)) === JSON.stringify(reviewer.native.models) &&
+      (i !== 3 || !provider.permission_denials?.length), 'provider binding');
     support_permissions.push({ round: i + 1, denials: provider.permission_denials ?? [] });
     if (r.provider_result.json_offset !== null) {
       const { json_offset: offset, json_length: length } = r.provider_result;
-      require(Number.isSafeInteger(offset) && offset! >= 0 && Number.isSafeInteger(length) && length! > 0, 'JSON boundary');
-      require(JSON.stringify(JSON.parse(Buffer.from(provider.result).subarray(offset!, offset! + length!).toString())) === JSON.stringify(raw), 'provider JSON drift');
-    } else require(i === 0 && r.provider_result.json_length === null, 'typed legacy interpretation only for R1');
-    require(r.review.status === raw.conclusion && !r.review.debt.length && (i === 3 ? raw.conclusion === 'PASS' && Array.isArray(raw.new_blockers) && !raw.new_blockers.length : raw.conclusion === 'FAIL'), 'non-PASS final');
-    require(r.review.findings.length === raw.findings.length && new Set(raw.findings.map(x => x.id)).size === raw.findings.length, 'finding coverage');
+      const isSafeInteger = (value: unknown): value is number => Number.isSafeInteger(value);
+      require(isSafeInteger(offset) &&
+        offset >= 0 &&
+        isSafeInteger(length) &&
+        length > 0, 'JSON boundary');
+      require(JSON.stringify(
+        JSON.parse(
+          Buffer.from(provider.result)
+            .subarray(offset, offset + length)
+            .toString()
+        )
+      ) === JSON.stringify(raw), 'provider JSON drift');
+    } else
+      require(i === 0 &&
+        r.provider_result.json_length === null, 'typed legacy interpretation only for R1');
+    require(r.review.status === raw.conclusion &&
+      !r.review.debt.length &&
+      (i === 3
+        ? raw.conclusion === 'PASS' && Array.isArray(raw.new_blockers) && !raw.new_blockers.length
+        : raw.conclusion === 'FAIL'), 'non-PASS final');
+    require(r.review.findings.length === raw.findings.length &&
+      new Set(raw.findings.map(x => x.id)).size === raw.findings.length, 'finding coverage');
     for (const [n, finding] of r.review.findings.entries()) {
-      const old = raw.findings[n], closed = ['CLOSED', 'NOT_A_DEFECT'].includes(old.disposition ?? '');
-      require(finding.failure_class === 'product' && finding.id === old.id && finding.severity === old.severity && ['blocker', 'high', 'medium', 'low'].includes(finding.severity) && finding.status === (closed ? 'closed' : 'open') && finding.carry_over === (i > 0) && finding.evidence.trim() && (!old.evidence || finding.evidence === old.evidence), 'finding interpretation');
+      const old = raw.findings[n],
+        closed = ['CLOSED', 'NOT_A_DEFECT'].includes(old.disposition ?? '');
+      require(finding.failure_class === 'product' &&
+        finding.id === old.id &&
+        finding.severity === old.severity &&
+        ['blocker', 'high', 'medium', 'low'].includes(finding.severity) &&
+        finding.status === (closed ? 'closed' : 'open') &&
+        finding.carry_over === i > 0 &&
+        finding.evidence.trim() &&
+        (!old.evidence || finding.evidence === old.evidence), 'finding interpretation');
     }
     require(r.authors.length, 'support author coverage');
-    authors.push(...r.authors.map(a => { const author = actor(a, 'general'); require(author.job.cwd === f.worktree, 'author worktree binding'); return author.identity; }));
-    reviewers.push(reviewer.identity); reviews.push(r.review); previous = f.head;
+    authors.push(
+      ...r.authors.map(a => {
+        const author = actor(a, 'general');
+        require(author.job.cwd === f.worktree, 'author worktree binding');
+        return author.identity;
+      })
+    );
+    reviewers.push(reviewer.identity);
+    reviews.push(r.review);
+    previous = f.head;
   }
-  require(previous === e.candidate && !ledgerOf(reviews, 'G2', { strict: p.mode === 'strict' }).blocking.length, 'unclosed findings');
-  for (const reviewer of reviewers) require(independence(authors, reviewer) === null, 'review not independent');
-  require(command('rev-parse', 'HEAD') === e.candidate && !command('status', '--porcelain'), 'candidate drift');
-  return { reviews, identity: { authors, reviewer: reviewers.at(-1)! }, permissions, support_permissions, legacy_input_binding: e.admission };
+  require(previous === e.candidate &&
+    !ledgerOf(reviews, 'G2', { strict: p.mode === 'strict' }).blocking.length, 'unclosed findings');
+  for (const reviewer of reviewers)
+    require(independence(authors, reviewer) === null, 'review not independent');
+  require(command('rev-parse', 'HEAD') === e.candidate &&
+    !command('status', '--porcelain'), 'candidate drift');
+  return {
+    reviews,
+    identity: { authors, reviewer: reviewers[reviewers.length - 1] },
+    permissions,
+    support_permissions,
+    legacy_input_binding: e.admission,
+  };
 }
 
 function gate(): void {
   const round = Number(env('ROUND'));
   const pick = (k: string): unknown[] =>
     Array.from({ length: round }, (_, i) => json(`${k}${String(i + 1)}`));
-  if (env('RECOVERY_EVIDENCE') && recoveryHash(env('RECOVERY_EVIDENCE')) !== env('RECOVERY_SHA256')) throw new Error('recovery: admission drift');
-  const recovery = env('RECOVERY_EVIDENCE') ? JSON.parse(readFileSync(env('RECOVERY_EVIDENCE'), 'utf8')) as RecoveryEvidence : null;
-  if (recovery && runEvidence().adopted_from_run_id !== recovery.engine_run_id) throw new Error('recovery: execution adoption binding');
-  const reused = recovery ? validateRecovery(recovery, plan(), process.cwd(), env('OPERATOR_ID'), recovery.engine_run_id, runEvidence) : null;
-  const reviews = reused?.reviews ?? pick('R') as (Review | null)[];
+  if (env('RECOVERY_EVIDENCE') && recoveryHash(env('RECOVERY_EVIDENCE')) !== env('RECOVERY_SHA256'))
+    throw new Error('recovery: admission drift');
+  const recovery = env('RECOVERY_EVIDENCE')
+    ? (JSON.parse(readFileSync(env('RECOVERY_EVIDENCE'), 'utf8')) as RecoveryEvidence)
+    : null;
+  if (recovery && runEvidence().adopted_from_run_id !== recovery.engine_run_id)
+    throw new Error('recovery: execution adoption binding');
+  const reused = recovery
+    ? validateRecovery(
+        recovery,
+        plan(),
+        process.cwd(),
+        env('OPERATOR_ID'),
+        recovery.engine_run_id,
+        runEvidence
+      )
+    : null;
+  const reviews = reused?.reviews ?? (pick('R') as (Review | null)[]);
   const rechecks = pick('C') as Accept[];
-  if (recovery && rechecks.at(-1)?.head !== recovery.candidate) throw new Error('recovery: acceptance candidate drift');
+  if (recovery && rechecks.at(-1)?.head !== recovery.candidate)
+    throw new Error('recovery: acceptance candidate drift');
   const tag = env('TAG');
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
@@ -1562,8 +1790,9 @@ function gate(): void {
     strict: plan().mode === 'strict',
     expired: expired(),
     reviewRequired: env('REVIEW') !== '0',
-    permissions: reused?.permissions ?? (
-      env('ARCHON') && !expired()
+    permissions:
+      reused?.permissions ??
+      (env('ARCHON') && !expired()
         ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'))
         : []),
   };
@@ -1588,16 +1817,18 @@ function gate(): void {
     const milestones = plan()
       .packages.filter(p => pkgs.includes(p.id))
       .map(p => p.milestone ?? 'm1');
-    identity = reused?.identity ?? (env('ARCHON')
-      ? {
-          authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
-          reviewer: attemptIdentity(
-            attempts,
-            reviewer,
-            done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding
-          ),
-        }
-      : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } });
+    identity =
+      reused?.identity ??
+      (env('ARCHON')
+        ? {
+            authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
+            reviewer: attemptIdentity(
+              attempts,
+              reviewer,
+              done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding
+            ),
+          }
+        : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } });
   }
   const why = identity ? independence(identity.authors, identity.reviewer) : 'reviewer_unknown';
   if (identity && rechecks.at(-1)?.same) d = decide({ ...decision, qualifiedReview: why === null });
@@ -1641,7 +1872,13 @@ function gate(): void {
     grade: d.verdict === 'pass' ? grade : null,
     risk,
     identity,
-    ...(reused ? { legacy_input_binding: reused.legacy_input_binding, support_permissions: reused.support_permissions, recovery_evidence: env('RECOVERY_EVIDENCE') } : {}),
+    ...(reused
+      ? {
+          legacy_input_binding: reused.legacy_input_binding,
+          support_permissions: reused.support_permissions,
+          recovery_evidence: env('RECOVERY_EVIDENCE'),
+        }
+      : {}),
     milestone: env('MILESTONE'),
     review_file: reviewFile,
     ledger_file: ledgerFile,
