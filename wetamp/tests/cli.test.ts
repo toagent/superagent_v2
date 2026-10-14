@@ -57,8 +57,8 @@ import {
   WETAMP,
 } from '../src/config';
 import { redact } from '../src/redact';
-import { buildWorkflow, engineHash, generate } from '../src/generate';
-import { loadPlan, milestones, type Plan } from '../src/plan';
+import { buildWorkflow, engineHash, generate, renderBrief } from '../src/generate';
+import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { detailOf, redact as boardRedact } from '../src/board/detail';
 import { rowOf } from '../src/board/data';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
@@ -275,6 +275,68 @@ describe('quick', () => {
       });
     }
   });
+  test('card snapshots full instructions and reuses the strict six-round workflow', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      card = join(root, 'card.md');
+    const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SUPERAGENT_WRITE_ROOTS'] as const;
+    const saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, {
+      SUPERAGENT_HOME: join(root, 'sa'),
+      ARCHON_HOME: join(root, 'archon'),
+      SUPERAGENT_WRITE_ROOTS: root,
+    });
+    const brief =
+      '# Task\nProblem, why now, outcome, invariants and acceptance.\n' +
+      'Long context. '.repeat(2000);
+    writeFileSync(card, brief);
+    const args = [
+      'quick',
+      '--card',
+      card,
+      '--repo',
+      repo,
+      '--base',
+      'HEAD',
+      '--accept',
+      'true',
+      '--accept-timeout',
+      '900',
+      '--console',
+      'codex',
+      '--review',
+    ];
+    try {
+      const path = quickPlan(parseArgs(args));
+      writeFileSync(card, 'changed later');
+      const plan = loadPlan(path, [root]);
+      expect(plan.packages[0].notes).toBe(brief);
+      expect(plan.packages[0].goal).toContain('card.md');
+      expect(renderBrief(plan.packages[0], '', capsOf(plan, plan.packages[0]))).toContain(brief);
+      expect(plan.packages[0].title).toBe('card.md');
+      expect(plan.packages[0].accept[0].timeout_s).toBe(900);
+      expect(plan.console).toBe('codex');
+      expect(plan.mode).toBe('strict');
+      expect(milestones(plan)[0].review).toBe(true);
+      const workflow = buildWorkflow(plan, milestones(plan), 'card', '/GEN', true);
+      expect(JSON.stringify(workflow)).toContain('gate-m1-r6');
+      expect(JSON.stringify(workflow)).not.toContain('gate-m1-r7');
+      expect(() => quickPlan(parseArgs([...args, '--goal', 'conflicting']))).toThrow('not both');
+      for (const timeout of ['0', '-1', '1.5', 'NaN', 'Infinity', ''])
+        expect(() => quickPlan(parseArgs([...args, '--accept-timeout', timeout]))).toThrow(
+          '--accept-timeout'
+        );
+      expect(() => quickPlan(parseArgs([...args, '--console', 'other']))).toThrow('--console');
+      writeFileSync(card, ' ');
+      expect(() => quickPlan(parseArgs(args))).toThrow('non-empty');
+      expect(() => quickPlan(parseArgs([...args, '--card', join(root, 'missing')]))).toThrow();
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+  });
   test('missing or empty arguments fail before launch; help advertises quick', () => {
     for (const args of [
       [],
@@ -290,7 +352,7 @@ describe('quick', () => {
     const log = spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       expect(main(['--help'])).toBe(0);
-      expect(String(log.mock.calls[0]?.[0])).toContain('quick --goal');
+      expect(String(log.mock.calls[0]?.[0])).toContain('--card <file>');
     } finally {
       log.mockRestore();
     }

@@ -35,6 +35,8 @@ repo 默认 cwd 所在 git 根，base 默认当前分支，可用 `--repo <path>
 生成的 plan 先校验，保存在 `$SUPERAGENT_HOME/plans/quick-<ts>.json`，再走 run 的同一启动路径；p50 预算与 deadline 预测不足只警告，仅显式 hard 预算执行 budget floor 合计校验。
 默认单包；多包只在可独立验收且可并行或风险不同时拆；不按文件或步骤拆；小活用 quick。
 
+元帅推荐用 `superagent quick --card /path/card.md --accept "bun run test" --accept-timeout 900 --review --console codex --repo /path/repo --base feature-branch --scope "src/**" --json`，再 `superagent wait <run_id> --timeout 1500` 等终态；卡片须含问题、价值、时机、目标、不变量与验收。卡片完整内容冻结进 plan，`--card` 与 `--goal` 互斥；`--accept-timeout` 为每条验收命令的正整数秒数，默认仍为 180。编码、评审、修复复用现有至多 6 轮 workflow，`--review` 使用现有 strict 门禁，实际评审模型必须不同于所有实际作者，不能降级为 `DEGRADED_PASS`；G2 原有自动独立评审不变，模型池只在 `tiers.json` 配置。`--console` 可选，未传保留原来的 Claude 路由；`--repo`/`--base` 可承接已有提交，但引擎仍新建隔离 worktree，不直接复用脏工作区。仅调研等辅助工作用 `job exec`，不要逐轮手工派修复与评审。
+
 ```bash
 superagent run plan.json                 # 立即返回 {run_id, archon_run_id, branch, gen_dir}
 superagent wait <run> --timeout 3000     # 阻塞到终态或需要处理；owner 丢失会自动 recover 后续等

@@ -153,6 +153,8 @@ const OPTIONS = {
   'skip-selftest': { type: 'boolean' }, // Compatibility no-op; diagnostics are explicit.
   'lint-override': { type: 'string' },
   goal: { type: 'string' },
+  'accept-timeout': { type: 'string' },
+  console: { type: 'string' },
   accept: { type: 'string', multiple: true },
   scope: { type: 'string', multiple: true },
   risk: { type: 'string' },
@@ -802,10 +804,24 @@ export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
 
 /** Materialize and validate the ordinary plan contract before using the run launcher. */
 export function quickPlan(a: Args): string {
-  const goal = a.flags.goal;
-  if (!goal?.trim()) throw new Error('quick requires --goal <text>');
+  if (a.flags.card !== undefined && a.flags.goal !== undefined)
+    throw new Error('quick requires either --goal <text> or --card <file>, not both');
+  // Snapshot the full brief into the existing plan so later edits cannot change the run.
+  const card = a.flags.card !== undefined ? readFileSync(a.flags.card, 'utf8') : undefined;
+  const goal =
+    a.flags.card !== undefined
+      ? `执行卡片 ${basename(a.flags.card)}，完整要求见备注。`
+      : a.flags.goal;
+  if (!goal?.trim() || (card !== undefined && !card.trim()))
+    throw new Error('quick requires --goal <text> or a non-empty --card <file>');
   if (!a.flags.accept?.length || a.flags.accept.some(cmd => !cmd.trim()))
     throw new Error('quick requires at least one non-empty --accept <cmd>');
+  const acceptTimeout = Number(a.flags['accept-timeout'] ?? 180);
+  if (!Number.isSafeInteger(acceptTimeout) || acceptTimeout <= 0)
+    throw new Error('quick --accept-timeout must be a positive integer of seconds');
+  const console = a.flags.console;
+  if (console !== undefined && console !== 'codex' && console !== 'claude')
+    throw new Error('quick --console must be codex|claude');
   const risk = a.flags.risk ?? 'G1';
   if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2')
     throw new Error('quick --risk must be G0|G1|G2');
@@ -823,19 +839,23 @@ export function quickPlan(a: Args): string {
   const plan: Plan = {
     repo: git('rev-parse', '--show-toplevel'),
     base_ref: a.flags.base ?? git('symbolic-ref', '--short', 'HEAD'),
+    ...(console !== undefined ? { console } : {}),
+    // An explicitly requested independent review must never land as DEGRADED_PASS.
+    ...(a.flags.review ? { mode: 'strict' as const } : {}),
     budget: { weighted_tokens: 0, unlimited_tokens: true },
     packages: [
       {
         id: 'quick',
-        title: goal,
+        title: a.flags.card !== undefined ? basename(a.flags.card) : goal,
         goal,
+        ...(card !== undefined ? { notes: card } : {}),
         size,
         risk,
         milestone: 'm1',
         scope: { write: a.flags.scope ?? ['**/*'] },
         accept: a.flags.accept.map(cmd => ({
           cmd,
-          timeout_s: 180,
+          timeout_s: acceptTimeout,
           cache: !a.flags['no-cache'],
         })),
         ...(a.flags.review ? { review: true } : {}),
@@ -2574,7 +2594,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick --goal <text> --accept <cmd> [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--skip-selftest] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
