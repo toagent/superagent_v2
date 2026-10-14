@@ -23,8 +23,134 @@ import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
 import {
   resolveNodeBindings,
+  substituteNodeOutputRefs,
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
+
+import { substituteWorkflowVariables } from '../../packages/workflows/src/executor-shared';
+
+test('CONTEXT_PACK runtime code/repair/fix inline fresh bounded source without reinterpreting references', () => {
+  const gen = tmp(),
+    repo = gitRepo(tmp());
+  const p = structuredClone(fixture);
+  p.packages[0].scope = {
+    write: ['range.ts:2-3', 'long.ts', 'new.ts'],
+    read_hint: ['large.ts', 'overflow.ts', '.env.local', 'mykey.ts', '_private/file.ts'],
+  };
+  fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
+  fs.copyFileSync(
+    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+    join(gen, '.archon/scripts/policy-attempts.ts')
+  );
+  fs.copyFileSync(join(WETAMP, 'src/models.ts'), join(gen, '.archon/scripts/native-models.ts'));
+  const checker = join(gen, '.archon/scripts/sa-check.ts');
+  fs.writeFileSync(
+    checker,
+    readFileSync(checker, 'utf8').replace("from '../../../src/models'", "from './native-models'")
+  );
+  fs.writeFileSync(join(gen, 'plan.json'), JSON.stringify(p));
+  fs.writeFileSync(join(gen, 'execution.json'), JSON.stringify(executionTable(p, loadTiers())));
+  fs.mkdirSync(join(gen, 'briefs'));
+  fs.mkdirSync(join(gen, 'hints'));
+  for (const pkg of p.packages)
+    fs.writeFileSync(join(gen, 'briefs', `${pkg.id}.md`), renderBrief(pkg, '', capsOf(p, pkg, [])));
+  fs.writeFileSync(join(gen, 'hints/core.md'), 'HINT_FULL_TEXT');
+  const literal = '$missing.output.field `quoted` "double" $ARTIFACTS_DIR';
+  fs.writeFileSync(join(repo, 'range.ts'), `excluded\n${literal}\nselected\nlast`);
+  fs.writeFileSync(
+    join(repo, 'long.ts'),
+    Array.from({ length: 401 }, (_, i) => `line-${i + 1}`).join('\n')
+  );
+  fs.writeFileSync(join(repo, 'large.ts'), '中'.repeat(15000));
+  fs.writeFileSync(join(repo, 'overflow.ts'), 'OVERFLOW_CONTENT'.repeat(1000));
+  const nodes = nodesOf(buildWorkflow(p, milestones(p), 'pack', gen, false, NOW));
+  const ctx: ShellInputContext = {
+    workflowRun: { id: 'pack', user_message: '', metadata: {} },
+    artifactsDir: gen,
+    stateDir: gen,
+    baseBranch: 'main',
+    docsDir: gen,
+    nodeOutputs: new Map(),
+  };
+  const prompt = (id: string, producerId: string) => {
+    const producer = nodes.find(n => n.id === producerId)!;
+    const run = runAttempt(producer, repo, gen);
+    if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+    expect(run.exitCode).toBe(0);
+    ctx.nodeOutputs.set(producerId, { state: 'completed', output: run.stdout.toString() });
+    const node = nodes.find(n => n.id === id)!;
+    const bindings = resolveNodeBindings(
+      id,
+      { context_node: node.with!.context_node as string },
+      ctx,
+      undefined
+    );
+    const template = readFileSync(
+      join(WETAMP, 'templates/.archon/commands', `${node.command}.md`),
+      'utf8'
+    );
+    expect(template).not.toContain('先读取职责证据指针');
+    expect(template).not.toContain('先完整阅读任务书');
+    expect(template).toContain('$$INPUTS.context_node.output.context_pack');
+    const inputs = {
+      pkg: 'core',
+      brief: '',
+      hint: '',
+      prior_work: '',
+      reason: '',
+      accept_log: '',
+      milestone: 'm1',
+      round: 2,
+      ledger: '',
+      ...bindings,
+    };
+    const substituted = substituteWorkflowVariables(
+      template,
+      'pack',
+      '',
+      gen,
+      'main',
+      gen,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { inputs }
+    ).prompt;
+    return substituteNodeOutputRefs(substituted, ctx.nodeOutputs);
+  };
+  const code = prompt('code-core', 'package-attempt-core');
+  for (const text of [
+    p.packages[0].goal,
+    'HINT_FULL_TEXT',
+    literal,
+    'selected',
+    '已截断：仅前 200 行',
+    '共 401 行',
+    '不存在（可能是待新建文件）',
+    '48KB 上限',
+    '不内联（仓库外或隐私路径）',
+    '"cwd"',
+    '"scope"',
+    '"refs"',
+  ])
+    expect(code).toContain(text);
+  expect(code).toContain('中'.repeat(15000));
+  expect(code).not.toContain('OVERFLOW_CONTENT');
+  expect(code).not.toContain('line-201');
+  fs.writeFileSync(join(repo, 'range.ts'), 'excluded\nREPAIR_CURRENT_SOURCE\nselected\nlast');
+  fs.writeFileSync(join(gen, 'hints/core.md'), 'REPAIR_CURRENT_HINT');
+  const repair = prompt('repair-core', 'repair-context-core');
+  expect(repair).toContain('REPAIR_CURRENT_SOURCE');
+  expect(repair).toContain('REPAIR_CURRENT_HINT');
+  expect(repair).not.toContain(literal);
+  const handoff = nodes.find(n => n.id === 'handoff-m1-r2')!;
+  handoff.with!.work_keys = [];
+  expect(prompt('fix-m1-r2', handoff.id)).toContain('REPAIR_CURRENT_SOURCE');
+  const fake = nodesOf(buildWorkflow(p, milestones(p), 'pack', gen, true, NOW));
+  expect(fake.find(n => n.id === 'code-core')!.bash).toBeDefined();
+  expect(fake.some(n => n.id === 'repair-context-core')).toBe(false);
+});
 
 const fixture = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')
@@ -61,7 +187,10 @@ const runAttempt = (node: N, cwd: string, artifacts: string) =>
         ...process.env,
         ARTIFACTS_DIR: artifacts,
         ...Object.fromEntries(
-          Object.entries(node.with!).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, String(v)])
+          Object.entries(node.with!).map(([k, v]) => [
+            `INPUTS_${k.toUpperCase()}`,
+            Array.isArray(v) ? JSON.stringify(v) : String(v),
+          ])
         ),
       },
       stdout: 'pipe',
@@ -872,25 +1001,48 @@ test.each(['stable', 'dirty-before', 'dirty-during', 'commit-during', 'invalid']
 
 test('ENV_PRECHECK generated helper runs independently with no source checkout imports', () => {
   const root = tmp();
-  const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const, saved = keys.map(k => process.env[k]);
+  const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const,
+    saved = keys.map(k => process.env[k]);
   try {
-    Object.assign(process.env, { SUPERAGENT_HOME: join(root, 'home'), ARCHON_HOME: join(root, 'home/archon') });
+    Object.assign(process.env, {
+      SUPERAGENT_HOME: join(root, 'home'),
+      ARCHON_HOME: join(root, 'home/archon'),
+    });
     install();
-    const repo = gitRepo(root), plan = loadPlan(fixturePlan(root, repo), [root]);
-    const engine = gitRepo(tmp()), clean = coord.cleanEngine;
+    const repo = gitRepo(root),
+      plan = loadPlan(fixturePlan(root, repo), [root]);
+    const engine = gitRepo(tmp()),
+      clean = coord.cleanEngine;
     const boundary = spyOn(coord, 'cleanEngine').mockImplementation(() => clean(engine));
     const validation = spyOn(archon, 'archon').mockReturnValue({ code: 0, out: '', err: '' });
     let gen: ReturnType<typeof generate>;
-    try { gen = generate(plan, 'env-precheck'); } finally { validation.mockRestore(); boundary.mockRestore(); }
+    try {
+      gen = generate(plan, 'env-precheck');
+    } finally {
+      validation.mockRestore();
+      boundary.mockRestore();
+    }
     const source = readFileSync(join(gen.dir, '.archon/scripts/env-precheck.ts'), 'utf8');
     expect(source).not.toContain('../../../src');
-    const p = Bun.spawnSync([process.execPath, '--no-env-file', '-e',
-      `import { envPrecheck } from './.archon/scripts/env-precheck.ts'; console.log(JSON.stringify(envPrecheck(${JSON.stringify(repo)})));`],
-      { cwd: gen.dir, stdout: 'pipe', stderr: 'pipe' });
+    const p = Bun.spawnSync(
+      [
+        process.execPath,
+        '--no-env-file',
+        '-e',
+        `import { envPrecheck } from './.archon/scripts/env-precheck.ts'; console.log(JSON.stringify(envPrecheck(${JSON.stringify(repo)})));`,
+      ],
+      { cwd: gen.dir, stdout: 'pipe', stderr: 'pipe' }
+    );
     expect(p.exitCode, p.stderr.toString()).toBe(0);
-    expect(JSON.parse(p.stdout.toString())).toMatchObject({ ok: true, dependencies: 'not_required' });
+    expect(JSON.parse(p.stdout.toString())).toMatchObject({
+      ok: true,
+      dependencies: 'not_required',
+    });
   } finally {
-    keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+    keys.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k];
+      else process.env[k] = saved[i];
+    });
   }
 });
 

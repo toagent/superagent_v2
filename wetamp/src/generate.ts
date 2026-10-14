@@ -94,6 +94,12 @@ const outputSchema = (
     }
   ).$defs[kind];
 
+// Pack fields are declared only on runtime producers; AI output contracts stay unchanged.
+const contextOutputSchema = (): unknown => {
+  const schema = outputSchema('attempt') as { properties: Record<string, unknown> };
+  return { ...schema, properties: { ...schema.properties, context_pack: { type: 'string' } } };
+};
+
 const READONLY_MCP = 'reviewer-readonly.mcp.json';
 /**
  * Codex 评审节点的 mcp: 文件：只有一个以 tiers 哨兵命名、required 且命令必败的 server。
@@ -303,7 +309,7 @@ export function buildWorkflow(
         ...attemptInputs(attemptPath(gen, `pkg/${p.id}`), p.id),
         depends_on: [prev],
         always_run: true,
-        output_format: outputSchema('attempt'),
+        output_format: contextOutputSchema(),
       });
       // Carry only the initial package attempt; retries keep the native coder and hint binding.
       const carry = carried?.packages.includes(p.id)
@@ -325,7 +331,13 @@ export function buildWorkflow(
             retry: { max_attempts: tiers.policy.auto_retry.coder, on_error: 'transient' },
             model: '@sa-coder',
             ...execution(`code-${p.id}`),
-            with: { pkg: p.id, brief: brief(p), hint: join(gen, 'hints', `${p.id}.md`) },
+            // Defer pack expansion to the prompt's output-ref pass so source refs remain literal.
+            with: {
+              pkg: p.id,
+              brief: brief(p),
+              hint: join(gen, 'hints', `${p.id}.md`),
+              context_node: pkgAttempt,
+            },
           };
       nodes.push({
         id: `code-${p.id}`,
@@ -364,6 +376,16 @@ export function buildWorkflow(
           }
         )
       );
+      const repairContext = `repair-context-${p.id}`;
+      if (!fake)
+        nodes.push({
+          id: repairContext,
+          ...attemptInputs(attemptPath(gen, `pkg/${p.id}`)),
+          with: { counter: attemptPath(gen, `pkg/${p.id}`), gen, context_node: `repair-${p.id}` },
+          depends_on: [verify, pkgAttempt],
+          when: `$${verify}.output.disposition == 'repair'`,
+          output_format: contextOutputSchema(),
+        });
       nodes.push({
         id: `repair-${p.id}`,
         ...(fake
@@ -377,6 +399,7 @@ export function buildWorkflow(
                 pkg: p.id,
                 brief: brief(p),
                 hint: join(gen, 'hints', `${p.id}.md`),
+                context_node: repairContext,
                 prior_work: carry
                   ? { from: `$code-${p.id}.output`, if_skipped: carry }
                   : `$code-${p.id}.output`,
@@ -384,7 +407,7 @@ export function buildWorkflow(
                 accept_log: `$${verify}.output.log`,
               },
             }),
-        depends_on: [verify, pkgAttempt],
+        depends_on: [verify, pkgAttempt, ...(!fake ? [repairContext] : [])],
         when: `$${verify}.output.disposition == 'repair'`,
         output_format: outputSchema('coder'),
       });
@@ -422,6 +445,8 @@ export function buildWorkflow(
             with: {
               counter: attemptPath(gen, m.id),
               gen,
+              context_node: `fix-${t}`,
+              context_packages: covered.map(p => p.id),
               handoff: '1',
               work_keys:
                 r === 2 ? m.packages.flatMap(p => [`code_${p.id}`, `repair_${p.id}`]) : ['fix'],
@@ -449,6 +474,7 @@ export function buildWorkflow(
                 ...execution(`fix-${t}`),
                 with: {
                   prior_work: `$${handoff}.output.handoff`,
+                  context_node: handoff,
                   milestone: m.id,
                   round: r,
                   ledger: `$gate-${before}.output.ledger_file`,

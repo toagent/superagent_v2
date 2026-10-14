@@ -1,15 +1,83 @@
 import { expect, test } from 'bun:test';
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lastJson } from '../src/archon';
 import { executionTable } from '../src/execution';
 import { loadTiers, WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
 import { resolveAcceptanceContext } from '../src/role-context';
-import { prepareContext } from '../templates/.archon/scripts/sa-context';
+import { contextPack, prepareContext, roleContext } from '../templates/.archon/scripts/sa-context';
 import { buildExecNodeEnvironment } from '../../packages/workflows/src/exec-environment';
 import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/src/node-execution';
 import { gitRepo, sh, tmp } from './helpers';
+
+test('CONTEXT_PACK blocks outside/private symlink targets and preserves byte/range boundaries', () => {
+  const gen = tmp(),
+    repo = gitRepo(tmp()),
+    outside = tmp();
+  const plan = JSON.parse(
+    readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
+  ) as Plan;
+  plan.packages[0].scope = {
+    write: [],
+    read_hint: [
+      '../outside.ts',
+      join(outside, 'file.ts'),
+      'alias.ts',
+      'nested/file.ts',
+      'private-alias.ts',
+      '.env.production',
+      'cert.pem',
+      'publickey.ts',
+      '_private/file.ts',
+      'empty.ts',
+      'range.ts:2-2',
+      'full.ts',
+      'over.ts',
+    ],
+  };
+  writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(gen, 'execution.json'), JSON.stringify(executionTable(plan, loadTiers())));
+  mkdirSync(join(gen, 'briefs'));
+  writeFileSync(join(gen, 'briefs/core.md'), 'TASK_BODY');
+  writeFileSync(join(outside, 'file.ts'), 'OUTSIDE_SECRET');
+  mkdirSync(join(repo, '_private'));
+  writeFileSync(join(repo, '_private/file.ts'), 'PRIVATE_SECRET');
+  symlinkSync(join(outside, 'file.ts'), join(repo, 'alias.ts'));
+  symlinkSync(outside, join(repo, 'nested'));
+  symlinkSync(join(repo, '_private/file.ts'), join(repo, 'private-alias.ts'));
+  for (const file of ['.env.production', 'cert.pem', 'publickey.ts'])
+    writeFileSync(join(repo, file), 'CREDENTIAL_SECRET');
+  writeFileSync(join(repo, 'empty.ts'), '');
+  writeFileSync(join(repo, 'range.ts'), 'UNSELECTED\nselected\nUNSELECTED');
+  writeFileSync(join(repo, 'full.ts'), 'x'.repeat(48 * 1024 - 'selected'.length));
+  writeFileSync(join(repo, 'over.ts'), 'OVER_BUDGET');
+  const context = roleContext({
+    gen,
+    artifacts: gen,
+    node: 'code-core',
+    cwd: repo,
+    base: 'base',
+    head: 'head',
+    environment: 'unknown',
+  });
+  const before = sh('git status --porcelain', repo);
+  const pack = contextPack(gen, context);
+  expect(pack).toContain('TASK_BODY');
+  expect(pack).toContain('selected');
+  expect(pack).toContain('共 0 行');
+  expect(pack).toContain('x'.repeat(48 * 1024 - 'selected'.length));
+  expect(pack).toContain('48KB 上限');
+  for (const secret of [
+    'OUTSIDE_SECRET',
+    'PRIVATE_SECRET',
+    'CREDENTIAL_SECRET',
+    'UNSELECTED',
+    'OVER_BUDGET',
+  ])
+    expect(pack).not.toContain(secret);
+  expect(sh('git status --porcelain', repo)).toBe(before);
+});
 
 test('prepared R2 preserves requirements and open carry-over without closed history; immutable bytes', async () => {
   const gen = tmp(),

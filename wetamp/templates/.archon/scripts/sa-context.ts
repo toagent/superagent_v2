@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
 import type { Learning } from '../../../src/learning';
@@ -50,7 +50,7 @@ export function roleContext(input: {
       ...(execution.role === 'review'
       ? { id: p.id, title: p.title, goal: p.goal, notes: p.notes, scope: p.scope,
           accept: p.accept, environment: p.environment }
-      : { id: p.id, brief: join(gen, 'briefs', `${p.id}.md`), hint: join(gen, 'hints', `${p.id}.md`) }),
+      : { id: p.id, scope: p.scope, brief: join(gen, 'briefs', `${p.id}.md`), hint: join(gen, 'hints', `${p.id}.md`) }),
     })),
     coder: input.acceptance?.log
       ? read<unknown>(join(artifacts, `${basename(input.acceptance.log, '.log')}.coder.json`)) : 'unknown',
@@ -71,6 +71,66 @@ export function prepareContext(input: Parameters<typeof roleContext>[0]): string
   return freezeContext(input.artifacts, roleContext(input));
 }
 
+/** Runtime snapshots are reference data, never acceptance or permission evidence. */
+export function contextPack(gen: string, context: RoleContext, packages = context.execution.packages): string {
+  const plan = read<Plan>(join(gen, 'plan.json'));
+  if (plan === 'unknown') throw new Error('context: missing plan');
+  const root = realpathSync(context.cwd);
+  const inside = (path: string) => {
+    const rel = relative(root, path);
+    return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+  };
+  const privatePath = (path: string) => path.split(/[\\/]/).some(part =>
+    part === '_private' || part === '.git' || /^\.env/i.test(part) || /\.pem$/i.test(part) || /key/i.test(part));
+  const sections = ['## 职责 manifest\n' + JSON.stringify({
+    node: context.node, cwd: context.cwd, refs: context.refs, scope: context.execution.scope,
+    environment: context.environment, environment_check: context.environment_check,
+  }, null, 2)];
+  const entries = new Set<string>();
+  for (const p of plan.packages.filter(p => packages.includes(p.id))) {
+    sections.push(`## 任务书 ${p.id}\n` + readFileSync(join(gen, 'briefs', `${p.id}.md`), 'utf8'));
+    const hint = join(gen, 'hints', `${p.id}.md`);
+    if (existsSync(hint)) sections.push(`## hint ${p.id}\n` + readFileSync(hint, 'utf8'));
+    for (const entry of [...p.scope.write, ...(p.scope.read_hint ?? [])]) entries.add(entry);
+  }
+  let used = 0;
+  for (const entry of entries) {
+    const range = /:(\d+)-(\d+)$/.exec(entry);
+    const name = range ? entry.slice(0, range.index) : entry;
+    const path = resolve(root, name);
+    const title = `## 源码 ${entry}`;
+    if (!inside(path) || privatePath(name)) {
+      sections.push(`${title}\n不内联（仓库外或隐私路径）`); continue;
+    }
+    // Resolve symlinks before reading, including aliases to private files/directories.
+    let real: string;
+    try { real = realpathSync(path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      sections.push(`${title}\n不存在（可能是待新建文件）`); continue;
+    }
+    if (!inside(real) || privatePath(relative(root, real))) {
+      sections.push(`${title}\n不内联（仓库外或隐私路径）`); continue;
+    }
+    if (!statSync(real).isFile()) { sections.push(`${title}\n不是普通文件`); continue; }
+    const text = readFileSync(real, 'utf8');
+    const lines = text ? text.split('\n') : [];
+    if (text.endsWith('\n')) lines.pop();
+    const start = range ? Number(range[1]) : 1;
+    const end = range ? Number(range[2]) : lines.length > 400 ? 200 : lines.length;
+    if (start < 1 || (range && end < start)) throw new Error(`context: invalid line range ${entry}`);
+    const source = lines.slice(start - 1, end).join('\n');
+    const bytes = Buffer.byteLength(source);
+    if (used + bytes > 48 * 1024) {
+      sections.push(`${title}\n共 ${lines.length} 行；不内联（48KB 上限）`); continue;
+    }
+    used += bytes;
+    sections.push(`${title}\n共 ${lines.length} 行；行 ${start}-${Math.min(end, lines.length)}` +
+      (!range && lines.length > 400 ? '；已截断：仅前 200 行' : '') + `\n${source}`);
+  }
+  return sections.join('\n\n');
+}
+
 if (import.meta.main) {
   // Native script nodes use the engine's input channel; frozen CLI callers keep positional args.
   const [counter, gen, pkg, review] = process.env.INPUTS_COUNTER !== undefined
@@ -78,7 +138,9 @@ if (import.meta.main) {
     : process.argv.slice(2);
   if (!counter || !gen) throw new Error('context: attempt arguments missing');
   const attempt = String(readAttempt(counter));
-  if (pkg || review) {
+  let pack: string | undefined;
+  const contextNode = process.env.INPUTS_CONTEXT_NODE;
+  if (pkg || review || contextNode) {
     const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { stdout: 'pipe', stderr: 'pipe' });
     if (git.exitCode !== 0) throw new Error(git.stderr.toString());
     if (review) {
@@ -90,6 +152,17 @@ if (import.meta.main) {
       if (context.carry_over === 'unknown') throw new Error('context: missing carry-over');
       if (context.environment !== contextEnvironmentIdentity(process.env))
         throw new Error('context: stale review environment');
+    }
+    if (contextNode || pkg) {
+      const node = contextNode || `code-${pkg}`;
+      const pointer = contextNode?.startsWith('repair-')
+        ? read<{ path: string }>(join(process.env.ARTIFACTS_DIR!, `${node}.context.json`)) : 'unknown';
+      const prepared = pointer === 'unknown' ? 'unknown' : read<RoleContext>(pointer.path);
+      const context = prepared !== 'unknown' ? { ...prepared, cwd: process.cwd() } : roleContext({ gen, artifacts: process.env.ARTIFACTS_DIR!, node,
+        cwd: process.cwd(), base: git.stdout.toString().trim(), head: git.stdout.toString().trim(),
+        environment: contextEnvironmentIdentity(process.env) });
+      pack = contextPack(gen, context, process.env.INPUTS_CONTEXT_PACKAGES
+        ? JSON.parse(process.env.INPUTS_CONTEXT_PACKAGES) as string[] : undefined);
     }
     for (const role of pkg ? ['code'] : []) {
       const node = `${role}-${pkg}`;
@@ -107,5 +180,5 @@ if (import.meta.main) {
           .map(key => [key.toUpperCase(), JSON.parse(process.env[`INPUTS_WORK_${key.replace(/-/g, '_').toUpperCase()}`]!)])),
       })
     : undefined;
-  console.log(JSON.stringify({ attempt, ...(handoff ? { handoff } : {}) }));
+  console.log(JSON.stringify({ attempt, ...(pack !== undefined ? { context_pack: pack } : {}), ...(handoff ? { handoff } : {}) }));
 }
