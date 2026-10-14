@@ -99,5 +99,13 @@ if (import.meta.main) {
       writeFileSync(join(process.env.ARTIFACTS_DIR!, `${node}.context.json`), JSON.stringify({ path }));
     }
   }
-  console.log(JSON.stringify({ attempt }));
+  // Engine-resolved outputs are reference data, never acceptance or permission evidence.
+  const handoff = process.env.INPUTS_HANDOFF === '1'
+    ? freezeContext(process.env.ARTIFACTS_DIR!, {
+        version: 1,
+        work: Object.fromEntries((JSON.parse(process.env.INPUTS_WORK_KEYS!) as string[])
+          .map(key => [key.toUpperCase(), JSON.parse(process.env[`INPUTS_WORK_${key.replace(/-/g, '_').toUpperCase()}`]!)])),
+      })
+    : undefined;
+  console.log(JSON.stringify({ attempt, ...(handoff ? { handoff } : {}) }));
 }

@@ -318,18 +318,19 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: '@sa-coder'
+    model: "@sa-coder"
     effort: medium
     with:
       pkg: core
       brief: /GEN/briefs/core.md
       hint: /GEN/hints/core.md
+      prior_work: $code-core.output
       reason: $verify-core.output.reason
       accept_log: $verify-core.output.log
     depends_on:
       - verify-core
       - package-attempt-core
-    when: $verify-core.output.disposition == 'repair'
+    when: "$verify-core.output.disposition == 'repair'"
     output_format:
       type: object
       properties:
@@ -708,14 +709,35 @@ nodes:
       archon: /GEN/archon
       next: '1'
     trigger_rule: none_failed_min_one_success
+  - id: handoff-m1-r2
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/m1
+      gen: /GEN
+      handoff: "1"
+      work_keys:
+        - code_core
+        - repair_core
+      work_code_core:
+        from: $code-core.output
+        if_skipped: null
+      work_repair_core:
+        from: $repair-core.output
+        if_skipped: null
+    depends_on:
+      - gate-m1-r1
+      - attempt-m1
+    when: "$gate-m1-r1.output.verdict == 'fix'"
   - id: fix-m1-r2
     command: sa-fix
     retry:
       max_attempts: 3
       on_error: transient
-    model: '@sa-coder'
+    model: "@sa-coder"
     effort: medium
     with:
+      prior_work: $handoff-m1-r2.output.handoff
       milestone: m1
       round: 2
       ledger: $gate-m1-r1.output.ledger_file
@@ -725,7 +747,8 @@ nodes:
     depends_on:
       - gate-m1-r1
       - attempt-m1
-    when: $gate-m1-r1.output.verdict == 'fix'
+      - handoff-m1-r2
+    when: "$gate-m1-r1.output.verdict == 'fix'"
     output_format:
       type: object
       properties:
@@ -1082,14 +1105,29 @@ nodes:
       archon: /GEN/archon
       next: '1'
     trigger_rule: none_failed_min_one_success
+  - id: handoff-m1-r3
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/m1
+      gen: /GEN
+      handoff: "1"
+      work_keys:
+        - fix
+      work_fix: $fix-m1-r2.output
+    depends_on:
+      - gate-m1-r2
+      - attempt-m1
+    when: "$gate-m1-r2.output.verdict == 'fix'"
   - id: fix-m1-r3
     command: sa-fix
     retry:
       max_attempts: 3
       on_error: transient
-    model: '@sa-coder'
+    model: "@sa-coder"
     effort: medium
     with:
+      prior_work: $handoff-m1-r3.output.handoff
       milestone: m1
       round: 3
       ledger: $gate-m1-r2.output.ledger_file
@@ -1099,7 +1137,8 @@ nodes:
     depends_on:
       - gate-m1-r2
       - attempt-m1
-    when: $gate-m1-r2.output.verdict == 'fix'
+      - handoff-m1-r3
+    when: "$gate-m1-r2.output.verdict == 'fix'"
     output_format:
       type: object
       properties:
@@ -1720,18 +1759,19 @@ nodes:
     retry:
       max_attempts: 3
       on_error: transient
-    model: '@sa-coder'
+    model: "@sa-coder"
     effort: medium
     with:
       pkg: api
       brief: /GEN/briefs/api.md
       hint: /GEN/hints/api.md
+      prior_work: $code-api.output
       reason: $verify-api.output.reason
       accept_log: $verify-api.output.log
     depends_on:
       - verify-api
       - package-attempt-api
-    when: $verify-api.output.disposition == 'repair'
+    when: "$verify-api.output.disposition == 'repair'"
     output_format:
       type: object
       properties:
@@ -2109,14 +2149,35 @@ nodes:
       tag: gate-m2-r1
       archon: /GEN/archon
     trigger_rule: none_failed_min_one_success
+  - id: handoff-m2-r2
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/m2
+      gen: /GEN
+      handoff: "1"
+      work_keys:
+        - code_api
+        - repair_api
+      work_code_api:
+        from: $code-api.output
+        if_skipped: null
+      work_repair_api:
+        from: $repair-api.output
+        if_skipped: null
+    depends_on:
+      - gate-m2-r1
+      - attempt-m2
+    when: "$gate-m2-r1.output.verdict == 'fix'"
   - id: fix-m2-r2
     command: sa-fix
     retry:
       max_attempts: 3
       on_error: transient
-    model: '@sa-coder'
+    model: "@sa-coder"
     effort: medium
     with:
+      prior_work: $handoff-m2-r2.output.handoff
       milestone: m2
       round: 2
       ledger: $gate-m2-r1.output.ledger_file
@@ -2126,7 +2187,8 @@ nodes:
     depends_on:
       - gate-m2-r1
       - attempt-m2
-    when: $gate-m2-r1.output.verdict == 'fix'
+      - handoff-m2-r2
+    when: "$gate-m2-r1.output.verdict == 'fix'"
     output_format:
       type: object
       properties:
@@ -2482,14 +2544,29 @@ nodes:
       tag: gate-m2-r2
       archon: /GEN/archon
     trigger_rule: none_failed_min_one_success
+  - id: handoff-m2-r3
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/m2
+      gen: /GEN
+      handoff: "1"
+      work_keys:
+        - fix
+      work_fix: $fix-m2-r2.output
+    depends_on:
+      - gate-m2-r2
+      - attempt-m2
+    when: "$gate-m2-r2.output.verdict == 'fix'"
   - id: fix-m2-r3
     command: sa-fix
     retry:
       max_attempts: 3
       on_error: transient
-    model: '@sa-coder'
+    model: "@sa-coder"
     effort: medium
     with:
+      prior_work: $handoff-m2-r3.output.handoff
       milestone: m2
       round: 3
       ledger: $gate-m2-r2.output.ledger_file
@@ -2499,7 +2576,8 @@ nodes:
     depends_on:
       - gate-m2-r2
       - attempt-m2
-    when: $gate-m2-r2.output.verdict == 'fix'
+      - handoff-m2-r3
+    when: "$gate-m2-r2.output.verdict == 'fix'"
     output_format:
       type: object
       properties:

@@ -1040,3 +1040,129 @@ test('delivery defaults: no deadline survives >24h and preserves explicit human 
     )
   ).toThrow(/already passed/);
 });
+
+test('role efficiency handoff resolves prior work without model calls or skipped-branch guesses', () => {
+  const gen = tmp();
+  const nodes = nodesOf(buildWorkflow(fixture, milestones(fixture), 'handoff', gen, false, NOW));
+  const handoff = nodes.find(n => n.id === 'handoff-m1-r2')!;
+  const work = {
+    status: 'done',
+    changed_files: ['core.txt'],
+    quick_checks: [{ cmd: 'test -f core.txt', exit: 0 }],
+    notes: '$HOME `literal`',
+    deviations: [],
+    needs: [],
+  };
+  const ctx: ShellInputContext = {
+    workflowRun: { id: 'handoff', user_message: '', metadata: {} },
+    artifactsDir: gen,
+    stateDir: '',
+    baseBranch: '',
+    docsDir: '',
+    nodeOutputs: new Map<
+      string,
+      ShellInputContext['nodeOutputs'] extends Map<string, infer V> ? V : never
+    >([
+      [
+        'code-core',
+        { state: 'completed' as const, output: JSON.stringify(work), structuredOutput: work },
+      ],
+      [
+        'repair-core',
+        { state: 'skipped' as const, output: '', cause: { kind: 'condition', expr: 'false' } },
+      ],
+    ]),
+  };
+  const bound = resolveNodeBindings(
+    handoff.id,
+    handoff.with as Parameters<typeof resolveNodeBindings>[1],
+    ctx,
+    undefined
+  );
+  expect(bound.work_code_core).toEqual(work);
+  expect(bound.work_repair_core).toBeNull();
+  const result = Bun.spawnSync(
+    [
+      process.execPath,
+      '--no-env-file',
+      'run',
+      join(WETAMP, 'templates/.archon/scripts/sa-context.ts'),
+    ],
+    {
+      cwd: gen,
+      env: {
+        ...process.env,
+        ARTIFACTS_DIR: gen,
+        ...Object.fromEntries(
+          Object.entries(bound).map(([k, v]) => [
+            `INPUTS_${k.toUpperCase()}`,
+            typeof v === 'object' ? JSON.stringify(v) : String(v),
+          ])
+        ),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }
+  );
+  expect(result.stderr.toString()).toBe('');
+  expect(result.exitCode).toBe(0);
+  const path = JSON.parse(result.stdout.toString()).handoff;
+  expect(JSON.parse(readFileSync(path, 'utf8')).work).toEqual({
+    CODE_CORE: work,
+    REPAIR_CORE: null,
+  });
+  expect(handoff.command).toBeUndefined();
+  expect(nodes.find(n => n.id === 'fix-m1-r2')?.with?.prior_work).toBe(
+    '$handoff-m1-r2.output.handoff'
+  );
+  expect(nodes.find(n => n.id === 'repair-core')?.with?.prior_work).toBe('$code-core.output');
+  expect(nodes.find(n => n.id === 'handoff-m1-r3')?.with?.work_fix).toBe('$fix-m1-r2.output');
+  ctx.nodeOutputs.set('repair-core', { state: 'failed', output: '', error: 'fixture failure' });
+  expect(() =>
+    resolveNodeBindings(
+      handoff.id,
+      handoff.with as Parameters<typeof resolveNodeBindings>[1],
+      ctx,
+      undefined
+    )
+  ).toThrow('failed');
+});
+
+test('role efficiency preserves ordinary, explicit review, G2 and strict gates and routed effort', () => {
+  for (const [risk, mode, review, needed] of [
+    ['G1', undefined, false, false],
+    ['G1', undefined, true, true],
+    ['G2', undefined, false, true],
+    ['G1', 'strict', false, true],
+  ] as const) {
+    const p = structuredClone(fixture);
+    p.packages = [{ ...p.packages[0], risk, review }];
+    if (mode) p.mode = mode;
+    const ms = milestones(p);
+    const nodes = nodesOf(buildWorkflow(p, ms, 'roles', '/GEN', false, NOW));
+    const condition = nodes.find(n => n.id === 'review-m1-r1')!.when!;
+    expect(
+      evaluateCondition(
+        condition,
+        new Map([
+          [
+            'diff-m1-r1',
+            { state: 'completed', output: JSON.stringify({ disposition: 'advance', risk }) },
+          ],
+        ])
+      ).result
+    ).toBe(needed);
+    expect(nodes.filter(n => n.command).map(n => n.command)).toEqual([
+      'sa-code',
+      'sa-repair',
+      'sa-review',
+      'sa-fix',
+      'sa-review-delta',
+      'sa-fix',
+      'sa-review-delta',
+    ]);
+    expect(nodes.find(n => n.id === 'fix-m1-r2')?.when).toBe("$gate-m1-r1.output.verdict == 'fix'");
+    expect(nodes.find(n => n.id === 'verify-core')?.with?.kind).toBe('accept');
+    expect(nodes.find(n => n.id === 'settle-core')?.with?.kind).toBe('settle');
+  }
+});

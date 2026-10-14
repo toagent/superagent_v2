@@ -377,6 +377,9 @@ export function buildWorkflow(
                 pkg: p.id,
                 brief: brief(p),
                 hint: join(gen, 'hints', `${p.id}.md`),
+                prior_work: carry
+                  ? { from: `$code-${p.id}.output`, if_skipped: carry }
+                  : `$code-${p.id}.output`,
                 reason: `$${verify}.output.reason`,
                 accept_log: `$${verify}.output.log`,
               },
@@ -411,6 +414,30 @@ export function buildWorkflow(
       const t = `${m.id}-r${String(r)}`;
       const before = `${m.id}-r${String(r - 1)}`;
       if (r > 1) {
+        const handoff = `handoff-${t}`;
+        if (!fake) {
+          nodes.push({
+            id: handoff,
+            ...attemptInputs(attemptPath(gen, m.id)),
+            with: {
+              counter: attemptPath(gen, m.id),
+              gen,
+              handoff: '1',
+              work_keys:
+                r === 2 ? m.packages.flatMap(p => [`code_${p.id}`, `repair_${p.id}`]) : ['fix'],
+              ...(r === 2
+                ? Object.fromEntries(
+                    m.packages.flatMap(p => [
+                      [`work_code_${p.id}`, skippable(`$code-${p.id}.output`)],
+                      [`work_repair_${p.id}`, skippable(`$repair-${p.id}.output`)],
+                    ])
+                  )
+                : { work_fix: `$fix-${before}.output` }),
+            },
+            depends_on: [prev, attempt],
+            when: `$gate-${before}.output.verdict == 'fix'`,
+          });
+        }
         nodes.push({
           id: `fix-${t}`,
           ...(fake
@@ -421,6 +448,7 @@ export function buildWorkflow(
                 model: '@sa-coder',
                 ...execution(`fix-${t}`),
                 with: {
+                  prior_work: `$${handoff}.output.handoff`,
                   milestone: m.id,
                   round: r,
                   ledger: `$gate-${before}.output.ledger_file`,
@@ -429,7 +457,7 @@ export function buildWorkflow(
                   hints: join(gen, 'hints'),
                 },
               }),
-          depends_on: [prev, attempt],
+          depends_on: fake ? [prev, attempt] : [prev, attempt, handoff],
           when: `$gate-${before}.output.verdict == 'fix'`,
           output_format: outputSchema('coder'),
         });

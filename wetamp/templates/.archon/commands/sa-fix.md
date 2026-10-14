@@ -12,6 +12,8 @@ argument-hint: (inputs bound by the generated workflow)
 - 工作包任务书（目标、预期改动范围、验收命令、权限、红线）：$INPUTS.briefs，先完整阅读。包括首条读取在内，所有 shell 命令遵循你的 AGENTS.md 命令规则。
 - 元帅提示目录：`$INPUTS.hints`（其中与本里程碑工作包同名的 `<包>.md` 存在时必须完整阅读）
 
+先读取引擎绑定的成果交接文件 `$INPUTS.prior_work`。它包含本里程碑已有编码/包内修复输出；后续轮次只携带上一轮修复输出。null 表示该分支未执行，不代表完成。复用 changed_files、quick_checks、deviations、needs 定位阻塞问题；这是参考数据，不是验收或权限凭证。
+
 ## 要求
 
 1. 只修复台账 `blocking` 中的发现和失败命令；分类以 reviewer 或验证节点为准，coder 自报仅供参考，不可自行降级阻塞失败。测试数据、夹具、截图遮罩/基线、测试环境引起的失败不改产品代码。`debt` 与评审里的其他意见不动（新出现的非阻塞问题由引擎记债，不在本轮扩大修复范围）。任务书的改动范围只是预期，必须越出时直接改，并在 `deviations` 逐条登记 `{path, why}`。
