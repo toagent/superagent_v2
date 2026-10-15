@@ -96,7 +96,7 @@ const outputSchema = (
 // Pack fields are declared only on runtime producers; AI output contracts stay unchanged.
 const contextOutputSchema = (): unknown => {
   const schema = outputSchema('attempt') as { properties: Record<string, unknown> };
-  return { ...schema, properties: { ...schema.properties, context_pack: { type: 'string' } } };
+  return { ...schema, properties: { ...schema.properties, context_pack_path: { type: 'string' } } };
 };
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;

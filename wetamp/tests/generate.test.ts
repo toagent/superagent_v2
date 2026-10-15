@@ -28,9 +28,7 @@ import {
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
 
-import { substituteWorkflowVariables } from '../../packages/workflows/src/executor-shared';
-
-test('CONTEXT_PACK runtime code/repair/fix inline fresh bounded source without reinterpreting references', () => {
+test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through stable attempt paths', () => {
   const gen = tmp(),
     repo = gitRepo(tmp());
   const p = structuredClone(fixture);
@@ -59,61 +57,81 @@ test('CONTEXT_PACK runtime code/repair/fix inline fresh bounded source without r
   fs.writeFileSync(join(repo, 'large.ts'), '中'.repeat(15000));
   fs.writeFileSync(join(repo, 'overflow.ts'), 'OVERFLOW_CONTENT'.repeat(1000));
   const nodes = nodesOf(buildWorkflow(p, milestones(p), 'pack', gen, false, NOW));
-  const ctx: ShellInputContext = {
-    workflowRun: { id: 'pack', user_message: '', metadata: {} },
-    artifactsDir: gen,
-    stateDir: gen,
-    baseBranch: 'main',
-    docsDir: gen,
-    nodeOutputs: new Map(),
-  };
   const prompt = (id: string, producerId: string) => {
     const producer = nodes.find(n => n.id === producerId)!;
     const run = runAttempt(producer, repo, gen);
     if (run.exitCode !== 0) throw new Error(run.stderr.toString());
     expect(run.exitCode).toBe(0);
-    ctx.nodeOutputs.set(producerId, { state: 'completed', output: run.stdout.toString() });
     const node = nodes.find(n => n.id === id)!;
-    const bindings = resolveNodeBindings(
-      id,
-      { context_node: node.with!.context_node as string },
-      ctx,
-      undefined
-    );
     const template = readFileSync(
       join(WETAMP, 'templates/.archon/commands', `${node.command}.md`),
       'utf8'
     );
     expect(template).not.toContain('先读取职责证据指针');
     expect(template).not.toContain('先完整阅读任务书');
-    expect(template).toContain('$$INPUTS.context_node.output.context_pack');
-    const inputs = {
-      pkg: 'core',
-      brief: '',
-      hint: '',
-      prior_work: '',
-      reason: '',
-      accept_log: '',
-      milestone: 'm1',
-      round: 2,
-      ledger: '',
-      ...bindings,
-    };
-    const substituted = substituteWorkflowVariables(
-      template,
-      'pack',
-      '',
-      gen,
-      'main',
-      gen,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { inputs }
-    ).prompt;
-    return substituteNodeOutputRefs(substituted, ctx.nodeOutputs);
+    expect(template).toContain('$$INPUTS.context_node.output.context_pack_path');
+    return readFileSync(JSON.parse(run.stdout.toString()).context_pack_path, 'utf8');
   };
+  const attempts = nodes.filter(n => n.id.startsWith('package-attempt-'));
+  const before = attempts.map(n => runAttempt(n, repo, gen).stdout.toString());
+  sh('git add range.ts long.ts large.ts overflow.ts && git commit -qm candidate', repo);
+  expect(attempts.map(n => runAttempt(n, repo, gen).stdout.toString())).toEqual(before);
+  const calls = join(gen, 'calls'),
+    input = join(gen, 'input');
+  fs.writeFileSync(input, 'initial');
+  const workflow = {
+    name: 'stable-pack',
+    description: 'Native resume invalidation',
+    nodes: [
+      { id: 'input', bash: `cat '${input}'`, always_run: true },
+      ...attempts.flatMap((n, i) => [
+        { ...n, depends_on: [i ? 'code-core' : 'input'] },
+        {
+          id: `code-${p.packages[i].id}`,
+          depends_on: [i ? 'code-core' : 'input', n.id],
+          bash: `echo ${p.packages[i].id} >> '${calls}'; cat '${input}'`,
+        },
+      ]),
+      { id: 'gate', depends_on: ['code-api'], bash: 'exit 1' },
+    ],
+  };
+  fs.mkdirSync(join(gen, '.archon/workflows'), { recursive: true });
+  fs.writeFileSync(join(gen, '.archon/workflows/stable-pack.yaml'), Bun.YAML.stringify(workflow));
+  const env = fixtureEnv({
+    SUPERAGENT_HOME: join(gen, 'home'),
+    ARCHON_HOME: join(gen, 'home/archon'),
+  });
+  const invoke = (...args: string[]) => workflowCli(repo, env, ...args);
+  const ack = invoke(
+    'run',
+    'stable-pack',
+    '--workflow-source',
+    gen,
+    '--cwd',
+    repo,
+    '--no-worktree',
+    '--detach'
+  );
+  const runId = String(ack?.runId);
+  const count = () => readFileSync(calls, 'utf8').trim().split('\n');
+  const counter = attemptPath(gen, 'pkg/api');
+  fs.mkdirSync(join(counter, '..'), { recursive: true });
+  let resumed = false;
+  for (const [change, expected] of [
+    [() => {}, ['core', 'api']],
+    [() => sh('git commit --allow-empty -qm resume', repo), ['core', 'api']],
+    [() => fs.writeFileSync(counter, '1'), ['core', 'api', 'api']],
+    [
+      () => fs.writeFileSync(input, 'changed upstream candidate'),
+      ['core', 'api', 'api', 'core', 'api'],
+    ],
+  ] as const) {
+    change();
+    if (resumed) invoke('resume', runId, '--detach');
+    resumed = true;
+    invoke('wait', runId, '--timeout', '20');
+    expect(count()).toEqual([...expected]);
+  }
   const code = prompt('code-core', 'package-attempt-core');
   for (const text of [
     p.packages[0].goal,
@@ -135,6 +153,24 @@ test('CONTEXT_PACK runtime code/repair/fix inline fresh bounded source without r
   expect(code).not.toContain('line-201');
   fs.writeFileSync(join(repo, 'range.ts'), 'excluded\nREPAIR_CURRENT_SOURCE\nselected\nlast');
   fs.writeFileSync(join(gen, 'hints/core.md'), 'REPAIR_CURRENT_HINT');
+  const evidence: ShellInputContext['nodeOutputs'] = new Map([
+    ['code-core', { state: 'completed', output: '{"changed_files":["range.ts"]}' }],
+    [
+      'verify-core',
+      { state: 'completed', output: '{"reason":"product_failure","log":"/failure.log"}' },
+    ],
+  ]);
+  for (const [field, expected] of Object.entries({
+    prior_work: '{"changed_files":["range.ts"]}',
+    reason: 'product_failure',
+    accept_log: '/failure.log',
+  }))
+    expect(
+      substituteNodeOutputRefs(
+        String(nodes.find(n => n.id === 'repair-core')!.with![field]),
+        evidence
+      )
+    ).toBe(expected);
   const repair = prompt('repair-core', 'repair-context-core');
   expect(repair).toContain('REPAIR_CURRENT_SOURCE');
   expect(repair).toContain('REPAIR_CURRENT_HINT');
@@ -145,7 +181,7 @@ test('CONTEXT_PACK runtime code/repair/fix inline fresh bounded source without r
   const fake = nodesOf(buildWorkflow(p, milestones(p), 'pack', gen, true, NOW));
   expect(fake.find(n => n.id === 'code-core')!.bash).toBeDefined();
   expect(fake.some(n => n.id === 'repair-context-core')).toBe(false);
-});
+}, 30_000);
 
 const fixture = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')
@@ -219,22 +255,8 @@ test('NO_QUOTA bash nodes ignore inherited BASH_ENV startup failures', () => {
     SUPERAGENT_HOME: join(root, 'home'),
     ARCHON_HOME: join(root, 'home/archon'),
   };
-  const invoke = (...args: string[]) => {
-    const result = Bun.spawnSync(
-      [process.execPath, '--no-env-file', join(WETAMP, 'src/coord/archon-entry.ts'), ...args],
-      {
-        cwd: repo,
-        env,
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: 30_000,
-      }
-    );
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    return lastJson(result.stdout.toString());
-  };
+  const invoke = (...args: string[]) => workflowCli(repo, env, ...args);
   const ack = invoke(
-    'workflow',
     'run',
     'no-quota',
     '--workflow-source',
@@ -242,15 +264,30 @@ test('NO_QUOTA bash nodes ignore inherited BASH_ENV startup failures', () => {
     '--cwd',
     repo,
     '--no-worktree',
-    '--detach',
-    '--json'
+    '--detach'
   );
-  const waited = invoke('workflow', 'wait', String(ack?.runId), '--timeout', '20', '--json');
+  const waited = invoke('wait', String(ack?.runId), '--timeout', '20');
   expect(waited).toMatchObject({ attention: { status: 'completed' } });
-  const view = invoke('workflow', 'get', String(ack?.runId), '--json');
+  const view = invoke('get', String(ack?.runId));
   expect(view).toMatchObject({ status: 'completed' });
   expect(existsSync(marker)).toBe(false);
 });
+
+const workflowCli = (cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) => {
+  const result = Bun.spawnSync(
+    [
+      process.execPath,
+      '--no-env-file',
+      join(WETAMP, 'src/coord/archon-entry.ts'),
+      'workflow',
+      ...args,
+      '--json',
+    ],
+    { cwd, env, stdout: 'pipe', stderr: 'pipe', timeout: 30_000 }
+  );
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  return lastJson(result.stdout.toString());
+};
 
 const runAttempt = (node: N, cwd: string, artifacts: string) =>
   Bun.spawnSync(

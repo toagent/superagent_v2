@@ -273,7 +273,7 @@ if (import.meta.main) {
         : process.argv.slice(2);
     if (!counter || !gen) throw new Error('context: attempt arguments missing');
     const attempt = String(readAttempt(counter));
-    let pack: string | undefined;
+    let packPath: string | undefined;
     const contextNode = process.env.INPUTS_CONTEXT_NODE;
     const artifacts = process.env.ARTIFACTS_DIR ?? '';
     if (!artifacts && (pkg || review || contextNode || process.env.INPUTS_HANDOFF === '1'))
@@ -342,26 +342,22 @@ if (import.meta.main) {
                 head: git.stdout.toString().trim(),
                 environment: environmentIdentity(projectEnvironment(process.env)),
               });
-        pack = contextPack(
-          gen,
-          context,
-          process.env.INPUTS_CONTEXT_PACKAGES
-            ? (JSON.parse(process.env.INPUTS_CONTEXT_PACKAGES) as string[])
-            : undefined
+        if (pkg) {
+          const path = freezeContext(artifacts, context);
+          writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path }));
+        }
+        packPath = join(artifacts, 'contexts', `${node}.md`);
+        mkdirSync(dirname(packPath), { recursive: true });
+        writeFileSync(
+          packPath,
+          contextPack(
+            gen,
+            context,
+            process.env.INPUTS_CONTEXT_PACKAGES
+              ? (JSON.parse(process.env.INPUTS_CONTEXT_PACKAGES) as string[])
+              : undefined
+          )
         );
-      }
-      for (const role of pkg ? ['code'] : []) {
-        const node = `${role}-${pkg}`;
-        const path = prepareContext({
-          gen,
-          artifacts: artifacts,
-          node,
-          cwd: process.cwd(),
-          base: git.stdout.toString().trim(),
-          head: git.stdout.toString().trim(),
-          environment: environmentIdentity(projectEnvironment(process.env)),
-        });
-        writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path }));
       }
     }
     // Engine-resolved outputs are reference data, never acceptance or permission evidence.
@@ -382,7 +378,7 @@ if (import.meta.main) {
     console.log(
       JSON.stringify({
         attempt,
-        ...(pack !== undefined ? { context_pack: pack } : {}),
+        ...(packPath !== undefined ? { context_pack_path: packPath } : {}),
         ...(handoff ? { handoff } : {}),
       })
     );
