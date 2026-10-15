@@ -487,6 +487,17 @@ export function scopeRisk(
   return { risk: maxRisk(declared, out_of_scope.length ? 'G2' : 'G0', ...inferred), out_of_scope };
 }
 
+/** Shared with land's read-only reuse probe; a commit binds the accepted tree. */
+// prettier-ignore
+export function acceptanceContractHash(): string {
+  return sha(JSON.stringify([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
+}
+// prettier-ignore
+export function reusableAcceptance(prior: Accept | undefined, head: string): boolean {
+  const checks = plan().packages.filter(k => env('PKGS').split(',').includes(k.id)).flatMap(k => k.accept);
+  return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) && prior.command_results?.every(r => r.pass === true) === true;
+}
+
 /** 一次验收：coder 处置 + 命令 + 干净工作区；有 BASE 时另存全量 patch、相对 DELTA_BASE 的增量 patch 与交付范围。 */
 function acceptOnce(
   tag: string,
@@ -606,17 +617,7 @@ function acceptOnce(
     delta,
     no_changes: noChanges,
     diff_hash: hash,
-    contract_hash: sha(
-      JSON.stringify([
-        p,
-        ids,
-        scopeIds,
-        base,
-        env('RISK'),
-        environmentIdentity(projectEnvironment(process.env)),
-        env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null,
-      ])
-    ),
+    contract_hash: acceptanceContractHash(),
     // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
     base_results: baseResults,
