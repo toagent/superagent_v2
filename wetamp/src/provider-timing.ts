@@ -83,8 +83,11 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     const terminals = group.rows.filter(r => r.event_type !== 'provider_event');
     const terminal = terminals.length === 1 ? terminals[0] : undefined;
     const missing = raw.length ? 'unknown' : providerMetricMissing(terminal?.data);
-    const silence = complete ? unique.slice(1).reduce<{ start: string; ms: number; end: ProviderEventEnvelope['event'] } | undefined>((best, e, i) => {
-      const start = unique[i].observedAt, ms = utcClock(e.observedAt) - utcClock(start);
+    // Boundary summaries must not hide the warning or lifecycle event that ends silence.
+    const boundaries = unique.filter(e => !(e.event.type === 'state_update' &&
+      e.event.state === 'running' && e.event.progress));
+    const silence = complete ? boundaries.slice(1).reduce<{ start: string; ms: number; end: ProviderEventEnvelope['event'] } | undefined>((best, e, i) => {
+      const start = boundaries[i].observedAt, ms = utcClock(e.observedAt) - utcClock(start);
       return !best || ms > best.ms ? { start, ms, end: e.event } : best;
     }, undefined) : undefined;
     const longGaps = complete ? unique.slice(1).flatMap((e, i) => {
