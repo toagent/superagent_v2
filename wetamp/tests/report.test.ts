@@ -17,6 +17,7 @@ import {
   criticalPath,
   demandStats,
   firstPassOf,
+  planOf,
   cancellationStats,
 } from '../src/report';
 import type { Job } from '../src/jobs';
@@ -106,39 +107,29 @@ describe('F-22 report', () => {
       const summary = reportSummary(buildReport([]));
       expect(summary).toMatchObject({
         demands: {
-          by_request: {
-            'plan-external': {
-              jobs: { inferred: 1, unknown: 0 },
-              investment: { status: 'known', input: 100, fees: 0.25 },
-            },
-          },
+          denominator: 0,
+          by_request: {},
+          unattributed: { jobs: 1, input: 100, fees: 0.25 },
         },
       });
       writeFileSync(join(root, 'jobs/missing.json'), JSON.stringify({ ...job, id: 'missing' }));
       expect(reportSummary(buildReport([]))).toMatchObject({
         demands: {
-          by_request: {
-            'plan-external': {
-              jobs: { inferred: 1, unknown: 1 },
-              investment: {
-                status: 'unknown',
-                input: 'unknown',
-                fees: 'unknown',
-                known_tokens: { input: 100 },
-                coverage: '1/2',
-              },
-            },
+          denominator: 0,
+          unattributed: {
+            jobs: 2,
+            status: 'unknown',
+            input: 'unknown',
+            known_tokens: { input: 100 },
+            coverage: '1/2',
           },
         },
       });
       expect(readFileSync(known, 'utf8')).toBe(before);
       expect(demandStats([], [], [], [{ ...job, id: 'missing' }])).toMatchObject({
-        by_request: {
-          'plan-external': {
-            jobs: { inferred: 0, unknown: 1 },
-            investment: { input: 'unknown', fees: 'unknown', coverage: '0/1' },
-          },
-        },
+        denominator: 0,
+        by_request: {},
+        unattributed: { input: 'unknown', fees: 'unknown', coverage: '0/1' },
       });
     } finally {
       keys.forEach((k, i) => {
@@ -173,13 +164,9 @@ describe('F-22 report', () => {
     };
     const jobs = [{ id: 'old', kind: 'codex' }] as Job[];
     expect(demandStats([], [], [session], jobs)).toMatchObject({
-      by_request: {
-        'plan-external': {
-          jobs: { inferred: 1, unknown: 0 },
-          investment: { input: 100, fees: 1, coverage: '1/1' },
-        },
-      },
-      unattributed: { input: 'unknown' },
+      denominator: 0,
+      by_request: {},
+      unattributed: { jobs: 1, input: 100, fees: 1, coverage: '1/1' },
     });
     const conflict = {
       id: 'other',
@@ -188,7 +175,7 @@ describe('F-22 report', () => {
       session_id: session.id,
     } as Job;
     const demands = demandStats([], [], [session], [...jobs, conflict]);
-    for (const ref of ['plan-external', 'other'])
+    for (const ref of ['other'])
       expect(demands).toMatchObject({
         by_request: {
           [ref]: {
@@ -423,7 +410,7 @@ describe('F-22 report', () => {
     }
   });
 
-  test('cancel summaries use only successful explicit reasons; historical errors are unrecorded', () => {
+  test('cancel summaries prioritize successful events and fall back to deadline', () => {
     const pair = (status: string, events?: Ledger['intervention_events']) =>
       ({
         ledger: { intervention_events: events, reason: 'deadline' },
@@ -440,7 +427,7 @@ describe('F-22 report', () => {
         ]),
         pair('completed'),
       ])
-    ).toEqual({ unrecorded: 2, superseded: 1 });
+    ).toEqual({ deadline: 2, superseded: 1 });
   });
   // prettier-ignore
   test('attempt receipts sum retries; registered holds exclude inter-node idle and review reasons stay explicit', () => {
@@ -1024,15 +1011,14 @@ describe('F-22 report', () => {
     ev('node_started', 'code-core'),
     ev('node_completed', 'code-core'),
     ev('node_failed', 'review-m2-r1', { provider_failure: { class: 'vendor_unavailable' } }),
-    ev(
-      'node_completed',
-      'review-m2-r1',
-      provider('claude-x', { input: 100, output: 10, cacheRead: 60 })
-    ),
+    ev('node_completed', 'review-m2-r1', {
+      ...provider('claude-x', { input: 100, output: 10, cacheRead: 60 }),
+      attempt: { id: 'review-second', startedAt: '2026-10-10T00:00:02.000Z' },
+    }),
     ev('node_completed', 'repair-api'),
-    // 条件跳过（无 binding.model）与 resume 沿用的 prior_success（无 attempt）不是调用
+    // 条件跳过与 resume 沿用的 prior_success（无 attempt）不是调用
     {
-      event_type: 'node_completed',
+      event_type: 'node_skipped',
       step_name: 'fix-m1-r2',
       data: { attempt: { id: 'x' }, binding: {} },
     },
@@ -1041,7 +1027,7 @@ describe('F-22 report', () => {
   ];
   const calls = callsOf('r1', events, plan);
 
-  test('one call per terminal AI event with milestone, role, attempt, model identity and failure class', () => {
+  test('one call per AI attempt with milestone, role, model identity and failure class', () => {
     expect(calls.map(c => [c.node, c.milestone, c.role, c.attempt, c.model, c.failure])).toEqual([
       ['code-core', 'm1', 'code', 1, 'm-req(pinned)', null],
       ['review-m2-r1', 'm2', 'review', 1, 'm-req(pinned)', 'vendor_unavailable'],
@@ -1081,7 +1067,7 @@ describe('F-22 report', () => {
   });
 });
 
-test('engine comparison matches nearest three once, isolates strata and preserves unknowns', () => {
+test('engine comparison uses disjoint nearest matches and requires both cohorts', () => {
   const row = (id: string, newer: boolean, diff: number): EngineRow => ({
     id,
     newer,
@@ -1105,19 +1091,16 @@ test('engine comparison matches nearest three once, isolates strata and preserve
   const report = (patch: Partial<EngineRow> = {}) =>
     engineComparison([...old, ...fresh.map(r => ({ ...r, ...patch }))]);
   expect(report().size_matched).toMatchObject({
-    old: { runs: 3, tokens: 10 },
-    new: { runs: 15 },
-    unmatched: 0,
+    old: { runs: 5, tokens: 26.2 },
+    new: { runs: 2 },
+    unmatched: 13,
   });
-  expect(report().verdict).toBe('unproven');
-  expect(report({ adjusted: 75 }).verdict).toBe('improved');
-  expect(report({ adjusted: 106 }).verdict).toBe('regressed');
-  expect(report({ tokens: 11 }).verdict).toBe('regressed');
-  expect(report({ first: false }).verdict).toBe('regressed');
+  expect(report().verdict).toBe('insufficient_sample');
+  expect(report({ adjusted: 75 }).verdict).toBe('insufficient_sample');
   expect(report({ diff: 'unknown' }).size_matched.unmatched).toBe(15);
   expect(report({ repo: 'other' }).size_matched.unmatched).toBe(15);
   expect(report({ risk: 'G2' }).size_matched.unmatched).toBe(15);
-  expect(report({ tokens: 'unknown', adjusted: 75 }).verdict).toBe('unproven');
+  expect(report({ tokens: 'unknown', adjusted: 75 }).verdict).toBe('insufficient_sample');
   expect(engineComparison([fresh[0]])).toMatchObject({
     verdict: 'insufficient_sample',
     groups: { old: { runs: 0 } },
@@ -1226,6 +1209,195 @@ test('engine projection groups ledger commits and unions retry silences without 
       size_matched: { old: { runs: 1 }, new: { runs: 1 }, unmatched: 0 },
       groups: { new: { missing: { diff: 0 } } },
     });
+  } finally {
+    keys.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k];
+      else process.env[k] = saved[i];
+    });
+  }
+});
+
+test('P1 started attempts survive cancellation and late terminal receipts deduplicate', () => {
+  const start = ev('node_started', 'code-core', { invocation: { id: 'i' }, binding: {} });
+  expect(callsOf('r', [start, start, { event_type: 'workflow_cancelled' }], plan)).toMatchObject([
+    { attempt: 1, failure: 'unknown', tokens: null, exec_ms: null, model: 'unknown' },
+  ]);
+  const terminal = ev('node_failed', 'code-core', {
+    invocation: { id: 'i' },
+    ...provider('m', { input: 10, output: 2 }),
+  });
+  const calls = callsOf('r', [start, terminal, terminal, start], plan);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({ failure: 'unknown', tokens: { input: 10, output: 2 } });
+  expect(callsOf('r', [terminal, start, terminal], plan)).toEqual(calls);
+  expect(
+    cancellationStats([
+      { ledger: { rejected: 'human rejected' } as Ledger, run: { id: 'r', status: 'cancelled' } },
+      { ledger: {} as Ledger, run: { id: 'u', status: 'cancelled' } },
+    ])
+  ).toEqual({ rejected: 1, unrecorded: 1 });
+});
+
+test('P1 SQL clock precision allows subsecond persistence, not a real overrun', () => {
+  const run = {
+    id: 'r',
+    status: 'completed' as const,
+    started_at: '2026-10-10 00:00:00',
+    completed_at: '2026-10-10 00:00:03',
+  };
+  const event = ev('node_completed', 'code-core', {
+    invocation: { id: 'i' },
+    timing: { startedAt: '2026-10-10T00:00:02Z', durationMs: 1500 },
+  });
+  expect(measurementOf(run, [event], plan).wall_clock_ms).toBe(3000);
+  expect(
+    measurementOf({ ...run, completed_at: '2026-10-10T00:00:03Z' }, [event], plan).wall_clock_ms
+  ).toBe('unknown');
+  expect(
+    measurementOf(
+      run,
+      [
+        ev('node_completed', 'code-core', {
+          invocation: { id: 'i' },
+          timing: { startedAt: '2026-10-10T00:00:02Z', durationMs: 2001 },
+        }),
+      ],
+      plan
+    ).wall_clock_ms
+  ).toBe('unknown');
+});
+
+test('P1 improvement requires independent cohorts, completion and total investment', () => {
+  const rows = (newer: boolean, n = 15): EngineRow[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `${newer}-${i}`,
+      newer,
+      started: newer ? 86400000 : 0,
+      repo: 'r',
+      risk: 'G1',
+      status: 'completed',
+      elapsed: newer ? 70 : 100,
+      adjusted: 1,
+      tokens: 100,
+      first: true,
+      diff: 10,
+      silence: 0,
+      disruptions: 0,
+    }));
+  const old = rows(false),
+    fresh = rows(true);
+  expect(engineComparison([...old, ...fresh]).verdict).toBe('improved');
+  expect(
+    engineComparison([
+      ...old,
+      ...rows(true, 100).map((r, i) => (i < 15 ? r : { ...r, status: 'failed', first: false })),
+    ]).verdict
+  ).not.toBe('improved');
+  expect(engineComparison([...old.slice(0, 1), ...fresh]).verdict).toBe('insufficient_sample');
+  expect(
+    engineComparison([...old, ...fresh.map(r => ({ ...r, elapsed: 100, adjusted: 0 }))]).verdict
+  ).toBe('unproven');
+  expect(
+    engineComparison([...old, ...fresh.map(r => ({ ...r, tokens: 'unknown' as const }))]).verdict
+  ).toBe('unproven');
+  expect(engineComparison([...old, ...fresh]).size_matched.old.runs).toBe(15);
+});
+
+test('P1 outside plan falls back to confined generation snapshot and attributes demand', () => {
+  const root = tmp(),
+    outside = tmp();
+  const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const,
+    saved = keys.map(k => process.env[k]);
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root });
+  try {
+    writeFileSync(
+      join(outside, 'plan.json'),
+      JSON.stringify({ request_ref: 'wrong', packages: [] })
+    );
+    writeFileSync(join(root, 'plan.json'), JSON.stringify({ request_ref: 'actual', packages: [] }));
+    const ledger = {
+      run_id: 'r',
+      repo: root,
+      gen_dir: root,
+      plan: join(outside, 'plan.json'),
+    } as Ledger;
+    expect(planOf(ledger)?.request_ref).toBe('actual');
+    expect(demandStats([{ ledger, run: { id: 'r', status: 'cancelled' } }], [])).toMatchObject({
+      denominator: 1,
+      unknown_runs: [],
+      by_request: { actual: { attempts: [{ run: 'r' }] } },
+    });
+    writeFileSync(
+      join(root, 'plan.json'),
+      JSON.stringify({ request_ref: 'plan-external', packages: [] })
+    );
+    expect(
+      demandStats(
+        [{ ledger, run: { id: 'r', status: 'cancelled' } }],
+        callsOf('r', [ev('node_started', 'code-core')], plan)
+      )
+    ).toMatchObject({
+      denominator: 0,
+      unknown_runs: ['r'],
+      unattributed: { calls: 1, input: 'unknown' },
+    });
+  } finally {
+    keys.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k];
+      else process.env[k] = saved[i];
+    });
+  }
+});
+
+test('P1 prior success event preserves measured node duration in batch report', () => {
+  const root = tmp(),
+    keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const,
+    saved = keys.map(k => process.env[k]);
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: '' });
+  const db = new Database(join(root, 'archon.db'));
+  db.run(
+    'CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, started_at TEXT, completed_at TEXT, metadata TEXT)'
+  );
+  db.run(
+    'CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT, event_type TEXT, step_name TEXT, created_at TEXT, event_order INTEGER, data TEXT)'
+  );
+  db.run(
+    "INSERT INTO remote_agent_workflow_runs VALUES ('r', 'completed', '2026-10-10 00:00:00', '2026-10-10 00:00:03', '{}')"
+  );
+  const unavailable = { source: 'unavailable', reason: 'not_applicable' };
+  const data = {
+    node: { id: 'code-core', kind: 'exec', runtime: 'sh' },
+    invocation: { id: 'i', startedAt: '2026-10-10T00:00:00Z', loopPath: [] },
+    attempt: { id: 'a', startedAt: '2026-10-10T00:00:00Z' },
+    binding: {},
+    timing: { startedAt: '2026-10-10T00:00:00Z', durationMs: 3000 },
+    spend: {
+      tokens: unavailable,
+      costUsd: unavailable,
+      stopReason: unavailable,
+      numTurns: unavailable,
+    },
+    accounting: 'node',
+  };
+  const insert = db.prepare(
+    "INSERT INTO remote_agent_workflow_events VALUES ('r', ?, 'code-core', '2026-10-10 00:00:03', ?, ?)"
+  );
+  insert.run('node_completed', 1, JSON.stringify(data));
+  insert.run('node_skipped_prior_success', 2, '{}');
+  db.close();
+  try {
+    const report = buildReport([
+      {
+        run_id: 'r',
+        archon_run_id: 'r',
+        repo: root,
+        gen_dir: root,
+        recoveries: [],
+        workflow: 'w',
+      } as unknown as Ledger,
+    ]);
+    expect(report['node_s:code']).toBe(3);
+    expect(report['state:completed']).toBe(1);
   } finally {
     keys.forEach((k, i) => {
       if (saved[i] === undefined) delete process.env[k];

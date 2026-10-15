@@ -1,6 +1,7 @@
-import { confined } from './board/workflow';
+import { confined, OUTSIDE } from './board/workflow';
 // Ledger-derived measurements shared by report, board and cockpit.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { WETAMP } from './config';
 import { join, resolve } from 'node:path';
 import { archonRunIds, type RunView } from './archon';
 import {
@@ -28,11 +29,27 @@ export const ms = (a?: string, b?: string): number | null => {
   return Number.isFinite(delta) && delta >= 0 ? delta : null;
 };
 
+export const cwdOf = (l: Ledger): string => (existsSync(l.repo) ? l.repo : WETAMP);
+const precisionOf = (value?: string): number => (value?.includes(' ') ? 1000 : 0);
+
+export function planFileOf(l: Ledger): string | null {
+  const locate = (path: string): string | null => {
+    try {
+      return confined(l, path);
+    } catch (error) {
+      if (error instanceof Error && error.message.endsWith(OUTSIDE)) return null;
+      throw error;
+    }
+  };
+  return (
+    (typeof l.plan === 'string' ? locate(resolve(l.repo, l.plan)) : null) ??
+    locate(join(l.gen_dir, 'plan.json'))
+  );
+}
+
 export function planOf(l: Ledger): Plan | null {
   try {
-    const file =
-      (typeof l.plan === 'string' ? confined(l, resolve(l.repo, l.plan)) : null) ??
-      confined(l, join(l.gen_dir, 'plan.json'));
+    const file = planFileOf(l);
     if (file) {
       const value = JSON.parse(readFileSync(file, 'utf8')) as {
         packages?: (Partial<Plan['packages'][number]> | null)[];
@@ -95,7 +112,7 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
   let cursor = clock(run.started_at ?? '');
   const recordedEnd = clock(run.completed_at ?? '');
   // SQL terminal clocks truncate milliseconds; node persistence may finish after dispatch.
-  const precision = run.completed_at?.includes(' ') ? 1000 : 0;
+  const precision = precisionOf(run.completed_at ?? undefined);
   const end = Math.max(recordedEnd, ...[...rows.values()].map(r => r.end));
   if (end > recordedEnd + precision) return unknown;
   const segments: { phase: string; node?: string; ms: number }[] = [];
@@ -202,7 +219,7 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
   const hold = segments ? segments.filter(s => s.phase === 'human_wait').reduce((sum,s) => sum + s.ms, 0) : !waitUnknown && !waits.size && holds.length ? holdUnion.reduce((sum,i) => sum + i.end - i.start, 0) : 'unknown';
   return { k1: run.started_at && Number.isFinite(clock(run.started_at)) ? (clock(run.started_at) < clock('2026-10-14T16:01:23+08:00') ? 'pre' : 'post') : 'unknown', status: run.status,
     cumulative_ms: nodes.length && nodes.every(n => typeof n.cumulative_ms === 'number') ? nodes.reduce((a,n) => a + Number(n.cumulative_ms), 0) : 'unknown',
-    wall_clock_ms: intervals.some(i => i.start < clock(run.started_at ?? '') || i.end > clock(run.completed_at ?? '')) ? 'unknown' : ms(run.started_at ?? undefined, run.completed_at ?? undefined) ?? 'unknown', hold_ms: hold,
+    wall_clock_ms: intervals.some(i => i.start < clock(run.started_at ?? '') || i.end > clock(run.completed_at ?? '') + precisionOf(run.completed_at ?? undefined)) ? 'unknown' : ms(run.started_at ?? undefined, run.completed_at ?? undefined) ?? 'unknown', hold_ms: hold,
     idle_ms: segments ? segments.filter(s => s.phase === 'unclassified_wait').reduce((sum,s) => sum + s.ms, 0) : nodes.length && intervals.length === nodes.length && typeof hold === 'number' ? union.slice(1).reduce((sum,i,k) => sum + i.start - union[k].end - holdUnion.reduce((covered,h) => covered + Math.max(0, Math.min(i.start,h.end) - Math.max(union[k].end,h.start)), 0), 0) : 'unknown',
     nodes: nodes.map(n => ({ ...n, execution: n.attempt === 'unknown' || n.invocation === 'unknown' ? 'unknown' : (counts.get(n.node) ?? 0) > 1 ? 'multiple' : 'single' })) };
 }

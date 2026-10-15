@@ -282,6 +282,7 @@ export function proposeLearning(l: Ledger, request: LearningRequest): Record<str
       events[0]?.workflow_run_id !== run.id ||
       calls.length !== 1 ||
       !call?.identity ||
+      call.failure !== null ||
       !call.provider ||
       call.provider === 'unknown' ||
       events[0]?.data?.binding?.model?.resolved?.source !== 'provider' ||

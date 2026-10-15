@@ -1016,7 +1016,9 @@ export function memoryTick(
                 : calls.every(c => c.exec_ms !== null)
                   ? calls.reduce((n, c) => n + (c.exec_ms ?? 0), 0)
                   : 0;
-            return ['completed', 'failed'].includes(run.status) &&
+            return calls.length > 0 &&
+              calls.every(c => c.failure === null) &&
+              ['completed', 'failed'].includes(run.status) &&
               Number.isFinite(duration) &&
               duration > 0
               ? [
