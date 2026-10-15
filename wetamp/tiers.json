@@ -125,7 +125,7 @@
       "name": "元帅",
       "purpose": "主控：设计、架构、拍板验收；使用用户启动客户端的第一档。",
       "pools": {
-        "claude": ["claude-opus-5-5", "claude-fable-5-1"],
+        "claude": ["claude-fable-5-1", "claude-opus-5-5"],
         "chatgpt": ["gpt-6-astra"]
       }
     },
@@ -139,23 +139,30 @@
     },
     "general": {
       "name": "将军",
-      "purpose": "编码：ChatGPT 池为主力，Claude 池为候选；实现、验收、修复一次性闭环。",
+      "purpose": "编码：Claude 池（single:claude）与 ChatGPT 池并为主力；实现、验收、修复一次性闭环。",
       "pools": {
-        "chatgpt": ["gpt-6.1-sol", "gpt-6-sol"],
-        "claude": ["claude-opus-5", "claude-opus-4-8"]
+        "chatgpt": ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol"],
+        "claude": ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]
       }
     }
   },
   "routing": {
-    "budget": { "claude_daily_usd": 300, "claude_medium_usd": 200, "codex_warning_usd": 500 },
+    "budget": { "claude_daily_usd": 3000, "claude_medium_usd": 2000, "codex_warning_usd": 500 },
     "commander": {
       "by_console": {
-        "claude": ["claude-opus-5-5", "claude-fable-5-1"],
+        "claude": ["claude-fable-5-1", "claude-opus-5-5"],
         "codex": ["gpt-6-astra"]
       }
     },
     "coder": {
-      "models": ["gpt-6.1-sol", "gpt-6-sol", "claude-opus-5", "claude-opus-4-8"]
+      "models": [
+        "claude-opus-5-5",
+        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "claude-opus-5",
+        "claude-opus-4-8"
+      ]
     },
     "reviewer": {
       "by_risk": {
