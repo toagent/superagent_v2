@@ -232,6 +232,62 @@ function stallClock() {
 }
 
 describe('CodexProvider', () => {
+  test.each(['reasoning', 'message', 'tool', 'task'] as const)(
+    'PROGRESS_METADATA summarizes %s without delta content',
+    async kind => {
+      const clock = stallClock();
+      const { provider, server } = providerWith({ completion: null });
+      const running = run(provider);
+      try {
+        await clock.advance(120_000);
+        if (kind === 'tool') server.processes[0].send(itemStarted(command('active', 'test')));
+        else if (kind === 'task')
+          server.processes[0].send(itemStarted(subAgentActivity('started')));
+        else {
+          const params = {
+            threadId: THREAD_ID,
+            turnId: TURN_ID,
+            itemId: 'r',
+            delta: 'PRIVATE_DELTA',
+          };
+          server.processes[0].send(
+            kind === 'message'
+              ? { method: 'item/agentMessage/delta', params }
+              : { method: 'item/reasoning/textDelta', params: { ...params, contentIndex: 0 } }
+          );
+          server.processes[0].send(itemStarted(reasoning('another-item', [])));
+        }
+        await clock.advance(kind === 'tool' || kind === 'task' ? 200_000 : 120_000);
+        if (kind === 'tool')
+          server.processes[0].send(
+            itemCompleted(command('active', 'test', { status: 'completed', exitCode: 0 }))
+          );
+        if (kind === 'task') server.processes[0].send(itemCompleted(subAgentActivity('completed')));
+        server.processes[0].send(turnCompleted('completed'));
+        const chunks = await running;
+        const snapshots = chunks.flatMap(c =>
+          c.type === 'state_update' && c.progress ? [c.progress] : []
+        );
+        expect(snapshots).toHaveLength(1);
+        expect(snapshots[0].since).toBe(new Date(0).toISOString());
+        expect(snapshots[0]).toMatchObject({
+          reasoning: { count: Number(kind === 'reasoning') },
+          message: { count: Number(kind === 'message') },
+          activeTools: Number(kind === 'tool'),
+          activeTasks: Number(kind === 'task'),
+        });
+        if (kind === 'reasoning' || kind === 'message')
+          expect(snapshots[0][kind].lastAt).toBe(new Date(120_000).toISOString());
+        expect(JSON.stringify(snapshots)).not.toContain('PRIVATE_DELTA');
+        expect(server.processes[0].methods).not.toContain('turn/interrupt');
+      } finally {
+        server.processes[0]?.send(turnCompleted('completed'));
+        await running;
+        clock.restore();
+      }
+    }
+  );
+
   test('STALL_PROGRESS interrupts despite periodic metadata notifications', async () => {
     const clock = stallClock();
     const script: FakeTurnScript = { completion: null };
@@ -259,6 +315,14 @@ describe('CodexProvider', () => {
       expect(server.processes[0].methods.filter(m => m === 'turn/start')).toHaveLength(2);
       expect(resultOf(chunks).failure).toBeUndefined();
       expect(chunks.at(-1)).toEqual({ type: 'settled' });
+      expect(chunks.find(c => c.type === 'state_update')).toMatchObject({
+        progress: {
+          reasoning: { count: 0, lastAt: null },
+          message: { count: 0, lastAt: null },
+          activeTools: 0,
+          activeTasks: 0,
+        },
+      });
     } finally {
       server.processes[0]?.send(turnCompleted('completed'));
       await running;

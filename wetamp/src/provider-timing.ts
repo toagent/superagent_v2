@@ -87,6 +87,20 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       const start = unique[i].observedAt, ms = utcClock(e.observedAt) - utcClock(start);
       return !best || ms > best.ms ? { start, ms, end: e.event } : best;
     }, undefined) : undefined;
+    const longGaps = complete ? unique.slice(1).flatMap((e, i) => {
+      const start = unique[i].observedAt, end = e.observedAt;
+      const ms = utcClock(end) - utcClock(start);
+      if (ms < 180000) return [];
+      const p = e.event.type === 'state_update' ? e.event.progress : undefined;
+      const covered = p && utcClock(p.since) <= utcClock(start) &&
+        utcClock(p.at) >= utcClock(start) && utcClock(p.at) <= utcClock(end);
+      const model = p && [p.reasoning, p.message].some(d => d.count > 0 && d.lastAt &&
+        utcClock(d.lastAt) > utcClock(start) && utcClock(d.lastAt) <= utcClock(p.at));
+      // Observed activity wins; silence describes client observation, not server health.
+      const classification = !covered ? 'unclassified' : model ? 'model_progress' :
+        p.activeTools + p.activeTasks > 0 ? 'tool_active' : 'silent';
+      return [{ start, end, ms, classification }];
+    }) : undefined;
     const warnings = complete ? unique.flatMap(e => e.event.type === 'warning'
       ? [{ code: e.event.code, at: e.observedAt }] : []) : missing;
     const settled = clock(terminal?.created_at);
@@ -203,6 +217,9 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       longest_silence_ms: silence?.ms ?? missing, longest_silence_at: silence?.start ?? missing,
       longest_silence_closed_by: silence ? (silence.end.type === 'warning'
         ? { type: silence.end.type, code: silence.end.code } : { type: silence.end.type }) : missing,
+      long_gaps: longGaps ?? missing,
+      unclassified_gap_ratio: longGaps ? (longGaps.length ?
+        longGaps.filter(g => g.classification === 'unclassified').length / longGaps.length : 0) : missing,
       provider_warnings: warnings,
       budget: { over: reasons.length > 0, reasons },
     };

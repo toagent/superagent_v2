@@ -5545,6 +5545,24 @@ export interface components {
             type: 'state_update';
             /** @enum {string} */
             state: 'running' | 'requires_action';
+            progress?: {
+              /** Format: date-time */
+              since: string;
+              /** Format: date-time */
+              at: string;
+              reasoning: {
+                count: number;
+                /** Format: date-time */
+                lastAt: string | null;
+              };
+              message: {
+                count: number;
+                /** Format: date-time */
+                lastAt: string | null;
+              };
+              activeTools: number;
+              activeTasks: number;
+            };
           };
       runId: string;
       stepName: string;
