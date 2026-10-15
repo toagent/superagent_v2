@@ -21,7 +21,7 @@ import {
 } from '../src/land';
 import * as config from '../src/config';
 import type { Land } from '../templates/.archon/scripts/sa-check';
-import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { directAuxiliaryPreload, fixturePlan, gitRepo, sh, tmp } from './helpers';
 const saved = { ...process.env };
 // prettier-ignore
 afterEach(() => { process.env = { ...saved }; });
@@ -141,6 +141,8 @@ test.each([
   const plan = fixturePlan(f.root, f.repo, p => {
     p.packages = [{ id: 'p', accept: [{ cmd: `test -f ${path}/README.md`, timeout_s: 2 }] }];
   });
+  // Watchdog process behavior is covered separately; retain real Git and acceptance here.
+  const preload = directAuxiliaryPreload();
   const verify = mock((cwd: string) => {
     expect(sh('git rev-parse HEAD', join(cwd, path))).toBe(sourceSubmodule);
     if (nested)
@@ -154,6 +156,7 @@ test.each([
         cwd,
         env: {
           ...process.env,
+          BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`,
           INPUTS_KIND: 'accept',
           INPUTS_PLAN: plan,
           INPUTS_PKGS: 'p',
@@ -463,8 +466,9 @@ test.each(['current', 'legacy-ref', 'legacy-hash'])('%s apply checks the accepte
   const f = fixture(), counter = join(f.root, 'calls');
   const receipt = mode === 'current' ? f.land : { branch: f.land.branch, head: f.land.head, commands: [], debt: [] };
   const plan = fixturePlan(f.root, f.repo, p => { p.packages = [{ id: 'p', accept: [{ cmd: `echo checked >> '${counter}'`, timeout_s: 2, cache: true }] }]; });
+  const preload = directAuxiliaryPreload();
   const verify = (cwd: string) => Bun.spawnSync([process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')], {
-    cwd, env: { ...process.env, INPUTS_KIND: 'accept', INPUTS_PLAN: plan, INPUTS_PKGS: 'p', INPUTS_TAG: 'land-check', ARTIFACTS_DIR: f.art }, stdout: 'pipe', stderr: 'pipe',
+    cwd, env: { ...process.env, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`, INPUTS_KIND: 'accept', INPUTS_PLAN: plan, INPUTS_PKGS: 'p', INPUTS_TAG: 'land-check', ARTIFACTS_DIR: f.art }, stdout: 'pipe', stderr: 'pipe',
   }).exitCode;
   expect(verify(f.worktree)).toBe(0);
   const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');

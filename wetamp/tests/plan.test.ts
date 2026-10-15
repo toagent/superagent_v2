@@ -35,9 +35,16 @@ test('owner contracts reject optional keys, types and optionality drift', () => 
     path === file
       ? source + probes.map((probe, i) => `\nexport type Drift${i} = ${probe};`).join('')
       : read(path);
-  const diagnostics = ts.getPreEmitDiagnostics(
-    ts.createProgram([file, ...fileNames.filter(path => path.endsWith('.d.ts'))], options, host)
+  const program = ts.createProgram(
+    [file, ...fileNames.filter(path => path.endsWith('.d.ts'))],
+    options,
+    host
   );
+  const subject = program.getSourceFile(file);
+  if (!subject) throw new Error('missing contract test source');
+  // Resolve real imported owner types, but only diagnose the contract and its mutations.
+  // The package type-check owns diagnostics in unrelated dependency implementations.
+  const diagnostics = program.getSemanticDiagnostics(subject);
   expect(diagnostics.map(d => d.code)).toEqual(probes.map(() => 2344));
   expect(
     diagnostics.every(

@@ -1533,23 +1533,31 @@ describe('run (archon stub)', () => {
     ).aliases;
   };
   const want = renderAliases(loadTiers());
-  test('console=codex pins @sa-reviewer to the codex-console pool via the run config layer', () => {
-    const call = start('codex')[0];
-    expect(call).not.toContain('--model');
-    expect(pinned(call)).toEqual({
-      '@sa-coder': want['@sa-coder'],
-      '@sa-reviewer': want['@sa-reviewer-codex'],
-      '@sa-reviewer-alt': want['@sa-reviewer-alt-codex'],
-      '@sa-reviewer-G0': resolveRoute(loadTiers(), 'codex', 'auto', 'review', 'G0', 1, [
-        want['@sa-coder'].model,
-      ]).candidates[0],
-    });
-  });
-  test('console=claude pins the concrete claude-console models, effort included', () => {
-    const a = pinned(start()[0]);
-    expect(a['@sa-reviewer']).toEqual(want['@sa-reviewer']);
-    expect(a['@sa-coder']).toMatchObject({ effort: 'high' });
-  });
+  test.each(['codex', 'claude'] as const)(
+    'console=%s pins routed models and effort in the run config layer',
+    console => {
+      const call = start(console)[0];
+      expect(call).not.toContain('--model');
+      const tiers = loadTiers();
+      const coder = resolveRoute(tiers, console).candidates[0];
+      const reviewers = resolveRoute(tiers, console, 'auto', 'review', 'G1', 1, [
+        coder.model,
+      ]).candidates;
+      const reviewer = reviewers[0];
+      expect(pinned(call)).toEqual({
+        '@sa-coder': { ...coder, effort: 'high' },
+        '@sa-reviewer': { ...reviewer, effort: 'high' },
+        '@sa-reviewer-alt': {
+          ...(reviewers.find(a => a.provider !== reviewer.provider) ?? reviewers.at(1) ?? reviewer),
+          effort: 'high',
+        },
+        '@sa-reviewer-G0': resolveRoute(tiers, console, 'auto', 'review', 'G0', 1, [coder.model])
+          .candidates[0],
+      });
+      expect(coder.provider).toBe('codex');
+      expect(reviewer.model).not.toBe(coder.model);
+    }
+  );
   const drifted = (where: 'global' | 'repo'): { code: number; out: string; calls: string[] } => {
     const s = stub([]);
     const repo = gitRepo(s.root);
