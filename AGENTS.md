@@ -166,7 +166,7 @@ what you changed — a thin brief is cheaper to correct before a run than after 
 - Remove test temp trees with `removeTempTree` or `trackTempRoots` from `@archon/paths/test-utils`.
 - Spawn a subprocess only when the subprocess is the subject under test. To suppress an inherited env key for a Bun child, pass it as `''`; deleting it allows `.env` loading to restore it.
 - Bun's module mocks pollute the process cache. Use the package test scripts that preserve isolation; do not run `bun test` from the repository root.
-- Always run lint through `bun run lint` or `bun run lint:fix`; the wrapper isolates packages to keep typed lint within its memory budget.
+- Always run lint through `bun run lint` or `bun run lint:fix`; the wrapper isolates packages to keep typed lint within its memory budget. `wetamp` is outside the root lint scope and has no lint script; validate it with `cd wetamp && bun run type-check`.
 - Run the narrow checks that prove the changed behavior while iterating.
 - Run `bun run validate` before opening a pull request. It runs every pull-request gate except the ones needing something a contributor may not have — a live PostgreSQL, a Docker daemon, an unshallowed checkout, Node for the docs site, GitHub API quota — because `scripts/validate.ts` owns the check list and the workflows call that script rather than restating it.
 - Those excluded jobs are listed in [`CONTRIBUTING.md`](CONTRIBUTING.md) with the command to run each one yourself. Schema changes require the PostgreSQL upgrade check from that list.

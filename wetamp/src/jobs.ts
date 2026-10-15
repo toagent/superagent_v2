@@ -205,7 +205,14 @@ const git = (cwd: string, ...args: string[]): string => {
 // prettier-ignore
 export function cleanJob(id: string): void {
   const j = readJobs().jobs.find(j => j.id === id), w = j?.worktree;
-  if (!j || !w) throw new Error('job clean: no registered worktree');
+  if (!j) throw new Error('job clean: no registered worktree');
+  if (!w) {
+    if (alive(j.wrapper_pid) || (j.pid !== 0 && alive(j.pid))) throw new Error('job clean: owner is still active');
+    if (j.state !== 'lost') throw new Error('job clean: no registered worktree');
+    j.ended_at ??= new Date().toISOString();
+    save(j);
+    return;
+  }
   if (w.created === false) throw new Error('job clean: worktree was reused; not owned by this job');
   if (['queued', 'running'].includes(j.state) || alive(j.wrapper_pid)) throw new Error('job clean: owner is still active');
   if (git(w.path, 'symbolic-ref', '--short', 'HEAD') !== w.branch || git(w.path, 'status', '--porcelain', '-z'))

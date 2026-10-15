@@ -11,7 +11,16 @@ import {
   parseQueue,
   psRows,
 } from '../src/board/activity';
-import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
+import {
+  cleanJob,
+  modelOf,
+  projectJob,
+  readJobs,
+  recent,
+  RECENT_MS,
+  roleOf,
+  type Job,
+} from '../src/jobs';
 import { loadTiers } from '../src/config';
 import { caller } from '../src/coord';
 import { codexFixtureEnv, gitRepo, sh, tmp } from './helpers';
@@ -153,6 +162,81 @@ describe('job registry', () => {
     return f;
   };
   const NOW = Date.parse('2026-10-10T12:00:00Z');
+
+  test('board and jobs share the one-hour visibility window', async () => {
+    put({ id: 'queued', state: 'queued' });
+    put({ id: 'running' });
+    put({ id: 'lost', state: 'lost' });
+    for (const state of ['done', 'failed', 'lost'] as const) {
+      for (const age of [45 * 60_000, RECENT_MS, RECENT_MS + 1]) {
+        put({ id: `${state}-${age}`, state, ended_at: new Date(NOW - age).toISOString() });
+      }
+    }
+    const expected = readJobs()
+      .jobs.filter(j => recent(j, NOW))
+      .map(j => j.id);
+    expect(expected).toHaveLength(9);
+    const activity = await loadActivity(NOW, AbortSignal.abort());
+    expect(activity.jobs.map(j => j.id)).toEqual(expected);
+    expect(activity.jobHistory).toHaveLength(12);
+  });
+
+  test.each(['queued', 'running', 'lost'] as const)(
+    'clean retires a dead %s job without a worktree and preserves its history',
+    async state => {
+      const file = put({
+        id: 'retire',
+        state,
+        wrapper_pid: 99999999,
+        pid: state === 'queued' ? 0 : 99999999,
+      });
+      const before = readFileSync(file, 'utf8');
+      expect(readJobs().jobs[0].state).toBe('lost');
+      expect(readFileSync(file, 'utf8')).toBe(before);
+      const start = Date.now();
+      cleanJob('retire');
+      const retired = JSON.parse(readFileSync(file, 'utf8')) as Job;
+      expect(retired.state).toBe('lost');
+      const ended = Date.parse(retired.ended_at!);
+      expect(ended).toBeGreaterThanOrEqual(start);
+      expect(ended).toBeLessThanOrEqual(Date.now());
+      expect(recent(retired, ended + RECENT_MS)).toBe(true);
+      expect(recent(retired, ended + RECENT_MS + 1)).toBe(false);
+      const activity = await loadActivity(ended + RECENT_MS + 1, AbortSignal.abort());
+      expect(activity.jobs).toEqual([]);
+      expect(activity.jobHistory).toEqual([retired]);
+      cleanJob('retire');
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(retired);
+    }
+  );
+
+  test.each(['queued', 'running', 'lost'] as const)(
+    'clean refuses a %s job with a live wrapper or child without writing',
+    state => {
+      for (const live of ['wrapper_pid', 'pid'] as const) {
+        const file = put({
+          id: 'active',
+          state,
+          wrapper_pid: 99999999,
+          pid: 0,
+          [live]: process.pid,
+        });
+        const before = readFileSync(file, 'utf8');
+        expect(() => cleanJob('active')).toThrow('owner is still active');
+        expect(readFileSync(file, 'utf8')).toBe(before);
+      }
+    }
+  );
+
+  test('clean does not retire completed jobs without a worktree', () => {
+    for (const state of ['done', 'failed'] as const) {
+      const file = put({ id: state, state, wrapper_pid: 99999999, pid: 99999999 });
+      const before = readFileSync(file, 'utf8');
+      expect(() => cleanJob(state)).toThrow('no registered worktree');
+      expect(readFileSync(file, 'utf8')).toBe(before);
+    }
+    expect(() => cleanJob('missing')).toThrow('no registered worktree');
+  });
 
   // prettier-ignore
   test('stalled and ETA are read-only projections using role and kind history', () => {

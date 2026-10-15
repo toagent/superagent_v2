@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { tail } from '../archon';
 import { home, loadTiers, type Tiers } from '../config';
-import { modelOf, readJobs, type Job, type Kind, type Tier } from '../jobs';
+import { modelOf, readJobs, recent, type Job, type Kind, type Tier } from '../jobs';
 import type { Launcher } from '../launcher';
 import { presence, type Identity } from '../coord';
 import * as term from './terminals';
@@ -357,12 +357,7 @@ export async function loadActivity(
   try {
     const r = readJobs();
     jobHistory = r.jobs;
-    jobs = r.jobs.filter(
-      j =>
-        ['queued', 'running'].includes(j.state) ||
-        (j.state === 'lost' && !j.ended_at) ||
-        visible(j.ended_at, now)
-    ); // 活动作业与无结束时间的 lost 投影均保留
+    jobs = r.jobs.filter(j => recent(j, now));
     for (const b of r.bad) note('jobs', new Error(b));
   } catch (e) {
     note('jobs', e);
