@@ -18,6 +18,7 @@ import {
   cleanEngine,
   repoScope,
   runScope,
+  same,
   presence,
   escalationTitle,
   type Identity,
@@ -370,10 +371,12 @@ console.log(JSON.stringify({results,presence:presence(who,sa),who}));
     expect(result.results[mode].error).toContain('派生会话');
   }
 }, 30000);
-for (const mode of ['owner', 'foreign', 'generation', 'lease', 'takeover'])
-  test(`P5: takeover wait retains caller identity after its background shell exits (${mode})`, async () => {
+// Only engine observation is stubbed: ancestry, identity, CLI claim and coordination storage are real.
+for (const mode of ['inbox', 'takeover', 'completed'])
+  test(`P5: orphaned wait retains its original inbox and fencing (${mode})`, async () => {
     const s = setup();
     const module = (file: string) => JSON.stringify(join(import.meta.dir, '../src', file));
+    const file = (name: string) => JSON.stringify(join(s.root, name));
     const child = join(s.root, 'wait.ts');
     writeFileSync(
       child,
@@ -382,61 +385,99 @@ import {spyOn} from 'bun:test';
 import {existsSync,writeFileSync} from 'node:fs';
 import * as native from ${module('archon.ts')};
 import * as land from ${module('land.ts')};
-import {caller,Coordination,repoScope} from ${module('coord/index.ts')};
+import {caller,coord,runScope,repoScope} from ${module('coord/index.ts')};
 import {main} from ${module('cli.ts')};
-const before=caller(), parent=process.ppid;
-let after, landed=false;
-spyOn(native,'getRun').mockImplementation(() => {
-  writeFileSync(${JSON.stringify(join(s.root, 'ready'))},'ready');
-  const deadline=Date.now()+5000;
+const before=caller(), parent=process.ppid, mode=${JSON.stringify(mode)};
+let after, landed=false, observed=false, fencing=[];
+const output=[];
+spyOn(native,'getRun').mockImplementation(() => ({id:'engine',status:observed && mode==='completed'?'completed':'pending',nodes:[]}));
+spyOn(native,'waitNotification').mockImplementation(() => {
+  writeFileSync(${file('ready')},String(process.pid));
+  const deadline=Date.now()+10000;
   while(process.ppid===parent && Date.now()<deadline) Bun.sleepSync(10);
   if(process.ppid===parent) throw new Error('background shell did not exit');
   after=caller(true);
-  if (${JSON.stringify(mode)}==='takeover') new Coordination({runs:()=>[]}).claim(repoScope(${JSON.stringify(s.repo)}),{...before,session_id:'new-owner'},true,'another takeover');
-  return {id:'engine',status:'completed',output_root:process.env.SUPERAGENT_HOME,nodes:[]};
+  writeFileSync(${file('reparented')},String(process.ppid));
+  while(!existsSync(${file('resume')}) && Date.now()<deadline) Bun.sleepSync(10);
+  if(!existsSync(${file('resume')})) throw new Error('controller did not resume wait');
+  observed=true;
 });
-spyOn(land,'applyLand').mockImplementation(() => {landed=true;return {status:'manual_push'};});
-const output=[];
+spyOn(land,'applyLand').mockImplementation(() => {landed=true;throw new Error('wait must not deliver');});
 spyOn(console,'log').mockImplementation(x=>output.push(JSON.parse(x)));
-try {main(['wait','background','--timeout','10','--json']);}
-finally {writeFileSync(${JSON.stringify(join(s.root, 'result'))},JSON.stringify({before,after,landed,output}));}
+try {
+  const code=main(['wait','background','--timeout','15','--json']);
+  if(mode==='takeover') for(const scope of [repoScope(${JSON.stringify(s.repo)}),runScope({run_id:'background',repo:${JSON.stringify(s.repo)}})]) {
+    try {coord().mutate(scope,before,()=>{throw new Error('mutation executed');},1);}
+    catch(e) {fencing.push(e.message);}
+  }
+  writeFileSync(${file('result')},JSON.stringify({before,after,parent,reparented:process.ppid,landed,output,code,fencing}));
+} catch(e) {writeFileSync(${file('result')},JSON.stringify({error:e.stack}));}
+`
+    );
+    // A second live controller invokes the actual claim CLI, without overriding caller().
+    writeFileSync(
+      join(s.root, 'codex'),
+      `
+import {writeFileSync} from 'node:fs';
+import {hostname} from 'node:os';
+import {inspectProcess} from ${module('launcher.ts')};
+const who={client:'codex',session_id:'B',host:hostname(),pid:process.pid,pid_start:inspectProcess(process.pid).start};
+writeFileSync(${JSON.stringify(join(s.sa, 'live/b.json'))},JSON.stringify({...who,at:new Date().toISOString()}));
+const code=\`import {main} from ${module('cli.ts')};
+let refused=false;
+try {main(['claim',${JSON.stringify(s.repo)}]);} catch(e) {refused=e.message.includes('普通认领');}
+if(!refused) throw new Error('online owner was not fenced');
+for(const target of [${JSON.stringify(s.repo)},'background']) main(['claim',target,'--takeover','--reason','scratch operator authorized B']);\`;
+const p=Bun.spawnSync([process.execPath,'-e',code],{stdout:'ignore',stderr:'pipe'});
+if(p.exitCode!==0) throw new Error(p.stderr.toString());
 `
     );
     const parent = join(s.root, 'claude');
     writeFileSync(
       parent,
       `
-import {mkdirSync,writeFileSync,existsSync,readFileSync,readdirSync,unlinkSync} from 'node:fs';
+import {mkdirSync,writeFileSync,existsSync,readFileSync} from 'node:fs';
 import {hostname} from 'node:os';
 import {join} from 'node:path';
 import {Coordination,repoScope,runScope} from ${module('coord/index.ts')};
 import {inspectProcess} from ${module('launcher.ts')};
-const sa=process.env.SUPERAGENT_HOME,repo=${JSON.stringify(s.repo)};
+const sa=process.env.SUPERAGENT_HOME,repo=${JSON.stringify(s.repo)},mode=${JSON.stringify(mode)};
 mkdirSync(join(sa,'live'),{recursive:true});mkdirSync(join(sa,'runs'),{recursive:true});
 const who={client:'claude',session_id:'A',host:hostname(),pid:process.pid,pid_start:inspectProcess(process.pid).start};
 const c=new Coordination({sa,runs:()=>[]}),run=runScope({run_id:'background',repo});
-for(const scope of [repoScope(repo),run]) {c.claim(scope,{...who,session_id:'old-owner'});c.claim(scope,who,true,'user takeover');}
-const controller={...who,generation:${mode === 'generation' ? 1 : 2}};
-if(${JSON.stringify(mode)}==='lease') for(const f of readdirSync(join(sa,'coord/leases'))) unlinkSync(join(sa,'coord/leases',f));
-writeFileSync(join(sa,'live/a.json'),JSON.stringify({...who,session_id:${JSON.stringify(mode === 'foreign' ? 'B' : 'A')},at:new Date().toISOString()}));
-writeFileSync(join(sa,'runs/background.json'),JSON.stringify({run_id:'background',archon_run_id:'engine',repo,controller,gen_dir:sa,branch:'feature',workflow:'fixture',delivery:{},recoveries:[]}));
+for(const scope of [repoScope(repo),run]) c.claim(scope,who);
+writeFileSync(join(sa,'live/a.json'),JSON.stringify({...who,at:new Date().toISOString()}));
+writeFileSync(join(sa,'runs/background.json'),JSON.stringify({run_id:'background',archon_run_id:'engine',repo,controller:{...who,generation:1},gen_dir:sa,branch:'feature',workflow:'fixture',recoveries:[]}));
 writeFileSync(join(sa,'plan.json'),JSON.stringify({base_ref:'main',packages:[]}));
-writeFileSync(join(sa,'engine.json'),JSON.stringify({fake:false}));
-writeFileSync(join(sa,'accept-inputs.json'),'{}');
-mkdirSync(join(sa,'artifacts/runs/engine'),{recursive:true});writeFileSync(join(sa,'artifacts/runs/engine/land.json'),'{}');
-const shell=Bun.spawn(['bash','-c','"$1" "$2" & child=$!; while kill -0 "$child" 2>/dev/null && [ ! -f "$3" ]; do sleep 0.01; done','_',process.execPath,${JSON.stringify(child)},${JSON.stringify(join(s.root, 'ready'))}],{stdout:'ignore',stderr:'inherit'});
-await shell.exited;
-const deadline=Date.now()+10000;
-while(!existsSync(${JSON.stringify(join(s.root, 'result'))}) && Date.now()<deadline) await Bun.sleep(10);
-console.log(readFileSync(${JSON.stringify(join(s.root, 'result'))},'utf8'));
+const awaitFile=async file=>{
+  const deadline=Date.now()+15000;
+  while(!existsSync(file) && Date.now()<deadline) await Bun.sleep(10);
+  if(!existsSync(file)) throw new Error('missing handshake: '+file);
+};
+// Exit as soon as wait reaches its blocking boundary; never wait for the background child.
+const shell=Bun.spawn(['bash','-c','"$1" "$2" & child=$!; while kill -0 "$child" 2>/dev/null && [ ! -f "$3" ]; do sleep 0.01; done','_',process.execPath,${JSON.stringify(child)},${file('ready')}],{stdout:'ignore',stderr:'inherit'});
+if(await shell.exited!==0) throw new Error('parent shell failed');
+await awaitFile(${file('reparented')});
+if(mode==='takeover') {
+  const p=Bun.spawn([process.execPath,${file('codex')}],{stdout:'ignore',stderr:'inherit'});
+  if(await p.exited!==0) throw new Error('takeover failed');
+}
+let message;
+if(mode!=='completed') message=c.handoff(run,mode==='takeover'?who:{...who,session_id:'sender'},${JSON.stringify(input)}).id;
+writeFileSync(${file('resume')},'resume');
+await awaitFile(${file('result')});
+console.log(JSON.stringify({...JSON.parse(readFileSync(${file('result')},'utf8')),message,owner:c.owner(run),messages:c.messages()}));
 `
     );
     const p = Bun.spawn([process.execPath, parent], {
+      cwd: s.repo,
       env: {
-        ...process.env,
+        PATH: process.env.PATH,
+        HOME: s.root,
         SUPERAGENT_HOME: s.sa,
         ARCHON_HOME: join(s.sa, 'archon'),
         SUPERAGENT_RELAY_QUOTA: 'off',
+        SUPERAGENT_ROLE: '',
       },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -448,15 +489,33 @@ console.log(readFileSync(${JSON.stringify(join(s.root, 'result'))},'utf8'));
     ]);
     expect({ code, err }).toEqual({ code: 0, err: '' });
     const result = JSON.parse(out);
-    expect(result.before).toMatchObject({
-      client: 'claude',
-      session_id: mode === 'foreign' ? 'B' : 'A',
-    });
+    expect(result.error).toBeUndefined();
+    expect(result.before).toMatchObject({ client: 'claude', session_id: 'A' });
+    expect(result.reparented).not.toBe(result.parent);
     expect(result.after.client).toBe('shell');
     expect(result.after.pid).not.toBe(result.before.pid);
-    expect(result.output[0].delivery).toBeUndefined();
     expect(result.landed).toBe(false);
-  }, 20000);
+    if (mode === 'completed') {
+      expect(result.output[0].state).toBe('completed');
+      expect(result.output[0].delivery).toBeUndefined();
+      expect(result.code).toBe(0);
+    } else {
+      expect(result.code).toBe(3);
+      expect(result.output[0].state).toBe('inbox');
+      const inbox = result.output[0].inbox as Message[];
+      expect(inbox.length).toBeGreaterThan(0);
+      for (const message of inbox) expect(same(message.recipient, result.before)).toBe(true);
+      if (mode === 'inbox') expect(inbox.map(m => m.id)).toEqual([result.message]);
+      else {
+        expect(inbox.every(m => m.type === 'takeover' && m.generation === 2)).toBe(true);
+        expect(inbox.map(m => m.id)).not.toContain(result.message);
+        expect(result.messages.find((m: Message) => m.id === result.message).state).toBe('queued');
+        expect(result.owner).toMatchObject({ generation: 2, owner: { session_id: 'B' } });
+        expect(result.fencing).toHaveLength(2);
+        for (const error of result.fencing) expect(error).toContain('owner/generation fencing');
+      }
+    }
+  }, 30000);
 test('P5: admission refusal uses owner presence and names run/repository scopes', () => {
   const s = setup();
   const c = new Coordination({ sa: s.sa, runs: () => [] });
