@@ -489,6 +489,132 @@ const ids = (reviews: (Rv | null)[], risk = 'G1'): string[] =>
     .blocking.map(e => e.id)
     .sort();
 
+describe('NONCONVERGENCE delivery gate', () => {
+  test('G1 done + error_class advances in one round without review', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      plan = planFile(root, 'true');
+    const accepted = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      risk: 'G1',
+      tag: 'diff-m1-r1',
+      coder: '{"status":"done","error_class":"task","needs":[],"blockers":[]}',
+    });
+    expect(accepted.out).toMatchObject({
+      ok: true,
+      disposition: 'advance',
+      error_class_ignored: true,
+    });
+    expect(
+      runScript(repo, {
+        kind: 'gate',
+        plan,
+        pkgs: 'a',
+        risk: 'G1',
+        review: '0',
+        round: '1',
+        milestone: 'm1',
+        tag: 'gate-m1-r1',
+        r1: 'null',
+        c1: JSON.stringify(accepted.out),
+      })
+    ).toMatchObject({
+      code: 0,
+      out: { verdict: 'pass', reason: 'review_not_required', rounds: 1 },
+    });
+  });
+  test.each(['G1', 'G2'])('%s low unknown self-report finding remains debt', risk => {
+    for (const status of ['PASS', 'FAIL'] as const) {
+      const result = decide({
+        risk,
+        reviewRequired: true,
+        reviews: [
+          R(status, [
+            f('low', { failure_class: 'unknown', evidence: 'done + error_class diagnostic' }),
+            f('low', { id: 'naming', evidence: 'naming debt' }),
+          ]),
+        ],
+        rechecks: [C('a')],
+      });
+      expect(result).toMatchObject({
+        verdict: 'pass',
+        decision: { kind: 'debt' },
+        ledger: { blocking: [] },
+      });
+      expect(result.ledger.debt).toHaveLength(2);
+    }
+    expect(
+      decide({
+        risk,
+        reviews: [R('PASS', [f('high', { failure_class: 'unknown' })])],
+        rechecks: [C('a')],
+      })
+    ).toMatchObject({ verdict: 'escalate', reason: 'acceptance_failed' });
+  });
+  test.each([false, true])('repeated failed input stops at round two (same=%s)', same => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      plan = planFile(root, 'true');
+    const check = {
+      ...C('a', false),
+      head: sh('git rev-parse HEAD', repo).trim(),
+      failed: ['test-command'],
+      failures: [{ command: 'test-command', failure_class: 'product', evidence: 'test failed' }],
+    };
+    const gate = (checks: unknown[]) =>
+      runScript(repo, {
+        kind: 'gate',
+        plan,
+        pkgs: 'a',
+        risk: 'G1',
+        review: '0',
+        round: String(checks.length),
+        milestone: 'm1',
+        tag: `gate-m1-r${checks.length}`,
+        r1: 'null',
+        r2: 'null',
+        c1: JSON.stringify(checks[0]),
+        c2: JSON.stringify(checks[1] ?? null),
+      });
+    expect(gate([check])).toMatchObject({
+      code: 0,
+      out: { verdict: 'fix', decision: { kind: 'repair' } },
+    });
+    expect(gate([check, { ...check, same }])).toMatchObject({
+      code: 1,
+      out: {
+        verdict: 'escalate',
+        reason: 'no_change',
+        rounds: 2,
+        decision: {
+          kind: 'block',
+          evidence: expect.arrayContaining([expect.stringContaining('unchanged')]),
+        },
+      },
+    });
+    const changed = {
+      ...check,
+      failures: [{ ...check.failures[0], evidence: 'different failure' }],
+    };
+    expect(gate([check, changed])).toMatchObject({ code: 0, out: { verdict: 'fix' } });
+  });
+  test('unchanged diff stops unknown diagnosis even after an empty commit', () => {
+    const unknown = R('PASS', [f('high', { failure_class: 'unknown' })]);
+    const result = decide({
+      reviews: [unknown, null],
+      rechecks: [
+        { ...C('a'), head: 'before' },
+        { ...C('a', true, true), head: 'empty-commit' },
+      ],
+      risk: 'G2',
+    });
+    expect(result).toMatchObject({ verdict: 'escalate', reason: 'no_change' });
+    expect(nextDisposition(result.decision)).toBe('fail');
+  });
+});
+
 describe('FC failure classification', () => {
   test('runtime enum and embedded output schemas derive from their owning schema', () => {
     expect([...FAILURE_CLASSES] as string[]).toEqual(outputSchema.$defs.failure_class.enum);

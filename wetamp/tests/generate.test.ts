@@ -586,6 +586,27 @@ describe('buildWorkflow', () => {
         "$diff-m1-r1.output.disposition == 'advance' && $diff-m1-r1.output.risk == 'G2'"
       );
       expect(nodes.find(n => n.id === 'gate-m1-r1')?.with?.review).toBe('0');
+      const when = nodes.find(n => n.id === 'review-m1-r1')!.when!;
+      const ctx = {
+        nodeOutputs: new Map([
+          [
+            'diff-m1-r1',
+            {
+              state: 'completed' as const,
+              output: JSON.stringify({
+                disposition: 'advance',
+                risk: 'G1',
+                self_report_conflict: true,
+                error_class_ignored: true,
+              }),
+            },
+          ],
+        ]),
+      };
+      expect(evaluateCondition(when, ctx.nodeOutputs)).toMatchObject({
+        parsed: true,
+        result: false,
+      });
     }
   });
   test('ACCT: short acceptance keeps the Archon subprocess default floor', () => {

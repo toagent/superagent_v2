@@ -398,7 +398,8 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
 /** Route structured blocks without turning acceptance failures into human waits. */
 export function nextDisposition(decision: DeliveryDecision): Disposition {
   const reason = reasons.find(r => r.code === decision.reason);
-  if (decision.kind === 'block' && decision.reason === 'coder_partial') return 'fail';
+  if (decision.kind === 'block' && ['coder_partial', 'no_change'].includes(decision.reason ?? ''))
+    return 'fail';
   if (decision.kind === 'block')
     return reason?.hold === 'review_limit' || reason?.hold === 'redline' ? 'fail' : 'repair';
   return decision.kind === 'repair' ? 'repair' : 'advance';
@@ -906,7 +907,7 @@ export function ledgerOf(
         Object.assign(known, {
           failure_class: classification,
           evidence: f.evidence,
-          blocks: classification === 'unknown' || (!nonProduct && known.eligible),
+          blocks: !nonProduct && known.eligible,
           debt_reason: nonProduct ? 'non_product' : undefined,
         });
       } else
@@ -921,9 +922,7 @@ export function ledgerOf(
           command: f.command,
           repair_rounds: 0,
           ...(nonProduct ? { debt_reason: 'non_product' as const } : {}),
-          blocks:
-            classification === 'unknown' ||
-            (!nonProduct && (base ? sev.includes(f.severity) : f.severity === 'blocker')),
+          blocks: !nonProduct && (base ? sev.includes(f.severity) : f.severity === 'blocker'),
           eligible: base ? sev.includes(f.severity) : f.severity === 'blocker',
         });
     }
@@ -1040,18 +1039,34 @@ export function deliveryDecision(input: {
       ...[...ledger.blocking, ...ledger.debt].flatMap(e => (e.evidence ? [e.evidence] : [])),
     ]),
   ];
-  const out = (kind: DeliveryDecision['kind'], reason: string | null, debt: string[] = []) => ({
-    decision: {
-      kind: kind === 'advance' && debt.length ? 'debt' : kind,
-      reason,
-      evidence,
-      debt,
-      requirements: completion,
-    },
-    rounds,
-    ledger,
-    audit,
-  });
+  // Compare causal inputs, not round-specific log paths or diagnostic self-reports.
+  // prettier-ignore
+  const signature = (i: number) => { const c = input.rechecks.at(i); return JSON.stringify([c?.head, c?.diff_hash, c?.contract_hash, c?.ok, c?.workspace_clean, c?.failed, c?.failures, c?.decision?.evidence, reviews.at(i)]); };
+  const repeated = !!check?.head && input.rechecks.length > 1 && signature(-1) === signature(-2);
+  const out = (kind: DeliveryDecision['kind'], reason: string | null, debt: string[] = []) => {
+    if (
+      (kind === 'repair' || kind === 'block') &&
+      ['acceptance_failed', 'review_failed', 'review_inconsistent'].includes(reason ?? '') &&
+      (check?.same || repeated)
+    ) {
+      kind = 'block';
+      reason = 'no_change';
+    }
+    if (reason === 'no_change')
+      evidence.push('repair input unchanged: same diff or identical adjacent head and evidence');
+    return {
+      decision: {
+        kind: kind === 'advance' && debt.length ? 'debt' : kind,
+        reason,
+        evidence,
+        debt,
+        requirements: completion,
+      },
+      rounds,
+      ledger,
+      audit,
+    };
+  };
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
   if (!check) return out('block', 'engine_suspect');
@@ -1159,10 +1174,10 @@ export function deliveryDecision(input: {
   }
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
-  // A completed review's FAIL can describe only classified debt. Empty/unclassified FAIL stays a failure.
+  // Non-blocking findings remain debt even when the reviewer labels the review FAIL.
   const debtOnly =
     ledger.blocking.length === 0 &&
-    ledger.debt.some(e => e.debt_reason) &&
+    ledger.debt.length > 0 &&
     (last?.status === 'PASS' || (last?.status === 'FAIL' && last.findings.length > 0));
   if (accepted && debtOnly) return out('advance', null, debt);
   let reason: string;
