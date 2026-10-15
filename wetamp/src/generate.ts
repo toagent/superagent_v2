@@ -26,7 +26,7 @@ import {
   type RecoveryEvidence,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
-import { cleanEngine } from './coord';
+import { caller, cleanEngine, coord, repoScope, runScope } from './coord';
 import {
   WETAMP,
   CODEX_WORKER,
@@ -606,6 +606,19 @@ export function buildWorkflow(
     ...(delivery ? { target_checkout: delivery.checkout, target_branch: delivery.branch } : {}),
   };
   nodes.push(check('land', [], landInputs, after));
+  if (delivery && !fake)
+    nodes.push({
+      id: 'deliver',
+      depends_on: ['land'],
+      bash: `bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`,
+      with: { run },
+      timeout:
+        20 * 60_000 +
+        3 *
+          Number(
+            acceptTimeout(plan.packages, plan).timeout ?? ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS
+          ),
+    });
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
@@ -751,6 +764,14 @@ export function generate(
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
+  if (delivery && !fake)
+    writeFileSync(
+      join(dir, 'delivery-authorization.json'),
+      JSON.stringify({
+        run: coord().admit(runScope({ run_id: run, repo: plan.repo }), caller()),
+        repo: coord().admit(repoScope(plan.repo), caller()),
+      })
+    );
   writeFileSync(
     join(dir, 'accept-inputs.json'),
     JSON.stringify(
@@ -863,7 +884,13 @@ export function generate(
     'run-config.yaml',
     'codex-worker',
   ];
-  git(dir, 'add', ...files, ...(fake ? [] : ['archon']));
+  git(
+    dir,
+    'add',
+    ...files,
+    ...(fake ? [] : ['archon']),
+    ...(delivery && !fake ? ['delivery-authorization.json'] : [])
+  );
   const staged = Bun.spawnSync(['git', 'diff', '--cached', '--quiet'], {
     cwd: dir,
     timeout: QUERY_TIMEOUT_MS,

@@ -1563,3 +1563,21 @@ test('NO_HOLD generated acceptance uses bounded repairs and no durable human wai
     "$verify-core.output.disposition == 'repair'"
   );
 });
+
+test('DURABLE_DELIVERY verified workflow schedules delivery without a wait client', () => {
+  const delivery = { checkout: '/repo', branch: 'feature', head: 'a'.repeat(40) };
+  const nodes = nodesOf(
+    buildWorkflow(
+      fixture,
+      milestones(fixture),
+      'durable',
+      '/GEN',
+      false,
+      NOW,
+      loadTiers(),
+      undefined,
+      delivery
+    )
+  );
+  expect(nodes.find(n => n.id === 'deliver')).toMatchObject({ depends_on: ['land'] });
+});

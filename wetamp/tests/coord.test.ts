@@ -454,11 +454,8 @@ console.log(readFileSync(${JSON.stringify(join(s.root, 'result'))},'utf8'));
     });
     expect(result.after.client).toBe('shell');
     expect(result.after.pid).not.toBe(result.before.pid);
-    expect(result.output[0].delivery).toMatchObject({
-      status: mode === 'owner' ? 'manual_push' : 'blocked',
-    });
-    if (mode !== 'owner') expect(result.output[0].delivery.reason).toContain('fencing');
-    expect(result.landed).toBe(mode === 'owner');
+    expect(result.output[0].delivery).toBeUndefined();
+    expect(result.landed).toBe(false);
   }, 20000);
 test('P5: admission refusal uses owner presence and names run/repository scopes', () => {
   const s = setup();

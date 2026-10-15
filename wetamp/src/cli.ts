@@ -2,12 +2,17 @@
 import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
-import { applyLand, captureDelivery, type DeliveryTarget } from './land';
-import { integratedReceipt, type DeliveryOutcome, type DeliveryReceipt } from './land';
+import {
+  captureDelivery,
+  acceptRun,
+  finalizeDelivery,
+  deliveryProjection,
+  type DeliveryTarget,
+} from './land';
+export { finalizeDelivery } from './land';
+import { type DeliveryOutcome, type DeliveryReceipt } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
-import { budgetReason, readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
-import type { resolveAcceptanceContext } from './role-context';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick } from './memory';
 import { publishLearning, proposeLearning, type LearningRequest } from './learning';
@@ -20,17 +25,7 @@ import {
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
-import {
-  assertCommander,
-  caller,
-  control,
-  coord,
-  presence,
-  repoScope,
-  runScope,
-  type Controller,
-  type Identity,
-} from './coord';
+import { caller, control, coord, repoScope, runScope, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
@@ -71,10 +66,6 @@ import {
   type RunView,
 } from './archon';
 import {
-  deliveryDecision,
-  type Accept,
-  type Review,
-  budgetUsage,
   attemptPath,
   type DeliveryDecision,
   type decide as decideGate,
@@ -215,7 +206,7 @@ export function parseArgs(argv: string[]): Args {
   return { _: positionals, flags: values };
 }
 
-const print = (o: unknown): void => {
+export const print = (o: unknown): void => {
   console.log(JSON.stringify(o, null, 2));
 };
 
@@ -343,7 +334,7 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
   }
 }
 
-function intervention<
+export function intervention<
   T extends number | boolean | { ok: boolean; busy?: boolean; refused?: boolean },
 >(
   l: Ledger,
@@ -1284,7 +1275,7 @@ function cancelRun(id: string, status: RunView['status'], cwd?: string): boolean
   return now !== 'running' && end(now);
 }
 
-const planOf = (l: Ledger): Plan =>
+export const planOf = (l: Ledger): Plan =>
   JSON.parse(readFileSync(join(l.gen_dir, 'plan.json'), 'utf8')) as Plan;
 
 /** 过了 plan 的绝对 deadline，签收节点与 land 都会拒绝、supervise-tick 会取消 run；approve 在此提前拒绝，不发无效 signal。 */
@@ -1529,171 +1520,6 @@ function brief(l: Ledger, json = false): number {
   );
   console.log(lines.slice(0, 20).join('\n'));
   return c.exit;
-}
-
-/** 在 run 的 worktree 里跑 plan 的验收命令（同 verify 节点脚本），退出码即结果。 */
-function acceptRun(
-  l: Ledger,
-  pkg: string | undefined,
-  cwd?: string,
-  cacheArt?: string,
-  report = true
-): number {
-  const run = archonJson(
-    ['workflow', 'get', l.archon_run_id, '--verbose', '--events'],
-    l.repo
-  ) as unknown as RunView & { events: Parameters<typeof budgetUsage>[0] };
-  if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
-  const plan = planOf(l);
-  if (pkg && !plan.packages.some(p => p.id === pkg))
-    throw new Error(`accept: unknown package ${pkg}`);
-  const art = cacheArt ?? artifactsOf(run);
-  const contracts = readJson(join(l.gen_dir, 'accept-inputs.json')) as Record<string, string>[];
-  if (!Array.isArray(contracts)) throw new Error('accept: missing generated acceptance contract');
-  const selected = pkg
-    ? contracts.filter(c => c.tag === `verify-${pkg}`)
-    : [...new Set(contracts.map(c => c.milestone))].map(m =>
-        [...contracts]
-          .reverse()
-          .find(
-            c =>
-              c.milestone === m &&
-              c.tag.startsWith('diff-') &&
-              evidenceJson(l, art, `${c.tag}.json`)
-          )
-      );
-  if (!selected.length || selected.some(c => !c))
-    throw new Error('accept: missing acceptance evidence');
-  const resolved = Bun.spawnSync([process.execPath, join(import.meta.dir, 'role-context.ts')], {
-    stdin: Buffer.from(JSON.stringify({ run, contracts: selected, art })),
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  if (resolved.exitCode !== 0)
-    throw new Error(`accept: input resolution failed: ${resolved.stderr.toString()}`);
-  const { inputs: resolvedInputs, events_file } = JSON.parse(resolved.stdout.toString()) as Awaited<
-    ReturnType<typeof resolveAcceptanceContext>
-  >;
-  mkdirSync(art, { recursive: true });
-  let code = 0;
-  for (const inputs of resolvedInputs) {
-    const prior = evidenceJson(l, art, `${inputs.tag}.json`) as Accept | undefined;
-    const gate = evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.json`);
-    const p = Bun.spawnSync(
-      [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
-      {
-        cwd: cwd ?? run.working_path,
-        env: {
-          ...process.env,
-          ...Object.fromEntries(
-            Object.entries(inputs).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])
-          ),
-          INPUTS_TAG: `accept-${inputs.tag}`,
-          INPUTS_EVENTS_FILE: events_file,
-          WORKFLOW_ID: run.id,
-          ARTIFACTS_DIR: art,
-        },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      }
-    );
-    const out = lastJson(p.stdout.toString()) as (Record<string, unknown> & Accept) | undefined;
-    const same =
-      !!out?.contract_hash &&
-      out.contract_hash === prior?.contract_hash &&
-      !!out.diff_hash &&
-      out.diff_hash === prior.diff_hash &&
-      decisionOf(gate)?.kind === 'debt';
-    const reviews = same
-      ? (evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.review.json`) as
-          | Review
-          | undefined)
-      : undefined;
-    let { decision } = deliveryDecision({
-      rechecks: out ? [out] : [],
-      approved: { check: prior, decision: decisionOf(gate) },
-      risk: out?.risk ?? inputs.risk,
-      strict: plan.mode === 'strict',
-      ...(reviews ? { reviews: [reviews] } : {}),
-    });
-    const limits = plan.budget;
-    const used = budgetUsage(
-      run.events,
-      loadTiers().policy.budget_floor.S,
-      readPolicyAttempts(art)
-    );
-    const reason = budgetReason(limits, used, false);
-    if (p.exitCode !== 0)
-      decision = { ...decision, kind: 'block', reason: out?.reason ?? 'engine_suspect' };
-    if (reason)
-      console.warn(JSON.stringify({ code: 'superagent.budget_observed', reason, used, limits }));
-    const ok = ['advance', 'debt'].includes(decision.kind);
-    if (report)
-      print(
-        out
-          ? {
-              ...out,
-              decision,
-              ok,
-              ...(reason ? { budget_advisory: reason } : {}),
-            }
-          : { ok: false, error: tail(p.stderr.toString()) }
-      );
-    if (!ok) code = 1;
-  }
-  return code;
-}
-
-/** Plan and quick share real acceptance and the original audited landing admission. */
-export function finalizeDelivery(id: string, automatic = false, who: Identity = caller()) {
-  assertCommander();
-  if (automatic && presence(who, home().sa).state !== 'online')
-    throw new Error('coord: delivery caller is not verifiably online');
-  const l = loadLedger(coord().resolveRun(id)?.run_id ?? id);
-  const deliver = () =>
-    control(
-      l,
-      controller => {
-        if (!l.delivery)
-          throw new Error('delivery: unknown legacy target; use a new quick/run contract');
-        const target = l.delivery;
-        const run = getRun(l.archon_run_id, l.repo),
-          art = artifactsOf(run);
-        const land = evidenceJson(l, art, 'land.json') as Land | undefined;
-        if (!land) throw new Error('delivery: missing generated land evidence');
-        const contract = createHash('sha256')
-          .update(readFileSync(join(l.gen_dir, 'accept-inputs.json')))
-          .digest('hex');
-        let receipt: ReturnType<typeof applyLand>;
-        intervention(l, 'land', () => {
-          receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
-            repo: l.repo,
-            plan: planOf(l),
-            base_ref: planOf(l).base_ref,
-            delivery: {
-              task: l.run_id,
-              target,
-              contract,
-              evidence: art,
-              title: planOf(l)
-                .packages.map(p => p.title)
-                .join('; '),
-              receipt: join(art, 'delivery.json'),
-            },
-          });
-          return 0;
-        });
-        updateLedger(l, cur => {
-          cur.controller = controller;
-          cur.delivery_result =
-            receipt?.status === 'manual_push' ? { ...receipt, status: 'integrated' } : receipt;
-        });
-        return receipt;
-      },
-      who,
-      automatic ? (l.controller?.generation ?? 0) : undefined
-    );
-  return coord().mutate(repoScope(l.repo), who, deliver);
 }
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
@@ -2914,33 +2740,8 @@ export function main(argv: string[]): number {
       const who = caller(true);
       const l = ledger(),
         s = waitRun(l, t, who);
-      if (s.state === 'completed') {
-        try {
-          const engine = readJson(join(l.gen_dir, 'engine.json'));
-          if (
-            !l.delivery ||
-            !engine ||
-            typeof engine !== 'object' ||
-            !('fake' in engine) ||
-            engine.fake !== false
-          )
-            s.delivery = {
-              status: 'unknown',
-              reason: 'legacy/fake or unverified launch; automatic delivery unavailable',
-            };
-          else s.delivery = finalizeDelivery(l.run_id, true, who);
-        } catch (e) {
-          const blocked = {
-            status: 'blocked' as const,
-            reason: e instanceof Error ? e.message : String(e),
-          };
-          s.delivery = blocked;
-          // prettier-ignore
-          updateLedger(l, cur => {
-            if (cur.delivery_result?.status !== 'integrated' || !integratedReceipt({ ...cur.delivery_result, status: 'manual_push' }, cur.delivery_result.source, cur.delivery_result)) cur.delivery_result = blocked;
-          });
-        }
-      }
+      if (s.state === 'completed')
+        s.delivery = deliveryProjection(l, getRun(l.archon_run_id, l.repo));
       // prettier-ignore
       print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) ? relayQuota(l.gen_dir, 'end') : {}) });
       return Number(s.exit);
@@ -3054,8 +2855,9 @@ export function main(argv: string[]): number {
       return brief(ledger(), !!a.flags.json);
     case 'land': {
       const l = ledger(true);
-      if (a.flags.apply && l.delivery) {
-        print(finalizeDelivery(l.run_id));
+      if (a.flags.apply) {
+        const receipt = finalizeDelivery(l.run_id);
+        if (receipt) print(receipt);
         return 0;
       }
       return controlled(l, () => {
@@ -3065,27 +2867,9 @@ export function main(argv: string[]): number {
           console.error(`land: no land.json yet (state ${classify(run).state})`);
           return 1;
         }
-        if (a.flags.apply) {
-          applyLand(run, land as Land, cwd => acceptRun(l, undefined, cwd, artifactsOf(run)), {
-            repo: l.repo,
-            plan: planOf(l),
-            launch_branch: l.launch_branch,
-            base_ref: planOf(l).base_ref,
-          });
-          return 0;
-        }
-        const inputs = join(l.gen_dir, 'accept-inputs.json');
-        // prettier-ignore
-        if (l.delivery && existsSync(inputs)) {
-          const receipt = integratedReceipt(evidenceJson(l, artifactsOf(run), 'delivery.json') as DeliveryOutcome | undefined, (land as Land).head, {
-            task: l.run_id, target: l.delivery, evidence: artifactsOf(run),
-            contract: createHash('sha256').update(readFileSync(inputs)).digest('hex'),
-          });
-          if (receipt) {
-            updateLedger(l, cur => { cur.delivery_result = { ...receipt, status: 'integrated' }; });
-            land = { ...(land as Land), status: 'integrated', integrated: receipt.integrated };
-          } else updateLedger(l, cur => { if (cur.delivery_result?.status === 'integrated') delete cur.delivery_result; });
-        }
+        const receipt = deliveryProjection(l, run);
+        if (receipt)
+          land = { ...(land as Land), status: 'integrated', integrated: receipt.integrated };
         const needs = needsOf(artifactsOf(run), undefined, l);
         print(
           a.flags.json && needs.length ? { ...(land as Record<string, unknown>), needs } : land
