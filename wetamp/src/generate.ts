@@ -606,12 +606,12 @@ export function buildWorkflow(
     ...(delivery ? { target_checkout: delivery.checkout, target_branch: delivery.branch } : {}),
   };
   nodes.push(check('land', [], landInputs, after));
-  if (delivery && !fake)
+  if (delivery && !fake) {
+    if (!run || /[^0-9a-f-]/.test(run)) throw new Error('delivery: invalid run id');
     nodes.push({
       id: 'deliver',
       depends_on: ['land'],
-      bash: `bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`,
-      with: { run },
+      bash: `INPUTS_RUN='${run}' bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`,
       timeout:
         20 * 60_000 +
         3 *
@@ -619,6 +619,7 @@ export function buildWorkflow(
             acceptTimeout(plan.packages, plan).timeout ?? ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS
           ),
     });
+  }
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,

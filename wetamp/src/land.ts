@@ -559,8 +559,8 @@ export function deliveryProjection(l: Ledger, run: RunView): DeliveryReceipt | u
     localDelivery(l, art, l.delivery)
   );
 }
-if (import.meta.main && !process.env.INPUTS_RUN) selftest(false);
-if (import.meta.main && process.env.INPUTS_RUN) {
+if (import.meta.main) {
+  if (!process.env.INPUTS_RUN) throw new Error('delivery: missing run id');
   const { loadLedger, print, readJson } = operator();
   const l = loadLedger(process.env.INPUTS_RUN);
   const { run, repo } = (readJson(join(l.gen_dir, 'delivery-authorization.json')) ??

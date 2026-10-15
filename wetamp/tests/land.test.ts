@@ -23,10 +23,36 @@ import {
 import * as config from '../src/config';
 import type { Plan } from '../src/plan';
 import type { Land } from '../templates/.archon/scripts/sa-check';
-import { directAuxiliaryPreload, fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { directAuxiliaryPreload, fixtureEnv, fixturePlan, gitRepo, sh, tmp } from './helpers';
 const saved = { ...process.env };
 // prettier-ignore
 afterEach(() => { process.env = { ...saved }; });
+
+test('delivery entry rejects missing run id without starting selftest', () => {
+  const root = tmp();
+  const marker = join(root, 'selftest-started');
+  const bin = join(root, 'selftest.sh');
+  writeFileSync(bin, `touch '${marker}'\nexit 1\n`);
+  const result = Bun.spawnSync(
+    [process.execPath, '--no-env-file', join(import.meta.dir, '../src/land.ts')],
+    {
+      env: fixtureEnv({
+        SUPERAGENT_HOME: root,
+        ARCHON_HOME: join(root, 'archon'),
+        INPUTS_RUN: '',
+        NODE_ENV: 'test',
+        SA_SELFTEST_BIN: bin,
+      }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 5_000,
+    }
+  );
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr.toString()).toContain('delivery: missing run id');
+  expect(existsSync(marker)).toBe(false);
+});
+
 // prettier-ignore
 const fixture = () => {
   const root = tmp(), repo = gitRepo(root), worktree = join(root, 'worker'), art = join(root, 'art');

@@ -1564,13 +1564,16 @@ test('NO_HOLD generated acceptance uses bounded repairs and no durable human wai
   );
 });
 
-test('DURABLE_DELIVERY verified workflow schedules delivery without a wait client', () => {
+test('DURABLE_DELIVERY generated node receives run id through real Archon execution', () => {
+  const root = tmp(),
+    repo = gitRepo(join(root, 'repo')),
+    run = newRunId(new Date(NOW));
   const delivery = { checkout: '/repo', branch: 'feature', head: 'a'.repeat(40) };
   const nodes = nodesOf(
     buildWorkflow(
       fixture,
       milestones(fixture),
-      'durable',
+      run,
       '/GEN',
       false,
       NOW,
@@ -1579,5 +1582,60 @@ test('DURABLE_DELIVERY verified workflow schedules delivery without a wait clien
       delivery
     )
   );
-  expect(nodes.find(n => n.id === 'deliver')).toMatchObject({ depends_on: ['land'] });
-});
+  const deliver = nodes.find(n => n.id === 'deliver')!;
+  expect(deliver).toMatchObject({ depends_on: ['land'] });
+  const observed = join(root, 'received-run.json');
+  const preload = join(root, 'delivery-probe.ts');
+  // Observe the actual land.ts child before authorization/integration can run.
+  fs.writeFileSync(
+    preload,
+    `if (process.argv[1] === ${JSON.stringify(join(WETAMP, 'src/land.ts'))}) {
+      await Bun.write(${JSON.stringify(observed)}, JSON.stringify({ run: process.env.INPUTS_RUN }));
+      process.exit(0);
+    }`
+  );
+  const workflows = join(repo, '.archon/workflows');
+  fs.mkdirSync(workflows, { recursive: true });
+  fs.writeFileSync(
+    join(workflows, 'delivery-input.yaml'),
+    Bun.YAML.stringify({
+      name: 'delivery-input',
+      description: 'Generated delivery process input contract',
+      nodes: [{ id: 'land', bash: 'true' }, deliver],
+    })
+  );
+  const env = fixtureEnv({
+    SUPERAGENT_HOME: join(root, 'home'),
+    ARCHON_HOME: join(root, 'home/archon'),
+    INPUTS_RUN: 'wrong-inherited-run',
+    BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`,
+  });
+  const ack = workflowCli(
+    repo,
+    env,
+    'run',
+    'delivery-input',
+    '--workflow-source',
+    repo,
+    '--cwd',
+    repo,
+    '--no-worktree',
+    '--detach'
+  );
+  const waited = workflowCli(repo, env, 'wait', String(ack?.runId), '--timeout', '20');
+  expect(waited).toMatchObject({ attention: { status: 'completed' } });
+  expect(JSON.parse(readFileSync(observed, 'utf8'))).toEqual({ run });
+}, 30_000);
+
+test.each(['', 'bad-id', "ab'cd", 'ab\n', '$(echo bad)', 'ab cd'])(
+  'DURABLE_DELIVERY rejects unsafe run id %j before building a shell command',
+  run => {
+    expect(() =>
+      buildWorkflow(fixture, milestones(fixture), run, '/GEN', false, NOW, loadTiers(), undefined, {
+        checkout: '/repo',
+        branch: 'feature',
+        head: 'a'.repeat(40),
+      })
+    ).toThrow('delivery: invalid run id');
+  }
+);
