@@ -304,6 +304,47 @@ test('PROVIDER_TIMING silence closes on structured warnings without exposing mes
     });
 });
 
+test.each(['codex.will_retry', 'codex.stall_interrupt'])(
+  'PROVIDER_TIMING progress snapshots preserve silence attribution to %s',
+  code => {
+    const snapshot: ProviderEventEnvelope['event'] = {
+      type: 'state_update',
+      state: 'running',
+      progress: {
+        since: at(0),
+        at: at(600000),
+        reasoning: { count: 0, lastAt: null },
+        message: { count: 0, lastAt: null },
+        activeTools: 0,
+        activeTasks: 0,
+      },
+    };
+    const warning = { type: 'warning', code, message: 'private error' } as const;
+    const original = providerTiming('r', [row(0, 0, message), row(1, 600001, warning)])[0];
+    const timing = providerTiming('r', [
+      row(0, 0, message),
+      row(1, 600000, snapshot),
+      row(2, 600001, warning),
+    ])[0];
+    expect(timing).toMatchObject({
+      longest_silence_ms: original.longest_silence_ms,
+      longest_silence_at: original.longest_silence_at,
+      longest_silence_closed_by: { type: 'warning', code },
+      long_gaps: [{ start: at(0), end: at(600000), ms: 600000, classification: 'silent' }],
+      unclassified_gap_ratio: 0,
+    });
+    expect(slowNodes([timing])[0].longest_silence_closed_by).toEqual({ type: 'warning', code });
+    // Real state transitions still close silence; only progress summaries are transparent.
+    expect(
+      providerTiming('r', [
+        row(0, 0, message),
+        row(1, 600000, { type: 'state_update', state: 'running' }),
+        row(2, 600001, warning),
+      ])[0].longest_silence_closed_by
+    ).toEqual({ type: 'state_update' });
+  }
+);
+
 const editTools: Pick<
   Extract<ProviderEventEnvelope['event'], { type: 'tool_call' }>,
   'name' | 'rawInput'
@@ -395,4 +436,44 @@ test('explore ratio keeps parse failures and unfamiliar tools in the denominator
     unrecognized_actions: 2,
   });
   expect(providerTiming('r', [terminal()])[0]?.explore_ratio).toBe('unknown');
+});
+
+test('PROVIDER_TIMING long gaps require explicit activity evidence, including historical unknowns', () => {
+  const progress = (kind: string): ProviderEventEnvelope['event'] => ({
+    type: 'state_update',
+    state: 'running',
+    progress: {
+      since: at(0),
+      at: at(180000),
+      reasoning: {
+        count: Number(kind === 'model_progress'),
+        lastAt: kind === 'model_progress' ? at(120000) : null,
+      },
+      message: { count: 0, lastAt: null },
+      activeTools: Number(kind === 'tool_active'),
+      activeTasks: 0,
+    },
+  });
+  for (const kind of ['model_progress', 'tool_active', 'silent', 'unclassified']) {
+    const event = kind === 'unclassified' ? message : progress(kind);
+    const timing = providerTiming('r', [row(0, 0, message), row(1, 180000, event)])[0];
+    expect(timing.long_gaps).toEqual([
+      { start: at(0), end: at(180000), ms: 180000, classification: kind },
+    ]);
+    expect(timing.unclassified_gap_ratio).toBe(Number(kind === 'unclassified'));
+  }
+  const stale = progress('silent');
+  if (stale.type === 'state_update' && stale.progress) stale.progress.since = at(1);
+  expect(
+    providerTiming('r', [row(0, 0, message), row(1, 180000, stale)])[0].unclassified_gap_ratio
+  ).toBe(1);
+  expect(
+    providerTiming('r', [row(0, 0, message), row(2, 180000, progress('silent'))])[0].long_gaps
+  ).toBe('unknown');
+  const mixed = providerTiming('r', [
+    row(0, 0, message),
+    row(1, 180000, progress('silent')),
+    row(2, 360000, message),
+  ])[0];
+  expect(mixed.unclassified_gap_ratio).toBe(0.5);
 });

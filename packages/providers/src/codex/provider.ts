@@ -619,6 +619,30 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
   let stallInterrupts = 0;
   let interrupting = false;
   let lastProgressAt = Date.now();
+  let since = Date.now();
+  const delta = (): { count: number; lastAt: string | null } => ({ count: 0, lastAt: null });
+  let reasoning = delta(),
+    message = delta();
+  // Aggregate until a boundary flush; unpersisted item starts must not erase evidence.
+  function* progress(): Generator<ProviderEvent> {
+    const now = Date.now();
+    if (now - since < STALL_MS) return;
+    yield {
+      type: 'state_update',
+      state: 'running',
+      progress: {
+        since: new Date(since).toISOString(),
+        at: new Date(now).toISOString(),
+        reasoning,
+        message,
+        activeTools: activeToolIds.size,
+        activeTasks: liveTasks.size,
+      },
+    };
+    since = now;
+    reasoning = delta();
+    message = delta();
+  }
   const notifications = connection.notifications();
   let next = notifications.next();
   while (true) {
@@ -644,6 +668,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
       }
     })();
     if (observed === null) {
+      yield* progress();
       if (interrupting || stallInterrupts >= 2)
         throw new Error('Codex model stream stalled after interrupt recovery');
       interrupting = true;
@@ -662,12 +687,30 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
     }
     if (observed.done) break;
     const notification = observed.value;
+    if (
+      (notification.method === 'item/started' ||
+        notification.method === 'item/completed' ||
+        notification.method === 'turn/completed' ||
+        notification.method === 'error') &&
+      ((notification.method !== 'turn/completed' &&
+        notification.params.threadId === threadId &&
+        notification.params.turnId === turnId) ||
+        (notification.method === 'turn/completed' &&
+          notification.params.threadId === threadId &&
+          notification.params.turn.id === turnId) ||
+        agentThreads.has(notification.params.threadId))
+    )
+      yield* progress();
     switch (notification.method) {
       case 'item/agentMessage/delta':
       case 'item/reasoning/summaryTextDelta':
       case 'item/reasoning/textDelta':
-        if (notification.params.threadId === threadId && notification.params.turnId === turnId)
+        if (notification.params.threadId === threadId && notification.params.turnId === turnId) {
           lastProgressAt = Date.now();
+          const activity = notification.method === 'item/agentMessage/delta' ? message : reasoning;
+          activity.count++;
+          activity.lastAt = new Date(lastProgressAt).toISOString();
+        }
         break;
 
       case 'model/rerouted':

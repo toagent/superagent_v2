@@ -197,6 +197,23 @@ export const stateUpdateSchema = z.object({
   type: z.literal('state_update'),
   /** `requires_action`: the agent waits on the user, such as for a permission answer. */
   state: z.enum(['running', 'requires_action']),
+  /** Client-observed activity since turn start or the preceding snapshot; never content. */
+  progress: z
+    .object({
+      since: z.iso.datetime(),
+      at: z.iso.datetime(),
+      reasoning: z.object({
+        count: z.number().int().nonnegative(),
+        lastAt: z.iso.datetime().nullable(),
+      }),
+      message: z.object({
+        count: z.number().int().nonnegative(),
+        lastAt: z.iso.datetime().nullable(),
+      }),
+      activeTools: z.number().int().nonnegative(),
+      activeTasks: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 
 /** Every non-terminal event a provider may stream. */
