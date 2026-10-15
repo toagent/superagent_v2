@@ -1511,18 +1511,10 @@ describe('run (archon stub)', () => {
       delete p.deadline;
       delete p.budget;
     });
-    const diagnosis = spyOn(landMod, 'selftest').mockImplementation(() => {
-      throw new Error('unexpected diagnosis');
-    });
-    try {
-      for (const receipt of [undefined, { fake: true }, { expires_at: '2020-01-01' }]) {
-        if (receipt) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(receipt));
-        else rmSync(join(s.root, 'home', 'selftest.json'), { force: true });
-        expect(captured(() => main(['run', plan])).code).toBe(0);
-      }
-      expect(diagnosis).not.toHaveBeenCalled();
-    } finally {
-      diagnosis.mockRestore();
+    for (const receipt of [undefined, { fake: true }, { expires_at: '2020-01-01' }]) {
+      if (receipt) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(receipt));
+      else rmSync(join(s.root, 'home', 'selftest.json'), { force: true });
+      expect(captured(() => main(['run', plan])).code).toBe(0);
     }
   });
   /** workflow run 的 --config 文件里钉住的别名。 */

@@ -1,8 +1,16 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DeliveryReceipt, LocalDelivery } from '../src/land';
-import { tmp } from './helpers';
+import { directAuxiliaryPreload, fixturePlan, tmp } from './helpers';
+import * as archon from '../src/archon';
+import { finalizeDelivery } from '../src/land';
+import { ledgerPath, loadLedger, type Ledger } from '../src/cli';
+import { caller, coord, repoScope, runScope } from '../src/coord';
+import * as coordination from '../src/coord';
+import { generate } from '../src/generate';
+import type { Plan } from '../src/plan';
+import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
 
 // Exercise the real delivery boundary in fresh processes: no mocked Git, receipts,
 // acceptance, or lock release. tmp() also owns candidates left behind by SIGKILL.
@@ -129,8 +137,158 @@ console.log(JSON.stringify(receipt));
       .trim()
       .split('\n')
       .map(line => (JSON.parse(line) as { head: string }).head);
-  return { repo, git, original, marker, delivery, execute, recover, acceptance };
+  return {
+    root,
+    worker,
+    source,
+    env,
+    repo,
+    git,
+    original,
+    marker,
+    delivery,
+    execute,
+    recover,
+    acceptance,
+  };
 }
+
+test('DURABLE_DELIVERY finalizeDelivery persists integrated ledger and repeats without another integration', () => {
+  const f = fixture();
+  const saved = { ...process.env };
+  const home = join(f.root, 'home');
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  Object.assign(process.env, {
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    SUPERAGENT_HOME: home,
+    ARCHON_HOME: join(home, 'archon'),
+    SUPERAGENT_MEMORY: 'off',
+    BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${directAuxiliaryPreload()}`,
+  });
+  let transport: ReturnType<typeof spyOn<typeof archon, 'archon'>> | undefined;
+  try {
+    const checks = join(f.root, 'finalize-checks');
+    const plan = JSON.parse(
+      readFileSync(
+        fixturePlan(f.root, f.repo, p => {
+          p.base_ref = f.original;
+          p.environment = [];
+          p.packages = [
+            {
+              id: 'p',
+              title: 'Finalize delivery',
+              risk: 'G1',
+              size: 'S',
+              scope: { write: ['feature.txt'] },
+              accept: [
+                {
+                  cmd: `test "$(cat feature.txt)" = feature && test "$(cat target.txt)" = target && git rev-parse HEAD >> '${checks}'`,
+                  timeout_s: 5,
+                },
+              ],
+            },
+          ];
+        }),
+        'utf8'
+      )
+    ) as Plan;
+    // Generation's engine checkout guard is covered separately; this test runs before commit.
+    const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(f.original);
+    let gen: ReturnType<typeof generate>;
+    try {
+      gen = generate(plan, 'fault', true);
+    } finally {
+      engine.mockRestore();
+    }
+    const ledger: Ledger = {
+      run_id: 'fault',
+      archon_run_id: 'fault',
+      repo: f.repo,
+      branch: 'sa/fault',
+      plan: join(gen.dir, 'plan.json'),
+      gen_dir: gen.dir,
+      workflow: 'sa-fault',
+      console: 'codex',
+      started_at: '',
+      transcript: '',
+      log: '',
+      delivery: f.delivery.target,
+    };
+    const who = caller();
+    ledger.controller = coord().claim(repoScope(f.repo), who).controller;
+    const authorization = {
+      repo: ledger.controller,
+      run: coord().claim(runScope(ledger), who).controller,
+    };
+    process.env.WORKFLOW_ID = ledger.archon_run_id;
+    writeFileSync(ledgerPath('fault'), JSON.stringify(ledger));
+    const art = join(home, 'artifacts/runs/fault');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'land.json'), JSON.stringify({ branch: 'sa/fault', head: f.source }));
+    const contracts = JSON.parse(
+      readFileSync(join(gen.dir, 'accept-inputs.json'), 'utf8')
+    ) as Record<string, string>[];
+    const contract = contracts.find(c => c.tag === 'diff-m1-r1')!;
+    // Prior gate evidence selects the contract; acceptance still runs on the real merge candidate.
+    writeFileSync(join(art, `${contract.tag}.json`), JSON.stringify({ ok: true }));
+    const output = {
+      head: f.source,
+      reviewed_head: f.source,
+      status: 'done',
+      error_class: null,
+      needs: [],
+    };
+    const producers = new Set(
+      Object.values(contract)
+        .map(v => parseWholeOutputRef(v)?.nodeId)
+        .filter(Boolean)
+    );
+    const run = {
+      id: 'fault',
+      status: 'running',
+      working_path: f.worker,
+      output_root: home,
+      nodes: [
+        { nodeId: 'land', state: 'completed' },
+        { nodeId: 'deliver', state: 'running' },
+      ],
+      events: [...producers].map(step_name => ({
+        step_name,
+        event_type: 'node_completed',
+        data: { node_output: JSON.stringify(output), structured_output: output },
+      })),
+    };
+    // Only the external engine query is a fixture; acceptance, Git, leases and ledger writes are real.
+    transport = spyOn(archon, 'archon').mockImplementation(args => {
+      expect(args.slice(0, 3)).toEqual(['workflow', 'get', 'fault']);
+      return { code: 0, out: JSON.stringify(run), err: '' };
+    });
+    expect(loadLedger('fault').delivery_result).toBeUndefined();
+    const receipt = finalizeDelivery('fault', false, who, authorization);
+    if (receipt?.status !== 'manual_push') throw new Error('delivery did not integrate');
+    const head = f.git(f.repo, 'rev-parse', 'HEAD');
+    expect(receipt).toMatchObject({
+      status: 'manual_push',
+      integrated: head,
+      accepted: head,
+      source: f.source,
+    });
+    expect(loadLedger('fault').delivery_result).toEqual({ ...receipt, status: 'integrated' });
+    expect(readFileSync(checks, 'utf8').trim()).toBe(head);
+    expect(finalizeDelivery('fault', false, who, authorization)).toEqual(receipt);
+    expect(loadLedger('fault').delivery_result).toEqual({ ...receipt, status: 'integrated' });
+    expect(f.git(f.repo, 'rev-parse', 'HEAD')).toBe(head);
+    expect(f.git(f.repo, 'rev-list', '--merges', `${f.original}..HEAD`)).toBe(head);
+    expect(f.git(f.repo, 'rev-list', '--count', `${f.original}..HEAD`)).toBe('2');
+    expect(readFileSync(checks, 'utf8').trim()).toBe(head);
+    expect(f.git(f.repo, 'status', '--porcelain')).toBe('');
+  } finally {
+    transport?.mockRestore();
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+}, 15000);
 
 test.each(['before', 'after'])(
   'DURABLE_DELIVERY SIGKILL %s target update recovers exactly once',

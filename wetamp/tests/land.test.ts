@@ -17,7 +17,6 @@ import {
   captureDelivery,
   excludeCodegraph,
   integratedReceipt,
-  selftest,
   type LocalDelivery,
 } from '../src/land';
 import * as config from '../src/config';
@@ -779,20 +778,6 @@ test.each(['dirty', 'tree'])('apply refuses %s before advancing the target', kin
   expect(() => applyLand(f.run, f.land, () => { throw new Error('must not verify'); })).toThrow(kind === 'dirty' ? 'dirty' : 'tree differs');
   expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
 });
-// prettier-ignore
-test.each([true, false])('selftest wait=%s refreshes the latest fingerprint after an occupied lease', async wait => {
-  const root = tmp();
-  process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = root;
-  const receipt = { ok: true, fake: false, fingerprint: 'fixture', config_hash: config.configHash(), expires_at: new Date(Date.now() + 3600e3).toISOString() };
-  const bin = join(root, 'selftest.sh'); process.env.NODE_ENV = 'test'; process.env.SA_SELFTEST_BIN = bin; writeFileSync(bin, `printf '%s' '${JSON.stringify(receipt)}' > '${join(root, 'selftest.json')}'\n`);
-  const child = Bun.spawn([process.execPath, '-e', `import { lock } from ${JSON.stringify(join(import.meta.dir, '../src/archon.ts'))}; const l=lock(${JSON.stringify(join(root, 'selftest.lock'))}); if(!l.ok) process.exit(1); console.log('locked'); await Bun.sleep(200); await Bun.write(${JSON.stringify(join(root, 'selftest.json'))}, ${JSON.stringify(JSON.stringify({ ...receipt, fingerprint: 'previous' }))}); l.release();`], { stdout: 'pipe', stderr: 'pipe' });
-  await child.stdout.getReader().read();
-  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
-  try { selftest(wait); } finally { probe.mockRestore(); }
-  expect(await child.exited).toBe(0);
-  expect(JSON.parse(readFileSync(join(root, 'selftest.json'), 'utf8')).fingerprint).toBe('fixture');
-});
-
 // prettier-ignore
 test.each([true, false])('conflicts use PATH mergiraf only in the candidate; available=%s', available => {
   const f = fixture(), bin = join(f.root, 'bin'); mkdirSync(bin);

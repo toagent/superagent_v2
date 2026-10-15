@@ -29,7 +29,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { archonJson, getRun, lastJson, tail, lock, QUERY_TIMEOUT_MS, type RunView } from './archon';
-import { home, loadTiers, receiptIssue, WETAMP, type Receipt } from './config';
+import { loadTiers } from './config';
 import { redact } from './redact';
 import {
   deliveryDecision,
@@ -46,8 +46,6 @@ export class LandError extends Error {
     code:
       | 'codegraph_exclude_failed'
       | 'delivery_git_failed'
-      | 'selftest_lock_timeout'
-      | 'selftest_receipt_invalid'
       | 'not_ready'
       | 'repository_missing'
       | 'target_missing'
@@ -150,42 +148,8 @@ export function captureDelivery(checkout: string): DeliveryTarget {
     head: git('rev-parse', 'HEAD'),
   };
 }
-const selftestTimeout = (): number =>
+const integrationLockTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_SELFTEST_TIMEOUT_MS)) || 20 * 60_000;
-/** Explicit diagnostics own the kernel lease for the entire script. */
-// prettier-ignore
-export function selftest(wait: boolean): void {
-  const { sa } = home(), path = join(sa, 'selftest.json');
-  const issue = () => receiptIssue(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) as Partial<Receipt> : undefined);
-  if (!issue()) return;
-  const deadline = Date.now() + selftestTimeout();
-  let lease = lock(join(sa, 'selftest.lock'));
-  while (!lease.ok && Date.now() < deadline) {
-    Bun.sleepSync(50);
-    lease = lock(join(sa, 'selftest.lock'));
-  }
-  if (!lease.ok) throw new LandError('selftest_lock_timeout', 'preflight: timed out waiting for selftest.lock');
-  try {
-    let why = issue();
-    if (why && (why.kind !== 'invalid' || !wait)) {
-      console.error(`preflight: ${why.kind}; running real selftest synchronously`);
-      const bin = process.env.NODE_ENV === 'test' ? process.env.SA_SELFTEST_BIN ?? join(WETAMP, 'scripts/selftest.sh') : join(WETAMP, 'scripts/selftest.sh');
-      const timeout = selftestTimeout();
-      // The supervisor stays outside the child's group so it can kill descendants and reap bash.
-      const supervisor = `use Time::HiRes qw(alarm); my $ms = shift; my $pid = fork // die "fork: $!";
-        if (!$pid) { setpgrp(0, 0) or die "setpgrp: $!"; exec "bash", @ARGV; die "exec: $!"; }
-        $SIG{ALRM} = sub { kill 'KILL', -$pid; waitpid($pid, 0); exit 124; };
-        alarm($ms / 1000); waitpid($pid, 0); exit($? & 127 ? 128 + ($? & 127) : $? >> 8);`;
-      const p = Bun.spawnSync(['perl', '-e', supervisor, String(timeout), bin], { env: process.env, timeout: timeout + 1000, killSignal: 'SIGKILL' });
-      const log = redact(p.stdout.toString() + p.stderr.toString());
-      if (!wait) console.log(log);
-      if (p.exitedDueToTimeout || p.exitCode !== 0)
-        why.message += `; selftest ${p.exitedDueToTimeout || p.exitCode === 124 ? 'timed out' : `exit ${String(p.exitCode)}`}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
-      else why = issue();
-    }
-    if (why) throw new LandError('selftest_receipt_invalid', `preflight: no valid selftest receipt: ${why.message}; fix: wetamp/scripts/selftest.sh (real, not --fake)`);
-  } finally { lease.release(); }
-}
 // prettier-ignore
 export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan; reuse?: () => string[] | undefined }): DeliveryOutcome | undefined {
   if ((!['completed', 'running'].includes(run.status) || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed')) ||
@@ -204,7 +168,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   const targetCheckout = () => git('worktree', 'list', '--porcelain', '-z').split('\0\0').find(record => record.split('\0').includes(`branch refs/heads/${target}`))?.split('\0').find(line => line.startsWith('worktree '))?.slice(9);
   const lockfile = join(git('rev-parse', '--path-format=absolute', '--git-common-dir'), `sa-land-${createHash('sha256').update(target).digest('hex')}.lock`);
   let lease = lock(lockfile);
-  const deadline = Date.now() + selftestTimeout();
+  const deadline = Date.now() + integrationLockTimeout();
   while (!lease.ok && Date.now() < deadline) { Bun.sleepSync(50); lease = lock(lockfile); }
   if (!lease.ok) throw new LandError('integration_lock_timeout', 'land: timed out waiting for integration lock');
   try {
