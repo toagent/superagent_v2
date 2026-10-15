@@ -27,6 +27,52 @@ const saved = { ...process.env };
 // prettier-ignore
 afterEach(() => { process.env = { ...saved }; });
 
+test.each(['unknown run', 'missing durable authorization', 'authorization/run mismatch'])(
+  'delivery entry loads operator and rejects %s',
+  failure => {
+    const root = tmp();
+    const id = '00000000-nonexistent';
+    if (failure !== 'unknown run') {
+      mkdirSync(join(root, 'runs'));
+      writeFileSync(
+        join(root, 'runs', `${id}.json`),
+        JSON.stringify({
+          run_id: id,
+          archon_run_id: id,
+          gen_dir: root,
+          repo: root,
+          branch: 'sa/test',
+          workflow: 'test',
+        })
+      );
+    }
+    if (failure === 'authorization/run mismatch')
+      writeFileSync(
+        join(root, 'delivery-authorization.json'),
+        JSON.stringify({ run: {}, repo: {} })
+      );
+    const result = Bun.spawnSync([process.execPath, '--no-env-file', 'src/land.ts'], {
+      cwd: join(import.meta.dir, '..'),
+      env: fixtureEnv({
+        SUPERAGENT_HOME: root,
+        ARCHON_HOME: join(root, 'archon'),
+        INPUTS_RUN: id,
+        WORKFLOW_ID: '',
+      }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 5_000,
+    });
+    const output = result.stdout.toString() + result.stderr.toString();
+    expect(result.exitedDueToTimeout).toBe(false);
+    expect(result.exitCode).toBe(1);
+    expect(output).not.toContain('require() async module');
+    expect(output).toContain(
+      failure === 'unknown run' ? `unknown run ${id}` : `delivery: ${failure}`
+    );
+  }
+);
+
 test('delivery entry rejects missing run id', () => {
   const root = tmp();
   const result = Bun.spawnSync(
