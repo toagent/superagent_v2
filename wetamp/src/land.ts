@@ -15,13 +15,54 @@ import { lock, QUERY_TIMEOUT_MS, type RunView } from './archon';
 import { home, receiptIssue, WETAMP, type Receipt } from './config';
 import { redact } from './redact';
 import { landTarget, type Land } from '../templates/.archon/scripts/sa-check';
+/** Fixed codes are safe for intervention persistence; diagnostics stay in message. */
+export class LandError extends Error {
+  constructor(
+    code:
+      | 'codegraph_exclude_failed'
+      | 'delivery_git_failed'
+      | 'selftest_lock_timeout'
+      | 'selftest_receipt_invalid'
+      | 'not_ready'
+      | 'repository_missing'
+      | 'target_missing'
+      | 'target_protected'
+      | 'git_failed'
+      | 'integration_lock_timeout'
+      | 'delivery_target_changed'
+      | 'target_dirty'
+      | 'source_head_drifted'
+      | 'source_dirty'
+      | 'source_tree_changed'
+      | 'target_history_changed'
+      | 'target_history_check_failed'
+      | 'integration_ancestry_failed'
+      | 'candidate_ancestry_failed'
+      | 'merge_conflicts'
+      | 'submodule_init_failed'
+      | 'dependency_install_failed'
+      | 'acceptance_failed'
+      | 'candidate_changed'
+      | 'target_checkout_changed'
+      | 'target_advanced'
+      | 'integration_outcome_unknown',
+    message: string
+  ) {
+    super(message);
+    this.name = `land_${code}`;
+  }
+}
 /** Shared Git metadata keeps the main index out of every worktree's clean checks. */
 export function excludeCodegraph(repo: string): void {
   const result = Bun.spawnSync(
     ['git', '-C', repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
     { stdout: 'pipe', stderr: 'pipe' }
   );
-  if (result.exitCode !== 0) throw new Error('codegraph: cannot resolve common info/exclude');
+  if (result.exitCode !== 0)
+    throw new LandError(
+      'codegraph_exclude_failed',
+      'codegraph: cannot resolve common info/exclude'
+    );
   const file = result.stdout.toString().trim();
   if (!existsSync(file) || !readFileSync(file, 'utf8').split('\n').includes('.codegraph/'))
     appendFileSync(file, '\n.codegraph/\n');
@@ -73,7 +114,8 @@ export function integratedReceipt(receipt: DeliveryOutcome | undefined, source: 
 export function captureDelivery(checkout: string): DeliveryTarget {
   const git = (...args: string[]) => {
     const p = Bun.spawnSync(['git', '-C', checkout, ...args], { stdout: 'pipe', stderr: 'pipe' });
-    if (p.exitCode !== 0) throw new Error(`delivery: ${p.stderr.toString().trim()}`);
+    if (p.exitCode !== 0)
+      throw new LandError('delivery_git_failed', `delivery: ${p.stderr.toString().trim()}`);
     return p.stdout.toString().trim();
   };
   return {
@@ -96,7 +138,7 @@ export function selftest(wait: boolean): void {
     Bun.sleepSync(50);
     lease = lock(join(sa, 'selftest.lock'));
   }
-  if (!lease.ok) throw new Error('preflight: timed out waiting for selftest.lock');
+  if (!lease.ok) throw new LandError('selftest_lock_timeout', 'preflight: timed out waiting for selftest.lock');
   try {
     let why = issue();
     if (why && (why.kind !== 'invalid' || !wait)) {
@@ -115,20 +157,20 @@ export function selftest(wait: boolean): void {
         why.message += `; selftest ${p.exitedDueToTimeout || p.exitCode === 124 ? 'timed out' : `exit ${String(p.exitCode)}`}; log tail:\n${log.split('\n').slice(-20).join('\n')}`;
       else why = issue();
     }
-    if (why) throw new Error(`preflight: no valid selftest receipt: ${why.message}; fix: wetamp/scripts/selftest.sh (real, not --fake)`);
+    if (why) throw new LandError('selftest_receipt_invalid', `preflight: no valid selftest receipt: ${why.message}; fix: wetamp/scripts/selftest.sh (real, not --fake)`);
   } finally { lease.release(); }
 }
 // prettier-ignore
 export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery }): DeliveryOutcome | undefined {
   if (run.status !== 'completed' || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed'))
-    throw new Error('land: run is not ready for integration');
+    throw new LandError('not_ready', 'land: run is not ready for integration');
   const delivery = context?.delivery;
-  const repo = delivery?.target.checkout ?? land.repo ?? context?.repo; if (!repo) throw new Error('land: missing repository');
-  const target = delivery?.target.branch ?? land.target ?? (context && landTarget(repo, context.base_ref, () => context.launch_branch)); if (!target) throw new Error('land: missing integration target');
-  if (delivery && /^(main|master|dev|develop|release-.*)$/.test(target)) throw new Error('delivery: protected target branch');
+  const repo = delivery?.target.checkout ?? land.repo ?? context?.repo; if (!repo) throw new LandError('repository_missing', 'land: missing repository');
+  const target = delivery?.target.branch ?? land.target ?? (context && landTarget(repo, context.base_ref, () => context.launch_branch)); if (!target) throw new LandError('target_missing', 'land: missing integration target');
+  if (delivery && /^(main|master|dev|develop|release-.*)$/.test(target)) throw new LandError('target_protected', 'delivery: protected target branch');
   const gitAt = (cwd: string, ...args: string[]): string => {
     const p = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
-    if (p.exitCode !== 0) throw new Error(`land: ${p.stderr.toString().trim()}`);
+    if (p.exitCode !== 0) throw new LandError('git_failed', `land: ${p.stderr.toString().trim()}`);
     return p.stdout.toString().trim();
   };
   const git = (...args: string[]): string => gitAt(repo, ...args);
@@ -137,28 +179,28 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   let lease = lock(lockfile);
   const deadline = Date.now() + selftestTimeout();
   while (!lease.ok && Date.now() < deadline) { Bun.sleepSync(50); lease = lock(lockfile); }
-  if (!lease.ok) throw new Error('land: timed out waiting for integration lock');
+  if (!lease.ok) throw new LandError('integration_lock_timeout', 'land: timed out waiting for integration lock');
   try {
   const checkout = targetCheckout();
-  if (delivery && (!checkout || realpathSync(checkout) !== delivery.target.checkout || gitAt(checkout, 'symbolic-ref', '--short', 'HEAD') !== target)) throw new Error('delivery: target checkout/branch changed');
-  const clean = () => { if (checkout && gitAt(checkout, 'status', '--porcelain', '--untracked-files=all')) throw new Error('land: target checkout is dirty'); };
+  if (delivery && (!checkout || realpathSync(checkout) !== delivery.target.checkout || gitAt(checkout, 'symbolic-ref', '--short', 'HEAD') !== target)) throw new LandError('delivery_target_changed', 'delivery: target checkout/branch changed');
+  const clean = () => { if (checkout && gitAt(checkout, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('target_dirty', 'land: target checkout is dirty'); };
   clean();
   const tree = git('rev-parse', `${land.head}^{tree}`);
   const sameTree = () => {
-    if (delivery && git('rev-parse', land.branch) !== land.head) throw new Error('delivery: source HEAD drifted');
-    if (delivery && run.working_path && gitAt(run.working_path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('delivery: source checkout is dirty');
-    if (git('rev-parse', `${land.branch}^{tree}`) !== tree) throw new Error('land: branch tree differs from accepted tree');
+    if (delivery && git('rev-parse', land.branch) !== land.head) throw new LandError('source_head_drifted', 'delivery: source HEAD drifted');
+    if (delivery && run.working_path && gitAt(run.working_path, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('source_dirty', 'delivery: source checkout is dirty');
+    if (git('rev-parse', `${land.branch}^{tree}`) !== tree) throw new LandError('source_tree_changed', 'land: branch tree differs from accepted tree');
   };
   sameTree();
   const targetHistory = (tip: string) => {
     if (!delivery) return;
     const p = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', delivery.target.head, tip], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
-    if (p.exitCode === 1) throw new Error('delivery: target HEAD is not a descendant of launch HEAD');
-    if (p.exitCode !== 0) throw new Error(`delivery: cannot verify launch HEAD ancestry: ${p.stderr.toString().trim()}`);
+    if (p.exitCode === 1) throw new LandError('target_history_changed', 'delivery: target HEAD is not a descendant of launch HEAD');
+    if (p.exitCode !== 0) throw new LandError('target_history_check_failed', `delivery: cannot verify launch HEAD ancestry: ${p.stderr.toString().trim()}`);
   };
   targetHistory(git('rev-parse', `refs/heads/${target}`));
   const ancestor = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', land.head, `refs/heads/${target}`], { stdout: 'pipe', stderr: 'pipe' });
-  if (ancestor.exitCode > 1) throw new Error(`delivery: ${ancestor.stderr.toString().trim()}`);
+  if (ancestor.exitCode > 1) throw new LandError('integration_ancestry_failed', `delivery: ${ancestor.stderr.toString().trim()}`);
   // Git evidence, never a supplied receipt, determines whether integration already happened.
   const q = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
   const push = `git -C ${q(repo)} push origin ${q(target)}`;
@@ -191,7 +233,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   try {
     git('worktree', 'add', '--detach', candidate, tip);
     const ff = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', tip, land.head], { stdout: 'pipe', stderr: 'pipe' });
-    if (ff.exitCode > 1) throw new Error(`land: ${ff.stderr.toString().trim()}`);
+    if (ff.exitCode > 1) throw new LandError('candidate_ancestry_failed', `land: ${ff.stderr.toString().trim()}`);
     try { gitAt(candidate, 'merge', ff.exitCode === 0 ? '--ff-only' : '--no-ff', '-m', delivery ? `${delivery.title}\n\nTask: ${delivery.task}\nAcceptance contract: ${delivery.contract}\nLocal delivery; manual push required.` : `Merge ${land.branch}`, land.head); }
     catch (e) {
       const conflicts = gitAt(candidate, 'diff', '--name-only', '--diff-filter=U');
@@ -204,7 +246,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       const remaining = gitAt(candidate, 'diff', '--name-only', '--diff-filter=U');
       if (remaining) {
         gitAt(candidate, 'merge', '--abort');
-        throw new Error(`land: merge conflicts:\n${remaining}\nnext: git -C ${repo} merge --no-ff ${land.branch}`);
+        throw new LandError('merge_conflicts', `land: merge conflicts:\n${remaining}\nnext: git -C ${repo} merge --no-ff ${land.branch}`);
       }
       gitAt(candidate, 'commit', '--no-edit');
     }
@@ -219,7 +261,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
         const command = (dir: string, ...args: string[]): void => {
           const p = Bun.spawnSync(['git', '-C', dir, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: 20 * 60_000 });
           if (p.exitedDueToTimeout || p.exitCode !== 0)
-            throw new Error(`land: submodule initialization failed (exit ${String(p.exitCode)}${p.exitedDueToTimeout ? ', timed out' : ''}); paths: ${redact(dest)}; log tail:\n${redact(p.stdout.toString() + p.stderr.toString()).split('\n').slice(-20).join('\n')}`);
+            throw new LandError('submodule_init_failed', `land: submodule initialization failed (exit ${String(p.exitCode)}${p.exitedDueToTimeout ? ', timed out' : ''}); paths: ${redact(dest)}; log tail:\n${redact(p.stdout.toString() + p.stderr.toString()).split('\n').slice(-20).join('\n')}`);
         };
         // Standalone clones keep all configuration inside the candidate, never the shared superproject.
         command(cwd, '-c', 'protocol.file.allow=always', 'clone', '--no-checkout', '--', cached ?? url, dest);
@@ -236,15 +278,15 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       const dir = join(candidate, rel), lockfile = join(dir, 'bun.lock');
       if (!existsSync(lockfile)) continue;
       const p = Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
-      if (p.exitCode !== 0) throw new Error(`land: dependency install failed: ${p.stderr.toString().trim()}`);
+      if (p.exitCode !== 0) throw new LandError('dependency_install_failed', `land: dependency install failed: ${p.stderr.toString().trim()}`);
     }
-    if (verify(candidate) !== 0) throw new Error('land: acceptance failed');
-    if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new Error('land: acceptance changed candidate checkout');
+    if (verify(candidate) !== 0) throw new LandError('acceptance_failed', 'land: acceptance failed');
+    if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('candidate_changed', 'land: acceptance changed candidate checkout');
     sameTree(); clean();
-    if (targetCheckout() !== checkout) throw new Error('land: target checkout changed during acceptance; retry land --apply');
+    if (targetCheckout() !== checkout) throw new LandError('target_checkout_changed', 'land: target checkout changed during acceptance; retry land --apply');
     if (git('rev-parse', `refs/heads/${target}`) !== tip) {
       if (attempt < 2) continue;
-      throw new Error('land: target advanced during acceptance after 2 retries');
+      throw new LandError('target_advanced', 'land: target advanced during acceptance after 2 retries');
     }
     if (checkout) gitAt(checkout, 'merge', '--ff-only', accepted);
     else git('update-ref', `refs/heads/${target}`, accepted, tip);
@@ -258,7 +300,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     if (!delivery) console.log(`land: integrated ${accepted} in ${checkout ?? repo}`);
     if (delivery) {
       const integrated = git('rev-parse', `refs/heads/${target}`);
-      if (integrated !== accepted) throw new Error('delivery: target changed after integration; outcome unknown');
+      if (integrated !== accepted) throw new LandError('integration_outcome_unknown', 'delivery: target changed after integration; outcome unknown');
       receipt = { task: delivery.task, source: land.head, target: delivery.target, target_tip: tip, contract: delivery.contract, evidence: delivery.evidence, accepted, integrated, status: 'manual_push', push };
       const temp = `${delivery.receipt}.${String(process.pid)}.tmp`;
       writeFileSync(temp, JSON.stringify(receipt, null, 2));

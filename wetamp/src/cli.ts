@@ -870,6 +870,7 @@ export function quickPlan(a: Args): string {
   };
   const size = 'S';
   const plan: Plan = {
+    ...(a.flags['request-ref'] !== undefined ? { request_ref: a.flags['request-ref'] } : {}),
     repo: git('rev-parse', '--show-toplevel'),
     base_ref: a.flags.base ?? git('symbolic-ref', '--short', 'HEAD'),
     ...(consoleClient !== undefined ? { console: consoleClient } : {}),
@@ -1403,7 +1404,14 @@ function decide(l: Ledger, a: Args): number {
     });
   }
   if (action === 'reject') {
-    const ok = intervention(l, 'decide', () => cancelRun(l.archon_run_id, run.status, l.repo));
+    const ok = intervention(
+      l,
+      'cancel',
+      () => cancelRun(l.archon_run_id, run.status, l.repo),
+      undefined,
+      undefined,
+      'rejected'
+    );
     if (ok)
       updateLedger(l, cur => {
         cur.rejected = run.id;
@@ -2046,7 +2054,17 @@ function pollAsk(
 /** plan 截止已过：终止 run（保留证据），该 run 未执行的提问记 expired，ledger 记 failed/deadline；不提醒。 */
 function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): Action {
   const x = { run_id: l.run_id, ...base, action: 'cancel', reason: 'deadline' };
-  if (!cancelRun(l.archon_run_id, run.status, l.repo)) return { ...x, ok: false };
+  if (
+    !intervention(
+      l,
+      'cancel',
+      () => cancelRun(l.archon_run_id, run.status, l.repo),
+      undefined,
+      undefined,
+      'deadline'
+    )
+  )
+    return { ...x, ok: false };
   if (!(asks instanceof Error))
     for (const [k, a] of Object.entries(asks))
       if (k.startsWith(`${l.run_id}:`) && a && !['approved', 'rejected'].includes(a.status))
@@ -2665,7 +2683,7 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|plan check <file>|run <plan.json> [--fake] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2857,6 +2875,16 @@ export function main(argv: string[]): number {
         print(result);
       }
       return 0;
+    case 'plan': {
+      if (target !== 'check' || a._.length !== 3)
+        throw new Error('usage: superagent plan check <file>');
+      const plan = loadPlan(a._[2]);
+      const plan_lint = lintPlan(plan, a.flags['lint-override']);
+      if (plan_lint.rejected)
+        throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
+      print({ ok: true, plan_lint });
+      return 0;
+    }
     case 'run':
       return startRun(need(target, 'run <plan.json>'), a);
     case 'quick':
@@ -2951,7 +2979,7 @@ export function main(argv: string[]): number {
       const reason = a.flags.reason ?? 'unstated';
       // Operational labels only: do not persist free-text messages or credentials.
       // prettier-ignore
-      const reasons = ['unstated', 'superseded', 'replaced', 'deadline', 'operator', 'test', 'duplicate', 'obsolete'];
+      const reasons = ['unstated', 'superseded', 'replaced', 'deadline', 'operator', 'test', 'duplicate', 'obsolete', 'rejected'];
       if (!reasons.includes(reason))
         throw new Error(`cancel --reason must be an operational label: ${reasons.join('|')}`);
       // 未登记：按 archon run id 处理（selftest 用）
