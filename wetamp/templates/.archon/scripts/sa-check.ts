@@ -754,13 +754,12 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
   }
 }
 
-export const environmentChecks = (p: Plan): Check[] =>
+export const environmentChecks = (p: Pick<Plan, 'environment' | 'packages'>): Check[] =>
   (p.environment ?? []).concat(p.packages.flatMap(k => k.environment ?? []));
 
 // prettier-ignore
 async function environment(): Promise<void> {
   const log = join(artifacts, 'environment.log');
-  writeFileSync(log, '');
   const notes: string[] = [];
   let owned = false;
   try {
@@ -771,17 +770,23 @@ async function environment(): Promise<void> {
       realpathSync(git('rev-parse', '--git-dir').trim()) !== realpathSync(git('rev-parse', '--git-common-dir').trim());
   } catch (e) { notes.push(`worktree ownership unavailable: ${String(e)}`); }
   if (!owned) notes.push('Recovery skipped: current checkout is not proven to be created and owned by this run.');
-  const { environment: precheck, provisioned } = owned ? await provisionEnvironment(process.cwd()) :
-    { environment: envPrecheck(process.cwd()), provisioned: [] };
+  const out = { ...await prepareEnvironment(process.cwd(), plan(), log, owned), notes, head: git('rev-parse', 'HEAD').trim() };
+  writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
+  emit(out);
+  if (!out.ok) process.exit(1);
+}
+/** Recovery authorization belongs to the caller that established checkout ownership. */
+// prettier-ignore
+export async function prepareEnvironment(cwd: string, p: Parameters<typeof environmentChecks>[0], log: string, owned: boolean) {
+  writeFileSync(log, '');
+  const { environment: precheck, provisioned } = owned ? await provisionEnvironment(cwd) :
+    { environment: envPrecheck(cwd), provisioned: [] };
   appendFileSync(log, `${JSON.stringify(precheck)}\n`);
   const failures: CheckFailure[] = precheck.failures.map(f => ({
     command: 'env-precheck', failure_class: f.failure_class, evidence: log,
   }));
-  const failed = precheck.ok ? run(environmentChecks(plan()), log, undefined, '', failures) : ['env-precheck'];
-  const out = { ok: failed.length === 0, failed, failures, precheck, provisioned, notes, log, head: git('rev-parse', 'HEAD').trim() };
-  writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
-  emit(out);
-  if (failed.length) process.exit(1);
+  const failed = precheck.ok ? run(environmentChecks(p), log, cwd, '', failures) : ['env-precheck'];
+  return { ok: failed.length === 0, failed, failures, precheck, provisioned, log };
 }
 
 const severities = (risk: string): string[] =>

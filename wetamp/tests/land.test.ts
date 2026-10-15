@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -20,6 +21,7 @@ import {
   type LocalDelivery,
 } from '../src/land';
 import * as config from '../src/config';
+import type { Plan } from '../src/plan';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { directAuxiliaryPreload, fixturePlan, gitRepo, sh, tmp } from './helpers';
 const saved = { ...process.env };
@@ -52,6 +54,68 @@ const deliveryFixture = () => {
   };
   return { ...f, delivery, context: { repo: f.repo, base_ref: 'main', delivery } };
 };
+
+test.each(['pass', 'fail'])('LAND_ENVIRONMENT reuses plan setup only in candidate: %s', kind => {
+  const f = deliveryFixture();
+  writeFileSync(join(f.worktree, '.gitignore'), '.prepared/\n');
+  sh('git add .gitignore && git commit -qm ignore-environment', f.worktree);
+  f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
+  const setup = 'mkdir -p .prepared && pwd -P > .prepared/cwd';
+  const packageSetup = kind === 'pass' ? 'touch .prepared/package' : 'exit 23';
+  const planPath = fixturePlan(f.root, f.repo, p => {
+    p.environment = [{ cmd: setup, timeout_s: 2 }];
+    p.packages = [
+      {
+        id: 'p',
+        environment: [{ cmd: packageSetup, timeout_s: 2 }],
+        accept: [{ cmd: 'test -f .prepared/package', timeout_s: 2 }],
+      },
+    ];
+  });
+  const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+  const before = sh('git rev-parse HEAD', f.repo);
+  const preload = directAuxiliaryPreload();
+  process.env.BUN_OPTIONS = `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`;
+  if (kind === 'pass') {
+    const prepared = Bun.spawnSync(
+      [process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')],
+      {
+        cwd: f.worktree,
+        env: { ...process.env, INPUTS_KIND: 'env', INPUTS_PLAN: planPath, ARTIFACTS_DIR: f.art },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+    expect(prepared.exitCode).toBe(0);
+    expect(sh('test -f .prepared/package', f.worktree)).toBe('');
+  }
+  const verify = mock((cwd: string) => {
+    expect(cwd).not.toBe(f.repo);
+    expect(cwd).not.toBe(f.worktree);
+    expect(readFileSync(join(cwd, '.prepared/cwd'), 'utf8').trim()).toBe(realpathSync(cwd));
+    return Bun.spawnSync(['sh', '-c', 'test -f .prepared/package'], { cwd }).exitCode;
+  });
+  const context = { ...f.context, plan };
+  if (kind === 'pass') {
+    expect(applyLand(f.run, f.land, verify, context)?.status).toBe('manual_push');
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(f.worktree, '.prepared/cwd'), 'utf8').trim()).toBe(f.worktree);
+  } else {
+    let error: unknown;
+    try {
+      applyLand(f.run, f.land, verify, context);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toHaveProperty('name', 'land_environment_failed');
+    expect((error as Error).message).toContain('exit 23');
+    expect((error as Error).message).toContain('environment.log');
+    expect(verify).not.toHaveBeenCalled();
+    expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
+    expect(existsSync(join(f.worktree, '.prepared'))).toBe(false);
+  }
+  expect(existsSync(join(f.repo, '.prepared'))).toBe(false);
+});
 
 test.each(['valid', 'unmerged', 'foreign', 'contract', 'launch', 'advanced', 'missing'])(
   'CARD_Y integration projection requires bound receipt and Git history: %s',
@@ -429,7 +493,7 @@ test('delivery renders local merge comment and does not accept a fabricated rece
   }
 });
 // prettier-ignore
-test.each(['.', 'wetamp'])('candidate owns the %s workspace graph even with an unchanged lockfile', rel => {
+test.each(['.', 'wetamp', 'apps/advisor'])('candidate owns the %s workspace graph even with an unchanged lockfile', rel => {
   const f = fixture(), dir = join(f.repo, rel), pkg = join(dir, 'packages/provider');
   mkdirSync(pkg, { recursive: true });
   writeFileSync(join(f.repo, '.gitignore'), 'node_modules/\n');
@@ -448,6 +512,11 @@ test.each(['.', 'wetamp'])('candidate owns the %s workspace graph even with an u
   sh(`git add '${rel}/packages/provider/package.json' '${rel}/packages/provider/index.ts' '${rel}/packages/provider/launch-policy.ts' && git commit -qm candidate-exports`, f.worktree);
   f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
   expect(readFileSync(join(workerDir, 'bun.lock')).equals(readFileSync(join(dir, 'bun.lock')))).toBe(true);
+  // Independent nested projects declare setup; root workspaces use shared provisioning.
+  const planPath = fixturePlan(f.root, f.repo, p => {
+    p.environment = rel === '.' ? [] : [{ cmd: `cd ${rel} && bun install --frozen-lockfile`, timeout_s: 10 }];
+  });
+  const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
   const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
   let candidate = '';
   try { applyLand(f.run, f.land, cwd => {
@@ -457,7 +526,7 @@ test.each(['.', 'wetamp'])('candidate owns the %s workspace graph even with an u
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString().trim()).toBe('candidate candidate-policy');
     return result.exitCode;
-  }); } finally { probe.mockRestore(); }
+  }, { repo: f.repo, base_ref: 'main', plan }); } finally { probe.mockRestore(); }
   expect(existsSync(candidate)).toBe(false);
   expect(readFileSync(join(pkg, 'index.ts'), 'utf8')).toContain('candidate');
 });

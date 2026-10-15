@@ -1666,6 +1666,7 @@ export function finalizeDelivery(id: string, automatic = false, who: Identity = 
         intervention(l, 'land', () => {
           receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
             repo: l.repo,
+            plan: planOf(l),
             base_ref: planOf(l).base_ref,
             delivery: {
               task: l.run_id,
@@ -3065,6 +3066,7 @@ export function main(argv: string[]): number {
         if (a.flags.apply) {
           applyLand(run, land as Land, cwd => acceptRun(l, undefined, cwd, artifactsOf(run)), {
             repo: l.repo,
+            plan: planOf(l),
             launch_branch: l.launch_branch,
             base_ref: planOf(l).base_ref,
           });
