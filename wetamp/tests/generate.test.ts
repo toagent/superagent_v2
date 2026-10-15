@@ -768,6 +768,19 @@ describe('buildWorkflow', () => {
     );
     expect(verified).toMatchObject({ ok: false, base_pass: false, disposition: 'repair' });
   }, 40_000);
+  test('package delta starts at the previous delivery, not the milestone baseline', () => {
+    const plan = structuredClone(fixture) as Plan;
+    plan.packages[1].milestone = plan.packages[0].milestone;
+    const workflow = buildWorkflow(plan, milestones(plan), 'golden-0001', '/GEN', false, NOW);
+    const nodes = workflow.nodes as { id: string; with?: Record<string, unknown> }[];
+    expect(nodes.find(n => n.id === 'verify-core')?.with?.delta_base).toBe('$start-m1.output.head');
+    expect(nodes.find(n => n.id === 'verify-api')?.with?.delta_base).toBe(
+      '$settle-core.output.head'
+    );
+    expect(nodes.find(n => n.id === 'settle-api')?.with?.delta_base).toBe(
+      '$settle-core.output.head'
+    );
+  });
   test('golden: two packages across two milestones', () => {
     expect(build(false)).toEqual(golden('two-pkgs'));
   });

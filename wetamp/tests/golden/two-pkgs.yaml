@@ -172,6 +172,7 @@ nodes:
       pkgs: core
       scope_pkgs: core
       base: $start-m1.output.head
+      delta_base: $start-m1.output.head
       risk: G1
       milestone: m1
       archon: /GEN/archon
@@ -469,6 +470,7 @@ nodes:
       pkgs: core
       scope_pkgs: core
       base: $start-m1.output.head
+      delta_base: $start-m1.output.head
       risk: G1
       milestone: m1
       archon: /GEN/archon
@@ -482,6 +484,8 @@ nodes:
       type: object
       properties:
         diff_hash:
+          type: string
+        head:
           type: string
       required:
         - diff_hash
@@ -3304,6 +3308,7 @@ nodes:
       pkgs: api
       scope_pkgs: core,api
       base: $start-m2.output.head
+      delta_base: $start-m2.output.head
       risk: G2
       milestone: m2
       archon: /GEN/archon
@@ -3601,6 +3606,7 @@ nodes:
       pkgs: api
       scope_pkgs: core,api
       base: $start-m2.output.head
+      delta_base: $start-m2.output.head
       risk: G2
       milestone: m2
       archon: /GEN/archon
@@ -3614,6 +3620,8 @@ nodes:
       type: object
       properties:
         diff_hash:
+          type: string
+        head:
           type: string
       required:
         - diff_hash

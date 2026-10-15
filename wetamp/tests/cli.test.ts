@@ -765,6 +765,7 @@ describe('HF3 latest-engine recovery', () => {
       }
     ).nodes;
     const code = nodes.find(n => n.id === 'code-core');
+    expect(nodes.find(n => n.id === 'verify-core')?.with?.delta_base).toBe('$start-m1.output.head');
     const carried = sample === 'verify' || sample === 'settle';
     expect(l.adoptions?.at(-1)?.carried).toEqual(carried ? ['core'] : []);
     if (carried) {
@@ -3248,6 +3249,29 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     decision: { kind: 'block', reason, evidence: ['events:code-core:0'], debt: [] },
   });
 
+  test('empty unfinished delivery stays held with original blockers and needs in status and wait', () => {
+    const blockers = ['需求尚未明确'];
+    const needs = [{ cap: 'requirement_decision', why: '缺少输入', minimal_ask: '补充需求' }];
+    const result = saCheck.disposition(
+      JSON.stringify({ status: 'partial', blockers, needs }),
+      true,
+      {
+        ok: true,
+        diff_hash: 'empty',
+        same: false,
+        no_changes: true,
+      }
+    );
+    held('verify-core', { 'verify-core.json': { ...result, ok: true, milestone: 'm1' } });
+    for (const command of ['status', 'wait']) {
+      const response = captured(() => main([command, 'sa1', '--timeout', '1']));
+      const out = JSON.parse(response.out);
+      expect(out.state).toBe('held:gate');
+      expect(out.reason).toStartWith('coder:');
+      expect(out.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
+      expect(out.delivery[0].decision).toMatchObject({ reason: 'coder_partial', blockers, needs });
+    }
+  });
   test('single delivery decision: green redline self-report has identical status, brief and board projections', () => {
     const s = held('gate-m1-r1', {
       'verify-core.coder.json': {

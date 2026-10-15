@@ -118,7 +118,7 @@ const base: Reason[] = [
   deterministic('approval', 'approval', 'human', '等待 Archon 审批'),
   deterministic('engine_suspect', 'engine_suspect', 'engine', '验收与状态矛盾或原因未注册'),
   entry('coder_output_invalid', 'coder', 'transient', 'coder', '编码输出不是合法 JSON'),
-  deterministic('coder_partial', 'coder', 'coder', '编码未完成且验收失败'),
+  deterministic('coder_partial', 'coder', 'coder', '编码未完成且无改动或验收失败'),
   deterministic('acceptance_failed', 'gate', 'coder', '验收失败'),
   deterministic('review_failed', 'gate', 'coder', '评审未通过'),
   deterministic('review_modified_checkout', 'gate', 'human', '评审修改工作区或完整性证据不可用'),

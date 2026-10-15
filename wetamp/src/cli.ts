@@ -627,6 +627,8 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const decision = decisionOf(evidenceJson(l, artifactsOf(run), `${c.node}.json`));
+    if (decision?.kind === 'block' && decision.reason === 'coder_partial')
+      return { ...c, state: 'held:gate', exit: EXIT.held };
     if (
       /^(verify|settle|gate)-/.test(c.node) &&
       (!decision || decision.kind === 'advance' || decision.kind === 'debt')

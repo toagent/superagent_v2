@@ -1157,11 +1157,15 @@ describe('single delivery decision', () => {
         delta_base: candidate ? sh('git rev-parse HEAD', repo).trim() : base,
         coder: JSON.stringify(report),
       });
-      expect(result.code, result.err).toBe(0);
+      const emptyUnfinished = includeBase && status !== 'done';
+      expect(result.code, result.err).toBe(emptyUnfinished ? 1 : 0);
       expect(result.out).toMatchObject({
         ok: false,
-        disposition: 'repair',
-        reason,
+        disposition: emptyUnfinished ? 'fail' : 'repair',
+        reason: emptyUnfinished ? 'coder_partial' : reason,
+        ...(emptyUnfinished
+          ? { decision: { blockers: report.blockers, needs: report.needs } }
+          : {}),
       });
       expect(existsSync(marker) ? readFileSync(marker, 'utf8').trim().split('\n').length : 0).toBe(
         count
@@ -2157,6 +2161,49 @@ describe('sa-check script', () => {
       ok: true,
     });
   }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
+  test.each([
+    ['partial', false, false],
+    ['done', false, false],
+    ['partial', true, false],
+    ['partial', false, true],
+  ] as const)('empty delivery: %s changed=%s previous-package=%s', (status, changed, previous) => {
+    const root = tmp();
+    const repo = gitRepo(root);
+    const base = sh('git rev-parse HEAD', repo).trim();
+    if (previous) sh('echo prior > prior && git add prior && git commit -qm prior', repo);
+    const start = sh('git rev-parse HEAD', repo).trim();
+    if (changed) sh('echo work > work && git add work && git commit -qm work', repo);
+    const blockers = ['需要确认原始需求'];
+    const needs = [{ cap: 'requirement_decision', why: '输入缺失', minimal_ask: '提供需求' }];
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan: planFile(root, 'true'),
+      pkgs: 'a',
+      tag: 'verify-a',
+      base,
+      delta_base: start,
+      coder: JSON.stringify({
+        status,
+        error_class: status === 'done' ? null : 'task',
+        blockers,
+        needs,
+      }),
+    });
+    const blocked = status !== 'done' && !changed;
+    expect(r.code, r.err).toBe(blocked ? 1 : 0);
+    expect(r.out).toMatchObject({
+      ok: true,
+      no_changes: !changed,
+      disposition: blocked ? 'fail' : 'advance',
+      decision: blocked
+        ? { kind: 'block', reason: 'coder_partial', blockers, needs }
+        : { kind: 'advance' },
+    });
+    // Subsequent decisions without a self-report must preserve the recorded block and details.
+    expect(deliveryDecision({ rechecks: [r.out as Accept] }).decision.kind).toBe(
+      blocked ? 'block' : 'advance'
+    );
+  });
   test('accept: uncommitted change fails even when commands pass', () => {
     const root = tmp();
     const repo = gitRepo(root);
@@ -2622,7 +2669,10 @@ describe('sa-check script', () => {
       repaired: JSON.stringify({ status: 'done', error_class: 'task', needs: [] }),
     });
     expect(r.code).toBe(0);
-    expect(r.out).toEqual({ diff_hash: '' });
+    expect(r.out).toEqual({
+      diff_hash: '',
+      head: sh('git rev-parse HEAD', join(root, 'repo')).trim(),
+    });
     expect(JSON.parse(readFileSync(join(r.art, 'settle-a.json'), 'utf8'))).toMatchObject({
       ok: true,
       disposition: 'advance',
@@ -2642,6 +2692,7 @@ describe('sa-check script', () => {
       disposition: 'advance',
       reason: null,
       diff_hash: 'delivered',
+      head: sh('git rev-parse HEAD', repo).trim(),
       same: false,
     };
     const pass = runScript(repo, {
@@ -2653,7 +2704,7 @@ describe('sa-check script', () => {
       repaired: 'null',
     });
     expect(pass.code).toBe(0);
-    expect(pass.out).toEqual({ diff_hash: 'delivered' });
+    expect(pass.out).toEqual({ diff_hash: 'delivered', head: first.head });
     const auditChanged = runScript(repo, {
       kind: 'settle',
       plan: planFile(root, PRODUCT_FAILURE),
@@ -2662,7 +2713,6 @@ describe('sa-check script', () => {
       first: JSON.stringify({
         ...first,
         log: '/changed.log',
-        head: 'changed',
         decision: { kind: 'debt', reason: null, evidence: ['/changed.log'], debt: ['fixture'] },
       }),
       repaired: 'null',
@@ -3157,7 +3207,7 @@ test.each(['settle', 'accept'])('NO_HOLD %s repair exhaustion exits failed with 
   ).toEqual(r.out);
 });
 
-test('ROOT_ACCEPT coder redline with green empty diff advances', () => {
+test('ROOT_ACCEPT unfinished redline self-report with green empty diff holds as coder_partial', () => {
   const root = tmp(),
     repo = gitRepo(root);
   const r = runScript(repo, {
@@ -3168,8 +3218,8 @@ test('ROOT_ACCEPT coder redline with green empty diff advances', () => {
     base: sh('git rev-parse HEAD', repo).trim(),
     coder: '{"status":"blocked","error_class":"redline","needs":[]}',
   });
-  expect(r.code, r.err).toBe(0);
-  expect(r.out).toMatchObject({ ok: true, disposition: 'advance', reason: null });
+  expect(r.code, r.err).toBe(1);
+  expect(r.out).toMatchObject({ ok: true, disposition: 'fail', reason: 'coder_partial' });
   expect(
     nextDisposition({
       kind: 'block',

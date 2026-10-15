@@ -347,6 +347,7 @@ export function buildWorkflow(
         pkgs: p.id,
         scope_pkgs,
         base,
+        delta_base: `$${prev}.output.head`,
         risk: p.risk,
         milestone: m.id,
         ...ledger,

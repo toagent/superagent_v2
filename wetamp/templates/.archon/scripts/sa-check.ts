@@ -47,6 +47,7 @@ interface Coder {
   status: 'done' | 'blocked' | 'partial';
   error_class: string | null;
   needs?: unknown[];
+  blockers?: string[];
 }
 type Disposition = 'advance' | 'repair' | 'fail';
 type RequirementContract = Pick<Pkg, 'id' | 'accept' | 'requirements'>;
@@ -72,6 +73,8 @@ export type DeliveryDecision = {
     evidence: string[];
     debt: string[];
     requirements?: Completion;
+    blockers?: Coder['blockers'];
+    needs?: Coder['needs'];
   };
 }['advance' | 'debt' | 'repair' | 'block'];
 export interface Accept {
@@ -80,6 +83,7 @@ export interface Accept {
   milestone?: string;
   diff_hash: string;
   same: boolean;
+  no_changes?: boolean;
   head?: string;
   checkout_fingerprint?: string;
   contract_hash?: string;
@@ -394,6 +398,7 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
 /** Route structured blocks without turning acceptance failures into human waits. */
 export function nextDisposition(decision: DeliveryDecision): Disposition {
   const reason = reasons.find(r => r.code === decision.reason);
+  if (decision.kind === 'block' && decision.reason === 'coder_partial') return 'fail';
   if (decision.kind === 'block')
     return reason?.hold === 'review_limit' || reason?.hold === 'redline' ? 'fail' : 'repair';
   return decision.kind === 'repair' ? 'repair' : 'advance';
@@ -529,6 +534,7 @@ function acceptOnce(
   };
   const patch = save(`${tag}.patch`, base);
   const delta = env('DELTA_BASE') ? save(`${tag}.delta.patch`, env('DELTA_BASE')) : patch;
+  const noChanges = delta ? readFileSync(delta, 'utf8').length === 0 : undefined;
   const hash = patch ? sha(readFileSync(patch, 'utf8')).slice(0, 16) : '';
   const failed = run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
   const scope =
@@ -567,6 +573,7 @@ function acceptOnce(
       requirement_contract: requirementContract,
       command_results: commandResults,
       diff_hash: hash,
+      no_changes: noChanges,
       same: false,
       failed,
       failures,
@@ -597,6 +604,7 @@ function acceptOnce(
     log,
     patch,
     delta,
+    no_changes: noChanges,
     diff_hash: hash,
     contract_hash: sha(
       JSON.stringify([
@@ -659,7 +667,8 @@ function finish(
   }
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   // Audit/control evidence stays in the artifact; downstream packages consume only delivered data.
-  emit(env('KIND') === 'settle' && out.disposition !== 'fail' ? { diff_hash: out.diff_hash } : out);
+  const delivered = { diff_hash: out.diff_hash, head: out.head };
+  emit(env('KIND') === 'settle' && out.disposition !== 'fail' ? delivered : out);
   if (out.disposition === 'fail') {
     console.error(`${tag}: failed (${out.reason ?? ''})`);
     process.exit(1);
@@ -942,7 +951,7 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
 export const MAX_ROUNDS = 6;
 type Verdict = 'pass' | 'fix' | 'escalate';
 
-/** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，自报只有 environment needs 可阻断失败验收。 */
+/** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，未完成自报只阻断已证实的空交付。 */
 export function deliveryDecision(input: {
   approved?: { check?: Accept; decision?: DeliveryDecision };
   selfReport?: string;
@@ -1040,6 +1049,16 @@ export function deliveryDecision(input: {
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
   if (!check) return out('block', 'engine_suspect');
+  if (check.no_changes === true && coder && coder.status !== 'done') {
+    const result = out('block', 'coder_partial');
+    Object.assign(result.decision, { blockers: coder.blockers ?? [], needs: coder.needs ?? [] });
+    return result;
+  }
+  if (check.decision?.reason === 'coder_partial') {
+    const result = out('block', 'coder_partial');
+    Object.assign(result.decision, check.decision);
+    return result;
+  }
   if (items.some(r => r.status === 'unknown')) return out('block', 'acceptance_failed');
   if (
     !check.ok &&

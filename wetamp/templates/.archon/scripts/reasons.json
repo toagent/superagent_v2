@@ -116,7 +116,7 @@
     "hold": "coder",
     "determinism": "deterministic",
     "owner": "coder",
-    "description": "编码未完成且验收失败"
+    "description": "编码未完成且无改动或验收失败"
   },
   {
     "code": "acceptance_failed",
@@ -186,7 +186,7 @@
     "hold": "coder",
     "determinism": "deterministic",
     "owner": "coder",
-    "description": "编码未完成且验收失败"
+    "description": "编码未完成且无改动或验收失败"
   },
   {
     "code": "repair_exhausted:acceptance_failed",
@@ -298,7 +298,7 @@
     "hold": "review_limit",
     "determinism": "deterministic",
     "owner": "coder",
-    "description": "编码未完成且验收失败"
+    "description": "编码未完成且无改动或验收失败"
   },
   {
     "code": "acceptance_failed+review_limit",
@@ -368,7 +368,7 @@
     "hold": "review_limit",
     "determinism": "deterministic",
     "owner": "coder",
-    "description": "编码未完成且验收失败"
+    "description": "编码未完成且无改动或验收失败"
   },
   {
     "code": "repair_exhausted:acceptance_failed+review_limit",
