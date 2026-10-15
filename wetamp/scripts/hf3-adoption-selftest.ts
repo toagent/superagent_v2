@@ -6,7 +6,7 @@ import { archonJson, getRun, type RunView } from '../src/archon';
 import { main, loadLedger, ledgerPath, type Ledger } from '../src/cli';
 import { WETAMP, home, writeAtomic } from '../src/config';
 import { caller, coord, repoScope } from '../src/coord';
-import { generate } from '../src/generate';
+import { engineHash, generate } from '../src/generate';
 import type { Plan } from '../src/plan';
 
 const [repo, timeout] = process.argv.slice(2);
@@ -113,14 +113,21 @@ try {
     'scratch engine change'
   );
   console.error(`HF3 2/3 engine=${engineGit('rev-parse', 'HEAD')} changed=true`);
-  // A changed engine adopts the run; settle-core never advanced, so no package is carried.
-  assert.equal(main(['decide', runId, 'retry']), 0);
+  // Terminal acceptance failures have no hold; resume adopts a changed engine.
+  // settle-core never advanced, so no package is carried.
+  const latest = engineHash();
+  assert.notEqual(latest, gen.engine_hash);
+  assert.equal(main(['resume', runId]), 0);
   const next = loadLedger(runId);
   assert.notEqual(next.archon_run_id, current);
   assert.equal(next.adoptions?.length, 1);
   assert.equal(next.adoptions[0].from, current);
   assert.deepEqual(next.adoptions[0].carried, []);
-  console.error(`HF3 3/3 retry=adopted run=${next.archon_run_id} from=${current} carried=none`);
+  assert.equal(next.adoptions[0].reason, 'engine_stale');
+  assert.equal(next.adoptions[0].engine_to, latest);
+  assert.equal(next.engine_hash, latest);
+  assert.equal(next.engine_commit, engineGit('rev-parse', 'HEAD'));
+  console.error(`HF3 3/3 resume=adopted run=${next.archon_run_id} from=${current} carried=none`);
 } finally {
   // Every run here belongs to this selftest. Abandon only a nonterminal owned run.
   for (const id of new Set([current, loadLedger(runId).archon_run_id])) {
