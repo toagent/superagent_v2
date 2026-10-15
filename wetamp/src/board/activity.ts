@@ -355,7 +355,7 @@ export async function loadActivity(
   let jobs: Job[] = [],
     jobHistory: Job[] = [];
   try {
-    const r = readJobs(now, true);
+    const r = readJobs();
     jobHistory = r.jobs;
     jobs = r.jobs.filter(j => ['queued', 'running'].includes(j.state) || visible(j.ended_at, now)); // 活动作业都保留：scan 从这里认 wrapper
     for (const b of r.bad) note('jobs', new Error(b));

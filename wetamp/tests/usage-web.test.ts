@@ -269,7 +269,7 @@ describe('DEMAND_INVESTMENT', () => {
     const root = setup(); process.env.SUPERAGENT_RELAY_QUOTA_URL = ''; process.env.SUPERAGENT_RELAY_QUOTA = '';
     try {
       expect(await jobCli(['job', 'exec', '--title', 'support', '--request-ref', 'ticket:42', '--', 'true'], () => ({ pressure: 1, free: 90, source: 'sysctl' }))).toBe(0);
-      const job = readJobs(Date.now(), true).jobs[0]!; expect(job.request_ref).toBe('ticket:42');
+      const job = readJobs().jobs[0]!; expect(job.request_ref).toBe('ticket:42');
       const guessed = { ...job, pid: 123, kind: 'codex' as const, role: 'commander' as const };
       const logs = join(root, 'codex/sessions', ...new Date(job.started_at).toLocaleDateString('sv-SE').split('-')); mkdirSync(logs, { recursive: true });
       writeFileSync(join(logs, 'unrelated.jsonl'), JSON.stringify({ type: 'session_meta', payload: { id: uuid, cwd: job.cwd, timestamp: job.started_at } }));

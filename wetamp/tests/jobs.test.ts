@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 // prettier-ignore
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
 import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
@@ -150,7 +151,7 @@ describe('job registry', () => {
   test('stalled and ETA are read-only projections using role and kind history', () => {
     const log = join(tmp(), 'output'); writeFileSync(log, ''); utimesSync(log, NOW / 1000 - 601, NOW / 1000 - 601);
     const file = put({ id: 'live', log, role: 'general', started_at: new Date(NOW - 700_000).toISOString() });
-    const bytes = readFileSync(file, 'utf8'), j = { ...readJobs(NOW, true).jobs[0], pid: 99999999, wrapper_pid: 99999999 };
+    const bytes = readFileSync(file, 'utf8'), j = { ...readJobs().jobs[0], pid: 99999999, wrapper_pid: 99999999 };
     const history = [100, 300, 900].map(s => ({ ...j, log: null, state: 'done' as const, ended_at: new Date(Date.parse(j.started_at) + s * 1000).toISOString() }));
     expect(projectJob(j, [...history, { ...history[2], kind: 'codex' }], NOW)).toMatchObject({ state: 'running', stalled: true, eta: new Date(NOW - 400_000).toISOString() });
     utimesSync(log, NOW / 1000, NOW / 1000);
@@ -180,33 +181,50 @@ describe('job registry', () => {
     expect(() => projectJob({ ...legacy, log: join(log, 'invalid') }, [], NOW)).toThrow();
   });
 
-  test('read-only reads expose lost state without rewriting or deleting records', () => {
-    const old = put({ id: 'old-readonly', state: 'done', ended_at: '2026-10-09T11:00:00Z' });
-    const lost = put({ id: 'lost-readonly', pid: 99999999, wrapper_pid: 99999999 });
-    const bytes = readFileSync(lost, 'utf8');
-    expect(
-      readJobs(NOW, true)
-        .jobs.map(j => j.state)
+  test('CLI queries retain historical file count, hashes and mtimes; lost is only a projection', () => {
+    put({ id: 'old-readonly', state: 'done', ended_at: '2026-10-09T11:00:00Z' });
+    put({ id: 'lost-readonly', pid: 99999999, wrapper_pid: 99999999 });
+    const snapshot = () =>
+      readdirSync(jobsDir)
         .sort()
-    ).toEqual(['done', 'lost']);
-    expect(existsSync(old)).toBe(true);
-    expect(readFileSync(lost, 'utf8')).toBe(bytes);
+        .map(name => {
+          const file = join(jobsDir, name);
+          return {
+            name,
+            hash: createHash('sha256').update(readFileSync(file)).digest('hex'),
+            mtime: statSync(file).mtimeMs,
+          };
+        });
+    for (const name of readdirSync(jobsDir)) utimesSync(join(jobsDir, name), 1, 1);
+    const before = snapshot();
+    for (const flags of ['', '--all']) {
+      const output = JSON.parse(sh(`bun src/cli.ts jobs --json ${flags}`, WETAMP));
+      expect(snapshot()).toEqual(before);
+      if (flags) {
+        expect(output.jobs.map((j: Job) => j.state).sort()).toEqual(['done', 'lost']);
+        expect(output.jobs.find((j: Job) => j.id === 'lost-readonly').ended_at).toBeUndefined();
+      } else expect(output.jobs).toEqual([]);
+    }
+    expect(JSON.parse(readFileSync(join(jobsDir, 'lost-readonly.json'), 'utf8')).state).toBe(
+      'running'
+    );
   });
 
-  test('GC removes jobs ended over 24h ago; dead running jobs become lost; bad files are reported', async () => {
-    expect(readJobs(NOW)).toEqual({ jobs: [], bad: [] }); // 目录还不存在
+  test('reads retain old jobs and project lost state; bad files are reported', async () => {
+    expect(readJobs()).toEqual({ jobs: [], bad: [] }); // 目录还不存在
     const dead = await deadPid();
     const old = put({ id: 'a-old', state: 'done', exit_code: 0, ended_at: '2026-10-09T11:00:00Z' });
     put({ id: 'b-live', started_at: '2026-10-10T11:00:00.000Z' });
     const lost = put({ id: 'c-lost', pid: dead, wrapper_pid: dead });
     writeFileSync(join(jobsDir, 'd-bad.json'), '{');
-    const r = readJobs(NOW);
-    expect(existsSync(old)).toBe(false);
+    const r = readJobs();
+    expect(existsSync(old)).toBe(true);
     expect(r.jobs.map(j => [j.id, j.state])).toEqual([
       ['b-live', 'running'],
+      ['a-old', 'done'],
       ['c-lost', 'lost'],
     ]);
-    expect((JSON.parse(readFileSync(lost, 'utf8')) as Job).state).toBe('lost');
+    expect((JSON.parse(readFileSync(lost, 'utf8')) as Job).state).toBe('running');
     expect(r.bad).toHaveLength(1);
     expect(r.bad[0]).toStartWith('d-bad.json');
   });
@@ -214,7 +232,7 @@ describe('job registry', () => {
   test('queued remains active while its wrapper lives; only a dead owner becomes lost', () => {
     put({ id: 'queued', state: 'queued', pid: 0, reason: 'environment' });
     put({ id: 'orphan', state: 'queued', pid: 0, wrapper_pid: 99999999 });
-    const jobs = readJobs(NOW).jobs;
+    const jobs = readJobs().jobs;
     expect(jobs.find(j => j.id === 'queued')?.state).toBe('queued');
     expect(recent(jobs.find(j => j.id === 'queued')!, NOW)).toBe(true);
     expect(jobs.find(j => j.id === 'orphan')?.state).toBe('lost');
@@ -317,7 +335,7 @@ else {
       const err = await new Response(p.stderr as ReadableStream).text();
       const invalid = !['ignored', 'untracked'].includes(mode);
       expect(await p.exited, err).toBe(invalid ? 1 : 0);
-      const job = readJobs(Date.now(), true).jobs.find(j => j.title === 'integrity');
+      const job = readJobs().jobs.find(j => j.title === 'integrity');
       expect(job?.state).toBe(invalid ? 'failed' : 'done');
       expect(job?.reason).toBe(invalid ? 'review_modified_checkout' : undefined);
       if (invalid) {
@@ -341,7 +359,7 @@ else {
     const err = await new Response(p.stderr as ReadableStream).text();
     expect(await p.exited, err).toBe(0);
     expect(await new Response(p.stdout as ReadableStream).text()).toBe('reviewer-started');
-    expect(readJobs(Date.now(), true).jobs.find(j => j.title === mode)?.state).toBe('done');
+    expect(readJobs().jobs.find(j => j.title === mode)?.state).toBe('done');
   });
 
   // prettier-ignore
@@ -742,7 +760,7 @@ else if (process.argv[1].endsWith('/claude')) {
       expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
-      expect(readJobs(Date.now(), true).jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high' } });
+      expect(readJobs().jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high' } });
       expect(args.some((a: string) => a.startsWith('mcp_servers='))).toBe(false);
     }
     for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
@@ -767,7 +785,7 @@ else if (process.argv[1].endsWith('/claude')) {
       expect(await p.exited).not.toBe(0);
       expect(await new Response(p.stderr as ReadableStream).text()).toContain('unsupported role provider');
       expect(existsSync(launched)).toBe(false);
-      expect(readJobs(Date.now(), true).jobs).toEqual([]);
+      expect(readJobs().jobs).toEqual([]);
     }
     const p = run(['job', 'exec', '--title', 'ordinary', '--', join(root, 'unknown-agent')]);
     expect(await p.exited).toBe(0);
@@ -862,7 +880,7 @@ else {
       ]);
       expect(exit, stderr).toBe(0);
       const received = JSON.parse(stdout);
-      const job = readJobs(Date.now(), true).jobs.find(j => j.title === `input-${withCard}`)!;
+      const job = readJobs().jobs.find(j => j.title === `input-${withCard}`)!;
       expect(received.input).toBe(withCard
         ? `Registered job input: ${JSON.stringify({ id: job.id, card, request_ref: 'request-123' })}\n\n${contents}` : '');
       expect(received.again).toBe('');

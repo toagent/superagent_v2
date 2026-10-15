@@ -7,7 +7,6 @@ import {
   readdirSync,
   renameSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { launcher, type Launcher } from './launcher';
@@ -81,7 +80,6 @@ export interface Job {
 
 const USAGE =
   'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] -- <cmd...> | job clean <id> | jobs [--json] [--all]';
-const DAY_MS = 86_400_000;
 export const RECENT_MS = 3_600_000;
 export interface MemoryReading {
   pressure: number | null;
@@ -146,11 +144,8 @@ export function alive(pid: number): boolean {
   }
 }
 
-/**
- * 全部登记作业（新的在前）。已结束超过 24h 且无登记工作树的删除；queued/running 的子进程与 wrapper 都不在了的改记 lost 并回写
- * （ended_at=发现时刻，24h 后同样回收）。readonly 不回写/删除、不伪造 ended_at。wrapper 还在就不判；坏文件单列 bad。
- */
-export function readJobs(now = Date.now(), readonly = false): { jobs: Job[]; bad: string[] } {
+/** 全部登记作业（新的在前）。lost 仅作显示投影，不回写、不删除、不制造 ended_at；坏文件单列 bad。 */
+export function readJobs(): { jobs: Job[]; bad: string[] } {
   const jobs: Job[] = [];
   const bad: string[] = [];
   let files: string[];
@@ -162,32 +157,22 @@ export function readJobs(now = Date.now(), readonly = false): { jobs: Job[]; bad
   }
   for (const f of files) {
     const file = join(dir(), f);
-    const load = (): Job => JSON.parse(readFileSync(file, 'utf8')) as Job;
     let j: Job;
     try {
-      j = load();
+      j = JSON.parse(readFileSync(file, 'utf8')) as Job;
       if (typeof j.state !== 'string' || typeof j.started_at !== 'string')
         throw new Error('not a job record');
       if (
         ['queued', 'running'].includes(j.state) &&
         !alive(j.wrapper_pid) &&
         (j.pid === 0 || !alive(j.pid))
-      ) {
-        const state = j.state;
-        j = {
-          ...j,
-          state: 'lost',
-          ...(!readonly ? { ended_at: new Date(now).toISOString() } : {}),
-        };
-        if (!readonly && load().state === state) save(j); // 重读一次：wrapper 可能刚写完终态才退出
-      }
+      )
+        j = { ...j, state: 'lost' };
     } catch (e) {
       bad.push(`${f}: ${(e as Error).message}`);
       continue;
     }
-    if (!readonly && !j.worktree && j.ended_at && now - Date.parse(j.ended_at) > DAY_MS)
-      unlinkSync(file);
-    else jobs.push(j);
+    jobs.push(j);
   }
   return { jobs: jobs.sort((a, b) => b.started_at.localeCompare(a.started_at)), bad };
 }
@@ -217,7 +202,7 @@ const git = (cwd: string, ...args: string[]): string => {
 };
 // prettier-ignore
 export function cleanJob(id: string): void {
-  const j = readJobs(Date.now(), true).jobs.find(j => j.id === id), w = j?.worktree;
+  const j = readJobs().jobs.find(j => j.id === id), w = j?.worktree;
   if (!j || !w) throw new Error('job clean: no registered worktree');
   if (w.created === false) throw new Error('job clean: worktree was reused; not owned by this job');
   if (['queued', 'running'].includes(j.state) || alive(j.wrapper_pid)) throw new Error('job clean: owner is still active');
@@ -446,7 +431,7 @@ export async function jobCli(
   }
   if (a._[0] === 'jobs' && a._.length === 1 && !cmd.length) {
     const now = Date.now();
-    const { jobs, bad } = readJobs(now);
+    const { jobs, bad } = readJobs();
     const shown = (a.flags.all ? jobs : jobs.filter(j => recent(j, now))).map(j => projectJob(j, jobs, now));
     if (a.flags.json) console.log(JSON.stringify({ jobs: shown, bad }, null, 2));
     else
