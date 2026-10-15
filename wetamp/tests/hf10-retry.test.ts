@@ -47,8 +47,12 @@ if (typeof Bun !== 'undefined') for (const key of ['spawn', 'spawnSync']) {
 }
 process.on('exit', () => { if (violations) process.exitCode = 1; });
 const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
-if (scratch.ROOT !== '/tmp/sa-scratch') throw new Error('production default changed');
-Object.assign(scratch, scratch.createScratch(${JSON.stringify(scratchRoot)}));
+const key = Symbol.for('superagent.test.scratch.default');
+if (!globalThis[key]) {
+  if (scratch.ROOT !== '/tmp/sa-scratch') throw new Error('production default changed');
+  globalThis[key] = true;
+}
+if (scratch.ROOT !== ${JSON.stringify(scratchRoot)}) Object.assign(scratch, scratch.createScratch(${JSON.stringify(scratchRoot)}));
 module.exports = {violations: () => violations};`
 );
 mkdirSync(join(scratchRoot, 'codex-sentinel'), { recursive: true });

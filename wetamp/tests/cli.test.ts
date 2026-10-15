@@ -1529,6 +1529,27 @@ describe('run (archon stub)', () => {
 
 // Value: protects=health JSON summary/verbose and check failures; seam=native subprocess fixture; no_claim=live provider acceptance.
 describe('health upstream reporting', () => {
+  test('global hooks contamination only warns and preserves health status', () => {
+    const root = tmp(),
+      config = join(tmp(), 'gitconfig');
+    for (const name of ['pre-commit', 'pre-push', '.backup']) writeFileSync(join(root, name), '');
+    writeFileSync(config, `[core]\n\thooksPath = ${root}\n`);
+    process.env.GIT_CONFIG_GLOBAL = config;
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const before = check([]);
+      expect(warn).not.toHaveBeenCalled();
+      writeFileSync(join(root, 'prepare-commit-msg'), '');
+      expect(check([]).code).toBe(before.code);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain(
+        'prepare-commit-msg；可能被 lefthook/husky install 写入全局 hooksPath'
+      );
+      expect(existsSync(join(root, 'prepare-commit-msg'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
   const check = (files: string[], exitCode = 0, verbose = false) => {
     stub([]);
     const spawnSync = Bun.spawnSync;

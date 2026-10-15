@@ -65,7 +65,11 @@ done
 echo $$ > "$LOCK/pid"
 # 等锁另计：步骤预算从拿到锁起算，并发排队不吃掉后续 bun test 的时间。
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/sa-verify.XXXXXX")"
+TMP_BASE="$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${TMPDIR:-/tmp}")"
+case "$TMP_BASE" in
+  /tmp/sa-scratch|/tmp/sa-scratch/*|/private/tmp/sa-scratch|/private/tmp/sa-scratch/*) TMP_BASE=/tmp;;
+esac
+TMP="$(mktemp -d "$TMP_BASE/sa-verify.XXXXXX")"
 TMP="$(cd -P "$TMP" && pwd)"
 echo "$TMP" > "$LOCK/tmp"
 WT="$TMP/wt"
@@ -83,6 +87,10 @@ cached || true
 LOG="$SA_HOME/verify/${SHA:0:12}.log"
 # 各步骤（含 bun test）只碰临时 home，不写调用方的台账。
 export SUPERAGENT_HOME="$TMP/sa" ARCHON_HOME="$TMP/sa/archon" XDG_STATE_HOME="$TMP/state"
+export TMPDIR="$TMP"
+export GIT_CONFIG_GLOBAL="$TMP/gitconfig"
+git config --global user.name 'superagent verify'
+git config --global user.email 'verify@superagent.local'
 : > "$LOG"
 git -C "$REPO" worktree add -q --detach "$WT" "$SHA" >>"$LOG" 2>&1
 STEPS=() OK=1 INCONCLUSIVE=0

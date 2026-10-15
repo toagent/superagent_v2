@@ -1179,6 +1179,26 @@ function reconcileIntents(): Action[] {
 }
 
 function health(cwd?: string, verbose = false): number {
+  const hooks = Bun.spawnSync(['git', 'config', '--global', '--path', 'core.hooksPath'], {
+    env: process.env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: QUERY_TIMEOUT_MS,
+  });
+  const hooksPath = hooks.stdout.toString().trim();
+  if (hooks.exitCode === 0 && hooksPath) {
+    try {
+      const unexpected = readdirSync(hooksPath).filter(
+        name => !name.startsWith('.') && !['pre-commit', 'pre-push'].includes(name)
+      );
+      if (unexpected.length)
+        console.warn(
+          `health: ${hooksPath}: ${unexpected.join(', ')}；可能被 lefthook/husky install 写入全局 hooksPath`
+        );
+    } catch (error) {
+      console.warn(`health: 无法读取全局 hooksPath ${hooksPath}: ${(error as Error).message}`);
+    }
+  }
   const mode = installMode();
   const aliases = runAliases('claude');
   const drift = aliasDrift(cwd);

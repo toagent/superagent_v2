@@ -114,6 +114,28 @@ exit 0
 
 // 每个用例建临时仓库并多次 git worktree add/remove，满载（如嵌在 verify-local 里跑）时超过 bun 默认 5s。
 describe('scripts/verify-local.sh', () => {
+  test('steps isolate global Git config and avoid production scratch TMPDIR', () => {
+    const f = fixture(),
+      config = join(f.root, 'host.gitconfig');
+    writeFileSync(config, '[core]\n\thooksPath = /host-hooks\n');
+    const bun = join(f.root, 'bun/bin/bun');
+    writeFileSync(
+      bun,
+      readFileSync(bun, 'utf8').replace(
+        '#!/bin/sh',
+        `#!/bin/sh
+git config --global --get core.hooksPath && exit 9
+[ "$(git config --global user.name)" = "superagent verify" ] || exit 10`
+      )
+    );
+    const result = f.run(f.pass, {
+      GIT_CONFIG_GLOBAL: config,
+      TMPDIR: '/tmp/sa-scratch/not-created',
+    });
+    expect(result.code).toBe(0);
+    expect(readFileSync(config, 'utf8')).toBe('[core]\n\thooksPath = /host-hooks\n');
+  });
+
   test.each(['dead', 'live', 'dirty'] as const)(
     'startup recovery respects %s lock ownership',
     async state => {
