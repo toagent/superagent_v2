@@ -55,6 +55,46 @@ const deliveryFixture = () => {
   return { ...f, delivery, context: { repo: f.repo, base_ref: 'main', delivery } };
 };
 
+test.each(['same-tree', 'advanced-tree', 'acceptance-failed', 'acceptance-threw'])(
+  'LAND_TIMING measures actual stages without inferring tree-bound evidence: %s',
+  kind => {
+    const f = deliveryFixture();
+    if (kind === 'advanced-tree') {
+      writeFileSync(join(f.repo, 'concurrent.txt'), 'concurrent');
+      sh('git add concurrent.txt && git commit -qm concurrent', f.repo);
+    }
+    const before = sh('git rev-parse HEAD', f.repo);
+    const verify = mock((cwd: string) => {
+      const candidateTree = sh('git rev-parse HEAD^{tree}', cwd);
+      const sourceTree = sh('git rev-parse HEAD^{tree}', f.worktree);
+      expect(candidateTree === sourceTree).toBe(kind !== 'advanced-tree');
+      if (kind === 'acceptance-threw') throw new Error('verification threw');
+      return kind === 'acceptance-failed' ? 1 : 0;
+    });
+    if (kind.startsWith('acceptance-')) {
+      expect(() => applyLand(f.run, f.land, verify, f.context)).toThrow(
+        kind === 'acceptance-threw' ? 'verification threw' : 'land: acceptance failed'
+      );
+      expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
+      expect(existsSync(f.delivery.receipt)).toBe(false);
+    } else {
+      expect(applyLand(f.run, f.land, verify, f.context)?.status).toBe('manual_push');
+    }
+    expect(verify).toHaveBeenCalledTimes(1);
+    const log = readFileSync(join(f.art, 'land-environment.log'), 'utf8');
+    const timings = [...log.matchAll(/^# land stage=(\w+) attempt=0 ms=([\d.]+)$/gm)];
+    expect(timings.map(match => match[1])).toEqual(
+      kind.startsWith('acceptance-')
+        ? ['environment', 'acceptance']
+        : ['environment', 'acceptance', 'integrate']
+    );
+    for (const match of timings) {
+      expect(Number.isFinite(Number(match[2]))).toBe(true);
+      expect(Number(match[2])).toBeGreaterThanOrEqual(0);
+    }
+  }
+);
+
 test.each(['pass', 'fail'])('LAND_ENVIRONMENT reuses plan setup only in candidate: %s', kind => {
   const f = deliveryFixture();
   writeFileSync(join(f.worktree, '.gitignore'), '.prepared/\n');
@@ -113,6 +153,9 @@ test.each(['pass', 'fail'])('LAND_ENVIRONMENT reuses plan setup only in candidat
     expect(verify).not.toHaveBeenCalled();
     expect(sh('git rev-parse HEAD', f.repo)).toBe(before);
     expect(existsSync(join(f.worktree, '.prepared'))).toBe(false);
+    const log = readFileSync(join(f.art, 'land-environment.log'), 'utf8');
+    expect(log).toMatch(/# land stage=environment attempt=0 ms=[\d.]+/);
+    expect(log).not.toContain('# land stage=acceptance');
   }
   expect(existsSync(join(f.repo, '.prepared'))).toBe(false);
 });

@@ -289,13 +289,21 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
         prepareSubmodules(dest, [dest, ...(cached ? [cached] : [])]);
       }
     };
-    prepareSubmodules(candidate, [...new Set([repo, ...(run.working_path ? [run.working_path] : [])])]);
     const accepted = gitAt(candidate, 'rev-parse', 'HEAD');
     const log = join(delivery?.evidence ?? mkdtempSync(join(tmpdir(), 'sa-land-env-')), 'land-environment.log');
+    const timed = <T>(stage: 'environment' | 'acceptance' | 'integrate', action: () => T): T => {
+      const start = performance.now();
+      try { return action(); }
+      finally { appendFileSync(log, `# land stage=${stage} attempt=${String(attempt)} ms=${String(performance.now() - start)}\n`); }
+    };
+    // Run evidence has no explicit accepted tree binding; always prepare and verify.
+    timed('environment', () => {
+    prepareSubmodules(candidate, [...new Set([repo, ...(run.working_path ? [run.working_path] : [])])]);
     const script = `import { prepareEnvironment } from ${JSON.stringify(join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts'))}; const { plan, log } = await Bun.stdin.json(); const out = await prepareEnvironment(process.cwd(), plan, log, true); console.log(JSON.stringify(out)); process.exitCode = out.ok ? 0 : 1;`;
     const prepared = Bun.spawnSync([process.execPath, '-e', script], { cwd: candidate, env: { ...process.env, INPUTS_KIND: 'env' }, stdin: Buffer.from(JSON.stringify({ plan: context?.plan ?? { packages: [] }, log })), stdout: 'pipe', stderr: 'pipe' });
     if (prepared.exitCode !== 0) throw new LandError('environment_failed', `land: environment preparation failed; log: ${log}; ${redact(prepared.stdout.toString() + prepared.stderr.toString()).slice(-4000)}`);
-    if (verify(candidate) !== 0) throw new LandError('acceptance_failed', 'land: acceptance failed');
+    });
+    if (timed('acceptance', () => verify(candidate)) !== 0) throw new LandError('acceptance_failed', 'land: acceptance failed');
     if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('candidate_changed', 'land: acceptance changed candidate checkout');
     sameTree(); clean();
     if (targetCheckout() !== checkout) throw new LandError('target_checkout_changed', 'land: target checkout changed during acceptance; retry land --apply');
@@ -303,10 +311,12 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       if (attempt < 2) continue;
       throw new LandError('target_advanced', 'land: target advanced during acceptance after 2 retries');
     }
+    timed('integrate', () => {
     if (accepted !== tip) {
       if (checkout) gitAt(checkout, 'merge', '--ff-only', accepted);
       else git('update-ref', `refs/heads/${target}`, accepted, tip);
     }
+    });
     if (checkout && existsSync(join(checkout, '.codegraph'))) {
       try {
         excludeCodegraph(checkout);
