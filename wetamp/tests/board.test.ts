@@ -590,6 +590,7 @@ describe('detail', () => {
       { status: 'failed', output_root: join(root, 'out') },
       { plan: `../${basename(outside)}/plan.json`, transcript: join(outside, 't.jsonl') }
     );
+    writeFileSync(join(l.gen_dir, 'plan.json'), JSON.stringify({ packages: [] }));
     const art = join(root, 'out', 'artifacts', 'runs', 'a-esc');
     mkdirSync(art, { recursive: true });
     symlinkSync(join(outside, 'gate-m1-r1.json'), join(art, 'gate-m1-r1.json'));
@@ -598,7 +599,7 @@ describe('detail', () => {
     expect(d.packages).toEqual([]);
     expect(d.events).toEqual([]);
     expect(d.gates).toEqual([]);
-    expect(d.errors).toHaveLength(4);
+    expect(d.errors).toHaveLength(3);
     for (const e of d.errors) expect(e).toContain('（路径越界，已跳过）');
     expect(detailLines(d, Date.now()).join('\n')).not.toContain('leak');
   });
@@ -927,4 +928,22 @@ test('pending asks follow real engine hold mapping, including failed coder nodes
       expect(cockpit(resumed, now).needs).toEqual([]);
     }
   }
+});
+
+test('P1 deleted repository uses the same report and board fallback', async () => {
+  ledger(
+    'gone',
+    {
+      status: 'completed',
+      nodes: [{ nodeId: 'code-core', state: 'completed', durationMs: 19387000 }],
+    },
+    { repo: join(root, 'deleted') }
+  );
+  const snapshot = await createLoader()(50);
+  const summary = report();
+  expect(snapshot.summary.unreadable).toEqual([]);
+  expect(summary.unreadable).toEqual([]);
+  expect(snapshot.summary['state:completed']).toBe(summary['state:completed']);
+  expect(snapshot.summary['node_s:code']).toBe(summary['node_s:code']);
+  expect(snapshot.summary['node_s:code']).toBe(19387);
 });

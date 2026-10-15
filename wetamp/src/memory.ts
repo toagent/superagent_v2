@@ -996,6 +996,11 @@ export function memoryTick(
                 : null,
           };
           const previous = JSON.stringify(index.samples[id]);
+          const settledCalls = callsOf(
+            l.run_id,
+            events.filter(e => e.event_type !== 'node_started') as Parameters<typeof callsOf>[1],
+            plan
+          );
           index.samples[id] = plan.packages.flatMap(p => {
             const calls = stats.calls.filter(
                 c => c.node === `code-${p.id}` || c.node === `repair-${p.id}`
@@ -1016,7 +1021,10 @@ export function memoryTick(
                 : calls.every(c => c.exec_ms !== null)
                   ? calls.reduce((n, c) => n + (c.exec_ms ?? 0), 0)
                   : 0;
-            return ['completed', 'failed'].includes(run.status) &&
+            return calls.length > 0 &&
+              settledCalls.filter(c => c.node === `code-${p.id}` || c.node === `repair-${p.id}`)
+                .length === calls.length &&
+              ['completed', 'failed'].includes(run.status) &&
               Number.isFinite(duration) &&
               duration > 0
               ? [

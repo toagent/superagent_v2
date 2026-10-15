@@ -1,6 +1,7 @@
 // board 详情：选中 run 的 plan 包、gate 各轮结论、transcript 末尾事件、待决签收与下一步命令。只读，任何一项读不到只影响该项。
 import { readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { planFileOf } from '../ledger-metrics';
+import { join } from 'node:path';
 import { milestones, type Plan } from '../plan';
 import {
   asksOf,
@@ -67,15 +68,6 @@ function events(file: string): Detail['events'] {
   return out;
 }
 
-/** ledger.plan 相对 ledger.repo（run 时的写法），不存在时用生成目录里的副本；越界抛错（confined）。 */
-function planOf(l: Ledger): string {
-  const p =
-    confined(l, isAbsolute(l.plan) ? l.plan : resolve(l.repo, l.plan)) ??
-    confined(l, join(l.gen_dir, 'plan.json'));
-  if (!p) throw new Error(`no plan at ${l.plan} or ${l.gen_dir}/plan.json`);
-  return p;
-}
-
 export function detailOf(l: Ledger, row: BoardRow): Detail {
   const d: Detail = {
     run_id: l.run_id,
@@ -98,7 +90,8 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
     }
   };
   part('plan', () => {
-    d.plan = planOf(l);
+    d.plan = planFileOf(l);
+    if (!d.plan) throw new Error('plan unavailable');
     const plan = JSON.parse(readFileSync(d.plan, 'utf8')) as Plan;
     d.packages = plan.packages.map(p => ({
       id: p.id,

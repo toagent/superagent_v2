@@ -1,4 +1,4 @@
-import { clock, firstPassOf, planOf } from '../ledger-metrics';
+import { clock, firstPassOf, planOf, cwdOf } from '../ledger-metrics';
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
@@ -408,7 +408,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       if (hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status))
         return { l, run: hit.run, stale: false };
       try {
-        const run = await getRunAsync(l.archon_run_id, l.repo, { timeoutMs, signal });
+        const run = await getRunAsync(l.archon_run_id, cwdOf(l), { timeoutMs, signal });
         cache.set(id, { run, mtimeMs });
         return { l, run, stale: false };
       } catch (e) {

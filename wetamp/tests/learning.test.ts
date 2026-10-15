@@ -299,6 +299,10 @@ test('LEARNING_EVIDENCE freezes original bytes and actual identity, submits only
     reject();
     event.workflow_run_id = 'native';
     expect(calls).toEqual([]);
+    event.event_type = 'node_started';
+    reject();
+    event.event_type = 'node_failed';
+    run.status = 'failed';
     const result = proposeLearning(ledger, request);
     expect(result.status).toBe('prepared');
     expect(result.model).toBe('actual-provider-model');

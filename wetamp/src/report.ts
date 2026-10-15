@@ -1,4 +1,5 @@
 import {
+  cwdOf,
   clock,
   ms,
   planOf,
@@ -24,7 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { confined } from './board/workflow';
 import { join } from 'node:path';
 import { archonJson, archonRunIds, getRun, tail, reportRuns } from './archon';
-import { readNodeRecordEvent } from '../../packages/workflows/src/node-record-reader';
+import { buildNodeSummaries } from '../../packages/cli/src/commands/workflow';
 import { home, WETAMP } from './config';
 import {
   type Ledger,
@@ -123,7 +124,7 @@ export function reportSummary(report: Record<string, unknown>): Record<string, u
   return {
     ...Object.fromEntries(Object.entries(report).filter(([, v]) => typeof v === 'number' || typeof v === 'string')),
     metrics: report.metrics, cancellations: report.cancellations, interventions,
-    demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length, by_request: demands.by_request },
+    demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length, by_request: demands.by_request, unattributed: demands.unattributed },
     usage: Object.fromEntries(['total', 'investment', 'supplemental', 'learning', 'window'].map(k => [k, usage[k]])),
     jobs: { phase_coverage: jobs.phase_coverage }, repo_missing: (report.repo_missing as unknown[]).length,
     ...(report.full_usage ? { full_usage: Object.fromEntries(Object.entries(report.full_usage as Record<string, unknown>).filter(([k]) => ['label', 'status', 'at', 'since', 'coverage', 'total'].includes(k))) } : {}),
@@ -132,7 +133,7 @@ export function reportSummary(report: Record<string, unknown>): Record<string, u
     next_steps: ['superagent report --full --json: inspect details and unreadable evidence', 'For missing AI measurements, inspect provider event capture; n/a is excluded from unknown counts'],
   };
 }
-/** 一次 AI 节点调用（node_completed/node_failed 各一条；条件跳过与 resume 沿用的 prior_success 不算调用）。 */
+/** 一次 AI attempt；started 与终态按身份合并，未终结时 failure/成本保持 unknown。 */
 export interface Call {
   run: string;
   milestone: string;
@@ -191,20 +192,34 @@ export function jobReceipt(j: Job): Record<string, unknown> {
 
 export function callsOf(runId: string, events: Event[], plan: Plan | null): Call[] {
   const seen = new Map<string, number>();
-  const identities = new Set<string>();
-  const out: Call[] = [];
+  const attempts = new Map<string, Event>();
   for (const e of events) {
-    if (e.event_type !== 'node_completed' && e.event_type !== 'node_failed') continue;
+    if (
+      !['node_started', 'node_completed', 'node_failed'].includes(e.event_type) ||
+      !e.data?.attempt?.id
+    )
+      continue;
+    const key = JSON.stringify([
+      e.workflow_run_id ?? runId,
+      e.step_name,
+      e.data.invocation?.id,
+      e.data.attempt.id,
+    ]);
+    const prior = attempts.get(key);
+    if (!prior || prior.event_type === 'node_started') attempts.set(key, e);
+  }
+  const out: Call[] = [];
+  for (const e of attempts.values()) {
     const [node, role, rest] = AI_NODE.exec(e.step_name ?? '') ?? [];
-    if (!node || !role || !e.data?.attempt?.id || !e.data.binding?.model) continue;
+    if (!node || !role || !e.data?.attempt?.id) continue;
+    // Native node kind owns classification; legacy receipts only expose model binding.
+    if (e.data.node ? e.data.node.kind !== 'agent' : !e.data.binding?.model) continue;
     const identity = e.data.invocation?.id
       ? JSON.stringify([e.workflow_run_id ?? runId, e.data.invocation.id, e.data.attempt.id])
       : null;
-    if (identity && identities.has(identity)) continue;
-    if (identity) identities.add(identity);
     const n = (seen.get(node) ?? 0) + 1;
     seen.set(node, n);
-    const t = e.data.spend?.tokens;
+    const t = e.event_type === 'node_started' ? undefined : e.data.spend?.tokens;
     const fee = e.data.spend?.costUsd;
     const raw =
       t?.source === 'provider' && t.value
@@ -217,18 +232,20 @@ export function callsOf(runId: string, events: Event[], plan: Plan | null): Call
       node,
       attempt: n,
       model: modelOf(e),
-      effort: e.data.binding.effort ?? null,
+      effort: e.data.binding?.effort ?? null,
       tokens: raw ? normalizeTokens(raw) : null,
       raw,
-      provider: e.data.binding.provider ?? e.data.provider ?? null,
+      provider: e.data.binding?.provider ?? e.data.provider ?? null,
       session: e.data.session_id ?? null,
       identity,
       failure:
         e.event_type === 'node_failed'
           ? (e.data.provider_failure?.class ?? e.data.failure_kind ?? 'unknown')
-          : null,
+          : e.event_type === 'node_started'
+            ? 'unknown'
+            : null,
       queue_ms: ms(e.data.invocation?.startedAt, e.data.attempt.startedAt),
-      exec_ms: e.data.timing?.durationMs ?? null,
+      exec_ms: e.event_type === 'node_started' ? null : (e.data.timing?.durationMs ?? null),
     });
   }
   return out;
@@ -309,7 +326,7 @@ export function cancellationStats(pairs: Pair[]): Record<string, number> {
     if (run instanceof Error || run.status !== 'cancelled') continue;
     const reason =
       ledger.intervention_events?.filter(e => e.action === 'cancel' && e.ok).at(-1)?.reason ??
-      'unrecorded';
+      (ledger.reason === 'deadline' ? 'deadline' : ledger.rejected ? 'rejected' : 'unrecorded');
     reasons[reason] = (reasons[reason] ?? 0) + 1;
   }
   return reasons;
@@ -328,6 +345,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     };
   });
   const allocatedJobs = new Set<UsageSession>();
+  const allocated = new Set<UsageSession>();
   const current_tasks = Object.fromEntries<unknown>([...new Set(pairs.map(p => p.ledger.repo))].map(repo => {
     try {
       const root = intakeRoot(home().sa, repo);
@@ -340,14 +358,14 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
   const unknown: string[] = [];
   for (const pair of pairs) {
     const ref = planOf(pair.ledger)?.request_ref;
-    if (typeof ref !== 'string' || !ref.trim()) {
+    if (typeof ref !== 'string' || !ref.trim() || ref === 'plan-external') {
       unknown.push(pair.ledger.run_id);
       continue;
     }
     by.set(ref, [...(by.get(ref) ?? []), pair]);
   }
   for (const ref of [...sessions.map(s => s.owner?.conflict ? undefined : s.owner?.request_ref), ...jobs.map(j => j.request_ref)])
-    if (ref && !by.has(ref)) by.set(ref, []);
+    if (ref?.trim() && ref !== 'plan-external' && !by.has(ref)) by.set(ref, []);
   const sessionKeys = new Map<string, string>();
   const sessionId = (provider: string, id: string) => { const key = `${provider}:${id}`, cached = sessionKeys.get(key); if (cached !== undefined) return cached; const value = `${provider}:${sessionKey(id)}`; sessionKeys.set(key, value); return value; };
   const claims = new Map<string, Set<string>>();
@@ -387,6 +405,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
       const extra = candidates.filter(
         s => !disputed(s.client, s.id) && (s.owner?.kind === 'run' && (s.owner.request_ref === ref || (!!s.owner.run_id && runIds.has(s.owner.run_id))) || ownedSessions.has(sessionId(s.client, s.id)) || s.owner?.kind !== 'run' && jobSessions.has(sessionId(s.client, s.id)))
       );
+      for (const s of extra) allocated.add(s);
       for (const s of extra)
         if (jobSessions.has(sessionId(s.client, s.id)) && s.owner?.kind !== 'run') allocatedJobs.add(s);
       const inferred = demandJobs.filter(j => j.session_id && !disputed(j.kind, j.session_id)).length;
@@ -415,9 +434,12 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     .map(d => d.elapsed_ms)
     .filter((n): n is number => typeof n === 'number')
     .sort((a, b) => a - b);
+  const unownedJobs = jobs.filter(j => !j.request_ref?.trim() || j.request_ref === 'plan-external');
+  const unownedSessions = sessions.filter(s => !allocated.has(s));
+  const missingUnowned = unownedJobs.filter(j => { const id = j.session_id; return !id || !unownedSessions.some(s => s.client === j.kind && sessionId(s.client, s.id) === sessionId(j.kind, id)); }).length;
   return {
     current_tasks,
-    unattributed: { ...investmentOf([], sessions.filter(s => !allocatedJobs.has(s) && (disputed(s.client, s.id) || s.owner?.kind !== 'run' || !s.owner.request_ref && ![...by.values()].some(ps => ps.some(p => p.ledger.run_id === s.owner?.run_id))))), attribution: 'unknown' },
+    unattributed: { ...rollup(calls.filter(c => !refsByRun.has(c.run))), ...investmentOf(calls.filter(c => !refsByRun.has(c.run)), unownedSessions, missingUnowned), jobs: unownedJobs.length, attribution: 'unknown' },
     denominator: by.size,
     completed: Object.values(demands).filter(d => d.complete === true).length,
     unknown_runs: unknown,
@@ -463,14 +485,7 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
     const cached = views.get(id); if (cached) return cached;
     const run = batch?.get(id);
     if (!run) throw new Error(`run ${id} outside report window or missing`);
-    const nodes = new Map<string, NonNullable<RunView['nodes']>[number]>();
-    for (const e of run.events) {
-      const record = readNodeRecordEvent(e);
-      if (!record) continue;
-      const state = ({ node_started: 'running', node_suspended: 'running', node_completed: 'completed', node_failed: 'failed', node_skipped: 'skipped', node_skipped_prior_success: 'completed', node_always_run_reset: 'pending', node_prior_cache_invalidated: 'pending' } as Record<string, string>)[e.event_type];
-      if (state) nodes.set(record.path, { nodeId: record.path, state, execution: record.metadata, durationMs: record.metadata?.timing.durationMs, error: record.data.error });
-    }
-    const result = { ...run, nodes: [...nodes.values()] }; views.set(id, result); return result;
+    const result = { ...run, nodes: buildNodeSummaries(run.events) }; views.set(id, result); return result;
   };
   const jobs = readJobs();
   const receipts = jobs.jobs.map(jobReceipt);
@@ -482,7 +497,6 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
   const measurement: Record<string, unknown> = {};
   const attempts: ReturnType<typeof providerTiming> = [];
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
-  const cwdOf = (l: Ledger): string => (repo_missing.includes(l.run_id) ? WETAMP : l.repo);
   const pairs: Pair[] = ls.map(l => {
     try {
       return { ledger: l, run: batch ? view(l.archon_run_id) : getRun(l.archon_run_id, cwdOf(l)) };
@@ -700,7 +714,7 @@ export function engineComparison(rows: EngineRow[], baselineDays = 7) {
     const done = rs.filter(r => r.status === 'completed');
     const terminal = rs.filter(r => ['completed', 'failed', 'cancelled'].includes(r.status));
     const known = terminal.filter(r => r.first !== 'unknown');
-    const sum = (field: 'silence' | 'disruptions'): Measure =>
+    const sum = (field: 'silence' | 'disruptions' | 'tokens'): Measure =>
       rs.length && rs.every(r => typeof r[field] === 'number')
         ? rs.reduce((n, r) => n + Number(r[field]), 0)
         : 'unknown';
@@ -710,7 +724,11 @@ export function engineComparison(rows: EngineRow[], baselineDays = 7) {
       terminal: terminal.length,
       elapsed_ms: median(terminal.map(r => r.elapsed)),
       adjusted_ms: median(terminal.map(r => r.adjusted)),
-      tokens: median(done.map(r => r.tokens)),
+      tokens:
+        done.length && typeof sum('tokens') === 'number'
+          ? Number(sum('tokens')) / done.length
+          : ('unknown' as const),
+      completion_rate: rs.length ? done.length / rs.length : ('unknown' as const),
       first_pass: known.length
         ? known.filter(r => r.first === true).length / known.length
         : ('unknown' as const),
@@ -742,6 +760,7 @@ export function engineComparison(rows: EngineRow[], baselineDays = 7) {
       const candidates = old
         .filter(
           o =>
+            !selected.has(o.id) &&
             o.status === 'completed' &&
             o.repo === r.repo &&
             o.risk === r.risk &&
@@ -759,8 +778,8 @@ export function engineComparison(rows: EngineRow[], baselineDays = 7) {
     };
   };
   const size_matched = matched(older, newer),
-    a = size_matched.old,
-    b = size_matched.new;
+    a = summary(older),
+    b = summary(newer);
   const comparable = (x: Measure, y: Measure) => typeof x === 'number' && typeof y === 'number';
   const regressed = (x: Measure, y: Measure, higher: boolean) =>
     comparable(x, y) &&
@@ -768,15 +787,23 @@ export function engineComparison(rows: EngineRow[], baselineDays = 7) {
       ? Number(y) < Number(x) * (1 - ENGINE_REGRESSION)
       : Number(y) > Number(x) * (1 + ENGINE_REGRESSION));
   const verdict =
-    newer.filter(r => r.status === 'completed').length < ENGINE_MIN_COMPLETED
+    a.completed < ENGINE_MIN_COMPLETED || b.completed < ENGINE_MIN_COMPLETED
       ? 'insufficient_sample'
-      : regressed(a.adjusted_ms, b.adjusted_ms, false) ||
+      : regressed(a.elapsed_ms, b.elapsed_ms, false) ||
+          regressed(a.completion_rate, b.completion_rate, true) ||
           regressed(a.tokens, b.tokens, false) ||
           regressed(a.first_pass, b.first_pass, true)
         ? 'regressed'
-        : comparable(a.adjusted_ms, b.adjusted_ms) &&
-            Number(a.adjusted_ms) > 0 &&
-            Number(b.adjusted_ms) <= Number(a.adjusted_ms) * (1 - ENGINE_IMPROVEMENT) &&
+        : a.terminal === a.runs &&
+            b.terminal === b.runs &&
+            !a.missing.elapsed &&
+            !b.missing.elapsed &&
+            !a.missing.first &&
+            !b.missing.first &&
+            Number(b.completion_rate) >= Number(a.completion_rate) &&
+            comparable(a.elapsed_ms, b.elapsed_ms) &&
+            Number(a.elapsed_ms) > 0 &&
+            Number(b.elapsed_ms) <= Number(a.elapsed_ms) * (1 - ENGINE_IMPROVEMENT) &&
             comparable(a.first_pass, b.first_pass) &&
             Number(b.first_pass) >= Number(a.first_pass) &&
             comparable(a.tokens, b.tokens) &&
