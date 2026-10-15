@@ -84,7 +84,12 @@ const shared = createRequire(import.meta.url)('../../hooks/coord.cjs') as {
   hash: (value: unknown) => string;
   read: (file: string) => unknown;
   files: <T = Message>(home: string, dir: string) => T[];
-  refusal: (action: string, owner: Identity | null, state: Presence['state']) => string;
+  refusal: (
+    action: string,
+    owner: Identity | null,
+    state: Presence['state'],
+    scope?: Scope
+  ) => string;
   resolveOwner: (
     scope: Scope,
     claims: Claim[],
@@ -108,10 +113,13 @@ export function repoScope(path: string): Extract<Scope, { kind: 'repo' }> {
   return scope;
 }
 export const runScope = shared.runScope;
-export function caller(readonly = false): Identity {
+export function assertCommander(): void {
   const role = process.env.SUPERAGENT_ROLE ?? '';
-  if (!readonly && ['general', 'strategist', 'reviewer', 'worker'].includes(role))
+  if (['general', 'strategist', 'reviewer', 'worker'].includes(role))
     throw new Error(`派生会话不参与认领或控制；请交回元帅（当前角色：${role}）`);
+}
+export function caller(readonly = false): Identity {
+  if (!readonly) assertCommander();
   const who = launcher(home().sa);
   if (who?.pid_start) return who;
   // A human shell is also an explicit local controller; use its parent lifetime, never the short-lived CLI PID.
@@ -388,7 +396,7 @@ export class Coordination {
         const view = this.owner(scope);
         if (view.conflicts.length && !takeover) throw new Error(view.next);
         if (view.owner && !same(view.owner, who) && view.presence.state !== 'offline' && !takeover)
-          throw new Error(shared.refusal('普通认领', view.owner, view.presence.state));
+          throw new Error(shared.refusal('普通认领', view.owner, view.presence.state, scope));
         const existing = this.claimOf(scope);
         const c = same(view.owner, who) && existing ? existing : this.transfer(scope, who, reason);
         this.save('leases', this.leaseKey(scope, who), { generation: c.generation });

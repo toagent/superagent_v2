@@ -20,7 +20,17 @@ import {
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
-import { caller, control, coord, repoScope, runScope, type Controller } from './coord';
+import {
+  assertCommander,
+  caller,
+  control,
+  coord,
+  presence,
+  repoScope,
+  runScope,
+  type Controller,
+  type Identity,
+} from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
@@ -820,10 +830,10 @@ export const waitClock = {
 };
 
 /** Observe engine state and inbox; continuation is an explicit engine action. */
-export function waitRun(l: Ledger, timeoutS: number): Record<string, unknown> {
+export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
   const deadline = waitClock.now() + timeoutS * 1000;
   for (;;) {
-    const inbox = coord().surfaced(caller(true));
+    const inbox = coord().surfaced(who);
     if (inbox.length) return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox };
     const run = getRun(l.archon_run_id, l.repo);
     const c = classifyRun(l, run);
@@ -1633,9 +1643,11 @@ function acceptRun(
 }
 
 /** Plan and quick share real acceptance and the original audited landing admission. */
-export function finalizeDelivery(id: string, automatic = false) {
+export function finalizeDelivery(id: string, automatic = false, who: Identity = caller()) {
+  assertCommander();
+  if (automatic && presence(who, home().sa).state !== 'online')
+    throw new Error('coord: delivery caller is not verifiably online');
   const l = loadLedger(coord().resolveRun(id)?.run_id ?? id);
-  const who = caller();
   const deliver = () =>
     control(
       l,
@@ -2895,8 +2907,10 @@ export function main(argv: string[]): number {
         console.error(`--timeout must be a positive number of seconds\n${USAGE}`);
         return EXIT_USAGE;
       }
+      // Resolve before waiting: a background shell may exit and reparent this process.
+      const who = caller(true);
       const l = ledger(),
-        s = waitRun(l, t);
+        s = waitRun(l, t, who);
       if (s.state === 'completed') {
         try {
           const engine = readJson(join(l.gen_dir, 'engine.json'));
@@ -2911,7 +2925,7 @@ export function main(argv: string[]): number {
               status: 'unknown',
               reason: 'legacy/fake or unverified launch; automatic delivery unavailable',
             };
-          else s.delivery = finalizeDelivery(l.run_id, true);
+          else s.delivery = finalizeDelivery(l.run_id, true, who);
         } catch (e) {
           const blocked = {
             status: 'blocked' as const,

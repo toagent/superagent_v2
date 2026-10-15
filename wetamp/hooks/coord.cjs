@@ -4,7 +4,7 @@ const fs = require('node:fs'),
   os = require('node:os'),
   path = require('node:path'),
   crypto = require('node:crypto');
-const { same } = require('./identity.cjs');
+const { same, presence } = require('./identity.cjs');
 const { resolvePath } = require('./redline.cjs');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function read(file) {
@@ -52,9 +52,9 @@ function repoScope(file) {
 }
 const label = owner =>
   owner ? `${owner.client} ${owner.session_id || `pid:${owner.pid}`}` : '无主';
-function refusal(action, owner, state = 'unknown') {
+function refusal(action, owner, state = 'unknown', scope) {
   const status = { online: '在线', offline: '离线', unknown: '状态未知' }[state];
-  return `已拒绝：${action}\n原因：这个仓库由 ${label(owner)} 负责（${status}）\n可以：superagent handoff --to <path|run> … 或经用户同意 superagent claim --takeover --reason "<原话>"`;
+  return `已拒绝：${action}\n原因：这个${scope?.kind === 'run' ? '运行' : '仓库'}由 ${label(owner)} 负责（${status}）\n可以：superagent handoff --to <path|run> … 或经用户同意 superagent claim --takeover --reason "<原话>"`;
 }
 // The CLI supplies verified run states; hooks use a read-only database snapshot, never a subprocess.
 function candidates(home, archon = path.join(home, 'archon'), scope) {
@@ -158,7 +158,12 @@ function admission(home, scope, who, expected, archon, resolved) {
     (claims.some(c => hash(c.scope) === hash(owned)) && lease?.generation !== view.generation)
   )
     throw new Error(
-      refusal(`变更动作（owner/generation fencing ${scope.kind}:${scope.id}）`, view.owner)
+      refusal(
+        `变更动作（owner/generation fencing ${scope.kind}:${scope.id}）`,
+        view.owner,
+        (view.presence || presence(view.owner, home)).state,
+        scope
+      )
     );
   return { ...who, generation: view.generation };
 }

@@ -370,6 +370,117 @@ console.log(JSON.stringify({results,presence:presence(who,sa),who}));
     expect(result.results[mode].error).toContain('派生会话');
   }
 }, 30000);
+for (const mode of ['owner', 'foreign', 'generation', 'lease', 'takeover'])
+  test(`P5: takeover wait retains caller identity after its background shell exits (${mode})`, async () => {
+    const s = setup();
+    const module = (file: string) => JSON.stringify(join(import.meta.dir, '../src', file));
+    const child = join(s.root, 'wait.ts');
+    writeFileSync(
+      child,
+      `
+import {spyOn} from 'bun:test';
+import {existsSync,writeFileSync} from 'node:fs';
+import * as native from ${module('archon.ts')};
+import * as land from ${module('land.ts')};
+import {caller,Coordination,repoScope} from ${module('coord/index.ts')};
+import {main} from ${module('cli.ts')};
+const before=caller(), parent=process.ppid;
+let after, landed=false;
+spyOn(native,'getRun').mockImplementation(() => {
+  writeFileSync(${JSON.stringify(join(s.root, 'ready'))},'ready');
+  const deadline=Date.now()+5000;
+  while(process.ppid===parent && Date.now()<deadline) Bun.sleepSync(10);
+  if(process.ppid===parent) throw new Error('background shell did not exit');
+  after=caller(true);
+  if (${JSON.stringify(mode)}==='takeover') new Coordination({runs:()=>[]}).claim(repoScope(${JSON.stringify(s.repo)}),{...before,session_id:'new-owner'},true,'another takeover');
+  return {id:'engine',status:'completed',output_root:process.env.SUPERAGENT_HOME,nodes:[]};
+});
+spyOn(land,'applyLand').mockImplementation(() => {landed=true;return {status:'manual_push'};});
+const output=[];
+spyOn(console,'log').mockImplementation(x=>output.push(JSON.parse(x)));
+try {main(['wait','background','--timeout','10','--json']);}
+finally {writeFileSync(${JSON.stringify(join(s.root, 'result'))},JSON.stringify({before,after,landed,output}));}
+`
+    );
+    const parent = join(s.root, 'claude');
+    writeFileSync(
+      parent,
+      `
+import {mkdirSync,writeFileSync,existsSync,readFileSync,readdirSync,unlinkSync} from 'node:fs';
+import {hostname} from 'node:os';
+import {join} from 'node:path';
+import {Coordination,repoScope,runScope} from ${module('coord/index.ts')};
+import {inspectProcess} from ${module('launcher.ts')};
+const sa=process.env.SUPERAGENT_HOME,repo=${JSON.stringify(s.repo)};
+mkdirSync(join(sa,'live'),{recursive:true});mkdirSync(join(sa,'runs'),{recursive:true});
+const who={client:'claude',session_id:'A',host:hostname(),pid:process.pid,pid_start:inspectProcess(process.pid).start};
+const c=new Coordination({sa,runs:()=>[]}),run=runScope({run_id:'background',repo});
+for(const scope of [repoScope(repo),run]) {c.claim(scope,{...who,session_id:'old-owner'});c.claim(scope,who,true,'user takeover');}
+const controller={...who,generation:${mode === 'generation' ? 1 : 2}};
+if(${JSON.stringify(mode)}==='lease') for(const f of readdirSync(join(sa,'coord/leases'))) unlinkSync(join(sa,'coord/leases',f));
+writeFileSync(join(sa,'live/a.json'),JSON.stringify({...who,session_id:${JSON.stringify(mode === 'foreign' ? 'B' : 'A')},at:new Date().toISOString()}));
+writeFileSync(join(sa,'runs/background.json'),JSON.stringify({run_id:'background',archon_run_id:'engine',repo,controller,gen_dir:sa,branch:'feature',workflow:'fixture',delivery:{},recoveries:[]}));
+writeFileSync(join(sa,'plan.json'),JSON.stringify({base_ref:'main',packages:[]}));
+writeFileSync(join(sa,'engine.json'),JSON.stringify({fake:false}));
+writeFileSync(join(sa,'accept-inputs.json'),'{}');
+mkdirSync(join(sa,'artifacts/runs/engine'),{recursive:true});writeFileSync(join(sa,'artifacts/runs/engine/land.json'),'{}');
+const shell=Bun.spawn(['bash','-c','"$1" "$2" & child=$!; while kill -0 "$child" 2>/dev/null && [ ! -f "$3" ]; do sleep 0.01; done','_',process.execPath,${JSON.stringify(child)},${JSON.stringify(join(s.root, 'ready'))}],{stdout:'ignore',stderr:'inherit'});
+await shell.exited;
+const deadline=Date.now()+10000;
+while(!existsSync(${JSON.stringify(join(s.root, 'result'))}) && Date.now()<deadline) await Bun.sleep(10);
+console.log(readFileSync(${JSON.stringify(join(s.root, 'result'))},'utf8'));
+`
+    );
+    const p = Bun.spawn([process.execPath, parent], {
+      env: {
+        ...process.env,
+        SUPERAGENT_HOME: s.sa,
+        ARCHON_HOME: join(s.sa, 'archon'),
+        SUPERAGENT_RELAY_QUOTA: 'off',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    expect({ code, err }).toEqual({ code: 0, err: '' });
+    const result = JSON.parse(out);
+    expect(result.before).toMatchObject({
+      client: 'claude',
+      session_id: mode === 'foreign' ? 'B' : 'A',
+    });
+    expect(result.after.client).toBe('shell');
+    expect(result.after.pid).not.toBe(result.before.pid);
+    expect(result.output[0].delivery).toMatchObject({
+      status: mode === 'owner' ? 'manual_push' : 'blocked',
+    });
+    if (mode !== 'owner') expect(result.output[0].delivery.reason).toContain('fencing');
+    expect(result.landed).toBe(mode === 'owner');
+  }, 20000);
+test('P5: admission refusal uses owner presence and names run/repository scopes', () => {
+  const s = setup();
+  const c = new Coordination({ sa: s.sa, runs: () => [] });
+  for (const [owner, state, label] of [
+    [a, 'online', '在线'],
+    [{ ...a, pid_start: 'old-lifetime' }, 'offline', '离线'],
+    [{ ...a, host: 'remote' }, 'unknown', '状态未知'],
+  ] as const) {
+    for (const scope of [s.scope, runScope({ run_id: 'presence', repo: s.repo })]) {
+      s.c.claim(scope, owner, true, 'presence fixture');
+      expect(c.owner(scope).presence.state).toBe(state);
+      for (const action of [
+        () => c.admit(scope, b),
+        () => req('../hooks/coord.cjs').admission(s.sa, scope, b),
+      ]) {
+        expect(action).toThrow(`（${label}）`);
+        expect(action).toThrow(scope.kind === 'run' ? '这个运行由' : '这个仓库由');
+      }
+    }
+  }
+});
 test('CLI mutation obeys owner fencing before invoking engine; read-only owner remains available', () => {
   const s = setup();
   s.c.claim(s.scope, a);
