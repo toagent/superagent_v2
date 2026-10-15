@@ -15,6 +15,7 @@ import { lock, QUERY_TIMEOUT_MS, type RunView } from './archon';
 import { home, receiptIssue, WETAMP, type Receipt } from './config';
 import { redact } from './redact';
 import { landTarget, type Land } from '../templates/.archon/scripts/sa-check';
+import type { Plan } from './plan';
 /** Fixed codes are safe for intervention persistence; diagnostics stay in message. */
 export class LandError extends Error {
   constructor(
@@ -40,7 +41,7 @@ export class LandError extends Error {
       | 'candidate_ancestry_failed'
       | 'merge_conflicts'
       | 'submodule_init_failed'
-      | 'dependency_install_failed'
+      | 'environment_failed'
       | 'acceptance_failed'
       | 'candidate_changed'
       | 'target_checkout_changed'
@@ -161,7 +162,7 @@ export function selftest(wait: boolean): void {
   } finally { lease.release(); }
 }
 // prettier-ignore
-export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery }): DeliveryOutcome | undefined {
+export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan }): DeliveryOutcome | undefined {
   if (run.status !== 'completed' || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed'))
     throw new LandError('not_ready', 'land: run is not ready for integration');
   const delivery = context?.delivery;
@@ -273,13 +274,10 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     };
     prepareSubmodules(candidate, [...new Set([repo, ...(run.working_path ? [run.working_path] : [])])]);
     const accepted = gitAt(candidate, 'rev-parse', 'HEAD');
-    // Workspace links must resolve within the checkout being accepted.
-    for (const rel of ['.', 'wetamp']) {
-      const dir = join(candidate, rel), lockfile = join(dir, 'bun.lock');
-      if (!existsSync(lockfile)) continue;
-      const p = Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
-      if (p.exitCode !== 0) throw new LandError('dependency_install_failed', `land: dependency install failed: ${p.stderr.toString().trim()}`);
-    }
+    const log = join(delivery?.evidence ?? mkdtempSync(join(tmpdir(), 'sa-land-env-')), 'land-environment.log');
+    const script = `import { prepareEnvironment } from ${JSON.stringify(join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts'))}; const { plan, log } = await Bun.stdin.json(); const out = await prepareEnvironment(process.cwd(), plan, log, true); console.log(JSON.stringify(out)); process.exitCode = out.ok ? 0 : 1;`;
+    const prepared = Bun.spawnSync([process.execPath, '-e', script], { cwd: candidate, env: { ...process.env, INPUTS_KIND: 'env' }, stdin: Buffer.from(JSON.stringify({ plan: context?.plan ?? { packages: [] }, log })), stdout: 'pipe', stderr: 'pipe' });
+    if (prepared.exitCode !== 0) throw new LandError('environment_failed', `land: environment preparation failed; log: ${log}; ${redact(prepared.stdout.toString() + prepared.stderr.toString()).slice(-4000)}`);
     if (verify(candidate) !== 0) throw new LandError('acceptance_failed', 'land: acceptance failed');
     if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('candidate_changed', 'land: acceptance changed candidate checkout');
     sameTree(); clean();
