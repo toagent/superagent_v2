@@ -524,16 +524,17 @@ export function deliveryProjection(l: Ledger, run: RunView): DeliveryReceipt | u
     localDelivery(l, art, l.delivery)
   );
 }
-if (import.meta.main) {
-  if (!process.env.INPUTS_RUN) throw new Error('delivery: missing run id');
-  await import('./cli');
-  const { loadLedger, print, readJson } = operator();
-  const l = loadLedger(process.env.INPUTS_RUN);
-  const { run, repo } = (readJson(join(l.gen_dir, 'delivery-authorization.json')) ??
-    {}) as Partial<DeliveryAuthorization>;
-  if (!run || !repo) throw new Error('delivery: missing durable authorization');
-  print(finalizeDelivery(l.run_id, false, run, { run, repo }));
-}
+// Finish entry evaluation before loading the operator's circular import.
+if (import.meta.main)
+  queueMicrotask(() => {
+    if (!process.env.INPUTS_RUN) throw new Error('delivery: missing run id');
+    const { loadLedger, print, readJson } = operator();
+    const l = loadLedger(process.env.INPUTS_RUN);
+    const { run, repo } = (readJson(join(l.gen_dir, 'delivery-authorization.json')) ??
+      {}) as Partial<DeliveryAuthorization>;
+    if (!run || !repo) throw new Error('delivery: missing durable authorization');
+    print(finalizeDelivery(l.run_id, false, run, { run, repo }));
+  });
 
 /** Re-entry is safe only for our generated, authorized delivery, after all gates. */
 export function deliveryRecoverable(run: RunView): boolean {

@@ -2955,7 +2955,8 @@ function need<T>(v: T | undefined, usage: string): T {
   return v;
 }
 
-if (import.meta.main) {
+// Keep this module synchronous: land loads operator evidence lazily via require().
+async function runCli(): Promise<void> {
   try {
     const argv = process.argv.slice(2);
     // board（带 ink/react 依赖）与 job/jobs 是异步动词：在这里分流，其余动词启动时不加载 React。
@@ -2979,3 +2980,5 @@ if (import.meta.main) {
     process.exit(1);
   }
 }
+// Let Bun finish evaluating the entry module before land can require it back.
+if (import.meta.main) queueMicrotask(() => void runCli());

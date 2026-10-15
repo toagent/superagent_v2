@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DeliveryReceipt, LocalDelivery } from '../src/land';
 import { directAuxiliaryPreload, fixturePlan, tmp } from './helpers';
@@ -282,6 +282,38 @@ test('DURABLE_DELIVERY finalizeDelivery persists integrated ledger and repeats w
     expect(f.git(f.repo, 'rev-list', '--count', `${f.original}..HEAD`)).toBe('2');
     expect(readFileSync(checks, 'utf8').trim()).toBe(head);
     expect(f.git(f.repo, 'status', '--porcelain')).toBe('');
+
+    // Exercise the actual CLI entry while its module is loading, with real delivery evidence.
+    const stub = join(f.root, 'engine-stub');
+    mkdirSync(stub);
+    writeFileSync(
+      join(stub, 'get-000.json'),
+      JSON.stringify({ ...run, status: 'completed', nodes: [] })
+    );
+    const bin = join(stub, 'archon');
+    writeFileSync(
+      bin,
+      `#!/bin/sh\nexec '${process.execPath}' '${join(import.meta.dir, 'fixtures/archon-stub.ts')}' '${stub}' "$@"\n`
+    );
+    chmodSync(bin, 0o755);
+    const child = Bun.spawnSync(
+      [process.execPath, '--no-env-file', 'src/cli.ts', 'wait', 'fault', '--json'],
+      {
+        cwd: join(import.meta.dir, '..'),
+        env: { ...process.env, SA_ARCHON_BIN: bin, SUPERAGENT_RELAY_QUOTA: 'off' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 5_000,
+      }
+    );
+    const childOutput = child.stdout.toString() + child.stderr.toString();
+    expect(child.exitedDueToTimeout).toBe(false);
+    expect(childOutput).not.toContain('require() async module');
+    expect(child.exitCode, childOutput).toBe(0);
+    expect(JSON.parse(child.stdout.toString())).toMatchObject({
+      state: 'completed',
+      delivery: receipt,
+    });
   } finally {
     transport?.mockRestore();
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
