@@ -44,7 +44,7 @@ superagent brief <run>                   # ≤20 行接手摘要：状态、各�
 superagent land <run>                    # 打印本地合入命令（switch + merge）；由人执行，从不 push
 superagent board                         # 终端看板（Ink）：全部 run 的状态/进度/held 原因，Enter 看详情；--once 打一帧，--json 出数据
 superagent job exec --title t -- cmd...  # 登记直接派出的后台作业，board 活动区可见；退出码透传、信号转发
-superagent jobs [--all]                  # 列出登记作业（默认 running 与 1h 内结束的）；结束超过 24h 的读取时回收
+superagent jobs [--all]                  # 列出登记作业（默认 running 与 1h 内结束的）；查询只读、保留历史；lost 仅为显示投影
 ```
 
 本地 delivery 允许目标分支沿启动 HEAD 正常前进：同 base 工作包在目标锁下按实时 tip 组合验收并串行集成，receipt 的 `target_tip` 记录实际验收基准，原启动目标身份保留；目标历史重写仍拒绝，push 始终由人执行。

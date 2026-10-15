@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readJobs, type Job } from '../src/jobs';
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spyOn, afterAll } from 'bun:test';
@@ -10,6 +12,7 @@ import {
   readdirSync,
   writeFileSync,
   statSync,
+  utimesSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -287,6 +290,60 @@ describe('EV1 incident replay', () => {
     expect(failure.phase).toBe('preflight');
     expect(failure.reason).toContain('worktree.baseBranch');
     expect(existsSync(join(sa, 'runs'))).toBe(false);
+  });
+  test('background reflection preserves historical jobs while recording its own completion', async () => {
+    fake();
+    saveEpisode(episode());
+    const dir = join(sa, 'jobs');
+    mkdirSync(dir, { recursive: true });
+    for (const state of ['done', 'running'] as const) {
+      const job: Job = {
+        id: `history-${state}`,
+        title: 'history',
+        card: null,
+        log: null,
+        cwd: root,
+        kind: 'other',
+        model: null,
+        wrapper_pid: 99999999,
+        pid: 99999999,
+        started_at: '2026-10-08T10:00:00Z',
+        state,
+        ...(state === 'done' ? { ended_at: '2026-10-08T11:00:00Z', exit_code: 0 } : {}),
+      };
+      const file = join(dir, `${job.id}.json`);
+      writeFileSync(file, JSON.stringify(job));
+      utimesSync(file, 1, 1);
+    }
+    const snapshot = () =>
+      readdirSync(dir)
+        .filter(n => n.startsWith('history-'))
+        .sort()
+        .map(name => {
+          const file = join(dir, name);
+          return {
+            name,
+            hash: createHash('sha256').update(readFileSync(file)).digest('hex'),
+            mtime: statSync(file).mtimeMs,
+          };
+        });
+    const before = snapshot();
+    expect(await reflectOne(NOW)).toBe(true);
+    expect(memoryState().lessons).toHaveLength(1);
+    expect(snapshot()).toEqual(before);
+    // The reflector registers one new job through job exec; historical files remain unchanged.
+    expect(readdirSync(dir)).toHaveLength(before.length + 1);
+    const jobs = readJobs().jobs;
+    expect(jobs.find(j => j.id === 'history-running')).toMatchObject({ state: 'lost' });
+    expect(jobs.find(j => j.id === 'history-running')?.ended_at).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(dir, 'history-running.json'), 'utf8')).state).toBe(
+      'running'
+    );
+    expect(jobs.find(j => j.title.startsWith('memory-reflect:'))).toMatchObject({
+      state: 'done',
+      exit_code: 0,
+    });
+    expect(snapshot()).toEqual(before);
   });
   test('reflection produces candidates without authorizing production prompts or rewriting status', async () => {
     fakeValidation();

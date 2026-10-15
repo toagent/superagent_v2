@@ -1165,7 +1165,7 @@ export function memoryTick(
       } catch (e) {
         error(l.run_id, e);
       }
-    const { jobs, bad } = readJobs(now, true);
+    const { jobs, bad } = readJobs();
     for (const id of bad) error(id.split(':')[0], new SyntaxError());
     for (const j of jobs)
       try {

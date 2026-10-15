@@ -472,7 +472,7 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
     }
     const result = { ...run, nodes: [...nodes.values()] }; views.set(id, result); return result;
   };
-  const jobs = readJobs(Date.now(), true);
+  const jobs = readJobs();
   const receipts = jobs.jobs.map(jobReceipt);
   const calls: Call[] = [];
   const unreadable: string[] = [];
