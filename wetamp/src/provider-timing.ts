@@ -83,6 +83,12 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     const terminals = group.rows.filter(r => r.event_type !== 'provider_event');
     const terminal = terminals.length === 1 ? terminals[0] : undefined;
     const missing = raw.length ? 'unknown' : providerMetricMissing(terminal?.data);
+    const silence = complete ? unique.slice(1).reduce<{ start: string; ms: number; end: ProviderEventEnvelope['event'] } | undefined>((best, e, i) => {
+      const start = unique[i].observedAt, ms = utcClock(e.observedAt) - utcClock(start);
+      return !best || ms > best.ms ? { start, ms, end: e.event } : best;
+    }, undefined) : undefined;
+    const warnings = complete ? unique.flatMap(e => e.event.type === 'warning'
+      ? [{ code: e.event.code, at: e.observedAt }] : []) : missing;
     const settled = clock(terminal?.created_at);
     const starts = new Map<string, ProviderEventEnvelope[]>();
     const ends = new Map<string, ProviderEventEnvelope[]>();
@@ -194,6 +200,10 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       non_tool_gap_ms: typeof window === 'object' && closed ? window.duration_ms - knownMs : missing,
       model_turns: recognized ? turns : missing, first_edit_ms: missing === 'n/a' ? missing : firstEdit,
       longest_gap_ms: longest?.ms ?? missing, longest_gap_at: longest?.start ?? missing,
+      longest_silence_ms: silence?.ms ?? missing, longest_silence_at: silence?.start ?? missing,
+      longest_silence_closed_by: silence ? (silence.end.type === 'warning'
+        ? { type: silence.end.type, code: silence.end.code } : { type: silence.end.type }) : missing,
+      provider_warnings: warnings,
       budget: { over: reasons.length > 0, reasons },
     };
   });
@@ -210,6 +220,8 @@ export function slowNodes(timings: readonly ReturnType<typeof providerTiming>[nu
     return { run: t.run, node: t.node, attempt: t.attempt_id, reasons: t.budget.reasons,
       over_ratio: ratio, duration_ms: typeof t.window === 'object' ? t.window.duration_ms : 'unknown',
       model_turns: t.model_turns, first_edit_ms: t.first_edit_ms,
-      longest_gap_ms: t.longest_gap_ms, longest_gap_at: t.longest_gap_at };
+      longest_gap_ms: t.longest_gap_ms, longest_gap_at: t.longest_gap_at,
+      longest_silence_ms: t.longest_silence_ms, longest_silence_closed_by: t.longest_silence_closed_by,
+      provider_warnings: t.provider_warnings };
   }).sort((a, b) => b.over_ratio - a.over_ratio).slice(0, 5);
 }

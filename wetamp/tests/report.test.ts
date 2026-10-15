@@ -529,6 +529,9 @@ describe('F-22 report', () => {
           first_edit_ms: 0,
           longest_gap_ms: 0,
           longest_gap_at: '2026-10-14T00:00:00.000Z',
+          longest_silence_ms: 156000 * (i + 1),
+          longest_silence_closed_by: { type: 'tool_call_update' },
+          provider_warnings: [],
         }))
       );
       expect(buildReport([]).slow_nodes).toEqual([]);

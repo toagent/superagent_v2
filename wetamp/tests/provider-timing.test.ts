@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { providerTiming } from '../src/provider-timing';
+import { providerTiming, slowNodes } from '../src/provider-timing';
 import type { ProviderEventEnvelope } from '../../packages/workflows/src/schemas/provider-event';
 
 const at = (ms: number) => new Date(Date.UTC(2026, 9, 14) + ms).toISOString();
@@ -164,6 +164,10 @@ test('PROVIDER_TIMING duplicates and seq gaps make totals unknown but preserve o
       tool_union_ms: 'unknown',
       non_tool_gap_ms: 'unknown',
       window: 'unknown',
+      longest_silence_ms: 'unknown',
+      longest_silence_at: 'unknown',
+      longest_silence_closed_by: 'unknown',
+      provider_warnings: 'unknown',
       known_tool_union_ms: 10,
       tool_intervals: [{ start: at(0), end: at(10) }],
     });
@@ -263,6 +267,41 @@ test('EFFICIENCY_BUDGET parallel batches, edit clock and longest gap include win
     model_turns: 'unknown',
     budget: { over: false, reasons: [] },
   });
+});
+
+test('PROVIDER_TIMING silence closes on structured warnings without exposing messages', () => {
+  const warning = {
+    type: 'warning',
+    code: 'codex.will_retry',
+    message: 'private error text',
+  } as const;
+  const rows = [row(0, 0, warning), row(1, 100, message), row(2, 200101, warning)];
+  const timing = providerTiming('r', [...rows].reverse())[0]!;
+  const warnings = [0, 200101].map(ms => ({ code: warning.code, at: at(ms) }));
+  expect(timing).toMatchObject({
+    longest_gap_ms: 200101,
+    longest_silence_ms: 200001,
+    longest_silence_at: at(100),
+    longest_silence_closed_by: { type: 'warning', code: warning.code },
+    provider_warnings: warnings,
+  });
+  expect(slowNodes([timing])[0]).toMatchObject({
+    longest_silence_ms: 200001,
+    longest_silence_closed_by: { type: 'warning', code: warning.code },
+    provider_warnings: warnings,
+  });
+  expect(JSON.stringify([timing, slowNodes([timing])])).not.toContain(warning.message);
+  expect(providerTiming('r', [row(0, 0, message), row(1, 10, message)])[0]).toMatchObject({
+    longest_silence_ms: 10,
+    longest_silence_closed_by: { type: 'agent_message_chunk' },
+    provider_warnings: [],
+  });
+  for (const sparse of [[terminal()], [rows[0]!]])
+    expect(providerTiming('r', sparse)[0]).toMatchObject({
+      longest_silence_ms: 'unknown',
+      longest_silence_at: 'unknown',
+      longest_silence_closed_by: 'unknown',
+    });
 });
 
 const editTools: Pick<
