@@ -3,7 +3,14 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 // prettier-ignore
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { etimeS, parseLsof, parsePs, parseQueue, psRows } from '../src/board/activity';
+import {
+  etimeS,
+  loadActivity,
+  parseLsof,
+  parsePs,
+  parseQueue,
+  psRows,
+} from '../src/board/activity';
 import { modelOf, projectJob, readJobs, recent, roleOf, type Job } from '../src/jobs';
 import { loadTiers } from '../src/config';
 import { caller } from '../src/coord';
@@ -181,8 +188,9 @@ describe('job registry', () => {
     expect(() => projectJob({ ...legacy, log: join(log, 'invalid') }, [], NOW)).toThrow();
   });
 
-  test('CLI queries retain historical file count, hashes and mtimes; lost is only a projection', () => {
+  test('CLI and board retain history and show lost projections without an end time', async () => {
     put({ id: 'old-readonly', state: 'done', ended_at: '2026-10-09T11:00:00Z' });
+    put({ id: 'old-lost', state: 'lost', ended_at: '2026-10-09T11:00:00Z' });
     put({ id: 'lost-readonly', pid: 99999999, wrapper_pid: 99999999 });
     const snapshot = () =>
       readdirSync(jobsDir)
@@ -201,10 +209,20 @@ describe('job registry', () => {
       const output = JSON.parse(sh(`bun src/cli.ts jobs --json ${flags}`, WETAMP));
       expect(snapshot()).toEqual(before);
       if (flags) {
-        expect(output.jobs.map((j: Job) => j.state).sort()).toEqual(['done', 'lost']);
+        expect(output.jobs.map((j: Job) => j.state).sort()).toEqual(['done', 'lost', 'lost']);
         expect(output.jobs.find((j: Job) => j.id === 'lost-readonly').ended_at).toBeUndefined();
-      } else expect(output.jobs).toEqual([]);
+      } else {
+        expect(output.jobs.map((j: Job) => j.id)).toEqual(['lost-readonly']);
+        expect(output.jobs[0].state).toBe('lost');
+        expect(output.jobs[0].ended_at).toBeUndefined();
+      }
     }
+    // Abort process/remote discovery; exercise the real board job filter without host I/O.
+    const activity = await loadActivity(Date.now(), AbortSignal.abort());
+    expect(activity.jobs.map(j => j.id)).toEqual(['lost-readonly']);
+    expect(activity.jobs[0].state).toBe('lost');
+    expect(activity.jobs[0].ended_at).toBeUndefined();
+    expect(snapshot()).toEqual(before);
     expect(JSON.parse(readFileSync(join(jobsDir, 'lost-readonly.json'), 'utf8')).state).toBe(
       'running'
     );

@@ -177,9 +177,11 @@ export function readJobs(): { jobs: Job[]; bad: string[] } {
   return { jobs: jobs.sort((a, b) => b.started_at.localeCompare(a.started_at)), bad };
 }
 
-/** queued/running 的，以及 1h 内结束的（board 的活动区与 `jobs` 默认口径）。 */
+/** 活动作业、无结束时间的 lost 投影，以及 1h 内结束的作业。 */
 export const recent = (j: Job, now: number): boolean =>
-  ['queued', 'running'].includes(j.state) || now - Date.parse(j.ended_at ?? '') <= RECENT_MS;
+  ['queued', 'running'].includes(j.state) ||
+  (j.state === 'lost' && !j.ended_at) ||
+  now - Date.parse(j.ended_at ?? '') <= RECENT_MS;
 
 /** Display only: neither stalled nor ETA changes the registered lifecycle. */
 // prettier-ignore
