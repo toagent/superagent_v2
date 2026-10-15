@@ -71,18 +71,9 @@ export function writeAtomic(path: string, text: string): void {
 
 /**
  * selftest 回执（$SUPERAGENT_HOME/selftest.json）：只由非 fake 的 selftest 写，绑定运行边界、配置哈希与有效期；
- * 显式 selftest 拒绝 fake、过期或漂移的回执。fake 只证明引擎契约，写 selftest-fake.json，不覆盖正式回执。
+ * fake 只证明引擎契约，写 selftest-fake.json，不覆盖正式回执。
  */
 export const SELFTEST_TTL_MS = 7 * 24 * 3600e3;
-export interface Receipt {
-  ok: boolean;
-  at: string;
-  expires_at: string;
-  fake: boolean;
-  head: string;
-  fingerprint?: string;
-  config_hash: string;
-}
 /** wetamp 所在检出的 HEAD；不是 git 检出时为空串（回执无法绑定，selftest 视为漂移）。 */
 export function gitHead(repo = WETAMP): string {
   const p = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], {
@@ -126,45 +117,6 @@ export function configHash(): string {
     h.update(`${existsSync(p) ? readFileSync(p, 'utf8') : ''}\0`);
   return h.digest('hex').slice(0, 16);
 }
-interface Issue {
-  kind: 'drift' | 'config-drift' | 'invalid';
-  message: string;
-}
-export function receiptIssue(
-  r: Partial<Receipt> | undefined,
-  now = Date.now(),
-  repo = join(WETAMP, '..')
-): Issue | null {
-  const issue = (message: string, kind: Issue['kind'] = 'invalid'): Issue => ({ kind, message });
-  if (!r) return issue('no selftest.json');
-  if (r.ok !== true) return issue('receipt is not a pass');
-  if (r.fake !== false)
-    return issue('fake receipt (selftest --fake proves only the engine contract)');
-  const exp = Date.parse(r.expires_at ?? '');
-  if (!(exp > now)) return issue(`expired (expires_at ${r.expires_at ?? '?'})`);
-  try {
-    const fingerprint = runtimeFingerprint(repo);
-    if (r.config_hash !== configHash())
-      return issue('config drift (tiers.json or $ARCHON_HOME/config.yaml changed)', 'config-drift');
-    if (r.fingerprint !== undefined) {
-      if (r.fingerprint !== fingerprint)
-        return issue('runtime fingerprint drift (committed runtime files changed)', 'drift');
-    } else {
-      const head = gitHead(repo);
-      if (!head || r.head !== head)
-        return issue(
-          `HEAD drift (legacy receipt ${(r.head ?? '?').slice(0, 8)}, now ${head.slice(0, 8) || '?'})`,
-          head ? 'drift' : 'invalid'
-        );
-    }
-  } catch (e) {
-    return issue((e as Error).message);
-  }
-  return null;
-}
-export const receiptProblem = (...args: Parameters<typeof receiptIssue>): string | null =>
-  receiptIssue(...args)?.message ?? null;
-
 export function providerOf(model: string): Alias['provider'] {
   if (model.startsWith('gpt-')) return 'codex';
   if (model.startsWith('claude-')) return 'claude';

@@ -6,14 +6,13 @@ import { directAuxiliaryPreload, fixturePlan, tmp } from './helpers';
 import * as archon from '../src/archon';
 import { finalizeDelivery } from '../src/land';
 import { ledgerPath, loadLedger, type Ledger } from '../src/cli';
-import { caller, coord, repoScope, runScope } from '../src/coord';
 import * as coordination from '../src/coord';
 import { generate } from '../src/generate';
 import type { Plan } from '../src/plan';
 import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
 
-// Exercise the real delivery boundary in fresh processes: no mocked Git, receipts,
-// acceptance, or lock release. tmp() also owns candidates left behind by SIGKILL.
+// Git, receipts, acceptance and leases are real; finalizeDelivery stubs engine queries
+// and checkout inspection. Fault injection uses fresh processes; tmp() owns SIGKILL residue.
 function fixture() {
   const root = tmp();
   const env = {
@@ -22,7 +21,7 @@ function fixture() {
     GIT_CONFIG_NOSYSTEM: '1',
     TMPDIR: root,
     NODE_ENV: 'test',
-    SA_SELFTEST_TIMEOUT_MS: '2000',
+    SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
   };
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -215,11 +214,11 @@ test('DURABLE_DELIVERY finalizeDelivery persists integrated ledger and repeats w
       log: '',
       delivery: f.delivery.target,
     };
-    const who = caller();
-    ledger.controller = coord().claim(repoScope(f.repo), who).controller;
+    const who = coordination.caller();
+    ledger.controller = coordination.coord().claim(coordination.repoScope(f.repo), who).controller;
     const authorization = {
       repo: ledger.controller,
-      run: coord().claim(runScope(ledger), who).controller,
+      run: coordination.coord().claim(coordination.runScope(ledger), who).controller,
     };
     process.env.WORKFLOW_ID = ledger.archon_run_id;
     writeFileSync(ledgerPath('fault'), JSON.stringify(ledger));

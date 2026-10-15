@@ -27,11 +27,8 @@ const saved = { ...process.env };
 // prettier-ignore
 afterEach(() => { process.env = { ...saved }; });
 
-test('delivery entry rejects missing run id without starting selftest', () => {
+test('delivery entry rejects missing run id', () => {
   const root = tmp();
-  const marker = join(root, 'selftest-started');
-  const bin = join(root, 'selftest.sh');
-  writeFileSync(bin, `touch '${marker}'\nexit 1\n`);
   const result = Bun.spawnSync(
     [process.execPath, '--no-env-file', join(import.meta.dir, '../src/land.ts')],
     {
@@ -40,7 +37,6 @@ test('delivery entry rejects missing run id without starting selftest', () => {
         ARCHON_HOME: join(root, 'archon'),
         INPUTS_RUN: '',
         NODE_ENV: 'test',
-        SA_SELFTEST_BIN: bin,
       }),
       stdout: 'pipe',
       stderr: 'pipe',
@@ -49,7 +45,6 @@ test('delivery entry rejects missing run id without starting selftest', () => {
   );
   expect(result.exitCode).not.toBe(0);
   expect(result.stderr.toString()).toContain('delivery: missing run id');
-  expect(existsSync(marker)).toBe(false);
 });
 
 // prettier-ignore

@@ -149,7 +149,8 @@ export function captureDelivery(checkout: string): DeliveryTarget {
   };
 }
 const integrationLockTimeout = (): number =>
-  (process.env.NODE_ENV === 'test' && Number(process.env.SA_SELFTEST_TIMEOUT_MS)) || 20 * 60_000;
+  (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
+  20 * 60_000;
 // prettier-ignore
 export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan; reuse?: () => string[] | undefined }): DeliveryOutcome | undefined {
   if ((!['completed', 'running'].includes(run.status) || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed')) ||

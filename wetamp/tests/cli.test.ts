@@ -47,16 +47,7 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import {
-  configHash,
-  gitHead,
-  receiptProblem,
-  runtimeFingerprint,
-  renderAliases,
-  loadTiers,
-  resolveRoute,
-  WETAMP,
-} from '../src/config';
+import { gitHead, renderAliases, loadTiers, resolveRoute, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate, renderBrief } from '../src/generate';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
@@ -1434,76 +1425,7 @@ describe('run (archon stub)', () => {
     expect(captured(() => main(['run', plan])).code).toBe(0);
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
-  test('selftest fingerprint: documentation and tests preserve receipts; runtime commits and dirty files invalidate them', () => {
-    const s = stub([]),
-      repo = gitRepo(s.root);
-    const now = Date.now();
-    const receipt = () => ({
-      ok: true,
-      fake: false,
-      head: gitHead(repo),
-      config_hash: configHash(),
-      expires_at: new Date(now + 3600e3).toISOString(),
-      fingerprint: runtimeFingerprint(repo),
-    });
-    const put = (path: string, text = 'fixture\n'): void => {
-      mkdirSync(join(repo, path, '..'), { recursive: true });
-      writeFileSync(join(repo, path), text);
-    };
-    const commit = (path: string): void => {
-      sh(`git add -- '${path}' && git -c user.name=t -c user.email=t@l commit -qm fixture`, repo);
-    };
-    let good = receipt();
-    const legacy = { ...good, fingerprint: undefined };
-    expect(receiptProblem(legacy, now, repo)).toBeNull();
-    for (const path of [
-      'wetamp/tests/x.test.ts',
-      'wetamp/src/board/model.ts',
-      'wetamp/src/report.ts',
-      'wetamp/docs/guide.md',
-      'PROGRESS.md',
-      'packages/docs-web/src/index.ts',
-      '.github/workflows/ci.yml',
-      'packages/core/tests/fixture.ts',
-      'packages/core/__tests__/fixture.ts',
-      'packages/core/src/index.test.ts',
-    ]) {
-      put(path);
-      expect(receiptProblem(good, now, repo)).toBeNull();
-      commit(path);
-      expect(receiptProblem(good, now, repo)).toBeNull();
-    }
-    expect(receiptProblem(legacy, now, repo)).toContain('HEAD drift (legacy receipt');
-    for (const path of [
-      'wetamp/src/runtime.ts',
-      'wetamp/templates/nested/prompt.md',
-      'packages/core/src/runtime.ts',
-      'wetamp/bin/worker',
-      'wetamp/hooks/runtime.cjs',
-      'wetamp/schemas/runtime.json',
-    ]) {
-      put(path);
-      expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
-      sh(`git add -- '${path}'`, repo);
-      expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
-      commit(path);
-      expect(receiptProblem(good, now, repo)).toContain('runtime fingerprint drift');
-      good = receipt();
-      expect(receiptProblem(good, now, repo)).toBeNull();
-    }
-    put('wetamp/src/runtime.ts', 'edited\n');
-    expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
-    expect(receiptProblem({ ...good, fingerprint: undefined }, now, repo)).toContain(
-      'runtime worktree drift'
-    );
-    commit('wetamp/src/runtime.ts');
-    good = receipt();
-    // Rename folding must not hide removal of runtime code behind a documentation destination.
-    fs.renameSync(join(repo, 'wetamp/src/runtime.ts'), join(repo, 'wetamp/docs/runtime.md'));
-    sh('git add -- wetamp/src/runtime.ts wetamp/docs/runtime.md', repo);
-    expect(receiptProblem(good, now, repo)).toContain('runtime worktree drift');
-  });
-  test('delivery defaults: launch ignores missing or invalid selftest receipts without diagnosis', () => {
+  test('delivery defaults: launch succeeds with missing or invalid selftest receipts', () => {
     const s = stub([]),
       repo = gitRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
