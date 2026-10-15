@@ -200,6 +200,46 @@ describe('redact (shared redact (cli and board))', () => {
   });
 });
 
+test('plan check validates without dispatch or launch-failure writes', () => {
+  const s = stub([]),
+    repo = gitRepo(s.root);
+  const path = fixturePlan(s.root, repo);
+  const failures = join(s.root, 'home', 'launch-failures');
+  mkdirSync(failures, { recursive: true });
+  writeFileSync(join(failures, 'existing.json'), '{}');
+  const invoke = () =>
+    Bun.spawnSync(
+      [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'plan', 'check', path],
+      {
+        env: { ...process.env, SUPERAGENT_WRITE_ROOTS: s.root },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+  const valid = invoke();
+  expect(valid.exitCode).toBe(0);
+  expect(JSON.parse(valid.stdout.toString())).toMatchObject({
+    ok: true,
+    plan_lint: { rejected: false },
+  });
+  const plan = JSON.parse(readFileSync(path, 'utf8'));
+  plan.packages[0].goal = 'x'.repeat(2001);
+  writeFileSync(path, JSON.stringify(plan));
+  const invalid = invoke();
+  expect(invalid.exitCode).not.toBe(0);
+  let schemaError = '';
+  try {
+    loadPlan(path);
+  } catch (e) {
+    schemaError = (e as Error).message;
+  }
+  expect(schemaError).toContain('2000');
+  expect(invalid.stderr.toString()).toContain(schemaError);
+  expect(readdirSync(failures)).toEqual(['existing.json']);
+  expect(readFileSync(join(failures, 'existing.json'), 'utf8')).toBe('{}');
+  expect(s.calls()).toEqual([]);
+});
+
 describe('quick', () => {
   test('delivery defaults: validated quick plan resolves git defaults without an implicit deadline', () => {
     const root = tmp(),
@@ -216,10 +256,22 @@ describe('quick', () => {
       mkdirSync(join(repo, 'src'));
       process.chdir(join(repo, 'src'));
       const path = quickPlan(
-        parseArgs(['quick', '--goal', 'deliver', '--accept', 'true', '--accept', 'echo ok'])
+        parseArgs([
+          'quick',
+          '--goal',
+          'deliver',
+          '--accept',
+          'true',
+          '--accept',
+          'echo ok',
+          '--request-ref',
+          'urgent-1015',
+        ])
       );
       expect(path.startsWith(join(root, 'sa', 'plans', 'quick-'))).toBe(true);
       const plan = loadPlan(path);
+      expect(plan.request_ref).toBe('urgent-1015');
+      expect(JSON.parse(readFileSync(path, 'utf8')).request_ref).toBe('urgent-1015');
       expect(plan.repo).toBe(repo);
       expect(plan.base_ref).toBe('main');
       expect(plan.budget).toEqual({ weighted_tokens: 0, unlimited_tokens: true });
@@ -1640,6 +1692,11 @@ describe('decide (archon stub)', () => {
   test('reject ends the paused run through abandon', () => {
     const s = stub([humanWait()]);
     expect(captured(() => main(['decide', 'sa1', 'reject'])).code).toBe(0);
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+      action: 'cancel',
+      reason: 'rejected',
+      ok: true,
+    });
     expect(s.calls()).toContain('workflow abandon r --json');
   });
   test('retry --hint writes the package hint, then resumes', () => {
@@ -1828,6 +1885,23 @@ test('CARD_Y fenced delivery retries and legacy land reconciliation agree with r
       'integrated'
     );
     expect(loadLedger('sa1').delivery_result?.status).toBe('blocked');
+    apply.mockImplementation((r, l, _verify, context) =>
+      realApply(r, { ...l, head: 'missing-accepted-head' }, () => 0, context)
+    );
+    expect(() => captured(() => main(['land', 'sa1', '--apply']))).toThrow(landMod.LandError);
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+      action: 'land',
+      ok: false,
+      error: 'land_git_failed',
+    });
+    apply.mockImplementation((r, l, _verify, context) => realApply(r, l, () => 1, context));
+    expect(() => captured(() => main(['land', 'sa1', '--apply']))).toThrow(landMod.LandError);
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+      action: 'land',
+      ok: false,
+      error: 'land_acceptance_failed',
+    });
+    apply.mockImplementation((r, l, _verify, context) => realApply(r, l, () => 0, context));
     const landed = captured(() => main(['land', 'sa1', '--apply']));
     expect(landed.code).toBe(0);
     const receipt = JSON.parse(landed.out);
@@ -3598,6 +3672,11 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         if (hold === 'deadline') {
           expect(s.calls()).toContain('workflow abandon r --json');
           expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
+          expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+            action: 'cancel',
+            reason: 'deadline',
+            ok: true,
+          });
         }
       });
       continue;
