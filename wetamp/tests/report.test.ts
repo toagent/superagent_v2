@@ -1218,7 +1218,11 @@ test('engine projection groups ledger commits and unions retry silences without 
 });
 
 test('P1 started attempts survive cancellation and late terminal receipts deduplicate', () => {
-  const start = ev('node_started', 'code-core', { invocation: { id: 'i' }, binding: {} });
+  const start = ev('node_started', 'code-core', {
+    invocation: { id: 'i' },
+    binding: {},
+    node: { id: 'code-core', kind: 'agent' },
+  });
   expect(callsOf('r', [start, start, { event_type: 'workflow_cancelled' }], plan)).toMatchObject([
     { attempt: 1, failure: 'unknown', tokens: null, exec_ms: null, model: 'unknown' },
   ]);
@@ -1404,4 +1408,26 @@ test('P1 prior success event preserves measured node duration in batch report', 
       else process.env[k] = saved[i];
     });
   }
+});
+
+test('R1-1 AI attempts use native kind and legacy model binding, not node names alone', () => {
+  const events = ['node_started', 'node_completed', 'node_failed'].flatMap(type => [
+    ev(type, 'repair-context-core', {
+      node: { id: 'repair-context-core', kind: 'exec' },
+      binding: {},
+    }),
+    ev(type, 'code-probe', { node: { id: 'code-probe', kind: 'exec' } }),
+    ev(type, 'code-legacy-script', { binding: {} }),
+  ]);
+  expect(callsOf('r', events, plan)).toEqual([]);
+  const agent = ev('node_started', 'code-core', {
+    node: { id: 'code-core', kind: 'agent' },
+    binding: {},
+  });
+  const legacy = ev('node_started', 'code-api');
+  expect(rollup(callsOf('r', [...events, agent, legacy], plan))).toMatchObject({
+    calls: 2,
+    coverage: '0/2',
+    repair_rounds: 0,
+  });
 });

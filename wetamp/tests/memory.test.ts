@@ -847,6 +847,43 @@ describe('EV1 lifecycle, privacy and priors', () => {
       ].tokens.n
     ).toBe(0);
     expect(foldEpisode(ledger, plan, eventRun, unknownEvents, {}, NOW).tokens[0].total).toBeNull();
+    // R1-3: failed attempts (even without a failure class) remain in retry-success priors.
+    const retryEvents = [
+      {
+        ...events[1],
+        event_type: 'node_failed',
+        data: { ...events[1].data, error: 'fixture failure' },
+      },
+      { ...events[1], data: { ...events[1].data, attempt: { ...data.attempt, id: 'retry' } } },
+    ];
+    writeFileSync(file, JSON.stringify({ ...eventRun, status: 'completed', events: retryEvents }));
+    writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify({ ...ledger, intervened: false }));
+    expect(memoryTick({}, NOW + 20000, false).errors).toEqual([]);
+    expect(
+      JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8'))[
+        priorKey(root, plan.packages[0], model)
+      ]
+    ).toMatchObject({ n: 1, duration: { p50: 60000 } });
+    // A terminal run cannot turn a started-only attempt into a completed sample.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...eventRun,
+        status: 'completed',
+        events: [
+          ...retryEvents,
+          { ...events[0], data: { ...data, attempt: { ...data.attempt, id: 'pending' } } },
+        ],
+      })
+    );
+    writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify({ ...ledger, intervened: true }));
+    expect(memoryTick({}, NOW + 25000, false).errors).toEqual([]);
+    expect(
+      JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8'))[
+        priorKey(root, plan.packages[0], model)
+      ]
+    ).toBeUndefined();
+
     delete process.env.FAKE_EV1_RUN;
   });
 });

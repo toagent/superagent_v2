@@ -212,6 +212,8 @@ export function callsOf(runId: string, events: Event[], plan: Plan | null): Call
   for (const e of attempts.values()) {
     const [node, role, rest] = AI_NODE.exec(e.step_name ?? '') ?? [];
     if (!node || !role || !e.data?.attempt?.id) continue;
+    // Native node kind owns classification; legacy receipts only expose model binding.
+    if (e.data.node ? e.data.node.kind !== 'agent' : !e.data.binding?.model) continue;
     const identity = e.data.invocation?.id
       ? JSON.stringify([e.workflow_run_id ?? runId, e.data.invocation.id, e.data.attempt.id])
       : null;
