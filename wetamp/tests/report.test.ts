@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import type { Plan } from '../src/plan';
 import {
   buildReport,
+  engineComparison,
+  type EngineRow,
   reportSummary,
   measurementOf,
   callsOf,
@@ -1077,4 +1079,157 @@ describe('F-22 report', () => {
     expect(rollup([])).toMatchObject({ calls: 0, input: 'unknown', exec_ms: 'unknown' });
     expect(JSON.stringify(rollup(calls))).not.toMatch(/cost|usd/i);
   });
+});
+
+test('engine comparison matches nearest three once, isolates strata and preserves unknowns', () => {
+  const row = (id: string, newer: boolean, diff: number): EngineRow => ({
+    id,
+    newer,
+    diff,
+    repo: 'repo',
+    risk: 'G1',
+    started: newer ? 86400000 : 0,
+    status: 'completed',
+    elapsed: 100,
+    adjusted: 100,
+    tokens: 100,
+    first: true,
+    silence: 0,
+    disruptions: 0,
+  });
+  const old = [1, 9, 10, 11, 100].map((size, i) => ({
+    ...row(`o${i}`, false, size),
+    tokens: size,
+  }));
+  const fresh = Array.from({ length: 15 }, (_, i) => ({ ...row(`n${i}`, true, 10), tokens: 10 }));
+  const report = (patch: Partial<EngineRow> = {}) =>
+    engineComparison([...old, ...fresh.map(r => ({ ...r, ...patch }))]);
+  expect(report().size_matched).toMatchObject({
+    old: { runs: 3, tokens: 10 },
+    new: { runs: 15 },
+    unmatched: 0,
+  });
+  expect(report().verdict).toBe('unproven');
+  expect(report({ adjusted: 75 }).verdict).toBe('improved');
+  expect(report({ adjusted: 106 }).verdict).toBe('regressed');
+  expect(report({ tokens: 11 }).verdict).toBe('regressed');
+  expect(report({ first: false }).verdict).toBe('regressed');
+  expect(report({ diff: 'unknown' }).size_matched.unmatched).toBe(15);
+  expect(report({ repo: 'other' }).size_matched.unmatched).toBe(15);
+  expect(report({ risk: 'G2' }).size_matched.unmatched).toBe(15);
+  expect(report({ tokens: 'unknown', adjusted: 75 }).verdict).toBe('unproven');
+  expect(engineComparison([fresh[0]])).toMatchObject({
+    verdict: 'insufficient_sample',
+    groups: { old: { runs: 0 } },
+  });
+});
+
+test('engine projection groups ledger commits and unions retry silences without emitting bodies', () => {
+  const root = tmp(),
+    bin = join(root, 'archon-stub'),
+    art = join(root, 'artifacts/runs/engine');
+  const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const,
+    saved = keys.map(k => process.env[k]);
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
+  try {
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(root, 'plan.json'),
+      JSON.stringify({ packages: [{ id: 'core', risk: 'G1' }] })
+    );
+    const at = (ms: number) => new Date(Date.UTC(2026, 9, 15) + ms).toISOString();
+    const events = [0, 1].flatMap(i =>
+      [0, 1].map(seq => ({
+        event_type: 'provider_event',
+        step_name: `code-${i}`,
+        data: {
+          attemptId: `a${i}`,
+          seq,
+          observedAt: at(i * 100000 + seq * 200000),
+          event: seq
+            ? { type: 'warning', code: 'codex.will_retry', message: 'never emit this' }
+            : { type: 'agent_message_chunk', text: 'never emit this' },
+        },
+      }))
+    );
+    const run = {
+      id: 'engine',
+      status: 'completed',
+      started_at: at(0),
+      completed_at: at(600000),
+      output_root: root,
+      events,
+    };
+    writeFileSync(
+      bin,
+      '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n',
+      { mode: 0o755 }
+    );
+    const base = Bun.spawnSync(['git', 'rev-parse', '6acdc886^'], { cwd: WETAMP })
+      .stdout.toString()
+      .trim();
+    const ledger = {
+      run_id: 'r',
+      archon_run_id: 'engine',
+      repo: root,
+      gen_dir: root,
+      plan: join(root, 'plan.json'),
+      started_at: at(0),
+      engine_commit: '6acdc886',
+    } as Ledger;
+    const ledgers = [
+      ledger,
+      { ...ledger, run_id: 'old', engine_commit: base, started_at: at(-86400000) },
+      { ...ledger, run_id: 'unknown', engine_commit: undefined },
+    ];
+    const result = buildReport(ledgers, { commit: '6acdc886', baselineDays: 7 });
+    expect(result).toMatchObject({
+      groups: {
+        old: { runs: 1 },
+        new: {
+          runs: 1,
+          elapsed_ms: 600000,
+          adjusted_ms: 300000,
+          disruptions: 2,
+          disruption_seconds: 300,
+          missing: { diff: 1 },
+        },
+      },
+      excluded: { unknown_engine_commit: 1 },
+    });
+    expect(JSON.stringify(result)).not.toContain('never emit this');
+    const ordinary = {
+      ...run,
+      events: events.map(e => ({
+        ...e,
+        data: { ...e.data, event: { ...e.data.event, code: 'other' } },
+      })),
+    };
+    writeFileSync(
+      bin,
+      '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(ordinary)) + ');\n'
+    );
+    expect(buildReport([ledger], { commit: '6acdc886', baselineDays: 7 })).toMatchObject({
+      groups: { new: { adjusted_ms: 600000, disruptions: 0, disruption_seconds: 0 } },
+    });
+    writeFileSync(
+      bin,
+      '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n'
+    );
+    const patch = join(art, 'delta.patch');
+    writeFileSync(
+      patch,
+      'diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1,2 @@\n-old\n+new\n+more\n'
+    );
+    writeFileSync(join(art, 'diff-m1-r1.json'), JSON.stringify({ delta: patch }));
+    expect(buildReport(ledgers, { commit: '6acdc886', baselineDays: 7 })).toMatchObject({
+      size_matched: { old: { runs: 1 }, new: { runs: 1 }, unmatched: 0 },
+      groups: { new: { missing: { diff: 0 } } },
+    });
+  } finally {
+    keys.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k];
+      else process.env[k] = saved[i];
+    });
+  }
 });

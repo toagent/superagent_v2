@@ -173,6 +173,8 @@ const OPTIONS = {
   limit: { type: 'string' },
   json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
   full: { type: 'boolean' },
+  'by-engine': { type: 'string' },
+  'baseline-days': { type: 'string' },
   'all-held': { type: 'boolean' },
   title: { type: 'string' },
   'request-ref': { type: 'string' },
@@ -2618,10 +2620,14 @@ export function summarize(pairs: Pair[]): Record<string, unknown> {
 }
 
 /** 全部登记 run 的计数摘要与用量台账（F-22，见 report.ts）。 */
-export function report(): Record<string, unknown> {
+export function report(engine?: { commit: string; baselineDays: number }): Record<string, unknown> {
   // F-02：坏 ledger 不进报表计算，单列在 unreadable，其余照常。
   const all = ledgers();
-  const r = buildReport(all.flatMap(l => ('error' in l ? [] : [l])));
+  const r = buildReport(
+    all.flatMap(l => ('error' in l ? [] : [l])),
+    engine
+  );
+  if (engine) return { ...r, unreadable_ledgers: all.filter(l => 'error' in l).length };
   const bad = all.flatMap(l => ('error' in l ? [`${l.run_id}: ${l.error}`] : []));
   return {
     ...r,
@@ -2639,7 +2645,7 @@ export function report(): Record<string, unknown> {
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|run <plan.json> [--fake] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -3036,6 +3042,27 @@ export function main(argv: string[]): number {
     case 'supervise-tick':
       return tickOutput();
     case 'report': {
+      if (a.flags['by-engine'] !== undefined) {
+        const commit = a.flags['by-engine'],
+          baselineDays = Number(a.flags['baseline-days'] ?? 7);
+        if (
+          !/^[0-9a-f]{7,40}$/i.test(commit) ||
+          !Number.isFinite(baselineDays) ||
+          baselineDays <= 0
+        )
+          throw new Error(
+            '--by-engine requires a commit hash and --baseline-days must be positive'
+          );
+        const check = Bun.spawnSync(['git', 'rev-parse', '--verify', `${commit}^{commit}`], {
+          cwd: WETAMP,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        if (check.exitCode !== 0)
+          throw new Error('--by-engine commit is unavailable in engine repository');
+        print(report({ commit, baselineDays }));
+        return 0;
+      }
       const r = report();
       const full = readUsage();
       const output = { ...r, full_usage: { label: '全量（ccusage）', ...usageSummary(full) } };

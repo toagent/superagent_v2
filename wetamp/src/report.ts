@@ -1,4 +1,12 @@
-import { clock, ms, planOf, criticalPath, measurementOf, metricsOf } from './ledger-metrics';
+import {
+  clock,
+  ms,
+  planOf,
+  criticalPath,
+  measurementOf,
+  metricsOf,
+  firstPassOf,
+} from './ledger-metrics';
 export {
   clock,
   ms,
@@ -11,7 +19,9 @@ export {
 import { snapshotOf } from './board/data';
 // superagent report（F-22）：run 计数摘要 + 执行层用量台账。用量只来自 Archon 事件里的 spend/binding/timing，
 // 未回执的用量记 unknown，从不当 0；不折算金额。
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { confined } from './board/workflow';
 import { join } from 'node:path';
 import { archonJson, archonRunIds, getRun, tail, reportRuns } from './archon';
 import { readNodeRecordEvent } from '../../packages/workflows/src/node-record-reader';
@@ -442,7 +452,7 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
  * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
  */
 // prettier-ignore
-export function buildReport(ls: Ledger[]): Record<string, unknown> {
+export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDays: number }): Record<string, unknown> {
   const flag = process.argv.find(a => a.startsWith('--since='))?.slice(8) ?? process.argv[process.argv.indexOf('--since') + 1];
   const since = process.argv.some(a => a === '--since' || a.startsWith('--since=')) ? (/^\d{8}$/.test(flag) ? `${flag.slice(0,4)}-${flag.slice(4,6)}-${flag.slice(6,8)}T00:00:00.000Z` : flag) : '';
   if (since && !Number.isFinite(Date.parse(since))) throw new Error('--since must be YYYYMMDD or an ISO timestamp');
@@ -534,7 +544,7 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       s.owner?.kind === 'job' &&
       jobs.jobs.some(j => j.id === s.owner?.job_id && j.title.startsWith('memory-reflect:'))
   );
-  return {
+  const report = {
     ...snapshot.summary,
     repo_missing,
     requirements: Object.fromEntries(
@@ -580,5 +590,223 @@ export function buildReport(ls: Ledger[]): Record<string, unknown> {
       by_attempt: group(calls, c => `attempt:${String(c.attempt)}`),
       unreadable,
     },
+  };
+  if (!engine) return report;
+  const ancestry = new Map<string, boolean | 'unknown'>();
+  const rows = pairs.map(pair => {
+    const l = pair.ledger, run = pair.run, plan = planOf(l), ids = archonRunIds(l);
+    const commit = l.engine_commit;
+    if (commit && !ancestry.has(commit)) {
+      const result = spawnSync('git', ['merge-base', '--is-ancestor', engine.commit, commit], { cwd: WETAMP, timeout: 5000 });
+      ancestry.set(commit, result.status === 0 ? true : result.status === 1 ? false : 'unknown');
+    }
+    const timing = ids.flatMap(id => Array.isArray(timings[`${l.run_id}/${id}`]) ? timings[`${l.run_id}/${id}`] as ReturnType<typeof providerTiming> : []);
+    const intervals = timing.flatMap(t =>
+      typeof t.longest_silence_ms === 'number' && t.longest_silence_ms >= ENGINE_SILENCE_MS &&
+      typeof t.longest_silence_closed_by === 'object' &&
+      t.longest_silence_closed_by.type === 'warning' && t.longest_silence_closed_by.code === 'codex.will_retry'
+      ? [{ start: clock(t.longest_silence_at), end: clock(t.longest_silence_at) + t.longest_silence_ms }] : []);
+    const elapsed = run instanceof Error ? 'unknown' : ms(l.started_at, run.completed_at ?? undefined) ?? 'unknown';
+    const completeTiming = ids.every(id => Array.isArray(timings[`${l.run_id}/${id}`])) && timing.length > 0 && timing.every(t => t.longest_silence_ms !== 'unknown');
+    const union: typeof intervals = [];
+    for (const i of intervals.sort((a, b) => a.start - b.start)) {
+      const last = union.at(-1);
+      if (last && i.start <= last.end) last.end = Math.max(last.end, i.end); else union.push({ ...i });
+    }
+    const silence = completeTiming ? union.reduce((sum, i) => sum + i.end - i.start, 0) : 'unknown';
+    const usage = report.usage.by_run[l.run_id] as Record<string, unknown> | undefined;
+    const tokens = usage && !missingGenerations[l.run_id] && typeof usage.calls === 'number' && usage.calls > 0 &&
+      usage.coverage === `${String(usage.calls)}/${String(usage.calls)}` &&
+      usage.identity_coverage === usage.coverage &&
+      typeof usage.input === 'number' && typeof usage.output === 'number' ? usage.input + usage.output : 'unknown';
+    let diff: number | 'unknown' = 'unknown';
+    try {
+      const patches = new Map<string, string>();
+      for (const id of ids) {
+        const v = batch ? view(id) : id === l.archon_run_id && !(run instanceof Error) ? run : getRun(id, cwdOf(l));
+        if (!v.output_root) throw new Error('missing_artifacts');
+        const art = confined(l, artifactsOf(v));
+        if (!art) throw new Error('missing_artifacts');
+        const files = readdirSync(art).filter(f => /^diff-.+\.json$/.test(f));
+        if (!files.length) throw new Error('missing_diff');
+        for (const file of files) {
+          const meta = evidenceJson(l, art, file) as { delta?: string } | undefined;
+          const path = meta?.delta && confined(l, meta.delta);
+          if (!path) throw new Error('missing_delta');
+          patches.set(file, path);
+        }
+      }
+      let lines = 0;
+      for (const patch of new Set(patches.values())) {
+        const stat = spawnSync('git', ['apply', '--numstat', '--', patch], { encoding: 'utf8', timeout: 5000 });
+        if (stat.status !== 0) throw new Error('numstat_failed');
+        for (const line of stat.stdout.trim().split('\n').filter(Boolean)) {
+          const [added, removed] = line.split('\t');
+          if (!/^\d+$/.test(added) || !/^\d+$/.test(removed)) throw new Error('binary_diff');
+          lines += Number(added) + Number(removed);
+        }
+      }
+      diff = lines;
+    } catch { /* Missing or binary deltas cannot be size matched. */ }
+    return {
+      id: l.run_id, repo: l.repo,
+      risk: plan?.packages.map(p => p.risk).sort().at(-1) ?? 'unknown',
+      started: clock(l.started_at), newer: commit ? ancestry.get(commit) ?? 'unknown' : 'unknown',
+      status: run instanceof Error ? 'unknown' : run.status, elapsed,
+      adjusted: typeof elapsed === 'number' && typeof silence === 'number' && silence <= elapsed ? elapsed - silence : 'unknown',
+      tokens, first: firstPassOf(pair), diff, silence, disruptions: completeTiming ? intervals.length : 'unknown'
+    } satisfies EngineRow;
+  });
+  return { engine_commit: engine.commit, baseline_days: engine.baselineDays, ...engineComparison(rows, engine.baselineDays) };
+}
+
+// Thresholds are the report --by-engine task card's decision policy, not runtime controls.
+const ENGINE_MIN_COMPLETED = 15,
+  ENGINE_IMPROVEMENT = 0.25,
+  ENGINE_REGRESSION = 0.05,
+  ENGINE_SILENCE_MS = 180_000;
+type Measure = number | 'unknown';
+export interface EngineRow {
+  id: string;
+  repo: string;
+  risk: string;
+  started: number;
+  newer: boolean | 'unknown';
+  status: string;
+  elapsed: Measure;
+  adjusted: Measure;
+  tokens: Measure;
+  first: boolean | 'unknown';
+  diff: Measure;
+  silence: Measure;
+  disruptions: Measure;
+}
+const median = (values: Measure[]): Measure => {
+  const xs = values
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+    .sort((a, b) => a - b);
+  return xs.length
+    ? (xs[Math.floor((xs.length - 1) / 2)] + xs[Math.floor(xs.length / 2)]) / 2
+    : 'unknown';
+};
+export function engineComparison(rows: EngineRow[], baselineDays = 7) {
+  const newer = rows.filter(r => r.newer === true),
+    earliest = Math.min(...newer.map(r => r.started).filter(Number.isFinite));
+  const older = rows.filter(
+    r =>
+      r.newer === false && r.started < earliest && r.started >= earliest - baselineDays * 86400000
+  );
+  const summary = (rs: EngineRow[]) => {
+    const done = rs.filter(r => r.status === 'completed');
+    const terminal = rs.filter(r => ['completed', 'failed', 'cancelled'].includes(r.status));
+    const known = terminal.filter(r => r.first !== 'unknown');
+    const sum = (field: 'silence' | 'disruptions'): Measure =>
+      rs.length && rs.every(r => typeof r[field] === 'number')
+        ? rs.reduce((n, r) => n + Number(r[field]), 0)
+        : 'unknown';
+    return {
+      runs: rs.length,
+      completed: done.length,
+      terminal: terminal.length,
+      elapsed_ms: median(terminal.map(r => r.elapsed)),
+      adjusted_ms: median(terminal.map(r => r.adjusted)),
+      tokens: median(done.map(r => r.tokens)),
+      first_pass: known.length
+        ? known.filter(r => r.first === true).length / known.length
+        : ('unknown' as const),
+      disruptions: sum('disruptions'),
+      disruption_seconds:
+        typeof sum('silence') === 'number' ? Number(sum('silence')) / 1000 : 'unknown',
+      missing: Object.fromEntries(
+        [
+          'elapsed',
+          'adjusted',
+          'tokens',
+          'first',
+          'diff',
+          'silence',
+          'disruptions',
+          'risk',
+          'status',
+        ].map(k => [k, rs.filter(r => r[k as keyof EngineRow] === 'unknown').length])
+      ),
+    };
+  };
+  const matched = (old: EngineRow[], fresh: EngineRow[]) => {
+    const selected = new Map<string, EngineRow>(),
+      chosen: EngineRow[] = [];
+    for (const r of fresh.filter(r => r.status === 'completed')) {
+      if (r.diff === 'unknown' || r.risk === 'unknown') continue;
+      const size = r.diff;
+      const distance = (o: EngineRow) => Math.abs(Math.log((Number(o.diff) + 1) / (size + 1)));
+      const candidates = old
+        .filter(
+          o =>
+            o.status === 'completed' &&
+            o.repo === r.repo &&
+            o.risk === r.risk &&
+            typeof o.diff === 'number'
+        )
+        .sort((a, b) => distance(a) - distance(b) || a.id.localeCompare(b.id))
+        .slice(0, 3);
+      if (candidates.length) chosen.push(r);
+      candidates.forEach(o => selected.set(o.id, o));
+    }
+    return {
+      old: summary([...selected.values()]),
+      new: summary(chosen),
+      unmatched: fresh.filter(r => r.status === 'completed').length - chosen.length,
+    };
+  };
+  const size_matched = matched(older, newer),
+    a = size_matched.old,
+    b = size_matched.new;
+  const comparable = (x: Measure, y: Measure) => typeof x === 'number' && typeof y === 'number';
+  const regressed = (x: Measure, y: Measure, higher: boolean) =>
+    comparable(x, y) &&
+    (higher
+      ? Number(y) < Number(x) * (1 - ENGINE_REGRESSION)
+      : Number(y) > Number(x) * (1 + ENGINE_REGRESSION));
+  const verdict =
+    newer.filter(r => r.status === 'completed').length < ENGINE_MIN_COMPLETED
+      ? 'insufficient_sample'
+      : regressed(a.adjusted_ms, b.adjusted_ms, false) ||
+          regressed(a.tokens, b.tokens, false) ||
+          regressed(a.first_pass, b.first_pass, true)
+        ? 'regressed'
+        : comparable(a.adjusted_ms, b.adjusted_ms) &&
+            Number(a.adjusted_ms) > 0 &&
+            Number(b.adjusted_ms) <= Number(a.adjusted_ms) * (1 - ENGINE_IMPROVEMENT) &&
+            comparable(a.first_pass, b.first_pass) &&
+            Number(b.first_pass) >= Number(a.first_pass) &&
+            comparable(a.tokens, b.tokens) &&
+            Number(b.tokens) <= Number(a.tokens)
+          ? 'improved'
+          : 'unproven';
+  const compact = (s: ReturnType<typeof summary>) => ({
+    completed: s.completed,
+    tokens: s.tokens,
+    adjusted_ms: s.adjusted_ms,
+    first_pass: s.first_pass,
+  });
+  return {
+    groups: { old: summary(older), new: summary(newer) },
+    size_matched,
+    verdict,
+    excluded: {
+      unknown_engine_commit: rows.filter(r => r.newer === 'unknown').length,
+      outside_baseline: rows.filter(r => r.newer === false).length - older.length,
+      invalid_started_at: rows.filter(r => !Number.isFinite(r.started)).length,
+    },
+    strata: [...new Set([...older, ...newer].map(r => JSON.stringify([r.repo, r.risk])))].map(
+      key => {
+        const [repo, risk] = JSON.parse(key) as string[];
+        const m = matched(
+          older.filter(r => r.repo === repo && r.risk === risk),
+          newer.filter(r => r.repo === repo && r.risk === risk)
+        );
+        return { repo, risk, unmatched: m.unmatched, old: compact(m.old), new: compact(m.new) };
+      }
+    ),
   };
 }
