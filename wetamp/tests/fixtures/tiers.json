@@ -1,0 +1,95 @@
+{
+  "tiers": {
+    "general": {
+      "pools": {
+        "chatgpt": ["gpt-6.1-sol", "gpt-6-sol"],
+        "claude": ["claude-opus-5"]
+      }
+    },
+    "strategist": {
+      "pools": {
+        "chatgpt": ["gpt-6.1-sol", "gpt-6-astra"],
+        "claude": ["claude-opus-5-5"]
+      }
+    }
+  },
+  "routing": {
+    "budget": {
+      "claude_daily_usd": 300,
+      "claude_medium_usd": 200,
+      "codex_warning_usd": 500
+    },
+    "commander": {
+      "by_console": {
+        "claude": ["claude-opus-5-5"],
+        "codex": ["gpt-6-astra"]
+      }
+    },
+    "coder": {
+      "models": ["gpt-6.1-sol", "gpt-6-sol", "claude-opus-5"]
+    },
+    "reviewer": {
+      "by_console": {
+        "claude": ["gpt-6-astra", "claude-opus-5-5"],
+        "codex": ["claude-opus-5-5", "gpt-6-astra"]
+      },
+      "by_risk": {
+        "G0": ["gpt-6-sol", "gpt-6-astra", "claude-opus-5-5"]
+      }
+    }
+  },
+  "policy": {
+    "context": {
+      "advisory_tokens": {
+        "commander": 160000,
+        "general": 240000,
+        "strategist": 360000
+      }
+    },
+    "sandbox": {
+      "network": true
+    },
+    "auto_retry": {
+      "environment": 5
+    },
+    "exec_profiles": {
+      "coder": {
+        "codex": {},
+        "claude": {}
+      },
+      "reviewer": {
+        "codex": {},
+        "claude": {}
+      }
+    },
+    "effort": {
+      "G0": "medium",
+      "coder": {
+        "first": "medium",
+        "repair": "medium"
+      },
+      "reviewer": {
+        "R1": "high",
+        "R2": "medium",
+        "R3": "medium",
+        "R4": "medium",
+        "R5": "medium",
+        "R6": "medium"
+      },
+      "G2_reviewer": {
+        "R1": "high",
+        "R2": "high",
+        "R3": "high",
+        "R4": "high",
+        "R5": "high",
+        "R6": "high"
+      }
+    },
+    "risk_paths": ["**/auth/**"],
+    "code_extensions": [".ts"],
+    "exempt_paths": ["*.md"],
+    "budget_floor": {
+      "S": 200000
+    }
+  }
+}

@@ -13,11 +13,21 @@ import { join } from 'node:path';
 import { buildExecNodeEnvironment } from '../../packages/workflows/src/exec-environment';
 import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/src/node-execution';
 import { removeTempTree } from '@archon/paths/test-utils';
+import { loadTiers } from '../src/config';
 
 const roots: string[] = [];
 afterAll(async () => {
   for (const r of roots.splice(0)) await removeTempTree(r);
   repoTemplate = undefined;
+});
+
+/** Fresh policy values, independent of the operator's routing and budget choices. */
+export const fixtureTiers = () => loadTiers(join(import.meta.dir, 'fixtures/tiers.json'));
+
+/** Only opted-in child processes see the fixture at the default tiers path. */
+export const fixtureTiersEnv = () => ({
+  BUN_OPTIONS:
+    `${process.env.BUN_OPTIONS ?? ''} --preload=${join(import.meta.dir, 'fixtures/tiers-preload.cjs')}`.trim(),
 });
 
 /** Stable install shape, entirely under scratch HOME; no operator checkout or config. */

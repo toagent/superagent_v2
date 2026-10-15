@@ -1,14 +1,14 @@
 import { expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { tmp } from './helpers';
+import { fixtureTiersEnv, tmp } from './helpers';
 // prettier-ignore
 test('relay-quota: passive HTTP, thresholds, omissions, failures, disabled and once per phase', async () => {
   let status = 200, calls = 0, cost = 41.37, level = 'ok', stall = false;
   const dir = tmp(), source = join(import.meta.dir, '../src/relay-quota.ts');
   const server = Bun.serve({ port: 0, fetch(req) { calls++; expect(new URL(req.url).pathname).toBe('/api/v1/toagent/relay-quota'); expect(req.headers.has('authorization')).toBe(true); return stall ? new Promise<Response>(() => {}) : Response.json({ platforms: { anthropic: { today: { cost }, level, accounts_available: 3, accounts_total: 4, five_hour: { remaining_pct: 58 }, seven_day: { remaining_pct: null } }, openai: { today: { cost: 600 }, five_hour: null } } }, { status }); } });
   const query = async (env = {}, token = 'synthetic', cache?: string, stage = 'start') => {
-    const child = Bun.spawn([process.execPath, '-e', `import {relayQuota} from ${JSON.stringify(source)}; console.log(JSON.stringify(relayQuota(${JSON.stringify(cache)},${JSON.stringify(stage)},()=>${JSON.stringify(token)})));`], { env: { ...process.env, SUPERAGENT_HOME: dir, SUPERAGENT_RELAY_QUOTA_URL: server.url.origin, SUPERAGENT_RELAY_QUOTA: '', ...env }, stdout: 'pipe', stderr: 'pipe' });
+    const child = Bun.spawn([process.execPath, '-e', `import {relayQuota} from ${JSON.stringify(source)}; console.log(JSON.stringify(relayQuota(${JSON.stringify(cache)},${JSON.stringify(stage)},()=>${JSON.stringify(token)})));`], { env: { ...process.env, ...fixtureTiersEnv(), SUPERAGENT_HOME: dir, SUPERAGENT_RELAY_QUOTA_URL: server.url.origin, SUPERAGENT_RELAY_QUOTA: '', ...env }, stdout: 'pipe', stderr: 'pipe' });
     expect(await child.exited).toBe(0); return JSON.parse(await new Response(child.stdout).text()) as { quota?: string };
   };
   try {

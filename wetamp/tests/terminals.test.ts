@@ -11,7 +11,6 @@ import {
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { attach, psRows, rankOf } from '../src/board/activity';
-import { loadTiers } from '../src/config';
 import type { Job } from '../src/jobs';
 import {
   bindLive,
@@ -27,7 +26,7 @@ import {
   type Live,
   type Session,
 } from '../src/board/terminals';
-import { tmp } from './helpers';
+import { fixtureTiers, tmp } from './helpers';
 
 const HOOKS = join(import.meta.dir, '..', 'hooks');
 const live = createRequire(import.meta.url)(join(HOOKS, 'live.cjs')) as {
@@ -134,7 +133,7 @@ describe('interactive sessions from ps', () => {
     } as unknown as Job;
     const mine = liveOf({ pid: 710, event: 'Stop', at: iso(NOW - 60_000), role: 'commander' });
     const derived = liveOf({ pid: 740, event: 'PreToolUse', tool: 'Bash', role: 'general' });
-    const pools = loadTiers().tiers;
+    const pools = fixtureTiers().tiers;
     const own = attach(rows, s, [job], [], [mine, derived], pools);
     expect(own.bound.get(s[0])).toBe(mine);
     expect(own.jobs[0]).toMatchObject({ tier: 'general', guess: false, owner: 710 }); // 角色来自心跳
@@ -149,7 +148,7 @@ describe('interactive sessions from ps', () => {
   });
 
   test('rankOf: explicit role wins; otherwise a model in exactly one of general/strategist pools is a guess', () => {
-    const pools = loadTiers().tiers;
+    const pools = fixtureTiers().tiers;
     expect(rankOf('commander', 'gpt-6-sol', pools)).toEqual({ tier: 'commander', guess: false });
     expect(rankOf(null, 'gpt-6-sol', pools)).toEqual({ tier: 'general', guess: true });
     expect(rankOf(undefined, 'claude-opus-5-5', pools)).toEqual({

@@ -14,7 +14,7 @@ import {
 import { buildWorkflow, engineHash } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
 import { decide } from '../templates/.archon/scripts/sa-check';
-import { fixturePlan, gitRepo, tmp } from './helpers';
+import { fixturePlan, fixtureTiers, fixtureTiersEnv, gitRepo, tmp } from './helpers';
 const { loadPolicy } = createRequire(import.meta.url)('../bin/policy-snapshot.cjs') as {
   loadPolicy(path: string): Record<string, unknown>;
 };
@@ -25,11 +25,11 @@ const plan = JSON.parse(
 describe('B1-POLICY frozen routing', () => {
   // prettier-ignore
   test('budget cache only downgrades auto: all roles, unknown observations and explicit modes', () => {
-    const previous = process.env.SUPERAGENT_HOME, quota = process.env.SUPERAGENT_RELAY_QUOTA, dir = tmp(), tiers = loadTiers(), now = Date.now();
+    const previous = process.env.SUPERAGENT_HOME, quota = process.env.SUPERAGENT_RELAY_QUOTA, dir = tmp(), tiers = fixtureTiers(), now = Date.now();
     process.env.SUPERAGENT_HOME = dir;
     process.env.SUPERAGENT_RELAY_QUOTA = 'off';
     const cache = (value: unknown) => writeFileSync(join(dir, 'relay-quota.json'), typeof value === 'string' ? value : JSON.stringify(value));
-    const models = () => { const p = Bun.spawnSync([process.execPath, join(WETAMP, 'src/cli.ts'), 'models', '--json'], { env: process.env }); expect(p.exitCode).toBe(0); return JSON.parse(p.stdout.toString()); };
+    const models = () => { const p = Bun.spawnSync([process.execPath, join(WETAMP, 'src/cli.ts'), 'models', '--json'], { env: { ...process.env, ...fixtureTiersEnv() } }); expect(p.exitCode).toBe(0); return JSON.parse(p.stdout.toString()); };
     try {
       expect(models().budget.notice).toBe('预算状态未知');
       for (const value of ['{', { at: now - 3600e3 - 1, claude_daily_usd: 300 }, { at: now, claude_daily_usd: '300' }]) {
@@ -52,7 +52,7 @@ describe('B1-POLICY frozen routing', () => {
   });
   // prettier-ignore
   test('commander routing follows console and validates its configured pools', () => {
-    const t = loadTiers(), path = join(tmp(), 'tiers.json');
+    const t = fixtureTiers(), path = join(tmp(), 'tiers.json');
     for (const c of ['claude', 'codex'] as const)
       for (const mode of ['auto', 'strict', 'single:claude', 'single:chatgpt'])
         expect(resolveRoute(t, c, mode, 'command').candidates.map(a => a.model)).toEqual(t.routing.commander.by_console[c]);
@@ -61,7 +61,7 @@ describe('B1-POLICY frozen routing', () => {
     expect(() => loadTiers(path)).toThrow('commander.by_console.codex');
   });
   test('auto and strict coder routes use only Codex and fail without Codex candidates', () => {
-    const tiers = loadTiers();
+    const tiers = fixtureTiers();
     for (const console of ['claude', 'codex'] as const)
       for (const mode of ['auto', 'strict'])
         for (const role of ['code', 'repair'] as const)
@@ -76,7 +76,7 @@ describe('B1-POLICY frozen routing', () => {
         expect(() => resolveRoute(tiers, 'codex', mode, role)).toThrow(`no eligible ${role}`);
   });
   test('single vendor filters both roles; risk and round use the owning policy', () => {
-    const tiers = loadTiers();
+    const tiers = fixtureTiers();
     for (const [mode, provider] of [
       ['single:claude', 'claude'],
       ['single:chatgpt', 'codex'],
@@ -102,7 +102,8 @@ describe('B1-POLICY frozen routing', () => {
         'single',
         '/GEN',
         false,
-        Date.parse('2026-10-09')
+        Date.parse('2026-10-09'),
+        tiers
       ) as {
         nodes: { command?: string; model?: string; sandbox?: unknown; mcp?: string }[];
       };
@@ -119,7 +120,7 @@ describe('B1-POLICY frozen routing', () => {
     expect(() => runAliases('claude', tiers)).toThrow('no eligible review');
   });
   test('policy is complete, detached from live tiers, validated, and part of workflow identity', () => {
-    const tiers = loadTiers(),
+    const tiers = fixtureTiers(),
       frozen = snapshotPolicy(tiers),
       root = join(tmp(), 'wetamp');
     mkdirSync(root, { recursive: true });
@@ -135,7 +136,7 @@ describe('B1-POLICY frozen routing', () => {
     expect(() => loadPolicy(path)).toThrow('hash mismatch');
     for (const dir of ['src', 'templates', 'schemas'])
       cpSync(join(WETAMP, dir), join(root, dir), { recursive: true });
-    copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
+    writeFileSync(join(root, 'tiers.json'), JSON.stringify(fixtureTiers()));
     mkdirSync(join(root, '../packages/workflows/src'), { recursive: true });
     copyFileSync(
       join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
@@ -149,7 +150,7 @@ describe('B1-POLICY frozen routing', () => {
     const root = tmp(),
       path = join(root, 'policy.json'),
       real = join(root, 'codex');
-    const tiers = loadTiers();
+    const tiers = fixtureTiers();
     tiers.policy.exec_profiles.coder.codex = { 'features.multi_agent': false, snapshot_test: true };
     tiers.policy.exec_profiles.reviewer.codex = tiers.policy.exec_profiles.coder.codex;
     writeFileSync(path, JSON.stringify(snapshotPolicy(tiers)));

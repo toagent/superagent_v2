@@ -23,7 +23,7 @@ import {
   readPolicyAttempts,
   writePolicyAttempts,
 } from '../templates/.archon/scripts/policy-attempts';
-import { tmp } from './helpers';
+import { fixtureTiers, tmp } from './helpers';
 
 const pool: Alias[] = [
   { provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' },
@@ -234,7 +234,7 @@ function runtimeFixture() {
   const root = tmp(),
     artifacts = join(root, 'artifacts/runs/run');
   mkdirSync(artifacts, { recursive: true });
-  const tiers = loadTiers(),
+  const tiers = fixtureTiers(),
     policyPath = join(root, 'policy.json');
   writeFileSync(policyPath, JSON.stringify(snapshotPolicy(tiers)));
   const plan = JSON.parse(

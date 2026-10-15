@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
-import { stableInstall } from './helpers';
+import { fixtureTiers, fixtureTiersEnv, stableInstall } from './helpers';
 import {
   assertAuthorNotReviewer,
   loadTiers,
@@ -35,6 +35,7 @@ function runInstall(
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
       ...process.env,
+      ...fixtureTiersEnv(),
       HOME: home,
       SUPERAGENT_HOME: home,
       ARCHON_HOME: archonHome,
@@ -124,7 +125,7 @@ describe('install.sh', () => {
 
 describe('aliases', () => {
   test('rendered from tiers.json with cross-vendor alt and per-console reviewer', () => {
-    const a = renderAliases(loadTiers());
+    const a = renderAliases(fixtureTiers());
     expect(a['@sa-coder']).toEqual({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' });
     expect(a['@sa-reviewer']).toEqual({ provider: 'codex', model: 'gpt-6-astra', effort: 'high' });
     expect(a['@sa-reviewer-alt'].provider).toBe('claude');
@@ -133,11 +134,11 @@ describe('aliases', () => {
   });
 
   test('author == reviewer is rejected', () => {
-    const a = renderAliases(loadTiers());
+    const a = renderAliases(fixtureTiers());
     expect(() => assertAuthorNotReviewer({ ...a, '@sa-reviewer': a['@sa-coder'] })).toThrow(
       'equals @sa-coder'
     );
-    const t = loadTiers();
+    const t = fixtureTiers();
     t.routing.reviewer.by_console.claude = [t.routing.coder.models[0]];
     expect(() => mergeConfig(null, t)).toThrow('no reviewer differs');
   });
