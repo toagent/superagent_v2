@@ -115,7 +115,7 @@ const jsonOf = (args: string[], r: Exec): Json => {
   const j = lastJson(r.out);
   if (!j)
     throw new Error(
-      `archon ${args.slice(0, 2).join(' ')} exit ${String(r.code)}: ${tail(r.err || r.out)}`
+      `archon ${args.slice(0, 2).join(' ')} exit ${String(r.code)}: ${errorExcerpt(r.err || r.out)}`
     );
   return j;
 };
@@ -172,6 +172,13 @@ export function reportRuns(since: string, until: string) {
 
 export const tail = (s: string, n = 400): string => s.trim().slice(-n);
 
+export const errorExcerpt = (s: string, n = 400): string => {
+  s = s.trim();
+  if (s.length <= n) return s;
+  const head = Math.min(n - 1, Math.max(s.indexOf('\n'), Math.ceil((n - 1) / 2)));
+  return s.slice(0, head) + '…' + s.slice(s.length - (n - head - 1));
+};
+
 /** Ledger order preserves generation chronology; each engine run contributes once. */
 export const archonRunIds = (l: Pick<Ledger, 'archon_run_id' | 'adoptions'>): string[] => [
   ...new Set([...(l.adoptions ?? []).flatMap(a => [a.from, a.to]), l.archon_run_id]),
@@ -201,7 +208,7 @@ export function waitNotification(id: string, cwd: string, seconds: number): RunW
   ];
   const kind = kinds.find(k => k === j.result);
   if (![0, 3].includes(r.code) || j.ok !== true || j.action !== 'wait' || j.runId !== id || !kind)
-    throw new Error(`workflow wait ${id}: ${tail(r.err || r.out)}`);
+    throw new Error(`workflow wait ${id}: ${errorExcerpt(r.err || r.out)}`);
   if (kind === 'aborted' || kind === 'not_found') throw new Error(`workflow wait ${id}: ${kind}`);
   return kind;
 }

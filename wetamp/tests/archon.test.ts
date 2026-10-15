@@ -5,6 +5,25 @@ import { tmp } from './helpers';
 import { expect, spyOn, test } from 'bun:test';
 import * as transport from '../src/archon';
 
+test('error excerpts preserve the first line and stack tail within the limit', () => {
+  const first =
+    'TypeError: require() async module "/workspace/wetamp/src/cli.ts" is unsupported. use "await import()" instead.';
+  const error =
+    first + '\n' + '    at main (/workspace/wetamp/src/cli.ts:530:12)\n'.repeat(30) + 'Bun v1.4.3';
+  for (const limit of [200, 400]) {
+    const excerpt = transport.errorExcerpt(error, limit);
+    expect(excerpt).toStartWith(first);
+    expect(excerpt).toEndWith('Bun v1.4.3');
+    expect(excerpt).toContain('…');
+    expect(excerpt.length).toBeLessThanOrEqual(limit);
+  }
+  expect(transport.errorExcerpt('  short error\n')).toBe('short error');
+  expect(transport.errorExcerpt('')).toBe('');
+  expect(transport.errorExcerpt('x'.repeat(200), 200)).toBe('x'.repeat(200));
+  expect(transport.errorExcerpt('x'.repeat(500), 200).length).toBe(200);
+  expect(transport.tail('abcdef', 3)).toBe('def');
+});
+
 test('native wait enforces bounded transport and rejects broken notifications', () => {
   const spawn = spyOn(Bun, 'spawnSync').mockReturnValue({
     exitCode: 3,

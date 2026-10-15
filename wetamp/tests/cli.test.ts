@@ -991,6 +991,29 @@ describe('HF5 episode regressions', () => {
 });
 
 describe('waitRun (archon stub)', () => {
+  test('wait --json retains long errors at node, terminal record and metadata boundaries', () => {
+    const first =
+      'TypeError: require() async module "/workspace/wetamp/src/cli.ts" is unsupported. use "await import()" instead.';
+    const error =
+      first +
+      '\n' +
+      '    at main (/workspace/wetamp/src/cli.ts:530:12)\n'.repeat(30) +
+      'Bun v1.4.3';
+    for (const extra of [
+      { nodes: [{ nodeId: 'code-quick', state: 'failed' as const, error }] },
+      { terminal_record: { error } },
+      { metadata: { error } },
+    ]) {
+      stub([run('failed', extra)]);
+      const result = captured(() => main(['wait', 'sa1', '--json', '--timeout', '1']));
+      const out = JSON.parse(result.out);
+      expect(result.code).toBe(EXIT.failed);
+      expect(out).toMatchObject({ run_id: 'sa1', state: 'failed', exit: EXIT.failed });
+      expect(out.error).toStartWith(first);
+      expect(out.error).toEndWith('Bun v1.4.3');
+      expect(out.error.length).toBeLessThanOrEqual(200);
+    }
+  });
   test('wait native block surfaces inbox before another get', () => {
     const s = stub([run('running')]);
     const message: coordModule.Message = {

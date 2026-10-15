@@ -62,6 +62,7 @@ import {
   signalHuman,
   waitNotification,
   tail,
+  errorExcerpt,
   type RecoverResult,
   type RunView,
 } from './archon';
@@ -588,10 +589,10 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
 
 /**
  * failed 的原因：有失败节点取节点 error；没有（启动失败、executor 在节点外出错、进程被信号终止）则取引擎写的
- * run 级 error（终局记录优先）与停止原因类别，并给出能看到全文的证据路径。错误文本先脱敏再截尾。
+ * run 级 error（终局记录优先）与停止原因类别，并给出能看到全文的证据路径。错误文本先脱敏再截断。
  */
 function failure(l: Ledger, run: RunView, node: string | undefined): Record<string, unknown> {
-  const cut = (s: string): string => tail(redact(s), 200);
+  const cut = (s: string): string => errorExcerpt(redact(s), 200);
   if (node) return { error: cut(run.nodes?.find(n => n.nodeId === node)?.error ?? '') };
   const why = run.metadata?.stop_reason;
   // 停止原因是引擎枚举值；不是枚举形状的就不当原因转述
