@@ -214,10 +214,19 @@ test('device revocation requires final confirmation and cannot submit twice', as
   const duplicate = elements['revoke-confirm'].onclick();
   expect(calls).toEqual(['/sa/device/revoke']);
   expect(elements['revoke-confirm'].disabled).toBe(true);
+  expect(elements['revoke-cancel'].disabled).toBe(false);
   expect(elements.setup.hidden).toBe(true);
+  elements['revoke-cancel'].onclick();
+  expect(elements['revoke-dialog'].open).toBe(false);
   releaseRevoke();
   await Promise.all([first, duplicate]);
   expect(elements.setup.hidden).toBe(false);
+  expect(elements['revoke-confirm'].disabled).toBe(false);
+  expect(elements['revoke-cancel'].disabled).toBe(false);
+  expect(elements['revoke-dialog'].open).toBe(false);
+  elements.revoke.onclick();
+  expect(elements['revoke-dialog'].open).toBe(true);
+  elements['revoke-cancel'].onclick();
   expect(elements['revoke-dialog'].open).toBe(false);
 });
 test('Apple-only push rejects internal, redirect/credential-shaped targets and invalid keys', () => {

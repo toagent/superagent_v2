@@ -134,7 +134,6 @@ $('revoke-confirm').onclick = async () => {
   if (revokeBusy) return;
   revokeBusy = true;
   $('revoke-confirm').disabled = true;
-  $('revoke-cancel').disabled = true;
   try {
     await request('/sa/device/revoke', {});
     csrf = '';
@@ -145,10 +144,10 @@ $('revoke-confirm').onclick = async () => {
     $('revoke-dialog').close();
   } catch (e) {
     $('connection').textContent = e.message;
-    $('revoke-confirm').disabled = false;
-    $('revoke-cancel').disabled = false;
   } finally {
     revokeBusy = false;
+    $('revoke-confirm').disabled = false;
+    $('revoke-cancel').disabled = false;
   }
 };
 $('refresh').onclick = () => {
