@@ -8,10 +8,28 @@ const redline = require('./redline.cjs'),
 (async () => {
   const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
   const input = payload.tool_input || payload.args || {};
-  const shell = input.command ?? input.cmd ?? input.script ?? input.input ?? input.shellCommand;
-  if (typeof shell !== 'string') return;
+  const privacy = process.argv.includes('--privacy');
+  const shell =
+    !privacy || ['bash', 'shell', 'run', 'exec'].includes(payload.tool_name)
+      ? (input.command ?? input.cmd ?? input.script ?? input.input ?? input.shellCommand)
+      : undefined;
+  if (!privacy && typeof shell !== 'string') return;
   await redline.init();
   const cwd = input.workdir || input.directory || payload.cwd || process.cwd();
+  if (privacy) {
+    const why = redline.reason({
+      name: payload.tool_name,
+      input,
+      cwd,
+      shell: typeof shell === 'string' ? shell : undefined,
+    });
+    if (why) {
+      process.stderr.write(why + '\n');
+      process.exitCode = 2;
+      return;
+    }
+    if (typeof shell !== 'string') return;
+  }
   const advisory = new Set();
   let superagentPermissionCategory = 'diagnostic';
   const reason = require('./shell-ast.cjs').analyze(
@@ -55,9 +73,14 @@ const redline = require('./redline.cjs'),
     process.stdout.write(
       JSON.stringify({ systemMessage: `SUPERAGENT advisory: ${[...advisory].join(', ')}` }) + '\n'
     );
-})().catch(() =>
+})().catch(() => {
+  if (process.argv.includes('--privacy')) {
+    process.stderr.write('已拦截：redline_internal_error：隐私检查不可用\n');
+    process.exitCode = 2;
+    return;
+  }
   process.stdout.write(
     JSON.stringify({ systemMessage: 'SUPERAGENT advisory: Git guard input unavailable; allowed' }) +
       '\n'
-  )
-);
+  );
+});

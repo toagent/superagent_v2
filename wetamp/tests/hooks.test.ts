@@ -128,6 +128,77 @@ function boundary() {
 }
 
 describe('两条底线', () => {
+  test('iCloud aliases, MCP, listing/search and Codex hook payloads; other cloud providers allowed', () => {
+    const { home, repo, env, sh } = boundary();
+    const target = join(home, 'Library/CloudStorage/iCloud Drive');
+    mkdirSync(target, { recursive: true });
+    const alias = join(repo, 'cloud-link');
+    symlinkSync(target, alias);
+    for (const path of [target, alias, join(alias, 'new-file')]) {
+      for (const name of ['Read', 'Edit', 'Write', 'LS', 'Glob', 'Grep', 'mcp__files__read'])
+        expect(
+          redline.reason({ name, input: { file_path: path, path }, cwd: repo, env })
+        ).toContain('iCloud');
+      expect(sh(`ls "${path}"`)).toContain('iCloud');
+      expect(
+        redline.reason({
+          name: 'lookup',
+          input: { arguments: { nested: [{ path }] } },
+          cwd: repo,
+          env,
+        })
+      ).toContain('iCloud');
+    }
+    const safe = join(home, 'Library/CloudStorage/SynologyDrive/a');
+    expect(sh(`cat "${safe}"`)).toBeNull();
+    expect(redline.reason({ name: 'lookup', input: { path: safe }, cwd: repo, env })).toBeNull();
+    // Transport fixtures prove guard handling, not that a live Codex client emits every event.
+    for (const [tool_name, tool_input] of [
+      ['Read', { file_path: target }],
+      ['view_image', { path: target }],
+      ['exec_command', { cmd: `ls "${target}"` }],
+      ['apply_patch', { input: `*** Begin Patch\n*** Add File: ${target}/new\n+x\n*** End Patch` }],
+      ['mcp__files__read', { arguments: { path: target } }],
+    ] as const) {
+      expect(
+        reason(
+          run(
+            'guard.cjs',
+            'codex',
+            {
+              hook_event_name: 'PreToolUse',
+              cwd: repo,
+              tool_name,
+              tool_input,
+            },
+            { ...env, SUPERAGENT_HOME: join(home, '.superagent') }
+          )
+        )
+      ).toContain('iCloud');
+    }
+  });
+  test('redline internal path inspection errors fail closed', () => {
+    const { repo, env } = boundary();
+    const input = {
+      get path(): string {
+        throw new Error('synthetic path failure');
+      },
+    };
+    expect(redline.reason({ name: 'Read', input, cwd: repo, env })).toContain(
+      'redline_internal_error'
+    );
+    expect(
+      redline.reason({
+        shell: 'cat ./file',
+        cwd: repo,
+        env: {
+          get HOME(): string {
+            throw new Error('synthetic path failure');
+          },
+        },
+      })
+    ).toContain('redline_internal_error');
+  });
   const privatePaths = [
     '.ssh/id_ed25519',
     '.aws/credentials',
@@ -137,6 +208,8 @@ describe('两条底线', () => {
     '.pypirc',
     'Library/Keychains/login.keychain-db',
     'Library/Mobile Documents/a',
+    'Library/CloudStorage/iCloud云盘-iCloudDrive (2026-6-6 08:15)/a',
+    'Library/CloudStorage/ICLOUDDrive/a',
     'Library/Application Support/Google/Chrome/Default/Cookies',
     'Library/Application Support/Chromium/a',
     'Library/Application Support/Arc/a',
@@ -473,8 +546,8 @@ describe('guard.cjs', () => {
     expect(guard('claude', bash('cp NOTES.md a.ts'))).toBeNull();
     expect(guard('claude', bash('git status'))).toBeNull();
     expect(
-      guard('codex', { tool_name: 'apply_patch', tool_input: { input: 'invalid' } })?.systemMessage
-    ).toContain('advisory');
+      reason(guard('codex', { tool_name: 'apply_patch', tool_input: { input: 'invalid' } }))
+    ).toContain('redline_internal_error');
     expect(
       guard('claude', { tool_name: 'Edit', tool_input: { file_path: join(repo, 'a.ts') } })
         ?.systemMessage

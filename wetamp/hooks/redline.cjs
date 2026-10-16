@@ -60,12 +60,17 @@ function secretKind(abs, env) {
   if (under(['Library', 'Keychains'])) return '钥匙串';
   if (SECRET_FILES.some(under)) return '凭据文件';
   if (under(['Library', 'Mobile Documents'])) return 'iCloud';
+  const cloud = path.join(home, 'library', 'cloudstorage') + '/';
+  if (p.startsWith(cloud) && p.slice(cloud.length).split('/')[0].startsWith('icloud'))
+    return 'iCloud';
   if (BROWSER.some(under)) return '浏览器资料';
   return null;
 }
 function pathKind(file, base, env) {
   const abs = path.resolve(base, expand(file, env));
-  return secretKind(abs, env) ?? secretKind(resolvePath(abs), env);
+  return (
+    secretKind(abs, env) ?? secretKind(resolvePath(abs), { ...env, HOME: resolvePath(homeOf(env)) })
+  );
 }
 // 一个 shell 词里可能指向受保护路径的部分：整词（含 `--opt=` 后的值）与词内嵌的 ~/$HOME/绝对路径。
 // 不含 / 的相对词只在文件存在时才算路径（`grep _private src` 里的 _private 是模式）。
@@ -171,6 +176,8 @@ function reason({
   onAdvisory = () => {},
   onCategory = () => {},
 }) {
+  const failed = () =>
+    message('工具调用', 'redline_internal_error：无法完成隐私路径检查', '修复检查器后重试');
   const privacy = (values, dir, context) => {
     for (const value of values) {
       const kind = wordKind(value, dir, context);
@@ -211,7 +218,8 @@ function reason({
         }
       return paths ? null : privacy(strings(input), cwd, env);
     }
-    return require('./shell-ast.cjs').analyze(
+    let analysisFailed = false;
+    const result = require('./shell-ast.cjs').analyze(
       shell,
       input.workdir || cwd,
       env,
@@ -252,11 +260,14 @@ function reason({
         return null;
       },
       word => expand(word, env),
-      onAdvisory
+      code => {
+        if (code === 'shell_analysis_failed') analysisFailed = true;
+        onAdvisory(code);
+      }
     );
+    return analysisFailed ? failed() : result;
   } catch {
-    onAdvisory('redline_internal_error');
-    return null;
+    return failed();
   }
 }
 const init = () => require('./shell-ast.cjs').init();

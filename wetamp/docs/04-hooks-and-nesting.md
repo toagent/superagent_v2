@@ -2,15 +2,18 @@
 
 默认放行。`guard.cjs` 供 Claude/Codex 原生 hooks 使用，`git-guardrail.cjs` 供旧 Git/OpenCode 适配器使用。hook 只拒绝：
 
-1. 凭据隐私：隐私路径黑名单原样保留，检查 Read、编辑/补丁路径、Bash（含包装器）及所有 MCP 参数，包括裸工具名。黑名单包含 SSH 私钥（公开文件例外不变）、钥匙串、凭据文件、iCloud、任一路径段 `_private`、浏览器资料。`security find-*-password`、`dump-keychain`、`export` 仍拒绝。
+1. 凭据隐私：检查 Read、编辑/补丁路径、列举/搜索、Bash（含包装器）及所有 MCP 参数，包括裸工具名。黑名单包含 SSH 私钥（公开文件例外不变）、钥匙串、凭据文件、iCloud、任一路径段 `_private`、浏览器资料。iCloud 包含 `~/Library/Mobile Documents` 与 `~/Library/CloudStorage/iCloud*`（目录名大小写不敏感），也拒绝指向这些位置的软链；不拦其他云盘（如 SynologyDrive）。`security find-*-password`、`dump-keychain`、`export` 仍拒绝。
 2. 不可逆破坏：`git push --force/-f/+refspec/--force-with-lease`、`git reset --hard`，以及对家目录、仓库根或 `/`（含其祖先与软链目标）的 `rm -rf`。其余删除操作放行。
 
-再委派、GitHub 写工具与发布、Serena 执行与写入、主检出及 `~/.superagent` 写入、reviewer 编辑、提权、kill/signal、跨元帅 hook 动作全部放行。删除效果登记表及 MCP 名称归一；隐私直接检查参数，不依赖登记。解析未知、锁等待失败或内部异常只留下 advisory，不挂起。hook 不是执行沙箱，不能完整推断脚本内部及间接执行效果。
+再委派、GitHub 写工具与发布、Serena 执行与写入、主检出及 `~/.superagent` 写入、reviewer 编辑、提权、kill/signal、跨元帅 hook 动作全部放行。删除效果登记表及 MCP 名称归一；隐私直接检查参数，不依赖登记。红线检查内部异常返回 `redline_internal_error` 并拒绝；其他计量/锁错误及未知 shell 语法仍为 advisory。hook 不是执行沙箱，不能完整推断脚本内部及间接执行效果。
 
 ## 事件与提示
 
 - Claude：`SessionStart/PreToolUse/PostToolUse/SubagentStop/Stop` → `guard.cjs claude`；`UserPromptSubmit/PreToolUse` → `context-advisory.cjs`。
 - Codex：前述五事件 → `guard.cjs codex`。Codex 只加载用户级 `hooks.json`；guard 信任检查仍确保两条底线有效。
+- OpenCode/Orca：`tool.execute.before` 对所有工具调用经 `git-guardrail.cjs --privacy` 复用 `redline.cjs`，命中或检查失败即拒绝；原有 Git 检查继续执行。
+- Claude 第二道防线：安装器幂等合并两类路径（自身及 `/**`）的 Read/Edit deny，保留用户条目。依据 [官方权限文档](https://code.claude.com/docs/en/permissions#read-and-edit)，Edit 覆盖 Write；`Write(path)` 不参与匹配，故不写入无效规则。CloudStorage 名称用 `[iI][cC][lL][oO][uU][dD]*`。
+- Codex 覆盖证据：`tests/hooks.test.ts` 将 Read/view_image、exec_command、apply_patch 与 MCP 的 PreToolUse payload 送入真实 guard 子进程验证拒绝。这是传输夹具，未采集真实 Codex 客户端事件；上述工具是否实际触发 PreToolUse 均为 NOT_RUN，不能据此声称端到端全覆盖。隐藏脚本 I/O、未触发 hook 的工具与外部进程不在本包证明范围。
 - `permissionDecision:deny` 只服务两条底线；`systemMessage/additionalContext` 是不阻断的提示。
 - 元帅 G-1 微改累计与派发上下文、Stop G-3、上下文阈值保留为 advisory。派生身份仅用于心跳/提示及计量分工，不用于拒绝。
 - shell AST 保留变量、cwd、重定向、软链及 `bash -c`/`eval`/`find -exec` 等包装处理；不执行待检查命令。

@@ -112,8 +112,13 @@ export interface Prior {
 }
 const root = (): string => join(home().sa, 'memory');
 export const memoryOn = (): boolean => process.env.SUPERAGENT_MEMORY !== 'off';
+const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as {
+  reason: (input: { name: string; input: { path: string }; cwd: string }) => string | null;
+};
 export const privateProject = (p: string): boolean =>
-  p.includes('_private') || p.includes('Mobile Documents');
+  p.includes('_private') ||
+  p.includes('Mobile Documents') ||
+  redline.reason({ name: 'Read', input: { path: p }, cwd: process.cwd() }) !== null;
 export const memoryLog = (why: string): void => {
   console.error(`memory: ${why}`);
 };
