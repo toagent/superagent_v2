@@ -132,9 +132,25 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
 
 /** 新文本：只有命令串改写时原地替换字符串字面量（保留文件排版），结构变化才整体重排。 */
 function render(raw: string, client: Client, purge: boolean): string {
-  const doc = JSON.parse(raw || '{}') as { hooks?: Hooks };
+  const doc = JSON.parse(raw || '{}') as {
+    hooks?: Hooks;
+    permissions?: { deny?: string[]; [key: string]: unknown };
+  };
+  const before = JSON.stringify(doc);
+  if (client === 'claude' && !purge) {
+    const permissions = (doc.permissions ??= {});
+    // Official file rules use ~/ for HOME and ** for recursive matching.
+    // Edit covers Write too; Write(path) is not consulted by Claude Code.
+    const rules = ['Read', 'Edit'].flatMap(tool =>
+      ['~/Library/Mobile Documents', '~/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]*'].flatMap(
+        path => [path, `${path}/**`].map(pattern => `${tool}(${pattern})`)
+      )
+    );
+    permissions.deny = [...new Set([...(permissions.deny ?? []), ...rules])];
+  }
+  const permissionsChanged = before !== JSON.stringify(doc);
   const next = mergeHooks(doc.hooks ?? {}, client, purge);
-  if (JSON.stringify(next) === JSON.stringify(doc.hooks ?? {})) return raw;
+  if (!permissionsChanged && JSON.stringify(next) === JSON.stringify(doc.hooks ?? {})) return raw;
   let text = raw || '{}';
   for (const m of new Set(raw.match(V1_HOOKS) ?? [])) text = text.replaceAll(m, V2_HOOKS);
   // 原地替换只在结果与结构化合并完全一致（含 hooks 以外的键未被波及）时采用
@@ -143,6 +159,7 @@ function render(raw: string, client: Client, purge: boolean): string {
     JSON.stringify({ ...doc, hooks: next });
   if (
     !purge &&
+    !permissionsChanged &&
     same &&
     JSON.stringify((JSON.parse(text) as { hooks?: Hooks }).hooks) === JSON.stringify(next)
   )
@@ -182,15 +199,13 @@ export function openCodeGuard(guard = V2_HOOKS + 'git-guardrail.cjs'): string {
 import { spawn } from 'node:child_process';
 export const GitGuardrailPlugin = async (context = {}) => ({
   'tool.execute.before': async (input, output) => {
-    if (!['bash', 'shell', 'run', 'exec'].includes(input.tool)) return;
     const args = output?.args ?? input.args ?? {};
     const command = args.command ?? args.cmd ?? args.script;
-    if (typeof command !== 'string') return;
     const payload = { ...input, session_id: input.sessionID ?? input.session_id,
       cwd: args.directory ?? args.workdir ?? input.cwd ?? context.directory ?? context.worktree,
       tool_name: input.tool, tool_input: { ...args, command } };
     await new Promise((resolve, reject) => {
-      const child = spawn('node', [${JSON.stringify(guard)}]);
+      const child = spawn('node', [${JSON.stringify(guard)}, '--privacy']);
       let error = '', stdout = '';
       child.stdout.on('data', data => { stdout += data; });
       child.stderr.on('data', data => { error += data; });

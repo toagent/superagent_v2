@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { fixtureTiers, fixtureTiersEnv, stableInstall } from './helpers';
+import { openCodeGuard } from '../src/install-hooks';
 import {
   assertAuthorNotReviewer,
   loadTiers,
@@ -165,6 +166,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
           SUPERAGENT_HOME: join(home, '.superagent'),
           CLAUDE_CONFIG_DIR: '',
           CODEX_HOME: '',
+          OPENCODE_CONFIG_DIR: '',
+          XDG_CONFIG_HOME: '',
           XDG_STATE_HOME: '',
         },
         stdout: 'pipe',
@@ -183,6 +186,62 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       ).hooks
     ).map(([e, gs]) => [e, ...gs.flatMap(g => g.hooks.map(h => h.command))]);
 
+  test('Claude iCloud deny merges idempotently and preserves existing permissions', () => {
+    const { home, sh } = sandbox();
+    const file = join(home, '.claude/settings.json');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({ permissions: { deny: ['Read(./secret)'], allow: ['Bash(echo *)'] } })
+    );
+    expect(sh('--hooks').code).toBe(0);
+    const first = readFileSync(file, 'utf8');
+    const { permissions } = JSON.parse(first);
+    expect(permissions.allow).toEqual(['Bash(echo *)']);
+    expect(permissions.deny).toContain('Read(./secret)');
+    for (const tool of ['Read', 'Edit'])
+      for (const path of [
+        '~/Library/Mobile Documents',
+        '~/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]*',
+      ])
+        for (const suffix of ['', '/**'])
+          expect(permissions.deny).toContain(`${tool}(${path}${suffix})`);
+    expect(permissions.deny).toHaveLength(9);
+    expect(sh('--hooks').code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe(first);
+  });
+  test('OpenCode plugin rejects iCloud read/edit/bash/MCP and allows SynologyDrive', () => {
+    const home = tmp(),
+      adapter = join(home, 'adapter.mjs');
+    writeFileSync(adapter, openCodeGuard());
+    const script = `import plugin from ${JSON.stringify(adapter)};
+      const hooks = await plugin({ directory: process.env.HOME });
+      const results = [];
+      for (const tool of ['read', 'edit', 'bash', 'mcp__files__read']) {
+        for (const provider of ['iCloud Drive', 'SynologyDrive']) {
+          const path = process.env.HOME + '/Library/CloudStorage/' + provider + '/a';
+          try { await hooks['tool.execute.before']({ tool }, { args: { filePath: path, command: 'cat "' + path + '"' } }); results.push('allow'); }
+          catch (e) { results.push(e.message.includes('iCloud') ? 'deny' : e.message); }
+        }
+      }
+      console.log(JSON.stringify(results));`;
+    const p = Bun.spawnSync(['node', '--input-type=module', '-e', script], {
+      env: { ...process.env, HOME: home },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(p.exitCode).toBe(0);
+    expect(JSON.parse(p.stdout.toString())).toEqual([
+      'deny',
+      'allow',
+      'deny',
+      'allow',
+      'deny',
+      'allow',
+      'deny',
+      'allow',
+    ]);
+  });
   test('G1: --hooks publishes controller ledger after trust; dry-run preserves bytes and repeat is idempotent', () => {
     const { home, sh } = sandbox();
     const ledger = join(home, '.local/state/superagent/install.json');
