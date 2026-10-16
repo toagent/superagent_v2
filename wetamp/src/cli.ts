@@ -888,7 +888,7 @@ export function quickPlan(a: Args): string {
     throw new Error('quick requires --goal <text> or a non-empty --card <file>');
   if (!a.flags.accept?.length || a.flags.accept.some(cmd => !cmd.trim()))
     throw new Error('quick requires at least one non-empty --accept <cmd>');
-  const acceptTimeout = Number(a.flags['accept-timeout'] ?? 180);
+  const acceptTimeout = Number(a.flags['accept-timeout'] ?? 900);
   if (!Number.isSafeInteger(acceptTimeout) || acceptTimeout <= 0)
     throw new Error('quick --accept-timeout must be a positive integer of seconds');
   const consoleClient = a.flags.console;

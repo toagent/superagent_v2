@@ -30,13 +30,13 @@ plan 的目标 repo 必须位于 `SUPERAGENT_WRITE_ROOTS`（冒号分隔，默�
 
 小活用 `superagent quick --goal "修复启动错误" --accept "bun test tests/start.test.ts" --scope "src/**" --scope "tests/**"`，
 `run` 和 `quick` 默认拒绝同仓库写范围重叠（包括已执行完但 `delivery_result` 非 integrated 的 run），状态或历史 plan 不可读也按无法判定拒绝；可用 `--allow-overlap "具体原因"` 显式放行，原因保存到 ledger 的 `allow_overlap`。历史 plan 优先读取 gen_dir/plan.json，否则相对 ledger.repo 解析。此参数不绕过 SQLite-only 等其他启动检查，不自动排队或重试。
-`--accept` 与 `--scope` 可重复；默认单包、单里程碑、size S、risk G1，预算默认 observe、无 token 上限，不附加 deadline，单条验收超时 180 秒。
+`--accept` 与 `--scope` 可重复；默认单包、单里程碑、size S、risk G1，预算默认 observe、无 token 上限，不附加 deadline，单条验收超时 900 秒。
 repo 默认 cwd 所在 git 根，base 默认当前分支，可用 `--repo <path>`、`--base <ref>` 覆盖；默认写范围 `**/*`，建议显式收窄 scope。
 验收默认 `cache:true`，依赖时间、随机性或外部写入的命令须加 `--no-cache`；`--risk G0|G1|G2` 声明风险，`--review` 请求评审，`--json` 输出与 run 同形。
 生成的 plan 先校验，保存在 `$SUPERAGENT_HOME/plans/quick-<ts>.json`，再走 run 的同一启动路径；p50 预算与 deadline 预测不足只警告，仅显式 hard 预算执行 budget floor 合计校验。
 默认单包；多包只在可独立验收且可并行或风险不同时拆；不按文件或步骤拆；小活用 quick。
 
-元帅推荐用 `superagent quick --card /path/card.md --accept "bun run test" --accept-timeout 900 --review --console codex --repo /path/repo --base feature-branch --scope "src/**" --json`，再 `superagent wait <run_id> --timeout 1500` 等终态；卡片须含问题、价值、时机、目标、不变量与验收。卡片完整内容冻结进 plan，`--card` 与 `--goal` 互斥；`--accept-timeout` 为每条验收命令的正整数秒数，默认仍为 180。编码、评审、修复复用现有至多 6 轮 workflow，`--review` 使用现有 strict 门禁，实际评审模型必须不同于所有实际作者，不能降级为 `DEGRADED_PASS`；G2 原有自动独立评审不变，模型池只在 `tiers.json` 配置。`--console` 可选，未传保留原来的 Claude 路由；`--repo`/`--base` 可承接已有提交，但引擎仍新建隔离 worktree，不直接复用脏工作区。仅调研等辅助工作用 `job exec`，不要逐轮手工派修复与评审。
+元帅推荐用 `superagent quick --card /path/card.md --accept "bun run test" --accept-timeout 900 --review --console codex --repo /path/repo --base feature-branch --scope "src/**" --json`，再 `superagent wait <run_id> --timeout 1500` 等终态；卡片须含问题、价值、时机、目标、不变量与验收。卡片完整内容冻结进 plan，`--card` 与 `--goal` 互斥；`--accept-timeout` 为每条验收命令的正整数秒数，默认 900。编码、评审、修复复用现有至多 6 轮 workflow，`--review` 使用现有 strict 门禁，实际评审模型必须不同于所有实际作者，不能降级为 `DEGRADED_PASS`；G2 原有自动独立评审不变，模型池只在 `tiers.json` 配置。`--console` 可选，未传保留原来的 Claude 路由；`--repo`/`--base` 可承接已有提交，但引擎仍新建隔离 worktree，不直接复用脏工作区。仅调研等辅助工作用 `job exec`，不要逐轮手工派修复与评审。
 
 ```bash
 superagent run plan.json                 # 立即返回 {run_id, archon_run_id, branch, gen_dir}

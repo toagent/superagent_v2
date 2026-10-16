@@ -753,9 +753,22 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(lint.warnings).toHaveLength(2);
     expect(lint.override).toBeUndefined();
     expect(existsSync(join(sa, 'launch-failures'))).toBe(false);
-    expect(main(['run', path, '--fake', '--lint-override', '明确的小样本验收'])).toBe(0);
+    const overlapReason = 'stub engine runs intentionally share the fixture scope';
+    expect(
+      main([
+        'run',
+        path,
+        '--fake',
+        '--lint-override',
+        '明确的小样本验收',
+        '--allow-overlap',
+        overlapReason,
+      ])
+    ).toBe(0);
     const second = readdirSync(join(sa, 'runs')).find(file => file !== first)!;
-    expect(JSON.parse(readFileSync(join(sa, 'runs', second), 'utf8')).plan_lint).toMatchObject({
+    const secondLedger = JSON.parse(readFileSync(join(sa, 'runs', second), 'utf8'));
+    expect(secondLedger.allow_overlap).toBe(overlapReason);
+    expect(secondLedger.plan_lint).toMatchObject({
       override: '明确的小样本验收',
       rejected: false,
     });

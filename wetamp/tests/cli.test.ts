@@ -287,8 +287,8 @@ describe('quick', () => {
         scope: { write: ['**/*'] },
       });
       expect(plan.packages[0].accept).toEqual([
-        { cmd: 'true', timeout_s: 180, cache: true },
-        { cmd: 'echo ok', timeout_s: 180, cache: true },
+        { cmd: 'true', timeout_s: 900, cache: true },
+        { cmd: 'echo ok', timeout_s: 900, cache: true },
       ]);
       expect(milestones(plan)).toHaveLength(1);
       const explicit = loadPlan(
@@ -356,7 +356,7 @@ describe('quick', () => {
       '--accept',
       'true',
       '--accept-timeout',
-      '900',
+      '120',
       '--console',
       'codex',
       '--review',
@@ -369,7 +369,7 @@ describe('quick', () => {
       expect(plan.packages[0].goal).toContain('card.md');
       expect(renderBrief(plan.packages[0], '', capsOf(plan, plan.packages[0]))).toContain(brief);
       expect(plan.packages[0].title).toBe('card.md');
-      expect(plan.packages[0].accept[0].timeout_s).toBe(900);
+      expect(plan.packages[0].accept[0].timeout_s).toBe(120);
       expect(plan.console).toBe('codex');
       expect(plan.mode).toBe('strict');
       expect(milestones(plan)[0].review).toBe(true);
