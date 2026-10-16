@@ -1,3 +1,4 @@
+import { describeDecision, type Decision } from '../decisions';
 import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-metrics';
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
 import { spawnSync } from 'node:child_process';
@@ -28,6 +29,7 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  humanDecision?: Decision;
   askReason?: ReturnType<typeof holdOf>;
   nativeState?: RunView['status'];
   completed_at?: RunView['completed_at'];
@@ -79,6 +81,7 @@ export interface Snapshot {
   eta?: Record<string, Estimate>;
   heartbeat_ms?: number;
   asks?: Record<string, { status: string }>;
+  humanDecisions?: Decision[];
   coordMessages?: Message[];
   usage?: UsageCache;
   web_url?: string;
@@ -166,6 +169,13 @@ export function rowOf(
     /* Missing outcome provides no reason. */
   }
   return {
+    humanDecision: (() => {
+      try {
+        return describeDecision(l, run);
+      } catch {
+        return undefined;
+      }
+    })(),
     askReason: holdOf(l, run, c),
     coordination: (() => {
       try {
@@ -454,6 +464,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       /* Missing memory remains unknown. */
     }
     return {
+      humanDecisions: rows.flatMap(r => (r.stale || !r.humanDecision ? [] : [r.humanDecision])),
       reflection,
       heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })
         ?.mtimeMs,

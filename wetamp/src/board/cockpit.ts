@@ -323,6 +323,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
         },
       ];
     }
+    if (s.humanDecisions) return [];
     const parts = /^([^:]+):([^:]+)(?::([^:]+))?$/.exec(key);
     if (!parts) return unresolved();
     const [, id, reason] = parts,
@@ -346,6 +347,17 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       },
     ];
   });
+  for (const d of s.humanDecisions ?? []) {
+    const r = s.rows.find(r => r.run_id === d.run);
+    if (!r) continue;
+    needs.push({
+      ...project(r),
+      question:
+        d.question +
+        '；' +
+        (d.disabled ?? d.options.map(o => o.label + '：' + o.consequence).join(' / ')),
+    });
+  }
   return {
     tokenRows: known && todaySessions ? tokenRows.sort((a, b) => b.total - a.total) : null,
     metrics: metricsOf(s.rows, s.summary, now),

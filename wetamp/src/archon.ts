@@ -235,6 +235,7 @@ export async function getRunAsync(
     stdout: 'pipe',
     stderr: 'pipe',
     detached: true,
+    env: { ...process.env },
   });
   let onAbort = (): void => undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;

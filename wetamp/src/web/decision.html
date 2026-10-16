@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f3f5f7" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>人工决定 · 一件事</title>
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <style>
+      :root {
+        --paper: #f3f5f7;
+        --surface: #fff;
+        --ink: #19252f;
+        --muted: #536574;
+        --line: #d5dde4;
+        --action: #1756a5;
+        --error: #9e3029;
+      }
+      * {
+        box-sizing: border-box;
+        overflow-wrap: anywhere;
+        min-width: 0;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font:
+          16px/1.6 -apple-system,
+          BlinkMacSystemFont,
+          'PingFang SC',
+          sans-serif;
+      }
+      main {
+        max-width: 560px;
+        margin: auto;
+        padding: 32px 20px max(32px, env(safe-area-inset-bottom));
+      }
+      h1 {
+        font-size: 28px;
+        line-height: 1.3;
+        margin: 8px 0 16px;
+        text-wrap: balance;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      p {
+        margin: 8px 0 16px;
+      }
+      .eyebrow,
+      .muted {
+        color: var(--muted);
+      }
+      .eyebrow {
+        font-weight: 600;
+        letter-spacing: 0.12em;
+      }
+      section {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 20px;
+        margin: 24px 0;
+      }
+      button,
+      input {
+        font: inherit;
+        min-height: 48px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        padding: 12px;
+        width: 100%;
+      }
+      button {
+        color: var(--ink);
+        background: var(--surface);
+        cursor: pointer;
+        text-align: left;
+        margin-top: 12px;
+      }
+      button strong,
+      button span {
+        display: block;
+      }
+      button span {
+        font-size: 16px;
+        font-weight: 400;
+      }
+      .primary {
+        background: var(--action);
+        color: white;
+        border-color: var(--action);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button:hover:not(:disabled) {
+        filter: brightness(0.95);
+      }
+      button:active:not(:disabled) {
+        transform: translateY(1px);
+      }
+      :focus-visible {
+        outline: 3px solid var(--action);
+        outline-offset: 3px;
+      }
+      #connection {
+        border-left: 3px solid var(--line);
+        padding-left: 12px;
+        overflow-wrap: anywhere;
+      }
+      .error {
+        color: var(--error);
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: inherit;
+      }
+      ol {
+        padding-left: 24px;
+      }
+      li {
+        margin: 8px 0;
+      }
+      time {
+        font-variant-numeric: tabular-nums;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+    <script src="/decision.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">需要你 / 人工决定</div>
+      <h1>一件事，一份真实回执</h1>
+      <p id="connection" role="status" aria-live="polite">正在连接…</p>
+      <section id="setup">
+        <h2>授权本设备</h2>
+        <p>先添加到主屏幕。生产授权需要重新配对，旧实验授权无效。</p>
+        <label for="code">Mac 私有配对页中的一次性码</label
+        ><input id="code" autocomplete="off" autocapitalize="off" spellcheck="false" />
+        <button id="pair">配对</button>
+      </section>
+      <section id="item" hidden>
+        <h2 id="question"></h2>
+        <p id="reason"></p>
+        <p id="context"></p>
+        <p id="disabled"></p>
+        <div id="options"></div>
+      </section>
+      <section>
+        <h2>执行回执</h2>
+        <p id="receipt">尚未提交</p>
+        <p id="state"></p>
+        <ol id="events"></ol>
+      </section>
+      <section>
+        <button id="notify">开启通知</button>
+        <p id="push"></p>
+        <button id="refresh">重新读取</button><button id="revoke">撤销本设备授权</button>
+      </section>
+    </main>
+  </body>
+</html>

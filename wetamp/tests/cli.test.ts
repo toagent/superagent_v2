@@ -2321,6 +2321,17 @@ test.each(['failed', 'running', 'paused', 'pending'] as const)(
 );
 
 describe('supervise-tick (archon + supervisor stubs)', () => {
+  test('configured mobile transport leaves existing Reminders untouched and exposes unsupported gates', () => {
+    const s = stub([humanWait()]);
+    mkdirSync(join(s.root, 'home/console'), { recursive: true });
+    writeFileSync(join(s.root, 'home/console/decision-origin'), 'https://private.example.test');
+    const calls = supervisor(s.root, 'yes');
+    expect(cliMod.superviseTick()).toMatchObject({
+      actions: [{ transport: 'mobile', held: true, ok: false }],
+    });
+    expect(calls()).toEqual([]);
+  });
+
   const tick = (): Record<string, unknown>[] => {
     const { code, out } = captured(() => main(['supervise-tick']));
     expect(code).toBe(0);

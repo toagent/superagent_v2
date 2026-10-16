@@ -861,11 +861,13 @@ test('summarize, report and the board share one summary', async () => {
     slow_nodes,
     jobs,
     recorded_blockers,
+    human_decisions,
     delivery,
     undelivered,
     ...expected
   } = report();
   expect(decisions).toEqual({});
+  expect(human_decisions).toMatchObject({ decisions: [], unknown: expect.any(Array) });
   expect(requirements).toEqual({ g: {}, f: {} });
   expect(measurement).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
   expect(provider_timing).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
