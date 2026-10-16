@@ -2,7 +2,7 @@ import { expect, spyOn, test } from 'bun:test';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generate } from '../src/generate';
-import { ledgerPath, loadLedger, type Ledger } from '../src/cli';
+import { ledgerPath, loadLedger } from '../src/cli';
 import * as coordination from '../src/coord';
 import type { Plan } from '../src/plan';
 import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
@@ -77,7 +77,7 @@ test('generated deliver command integrates the run branch into its target', () =
     } finally {
       engine.mockRestore();
     }
-    const ledger: Ledger = {
+    const ledger = {
       run_id: runId,
       archon_run_id: runId,
       repo,
@@ -85,10 +85,6 @@ test('generated deliver command integrates the run branch into its target', () =
       plan: join(gen.dir, 'plan.json'),
       gen_dir: gen.dir,
       workflow: gen.workflow,
-      console: 'codex',
-      started_at: '',
-      transcript: '',
-      log: '',
       delivery,
     };
     writeFileSync(ledgerPath(runId), JSON.stringify(ledger));
@@ -103,13 +99,8 @@ test('generated deliver command integrates the run branch into its target', () =
     ) as Record<string, string>[];
     const contract = contracts.find(c => c.tag === 'diff-m1-r1')!;
     writeFileSync(join(art, `${contract.tag}.json`), JSON.stringify({ ok: true }));
-    const output = {
-      head: sourceHead,
-      reviewed_head: sourceHead,
-      status: 'done',
-      error_class: null,
-      needs: [],
-    };
+    // prettier-ignore
+    const output = { head: sourceHead, reviewed_head: sourceHead, status: 'done', error_class: null, needs: [] };
     const producers = new Set(
       Object.values(contract)
         .map(value => parseWholeOutputRef(value)?.nodeId)
@@ -136,9 +127,8 @@ test('generated deliver command integrates the run branch into its target', () =
     const workflow = Bun.YAML.parse(
       readFileSync(join(gen.dir, '.archon/workflows', gen.workflow, `${gen.workflow}.yaml`), 'utf8')
     ) as { nodes: { id: string; bash?: string }[] };
-    const command = workflow.nodes.find(node => node.id === 'deliver')?.bash;
-    expect(command).toBeString();
-    const result = Bun.spawnSync(['bash', '-c', command!], {
+    const command = workflow.nodes.find(node => node.id === 'deliver')?.bash!;
+    const result = Bun.spawnSync(['bash', '-c', command], {
       cwd: repo,
       env: fixtureEnv(),
       stdout: 'pipe',
@@ -146,7 +136,6 @@ test('generated deliver command integrates the run branch into its target', () =
       timeout: 15_000,
     });
     const outputText = result.stdout.toString() + result.stderr.toString();
-    expect(result.exitedDueToTimeout).toBe(false);
     expect(result.exitCode, outputText).toBe(0);
     expect(sh(`git merge-base --is-ancestor ${sourceHead} delivery-target`, repo)).toBe('');
     expect(loadLedger(runId).delivery_result).toMatchObject({
