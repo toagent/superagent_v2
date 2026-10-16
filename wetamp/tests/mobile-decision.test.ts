@@ -6,7 +6,7 @@ import * as archonModule from '../src/archon';
 import * as cliModule from '../src/cli';
 import * as sqlHost from '../../packages/core/src/workflows/sql-host';
 import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
 import {
@@ -90,6 +90,58 @@ test('pairing is one-use, short-lived, rate-bounded; session, VAPID, receipt and
   reload.revoke(p.device.id);
   expect(() => store.authenticate(p.session)).toThrow();
 });
+test('legacy authorization migration preserves eligible device state without reviving invalid devices', () => {
+  const root = join(tmp(), 'mobile'),
+    store = new DeviceStore(root),
+    now = Date.now(),
+    subscription = {
+      endpoint: 'https://web.push.apple.com/Qlegacy',
+      keys: {
+        p256dh: Buffer.alloc(65).toString('base64url'),
+        auth: Buffer.alloc(16).toString('base64url'),
+      },
+    },
+    device = (id: string, expires: number, revoked = false) => ({
+      id: digest(id),
+      session: digest(id + '-session'),
+      csrf: id + '-csrf',
+      expires,
+      grant,
+      lastRead: id + '-read',
+      revoked,
+      subscription,
+    });
+  writeFileSync(
+    join(root, 'state.json'),
+    JSON.stringify({
+      devices: [
+        device('active', now + 10000),
+        device('expired', now - 1),
+        device('revoked', now + 10000, true),
+      ],
+      receipts: [{ id: 'receipt', device: digest('active') }],
+      notices: {},
+    })
+  );
+
+  const migrated = store.transaction(s => s);
+  expect(migrated.deviceAuthorizationVersion).toBe(1);
+  expect(migrated.devices[0]).toMatchObject({
+    id: digest('active'),
+    session: digest('active-session'),
+    csrf: 'active-csrf',
+    grant,
+    lastRead: 'active-read',
+    subscription,
+    authorized: true,
+  });
+  expect(migrated.devices[0].expires).toBeUndefined();
+  expect(migrated.devices.slice(1).every(d => !d.authorized)).toBe(true);
+  expect(migrated.receipts).toHaveLength(1);
+  expect(store.authenticate('active-session').id).toBe(digest('active'));
+  expect(() => store.authenticate('expired-session')).toThrow();
+  expect(() => store.authenticate('revoked-session')).toThrow();
+});
 test('private origin adapter isolates console, pairs once, requires CSRF and bounds streamed requests', async () => {
   const store = new DeviceStore(join(tmp(), 'mobile'));
   const page = store.pairing(grant),
@@ -113,9 +165,15 @@ test('private origin adapter isolates console, pairs once, requires CSRF and bou
   const paired = await adapter.fetch(req('/sa/device/pair', { code }));
   expect(paired.status).toBe(200);
   expect(paired.headers.get('set-cookie')).toContain('Secure; HttpOnly; SameSite=Strict');
+  expect(paired.headers.get('set-cookie')).toContain('Max-Age=34560000');
   const cookie = paired.headers.get('set-cookie')!.split(';')[0];
   adapter = await createDecisionAdapter(origin, new DeviceStore(store.root));
   const device = store.authenticate(cookie.split('=')[1]);
+  const renewed = await adapter.fetch(req('/sa/decisions', undefined, { cookie }));
+  expect(renewed.status).toBe(200);
+  expect(renewed.headers.get('set-cookie')).toBe(
+    cookie + '; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=34560000'
+  );
   for (const path of ['/console', '/sa/data', '/api/workflows/runs', '/sa/memory'])
     expect((await adapter.fetch(req(path, undefined, { cookie }))).status).toBe(404);
   expect((await adapter.fetch(req('/sa/device/revoke', {}, { cookie }))).status).toBe(403);
@@ -131,10 +189,11 @@ test('private origin adapter isolates console, pairs once, requires CSRF and bou
       )
     ).status
   ).toBe(413);
-  expect(
-    (await adapter.fetch(req('/sa/device/revoke', {}, { cookie, 'x-csrf-token': device.csrf })))
-      .status
-  ).toBe(200);
+  const revoked = await adapter.fetch(
+    req('/sa/device/revoke', {}, { cookie, 'x-csrf-token': device.csrf })
+  );
+  expect(revoked.status).toBe(200);
+  expect(revoked.headers.get('set-cookie')).toContain('Max-Age=0');
   expect((await adapter.fetch(req('/sa/decisions', undefined, { cookie }))).status).toBe(401);
   expect(() => checkOrigin('http://decision.example.test')).toThrow();
 });

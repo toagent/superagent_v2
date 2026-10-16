@@ -14,6 +14,7 @@ import {
   BoundaryError,
   DeviceStore,
   digest,
+  isAuthorizedDevice,
   isOperatorDevice,
   requireThat,
   type Device,
@@ -162,7 +163,7 @@ export async function answerDecision(
         // Re-read revocation inside the same bounded operation before the CAS.
         store.transaction(s => {
           requireThat(
-            s.devices.some(d => d.id === device.id && !d.revoked && d.expires > Date.now()),
+            s.devices.some(d => d.id === device.id && isAuthorizedDevice(d)),
             401
           );
         });
@@ -307,7 +308,7 @@ export async function decisionState(
     const lastRead = new Date().toISOString();
     store.transaction(s => {
       const current = s.devices.find(d => d.id === device.id);
-      requireThat(current && !current.revoked, 401);
+      requireThat(current && isAuthorizedDevice(current), 401);
       current.lastRead = lastRead;
     });
     return {
@@ -349,7 +350,7 @@ export async function decisionState(
     const lastRead = new Date().toISOString();
     store.transaction(s => {
       const d = s.devices.find(d => d.id === device.id);
-      requireThat(d && !d.revoked, 401);
+      requireThat(d && isAuthorizedDevice(d), 401);
       d.lastRead = lastRead;
     });
     return {

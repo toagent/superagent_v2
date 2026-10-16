@@ -2,7 +2,7 @@ import webpush from 'web-push';
 import { resolve4 } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 import { Agent } from 'node:https';
-import { DeviceStore, isOperatorDevice, requireThat } from './device-store';
+import { DeviceStore, isAuthorizedDevice, isOperatorDevice, requireThat } from './device-store';
 import { decisionState, loadCurrentDecisions, type DecisionInbox } from '../decisions';
 
 export function validateSubscription(value: unknown): webpush.PushSubscription {
@@ -100,7 +100,7 @@ export function createPush(
     publicKey: vapid.publicKey,
     async tick() {
       const devices = store.transaction(s =>
-        s.devices.filter(d => !d.revoked && d.expires > Date.now() && d.subscription)
+        s.devices.filter(d => isAuthorizedDevice(d) && d.subscription)
       );
       const operatorInbox = devices.some(isOperatorDevice) ? await loadInbox() : undefined;
       let unknown = 0;
@@ -141,9 +141,7 @@ export function createPush(
           let status = 'failed';
           try {
             const target = store.transaction(
-              s =>
-                s.devices.find(d => d.id === device.id && !d.revoked && d.expires > Date.now())
-                  ?.subscription
+              s => s.devices.find(d => d.id === device.id && isAuthorizedDevice(d))?.subscription
             );
             if (!target) continue;
             validateSubscription(target);
@@ -169,7 +167,7 @@ export function createPush(
         }
       }
       return store.transaction(s => {
-        const paired = s.devices.filter(d => !d.revoked && d.expires > Date.now());
+        const paired = s.devices.filter(isAuthorizedDevice);
         const notices = Object.entries(s.notices)
           .filter(([key]) => devices.some(d => key.startsWith(d.id + ':')))
           .flatMap(([, n]) => (n ? [n] : []));

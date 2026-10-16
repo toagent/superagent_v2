@@ -34,11 +34,15 @@ export const operatorGrant = (): Grant => ({
 });
 export const isOperatorDevice = (device: Device): boolean =>
   device.grant.scope === 'managed-approvals';
+export const isAuthorizedDevice = (device: Device): boolean =>
+  device.authorized === true && !device.revoked;
 export interface Device {
   id: string;
   session: string;
   csrf: string;
-  expires: number;
+  /** Legacy expiry retained only on devices that were not eligible for migration. */
+  expires?: number;
+  authorized?: true;
   grant: Grant;
   lastRead?: string;
   revoked?: boolean;
@@ -57,6 +61,7 @@ export interface Receipt {
   error?: { phase: string; name: string; code?: string; message?: string };
 }
 interface State {
+  deviceAuthorizationVersion?: 1;
   pair?: { hash: string; expires: number; attempts: number; grant: Grant };
   devices: Device[];
   receipts: Receipt[];
@@ -77,6 +82,15 @@ export class DeviceStore {
       const state: State = existsSync(file)
         ? (JSON.parse(readFileSync(file, 'utf8')) as State)
         : { devices: [], receipts: [], notices: {} };
+      if (state.deviceAuthorizationVersion !== 1) {
+        const now = Date.now();
+        for (const device of state.devices)
+          if (!device.revoked && typeof device.expires === 'number' && device.expires > now) {
+            device.authorized = true;
+            delete device.expires;
+          }
+        state.deviceAuthorizationVersion = 1;
+      }
       const result = fn(state);
       const tmp = file + '.tmp';
       writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
@@ -118,7 +132,7 @@ export class DeviceStore {
         id: secret(),
         session: digest(session),
         csrf: secret(),
-        expires: Date.now() + 30 * 86400000,
+        authorized: true,
         grant: pair.grant,
       });
       delete s.pair;
@@ -129,7 +143,7 @@ export class DeviceStore {
   }
   authenticate(session: string): Device {
     const d = this.transaction(s => s.devices.find(d => d.session === digest(session)));
-    requireThat(d && !d.revoked && d.expires > Date.now(), 401, '请先配对');
+    requireThat(d && isAuthorizedDevice(d), 401, '请先配对');
     return d;
   }
   deviceLock(id: string) {

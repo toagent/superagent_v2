@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { BoundaryError, DeviceStore, requireThat } from './device-store';
+import { BoundaryError, DeviceStore, isAuthorizedDevice, requireThat } from './device-store';
 import { answerDecision, decisionState } from '../decisions';
 import { createPush, validateSubscription } from './push';
 
@@ -37,6 +37,8 @@ export async function createDecisionAdapter(origin: string, store = new DeviceSt
       createHash('sha256').update(style).digest('base64') +
       "'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   };
+  const cookie = (session: string, maxAge = 34560000) =>
+    `__Host-sa_device=${session}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=${String(maxAge)}`;
   async function body(req: Request): Promise<Record<string, unknown>> {
     requireThat(req.headers.get('content-type') === 'application/json', 415);
     requireThat(Number(req.headers.get('content-length') ?? 0) <= 4096, 413);
@@ -71,8 +73,16 @@ export async function createDecisionAdapter(origin: string, store = new DeviceSt
     host,
     tick: () => push.tick(),
     fetch: async (req: Request): Promise<Response> => {
+      let renewedCookie: string | undefined;
       const json = (data: unknown, status = 200, extra = {}) =>
-        Response.json(data, { status, headers: { ...headers, ...extra } });
+        Response.json(data, {
+          status,
+          headers: {
+            ...headers,
+            ...(status < 400 && renewedCookie ? { 'Set-Cookie': renewedCookie } : {}),
+            ...extra,
+          },
+        });
       try {
         const url = new URL(req.url),
           path = url.pathname;
@@ -92,18 +102,14 @@ export async function createDecisionAdapter(origin: string, store = new DeviceSt
         if (path === '/sa/device/pair' && req.method === 'POST' && !url.search) {
           requireThat(typeof data.code === 'string' && data.code.length <= 128);
           const session = store.pair(data.code);
-          return json({ paired: true }, 200, {
-            'Set-Cookie':
-              '__Host-sa_device=' +
-              session +
-              '; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000',
-          });
+          return json({ paired: true }, 200, { 'Set-Cookie': cookie(session) });
         }
         const session = /(?:^|;\s*)__Host-sa_device=([a-f0-9]{64})(?:;|$)/.exec(
           req.headers.get('cookie') ?? ''
         )?.[1];
         requireThat(session, 401, '请先配对');
         const device = store.authenticate(session);
+        renewedCookie = cookie(session);
         if (req.method === 'POST')
           requireThat(req.headers.get('x-csrf-token') === device.csrf, 403, 'CSRF 校验失败');
         if (path === '/sa/decisions' && req.method === 'GET' && !url.search) {
@@ -142,7 +148,7 @@ export async function createDecisionAdapter(origin: string, store = new DeviceSt
         if (path === '/sa/device/subscription' && req.method === 'POST') {
           const subscription = validateSubscription(data);
           store.transaction(s => {
-            const d = s.devices.find(d => d.id === device.id && !d.revoked);
+            const d = s.devices.find(d => d.id === device.id && isAuthorizedDevice(d));
             requireThat(d, 401);
             d.subscription = subscription;
           });
