@@ -237,7 +237,7 @@ export function rowOf(
           .filter(k => k.startsWith('rounds:'))
           .map(k => Number(k.slice(7))),
         ...nodes
-          .filter(n => n.state !== 'skipped')
+          .filter(n => n.state !== 'skipped' && n.state !== 'pending')
           .map(n => Number(/-r(\d+)$/.exec(n.nodeId)?.[1] ?? 0))
       ),
       reason:

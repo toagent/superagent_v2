@@ -52,10 +52,7 @@ afterAll(() => {
 let root = '';
 let stubDir = '';
 
-/**
- * archon 桩：`workflow get <id>` 返回 get-<id>.json；有 fail-<id> 标记时非零退出；有 hang-<id> 标记时挂起
- * （sleep 是孙进程、握着 stdout，用来验证整组被杀）；每次调用记一行。
- */
+/** archon 查询桩；sleep 孙进程用来验证超时或取消会杀掉整个进程组。 */
 beforeEach(() => {
   root = tmp();
   stubDir = join(root, 'stub');
@@ -226,6 +223,7 @@ describe('data rows', () => {
         { nodeId: 'code-a', state: 'completed' },
         { nodeId: 'review-m1-r1', state: 'completed' },
         { nodeId: 'human-m1', state: 'running' },
+        { nodeId: 'review-m1-r6', state: 'pending' },
       ],
     };
     const loaded = readLedger('sa1');
@@ -241,6 +239,7 @@ describe('data rows', () => {
       nodes: { done: 2, total: 4, current: 'human-m1', currentRole: 'human' },
       elapsed_s: 725,
       held: { node: 'human-m1', event: 'sa.human.m1' },
+      engine: { round: 1 },
       repo: root.split('/').at(-1),
       branch: 'sa/sa1',
       stale: false,
