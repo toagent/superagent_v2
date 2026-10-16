@@ -1,7 +1,6 @@
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { fmtClock, fmtElapsed, type Snapshot } from './data';
-import { basename } from 'node:path';
 import { cockpit, decisionHeader, fit } from './cockpit';
 import { residentHash } from '../generate';
 
@@ -29,87 +28,62 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
     );
   };
   const jobs = snap.activity?.jobs ?? [];
+  // Cockpit owns liveness; cached/error rows cannot establish current activity.
+  const active = c.active.filter(r => {
+    const row = snap.rows.find(x => x.run_id === r.id);
+    return (
+      !row || (!row.stale && !row.error && (!row.nativeState || row.nativeState === 'running'))
+    );
+  });
+  const unverified =
+    snap.rows.filter(
+      r =>
+        !active.some(x => x.id === r.run_id) &&
+        !c.needs.some(x => x.id === r.run_id) &&
+        !['completed', 'failed', 'cancelled'].includes(r.state)
+    ).length +
+    jobs.filter(j => !active.some(r => r.id === j.id) && !['done', 'failed'].includes(j.state))
+      .length;
   const alerts = [
     ...(typeof snap.summary.load_error === 'string'
       ? [`载入失败：${snap.summary.load_error}`]
       : []),
     ...c.anomalies,
-    ...snap.rows
-      .filter(r => r.stale || r.error)
-      .map(r => `${r.run_id}：${r.error ?? '查询失败，沿用旧数据'}`),
     ...(snap.activity?.notes ?? []),
   ];
-  const completed = snap.rows.filter(
-    r => r.state === 'completed' && !r.stale && (!r.nativeState || r.nativeState === 'completed')
-  );
-  const recent = [
-    ...completed.map(r => ({
-      at: r.completed_at ?? '',
-      label: `完成 · ${r.engine?.title ?? r.run_id}`,
-      color: 'green',
-    })),
-    ...jobs
-      .filter(j => j.state === 'done')
-      .map(j => ({ at: j.ended_at ?? '', label: `进程结束·未验收 · ${j.title}`, color: 'gray' })),
-  ].sort((a, b) => b.at.localeCompare(a.at));
-  const cards = [
-    ...c.runs
-      .filter(r => !completed.some(x => x.run_id === r.id))
-      .map(r => {
-        const row = snap.rows.find(x => x.run_id === r.id)!;
-        const live = c.active.some(x => x.id === r.id) && !row.stale;
-        const disposition = row.engine?.dispositions.at(-1);
-        return {
-          terminal:
-            !row.stale && ['failed', 'cancelled'].includes(row.state) &&
-            (!row.nativeState || row.nativeState === row.state),
-          title: `${r.title} · ${r.project}`,
-          status: live
-            ? `${r.stage} · ${r.progressText}`
-            : `${row.stale ? '数据陈旧 · ' : ''}${r.state} · ${r.reason || '状态待核实'}`,
-          detail:
-            row.error ||
-            (live
-              ? `${r.node ?? r.stage} · ${disposition ? `${disposition.action} · ${disposition.reason}` : `已用 ${r.elapsed} · 第${r.round}轮`}`
-              : disposition
-                ? `${disposition.action} · ${disposition.reason}`
-                : `最近事件 ${fmtClock(row.lastEvent ?? '', now.getTime())}`),
-          color: live ? 'cyan' : ['failed', 'unreadable'].includes(r.state) ? 'red' : 'yellow',
-        };
-      }),
-    ...jobs
-      .filter(j => j.state !== 'done')
-      .map(j => {
-        const live = c.active.find(r => r.id === j.id);
-        return {
-          terminal: j.state === 'failed',
-          title: `${j.title} · ${basename(j.cwd)}`,
-          status: live
-            ? `${live.stage} · ${live.progressText}`
-            : `${j.state} · ${j.state === 'queued' ? '准备启动' : '状态待核实'}`,
-          detail:
-            j.reason ||
-            (j.state === 'running' && !live
-              ? '心跳失联 / 进程状态未知'
-              : `最近心跳 ${fmtClock(j.heartbeatAt ?? '', now.getTime())}`),
-          color: live ? 'cyan' : j.state === 'failed' ? 'red' : 'yellow',
-        };
-      }),
-  ].sort((a, b) => Number(a.terminal) - Number(b.terminal));
+  const cards = active.map(r => {
+    const row = snap.rows.find(x => x.run_id === r.id);
+    const job = jobs.find(j => j.id === r.id);
+    const disposition = row?.engine?.dispositions.at(-1);
+    return {
+      title: `${r.title} · ${r.project}`,
+      status: `${r.stage} · ${r.progressText}`,
+      detail: row
+        ? `${r.node ?? r.stage} · ${disposition ? `${disposition.action} · ${disposition.reason}` : `已用 ${r.elapsed} · 第${r.round}轮`}`
+        : job?.reason || `最近心跳 ${fmtClock(job?.heartbeatAt ?? '', now.getTime())}`,
+      color: 'cyan',
+    };
+  });
+  const header = { ...c, active, anomalies: alerts };
   const age = now.getTime() - Date.parse(snap.at);
   const footer = `数据 ${fmtClock(snap.at, now.getTime())} · ${Number.isFinite(age) && age >= 0 ? `${fmtElapsed(Math.floor(age / 1000))}前` : '时效未知'}`;
-  // Reserve data freshness first, then alerts, decisions, cards and recent results.
+  // Reserve data freshness first, then alerts, decisions and live cards.
   const end = height - 1;
   if (lines.length < end)
     text(
       width >= 54
-        ? decisionHeader({ ...c, anomalies: alerts })
-        : `跑 ${c.active.length} · 等你 ${c.needs.length} · 僵死 ${c.zombies}`,
+        ? decisionHeader(header)
+        : `跑 ${active.length} · 等你 ${c.needs.length} · 僵死 ${c.zombies}`,
       undefined,
       true
     );
   if (width < 54 && lines.length < end)
-    text(`${decisionHeader(c).split(' · ')[3]} · 异常 ${alerts.length}`, undefined, false, true);
+    text(
+      `${decisionHeader(header).split(' · ')[3]} · 异常 ${alerts.length}`,
+      undefined,
+      false,
+      true
+    );
   const alertSlots = Math.min(2, end - lines.length, alerts.length);
   for (let i = 0; i < alertSlots; i++) {
     const suffix =
@@ -121,8 +95,8 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
       'yellow'
     );
   }
-  const recentSlots = recent.length && end - lines.length >= 5 ? 2 : 0;
-  const bodyEnd = end - recentSlots;
+  if (unverified && lines.length < end) text(`待核实 ${unverified} 项`, undefined, false, true);
+  const bodyEnd = end;
   if (c.needs.length && lines.length < bodyEnd) {
     text('需要你', 'yellow', true);
     let shown = 0;
@@ -160,7 +134,7 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
       text(`还有 ${c.needs.length - shown} 项待决策`, 'yellow');
   }
   if (lines.length < bodyEnd)
-    text(cards.length ? `任务 · ${cards.length}` : '无进行中任务', undefined, false, true);
+    text(cards.length ? `任务 · ${cards.length}` : '暂无活跃任务', undefined, false, true);
   let shown = 0;
   for (const card of cards) {
     if (lines.length + 3 + (shown + 1 < cards.length ? 1 : 0) > bodyEnd) break;
@@ -171,15 +145,6 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
   }
   if (shown < cards.length && lines.length < bodyEnd)
     text(`还有 ${cards.length - shown} 项任务未显示`, undefined, false, true);
-  if (recentSlots) {
-    text(
-      `近期完成 / 结束 · ${recent.length}${recent.length > 1 ? `（另 ${recent.length - 1} 项）` : ''}`,
-      undefined,
-      false,
-      true
-    );
-    text(recent[0].label, recent[0].color);
-  }
   text(footer, undefined, false, true);
   return (
     <Box flexDirection="column" width={width}>

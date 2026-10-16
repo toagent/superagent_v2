@@ -167,7 +167,7 @@ test('needs never infer questions from held states; unanswered asks remain visib
     }),
     { columns: 46 }
   );
-  expect(empty).toContain('无进行中任务');
+  expect(empty).toContain('暂无活跃任务');
   expect(empty.split('\n').at(-1)).toContain('数据 ');
 });
 test('board exits with the wrapper restart code when its recorded engine changes', () => {

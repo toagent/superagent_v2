@@ -784,12 +784,14 @@ describe('end to end', () => {
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
     expect(r.out.trimEnd().split('\n').length).toBeLessThanOrEqual(20);
-    expect(r.out).toContain('异常 31'); // 30 unresolved asks plus the unreadable ledger
+    expect(r.out).toContain('异常 30'); // 30 unresolved asks; the unreadable ledger is unverified
+    expect(r.out).toContain('待核实 1 项');
+    expect(r.out).toContain('暂无活跃任务');
     expect(r.out).toContain('等你 0');
     expect(r.out).not.toContain('acknowledged event');
     expect(readFileSync(asksPath, 'utf8')).toBe(asks);
     expect(readFileSync(messagePath, 'utf8')).toBe(message);
-    expect(r.out).toContain('跑');
+    expect(r.out).toContain('跑 0');
     expect(r.out).toContain('无法解析：coord:missing-0');
     expect(r.out).not.toContain('remote');
   });

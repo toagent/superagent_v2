@@ -129,7 +129,8 @@ for (const width of [120, 56])
     expect(text.split('\n')[0]).toContain('等你 1');
     expect(text).not.toContain('反思');
     expect(text).not.toContain('今日');
-    expect(text).toContain('zombie'); // stale runs remain visible, never silently completed
+    expect(text).not.toContain('zombie交付');
+    expect(text).toContain('待核实 1 项');
     expect(text).not.toContain('?%');
     if (width >= 100) expect(text).toContain('62% 剩~14m');
     expect(text).toContain('需要你');
@@ -516,8 +517,6 @@ for (const width of [38, 54, 82, 120])
         '编码',
         '62%',
         '还有 ',
-        '近期完成',
-        'delivered交付',
         '是=批准',
         '否=终止',
         '已等',
@@ -526,12 +525,12 @@ for (const width of [38, 54, 82, 120])
       expect(JSON.stringify(s)).toBe(before);
     });
 
-test('pane prioritizes unresolved runs and live jobs over terminal history', () => {
+test('pane shows only live cards among terminal, owner-lost and zombie history', () => {
   const s = snapshot();
   s.rows.unshift(
     ...Array.from({ length: 20 }, (_, i) => {
-      const state = i % 2 ? ('cancelled' as const) : ('failed' as const);
-      return { ...row(`history-${i}`, state), nativeState: state };
+      const state = ['completed', 'failed', 'cancelled', 'owner_lost', 'running'][i % 5];
+      return { ...row(`history-${i}`, state), lastEvent: iso(-1800) };
     })
   );
   s.rows.push(
@@ -543,23 +542,20 @@ test('pane prioritizes unresolved runs and live jobs over terminal history', () 
   const text = renderToString(createElement(Frame, { snap: s, width: 50, height: 47, now }), {
     columns: 50,
   });
-  const titles = [
-    'active交付',
-    'held交付',
-    'zombie交付',
-    'unknown交付',
-    'lost交付',
-    'cached交付',
-    'conflict交付',
-    'j1 ·',
-    'j2 ·',
-    'history-0交付',
-  ];
-  for (const title of titles) expect(text).toContain(title);
-  for (let i = 1; i < titles.length; i++)
-    expect(text.indexOf(titles[i])).toBeGreaterThan(text.indexOf(titles[i - 1]));
-  expect(text).toContain('任务 · 29');
-  expect(text).toContain('项任务未显示');
+  for (const title of ['active交付', 'j1 ·', 'j2 ·']) expect(text).toContain(title);
+  for (const id of [
+    'held',
+    'zombie',
+    'unknown',
+    'lost',
+    'cached',
+    'conflict',
+    ...Array.from({ length: 20 }, (_, i) => `history-${i}`),
+  ])
+    expect(text).not.toContain(`${id}交付`);
+  expect(text).toContain('是=批准');
+  expect(text).toContain('任务 · 3');
+  expect(text).not.toContain('近期完成');
 });
 
 test('pane separates process exit from run completion and preserves missing/stale evidence', () => {
@@ -568,24 +564,43 @@ test('pane separates process exit from run completion and preserves missing/stal
     row('unknown', 'unknown'),
     { ...row('cached'), stale: true },
     row('lost', 'owner_lost'),
+    row('unreadable', 'unreadable'),
+    { ...row('missing'), lastEvent: undefined },
+    { ...row('future'), lastEvent: iso(60) },
   ];
   s.asks = {};
   s.activity!.jobs[0].state = 'done';
   s.activity!.jobs[0].ended_at = iso(-1);
   s.activity!.jobs[1].pidAlive = false;
+  s.activity!.jobs.push(
+    ...(['queued', 'lost', 'failed'] as const).map(state => ({
+      ...s.activity!.jobs[0],
+      id: state,
+      title: `${state}-job`,
+      state,
+    }))
+  );
   const render = (now: Date) =>
     renderToString(createElement(Frame, { snap: s, width: 82, height: 32, now }), { columns: 82 });
   const text = render(now);
-  for (const value of [
-    'unknown',
-    '数据陈旧',
-    'owner_lost',
-    '心跳失联',
-    '进程结束·未验收',
-    '查询失败',
+  expect(text).toContain('暂无活跃任务');
+  expect(text).toContain('跑 0');
+  expect(text).toContain('待核实 9 项');
+  for (const title of [
+    'unknown交付',
+    'cached交付',
+    'lost交付',
+    'unreadable交付',
+    'missing交付',
+    'future交付',
+    'queued-job',
+    'lost-job',
+    'failed-job',
+    'j1',
+    'j2',
+    '近期完成',
   ])
-    expect(text).toContain(value);
-  expect(text).not.toContain('完成 ·');
+    expect(text).not.toContain(title);
   expect(
     render(new Date(ms + 60000))
       .split('\n')
@@ -603,6 +618,6 @@ test('empty pane and tiny heights keep data freshness without invented completio
     expect(text.split('\n').length).toBeLessThanOrEqual(height);
     expect(text).toContain('时效未知');
     expect(text).not.toContain('完成');
-    if (height === 20) expect(text).toContain('无进行中任务');
+    if (height === 20) expect(text).toContain('暂无活跃任务');
   }
 });
