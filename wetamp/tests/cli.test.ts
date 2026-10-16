@@ -2405,6 +2405,14 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
   }
   test('HF8 CLI still ticks when refreshConsole rejects an ambiguous legacy owner', async () => {
     const s = stub([humanWait()]);
+    // Parent spies do not cross the CLI process boundary. Keep real cleanup confined
+    // to this fixture, as scratch.test.ts does, rather than scanning operator sessions.
+    const preload = join(s.root, 'scratch-preload.cjs');
+    writeFileSync(
+      preload,
+      `const scratch = require(${JSON.stringify(join(WETAMP, 'hooks/scratch.cjs'))});
+Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scratch'))}));\n`
+    );
     writeFileSync(
       join(s.root, 'home', 'web.json'),
       JSON.stringify({
@@ -2415,7 +2423,10 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       })
     );
     const p = Bun.spawn([BIN, 'supervise-tick', '--json'], {
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`.trim(),
+      },
       stdout: 'pipe',
       stderr: 'pipe',
     });
