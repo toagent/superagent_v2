@@ -1326,6 +1326,7 @@ test.each([
   'quick-database-override',
 ])('scope overlap admission: %s (repository contact remains independent)', async scenario => {
   const s = setup();
+  sh('git switch -q -c feature', s.repo);
   isolated(s);
   process.env.SUPERAGENT_WRITE_ROOTS = s.root;
   process.env.SUPERAGENT_MEMORY = 'off';

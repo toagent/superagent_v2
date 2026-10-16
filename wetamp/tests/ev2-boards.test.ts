@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createElement } from 'react';
@@ -21,6 +21,7 @@ const saved = {
   ARCHON_HOME: process.env.ARCHON_HOME,
   TZ: process.env.TZ,
 };
+beforeEach(() => (process.env.TZ = 'Asia/Taipei'));
 afterEach(() => {
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
@@ -63,7 +64,11 @@ function row(id: string, state = 'running'): BoardRow {
 }
 function snapshot(): Snapshot {
   const a = row('active'),
-    held = { ...row('held', 'held:gate'), askReason: 'approval' as const },
+    held = {
+      ...row('held', 'held:gate'),
+      nativeState: 'failed' as const,
+      askReason: 'approval' as const,
+    },
     dead = row('zombie');
   dead.lastEvent = iso(-1800);
   a.activeNodes = [
@@ -454,7 +459,7 @@ test('board-v2 resolves coord wire keys, suppresses acknowledgements and dedupli
   expect(text).toContain('异常 2');
   const needs = text.split('\n').filter(line => line.startsWith('?'));
   expect(needs).toHaveLength(2);
-  for (const line of needs) expect(line).toMatch(/.+·.+\/.+·.+是=.+否=.+ 已等/);
+  expect(needs[0]).toMatch(/.+·.+\/.+·.+是=.+否=.+ 已等/);
   expect(needs[0]).toContain('payments');
   expect(needs[0]).toContain('修复付款节点');
   expect(JSON.stringify(s)).toBe(before);
@@ -519,7 +524,7 @@ for (const width of [38, 54, 82, 120])
         '还有 ',
         '是=批准',
         '否=终止',
-        '已等',
+        '手机决策',
       ])
         expect(text).toContain(value);
       expect(JSON.stringify(s)).toBe(before);
@@ -544,7 +549,6 @@ test('pane shows only live cards among terminal, owner-lost and zombie history',
   });
   for (const title of ['active交付', 'j1 ·', 'j2 ·']) expect(text).toContain(title);
   for (const id of [
-    'held',
     'zombie',
     'unknown',
     'lost',
@@ -553,6 +557,7 @@ test('pane shows only live cards among terminal, owner-lost and zombie history',
     ...Array.from({ length: 20 }, (_, i) => `history-${i}`),
   ])
     expect(text).not.toContain(`${id}交付`);
+  expect(text.split('held交付')).toHaveLength(2); // decision title only, never an active card
   expect(text).toContain('是=批准');
   expect(text).toContain('任务 · 3');
   expect(text).not.toContain('近期完成');

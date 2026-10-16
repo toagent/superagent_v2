@@ -218,7 +218,7 @@ test('every S3 reason translates, unknown reason survives unchanged, needs requi
   );
   expect(c.needs).toHaveLength(1);
   expect(c.active).toHaveLength(0);
-  expect(c.needs[0].question).toBe('等待批准 是=批准 否=终止');
+  expect(c.needs[0].question).toBe('等待批准 是=批准 否=终止；手机决策信息未知，请在 Mac 核实');
   expect(c.needs[0].waiting).toBe('3m00s');
   expect(render(snapshot())).not.toContain('需要你');
 });
