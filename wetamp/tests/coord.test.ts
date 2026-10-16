@@ -28,7 +28,7 @@ import {
 import { ownerLost } from '../src/archon';
 import * as native from '../src/archon';
 import * as landing from '../src/land';
-import { finalizeDelivery, main, waitRun, type Ledger } from '../src/cli';
+import { finalizeDelivery, main, scopeOverlaps, waitRun, type Ledger } from '../src/cli';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const req = createRequire(import.meta.url);
@@ -1243,7 +1243,45 @@ test('parallel runs claim independently of the online repository contact and fen
   expect(s.c.mutate(second, b, () => true)).toBe(true);
 });
 
-test('run launches under its own claim while another online owner remains repository contact', async () => {
+test('scope overlap reports unreadable state and DATABASE_URL without treating either as clear', () => {
+  const s = setup();
+  isolated(s);
+  const l = registered(s);
+  const plan = { repo: s.repo, packages: [] } as unknown as import('../src/plan').Plan;
+  expect(scopeOverlaps(plan)).toMatchObject([
+    { run_id: l.run_id, paths: [], error: expect.any(String) },
+  ]);
+  process.env.DATABASE_URL = 'unsupported-fixture';
+  expect(scopeOverlaps(plan)).toMatchObject([
+    { run_id: 'unknown', error: expect.stringContaining('DATABASE_URL') },
+  ]);
+  const output = spyOn(console, 'log').mockImplementation(() => undefined);
+  try {
+    for (const verb of ['run', 'quick']) {
+      expect(main([verb, '--allow-overlap', 'operator accepts overlap'])).toBe(64);
+      expect(JSON.parse(String(output.mock.calls.at(-1)![0]))).toMatchObject({
+        reason: 'scope_overlap',
+        overlap_warnings: [{ run_id: 'unknown', error: expect.stringContaining('SQLite-only') }],
+      });
+    }
+  } finally {
+    output.mockRestore();
+  }
+});
+
+test.each([
+  'overlap',
+  'override',
+  'completed',
+  'disjoint',
+  'unknown',
+  'unreadable',
+  'relative',
+  'quick',
+  'quick-override',
+  'unknown-override',
+  'state-unreadable',
+])('scope overlap admission: %s (repository contact remains independent)', async scenario => {
   const s = setup();
   isolated(s);
   process.env.SUPERAGENT_WRITE_ROOTS = s.root;
@@ -1251,13 +1289,20 @@ test('run launches under its own claim while another online owner remains reposi
   const contact = s.c.claim(s.scope, b).controller;
   const plan = fixturePlan(s.root, s.repo);
   const l = registered(s, contact);
-  l.plan = plan;
+  l.plan = 'missing-original.json'; // Frozen plan wins over an unavailable original.
+  if (scenario === 'completed') l.delivery_result = { status: 'blocked', reason: 'merge conflict' };
+  if (scenario === 'relative' || scenario === 'unreadable') {
+    l.gen_dir = join(s.root, 'missing-gen');
+    l.plan = 'historical.json';
+    if (scenario === 'relative') writeFileSync(join(s.repo, l.plan), readFileSync(plan));
+  }
   writeFileSync(join(s.sa, 'runs', l.run_id + '.json'), JSON.stringify(l));
   writeFileSync(
     join(s.sa, 'runs', 'failed.json'),
     JSON.stringify({
       ...l,
       run_id: 'failed',
+      delivery_result: undefined,
       archon_run_id: 'failed-engine',
       state: 'failed',
       plan: 'missing.json',
@@ -1268,6 +1313,7 @@ test('run launches under its own claim while another online owner remains reposi
     JSON.stringify({
       ...l,
       run_id: 'completed',
+      delivery_result: undefined,
       archon_run_id: 'completed-engine',
       plan: 'missing.json',
     })
@@ -1276,8 +1322,14 @@ test('run launches under its own claim while another online owner remains reposi
   mkdirSync(process.env.ARCHON_HOME!, { recursive: true });
   const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
   db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
-  db.run('insert into remote_agent_workflow_runs values (?, ?)', [l.archon_run_id, 'running']);
+  db.run('insert into remote_agent_workflow_runs values (?, ?)', [
+    l.archon_run_id,
+    scenario === 'completed' ? 'completed' : 'running',
+  ]);
+  if (scenario.startsWith('unknown'))
+    db.run('delete from remote_agent_workflow_runs where id=?', [l.archon_run_id]);
   db.run('insert into remote_agent_workflow_runs values (?, ?)', ['completed-engine', 'completed']);
+  if (scenario === 'state-unreadable') db.run('drop table remote_agent_workflow_runs');
   const native = req('../src/archon.ts') as typeof import('../src/archon');
   const coordination = req('../src/coord/index.ts') as typeof import('../src/coord');
   const relay = req('../src/relay-quota.ts') as typeof import('../src/relay-quota');
@@ -1286,24 +1338,60 @@ test('run launches under its own claim while another online owner remains reposi
       ? { id: l.archon_run_id, status: 'running' }
       : { ok: true, runId: 'new-engine-run' }
   );
-  const clean = coordination.cleanEngine;
-  const engine = spyOn(coordination, 'cleanEngine').mockImplementation(() => clean(s.repo));
+  // Generation has its own suite; admission must not spend the test deadline validating a workflow.
+  const generator = req('../src/generate.ts') as typeof import('../src/generate');
+  const generated = spyOn(generator, 'generate').mockReturnValue({
+    dir: s.root,
+    workflow: 'fixture',
+    config: 'fixture',
+    engine_hash: 'fixture',
+    engine_commit: 'fixture',
+  });
   const identity = spyOn(coordination, 'caller').mockReturnValue(a);
   const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'fixture' });
   const outputs: string[] = [],
     output = spyOn(console, 'log').mockImplementation(value => outputs.push(String(value)));
   try {
-    expect(main(['run', plan, '--fake']), outputs.join('\n')).toBe(0);
+    let input = plan;
+    if (scenario === 'disjoint') {
+      input = join(s.root, 'disjoint.json');
+      const next = JSON.parse(readFileSync(plan, 'utf8'));
+      for (const pkg of next.packages) pkg.scope.write = ['unrelated/**'];
+      writeFileSync(input, JSON.stringify(next));
+    }
+    const args = scenario.startsWith('quick')
+      ? ['quick', '--goal', 'overlap fixture', '--accept', 'true', '--repo', s.repo]
+      : ['run', input];
+    const allowed = scenario.includes('override') || scenario === 'disjoint';
+    const flags = scenario.includes('override') ? ['--allow-overlap', 'coordinated handoff'] : [];
+    expect(main([...args, '--fake', ...flags]), outputs.join('\n')).toBe(allowed ? 0 : 64);
     const result = JSON.parse(outputs.at(-1)!);
+    if (!allowed) {
+      expect(result).toMatchObject({ status: 'rejected', reason: 'scope_overlap' });
+      expect(result.overlap_warnings).toEqual(
+        expect.arrayContaining([expect.objectContaining({ run_id: l.run_id })])
+      );
+      if (['unknown', 'unreadable', 'state-unreadable'].includes(scenario))
+        expect(result.overlap_warnings[0].error).toBeString();
+      expect(launch).not.toHaveBeenCalled();
+      return;
+    }
     expect(result.default_contact).toMatchObject(b);
-    expect(result.overlap_warnings).toMatchObject([{ run_id: l.run_id, paths: expect.any(Array) }]);
+    if (scenario.includes('override')) {
+      expect(result.overlap_warnings).toMatchObject([
+        { run_id: l.run_id, paths: expect.any(Array) },
+      ]);
+      expect(
+        JSON.parse(readFileSync(join(s.sa, 'runs', result.run_id + '.json'), 'utf8')).allow_overlap
+      ).toBe('coordinated handoff');
+    } else expect(result.overlap_warnings).toEqual([]);
     expect(launch.mock.calls.some(([args]) => args[1] === 'get')).toBe(false);
     expect(s.c.owner(runScope({ run_id: result.run_id, repo: s.repo })).owner).toEqual(a);
     expect(s.c.owner(s.scope).owner).toEqual(b);
   } finally {
     db.close();
     launch.mockRestore();
-    engine.mockRestore();
+    generated.mockRestore();
     identity.mockRestore();
     quota.mockRestore();
     output.mockRestore();
