@@ -13,6 +13,7 @@ import {
   writeFileSync,
   statSync,
   utimesSync,
+  symlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -70,6 +71,7 @@ const portEvidence = {
 let root: string, sa: string, plan: Plan, ledger: Ledger, raw: RunView;
 const saved = new Map<string, string | undefined>();
 const keys = [
+  'HOME',
   'SUPERAGENT_ROLE',
   'SA_JOB_ID',
   'SUPERAGENT_HOME',
@@ -582,12 +584,20 @@ describe('EV1 lifecycle, privacy and priors', () => {
   });
   test('private and iCloud projects only triage, never invoke reflection', async () => {
     fake();
+    process.env.HOME = root;
+    const cloud = join(root, 'Library/CloudStorage/iClOuD Drive');
+    mkdirSync(cloud, { recursive: true });
+    symlinkSync(cloud, join(root, 'cloud-alias'));
+    expect(privateProject(join(root, 'Library/CloudStorage/SynologyDrive'))).toBe(false);
     for (const p of [
+      cloud,
+      join(root, 'cloud-alias/new-repo'),
       '/repo/_private-client',
       '/repo/_private/client',
       '/Users/operator/Library/Mobile Documents/com~apple~CloudDocs/repo',
     ]) {
       expect(privateProject(p)).toBe(true);
+      expect(reflectionQueue([episode({ project: p })], [], NOW)).toEqual([]);
       saveEpisode(episode({ id: `private-${p.includes('_private') ? 'a' : 'b'}`, project: p }));
     }
     expect(await reflectOne(NOW)).toBe(false);
