@@ -1,10 +1,17 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import https from 'node:https';
+import { EventEmitter } from 'node:events';
+import { createECDH } from 'node:crypto';
+import webpush from 'web-push';
+import * as archonModule from '../src/archon';
+import * as cliModule from '../src/cli';
+import * as sqlHost from '../../packages/core/src/workflows/sql-host';
+import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
 import { DeviceStore, digest, type Grant } from '../src/web/device-store';
 import { checkOrigin, createDecisionAdapter } from '../src/web/decision-adapter';
-import { publicIPv4, validateSubscription, createPush } from '../src/web/push';
+import { deliver, publicIPv4, validateSubscription, createPush } from '../src/web/push';
 import {
   authorizeDecision,
   answerDecision,
@@ -184,7 +191,11 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
   const send = async () => {
     deliveries++;
   };
-  await createPush(store, origin, send).tick();
+  expect(await createPush(store, origin, send).tick()).toMatchObject({
+    state: 'observed',
+    accepted: 1,
+    failed: 0,
+  });
   await createPush(new DeviceStore(store.root), origin, send).tick();
   expect(deliveries).toBe(1);
   const adapter = await createDecisionAdapter(origin, store);
@@ -229,6 +240,11 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
     }).tick();
   }
   expect(failures).toBe(3);
+  expect(await createPush(new DeviceStore(store.root), origin, send).tick()).toMatchObject({
+    state: 'failed',
+    failed: 1,
+    exhausted: 1,
+  });
   expect(store.transaction(s => s.notices[key]!.status)).toBe('failed');
   expect(state.receipt!.stage).toBe('resuming');
   expect(state.events.some(e => e.type === 'workflow_completed')).toBe(true);
@@ -237,4 +253,161 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
   expect(loadLedger(d.run).intervention_events!.at(-1)!.origin).toBe('operator');
   expect(authorizeDecision.bind(null, d.run)).toThrow();
   expect(coord().owner(runScope(loadLedger(d.run))).generation).toBe(d.controller!.generation);
+}, 120000);
+
+test('R1-2 default deliver executes web-push encryption, pinned DNS, HTTP failure and timeout handling', async () => {
+  const ecdh = createECDH('prime256v1');
+  const target = {
+    endpoint: 'https://web.push.apple.com/Qfixture',
+    keys: {
+      p256dh: ecdh.generateKeys().toString('base64url'),
+      auth: Buffer.alloc(16, 1).toString('base64url'),
+    },
+  };
+  const vapid = webpush.generateVAPIDKeys();
+  let requests = 0,
+    mode = 201;
+  const agents: https.Agent[] = [];
+  const request = spyOn(https, 'request').mockImplementation((...args: unknown[]) => {
+    requests++;
+    const options = args[0] as https.RequestOptions;
+    const respond = args[1] as (
+      response: EventEmitter & { statusCode: number; headers: object }
+    ) => void;
+    expect(options.hostname).toBe('web.push.apple.com');
+    expect(options.timeout).toBe(10000);
+    expect(options.method).toBe('POST');
+    expect(options.headers).toMatchObject({ TTL: 86400, 'Content-Encoding': 'aes128gcm' });
+    const agent = options.agent as https.Agent;
+    agents.push(agent);
+    expect(agent.options.rejectUnauthorized).not.toBe(false);
+    agent.options.lookup!('web.push.apple.com', {}, (error, address, family) => {
+      expect(error).toBeNull();
+      expect(address).toBe('17.1.2.3');
+      expect(family).toBe(4);
+    });
+    const req = Object.assign(new EventEmitter(), {
+      write: (body: Buffer) => {
+        expect(body.length).toBeGreaterThan(0);
+      },
+      destroy: (error: Error) => {
+        req.emit('error', error);
+      },
+      end: () =>
+        queueMicrotask(() => {
+          if (mode === 0) {
+            req.emit('timeout');
+            return;
+          }
+          const response = Object.assign(new EventEmitter(), {
+            statusCode: mode,
+            headers: { location: 'https://127.0.0.1/' },
+          });
+          respond(response);
+          response.emit('end');
+        }),
+    });
+    return req as unknown as ReturnType<typeof https.request>;
+  });
+  const destroy = spyOn(https.Agent.prototype, 'destroy');
+  try {
+    for (const addresses of [[], ['127.0.0.1'], ['17.1.2.3', '10.0.0.1']])
+      await expect(
+        deliver(target, 'fixture', vapid, origin, async () => addresses)
+      ).rejects.toThrow();
+    await expect(
+      deliver(target, 'fixture', vapid, origin, async () => {
+        throw Object.assign(new Error('DNS failed'), { code: 'ENOTFOUND' });
+      })
+    ).rejects.toMatchObject({ code: 'ENOTFOUND' });
+    expect(requests).toBe(0);
+    const resolve = async (host: string) => {
+      expect(host).toBe('web.push.apple.com');
+      return ['17.1.2.3'];
+    };
+    await deliver(target, 'fixture', vapid, origin, resolve);
+    for (mode of [302, 410, 500])
+      await expect(deliver(target, 'fixture', vapid, origin, resolve)).rejects.toMatchObject({
+        statusCode: mode,
+      });
+    mode = 0;
+    await expect(deliver(target, 'fixture', vapid, origin, resolve)).rejects.toThrow(
+      'Socket timeout'
+    );
+    expect(requests).toBe(5); // Redirects are rejected, never followed.
+    expect(destroy).toHaveBeenCalledTimes(5);
+    expect(new Set(agents).size).toBe(5);
+  } finally {
+    request.mockRestore();
+    destroy.mockRestore();
+  }
+});
+
+test('R1-4 health distinguishes absent pairing and subscription without exposing device data', async () => {
+  const store = new DeviceStore(join(tmp(), 'mobile'));
+  expect(await createPush(store, origin).tick()).toMatchObject({
+    state: 'unpaired',
+    paired: 0,
+    subscribed: 0,
+  });
+  pair(store);
+  const health = await createPush(store, origin).tick();
+  expect(health).toMatchObject({ state: 'unsubscribed', paired: 1, subscribed: 0, accepted: 0 });
+  expect(JSON.stringify(health)).not.toContain('session');
+});
+
+test('R1-3 answer failures preserve stage and machine diagnostics, reject HTTP and never replay', async () => {
+  const { closeDatabase } = await import('../../packages/core/src/db/connection');
+  for (const phase of ['respond', 'ledger', 'resume'] as const) {
+    await closeDatabase();
+    const canary = await startCanary(tmp());
+    const store = new DeviceStore(),
+      d = authorizeDecision(canary.runId);
+    const p = pair(store, { run: d.run, engine: d.engine, controller: d.controller! });
+    const error = Object.assign(new Error('synthetic private body'), { code: 'EIO' });
+    const operations = sqlHost.createSqlWorkflowOperations();
+    const archonJson = archonModule.archonJson;
+    const spy =
+      phase === 'respond'
+        ? spyOn(sqlHost, 'createSqlWorkflowOperations').mockReturnValue({
+            ...operations,
+            respondToWorkflow: async () => {
+              throw error;
+            },
+          })
+        : phase === 'ledger'
+          ? spyOn(cliModule, 'updateLedger').mockImplementation(() => {
+              throw error;
+            })
+          : spyOn(archonModule, 'archonJson').mockImplementation((args, cwd) =>
+              args[1] === 'resume' ? { ok: false } : archonJson(args, cwd)
+            );
+    try {
+      const adapter = await createDecisionAdapter(origin, store);
+      const response = await adapter.fetch(
+        new Request(origin + '/sa/decisions/' + d.id + '/answer', {
+          method: 'POST',
+          headers: {
+            host: 'decision.example.test',
+            origin,
+            'content-type': 'application/json',
+            cookie: '__Host-sa_device=' + p.session,
+            'x-csrf-token': p.device.csrf,
+          },
+          body: JSON.stringify({ decision: 'detail' }),
+        })
+      );
+      expect(response.status).toBe(503);
+      const receipt = new DeviceStore(store.root).transaction(s => s.receipts[0]);
+      expect(receipt.stage).toBe(phase === 'respond' ? 'unknown' : 'accepted');
+      expect(receipt.error).toMatchObject({ phase, name: 'Error' });
+      if (phase === 'resume') expect(receipt.error!.message).toContain('续跑尚未确认');
+      else expect(receipt.error!.code).toBe('EIO');
+      expect(JSON.stringify(receipt)).not.toContain('synthetic private body');
+      await expect(answerDecision(store, p.device, d.id, 'detail')).rejects.toThrow('已有答复');
+    } finally {
+      spy.mockRestore();
+      await closeDatabase();
+    }
+  }
 }, 120000);

@@ -420,8 +420,17 @@ async function serve(): Promise<void> {
     const notify = async () => {
       if (!mobile || notifying) return;
       notifying = true;
-      try { await mobile.tick(); writeAtomic(join(dir, 'mobile-health'), JSON.stringify({ state: 'observed', at: new Date().toISOString() })); } catch { writeAtomic(join(dir, 'mobile-health'), 'notification observation failed; unknown'); }
-      finally { notifying = false; }
+      try {
+        const health = await mobile.tick();
+        writeAtomic(
+          join(dir, 'mobile-health'),
+          JSON.stringify({ ...health, at: new Date().toISOString() })
+        );
+      } catch {
+        writeAtomic(join(dir, 'mobile-health'), 'notification observation failed; unknown');
+      } finally {
+        notifying = false;
+      }
     };
     if (mobile) { mobileTimer = setInterval(() => void notify(), 15000); void notify(); }
     const consoleHandler = handler(port, token, () => overview(demand.snapshot()), 'http://localhost', fetch, socket, () => demand.snapshot(), demand.update);

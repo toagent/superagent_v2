@@ -1015,3 +1015,45 @@ test('P1 deleted repository uses the same report and board fallback', async () =
   expect(snapshot.summary['node_s:code']).toBe(summary['node_s:code']);
   expect(snapshot.summary['node_s:code']).toBe(19387);
 });
+
+test('R1-1 loader and report retain unknown human needs and malformed asks, without duplicates', async () => {
+  const gate = { nodeId: 'human-m1', pauseId: 'p', message: '当前签收问题' };
+  const run: RunView = {
+    id: 'a-human',
+    status: 'paused',
+    metadata: {
+      approval: gate,
+    },
+  };
+  const l = ledger('human', run, { repo: gitRepo(tmp()) });
+  writeFileSync(join(l.gen_dir, 'plan.json'), JSON.stringify({ packages: [{ title: '测试' }] }));
+  const asks = {
+    'human:signoff': { status: 'pending' },
+    malformed: { status: 'pending' },
+    'orphan:signoff': { status: 'unknown' },
+  };
+  writeFileSync(join(process.env.SUPERAGENT_HOME!, 'asks.json'), JSON.stringify(asks));
+  const load = createLoader();
+  const fresh = await load(50);
+  const reportSnapshot = snapshotOf([{ ledger: l, run }]);
+  reportSnapshot.asks = asks;
+  const projected = cockpit(fresh);
+  expect(projected.needs).toHaveLength(1);
+  expect(projected.needs[0].question).toContain('当前签收问题');
+  expect(projected.needs.map(n => n.question)).toEqual(
+    cockpit(reportSnapshot).needs.map(n => n.question)
+  );
+  expect(projected.anomalies).toEqual(['无法解析：malformed', '无法解析：orphan:signoff']);
+  writeFileSync(join(stubDir, 'fail-a-human'), '1');
+  const stale = await load(50);
+  expect(stale.rows[0].stale).toBe(true);
+  expect(cockpit(stale).needs).toHaveLength(1);
+  expect(cockpit(stale).needs[0].question).toContain('未知');
+  expect(cockpit(stale).needs[0].decision).toBeUndefined();
+  // The loader catches descriptor failures (e.g. an unreadable frozen plan).
+  writeFileSync(join(l.gen_dir, 'plan.json'), '{');
+  const broken = snapshotOf([{ ledger: l, run }]);
+  broken.asks = asks;
+  expect(broken.rows[0].humanDecision).toBeUndefined();
+  expect(cockpit(broken).needs.map(n => n.id)).toEqual(['human']);
+});

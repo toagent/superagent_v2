@@ -61,13 +61,15 @@ interface Vapid {
   publicKey: string;
   privateKey: string;
 }
-async function deliver(
+export async function deliver(
   target: webpush.PushSubscription,
   payload: string,
   vapid: Vapid,
-  origin: string
+  origin: string,
+  resolve = (host: string): Promise<string[]> => resolve4(host)
 ) {
-  const addresses = await resolve4('web.push.apple.com');
+  validateSubscription(target);
+  const addresses = await resolve('web.push.apple.com');
   requireThat(addresses.length && addresses.every(publicIPv4));
   const agent = new Agent({
     family: 4,
@@ -95,11 +97,13 @@ export function createPush(store: DeviceStore, origin: string, send = deliver) {
       const devices = store.transaction(s =>
         s.devices.filter(d => !d.revoked && d.expires > Date.now() && d.subscription)
       );
+      let unknown = 0;
       for (const device of devices) {
         const previous = store.transaction(s =>
           s.receipts.filter(r => r.device === device.id).at(-1)
         );
         const state = await decisionState(device, undefined, store);
+        if (state.status === 'unknown') unknown++;
         const done = ['completed', 'failed', 'cancelled'].includes(state.status);
         const decision = state.decision;
         if ((!decision || decision.disabled) && !(done && previous)) continue;
@@ -148,6 +152,32 @@ export function createPush(store: DeviceStore, origin: string, send = deliver) {
           notice.status = status;
         });
       }
+      return store.transaction(s => {
+        const paired = s.devices.filter(d => !d.revoked && d.expires > Date.now());
+        const notices = Object.entries(s.notices)
+          .filter(([key]) => devices.some(d => key.startsWith(d.id + ':')))
+          .flatMap(([, n]) => (n ? [n] : []));
+        const failed = notices.filter(n => n.status === 'failed').length;
+        const pending = notices.filter(n => n.status === 'unknown').length;
+        return {
+          state: !paired.length
+            ? 'unpaired'
+            : !devices.length
+              ? 'unsubscribed'
+              : failed
+                ? 'failed'
+                : unknown || pending
+                  ? 'unknown'
+                  : 'observed',
+          paired: paired.length,
+          subscribed: devices.length,
+          accepted: notices.filter(n => n.status === 'accepted').length,
+          failed,
+          exhausted: notices.filter(n => n.status !== 'accepted' && n.attempts >= 3).length,
+          unknown: unknown + pending,
+          delivery: 'accepted 仅表示推送服务接收，不证明手机送达',
+        };
+      });
     },
   };
 }

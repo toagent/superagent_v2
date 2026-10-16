@@ -44,6 +44,7 @@ export interface Receipt {
   decision: string;
   at: string;
   stage: 'intent' | 'accepted' | 'resuming' | 'unknown';
+  error?: { phase: string; name: string; code?: string; message?: string };
 }
 interface State {
   pair?: { hash: string; expires: number; attempts: number; grant: Grant };

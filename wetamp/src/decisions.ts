@@ -10,7 +10,14 @@ import {
   type Ledger,
 } from './cli';
 import { coord, runScope, same, type Controller } from './coord';
-import { DeviceStore, digest, requireThat, type Device, type Receipt } from './web/device-store';
+import {
+  BoundaryError,
+  DeviceStore,
+  digest,
+  requireThat,
+  type Device,
+  type Receipt,
+} from './web/device-store';
 
 export interface Decision {
   id: string;
@@ -172,6 +179,7 @@ export async function answerDecision(
             r.stage = value;
           });
         };
+        let phase = 'respond';
         try {
           const { createSqlWorkflowOperations } =
             await import('../../packages/core/src/workflows/sql-host');
@@ -183,6 +191,7 @@ export async function answerDecision(
             { nodeId: d.node, pauseId: d.pause }
           );
           stage('accepted');
+          phase = 'ledger';
           updateLedger(l, cur => {
             (cur.intervention_events ??= []).push({
               at: receipt.at,
@@ -194,6 +203,7 @@ export async function answerDecision(
               ask_id: device.id,
             });
           });
+          phase = 'resume';
           const now = getRun(d.engine, l.repo);
           if (now.status === 'paused') {
             c.mutate(
@@ -207,8 +217,26 @@ export async function answerDecision(
             );
             stage('resuming');
           }
-        } catch {
+        } catch (error) {
           if (receipt.stage === 'intent') stage('unknown');
+          // Keep machine diagnostics, never provider bodies, request contents or credentials.
+          store.transaction(s => {
+            const r = s.receipts.find(r => r.id === id);
+            requireThat(r, 500);
+            r.error = {
+              phase,
+              name: error instanceof Error ? error.name : 'UnknownError',
+              code:
+                error &&
+                typeof error === 'object' &&
+                'code' in error &&
+                typeof error.code === 'string'
+                  ? error.code
+                  : undefined,
+              message: error instanceof BoundaryError ? error.message : undefined,
+            };
+          });
+          throw error;
         }
         return receipt;
       },

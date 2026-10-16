@@ -81,7 +81,6 @@ export interface Snapshot {
   eta?: Record<string, Estimate>;
   heartbeat_ms?: number;
   asks?: Record<string, { status: string }>;
-  humanDecisions?: Decision[];
   coordMessages?: Message[];
   usage?: UsageCache;
   web_url?: string;
@@ -464,7 +463,6 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       /* Missing memory remains unknown. */
     }
     return {
-      humanDecisions: rows.flatMap(r => (r.stale || !r.humanDecision ? [] : [r.humanDecision])),
       reflection,
       heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })
         ?.mtimeMs,
