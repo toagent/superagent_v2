@@ -4,18 +4,33 @@ exports[`62 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
 "跑 3 · 等你 1 · 僵死 0 · ETA ~14m · 异常 0
 需要你
 ? xiaopan·xia…/revi…·等待批准 是=批准 否=终止 已等1h02m
-进行中
-sinan · IIQE 题目清单报告 · code-a (编码 m2/3) · 已用 1h00m ·…
-xiaopan · 启动配置烘焙 · review-m2-r1 (评审 r1) · 已用 1h00m …
-xiaopan · 启动配置烘焙 · 编码 · 已用 10m00s · 33% 剩~20m · 第…"
+任务 · 3
+IIQE 题目清单报告 · sinan
+  编码 m2/3 · 62% 剩~14m
+  code-a · 已用 1h00m · 第1轮
+启动配置烘焙 · xiaopan
+  评审 r1 · 31% 剩~40m
+  review-m2-r1 · ask · approval
+启动配置烘焙 · xiaopan
+  编码 · 33% 剩~20m
+  最近心跳 16:58:00
+数据 16:58:00 · 0s前"
 `;
 
 exports[`46 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
-"跑 3 · 等你 1 · 僵死 0 · ETA ~14m · 异常 0
+"跑 3 · 等你 1 · 僵死 0
+ETA ~14m · 异常 0
 需要你
 ? xiao…·x…/r…·等待… 是=批准 否=终止 已等1h02m
-进行中
-sinan · IIQE 题目清单报告 · code-a (编码 m2/3…
-xiaopan · 启动配置烘焙 · review-m2-r1 (评审 r…
-xiaopan · 启动配置烘焙 · 编码 · 已用 10m00s ·…"
+任务 · 3
+IIQE 题目清单报告 · sinan
+  编码 m2/3 · 62% 剩~14m
+  code-a · 已用 1h00m · 第1轮
+启动配置烘焙 · xiaopan
+  评审 r1 · 31% 剩~40m
+  review-m2-r1 · ask · approval
+启动配置烘焙 · xiaopan
+  编码 · 33% 剩~20m
+  最近心跳 16:58:00
+数据 16:58:00 · 0s前"
 `;

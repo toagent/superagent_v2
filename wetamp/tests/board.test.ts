@@ -784,7 +784,7 @@ describe('end to end', () => {
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
     expect(r.out.trimEnd().split('\n').length).toBeLessThanOrEqual(20);
-    expect(r.out).toContain('异常 30');
+    expect(r.out).toContain('异常 31'); // 30 unresolved asks plus the unreadable ledger
     expect(r.out).toContain('等你 0');
     expect(r.out).not.toContain('acknowledged event');
     expect(readFileSync(asksPath, 'utf8')).toBe(asks);

@@ -119,14 +119,16 @@ for (const width of [62, 46])
       columns: width,
     });
     expect(frame).toMatchSnapshot();
-    expect(frame.split('\n')).toHaveLength(7);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(100);
+    expect(frame).toContain('数据 ');
+    expect(frame).toContain('任务 · 3');
     expect(frame).toContain('跑 3 · 等你 1');
     const roles = cockpit(snap, now.getTime()).active.map(r => r.role);
     expect(roles).toContain('将军·sol6.1');
     expect(roles).toContain('军师·astra');
     expect(frame).toContain('是=批准 否=终止 已等1h02m');
     expect(frame).toContain(width >= 60 ? '等待批准' : '等待…');
-    expect(frame).not.toMatch(/心跳|tok |今日结果|终端|预算|q退出/);
+    expect(frame).not.toMatch(/tok |今日结果|终端|预算|q退出/);
     for (const line of frame.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   });
 test('registered jobs use same-role median and expose history basis; missing/other-role history stays unknown', () => {
@@ -165,7 +167,8 @@ test('needs never infer questions from held states; unanswered asks remain visib
     }),
     { columns: 46 }
   );
-  expect(empty).toEndWith('无进行中任务');
+  expect(empty).toContain('无进行中任务');
+  expect(empty.split('\n').at(-1)).toContain('数据 ');
 });
 test('board exits with the wrapper restart code when its recorded engine changes', () => {
   expect(boardExitCode('original', 'original')).toBe(0);

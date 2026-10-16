@@ -129,7 +129,7 @@ for (const width of [120, 56])
     expect(text.split('\n')[0]).toContain('等你 1');
     expect(text).not.toContain('反思');
     expect(text).not.toContain('今日');
-    expect(text).not.toContain('zombie');
+    expect(text).toContain('zombie'); // stale runs remain visible, never silently completed
     expect(text).not.toContain('?%');
     if (width >= 100) expect(text).toContain('62% 剩~14m');
     expect(text).toContain('需要你');
@@ -462,17 +462,111 @@ test('board-v2 resolves coord wire keys, suppresses acknowledgements and dedupli
     columns: 160,
   });
   expect(longTitle.split('\n').find(line => line.startsWith('? payments'))).toContain('否=继续等');
-  for (const width of [56, 62, 80]) {
+  for (const width of [38, 56, 62, 80]) {
     const narrow = renderToString(createElement(Frame, { snap: s, width, height: 20, now }), {
       columns: width,
     });
     const line = narrow.split('\n').find(line => line.startsWith('?'))!;
-    expect(line).toContain('是=发现者接管 否=继续等 已等2m00s');
-    expect(line).toMatch(/.+·.+\/.+·.+是=/);
+    if (width === 38) {
+      expect(narrow).toContain('是=发现者接管 否=继续等');
+      expect(narrow).toContain('已等2m00s');
+    } else {
+      expect(line).toContain('是=发现者接管 否=继续等 已等2m00s');
+      expect(line).toMatch(/.+·.+\/.+·.+是=/);
+    }
     expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   }
   for (const state of ['accepted', 'done', 'rejected'] as const) {
     s.coordMessages = [{ ...message, state }];
     expect(cockpit(s, ms).needs.map(r => r.id)).toEqual(['held']);
+  }
+});
+
+for (const width of [38, 54, 82, 120])
+  for (const height of [20, 32])
+    test(`pane ${width}x${height}: bounded cards, alerts and snapshot freshness`, () => {
+      const s = snapshot();
+      s.rows[0].engine!.title = '\x1b[31m长中文任务标题\x1b[0m'.repeat(10);
+      s.summary.load_error = 'offline';
+      const done = {
+        ...row('delivered', 'completed'),
+        nativeState: 'completed' as const,
+        completed_at: iso(-5),
+      };
+      s.rows.push(done, row('unknown', 'unknown'));
+      s.activity!.jobs.push(
+        ...Array.from({ length: 8 }, (_, i) => ({
+          ...s.activity!.jobs[0],
+          id: `job-${i}`,
+          title: `登记任务${i}`,
+        }))
+      );
+      const before = JSON.stringify(s);
+      const text = renderToString(createElement(Frame, { snap: s, width, height, now }), {
+        columns: width,
+      });
+      const lines = text.split('\n');
+      expect(lines.length).toBeLessThanOrEqual(height);
+      for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
+      expect(text).not.toContain('\x1b');
+      for (const value of [
+        '载入失败：offline',
+        '数据 ',
+        '长中文任务标题',
+        '编码',
+        '62%',
+        '还有 ',
+        '近期完成',
+        'delivered交付',
+        '是=批准',
+        '否=终止',
+        '已等',
+      ])
+        expect(text).toContain(value);
+      expect(JSON.stringify(s)).toBe(before);
+    });
+
+test('pane separates process exit from run completion and preserves missing/stale evidence', () => {
+  const s = snapshot();
+  s.rows = [
+    row('unknown', 'unknown'),
+    { ...row('cached'), stale: true },
+    row('lost', 'owner_lost'),
+  ];
+  s.asks = {};
+  s.activity!.jobs[0].state = 'done';
+  s.activity!.jobs[0].ended_at = iso(-1);
+  s.activity!.jobs[1].pidAlive = false;
+  const render = (now: Date) =>
+    renderToString(createElement(Frame, { snap: s, width: 82, height: 32, now }), { columns: 82 });
+  const text = render(now);
+  for (const value of [
+    'unknown',
+    '数据陈旧',
+    'owner_lost',
+    '心跳失联',
+    '进程结束·未验收',
+    '查询失败',
+  ])
+    expect(text).toContain(value);
+  expect(text).not.toContain('完成 ·');
+  expect(
+    render(new Date(ms + 60000))
+      .split('\n')
+      .at(-1)
+  ).toContain('1m00s前');
+  expect(render(now).split('\n').at(-1)).toContain('0s前');
+});
+
+test('empty pane and tiny heights keep data freshness without invented completion', () => {
+  const s: Snapshot = { at: 'invalid', rows: [], summary: {} };
+  for (const height of [1, 2, 3, 20]) {
+    const text = renderToString(createElement(Frame, { snap: s, width: 38, height, now }), {
+      columns: 38,
+    });
+    expect(text.split('\n').length).toBeLessThanOrEqual(height);
+    expect(text).toContain('时效未知');
+    expect(text).not.toContain('完成');
+    if (height === 20) expect(text).toContain('无进行中任务');
   }
 });
