@@ -2,8 +2,8 @@ import webpush from 'web-push';
 import { resolve4 } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 import { Agent } from 'node:https';
-import { DeviceStore, requireThat } from './device-store';
-import { decisionState } from '../decisions';
+import { DeviceStore, isOperatorDevice, requireThat } from './device-store';
+import { decisionState, loadCurrentDecisions, type DecisionInbox } from '../decisions';
 
 export function validateSubscription(value: unknown): webpush.PushSubscription {
   requireThat(value && typeof value === 'object');
@@ -89,7 +89,12 @@ export async function deliver(
   }
 }
 /** Durable intent first: a crash may lose a notification, never fabricate delivery. */
-export function createPush(store: DeviceStore, origin: string, send = deliver) {
+export function createPush(
+  store: DeviceStore,
+  origin: string,
+  send = deliver,
+  loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions
+) {
   const vapid = store.transaction(s => (s.vapid ??= webpush.generateVAPIDKeys()));
   return {
     publicKey: vapid.publicKey,
@@ -97,16 +102,22 @@ export function createPush(store: DeviceStore, origin: string, send = deliver) {
       const devices = store.transaction(s =>
         s.devices.filter(d => !d.revoked && d.expires > Date.now() && d.subscription)
       );
+      const operatorInbox = devices.some(isOperatorDevice) ? await loadInbox() : undefined;
       let unknown = 0;
       for (const device of devices) {
-        const view = await decisionState(device, undefined, store);
-        unknown += view.unknown + (view.status === 'unknown' ? 1 : 0);
+        const view = isOperatorDevice(device)
+          ? {
+              decisions: operatorInbox?.decisions ?? [],
+              unknown: operatorInbox?.unknown.length ?? 0,
+            }
+          : await decisionState(device, undefined, store);
+        unknown += view.unknown;
         const receipts = store.transaction(s => s.receipts.filter(r => r.device === device.id));
         const items: { id: string; status?: string }[] = view.decisions
           .filter(d => !d.disabled)
           .map(d => ({ id: d.id }));
         for (const receipt of receipts) {
-          const state = await decisionState(device, receipt.id, store);
+          const state = await decisionState(device, receipt.id, store, operatorInbox);
           if (state.status === 'unknown') unknown++;
           if (['completed', 'failed', 'cancelled'].includes(state.status))
             items.push({ id: receipt.id, status: state.status });

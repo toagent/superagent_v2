@@ -19,6 +19,7 @@ import {
   type Device,
   type Receipt,
 } from './web/device-store';
+import type { Snapshot } from './board/data';
 
 export interface Decision {
   id: string;
@@ -109,6 +110,31 @@ export function currentDecisions(): { decisions: Decision[]; unknown: string[] }
   }
   return { decisions: decisions.sort((a, b) => a.run.localeCompare(b.run)), unknown };
 }
+export type DecisionInbox = ReturnType<typeof currentDecisions>;
+export const DECISION_SCAN_LIMIT = 100;
+let inboxLoader: ((limit: number) => Promise<Snapshot>) | undefined;
+let inboxPending: Promise<DecisionInbox> | undefined;
+
+export function decisionsFromSnapshot(snapshot: Snapshot): DecisionInbox {
+  const decisions = snapshot.rows
+    .flatMap(row => (!row.stale && row.humanDecision ? [row.humanDecision] : []))
+    .sort((a, b) => a.run.localeCompare(b.run));
+  const unknown = snapshot.rows
+    .filter(row => (row.stale || row.state === 'unreadable') && !row.missing)
+    .map(row => row.run_id);
+  return { decisions, unknown };
+}
+
+/** The mobile hot path shares the board's bounded, cached, parallel and timed loader. */
+export async function loadCurrentDecisions(): Promise<DecisionInbox> {
+  return (inboxPending ??= (async () => {
+    const { createLoader } = await import('./board/data');
+    inboxLoader ??= createLoader();
+    return decisionsFromSnapshot(await inboxLoader(DECISION_SCAN_LIMIT));
+  })().finally(() => {
+    inboxPending = undefined;
+  }));
+}
 export function authorizeDecision(run: string): Decision {
   const l = loadLedger(run),
     d = describeDecision(l, getRun(l.archon_run_id, l.repo));
@@ -122,7 +148,7 @@ export async function answerDecision(
   choice: string
 ): Promise<Receipt> {
   const candidate = isOperatorDevice(device)
-    ? currentDecisions().decisions.find(d => d.id === id)
+    ? (await loadCurrentDecisions()).decisions.find(d => d.id === id)
     : undefined;
   if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
   const l = loadLedger(candidate?.run ?? device.grant.run),
@@ -257,12 +283,17 @@ export async function answerDecision(
     deviceGuard.release();
   }
 }
-export async function decisionState(device: Device, id?: string, store = new DeviceStore()) {
+export async function decisionState(
+  device: Device,
+  id?: string,
+  store = new DeviceStore(),
+  operatorInbox?: DecisionInbox
+) {
   const receipt = store.transaction(s =>
     s.receipts.filter(r => (!id || r.id === id) && r.device === device.id).at(-1)
   );
   const inbox = isOperatorDevice(device)
-    ? currentDecisions()
+    ? (operatorInbox ?? (await loadCurrentDecisions()))
     : (() => {
         try {
           const l = loadLedger(device.grant.run),

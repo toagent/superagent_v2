@@ -4,7 +4,7 @@ import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { getRunAsync, tail, type RunView } from '../archon';
+import { getRunAsync, RunQueryError, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
 import { loadActivity, type Activity } from './activity';
@@ -73,6 +73,8 @@ export interface BoardRow {
   plan: string;
   /** 本轮查询失败，沿用上一轮的 run。 */
   stale: boolean;
+  /** The engine confirmed that this historical run no longer exists. */
+  missing?: boolean;
   error?: string;
 }
 
@@ -311,7 +313,7 @@ export function rowOf(
   };
 }
 
-export function unreadableRow(id: string, error: string, l?: Ledger): BoardRow {
+export function unreadableRow(id: string, error: string, l?: Ledger, missing = false): BoardRow {
   return {
     run_id: id,
     state: 'unreadable',
@@ -329,6 +331,7 @@ export function unreadableRow(id: string, error: string, l?: Ledger): BoardRow {
     evidence: '',
     plan: l?.plan ?? '',
     stale: false,
+    missing,
     error,
   };
 }
@@ -438,7 +441,9 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       const { l } = r;
       pairs.push({ ledger: l, run: r.run ?? r.err });
       if (!r.run) {
-        rows.push(unreadableRow(l.run_id, tail(r.err.message, 200), l));
+        rows.push(
+          unreadableRow(l.run_id, tail(r.err.message, 200), l, r.err instanceof RunQueryError)
+        );
         continue;
       }
       if (!roles.has(l.run_id)) roles.set(l.run_id, workflowRoles(l));

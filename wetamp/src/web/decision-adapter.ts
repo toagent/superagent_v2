@@ -112,11 +112,16 @@ export async function createDecisionAdapter(origin: string, store = new DeviceSt
             deviceId: device.id,
             csrf: device.csrf,
             publicKey: push.publicKey,
-            notification: store.transaction(s =>
-              Object.entries(s.notices)
+            notification: store.transaction(s => {
+              const notices = Object.entries(s.notices)
                 .filter(([k]) => k.startsWith(device.id + ':'))
-                .map(([, n]) => ({ ...n }))
-            ),
+                .flatMap(([, n]) => (n ? [n] : []));
+              return {
+                accepted: notices.filter(n => n.status === 'accepted').length,
+                failed: notices.filter(n => n.status === 'failed').length,
+                unknown: notices.filter(n => n.status === 'unknown').length,
+              };
+            }),
             subscribed: !!device.subscription,
             delivery: 'accepted 仅表示推送服务接收，不证明手机送达',
           });

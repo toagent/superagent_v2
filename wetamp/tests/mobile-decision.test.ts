@@ -22,6 +22,7 @@ import {
   authorizeDecision,
   answerDecision,
   decisionState,
+  decisionsFromSnapshot,
   currentDecisions,
 } from '../src/decisions';
 import { startCanary } from '../scripts/mobile-canary';
@@ -193,7 +194,7 @@ test('device revocation requires final confirmation and cannot submit twice', as
         note: '',
         events: [],
         subscribed: false,
-        notification: [],
+        notification: { accepted: 0, failed: 0, unknown: 0 },
       })
     );
   };
@@ -239,6 +240,83 @@ test('device revocation requires final confirmation and cannot submit twice', as
   expect(elements['revoke-dialog'].open).toBe(true);
   elements['revoke-cancel'].onclick();
   expect(elements['revoke-dialog'].open).toBe(false);
+});
+test('operator inbox sorts multiple runs, ignores archived runs and preserves real unknowns', () => {
+  const decision = (run: string) => ({
+    id: digest(run),
+    run,
+    engine: 'engine-' + run,
+    node: 'gate',
+    pause: 'pause-' + run,
+    question: run,
+    reason: 'approval',
+    context: run,
+    options: [{ id: 'approve', label: 'Approve', consequence: 'Continue' }],
+  });
+  const row = (run_id: string, extra: Record<string, unknown> = {}) =>
+    ({
+      run_id,
+      state: 'paused',
+      stale: false,
+      humanDecision: decision(run_id),
+      ...extra,
+    }) as unknown as import('../src/board/data').BoardRow;
+  const inbox = decisionsFromSnapshot({
+    summary: {},
+    at: new Date().toISOString(),
+    rows: [
+      row('run-b'),
+      row('run-a'),
+      row('archived', { state: 'unreadable', humanDecision: undefined, missing: true }),
+      row('unreadable', { state: 'unreadable', humanDecision: undefined }),
+      row('stale', { stale: true }),
+    ],
+  });
+  expect(inbox.decisions.map(d => d.run)).toEqual(['run-a', 'run-b']);
+  expect(inbox.unknown.sort()).toEqual(['stale', 'unreadable']);
+});
+
+test('operator push shares one inbox and notifies each run once', async () => {
+  const store = new DeviceStore(join(tmp(), 'mobile')),
+    operator = pair(store, operatorGrant());
+  store.transaction(s => {
+    s.devices.find(d => d.id === operator.device.id)!.subscription = {
+      endpoint: 'https://web.push.apple.com/Qmulti',
+      keys: {
+        p256dh: Buffer.alloc(65).toString('base64url'),
+        auth: Buffer.alloc(16).toString('base64url'),
+      },
+    };
+  });
+  let loads = 0,
+    sends = 0;
+  const decisions = ['run-b', 'run-a'].map(run => ({
+    id: digest(run),
+    run,
+    engine: 'engine-' + run,
+    node: 'gate',
+    pause: 'pause-' + run,
+    question: run,
+    reason: 'approval',
+    context: run,
+    options: [{ id: 'approve', label: 'Approve', consequence: 'Continue' }],
+  }));
+  const push = createPush(
+    store,
+    origin,
+    async () => {
+      sends++;
+    },
+    async () => {
+      loads++;
+      return { decisions, unknown: [] };
+    }
+  );
+  await push.tick();
+  await push.tick();
+  expect(loads).toBe(2);
+  expect(sends).toBe(2);
+  expect(store.transaction(s => Object.keys(s.notices))).toHaveLength(2);
 });
 test('Apple-only push rejects internal, redirect/credential-shaped targets and invalid keys', () => {
   for (const endpoint of [

@@ -107,10 +107,13 @@ async function refresh() {
         $('options').append(button);
       }
     }
-    $('push').textContent = view.subscribed
-      ? view.delivery + '。通知状态：' + view.notification.map(n => n.status).join(' / ')
-      : '未订阅，本设备尚未启用通知' +
-        (view.unknown ? '；另有 ' + view.unknown + ' 个 ledger 当前无法确认' : '');
+    const notices = view.notification || { accepted: 0, failed: 0, unknown: 0 };
+    $('push').textContent =
+      (view.subscribed
+        ? view.delivery +
+          `。通知：已接收 ${notices.accepted}，失败 ${notices.failed}，未知 ${notices.unknown}`
+        : '未订阅，本设备尚未启用通知') +
+      (view.unknown ? '；另有 ' + view.unknown + ' 个 ledger 当前无法确认' : '');
   } catch (e) {
     $('connection').textContent = e.message + '；当前状态未知，上次成功读取的信息可能已过期';
     for (const b of $('options').children) b.disabled = true;

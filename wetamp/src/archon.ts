@@ -17,6 +17,15 @@ export interface Exec {
 }
 export type Json = Record<string, unknown>;
 
+export class RunQueryError extends Error {
+  constructor(
+    public readonly kind: 'not_found',
+    id: string
+  ) {
+    super(`workflow get ${id}: ${kind}`);
+  }
+}
+
 /** `workflow get --json --verbose` 中本层读取的字段（PoC 实测）。 */
 export type { ExecutionRunView as RunView } from '@archon/workflows/execution-lifecycle';
 import type { ExecutionRunView as RunView } from '@archon/workflows/execution-lifecycle';
@@ -265,7 +274,9 @@ export async function getRunAsync(
       Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]),
       killed,
     ]);
-    return runOf(id, jsonOf(args, { code, out, err }));
+    const result = jsonOf(args, { code, out, err });
+    if (result.error === 'not_found') throw new RunQueryError('not_found', id);
+    return runOf(id, result);
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener('abort', onAbort);
