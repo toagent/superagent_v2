@@ -141,7 +141,7 @@
       "name": "将军",
       "purpose": "编码：Claude 池（single:claude）与 ChatGPT 池并为主力；实现、验收、修复一次性闭环。",
       "pools": {
-        "chatgpt": ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol"],
+        "chatgpt": ["gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"],
         "claude": ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]
       }
     }
@@ -156,12 +156,12 @@
     },
     "coder": {
       "models": [
-        "claude-opus-5-5",
-        "gpt-6-astra",
+        "gpt-5.6-sol",
         "gpt-6.1-sol",
-        "gpt-6-sol",
         "claude-opus-5",
-        "claude-opus-4-8"
+        "claude-opus-4-8",
+        "claude-opus-5-5",
+        "gpt-6-astra"
       ]
     },
     "reviewer": {
