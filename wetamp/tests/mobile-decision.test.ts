@@ -135,7 +135,7 @@ test('legacy authorization migration preserves eligible device state without rev
     subscription,
     authorized: true,
   });
-  expect(migrated.devices[0].expires).toBeUndefined();
+  expect(migrated.devices[0].expires).toBe(now + 10000);
   expect(migrated.devices.slice(1).every(d => !d.authorized)).toBe(true);
   expect(migrated.receipts).toHaveLength(1);
   expect(store.authenticate('active-session').id).toBe(digest('active'));

@@ -40,7 +40,7 @@ export interface Device {
   id: string;
   session: string;
   csrf: string;
-  /** Legacy expiry retained only on devices that were not eligible for migration. */
+  /** Legacy expiry retained for compatibility with older readers. */
   expires?: number;
   authorized?: true;
   grant: Grant;
@@ -87,7 +87,6 @@ export class DeviceStore {
         for (const device of state.devices)
           if (!device.revoked && typeof device.expires === 'number' && device.expires > now) {
             device.authorized = true;
-            delete device.expires;
           }
         state.deviceAuthorizationVersion = 1;
       }
