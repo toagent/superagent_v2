@@ -569,17 +569,31 @@ export async function webCli(argv: string[]): Promise<number> {
       store.revoke(a._[2] ?? '');
       console.log(JSON.stringify({ revoked: true }));
     } else {
-      const l = (await import('../cli')).loadLedger(a._[2] ?? '');
-      const file = coord().mutate(runScope(l), who, () => {
-        const d = authorizeDecision(l.run_id);
-        requireThat(d.controller, 409);
-        return store.pairing({ run: d.run, engine: d.engine, controller: d.controller });
-      });
+      const target = a._[2];
+      let file: string;
+      if (target) {
+        const l = (await import('../cli')).loadLedger(target);
+        file = coord().mutate(runScope(l), who, () => {
+          const d = authorizeDecision(l.run_id);
+          requireThat(d.controller, 409);
+          return store.pairing({
+            scope: 'run',
+            run: d.run,
+            engine: d.engine,
+            controller: d.controller,
+          });
+        });
+      } else {
+        const { operatorGrant } = await import('./device-store');
+        file = store.pairing(operatorGrant());
+      }
       console.log(
         JSON.stringify({
           pairing_page: file,
           expires_in_s: 600,
-          authority: '仅此 run、engine 和当前 owner generation；后续 gate 仍逐项确认',
+          authority: target
+            ? '仅此 run、engine 和当前 owner generation；后续 gate 仍逐项确认'
+            : '仅 Archon 管理的具名审批；不授予 console、独立代理或原生弹窗权限',
         })
       );
       if (a.flags.open)

@@ -14,6 +14,7 @@ import {
   BoundaryError,
   DeviceStore,
   digest,
+  isOperatorDevice,
   requireThat,
   type Device,
   type Receipt,
@@ -106,7 +107,7 @@ export function currentDecisions(): { decisions: Decision[]; unknown: string[] }
       unknown.push(id);
     }
   }
-  return { decisions, unknown };
+  return { decisions: decisions.sort((a, b) => a.run.localeCompare(b.run)), unknown };
 }
 export function authorizeDecision(run: string): Decision {
   const l = loadLedger(run),
@@ -120,7 +121,11 @@ export async function answerDecision(
   id: string,
   choice: string
 ): Promise<Receipt> {
-  const l = loadLedger(device.grant.run),
+  const candidate = isOperatorDevice(device)
+    ? currentDecisions().decisions.find(d => d.id === id)
+    : undefined;
+  if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
+  const l = loadLedger(candidate?.run ?? device.grant.run),
     c = coord(),
     scope = runScope(l);
   const deviceGuard = store.deviceLock(device.id);
@@ -140,22 +145,28 @@ export async function answerDecision(
         const run = getRun(l.archon_run_id, l.repo),
           d = describeDecision(l, run, c.owner(scope));
         requireThat(
-          d && !d.disabled && d.id === id && d.controller && d.engine === device.grant.engine,
+          d &&
+            !d.disabled &&
+            d.id === id &&
+            d.controller &&
+            (isOperatorDevice(device) || d.engine === device.grant.engine),
           409,
           '决定已变化，请重读'
         );
-        requireThat(
-          same(d.controller, device.grant.controller) &&
-            d.controller.generation === device.grant.controller.generation,
-          409,
-          '授权 owner 已变化'
-        );
+        if (!isOperatorDevice(device))
+          requireThat(
+            same(d.controller, device.grant.controller) &&
+              d.controller.generation === device.grant.controller.generation,
+            409,
+            '授权 owner 已变化'
+          );
         requireThat(
           d.options.some(o => o.id === choice),
           400,
           '不支持此选项'
         );
-        c.admit(scope, device.grant.controller, device.grant.controller.generation);
+        const controller = isOperatorDevice(device) ? d.controller : device.grant.controller;
+        c.admit(scope, controller, controller.generation);
         const receipt: Receipt = {
           id,
           device: device.id,
@@ -208,12 +219,12 @@ export async function answerDecision(
           if (now.status === 'paused') {
             c.mutate(
               scope,
-              device.grant.controller,
+              controller,
               () => {
                 const ack = archonJson(['workflow', 'resume', d.engine, '--detach'], l.repo);
                 requireThat(ack.ok === true, 503, '引擎已接收，续跑尚未确认');
               },
-              device.grant.controller.generation
+              controller.generation
             );
             stage('resuming');
           }
@@ -250,12 +261,49 @@ export async function decisionState(device: Device, id?: string, store = new Dev
   const receipt = store.transaction(s =>
     s.receipts.filter(r => (!id || r.id === id) && r.device === device.id).at(-1)
   );
+  const inbox = isOperatorDevice(device)
+    ? currentDecisions()
+    : (() => {
+        try {
+          const l = loadLedger(device.grant.run),
+            decision = describeDecision(l, getRun(device.grant.engine, l.repo));
+          return { decisions: decision ? [decision] : [], unknown: [] };
+        } catch {
+          return { decisions: [], unknown: [device.grant.run] };
+        }
+      })();
+  if (isOperatorDevice(device) && !id && !receipt && !inbox.decisions.length) {
+    const lastRead = new Date().toISOString();
+    store.transaction(s => {
+      const current = s.devices.find(d => d.id === device.id);
+      requireThat(current && !current.revoked, 401);
+      current.lastRead = lastRead;
+    });
+    return {
+      decision: undefined,
+      decisions: [],
+      unknown: inbox.unknown.length,
+      receipt: undefined,
+      status: inbox.unknown.length ? 'unknown' : 'idle',
+      lastRead,
+      events: [],
+      stale: false,
+      note: inbox.unknown.length
+        ? '部分 ledger 无法读取；不推断没有待处理事项'
+        : '当前没有待处理的 Archon 受管审批',
+    };
+  }
   try {
-    const l = loadLedger(device.grant.run),
-      run = getRun(device.grant.engine, l.repo);
-    requireThat(run.id === device.grant.engine && l.archon_run_id === run.id, 409);
-    const d = describeDecision(l, run);
+    const selected = id
+        ? inbox.decisions.find(d => d.id === id)
+        : (inbox.decisions.find(d => !d.disabled) ?? inbox.decisions[0]),
+      l = loadLedger(selected?.run ?? receipt?.run ?? device.grant.run),
+      engine = selected?.engine ?? receipt?.engine ?? device.grant.engine,
+      run = getRun(engine, l.repo);
+    requireThat(run.id === engine && l.archon_run_id === run.id, 409);
+    const d = selected ?? describeDecision(l, run);
     if (
+      !isOperatorDevice(device) &&
       d &&
       (!d.controller ||
         !same(d.controller, device.grant.controller) ||
@@ -275,6 +323,8 @@ export async function decisionState(device: Device, id?: string, store = new Dev
     });
     return {
       decision,
+      decisions: inbox.decisions,
+      unknown: inbox.unknown.length,
       receipt: receipt?.id === decision?.id || !decision ? receipt : undefined,
       status: run.status,
       lastRead,
@@ -285,9 +335,12 @@ export async function decisionState(device: Device, id?: string, store = new Dev
   } catch {
     return {
       receipt,
+      decisions: inbox.decisions,
+      unknown: inbox.unknown.length,
       lastRead: device.lastRead,
-      status: 'unknown',
+      status: id || receipt ? 'unknown' : 'idle',
       events: [],
+      stale: !!id && !receipt,
       note: '观察丢失；不自动重放答复',
     };
   }

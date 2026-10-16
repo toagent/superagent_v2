@@ -9,7 +9,13 @@ import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
-import { DeviceStore, digest, type Grant } from '../src/web/device-store';
+import {
+  DeviceStore,
+  digest,
+  isOperatorDevice,
+  operatorGrant,
+  type Grant,
+} from '../src/web/device-store';
 import { checkOrigin, createDecisionAdapter } from '../src/web/decision-adapter';
 import { deliver, publicIPv4, validateSubscription, createPush } from '../src/web/push';
 import {
@@ -67,6 +73,9 @@ test('pairing is one-use, short-lived, rate-bounded; session, VAPID, receipt and
   expect(statSync(store.root).mode & 0o777).toBe(0o700);
   expect(statSync(join(store.root, 'state.json')).mode & 0o777).toBe(0o600);
   expect(createPush(reload, origin).publicKey).toBe(createPush(store, origin).publicKey);
+  const operator = pair(store, operatorGrant());
+  expect(operator.device.grant.scope).toBe('managed-approvals');
+  expect(isOperatorDevice(operator.device)).toBe(true);
   store.transaction(s => {
     s.pair = { hash: digest('expired'), expires: Date.now() - 1, attempts: 0, grant };
   });
@@ -137,6 +146,8 @@ test('device revocation requires final confirmation and cannot submit twice', as
   const elements = Object.fromEntries(
     [
       'setup',
+      'inbox-wrap',
+      'inbox',
       'item',
       'connection',
       'state',
@@ -270,6 +281,10 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
   const snap = await createLoader()(100);
   expect(cockpit(snap).needs.some(n => n.question.includes(d.question))).toBe(true);
   const p = pair(store, { run: d.run, engine: d.engine, controller: d.controller! });
+  const operator = pair(store, operatorGrant());
+  expect(
+    (await decisionState(operator.device, undefined, store)).decisions.map(x => x.id)
+  ).toContain(d.id);
   const stale = {
     ...p.device,
     grant: { ...p.device.grant, controller: { ...p.device.grant.controller, generation: 999 } },
@@ -286,7 +301,7 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
     },
   };
   store.transaction(s => {
-    s.devices.find(x => x.id === p.device.id)!.subscription = subscription;
+    s.devices.find(x => x.id === operator.device.id)!.subscription = subscription;
   });
   let deliveries = 0;
   const send = async () => {
@@ -300,6 +315,16 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
   await createPush(new DeviceStore(store.root), origin, send).tick();
   expect(deliveries).toBe(1);
   const adapter = await createDecisionAdapter(origin, store);
+  const inbox = await adapter.fetch(
+    new Request(origin + '/sa/decisions', {
+      headers: {
+        host: 'decision.example.test',
+        cookie: '__Host-sa_device=' + operator.session,
+      },
+    })
+  );
+  const inboxView = (await inbox.json()) as { decisions: { id: string }[] };
+  expect(inboxView.decisions.map(x => x.id)).toContain(d.id);
   const answered = await adapter.fetch(
     new Request(origin + '/sa/decisions/' + d.id + '/answer', {
       method: 'POST',
@@ -307,21 +332,21 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
         host: 'decision.example.test',
         origin,
         'content-type': 'application/json',
-        cookie: '__Host-sa_device=' + p.session,
-        'x-csrf-token': p.device.csrf,
+        cookie: '__Host-sa_device=' + operator.session,
+        'x-csrf-token': operator.device.csrf,
       },
       body: JSON.stringify({ decision: 'detail' }),
     })
   );
   expect(answered.status).toBe(202);
   expect(await answered.json()).toMatchObject({ receipt: { stage: 'resuming' } });
-  await expect(answerDecision(store, p.device, d.id, 'detail')).rejects.toThrow();
+  await expect(answerDecision(store, operator.device, d.id, 'detail')).rejects.toThrow();
   for (const end = Date.now() + 45000; Date.now() < end; ) {
     if (getRun(d.engine, canary.repo).status === 'completed') break;
     await Bun.sleep(250);
   }
   const reload = new DeviceStore(store.root),
-    state = await decisionState(reload.authenticate(p.session), d.id, reload);
+    state = await decisionState(reload.authenticate(operator.session), d.id, reload);
   expect(state.status).toBe('completed');
   await createPush(new DeviceStore(store.root), origin, send).tick();
   await createPush(new DeviceStore(store.root), origin, send).tick();

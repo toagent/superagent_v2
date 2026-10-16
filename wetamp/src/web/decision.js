@@ -26,6 +26,7 @@ const statuses = {
   completed: '引擎已完成',
   failed: '引擎执行失败',
   cancelled: '引擎已取消',
+  idle: '当前没有待处理事项',
   unknown: '观察丢失，当前状态未知',
 };
 async function refresh() {
@@ -34,7 +35,28 @@ async function refresh() {
     csrf = view.csrf;
     latest = view;
     $('setup').hidden = true;
-    const state = selected ? await request('/sa/decisions/' + selected + '/state') : view;
+    const decisions = view.decisions || (view.decision ? [view.decision] : []);
+    let state = selected ? await request('/sa/decisions/' + selected + '/state') : view;
+    if (state.stale) {
+      selected = decisions.find(d => !d.disabled)?.id || decisions[0]?.id || null;
+      state = selected ? await request('/sa/decisions/' + selected + '/state') : view;
+    }
+    $('inbox-wrap').hidden = !decisions.length;
+    $('inbox').replaceChildren();
+    for (const entry of decisions) {
+      const button = document.createElement('button'),
+        question = document.createElement('strong'),
+        context = document.createElement('span');
+      question.textContent = entry.question;
+      context.textContent = entry.context + (entry.disabled ? ' · 需在 Mac 处理' : '');
+      button.append(question, context);
+      button.setAttribute('aria-current', String(entry.id === (state.decision?.id || selected)));
+      button.onclick = async () => {
+        selected = entry.id;
+        await refresh();
+      };
+      $('inbox').append(button);
+    }
     $('connection').textContent = state.lastRead
       ? '最后成功读取：' + new Date(state.lastRead).toLocaleString()
       : '状态未知；保留上次读取，不推断完成';
@@ -87,7 +109,8 @@ async function refresh() {
     }
     $('push').textContent = view.subscribed
       ? view.delivery + '。通知状态：' + view.notification.map(n => n.status).join(' / ')
-      : '未订阅，本设备尚未启用通知';
+      : '未订阅，本设备尚未启用通知' +
+        (view.unknown ? '；另有 ' + view.unknown + ' 个 ledger 当前无法确认' : '');
   } catch (e) {
     $('connection').textContent = e.message + '；当前状态未知，上次成功读取的信息可能已过期';
     for (const b of $('options').children) b.disabled = true;
@@ -107,7 +130,9 @@ $('notify').onclick = async () => {
     if (!latest) throw new Error('先完成配对并成功读取');
     const notifications = globalThis.Notification;
     if (!notifications)
-      throw new Error('此页面模式不支持通知。在 iPhone 上，请先“添加到主屏幕”，再从主屏幕图标打开后重试');
+      throw new Error(
+        '此页面模式不支持通知。在 iPhone 上，请先“添加到主屏幕”，再从主屏幕图标打开后重试'
+      );
     if (!navigator.serviceWorker) throw new Error('此浏览器不支持通知');
     const registration = await navigator.serviceWorker.register('/sw.js');
     await navigator.serviceWorker.ready;
@@ -139,6 +164,7 @@ $('revoke-confirm').onclick = async () => {
     csrf = '';
     latest = undefined;
     $('setup').hidden = false;
+    $('inbox-wrap').hidden = true;
     $('item').hidden = true;
     $('connection').textContent = '本设备已撤销';
     $('revoke-dialog').close();

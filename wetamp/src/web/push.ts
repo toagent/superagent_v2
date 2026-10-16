@@ -99,58 +99,63 @@ export function createPush(store: DeviceStore, origin: string, send = deliver) {
       );
       let unknown = 0;
       for (const device of devices) {
-        const previous = store.transaction(s =>
-          s.receipts.filter(r => r.device === device.id).at(-1)
-        );
-        const state = await decisionState(device, undefined, store);
-        if (state.status === 'unknown') unknown++;
-        const done = ['completed', 'failed', 'cancelled'].includes(state.status);
-        const decision = state.decision;
-        if ((!decision || decision.disabled) && !(done && previous)) continue;
-        const id = done ? previous?.id : decision?.id;
-        if (!id) continue;
-        const key = device.id + ':' + id + (done ? ':' + state.status : ':gate');
-        const shouldSend = store.transaction(s => {
-          const n = s.notices[key];
-          if (n && (n.status === 'accepted' || n.attempts >= 3 || n.next > Date.now()))
-            return false;
-          // An interrupted send is unknown; retry only bounded push delivery, never decisions.
-          s.notices[key] = {
-            attempts: (n?.attempts ?? 0) + 1,
-            next: Date.now() + 60000,
-            status: 'unknown',
-          };
-          return true;
-        });
-        if (!shouldSend) continue;
-        let status = 'failed';
-        try {
-          const target = store.transaction(
-            s =>
-              s.devices.find(d => d.id === device.id && !d.revoked && d.expires > Date.now())
-                ?.subscription
-          );
-          if (!target) continue;
-          validateSubscription(target);
-          await send(
-            target,
-            JSON.stringify({
-              title: done ? '执行状态已更新' : '需要你的决定',
-              body: '打开查看原问题、合法选项或真实执行回执',
-              url: '/?decision=' + id,
-            }),
-            vapid,
-            origin
-          );
-          status = 'accepted';
-        } catch {
-          /* The persisted status is visible; endpoint and key never enter logs. */
+        const view = await decisionState(device, undefined, store);
+        unknown += view.unknown + (view.status === 'unknown' ? 1 : 0);
+        const receipts = store.transaction(s => s.receipts.filter(r => r.device === device.id));
+        const items: { id: string; status?: string }[] = view.decisions
+          .filter(d => !d.disabled)
+          .map(d => ({ id: d.id }));
+        for (const receipt of receipts) {
+          const state = await decisionState(device, receipt.id, store);
+          if (state.status === 'unknown') unknown++;
+          if (['completed', 'failed', 'cancelled'].includes(state.status))
+            items.push({ id: receipt.id, status: state.status });
         }
-        store.transaction(s => {
-          const notice = s.notices[key];
-          requireThat(notice, 500);
-          notice.status = status;
-        });
+        for (const item of items) {
+          const done = !!item.status;
+          const key = device.id + ':' + item.id + (item.status ? ':' + item.status : ':gate');
+          const shouldSend = store.transaction(s => {
+            const n = s.notices[key];
+            if (n && (n.status === 'accepted' || n.attempts >= 3 || n.next > Date.now()))
+              return false;
+            // An interrupted send is unknown; retry only bounded push delivery, never decisions.
+            s.notices[key] = {
+              attempts: (n?.attempts ?? 0) + 1,
+              next: Date.now() + 60000,
+              status: 'unknown',
+            };
+            return true;
+          });
+          if (!shouldSend) continue;
+          let status = 'failed';
+          try {
+            const target = store.transaction(
+              s =>
+                s.devices.find(d => d.id === device.id && !d.revoked && d.expires > Date.now())
+                  ?.subscription
+            );
+            if (!target) continue;
+            validateSubscription(target);
+            await send(
+              target,
+              JSON.stringify({
+                title: done ? '执行状态已更新' : '需要你的决定',
+                body: '打开查看原问题、合法选项或真实执行回执',
+                url: '/?decision=' + item.id,
+              }),
+              vapid,
+              origin
+            );
+            status = 'accepted';
+          } catch {
+            /* The persisted status is visible; endpoint and key never enter logs. */
+          }
+          store.transaction(s => {
+            const notice = s.notices[key];
+            requireThat(notice, 500);
+            notice.status = status;
+          });
+        }
       }
       return store.transaction(s => {
         const paired = s.devices.filter(d => !d.revoked && d.expires > Date.now());

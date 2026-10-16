@@ -20,10 +20,20 @@ export function requireThat(ok: unknown, status = 400, message?: string): assert
 export const digest = (s: string) => createHash('sha256').update(s).digest('hex');
 export const secret = () => randomBytes(32).toString('hex');
 export interface Grant {
+  /** Missing on persisted devices created before installation-wide pairing. */
+  scope?: 'run' | 'managed-approvals';
   run: string;
   engine: string;
   controller: Controller;
 }
+export const operatorGrant = (): Grant => ({
+  scope: 'managed-approvals',
+  run: '',
+  engine: '',
+  controller: { client: 'operator-device', pid: 0, generation: 0 },
+});
+export const isOperatorDevice = (device: Device): boolean =>
+  device.grant.scope === 'managed-approvals';
 export interface Device {
   id: string;
   session: string;
@@ -86,7 +96,13 @@ export class DeviceStore {
     const file = join(this.root, 'pairing.html');
     writeFileSync(
       file,
-      '<meta charset="utf-8"><h1>授权手机处理指定运行（10分钟，一次有效）</h1><p>' + code + '</p>',
+      '<meta charset="utf-8"><h1>' +
+        (grant.scope === 'managed-approvals'
+          ? '授权手机处理 Archon 受管审批'
+          : '授权手机处理指定运行') +
+        '（10分钟，一次有效）</h1><p>' +
+        code +
+        '</p>',
       { mode: 0o600 }
     );
     chmodSync(file, 0o600);
