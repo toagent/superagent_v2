@@ -201,7 +201,7 @@ export async function workflowContinuationCommand(
     if (action === 'due') {
       validateFlags(values, []);
       if (args.length) throw new Error('Usage: archon workflow due [--json]');
-      const runs = await host.deps.store.listDueWorkflowContinuations(new Date());
+      const runs = await host.deps.store.listDueWorkflowContinuations(new Date(), 2147483647);
       if (json) await writeJsonLine({ ok: true, action, runs: runs.map(run => run.id) });
       else for (const run of runs) console.log(run.id);
       return 0;

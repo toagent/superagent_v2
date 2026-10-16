@@ -34,7 +34,7 @@ const output: unknown[] = [];
 const scan = mock(async (): Promise<ContinuationWakeOutcome[]> => []);
 const resume = mock(async (): Promise<ContinuationAdmission> => ({ kind: 'not-accepted' }));
 const getRun = mock(async () => makeTestWorkflowRun());
-const listDue = mock(async (): Promise<WorkflowRun[]> => []);
+const listDue = mock(async (_dueAt: Date, _limit?: number): Promise<WorkflowRun[]> => []);
 const signal = mock(async () => ({ signaled: true }));
 const install = mock(async (_config: NativeScheduleConfig) => 'installed');
 const remove = mock(async (_id: string) => true);
@@ -72,9 +72,13 @@ beforeEach(() => {
 });
 
 test('due lists run ids without admitting continuations', async () => {
-  listDue.mockResolvedValue([makeTestWorkflowRun({ id: 'timed' })]);
+  const runs = Array.from({ length: 26 }, (_, index) =>
+    makeTestWorkflowRun({ id: `timed-${index + 1}` })
+  );
+  listDue.mockImplementation(async (_dueAt, limit = 25) => runs.slice(0, limit));
   expect(await workflowContinuationCommand(host, 'due', [], { json: true })).toBe(0);
-  expect(output[0]).toEqual({ ok: true, action: 'due', runs: ['timed'] });
+  expect(output[0]).toEqual({ ok: true, action: 'due', runs: runs.map(run => run.id) });
+  expect(listDue).toHaveBeenCalledWith(expect.any(Date), 2147483647);
   expect(scan).not.toHaveBeenCalled();
 });
 
