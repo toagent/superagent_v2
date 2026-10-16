@@ -30,7 +30,7 @@ import { Frame } from '../src/board/App';
 import { cockpit } from '../src/board/cockpit';
 import { metricsOf } from '../src/ledger-metrics';
 import { gitRepo, sh, tmp } from './helpers';
-import { caller, coord, repoScope, runScope } from '../src/coord';
+import { caller, coord, Coordination, repoScope, runScope } from '../src/coord';
 
 const WETAMP = join(import.meta.dir, '..');
 const ENV_KEYS = [
@@ -65,6 +65,11 @@ beforeEach(() => {
     bin,
     `#!/usr/bin/env bash
 echo "$*" >> "${stubDir}/calls"
+[ "$2" = runs ] && {
+  fail=$(find "${stubDir}" -name 'fail-*' -print -quit); [ -n "$fail" ] && { echo "archon down" >&2; exit 1; }
+  hang=$(find "${stubDir}" -name 'hang-*' -print -quit); [ -n "$hang" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
+  bun -e 'import {readdirSync,readFileSync} from "node:fs"; const d=process.argv[1]; console.log(JSON.stringify({runs:readdirSync(d).filter(x=>x.startsWith("get-")).map(x=>JSON.parse(readFileSync(d+"/"+x,"utf8")))}))' "${stubDir}"; exit;
+}
 [ -f "${stubDir}/fail-$3" ] && { echo "archon down" >&2; exit 1; }
 [ -f "${stubDir}/hang-$3" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
 cat "${stubDir}/get-$3.json"
@@ -266,13 +271,26 @@ describe('data rows', () => {
     });
     const load = createLoader();
     await load(50);
-    expect(calls()).toBe(2);
+    expect(calls()).toBe(1);
     await load(50);
-    expect(calls()).toBe(3); // 只有 live 再查
+    expect(calls()).toBe(2); // 只有 live 触发一次批查
     const later = new Date(Date.now() + 5000);
     utimesSync(ledgerFile('done'), later, later); // recover/decide 写 ledger → 缓存失效
     await load(50);
-    expect(calls()).toBe(5);
+    expect(calls()).toBe(3);
+  });
+
+  test('one refresh batches run projection and scans inbox once regardless of run count', async () => {
+    for (let i = 0; i < 8; i++) ledger(`done-${String(i)}`, { status: 'completed' });
+    ledger('live', { status: 'running' });
+    const messages = spyOn(Coordination.prototype, 'messages');
+    try {
+      expect((await createLoader()(50)).rows).toHaveLength(9);
+      expect(calls()).toBe(1);
+      expect(messages).toHaveBeenCalledTimes(1);
+    } finally {
+      messages.mockRestore();
+    }
   });
 
   test('a failed query keeps the previous run and marks the row stale; never-seen runs are unreadable', async () => {

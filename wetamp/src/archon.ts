@@ -232,13 +232,12 @@ function runOf(id: string, j: Json): RunView {
  * getRun 的异步版（board 并行查询用）：同一子命令、同一解析，外加超时与取消。子进程自成进程组（detached），
  * 超时或 abort 时整组 SIGKILL：只杀直接子进程的话，它派生的进程仍握着 stdout 管道，读管道会一直挂到它们退出。
  */
-export async function getRunAsync(
-  id: string,
+async function archonJsonAsync(
+  args: string[],
   cwd: string | undefined,
   opts: { timeoutMs: number; signal?: AbortSignal }
-): Promise<RunView> {
+): Promise<Json> {
   opts.signal?.throwIfAborted();
-  const args = ['workflow', 'get', id, '--verbose', '--json'];
   const p = Bun.spawn([archonBin(), ...args], {
     cwd,
     stdout: 'pipe',
@@ -259,7 +258,7 @@ export async function getRunAsync(
           return;
         }
       }
-      reject(new Error(`archon workflow get ${id}: ${why}`));
+      reject(new Error(`archon ${args.slice(0, 2).join(' ')}: ${why}`));
     };
     timer = setTimeout(() => {
       kill(`timed out after ${String(opts.timeoutMs)}ms`);
@@ -274,13 +273,40 @@ export async function getRunAsync(
       Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]),
       killed,
     ]);
-    const result = jsonOf(args, { code, out, err });
-    if (result.error === 'not_found') throw new RunQueryError('not_found', id);
-    return runOf(id, result);
+    return jsonOf(args, { code, out, err });
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener('abort', onAbort);
   }
+}
+
+export async function getRunAsync(
+  id: string,
+  cwd: string | undefined,
+  opts: { timeoutMs: number; signal?: AbortSignal }
+): Promise<RunView> {
+  const result = await archonJsonAsync(['workflow', 'get', id, '--verbose', '--json'], cwd, opts);
+  if (result.error === 'not_found') throw new RunQueryError('not_found', id);
+  return runOf(id, result);
+}
+
+/** One CLI/database query supplies the full node projection for every board ledger. */
+export async function getRunsAsync(
+  cwd: string | undefined,
+  opts: { timeoutMs: number; signal?: AbortSignal }
+): Promise<Map<string, RunView>> {
+  const result = await archonJsonAsync(
+    ['workflow', 'runs', '--all', '--limit', String(2 ** 31 - 1), '--verbose', '--json'],
+    cwd,
+    opts
+  );
+  if (!Array.isArray(result.runs)) throw new Error('archon workflow runs: invalid runs payload');
+  return new Map(
+    result.runs.map(value => {
+      const run = runOf('batch', value as Json);
+      return [run.id, run];
+    })
+  );
 }
 
 export function pidAlive(pid: number): boolean {

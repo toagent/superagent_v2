@@ -132,7 +132,10 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
   return { status: 'measured', elapsed_ms: end - clock(run.started_at ?? ''), recorded_elapsed_ms: elapsed, clock_precision_ms: precision, path, segments, critical_path_ms: segments.filter(s => s.phase !== 'unclassified_wait').reduce((s,r) => s + r.ms, 0), reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
 }
 
-export function firstPassOf(pair: Pair): boolean | 'unknown' {
+export function firstPassOf(
+  pair: Pair,
+  stats: Record<string, unknown> = summarize([pair])
+): boolean | 'unknown' {
   const { ledger, run } = pair;
   if (run instanceof Error) return 'unknown';
   if (run.status !== 'completed') return false;
@@ -151,7 +154,6 @@ export function firstPassOf(pair: Pair): boolean | 'unknown' {
   } catch {
     return 'unknown';
   }
-  const stats = summarize([pair]);
   try {
     const art = artifactsOf(run);
     if (evidenceGates(ledger, art).some(g => !decisionOf(evidenceJson(ledger, art, g))))

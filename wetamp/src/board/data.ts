@@ -4,7 +4,7 @@ import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { getRunAsync, RunQueryError, tail, type RunView } from '../archon';
+import { getRunsAsync, RunQueryError, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
 import { loadActivity, type Activity } from './activity';
@@ -125,7 +125,13 @@ export { OUTSIDE, confined, workflowRoles, type Role } from './workflow';
 export function rowOf(
   l: Ledger,
   run: RunView,
-  opts: { now: number; stale?: boolean; roles?: Map<string, Role> }
+  opts: {
+    now: number;
+    stale?: boolean;
+    roles?: Map<string, Role>;
+    pending?: number;
+    coordination?: Omit<NonNullable<BoardRow['coordination']>, 'pending'>;
+  }
 ): BoardRow {
   const c = classifyRun(l, run);
   const nodes = run.nodes ?? [];
@@ -179,6 +185,7 @@ export function rowOf(
     })(),
     askReason: holdOf(l, run, c),
     coordination: (() => {
+      if (opts.coordination) return { ...opts.coordination, pending: opts.pending ?? 0 };
       try {
         const c = coord(),
           scope = runScope(l),
@@ -186,7 +193,7 @@ export function rowOf(
         return {
           owner: view.owner,
           presence: view.presence,
-          pending: c.pending(scope) + c.pending({ kind: 'repo', id: scope.repo }),
+          pending: opts.pending ?? c.pending(scope) + c.pending({ kind: 'repo', id: scope.repo }),
         };
       } catch (e) {
         return {
@@ -223,7 +230,7 @@ export function rowOf(
             n.nodeId === `human-${currentMs}`
         )
         .map(n => ({ id: n.nodeId, state: n.state })),
-      firstPass: firstPassOf({ ledger: l, run }),
+      firstPass: firstPassOf({ ledger: l, run }, stats),
       round: Math.max(
         0,
         ...Object.keys(stats)
@@ -353,28 +360,13 @@ function safeRowOf(
   }
 }
 
-/** 并行度 ≤n 的 map，保持输入顺序。 */
-async function mapPool<T, R>(xs: T[], n: number, f: (x: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array<R>(xs.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < xs.length) {
-      const i = next++;
-      out[i] = await f(xs[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(n, xs.length) }, worker));
-  return out;
-}
-
 /** 不可逆的终态：resume 只接受 failed/paused，failed（含 held:gate/environment）可经 decide/cancel 再变，每轮都查。 */
 const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
-export const PARALLEL = 3;
 export const QUERY_TIMEOUT_MS = 10_000;
 
 /**
- * 带缓存的加载器（一个 board 进程一个）。completed/cancelled 在 ledger mtime 不变时不再查；其余每次刷新都查，
- * 单次查询超过 SA_BOARD_QUERY_TIMEOUT_MS（默认 10s）即杀掉；查询失败沿用上一次的 run 并标 stale，从未查到过则为
+ * 带缓存的加载器（一个 board 进程一个）。一次批查刷新所有非缓存 run；completed/cancelled 在 ledger mtime 不变时不再查。
+ * 批查超过 SA_BOARD_QUERY_TIMEOUT_MS（默认 10s）即杀掉；查询失败沿用上一次的 run 并标 stale，从未查到过则为
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 export function createLoader(signal?: AbortSignal): (limit: number) => Promise<Snapshot> {
@@ -395,25 +387,41 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, limit);
     const ledgers = new Map(ids.map(({ id }) => [id, readLedger(id)]));
-    const refs = [...ledgers.values()].flatMap(l =>
-      typeof l === 'string'
-        ? []
-        : [
-            {
-              run_id: l.run_id,
-              cwd: l.repo,
-              controller: (() => {
-                try {
-                  return coord().owner(runScope(l)).owner;
-                } catch {
-                  return null;
-                }
-              })(),
-            },
-          ]
-    );
+    const scopes = new Map<string, ReturnType<typeof runScope>>();
+    const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
+    const refs = [...ledgers.values()].flatMap(l => {
+      if (typeof l === 'string') return [];
+      try {
+        const scope = runScope(l),
+          view = coord().owner(scope);
+        scopes.set(l.run_id, scope);
+        owners.set(l.run_id, { owner: view.owner, presence: view.presence });
+        return [{ run_id: l.run_id, cwd: l.repo, controller: view.owner }];
+      } catch (e) {
+        owners.set(l.run_id, {
+          owner: null,
+          presence: { state: 'unknown' },
+          error: (e as Error).message,
+        });
+        return [{ run_id: l.run_id, cwd: l.repo, controller: null }];
+      }
+    });
     const activity = loadActivity(now, signal, refs);
-    const results = await mapPool(ids, PARALLEL, async ({ id, mtimeMs }) => {
+    const uncached = ids.filter(({ id, mtimeMs }) => {
+      const hit = cache.get(id);
+      return !(hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status));
+    });
+    let batch = new Map<string, RunView>();
+    let batchError: Error | undefined;
+    const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
+    if (uncached.length && firstLedger) {
+      try {
+        batch = await getRunsAsync(cwdOf(firstLedger), { timeoutMs, signal });
+      } catch (e) {
+        batchError = e as Error;
+      }
+    }
+    const results = ids.map(({ id, mtimeMs }) => {
       const l = ledgers.get(id);
       if (l === undefined) throw new Error(`ledger ${id}: missing from snapshot`);
       if (typeof l === 'string') return { row: unreadableRow(id, l) };
@@ -421,7 +429,9 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       if (hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status))
         return { l, run: hit.run, stale: false };
       try {
-        const run = await getRunAsync(l.archon_run_id, cwdOf(l), { timeoutMs, signal });
+        if (batchError) throw batchError;
+        const run = batch.get(l.archon_run_id);
+        if (!run) throw new RunQueryError('not_found', l.archon_run_id);
         cache.set(id, { run, mtimeMs });
         return { l, run, stale: false };
       } catch (e) {
@@ -429,6 +439,17 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
         return hit ? { l, run: hit.run, stale: true, err } : { l, err };
       }
     });
+    const coordinator = coord();
+    const coordMessages = coordinator.messages();
+    const pending = new Map<string, number>();
+    for (const message of coordMessages)
+      if (
+        !message.type &&
+        ['queued', 'surfaced', 'accepted', 'escalated'].includes(message.state)
+      ) {
+        const key = `${message.scope.kind}:${message.scope.id}`;
+        pending.set(key, (pending.get(key) ?? 0) + 1);
+      }
     const rows: BoardRow[] = [];
     const pairs: Pair[] = [];
     const bad: string[] = [];
@@ -447,7 +468,25 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
         continue;
       }
       if (!roles.has(l.run_id)) roles.set(l.run_id, workflowRoles(l));
-      rows.push(safeRowOf(l, r.run, { now, stale: r.stale, roles: roles.get(l.run_id) }, bad));
+      const scope = scopes.get(l.run_id);
+      let pendingCount = 0;
+      if (scope)
+        pendingCount =
+          (pending.get(`run:${scope.id}`) ?? 0) + (pending.get(`repo:${scope.repo}`) ?? 0);
+      rows.push(
+        safeRowOf(
+          l,
+          r.run,
+          {
+            now,
+            stale: r.stale,
+            roles: roles.get(l.run_id),
+            pending: pendingCount,
+            coordination: owners.get(l.run_id),
+          },
+          bad
+        )
+      );
     }
     const s = summarize(pairs);
     // 读不出的 ledger 不进 summarize（没有可计的 ledger），但计入 runs 与 unreadable，口径与 report 的“单列不吞错”一致
@@ -460,7 +499,6 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     } catch {
       /* Missing asks is not proof of a decision. */
     }
-    const coordMessages = coord().messages();
     let reflection: Snapshot['reflection'];
     try {
       reflection = memoryData(now).reflection;
