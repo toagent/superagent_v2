@@ -157,6 +157,7 @@ const OPTIONS = {
   fake: { type: 'boolean' },
   apply: { type: 'boolean' },
   'lint-override': { type: 'string' },
+  'allow-overlap': { type: 'string' },
   goal: { type: 'string' },
   'accept-timeout': { type: 'string' },
   console: { type: 'string' },
@@ -226,6 +227,7 @@ type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrate
 export interface Ledger {
   rejected?: string;
   gc?: GcAction[];
+  allow_overlap?: string;
   plan_lint?: ReturnType<typeof lintPlan>;
   /** Explicit workflow identity; engine_hash alone may be the legacy combined UI hash. */
   workflow_hash?: string;
@@ -954,9 +956,62 @@ function preflight(): void {
   );
 }
 
+export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; error?: string }[] {
+  try {
+    if (process.env.DATABASE_URL) throw new Error('DATABASE_URL: SQLite status unavailable');
+    const scope = repoScope(plan.repo).id;
+    return ledgers().flatMap<{ run_id: string; paths: string[]; error?: string }>(l => {
+      try {
+        if ('error' in l) throw new Error(l.error);
+        // Only a missing path is clear; permission and other filesystem errors stay unknown.
+        if (!statSync(l.repo, { throwIfNoEntry: false })) return [];
+        let status: string;
+        try {
+          status = coord().d.status(l);
+        } catch (error) {
+          if (repoScope(l.repo).id !== scope) return [];
+          throw error;
+        }
+        if (
+          ['completed', 'failed', 'cancelled'].includes(status) &&
+          (!l.delivery_result || l.delivery_result.status === 'integrated')
+        )
+          return [];
+        if (repoScope(l.repo).id !== scope) return [];
+        if (status === 'unknown') throw new Error('run status unavailable');
+        const frozen = join(l.gen_dir, 'plan.json');
+        const previous = loadPlan(
+          existsSync(frozen) ? frozen : resolve(l.repo, l.plan)
+        ).packages.flatMap(p => p.scope.write);
+        const prefix = (glob: string) => glob.split(/[*?{[]/, 1)[0];
+        const paths = plan.packages
+          .flatMap(p => p.scope.write)
+          .filter(path =>
+            previous.some(
+              other =>
+                path === other ||
+                new Bun.Glob(other).match(path) ||
+                new Bun.Glob(path).match(other) ||
+                (prefix(path) !== path &&
+                  prefix(other) !== other &&
+                  (prefix(path).startsWith(prefix(other)) ||
+                    prefix(other).startsWith(prefix(path))))
+            )
+          );
+        return paths.length ? [{ run_id: l.run_id, paths: [...new Set(paths)] }] : [];
+      } catch (error) {
+        return [{ run_id: l.run_id, paths: [], error: redact(String(error)) }];
+      }
+    });
+  } catch (error) {
+    return [{ run_id: 'unknown', paths: [], error: redact(String(error)) }];
+  }
+}
+
 function startRun(planPath: string, a: Args): number {
-  if (process.env.DATABASE_URL)
-    console.error('run: overlap check skipped: DATABASE_URL is set (SQLite status unavailable)');
+  const allow_overlap = a.flags['allow-overlap']?.trim();
+  if (a.flags['allow-overlap'] !== undefined && !allow_overlap)
+    throw new Error('--allow-overlap requires a non-empty reason');
   const run = newRunId();
   let phase: 'preflight' | 'admission' | 'engine' = 'preflight';
   let release: (() => void) | undefined;
@@ -980,6 +1035,17 @@ function startRun(planPath: string, a: Args): number {
         plan_lint = lintPlan(plan, a.flags['lint-override']);
         if (plan_lint.rejected)
           throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
+        // Report unreadable scope evidence before capacity inspection can fail on the same DB.
+        const conflicts = scopeOverlaps(plan);
+        if (conflicts.length && !allow_overlap) {
+          print({
+            ok: false,
+            status: 'rejected',
+            reason: 'scope_overlap',
+            overlap_warnings: conflicts,
+          });
+          return EXIT_USAGE;
+        }
         phase = 'admission';
         const admission = admitRun();
         if (!admission.ok) {
@@ -1026,37 +1092,12 @@ function startRun(planPath: string, a: Args): number {
           print(failure);
           return EXIT_ALIAS_DRIFT;
         }
-        const overlap_warnings = (process.env.DATABASE_URL ? [] : ledgers()).flatMap(l => {
-          try {
-            if (
-              'error' in l ||
-              l.state === 'failed' ||
-              repoScope(l.repo).id !== repo.id ||
-              ['completed', 'failed', 'cancelled'].includes(coord().d.status(l))
-            )
-              return [];
-            const previous = loadPlan(l.plan).packages.flatMap(p => p.scope.write);
-            const prefix = (glob: string) => glob.split(/[*?{[]/, 1)[0];
-            const paths = plan.packages
-              .flatMap(p => p.scope.write)
-              .filter(path =>
-                previous.some(
-                  other =>
-                    path === other ||
-                    new Bun.Glob(other).match(path) ||
-                    new Bun.Glob(path).match(other) ||
-                    (prefix(path) !== path &&
-                      prefix(other) !== other &&
-                      (prefix(path).startsWith(prefix(other)) ||
-                        prefix(other).startsWith(prefix(path))))
-                )
-              );
-            return paths.length ? [{ run_id: l.run_id, paths: [...new Set(paths)] }] : [];
-          } catch (error) {
-            console.error(`run: overlap check ${l.run_id}: ${String(error)}`);
-            return [];
-          }
-        });
+        // Recheck under the shared launch lock so concurrent starts cannot both pass.
+        const overlap_warnings = scopeOverlaps(plan);
+        if (overlap_warnings.length && !allow_overlap) {
+          print({ ok: false, status: 'rejected', reason: 'scope_overlap', overlap_warnings });
+          return EXIT_USAGE;
+        }
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
         const delivery =
           typeof launchBranch === 'string' && launchBranch ? captureDelivery(plan.repo) : undefined;
@@ -1075,6 +1116,7 @@ function startRun(planPath: string, a: Args): number {
         ];
         args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
         const l: Ledger = {
+          allow_overlap,
           plan_lint,
           run_id: run,
           engine_hash: gen.engine_hash,
@@ -2559,7 +2601,7 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|plan check <file>|run <plan.json> [--fake] [--lint-override reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|plan check <file>|run <plan.json> [--fake] [--lint-override reason] [--allow-overlap reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>] [--allow-overlap reason]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -2607,6 +2649,26 @@ export function main(argv: string[]): number {
         `\ncontinuous intake: ${INTAKE_USAGE} [arguments] [--repo path]; context|resume [bytes] [cursor]; backlog [parent-task]`
     );
     return 0;
+  }
+  if (
+    ['run', 'quick'].includes(verb) &&
+    process.env.DATABASE_URL &&
+    !a.flags['allow-overlap']?.trim()
+  ) {
+    print({
+      ok: false,
+      status: 'rejected',
+      reason: 'scope_overlap',
+      overlap_warnings: [
+        {
+          run_id: 'unknown',
+          paths: [],
+          error:
+            'DATABASE_URL: status unavailable; SQLite-only runtime requires a separate SQLite ARCHON_HOME',
+        },
+      ],
+    });
+    return EXIT_USAGE;
   }
   const resolveTarget = (id: string): Ledger | RunView => {
     const registered = coord().resolveRun(id);
