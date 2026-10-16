@@ -1051,11 +1051,16 @@ describe('waitRun (archon stub)', () => {
       expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
     }
   });
-  test('brief --json obtains the structured receipt summary with one get', () => {
+  test('brief --json obtains the structured receipt summary with one state query', () => {
     const s = stub([run('completed', { nodes: [] })]);
     const out = JSON.parse(captured(() => main(['brief', 'sa1', '--json'])).out);
     expect(out).toMatchObject({ run_id: 'sa1', state: 'completed', execution: [] });
-    expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
+    expect(
+      s.calls().filter(c => c.startsWith('workflow get') && !c.includes('--events'))
+    ).toHaveLength(1);
+    expect(
+      s.calls().filter(c => c.startsWith('workflow get') && c.includes('--events'))
+    ).toHaveLength(1);
   });
   test.each([20, 60, 0.125])(
     'wait %ss uses one native notification for the remaining deadline',
@@ -1064,7 +1069,12 @@ describe('waitRun (archon stub)', () => {
       expect(waitRun(s.ledger, seconds)).toMatchObject({ state: 'running', exit: EXIT.running });
       const waits = s.calls().filter(c => c.startsWith('workflow wait'));
       expect(waits).toHaveLength(1);
-      expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(2);
+      expect(
+        s.calls().filter(c => c.startsWith('workflow get') && !c.includes('--events'))
+      ).toHaveLength(2);
+      expect(
+        s.calls().filter(c => c.startsWith('workflow get') && c.includes('--events'))
+      ).toHaveLength(1);
       expect(Number(waits[0]!.split('--timeout ')[1])).toBeLessThanOrEqual(seconds);
       expect(Number(waits[0]!.split('--timeout ')[1])).toBeGreaterThan(0);
     }
@@ -1448,20 +1458,21 @@ describe('run (archon stub)', () => {
     expect(captured(() => main(['run', plan])).code).toBe(0);
     return s.calls().filter(c => c.startsWith('workflow run'));
   };
-  test('delivery defaults: launch succeeds with missing or invalid selftest receipts', () => {
-    const s = stub([]),
-      repo = gitRepo(s.root);
-    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
-    const plan = fixturePlan(s.root, repo, p => {
-      delete p.deadline;
-      delete p.budget;
-    });
-    for (const receipt of [undefined, { fake: true }, { expires_at: '2020-01-01' }]) {
+  test.each([undefined, { fake: true }, { expires_at: '2020-01-01' }])(
+    'delivery defaults: launch succeeds with selftest receipt %j',
+    receipt => {
+      const s = stub([]),
+        repo = gitRepo(s.root);
+      process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+      const plan = fixturePlan(s.root, repo, p => {
+        delete p.deadline;
+        delete p.budget;
+      });
       if (receipt) writeFileSync(join(s.root, 'home', 'selftest.json'), JSON.stringify(receipt));
       else rmSync(join(s.root, 'home', 'selftest.json'), { force: true });
       expect(captured(() => main(['run', plan])).code).toBe(0);
     }
-  });
+  );
   /** workflow run 的 --config 文件里钉住的别名。 */
   const pinned = (call: string): Record<string, unknown> => {
     const m = /--config (\S+)/.exec(call);
