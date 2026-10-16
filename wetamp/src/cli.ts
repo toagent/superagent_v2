@@ -959,17 +959,26 @@ function preflight(): void {
 export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; error?: string }[] {
   try {
     if (process.env.DATABASE_URL) throw new Error('DATABASE_URL: SQLite status unavailable');
+    const scope = repoScope(plan.repo).id;
     return ledgers().flatMap<{ run_id: string; paths: string[]; error?: string }>(l => {
       try {
         if ('error' in l) throw new Error(l.error);
-        if (repoScope(l.repo).id !== repoScope(plan.repo).id) return [];
-        const status = coord().d.status(l);
-        if (status === 'unknown') throw new Error('run status unavailable');
+        // Only a missing path is clear; permission and other filesystem errors stay unknown.
+        if (!statSync(l.repo, { throwIfNoEntry: false })) return [];
+        let status: string;
+        try {
+          status = coord().d.status(l);
+        } catch (error) {
+          if (repoScope(l.repo).id !== scope) return [];
+          throw error;
+        }
         if (
           ['completed', 'failed', 'cancelled'].includes(status) &&
           (!l.delivery_result || l.delivery_result.status === 'integrated')
         )
           return [];
+        if (repoScope(l.repo).id !== scope) return [];
+        if (status === 'unknown') throw new Error('run status unavailable');
         const frozen = join(l.gen_dir, 'plan.json');
         const previous = loadPlan(
           existsSync(frozen) ? frozen : resolve(l.repo, l.plan)

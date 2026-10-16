@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmdirSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -1277,6 +1278,7 @@ test.each([
   'override',
   'completed',
   'disjoint',
+  'deleted-repo',
   'unknown',
   'unreadable',
   'relative',
@@ -1294,6 +1296,11 @@ test.each([
   const contact = s.c.claim(s.scope, b).controller;
   const plan = fixturePlan(s.root, s.repo);
   const l = registered(s, contact);
+  if (scenario === 'deleted-repo') {
+    l.repo = join(s.root, 'deleted-repo');
+    mkdirSync(l.repo);
+    rmdirSync(l.repo);
+  }
   l.plan = 'missing-original.json'; // Frozen plan wins over an unavailable original.
   if (scenario === 'completed') l.delivery_result = { status: 'blocked', reason: 'merge conflict' };
   if (scenario === 'relative' || scenario === 'unreadable') {
@@ -1307,6 +1314,7 @@ test.each([
     JSON.stringify({
       ...l,
       run_id: 'failed',
+      repo: s.root, // Existing non-repository: terminal filtering must precede git.
       delivery_result: undefined,
       archon_run_id: 'failed-engine',
       state: 'failed',
@@ -1318,6 +1326,7 @@ test.each([
     JSON.stringify({
       ...l,
       run_id: 'completed',
+      repo: s.root,
       delivery_result: undefined,
       archon_run_id: 'completed-engine',
       plan: 'missing.json',
@@ -1331,7 +1340,7 @@ test.each([
     l.archon_run_id,
     scenario === 'completed' ? 'completed' : 'running',
   ]);
-  if (scenario.startsWith('unknown'))
+  if (scenario.startsWith('unknown') || scenario === 'deleted-repo')
     db.run('delete from remote_agent_workflow_runs where id=?', [l.archon_run_id]);
   db.run('insert into remote_agent_workflow_runs values (?, ?)', ['completed-engine', 'completed']);
   if (scenario === 'state-unreadable') db.run('drop table remote_agent_workflow_runs');
@@ -1370,7 +1379,8 @@ test.each([
     const args = scenario.startsWith('quick')
       ? ['quick', '--goal', 'overlap fixture', '--accept', 'true', '--repo', s.repo]
       : ['run', input];
-    const allowed = scenario.includes('override') || scenario === 'disjoint';
+    const allowed =
+      scenario.includes('override') || ['disjoint', 'deleted-repo'].includes(scenario);
     const flags = scenario.includes('override') ? ['--allow-overlap', 'coordinated handoff'] : [];
     expect(main([...args, '--fake', ...flags]), outputs.join('\n')).toBe(allowed ? 0 : 64);
     const result = JSON.parse(outputs.at(-1)!);
