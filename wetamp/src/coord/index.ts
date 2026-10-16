@@ -244,12 +244,15 @@ export class Coordination {
       shared.hash(scope.kind === 'run' ? { kind: 'repo', id: scope.repo } : scope) + '.lock'
     );
   }
-  scoped<T>(scope: Scope, f: () => T): T {
+  scoped<T>(scope: Scope, f: () => T, waitMs = 120_000): T {
     const key = this.scopeLock(scope);
     if (this.scopes.has(key)) return f();
     const root = join(this.d.sa, 'coord', 'locks');
     mkdirSync(root, { recursive: true });
-    for (let n = 0; ; n++) {
+    const deadline = this.d.now() + waitMs;
+    let nextNotice = 0,
+      holder = 'pid unknown';
+    for (;;) {
       const k = lock(key);
       if (k.ok) {
         this.scopes.add(key);
@@ -267,7 +270,22 @@ export class Coordination {
           throw e;
         }
       }
-      if (n >= 2400) throw new Error('coord: scope busy');
+      const now = this.d.now();
+      if (now >= nextNotice || now >= deadline) {
+        try {
+          const info = shared.read(key) as { pid?: unknown } | null;
+          if (typeof info?.pid === 'number') holder = `pid ${String(info.pid)}`;
+        } catch (e) {
+          // The holder truncates metadata after flock; partial JSON still means busy.
+          if (!(e instanceof SyntaxError)) throw e;
+        }
+        if (now >= deadline)
+          throw new Error(
+            `coord: scope busy; holder ${holder}; lock ${key}; wait for holder to finish, then retry delivery`
+          );
+        if (waitMs > 120_000) console.error(`coord: waiting for ${holder}; lock ${key}`);
+        nextNotice = now + 30_000;
+      }
       Bun.sleepSync(50);
     }
   }
@@ -460,17 +478,27 @@ export class Coordination {
     }
     return (shared.read(file) as { pid: number }).pid === a.parent.pid;
   }
-  mutate<T>(scope: Scope, who: Identity, f: (controller: Controller) => T, expected?: number): T {
-    return this.scoped(scope, () => {
-      const controller = this.admit(scope, who, expected);
-      const previous = this.active;
-      this.active = { scope, controller };
-      try {
-        return f(controller);
-      } finally {
-        this.active = previous;
-      }
-    });
+  mutate<T>(
+    scope: Scope,
+    who: Identity,
+    f: (controller: Controller) => T,
+    expected?: number,
+    waitMs?: number
+  ): T {
+    return this.scoped(
+      scope,
+      () => {
+        const controller = this.admit(scope, who, expected);
+        const previous = this.active;
+        this.active = { scope, controller };
+        try {
+          return f(controller);
+        } finally {
+          this.active = previous;
+        }
+      },
+      waitMs
+    );
   }
   messages(): Message[] {
     return shared.files(this.d.sa, 'inbox');

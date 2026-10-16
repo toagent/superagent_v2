@@ -148,7 +148,7 @@ export function captureDelivery(checkout: string): DeliveryTarget {
     head: git('rev-parse', 'HEAD'),
   };
 }
-const integrationLockTimeout = (): number =>
+export const integrationLockTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
   20 * 60_000;
 // prettier-ignore
@@ -507,7 +507,13 @@ export function finalizeDelivery(
       who,
       authorization?.run.generation ?? (automatic ? (l.controller?.generation ?? 0) : undefined)
     );
-  return coord().mutate(repoScope(l.repo), who, deliver, authorization?.repo.generation);
+  return coord().mutate(
+    repoScope(l.repo),
+    who,
+    deliver,
+    authorization?.repo.generation,
+    integrationLockTimeout()
+  );
 }
 
 export interface DeliveryAuthorization {
