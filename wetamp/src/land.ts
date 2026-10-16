@@ -163,7 +163,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   const gitAt = (cwd: string, ...args: string[]): string => {
     const p = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
     if (p.exitCode !== 0) throw new LandError('git_failed', `land: ${p.stderr.toString().trim()}`);
-    return p.stdout.toString().trim();
+    return p.stdout.toString().trimEnd();
   };
   const git = (...args: string[]): string => gitAt(repo, ...args);
   const targetCheckout = () => git('worktree', 'list', '--porcelain', '-z').split('\0\0').find(record => record.split('\0').includes(`branch refs/heads/${target}`))?.split('\0').find(line => line.startsWith('worktree '))?.slice(9);
@@ -175,7 +175,16 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   try {
   const checkout = targetCheckout();
   if (delivery && (!checkout || realpathSync(checkout) !== delivery.target.checkout || gitAt(checkout, 'symbolic-ref', '--short', 'HEAD') !== target)) throw new LandError('delivery_target_changed', 'delivery: target checkout/branch changed');
-  const clean = () => { if (checkout && gitAt(checkout, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('target_dirty', 'land: target checkout is dirty'); };
+  const clean = () => {
+    const records = checkout ? gitAt(checkout, 'status', '--porcelain=v1', '-z', '--untracked-files=all').split('\0') : [];
+    const paths: string[] = [];
+    for (let i = 0; i < records.length; i++) {
+      const row = records[i]; if (!row) continue;
+      paths.push(`${row.startsWith('??') ? 'untracked' : 'tracked'}: ${JSON.stringify(row.slice(3))}`);
+      if (/[RC]/.test(row.slice(0, 2))) i++; // porcelain -z includes a second rename/copy path.
+    }
+    if (paths.length) throw new LandError('target_dirty', `land: target checkout is dirty\n${paths.slice(0, 20).join('\n')}${paths.length > 20 ? `\n... ${String(paths.length - 20)} more paths` : ''}`);
+  };
   clean();
   const tree = git('rev-parse', `${land.head}^{tree}`);
   const sameTree = () => {

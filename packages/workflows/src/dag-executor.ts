@@ -290,7 +290,7 @@ export interface ShellInputContext {
  * the script source. Both shell env sites call this one function so the bag and its
  * ordering cannot diverge between them.
  */
-function inputEnvVars(node: DagNode, ctx: ShellInputContext): NodeJS.ProcessEnv {
+export function inputEnvVars(node: DagNode, ctx: ShellInputContext): NodeJS.ProcessEnv {
   const runInputs = resolveRunInputs(ctx.workflowRun);
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(runInputs ?? {})) {
@@ -330,6 +330,16 @@ function inputEnvVars(node: DagNode, ctx: ShellInputContext): NodeJS.ProcessEnv 
     )) {
       env[inputEnvKey(name)] = canonicalValueText(value);
     }
+  }
+  // Bound resolved inputs before spawn; leave headroom for inherited env and argv.
+  // Large node outputs belong in artifacts, not the OS environment transport.
+  // prettier-ignore
+  const sizes = Object.entries(env).map(([key, value]) => [key, Buffer.byteLength(key + '=' + (value ?? '')) + 1] as const);
+  const bytes = sizes.reduce((sum, [, size]) => sum + size, 0);
+  if (bytes > 128 * 1024) {
+    const largest = sizes.sort((a, b) => b[1] - a[1]).slice(0, 5);
+    // prettier-ignore
+    throw new Error(`engine_execution_boundary: node '${node.id}' resolved inputs ${bytes} bytes exceed 131072-byte env budget; ${largest.map(([key, size]) => `${key}=${size} bytes`).join(', ')}; pass artifact paths instead of output bodies (E2BIG prevention)`);
   }
   return env;
 }

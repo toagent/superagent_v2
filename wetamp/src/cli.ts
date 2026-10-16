@@ -1,3 +1,5 @@
+import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
+import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
@@ -51,6 +53,7 @@ import {
   archon,
   archonDetached,
   archonJson,
+  archonRunIds,
   admitRun,
   getRun,
   lastJson,
@@ -535,6 +538,32 @@ const ledgers = (): (Ledger | { run_id: string; error: string })[] =>
     }
   });
 
+/** Event metadata only: never expose model text or tool arguments in status. */
+// prettier-ignore
+export function lastActivity(l: Pick<Ledger, 'archon_run_id' | 'adoptions' | 'repo'>, query = archonJson) {
+  let latest: { run_id: string; node: string; at: string; type: string } | null = null;
+  const missing: string[] = [];
+  for (const id of archonRunIds(l)) {
+    try {
+      const result = query(['workflow', 'get', id, '--verbose', '--events'], l.repo);
+      if (!Array.isArray(result.events)) { missing.push(id); continue; }
+      for (const raw of result.events) {
+        const parsed = workflowEventRowSchema.safeParse(raw);
+        if (!parsed.success) continue;
+        const e = parsed.data;
+        if (!e.step_name) continue;
+        const provider = providerEventEnvelopeSchema.safeParse(e.data);
+        const type = e.event_type === 'provider_event' ? (provider.success ? provider.data.event.type : null) : e.event_type;
+        if (!type || type === 'heartbeat') continue;
+        const at = provider.success ? provider.data.observedAt : e.created_at;
+        if (Number.isFinite(Date.parse(at)) && (!latest || Date.parse(at) >= Date.parse(latest.at)))
+          latest = { run_id: id, node: e.step_name, at, type };
+      }
+    } catch { missing.push(id); }
+  }
+  return { latest, complete: missing.length === 0, missing };
+}
+
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
   const nodes = run.nodes ?? [];
@@ -552,6 +581,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
         ? 'current'
         : `stale(${workflowIdentity(l)?.slice(0, 8) ?? 'unknown'})`,
     adoption: l.adoptions?.at(-1) ?? null,
+    last_activity: lastActivity(l),
     state: c.state,
     exit: c.exit,
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
@@ -1483,6 +1513,7 @@ function brief(l: Ledger, json = false): number {
       l.branch
     }`,
   ];
+  lines.push(`last_activity: ${JSON.stringify(s.last_activity)}`);
   const ownership = coord().owner(runScope(l));
   lines.push(
     `controller: ${JSON.stringify(ownership.owner)} ${ownership.presence.state}; inbox: ${String(

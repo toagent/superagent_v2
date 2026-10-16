@@ -23,6 +23,7 @@ import { executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
 import {
+  inputEnvVars,
   resolveNodeBindings,
   substituteNodeOutputRefs,
   type ShellInputContext,
@@ -1660,3 +1661,21 @@ test.each(['', 'bad-id', "ab'cd", 'ab\n', '$(echo bad)', 'ab cd'])(
     ).toThrow('delivery: invalid run id');
   }
 );
+
+// The gate's C bindings carry complete acceptance outputs, including checkout fingerprints.
+// prettier-ignore
+test('gate rejects oversized resolved env before spawn without interpreting review', () => {
+  const ctx: ShellInputContext = {
+    workflowRun: { id: 'big', user_message: '', metadata: {} },
+    artifactsDir: '/art', stateDir: '/state', baseBranch: 'dev', docsDir: '/docs',
+    nodeOutputs: new Map([['diff', { state: 'completed', output: JSON.stringify({ log: '中'.repeat(180000) }) }]]),
+  };
+  const node = { id: 'gate', kind: 'exec' as const, script: 'sa-check', runtime: 'bun' as const, with: { C1: '$diff.output' } };
+  expect(() => inputEnvVars(node, ctx)).toThrow('engine_execution_boundary');
+  expect(() => inputEnvVars(node, ctx)).toThrow('INPUTS_C1=540021 bytes');
+  ctx.nodeOutputs.set('diff', { state: 'completed', output: JSON.stringify({ path: '/art/result.json' }) });
+  expect(inputEnvVars(node, ctx).INPUTS_C1).toBe('{"path":"/art/result.json"}');
+  node.with.C1 = 'x'.repeat(70000);
+  Object.assign(node.with, { C2: 'y'.repeat(70000) });
+  expect(() => inputEnvVars(node, ctx)).toThrow('env budget');
+});

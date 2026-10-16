@@ -922,3 +922,19 @@ test.each([0, 1])('codegraph sync after ff is best effort (exit %i)', exit => {
   ).toHaveLength(1);
   expect(sh('git status --porcelain', f.repo)).toBe('');
 });
+
+// prettier-ignore
+test('dirty target lists tracked/untracked paths, handles renames, and caps at 20', () => {
+  const f = fixture();
+  const tracked = sh('git ls-files', f.repo).trim().split('\n')[0];
+  sh(`git mv '${tracked}' renamed.txt`, f.repo);
+  for (let i = 0; i < 22; i++) writeFileSync(join(f.repo, `u${String(i).padStart(2, '0')}`), 'keep');
+  let message = '';
+  try { applyLand(f.run, f.land, () => { throw new Error('must not verify'); }); }
+  catch (e) { message = (e as Error).message; }
+  expect(message).toContain('tracked: "renamed.txt"');
+  expect(message).toContain('untracked: "u00"');
+  expect(message).not.toContain('"u19"');
+  expect(message).toContain('3 more paths');
+  expect(sh('git rev-parse HEAD', f.repo).trim()).not.toBe(f.land.head);
+});

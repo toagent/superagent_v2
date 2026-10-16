@@ -4406,3 +4406,25 @@ test.each(['verify-a', 'settle-a', 'diff-m1-r3', 'gate-m1-r3'])(
     expect(cliMod.holdOf({} as Ledger, r, c)).toBeUndefined();
   }
 );
+
+// prettier-ignore
+test('last_activity aggregates adopted runs and exposes missing history honestly', () => {
+  const ledger = { archon_run_id: 'new', repo: '/repo', adoptions: [{ from: 'old', to: 'new', at: '', engine_from: null, engine_to: '', reason: '' }] };
+  const row = (id: string, type: string, at: string) => ({ id: 'e', workflow_run_id: id, event_type: type, step_name: 'code', step_index: null, created_at: at, data: {} });
+  const old = row('old', 'tool_called', '2026-10-16T01:00:00Z');
+  const query = (args: string[]) => ({ events: args[2] === 'old' ? [old] : [] });
+  expect(cliMod.lastActivity(ledger, query)).toEqual({ latest: { run_id: 'old', node: 'code', at: old.created_at, type: 'tool_called' }, complete: true, missing: [] });
+  const current = { ...row('new', 'provider_event', '2026-10-16T02:00:01Z'), data: { attemptId: 'a', seq: 1, observedAt: '2026-10-16T02:00:00Z', event: { type: 'agent_message_chunk', text: 'PRIVATE' } } };
+  const activity = cliMod.lastActivity(ledger, args => ({ events: args[2] === 'new' ? [current] : [old] }));
+  expect(activity.latest?.run_id).toBe('new');
+  expect(activity.latest?.type).toBe('agent_message_chunk');
+  expect(JSON.stringify(activity)).not.toContain('PRIVATE');
+  expect(cliMod.lastActivity(ledger, () => { throw new Error('offline'); })).toEqual({ latest: null, complete: false, missing: ['old', 'new'] });
+});
+
+// prettier-ignore
+test('E2BIG preflight gate failure is engine evidence, never a review verdict', () => {
+  const failed = run('failed', { nodes: [{ nodeId: 'gate-m1', state: 'failed', error: 'engine_execution_boundary: oversized INPUTS_C1' }] });
+  const s = stub([failed]);
+  expect(classifyRun(s.ledger, failed).state).toBe('held:engine_suspect');
+});
