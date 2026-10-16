@@ -128,6 +128,98 @@ test('private origin adapter isolates console, pairs once, requires CSRF and bou
   expect((await adapter.fetch(req('/sa/decisions', undefined, { cookie }))).status).toBe(401);
   expect(() => checkOrigin('http://decision.example.test')).toThrow();
 });
+test('device revocation requires final confirmation and cannot submit twice', async () => {
+  const html = readFileSync(join(import.meta.dir, '../src/web/decision.html'), 'utf8');
+  expect(html).toContain('撤销后，本设备的通知和访问权限会立即失效');
+  expect(html).toContain('必须在 Mac 上生成新的配对码并重新配对');
+  expect(html).toMatch(/id="revoke-cancel" autofocus/);
+
+  const elements = Object.fromEntries(
+    [
+      'setup',
+      'item',
+      'connection',
+      'state',
+      'receipt',
+      'events',
+      'options',
+      'push',
+      'pair',
+      'code',
+      'notify',
+      'refresh',
+      'revoke',
+      'revoke-dialog',
+      'revoke-cancel',
+      'revoke-confirm',
+    ].map(id => [
+      id,
+      {
+        hidden: false,
+        disabled: false,
+        open: false,
+        children: [],
+        replaceChildren() {},
+        showModal() {
+          this.open = true;
+        },
+        close() {
+          this.open = false;
+        },
+      },
+    ])
+  ) as Record<string, any>;
+  const calls: string[] = [];
+  let releaseRevoke!: () => void;
+  const revokePending = new Promise<void>(resolve => (releaseRevoke = resolve));
+  const fetch = async (path: string) => {
+    calls.push(path);
+    if (path === '/sa/device/revoke') await revokePending;
+    return new Response(
+      JSON.stringify({
+        csrf: 'csrf',
+        status: 'unknown',
+        note: '',
+        events: [],
+        subscribed: false,
+        notification: [],
+      })
+    );
+  };
+  const source = readFileSync(join(import.meta.dir, '../src/web/decision.js'), 'utf8');
+  Function(
+    'document',
+    'location',
+    'fetch',
+    'setInterval',
+    source
+  )(
+    { getElementById: (id: string) => elements[id], visibilityState: 'visible' },
+    { href: origin },
+    fetch,
+    () => 0
+  );
+  await Bun.sleep(0);
+  calls.length = 0;
+
+  elements.revoke.onclick();
+  expect(elements['revoke-dialog'].open).toBe(true);
+  expect(calls).toEqual([]);
+  elements['revoke-cancel'].onclick();
+  expect(elements['revoke-dialog'].open).toBe(false);
+  expect(calls).toEqual([]);
+
+  elements.revoke.onclick();
+  const first = elements['revoke-confirm'].onclick();
+  const duplicate = elements['revoke-confirm'].onclick();
+  expect(calls).toEqual(['/sa/device/revoke']);
+  expect(elements['revoke-confirm'].disabled).toBe(true);
+  expect(elements.setup.hidden).toBe(true);
+  releaseRevoke();
+  await Promise.all([first, duplicate]);
+  expect(elements.setup.hidden).toBe(false);
+  expect(elements['revoke-dialog'].open).toBe(false);
+});
 test('Apple-only push rejects internal, redirect/credential-shaped targets and invalid keys', () => {
   for (const endpoint of [
     'http://web.push.apple.com/Qx',

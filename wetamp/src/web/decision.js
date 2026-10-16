@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 let csrf = '',
   selected = new URL(location.href).searchParams.get('decision'),
   busy = false,
+  revokeBusy = false,
   latest;
 async function request(path, data) {
   const response = await fetch(path, {
@@ -127,7 +128,13 @@ $('notify').onclick = async () => {
     $('push').textContent = e.message;
   }
 };
-$('revoke').onclick = async () => {
+$('revoke').onclick = () => $('revoke-dialog').showModal();
+$('revoke-cancel').onclick = () => $('revoke-dialog').close();
+$('revoke-confirm').onclick = async () => {
+  if (revokeBusy) return;
+  revokeBusy = true;
+  $('revoke-confirm').disabled = true;
+  $('revoke-cancel').disabled = true;
   try {
     await request('/sa/device/revoke', {});
     csrf = '';
@@ -135,8 +142,13 @@ $('revoke').onclick = async () => {
     $('setup').hidden = false;
     $('item').hidden = true;
     $('connection').textContent = '本设备已撤销';
+    $('revoke-dialog').close();
   } catch (e) {
     $('connection').textContent = e.message;
+    $('revoke-confirm').disabled = false;
+    $('revoke-cancel').disabled = false;
+  } finally {
+    revokeBusy = false;
   }
 };
 $('refresh').onclick = () => {

@@ -131,6 +131,19 @@
       time {
         font-variant-numeric: tabular-nums;
       }
+      details {
+        margin-top: 24px;
+        color: var(--muted);
+      }
+      dialog {
+        max-width: min(480px, calc(100% - 40px));
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--ink);
+      }
+      dialog::backdrop {
+        background: rgb(25 37 47 / 45%);
+      }
       [hidden] {
         display: none !important;
       }
@@ -165,8 +178,19 @@
       <section>
         <button id="notify">开启通知</button>
         <p id="push"></p>
-        <button id="refresh">重新读取</button><button id="revoke">撤销本设备授权</button>
+        <button id="refresh">重新读取</button>
+        <details>
+          <summary>设备设置</summary>
+          <button id="revoke">撤销本设备授权</button>
+        </details>
       </section>
+      <dialog id="revoke-dialog" aria-labelledby="revoke-title">
+        <h2 id="revoke-title">撤销本设备授权？</h2>
+        <p>撤销后，本设备的通知和访问权限会立即失效。</p>
+        <p>如需恢复，必须在 Mac 上生成新的配对码并重新配对。</p>
+        <button id="revoke-cancel" autofocus>取消</button>
+        <button id="revoke-confirm" class="error">确认撤销</button>
+      </dialog>
     </main>
   </body>
 </html>
