@@ -20,6 +20,7 @@ import { fixturePlan, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import { MAX_ROUNDS, CHECK_AUX_BUDGET_MS } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
+import { integrationLockTimeout } from '../src/land';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
 import {
@@ -1606,6 +1607,10 @@ test('DURABLE_DELIVERY generated node receives run id through real Archon execut
   );
   const deliver = nodes.find(n => n.id === 'deliver')!;
   expect(deliver).toMatchObject({ depends_on: ['land'] });
+  expect(Number(deliver.timeout)).toBeGreaterThanOrEqual(
+    integrationLockTimeout() +
+      fixture.packages.flatMap(p => p.accept).reduce((ms, c) => ms + c.timeout_s * 1000, 0)
+  );
   const observed = join(root, 'received-run.json');
   const preload = join(root, 'delivery-probe.ts');
   // Observe the actual land.ts child before authorization/integration can run.

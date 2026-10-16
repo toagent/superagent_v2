@@ -69,6 +69,42 @@ function setup(probe: (who: Identity) => Presence = () => online) {
   const c = new Coordination({ sa, runs: () => [], status: () => 'running', presence: probe });
   return { root, repo, sa, c, scope: repoScope(repo) };
 }
+// Virtual time exercises real flock contention without sleeping for minutes.
+// prettier-ignore
+test.each(['release', 'truncated', 'timeout', 'default'])('delivery scope wait: %s', kind => {
+  const s = setup();
+  s.c.claim(s.scope, a);
+  const file = join(s.sa, 'coord/locks', hooks.hash(s.scope) + '.lock');
+  const lease = native.lock(file);
+  if (!lease.ok) throw new Error('fixture lock busy');
+  let now = 0, released = false, entered = false;
+  s.c.d.now = () => now;
+  if (kind === 'truncated') writeFileSync(file, '{');
+  const output = spyOn(console, 'error').mockImplementation(() => {});
+  const sleep = spyOn(Bun, 'sleepSync').mockImplementation(() => {
+    expect(entered).toBe(false);
+    now += 60_000;
+    if (now === 180_000 && ['release', 'truncated'].includes(kind)) {
+      lease.release(); released = true;
+    }
+  });
+  try {
+    const budget = kind === 'default' ? undefined : landing.integrationLockTimeout();
+    const action = () => s.c.mutate(s.scope, a, () => { entered = true; return 'delivered'; }, undefined, budget);
+    if (['release', 'truncated'].includes(kind)) {
+      expect(action()).toBe('delivered');
+      expect(now).toBe(180_000);
+      expect(output.mock.calls.flat().join('\n')).toContain(kind === 'truncated' ? 'pid unknown' : `pid ${process.pid}`);
+    } else {
+      expect(action).toThrow(`holder pid ${process.pid}`);
+      expect(now).toBe(budget ?? 120_000);
+      expect(entered).toBe(false);
+    }
+  } finally {
+    sleep.mockRestore(); output.mockRestore();
+    if (!released) lease.release();
+  }
+});
 test('1: two actual processes race for one scope under flock; exactly one owner and monotonic generations', async () => {
   const s = setup();
   const code = `import {Coordination} from ${JSON.stringify(join(import.meta.dir, '../src/coord/index.ts'))};
@@ -1502,17 +1538,20 @@ for (const failure of ['none', 'repo', 'run']) {
       expect(s.actual.owner(run)).toMatchObject({ owner: a, generation: 2 });
       return undefined;
     });
+    const mutation = spyOn(Coordination.prototype, 'mutate');
     try {
       const action = () => finalizeDelivery('target', true);
       if (failure !== 'none')
         expect(action).toThrow(failure === 'repo' ? `repo:${s.scope.id}` : `run:${run.id}`);
       else action();
+      expect(mutation.mock.calls[0]?.[4]).toBe(landing.integrationLockTimeout());
       expect(apply).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
       expect(get).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
       expect(s.actual.owner(s.scope).generation).toBe(2);
       expect(s.actual.owner(run).generation).toBe(failure === 'none' ? 2 : 1);
       expect(s.actual.owner(s.scope).owner).toMatchObject(failure === 'repo' ? b : a);
     } finally {
+      mutation.mockRestore();
       apply.mockRestore();
       get.mockRestore();
       s.evidence.mockRestore();
