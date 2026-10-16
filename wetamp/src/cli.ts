@@ -2242,17 +2242,7 @@ function tick(
   }
   const observed: HoldSignal[] = [];
   const out: Action[] = reconcileIntents();
-  let dueContinuations = new Set<string>();
-  try {
-    dueContinuations = new Set(dueWorkflowContinuations());
-  } catch (e) {
-    out.push({
-      run_id: 'continuations',
-      action: 'error',
-      ok: false,
-      error: (e as Error).message,
-    });
-  }
+  let dueContinuations: Set<string> | Error | undefined;
   const live = new Set<string>();
   for (const l of ledgers()) {
     live.add(l.run_id);
@@ -2266,8 +2256,22 @@ function tick(
       const x = control(
         l,
         controller => {
+          if (dueContinuations === undefined) {
+            try {
+              dueContinuations = new Set(dueWorkflowContinuations());
+            } catch (e) {
+              dueContinuations = e as Error;
+              out.push({
+                run_id: 'continuations',
+                action: 'error',
+                ok: false,
+                error: dueContinuations.message,
+              });
+            }
+          }
           const run = getRun(l.archon_run_id, l.repo);
           if (
+            !(dueContinuations instanceof Error) &&
             dueContinuations.has(l.archon_run_id) &&
             !['completed', 'cancelled'].includes(run.status)
           )

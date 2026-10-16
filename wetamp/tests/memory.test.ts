@@ -722,6 +722,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
   });
   test('run admission warnings and override are recorded in the CLI ledgers with a stub engine', () => {
     const repo = gitRepo(root);
+    sh('git switch -qc feature/fixture', repo);
     process.env.SUPERAGENT_WRITE_ROOTS = root;
     const next = {
       ...plan,

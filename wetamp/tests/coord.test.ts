@@ -1326,12 +1326,14 @@ test.each([
   'quick-database-override',
 ])('scope overlap admission: %s (repository contact remains independent)', async scenario => {
   const s = setup();
+  sh('git switch -qc feature/fixture', s.repo);
   isolated(s);
   process.env.SUPERAGENT_WRITE_ROOTS = s.root;
   process.env.SUPERAGENT_MEMORY = 'off';
   const contact = s.c.claim(s.scope, b).controller;
   const plan = fixturePlan(s.root, s.repo);
   const l = registered(s, contact);
+  l.started_at = new Date(Date.now() - 2 * 86_400_000).toISOString();
   if (scenario === 'deleted-repo') {
     l.repo = join(s.root, 'deleted-repo');
     mkdirSync(l.repo);
