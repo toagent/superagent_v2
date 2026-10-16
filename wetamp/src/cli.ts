@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import {
   captureDelivery,
+  protectedTarget,
   acceptRun,
   finalizeDelivery,
   deliveryProjection,
@@ -1102,6 +1103,16 @@ function startRun(planPath: string, a: Args): number {
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
         const delivery =
           typeof launchBranch === 'string' && launchBranch ? captureDelivery(plan.repo) : undefined;
+        if (delivery && protectedTarget(delivery.branch)) {
+          print({
+            ok: false,
+            status: 'rejected',
+            reason: 'target_protected',
+            target: delivery.branch,
+            action: '在非保护分支（feature 分支）上启动：git switch -c <新分支> 后重跑',
+          });
+          return EXIT_USAGE;
+        }
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
         const gen = generate(plan, run, a.flags.fake ?? false, undefined, undefined, delivery);

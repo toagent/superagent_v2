@@ -95,6 +95,8 @@ export interface DeliveryTarget {
   branch: string;
   head: string;
 }
+export const protectedTarget = (branch: string): boolean =>
+  /^(main|master|dev|develop|release-.*)$/.test(branch);
 export interface LocalDelivery {
   task: string;
   target: DeliveryTarget;
@@ -159,7 +161,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   const delivery = context?.delivery;
   const repo = delivery?.target.checkout ?? land.repo ?? context?.repo; if (!repo) throw new LandError('repository_missing', 'land: missing repository');
   const target = delivery?.target.branch ?? land.target ?? (context && landTarget(repo, context.base_ref, () => context.launch_branch)); if (!target) throw new LandError('target_missing', 'land: missing integration target');
-  if (delivery && /^(main|master|dev|develop|release-.*)$/.test(target)) throw new LandError('target_protected', 'delivery: protected target branch');
+  if (delivery && protectedTarget(target)) throw new LandError('target_protected', 'delivery: protected target branch');
   const gitAt = (cwd: string, ...args: string[]): string => {
     const p = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
     if (p.exitCode !== 0) throw new LandError('git_failed', `land: ${p.stderr.toString().trim()}`);

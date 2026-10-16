@@ -949,6 +949,11 @@ function captured(fn: () => number): { code: number; out: string } {
     spy.mockRestore();
   }
 }
+const featureRepo = (root: string): string => {
+  const repo = gitRepo(root);
+  sh('git switch -qc feature/fixture', repo);
+  return repo;
+};
 
 describe('HF5 episode regressions', () => {
   test('M2-03 consecutive human signoffs each ask once; old yes cannot sign the next milestone', () => {
@@ -1328,9 +1333,36 @@ describe('verbs (archon stub)', () => {
 });
 
 describe('run (archon stub)', () => {
-  test('BYPASS_CAPACITY run launches with eight active runs and observes low disk', () => {
+  test.each([
+    ['run', 'main'],
+    ['run', 'dev'],
+    ['run', 'release-1.2'],
+    ['quick', 'main'],
+  ] as const)('%s rejects protected delivery target %s before generation', (command, branch) => {
     const s = stub([]),
       repo = gitRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    if (branch !== 'main') sh(`git switch -qc ${branch}`, repo);
+    const before = readdirSync(join(s.root, 'home/runs'));
+    const args =
+      command === 'run'
+        ? ['run', fixturePlan(s.root, repo)]
+        : ['quick', '--repo', repo, '--goal', 'x', '--accept', 'true'];
+    const result = captured(() => main(args));
+    expect(result.code).toBe(EXIT_USAGE);
+    expect(JSON.parse(result.out)).toEqual({
+      ok: false,
+      status: 'rejected',
+      reason: 'target_protected',
+      target: branch,
+      action: '在非保护分支（feature 分支）上启动：git switch -c <新分支> 后重跑',
+    });
+    expect(readdirSync(join(s.root, 'home/runs'))).toEqual(before);
+    expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(false);
+  });
+  test('BYPASS_CAPACITY run launches with eight active runs and observes low disk', () => {
+    const s = stub([]),
+      repo = featureRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     engineBoundary!.mockImplementation(() => cleanEngine(repo));
     const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
@@ -1358,7 +1390,7 @@ describe('run (archon stub)', () => {
     'P4a failed generation publishes no ledger: %s',
     sample => {
       const s = stub([]),
-        repo = gitRepo(s.root),
+        repo = featureRepo(s.root),
         engine = gitRepo(tmp());
       process.env.SUPERAGENT_WRITE_ROOTS = s.root;
       engineBoundary!.mockImplementation(() => cleanEngine(engine));
@@ -1434,7 +1466,7 @@ describe('run (archon stub)', () => {
   });
   test('engine launch rejection is recorded separately from preflight', () => {
     const s = stub([]),
-      repo = gitRepo(s.root);
+      repo = featureRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     fixtureOptions(s.dir, { launchReply: { ok: false, error: 'fixture_launch_rejected' } });
     const result = captured(() => main(['run', fixturePlan(s.root, repo), '--fake']));
@@ -1452,7 +1484,7 @@ describe('run (archon stub)', () => {
   });
   const start = (console?: string): string[] => {
     const s = stub([]);
-    const repo = gitRepo(s.root);
+    const repo = featureRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     const plan = fixturePlan(s.root, repo, p => (console ? (p.console = console) : undefined));
     expect(captured(() => main(['run', plan])).code).toBe(0);
@@ -1462,7 +1494,7 @@ describe('run (archon stub)', () => {
     'delivery defaults: launch succeeds with selftest receipt %j',
     receipt => {
       const s = stub([]),
-        repo = gitRepo(s.root);
+        repo = featureRepo(s.root);
       process.env.SUPERAGENT_WRITE_ROOTS = s.root;
       const plan = fixturePlan(s.root, repo, p => {
         delete p.deadline;
@@ -4294,7 +4326,7 @@ describe('launch intents (run + supervise-tick reconcile)', () => {
   };
   test('run writes the intent before starting and removes it once the ledger is saved', () => {
     const s = stub([]);
-    const repo = gitRepo(s.root);
+    const repo = featureRepo(s.root);
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     const plan = fixturePlan(s.root, repo);
     const dir = join(s.root, 'home', 'intents');

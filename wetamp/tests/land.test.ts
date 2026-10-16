@@ -17,6 +17,7 @@ import {
   captureDelivery,
   excludeCodegraph,
   integratedReceipt,
+  protectedTarget,
   type LocalDelivery,
 } from '../src/land';
 import * as config from '../src/config';
@@ -26,6 +27,17 @@ import { directAuxiliaryPreload, fixtureEnv, fixturePlan, gitRepo, sh, tmp } fro
 const saved = { ...process.env };
 // prettier-ignore
 afterEach(() => { process.env = { ...saved }; });
+
+test.each([
+  ['main', true],
+  ['dev', true],
+  ['release-1.2', true],
+  ['feature-x', false],
+  ['1.0.0', false],
+  ['sa/xxx', false],
+] as const)('protectedTarget(%s) = %s', (branch, expected) => {
+  expect(protectedTarget(branch)).toBe(expected);
+});
 
 test.each(['unknown run', 'missing durable authorization', 'authorization/run mismatch'])(
   'delivery entry loads operator and rejects %s',
