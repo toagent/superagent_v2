@@ -414,3 +414,12 @@ export function signalHuman(
     reason: `signal not admitted within ${String(SIGNAL_ACK_MS / 1000)}s; see ${log}`,
   };
 }
+
+export function dueWorkflowContinuations(): string[] {
+  const result = archonJson(['workflow', 'due']);
+  if (result.ok !== true)
+    throw new Error(typeof result.error === 'string' ? result.error : 'workflow due failed');
+  if (!Array.isArray(result.runs) || result.runs.some(id => typeof id !== 'string'))
+    throw new Error('workflow due returned invalid run ids');
+  return result.runs as string[];
+}

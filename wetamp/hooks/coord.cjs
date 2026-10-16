@@ -174,6 +174,7 @@ function archonMutation(argv) {
     return ![
       'list',
       'runs',
+      'due',
       'get',
       'status',
       'wait',

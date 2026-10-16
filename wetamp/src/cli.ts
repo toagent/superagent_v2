@@ -57,6 +57,7 @@ import {
   archonJson,
   archonRunIds,
   admitRun,
+  dueWorkflowContinuations,
   getRun,
   lastJson,
   lock,
@@ -2241,6 +2242,17 @@ function tick(
   }
   const observed: HoldSignal[] = [];
   const out: Action[] = reconcileIntents();
+  let dueContinuations = new Set<string>();
+  try {
+    dueContinuations = new Set(dueWorkflowContinuations());
+  } catch (e) {
+    out.push({
+      run_id: 'continuations',
+      action: 'error',
+      ok: false,
+      error: (e as Error).message,
+    });
+  }
   const live = new Set<string>();
   for (const l of ledgers()) {
     live.add(l.run_id);
@@ -2255,7 +2267,10 @@ function tick(
         l,
         controller => {
           const run = getRun(l.archon_run_id, l.repo);
-          if (!['completed', 'cancelled'].includes(run.status))
+          if (
+            dueContinuations.has(l.archon_run_id) &&
+            !['completed', 'cancelled'].includes(run.status)
+          )
             archonDetached(
               ['workflow', 'wake', l.archon_run_id, '--json'],
               join(sa, 'wake.log'),

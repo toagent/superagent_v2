@@ -47,6 +47,7 @@ export function fixtureArchon(dir: string, args: string[]): Exec {
         ? (options.adoptionReply ?? { ok: true, runId: 'r2' })
         : (options.launchReply ?? { ok: true, runId: 'r' })
     );
+  if (args[1] === 'due') return reply({ ok: true, action: 'due', runs: ['r'] });
   if (args[1] === 'resume' && options.resumeReply) return reply(options.resumeReply);
   const run: RunView | undefined = current ? JSON.parse(readFileSync(current, 'utf8')) : undefined;
   if (args[1] === 'wait') {
