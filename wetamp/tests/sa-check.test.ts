@@ -896,7 +896,7 @@ describe('FC failure classification', () => {
     expect(red.out).toMatchObject({
       ok: false,
       disposition: 'repair',
-      base_pass: false,
+      base_pass: null,
       decision: {
         kind: 'block',
         evidence: expect.arrayContaining([
@@ -2523,8 +2523,8 @@ describe('sa-check script', () => {
     const r = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'prepared', base });
     expect(r.out).toMatchObject({
       ok: false,
-      base_pass: false,
-      base_results: [{ cmd: command, pass: false }],
+      base_pass: null,
+      base_results: [{ cmd: command, pass: null }],
       disposition: 'repair',
     });
     expect(readFileSync(join(r.art, 'prepared.probe.log'), 'utf8')).toContain(
@@ -2555,7 +2555,7 @@ describe('sa-check script', () => {
       tag: 'v2',
       base,
     });
-    expect(preexisting.out).toMatchObject({ ok: false, base_pass: false });
+    expect(preexisting.out).toMatchObject({ ok: false, base_pass: null, baseline: 'incomparable' });
     expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
   });
   test('RA: probe records each base result without letting self-report suppress repair', () => {
@@ -2578,13 +2578,17 @@ describe('sa-check script', () => {
     });
     const base_results = [
       { cmd: commands[0], pass: true },
-      { cmd: commands[1], pass: false },
+      {
+        cmd: commands[1],
+        pass: null,
+        reason: 'baseline incomparable: exit=1; failure_class=unknown',
+      },
     ];
     expect(r).toMatchObject({
       code: 0,
       out: {
         ok: false,
-        base_pass: true,
+        base_pass: null,
         disposition: 'repair',
         base_results,
         failures: commands.map(command => ({ command, failure_class: 'unknown' })),
@@ -2610,7 +2614,7 @@ describe('sa-check script', () => {
       base,
     });
     expect(r.code).toBe(0);
-    expect(r.out).toMatchObject({ ok: false, base_results: [{ pass: false }] });
+    expect(r.out).toMatchObject({ ok: false, base_results: [{ pass: null }] });
     const path = readFileSync(trace, 'utf8').trim();
     expect(path.startsWith(join(r.art, 'probe-v3-'))).toBe(true);
     expect(existsSync(path)).toBe(false);
@@ -3475,4 +3479,119 @@ test('ROOT_ACCEPT malformed plan is an engine fault with original evidence and n
     engine_error: expect.any(String),
   });
   expect(r.err).not.toContain('at plan (');
+});
+
+test.each(['scope_violation', 'plan_invalid'])(
+  'adjudication %s stops verify, settle and gate repair',
+  error_class => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    const needs = [
+      { cap: 'scope_decision', why: '401 vs required 403', minimal_ask: 'resolve contract' },
+    ];
+    const coder = JSON.stringify({
+      status: 'blocked',
+      error_class,
+      needs,
+      blockers: ['contract conflict'],
+    });
+    const inputs = { plan: planFile(root, 'false'), pkgs: 'a', coder };
+    const verify = runScript(repo, { ...inputs, kind: 'accept', tag: 'verify-a' });
+    expect(verify.code).toBe(1);
+    expect(verify.out).toMatchObject({
+      disposition: 'fail',
+      reason: 'coder_needs',
+      decision: { needs },
+    });
+    const settled = runScript(repo, {
+      ...inputs,
+      kind: 'settle',
+      tag: 'settle-a',
+      first: JSON.stringify(verify.out),
+      repaired: coder,
+    });
+    expect(settled.code).toBe(1);
+    expect(settled.out).toMatchObject({
+      disposition: 'fail',
+      reason: 'coder_needs',
+      decision: { needs },
+    });
+    expect(decide({ rechecks: [verify.out as Accept], reviews: [null], risk: 'G1' })).toMatchObject(
+      { verdict: 'escalate', reason: 'coder_needs', decision: { needs } }
+    );
+  }
+);
+
+test.each([4, 1])(
+  'probe exit %s without comparable test evidence never proves baseline failure',
+  exit => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      base = sh('git rev-parse HEAD', repo).trim();
+    const command = `echo 'setup errors or missing new test'; exit ${exit}`;
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan: planFile(root, command, ['true']),
+      pkgs: 'a',
+      tag: 'incomparable',
+      base,
+    });
+    expect(r.out).toMatchObject({
+      ok: false,
+      base_pass: null,
+      baseline: 'incomparable',
+      base_results: [{ pass: null }],
+      disposition: 'repair',
+    });
+    expect((r.out as Accept).baseline_reason).toContain(`exit=${exit}`);
+  }
+);
+
+test('unresolved completeness blocker prevents verified requirement summary', () => {
+  const check = { cmd: 'true', timeout_s: 5 };
+  const accept: Accept = {
+    ok: true,
+    same: false,
+    diff_hash: 'x',
+    requirement_contract: [
+      {
+        id: 'a',
+        accept: [check],
+        requirements: [{ id: 'r', text: 'complete delivery', verified_by: [0] }],
+      },
+    ],
+    command_results: [{ check, pass: true, evidence: 'check.log' }],
+  };
+  const review = {
+    status: 'FAIL' as const,
+    debt: [],
+    findings: [
+      {
+        id: 'R1-1',
+        severity: 'blocker' as const,
+        status: 'open' as const,
+        file: 'report',
+        line: 1,
+        evidence: '19 requirements missing',
+        carry_over: false,
+        failure_class: 'product' as const,
+      },
+    ],
+  };
+  const result = deliveryDecision({ rechecks: [accept], reviews: [review] });
+  expect(result.decision.requirements?.status).toBe('unmet');
+  expect(result.decision.kind).toBe('repair');
+  expect(
+    deliveryDecision({
+      rechecks: [accept, accept],
+      reviews: [review, { ...review, status: 'PASS', findings: [] }],
+    }).decision.requirements?.status
+  ).toBe('unmet');
+  const closed = { ...review.findings[0]!, status: 'closed' as const, carry_over: true };
+  expect(
+    deliveryDecision({
+      rechecks: [accept, accept],
+      reviews: [review, { ...review, status: 'PASS', findings: [closed] }],
+    }).decision.requirements?.status
+  ).toBe('verified');
 });

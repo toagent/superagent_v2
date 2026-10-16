@@ -55,6 +55,7 @@ interface CommandResult {
   check: Check;
   pass: boolean | null;
   evidence: string;
+  exit?: number | string;
 }
 export interface Completion {
   status: 'legacy' | 'verified' | 'unmet' | 'unknown';
@@ -93,7 +94,9 @@ export interface Accept {
   failed?: string[];
   log?: string;
   base_pass?: boolean | null;
-  base_results?: { cmd: string; pass: boolean }[];
+  base_results?: { cmd: string; pass: boolean | null; reason?: string }[];
+  baseline?: 'comparable' | 'incomparable';
+  baseline_reason?: string;
   failures?: CheckFailure[];
   workspace_clean?: boolean;
   requirement_contract?: RequirementContract[];
@@ -307,6 +310,7 @@ function run(
       results.push({
         check: c,
         pass: saved.exit === undefined ? null : saved.exit === 0,
+        exit: saved.exit,
         evidence: log,
       });
       continue;
@@ -320,7 +324,7 @@ function run(
       timeout: c.timeout_s * 1000,
     });
     const code = p.signalCode ? `signal ${p.signalCode}` : p.exitCode;
-    results.push({ check: c, pass: code === 0, evidence: log });
+    results.push({ check: c, pass: code === 0, evidence: log, exit: code });
     appendFileSync(
       log,
       `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
@@ -398,7 +402,10 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
 /** Route structured blocks without turning acceptance failures into human waits. */
 export function nextDisposition(decision: DeliveryDecision): Disposition {
   const reason = reasons.find(r => r.code === decision.reason);
-  if (decision.kind === 'block' && ['coder_partial', 'no_change'].includes(decision.reason ?? ''))
+  if (
+    decision.kind === 'block' &&
+    ['coder_partial', 'coder_needs', 'no_change'].includes(decision.reason ?? '')
+  )
     return 'fail';
   if (decision.kind === 'block')
     return reason?.hold === 'review_limit' || reason?.hold === 'redline' ? 'fail' : 'repair';
@@ -574,6 +581,22 @@ function acceptOnce(
           tag
         )
       : [];
+  const incomparable =
+    base && failed.length && (!baseResults.length || baseResults.some(r => r.pass === null));
+  const baseline = {
+    base_pass: incomparable || !baseResults.length ? null : baseResults.some(r => r.pass),
+    ...(base && failed.length
+      ? {
+          baseline: incomparable ? ('incomparable' as const) : ('comparable' as const),
+          baseline_reason: incomparable
+            ? baseResults
+                .filter(r => r.pass === null)
+                .map(r => r.reason)
+                .join('; ') || 'baseline environment unavailable; see probe log'
+            : '',
+        }
+      : {}),
+  };
   if (baseResults.length) appendFileSync(log, `# base_results: ${JSON.stringify(baseResults)}\n`);
   else if (base && failed.length)
     appendFileSync(log, `# baseline unknown: see ${join(artifacts, `${tag}.probe.log`)}\n`);
@@ -591,7 +614,7 @@ function acceptOnce(
       failures,
       workspace_clean: !dirty,
       log,
-      base_pass: baseResults.length ? baseResults.some(r => r.pass) : null,
+      ...baseline,
     },
     env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : [],
     join(artifacts, `${tag}.coder.json`)
@@ -622,7 +645,7 @@ function acceptOnce(
     // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
     base_results: baseResults,
-    base_pass: baseResults.length ? baseResults.some(r => r.pass) : null,
+    ...baseline,
     ...scope,
     head: git('rev-parse', 'HEAD').trim(),
     checkout_fingerprint: checkoutFingerprint(args => auxiliary(['git', ...args])),
@@ -723,10 +746,26 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
       appendFileSync(log, '# baseline unknown: environment preparation failed\n');
       return [];
     }
-    return checks.map(c => ({
-      cmd: c.cmd,
-      pass: run([c], log, dir).length === 0,
-    }));
+    return checks.map(c => {
+      const failures: CheckFailure[] = [],
+        results: CommandResult[] = [];
+      const passed = run([c], log, dir, '', failures, results).length === 0;
+      // Exit 1 alone cannot distinguish assertions from setup errors. Only a
+      // structured non-environment failure proves the baseline actually ran.
+      const comparable =
+        passed ||
+        (results[0]?.exit === 1 &&
+          failures.every(f => f.failure_class !== 'unknown' && f.failure_class !== 'test_env'));
+      return {
+        cmd: c.cmd,
+        pass: comparable ? passed : null,
+        ...(!comparable
+          ? {
+              reason: `baseline incomparable: exit=${String(results[0]?.exit)}; failure_class=${failures[0]?.failure_class ?? 'unknown'}`,
+            }
+          : {}),
+      };
+    });
   } catch (error) {
     appendFileSync(log, `# baseline unknown: ${String(error)}\n`);
     return [];
@@ -977,12 +1016,16 @@ export function deliveryDecision(input: {
   } catch {
     /* Self-report is diagnostic only. */
   }
+  const adjudication =
+    coder?.status !== 'done' &&
+    ['scope_violation', 'plan_invalid'].includes(coder?.error_class ?? '') &&
+    coder?.needs?.length;
   const audit = {
     ...(coder && (coder.status !== 'done' || coder.error_class || coder.needs?.length)
       ? { self_report_conflict: true as const }
       : {}),
     ...(coder?.status === 'partial' ? { coder_partial: true as const } : {}),
-    ...(coder?.error_class ? { error_class_ignored: true as const } : {}),
+    ...(coder?.error_class && !adjudication ? { error_class_ignored: true as const } : {}),
   };
   const reviews = input.reviews ?? [];
   const rounds = reviews.length;
@@ -1029,6 +1072,7 @@ export function deliveryDecision(input: {
     strict: input.strict,
     rechecks: input.rechecks,
   });
+  if (ledger.blocking.length && completion.status === 'verified') completion.status = 'unmet';
   const evidence = [
     ...new Set([
       ...(input.permissions ?? []),
@@ -1070,6 +1114,15 @@ export function deliveryDecision(input: {
   if (input.permissions?.length || check?.decision?.reason === 'coder_redline')
     return out('block', 'coder_redline');
   if (!check) return out('block', 'engine_suspect');
+  if (check.decision?.reason === 'coder_needs' || adjudication) {
+    if (input.selfReportPath) evidence.push(input.selfReportPath);
+    const result = out('block', 'coder_needs');
+    Object.assign(result.decision, {
+      blockers: coder?.blockers ?? check.decision?.blockers ?? [],
+      needs: coder?.needs ?? check.decision?.needs ?? [],
+    });
+    return result;
+  }
   if (check.no_changes === true && coder && coder.status !== 'done') {
     const result = out('block', 'coder_partial');
     Object.assign(result.decision, { blockers: coder.blockers ?? [], needs: coder.needs ?? [] });
@@ -1095,7 +1148,9 @@ export function deliveryDecision(input: {
   }
   const unknown = check.failures?.some(
     f =>
-      f.failure_class === 'test_env' || (f.failure_class === 'baseline' && check.base_pass === null)
+      f.failure_class === 'test_env' ||
+      (f.failure_class === 'baseline' &&
+        (check.base_pass === null || check.baseline === 'incomparable'))
   );
   if (unknown) return out('block', 'environment');
   const approved = input.approved?.check;
