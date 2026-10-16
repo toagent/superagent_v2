@@ -38,17 +38,19 @@ async function refresh() {
     $('connection').textContent = state.lastRead
       ? '最后成功读取：' + new Date(state.lastRead).toLocaleString()
       : '状态未知；保留上次读取，不推断完成';
-    $('state').textContent = (statuses[state.status] || '状态未知') + '。' + state.note;
+    $('state').textContent =
+      (statuses[state.status] || '状态未知') +
+      (['completed', 'unknown'].includes(state.status) ? '。' + state.note : '');
     $('receipt').textContent = state.receipt
       ? {
-          intent: '提交意图已保存，受理尚未确认',
-          accepted: '引擎已接收；续跑尚未确认',
-          resuming: '续跑请求已受理，执行结果以上方状态为准',
+          intent: '已保存选择，等待引擎确认',
+          accepted: '引擎已接收选择',
+          resuming: '引擎已接收选择，正在继续执行',
           unknown: '提交结果未知，请在 Mac 核验；不会自动重发',
         }[state.receipt.stage]
       : state.stale
         ? '旧通知已失效，请回到当前事项'
-        : '尚未提交';
+        : '尚未提交选择';
     const decision = state.decision;
     $('item').hidden = !decision;
     $('options').replaceChildren();
@@ -83,13 +85,6 @@ async function refresh() {
         $('options').append(button);
       }
     }
-    $('events').replaceChildren(
-      ...state.events.map(e => {
-        const li = document.createElement('li');
-        li.textContent = [e.at, e.type, e.node].filter(Boolean).join(' · ');
-        return li;
-      })
-    );
     $('push').textContent = view.subscribed
       ? view.delivery + '。通知状态：' + view.notification.map(n => n.status).join(' / ')
       : '未订阅，本设备尚未启用通知';
@@ -110,9 +105,14 @@ $('pair').onclick = async () => {
 $('notify').onclick = async () => {
   try {
     if (!latest) throw new Error('先完成配对并成功读取');
+    const notifications = globalThis.Notification;
+    if (!notifications)
+      throw new Error('此页面模式不支持通知。在 iPhone 上，请先“添加到主屏幕”，再从主屏幕图标打开后重试');
+    if (!navigator.serviceWorker) throw new Error('此浏览器不支持通知');
     const registration = await navigator.serviceWorker.register('/sw.js');
     await navigator.serviceWorker.ready;
-    if ((await Notification.requestPermission()) !== 'granted') throw new Error('尚未允许通知');
+    if (!registration.pushManager) throw new Error('此浏览器不支持推送通知');
+    if ((await notifications.requestPermission()) !== 'granted') throw new Error('尚未允许通知');
     const bytes = Uint8Array.from(atob(latest.publicKey.replace(/-/g, '+').replace(/_/g, '/')), c =>
       c.charCodeAt(0)
     );
@@ -150,10 +150,7 @@ $('revoke-confirm').onclick = async () => {
     $('revoke-cancel').disabled = false;
   }
 };
-$('refresh').onclick = () => {
-  selected = null;
-  void refresh();
-};
+$('refresh').onclick = () => location.reload();
 setInterval(() => {
   if (!busy && document.visibilityState === 'visible') void refresh();
 }, 10000);
