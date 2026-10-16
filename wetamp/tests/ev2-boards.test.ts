@@ -526,6 +526,42 @@ for (const width of [38, 54, 82, 120])
       expect(JSON.stringify(s)).toBe(before);
     });
 
+test('pane prioritizes unresolved runs and live jobs over terminal history', () => {
+  const s = snapshot();
+  s.rows.unshift(
+    ...Array.from({ length: 20 }, (_, i) => {
+      const state = i % 2 ? ('cancelled' as const) : ('failed' as const);
+      return { ...row(`history-${i}`, state), nativeState: state };
+    })
+  );
+  s.rows.push(
+    row('unknown', 'unknown'),
+    row('lost', 'owner_lost'),
+    { ...row('cached', 'failed'), nativeState: 'failed', stale: true },
+    row('conflict', 'failed')
+  );
+  const text = renderToString(createElement(Frame, { snap: s, width: 50, height: 47, now }), {
+    columns: 50,
+  });
+  const titles = [
+    'active交付',
+    'held交付',
+    'zombie交付',
+    'unknown交付',
+    'lost交付',
+    'cached交付',
+    'conflict交付',
+    'j1 ·',
+    'j2 ·',
+    'history-0交付',
+  ];
+  for (const title of titles) expect(text).toContain(title);
+  for (let i = 1; i < titles.length; i++)
+    expect(text.indexOf(titles[i])).toBeGreaterThan(text.indexOf(titles[i - 1]));
+  expect(text).toContain('任务 · 29');
+  expect(text).toContain('项任务未显示');
+});
+
 test('pane separates process exit from run completion and preserves missing/stale evidence', () => {
   const s = snapshot();
   s.rows = [

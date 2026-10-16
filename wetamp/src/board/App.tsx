@@ -60,6 +60,9 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
         const live = c.active.some(x => x.id === r.id) && !row.stale;
         const disposition = row.engine?.dispositions.at(-1);
         return {
+          terminal:
+            !row.stale && ['failed', 'cancelled'].includes(row.state) &&
+            (!row.nativeState || row.nativeState === row.state),
           title: `${r.title} · ${r.project}`,
           status: live
             ? `${r.stage} · ${r.progressText}`
@@ -79,6 +82,7 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
       .map(j => {
         const live = c.active.find(r => r.id === j.id);
         return {
+          terminal: j.state === 'failed',
           title: `${j.title} · ${basename(j.cwd)}`,
           status: live
             ? `${live.stage} · ${live.progressText}`
@@ -91,7 +95,7 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
           color: live ? 'cyan' : j.state === 'failed' ? 'red' : 'yellow',
         };
       }),
-  ];
+  ].sort((a, b) => Number(a.terminal) - Number(b.terminal));
   const age = now.getTime() - Date.parse(snap.at);
   const footer = `数据 ${fmtClock(snap.at, now.getTime())} · ${Number.isFinite(age) && age >= 0 ? `${fmtElapsed(Math.floor(age / 1000))}前` : '时效未知'}`;
   // Reserve data freshness first, then alerts, decisions, cards and recent results.
