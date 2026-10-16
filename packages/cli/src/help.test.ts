@@ -204,6 +204,7 @@ Commands:
   workflow logs <run-id>     Print or follow a run's JSONL transcript
   workflow wait <run-id>     Block until the run ends or needs a human decision
   workflow resume <run-id>   Resume a failed or paused run from completed nodes
+  workflow due [--json]      List due continuations without waking them
   workflow wake [--watch] [--json] Wake due continuations across this install
   workflow signal <full-run-id> Signal and wake one exact event wait occurrence
   workflow cancel <run-id>   Stop a running workflow (stops an owning process first)

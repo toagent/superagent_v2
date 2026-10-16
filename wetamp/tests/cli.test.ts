@@ -526,6 +526,7 @@ function stub(responses: RunView[]): {
   root: string;
   ledger: Ledger;
   calls: () => string[];
+  due: ReturnType<typeof spyOn<typeof archonMod, 'dueWorkflowContinuations'>>;
 } {
   restoreFixtures();
   fixtureSpies.push(spyOn(launcherModule, 'launcher').mockReturnValue(undefined));
@@ -557,6 +558,7 @@ function stub(responses: RunView[]): {
     AGENT_SUPERVISOR_STATE: join(root, 'sv-state'),
   });
   let elapsed = 0;
+  const due = spyOn(archonMod, 'dueWorkflowContinuations').mockReturnValue(['r']);
   fixtureSpies.push(
     // Scratch cleanup has dedicated real-process coverage in scratch.test.ts.
     // Control fixtures must not scan or clean unrelated operator sessions.
@@ -567,6 +569,7 @@ function stub(responses: RunView[]): {
       elapsed += ms;
     }),
     spyOn(coordModule, 'caller').mockReturnValue((fixtureCaller ??= coordModule.caller())),
+    due,
     spyOn(archonMod, 'archon').mockImplementation((args, _cwd, intent) => {
       if (args[1] === 'wait') elapsed += Number(args[args.indexOf('--timeout') + 1]) * 1000;
       if (intent) {
@@ -617,7 +620,7 @@ function stub(responses: RunView[]): {
       ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n')
       : [];
   supervisor(root, 'pending');
-  return { dir, root, ledger, calls };
+  return { dir, root, ledger, calls, due };
 }
 
 describe('HF3 latest-engine recovery', () => {
@@ -2317,40 +2320,47 @@ test.each([
   60_000
 );
 
-test.each([
-  ['completed', 1],
-  ['completed', 100],
-  ['cancelled', 1],
-  ['cancelled', 100],
-] as const)('terminal-only admitted ledgers status=%s N=%i perform zero wakes', (status, n) => {
-  const s = stub([run(status)]);
-  for (let i = 1; i < n; i++) {
-    writeFileSync(ledgerPath(`sa${i + 1}`), JSON.stringify({ ...s.ledger, run_id: `sa${i + 1}` }));
-  }
-  const snapshot = spyOn(archonMod, 'getRun').mockReturnValue(run(status));
+test('supervise tick wakes all four native due continuation classes', () => {
+  const s = stub([run('running')]);
+  const ids = ['timed', 'event', 'scheduled', 'retry'];
+  for (const [index, id] of ids.entries())
+    writeFileSync(
+      ledgerPath(`sa${index + 1}`),
+      JSON.stringify({ ...s.ledger, run_id: `sa${index + 1}`, archon_run_id: id })
+    );
+  s.due.mockReturnValue(ids);
+  const snapshot = spyOn(archonMod, 'getRun').mockImplementation(id => ({ ...run('running'), id }));
   try {
     expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-    expect(s.calls().filter(c => c.startsWith('workflow wake'))).toHaveLength(0);
-    expect(snapshot).toHaveBeenCalledTimes(n);
+    expect(s.calls().filter(call => call.startsWith('workflow wake'))).toHaveLength(4);
+    expect(s.due).toHaveBeenCalledTimes(1);
   } finally {
     snapshot.mockRestore();
   }
 });
 
-test.each(['failed', 'running', 'paused', 'pending'] as const)(
-  'non-terminal exemption status=%s retains per-run wake',
-  async status => {
-    const s = stub([run(status)]);
-    const snapshot = spyOn(archonMod, 'getRun').mockReturnValue(run(status));
-    try {
-      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-      expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
-      expect(existsSync(ledgerPath('sa1'))).toBe(true);
-    } finally {
-      snapshot.mockRestore();
-    }
-  }
-);
+test('supervise tick starts no wakes when native due query is empty', () => {
+  const s = stub([run('running')]);
+  s.due.mockReturnValue([]);
+  expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+  expect(s.calls().filter(call => call.startsWith('workflow wake'))).toHaveLength(0);
+});
+
+test('supervise tick reports due query errors without waking', () => {
+  const s = stub([run('running')]);
+  s.due.mockImplementation(() => {
+    throw new Error('due query unavailable');
+  });
+  const result = captured(() => main(['supervise-tick']));
+  expect(result.code).toBe(1);
+  expect(JSON.parse(result.out).actions).toContainEqual({
+    run_id: 'continuations',
+    action: 'error',
+    ok: false,
+    error: 'due query unavailable',
+  });
+  expect(s.calls().filter(call => call.startsWith('workflow wake'))).toHaveLength(0);
+});
 
 describe('supervise-tick (archon + supervisor stubs)', () => {
   test('configured mobile transport leaves existing Reminders untouched and exposes unsupported gates', () => {

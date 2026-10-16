@@ -34,6 +34,7 @@ const output: unknown[] = [];
 const scan = mock(async (): Promise<ContinuationWakeOutcome[]> => []);
 const resume = mock(async (): Promise<ContinuationAdmission> => ({ kind: 'not-accepted' }));
 const getRun = mock(async () => makeTestWorkflowRun());
+const listDue = mock(async (): Promise<WorkflowRun[]> => []);
 const signal = mock(async () => ({ signaled: true }));
 const install = mock(async (_config: NativeScheduleConfig) => 'installed');
 const remove = mock(async (_id: string) => true);
@@ -42,7 +43,7 @@ mock.module('@archon/core/workflows/continuation-host', () => ({
   resumeWorkflowContinuation: resume,
 }));
 const host = {
-  deps: { store: { getWorkflowRun: getRun } },
+  deps: { store: { getWorkflowRun: getRun, listDueWorkflowContinuations: listDue } },
   operations: { signalWorkflowWait: signal },
 } as unknown as import('@archon/core/workflows/host-store').WorkflowHost;
 mock.module('../utils/stdout', () => ({
@@ -63,9 +64,18 @@ beforeEach(() => {
   resume.mockReset();
   resume.mockResolvedValue({ kind: 'not-accepted' });
   getRun.mockReset();
+  listDue.mockReset();
+  listDue.mockResolvedValue([]);
   signal.mockClear();
   install.mockClear();
   remove.mockClear();
+});
+
+test('due lists run ids without admitting continuations', async () => {
+  listDue.mockResolvedValue([makeTestWorkflowRun({ id: 'timed' })]);
+  expect(await workflowContinuationCommand(host, 'due', [], { json: true })).toBe(0);
+  expect(output[0]).toEqual({ ok: true, action: 'due', runs: ['timed'] });
+  expect(scan).not.toHaveBeenCalled();
 });
 
 test('empty wake succeeds and rejects fresh execution flags before scanning', async () => {

@@ -191,13 +191,21 @@ function validateFlags(values: Values, allowed: string[]): void {
 
 export async function workflowContinuationCommand(
   host: WorkflowHost,
-  action: 'wake' | 'signal',
+  action: 'due' | 'wake' | 'signal',
   args: string[],
   values: Values
 ): Promise<number> {
   const json = values.json === true;
   try {
     if (action === 'signal') return await signalEvent(host, args, values, json);
+    if (action === 'due') {
+      validateFlags(values, []);
+      if (args.length) throw new Error('Usage: archon workflow due [--json]');
+      const runs = await host.deps.store.listDueWorkflowContinuations(new Date());
+      if (json) await writeJsonLine({ ok: true, action, runs: runs.map(run => run.id) });
+      else for (const run of runs) console.log(run.id);
+      return 0;
+    }
     return await wake(host, args, values, json);
   } catch (error) {
     if (json)

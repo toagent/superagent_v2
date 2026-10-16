@@ -421,7 +421,10 @@ async function main(): Promise<number> {
       });
     }
 
-    if (command === 'workflow' && (subcommand === 'wake' || subcommand === 'signal')) {
+    if (
+      command === 'workflow' &&
+      (subcommand === 'due' || subcommand === 'wake' || subcommand === 'signal')
+    ) {
       const schedule = subcommand === 'wake' && positionals[2] === 'schedule';
       const { workflowContinuationCommand, workflowWakeScheduleCommand } = await loadRoute(
         () => import('./commands/workflow-continuations'),

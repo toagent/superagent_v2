@@ -185,6 +185,12 @@ const commandHelp: HelpEntry[] = [
   },
   {
     command: 'workflow',
+    subcommand: 'due',
+    spec: 'workflow due [--json]',
+    description: 'List due continuations without waking them',
+  },
+  {
+    command: 'workflow',
     subcommand: 'wake',
     spec: 'workflow wake [--watch] [--json]',
     description: 'Wake due continuations across this install',
