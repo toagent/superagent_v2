@@ -1,5 +1,6 @@
 import {
   cwdOf,
+  interventionCount,
   clock,
   ms,
   planOf,
@@ -123,6 +124,7 @@ export function reportSummary(report: Record<string, unknown>): Record<string, u
   const demands = report.demands as Record<string, unknown>;
   return {
     ...Object.fromEntries(Object.entries(report).filter(([, v]) => typeof v === 'number' || typeof v === 'string')),
+    delivery: report.delivery, undelivered: report.undelivered,
     metrics: report.metrics, cancellations: report.cancellations, interventions,
     demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length, by_request: demands.by_request, unattributed: demands.unattributed },
     usage: Object.fromEntries(['total', 'investment', 'supplemental', 'learning', 'window'].map(k => [k, usage[k]])),
@@ -451,10 +453,32 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     },
   };
 }
+/** Delivery receipts are independent of execution status; missing legacy evidence stays explicit. */
+export function deliveryStats(pairs: Pair[]) {
+  const counts: Record<string, number> = {};
+  const undelivered: { run: string; repo: string; status: string; reason: string }[] = [];
+  for (const { ledger: l, run } of pairs) {
+    const receipt = l.delivery_result;
+    const status = receipt?.status ?? (l.delivery ? 'missing' : 'legacy');
+    counts[status] = (counts[status] ?? 0) + 1;
+    if (!(run instanceof Error) && run.status === 'completed' && status !== 'integrated')
+      undelivered.push({
+        run: l.run_id,
+        repo: l.repo,
+        status,
+        reason:
+          receipt && 'reason' in receipt
+            ? receipt.reason.split(/\r?\n/)[0]
+            : receipt
+              ? 'delivery not integrated'
+              : 'delivery receipt missing',
+      });
+  }
+  return { delivery: counts, undelivered };
+}
+
 export function interventionStats(ls: Ledger[]): Record<string, unknown> {
-  const by_run = Object.fromEntries(
-    ls.map(l => [l.run_id, l.intervention_events?.length ?? 'unknown'])
-  );
+  const by_run = Object.fromEntries(ls.map(l => [l.run_id, interventionCount(l) ?? 'unknown']));
   const counts = Object.values(by_run)
     .filter((n): n is number => typeof n === 'number')
     .sort((a, b) => a - b);
@@ -560,6 +584,7 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
   );
   const report = {
     ...snapshot.summary,
+    ...deliveryStats(pairs),
     repo_missing,
     requirements: Object.fromEntries(
       pairs.map(({ ledger, run }) => [

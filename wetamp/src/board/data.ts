@@ -1,4 +1,4 @@
-import { clock, firstPassOf, planOf, cwdOf } from '../ledger-metrics';
+import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-metrics';
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
@@ -231,6 +231,7 @@ export function rowOf(
       dispositions: l.dispositions ?? [],
     },
     landed: (() => {
+      if (l.delivery_result) return l.delivery_result.status === 'integrated';
       if (c.state !== 'completed' || !plan?.base_ref) return false;
       const land = evidenceJson(l, artifactsOf(run), 'land.json') as { head?: string } | undefined;
       return (
@@ -248,11 +249,11 @@ export function rowOf(
         ).status === 0
       );
     })(),
-    interventions: l.intervention_events?.length,
+    interventions: interventionCount(l),
     intervened: nodes.some(n => n.nodeId.startsWith('human-') && n.state === 'completed')
       ? true
       : l.intervention_events
-        ? l.intervention_events.length > 0
+        ? (interventionCount(l) ?? 0) > 0
         : undefined,
     nativeState: run.status,
     completed_at: run.completed_at,

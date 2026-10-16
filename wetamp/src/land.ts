@@ -464,22 +464,30 @@ export function finalizeDelivery(
         const land = evidenceJson(l, art, 'land.json') as Land | undefined;
         if (!land) throw new Error('delivery: missing generated land evidence');
         let receipt: ReturnType<typeof applyLand>;
-        intervention(l, 'land', () => {
-          receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
-            repo: l.repo,
-            plan: planOf(l),
-            reuse: () => {
-              const reuse = { head: land.head, paths: [] as string[] };
-              return acceptRun(l, undefined, undefined, art, false, reuse) === 0
-                ? reuse.paths
-                : undefined;
-            },
-            base_ref: planOf(l).base_ref,
-            launch_branch: l.launch_branch,
-            delivery: target ? localDelivery(l, art, target) : undefined,
-          });
-          return 0;
-        });
+        intervention(
+          l,
+          'land',
+          () => {
+            receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
+              repo: l.repo,
+              plan: planOf(l),
+              reuse: () => {
+                const reuse = { head: land.head, paths: [] as string[] };
+                return acceptRun(l, undefined, undefined, art, false, reuse) === 0
+                  ? reuse.paths
+                  : undefined;
+              },
+              base_ref: planOf(l).base_ref,
+              launch_branch: l.launch_branch,
+              delivery: target ? localDelivery(l, art, target) : undefined,
+            });
+            return 0;
+          },
+          undefined,
+          undefined,
+          undefined,
+          automatic || authorization ? 'engine' : 'operator'
+        );
         updateLedger(l, cur => {
           cur.controller = controller;
           cur.delivery_result =

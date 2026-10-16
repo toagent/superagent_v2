@@ -274,6 +274,10 @@ test('DURABLE_DELIVERY finalizeDelivery persists integrated ledger and repeats w
       source: f.source,
     });
     expect(loadLedger('fault').delivery_result).toEqual({ ...receipt, status: 'integrated' });
+    expect(loadLedger('fault').intervention_events?.at(-1)).toMatchObject({
+      action: 'land',
+      origin: 'engine',
+    });
     expect(readFileSync(checks, 'utf8').trim()).toBe(head);
     expect(finalizeDelivery('fault', false, who, authorization)).toEqual(receipt);
     expect(loadLedger('fault').delivery_result).toEqual({ ...receipt, status: 'integrated' });

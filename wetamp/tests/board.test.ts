@@ -13,7 +13,7 @@ import { hostname } from 'node:os';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
 import type { RunView } from '../src/archon';
-import { report, summarize, type Ledger } from '../src/cli';
+import { report, summarize, intervention, loadLedger, type Ledger } from '../src/cli';
 import {
   bar,
   createLoader,
@@ -28,7 +28,8 @@ import {
 import { detailOf, detailLines, redact } from '../src/board/detail';
 import { Frame } from '../src/board/App';
 import { cockpit } from '../src/board/cockpit';
-import { gitRepo, tmp } from './helpers';
+import { metricsOf } from '../src/ledger-metrics';
+import { gitRepo, sh, tmp } from './helpers';
 import { caller, coord, repoScope, runScope } from '../src/coord';
 
 const WETAMP = join(import.meta.dir, '..');
@@ -124,6 +125,65 @@ function ledger(
 }
 
 describe('data rows', () => {
+  test('delivery receipts override ancestry; automatic landing is not an intervention', () => {
+    const run: RunView = { id: 'a-delivery', status: 'completed' };
+    const l = ledger('delivery', run, {
+      intervention_events: [],
+      delivery_result: { status: 'blocked', reason: 'dirty\nmore' },
+    });
+    const row = () => rowOf(loadLedger(l.run_id), run, { now: Date.now() });
+    expect(row().landed).toBe(false);
+    intervention(l, 'land', () => 0, undefined, undefined, undefined, 'engine');
+    expect(row()).toMatchObject({ interventions: 0, intervened: false });
+    intervention(l, 'land', () => 0);
+    expect(row()).toMatchObject({ interventions: 1, intervened: true });
+    expect(report()).toMatchObject({
+      delivery: { blocked: 1 },
+      undelivered: [{ run: 'delivery', repo: root, status: 'blocked', reason: 'dirty' }],
+      interventions: { by_run: { delivery: 1 } },
+    });
+    const integrated: NonNullable<Ledger['delivery_result']> = {
+      status: 'integrated',
+      task: 'delivery',
+      source: 'source',
+      target: { checkout: root, branch: 'target', head: 'base' },
+      contract: 'contract',
+      evidence: root,
+      accepted: 'accepted',
+      integrated: 'integrated',
+      target_tip: 'tip',
+      push: 'manual',
+    };
+    const now = Date.now();
+    const auto = rowOf(
+      {
+        ...l,
+        delivery_result: integrated,
+        intervention_events: loadLedger(l.run_id).intervention_events?.slice(0, 1),
+      },
+      { ...run, completed_at: new Date(now).toISOString() },
+      { now }
+    );
+    expect(metricsOf([auto], {}, now).completed).toBe(1);
+    // No plan or Git ancestry evidence: the durable receipt is sufficient.
+    expect(rowOf({ ...l, delivery_result: integrated }, run, { now: Date.now() }).landed).toBe(
+      true
+    );
+    const repo = gitRepo(tmp()),
+      output = join(repo, 'artifacts/runs', run.id);
+    mkdirSync(output, { recursive: true });
+    writeFileSync(
+      join(output, 'land.json'),
+      JSON.stringify({ head: sh('git rev-parse HEAD', repo).trim() })
+    );
+    writeFileSync(join(repo, 'plan.json'), JSON.stringify({ base_ref: 'main', packages: [] }));
+    const legacy = { ...l, repo, delivery_result: undefined };
+    const landedRun = { ...run, output_root: repo };
+    expect(rowOf(legacy, landedRun, { now }).landed).toBe(true);
+    expect(
+      rowOf({ ...legacy, delivery_result: l.delivery_result }, landedRun, { now }).landed
+    ).toBe(false);
+  });
   test('interventions use explicit events, never automatic asks or legacy booleans', () => {
     const run: RunView = { id: 'a-sa1', status: 'failed' };
     const l = ledger('sa1', run, {
@@ -799,6 +859,8 @@ test('summarize, report and the board share one summary', async () => {
     slow_nodes,
     jobs,
     recorded_blockers,
+    delivery,
+    undelivered,
     ...expected
   } = report();
   expect(decisions).toEqual({});
@@ -807,6 +869,8 @@ test('summarize, report and the board share one summary', async () => {
   expect(provider_timing).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
   expect(slow_nodes).toEqual([]);
   expect(recorded_blockers).toEqual([]);
+  expect(delivery).toEqual({ legacy: 2 });
+  expect(undelivered).toMatchObject([{ run: 'g', status: 'legacy' }]);
   expect(cancellations).toEqual({});
   expect(demands).toMatchObject({
     denominator: 0,

@@ -270,6 +270,7 @@ export interface Ledger {
   /** Append-only explicit decisions; absent on historical runs with unknown coverage. */
   intervention_events?: (Pick<Disposition, 'at' | 'action' | 'ok' | 'error'> & {
     source: 'superagent' | 'cli' | 'commander';
+    origin?: 'engine' | 'operator';
     ask_id?: string;
     key?: string;
     reason?: string;
@@ -343,7 +344,8 @@ export function intervention<
   execute: () => T,
   ask?: { key: string; id?: string },
   started: () => boolean = () => true,
-  reason?: string
+  reason?: string,
+  origin: NonNullable<Ledger['intervention_events']>[number]['origin'] = 'operator'
 ): T {
   let ok = false;
   let skipped = false;
@@ -365,6 +367,7 @@ export function intervention<
         (cur.intervention_events ??= []).push({
           at: new Date().toISOString(),
           action,
+          origin,
           source: ask ? 'superagent' : caller(true).client === 'shell' ? 'cli' : 'commander',
           ...(ask ? { key: ask.key, ask_id: ask.id } : {}),
           ok,

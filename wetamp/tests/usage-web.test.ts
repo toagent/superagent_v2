@@ -51,6 +51,20 @@ const owner = (kind: Owner['kind']): Owner => ({ kind, client: 'codex', role: 'g
 
 // prettier-ignore
 describe('WP-BT6 naming and metadata', () => {
+  test('refresh serializes shared bunx installation and preserves unattributed ownership', async () => {
+    setup();
+    let active = 0, peak = 0;
+    const cache = await refreshUsage(undefined, async (client, mode) => {
+      active++; peak = Math.max(peak, active);
+      await Bun.sleep(1);
+      active--;
+      return mode === 'daily' ? { daily: [] } : client === 'claude' ? claude : codex;
+    });
+    expect(peak).toBe(1);
+    expect(cache.sources).toEqual({ claude: 'ok', codex: 'ok' });
+    expect(cache.sessions.every(s => s.owner?.kind === 'unknown' && s.owner.role === null)).toBe(true);
+    expect(usageSummary(cache).attribution).toContain('no matching ownership evidence');
+  });
   test('collector failure preserves stderr and exit status without persisting credentials', async () => {
     setup();
     let diagnostic = '';

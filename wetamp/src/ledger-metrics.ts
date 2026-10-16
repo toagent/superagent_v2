@@ -29,6 +29,10 @@ export const ms = (a?: string, b?: string): number | null => {
   return Number.isFinite(delta) && delta >= 0 ? delta : null;
 };
 
+/** Historical events without origin remain operator interventions; never infer from prose. */
+export const interventionCount = (l: Ledger): number | undefined =>
+  l.intervention_events?.filter(e => !(e.action === 'land' && e.origin === 'engine')).length;
+
 export const cwdOf = (l: Ledger): string => (existsSync(l.repo) ? l.repo : WETAMP);
 const precisionOf = (value?: string): number => (value?.includes(' ') ? 1000 : 0);
 

@@ -270,7 +270,8 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
     const day = new Date().toLocaleDateString('sv-SE');
     const today: NonNullable<UsageCache['today']> = { day, status: 'ok', sessions: [] };
     const old = readUsage(), cache: UsageCache = { at: new Date().toISOString(), since, status: 'ok', sources: {}, source_at: {}, sessions: [], today, daily: [] };
-    await Promise.all((['claude', 'codex'] as const).map(async client => {
+    // bunx installs/links both clients from the same package cache; serialize under refresh.lock.
+    for (const client of ['claude', 'codex'] as const) {
       try {
         cache.sessions.push(...parseUsage(await collect(client, 'session', since), client));
         const d = obj(await collect(client, 'daily', since));
@@ -287,7 +288,7 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
       // Reuse the same ccusage collector/cache, scoped to the local day; lifetime sessions cannot prove role/day totals.
       try { today.sessions.push(...(since === day.replaceAll('-', '') && cache.sources[client] === 'ok' ? cache.sessions.filter(s => s.client === client) : parseUsage(await collect(client, 'session', day.replaceAll('-', '')), client))); }
       catch { today.status = 'unavailable'; }
-    }));
+    }
     if (Object.values(cache.sources).some(s => s !== 'ok')) cache.status = `用量未知（ccusage 不可用：${Object.entries(cache.sources).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}:${v}`).join(', ')}）；保留旧缓存`;
     const evidence = usageEvidence(); refreshEta(evidence.eta);
     writeAtomic(join(root(), 'runs.json'), JSON.stringify(evidence.runs));
@@ -312,13 +313,13 @@ export function usageSummary(c: UsageCache): Record<string, unknown> {
     for (const s of xs) { const k = f(s), a = out[k] ??= empty(); for (const field of Object.keys(a) as (keyof Counts)[]) a[field] += s[field]; }
     return out;
   };
-  return { status: c.status, at: c.at, since: c.since, coverage: '仅本机日志；开发机 / mini 不含；会话合计覆盖筛选日期内日志，daily 为实际每日消耗，reasoning 已含在 output 中', sources: c.sources, source_at: c.source_at, total: c.status === 'ok' ? group(() => 'all').all ?? empty() : null, by_role_model: group(s => `${s.owner?.role ?? '?'}·${shortModel(s.model) || '?'}${s.owner?.kind === 'inferred' ? '?' : ''}`, c.sessions.flatMap(s => s.parts?.length ? s.parts.map(p => ({ ...s, ...p })) : [s])), by_kind: group(s => s.owner?.kind ?? 'unknown'), daily: c.daily, top: [...c.sessions].sort((a, b) => b.total - a.total).slice(0, 20).map(s => ({ id: s.id, client: s.client, model: s.model, short_model: shortModel(s.model), at: s.at, owner: s.owner, input: s.input, output: s.output, reasoning: s.reasoning, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, sessions: 1 })) };
+  return { attribution: 'unknown = no matching ownership evidence; may include engine sessions without receipts, interactive sessions or other tools; ? = unknown role', status: c.status, at: c.at, since: c.since, coverage: '仅本机日志；开发机 / mini 不含；会话合计覆盖筛选日期内日志，daily 为实际每日消耗，reasoning 已含在 output 中', sources: c.sources, source_at: c.source_at, total: c.status === 'ok' ? group(() => 'all').all ?? empty() : null, by_role_model: group(s => `${s.owner?.role ?? '?'}·${shortModel(s.model) || '?'}${s.owner?.kind === 'inferred' ? '?' : ''}`, c.sessions.flatMap(s => s.parts?.length ? s.parts.map(p => ({ ...s, ...p })) : [s])), by_kind: group(s => s.owner?.kind ?? 'unknown'), daily: c.daily, top: [...c.sessions].sort((a, b) => b.total - a.total).slice(0, 20).map(s => ({ id: s.id, client: s.client, model: s.model, short_model: shortModel(s.model), at: s.at, owner: s.owner, input: s.input, output: s.output, reasoning: s.reasoning, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, sessions: 1 })) };
 }
 // prettier-ignore
 export function usageText(c: UsageCache): string {
   const summary = usageSummary(c);
   const row = (k: string, v: Counts): string => [k, v.input, v.output, v.reasoning, v.cacheRead, v.cacheWrite, v.total, v.sessions].join(' ');
-  return ['全量（ccusage） · 仅本机日志；开发机 / mini 不含', `${c.status} · 缓存 ${c.at ?? '无'}`, 'kind input output reasoning cacheRead cacheWrite 合计 会话数', ...Object.entries(summary.by_kind as Record<string, Counts>).map(([k, v]) => row(k, v)), '角色×模型', ...Object.entries(summary.by_role_model as Record<string, Counts>).map(([k, v]) => row(k, v)), 'Top 会话（其余汇总见 --json / Web）', ...[...c.sessions].sort((a, b) => b.total - a.total).slice(0, 5).map(s => `${s.id} ${s.owner?.kind ?? 'unknown'} ${fmtTokens(s.total)}`)].join('\n');
+  return ['全量（ccusage） · 仅本机日志；开发机 / mini 不含', `${c.status} · 缓存 ${c.at ?? '无'}`, String(summary.attribution), 'kind input output reasoning cacheRead cacheWrite 合计 会话数', ...Object.entries(summary.by_kind as Record<string, Counts>).map(([k, v]) => row(k, v)), '角色×模型', ...Object.entries(summary.by_role_model as Record<string, Counts>).map(([k, v]) => row(k, v)), 'Top 会话（其余汇总见 --json / Web）', ...[...c.sessions].sort((a, b) => b.total - a.total).slice(0, 5).map(s => `${s.id} ${s.owner?.kind ?? 'unknown'} ${fmtTokens(s.total)}`)].join('\n');
 }
 // prettier-ignore
 export const fmtTokens = (n: number): string => n >= 1e9 ? `${(n / 1e9).toFixed(1)}G` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);

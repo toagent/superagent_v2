@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Plan } from '../src/plan';
 import {
   buildReport,
+  deliveryStats,
   engineComparison,
   type EngineRow,
   reportSummary,
@@ -59,6 +60,38 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  test('delivery separates legacy, missing and blocked without mutating ledger evidence', () => {
+    const pairs = [
+      { run_id: 'legacy', repo: '/repo' },
+      {
+        run_id: 'missing',
+        repo: '/repo',
+        delivery: { checkout: '/repo', branch: 'work', head: 'base' },
+      },
+      {
+        run_id: 'blocked',
+        repo: '/repo',
+        delivery_result: { status: 'blocked', reason: 'dirty\ndetail' },
+      },
+    ].map(l => ({ ledger: l as Ledger, run: { id: l.run_id, status: 'completed' as const } }));
+    const before = JSON.stringify(pairs);
+    const stats = deliveryStats(pairs);
+    expect(stats.delivery).toEqual({ legacy: 1, missing: 1, blocked: 1 });
+    expect(stats.undelivered.map(r => r.status)).toEqual(['legacy', 'missing', 'blocked']);
+    expect(stats.undelivered[2].reason).toBe('dirty');
+    expect(JSON.stringify(pairs)).toBe(before);
+    expect(deliveryStats([{ ...pairs[2], run: new Error('unavailable') }]).undelivered).toEqual([]);
+    const summary = reportSummary({
+      ...stats,
+      usage: { unreadable: [] },
+      jobs: { unreadable: [] },
+      interventions: {},
+      demands: { unknown_runs: [] },
+      repo_missing: [],
+      unreadable: [],
+    });
+    expect(summary).toMatchObject(stats);
+  });
   test('standalone and historical jobs appear in summary with inferred usage and unknown gaps', () => {
     const root = tmp();
     const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const;
