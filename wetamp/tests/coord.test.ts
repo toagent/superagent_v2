@@ -1258,12 +1258,15 @@ test('scope overlap reports unreadable state and DATABASE_URL without treating e
   const output = spyOn(console, 'log').mockImplementation(() => undefined);
   try {
     for (const verb of ['run', 'quick']) {
-      expect(main([verb, '--allow-overlap', 'operator accepts overlap'])).toBe(64);
+      expect(main([verb])).toBe(64);
       expect(JSON.parse(String(output.mock.calls.at(-1)![0]))).toMatchObject({
         reason: 'scope_overlap',
         overlap_warnings: [{ run_id: 'unknown', error: expect.stringContaining('SQLite-only') }],
       });
     }
+    expect(() => main(['run', 'unused.json', '--allow-overlap', 'accepted'])).toThrow(
+      'SQLite-only'
+    );
   } finally {
     output.mockRestore();
   }
@@ -1281,6 +1284,8 @@ test.each([
   'quick-override',
   'unknown-override',
   'state-unreadable',
+  'database-override',
+  'quick-database-override',
 ])('scope overlap admission: %s (repository contact remains independent)', async scenario => {
   const s = setup();
   isolated(s);
@@ -1330,6 +1335,10 @@ test.each([
     db.run('delete from remote_agent_workflow_runs where id=?', [l.archon_run_id]);
   db.run('insert into remote_agent_workflow_runs values (?, ?)', ['completed-engine', 'completed']);
   if (scenario === 'state-unreadable') db.run('drop table remote_agent_workflow_runs');
+  if (scenario.includes('database')) {
+    process.env.DATABASE_URL = 'unsupported-fixture';
+    writeFileSync(join(process.env.ARCHON_HOME!, '.env'), 'DATABASE_URL=\n');
+  }
   const native = req('../src/archon.ts') as typeof import('../src/archon');
   const coordination = req('../src/coord/index.ts') as typeof import('../src/coord');
   const relay = req('../src/relay-quota.ts') as typeof import('../src/relay-quota');
@@ -1338,7 +1347,6 @@ test.each([
       ? { id: l.archon_run_id, status: 'running' }
       : { ok: true, runId: 'new-engine-run' }
   );
-  // Generation has its own suite; admission must not spend the test deadline validating a workflow.
   const generator = req('../src/generate.ts') as typeof import('../src/generate');
   const generated = spyOn(generator, 'generate').mockReturnValue({
     dir: s.root,
@@ -1379,7 +1387,7 @@ test.each([
     expect(result.default_contact).toMatchObject(b);
     if (scenario.includes('override')) {
       expect(result.overlap_warnings).toMatchObject([
-        { run_id: l.run_id, paths: expect.any(Array) },
+        { run_id: scenario.includes('database') ? 'unknown' : l.run_id, paths: expect.any(Array) },
       ]);
       expect(
         JSON.parse(readFileSync(join(s.sa, 'runs', result.run_id + '.json'), 'utf8')).allow_overlap

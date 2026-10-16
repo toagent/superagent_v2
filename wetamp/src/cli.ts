@@ -956,7 +956,6 @@ function preflight(): void {
   );
 }
 
-/** Unknown evidence is a conflict, never permission to launch. Uses the existing glob matcher. */
 export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; error?: string }[] {
   try {
     if (process.env.DATABASE_URL) throw new Error('DATABASE_URL: SQLite status unavailable');
@@ -2642,7 +2641,11 @@ export function main(argv: string[]): number {
     );
     return 0;
   }
-  if (['run', 'quick'].includes(verb) && process.env.DATABASE_URL) {
+  if (
+    ['run', 'quick'].includes(verb) &&
+    process.env.DATABASE_URL &&
+    !a.flags['allow-overlap']?.trim()
+  ) {
     print({
       ok: false,
       status: 'rejected',
