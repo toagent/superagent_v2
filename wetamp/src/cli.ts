@@ -568,6 +568,77 @@ export function lastActivity(l: Pick<Ledger, 'archon_run_id' | 'adoptions' | 're
   return { latest, complete: missing.length === 0, missing };
 }
 
+const reasonToken = (v: unknown): string | undefined =>
+  typeof v === 'string' && /^[A-Za-z_][A-Za-z0-9_:+-]{0,79}$/.test(v) ? v : undefined;
+
+function terminalProjection(l: Ledger, run: RunView, c: Classified) {
+  if (c.exit === EXIT.running) return { delivery_state: 'pending' as const };
+  const art = artifactsOf(run),
+    node = run.nodes?.find(n => n.nodeId === c.node),
+    ownError = node?.error?.split(':', 1)[0],
+    landError = [...(l.intervention_events ?? [])]
+      .reverse()
+      .find(e => e.action === 'land' && !e.ok)?.error,
+    landReason =
+      l.delivery_result?.status === 'blocked'
+        ? reasonToken(l.delivery_result.reason)
+        : landError?.startsWith('land_')
+          ? reasonToken(landError.slice(5))
+          : ownError?.startsWith('land_')
+            ? reasonToken(ownError.slice(5))
+            : undefined,
+    registered = reasonToken(c.node ? nodeReason(l, run, c) : undefined),
+    hold = holdOf(l, run, c),
+    stop = reasonToken(run.metadata?.stop_reason?.reason),
+    reason =
+      landReason ??
+      (registered && reasonOf(registered) ? registered : undefined) ??
+      hold ??
+      stop ??
+      'unclassified',
+    evidence =
+      [
+        landReason && join(art, 'delivery.json'),
+        c.node && join(art, `${c.node}.json`),
+        run.transcript_path,
+        l.log,
+        l.transcript,
+        art,
+        ledgerPath(l.run_id),
+      ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
+      ledgerPath(l.run_id),
+    integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
+    delivery_state = integrated
+      ? ('integrated' as const)
+      : landReason || (['land', 'deliver'].includes(c.node ?? '') && node?.state === 'failed')
+        ? ('blocked' as const)
+        : ('not_reached' as const),
+    action =
+      reason === 'target_protected'
+        ? '在 feature 分支重跑'
+        : c.state === 'owner_lost'
+          ? `superagent recover ${l.run_id}`
+          : c.state === 'held:human'
+            ? `superagent decide ${l.run_id} approve`
+            : c.state === 'held:paused'
+              ? `superagent resume ${l.run_id}`
+              : c.state.startsWith('held:')
+                ? `superagent decide ${l.run_id} retry`
+                : ['failed', 'cancelled'].includes(c.state)
+                  ? `superagent recover ${l.run_id}`
+                  : '读 evidence_path';
+  return {
+    delivery_state,
+    receipt: {
+      state: c.state,
+      failed_node: c.node ?? null,
+      reason,
+      evidence_path: evidence,
+      action,
+    },
+  };
+}
+
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
   const nodes = run.nodes ?? [];
@@ -588,6 +659,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     last_activity: lastActivity(l),
     state: c.state,
     exit: c.exit,
+    ...terminalProjection(l, run, c),
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
       nodes.length
     )} completed`,
@@ -633,10 +705,8 @@ function failure(l: Ledger, run: RunView, node: string | undefined): Record<stri
   if (node) return { error: cut(run.nodes?.find(n => n.nodeId === node)?.error ?? '') };
   const why = run.metadata?.stop_reason;
   // 停止原因是引擎枚举值；不是枚举形状的就不当原因转述
-  const token = (v: unknown): string | undefined =>
-    typeof v === 'string' && /^[A-Za-z_]{1,40}$/.test(v) ? v : undefined;
-  const reason = token(why?.reason);
-  const signal = token(why?.signal);
+  const reason = reasonToken(why?.reason);
+  const signal = reasonToken(why?.signal);
   const paths = [run.transcript_path, l.log, l.transcript].filter(
     (p): p is string => typeof p === 'string' && p !== '' && existsSync(p)
   );
@@ -1165,6 +1235,47 @@ function startRun(planPath: string, a: Args): number {
         mkdirSync(join(home().sa, 'runs'), { recursive: true });
         saveLedger(l);
         rmSync(intentPath(run), { force: true });
+        const recent = ledgers().flatMap(previous => {
+          try {
+            if ('error' in previous) return [];
+            const age = Date.now() - Date.parse(previous.started_at);
+            if (
+              previous.run_id === run ||
+              repoScope(previous.repo).id !== repo.id ||
+              !Number.isFinite(age) ||
+              age < 0 ||
+              age > 86400000
+            )
+              return [];
+            const priorRun = getRun(previous.archon_run_id, previous.repo);
+            if (!['completed', 'failed', 'cancelled'].includes(priorRun.status)) return [];
+            const projection = terminalProjection(
+              previous,
+              priorRun,
+              classifyRun(previous, priorRun)
+            );
+            return projection.receipt && projection.receipt.reason !== 'unclassified'
+              ? [{ ...projection.receipt, run: previous.run_id, at: previous.started_at }]
+              : [];
+          } catch {
+            return [];
+          }
+        });
+        const recent_failures = [...new Set(recent.map(r => r.reason))].flatMap(reason => {
+          const matches = recent
+            .filter(r => r.reason === reason)
+            .sort((x, y) => y.at.localeCompare(x.at));
+          return matches.length >= 2
+            ? [
+                {
+                  reason,
+                  count: matches.length,
+                  last_run: matches[0].run,
+                  action: matches[0].action,
+                },
+              ]
+            : [];
+        });
         const quota = relayQuota(gen.dir, 'start');
         if (budget.degraded) quota.quota = [quota.quota, budget.notice].filter(Boolean).join(' · ');
         print({
@@ -1176,6 +1287,7 @@ function startRun(planPath: string, a: Args): number {
           default_contact,
           overlap_warnings,
           plan_lint,
+          ...(recent_failures.length ? { recent_failures } : {}),
           ...quota,
         });
         return 0;
@@ -1567,6 +1679,13 @@ function brief(l: Ledger, json = false): number {
       l.branch
     }`,
   ];
+  const typed = s.receipt as
+    | { state: string; failed_node: string | null; reason: string; action: string }
+    | undefined;
+  if (typed)
+    lines.push(
+      `receipt: ${typed.state} ${typed.failed_node ?? '-'} ${typed.reason} → ${typed.action}`
+    );
   lines.push(`last_activity: ${JSON.stringify(s.last_activity)}`);
   const ownership = coord().owner(runScope(l));
   lines.push(

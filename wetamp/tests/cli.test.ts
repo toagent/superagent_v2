@@ -1052,14 +1052,24 @@ describe('waitRun (archon stub)', () => {
       expect(waitRun(s.ledger, 60)).toMatchObject({
         state: state.status === 'cancelled' ? 'cancelled' : 'held:human',
         exit: state.status === 'cancelled' ? EXIT.cancelled : EXIT.held,
+        delivery_state: 'not_reached',
+        receipt: { state: state.status === 'cancelled' ? 'cancelled' : 'held:human' },
       });
       expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
     }
   });
   test('brief --json obtains the structured receipt summary with one state query', () => {
     const s = stub([run('completed', { nodes: [] })]);
+    s.ledger.delivery_result = { status: 'integrated' } as NonNullable<Ledger['delivery_result']>;
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
     const out = JSON.parse(captured(() => main(['brief', 'sa1', '--json'])).out);
-    expect(out).toMatchObject({ run_id: 'sa1', state: 'completed', execution: [] });
+    expect(out).toMatchObject({
+      run_id: 'sa1',
+      state: 'completed',
+      delivery_state: 'integrated',
+      receipt: { state: 'completed' },
+      execution: [],
+    });
     expect(
       s.calls().filter(c => c.startsWith('workflow get') && !c.includes('--events'))
     ).toHaveLength(1);
@@ -1154,10 +1164,32 @@ describe('waitRun (archon stub)', () => {
     );
     const l = { ...s.ledger, log };
     const out = waitRun(l, 5);
-    expect(out).toMatchObject({ state: 'failed', exit: EXIT.failed, stop_reason: 'launch_failed' });
+    expect(out).toMatchObject({
+      state: 'failed',
+      exit: EXIT.failed,
+      stop_reason: 'launch_failed',
+      delivery_state: 'not_reached',
+      receipt: { reason: 'launch_failed' },
+    });
     expect(out.error).toBe('worker spawn failed: api_key=*** Bearer ***');
     expect(out.evidence_paths).toEqual([log]); // 不存在的 transcript 不列
     expect(out.node).toBeUndefined();
+  });
+  test('deliver LandError is typed as a blocked delivery', () => {
+    const s = stub([
+      run('failed', { nodes: [{ nodeId: 'deliver', state: 'failed', error: 'Bash node failed' }] }),
+    ]);
+    s.ledger.intervention_events = [
+      { at: '', action: 'land', source: 'cli', ok: false, error: 'land_target_protected' },
+    ];
+    expect(waitRun(s.ledger, 5)).toMatchObject({
+      delivery_state: 'blocked',
+      receipt: {
+        failed_node: 'deliver',
+        reason: 'target_protected',
+        action: '在 feature 分支重跑',
+      },
+    });
   });
   test('early failure: metadata.error when no terminal record; a signal joins the reason; a non-enum reason is dropped', () => {
     const s = stub([
@@ -1333,6 +1365,26 @@ describe('verbs (archon stub)', () => {
 });
 
 describe('run (archon stub)', () => {
+  test('successful start warns after two recent failures with the same typed reason', () => {
+    const s = stub([run('failed', { metadata: { stop_reason: { reason: 'launch_failed' } } })]),
+      repo = featureRepo(s.root),
+      started_at = new Date().toISOString();
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    for (const id of ['old-a', 'old-b'])
+      writeFileSync(ledgerPath(id), JSON.stringify({ ...s.ledger, run_id: id, repo, started_at }));
+    const out = JSON.parse(
+      captured(() =>
+        main(['run', fixturePlan(s.root, repo), '--fake', '--allow-overlap', 'fixture'])
+      ).out
+    );
+    expect(out.recent_failures, JSON.stringify(out)).toEqual([
+      expect.objectContaining({
+        reason: 'launch_failed',
+        count: 2,
+        action: expect.stringContaining('superagent recover'),
+      }),
+    ]);
+  });
   test.each([
     ['run', 'main'],
     ['run', 'dev'],
@@ -1735,6 +1787,7 @@ describe('brief / land (archon stub)', () => {
     expect(code).toBe(0);
     const lines = out.split('\n');
     expect(lines[0]).toStartWith('sa1 completed');
+    expect(lines[1]).toStartWith('receipt: completed - unclassified →');
     expect(lines).toContain('gate-m1-r1: unknown debt=0');
     expect(lines).toContain('gate-m1-r2: unknown debt=0');
     expect(lines).toContain('git merge --ff-only sa/sa1');
@@ -2969,7 +3022,7 @@ describe('RCPT consumed decision receipts', () => {
     };
     writeFileSync(join(s.root, 'home', 'asks.json'), JSON.stringify(saved));
     const lines = captured(() => main(['brief', 'sa1'])).out.split('\n');
-    expect(lines.filter(line => line.startsWith('receipt:'))).toEqual(['receipt: 最新答复']);
+    expect(lines).toContain('receipt: 最新答复');
     expect(lines.length).toBeLessThanOrEqual(20);
     expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe('最新答复');
   });
