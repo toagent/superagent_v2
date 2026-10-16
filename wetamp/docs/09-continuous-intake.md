@@ -137,3 +137,41 @@ append-only 数组上界与绝对位置；持续追加不重启遍历，条目�
 任务自身的当前撤销意图优先显示为 `cancelled_intent`，不被子任务的 unknown 状态覆盖。
 可按父任务查看其整个子树。原生 hook 要求读完 continuation 后判断范围/生成进度，
 进度以 backlog 为准；status-only 继续提交 `actions: []`，不缩小旧需求集合。
+
+## 私网手机人工决策（人工切换）
+
+`console mobile-config https://<private-host>` 只保存配置，不部署或重启。配置存在时，
+`supervise-tick` 对未来人工门不调用旧提醒 transport，也不读取/修改旧提醒；不支持的
+COORD 接管、自由文本反馈、旧 occurrence 和非人工 blocker 必须在 Mac 处理。
+`report.human_decisions`、board 与手机从同一当前引擎 gate 描述派生，历史 asks 仍保留。
+
+人工在已提交、G2 评审通过的引擎检出中执行 `superagent console stop` 后 `superagent console start` 安装/加载现有
+launchd KeepAlive 服务（会更新该 console，切换前核验归属）。监督 tick 的安装与
+bootstrap 继续使用 `wetamp/scripts/install.sh` 打印的命令；本包不自动执行。
+私网 HTTPS 反向代理仅把指定 origin 转到 loopback console 端口。设备只能访问手机
+路由，不能访问 `/console`、`/sa/data` 或完整 API。禁止公网 Funnel。
+
+原 run owner 执行 `superagent console mobile-pair <sa-run> --open`，只在本机私有页面
+显示十分钟一次性码。授权范围为该 run、engine、owner generation；后续人工门逐项
+显示问题和具名后果。设备未配对/未订阅不代表已通知。旧实验 cookie 不迁移。
+手机从主屏幕配对、开启通知后，必须再读取当前门才能提交；打开/关闭通知均无副作用。
+`superagent console mobile-revoke <device-id>` 可在 Mac 撤销；设备也可自行撤销。
+
+状态在 `$SUPERAGENT_HOME/console/mobile`（目录 0700、文件 0600），包括设备、
+VAPID、订阅、操作意图和通知去重。通知最多尝试三次；`accepted` 仅是推送服务受理，
+不等于设备送达。`intent`/`unknown` 不自动重放答复；`accepted` 与 `resuming` 也不是
+完成。页面显示原引擎状态、事件与最后成功读取时间；失联显示未知。
+`console status` 核验进程；`console/mobile-health` 为通知观察异常的本机证据，
+设备页面提供本设备通知失败状态。
+
+回滚：`superagent console mobile-disable` 保存切换事实，再人工 `console stop`、
+`console start` 加载；未来通知恢复旧 transport，设备和回执保留。不要停止实验
+PID19318 或改动其 51040/8445 监听。沿用既有私有 origin、`/` 主屏幕入口和 manifest id，
+由操作者仅切换反向代理 upstream；回滚时改回原 upstream，两个服务可并存。
+
+无害验收：`bun --no-env-file wetamp/scripts/mobile-canary.ts` 仅新建临时 git 项目和
+独立 `SUPERAGENT_HOME`/`ARCHON_HOME`，经真实 CLI/引擎创建三选 gate。输出 JSON
+包含 `root`、`runId`，按该 scratch home 配对后选择 approve（摘要）/detail/stop，只产生
+scratch `canary-result.txt`。不接触现有业务门，不模拟 engine。该命令只创建 gate，
+不批准；测试覆盖实际 detail 分支和终态事件，其余分支由主控按同样流程逐个新建验证。
+生产安装、主控浏览器重启、手机真机和跨夜观察均须独立留证，未运行为 NOT_RUN。

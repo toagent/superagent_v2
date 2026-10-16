@@ -1,3 +1,4 @@
+import { currentDecisions as mobileDecisions, describeDecision } from './decisions';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
@@ -2209,7 +2210,7 @@ function tick(
       });
     }
   }
-  if (!(asks instanceof Error)) {
+  if (!(asks instanceof Error) && !existsSync(join(sa, 'console/decision-origin'))) {
     for (const action of coord().tick((key, title) => {
       const r = pollAsk(
         key,
@@ -2461,6 +2462,26 @@ function dispose(
       ) ?? false;
     const p: Policy = HOLD_POLICY[hold];
     if (
+      ['ask', 'signoff'].includes(p.do) &&
+      existsSync(join(home().sa, 'console/decision-origin'))
+    ) {
+      const decision = describeDecision(l, run);
+      return {
+        run_id: l.run_id,
+        action: 'none',
+        ok: false,
+        held: true,
+        transport: 'mobile',
+        decision: decision?.id,
+        reason:
+          decision?.disabled ??
+          (decision
+            ? '请在手机查看；未配对/未订阅不等于已通知，查看 console mobile-health'
+            : '当前门不能在手机处理，请在 Mac 查看原始 blocker'),
+      };
+    }
+
+    if (
       !(asks instanceof Error) &&
       ['ask', 'signoff'].includes(p.do) &&
       !(hold === 'signoff' && pastDeadline(l))
@@ -2588,6 +2609,7 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
   return {
     ...r,
     decisions: loadAsks(),
+    human_decisions: mobileDecisions(),
     recorded_blockers: all.flatMap(l =>
       'error' in l
         ? []

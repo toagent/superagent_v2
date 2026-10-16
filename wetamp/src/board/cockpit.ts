@@ -331,6 +331,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     if (!row || !policy || !['ask', 'signoff'].includes(policy.do)) return unresolved();
     // the engine owns reason mapping; failed may still require a coder decision.
     if (row.askReason !== reason) return [];
+    if (!row.stale && row.humanDecision) return [];
     if (seen.has(`${id}:${reason}`)) return [];
     seen.add(`${id}:${reason}`);
     const r = project(row, reason);
@@ -340,12 +341,26 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     return [
       {
         ...r,
+        ...(row.stale || (!row.humanDecision && ['signoff', 'approval'].includes(reason))
+          ? { decision: undefined, question: r.question + '；手机决策信息未知，请在 Mac 核实' }
+          : {}),
         waiting: asked
           ? fmtElapsed(Math.max(0, Math.floor((now - clock(asked.at)) / 1000)))
           : r.waiting,
       },
     ];
   });
+  for (const r of s.rows) {
+    const d = r.humanDecision;
+    if (r.stale || !d) continue;
+    needs.push({
+      ...project(r),
+      question:
+        d.question +
+        '；' +
+        (d.disabled ?? d.options.map(o => o.label + '：' + o.consequence).join(' / ')),
+    });
+  }
   return {
     tokenRows: known && todaySessions ? tokenRows.sort((a, b) => b.total - a.total) : null,
     metrics: metricsOf(s.rows, s.summary, now),

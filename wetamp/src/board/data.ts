@@ -1,3 +1,4 @@
+import { describeDecision, type Decision } from '../decisions';
 import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-metrics';
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
 import { spawnSync } from 'node:child_process';
@@ -28,6 +29,7 @@ import {
 } from '../cli';
 
 export interface BoardRow {
+  humanDecision?: Decision;
   askReason?: ReturnType<typeof holdOf>;
   nativeState?: RunView['status'];
   completed_at?: RunView['completed_at'];
@@ -166,6 +168,13 @@ export function rowOf(
     /* Missing outcome provides no reason. */
   }
   return {
+    humanDecision: (() => {
+      try {
+        return describeDecision(l, run);
+      } catch {
+        return undefined;
+      }
+    })(),
     askReason: holdOf(l, run, c),
     coordination: (() => {
       try {
