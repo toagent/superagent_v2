@@ -130,6 +130,7 @@ export function rowOf(
     stale?: boolean;
     roles?: Map<string, Role>;
     pending?: number;
+    includeCoordination?: boolean;
     coordination?: Omit<NonNullable<BoardRow['coordination']>, 'pending'>;
   }
 ): BoardRow {
@@ -184,26 +185,31 @@ export function rowOf(
       }
     })(),
     askReason: holdOf(l, run, c),
-    coordination: (() => {
-      if (opts.coordination) return { ...opts.coordination, pending: opts.pending ?? 0 };
-      try {
-        const c = coord(),
-          scope = runScope(l),
-          view = c.owner(scope);
-        return {
-          owner: view.owner,
-          presence: view.presence,
-          pending: opts.pending ?? c.pending(scope) + c.pending({ kind: 'repo', id: scope.repo }),
-        };
-      } catch (e) {
-        return {
-          owner: null,
-          presence: { state: 'unknown' as const },
-          pending: 0,
-          error: (e as Error).message,
-        };
-      }
-    })(),
+    ...(opts.includeCoordination === false
+      ? {}
+      : {
+          coordination: (() => {
+            if (opts.coordination) return { ...opts.coordination, pending: opts.pending ?? 0 };
+            try {
+              const c = coord(),
+                scope = runScope(l),
+                view = c.owner(scope);
+              return {
+                owner: view.owner,
+                presence: view.presence,
+                pending:
+                  opts.pending ?? c.pending(scope) + c.pending({ kind: 'repo', id: scope.repo }),
+              };
+            } catch (e) {
+              return {
+                owner: null,
+                presence: { state: 'unknown' as const },
+                pending: 0,
+                error: (e as Error).message,
+              };
+            }
+          })(),
+        }),
     engine: {
       title: plan?.packages[0]?.title
         ? `${plan.packages[0].title}${plan.packages.length > 1 ? ` +${String(plan.packages.length - 1)}` : ''}`
@@ -554,8 +560,19 @@ export function bar(done: number, total: number, width = 6): string {
   return `${'█'.repeat(full)}${'░'.repeat(width - full)} ${String(done)}/${String(total)}`;
 }
 
-export function snapshotOf(pairs: Pair[], now = Date.now()): Snapshot {
+export function snapshotOf(
+  pairs: Pair[],
+  now = Date.now(),
+  options: { includeCoordination?: boolean } = {}
+): Snapshot {
   const summary = summarize(pairs);
-  const rows = pairs.map(p => safeRowOf(p.ledger, p.run, { now }, summary.unreadable as string[]));
+  const rows = pairs.map(p =>
+    safeRowOf(
+      p.ledger,
+      p.run,
+      { now, includeCoordination: options.includeCoordination },
+      summary.unreadable as string[]
+    )
+  );
   return { at: new Date(now).toISOString(), summary, rows };
 }

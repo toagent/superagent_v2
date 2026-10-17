@@ -1,4 +1,4 @@
-import { currentDecisions as mobileDecisions, describeDecision } from './decisions';
+import { describeDecision, type DecisionInbox } from './decisions';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
@@ -119,7 +119,7 @@ if (
 )
   delete process.env.TMPDIR;
 
-export function intakeEvidence(repo: string): EvidenceReader {
+export function intakeEvidence(repo: string, query: typeof getRun = getRun): EvidenceReader {
   // Cache only raw engine reads for this query; every binding still validates its identity.
   const runs = new Map<string, RunView | undefined>();
   return binding => {
@@ -134,7 +134,7 @@ export function intakeEvidence(repo: string): EvidenceReader {
       const key = JSON.stringify([l.repo, l.archon_run_id]);
       if (!runs.has(key)) {
         runs.set(key, undefined);
-        runs.set(key, getRun(l.archon_run_id, l.repo));
+        runs.set(key, query(l.archon_run_id, l.repo));
       }
       const run = runs.get(key);
       if (!run) return undefined;
@@ -2894,14 +2894,21 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
   const all = ledgers();
   const r = buildReport(
     all.flatMap(l => ('error' in l ? [] : [l])),
-    engine
+    engine,
+    { humanDecisions: !engine }
   );
   if (engine) return { ...r, unreadable_ledgers: all.filter(l => 'error' in l).length };
   const bad = all.flatMap(l => ('error' in l ? [`${l.run_id}: ${l.error}`] : []));
   return {
     ...r,
     decisions: loadAsks(),
-    human_decisions: mobileDecisions(),
+    human_decisions: {
+      ...(r.human_decisions as DecisionInbox),
+      unknown: [
+        ...(r.human_decisions as DecisionInbox).unknown,
+        ...all.flatMap(l => ('error' in l ? [l.run_id] : [])),
+      ],
+    },
     recorded_blockers: all.flatMap(l =>
       'error' in l
         ? []

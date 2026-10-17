@@ -343,7 +343,7 @@ export function cancellationStats(pairs: Pair[]): Record<string, number> {
 }
 
 // prettier-ignore
-export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [], jobs: Job[] = [], unreadable: Record<string, number> = {} ): Record<string, unknown> {
+export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSession[] = [], jobs: Job[] = [], unreadable: Record<string, number> = {}, evidenceFor: typeof intakeEvidence = intakeEvidence ): Record<string, unknown> {
   jobs = jobs.map(j => {
     const inferred = sessions.filter(
       s => s.client === j.kind && s.owner?.kind === 'inferred' && s.owner.job_id === j.id
@@ -360,7 +360,7 @@ export function demandStats( pairs: Pair[], calls: Call[], sessions: UsageSessio
     try {
       const root = intakeRoot(home().sa, repo);
       if (!existsSync(join(root, 'state.json'))) return [repo, 'unknown'];
-      const view = new Intake(root).backlog(repo, intakeEvidence(repo));
+      const view = new Intake(root).backlog(repo, evidenceFor(repo));
       return [repo, { obligations: view.obligations, tasks: view.tasks.map(({ id, revision, requirements, completion, covered, reason, children }) => ({ id, revision, obligations: requirements.length, completion, covered, reason, children })) }];
     } catch { return [repo, 'unknown']; }
   }));
@@ -512,7 +512,11 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
  * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
  */
 // prettier-ignore
-export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDays: number }): Record<string, unknown> {
+export function buildReport(
+  ls: Ledger[],
+  engine?: { commit: string; baselineDays: number },
+  options: { humanDecisions?: boolean } = {}
+): Record<string, unknown> {
   const flag = process.argv.find(a => a.startsWith('--since='))?.slice(8) ?? process.argv[process.argv.indexOf('--since') + 1];
   const since = process.argv.some(a => a === '--since' || a.startsWith('--since=')) ? (/^\d{8}$/.test(flag) ? `${flag.slice(0,4)}-${flag.slice(4,6)}-${flag.slice(6,8)}T00:00:00.000Z` : flag) : '';
   if (since && !Number.isFinite(Date.parse(since))) throw new Error('--since must be YYYYMMDD or an ISO timestamp');
@@ -542,6 +546,18 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
       return { ledger: l, run: e as Error };
     }
   });
+  const pairRuns = new Map(
+    pairs.map(({ ledger, run }) => [JSON.stringify([ledger.repo, ledger.archon_run_id]), run])
+  );
+  const evidenceFor = (repo: string) =>
+    intakeEvidence(repo, (id, cwd) => {
+      const key = JSON.stringify([cwd, id]);
+      if (!pairRuns.has(key)) return getRun(id, cwd);
+      const run = pairRuns.get(key);
+      if (run instanceof Error) throw run;
+      if (!run) throw new Error(`run ${id} missing from report snapshot`);
+      return run;
+    });
   for (const l of ls) {
     const events: Event[] = [];
     const reportPlan = planOf(l) as {
@@ -575,7 +591,10 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
     measurement[id] = measurementOf(run, run.events, null, timing, graph, paths[id] as ReturnType<typeof criticalPath>);
     calls.push(...callsOf(id, run.events, null));
   }
-  const snapshot = { ...snapshotOf(pairs), reflection: 'unknown' };
+  const snapshot = {
+    ...snapshotOf(pairs, Date.now(), { includeCoordination: false }),
+    reflection: 'unknown' as const,
+  };
   // ccusage snapshots are cumulative per session. Never add one to its engine turn receipts.
   const sessions = readUsage();
   const engineSessions = new Set(
@@ -602,6 +621,18 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
   );
   const report = {
     ...snapshot.summary,
+    ...(options.humanDecisions
+      ? {
+          human_decisions: {
+            decisions: snapshot.rows
+              .flatMap(row => (row.humanDecision ? [row.humanDecision] : []))
+              .sort((a, b) => a.run.localeCompare(b.run)),
+            unknown: snapshot.rows
+              .filter(row => (row.stale || row.state === 'unreadable') && !row.missing)
+              .map(row => row.run_id),
+          },
+        }
+      : {}),
     ...deliveryStats(pairs),
     repo_missing,
     requirements: Object.fromEntries(
@@ -613,7 +644,7 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
     metrics: metricsOf(snapshot.rows, snapshot.summary, Date.now()),
     cancellations,
     interventions: interventionStats(ls),
-    demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
+    demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations, evidenceFor), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
     measurement,
     provider_timing: timings,

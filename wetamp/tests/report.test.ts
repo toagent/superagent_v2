@@ -24,7 +24,7 @@ import {
 import type { Job } from '../src/jobs';
 import type { UsageSession } from '../src/usage';
 import { archonRunIds } from '../src/archon';
-import { main, type Ledger } from '../src/cli';
+import { main, report as cliReport, type Ledger } from '../src/cli';
 import { tmp } from './helpers';
 import { WETAMP } from '../src/config';
 import { currentDecisions } from '../src/decisions';
@@ -500,6 +500,24 @@ describe('F-22 report', () => {
       expect(readFileSync(join(root, 'archon.db'))).toEqual(before);
       expect(report.provider_timing).toMatchObject({ '0': [{ cmds: 85, explore_ratio: 1, model_turns: 84 }] });
     } finally { keys.forEach((k,i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; }); }
+  });
+
+  // prettier-ignore
+  test('report reuses its batch for human decisions instead of querying each run again', () => {
+    const root = tmp(), keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'] as const, saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: '' });
+    mkdirSync(join(root, 'runs')); writeFileSync(join(root, 'plan.json'), JSON.stringify({ packages: [] }));
+    const ledger = { run_id: 'r', archon_run_id: 'engine', repo: root, gen_dir: root, plan: join(root, 'plan.json'), branch: 'task', workflow: 'fixture', console: 'codex', started_at: '2026-10-10T00:00:00Z', transcript: '', log: '' };
+    writeFileSync(join(root, 'runs/r.json'), JSON.stringify(ledger));
+    const db = new Database(join(root, 'archon.db'));
+    db.run('CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, started_at TEXT, completed_at TEXT, metadata TEXT)');
+    db.run('CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT, event_type TEXT, step_name TEXT, created_at TEXT, event_order INTEGER, data TEXT)');
+    db.run("INSERT INTO remote_agent_workflow_runs VALUES ('engine', 'failed', '2026-10-10T00:00:00Z', NULL, '{}')"); db.close();
+    try {
+      expect(cliReport().human_decisions).toEqual({ decisions: [], unknown: [] });
+    } finally {
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+    }
   });
 
   test('terminal decision scans reuse safe cache and recheck failed evidence', () => {
