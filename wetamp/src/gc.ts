@@ -54,6 +54,10 @@ export interface GcAction {
 
 class GcSkip extends Error {}
 type RepoState = [git: (...args: string[]) => string, trees: string[][], refs: string];
+interface GcInput {
+  fingerprint: string;
+  working_path: string;
+}
 
 // Only engine probe directories enter this path; run/user worktrees keep their existing guards.
 function collectProbe(path: string, id: string, dryRun: boolean, repo?: string): GcAction {
@@ -162,16 +166,16 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
   } catch (e) {
     console.error(`gc revision cache unavailable: ${(e as Error).message}`);
   }
-  let cached: Record<string, string> = {};
+  let cached: Partial<Record<string, GcInput>> = {};
   if (!dryRun)
     try {
       cached = JSON.parse(
         readFileSync(join(home().sa, 'gc-inputs.json'), 'utf8')
-      ) as unknown as Record<string, string>;
+      ) as unknown as Partial<Record<string, GcInput>>;
     } catch {
       cached = {};
     }
-  const next: Record<string, string> = {},
+  const next: Partial<Record<string, GcInput>> = {},
     repos = new Map<string, RepoState>();
   const repoState = (repo: string): RepoState => {
     const hit = repos.get(repo);
@@ -192,16 +196,29 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
     repos.set(repo, state);
     return state;
   };
-  const fingerprint = (id: string, l: Ledger, state: RepoState): string | undefined => {
+  const fingerprint = (
+    id: string,
+    l: Ledger,
+    state: RepoState,
+    path?: string | null
+  ): string | undefined => {
     const revision = revisions?.get(l.archon_run_id);
-    if (!revision) return undefined;
+    if (!revision || !path) return undefined;
     const { mtimeMs, size } = statSync(ledgerPath(id));
-    return JSON.stringify([l.archon_run_id, mtimeMs, size, revision, ...state.slice(1)]);
+    const ref = `refs/heads/sa/${id}`,
+      refs = state[2].trim().split('\n'),
+      tree = state[1].find(t => t.includes(`worktree ${path}`) || t.includes(`branch ${ref}`)),
+      sha = refs.find(r => r.startsWith(`${ref} `)),
+      landed = refs
+        .filter(r => r.startsWith('refs/heads/') && !r.startsWith('refs/heads/sa/'))
+        .sort();
+    return JSON.stringify([l.archon_run_id, mtimeMs, size, revision, tree, sha, landed]);
   };
   try {
     for (const id of ledgerIds()) {
       const events: GcAction[] = [];
       const failures: unknown[] = [];
+      let workingPath: string | null | undefined = cached[id]?.working_path;
       const collect = (l: Ledger): void => {
         let object: GcAction['object'] = 'run';
         const event = (action: GcAction['action'], reason: string, path?: string): void => {
@@ -231,6 +248,7 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
           const sha = refs.find(r => r.startsWith(`${ref} `))?.slice(ref.length + 1);
           const run = getRun(l.archon_run_id, plan.repo);
           if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
+          workingPath = run.working_path;
           if (!['completed', 'failed', 'cancelled'].includes(run.status))
             throw new GcSkip(`run ${run.status} remains recoverable`);
           if (run.output_root) {
@@ -321,14 +339,14 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
               return undefined;
             }
           })(),
-          fp = state && fingerprint(id, l, state);
-        if (fp && cached[id] === fp) next[id] = fp;
+          fp = state && fingerprint(id, l, state, workingPath);
+        if (fp && cached[id]?.fingerprint === fp) next[id] = cached[id];
         else if (dryRun) collect(l);
         else {
           updateLedger(l, collect);
-          const after = state && fingerprint(id, l, state);
-          if (!failures.length && after && events.every(e => e.action === 'skipped'))
-            next[id] = after;
+          const after = state && fingerprint(id, l, state, workingPath);
+          if (!failures.length && after && workingPath && events.every(e => e.action === 'skipped'))
+            next[id] = { fingerprint: after, working_path: workingPath };
         }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

@@ -157,6 +157,32 @@ test('unchanged skipped ledger uses cache and branch SHA changes invalidate it',
   expect(query).toHaveBeenCalledTimes(1);
 });
 
+test('another sa worktree advancing does not invalidate a cached ledger', () => {
+  const f = fixture('paused', false);
+  revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+  expect(gc()[0].reason).toContain('paused');
+  const other = join(f.root, 'other');
+  f.git('worktree', 'add', '-b', 'sa/other', other);
+  writeFileSync(join(other, 'other.txt'), 'other');
+  f.git('-C', other, 'add', 'other.txt');
+  f.git('-C', other, '-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'other');
+  query?.mockClear();
+  expect(gc()).toEqual([]);
+  expect(query).not.toHaveBeenCalled();
+});
+
+test('a non-sa branch advancing invalidates a cached ledger', () => {
+  const f = fixture('completed', false);
+  revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+  expect(gc()[0].reason).toContain('not merged');
+  writeFileSync(join(f.repo, 'main.txt'), 'main');
+  f.git('add', 'main.txt');
+  f.git('-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'main');
+  query?.mockClear();
+  expect(gc()[0].reason).toContain('not merged');
+  expect(query).toHaveBeenCalledTimes(1);
+});
+
 test('unmerged completed run is retained and the same skip is recorded only once', () => {
   const f = fixture('completed', false);
   expect(gc()[0].reason).toContain('not merged');
