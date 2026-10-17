@@ -131,24 +131,24 @@
       "name": "元帅",
       "purpose": "主控：设计、架构、拍板验收；使用用户启动客户端的第一档。",
       "pools": {
-        "claude": ["claude-fable-5-1", "claude-opus-5-5"],
-        "chatgpt": ["gpt-6-astra"]
+        "claude": ["claude-opus-5-5", "claude-fable-5-1"],
+        "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"]
       }
     },
     "strategist": {
       "name": "军师",
       "purpose": "评审：优先异厂商且不同于作者模型；池内按序降级，最后一项为兜底。",
       "pools": {
-        "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"],
-        "chatgpt": ["gpt-6.1-sol", "gpt-6-astra"]
+        "claude": ["claude-opus-5-5", "claude-fable-5-1"],
+        "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"]
       }
     },
     "general": {
       "name": "将军",
       "purpose": "编码：Claude 池（single:claude）与 ChatGPT 池并为主力；实现、验收、修复一次性闭环。",
       "pools": {
-        "chatgpt": ["gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"],
-        "claude": ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]
+        "chatgpt": ["gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"],
+        "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"]
       }
     }
   },
