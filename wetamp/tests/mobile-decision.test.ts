@@ -380,94 +380,30 @@ test('device revocation requires final confirmation and cannot submit twice', as
   elements['revoke-cancel'].onclick();
   expect(elements['revoke-dialog'].open).toBe(false);
 });
+// prettier-ignore
 test('decision click keeps the POST receipt across stale refresh and reports POST failure', async () => {
-  const ids = [
-    'setup',
-    'inbox-wrap',
-    'inbox',
-    'item',
-    'connection',
-    'state',
-    'receipt',
-    'options',
-    'question',
-    'reason',
-    'context',
-    'disabled',
-    'push',
-    'pair',
-    'code',
-    'notify',
-    'refresh',
-    'revoke',
-    'revoke-dialog',
-    'revoke-cancel',
-    'revoke-confirm',
-  ];
-  const element = () => ({
-    hidden: false,
-    disabled: false,
-    children: [] as any[],
-    textContent: '',
-    replaceChildren(...children: any[]) {
-      this.children = children;
-    },
-    append(...children: any[]) {
-      this.children.push(...children);
-    },
-    setAttribute() {},
-    showModal() {},
-    close() {},
-  });
+  const ids = ['setup', 'inbox-wrap', 'inbox', 'item', 'connection', 'state', 'receipt', 'options',
+    'question', 'reason', 'context', 'disabled', 'push', 'pair', 'code', 'notify', 'refresh', 'revoke',
+    'revoke-dialog', 'revoke-cancel', 'revoke-confirm'];
+  const element = () => ({ hidden: false, disabled: false, children: [] as any[], textContent: '',
+    replaceChildren(...children: any[]) { this.children = children; }, append(...children: any[]) { this.children.push(...children); },
+    setAttribute() {}, showModal() {}, close() {} });
   const elements = Object.fromEntries(ids.map(id => [id, element()])) as Record<string, any>;
-  const decision = {
-    id: 'd1',
-    question: '继续？',
-    reason: '测试',
-    context: '上下文',
-    options: [{ id: 'yes', label: '是', consequence: '继续' }],
-  };
-  const view = {
-    csrf: 'csrf',
-    status: 'paused',
-    note: '',
-    decisions: [decision],
-    subscribed: false,
-    notification: { accepted: 0, failed: 0, unknown: 0 },
-  };
+  const decision = { id: 'd1', question: '继续？', reason: '测试', context: '上下文', options: [{ id: 'yes', label: '是', consequence: '继续' }] };
+  const view = { csrf: 'csrf', status: 'paused', note: '', decisions: [decision], subscribed: false,
+    notification: { accepted: 0, failed: 0, unknown: 0 } };
   const json = (value: object, status = 200) => new Response(JSON.stringify(value), { status });
-  let stateCalls = 0,
-    answerCalls = 0,
-    releaseStale!: (response: Response) => void,
-    interval!: () => void;
+  let stateCalls = 0, answerCalls = 0, releaseStale!: (response: Response) => void, interval!: () => void;
   const stale = new Promise<Response>(resolve => (releaseStale = resolve));
   const fetch = async (path: string) => {
-    if (path.endsWith('/answer'))
-      return ++answerCalls === 1
-        ? json({ receipt: { stage: 'intent' } })
-        : json({ error: '提交失败' }, 500);
+    if (path.endsWith('/answer')) return ++answerCalls === 1 ? json({ receipt: { stage: 'intent' } }) : json({ error: '提交失败' }, 500);
     if (path.endsWith('/state')) return ++stateCalls === 1 ? json({ ...view, decision }) : stale;
     return stateCalls < 2 ? json(view) : new Promise<Response>(() => {});
   };
   const source = readFileSync(join(import.meta.dir, '../src/web/decision.js'), 'utf8');
-  Function(
-    'document',
-    'location',
-    'fetch',
-    'setInterval',
-    'confirm',
-    source
-  )(
-    {
-      getElementById: (id: string) => elements[id],
-      createElement: element,
-      visibilityState: 'visible',
-    },
-    { href: origin + '/?decision=d1' },
-    fetch,
-    (callback: () => void) => ((interval = callback), 0),
-    () => true
-  );
+  Function('document', 'location', 'fetch', 'setInterval', 'confirm', source)(
+    { getElementById: (id: string) => elements[id], createElement: element, visibilityState: 'visible' },
+    { href: origin + '/?decision=d1' }, fetch, (callback: () => void) => ((interval = callback), 0), () => true);
   await Bun.sleep(0);
   const option = elements.options.children[0];
   interval();
