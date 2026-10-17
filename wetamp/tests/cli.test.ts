@@ -423,8 +423,9 @@ describe('quick', () => {
     const log = spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       expect(main(['--help'])).toBe(0);
-      expect(String(log.mock.calls[0]?.[0])).toContain('--card <file>');
-      expect(String(log.mock.calls[0]?.[0])).toContain('--environment <cmd>');
+      expect(cliMod.CLI_COMMAND_USAGE.find(command => command.command === 'quick')?.flags).toEqual(
+        expect.arrayContaining(['card', 'environment'])
+      );
     } finally {
       log.mockRestore();
     }
@@ -710,6 +711,9 @@ describe('HF3 latest-engine recovery', () => {
     'invalid-settle',
     'settle-repair',
     'no-worktree',
+    'coded',
+    'coded-dirty',
+    'coded-unrelated',
   ])('P2: adoption carries only accepted ancestors (%s)', sample => {
     const s = setup('old');
     const worktree = gitRepo(s.root);
@@ -721,7 +725,7 @@ describe('HF3 latest-engine recovery', () => {
     ).trim();
     const art = join(s.root, 'artifacts', 'runs', 'r');
     mkdirSync(art, { recursive: true });
-    if (sample !== 'missing')
+    if (sample !== 'missing' && !sample.startsWith('coded'))
       writeFileSync(
         join(art, 'verify-core.json'),
         sample === 'invalid'
@@ -760,6 +764,34 @@ describe('HF3 latest-engine recovery', () => {
           output_root: s.root,
           nodes: [
             { nodeId: 'code-core', state: 'completed' },
+            ...(sample.startsWith('coded')
+              ? [
+                  {
+                    nodeId: 'verify-core',
+                    state: 'failed',
+                    execution: {
+                      attempt: {
+                        checkoutStart: {
+                          kind: 'git',
+                          sampledAt: new Date().toISOString(),
+                          commit: sample === 'coded-unrelated' ? unrelated : head,
+                          tree: head,
+                          worktree:
+                            sample === 'coded-dirty'
+                              ? {
+                                  status: 'dirty',
+                                  content: 'incomplete',
+                                  staged: 0,
+                                  unstaged: 1,
+                                  untracked: 0,
+                                }
+                              : { status: 'clean' },
+                        },
+                      },
+                    } as never,
+                  },
+                ]
+              : []),
             { nodeId: 'gate-m1-r1', state: 'failed' },
           ],
         })
@@ -789,7 +821,9 @@ describe('HF3 latest-engine recovery', () => {
     expect(nodes.find(n => n.id === 'verify-core')?.with?.delta_base).toBe('$start-m1.output.head');
     const carried = sample === 'verify' || sample === 'settle';
     expect(l.adoptions?.at(-1)?.carried).toEqual(carried ? ['core'] : []);
-    if (carried) {
+    const coded = sample === 'coded';
+    expect(l.adoptions?.at(-1)?.coded).toEqual(coded ? ['core'] : []);
+    if (carried || coded) {
       expect(code?.when).toBe("$package-attempt-core.output.attempt != '0'");
       const binding = nodes.find(n => n.id === 'verify-core')?.with?.coder as {
         if_skipped: string;
@@ -797,7 +831,7 @@ describe('HF3 latest-engine recovery', () => {
       expect(JSON.parse(binding.if_skipped)).toMatchObject({
         status: 'done',
         error_class: null,
-        notes: 'carried from r',
+        notes: `${carried ? 'carried' : 'coded'} from r`,
       });
     } else expect(code?.when).toBeUndefined();
     expect(code?.command).toBe('sa-code');
@@ -1357,6 +1391,7 @@ describe('verbs (archon stub)', () => {
     expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
     expect(s.calls()).toContain('workflow cancel r --json');
     expect(s.calls().some(c => c.startsWith('workflow abandon'))).toBe(false);
+    expect(loadLedger('sa1').intervention_events?.at(-1)?.reason).toBe('unstated');
   });
   test('cancel: a paused or failed run is abandoned (the engine refuses cancel for them)', () => {
     for (const r of [humanWait(), run('failed')]) {
@@ -3876,6 +3911,11 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       writeFileSync(asksFile(), JSON.stringify({ [noKey]: { status: 'unknown' } }));
       expect(tick()[0]).toMatchObject({ action: 'reject', reason: hold, ok: true });
       expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(true);
+      expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+        action: 'cancel',
+        reason: 'rejected',
+        ok: true,
+      });
     });
   }
 

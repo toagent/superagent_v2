@@ -31,7 +31,15 @@ import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
 import { caller, control, coord, repoScope, runScope, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
-import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
+import {
+  askQuestion,
+  askName,
+  CANCELLATION_REASONS,
+  HOLD_POLICY,
+  reasonOf,
+  type Hold,
+  type Policy,
+} from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
 import {
@@ -152,7 +160,7 @@ export function intakeEvidence(repo: string): EvidenceReader {
   };
 }
 
-const OPTIONS = {
+export const OPTIONS = {
   ...COORD_OPTIONS,
   timeout: { type: 'string' },
   pkg: { type: 'string' },
@@ -246,6 +254,7 @@ export interface Ledger {
     reason: string;
     engine_commit?: string;
     carried?: string[];
+    coded?: string[];
   }[];
   launcher?: Launcher;
   controller?: Controller;
@@ -380,7 +389,7 @@ export function intervention<
           source: ask ? 'superagent' : caller(true).client === 'shell' ? 'cli' : 'commander',
           ...(ask ? { key: ask.key, ask_id: ask.id } : {}),
           ok,
-          ...(reason ? { reason } : {}),
+          reason: reason ?? action,
           ...(!ok ? { error } : {}),
         });
       });
@@ -394,7 +403,14 @@ const answerAction = <T extends { ok: boolean }>(
   execute: () => T
 ): T =>
   a.status === 'yes' || a.status === 'no'
-    ? intervention(l, 'answer', execute, { key, id: a.id })
+    ? intervention(
+        l,
+        a.status === 'no' ? 'cancel' : 'answer',
+        execute,
+        { key, id: a.id },
+        undefined,
+        a.status === 'no' ? 'rejected' : 'human_decision'
+      )
     : execute();
 
 export interface Classified {
@@ -720,6 +736,24 @@ const coderBudgetExceeded = (run: RunView, c: Classified): boolean => {
   );
 };
 
+/** A successor's immutable start sample is the first durable HEAD evidence after coding. */
+const codedHead = (run: RunView, pkg: string): string | undefined => {
+  const latest = (id: string) => [...(run.nodes ?? [])].reverse().find(n => n.nodeId === id);
+  const successor =
+    latest(`repair-${pkg}`)?.state === 'completed'
+      ? `settle-${pkg}`
+      : latest(`code-${pkg}`)?.state === 'completed'
+        ? `verify-${pkg}`
+        : undefined;
+  const sample = [...(run.nodes ?? [])].reverse().find(n => n.nodeId === successor)?.execution
+    ?.attempt.checkoutStart;
+  return sample?.kind === 'git' &&
+    sample.worktree.status === 'clean' &&
+    typeof sample.commit === 'string'
+    ? sample.commit
+    : undefined;
+};
+
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
   l: Ledger,
@@ -735,6 +769,7 @@ function recoverRun(
         engine_from: string | null;
         commit: string | undefined;
         carried: string[];
+        coded: string[];
         dir: string;
       }
     | undefined;
@@ -763,6 +798,7 @@ function recoverRun(
               : 'engine_stale',
           engine_commit: adopted.commit,
           carried: adopted.carried,
+          coded: adopted.coded,
         });
         l.archon_run_id = to;
         l.engine_hash = adopted.hash;
@@ -803,6 +839,7 @@ function recoverRun(
               engine_from: l.engine_hash ?? null,
               commit: l.engine_commit,
               carried: [],
+              coded: [],
               dir: l.gen_dir,
             };
             // prettier-ignore
@@ -859,6 +896,25 @@ function recoverRun(
             }
           })
           .map(p => p.id);
+        const coded = plan.packages
+          .filter(p => {
+            if (!run.working_path || carried.includes(p.id)) return false;
+            try {
+              const head = codedHead(run, p.id);
+              return (
+                head !== undefined &&
+                Bun.spawnSync(['git', 'merge-base', '--is-ancestor', '--', head, 'HEAD'], {
+                  cwd: run.working_path,
+                  stdout: 'pipe',
+                  stderr: 'pipe',
+                  timeout: QUERY_TIMEOUT_MS,
+                }).exitCode === 0
+              );
+            } catch {
+              return false;
+            }
+          })
+          .map(p => p.id);
         const gen = generate(
           plan,
           l.run_id,
@@ -867,6 +923,7 @@ function recoverRun(
           {
             from: run.id,
             packages: carried,
+            coded,
             ...(recovery
               ? {
                   recovery: {
@@ -885,6 +942,7 @@ function recoverRun(
           engine_from: l.engine_hash ?? null,
           commit: gen.engine_commit,
           carried,
+          coded,
           dir: gen.dir,
         };
         return [
@@ -1994,7 +2052,14 @@ function consumeAnswer(
   asks: Asks
 ): void {
   // Reconciled acknowledgements use the same decision key as the original execution.
-  intervention(l, 'answer', () => true, { key, id: a.id });
+  intervention(
+    l,
+    effect.action === 'reject' ? 'cancel' : 'answer',
+    () => true,
+    { key, id: a.id },
+    undefined,
+    effect.action === 'reject' ? 'rejected' : 'human_decision'
+  );
   if (effect.action === 'reject')
     updateLedger(l, cur => {
       cur.rejected = effect.engine_run;
@@ -2843,8 +2908,64 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
   };
 }
 
-const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|plan check <file>|run <plan.json> [--fake] [--lint-override reason] [--allow-overlap reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--environment <cmd>...] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>] [--allow-overlap reason]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--repo path] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+type OptionName = keyof typeof OPTIONS;
+interface CommandUsage {
+  command: string;
+  positionals?: string;
+  flags: readonly OptionName[];
+}
+
+// task-kind is globally parsed only to preserve its targeted compatibility error.
+// prettier-ignore
+export const CLI_GLOBAL_OPTIONS = ['help', 'json', 'task-kind'] as const satisfies readonly OptionName[];
+// prettier-ignore
+export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
+  { command: 'owner', positionals: '[path|run]', flags: [] },
+  { command: 'claim', positionals: '[path|run]', flags: ['takeover', 'reason'] },
+  { command: 'release', positionals: '[path|run]', flags: [] },
+  { command: 'handoff', flags: ['to', 'kind', 'title', 'body-file', 'evidence', 'severity'] },
+  { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note'] },
+  { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
+  { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap'] },
+  { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
+  { command: 'wait', positionals: '<run>', flags: ['timeout'] },
+  { command: 'status', flags: [] },
+  { command: 'brief', flags: [] },
+  { command: 'land', positionals: '<run>', flags: ['apply'] },
+  { command: 'resume', positionals: '<run>', flags: ['reconciled'] },
+  { command: 'cancel', positionals: '<run>', flags: ['reason'] },
+  { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
+  { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
+  { command: 'accept', positionals: '<run>', flags: ['pkg'] },
+  { command: 'report', flags: ['full', 'by-engine', 'baseline-days'] },
+  { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
+  { command: 'quota', flags: [] },
+  { command: 'usage', flags: ['since', 'repo', 'refresh'] },
+  { command: 'console', positionals: 'start|stop|status|url', flags: ['open'] },
+  { command: 'gc', flags: ['dry-run'] },
+  { command: 'scratch-clean', flags: ['session', 'dry-run'] },
+  { command: 'supervise-tick', flags: [] },
+  { command: 'health', flags: ['cwd', 'verbose'] },
+  { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
+  { command: 'models', flags: ['mode'] },
+  { command: 'job exec', positionals: '-- <cmd...>', flags: ['title', 'request-ref', 'card', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'worktree', 'base'] },
+  { command: 'job clean', positionals: '<id>', flags: [] },
+  { command: 'jobs', flags: ['all'] },
+];
+
+const optionUsage = (name: OptionName): string => {
+  const option = OPTIONS[name];
+  const value = option.type === 'string' ? ` <${name}>${'multiple' in option ? '...' : ''}` : '';
+  return ` [--${name}${value}]`;
+};
+export const USAGE = [
+  'usage: superagent <command> [options]',
+  ...CLI_COMMAND_USAGE.map(
+    ({ command, positionals, flags }) =>
+      `  ${command}${positionals ? ` ${positionals}` : ''}${flags.map(optionUsage).join('')}`
+  ),
+  '  global: [--help] [--json] (--task-kind is rejected)',
+].join('\n');
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
@@ -3137,9 +3258,8 @@ export function main(argv: string[]): number {
       const reason = a.flags.reason ?? 'unstated';
       // Operational labels only: do not persist free-text messages or credentials.
       // prettier-ignore
-      const reasons = ['unstated', 'superseded', 'replaced', 'deadline', 'operator', 'test', 'duplicate', 'obsolete', 'rejected'];
-      if (!reasons.includes(reason))
-        throw new Error(`cancel --reason must be an operational label: ${reasons.join('|')}`);
+      if (!(CANCELLATION_REASONS as readonly string[]).includes(reason))
+        throw new Error(`cancel --reason must be an operational label: ${CANCELLATION_REASONS.join('|')}`);
       // 未登记：按 archon run id 处理（selftest 用）
       const resolved = resolveTarget(id);
       const ok =

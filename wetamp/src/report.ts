@@ -322,13 +322,21 @@ function capturedGraph(run: RunView, workflow: string): Parameters<typeof critic
   return undefined;
 }
 
+const REASON_RECORDING_SINCE = Date.parse('2026-10-11T17:56:55.000Z');
+const missingReason = (at?: string | null): 'legacy' | 'unrecorded' =>
+  at != null && Date.parse(at) < REASON_RECORDING_SINCE ? 'legacy' : 'unrecorded';
+
 export function cancellationStats(pairs: Pair[]): Record<string, number> {
   const reasons: Record<string, number> = {};
   for (const { ledger, run } of pairs) {
     if (run instanceof Error || run.status !== 'cancelled') continue;
     const reason =
       ledger.intervention_events?.filter(e => e.action === 'cancel' && e.ok).at(-1)?.reason ??
-      (ledger.reason === 'deadline' ? 'deadline' : ledger.rejected ? 'rejected' : 'unrecorded');
+      (ledger.reason === 'deadline'
+        ? 'deadline'
+        : ledger.rejected
+          ? 'rejected'
+          : missingReason(ledger.started_at));
     reasons[reason] = (reasons[reason] ?? 0) + 1;
   }
   return reasons;
@@ -478,7 +486,12 @@ export function deliveryStats(pairs: Pair[]) {
 }
 
 export function interventionStats(ls: Ledger[]): Record<string, unknown> {
-  const by_run = Object.fromEntries(ls.map(l => [l.run_id, interventionCount(l) ?? 'unknown']));
+  const by_run = Object.fromEntries(
+    ls.map(l => [
+      l.run_id,
+      interventionCount(l) ?? (missingReason(l.started_at) === 'legacy' ? 'legacy' : 'unknown'),
+    ])
+  );
   const counts = Object.values(by_run)
     .filter((n): n is number => typeof n === 'number')
     .sort((a, b) => a - b);
@@ -486,7 +499,8 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
   return {
     by_run,
     known: n,
-    unknown: ls.length - n,
+    legacy: Object.values(by_run).filter(v => v === 'legacy').length,
+    unknown: Object.values(by_run).filter(v => v === 'unknown').length,
     median: n ? (counts[Math.floor((n - 1) / 2)] + counts[Math.floor(n / 2)]) / 2 : 'unknown',
     max: counts.at(-1) ?? 'unknown',
     zero_share: n ? counts.filter(c => c === 0).length / n : 'unknown',
@@ -574,7 +588,7 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
   const cancellations = cancellationStats(pairs);
   for (const [id, run] of batch ?? []) {
     if (run.status !== 'cancelled' || pairs.some(p => !(p.run instanceof Error) && p.run.id === id)) continue;
-    let reason = 'unrecorded';
+    let reason: string = missingReason(run.started_at);
     try {
       const receipt = JSON.parse(readFileSync(join(home().sa, 'cancellations', `${encodeURIComponent(id)}.json`), 'utf8')) as { reason?: string };
       if (typeof receipt.reason === 'string') reason = receipt.reason;

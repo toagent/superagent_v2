@@ -105,6 +105,7 @@ const skippable = (from: string): Node => ({ from, if_skipped: null });
 export interface Carried {
   from: string;
   packages: string[];
+  coded?: string[];
   recovery?: RecoveryEvidence & { admitted_by: unknown; admitted_at: string };
 }
 
@@ -317,18 +318,24 @@ export function buildWorkflow(
         output_format: contextOutputSchema(),
       });
       // Carry only the initial package attempt; retries keep the native coder and hint binding.
-      const carry = carried?.packages.includes(p.id)
-        ? JSON.stringify({
-            status: 'done',
-            changed_files: [],
-            quick_checks: [],
-            notes: `carried from ${carried.from}`,
-            blockers: [],
-            error_class: null,
-            deviations: [],
-            needs: [],
-          })
-        : undefined;
+      const resumed = carried?.packages.includes(p.id)
+        ? 'carried'
+        : carried?.coded?.includes(p.id)
+          ? 'coded'
+          : undefined;
+      const carry =
+        resumed && carried
+          ? JSON.stringify({
+              status: 'done',
+              changed_files: [],
+              quick_checks: [],
+              notes: `${resumed} from ${carried.from}`,
+              blockers: [],
+              error_class: null,
+              deviations: [],
+              needs: [],
+            })
+          : undefined;
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
         : {

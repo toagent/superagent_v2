@@ -27,6 +27,7 @@ import { archonRunIds } from '../src/archon';
 import { main, type Ledger } from '../src/cli';
 import { tmp } from './helpers';
 import { WETAMP } from '../src/config';
+import { currentDecisions } from '../src/decisions';
 
 const plan = {
   packages: [
@@ -499,6 +500,76 @@ describe('F-22 report', () => {
       expect(readFileSync(join(root, 'archon.db'))).toEqual(before);
       expect(report.provider_timing).toMatchObject({ '0': [{ cmds: 85, explore_ratio: 1, model_turns: 84 }] });
     } finally { keys.forEach((k,i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; }); }
+  });
+
+  test('terminal decision scans reuse safe cache and recheck failed evidence', () => {
+    const root = tmp(),
+      keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'DATABASE_URL'] as const,
+      saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, DATABASE_URL: '' });
+    mkdirSync(join(root, 'runs'));
+    const ledger = {
+      run_id: 'r',
+      archon_run_id: 'engine',
+      repo: root,
+      gen_dir: root,
+      branch: 'task',
+      workflow: 'fixture',
+      recoveries: [],
+    };
+    const file = join(root, 'runs/r.json');
+    writeFileSync(file, JSON.stringify(ledger));
+    const db = new Database(join(root, 'archon.db'));
+    db.run(
+      'CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, last_activity_at TEXT, completed_at TEXT, metadata TEXT)'
+    );
+    db.run('CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT)');
+    db.run(
+      "INSERT INTO remote_agent_workflow_runs VALUES ('engine', 'completed', 'now', 'now', '{}')"
+    );
+    db.close();
+    let calls = 0;
+    let status: 'completed' | 'failed' = 'completed';
+    const query = () => {
+      calls++;
+      return {
+        id: 'engine',
+        status,
+        output_root: root,
+        metadata: {},
+        nodes: status === 'failed' ? [{ nodeId: 'verify-core', state: 'failed' }] : [],
+      } as unknown as import('../src/archon').RunView;
+    };
+    try {
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(calls).toBe(1);
+      writeFileSync(file, JSON.stringify({ ...ledger, reason: 'changed' }));
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(calls).toBe(2);
+      status = 'failed';
+      const artifacts = join(root, 'artifacts/runs/engine');
+      mkdirSync(artifacts, { recursive: true });
+      writeFileSync(join(root, 'plan.json'), JSON.stringify({ packages: [] }));
+      writeFileSync(
+        join(artifacts, 'verify-core.json'),
+        JSON.stringify({ decision: { kind: 'block', reason: 'coder_partial' } })
+      );
+      const changedDb = new Database(join(root, 'archon.db'));
+      changedDb.run("UPDATE remote_agent_workflow_runs SET status = 'failed'");
+      changedDb.close();
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(calls).toBe(4);
+      writeFileSync(join(artifacts, 'verify-core.json'), '{invalid');
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: ['r'] });
+      expect(calls).toBe(5);
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
   });
 
   test('EFFICIENCY_BUDGET buildReport ranks slow attempts across runs and limits to five', () => {
@@ -1045,25 +1116,27 @@ describe('F-22 report', () => {
       error: 'exit:1',
     };
     const runs = [
-      { run_id: 'old', recoveries: ['a'], intervened: true },
+      { run_id: 'old', started_at: '2026-10-11T00:00:00Z', recoveries: ['a'], intervened: true },
+      { run_id: 'missing', started_at: '2026-10-13T00:00:00Z' },
       { run_id: 'zero', intervention_events: [] },
       { run_id: 'one', intervention_events: [event] },
       { run_id: 'many', intervention_events: Array.from({ length: 25 }, () => event) },
     ] as Ledger[];
     expect(interventionStats(runs)).toEqual({
-      by_run: { old: 'unknown', zero: 0, one: 1, many: 25 },
+      by_run: { old: 'legacy', missing: 'unknown', zero: 0, one: 1, many: 25 },
       known: 3,
+      legacy: 1,
       unknown: 1,
       median: 1,
       max: 25,
       zero_share: 1 / 3,
     });
-    expect(interventionStats(runs.slice(0, 1))).toMatchObject({
+    expect(interventionStats(runs.slice(0, 2))).toMatchObject({
       median: 'unknown',
       max: 'unknown',
       zero_share: 'unknown',
     });
-    expect(interventionStats(runs.slice(1, 3)).median).toBe(0.5);
+    expect(interventionStats(runs.slice(2, 4)).median).toBe(0.5);
   });
   const events = [
     ev('node_started', 'code-core'),
@@ -1295,9 +1368,16 @@ test('P1 started attempts survive cancellation and late terminal receipts dedupl
   expect(
     cancellationStats([
       { ledger: { rejected: 'human rejected' } as Ledger, run: { id: 'r', status: 'cancelled' } },
-      { ledger: {} as Ledger, run: { id: 'u', status: 'cancelled' } },
+      {
+        ledger: { started_at: '2026-10-11T00:00:00Z' } as Ledger,
+        run: { id: 'l', status: 'cancelled' },
+      },
+      {
+        ledger: { started_at: '2026-10-13T00:00:00Z' } as Ledger,
+        run: { id: 'u', status: 'cancelled' },
+      },
     ])
-  ).toEqual({ rejected: 1, unrecorded: 1 });
+  ).toEqual({ rejected: 1, legacy: 1, unrecorded: 1 });
 });
 
 test('P1 SQL clock precision allows subsecond persistence, not a real overrun', () => {
