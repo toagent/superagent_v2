@@ -711,6 +711,7 @@ describe('HF3 latest-engine recovery', () => {
     'settle-repair',
     'no-worktree',
     'coded',
+    'coded-dirty',
     'coded-unrelated',
   ])('P2: adoption carries only accepted ancestors (%s)', sample => {
     const s = setup('old');
@@ -723,7 +724,7 @@ describe('HF3 latest-engine recovery', () => {
     ).trim();
     const art = join(s.root, 'artifacts', 'runs', 'r');
     mkdirSync(art, { recursive: true });
-    if (!['missing', 'coded', 'coded-unrelated'].includes(sample))
+    if (sample !== 'missing' && !sample.startsWith('coded'))
       writeFileSync(
         join(art, 'verify-core.json'),
         sample === 'invalid'
@@ -774,7 +775,16 @@ describe('HF3 latest-engine recovery', () => {
                           sampledAt: new Date().toISOString(),
                           commit: sample === 'coded-unrelated' ? unrelated : head,
                           tree: head,
-                          worktree: { status: 'clean' },
+                          worktree:
+                            sample === 'coded-dirty'
+                              ? {
+                                  status: 'dirty',
+                                  content: 'incomplete',
+                                  staged: 0,
+                                  unstaged: 1,
+                                  untracked: 0,
+                                }
+                              : { status: 'clean' },
                         },
                       },
                     } as never,

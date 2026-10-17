@@ -529,13 +529,15 @@ describe('F-22 report', () => {
     );
     db.close();
     let calls = 0;
+    let status: 'completed' | 'failed' = 'completed';
     const query = () => {
       calls++;
       return {
         id: 'engine',
-        status: 'completed',
+        status,
+        output_root: root,
         metadata: {},
-        nodes: [],
+        nodes: status === 'failed' ? [{ nodeId: 'verify-core', state: 'failed' }] : [],
       } as unknown as import('../src/archon').RunView;
     };
     try {
@@ -545,6 +547,23 @@ describe('F-22 report', () => {
       writeFileSync(file, JSON.stringify({ ...ledger, reason: 'changed' }));
       expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
       expect(calls).toBe(2);
+      status = 'failed';
+      const artifacts = join(root, 'artifacts/runs/engine');
+      mkdirSync(artifacts, { recursive: true });
+      writeFileSync(join(root, 'plan.json'), JSON.stringify({ packages: [] }));
+      writeFileSync(
+        join(artifacts, 'verify-core.json'),
+        JSON.stringify({ decision: { kind: 'block', reason: 'coder_partial' } })
+      );
+      const changedDb = new Database(join(root, 'archon.db'));
+      changedDb.run("UPDATE remote_agent_workflow_runs SET status = 'failed'");
+      changedDb.close();
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(calls).toBe(3);
+      writeFileSync(join(artifacts, 'verify-core.json'), '{invalid');
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: ['r'] });
+      expect(calls).toBe(4);
     } finally {
       keys.forEach((k, i) => {
         if (saved[i] === undefined) delete process.env[k];

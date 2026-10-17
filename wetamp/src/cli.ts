@@ -732,7 +732,11 @@ const codedHead = (run: RunView, pkg: string): string | undefined => {
         : undefined;
   const sample = [...(run.nodes ?? [])].reverse().find(n => n.nodeId === successor)?.execution
     ?.attempt.checkoutStart;
-  return sample?.kind === 'git' && typeof sample.commit === 'string' ? sample.commit : undefined;
+  return sample?.kind === 'git' &&
+    sample.worktree.status === 'clean' &&
+    typeof sample.commit === 'string'
+    ? sample.commit
+    : undefined;
 };
 
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
