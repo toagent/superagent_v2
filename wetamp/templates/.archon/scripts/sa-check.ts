@@ -207,7 +207,7 @@ const attrs = (s: string): Record<string, string | undefined> => Object.fromEntr
 // prettier-ignore
 function validXml(xml: string): boolean {
   const tags = [...xml.matchAll(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<(?:"[^"]*"|'[^']*'|[^'">])*>/g)], stack: string[] = [];
-  const bad = /&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[\da-f]+);)/i, attr = /([:\w.-]+)\s*=\s*(["'])(.*?)\2/gs;
+  const bad = /&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[\da-f]+);)/i, attr = /\s+([:\w.-]+)\s*=\s*(["'])(.*?)\2/gs;
   let end = 0, roots = 0;
   for (const match of tags) {
     const text = xml.slice(end, match.index), token = match[0]; end = match.index + token.length;
@@ -230,10 +230,12 @@ function junitCases(path: string, expected: string[], started: number): Structur
   try {
     if (!existsSync(path) || statSync(path).mtimeMs < started) return;
     const xml = readFileSync(path, 'utf8');
-    if (!validXml(xml) || /<error\b/.test(xml)) return;
-    if (![...xml.matchAll(/<testsuite\b([^>]*)>/g)].some(m => Number(attrs(m[1]).tests) > 0))
+    if (!validXml(xml)) return;
+    const elements = xml.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+    if (/<error\b/.test(elements)) return;
+    if (![...elements.matchAll(/<testsuite\b([^>]*)>/g)].some(m => Number(attrs(m[1]).tests) > 0))
       return;
-    const cases = [...xml.matchAll(/<testcase\b([^>]*)(?:\/>|>([\s\S]*?)<\/testcase>)/g)];
+    const cases = [...elements.matchAll(/<testcase\b([^>]*)(?:\/>|>([\s\S]*?)<\/testcase>)/g)];
     const ids: string[] = [], skipped: string[] = [], failures: StructuredCases['failures'] = [];
     for (const match of cases) {
       const a = attrs(match[1]),
@@ -365,7 +367,7 @@ function run(
                 tree,
                 c.cmd,
                 c.timeout_s,
-                'junit-v1',
+                'junit-v2',
                 c.report ?? null,
                 c.known_failures ?? null,
                 envKey,
@@ -384,22 +386,27 @@ function run(
         stderr?: string;
         structured?: StructuredCases;
       };
-      appendFileSync(
-        log,
-        `$ ${c.cmd}\n# reused ${saved.failure ? 'failure' : 'pass'} from ${saved.tag}\n${saved.stdout ?? ''}${saved.stderr ?? ''}\n`
-      );
-      if (saved.failure) {
-        failed.push(c.cmd);
-        failures.push(saved.failure);
+      if (c.report && saved.structured?.complete !== true) {
+        // Older or incomplete adapter output cannot prove structured acceptance.
+      } else {
+        appendFileSync(
+          log,
+          `$ ${c.cmd}\n# reused ${saved.failure ? 'failure' : 'pass'} from ${saved.tag}\n${saved.stdout ?? ''}${saved.stderr ?? ''}\n`
+        );
+        if (saved.failure) {
+          failed.push(c.cmd);
+          failures.push(saved.failure);
+        }
+        results.push({
+          check: c,
+          pass:
+            saved.pass ?? (saved.exit === undefined ? null : !saved.failure && saved.exit === 0),
+          exit: saved.exit,
+          evidence: log,
+          ...(saved.structured ? { structured: saved.structured } : {}),
+        });
+        continue;
       }
-      results.push({
-        check: c,
-        pass: saved.pass ?? (saved.exit === undefined ? null : !saved.failure && saved.exit === 0),
-        exit: saved.exit,
-        evidence: log,
-        ...(saved.structured ? { structured: saved.structured } : {}),
-      });
-      continue;
     }
     const t0 = Date.now();
     let reportPath = '';

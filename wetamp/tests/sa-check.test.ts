@@ -2216,6 +2216,76 @@ describe('sa-check script', () => {
       failures: [{ failure_class: 'test_env', adjudicated: true }],
     });
   });
+  test('P2: cache:false failure body changes invalidate an approved adjudication', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'false', ['true']),
+      body = join(root, 'failure-body');
+    writeFileSync(body, 'first');
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'README.md'), 'candidate\n');
+    sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    p.packages[0].accept = [
+      {
+        cmd: `printf '<testsuite tests="1"><testcase classname="suite" name="case"><failure>%s</failure></testcase></testsuite>' "$(cat '${body}')" > junit.xml; exit 1`,
+        timeout_s: 5,
+        cache: false,
+        report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+        known_failures: [{ id: 'suite::case', reason: 'known' }],
+      },
+    ];
+    writeFileSync(path, JSON.stringify(p));
+    const inputs = { kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a', base };
+    const first = runScript(repo, inputs);
+    const adjudication = (first.out as { adjudication: Record<string, unknown> }).adjudication;
+    mkdirSync(join(root, 'approvals'));
+    writeFileSync(join(root, 'approvals', 'verify-a.json'), JSON.stringify(adjudication));
+    expect(runScript(repo, inputs).out).toMatchObject({ disposition: 'advance' });
+    writeFileSync(body, 'changed');
+    const changed = runScript(repo, inputs);
+    expect(changed.out).toMatchObject({
+      disposition: 'adjudicate',
+      adjudication: { failed_tests: ['suite::case'] },
+    });
+    expect(
+      (changed.out as { adjudication: { failure_digest: string } }).adjudication.failure_digest
+    ).not.toBe(adjudication.failure_digest);
+  });
+  test('P2: a newly skipped candidate case cannot be adjudicated', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'false', ['true']);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'README.md'), 'candidate\n');
+    sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    p.packages[0].accept = [
+      {
+        cmd: `if grep -q candidate README.md; then extra='<skipped/>'; else extra=''; fi; printf '<testsuite tests="2"><testcase classname="suite" name="failed"><failure>same</failure></testcase><testcase classname="suite" name="later">%s</testcase></testsuite>' "$extra" > junit.xml; exit 1`,
+        timeout_s: 5,
+        cache: false,
+        report: { junit: 'junit.xml', collect: `printf 'suite::failed\\nsuite::later\\n'` },
+        known_failures: [{ id: 'suite::failed', reason: 'known' }],
+      },
+    ];
+    writeFileSync(path, JSON.stringify(p));
+    const result = runScript(repo, {
+      kind: 'accept',
+      plan: path,
+      pkgs: 'a',
+      tag: 'verify-a',
+      base,
+    });
+    expect(result.out).toMatchObject({
+      disposition: 'repair',
+      failures: [{ failure_class: 'unknown' }],
+      command_results: [{ structured: { complete: true, skipped: ['suite::later'] } }],
+    });
+    expect(result.out).not.toHaveProperty('adjudication');
+  });
   test('P2: report without collect remains unknown and cannot adjudicate', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -2259,6 +2329,14 @@ describe('sa-check script', () => {
       'duplicate id',
       `printf '%s' '<testsuite tests="2"><testcase classname="suite" name="case"/><testcase classname="suite" name="case"/></testsuite>' > junit.xml`,
     ],
+    [
+      'attributes without whitespace',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite"name="case"/></testsuite>' > junit.xml`,
+    ],
+    [
+      'comment-only testcase',
+      `printf '%s' '<testsuite tests="1"><!-- <testcase classname="suite" name="case"/> --></testsuite>' > junit.xml`,
+    ],
   ])(
     'P2: exit zero with %s structured report fails closed and stays failed in cache',
     (_, command) => {
@@ -2285,6 +2363,25 @@ describe('sa-check script', () => {
       }
     }
   );
+  test('P2: JUnit element discovery ignores comments and CDATA', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'true');
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    p.packages[0].accept[0] = {
+      cmd: `printf '%s' '<testsuite tests="1"><!-- <testcase classname="fake" name="comment"/> --><![CDATA[<testcase classname="fake" name="cdata"/>]]><testcase classname="suite" name="case"/></testsuite>' > junit.xml`,
+      timeout_s: 5,
+      report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+    };
+    writeFileSync(path, JSON.stringify(p));
+    expect(
+      runScript(repo, { kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a' }).out
+    ).toMatchObject({
+      ok: true,
+      command_results: [{ structured: { complete: true, ids: ['suite::case'] } }],
+    });
+  });
   test.each([
     [
       'stale report',
@@ -3234,6 +3331,71 @@ describe('sa-check script', () => {
     expect(runScript(repo, { ...inputs, tag: 'current-reuse' }, SCRIPT, node).code).toBe(0);
     expect(readFileSync(counter, 'utf8')).toBe('executed\nexecuted\n');
   });
+  test('P2: junit-v1 cache entries cannot satisfy the current adapter', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      art = join(root, 'art'),
+      counter = join(root, 'executions'),
+      p = planFile(root, 'true');
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const plan = JSON.parse(readFileSync(p, 'utf8'));
+    plan.packages[0].accept[0] = {
+      cmd: `echo executed >> '${counter}'; printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"/></testsuite>' > junit.xml`,
+      timeout_s: 5,
+      report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+    };
+    writeFileSync(p, JSON.stringify(plan));
+    const scripts = join(root, 'scripts');
+    cpSync(join(import.meta.dir, '../templates/.archon/scripts'), scripts, { recursive: true });
+    cpSync(
+      join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'),
+      join(scripts, 'policy-attempts.ts')
+    );
+    const legacy = join(scripts, 'sa-check.ts');
+    writeFileSync(legacy, readFileSync(legacy, 'utf8').replace("'junit-v2'", "'junit-v1'"));
+    const node = acceptanceNodeEnvironment(art, 'old-adapter');
+    expect(
+      runScript(
+        repo,
+        { kind: 'accept', plan: p, pkgs: 'a', tag: 'old-adapter' },
+        legacy,
+        node,
+        true
+      ).code
+    ).toBe(0);
+    expect(
+      runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'current' }, SCRIPT, node).code
+    ).toBe(0);
+    expect(readFileSync(counter, 'utf8')).toBe('executed\nexecuted\n');
+  });
+  test.each(['missing', 'incomplete'])(
+    'P2: %s cached structured output reruns the report check',
+    state => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        counter = join(root, 'executions'),
+        p = planFile(root, 'true');
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+      const plan = JSON.parse(readFileSync(p, 'utf8'));
+      plan.packages[0].accept[0] = {
+        cmd: `echo executed >> '${counter}'; printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"/></testsuite>' > junit.xml`,
+        timeout_s: 5,
+        report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+      };
+      writeFileSync(p, JSON.stringify(plan));
+      const first = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'first' });
+      expect(first.code, first.err).toBe(0);
+      const cache = join(first.art, 'accept-cache');
+      const entry = join(cache, readdirSync(cache).find(name => name !== '.key')!);
+      const saved = JSON.parse(readFileSync(entry, 'utf8'));
+      if (state === 'missing') delete saved.structured;
+      else saved.structured.complete = false;
+      writeFileSync(entry, JSON.stringify(saved));
+      const rerun = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'rerun' });
+      expect(rerun.code, rerun.err).toBe(0);
+      expect(readFileSync(counter, 'utf8')).toBe('executed\nexecuted\n');
+    }
+  );
   test('U5: real node environments reuse output and contract; identity changes execute again', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -3425,6 +3587,32 @@ describe('sa-check script', () => {
     check.timeout_s++;
     go('contract-change');
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
+  });
+  test('P2: structured probes cache the second check using the execution cwd tree', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      p = planFile(root, 'false', ['true']),
+      trees = join(root, 'trees');
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const base = sh('git rev-parse HEAD', repo).trim(),
+      baseTree = sh('git rev-parse HEAD^{tree}', repo).trim();
+    writeFileSync(join(repo, 'README.md'), 'candidate\n');
+    sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+    const candidateTree = sh('git rev-parse HEAD^{tree}', repo).trim();
+    const plan = JSON.parse(readFileSync(p, 'utf8'));
+    const check = {
+      cmd: `git rev-parse HEAD^{tree} >> '${trees}'; printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"><failure>same</failure></testcase></testsuite>' > junit.xml; exit 1`,
+      timeout_s: 5,
+      report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+      known_failures: [{ id: 'suite::case', reason: 'known' }],
+    };
+    plan.packages[0].accept = [check, check];
+    writeFileSync(p, JSON.stringify(plan));
+    runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a', base });
+    expect(readFileSync(trees, 'utf8')).toBe(`${candidateTree}\n${baseTree}\n`);
+    expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).toContain(
+      '# reused failure from verify-a'
+    );
   });
   test('F-20/F-13: delta patch against delta_base; out-of-scope and risk paths raise the risk', () => {
     const root = tmp();
