@@ -697,7 +697,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     const decision = decisionOf(evidenceJson(l, artifactsOf(run), `${c.node}.json`));
     if (
       decision?.kind === 'block' &&
-      ['coder_partial', 'acceptance_adjudication'].includes(decision.reason ?? '')
+      ['coder_partial', 'coder_needs', 'acceptance_adjudication'].includes(decision.reason ?? '')
     )
       return { ...c, state: 'held:gate', exit: EXIT.held };
     if (

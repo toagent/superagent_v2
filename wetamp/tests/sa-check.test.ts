@@ -1284,11 +1284,12 @@ describe('single delivery decision', () => {
         coder: JSON.stringify(report),
       });
       const emptyUnfinished = includeBase && status !== 'done';
+      const emptyReason = report.needs.length ? 'coder_needs' : 'coder_partial';
       expect(result.code, result.err).toBe(emptyUnfinished ? 1 : 0);
       expect(result.out).toMatchObject({
         ok: false,
         disposition: emptyUnfinished ? 'fail' : 'repair',
-        reason: emptyUnfinished ? 'coder_partial' : reason,
+        reason: emptyUnfinished ? emptyReason : reason,
         ...(emptyUnfinished
           ? { decision: { blockers: report.blockers, needs: report.needs } }
           : {}),
@@ -2637,48 +2638,54 @@ describe('sa-check script', () => {
     });
   }, 30_000); // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
   test.each([
-    ['partial', false, false],
-    ['done', false, false],
-    ['partial', true, false],
-    ['partial', false, true],
-  ] as const)('empty delivery: %s changed=%s previous-package=%s', (status, changed, previous) => {
-    const root = tmp();
-    const repo = gitRepo(root);
-    const base = sh('git rev-parse HEAD', repo).trim();
-    if (previous) sh('echo prior > prior && git add prior && git commit -qm prior', repo);
-    const start = sh('git rev-parse HEAD', repo).trim();
-    if (changed) sh('echo work > work && git add work && git commit -qm work', repo);
-    const blockers = ['需要确认原始需求'];
-    const needs = [{ cap: 'requirement_decision', why: '输入缺失', minimal_ask: '提供需求' }];
-    const r = runScript(repo, {
-      kind: 'accept',
-      plan: planFile(root, 'true'),
-      pkgs: 'a',
-      tag: 'verify-a',
-      base,
-      delta_base: start,
-      coder: JSON.stringify({
-        status,
-        error_class: status === 'done' ? null : 'task',
-        blockers,
-        needs,
-      }),
-    });
-    const blocked = status !== 'done' && !changed;
-    expect(r.code, r.err).toBe(blocked ? 1 : 0);
-    expect(r.out).toMatchObject({
-      ok: true,
-      no_changes: !changed,
-      disposition: blocked ? 'fail' : 'advance',
-      decision: blocked
-        ? { kind: 'block', reason: 'coder_partial', blockers, needs }
-        : { kind: 'advance' },
-    });
-    // Subsequent decisions without a self-report must preserve the recorded block and details.
-    expect(deliveryDecision({ rechecks: [r.out as Accept] }).decision.kind).toBe(
-      blocked ? 'block' : 'advance'
-    );
-  });
+    ['partial', false, false, true],
+    ['partial', false, false, false],
+    ['done', false, false, true],
+    ['partial', true, false, true],
+    ['partial', false, true, true],
+  ] as const)(
+    'empty delivery: %s changed=%s previous-package=%s needs=%s',
+    (status, changed, previous, hasNeeds) => {
+      const root = tmp();
+      const repo = gitRepo(root);
+      const base = sh('git rev-parse HEAD', repo).trim();
+      if (previous) sh('echo prior > prior && git add prior && git commit -qm prior', repo);
+      const start = sh('git rev-parse HEAD', repo).trim();
+      if (changed) sh('echo work > work && git add work && git commit -qm work', repo);
+      const blockers = ['需要确认原始需求'];
+      const needs = hasNeeds
+        ? [{ cap: 'requirement_decision', why: '输入缺失', minimal_ask: '提供需求' }]
+        : [];
+      const r = runScript(repo, {
+        kind: 'accept',
+        plan: planFile(root, 'true'),
+        pkgs: 'a',
+        tag: 'verify-a',
+        base,
+        delta_base: start,
+        coder: JSON.stringify({
+          status,
+          error_class: status === 'done' ? null : 'task',
+          blockers,
+          needs,
+        }),
+      });
+      const blocked = status !== 'done' && !changed;
+      expect(r.code, r.err).toBe(blocked ? 1 : 0);
+      expect(r.out).toMatchObject({
+        ok: true,
+        no_changes: !changed,
+        disposition: blocked ? 'fail' : 'advance',
+        decision: blocked
+          ? { kind: 'block', reason: hasNeeds ? 'coder_needs' : 'coder_partial', blockers, needs }
+          : { kind: 'advance' },
+      });
+      // Subsequent decisions without a self-report must preserve the recorded block and details.
+      expect(deliveryDecision({ rechecks: [r.out as Accept] }).decision.kind).toBe(
+        blocked ? 'block' : 'advance'
+      );
+    }
+  );
   test('accept: uncommitted change fails even when commands pass', () => {
     const root = tmp();
     const repo = gitRepo(root);

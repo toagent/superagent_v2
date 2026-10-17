@@ -1319,7 +1319,7 @@ export function deliveryDecision(input: {
     return result;
   }
   if (check.no_changes === true && coder && coder.status !== 'done') {
-    const result = out('block', 'coder_partial');
+    const result = out('block', coder.needs?.length ? 'coder_needs' : 'coder_partial');
     Object.assign(result.decision, { blockers: coder.blockers ?? [], needs: coder.needs ?? [] });
     return result;
   }
