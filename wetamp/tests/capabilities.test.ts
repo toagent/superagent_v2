@@ -49,7 +49,8 @@ test('context uses ledger/effective risk and emits one mapped guidance line', ()
     writeFileSync(join(artifacts, `gate-${d.milestone}-r${d.round - 1}.ledger.json`), JSON.stringify({ blocking: [{ failure_class: 'product' }], debt: [], closed: [] }));
     expect(roleContext({ ...base, node: fix }).capabilities.injected).toContain('debug.root-cause');
     const review = Object.keys(table).find(key => key.startsWith('review-') && key.endsWith('-r1'))!;
-    expect(roleContext({ ...base, node: review, acceptance: { ok: true, diff_hash: '', same: true, risk: 'G2' } }).capabilities.injected).toEqual(['security.audit']);
+    const reviewContext = roleContext({ ...base, node: review, acceptance: { ok: true, diff_hash: '', same: true, risk: 'G2' } });
+    expect(reviewContext.capabilities.injected).toEqual(['security.audit']); expect(reviewContext.capability_guidance).toContain(mapping.find(cap => cap.id === 'security.audit')!.use.claude);
   } finally { if (old === undefined) delete process.env.HOME; else process.env.HOME = old; }
 });
 
@@ -61,7 +62,7 @@ test('missing skills are unavailable, health-visible, and map-owned', () => {
   const health = Bun.spawnSync([process.execPath, 'src/cli.ts', 'health'], { cwd: WETAMP, env: { ...process.env, HOME: home, SUPERAGENT_HOME: state, ARCHON_HOME: archon } });
   expect(JSON.parse(health.stdout.toString().trim()).capability_drift).toHaveLength(1);
   const names = mapping.flatMap(cap => Object.values(cap.use));
-  const files = Bun.spawnSync(['rg', '--files', 'src', 'templates', 'README.md'], { cwd: WETAMP }).stdout.toString().trim().split('\n');
+  const files = Bun.spawnSync(['rg', '--files', '--hidden', 'src', 'templates', 'README.md'], { cwd: WETAMP }).stdout.toString().trim().split('\n');
   const source = files.map(file => readFileSync(join(WETAMP, file), 'utf8')).join('\n');
-  expect(names.filter(name => [`'${name}'`, `"${name}"`, `\`${name}\``].some(s => source.includes(s)))).toEqual([]);
+  expect(names.filter(name => new RegExp(`(^|[^\\w-])${name}($|[^\\w-])`, 'm').test(source))).toEqual([]);
 });

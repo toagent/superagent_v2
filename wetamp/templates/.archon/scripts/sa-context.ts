@@ -122,6 +122,7 @@ export function roleContext(input: {
     environment: input.environment,
     environment_check: read(join(artifacts, 'environment.json')),
     capabilities: capability.evidence,
+    ...(capability.guidance.length ? { capability_guidance: capability.guidance.join('\n') } : {}),
     acceptance: input.acceptance ?? 'unknown',
     diff: incremental ? input.delta : input.patch,
     full_diff: input.patch,
