@@ -502,7 +502,7 @@ describe('F-22 report', () => {
     } finally { keys.forEach((k,i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; }); }
   });
 
-  test('terminal decision scans reuse unchanged cache and invalidate when the ledger changes', () => {
+  test('terminal decision scans reuse safe cache and recheck failed evidence', () => {
     const root = tmp(),
       keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'DATABASE_URL'] as const,
       saved = keys.map(k => process.env[k]);
@@ -560,10 +560,10 @@ describe('F-22 report', () => {
       changedDb.close();
       expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
       expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
-      expect(calls).toBe(3);
+      expect(calls).toBe(4);
       writeFileSync(join(artifacts, 'verify-core.json'), '{invalid');
       expect(currentDecisions(query)).toEqual({ decisions: [], unknown: ['r'] });
-      expect(calls).toBe(4);
+      expect(calls).toBe(5);
     } finally {
       keys.forEach((k, i) => {
         if (saved[i] === undefined) delete process.env[k];

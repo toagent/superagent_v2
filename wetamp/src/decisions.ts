@@ -24,7 +24,6 @@ import {
 } from './web/device-store';
 import type { Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
-import { confined } from './board/workflow';
 
 export interface Decision {
   id: string;
@@ -103,71 +102,39 @@ export function describeDecision(
   };
 }
 const DECISION_CACHE_VERSION = 2;
-type TerminalDecisionCache = [
-  string,
-  'completed' | 'failed' | 'cancelled',
-  string | null,
-  string | null,
-  string,
-];
 interface DecisionCache {
   version: number;
   terminal: Record<string, string>;
 }
 const decisionCachePath = (): string => join(home().sa, 'report-decisions.json');
-const cacheEntry = (raw: unknown): TerminalDecisionCache | undefined => {
-  if (typeof raw !== 'string') return;
-  try {
-    const value = JSON.parse(raw) as unknown;
-    const valid =
-      Array.isArray(value) &&
-      value.length === 5 &&
-      typeof value[0] === 'string' &&
-      typeof value[1] === 'string' &&
-      ['completed', 'failed', 'cancelled'].includes(value[1]) &&
-      [value[2], value[3]].every(v => v === null || typeof v === 'string') &&
-      typeof value[4] === 'string';
-    return valid ? (value as TerminalDecisionCache) : undefined;
-  } catch {
-    return undefined;
-  }
-};
-const dependencyRevision = (l: Ledger, entry: TerminalDecisionCache): string => {
-  if (entry[1] !== 'failed') return '';
-  const evidence =
-    entry[2] && entry[3]
-      ? confined(l, join(entry[2], 'artifacts', 'runs', l.archon_run_id, `${entry[3]}.json`))
-      : null;
-  const revision = (path: string | null): string | null =>
-    path && existsSync(path) ? digest(readFileSync(path, 'utf8')) : null;
-  return digest(JSON.stringify([revision(join(l.gen_dir, 'plan.json')), revision(evidence)]));
-};
 function readDecisionCache(): DecisionCache {
   const path = decisionCachePath();
   if (!existsSync(path)) return { version: DECISION_CACHE_VERSION, terminal: {} };
   try {
-    const value = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-    const terminal = value.terminal;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+      throw new Error('version or shape mismatch');
+    const value = parsed as Record<string, unknown>;
     if (
       value.version !== DECISION_CACHE_VERSION ||
-      terminal === null ||
-      typeof terminal !== 'object' ||
-      Array.isArray(terminal) ||
-      !Object.values(terminal).every(entry => cacheEntry(entry))
+      value.terminal === null ||
+      typeof value.terminal !== 'object' ||
+      Array.isArray(value.terminal) ||
+      !Object.values(value.terminal).every(entry => typeof entry === 'string')
     )
       throw new Error('version or shape mismatch');
-    return { version: DECISION_CACHE_VERSION, terminal: terminal as Record<string, string> };
+    return { version: DECISION_CACHE_VERSION, terminal: value.terminal as Record<string, string> };
   } catch (e) {
     console.error(`superagent report cache ignored: ${(e as Error).message}`);
+    return { version: DECISION_CACHE_VERSION, terminal: {} };
   }
-  return { version: DECISION_CACHE_VERSION, terminal: {} };
 }
 export function currentDecisions(query = getRun): { decisions: Decision[]; unknown: string[] } {
   const decisions: Decision[] = [],
-    unknown: string[] = [],
-    cache = readDecisionCache(),
-    revisions = reportRunRevisions(),
-    terminal: Record<string, string> = {};
+    unknown: string[] = [];
+  const cache = readDecisionCache(),
+    revisions = reportRunRevisions();
+  const terminal: Record<string, string> = {};
   for (const id of ledgerIds()) {
     try {
       const l = loadLedger(id),
@@ -176,32 +143,15 @@ export function currentDecisions(query = getRun): { decisions: Decision[]; unkno
         fingerprint = revision
           ? JSON.stringify([l.archon_run_id, stamp.mtimeMs, stamp.size, revision])
           : null;
-      const raw = cache.terminal[id],
-        cached = cacheEntry(raw);
-      if (
-        fingerprint &&
-        raw &&
-        cached?.[0] === fingerprint &&
-        cached[4] === dependencyRevision(l, cached)
-      ) {
-        terminal[id] = raw;
+      if (fingerprint && cache.terminal[id] === fingerprint) {
+        terminal[id] = fingerprint;
         continue;
       }
       const run = query(l.archon_run_id, l.repo);
       const d = describeDecision(l, run);
       if (d) decisions.push(d);
-      if (fingerprint && ['completed', 'failed', 'cancelled'].includes(run.status)) {
-        const failed = run.nodes?.find(n => n.state === 'failed')?.nodeId ?? null;
-        const entry: TerminalDecisionCache = [
-          fingerprint,
-          run.status as TerminalDecisionCache[1],
-          run.output_root ?? null,
-          failed,
-          '',
-        ];
-        entry[4] = dependencyRevision(l, entry);
-        terminal[id] = JSON.stringify(entry);
-      }
+      if (fingerprint && ['completed', 'cancelled'].includes(run.status))
+        terminal[id] = fingerprint;
     } catch {
       unknown.push(id);
     }
