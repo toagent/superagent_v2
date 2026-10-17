@@ -60,26 +60,10 @@ interface CommandResult {
   exit?: number | string;
   structured?: StructuredCases;
 }
-interface StructuredCases {
-  complete: boolean;
-  tests: number;
-  ids: string[];
-  skipped: string[];
-  failures: { id: string; type: string; message: string; body_hash: string }[];
-  failure_digest: string;
-  report: string;
-}
-interface Adjudication {
-  diff_hash: string;
-  contract_hash: string;
-  command: string;
-  failed_tests: string[];
-  failure_digest: string;
-  report: string;
-  counts: { candidate: number; base: number; expected: number; expected_base: number };
-  known: { id: string; reason: string }[];
-  cases: { id: string; message: string; base: 'failed' | 'passed' }[];
-}
+// prettier-ignore
+interface StructuredCases { complete: boolean; tests: number; ids: string[]; skipped: string[]; failures: { id: string; type: string; message: string; body_hash: string }[]; failure_digest: string; report: string }
+// prettier-ignore
+interface Adjudication { diff_hash: string; contract_hash: string; command: string; failed_tests: string[]; failure_digest: string; report: string; counts: { candidate: number; base: number; expected: number; expected_base: number }; known: { id: string; reason: string }[]; cases: { id: string; message: string; base: 'failed' | 'passed' }[] }
 export interface Completion {
   status: 'legacy' | 'verified' | 'unmet' | 'unknown';
   items: {
@@ -117,12 +101,8 @@ export interface Accept {
   failed?: string[];
   log?: string;
   base_pass?: boolean | null;
-  base_results?: {
-    cmd: string;
-    pass: boolean | null;
-    reason?: string;
-    structured?: StructuredCases;
-  }[];
+  // prettier-ignore
+  base_results?: { cmd: string; pass: boolean | null; reason?: string; structured?: StructuredCases }[];
   baseline?: 'comparable' | 'incomparable';
   baseline_reason?: string;
   failures?: CheckFailure[];
@@ -131,15 +111,11 @@ export interface Accept {
   command_results?: CommandResult[];
   adjudication?: Adjudication;
 }
+// prettier-ignore
 export interface CheckFailure {
-  command: string;
-  failure_class: FailureClass;
-  evidence: string;
-  repair_rounds?: number;
-  debt_reason?: 'repair_limit';
-  failed_tests?: string[];
-  failure_digest?: string;
-  adjudicated?: boolean;
+  command: string; failure_class: FailureClass; evidence: string;
+  repair_rounds?: number; debt_reason?: 'repair_limit';
+  failed_tests?: string[]; failure_digest?: string; adjudicated?: boolean;
 }
 /** sa-check uses these fields from the complete frozen <gen>/policy.json. */
 interface Policy {
@@ -222,15 +198,12 @@ const emit = (o: unknown): void => {
 };
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
-const xmlText = (s: string): string =>
-  s.replace(
-    /&(?:lt|gt|amp|quot|apos);/g,
-    x => ({ '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&apos;': "'" })[x] ?? x
-  );
-const attrs = (s: string): Record<string, string | undefined> =>
-  Object.fromEntries(
-    [...s.matchAll(/([:\w.-]+)\s*=\s*(["'])(.*?)\2/gs)].map(m => [m[1], xmlText(m[3])])
-  );
+// prettier-ignore
+const xmlText = (s: string): string => s.replace(/&(?:lt|gt|amp|quot|apos);/g,
+  x => ({ '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&apos;': "'" })[x] ?? x);
+// prettier-ignore
+const attrs = (s: string): Record<string, string | undefined> => Object.fromEntries(
+  [...s.matchAll(/([:\w.-]+)\s*=\s*(["'])(.*?)\2/gs)].map(m => [m[1], xmlText(m[3])]));
 // prettier-ignore
 function validXml(xml: string): boolean {
   const tags = [...xml.matchAll(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<(?:"[^"]*"|'[^']*'|[^'">])*>/g)], stack: string[] = [];
