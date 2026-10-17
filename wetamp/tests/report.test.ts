@@ -1116,25 +1116,27 @@ describe('F-22 report', () => {
       error: 'exit:1',
     };
     const runs = [
-      { run_id: 'old', recoveries: ['a'], intervened: true },
+      { run_id: 'old', started_at: '2026-10-11T00:00:00Z', recoveries: ['a'], intervened: true },
+      { run_id: 'missing', started_at: '2026-10-13T00:00:00Z' },
       { run_id: 'zero', intervention_events: [] },
       { run_id: 'one', intervention_events: [event] },
       { run_id: 'many', intervention_events: Array.from({ length: 25 }, () => event) },
     ] as Ledger[];
     expect(interventionStats(runs)).toEqual({
-      by_run: { old: 'unknown', zero: 0, one: 1, many: 25 },
+      by_run: { old: 'legacy', missing: 'unknown', zero: 0, one: 1, many: 25 },
       known: 3,
+      legacy: 1,
       unknown: 1,
       median: 1,
       max: 25,
       zero_share: 1 / 3,
     });
-    expect(interventionStats(runs.slice(0, 1))).toMatchObject({
+    expect(interventionStats(runs.slice(0, 2))).toMatchObject({
       median: 'unknown',
       max: 'unknown',
       zero_share: 'unknown',
     });
-    expect(interventionStats(runs.slice(1, 3)).median).toBe(0.5);
+    expect(interventionStats(runs.slice(2, 4)).median).toBe(0.5);
   });
   const events = [
     ev('node_started', 'code-core'),
@@ -1366,9 +1368,16 @@ test('P1 started attempts survive cancellation and late terminal receipts dedupl
   expect(
     cancellationStats([
       { ledger: { rejected: 'human rejected' } as Ledger, run: { id: 'r', status: 'cancelled' } },
-      { ledger: {} as Ledger, run: { id: 'u', status: 'cancelled' } },
+      {
+        ledger: { started_at: '2026-10-11T00:00:00Z' } as Ledger,
+        run: { id: 'l', status: 'cancelled' },
+      },
+      {
+        ledger: { started_at: '2026-10-13T00:00:00Z' } as Ledger,
+        run: { id: 'u', status: 'cancelled' },
+      },
     ])
-  ).toEqual({ rejected: 1, unrecorded: 1 });
+  ).toEqual({ rejected: 1, legacy: 1, unrecorded: 1 });
 });
 
 test('P1 SQL clock precision allows subsecond persistence, not a real overrun', () => {

@@ -1390,6 +1390,7 @@ describe('verbs (archon stub)', () => {
     expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
     expect(s.calls()).toContain('workflow cancel r --json');
     expect(s.calls().some(c => c.startsWith('workflow abandon'))).toBe(false);
+    expect(loadLedger('sa1').intervention_events?.at(-1)?.reason).toBe('unstated');
   });
   test('cancel: a paused or failed run is abandoned (the engine refuses cancel for them)', () => {
     for (const r of [humanWait(), run('failed')]) {
@@ -3909,6 +3910,11 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       writeFileSync(asksFile(), JSON.stringify({ [noKey]: { status: 'unknown' } }));
       expect(tick()[0]).toMatchObject({ action: 'reject', reason: hold, ok: true });
       expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(true);
+      expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+        action: 'cancel',
+        reason: 'rejected',
+        ok: true,
+      });
     });
   }
 

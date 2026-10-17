@@ -31,7 +31,15 @@ import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
 import { caller, control, coord, repoScope, runScope, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
-import { askQuestion, askName, HOLD_POLICY, reasonOf, type Hold, type Policy } from './reasons';
+import {
+  askQuestion,
+  askName,
+  CANCELLATION_REASONS,
+  HOLD_POLICY,
+  reasonOf,
+  type Hold,
+  type Policy,
+} from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
 import {
@@ -381,7 +389,7 @@ export function intervention<
           source: ask ? 'superagent' : caller(true).client === 'shell' ? 'cli' : 'commander',
           ...(ask ? { key: ask.key, ask_id: ask.id } : {}),
           ok,
-          ...(reason ? { reason } : {}),
+          reason: reason ?? action,
           ...(!ok ? { error } : {}),
         });
       });
@@ -395,7 +403,14 @@ const answerAction = <T extends { ok: boolean }>(
   execute: () => T
 ): T =>
   a.status === 'yes' || a.status === 'no'
-    ? intervention(l, 'answer', execute, { key, id: a.id })
+    ? intervention(
+        l,
+        a.status === 'no' ? 'cancel' : 'answer',
+        execute,
+        { key, id: a.id },
+        undefined,
+        a.status === 'no' ? 'rejected' : 'human_decision'
+      )
     : execute();
 
 export interface Classified {
@@ -2037,7 +2052,14 @@ function consumeAnswer(
   asks: Asks
 ): void {
   // Reconciled acknowledgements use the same decision key as the original execution.
-  intervention(l, 'answer', () => true, { key, id: a.id });
+  intervention(
+    l,
+    effect.action === 'reject' ? 'cancel' : 'answer',
+    () => true,
+    { key, id: a.id },
+    undefined,
+    effect.action === 'reject' ? 'rejected' : 'human_decision'
+  );
   if (effect.action === 'reject')
     updateLedger(l, cur => {
       cur.rejected = effect.engine_run;
@@ -3180,9 +3202,8 @@ export function main(argv: string[]): number {
       const reason = a.flags.reason ?? 'unstated';
       // Operational labels only: do not persist free-text messages or credentials.
       // prettier-ignore
-      const reasons = ['unstated', 'superseded', 'replaced', 'deadline', 'operator', 'test', 'duplicate', 'obsolete', 'rejected'];
-      if (!reasons.includes(reason))
-        throw new Error(`cancel --reason must be an operational label: ${reasons.join('|')}`);
+      if (!(CANCELLATION_REASONS as readonly string[]).includes(reason))
+        throw new Error(`cancel --reason must be an operational label: ${CANCELLATION_REASONS.join('|')}`);
       // 未登记：按 archon run id 处理（selftest 用）
       const resolved = resolveTarget(id);
       const ok =

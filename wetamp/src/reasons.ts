@@ -114,6 +114,17 @@ export const CODER_CLASSES = [
   'task',
   'redline',
 ] as const;
+export const CANCELLATION_REASONS = [
+  'unstated',
+  'superseded',
+  'replaced',
+  'deadline',
+  'operator',
+  'test',
+  'duplicate',
+  'obsolete',
+  'rejected',
+] as const;
 const base: Reason[] = [
   deterministic('base_branch_missing', 'engine_suspect', 'engine', '起跑缺少可检测的 base branch'),
   entry('cancelled_source', 'paused', 'transient', 'env', '有结构化取消来源'),

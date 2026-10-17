@@ -293,6 +293,7 @@ export async function answerDecision(
               origin: 'operator',
               source: 'cli',
               ok: true,
+              reason: 'human_decision',
               key: id,
               ask_id: device.id,
             });
