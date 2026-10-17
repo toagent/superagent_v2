@@ -1374,7 +1374,8 @@ function checkGeneratedRepo(): void {
   const singleConfig = Bun.YAML.parse(readFileSync(single.config, 'utf8')) as {
     aliases: Record<string, { provider: string }>;
   };
-  expect(Object.values(singleConfig.aliases).every(a => a.provider === 'claude')).toBe(true);
+  expect(singleConfig.aliases['@sa-coder'].provider).toBe('claude');
+  expect(singleConfig.aliases['@sa-reviewer-G0'].provider).toBe('codex');
   const singleWorkflow = Bun.YAML.parse(
     readFileSync(
       join(single.dir, '.archon/workflows', single.workflow, `${single.workflow}.yaml`),
@@ -1383,7 +1384,9 @@ function checkGeneratedRepo(): void {
   );
   for (const n of nodesOf(singleWorkflow).filter(n => n.command)) {
     const model = (n as N & { model: string }).model;
-    expect(singleConfig.aliases[model].provider).toBe('claude');
+    expect(singleConfig.aliases[model].provider).toBe(
+      n.command!.startsWith('sa-review') ? 'codex' : 'claude'
+    );
   }
   const thin = loadPlan(
     fixturePlan(root, plan.repo, p => (p.budget = { weighted_tokens: 700000 })),
