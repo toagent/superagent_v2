@@ -816,6 +816,7 @@ export function generate(
     join(dir, '.archon/scripts/policy-attempts.ts')
   );
   writeFileSync(join(dir, '.archon/scripts/reasons.json'), JSON.stringify(REASONS, null, 2) + '\n');
+  cpSync(join(WETAMP, 'capabilities.json'), join(dir, 'capabilities.json'));
   writeFileSync(join(dir, '.archon', 'principles.md'), principles);
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');

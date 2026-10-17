@@ -11,6 +11,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
 import type { Learning } from '../../../src/learning';
+import { capabilityGuidance, resolveCapabilities } from './capabilities';
 import {
   readAttempt,
   environmentIdentity,
@@ -66,6 +67,20 @@ export function roleContext(input: {
       : incremental
         ? 'unknown'
         : null;
+  const capabilityPath = join(gen, 'capabilities.json');
+  const capability = existsSync(capabilityPath)
+    ? resolveCapabilities(capabilityPath, process.env.HOME ?? '', {
+        role: execution.role,
+        failure_classes: [
+          ...(input.acceptance?.failures?.map(f => f.failure_class) ?? []),
+          ...(execution.role === 'repair' && execution.round > 1 && prior !== 'unknown'
+            ? prior.blocking.map(f => f.failure_class ?? 'unknown')
+            : []),
+        ],
+        risk: input.acceptance?.risk ?? execution.risk,
+        scope: execution.scope,
+      })
+    : { evidence: { injected: [], unavailable: [] }, guidance: [] };
   const git = (...args: string[]) => {
     const p = Bun.spawnSync(['git', '-C', input.cwd, ...args], { stdout: 'pipe', stderr: 'pipe' });
     return p.exitCode === 0 ? p.stdout.toString().trim() : 'unknown';
@@ -106,6 +121,7 @@ export function roleContext(input: {
     },
     environment: input.environment,
     environment_check: read(join(artifacts, 'environment.json')),
+    capabilities: capability.evidence,
     acceptance: input.acceptance ?? 'unknown',
     diff: incremental ? input.delta : input.patch,
     full_diff: input.patch,
@@ -204,11 +220,16 @@ export function contextPack(
           scope: context.execution.scope,
           environment: context.environment,
           environment_check: context.environment_check,
+          capabilities: context.capabilities,
         },
         null,
         2
       ),
   ];
+  if (existsSync(join(gen, 'capabilities.json')))
+    sections.push(
+      ...capabilityGuidance(join(gen, 'capabilities.json'), context.capabilities.injected)
+    );
   const entries = new Set<string>();
   for (const p of plan.packages.filter(p => packages.includes(p.id))) {
     sections.push(`## 任务书 ${p.id}\n` + readFileSync(join(gen, 'briefs', `${p.id}.md`), 'utf8'));

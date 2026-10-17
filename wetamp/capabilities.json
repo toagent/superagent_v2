@@ -1,0 +1,20 @@
+[
+  {
+    "id": "debug.root-cause",
+    "when": { "role": ["repair"], "failure_class": "product" },
+    "use": { "claude": "investigate", "codex": "gstack-investigate" },
+    "purpose": "定位产品失败的根因"
+  },
+  {
+    "id": "qa.visual",
+    "when": { "role": ["code", "repair"], "scope": ["packages/web/**", "*.tsx", "*.css"] },
+    "use": { "claude": "qa", "codex": "gstack-qa" },
+    "purpose": "验证并修复界面行为"
+  },
+  {
+    "id": "security.audit",
+    "when": { "role": ["review"], "risk": "G2" },
+    "use": { "claude": "cso", "codex": "gstack-cso" },
+    "purpose": "审计高风险安全边界"
+  }
+]

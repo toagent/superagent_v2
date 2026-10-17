@@ -127,6 +127,7 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 - `generated workflow invalid`：`install.sh` 未跑或 `config.yaml` 缺 `@sa-coder`/`@sa-reviewer` 别名；重跑 `install.sh`。
 - run 停在 running 但进程在别的机器：`recover` 拒绝（`owner alive or on another host`），到那台机器处理。
 - `superagent health` 报 `reason:"upstream_dirty"`：仓库 `wetamp/` 之外有改动，默认 `upstream_file_count` 给出文件数；用 `superagent health --verbose` 查看 `upstream_files`，确认改动归属后再处理。检查脚本失败另报 `reason:"upstream_check_failed"`，不冒充干净。
+- `superagent health` 报 `capability_drift`：能力映射引用的外部技能缺失；安装对应技能或更新 `capabilities.json` 后复查。缺失能力不会注入节点上下文，也不改变 run 准入。
 - 节点日志：`brief` 输出的 `evidence:` 目录；对话转录：ledger 的 `transcript`。
 
 # Native conversation intake
