@@ -2443,17 +2443,16 @@ export function superviseTick(): ReturnType<typeof tick> | { skipped: 'locked' }
   }
 }
 
-const tickCachePath = (sa: string): string => join(sa, 'supervise-terminal.json');
 const readTickCache = (sa: string): Record<string, string> => {
   try {
-    const value = JSON.parse(readFileSync(tickCachePath(sa), 'utf8')) as unknown;
+    const value = JSON.parse(readFileSync(join(sa, 'supervise-terminal.json'), 'utf8')) as unknown;
     if (
       value === null ||
       typeof value !== 'object' ||
       Array.isArray(value) ||
       !Object.values(value).every(item => typeof item === 'string')
     )
-      throw new Error('shape mismatch');
+      return {};
     return value as Record<string, string>;
   } catch {
     return {};
@@ -2462,9 +2461,7 @@ const readTickCache = (sa: string): Record<string, string> => {
 
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
-function tick(
-  sa: string
-): {
+function tick(sa: string): {
   actions: Action[];
   gc: GcAction[];
   scratch: ScratchAction[];
@@ -2572,7 +2569,7 @@ function tick(
   }
   if (revisions)
     try {
-      writeAtomic(tickCachePath(sa), JSON.stringify(terminal));
+      writeAtomic(join(sa, 'supervise-terminal.json'), JSON.stringify(terminal));
     } catch (e) {
       console.error(`supervise-tick cache write failed: ${(e as Error).message}`);
     }
