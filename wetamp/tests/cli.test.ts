@@ -3577,6 +3577,29 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       s: held('code-api'),
       first: { action: 'none', held: true, ok: true },
     }),
+    coder_budget: () => {
+      const s = held('code-core');
+      setGet(
+        s.root,
+        run('failed', {
+          working_path: '/preserved/worktree',
+          nodes: [
+            {
+              nodeId: 'code-core',
+              state: 'failed',
+              execution: {
+                lifecycle: {
+                  status: 'failed',
+                  error: 'typed failure',
+                  providerFailure: { class: 'budget_exceeded', evidence: 'typed' },
+                },
+              },
+            },
+          ],
+        } as unknown as Partial<RunView>)
+      );
+      return { s, first: { action: 'none', held: true, ok: true } };
+    },
     environment: () => ({
       s: held('environment'),
       first: { action: 'none', held: true, ok: true },

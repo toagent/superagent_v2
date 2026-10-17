@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadTiers, WETAMP } from '../src/config';
-import { classify, holdOf, reasonHold, type Ledger } from '../src/cli';
+import { classify, classifyRun, holdOf, reasonHold, type Ledger } from '../src/cli';
 import type { RunView } from '../src/archon';
 import { buildWorkflow } from '../src/generate';
 import { describeExecution, executionRoute } from '../src/execution';
@@ -137,6 +137,34 @@ describe('EFFICIENCY_CONSTITUTION', () => {
         expect(holdOf(ledger, approval, classify(approval))).toBe('approval');
       }
     }
+  });
+
+  test('① typed coder budget exhaustion is a registered hold and preserves the worktree for retry', () => {
+    const run = {
+      id: 'fixture',
+      status: 'failed',
+      working_path: '/preserved/worktree',
+      nodes: [
+        {
+          nodeId: 'code-core',
+          state: 'failed',
+          execution: {
+            lifecycle: {
+              status: 'failed',
+              error: 'typed failure',
+              providerFailure: { class: 'budget_exceeded', evidence: 'typed' },
+            },
+          },
+        },
+      ],
+    } as unknown as RunView;
+    const ledger = { plan: planPath, gen_dir: root, started_at: '2026-10-14T00:00:00Z' } as Ledger;
+    const classified = classify(run);
+    const held = classifyRun(ledger, run);
+    expect(held).toMatchObject({ state: 'held:gate', node: 'code-core' });
+    expect(holdOf(ledger, run, held)).toBe('coder_budget');
+    expect(run.working_path).toBe('/preserved/worktree');
+    expect(classified.state).toBe('failed');
   });
 
   test('① parsed config/schema contain no admission or hard-budget fields', () => {

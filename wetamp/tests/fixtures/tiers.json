@@ -39,6 +39,9 @@
     }
   },
   "policy": {
+    "coder_budget_usd": {
+      "claude": 20
+    },
     "context": {
       "advisory_tokens": {
         "commander": 160000,

@@ -135,6 +135,7 @@ export interface Tiers {
     };
   };
   policy: {
+    coder_budget_usd: Partial<Record<Alias['provider'], number>> & { claude: number };
     /** Context advisory thresholds consumed by context-advisory.cjs. */
     context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
     sandbox: { network: boolean };
@@ -187,6 +188,9 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
   const budget = obj(t.routing.budget);
   if ([budget.claude_daily_usd, budget.claude_medium_usd, budget.codex_warning_usd].some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0))
     throw new Error('tiers.routing.budget: expected nonnegative finite thresholds');
+  const coderBudget = obj(t.policy.coder_budget_usd);
+  if (typeof coderBudget.claude !== 'number' || !Number.isFinite(coderBudget.claude) || coderBudget.claude <= 0 || Object.entries(coderBudget).some(([provider, n]) => !['claude', 'codex'].includes(provider) || typeof n !== 'number' || !Number.isFinite(n) || n <= 0))
+    throw new Error('tiers.policy.coder_budget_usd: expected positive finite provider budgets');
   for (const c of ['claude', 'codex'] as const) {
     const models = obj(obj(obj(t.routing).commander).by_console)[c];
     if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))
@@ -227,6 +231,8 @@ export function resolveRoute(
     throw new Error(`unsupported routing mode: ${mode}`);
   if (budgetState(t, mode).degraded) { mode = 'single:chatgpt'; console = 'codex'; }
   const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
+  // single:chatgpt keeps reviews on Codex; only single:claude opens the configured review pool.
+  const reviewIgnoresVendor = role === 'review' && mode === 'single:claude';
   const models =
     role === 'command' ? t.routing.commander.by_console[console] : role === 'review'
       ? (t.routing.reviewer.by_risk?.[risk] ?? t.routing.reviewer.by_console[console])
@@ -237,7 +243,7 @@ export function resolveRoute(
     // Initial code/repair routing stays Codex; dispatch may retain the failover pool.
     .filter(a => vendorFailover || vendor !== null || role === 'review' || role === 'command' || a.provider === 'codex')
     .filter(
-      a => (role === 'command' || !vendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
+      a => (role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
   if (!candidates.length)
     throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);

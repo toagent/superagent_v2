@@ -175,7 +175,12 @@ export function buildWorkflow(
       descriptor,
       descriptor.role === 'review' ? [aliases['@sa-coder'].model] : []
     ).candidates[0];
-    return executionNode(descriptor, candidate);
+    return {
+      ...executionNode(descriptor, candidate),
+      ...(descriptor.role !== 'review' && candidate.provider === 'claude'
+        ? { maxBudgetUsd: tiers.policy.coder_budget_usd.claude }
+        : {}),
+    };
   };
   const planPath = join(gen, 'plan.json');
   const policyPath = join(gen, 'policy.json');
