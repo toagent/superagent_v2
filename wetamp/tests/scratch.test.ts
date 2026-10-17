@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, expect, spyOn, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import {
@@ -28,6 +28,7 @@ writeFileSync(
   scratchPreload,
   `const fs = require('node:fs'), path = require('node:path');
 let violations = 0;
+const restores = [];
 const check = value => {
   if (value instanceof URL) value = require('node:url').fileURLToPath(value);
   if (Buffer.isBuffer(value)) value = value.toString();
@@ -42,6 +43,7 @@ for (const api of [fs, fs.promises]) for (const key of Object.keys(api)) {
   if (typeof api[key] !== 'function' || /^[A-Z]/.test(key)) continue;
   const fn = api[key], native = fn.native;
   api[key] = wrap(fn);
+  restores.push(() => { api[key] = fn; });
   if (native) api[key].native = wrap(native);
 }
 require('node:module').syncBuiltinESMExports();
@@ -52,6 +54,7 @@ if (typeof Bun !== 'undefined') for (const key of ['spawn', 'spawnSync']) {
     if (['bun', 'node'].includes(path.basename(cmd[0]))) { const i = cmd[1] === 'run' ? 2 : cmd[2] === 'run' ? 3 : 1; cmd = [...cmd.slice(0, i), path.basename(cmd[0]) === 'bun' ? '--preload' : '--require', __filename, ...cmd.slice(i)]; }
     return spawn(cmd, {...options, env: {...process.env, ...options.env}});
   };
+  restores.push(() => { Bun[key] = spawn; });
 }
 process.on('exit', () => { if (violations) process.exitCode = 1; });
 const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
@@ -61,9 +64,12 @@ if (!globalThis[key]) {
   globalThis[key] = true;
 }
 if (scratch.ROOT !== ${JSON.stringify(scratchRoot)}) Object.assign(scratch, scratch.createScratch(${JSON.stringify(scratchRoot)}));
-module.exports = {violations: () => violations};`
+module.exports = {violations: () => violations, restore: () => {
+  for (const restore of restores.reverse()) restore();
+  require('node:module').syncBuiltinESMExports();
+}};`
 );
-const boundary = require(scratchPreload) as { violations: () => number };
+const boundary = require(scratchPreload) as { violations: () => number; restore: () => void };
 const collection = await import('../src/gc');
 const { gc, scratchClean } = collection;
 const { ledgerPath, main, superviseTick } = await import('../src/cli');
@@ -105,6 +111,7 @@ const keys = [
 const saved = keys.map(k => process.env[k]);
 let ownerSpy: ReturnType<typeof spyOn<typeof live, 'owner'>> | undefined;
 let query: ReturnType<typeof spyOn<typeof archon, 'getRun'>> | undefined;
+afterAll(() => boundary.restore());
 afterEach(async () => {
   expect(boundary.violations()).toBe(0);
   ownerSpy?.mockRestore();

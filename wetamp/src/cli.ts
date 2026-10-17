@@ -24,6 +24,7 @@ import {
   askKey,
   cockpitSignals,
   supersedeAsks,
+  unresolved,
   type HoldSignal,
   type Ask as BaseAsk,
 } from './cockpit-signals';
@@ -73,6 +74,7 @@ import {
   pidAlive,
   QUERY_TIMEOUT_MS,
   recover,
+  reportRunRevisions,
   signalHuman,
   waitNotification,
   tail,
@@ -2441,13 +2443,30 @@ export function superviseTick(): ReturnType<typeof tick> | { skipped: 'locked' }
   }
 }
 
+const readTickCache = (sa: string): Record<string, string> => {
+  try {
+    const value = JSON.parse(readFileSync(join(sa, 'supervise-terminal.json'), 'utf8')) as unknown;
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      !Object.values(value).every(item => typeof item === 'string')
+    )
+      return {};
+    return value as Record<string, string>;
+  } catch {
+    return {};
+  }
+};
+
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
-function tick(
-  sa: string
-): { actions: Action[]; gc: GcAction[]; scratch: ScratchAction[] } & ReturnType<
-  typeof cockpitSignals
-> {
+function tick(sa: string): {
+  actions: Action[];
+  gc: GcAction[];
+  scratch: ScratchAction[];
+  skipped_terminal: number;
+} & ReturnType<typeof cockpitSignals> {
   let asks: Asks | Error;
   try {
     asks = loadAsks();
@@ -2457,7 +2476,31 @@ function tick(
   const observed: HoldSignal[] = [];
   const out: Action[] = reconcileIntents();
   let dueContinuations: Set<string> | Error | undefined;
-  const live = new Set<string>();
+  const continuations = (): Set<string> | Error => {
+    if (dueContinuations !== undefined) return dueContinuations;
+    try {
+      return (dueContinuations = new Set(dueWorkflowContinuations()));
+    } catch (e) {
+      dueContinuations = e as Error;
+      out.push({
+        run_id: 'continuations',
+        action: 'error',
+        ok: false,
+        error: dueContinuations.message,
+      });
+      return dueContinuations;
+    }
+  };
+  let revisions: Map<string, string> | null = null;
+  try {
+    revisions = reportRunRevisions();
+  } catch (e) {
+    console.error(`supervise-tick revision cache unavailable: ${(e as Error).message}`);
+  }
+  const cached = readTickCache(sa),
+    terminal: Record<string, string> = {},
+    live = new Set<string>();
+  let skippedTerminal = 0;
   for (const l of ledgers()) {
     live.add(l.run_id);
     try {
@@ -2467,26 +2510,34 @@ function tick(
         throw new Error(
           'coord: run 没有可验证 controller/launcher；请先 claim 并显式 resume/decide'
         );
+      const stamp = statSync(ledgerPath(l.run_id)),
+        revision = revisions?.get(l.archon_run_id),
+        fingerprint = revision
+          ? JSON.stringify([l.archon_run_id, stamp.mtimeMs, stamp.size, revision])
+          : undefined,
+        hasAsk =
+          !(asks instanceof Error) &&
+          Object.entries(asks).some(([key, ask]) =>
+            key.startsWith(`${l.run_id}:`) && ask ? unresolved(ask) : false
+          );
+      const cacheHit = fingerprint && cached[l.run_id] === fingerprint && !hasAsk;
+      const due = cacheHit ? continuations() : undefined;
+      if (cacheHit && due instanceof Set && !due.has(l.archon_run_id)) {
+        terminal[l.run_id] = fingerprint;
+        skippedTerminal++;
+        continue;
+      }
+      let confirmedTerminal: string | undefined;
       const x = control(
         l,
         controller => {
-          if (dueContinuations === undefined) {
-            try {
-              dueContinuations = new Set(dueWorkflowContinuations());
-            } catch (e) {
-              dueContinuations = e as Error;
-              out.push({
-                run_id: 'continuations',
-                action: 'error',
-                ok: false,
-                error: dueContinuations.message,
-              });
-            }
-          }
+          const due = continuations();
           const run = getRun(l.archon_run_id, l.repo);
+          if (fingerprint && ['completed', 'cancelled'].includes(run.status))
+            confirmedTerminal = fingerprint;
           if (
-            !(dueContinuations instanceof Error) &&
-            dueContinuations.has(l.archon_run_id) &&
+            due instanceof Set &&
+            due.has(l.archon_run_id) &&
             !['completed', 'cancelled'].includes(run.status)
           )
             archonDetached(
@@ -2506,6 +2557,7 @@ function tick(
         l.controller?.generation
       );
       if (x) out.push(x);
+      else if (confirmedTerminal && !hasAsk) terminal[l.run_id] = confirmedTerminal;
     } catch (e) {
       out.push({
         run_id: l.run_id,
@@ -2515,6 +2567,12 @@ function tick(
       });
     }
   }
+  if (revisions)
+    try {
+      writeAtomic(join(sa, 'supervise-terminal.json'), JSON.stringify(terminal));
+    } catch (e) {
+      console.error(`supervise-tick cache write failed: ${(e as Error).message}`);
+    }
   if (!(asks instanceof Error)) {
     const mobile = existsSync(join(sa, 'console/decision-origin')),
       currentAsks = asks;
@@ -2556,6 +2614,7 @@ function tick(
   if (due) writeAtomic(gcStamp, String(Date.now()));
   return {
     actions: out,
+    skipped_terminal: skippedTerminal,
     ...cockpitSignals(observed, asks instanceof Error ? {} : asks),
     gc: due ? gc() : [],
     scratch: scratchClean(),

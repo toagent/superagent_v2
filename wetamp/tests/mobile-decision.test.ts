@@ -517,17 +517,17 @@ test('operator saves COORD intent while supervise lock is held and next tick tra
     expect((await decisionState(runDevice.device, undefined, store)).decisions).toEqual([]);
     const held = archonModule.lock(join(f.sa, 'supervise.lock'));
     if (!held.ok) throw new Error('failed to hold supervise lock');
-    const receipt = await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
-      decisions: [decision],
-      unknown: [],
-    }));
+    let inboxLoads = 0;
+    const receipt = await answerDecision(store, operator.device, decision.id, 'yes', async () => {
+      inboxLoads++;
+      throw new Error('COORD answer must not scan ledgers');
+    });
+    expect(inboxLoads).toBe(0);
     expect(receipt.stage).toBe('intent');
-    expect(
-      await decisionState(operator.device, decision.id, store, {
-        decisions: [decision],
-        unknown: [],
-      })
-    ).toMatchObject({ receipt: { stage: 'intent' }, status: 'paused' });
+    expect(await decisionState(operator.device, decision.id, store)).toMatchObject({
+      receipt: { stage: 'intent' },
+      status: 'paused',
+    });
     held.release();
     const next = { ...decision, id: 'f'.repeat(64), node: 'next-coord' };
     expect(
@@ -593,10 +593,13 @@ test('tick rejects revoked-device COORD intent without changing ask', async () =
       ).stage
     ).toBe('intent');
     const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
+    const asks = JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'));
+    asks[askKey].status = 'yes';
+    writeFileSync(join(f.sa, 'asks.json'), JSON.stringify(asks));
     store.revoke(operator.device.id);
     cliModule.superviseTick();
     expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
-      status: 'pending',
+      status: 'yes',
     });
     expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
   } finally {
