@@ -423,8 +423,9 @@ describe('quick', () => {
     const log = spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       expect(main(['--help'])).toBe(0);
-      expect(String(log.mock.calls[0]?.[0])).toContain('--card <file>');
-      expect(String(log.mock.calls[0]?.[0])).toContain('--environment <cmd>');
+      expect(cliMod.CLI_COMMAND_USAGE.find(command => command.command === 'quick')?.flags).toEqual(
+        expect.arrayContaining(['card', 'environment'])
+      );
     } finally {
       log.mockRestore();
     }

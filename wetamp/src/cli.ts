@@ -160,7 +160,7 @@ export function intakeEvidence(repo: string): EvidenceReader {
   };
 }
 
-const OPTIONS = {
+export const OPTIONS = {
   ...COORD_OPTIONS,
   timeout: { type: 'string' },
   pkg: { type: 'string' },
@@ -2908,8 +2908,104 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
   };
 }
 
-const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|plan check <file>|run <plan.json> [--fake] [--lint-override reason] [--allow-overlap reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--environment <cmd>...] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>] [--allow-overlap reason]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--repo path] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+type OptionName = keyof typeof OPTIONS;
+interface CommandUsage {
+  command: string;
+  positionals?: string;
+  flags: readonly OptionName[];
+}
+
+// task-kind is globally parsed only to preserve its targeted compatibility error.
+export const CLI_GLOBAL_OPTIONS = [
+  'help',
+  'json',
+  'task-kind',
+] as const satisfies readonly OptionName[];
+export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
+  { command: 'owner', positionals: '[path|run]', flags: [] },
+  { command: 'claim', positionals: '[path|run]', flags: ['takeover', 'reason'] },
+  { command: 'release', positionals: '[path|run]', flags: [] },
+  { command: 'handoff', flags: ['to', 'kind', 'title', 'body-file', 'evidence', 'severity'] },
+  { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note'] },
+  { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
+  { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap'] },
+  {
+    command: 'quick',
+    flags: [
+      'goal',
+      'card',
+      'accept',
+      'accept-timeout',
+      'environment',
+      'console',
+      'scope',
+      'risk',
+      'review',
+      'no-cache',
+      'base',
+      'repo',
+      'request-ref',
+      'allow-overlap',
+    ],
+  },
+  { command: 'wait', positionals: '<run>', flags: ['timeout'] },
+  { command: 'status', flags: [] },
+  { command: 'brief', flags: [] },
+  { command: 'land', positionals: '<run>', flags: ['apply'] },
+  { command: 'resume', positionals: '<run>', flags: ['reconciled'] },
+  { command: 'cancel', positionals: '<run>', flags: ['reason'] },
+  { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
+  {
+    command: 'decide',
+    positionals: '<run> approve|reject|retry',
+    flags: ['pkg', 'hint', 'all-held'],
+  },
+  { command: 'accept', positionals: '<run>', flags: ['pkg'] },
+  { command: 'report', flags: ['full', 'by-engine', 'baseline-days'] },
+  { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
+  { command: 'quota', flags: [] },
+  { command: 'usage', flags: ['since', 'repo', 'refresh'] },
+  { command: 'console', positionals: 'start|stop|status|url', flags: ['open'] },
+  { command: 'gc', flags: ['dry-run'] },
+  { command: 'scratch-clean', flags: ['session', 'dry-run'] },
+  { command: 'supervise-tick', flags: [] },
+  { command: 'health', flags: ['cwd', 'verbose'] },
+  { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
+  { command: 'models', flags: ['mode'] },
+  {
+    command: 'job exec',
+    positionals: '-- <cmd...>',
+    flags: [
+      'title',
+      'request-ref',
+      'card',
+      'log',
+      'role',
+      'mode',
+      'risk',
+      'round',
+      'author-model',
+      'worktree',
+      'base',
+    ],
+  },
+  { command: 'job clean', positionals: '<id>', flags: [] },
+  { command: 'jobs', flags: ['all'] },
+];
+
+const optionUsage = (name: OptionName): string => {
+  const option = OPTIONS[name];
+  const value = option.type === 'string' ? ` <${name}>${'multiple' in option ? '...' : ''}` : '';
+  return ` [--${name}${value}]`;
+};
+export const USAGE = [
+  'usage: superagent <command> [options]',
+  ...CLI_COMMAND_USAGE.map(
+    ({ command, positionals, flags }) =>
+      `  ${command}${positionals ? ` ${positionals}` : ''}${flags.map(optionUsage).join('')}`
+  ),
+  '  global: [--help] [--json] (--task-kind is rejected)',
+].join('\n');
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
