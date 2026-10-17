@@ -262,11 +262,14 @@ describe('quick', () => {
       expect(path.startsWith(join(root, 'sa', 'plans', 'quick-'))).toBe(true);
       const plan = loadPlan(path);
       expect(plan.request_ref).toBe('urgent-1015');
-      expect(JSON.parse(readFileSync(path, 'utf8')).request_ref).toBe('urgent-1015');
+      const rawPlan = JSON.parse(readFileSync(path, 'utf8'));
+      expect(rawPlan.request_ref).toBe('urgent-1015');
+      expect(rawPlan).not.toHaveProperty('environment');
       expect(plan.repo).toBe(repo);
       expect(plan.base_ref).toBe('main');
       expect(plan.budget).toEqual({ weighted_tokens: 0, unlimited_tokens: true });
       expect(plan.deadline).toBeUndefined();
+      expect(plan.environment).toBeUndefined();
       expect(() =>
         buildWorkflow(
           plan,
@@ -299,6 +302,12 @@ describe('quick', () => {
             'explicit',
             '--accept',
             'true',
+            '--environment',
+            'bun install --frozen-lockfile',
+            '--environment',
+            'bun run prepare',
+            '--accept-timeout',
+            '120',
             '--no-cache',
             '--repo',
             repo,
@@ -322,6 +331,10 @@ describe('quick', () => {
         scope: { write: ['src/**', 'tests/**'] },
       });
       expect(explicit.packages[0].accept[0]).toHaveProperty('cache', false);
+      expect(explicit.environment).toEqual([
+        { cmd: 'bun install --frozen-lockfile', timeout_s: 120 },
+        { cmd: 'bun run prepare', timeout_s: 120 },
+      ]);
     } finally {
       process.chdir(cwd);
       keys.forEach((k, i) => {
@@ -404,10 +417,14 @@ describe('quick', () => {
     expect(() =>
       quickPlan(parseArgs(['quick', '--goal', 'x', '--accept', 'true', '--risk', 'G3']))
     ).toThrow('--risk');
+    expect(() =>
+      quickPlan(parseArgs(['quick', '--goal', 'x', '--accept', 'true', '--environment', ' ']))
+    ).toThrow('--environment');
     const log = spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       expect(main(['--help'])).toBe(0);
       expect(String(log.mock.calls[0]?.[0])).toContain('--card <file>');
+      expect(String(log.mock.calls[0]?.[0])).toContain('--environment <cmd>');
     } finally {
       log.mockRestore();
     }
