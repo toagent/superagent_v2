@@ -1445,10 +1445,11 @@ const retryScope = (l: Ledger, node: string): string => {
 };
 const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
 const milestoneOf = (l: Ledger, node: string): string =>
-  /^(verify|settle|code|repair)-/.test(node)
+  /^diff-(.+)-r\d+$/.exec(node)?.[1] ??
+  (/^(verify|settle|code|repair)-/.test(node)
     ? (planOf(l).packages.find(p => node.replace(/^(verify|settle|code|repair)-/, '') === p.id)
         ?.milestone ?? 'm1')
-    : gateMilestone(node.replace(/^fix-/, 'gate-'));
+    : gateMilestone(node.replace(/^fix-/, 'gate-')));
 
 /** Bump the generated scope before resume; missing counters fail explicitly. */
 function retryGate(
@@ -1505,21 +1506,21 @@ function approveAdjudication(l: Ledger, run: RunView, c: Classified,
   const node = c.node, out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as
     { adjudication?: Record<string, unknown> } | undefined;
   const a = out?.adjudication;
-  if (
-    !node || !a ||
-    !['diff_hash', 'contract_hash', 'command', 'failure_digest'].every(k =>
-      typeof a[k] === 'string' && a[k] !== '') ||
-    !Array.isArray(a.failed_tests) ||
-    !a.failed_tests.every(v => typeof v === 'string')
-  )
+  if (!node || !a || !['diff_hash', 'contract_hash', 'command', 'failure_digest'].every(k =>
+    typeof a[k] === 'string' && a[k] !== '') || !Array.isArray(a.failed_tests) ||
+    !a.failed_tests.every(v => typeof v === 'string'))
     throw new Error('acceptance adjudication evidence missing or invalid');
   mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
-  writeFileSync(
-    join(l.gen_dir, 'approvals', `${node}.json`),
-    JSON.stringify({ diff_hash: a.diff_hash, contract_hash: a.contract_hash,
-      command: a.command, failed_tests: a.failed_tests, failure_digest: a.failure_digest,
-      at: new Date().toISOString() }) + '\n'
-  );
+  const path = join(l.gen_dir, 'approvals', `${node}.json`);
+  let approvals: Record<string, unknown>[] = [];
+  try {
+    const saved = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    approvals = Array.isArray(saved.approvals) ? saved.approvals as Record<string, unknown>[] : [saved];
+  } catch { /* first approval */ }
+  const approval = { diff_hash: a.diff_hash, contract_hash: a.contract_hash,
+    command: a.command, failed_tests: a.failed_tests, failure_digest: a.failure_digest,
+    at: new Date().toISOString() };
+  writeFileSync(path, JSON.stringify({ ...approval, approvals: [...approvals, approval] }) + '\n');
   return retry(l, c, undefined, onEffect);
 }
 

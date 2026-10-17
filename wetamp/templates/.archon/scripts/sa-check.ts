@@ -67,7 +67,6 @@ interface StructuredCases {
   skipped: string[];
   failures: { id: string; type: string; message: string; body_hash: string }[];
   failure_digest: string;
-  report_digest: string;
   report: string;
 }
 interface Adjudication {
@@ -233,10 +232,32 @@ const attrs = (s: string): Record<string, string | undefined> =>
     [...s.matchAll(/([:\w.-]+)\s*=\s*(["'])(.*?)\2/gs)].map(m => [m[1], xmlText(m[3])])
   );
 // prettier-ignore
+function validXml(xml: string): boolean {
+  const tags = [...xml.matchAll(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<(?:"[^"]*"|'[^']*'|[^'">])*>/g)], stack: string[] = [];
+  const bad = /&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[\da-f]+);)/i, attr = /([:\w.-]+)\s*=\s*(["'])(.*?)\2/gs;
+  let end = 0, roots = 0;
+  for (const match of tags) {
+    const text = xml.slice(end, match.index), token = match[0]; end = match.index + token.length;
+    if (bad.test(text) || (!stack.length && text.trim())) return false;
+    if (token.startsWith('<?') || token.startsWith('<!--')) continue;
+    if (token.startsWith('<![CDATA[')) { if (!stack.length) return false; continue; }
+    if (token.startsWith('<!')) return false;
+    const raw = token.slice(1, -1).trim(), closing = raw.startsWith('/'), name = /^\/?([:\w.-]+)/.exec(raw)?.[1];
+    if (!name) return false;
+    if (closing) { if (raw !== `/${name}` || stack.pop() !== name) return false; continue; }
+    const selfClosing = /\/\s*$/.test(raw), tail = raw.slice(name.length).replace(/\/\s*$/, ''), parsed = [...tail.matchAll(attr)];
+    if (tail.replace(attr, '').trim() || parsed.some(m => m[3].includes('<') || bad.test(m[3])) || new Set(parsed.map(m => m[1])).size !== parsed.length) return false;
+    if (!stack.length && ++roots > 1) return false;
+    if (!selfClosing) stack.push(name);
+  }
+  return roots === 1 && !stack.length && !xml.slice(end).trim() && !bad.test(xml.slice(end));
+}
+// prettier-ignore
 function junitCases(path: string, expected: string[], started: number): StructuredCases | undefined {
   try {
     if (!existsSync(path) || statSync(path).mtimeMs < started) return;
     const xml = readFileSync(path, 'utf8');
+    if (!validXml(xml) || /<error\b/.test(xml)) return;
     if (![...xml.matchAll(/<testsuite\b([^>]*)>/g)].some(m => Number(attrs(m[1]).tests) > 0))
       return;
     const cases = [...xml.matchAll(/<testcase\b([^>]*)(?:\/>|>([\s\S]*?)<\/testcase>)/g)];
@@ -264,7 +285,6 @@ function junitCases(path: string, expected: string[], started: number): Structur
       skipped,
       failures: sorted,
       failure_digest: sha(JSON.stringify(sorted.map(f => [f.id, f.type, f.message, f.body_hash]))),
-      report_digest: sha(xml),
       report: path,
     };
   } catch {
@@ -385,6 +405,7 @@ function run(
       const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
         tag: string;
         failure: CheckFailure | null;
+        pass?: boolean;
         exit?: number | string;
         stdout?: string;
         stderr?: string;
@@ -400,7 +421,7 @@ function run(
       }
       results.push({
         check: c,
-        pass: saved.exit === undefined ? null : saved.exit === 0,
+        pass: saved.pass ?? (saved.exit === undefined ? null : !saved.failure && saved.exit === 0),
         exit: saved.exit,
         evidence: log,
         ...(saved.structured ? { structured: saved.structured } : {}),
@@ -447,9 +468,10 @@ function run(
         (code === 0) === (structured.failures.length === 0) &&
         (code === 0 || structured.failures.length > 0));
     if (structured && !consistent) structured.complete = false;
+    const passed = code === 0 && (!c.report || structured?.complete === true);
     results.push({
       check: c,
-      pass: code === 0,
+      pass: passed,
       evidence: log,
       exit: code,
       ...(structured ? { structured } : {}),
@@ -458,7 +480,7 @@ function run(
       log,
       `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
     );
-    if (code !== 0) {
+    if (!passed) {
       failed.push(c.cmd);
       // A validation command may emit one JSON object. Prose and coder reports never classify failures.
       let classification: unknown;
@@ -497,7 +519,8 @@ function run(
         hit,
         JSON.stringify({
           tag: env('TAG'),
-          failure: code === 0 ? null : failures.at(-1),
+          failure: passed ? null : failures.at(-1),
+          pass: passed,
           exit: code,
           stdout: p.stdout.toString(),
           stderr: p.stderr.toString(),
@@ -756,7 +779,7 @@ function acceptOnce(
       failure.failure_class = 'product';
       continue;
     }
-    if (p.mode === 'strict' || env('RISK') === 'G2') continue;
+    if (p.mode === 'strict' || scope.risk === 'G2') continue;
     const pending: Adjudication = {
       diff_hash: hash,
       contract_hash: acceptanceContractHash(),
@@ -770,25 +793,23 @@ function acceptOnce(
       cases: candidate.failures.map(f => ({ id: f.id, message: f.message,
         base: baseFailed.has(f.id) ? 'failed' : 'passed' })),
     };
-    adjudication = pending;
     const approvalPath = join(dirname(env('PLAN')), 'approvals', `${tag}.json`);
-    let approved: Partial<Adjudication> | undefined;
+    let approvals: Partial<Adjudication>[] = [];
     try {
-      approved = JSON.parse(readFileSync(approvalPath, 'utf8')) as Partial<Adjudication>;
+      const saved = JSON.parse(readFileSync(approvalPath, 'utf8')) as
+        Partial<Adjudication> & { approvals?: Partial<Adjudication>[] };
+      approvals = Array.isArray(saved.approvals) ? saved.approvals : [saved];
     } catch { /* not adjudicated */ }
     const identity = ['diff_hash', 'contract_hash', 'command', 'failure_digest'] as const;
-    if (
-      approved &&
-      identity.every(k => approved[k] === pending[k]) &&
-      JSON.stringify(approved.failed_tests) === JSON.stringify(pending.failed_tests)
-    ) {
+    const approved = approvals.find(a => identity.every(k => a[k] === pending[k]) &&
+      JSON.stringify(a.failed_tests) === JSON.stringify(pending.failed_tests));
+    if (approved) {
       failure.failure_class = candidate.failures.some(f => known.some(k => k.id === f.id))
         ? 'test_env'
         : 'baseline';
       failure.adjudicated = true;
       failure.evidence = `${approvalPath}; ${candidate.report}`;
-      adjudication = undefined;
-    }
+    } else adjudication ??= pending;
   }
   const result = disposition(
     coder,

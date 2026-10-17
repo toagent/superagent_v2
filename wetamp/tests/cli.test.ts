@@ -3581,6 +3581,35 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       first: {},
     }),
   };
+  test('P2 approval of diff milestone retries that milestone and preserves prior approvals', () => {
+    const artifact = (command: string) => ({
+      decision: gate('acceptance_adjudication').decision,
+      adjudication: {
+        diff_hash: 'diff',
+        contract_hash: 'contract',
+        command,
+        failed_tests: [`${command}::case`],
+        failure_digest: `digest-${command}`,
+      },
+    });
+    const s = held('diff-m1-r1', { 'diff-m1-r1.json': artifact('bun test b') });
+    const prior = artifact('bun test a').adjudication;
+    mkdirSync(join(s.ledger.gen_dir, 'approvals'), { recursive: true });
+    writeFileSync(
+      join(s.ledger.gen_dir, 'approvals/diff-m1-r1.json'),
+      JSON.stringify({ ...prior, approvals: [prior] })
+    );
+    expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
+    expect(readFileSync(join(s.ledger.gen_dir, 'attempts/m1'), 'utf8')).toBe('1');
+    expect(s.calls().some(call => call.startsWith('workflow run sa-sa1 '))).toBe(true);
+    const saved = JSON.parse(
+      readFileSync(join(s.ledger.gen_dir, 'approvals/diff-m1-r1.json'), 'utf8')
+    );
+    expect(saved.approvals.map((a: { command: string }) => a.command)).toEqual([
+      'bun test a',
+      'bun test b',
+    ]);
+  });
   const yesCall: Record<string, string> = {
     review: 'workflow resume r --detach --json',
     retry: 'workflow resume r --detach --json',

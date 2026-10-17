@@ -2245,6 +2245,174 @@ describe('sa-check script', () => {
     });
     expect(out.out).not.toHaveProperty('adjudication');
   });
+  test.each([
+    ['missing', 'true'],
+    [
+      'truncated',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"/>' > junit.xml`,
+    ],
+    [
+      'suite error',
+      `printf '%s' '<testsuite tests="1"><error/><testcase classname="suite" name="case"/></testsuite>' > junit.xml`,
+    ],
+    [
+      'duplicate id',
+      `printf '%s' '<testsuite tests="2"><testcase classname="suite" name="case"/><testcase classname="suite" name="case"/></testsuite>' > junit.xml`,
+    ],
+  ])(
+    'P2: exit zero with %s structured report fails closed and stays failed in cache',
+    (_, command) => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        path = planFile(root, command);
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+      const p = JSON.parse(readFileSync(path, 'utf8'));
+      p.packages[0].accept[0] = {
+        cmd: command,
+        timeout_s: 5,
+        cache: true,
+        report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+      };
+      writeFileSync(path, JSON.stringify(p));
+      for (const tag of ['verify-a', 'diff-m1-r1']) {
+        const r = runScript(repo, { kind: 'accept', plan: path, pkgs: 'a', tag });
+        expect(r.out).toMatchObject({
+          ok: false,
+          disposition: 'repair',
+          failures: [{ failure_class: 'unknown' }],
+          command_results: [{ pass: false }],
+        });
+      }
+    }
+  );
+  test.each([
+    [
+      'stale report',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"/></testsuite>' > junit.xml; touch -t 200001010000 junit.xml`,
+      5,
+    ],
+    [
+      'failure with exit zero',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"><failure>bad</failure></testcase></testsuite>' > junit.xml`,
+      5,
+    ],
+    [
+      'passing report with exit one',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"/></testsuite>' > junit.xml; exit 1`,
+      5,
+    ],
+    [
+      'collect mismatch',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="other"/></testsuite>' > junit.xml`,
+      5,
+    ],
+    [
+      'signal after report',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"/></testsuite>' > junit.xml; kill -TERM $$`,
+      5,
+    ],
+    [
+      'timeout after report',
+      `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"/></testsuite>' > junit.xml; sleep 2`,
+      0.05,
+    ],
+  ])('P2: %s cannot provide complete structured evidence', (_, command, timeout_s) => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, command);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    p.packages[0].accept[0] = {
+      cmd: command,
+      timeout_s,
+      report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+    };
+    writeFileSync(path, JSON.stringify(p));
+    expect(
+      runScript(repo, { kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a' }).out
+    ).toMatchObject({ disposition: 'repair', failures: [{ failure_class: 'unknown' }] });
+  });
+  test.each(['normal', 'strict', 'effective G2'])(
+    'P2: %s structured baseline failure adjudication policy',
+    mode => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        path = planFile(root, 'false', ['true']);
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+      const base = sh('git rev-parse HEAD', repo).trim();
+      writeFileSync(join(repo, 'README.md'), 'candidate\n');
+      sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+      const p = JSON.parse(readFileSync(path, 'utf8'));
+      p.mode = mode === 'strict' ? 'strict' : 'single';
+      p.packages[0].scope = { write: mode === 'effective G2' ? ['src/'] : ['README.md'] };
+      p.packages[0].accept[0] = {
+        cmd: `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"><failure>body</failure></testcase></testsuite>' > junit.xml; exit 1`,
+        timeout_s: 5,
+        report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+      };
+      writeFileSync(path, JSON.stringify(p));
+      const policy = join(root, 'policy.json');
+      writeFileSync(
+        policy,
+        JSON.stringify({
+          risk_paths: [],
+          code_extensions: ['.ts'],
+          exempt_paths: [],
+          budget_floor: {},
+        })
+      );
+      const r = runScript(repo, {
+        kind: 'accept',
+        plan: path,
+        pkgs: 'a',
+        tag: 'verify-a',
+        base,
+        risk: 'G1',
+        policy,
+      });
+      if (mode === 'normal') expect(r.out).toMatchObject({ disposition: 'adjudicate' });
+      else {
+        expect(r.out).toMatchObject({
+          disposition: 'repair',
+          failures: [{ failure_class: 'unknown' }],
+        });
+        expect(r.out).not.toHaveProperty('adjudication');
+      }
+    }
+  );
+  test('P2: multiple structured failures retain independent approvals', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'false', ['true']);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'a.xml\nb.xml\n');
+    const xml = (id: string) =>
+      `<testsuite tests="1"><testcase classname="suite" name="${id}"><failure>${id}</failure></testcase></testsuite>`;
+    const command = (id: string) => `printf '%s' '${xml(id)}' > ${id}.xml; exit 1`;
+    const base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'README.md'), 'candidate\n');
+    sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    p.packages[0].accept = ['a', 'b'].map(id => ({
+      cmd: command(id),
+      timeout_s: 5,
+      report: { junit: `${id}.xml`, collect: `printf 'suite::${id}\\n'` },
+    }));
+    writeFileSync(path, JSON.stringify(p));
+    const inputs = { kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a', base };
+    const approvals: Record<string, unknown>[] = [];
+    mkdirSync(join(root, 'approvals'));
+    for (const expected of [command('a'), command('b')]) {
+      const r = runScript(repo, inputs);
+      expect(r.out).toMatchObject({ adjudication: { command: expected } });
+      approvals.push((r.out as { adjudication: Record<string, unknown> }).adjudication);
+      writeFileSync(join(root, 'approvals', 'verify-a.json'), JSON.stringify({ approvals }));
+    }
+    expect(runScript(repo, inputs).out).toMatchObject({
+      disposition: 'advance',
+      decision: { kind: 'debt' },
+      failures: [{ adjudicated: true }, { adjudicated: true }],
+    });
+  });
   for (const [command, needs, kind, disposition, reason, code] of [
     ['false', [{ cap: 'environment' }], 'block', 'repair', 'environment', 0],
     [PRODUCT_FAILURE, [], 'repair', 'repair', 'acceptance_failed', 0],
