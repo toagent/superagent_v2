@@ -993,6 +993,14 @@ function runsDb(owner: { host: string; pid: number }): Database {
   return db;
 }
 
+function revisionDb(): Database {
+  const db = new Database(join(process.env.ARCHON_HOME ?? '', 'archon.db'));
+  db.exec(`create table remote_agent_workflow_runs (id text, status text, last_activity_at text, completed_at text, metadata text);
+    create table remote_agent_workflow_events (workflow_run_id text);`);
+  db.run("insert into remote_agent_workflow_runs values ('r', 'completed', 'a', 'b', '{}')");
+  return db;
+}
+
 /** 后台子进程（signal/wake）异步写 calls：轮询到出现为止。 */
 async function eventually(calls: () => string[], prefix: string): Promise<string | undefined> {
   for (let i = 0; i < 40; i++) {
@@ -2525,6 +2533,34 @@ test('supervise tick reports due query errors without waking', () => {
 });
 
 describe('supervise-tick (archon + supervisor stubs)', () => {
+  test('terminal cache skips unchanged runs and invalidates on ledger or revision changes', () => {
+    const s = stub([run('completed')]),
+      db = revisionDb();
+    s.due.mockReturnValue([]);
+    const gets = () => s.calls().filter(call => call.startsWith('workflow get r')).length;
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 1 });
+    expect(gets()).toBe(1);
+    writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...s.ledger, transcript: 'changed' }));
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 1 });
+    db.run("update remote_agent_workflow_runs set last_activity_at = 'changed' where id = 'r'");
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
+    expect(gets()).toBe(3);
+    db.close();
+  });
+  test('an unresolved ask prevents terminal skipping and remains live', () => {
+    const s = stub([run('cancelled')]),
+      db = revisionDb();
+    s.due.mockReturnValue([]);
+    cliMod.superviseTick();
+    const path = join(s.root, 'home', 'asks.json');
+    writeFileSync(path, JSON.stringify({ 'sa1:fixture': { status: 'pending' } }));
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
+    expect(s.calls().filter(call => call.startsWith('workflow get r'))).toHaveLength(2);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toHaveProperty('sa1:fixture');
+    db.close();
+  });
   test('configured mobile transport leaves existing Reminders untouched and exposes unsupported gates', () => {
     const s = stub([humanWait()]);
     mkdirSync(join(s.root, 'home/console'), { recursive: true });
