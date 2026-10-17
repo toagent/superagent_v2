@@ -3287,9 +3287,9 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       const response = captured(() => main([command, 'sa1', '--timeout', '1']));
       const out = JSON.parse(response.out);
       expect(out.state).toBe('held:gate');
-      expect(out.reason).toStartWith('coder:');
+      expect(out.reason).toStartWith('needs:');
       expect(out.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
-      expect(out.delivery[0].decision).toMatchObject({ reason: 'coder_partial', blockers, needs });
+      expect(out.delivery[0].decision).toMatchObject({ reason: 'coder_needs', blockers, needs });
     }
   });
   test('single delivery decision: green redline self-report has identical status, brief and board projections', () => {
