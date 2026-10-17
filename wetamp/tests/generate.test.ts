@@ -207,12 +207,14 @@ type N = {
   timeout?: number;
   approval?: { message: string; decisions?: { id: string }[] };
   retry?: { max_attempts?: number; on_error: string };
+  maxBudgetUsd?: number;
   with?: Record<string, unknown>;
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
-test('ROOT_ACCEPT NO_QUOTA AI nodes have no cost caps, use engine transient defaults, and land never retries', () => {
+test('Claude coder nodes use the policy cost cap while Codex and review nodes stay uncapped', () => {
   for (const console of ['codex', 'claude'] as const) {
-    const plan = { ...fixture, console };
+    const mode = console === 'claude' ? 'single:claude' : 'single:chatgpt';
+    const plan = { ...fixture, console, mode } as Plan;
     const workflow = buildWorkflow(plan, milestones(plan), 'no-quota', '/GEN', false, NOW);
     const nodes = nodesOf(workflow);
     const ai = nodes.filter(node => node.command && /^(code|repair|fix|review)-/.test(node.id));
@@ -226,7 +228,12 @@ test('ROOT_ACCEPT NO_QUOTA AI nodes have no cost caps, use engine transient defa
         on_error: 'transient',
       });
     }
-    expect(JSON.stringify(workflow)).not.toContain('maxBudgetUsd');
+    for (const node of ai) {
+      const isCoder = /^(code|repair|fix)-/.test(node.id);
+      expect(node.maxBudgetUsd).toBe(
+        console === 'claude' && isCoder ? loadTiers().policy.coder_budget_usd.claude : undefined
+      );
+    }
     const land = nodes.filter(node => node.id.startsWith('land'));
     expect(land.length).toBeGreaterThan(0);
     for (const node of land) expect(node.retry).toBeUndefined();

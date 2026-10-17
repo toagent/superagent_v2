@@ -693,6 +693,7 @@ const adoptsRun = (l: Ledger, run: RunView): boolean =>
 /** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
+  if (coderBudgetExceeded(run, c)) return { ...c, state: 'held:gate', exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const decision = decisionOf(evidenceJson(l, artifactsOf(run), `${c.node}.json`));
     if (
@@ -708,6 +709,15 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   }
   return c;
 }
+
+const coderBudgetExceeded = (run: RunView, c: Classified): boolean => {
+  const lifecycle = run.nodes?.find(n => n.nodeId === c.node)?.execution?.lifecycle;
+  return (
+    /^(code|fix|repair)-/.test(c.node ?? '') &&
+    lifecycle?.status === 'failed' &&
+    lifecycle.providerFailure?.class === 'budget_exceeded'
+  );
+};
 
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
@@ -2483,6 +2493,7 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
 }
 
 const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
+  if (coderBudgetExceeded(run, c)) return 'coder_budget';
   const out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as {
     reason?: unknown;
   } | null;

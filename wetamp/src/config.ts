@@ -135,6 +135,7 @@ export interface Tiers {
     };
   };
   policy: {
+    coder_budget_usd: Partial<Record<Alias['provider'], number>> & { claude: number };
     /** Context advisory thresholds consumed by context-advisory.cjs. */
     context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
     sandbox: { network: boolean };
@@ -187,6 +188,9 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
   const budget = obj(t.routing.budget);
   if ([budget.claude_daily_usd, budget.claude_medium_usd, budget.codex_warning_usd].some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0))
     throw new Error('tiers.routing.budget: expected nonnegative finite thresholds');
+  const coderBudget = obj(t.policy.coder_budget_usd);
+  if (typeof coderBudget.claude !== 'number' || !Number.isFinite(coderBudget.claude) || coderBudget.claude <= 0 || Object.entries(coderBudget).some(([provider, n]) => !['claude', 'codex'].includes(provider) || typeof n !== 'number' || !Number.isFinite(n) || n <= 0))
+    throw new Error('tiers.policy.coder_budget_usd: expected positive finite provider budgets');
   for (const c of ['claude', 'codex'] as const) {
     const models = obj(obj(obj(t.routing).commander).by_console)[c];
     if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))

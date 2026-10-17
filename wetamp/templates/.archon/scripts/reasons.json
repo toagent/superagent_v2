@@ -56,6 +56,13 @@
     "description": "编码节点执行失败"
   },
   {
+    "code": "coder_budget",
+    "hold": "coder_budget",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "Claude 将军单次预算用尽"
+  },
+  {
     "code": "environment",
     "hold": "environment",
     "determinism": "transient",
@@ -243,6 +250,13 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "编码节点执行失败"
+  },
+  {
+    "code": "coder_budget+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "Claude 将军单次预算用尽"
   },
   {
     "code": "environment+review_limit",

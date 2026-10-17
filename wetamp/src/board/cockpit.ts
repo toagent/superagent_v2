@@ -12,6 +12,7 @@ export const REASONS = {
   deadline: '截止已过',
   gate: '门禁未通过',
   coder: '编码未通过',
+  coder_budget: 'Claude 将军预算用尽',
   environment: '环境未就绪',
   paused: '等待恢复',
   auto_retry_exhausted: '重试已用尽',

@@ -2,6 +2,7 @@
   "schema_version": 2,
   "policy": {
     "budget_floor": { "S": 200000 },
+    "coder_budget_usd": { "claude": 20 },
     "effort": {
       "G0": "medium",
       "coder": { "first": "medium", "repair": "medium" },
