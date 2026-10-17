@@ -125,6 +125,40 @@ describe('loadPlan', () => {
     const legacy = setup(p => (pkgs(p)[0].effort = 'high'));
     expect(loadPlan(legacy.path, [legacy.root]).packages[0].effort).toBe('high');
   });
+  test('structured acceptance report validates paths and known failure identity', () => {
+    const valid = setup(p => {
+      pkgs(p)[0].accept = [
+        {
+          cmd: 'bun test',
+          timeout_s: 5,
+          report: { junit: 'reports/junit.xml', collect: 'bun test --list' },
+          known_failures: [{ id: 'suite::case', reason: 'tracked environment issue' }],
+        },
+      ];
+    });
+    expect(loadPlan(valid.path, [valid.root]).packages[0].accept[0].report?.junit).toBe(
+      'reports/junit.xml'
+    );
+    for (const junit of ['/tmp/junit.xml', '../junit.xml']) {
+      const invalid = setup(p => {
+        pkgs(p)[0].accept = [{ cmd: 'true', timeout_s: 5, report: { junit } }];
+      });
+      expect(() => loadPlan(invalid.path, [invalid.root])).toThrow('plan invalid');
+    }
+    const duplicate = setup(p => {
+      pkgs(p)[0].accept = [
+        {
+          cmd: 'false',
+          timeout_s: 5,
+          known_failures: [
+            { id: 'suite::case', reason: 'one' },
+            { id: 'suite::case', reason: 'two' },
+          ],
+        },
+      ];
+    });
+    expect(() => loadPlan(duplicate.path, [duplicate.root])).toThrow('duplicate known failure id');
+  });
   test('valid plan loads with realpath repo', () => {
     const { path, root } = setup();
     expect(loadPlan(path, [root]).repo).toBe(join(root, 'repo'));

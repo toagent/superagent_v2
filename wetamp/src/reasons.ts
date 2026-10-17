@@ -1,5 +1,5 @@
 // 原因与处置的唯一注册表；generate 将 REASONS 写入冻结模板。
-export type Yes = 'retry' | 'resume' | 'approve' | 'review';
+export type Yes = 'retry' | 'resume' | 'approve' | 'review' | 'adjudicate';
 export type Policy =
   | { do: 'expire' | 'resume' }
   | { do: 'blocked'; text: string; next: string }
@@ -41,6 +41,12 @@ export const HOLD_POLICY = {
     next: '检查incident证据并修复引擎判定',
   },
   approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
+  acceptance_adjudication: {
+    do: 'ask',
+    yes: 'adjudicate',
+    text: '验收失败仅来自基线或预登记用例',
+    yesText: '按当前结构化证据记债并重跑验收',
+  },
 } as const satisfies Record<string, Policy>;
 export type Hold = keyof typeof HOLD_POLICY;
 
@@ -116,6 +122,12 @@ const base: Reason[] = [
   deterministic('coder_needs', 'needs', 'human', '编码端需要补充能力'),
   deterministic('coder_redline', 'redline', 'human', '编码端命中红线'),
   deterministic('approval', 'approval', 'human', '等待 Archon 审批'),
+  deterministic(
+    'acceptance_adjudication',
+    'acceptance_adjudication',
+    'human',
+    '结构化失败需要人工裁决'
+  ),
   deterministic('engine_suspect', 'engine_suspect', 'engine', '验收与状态矛盾或原因未注册'),
   entry('coder_output_invalid', 'coder', 'transient', 'coder', '编码输出不是合法 JSON'),
   deterministic('coder_partial', 'coder', 'coder', '编码未完成且无改动或验收失败'),

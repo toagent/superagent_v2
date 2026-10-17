@@ -113,6 +113,14 @@ export interface Check {
    * Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.
    */
   cache?: boolean;
+  report?: {
+    junit: string;
+    collect?: string;
+  };
+  known_failures?: {
+    id: string;
+    reason: string;
+  }[];
 }
 /**
  * Per-package override of the plan-level caps

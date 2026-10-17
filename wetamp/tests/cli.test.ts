@@ -3622,12 +3622,57 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       );
       return { s, first: {} };
     },
+    acceptance_adjudication: () => ({
+      s: held('verify-core', {
+        'verify-core.json': {
+          decision: gate('acceptance_adjudication').decision,
+          adjudication: {
+            diff_hash: 'diff',
+            contract_hash: 'contract',
+            command: 'bun test',
+            failed_tests: ['suite::case'],
+            failure_digest: 'digest',
+          },
+        },
+      }),
+      first: {},
+    }),
   };
+  test('P2 approval of diff milestone retries that milestone and preserves prior approvals', () => {
+    const artifact = (command: string) => ({
+      decision: gate('acceptance_adjudication').decision,
+      adjudication: {
+        diff_hash: 'diff',
+        contract_hash: 'contract',
+        command,
+        failed_tests: [`${command}::case`],
+        failure_digest: `digest-${command}`,
+      },
+    });
+    const s = held('diff-m1-r1', { 'diff-m1-r1.json': artifact('bun test b') });
+    const prior = artifact('bun test a').adjudication;
+    mkdirSync(join(s.ledger.gen_dir, 'approvals'), { recursive: true });
+    writeFileSync(
+      join(s.ledger.gen_dir, 'approvals/diff-m1-r1.json'),
+      JSON.stringify({ ...prior, approvals: [prior] })
+    );
+    expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
+    expect(readFileSync(join(s.ledger.gen_dir, 'attempts/m1'), 'utf8')).toBe('1');
+    expect(s.calls().some(call => call.startsWith('workflow run sa-sa1 '))).toBe(true);
+    const saved = JSON.parse(
+      readFileSync(join(s.ledger.gen_dir, 'approvals/diff-m1-r1.json'), 'utf8')
+    );
+    expect(saved.approvals.map((a: { command: string }) => a.command)).toEqual([
+      'bun test a',
+      'bun test b',
+    ]);
+  });
   const yesCall: Record<string, string> = {
     review: 'workflow resume r --detach --json',
     retry: 'workflow resume r --detach --json',
     resume: 'workflow resume r --detach --json',
     approve: 'workflow approve r --detach --json',
+    adjudicate: 'workflow run sa-sa1',
   };
 
   test.each(['approve', 'reject', 'retry', 'resume', 'recover'])(
@@ -3761,7 +3806,12 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       writeFileSync(join(s.root, 'answer'), 'yes');
       const before = s.calls().length;
       expect(tick()[0]).toMatchObject({ action: p.yes, reason: hold, ok: true });
-      expect(s.calls().slice(before)).toContain(yesCall[p.yes]);
+      expect(
+        s
+          .calls()
+          .slice(before)
+          .some(call => call.startsWith(yesCall[p.yes]))
+      ).toBe(true);
       expect(
         sup()
           .filter(c => c.startsWith('ask-status '))
@@ -4194,7 +4244,7 @@ describe('HF9 decision titles', () => {
           assertBoundedTitle(q, hold);
           const yes = /；是=(.+)；否=/.exec(q)?.[1] ?? '';
           expect(yes.length).toBeGreaterThan(0);
-          if (policy.do === 'ask' && policy.yes !== 'approve') {
+          if (policy.do === 'ask' && !['approve', 'adjudicate'].includes(policy.yes)) {
             if (hold !== 'engine_suspect')
               expect(yes).toContain('旧run身份未确认，将新开run从首个节点重跑');
             const target =
