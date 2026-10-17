@@ -221,7 +221,7 @@ export function coordinationDecisions(c = coord()): Decision[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-interface CoordIntentAction {
+interface CoordIntentAction extends Record<string, unknown> {
   run_id: 'coord';
   action: 'error';
   ok: false;
