@@ -231,6 +231,8 @@ export function resolveRoute(
     throw new Error(`unsupported routing mode: ${mode}`);
   if (budgetState(t, mode).degraded) { mode = 'single:chatgpt'; console = 'codex'; }
   const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
+  // single:chatgpt keeps reviews on Codex; only single:claude opens the configured review pool.
+  const reviewIgnoresVendor = role === 'review' && mode === 'single:claude';
   const models =
     role === 'command' ? t.routing.commander.by_console[console] : role === 'review'
       ? (t.routing.reviewer.by_risk?.[risk] ?? t.routing.reviewer.by_console[console])
@@ -241,7 +243,7 @@ export function resolveRoute(
     // Initial code/repair routing stays Codex; dispatch may retain the failover pool.
     .filter(a => vendorFailover || vendor !== null || role === 'review' || role === 'command' || a.provider === 'codex')
     .filter(
-      a => (role === 'command' || !vendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
+      a => (role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
   if (!candidates.length)
     throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);

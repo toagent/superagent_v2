@@ -75,22 +75,31 @@ describe('B1-POLICY frozen routing', () => {
       for (const role of ['code', 'repair'] as const)
         expect(() => resolveRoute(tiers, 'codex', mode, role)).toThrow(`no eligible ${role}`);
   });
-  test('single vendor filters both roles; risk and round use the owning policy', () => {
+  test('single modes keep coder ownership while review follows the permitted pool', () => {
     const tiers = fixtureTiers();
+    tiers.routing.reviewer.by_console.claude = ['gpt-6-astra', 'claude-opus-5', 'claude-opus-5-5'];
+    const claudeReview = resolveRoute(tiers, 'claude', 'single:claude', 'review', 'G1', 1, [
+      'claude-opus-5',
+    ]);
+    expect(claudeReview.candidates.map(a => a.model)).toEqual(['gpt-6-astra', 'claude-opus-5-5']);
+    const chatgptReview = resolveRoute(tiers, 'claude', 'single:chatgpt', 'review');
+    expect(chatgptReview.candidates.every(a => a.provider === 'codex')).toBe(true);
     for (const [mode, provider] of [
       ['single:claude', 'claude'],
       ['single:chatgpt', 'codex'],
     ] as const) {
-      const aliases = runAliases('codex', tiers, mode);
-      expect(Object.values(aliases).every(a => a.provider === provider)).toBe(true);
+      const aliases = runAliases('claude', tiers, mode);
+      expect(aliases['@sa-coder'].provider).toBe(provider);
       expect(aliases['@sa-reviewer'].model).not.toBe(aliases['@sa-coder'].model);
       for (const risk of ['G0', 'G1', 'G2'] as const) {
-        const route = resolveRoute(tiers, 'codex', mode, 'review', risk, 2, [
+        const route = resolveRoute(tiers, 'claude', mode, 'review', risk, 2, [
           aliases['@sa-coder'].model,
         ]);
         expect(
           route.candidates.every(
-            a => a.provider === provider && a.model !== aliases['@sa-coder'].model
+            a =>
+              (mode === 'single:claude' || a.provider === provider) &&
+              a.model !== aliases['@sa-coder'].model
           )
         ).toBe(true);
         expect(route.effort).toBe(risk === 'G0' ? 'medium' : risk === 'G2' ? 'high' : 'medium');
@@ -108,7 +117,8 @@ describe('B1-POLICY frozen routing', () => {
         nodes: { command?: string; model?: string; sandbox?: unknown; mcp?: string }[];
       };
       for (const node of workflow.nodes.filter(n => n.command)) {
-        expect(aliases[node.model!].provider).toBe(provider);
+        if (!node.command!.startsWith('sa-review'))
+          expect(aliases[node.model!].provider).toBe(provider);
         if (node.command!.startsWith('sa-review')) {
           expect(node.sandbox).toBeUndefined();
           expect(node.mcp).toBeUndefined();
