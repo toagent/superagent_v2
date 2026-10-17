@@ -846,6 +846,7 @@ test('summarize, report and the board share one summary', async () => {
       nodes: [{ nodeId: 'code-a', state: 'completed', durationMs: 4000 }],
     },
     {
+      started_at: '2026-10-12T00:00:00.000Z',
       recoveries: ['t'],
       dispositions: [
         {
@@ -857,11 +858,15 @@ test('summarize, report and the board share one summary', async () => {
       ],
     }
   );
-  const f = ledger('f', {
-    status: 'failed',
-    completed_at: new Date(Date.now() - 1000).toISOString(),
-    nodes: [{ nodeId: 'verify-a', state: 'failed' }],
-  });
+  const f = ledger(
+    'f',
+    {
+      status: 'failed',
+      completed_at: new Date(Date.now() - 1000).toISOString(),
+      nodes: [{ nodeId: 'verify-a', state: 'failed' }],
+    },
+    { started_at: '2026-10-12T00:00:00.000Z' }
+  );
   // Report-only metadata is separate from the shared summarize/board counters.
   const {
     usage,
@@ -875,6 +880,7 @@ test('summarize, report and the board share one summary', async () => {
     critical_path,
     measurement,
     provider_timing,
+    agent_ran_acceptance,
     slow_nodes,
     jobs,
     recorded_blockers,
@@ -888,6 +894,7 @@ test('summarize, report and the board share one summary', async () => {
   expect(requirements).toEqual({ g: {}, f: {} });
   expect(measurement).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
   expect(provider_timing).toMatchObject({ 'g/a-g': expect.anything(), 'f/a-f': expect.anything() });
+  expect(agent_ran_acceptance).toBe(0);
   expect(slow_nodes).toEqual([]);
   expect(recorded_blockers).toEqual([]);
   expect(delivery).toEqual({ legacy: 2 });
