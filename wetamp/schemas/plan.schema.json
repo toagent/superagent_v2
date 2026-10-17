@@ -251,6 +251,32 @@
           "type": "boolean",
           "default": true,
           "description": "Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused."
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["junit"],
+          "properties": {
+            "junit": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"
+            },
+            "collect": { "type": "string", "minLength": 1 }
+          }
+        },
+        "known_failures": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "reason"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
         }
       }
     },

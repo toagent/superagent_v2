@@ -97,6 +97,11 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
       if (r.verified_by.some(i => i >= p.accept.length))
         throw new Error(`plan invalid: ${p.id}/${r.id} verified_by outside accept`);
     }
+    for (const check of p.accept) {
+      const known = check.known_failures?.map(f => f.id) ?? [];
+      if (new Set(known).size !== known.length)
+        throw new Error(`plan invalid: duplicate known failure id ${p.id}/${check.cmd}`);
+    }
   }
   if (plan.deadline !== undefined && Number.isNaN(Date.parse(plan.deadline)))
     throw new Error('plan invalid: /deadline not date-time');

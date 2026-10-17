@@ -98,6 +98,13 @@
     "description": "等待 Archon 审批"
   },
   {
+    "code": "acceptance_adjudication",
+    "hold": "acceptance_adjudication",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "结构化失败需要人工裁决"
+  },
+  {
     "code": "engine_suspect",
     "hold": "engine_suspect",
     "determinism": "deterministic",
@@ -278,6 +285,13 @@
     "determinism": "deterministic",
     "owner": "human",
     "description": "等待 Archon 审批"
+  },
+  {
+    "code": "acceptance_adjudication+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "结构化失败需要人工裁决"
   },
   {
     "code": "engine_suspect+review_limit",

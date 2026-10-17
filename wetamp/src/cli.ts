@@ -690,7 +690,10 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const decision = decisionOf(evidenceJson(l, artifactsOf(run), `${c.node}.json`));
-    if (decision?.kind === 'block' && decision.reason === 'coder_partial')
+    if (
+      decision?.kind === 'block' &&
+      ['coder_partial', 'acceptance_adjudication'].includes(decision.reason ?? '')
+    )
       return { ...c, state: 'held:gate', exit: EXIT.held };
     if (
       /^(verify|settle|gate)-/.test(c.node) &&
@@ -1496,6 +1499,30 @@ const retry = (
     ? retryGate(l, c.node ?? '', prepare, onEffect)
     : recoverRun(l, prepare, onEffect);
 
+// prettier-ignore
+function approveAdjudication(l: Ledger, run: RunView, c: Classified,
+  onEffect?: (effect: DecisionEffect) => void): RecoverResult {
+  const node = c.node, out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as
+    { adjudication?: Record<string, unknown> } | undefined;
+  const a = out?.adjudication;
+  if (
+    !node || !a ||
+    !['diff_hash', 'contract_hash', 'command', 'failure_digest'].every(k =>
+      typeof a[k] === 'string' && a[k] !== '') ||
+    !Array.isArray(a.failed_tests) ||
+    !a.failed_tests.every(v => typeof v === 'string')
+  )
+    throw new Error('acceptance adjudication evidence missing or invalid');
+  mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
+  writeFileSync(
+    join(l.gen_dir, 'approvals', `${node}.json`),
+    JSON.stringify({ diff_hash: a.diff_hash, contract_hash: a.contract_hash,
+      command: a.command, failed_tests: a.failed_tests, failure_digest: a.failure_digest,
+      at: new Date().toISOString() }) + '\n'
+  );
+  return retry(l, c, undefined, onEffect);
+}
+
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
 function retryAllHeld(): number {
   const out = ledgers().flatMap((l): Record<string, unknown>[] => {
@@ -1535,6 +1562,12 @@ function decide(l: Ledger, a: Args): number {
     if (pastDeadline(l)) {
       print({ run_id: l.run_id, ok: false, reason: PAST_DEADLINE });
       return 1;
+    }
+    const reason = c.node ? nodeReason(l, run, c) : '';
+    if (c.state === 'held:gate' && reason === 'acceptance_adjudication') {
+      const res = intervention(l, 'decide', () => approveAdjudication(l, run, c));
+      print({ run_id: l.run_id, decision: 'approve', ...res });
+      return res.ok ? 0 : res.held ? EXIT.held : 1;
     }
     if (c.state !== 'held:human') {
       print({ run_id: l.run_id, ok: false, reason: 'run is not waiting for a human signoff' });
@@ -1657,6 +1690,11 @@ function brief(l: Ledger, json = false): number {
         d?.debt.length ?? 0
       )}`
     );
+  }
+  if (c.node && nodeReason(l, run, c) === 'acceptance_adjudication') {
+    const a = (evidenceJson(l, art, `${c.node}.json`) as { adjudication?: unknown } | null)
+      ?.adjudication;
+    lines.push(`adjudication: ${JSON.stringify(a ?? 'missing')}`);
   }
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
@@ -2177,11 +2215,13 @@ function askHold(
       const res =
         p.yes === 'approve'
           ? approveRun(l)
-          : p.yes === 'resume'
-            ? recoverRun(l, undefined, onEffect)
-            : p.yes === 'review'
-              ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, undefined, onEffect)
-              : retry(l, c, undefined, onEffect);
+          : p.yes === 'adjudicate'
+            ? approveAdjudication(l, run, c, onEffect)
+            : p.yes === 'resume'
+              ? recoverRun(l, undefined, onEffect)
+              : p.yes === 'review'
+                ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, undefined, onEffect)
+                : retry(l, c, undefined, onEffect);
       if (res.ok) {
         if (!effect) throw new Error('decision recovery succeeded without an execution receipt');
         consumeAnswer(l, c.node ?? '', key, r.a, 'yes', effect, asks);
@@ -2474,7 +2514,12 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
   let detail = reason;
   const compact = reason;
   if (hold === 'approval') detail = '等待批准';
-  else if (hold === 'signoff') {
+  else if (hold === 'acceptance_adjudication') {
+    const a = out.adjudication as
+      | { cases?: unknown; counts?: unknown; known?: unknown; report?: unknown }
+      | undefined;
+    detail = `用例${JSON.stringify(a?.cases ?? [])}；计数${JSON.stringify(a?.counts ?? {})}；known${JSON.stringify(a?.known ?? [])}；证据${typeof a?.report === 'string' ? a.report : '缺失'}`;
+  } else if (hold === 'signoff') {
     let files: string[] = [];
     try {
       files = evidenceGates(l, artifactsOf(run));

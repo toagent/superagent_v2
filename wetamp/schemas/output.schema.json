@@ -239,7 +239,10 @@
                 "type": "string",
                 "enum": ["product", "test_env", "fixture", "baseline", "test_data", "unknown"]
               },
-              "evidence": { "type": "string" }
+              "evidence": { "type": "string" },
+              "failed_tests": { "type": "array", "items": { "type": "string" } },
+              "failure_digest": { "type": "string" },
+              "adjudicated": { "type": "boolean" }
             },
             "required": ["command", "failure_class", "evidence"]
           }
@@ -278,7 +281,32 @@
           "type": "string"
         },
         "disposition": {
-          "enum": ["advance", "repair", "suspend"]
+          "enum": ["advance", "repair", "adjudicate", "fail", "suspend"]
+        },
+        "adjudication": {
+          "type": "object",
+          "required": [
+            "diff_hash",
+            "contract_hash",
+            "command",
+            "failed_tests",
+            "failure_digest",
+            "report",
+            "counts",
+            "known",
+            "cases"
+          ],
+          "properties": {
+            "diff_hash": { "type": "string" },
+            "contract_hash": { "type": "string" },
+            "command": { "type": "string" },
+            "failed_tests": { "type": "array", "items": { "type": "string" } },
+            "failure_digest": { "type": "string" },
+            "report": { "type": "string" },
+            "counts": { "type": "object" },
+            "known": { "type": "array" },
+            "cases": { "type": "array" }
+          }
         },
         "reason": {
           "type": ["string", "null"]

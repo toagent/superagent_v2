@@ -25,6 +25,7 @@ export const REASONS = {
   review_not_independent: '评审不独立',
   engine_suspect: '引擎嫌疑',
   approval: '等待批准',
+  acceptance_adjudication: '等待验收裁决',
 } satisfies Record<keyof typeof HOLD_POLICY, string> & Record<string, string>;
 export const reasonText = (s: string): string =>
   (REASONS as Partial<Record<string, string>>)[s] ?? s;
@@ -153,6 +154,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
               resume: '恢复',
               approve: '批准',
               review: '重评',
+              adjudicate: '按证据记债',
             }[policy.yes],
             no: '终止',
           }

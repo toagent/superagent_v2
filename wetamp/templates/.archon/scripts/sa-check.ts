@@ -14,10 +14,12 @@ import {
   realpathSync,
   readdirSync,
   renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan, Pkg } from '../../../src/plan';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
@@ -49,13 +51,35 @@ interface Coder {
   needs?: unknown[];
   blockers?: string[];
 }
-type Disposition = 'advance' | 'repair' | 'fail';
+type Disposition = 'advance' | 'repair' | 'adjudicate' | 'fail';
 type RequirementContract = Pick<Pkg, 'id' | 'accept' | 'requirements'>;
 interface CommandResult {
   check: Check;
   pass: boolean | null;
   evidence: string;
   exit?: number | string;
+  structured?: StructuredCases;
+}
+interface StructuredCases {
+  complete: boolean;
+  tests: number;
+  ids: string[];
+  skipped: string[];
+  failures: { id: string; type: string; message: string; body_hash: string }[];
+  failure_digest: string;
+  report_digest: string;
+  report: string;
+}
+interface Adjudication {
+  diff_hash: string;
+  contract_hash: string;
+  command: string;
+  failed_tests: string[];
+  failure_digest: string;
+  report: string;
+  counts: { candidate: number; base: number; expected: number; expected_base: number };
+  known: { id: string; reason: string }[];
+  cases: { id: string; message: string; base: 'failed' | 'passed' }[];
 }
 export interface Completion {
   status: 'legacy' | 'verified' | 'unmet' | 'unknown';
@@ -94,13 +118,19 @@ export interface Accept {
   failed?: string[];
   log?: string;
   base_pass?: boolean | null;
-  base_results?: { cmd: string; pass: boolean | null; reason?: string }[];
+  base_results?: {
+    cmd: string;
+    pass: boolean | null;
+    reason?: string;
+    structured?: StructuredCases;
+  }[];
   baseline?: 'comparable' | 'incomparable';
   baseline_reason?: string;
   failures?: CheckFailure[];
   workspace_clean?: boolean;
   requirement_contract?: RequirementContract[];
   command_results?: CommandResult[];
+  adjudication?: Adjudication;
 }
 export interface CheckFailure {
   command: string;
@@ -108,6 +138,9 @@ export interface CheckFailure {
   evidence: string;
   repair_rounds?: number;
   debt_reason?: 'repair_limit';
+  failed_tests?: string[];
+  failure_digest?: string;
+  adjudicated?: boolean;
 }
 /** sa-check uses these fields from the complete frozen <gen>/policy.json. */
 interface Policy {
@@ -190,6 +223,54 @@ const emit = (o: unknown): void => {
 };
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
+const xmlText = (s: string): string =>
+  s.replace(
+    /&(?:lt|gt|amp|quot|apos);/g,
+    x => ({ '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&apos;': "'" })[x] ?? x
+  );
+const attrs = (s: string): Record<string, string | undefined> =>
+  Object.fromEntries(
+    [...s.matchAll(/([:\w.-]+)\s*=\s*(["'])(.*?)\2/gs)].map(m => [m[1], xmlText(m[3])])
+  );
+// prettier-ignore
+function junitCases(path: string, expected: string[], started: number): StructuredCases | undefined {
+  try {
+    if (!existsSync(path) || statSync(path).mtimeMs < started) return;
+    const xml = readFileSync(path, 'utf8');
+    if (![...xml.matchAll(/<testsuite\b([^>]*)>/g)].some(m => Number(attrs(m[1]).tests) > 0))
+      return;
+    const cases = [...xml.matchAll(/<testcase\b([^>]*)(?:\/>|>([\s\S]*?)<\/testcase>)/g)];
+    const ids: string[] = [], skipped: string[] = [], failures: StructuredCases['failures'] = [];
+    for (const match of cases) {
+      const a = attrs(match[1]),
+        id = `${a.classname ?? ''}::${a.name ?? ''}`,
+        body = match[2] || '';
+      if (!a.classname || !a.name || ids.includes(id) || /<error\b/.test(body)) return;
+      ids.push(id);
+      if (/<skipped\b/.test(body)) skipped.push(id);
+      const f = /<failure\b([^>]*)>([\s\S]*?)<\/failure>|<failure\b([^>]*)\/>/.exec(body);
+      if (f) {
+        const fa = attrs(f[1] || f[3] || ''), text = xmlText(f[2] || '');
+        failures.push({ id, type: fa.type ?? '', message: fa.message ?? '', body_hash: sha(text) });
+      }
+    }
+    const sorted = [...failures].sort((a, b) => a.id.localeCompare(b.id));
+    const complete = ids.length > 0 && new Set(ids).size === ids.length &&
+      JSON.stringify([...ids].sort()) === JSON.stringify([...expected].sort());
+    return {
+      complete,
+      tests: ids.length,
+      ids,
+      skipped,
+      failures: sorted,
+      failure_digest: sha(JSON.stringify(sorted.map(f => [f.id, f.type, f.message, f.body_hash]))),
+      report_digest: sha(xml),
+      report: path,
+    };
+  } catch {
+    return;
+  }
+}
 
 // Publish a complete private key atomically; concurrent nodes share the winner's context.
 function cacheKey(): Buffer {
@@ -269,7 +350,13 @@ function run(
   // These variables belong to the engine node, not the project acceptance command (including probes).
   // Environment nodes keep their existing inherited environment.
   const commandEnv = env('KIND') === 'env' ? process.env : projectEnvironment(process.env);
-  const tree = artifacts && envKey && git('rev-parse', 'HEAD^{tree}').trim();
+  const treeResult =
+    artifacts && envKey
+      ? auxiliary(
+          cwd ? ['git', '-C', cwd, 'rev-parse', 'HEAD^{tree}'] : ['git', 'rev-parse', 'HEAD^{tree}']
+        )
+      : undefined;
+  const tree = treeResult?.exitCode === 0 ? treeResult.stdout.toString().trim() : '';
   const environment =
     tree && checks.some(c => c.cache !== false) ? environmentIdentity(commandEnv) : '';
   for (const c of checks) {
@@ -285,6 +372,9 @@ function run(
                 tree,
                 c.cmd,
                 c.timeout_s,
+                'junit-v1',
+                c.report ?? null,
+                c.known_failures ?? null,
                 envKey,
                 environment,
               ])
@@ -298,6 +388,7 @@ function run(
         exit?: number | string;
         stdout?: string;
         stderr?: string;
+        structured?: StructuredCases;
       };
       appendFileSync(
         log,
@@ -312,10 +403,35 @@ function run(
         pass: saved.exit === undefined ? null : saved.exit === 0,
         exit: saved.exit,
         evidence: log,
+        ...(saved.structured ? { structured: saved.structured } : {}),
       });
       continue;
     }
     const t0 = Date.now();
+    let reportPath = '';
+    let expected: string[] = [];
+    if (c.report) {
+      reportPath = resolve(cwd ?? process.cwd(), c.report.junit);
+      const rel = relative(cwd ?? process.cwd(), reportPath);
+      if (rel === '..' || rel.startsWith('../') || rel === '')
+        throw new Error('junit report path escapes cwd');
+      rmSync(reportPath, { force: true });
+      if (c.report.collect) {
+        const collected = Bun.spawnSync(['bash', '-c', c.report.collect], {
+          cwd,
+          env: commandEnv,
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: c.timeout_s * 1000,
+        });
+        if (collected.exitCode === 0 && !collected.signalCode)
+          expected = collected.stdout
+            .toString()
+            .split(/\r?\n/)
+            .map(x => x.trim())
+            .filter(Boolean);
+      }
+    }
     const p = Bun.spawnSync(['bash', '-c', c.cmd], {
       cwd,
       env: commandEnv,
@@ -324,7 +440,20 @@ function run(
       timeout: c.timeout_s * 1000,
     });
     const code = p.signalCode ? `signal ${p.signalCode}` : p.exitCode;
-    results.push({ check: c, pass: code === 0, evidence: log, exit: code });
+    const structured = reportPath ? junitCases(reportPath, expected, t0) : undefined;
+    const consistent =
+      !structured ||
+      (!p.signalCode &&
+        (code === 0) === (structured.failures.length === 0) &&
+        (code === 0 || structured.failures.length > 0));
+    if (structured && !consistent) structured.complete = false;
+    results.push({
+      check: c,
+      pass: code === 0,
+      evidence: log,
+      exit: code,
+      ...(structured ? { structured } : {}),
+    });
     appendFileSync(
       log,
       `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
@@ -348,11 +477,19 @@ function run(
       } catch {
         /* Unstructured output fails closed. */
       }
-      failures.push({
+      const failure: CheckFailure = {
         command: c.cmd,
         failure_class: failureClass(classification),
         evidence: log,
-      });
+        ...(structured
+          ? {
+              failed_tests: structured.failures.map(f => f.id),
+              failure_digest: structured.failure_digest,
+            }
+          : {}),
+      };
+      if (structured?.complete) failure.failure_class = 'unknown';
+      failures.push(failure);
     }
     if (hit) {
       mkdirSync(dirname(hit), { recursive: true });
@@ -364,6 +501,7 @@ function run(
           exit: code,
           stdout: p.stdout.toString(),
           stderr: p.stderr.toString(),
+          structured,
         })
       );
     }
@@ -407,8 +545,10 @@ export function nextDisposition(decision: DeliveryDecision): Disposition {
     ['coder_partial', 'coder_needs', 'no_change'].includes(decision.reason ?? '')
   )
     return 'fail';
-  if (decision.kind === 'block')
+  if (decision.kind === 'block') {
+    if (decision.reason === 'acceptance_adjudication') return 'adjudicate';
     return reason?.hold === 'review_limit' || reason?.hold === 'redline' ? 'fail' : 'repair';
+  }
   return decision.kind === 'repair' ? 'repair' : 'advance';
 }
 
@@ -600,6 +740,56 @@ function acceptOnce(
   if (baseResults.length) appendFileSync(log, `# base_results: ${JSON.stringify(baseResults)}\n`);
   else if (base && failed.length)
     appendFileSync(log, `# baseline unknown: see ${join(artifacts, `${tag}.probe.log`)}\n`);
+  let adjudication: Adjudication | undefined;
+  // prettier-ignore
+  for (const failure of failures) {
+    const candidate = commandResults.find(r => r.check.cmd === failure.command)?.structured;
+    const baselineResult = baseResults.find(r => r.cmd === failure.command)?.structured;
+    if (!candidate || !baselineResult || !candidate.complete || !baselineResult.complete) continue;
+    if (candidate.skipped.some(id => !baselineResult.skipped.includes(id))) continue;
+    const known = checks.find(c => c.cmd === failure.command)?.known_failures ?? [];
+    const baseFailed = new Set(baselineResult.failures.map(f => f.id));
+    const unexplained = candidate.failures.filter(
+      f => !baseFailed.has(f.id) && !known.some(k => k.id === f.id)
+    );
+    if (unexplained.length) {
+      failure.failure_class = 'product';
+      continue;
+    }
+    if (p.mode === 'strict' || env('RISK') === 'G2') continue;
+    const pending: Adjudication = {
+      diff_hash: hash,
+      contract_hash: acceptanceContractHash(),
+      command: failure.command,
+      failed_tests: candidate.failures.map(f => f.id).sort(),
+      failure_digest: candidate.failure_digest,
+      report: candidate.report,
+      counts: { candidate: candidate.tests, base: baselineResult.tests,
+        expected: candidate.ids.length, expected_base: baselineResult.ids.length },
+      known: known.filter(k => candidate.failures.some(f => f.id === k.id)),
+      cases: candidate.failures.map(f => ({ id: f.id, message: f.message,
+        base: baseFailed.has(f.id) ? 'failed' : 'passed' })),
+    };
+    adjudication = pending;
+    const approvalPath = join(dirname(env('PLAN')), 'approvals', `${tag}.json`);
+    let approved: Partial<Adjudication> | undefined;
+    try {
+      approved = JSON.parse(readFileSync(approvalPath, 'utf8')) as Partial<Adjudication>;
+    } catch { /* not adjudicated */ }
+    const identity = ['diff_hash', 'contract_hash', 'command', 'failure_digest'] as const;
+    if (
+      approved &&
+      identity.every(k => approved[k] === pending[k]) &&
+      JSON.stringify(approved.failed_tests) === JSON.stringify(pending.failed_tests)
+    ) {
+      failure.failure_class = candidate.failures.some(f => known.some(k => k.id === f.id))
+        ? 'test_env'
+        : 'baseline';
+      failure.adjudicated = true;
+      failure.evidence = `${approvalPath}; ${candidate.report}`;
+      adjudication = undefined;
+    }
+  }
   const result = disposition(
     coder,
     ok,
@@ -612,6 +802,7 @@ function acceptOnce(
       same: false,
       failed,
       failures,
+      ...(adjudication ? { adjudication } : {}),
       workspace_clean: !dirty,
       log,
       ...baseline,
@@ -635,6 +826,7 @@ function acceptOnce(
     ...result,
     failed,
     failures,
+    ...(adjudication ? { adjudication } : {}),
     workspace_clean: !dirty,
     log,
     patch,
@@ -694,7 +886,7 @@ function finish(
   // Audit/control evidence stays in the artifact; downstream packages consume only delivered data.
   const delivered = { diff_hash: out.diff_hash, head: out.head };
   emit(env('KIND') === 'settle' && out.disposition !== 'fail' ? delivered : out);
-  if (out.disposition === 'fail') {
+  if (out.disposition === 'fail' || out.disposition === 'adjudicate') {
     console.error(`${tag}: failed (${out.reason ?? ''})`);
     process.exit(1);
   }
@@ -749,7 +941,8 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
     return checks.map(c => {
       const failures: CheckFailure[] = [],
         results: CommandResult[] = [];
-      const passed = run([c], log, dir, '', failures, results).length === 0;
+      const passed =
+        run([c], log, dir, sha(JSON.stringify(['probe', base])), failures, results).length === 0;
       // Exit 1 alone cannot distinguish assertions from setup errors. Only a
       // structured non-environment failure proves the baseline actually ran.
       const comparable =
@@ -759,6 +952,7 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
       return {
         cmd: c.cmd,
         pass: comparable ? passed : null,
+        ...(results[0]?.structured ? { structured: results[0].structured } : {}),
         ...(!comparable
           ? {
               reason: `baseline incomparable: exit=${String(results[0]?.exit)}; failure_class=${failures[0]?.failure_class ?? 'unknown'}`,
@@ -1134,6 +1328,7 @@ export function deliveryDecision(input: {
     return result;
   }
   if (items.some(r => r.status === 'unknown')) return out('block', 'acceptance_failed');
+  if (check.adjudication) return out('block', 'acceptance_adjudication');
   if (
     !check.ok &&
     Array.isArray(coder?.needs) &&
@@ -1148,9 +1343,10 @@ export function deliveryDecision(input: {
   }
   const unknown = check.failures?.some(
     f =>
-      f.failure_class === 'test_env' ||
-      (f.failure_class === 'baseline' &&
-        (check.base_pass === null || check.baseline === 'incomparable'))
+      !f.adjudicated &&
+      (f.failure_class === 'test_env' ||
+        (f.failure_class === 'baseline' &&
+          (check.base_pass === null || check.baseline === 'incomparable')))
   );
   if (unknown) return out('block', 'environment');
   const approved = input.approved?.check;

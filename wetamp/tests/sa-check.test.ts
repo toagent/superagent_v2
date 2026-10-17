@@ -1709,7 +1709,11 @@ for (const kind of ['accept', 'settle', 'env'])
     expect(auxiliary.length).toBeGreaterThan(0);
     for (const call of auxiliary) {
       const category =
-        call.cmd[0] === 'git' ? call.cmd.slice(0, 2).join(' ') : call.cmd.slice(1, 3).join(' ');
+        call.cmd[0] === 'git'
+          ? call.cmd[1] === '-C'
+            ? `git ${call.cmd[3]}`
+            : call.cmd.slice(0, 2).join(' ')
+          : call.cmd.slice(1, 3).join(' ');
       expect(allowed.has(category), category).toBe(true);
       expect(call.timeout).toBe(CHECK_AUX_TIMEOUT_MS);
     }
@@ -2160,6 +2164,86 @@ describe('sa-check script', () => {
     });
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
+  });
+  test('P2: complete JUnit failures require identity-bound adjudication before becoming debt', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'false', ['true']);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'README.md'), 'candidate\n');
+    sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+    const plan = JSON.parse(readFileSync(path, 'utf8'));
+    const xml =
+      '<testsuite tests="1"><testcase classname="suite" name="case"><failure type="AssertionError" message="expected">body</failure></testcase></testsuite>';
+    plan.packages[0].accept = [
+      {
+        cmd: `printf '%s' '${xml}' > junit.xml; exit 1`,
+        timeout_s: 5,
+        report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+        known_failures: [{ id: 'suite::case', reason: 'tracked environment issue' }],
+      },
+    ];
+    writeFileSync(path, JSON.stringify(plan));
+    const inputs = { kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a', base };
+    const first = runScript(repo, inputs);
+    expect(first.code, first.err).toBe(1);
+    expect(first.out).toMatchObject({
+      disposition: 'adjudicate',
+      reason: 'acceptance_adjudication',
+      decision: { kind: 'block', reason: 'acceptance_adjudication' },
+      adjudication: { command: plan.packages[0].accept[0].cmd, failed_tests: ['suite::case'] },
+    });
+    const a = (first.out as { adjudication: Record<string, unknown> }).adjudication;
+    mkdirSync(join(root, 'approvals'));
+    writeFileSync(
+      join(root, 'approvals', 'verify-a.json'),
+      JSON.stringify({
+        diff_hash: a.diff_hash,
+        contract_hash: a.contract_hash,
+        command: a.command,
+        failed_tests: a.failed_tests,
+        failure_digest: a.failure_digest,
+        at: new Date().toISOString(),
+      })
+    );
+    const approved = runScript(repo, inputs);
+    expect(approved.code, approved.err).toBe(0);
+    expect(approved.out).toMatchObject({
+      ok: false,
+      disposition: 'advance',
+      decision: { kind: 'debt', reason: null },
+      failures: [{ failure_class: 'test_env', adjudicated: true }],
+    });
+  });
+  test('P2: report without collect remains unknown and cannot adjudicate', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'false', ['true']);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const plan = JSON.parse(readFileSync(path, 'utf8'));
+    plan.packages[0].accept = [
+      {
+        cmd: `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"><failure>body</failure></testcase></testsuite>' > junit.xml; exit 1`,
+        timeout_s: 5,
+        report: { junit: 'junit.xml' },
+        known_failures: [{ id: 'suite::case', reason: 'known' }],
+      },
+    ];
+    writeFileSync(path, JSON.stringify(plan));
+    const out = runScript(repo, {
+      kind: 'accept',
+      plan: path,
+      pkgs: 'a',
+      tag: 'verify-a',
+      base: sh('git rev-parse HEAD', repo).trim(),
+    });
+    expect(out.out).toMatchObject({
+      disposition: 'repair',
+      reason: 'acceptance_failed',
+      failures: [{ failure_class: 'unknown' }],
+    });
+    expect(out.out).not.toHaveProperty('adjudication');
   });
   for (const [command, needs, kind, disposition, reason, code] of [
     ['false', [{ cap: 'environment' }], 'block', 'repair', 'environment', 0],
