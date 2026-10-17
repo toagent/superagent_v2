@@ -556,13 +556,14 @@ export async function webCli(argv: string[]): Promise<number> {
     if (sub === 'mobile-devices') {
       console.log(JSON.stringify(store.listDevices()));
     } else if (sub === 'mobile-upgrade') {
-      const device = a._[2] ?? '';
+      const device = a._[2] ?? '',
+        upgraded = store.upgrade(device);
       console.log(
         JSON.stringify({
           device,
           scope: 'managed-approvals',
-          upgraded: store.upgrade(device),
-          next: '人工 console stop/start 后生效',
+          upgraded,
+          next: upgraded ? '已生效；手机刷新后可查看全部受管审批' : '设备已是 operator，无需操作',
         })
       );
     } else if (sub === 'mobile-config') {

@@ -1,5 +1,4 @@
-import { describeDecision, type DecisionInbox } from './decisions';
-import { DeviceStore } from './web/device-store';
+import { applyCoordIntents, describeDecision, type DecisionInbox } from './decisions';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
@@ -2519,27 +2518,7 @@ function tick(
   if (!(asks instanceof Error)) {
     const mobile = existsSync(join(sa, 'console/decision-origin')),
       currentAsks = asks;
-    if (mobile)
-      new DeviceStore().transaction(state => {
-        for (const receipt of state.receipts) {
-          if (receipt.stage !== 'intent' || !receipt.run.startsWith('coord:')) continue;
-          const choice = receipt.decision,
-            staleAsk = new Error('stale coord ask');
-          let accepted = false;
-          try {
-            accepted =
-              (choice === 'yes' || choice === 'no') &&
-              coord().answerEscalation(receipt.run.slice(6), Number(receipt.pause), key => {
-                const ask = currentAsks[key];
-                if (!ask || !['pending', 'unknown'].includes(ask.status)) throw staleAsk;
-                ask.status = choice;
-              });
-          } catch (error) {
-            if (error !== staleAsk) throw error;
-          }
-          receipt.stage = accepted ? 'accepted' : 'rejected';
-        }
-      });
+    if (mobile) out.push(...applyCoordIntents(currentAsks));
     for (const action of coord().tick((key, title) => pollCoordAsk(sa, currentAsks, key, title)))
       out.push({ run_id: 'coord', action: 'coord', ok: true, ...action });
     // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者

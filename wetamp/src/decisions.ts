@@ -221,6 +221,76 @@ export function coordinationDecisions(c = coord()): Decision[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+interface CoordIntentAction {
+  run_id: 'coord';
+  action: 'error';
+  ok: false;
+  error: string;
+}
+export function applyCoordIntents(
+  asks: Partial<Record<string, { status: string }>>,
+  answer = (id: string, generation: number, persist: (key: string) => void): boolean =>
+    coord().answerEscalation(id, generation, persist),
+  store = new DeviceStore()
+): CoordIntentAction[] {
+  let intents: { receipt: Receipt; authorized: boolean }[];
+  try {
+    intents = store.transaction(state =>
+      state.receipts
+        .filter(r => r.stage === 'intent' && r.run.startsWith('coord:'))
+        .map(receipt => ({
+          receipt: { ...receipt },
+          authorized: state.devices.some(
+            device => device.id === receipt.device && isAuthorizedDevice(device)
+          ),
+        }))
+    );
+  } catch {
+    return [{ run_id: 'coord', action: 'error', ok: false, error: 'coord intent read failed' }];
+  }
+  const actions: CoordIntentAction[] = [];
+  for (const intent of intents) {
+    let guard: ReturnType<DeviceStore['deviceLock']> | undefined;
+    try {
+      guard = store.deviceLock(intent.receipt.device);
+      const authorized =
+        intent.authorized &&
+        store.transaction(state =>
+          state.devices.some(
+            device => device.id === intent.receipt.device && isAuthorizedDevice(device)
+          )
+        );
+      const choice = intent.receipt.decision;
+      const staleAsk = new Error('stale coord ask');
+      let accepted = false;
+      if (authorized && (choice === 'yes' || choice === 'no'))
+        try {
+          accepted = answer(intent.receipt.run.slice(6), Number(intent.receipt.pause), key => {
+            const ask = asks[key];
+            if (!ask || !['pending', 'unknown'].includes(ask.status)) throw staleAsk;
+            ask.status = choice;
+          });
+        } catch (error) {
+          if (error !== staleAsk) throw error;
+        }
+      store.transaction(state => {
+        const current = state.receipts.find(r => r.id === intent.receipt.id);
+        if (current?.stage === 'intent') current.stage = accepted ? 'accepted' : 'rejected';
+      });
+    } catch {
+      actions.push({
+        run_id: 'coord',
+        action: 'error',
+        ok: false,
+        error: 'coord intent retryable failure',
+      });
+    } finally {
+      guard?.release();
+    }
+  }
+  return actions;
+}
+
 /** The mobile hot path shares the board's bounded, cached, parallel and timed loader. */
 export async function loadCurrentDecisions(): Promise<DecisionInbox> {
   return (inboxPending ??= (async () => {

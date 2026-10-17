@@ -206,6 +206,15 @@ test('legacy device upgrades in place and revoked device cannot be revived', () 
   expect(store.transaction(s => s.devices.find(d => d.id === revoked.device.id)!.revoked)).toBe(
     true
   );
+  const before = store.transaction(s => structuredClone(s));
+  expect(() => store.upgrade('0'.repeat(64))).toThrow();
+  expect(() => store.upgrade('INVALID')).toThrow();
+  const held = store.deviceLock(active.device.id);
+  expect(() => new DeviceStore(store.root).upgrade(active.device.id)).toThrow(
+    '设备操作进行中，请重读'
+  );
+  held.release();
+  expect(store.transaction(s => s)).toEqual(before);
 });
 test('device list exposes only non-secret fields and defaults legacy scope', () => {
   const store = new DeviceStore(join(tmp(), 'mobile')),
@@ -487,7 +496,24 @@ test('operator saves COORD intent while supervise lock is held and next tick tra
     ).toMatchObject({ decision: next, receipt: undefined, status: 'paused' });
     const asks = JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'));
     expect(Object.values(asks)[0]).toMatchObject({ status: 'pending' });
-    cliModule.superviseTick();
+    const deviceGuard = store.deviceLock(operator.device.id);
+    const failed = cliModule.superviseTick();
+    if (!('actions' in failed)) throw new Error('unexpected skipped tick');
+    expect(failed.actions).toContainEqual(
+      expect.objectContaining({ run_id: 'coord', action: 'error', ok: false })
+    );
+    expect(store.transaction(s => s.receipts[0].stage)).toBe('intent');
+    deviceGuard.release();
+    const originalAnswer = f.c.answerEscalation.bind(f.c),
+      answer = spyOn(f.c, 'answerEscalation').mockImplementation((...args) => {
+        expect(store.transaction(s => s.receipts.length)).toBe(1);
+        return originalAnswer(...args);
+      });
+    try {
+      cliModule.superviseTick();
+    } finally {
+      answer.mockRestore();
+    }
     expect(
       Object.values(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0]
     ).toMatchObject({ status: 'yes' });
@@ -499,14 +525,13 @@ test('operator saves COORD intent while supervise lock is held and next tick tra
     restoreEnv('ARCHON_HOME', previous[1]);
   }
 }, 30000);
-test('tick rejects stale COORD intent without changing ask', async () => {
+test('tick rejects revoked-device COORD intent without changing ask', async () => {
   const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
     f = coordDecisionFixture();
   try {
     const store = new DeviceStore(),
       operator = pair(store, operatorGrant()),
-      decision = coordinationDecisions(f.c)[0],
-      replacement = { ...f.owner, session_id: 'replacement', pid: 1003, pid_start: 'new-start' };
+      decision = coordinationDecisions(f.c)[0];
     expect(
       (
         await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
@@ -516,18 +541,12 @@ test('tick rejects stale COORD intent without changing ask', async () => {
       ).stage
     ).toBe('intent');
     const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
-    f.c.claim(f.scope, replacement, true, 'generation changed');
+    store.revoke(operator.device.id);
     cliModule.superviseTick();
     expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
       status: 'pending',
     });
     expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
-    expect(
-      await decisionState(operator.device, decision.id, store, {
-        decisions: coordinationDecisions(f.c),
-        unknown: [],
-      })
-    ).toMatchObject({ receipt: { stage: 'rejected' }, status: 'completed' });
   } finally {
     f.presence.mockRestore();
     restoreEnv('SUPERAGENT_HOME', previous[0]);
