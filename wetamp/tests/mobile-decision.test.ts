@@ -380,6 +380,13 @@ test('device revocation requires final confirmation and cannot submit twice', as
   elements['revoke-cancel'].onclick();
   expect(elements['revoke-dialog'].open).toBe(false);
 });
+test('decision click renders progress and the POST receipt before background refresh', () => {
+  const source = readFileSync(join(import.meta.dir, '../src/web/decision.js'), 'utf8');
+  expect(source).toContain("$('receipt').textContent = '正在提交…'");
+  expect(source).toContain("$('receipt').textContent = receiptStatuses[answer.receipt.stage]");
+  expect(source).toContain('void refresh()');
+  expect(source.match(/receiptStatuses\[/g)).toHaveLength(2);
+});
 test('operator inbox sorts multiple runs, ignores archived runs and preserves real unknowns', () => {
   const decision = (run: string) => ({
     id: digest(run),
