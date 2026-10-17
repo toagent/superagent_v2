@@ -13,6 +13,7 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 读取 `diff` 与 `acceptance.log`，源码按需读。不要重读所有任务书、累计台账或 glob 全部历史输出。`carry_over` 在增量轮只含仍 open 的 `blocking`/`debt`；若为 `unknown`，或 refs/所需证据缺失，返回 `INCOMPLETE`，不得猜测 PASS。核验 checkout HEAD 等于 `refs.head`，陈旧候选返回 `INCOMPLETE`。全量 `full_diff` 仅在核验需要上下文时查阅。
 
 逐项核对：目标是否实现、改动范围、正确性、安全（注入、XSS、LLM 信任边界、硬编码 secret）、测试是否真的覆盖所述行为。测试有度：G0/G1 只要求主路径有测试证明，边角场景缺测试记 `low` 进 `debt`，不要求额外测试轮次；G2 或特别难的改动才要求失败模式全覆盖。
+编码端自报的格式或标签问题只写入 `notes`；只有实际需求、正确性或安全缺口形成 blocking 发现。测试产物应写入 run artifacts，不得覆盖已跟踪文件。
 
 核对 manifest 的 `evidence`；若 `coder_partial: true`，编码端自报未完成，请判断完整性，缺失按 blocker 记。
 若 `error_class_ignored: true`，从 manifest 的 `evidence[].coder` 读取原 `error_class`：编码端自报 <class>，请核实。

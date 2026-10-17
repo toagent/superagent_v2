@@ -142,7 +142,7 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
     'selected',
     '已截断：仅前 200 行',
     '共 401 行',
-    '不存在（可能是待新建文件）',
+    '未内联（当前 worktree 中不存在）',
     '48KB 上限',
     '不内联（仓库外或隐私路径）',
     '"cwd"',
@@ -1096,9 +1096,8 @@ describe('renderBrief', () => {
       '/H/core.md',
     ])
       expect(b).toContain(s);
-    expect(b).toContain(
-      '以下命令由引擎在你交付后执行，结果与失败用例会回传给修复节点；你只运行与本次改动直接相关的聚焦测试。'
-    );
+    expect(b).toContain('交付前在当前 worktree 按原样运行本包全部命令一次');
+    expect(b).toContain('命令通过不代替逐项核对需求的实现位置与对应测试');
     expect(b).not.toContain('跑长时测试（全量、E2E）');
   });
   test('lists the package permissions and the execution-layer red lines', () => {

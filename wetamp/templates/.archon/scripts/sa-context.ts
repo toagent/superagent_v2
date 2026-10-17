@@ -176,10 +176,12 @@ export function contextPack(
   const plan = read(join(gen, 'plan.json')) as Plan | 'unknown';
   if (plan === 'unknown') throw new Error('context: missing plan');
   const root = realpathSync(context.cwd);
-  const inside = (path: string) => {
-    const rel = relative(root, path);
+  const within = (base: string, path: string) => {
+    const rel = relative(base, path);
     return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
   };
+  const inside = (path: string) => within(root, path);
+  const project = context.codegraph.projectPath;
   const privatePath = (path: string) =>
     path
       .split(/[\\/]/)
@@ -218,10 +220,18 @@ export function contextPack(
   for (const entry of entries) {
     const range = /:(\d+)-(\d+)$/.exec(entry);
     const name = range ? entry.slice(0, range.index) : entry;
-    const path = resolve(root, name);
+    const mapped =
+      isAbsolute(name) && isAbsolute(project) && within(project, name)
+        ? relative(project, name)
+        : name;
+    const path = resolve(root, mapped);
     const title = `## 源码 ${entry}`;
-    if (!inside(path) || privatePath(name)) {
+    if (privatePath(name)) {
       sections.push(`${title}\n不内联（仓库外或隐私路径）`);
+      continue;
+    }
+    if (!inside(path)) {
+      sections.push(`${title}\n未内联（无法映射到当前 worktree），需自行读取或请主控补全`);
       continue;
     }
     // Resolve symlinks before reading, including aliases to private files/directories.
@@ -229,19 +239,27 @@ export function contextPack(
     try {
       real = realpathSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      sections.push(`${title}\n不存在（可能是待新建文件）`);
+      const code = (error as NodeJS.ErrnoException).code;
+      sections.push(
+        `${title}\n未内联（${code === 'ENOENT' ? '当前 worktree 中不存在' : '无法解析或读取'}），需自行读取或请主控补全`
+      );
       continue;
     }
     if (!inside(real) || privatePath(relative(root, real))) {
       sections.push(`${title}\n不内联（仓库外或隐私路径）`);
       continue;
     }
-    if (!statSync(real).isFile()) {
-      sections.push(`${title}\n不是普通文件`);
+    let text: string;
+    try {
+      if (!statSync(real).isFile()) {
+        sections.push(`${title}\n未内联（不是普通文件），需自行读取或请主控补全`);
+        continue;
+      }
+      text = readFileSync(real, 'utf8');
+    } catch {
+      sections.push(`${title}\n未内联（无法解析或读取），需自行读取或请主控补全`);
       continue;
     }
-    const text = readFileSync(real, 'utf8');
     const lines = text ? text.split('\n') : [];
     if (text.endsWith('\n')) lines.pop();
     const start = range ? Number(range[1]) : 1;
