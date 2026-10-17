@@ -2496,8 +2496,16 @@ function tick(
       });
     }
   }
-  if (!(asks instanceof Error) && !existsSync(join(sa, 'console/decision-origin'))) {
+  if (!(asks instanceof Error)) {
+    const mobile = existsSync(join(sa, 'console/decision-origin'));
     for (const action of coord().tick((key, title) => {
+      if (mobile) {
+        const current = (asks as Asks)[key];
+        if (current) return { id: current.id, status: current.status };
+        (asks as Asks)[key] = { status: 'pending' };
+        saveAsks(asks as Asks);
+        return { status: 'pending' };
+      }
       const r = pollAsk(
         key,
         () => title,
@@ -2513,7 +2521,7 @@ function tick(
     asks = Object.fromEntries(
       Object.entries(asks).filter(([k]) => k.startsWith('coord:') || live.has(k.split(':')[0]))
     );
-    for (const [key, a] of Object.entries(asks)) {
+    for (const [key, a] of mobile ? [] : Object.entries(asks)) {
       if (a?.status !== 'superseded' || a.stale_answer) continue;
       if (!a.id) {
         const records = askRecords().records.filter(r => matchesAsk(r.question, key));

@@ -6,7 +6,7 @@ import * as archonModule from '../src/archon';
 import * as cliModule from '../src/cli';
 import * as sqlHost from '../../packages/core/src/workflows/sql-host';
 import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
 import {
@@ -21,6 +21,7 @@ import { deliver, publicIPv4, validateSubscription, createPush } from '../src/we
 import {
   authorizeDecision,
   answerDecision,
+  coordinationDecisions,
   decisionState,
   decisionsFromSnapshot,
   currentDecisions,
@@ -30,7 +31,7 @@ import { getRun } from '../src/archon';
 import { loadLedger, report } from '../src/cli';
 import { createLoader } from '../src/board/data';
 import { cockpit } from '../src/board/cockpit';
-import { coord, runScope } from '../src/coord';
+import { coord, runScope, type Identity, type Scope } from '../src/coord';
 const saved = { ...process.env },
   origin = 'https://decision.example.test';
 const grant: Grant = {
@@ -43,6 +44,45 @@ function pair(store: DeviceStore, g = grant) {
   const code = /<p>([a-f0-9]{64})<\/p>/.exec(readFileSync(page, 'utf8'))![1];
   const session = store.pair(code);
   return { code, session, device: store.authenticate(session) };
+}
+function restoreEnv(key: string, value: string | undefined) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+function coordDecisionFixture() {
+  const sa = tmp();
+  process.env.SUPERAGENT_HOME = sa;
+  process.env.ARCHON_HOME = join(sa, 'archon');
+  const c = coord(),
+    scope: Scope = { kind: 'repo', id: 'mobile-coord-fixture' },
+    owner: Identity = {
+      client: 'codex',
+      session_id: 'owner',
+      host: 'test',
+      pid: 1001,
+      pid_start: 'owner-start',
+    },
+    sender: Identity = {
+      client: 'claude',
+      session_id: 'sender',
+      host: 'test',
+      pid: 1002,
+      pid_start: 'sender-start',
+    };
+  c.claim(scope, owner);
+  const handoff = c.handoff(scope, sender, {
+    kind: 'takeover-request',
+    title: '需要接管',
+    body: 'fixture',
+    evidence: [],
+    severity: 'urgent',
+  });
+  const presence = spyOn(c.d, 'presence').mockReturnValue({ state: 'offline' });
+  mkdirSync(join(sa, 'console'), { recursive: true });
+  writeFileSync(join(sa, 'console/decision-origin'), origin);
+  writeFileSync(join(sa, 'gc-tick'), '');
+  cliModule.superviseTick();
+  return { sa, c, scope, owner, sender, message: String(handoff.id), presence };
 }
 beforeAll(() => {
   process.env.HOME = tmp();
@@ -376,6 +416,56 @@ test('operator push shares one inbox and notifies each run once', async () => {
   expect(loads).toBe(2);
   expect(sends).toBe(2);
   expect(store.transaction(s => Object.keys(s.notices))).toHaveLength(2);
+});
+test('operator answers COORD escalation and existing tick transfers ownership; run device cannot see it', async () => {
+  const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
+    f = coordDecisionFixture();
+  try {
+    const store = new DeviceStore(join(f.sa, 'mobile')),
+      operator = pair(store, operatorGrant()),
+      runDevice = pair(store),
+      decision = coordinationDecisions(f.c)[0];
+    expect(decision.question).toContain('是=交给发现者处理 否=继续等');
+    expect((await decisionState(runDevice.device, undefined, store)).decisions).toEqual([]);
+    const receipt = await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
+      decisions: [decision],
+      unknown: [],
+    }));
+    expect(receipt.stage).toBe('accepted');
+    const asks = JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'));
+    expect(Object.values(asks)[0]).toMatchObject({ status: 'yes' });
+    cliModule.superviseTick();
+    expect(f.c.owner(f.scope).owner).toMatchObject(f.sender);
+  } finally {
+    f.presence.mockRestore();
+    restoreEnv('SUPERAGENT_HOME', previous[0]);
+    restoreEnv('ARCHON_HOME', previous[1]);
+  }
+}, 15000);
+test('stale COORD generation returns 409 without changing ask or receipt', async () => {
+  const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
+    f = coordDecisionFixture();
+  try {
+    const store = new DeviceStore(join(f.sa, 'mobile')),
+      operator = pair(store, operatorGrant()),
+      decision = coordinationDecisions(f.c)[0],
+      replacement = { ...f.owner, session_id: 'replacement', pid: 1003, pid_start: 'new-start' };
+    f.c.claim(f.scope, replacement, true, 'generation changed');
+    await expect(
+      answerDecision(store, operator.device, decision.id, 'yes', async () => ({
+        decisions: [decision],
+        unknown: [],
+      }))
+    ).rejects.toMatchObject({ status: 409, message: '决定已变化，请重读' });
+    expect(Object.values(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))).toEqual([
+      { status: 'pending' },
+    ]);
+    expect(store.transaction(s => s.receipts)).toEqual([]);
+  } finally {
+    f.presence.mockRestore();
+    restoreEnv('SUPERAGENT_HOME', previous[0]);
+    restoreEnv('ARCHON_HOME', previous[1]);
+  }
 });
 test('Apple-only push rejects internal, redirect/credential-shaped targets and invalid keys', () => {
   for (const endpoint of [

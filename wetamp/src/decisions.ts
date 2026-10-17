@@ -1,5 +1,5 @@
 import { approvalContextSchema } from '@archon/workflows/schemas/workflow-run';
-import { getRun, archonJson, reportRunRevisions, type RunView } from './archon';
+import { getRun, archonJson, lock, reportRunRevisions, type RunView } from './archon';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -37,6 +37,7 @@ export interface Decision {
   options: { id: string; label: string; consequence: string }[];
   disabled?: string;
   controller?: Controller;
+  coordination?: { message: string; generation: number };
 }
 /** Engine metadata and the current wetamp hold are the shared owner, never asks history. */
 export function describeDecision(
@@ -181,13 +182,54 @@ export function decisionsFromSnapshot(snapshot: Snapshot): DecisionInbox {
     .map(row => row.run_id);
   return { decisions, unknown };
 }
+export function coordinationDecisions(c = coord()): Decision[] {
+  return c
+    .messages()
+    .flatMap(m => {
+      if (
+        m.type ||
+        m.state !== 'escalated' ||
+        !m.ask ||
+        !['pending', 'unknown'].includes(m.ask.status)
+      )
+        return [];
+      const view = c.owner(m.scope);
+      if (
+        view.conflicts.length ||
+        view.generation !== m.ask.generation ||
+        !same(view.owner, m.ask.owner)
+      )
+        return [];
+      return [
+        {
+          id: digest(JSON.stringify(['coord', m.id, m.ask.generation, m.ask.question])),
+          run: `coord:${m.id}`,
+          engine: 'coord',
+          node: m.id,
+          pause: String(m.ask.generation),
+          question: m.ask.question,
+          reason: 'COORD 交接需要操作者决定',
+          context: m.title,
+          options: [
+            { id: 'yes', label: '是', consequence: '交给发现者处理' },
+            { id: 'no', label: '否', consequence: '继续等待当前负责人' },
+          ],
+          coordination: { message: m.id, generation: m.ask.generation },
+        },
+      ];
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
 
 /** The mobile hot path shares the board's bounded, cached, parallel and timed loader. */
 export async function loadCurrentDecisions(): Promise<DecisionInbox> {
   return (inboxPending ??= (async () => {
     const { createLoader } = await import('./board/data');
     inboxLoader ??= createLoader();
-    return decisionsFromSnapshot(await inboxLoader(DECISION_SCAN_LIMIT));
+    const inbox = decisionsFromSnapshot(await inboxLoader(DECISION_SCAN_LIMIT));
+    inbox.decisions.push(...coordinationDecisions());
+    inbox.decisions.sort((a, b) => a.id.localeCompare(b.id));
+    return inbox;
   })().finally(() => {
     inboxPending = undefined;
   }));
@@ -202,12 +244,64 @@ export async function answerDecision(
   store: DeviceStore,
   device: Device,
   id: string,
-  choice: string
+  choice: string,
+  loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions
 ): Promise<Receipt> {
   const candidate = isOperatorDevice(device)
-    ? (await loadCurrentDecisions()).decisions.find(d => d.id === id)
+    ? (await loadInbox()).decisions.find(d => d.id === id)
     : undefined;
   if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
+  if (candidate?.coordination) {
+    requireThat(['yes', 'no'].includes(choice), 400, '不支持此选项');
+    const deviceGuard = store.deviceLock(device.id),
+      superviseGuard = lock(join(home().sa, 'supervise.lock'));
+    try {
+      requireThat(superviseGuard.ok, 409, '决定正在处理，请重读');
+      store.transaction(s => {
+        requireThat(
+          s.devices.some(d => d.id === device.id && isAuthorizedDevice(d)),
+          401
+        );
+        requireThat(
+          !s.receipts.some(r => r.id === id),
+          409,
+          '该决定已有答复；请查看回执，不会重放'
+        );
+      });
+      requireThat(
+        coord().answerEscalation(
+          candidate.coordination.message,
+          candidate.coordination.generation,
+          key => {
+            const path = join(home().sa, 'asks.json'),
+              asks = JSON.parse(readFileSync(path, 'utf8')) as Record<string, { status?: unknown }>,
+              ask = asks[key] as { status?: unknown } | undefined;
+            requireThat(ask && ['pending', 'unknown'].includes(String(ask.status)), 409);
+            ask.status = choice;
+            writeAtomic(path, JSON.stringify(asks) + '\n');
+          }
+        ),
+        409,
+        '决定已变化，请重读'
+      );
+      const receipt: Receipt = {
+        id,
+        device: device.id,
+        run: candidate.run,
+        engine: candidate.engine,
+        node: candidate.node,
+        pause: candidate.pause,
+        decision: choice,
+        at: new Date().toISOString(),
+        stage: 'accepted',
+      };
+      store.transaction(s => s.receipts.push(receipt));
+      return receipt;
+    } finally {
+      if (superviseGuard.ok) superviseGuard.release();
+      deviceGuard.release();
+    }
+  }
   const l = loadLedger(candidate?.run ?? device.grant.run),
     c = coord(),
     scope = runScope(l);
@@ -361,6 +455,28 @@ export async function decisionState(
           return { decisions: [], unknown: [device.grant.run] };
         }
       })();
+  const selectedCoord = id
+    ? inbox.decisions.find(d => d.id === id && d.coordination)
+    : inbox.decisions.find(d => d.coordination && !d.disabled);
+  if (selectedCoord || receipt?.run.startsWith('coord:')) {
+    const lastRead = new Date().toISOString();
+    store.transaction(s => {
+      const current = s.devices.find(d => d.id === device.id);
+      requireThat(current && isAuthorizedDevice(current), 401);
+      current.lastRead = lastRead;
+    });
+    return {
+      decision: selectedCoord,
+      decisions: inbox.decisions,
+      unknown: inbox.unknown.length,
+      receipt,
+      status: selectedCoord ? 'paused' : 'completed',
+      lastRead,
+      events: [],
+      stale: false,
+      note: selectedCoord ? '等待操作者决定' : 'COORD 已接收答复，后续由监督 tick 执行',
+    };
+  }
   if (isOperatorDevice(device) && !id && !receipt && !inbox.decisions.length) {
     const lastRead = new Date().toISOString();
     store.transaction(s => {

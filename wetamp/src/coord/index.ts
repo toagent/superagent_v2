@@ -648,6 +648,32 @@ export class Coordination {
         ['queued', 'surfaced', 'accepted', 'escalated'].includes(m.state)
     ).length;
   }
+  answerEscalation(id: string, generation: number, persist: (key: string) => void): boolean {
+    if (!/^[0-9a-f]{64}$/.test(id)) return false;
+    const initial = this.read('inbox', id);
+    if (!initial) return false;
+    return this.scoped(initial.scope, () =>
+      this.locked(() => {
+        const m = this.read('inbox', id),
+          view = m && this.owner(m.scope);
+        if (
+          !m ||
+          m.type ||
+          m.state !== 'escalated' ||
+          !m.ask ||
+          !['pending', 'unknown'].includes(m.ask.status) ||
+          m.ask.generation !== generation ||
+          !view ||
+          view.conflicts.length ||
+          view.generation !== generation ||
+          !same(view.owner, m.ask.owner)
+        )
+          return false;
+        persist(`coord:${m.id}:${String(generation)}:${String(m.ask_round ?? 0)}`);
+        return true;
+      })
+    );
+  }
   // Supervisor is an injected transport. Every answer is fenced against the owner/generation asked about.
   tick(
     ask: (key: string, question: string) => { id?: string; status: string }

@@ -142,7 +142,8 @@ append-only 数组上界与绝对位置；持续追加不重启遍历，条目�
 
 `console mobile-config https://<private-host>` 只保存配置，不部署或重启。配置存在时，
 `supervise-tick` 对未来人工门不调用旧提醒 transport，也不读取/修改旧提醒；不支持的
-COORD 接管、自由文本反馈、旧 occurrence 和非人工 blocker 必须在 Mac 处理。
+自由文本反馈、旧 occurrence 和非人工 blocker 必须在 Mac 处理。COORD 交接升级进入
+operator 设备收件箱；是=交给发现者处理，否=继续等待，旧提醒条目保持原样。
 `report.human_decisions`、board 与手机从同一当前引擎 gate 描述派生，历史 asks 仍保留。
 
 人工在已提交、G2 评审通过的引擎检出中执行 `superagent console stop` 后 `superagent console start` 安装/加载现有
