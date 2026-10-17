@@ -1,7 +1,7 @@
 # superagent（wetamp/）
 
 Archon 之上的 superagent 胶水层：把 `plan.json` 编译成 Archon 工作流，用 `archon workflow run --detach` 执行，
-外加崩溃恢复、评审轮次门禁、人工签收与合入命令。只改 `wetamp/`；仓库其余部分与 upstream 保持零差异。
+外加崩溃恢复、评审轮次门禁、人工签收与合入命令。`wetamp/FORK` 精确登记仓库其余部分相对 upstream 的有意修改。
 设计见 [`docs/00-architecture.md`](docs/00-architecture.md)，与旧版命令的对照见 [`docs/03-parity-matrix.md`](docs/03-parity-matrix.md)。
 设计原则以 [`templates/.archon/principles.md`](templates/.archon/principles.md) 为单一来源，生成时统一前置到所有 AI 节点的命令提示。
 
@@ -82,7 +82,7 @@ run 启动时把具体模型（含 effort）写进 `gen/<run>/run-config.yaml` �
 
 其它动词：`status <run>`、`cancel <run>`、`recover <run>`（显式恢复已确认 owner 离线的 run；未知副作用须先对账）、`accept <run> [--pkg id]`
 （在 run 的 worktree 里重跑验收命令）、`report`（默认摘要：总体指标、unknown/unreadable 计数与下一步；`--json` 同样默认摘要，`--full` 获取全部明细）、
-`health`（doctor + 别名 + upstream 零差异）、`supervise-tick`（由单个 launchd/cron 作业调用：观察、到期终止、原生审批与历史签收提问桥接）。
+`health`（doctor + 别名 + upstream 差异符合 `wetamp/FORK`）、`supervise-tick`（由单个 launchd/cron 作业调用：观察、到期终止、原生审批与历史签收提问桥接）。
 
 ## 跨元帅交接
 
@@ -113,10 +113,10 @@ gc 不删远端分支、不 `--force`；未合入的分支原样保留并提示�
 
 ```bash
 wetamp/scripts/upgrade-upstream.sh           # dry-run：fetch upstream dev，核对引擎事实与本机 archon.db 列，打印计划
-wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff upstream/dev，校验零差异，改写 wetamp/UPSTREAM
+wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff upstream/dev，校验差异符合 wetamp/FORK，改写 wetamp/UPSTREAM
 ```
 
-`--apply` 不提交 UPSTREAM、不 push。之后按提示执行 `bun install --frozen-lockfile`、`cd wetamp && bun test`、
+`--apply` 不提交 UPSTREAM、不 push。新增有意 fork 补丁须在同一提交登记到 `wetamp/FORK`。之后按提示执行 `bun install --frozen-lockfile`、`cd wetamp && bun test`、
 `wetamp/scripts/selftest.sh`，通过后提交 `wetamp/UPSTREAM`。dry-run 报 “no longer mentions …” 说明 `recover`
 依赖的引擎事实变了，先读 `src/archon.ts` 的 `recover()` 再升级。
 
@@ -126,7 +126,7 @@ wetamp/scripts/upgrade-upstream.sh --apply   # 在当前分支 merge --no-ff ups
 - `plan invalid: repo … outside allowed roots`：把 repo 放到 `~/work` 下，或设置 `SUPERAGENT_WRITE_ROOTS`。
 - `generated workflow invalid`：`install.sh` 未跑或 `config.yaml` 缺 `@sa-coder`/`@sa-reviewer` 别名；重跑 `install.sh`。
 - run 停在 running 但进程在别的机器：`recover` 拒绝（`owner alive or on another host`），到那台机器处理。
-- `superagent health` 报 `reason:"upstream_dirty"`：仓库 `wetamp/` 之外有改动，默认 `upstream_file_count` 给出文件数；用 `superagent health --verbose` 查看 `upstream_files`，确认改动归属后再处理。检查脚本失败另报 `reason:"upstream_check_failed"`，不冒充干净。
+- `superagent health` 报 `reason:"upstream_dirty"`：仓库差异不符合 `wetamp/FORK`（未登记路径或 `stale: <path>`），默认 `upstream_file_count` 给出条目数；用 `superagent health --verbose` 查看 `upstream_files`，确认改动归属后再处理。检查脚本失败另报 `reason:"upstream_check_failed"`，不冒充干净。
 - `superagent health` 报 `capability_drift`：能力映射引用的外部技能缺失；安装对应技能或更新 `capabilities.json` 后复查。缺失能力不会注入节点上下文，也不改变 run 准入。
 - 节点日志：`brief` 输出的 `evidence:` 目录；对话转录：ledger 的 `transcript`。
 

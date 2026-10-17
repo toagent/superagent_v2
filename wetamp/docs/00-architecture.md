@@ -41,6 +41,7 @@ Archon CLI（bun 源码运行，packages/cli）  ──▶ ~/.superagent/archon/
 ```
 wetamp/
   docs/                 本目录
+  FORK                  精确登记相对 upstream 的有意修改路径
   UPSTREAM              钉住的 upstream 提交与版本（升级脚本维护）
   bin/archon            源码运行 shim：exec bun --cwd "$REPO/packages/cli" src/cli.ts "$@"
   bin/superagent        兼容 CLI（bun + TypeScript，无构建步骤）
@@ -83,12 +84,14 @@ P3 支持显式 CLI 后台启动含顶层原生审批的工作流，暂停后由
 git remote add upstream https://github.com/coleam00/Archon.git   # 一次性
 git fetch upstream
 git checkout dev && git merge --ff-only upstream/dev
-git checkout wetamp && git merge dev            # wetamp/ 与 upstream 文件集不相交，不应有冲突
+git checkout wetamp && git merge dev            # FORK 登记路径若冲突，交给 git 停下报告
 bun install --frozen-lockfile
 wetamp/scripts/check-upstream-clean.sh         # 必须为空
 wetamp/scripts/selftest.sh                     # 见 §6
 # 更新 wetamp/UPSTREAM（提交号、Archon 版本、日期），提交到 wetamp 分支
 ```
+
+仅允许 `wetamp/FORK` 精确登记的路径与 upstream 不同；新增有意 fork 补丁须在同一提交登记，已无差异的登记会以 `stale: <path>` 报告。
 
 升级后要复测的 upstream 契约（selftest 覆盖）：`workflow run --workflow-source/--detach/--json` 的 JSON 字段、
 `workflow get --json` 状态字段、`approve/reject --json` 不自动 resume 的语义、`output_format` 字段路径严格校验、config 的 `tiers/aliases` 键。
@@ -196,7 +199,7 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 | `supervise-tick`                           | 唤醒引擎到期等待、观察 owner-lost、桥接人工决定；不自动恢复或重试                                                                                                                  |
 | `land <run>`                               | 打印 `land` 节点输出的合入命令（永不 push）                                                                                                                                        |
 | `report`                                   | 逐个 ledger `workflow get --verbose` 汇总状态/轮次/耗时（token 计量后置）                                                                                                          |
-| `health`                                   | `archon doctor` + 别名解析 + `check-upstream-clean`                                                                                                                                |
+| `health`                                   | `archon doctor` + 别名解析 + `check-upstream-clean`（差异须符合 `wetamp/FORK`）                                                                                                    |
 | `selftest`                                 | §2.4 契约复测 + 一条真实小工作流 detach → `kill -9` → resume                                                                                                                       |
 
 ## 7. 安全姿态（用户决定：无沙箱）

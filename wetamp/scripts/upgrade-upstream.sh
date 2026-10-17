@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 跟进 upstream/dev。默认 dry-run：fetch（只更新远端跟踪引用）+ 核对引擎事实 + 打印计划，不动任何分支与工作区；
-# --apply：在当前分支 merge --no-ff upstream/dev，校验 wetamp/ 之外与 upstream 零差异，改写 wetamp/UPSTREAM（不提交）。永不 push。
+# --apply：在当前分支 merge --no-ff upstream/dev，校验仅 wetamp/FORK 登记路径与 upstream 不同，改写 wetamp/UPSTREAM（不提交）。永不 push。
 # 引擎事实（recover/wait 依赖）登记在 wetamp/UPSTREAM 第 2 行起，逐条对 `git show upstream/dev:<file>` 核对：
 #   table <file> <table> <col>...   该文件里 `CREATE TABLE IF NOT EXISTS <table> (` 到 `);` 之间必须有以 <col> 开头的列定义
 #   fact <file> <text>              该文件必须原样含 <text>（定位写入点，不是全仓 grep）
@@ -35,7 +35,7 @@ if [ -f "$db" ]; then
   for col in status metadata; do grep -qx "$col" <<<"$cols" || die "$db: remote_agent_workflow_runs.$col missing"; done
   echo "db schema: ok (status, metadata)"
 else echo "db schema: skipped (no $db yet)"; fi
-[ -z "$(wetamp/scripts/check-upstream-clean.sh 2>/dev/null)" ] || die "files outside wetamp/ already differ from upstream"
+[ -z "$(wetamp/scripts/check-upstream-clean.sh 2>/dev/null)" ] || die "upstream differences do not match wetamp/FORK"
 [ "$behind" -gt 0 ] || { echo "already up to date"; exit 0; }
 version=$(git show upstream/dev:package.json | sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' | head -1)
 record="commit=$up version=$version branch=dev date=$(date +%F)"
@@ -48,8 +48,8 @@ if [ $apply = 0 ]; then
 fi
 git merge -q --no-ff --no-edit upstream/dev || die "merge stopped; resolve it or run: git merge --abort"
 out=$(wetamp/scripts/check-upstream-clean.sh 2>/dev/null)
-[ -z "$out" ] || die "after merge, files outside wetamp/ differ from upstream:
+[ -z "$out" ] || die "after merge, upstream differences do not match wetamp/FORK:
 $out"
 { echo "$record"; tail -n +2 wetamp/UPSTREAM; } >wetamp/UPSTREAM.new && mv wetamp/UPSTREAM.new wetamp/UPSTREAM
 echo "merged $up. next (manual): bun install --frozen-lockfile && (cd wetamp && bun test) && wetamp/scripts/selftest.sh"
-echo "  then: git add wetamp/UPSTREAM && git commit -m 'wetamp: track upstream $up'"
+echo "  then: update wetamp/FORK for intentional upstream changes; git add wetamp/UPSTREAM wetamp/FORK && git commit -m 'wetamp: track upstream $up'"

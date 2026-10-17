@@ -172,6 +172,15 @@ describe('upgrade-upstream.sh', () => {
     expect(result.out.trim().split('\n').sort()).toEqual([DB_TS, 'package.json', 'new.txt'].sort());
   });
 
+  test('upstream check filters registered paths and reports stale registrations', () => {
+    const { fork, env } = setup();
+    writeFileSync(join(fork, 'wetamp', 'FORK'), '# intentional\n\npackage.json\nstale.txt\n');
+    writeFileSync(join(fork, 'package.json'), '{"name":"registered"}\n');
+    writeFileSync(join(fork, 'new.txt'), 'unregistered');
+    const result = exec([join(fork, 'wetamp', 'scripts', 'check-upstream-clean.sh')], env);
+    expect(result).toEqual({ code: 0, out: 'new.txt\nstale: stale.txt\n' });
+  });
+
   test('dry-run fetches, checks engine facts and prints the plan without touching branches', () => {
     const { up, fork, env } = setup();
     const head = sh('git rev-parse HEAD', fork);
