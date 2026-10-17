@@ -108,6 +108,7 @@ import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
 import { refreshBudgetQuota, relayQuota } from './relay-quota';
+import { capabilityDrift } from './capabilities';
 
 const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
 if (
@@ -1431,6 +1432,10 @@ function health(cwd?: string, verbose = false): number {
   const mode = installMode();
   const aliases = runAliases('claude');
   const drift = aliasDrift(cwd);
+  const capabilities = capabilityDrift(
+    join(WETAMP, 'capabilities.json'),
+    process.env.HOME ?? homedir()
+  );
   const doctor = archon(['doctor']);
   const clean = Bun.spawnSync([join(WETAMP, 'scripts', 'check-upstream-clean.sh')], {
     stdout: 'pipe',
@@ -1441,13 +1446,14 @@ function health(cwd?: string, verbose = false): number {
   const upstreamFiles = upstreamDiff ? upstreamDiff.split('\n') : [];
   const upstreamClean = clean.exitCode === 0 && upstreamFiles.length === 0;
   const worker = codexWorkerProblem();
-  const ok = doctor.code === 0 && upstreamClean && !drift.length && !worker;
+  const ok = doctor.code === 0 && upstreamClean && !drift.length && !capabilities.length && !worker;
   print({
     ok,
     mode,
     doctor: doctor.code === 0 ? 'ok' : tail(doctor.out),
     aliases,
     alias_drift: drift,
+    capability_drift: capabilities,
     upstream_clean: upstreamClean,
     upstream_file_count: upstreamFiles.length,
     ...(!upstreamClean
@@ -1456,7 +1462,7 @@ function health(cwd?: string, verbose = false): number {
     ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
   });
-  return ok ? 0 : drift.length ? EXIT_ALIAS_DRIFT : 1;
+  return ok ? 0 : drift.length || capabilities.length ? EXIT_ALIAS_DRIFT : 1;
 }
 
 function resumeRun(
