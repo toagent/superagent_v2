@@ -458,7 +458,16 @@ export async function decisionState(
   const selectedCoord = id
     ? inbox.decisions.find(d => d.id === id && d.coordination)
     : inbox.decisions.find(d => d.coordination && !d.disabled);
-  if (selectedCoord || receipt?.run.startsWith('coord:')) {
+  const coordReceipt =
+    receipt?.run.startsWith('coord:') &&
+    (id
+      ? receipt.id === id
+      : selectedCoord
+        ? receipt.id === selectedCoord.id
+        : inbox.decisions.length === 0)
+      ? receipt
+      : undefined;
+  if (selectedCoord || coordReceipt) {
     const lastRead = new Date().toISOString();
     store.transaction(s => {
       const current = s.devices.find(d => d.id === device.id);
@@ -469,7 +478,7 @@ export async function decisionState(
       decision: selectedCoord,
       decisions: inbox.decisions,
       unknown: inbox.unknown.length,
-      receipt,
+      receipt: coordReceipt,
       status: selectedCoord ? 'paused' : 'completed',
       lastRead,
       events: [],

@@ -758,6 +758,31 @@ test('real CLI urgent and unknown-timeout use only temporary supervisor state an
     '状态未知'
   );
   expect(s.c.owner(s.scope).owner).toEqual(remote);
+
+  const calls = readFileSync(join(process.env.AGENT_SUPERVISOR_STATE!, 'calls'), 'utf8');
+  mkdirSync(join(s.sa, 'console'), { recursive: true });
+  writeFileSync(join(s.sa, 'console/decision-origin'), 'https://decision.example.test');
+  s.c.claim(s.scope, { ...a, pid: 99999998 }, true, 'mobile fixture');
+  expect(
+    main([
+      'handoff',
+      '--to',
+      s.repo,
+      '--kind',
+      'bug',
+      '--title',
+      'mobile title',
+      '--body-file',
+      body,
+      '--severity',
+      'urgent',
+      '--json',
+    ])
+  ).toBe(0);
+  expect(readFileSync(join(process.env.AGENT_SUPERVISOR_STATE!, 'calls'), 'utf8')).toBe(calls);
+  expect(Object.values(JSON.parse(readFileSync(join(s.sa, 'asks.json'), 'utf8')))).toContainEqual({
+    status: 'pending',
+  });
 });
 test('wait already blocking returns inbox after a new message arrives, before timeout', () => {
   const s = setup();

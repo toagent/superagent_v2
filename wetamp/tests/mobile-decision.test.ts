@@ -432,6 +432,10 @@ test('operator answers COORD escalation and existing tick transfers ownership; r
       unknown: [],
     }));
     expect(receipt.stage).toBe('accepted');
+    const next = { ...decision, id: 'f'.repeat(64), node: 'next-coord' };
+    expect(
+      await decisionState(operator.device, undefined, store, { decisions: [next], unknown: [] })
+    ).toMatchObject({ decision: next, receipt: undefined, status: 'paused' });
     const asks = JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'));
     expect(Object.values(asks)[0]).toMatchObject({ status: 'yes' });
     cliModule.superviseTick();
@@ -509,9 +513,23 @@ test('real CLI canary: production owner, three choices, shared projections, CAS,
   expect(cockpit(snap).needs.some(n => n.question.includes(d.question))).toBe(true);
   const p = pair(store, { run: d.run, engine: d.engine, controller: d.controller! });
   const operator = pair(store, operatorGrant());
-  expect(
-    (await decisionState(operator.device, undefined, store)).decisions.map(x => x.id)
-  ).toContain(d.id);
+  store.transaction(s =>
+    s.receipts.push({
+      id: 'e'.repeat(64),
+      device: operator.device.id,
+      run: 'coord:completed',
+      engine: 'coord',
+      node: 'completed',
+      pause: '1',
+      decision: 'yes',
+      at: new Date().toISOString(),
+      stage: 'accepted',
+    })
+  );
+  const defaultState = await decisionState(operator.device, undefined, store);
+  expect(defaultState.decisions.map(x => x.id)).toContain(d.id);
+  expect(defaultState.decision?.id).toBe(d.id);
+  store.transaction(s => s.receipts.pop());
   const stale = {
     ...p.device,
     grant: { ...p.device.grant, controller: { ...p.device.grant.controller, generation: 999 } },

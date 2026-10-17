@@ -2229,6 +2229,25 @@ function pollAsk(
   return { a, note };
 }
 
+function pollCoordAsk(sa: string, asks: Asks, key: string, title: string) {
+  if (existsSync(join(sa, 'console/decision-origin'))) {
+    const current = asks[key];
+    if (current) return { id: current.id, status: current.status };
+    asks[key] = { status: 'pending' };
+    saveAsks(asks);
+    return { status: 'pending' };
+  }
+  const result = pollAsk(
+    key,
+    () => title,
+    MAX_TTL_H,
+    asks,
+    () => coordinationContext(key)
+  );
+  if ('conflict' in result) throw new Error(result.conflict);
+  return { id: result.a.id, status: result.a.status };
+}
+
 /** plan 截止已过：终止 run（保留证据），该 run 未执行的提问记 expired，ledger 记 failed/deadline；不提醒。 */
 function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): Action {
   const x = { run_id: l.run_id, ...base, action: 'cancel', reason: 'deadline' };
@@ -2498,24 +2517,7 @@ function tick(
   }
   if (!(asks instanceof Error)) {
     const mobile = existsSync(join(sa, 'console/decision-origin'));
-    for (const action of coord().tick((key, title) => {
-      if (mobile) {
-        const current = (asks as Asks)[key];
-        if (current) return { id: current.id, status: current.status };
-        (asks as Asks)[key] = { status: 'pending' };
-        saveAsks(asks as Asks);
-        return { status: 'pending' };
-      }
-      const r = pollAsk(
-        key,
-        () => title,
-        MAX_TTL_H,
-        asks as Asks,
-        () => coordinationContext(key)
-      );
-      if ('conflict' in r) throw new Error(r.conflict);
-      return { id: r.a.id, status: r.a.status };
-    }))
+    for (const action of coord().tick((key, title) => pollCoordAsk(sa, asks as Asks, key, title)))
       out.push({ run_id: 'coord', action: 'coord', ok: true, ...action });
     // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者
     asks = Object.fromEntries(
@@ -3178,17 +3180,7 @@ export function main(argv: string[]): number {
           if (k.ok) {
             try {
               const asks = loadAsks();
-              coord().tick((key, title) => {
-                const r = pollAsk(
-                  key,
-                  () => title,
-                  MAX_TTL_H,
-                  asks,
-                  () => coordinationContext(key)
-                );
-                if ('conflict' in r) throw new Error(r.conflict);
-                return { id: r.a.id, status: r.a.status };
-              });
+              coord().tick((key, title) => pollCoordAsk(home().sa, asks, key, title));
               saveAsks(asks);
             } finally {
               k.release();
