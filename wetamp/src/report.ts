@@ -19,6 +19,7 @@ export {
   metricsOf,
 } from './ledger-metrics';
 import { snapshotOf } from './board/data';
+import { decisionsFromSnapshot } from './decisions';
 // superagent report（F-22）：run 计数摘要 + 执行层用量台账。用量只来自 Archon 事件里的 spend/binding/timing，
 // 未回执的用量记 unknown，从不当 0；不折算金额。
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -520,12 +521,14 @@ export function buildReport(
   const flag = process.argv.find(a => a.startsWith('--since='))?.slice(8) ?? process.argv[process.argv.indexOf('--since') + 1];
   const since = process.argv.some(a => a === '--since' || a.startsWith('--since=')) ? (/^\d{8}$/.test(flag) ? `${flag.slice(0,4)}-${flag.slice(4,6)}-${flag.slice(6,8)}T00:00:00.000Z` : flag) : '';
   if (since && !Number.isFinite(Date.parse(since))) throw new Error('--since must be YYYYMMDD or an ISO timestamp');
+  const decisionLedgers = ls;
   const batch = process.env.SA_ARCHON_BIN && process.env.SA_ARCHON_BIN !== '' ? null : reportRuns(since, '9999-12-31T23:59:59.999Z');
+  const decisionBatch = options.humanDecisions && batch && since ? reportRuns('', '9999-12-31T23:59:59.999Z') : batch;
   if (batch && since) ls = ls.filter(l => archonRunIds(l).some(id => batch.has(id)));
   const views = new Map<string, RunView & { events: Event[] }>();
-  const view = (id: string) => {
+  const view = (id: string, source = batch) => {
     const cached = views.get(id); if (cached) return cached;
-    const run = batch?.get(id);
+    const run = source?.get(id);
     if (!run) throw new Error(`run ${id} outside report window or missing`);
     const result = { ...run, nodes: buildNodeSummaries(run.events) }; views.set(id, result); return result;
   };
@@ -539,13 +542,19 @@ export function buildReport(
   const measurement: Record<string, unknown> = {};
   const attempts: ReturnType<typeof providerTiming> = [];
   const repo_missing = ls.filter(l => !existsSync(l.repo)).map(l => l.run_id);
-  const pairs: Pair[] = ls.map(l => {
+  const pairsOf = (ledgers: Ledger[], source: typeof batch): Pair[] => ledgers.map(l => {
     try {
-      return { ledger: l, run: batch ? view(l.archon_run_id) : getRun(l.archon_run_id, cwdOf(l)) };
+      return { ledger: l, run: source ? view(l.archon_run_id, source) : getRun(l.archon_run_id, cwdOf(l)) };
     } catch (e) {
       return { ledger: l, run: e as Error };
     }
   });
+  const pairs = pairsOf(ls, batch);
+  const decisionPairs = options.humanDecisions
+    ? decisionLedgers === ls && decisionBatch === batch
+      ? pairs
+      : pairsOf(decisionLedgers, decisionBatch)
+    : [];
   const pairRuns = new Map(
     pairs.map(({ ledger, run }) => [JSON.stringify([ledger.repo, ledger.archon_run_id]), run])
   );
@@ -591,8 +600,9 @@ export function buildReport(
     measurement[id] = measurementOf(run, run.events, null, timing, graph, paths[id] as ReturnType<typeof criticalPath>);
     calls.push(...callsOf(id, run.events, null));
   }
+  const boardSnapshot = snapshotOf(pairs, Date.now(), { includeCoordination: false });
   const snapshot = {
-    ...snapshotOf(pairs, Date.now(), { includeCoordination: false }),
+    ...boardSnapshot,
     reflection: 'unknown' as const,
   };
   // ccusage snapshots are cumulative per session. Never add one to its engine turn receipts.
@@ -623,14 +633,11 @@ export function buildReport(
     ...snapshot.summary,
     ...(options.humanDecisions
       ? {
-          human_decisions: {
-            decisions: snapshot.rows
-              .flatMap(row => (row.humanDecision ? [row.humanDecision] : []))
-              .sort((a, b) => a.run.localeCompare(b.run)),
-            unknown: snapshot.rows
-              .filter(row => (row.stale || row.state === 'unreadable') && !row.missing)
-              .map(row => row.run_id),
-          },
+          human_decisions: decisionsFromSnapshot(
+            decisionPairs === pairs
+              ? boardSnapshot
+              : snapshotOf(decisionPairs, Date.now(), { includeCoordination: false })
+          ),
         }
       : {}),
     ...deliveryStats(pairs),
