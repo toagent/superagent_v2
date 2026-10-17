@@ -17,6 +17,7 @@ import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/work
 import { workflowRoles } from './board/workflow';
 import type { TokenUsage } from '../../packages/provider-contract/src/result';
 import { redact } from './redact';
+import { repoScope } from './coord';
 
 export type ReportTokens = Partial<TokenUsage> & {
   basis?: 'gross' | 'raw-exclusive' | 'unknown';
@@ -101,7 +102,7 @@ export interface Owner { client: Client; role: Tier | null; model: string | null
 // prettier-ignore
 export interface UsageSession extends Counts { id: string; client: Client; model: string | null; at: string; cost: number | null; owner?: Owner; parts?: (Counts & { model: string })[] }
 // prettier-ignore
-export interface UsageCache { at: string | null; since?: string; source_at?: Partial<Record<Client, string | null>>; status: string; sources: Partial<Record<Client, string>>; sessions: UsageSession[]; today?: { day: string; status: string; sessions: UsageSession[] }; daily: (Omit<Counts, 'sessions'> & { day: string; client: Client; sessions: null })[] }
+export interface UsageCache { at: string | null; since?: string; repo?: string; source_at?: Partial<Record<Client, string | null>>; status: string; sources: Partial<Record<Client, string>>; sessions: UsageSession[]; today?: { day: string; status: string; sessions: UsageSession[] }; daily: (Omit<Counts, 'sessions'> & { day: string; client: Client; sessions: null })[] }
 type ObjectValue = Record<string, unknown>;
 // prettier-ignore
 const obj = (v: unknown): ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as ObjectValue : {};
@@ -307,19 +308,30 @@ export function requestUsageRefresh(): void {
   p.unref();
 }
 // prettier-ignore
+export function usageForRepo(c: UsageCache, repo: string): UsageCache {
+  const target = repoScope(repo).id;
+  const belongs = (s: UsageSession): boolean => {
+    try {
+      const path = s.owner?.run_id ? loadLedger(s.owner.run_id).repo : s.owner?.cwd;
+      return !!path && repoScope(path).id === target;
+    } catch { return false; }
+  };
+  return { ...c, repo, sessions: c.sessions.filter(belongs), ...(c.today ? { today: { ...c.today, sessions: c.today.sessions.filter(belongs) } } : {}), daily: [] };
+}
+// prettier-ignore
 export function usageSummary(c: UsageCache): Record<string, unknown> {
   const group = (f: (s: UsageSession) => string, xs = c.sessions): Partial<Record<string, Counts>> => {
     const out: Partial<Record<string, Counts>> = {};
     for (const s of xs) { const k = f(s), a = out[k] ??= empty(); for (const field of Object.keys(a) as (keyof Counts)[]) a[field] += s[field]; }
     return out;
   };
-  return { attribution: 'unknown = no matching ownership evidence; may include engine sessions without receipts, interactive sessions or other tools; ? = unknown role', status: c.status, at: c.at, since: c.since, coverage: '仅本机日志；开发机 / mini 不含；会话合计覆盖筛选日期内日志，daily 为实际每日消耗，reasoning 已含在 output 中', sources: c.sources, source_at: c.source_at, total: c.status === 'ok' ? group(() => 'all').all ?? empty() : null, by_role_model: group(s => `${s.owner?.role ?? '?'}·${shortModel(s.model) || '?'}${s.owner?.kind === 'inferred' ? '?' : ''}`, c.sessions.flatMap(s => s.parts?.length ? s.parts.map(p => ({ ...s, ...p })) : [s])), by_kind: group(s => s.owner?.kind ?? 'unknown'), daily: c.daily, top: [...c.sessions].sort((a, b) => b.total - a.total).slice(0, 20).map(s => ({ id: s.id, client: s.client, model: s.model, short_model: shortModel(s.model), at: s.at, owner: s.owner, input: s.input, output: s.output, reasoning: s.reasoning, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, sessions: 1 })) };
+  return { ...(c.repo ? { repo: c.repo } : {}), attribution: 'unknown = no matching ownership evidence; may include engine sessions without receipts, interactive sessions or other tools; ? = unknown role', status: c.status, at: c.at, since: c.since, coverage: c.repo ? '仅本机日志；只含有仓库归属证据的会话，daily 无法按仓库归属而省略；reasoning 已含在 output 中' : '仅本机日志；开发机 / mini 不含；会话合计覆盖筛选日期内日志，daily 为实际每日消耗，reasoning 已含在 output 中', sources: c.sources, source_at: c.source_at, total: c.status === 'ok' ? group(() => 'all').all ?? empty() : null, by_role_model: group(s => `${s.owner?.role ?? '?'}·${shortModel(s.model) || '?'}${s.owner?.kind === 'inferred' ? '?' : ''}`, c.sessions.flatMap(s => s.parts?.length ? s.parts.map(p => ({ ...s, ...p })) : [s])), by_kind: group(s => s.owner?.kind ?? 'unknown'), daily: c.daily, top: [...c.sessions].sort((a, b) => b.total - a.total).slice(0, 20).map(s => ({ id: s.id, client: s.client, model: s.model, short_model: shortModel(s.model), at: s.at, owner: s.owner, input: s.input, output: s.output, reasoning: s.reasoning, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, sessions: 1 })) };
 }
 // prettier-ignore
 export function usageText(c: UsageCache): string {
   const summary = usageSummary(c);
   const row = (k: string, v: Counts): string => [k, v.input, v.output, v.reasoning, v.cacheRead, v.cacheWrite, v.total, v.sessions].join(' ');
-  return ['全量（ccusage） · 仅本机日志；开发机 / mini 不含', `${c.status} · 缓存 ${c.at ?? '无'}`, String(summary.attribution), 'kind input output reasoning cacheRead cacheWrite 合计 会话数', ...Object.entries(summary.by_kind as Record<string, Counts>).map(([k, v]) => row(k, v)), '角色×模型', ...Object.entries(summary.by_role_model as Record<string, Counts>).map(([k, v]) => row(k, v)), 'Top 会话（其余汇总见 --json / Web）', ...[...c.sessions].sort((a, b) => b.total - a.total).slice(0, 5).map(s => `${s.id} ${s.owner?.kind ?? 'unknown'} ${fmtTokens(s.total)}`)].join('\n');
+  return [c.repo ? `仓库 ${c.repo}（ccusage） · 仅有归属证据的本机会话` : '全量（ccusage） · 仅本机日志；开发机 / mini 不含', `${c.status} · 缓存 ${c.at ?? '无'}`, String(summary.attribution), 'kind input output reasoning cacheRead cacheWrite 合计 会话数', ...Object.entries(summary.by_kind as Record<string, Counts>).map(([k, v]) => row(k, v)), '角色×模型', ...Object.entries(summary.by_role_model as Record<string, Counts>).map(([k, v]) => row(k, v)), 'Top 会话（其余汇总见 --json / Web）', ...[...c.sessions].sort((a, b) => b.total - a.total).slice(0, 5).map(s => `${s.id} ${s.owner?.kind ?? 'unknown'} ${fmtTokens(s.total)}`)].join('\n');
 }
 // prettier-ignore
 export const fmtTokens = (n: number): string => n >= 1e9 ? `${(n / 1e9).toFixed(1)}G` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
@@ -328,7 +340,7 @@ export async function usageCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv), since = a.flags.since;
   const date = since ? new Date(`${since.slice(0, 4)}-${since.slice(4, 6)}-${since.slice(6, 8)}`) : null;
   if (since && (!/^\d{8}$/.test(since) || !date || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10).replaceAll('-', '') !== since)) throw new Error('--since must be YYYYMMDD');
-  const cached = readUsage(), c = a.flags.refresh || (since && cached.since !== since) ? await refreshUsage(since) : cached;
+  const cached = readUsage(), all = a.flags.refresh || (since && cached.since !== since) ? await refreshUsage(since) : cached, c = a.flags.repo ? usageForRepo(all, a.flags.repo) : all;
   console.log(a.flags.json ? JSON.stringify(usageSummary(c), null, 2) : usageText(c));
   return c.status === 'ok' ? 0 : 1;
 }
