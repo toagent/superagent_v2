@@ -3,6 +3,7 @@ let csrf = '',
   selected = new URL(location.href).searchParams.get('decision'),
   busy = false,
   revokeBusy = false,
+  refreshGeneration = 0,
   latest;
 async function request(path, data) {
   const response = await fetch(path, {
@@ -29,18 +30,29 @@ const statuses = {
   idle: '当前没有待处理事项',
   unknown: '观察丢失，当前状态未知',
 };
+const receiptStatuses = {
+  intent: '已保存选择，等待引擎确认',
+  accepted: '引擎已接收选择',
+  rejected: '决定已变化，未执行；请重读',
+  resuming: '引擎已接收选择，正在继续执行',
+  unknown: '提交结果未知，请在 Mac 核验；不会自动重发',
+};
 async function refresh() {
+  const generation = ++refreshGeneration;
   try {
-    const view = await request('/sa/decisions');
+    const view = await request('/sa/decisions'),
+      decisions = view.decisions || (view.decision ? [view.decision] : []);
+    let nextSelected = selected,
+      state = nextSelected ? await request('/sa/decisions/' + nextSelected + '/state') : view;
+    if (state.stale) {
+      nextSelected = decisions.find(d => !d.disabled)?.id || decisions[0]?.id || null;
+      state = nextSelected ? await request('/sa/decisions/' + nextSelected + '/state') : view;
+    }
+    if (generation !== refreshGeneration) return;
+    selected = nextSelected;
     csrf = view.csrf;
     latest = view;
     $('setup').hidden = true;
-    const decisions = view.decisions || (view.decision ? [view.decision] : []);
-    let state = selected ? await request('/sa/decisions/' + selected + '/state') : view;
-    if (state.stale) {
-      selected = decisions.find(d => !d.disabled)?.id || decisions[0]?.id || null;
-      state = selected ? await request('/sa/decisions/' + selected + '/state') : view;
-    }
     $('inbox-wrap').hidden = !decisions.length;
     $('inbox').replaceChildren();
     for (const entry of decisions) {
@@ -64,13 +76,7 @@ async function refresh() {
       (statuses[state.status] || '状态未知') +
       (['completed', 'unknown'].includes(state.status) ? '。' + state.note : '');
     $('receipt').textContent = state.receipt
-      ? {
-          intent: '已保存选择，等待引擎确认',
-          accepted: '引擎已接收选择',
-          rejected: '决定已变化，未执行；请重读',
-          resuming: '引擎已接收选择，正在继续执行',
-          unknown: '提交结果未知，请在 Mac 核验；不会自动重发',
-        }[state.receipt.stage]
+      ? receiptStatuses[state.receipt.stage]
       : state.stale
         ? '旧通知已失效，请回到当前事项'
         : '尚未提交选择';
@@ -94,15 +100,20 @@ async function refresh() {
           if (busy || !confirm(decision.question + '\n' + option.label + '\n' + option.consequence))
             return;
           busy = true;
+          refreshGeneration++;
           for (const b of $('options').children) b.disabled = true;
           selected = decision.id;
+          $('receipt').textContent = '正在提交…';
           try {
-            await request('/sa/decisions/' + decision.id + '/answer', { decision: option.id });
+            const answer = await request('/sa/decisions/' + decision.id + '/answer', {
+              decision: option.id,
+            });
+            $('receipt').textContent = receiptStatuses[answer.receipt.stage];
           } catch (e) {
             $('connection').textContent = e.message + '；提交结果需重新读取，禁止自动重发';
           } finally {
             busy = false;
-            await refresh();
+            void refresh();
           }
         };
         $('options').append(button);
@@ -116,6 +127,7 @@ async function refresh() {
         : '未订阅，本设备尚未启用通知') +
       (view.unknown ? '；另有 ' + view.unknown + ' 个 ledger 当前无法确认' : '');
   } catch (e) {
+    if (generation !== refreshGeneration) return;
     $('connection').textContent = e.message + '；当前状态未知，上次成功读取的信息可能已过期';
     for (const b of $('options').children) b.disabled = true;
   }
