@@ -28,13 +28,7 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
     );
   };
   const jobs = snap.activity?.jobs ?? [];
-  // Cockpit owns liveness; cached/error rows cannot establish current activity.
-  const active = c.active.filter(r => {
-    const row = snap.rows.find(x => x.run_id === r.id);
-    return (
-      !row || (!row.stale && !row.error && (!row.nativeState || row.nativeState === 'running'))
-    );
-  });
+  const active = c.active;
   const unverified =
     snap.rows.filter(
       r =>

@@ -206,7 +206,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     const age = now - clock(at ?? '');
     return age >= 0 && age < 600000;
   };
-  const liveRows = s.rows.filter(r => r.state === 'running' && fresh(r.lastEvent));
+  const liveRows = s.rows.filter(r => r.state === 'running' && !r.stale && !r.error);
   const liveJobs =
     s.activity?.jobs.filter(j => j.state === 'running' && j.pidAlive && fresh(j.heartbeatAt)) ?? [];
   const zombies =
