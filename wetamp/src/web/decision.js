@@ -3,6 +3,7 @@ let csrf = '',
   selected = new URL(location.href).searchParams.get('decision'),
   busy = false,
   revokeBusy = false,
+  refreshGeneration = 0,
   latest;
 async function request(path, data) {
   const response = await fetch(path, {
@@ -37,17 +38,21 @@ const receiptStatuses = {
   unknown: '提交结果未知，请在 Mac 核验；不会自动重发',
 };
 async function refresh() {
+  const generation = ++refreshGeneration;
   try {
-    const view = await request('/sa/decisions');
+    const view = await request('/sa/decisions'),
+      decisions = view.decisions || (view.decision ? [view.decision] : []);
+    let nextSelected = selected,
+      state = nextSelected ? await request('/sa/decisions/' + nextSelected + '/state') : view;
+    if (state.stale) {
+      nextSelected = decisions.find(d => !d.disabled)?.id || decisions[0]?.id || null;
+      state = nextSelected ? await request('/sa/decisions/' + nextSelected + '/state') : view;
+    }
+    if (generation !== refreshGeneration) return;
+    selected = nextSelected;
     csrf = view.csrf;
     latest = view;
     $('setup').hidden = true;
-    const decisions = view.decisions || (view.decision ? [view.decision] : []);
-    let state = selected ? await request('/sa/decisions/' + selected + '/state') : view;
-    if (state.stale) {
-      selected = decisions.find(d => !d.disabled)?.id || decisions[0]?.id || null;
-      state = selected ? await request('/sa/decisions/' + selected + '/state') : view;
-    }
     $('inbox-wrap').hidden = !decisions.length;
     $('inbox').replaceChildren();
     for (const entry of decisions) {
@@ -95,6 +100,7 @@ async function refresh() {
           if (busy || !confirm(decision.question + '\n' + option.label + '\n' + option.consequence))
             return;
           busy = true;
+          refreshGeneration++;
           for (const b of $('options').children) b.disabled = true;
           selected = decision.id;
           $('receipt').textContent = '正在提交…';
@@ -121,6 +127,7 @@ async function refresh() {
         : '未订阅，本设备尚未启用通知') +
       (view.unknown ? '；另有 ' + view.unknown + ' 个 ledger 当前无法确认' : '');
   } catch (e) {
+    if (generation !== refreshGeneration) return;
     $('connection').textContent = e.message + '；当前状态未知，上次成功读取的信息可能已过期';
     for (const b of $('options').children) b.disabled = true;
   }
