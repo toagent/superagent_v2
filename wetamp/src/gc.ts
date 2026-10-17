@@ -10,9 +10,9 @@ import {
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { isPathInside } from '@archon/paths';
-import { getRun, QUERY_TIMEOUT_MS } from './archon';
-import { home } from './config';
-import { artifactsOf, ledgerIds, loadLedger, updateLedger, type Ledger } from './cli';
+import { getRun, QUERY_TIMEOUT_MS, reportRunRevisions } from './archon';
+import { home, writeAtomic } from './config';
+import { artifactsOf, ledgerIds, ledgerPath, loadLedger, updateLedger, type Ledger } from './cli';
 import type { Plan } from './plan';
 import { createRequire } from 'node:module';
 export interface ScratchAction {
@@ -51,6 +51,9 @@ export interface GcAction {
   at?: string;
   record_error?: string;
 }
+
+class GcSkip extends Error {}
+type RepoState = [git: (...args: string[]) => string, trees: string[][], refs: string];
 
 // Only engine probe directories enter this path; run/user worktrees keep their existing guards.
 function collectProbe(path: string, id: string, dryRun: boolean, repo?: string): GcAction {
@@ -153,9 +156,52 @@ function collectGen(dryRun: boolean): GcAction[] {
 /** Registered runs use the recovery lock; unreferenced gen snapshots use age and path guards. */
 export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] {
   const out: GcAction[] = [];
+  let revisions: Map<string, string> | null = null;
+  try {
+    if (!dryRun) revisions = reportRunRevisions();
+  } catch (e) {
+    console.error(`gc revision cache unavailable: ${(e as Error).message}`);
+  }
+  let cached: Record<string, string> = {};
+  if (!dryRun)
+    try {
+      cached = JSON.parse(
+        readFileSync(join(home().sa, 'gc-inputs.json'), 'utf8')
+      ) as unknown as Record<string, string>;
+    } catch {
+      cached = {};
+    }
+  const next: Record<string, string> = {},
+    repos = new Map<string, RepoState>();
+  const repoState = (repo: string): RepoState => {
+    const hit = repos.get(repo);
+    if (hit) return hit;
+    const git = (...args: string[]): string => {
+      const p = Bun.spawnSync(['git', '-C', repo, ...args], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: QUERY_TIMEOUT_MS,
+      });
+      if (p.exitCode !== 0)
+        throw new Error(p.stderr.toString() || `git ${args.join(' ')} exit ${String(p.exitCode)}`);
+      return p.stdout.toString();
+    };
+    const rawTrees = git('worktree', 'list', '--porcelain', '-z'),
+      rawRefs = git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/'),
+      state: RepoState = [git, rawTrees.split('\0\0').map(r => r.split('\0')), rawRefs];
+    repos.set(repo, state);
+    return state;
+  };
+  const fingerprint = (id: string, l: Ledger, state: RepoState): string | undefined => {
+    const revision = revisions?.get(l.archon_run_id);
+    if (!revision) return undefined;
+    const { mtimeMs, size } = statSync(ledgerPath(id));
+    return JSON.stringify([l.archon_run_id, mtimeMs, size, revision, ...state.slice(1)]);
+  };
   try {
     for (const id of ledgerIds()) {
       const events: GcAction[] = [];
+      const failures: unknown[] = [];
       const collect = (l: Ledger): void => {
         let object: GcAction['object'] = 'run';
         const event = (action: GcAction['action'], reason: string, path?: string): void => {
@@ -174,31 +220,19 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
           if (plan.repo !== l.repo || l.branch !== `sa/${id}`)
             throw new Error('ledger/plan identity mismatch');
           const ref = `refs/heads/sa/${id}`;
-          const git = (...args: string[]): string => {
-            const p = Bun.spawnSync(['git', '-C', plan.repo, ...args], {
-              stdout: 'pipe',
-              stderr: 'pipe',
-              timeout: QUERY_TIMEOUT_MS,
-            });
-            if (p.exitCode !== 0)
-              throw new Error(
-                p.stderr.toString() || `git ${args.join(' ')} exit ${String(p.exitCode)}`
-              );
-            return p.stdout.toString();
-          };
+          const state = repoState(plan.repo),
+            git = state[0];
           const trees = (): string[][] =>
             git('worktree', 'list', '--porcelain', '-z')
               .split('\0\0')
               .map(r => r.split('\0'));
-          const listed = trees();
-          const refs = git('for-each-ref', '--format=%(refname) %(objectname)', ref)
-            .trim()
-            .split('\n');
+          const listed = state[1];
+          const refs = state[2].trim().split('\n');
           const sha = refs.find(r => r.startsWith(`${ref} `))?.slice(ref.length + 1);
           const run = getRun(l.archon_run_id, plan.repo);
           if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
           if (!['completed', 'failed', 'cancelled'].includes(run.status))
-            throw new Error(`run ${run.status} remains recoverable`);
+            throw new GcSkip(`run ${run.status} remains recoverable`);
           if (run.output_root) {
             const art = artifactsOf(run),
               trash = join(art, '.trash');
@@ -225,10 +259,10 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
             e => e.object === 'worktree' && e.action === 'removed' && e.path === path
           );
           if (tree ? !tree.includes(`branch ${ref}`) : !removed || existsSync(path))
-            throw new Error('worktree path/branch registration mismatch');
+            throw new GcSkip('worktree path/branch registration mismatch');
           if (!sha) {
             if (!tree && removed) return;
-            throw new Error('registered branch missing');
+            throw new GcSkip('registered branch missing');
           }
           const merged = git(
             'for-each-ref',
@@ -243,7 +277,7 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
           // A failed run stays retryable through tick/decide whether or not it is fake.
           const disposable = engine.fake === true && run.status !== 'failed';
           if (!merged && !disposable && l.rejected !== run.id)
-            throw new Error(`run ${run.status} branch not merged; remains recoverable`);
+            throw new GcSkip(`run ${run.status} branch not merged; remains recoverable`);
           if (tree) {
             if (!dryRun) git('worktree', 'remove', path);
             event(dryRun ? 'would_remove' : 'removed', 'terminal run worktree', path);
@@ -262,6 +296,7 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
             event(dryRun ? 'would_remove' : 'removed', 'terminal run branch');
           }
         } catch (e) {
+          if (!(e instanceof GcSkip)) failures.push(e);
           event('skipped', e instanceof Error ? e.message : String(e));
         } finally {
           if (!dryRun)
@@ -279,8 +314,22 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
       };
       try {
         const l = loadLedger(id);
-        if (dryRun) collect(l);
-        else updateLedger(l, collect);
+        const state = (() => {
+            try {
+              return repoState(l.repo);
+            } catch {
+              return undefined;
+            }
+          })(),
+          fp = state && fingerprint(id, l, state);
+        if (fp && cached[id] === fp) next[id] = fp;
+        else if (dryRun) collect(l);
+        else {
+          updateLedger(l, collect);
+          const after = state && fingerprint(id, l, state);
+          if (!failures.length && after && events.every(e => e.action === 'skipped'))
+            next[id] = after;
+        }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         events.push({ run_id: id, object: 'run', action: 'skipped', reason, record_error: reason });
@@ -290,6 +339,7 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
   } catch (e) {
     out.push({ run_id: '*', object: 'run', action: 'skipped', reason: String(e) });
   }
+  if (!dryRun && revisions) writeAtomic(join(home().sa, 'gc-inputs.json'), JSON.stringify(next));
   try {
     for (const root of new Set(probeRoots.filter(existsSync).map(p => realpathSync(p)))) {
       for (const entry of readdirSync(root, { withFileTypes: true })) {

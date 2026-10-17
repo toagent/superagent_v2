@@ -33,9 +33,12 @@ const initialTrees = realTrees();
 afterAll(() => expect(realTrees()).toBe(initialTrees));
 const views = new Map<string, archon.RunView>();
 let query: ReturnType<typeof spyOn<typeof archon, 'getRun'>> | undefined;
+let revisions: ReturnType<typeof spyOn<typeof archon, 'reportRunRevisions'>> | undefined;
 afterEach(() => {
   query?.mockRestore();
+  revisions?.mockRestore();
   query = undefined;
+  revisions = undefined;
   views.clear();
   keys.forEach((k, i) => {
     if (originalEnv[i] === undefined) delete process.env[k];
@@ -119,6 +122,7 @@ function fixture(
 
 test('merged completed run removes only its worktree and branch; second GC is idempotent', () => {
   const f = fixture();
+  revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
   const unregistered = join(f.root, 'archon', 'workspaces', 'unregistered');
   mkdirSync(unregistered);
   expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
@@ -137,6 +141,20 @@ test('merged completed run removes only its worktree and branch; second GC is id
   expect(readFileSync(path, 'utf8')).toBe(bytes);
   expect(statSync(path).mtimeMs).toBe(old.getTime());
   expect(loadLedger(f.id).gc).toHaveLength(2);
+});
+
+test('unchanged skipped ledger uses cache and branch SHA changes invalidate it', () => {
+  const f = fixture('completed', false);
+  revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+  expect(gc()[0].reason).toContain('not merged');
+  query?.mockClear();
+  expect(gc()).toEqual([]);
+  expect(query).not.toHaveBeenCalled();
+  writeFileSync(join(f.path, 'next.txt'), 'next');
+  f.git('-C', f.path, 'add', 'next.txt');
+  f.git('-C', f.path, '-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'next');
+  expect(gc()[0].reason).toContain('not merged');
+  expect(query).toHaveBeenCalledTimes(1);
 });
 
 test('unmerged completed run is retained and the same skip is recorded only once', () => {
