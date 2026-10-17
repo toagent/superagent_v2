@@ -1074,6 +1074,14 @@ describe('buildWorkflow', () => {
 });
 
 describe('renderBrief', () => {
+  test('takes the S package test limit from tiers policy', () => {
+    const p = fixture.packages[0];
+    const limit = loadTiers().policy.test_budget.S;
+    const brief = renderBrief(p, '/H/core.md', capsOf(fixture, p, []));
+    expect(brief).toContain(
+      `新增测试上限（除非任务备注另有明确要求）：${String(limit.cases)} 个用例、${String(limit.lines)} 行测试代码。`
+    );
+  });
   test('carries goal, write scope, accept commands and hint path verbatim', () => {
     const b = renderBrief(
       fixture.packages[0],

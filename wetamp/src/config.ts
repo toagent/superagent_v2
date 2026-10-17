@@ -160,6 +160,7 @@ export interface Tiers {
     code_extensions: string[];
     exempt_paths: string[];
     budget_floor: { S: number };
+    test_budget: Record<Pkg['size'], { cases: number; lines: number }>;
   };
 }
 
@@ -191,6 +192,12 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
   const coderBudget = obj(t.policy.coder_budget_usd);
   if (typeof coderBudget.claude !== 'number' || !Number.isFinite(coderBudget.claude) || coderBudget.claude <= 0 || Object.entries(coderBudget).some(([provider, n]) => !['claude', 'codex'].includes(provider) || typeof n !== 'number' || !Number.isFinite(n) || n <= 0))
     throw new Error('tiers.policy.coder_budget_usd: expected positive finite provider budgets');
+  const testBudget = obj(t.policy.test_budget);
+  for (const size of ['S', 'M', 'L']) {
+    const value = obj(testBudget[size]);
+    if (![value.cases, value.lines].every(n => typeof n === 'number' && Number.isInteger(n) && n > 0))
+      throw new Error(`tiers.policy.test_budget.${size}: expected positive integer cases and lines`);
+  }
   for (const c of ['claude', 'codex'] as const) {
     const models = obj(obj(obj(t.routing).commander).by_console)[c];
     if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))

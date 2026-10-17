@@ -93,6 +93,11 @@
     "exempt_paths": ["*.md"],
     "budget_floor": {
       "S": 200000
+    },
+    "test_budget": {
+      "S": { "cases": 2, "lines": 40 },
+      "M": { "cases": 4, "lines": 120 },
+      "L": { "cases": 8, "lines": 300 }
     }
   }
 }

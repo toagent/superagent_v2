@@ -692,7 +692,12 @@ const fakeReview = (r: number): string => {
 };
 
 /** 单趟替换：计划文本里出现的 `{{x}}` 不会被再次展开。 */
-export function renderBrief(p: Pkg, hint: string, caps: Caps): string {
+export function renderBrief(
+  p: Pkg,
+  hint: string,
+  caps: Caps,
+  testBudget = loadTiers().policy.test_budget
+): string {
   const list = (xs: string[] | undefined): string =>
     xs?.length ? xs.map(x => `- \`${x}\``).join('\n') : '- （无）';
   const vars: Partial<Record<string, string>> = {
@@ -700,6 +705,8 @@ export function renderBrief(p: Pkg, hint: string, caps: Caps): string {
     title: p.title,
     risk: p.risk,
     size: p.size,
+    test_cases: String(testBudget[p.size].cases),
+    test_lines: String(testBudget[p.size].lines),
     goal:
       p.goal +
       (p.requirements
@@ -816,7 +823,9 @@ export function generate(
   for (const p of plan.packages) {
     writeFileSync(
       join(dir, 'briefs', `${p.id}.md`),
-      principles + '\n' + renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p))
+      principles +
+        '\n' +
+        renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p), tiers.policy.test_budget)
     );
   }
   const lessons = injectMemory(
