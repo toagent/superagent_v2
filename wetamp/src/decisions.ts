@@ -265,6 +265,7 @@ export function applyCoordIntents(
       const keyPrefix = `${intent.receipt.run}:${intent.receipt.pause}:`,
         validChoice = choice === 'yes' || choice === 'no';
       let accepted =
+        authorized &&
         validChoice &&
         Object.entries(asks).some(
           ([key, ask]) => key.startsWith(keyPrefix) && ask?.status === choice
@@ -323,8 +324,11 @@ export async function answerDecision(
   choice: string,
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions
 ): Promise<Receipt> {
+  const coordCandidate = isOperatorDevice(device)
+    ? coordinationDecisions().find(d => d.id === id)
+    : undefined;
   const candidate = isOperatorDevice(device)
-    ? (await loadInbox()).decisions.find(d => d.id === id)
+    ? (coordCandidate ?? (await loadInbox()).decisions.find(d => d.id === id))
     : undefined;
   if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
   if (candidate?.coordination) {
@@ -503,8 +507,12 @@ export async function decisionState(
   const receipt = store.transaction(s =>
     s.receipts.filter(r => (!id || r.id === id) && r.device === device.id).at(-1)
   );
+  const coordDecisions = isOperatorDevice(device) && id ? coordinationDecisions() : undefined;
   const inbox = isOperatorDevice(device)
-    ? (operatorInbox ?? (await loadCurrentDecisions()))
+    ? (operatorInbox ??
+      (id && (coordDecisions?.some(d => d.id === id) || receipt?.run.startsWith('coord:'))
+        ? { decisions: coordDecisions ?? [], unknown: [] }
+        : await loadCurrentDecisions()))
     : (() => {
         try {
           const l = loadLedger(device.grant.run),
