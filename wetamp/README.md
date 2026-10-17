@@ -30,7 +30,7 @@ plan 的目标 repo 必须位于 `SUPERAGENT_WRITE_ROOTS`（冒号分隔，默�
 
 小活用 `superagent quick --goal "修复启动错误" --accept "bun test tests/start.test.ts" --scope "src/**" --scope "tests/**"`，
 `run` 和 `quick` 默认拒绝同仓库写范围重叠（包括已执行完但 `delivery_result` 非 integrated 的 run），状态或历史 plan 不可读也按无法判定拒绝；可用 `--allow-overlap "具体原因"` 显式放行，原因保存到 ledger 的 `allow_overlap`。历史 plan 优先读取 gen_dir/plan.json，否则相对 ledger.repo 解析。此参数不绕过 SQLite-only 等其他启动检查，不自动排队或重试。
-`--accept` 与 `--scope` 可重复；默认单包、单里程碑、size S、risk G1，预算默认 observe、无 token 上限，不附加 deadline，单条验收超时 900 秒。
+`--accept`、`--environment` 与 `--scope` 可重复；`--environment <cmd>` 将环境准备写入 plan 顶层并复用于 run 与 land，超时沿用 `--accept-timeout`。默认单包、单里程碑、size S、risk G1，预算默认 observe、无 token 上限，不附加 deadline，单条验收超时 900 秒。
 repo 默认 cwd 所在 git 根，base 默认当前分支，可用 `--repo <path>`、`--base <ref>` 覆盖；默认写范围 `**/*`，建议显式收窄 scope。
 验收默认 `cache:true`，依赖时间、随机性或外部写入的命令须加 `--no-cache`；`--risk G0|G1|G2` 声明风险，`--review` 请求评审，`--json` 输出与 run 同形。
 生成的 plan 先校验，保存在 `$SUPERAGENT_HOME/plans/quick-<ts>.json`，再走 run 的同一启动路径；p50 预算与 deadline 预测不足只警告，仅显式 hard 预算执行 budget floor 合计校验。

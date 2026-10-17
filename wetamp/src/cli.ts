@@ -163,6 +163,7 @@ const OPTIONS = {
   'allow-overlap': { type: 'string' },
   goal: { type: 'string' },
   'accept-timeout': { type: 'string' },
+  environment: { type: 'string', multiple: true },
   console: { type: 'string' },
   accept: { type: 'string', multiple: true },
   scope: { type: 'string', multiple: true },
@@ -932,6 +933,8 @@ export function quickPlan(a: Args): string {
     throw new Error('quick requires --goal <text> or a non-empty --card <file>');
   if (!a.flags.accept?.length || a.flags.accept.some(cmd => !cmd.trim()))
     throw new Error('quick requires at least one non-empty --accept <cmd>');
+  if (a.flags.environment?.some(cmd => !cmd.trim()))
+    throw new Error('quick --environment requires a non-empty <cmd>');
   const acceptTimeout = Number(a.flags['accept-timeout'] ?? 900);
   if (!Number.isSafeInteger(acceptTimeout) || acceptTimeout <= 0)
     throw new Error('quick --accept-timeout must be a positive integer of seconds');
@@ -957,6 +960,9 @@ export function quickPlan(a: Args): string {
     repo: git('rev-parse', '--show-toplevel'),
     base_ref: a.flags.base ?? git('symbolic-ref', '--short', 'HEAD'),
     ...(consoleClient !== undefined ? { console: consoleClient } : {}),
+    ...(a.flags.environment
+      ? { environment: a.flags.environment.map(cmd => ({ cmd, timeout_s: acceptTimeout })) }
+      : {}),
     // An explicitly requested independent review must never land as DEGRADED_PASS.
     ...(a.flags.review ? { mode: 'strict' as const } : {}),
     budget: { weighted_tokens: 0, unlimited_tokens: true },
@@ -2827,7 +2833,7 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
 }
 
 const USAGE =
-  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|plan check <file>|run <plan.json> [--fake] [--lint-override reason] [--allow-overlap reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>] [--allow-overlap reason]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--repo path] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
+  'usage: superagent <owner [path|run]|claim [path|run] [--takeover --reason text]|release [path|run]|handoff --to path|run --kind bug|task|question|takeover-request --title t --body-file md|inbox [--all|--ack id accepted|rejected|done --note text]|plan check <file>|run <plan.json> [--fake] [--lint-override reason] [--allow-overlap reason]|quick (--goal <text>|--card <file>) --accept <cmd> [--accept-timeout s] [--environment <cmd>...] [--console codex|claude] [--accept <cmd>...] [--scope <glob>...] [--risk G0|G1|G2] [--review] [--no-cache] [--base <ref>] [--repo <path>] [--allow-overlap reason]|wait <run> [--timeout s]|status|brief|land <run> [--apply]|resume|cancel <run> [--reason label]|recover <run> [--evidence file.json]|decide <run> approve|reject|retry [--pkg id --hint text]|decide --all-held retry|accept <run> [--pkg id]|report [--by-engine commit [--baseline-days N]]|memory|quota|usage [--since YYYYMMDD] [--repo path] [--refresh]|console start|stop|status|url [--open] (web alias)|gc [--dry-run]|scratch-clean [--session id] [--dry-run]|supervise-tick|health [--cwd repo] [--verbose]|board [run] [--once] [--interval s] [--limit n]|models [--mode mode]|job exec --title t [--card p] [--log p] [--role r] [--mode mode] [--worktree branch --base ref] -- cmd...|job clean id|jobs [--all]> (every verb accepts --json)';
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
