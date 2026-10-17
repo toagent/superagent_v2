@@ -31,8 +31,8 @@ const HIGH_RISK_HOLDS: Record<(typeof HIGH_RISK)[number], readonly string[]> = {
 };
 // 高危操作可能需要人工执行；六类风险共享 redline 处置，不增加风险类别。
 const highRiskHolds = Object.values(HIGH_RISK_HOLDS).flat();
-// 显式暂停/取消与 human 签收尊重操作者决定；签收类仅在声明 human 时合法。
-const operatorHolds = ['paused', 'signoff', 'approval'] as const;
+// 显式暂停/取消、human 签收与结构化验收裁决尊重操作者决定；签收类仅在声明 human 时合法。
+const operatorHolds = ['paused', 'signoff', 'approval', 'acceptance_adjudication'] as const;
 // 自动补环境后仍缺外部资源等价于带 needs 的 blocked，不能凭空补齐资源。
 const externalResourceHolds = ['environment'] as const;
 const allowedHolds = new Set([...highRiskHolds, ...operatorHolds, ...externalResourceHolds]);
