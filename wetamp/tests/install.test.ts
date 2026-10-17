@@ -134,6 +134,14 @@ describe('aliases', () => {
     expect(a['@sa-reviewer-alt-codex'].provider).toBe('codex');
   });
 
+  test('same-vendor reviewer pool falls back to another model', () => {
+    const t = fixtureTiers();
+    t.routing.reviewer.by_console.claude = ['claude-opus-5', 'claude-opus-5-5'];
+    const a = renderAliases(t);
+    expect(a['@sa-reviewer'].model).toBe('claude-opus-5');
+    expect(a['@sa-reviewer-alt'].model).toBe('claude-opus-5-5');
+  });
+
   test('author == reviewer is rejected', () => {
     const a = renderAliases(fixtureTiers());
     expect(() => assertAuthorNotReviewer({ ...a, '@sa-reviewer': a['@sa-coder'] })).toThrow(

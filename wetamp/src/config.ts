@@ -270,6 +270,10 @@ export function snapshotPolicy(
 }
 
 const mk = (model: string): Alias => ({ provider: providerOf(model), model, effort: 'high' });
+const reviewerAlt = (pool: Alias[], reviewer: Alias): Alias =>
+  pool.find(a => a.provider !== reviewer.provider) ??
+  pool.find(a => a.model !== reviewer.model) ??
+  reviewer;
 
 /** 渲染全部别名；console=codex 的评审池用 -codex 后缀别名，run 时由 runAliases 钉成 @sa-reviewer。 */
 export function renderAliases(t: Tiers): Record<string, Alias> {
@@ -279,8 +283,7 @@ export function renderAliases(t: Tiers): Record<string, Alias> {
     const pool = t.routing.reviewer.by_console[c].map(mk);
     const reviewer = pool.find(a => a.model !== coder.model);
     if (!reviewer) throw new Error(`console ${c}: no reviewer differs from coder ${coder.model}`);
-    const alt = pool.find(a => a.provider !== reviewer.provider);
-    if (!alt) throw new Error(`console ${c}: no cross-vendor reviewer-alt`);
+    const alt = reviewerAlt(pool, reviewer);
     const sfx = c === 'claude' ? '' : '-codex';
     out[`@sa-reviewer${sfx}`] = reviewer;
     out[`@sa-reviewer-alt${sfx}`] = alt;
@@ -312,7 +315,7 @@ export function runAliases(c: Console, t = loadTiers(), mode = 'auto'): Record<s
     '@sa-coder': { ...coder, effort: 'high' },
     '@sa-reviewer': { ...reviewer, effort: 'high' },
     '@sa-reviewer-alt': {
-      ...(reviewers.find(a => a.provider !== reviewer.provider) ?? reviewers.at(1) ?? reviewer),
+      ...reviewerAlt(reviewers, reviewer),
       effort: 'high',
     },
   };
