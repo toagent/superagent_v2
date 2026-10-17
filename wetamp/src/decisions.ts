@@ -1,5 +1,5 @@
 import { approvalContextSchema } from '@archon/workflows/schemas/workflow-run';
-import { getRun, archonJson, lock, reportRunRevisions, type RunView } from './archon';
+import { getRun, archonJson, reportRunRevisions, type RunView } from './archon';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -253,11 +253,11 @@ export async function answerDecision(
   if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
   if (candidate?.coordination) {
     requireThat(['yes', 'no'].includes(choice), 400, '不支持此选项');
-    const deviceGuard = store.deviceLock(device.id),
-      superviseGuard = lock(join(home().sa, 'supervise.lock'));
+    const deviceGuard = store.deviceLock(device.id);
     try {
-      requireThat(superviseGuard.ok, 409, '决定正在处理，请重读');
-      store.transaction(s => {
+      const current = coordinationDecisions().find(d => d.id === id);
+      requireThat(current?.coordination, 409, '决定已变化，请重读');
+      return store.transaction(s => {
         requireThat(
           s.devices.some(d => d.id === device.id && isAuthorizedDevice(d)),
           401
@@ -267,38 +267,21 @@ export async function answerDecision(
           409,
           '该决定已有答复；请查看回执，不会重放'
         );
+        const receipt: Receipt = {
+          id,
+          device: device.id,
+          run: current.run,
+          engine: current.engine,
+          node: current.node,
+          pause: current.pause,
+          decision: choice,
+          at: new Date().toISOString(),
+          stage: 'intent',
+        };
+        s.receipts.push(receipt);
+        return receipt;
       });
-      requireThat(
-        coord().answerEscalation(
-          candidate.coordination.message,
-          candidate.coordination.generation,
-          key => {
-            const path = join(home().sa, 'asks.json'),
-              asks = JSON.parse(readFileSync(path, 'utf8')) as Record<string, { status?: unknown }>,
-              ask = asks[key] as { status?: unknown } | undefined;
-            requireThat(ask && ['pending', 'unknown'].includes(String(ask.status)), 409);
-            ask.status = choice;
-            writeAtomic(path, JSON.stringify(asks) + '\n');
-          }
-        ),
-        409,
-        '决定已变化，请重读'
-      );
-      const receipt: Receipt = {
-        id,
-        device: device.id,
-        run: candidate.run,
-        engine: candidate.engine,
-        node: candidate.node,
-        pause: candidate.pause,
-        decision: choice,
-        at: new Date().toISOString(),
-        stage: 'accepted',
-      };
-      store.transaction(s => s.receipts.push(receipt));
-      return receipt;
     } finally {
-      if (superviseGuard.ok) superviseGuard.release();
       deviceGuard.release();
     }
   }
@@ -483,7 +466,11 @@ export async function decisionState(
       lastRead,
       events: [],
       stale: false,
-      note: selectedCoord ? '等待操作者决定' : 'COORD 已接收答复，后续由监督 tick 执行',
+      note: selectedCoord
+        ? '等待操作者决定'
+        : coordReceipt?.stage === 'rejected'
+          ? 'COORD 决定已变化，答复未执行'
+          : 'COORD 已接收答复，后续由监督 tick 执行',
     };
   }
   if (isOperatorDevice(device) && !id && !receipt && !inbox.decisions.length) {

@@ -57,7 +57,7 @@ export interface Receipt {
   pause: string;
   decision: string;
   at: string;
-  stage: 'intent' | 'accepted' | 'resuming' | 'unknown';
+  stage: 'intent' | 'accepted' | 'rejected' | 'resuming' | 'unknown';
   error?: { phase: string; name: string; code?: string; message?: string };
 }
 interface State {

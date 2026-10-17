@@ -457,60 +457,83 @@ test('operator push shares one inbox and notifies each run once', async () => {
   expect(sends).toBe(2);
   expect(store.transaction(s => Object.keys(s.notices))).toHaveLength(2);
 });
-test('operator answers COORD escalation and existing tick transfers ownership; run device cannot see it', async () => {
+test('operator saves COORD intent while supervise lock is held and next tick transfers ownership', async () => {
   const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
     f = coordDecisionFixture();
   try {
-    const store = new DeviceStore(join(f.sa, 'mobile')),
+    const store = new DeviceStore(),
       operator = pair(store, operatorGrant()),
       runDevice = pair(store),
       decision = coordinationDecisions(f.c)[0];
     expect(decision.question).toContain('是=交给发现者处理 否=继续等');
     expect((await decisionState(runDevice.device, undefined, store)).decisions).toEqual([]);
+    const held = archonModule.lock(join(f.sa, 'supervise.lock'));
+    if (!held.ok) throw new Error('failed to hold supervise lock');
     const receipt = await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
       decisions: [decision],
       unknown: [],
     }));
-    expect(receipt.stage).toBe('accepted');
+    expect(receipt.stage).toBe('intent');
+    expect(
+      await decisionState(operator.device, decision.id, store, {
+        decisions: [decision],
+        unknown: [],
+      })
+    ).toMatchObject({ receipt: { stage: 'intent' }, status: 'paused' });
+    held.release();
     const next = { ...decision, id: 'f'.repeat(64), node: 'next-coord' };
     expect(
       await decisionState(operator.device, undefined, store, { decisions: [next], unknown: [] })
     ).toMatchObject({ decision: next, receipt: undefined, status: 'paused' });
     const asks = JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'));
-    expect(Object.values(asks)[0]).toMatchObject({ status: 'yes' });
+    expect(Object.values(asks)[0]).toMatchObject({ status: 'pending' });
     cliModule.superviseTick();
+    expect(
+      Object.values(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0]
+    ).toMatchObject({ status: 'yes' });
+    expect(store.transaction(s => s.receipts[0].stage)).toBe('accepted');
     expect(f.c.owner(f.scope).owner).toMatchObject(f.sender);
   } finally {
     f.presence.mockRestore();
     restoreEnv('SUPERAGENT_HOME', previous[0]);
     restoreEnv('ARCHON_HOME', previous[1]);
   }
-}, 15000);
-test('stale COORD generation returns 409 without changing ask or receipt', async () => {
+}, 30000);
+test('tick rejects stale COORD intent without changing ask', async () => {
   const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
     f = coordDecisionFixture();
   try {
-    const store = new DeviceStore(join(f.sa, 'mobile')),
+    const store = new DeviceStore(),
       operator = pair(store, operatorGrant()),
       decision = coordinationDecisions(f.c)[0],
       replacement = { ...f.owner, session_id: 'replacement', pid: 1003, pid_start: 'new-start' };
+    expect(
+      (
+        await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
+          decisions: [decision],
+          unknown: [],
+        }))
+      ).stage
+    ).toBe('intent');
+    const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
     f.c.claim(f.scope, replacement, true, 'generation changed');
-    await expect(
-      answerDecision(store, operator.device, decision.id, 'yes', async () => ({
-        decisions: [decision],
+    cliModule.superviseTick();
+    expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
+      status: 'pending',
+    });
+    expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
+    expect(
+      await decisionState(operator.device, decision.id, store, {
+        decisions: coordinationDecisions(f.c),
         unknown: [],
-      }))
-    ).rejects.toMatchObject({ status: 409, message: '决定已变化，请重读' });
-    expect(Object.values(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))).toEqual([
-      { status: 'pending' },
-    ]);
-    expect(store.transaction(s => s.receipts)).toEqual([]);
+      })
+    ).toMatchObject({ receipt: { stage: 'rejected' }, status: 'completed' });
   } finally {
     f.presence.mockRestore();
     restoreEnv('SUPERAGENT_HOME', previous[0]);
     restoreEnv('ARCHON_HOME', previous[1]);
   }
-});
+}, 15000);
 test('Apple-only push rejects internal, redirect/credential-shaped targets and invalid keys', () => {
   for (const endpoint of [
     'http://web.push.apple.com/Qx',

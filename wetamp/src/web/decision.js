@@ -67,6 +67,7 @@ async function refresh() {
       ? {
           intent: '已保存选择，等待引擎确认',
           accepted: '引擎已接收选择',
+          rejected: '决定已变化，未执行；请重读',
           resuming: '引擎已接收选择，正在继续执行',
           unknown: '提交结果未知，请在 Mac 核验；不会自动重发',
         }[state.receipt.stage]
