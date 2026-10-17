@@ -184,12 +184,18 @@
       "by_console": {
         "claude": [
           "claude-opus-5-5",
-          "gpt-6-astra",
           "gpt-5.6-sol",
+          "gpt-6-astra",
           "claude-opus-5",
           "claude-fable-5-1"
         ],
-        "codex": ["gpt-6-astra", "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"]
+        "codex": [
+          "gpt-5.6-sol",
+          "claude-opus-5-5",
+          "gpt-6-astra",
+          "claude-opus-5",
+          "claude-fable-5-1"
+        ]
       },
       "exclude_author": true
     }
