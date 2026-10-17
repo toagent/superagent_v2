@@ -155,8 +155,12 @@ bootstrap 继续使用 `wetamp/scripts/install.sh` 打印的命令；本包不�
 原 run owner 执行 `superagent console mobile-pair <sa-run> --open`，只在本机私有页面
 显示十分钟一次性码。授权范围为该 run、engine、owner generation；后续人工门逐项
 显示问题和具名后果。设备未配对/未订阅不代表已通知。旧实验 cookie 不迁移。
+本机可用 `superagent console mobile-devices` 查看脱敏设备列表；对已授权、未撤销的
+单 run 设备执行 `superagent console mobile-upgrade <device-id>`，再人工重启 console，
+可原地升级为 Archon 受管具名审批权限，不会获得 `/console`、`/sa/data` 或完整 API 权限。
 手机从主屏幕配对、开启通知后，必须再读取当前门才能提交；打开/关闭通知均无副作用。
-`superagent console mobile-revoke <device-id>` 可在 Mac 撤销；设备也可自行撤销。
+`superagent console mobile-revoke <device-id>` 可在 Mac 撤销；设备也可自行撤销。已撤销或未授权设备
+不能升级或恢复，必须重新配对。升级只针对显式指定的单个设备，不会自动批量迁移。
 
 状态在 `$SUPERAGENT_HOME/console/mobile`（目录 0700、文件 0600），包括设备、
 VAPID、订阅、操作意图和通知去重。通知最多尝试三次；`accepted` 仅是推送服务受理，

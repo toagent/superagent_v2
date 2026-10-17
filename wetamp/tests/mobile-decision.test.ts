@@ -182,6 +182,46 @@ test('legacy authorization migration preserves eligible device state without rev
   expect(() => store.authenticate('expired-session')).toThrow();
   expect(() => store.authenticate('revoked-session')).toThrow();
 });
+test('legacy device upgrades in place and revoked device cannot be revived', () => {
+  const store = new DeviceStore(join(tmp(), 'mobile')),
+    active = pair(store),
+    revoked = pair(store),
+    subscription = { endpoint: 'x', keys: { p256dh: 'k', auth: 'a' } };
+  store.transaction(s => {
+    const d = s.devices.find(d => d.id === active.device.id)!;
+    d.subscription = subscription;
+    d.lastRead = 'cursor';
+  });
+  expect(store.upgrade(active.device.id)).toBe(true);
+  expect(store.upgrade(active.device.id)).toBe(false);
+  expect(store.authenticate(active.session)).toMatchObject({
+    id: active.device.id,
+    csrf: active.device.csrf,
+    lastRead: 'cursor',
+    subscription,
+    grant: operatorGrant(),
+  });
+  store.revoke(revoked.device.id);
+  expect(() => store.upgrade(revoked.device.id)).toThrow('设备已撤销或未授权，请重新配对');
+  expect(store.transaction(s => s.devices.find(d => d.id === revoked.device.id)!.revoked)).toBe(
+    true
+  );
+});
+test('device list exposes only non-secret fields and defaults legacy scope', () => {
+  const store = new DeviceStore(join(tmp(), 'mobile')),
+    active = pair(store);
+  const json = JSON.stringify(store.listDevices());
+  expect(store.listDevices()[0]).toEqual({
+    id: active.device.id,
+    scope: 'run',
+    run: grant.run,
+    revoked: false,
+    authorized: true,
+    has_subscription: false,
+  });
+  for (const secret of ['session', 'csrf', 'subscription', 'vapid', 'pair'])
+    expect(json).not.toContain(`"${secret}"`);
+});
 test('private origin adapter isolates console, pairs once, requires CSRF and bounds streamed requests', async () => {
   const store = new DeviceStore(join(tmp(), 'mobile'));
   const page = store.pairing(grant),

@@ -151,6 +151,33 @@ export class DeviceStore {
     requireThat(guard.ok, 409, '设备操作进行中，请重读');
     return guard;
   }
+  listDevices() {
+    return this.transaction(s =>
+      s.devices.map(d => ({
+        id: d.id,
+        scope: d.grant.scope ?? 'run',
+        run: d.grant.run,
+        revoked: !!d.revoked,
+        authorized: isAuthorizedDevice(d),
+        has_subscription: !!d.subscription,
+      }))
+    );
+  }
+  upgrade(id: string): boolean {
+    const guard = this.deviceLock(id);
+    try {
+      return this.transaction(s => {
+        const d = s.devices.find(d => d.id === id);
+        requireThat(d, 404);
+        requireThat(isAuthorizedDevice(d), 409, '设备已撤销或未授权，请重新配对');
+        if (isOperatorDevice(d)) return false;
+        d.grant = operatorGrant();
+        return true;
+      });
+    } finally {
+      guard.release();
+    }
+  }
   revoke(id: string): void {
     const guard = this.deviceLock(id);
     try {

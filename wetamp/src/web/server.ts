@@ -539,12 +539,33 @@ export async function refreshConsole(
 export async function webCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv),
     sub = a._[1];
-  if (['mobile-pair', 'mobile-revoke', 'mobile-config', 'mobile-disable'].includes(sub)) {
+  if (
+    [
+      'mobile-pair',
+      'mobile-revoke',
+      'mobile-config',
+      'mobile-disable',
+      'mobile-devices',
+      'mobile-upgrade',
+    ].includes(sub)
+  ) {
     const who = caller(); // Only an explicit local commander may delegate operator authority.
     const dir = join(home().sa, 'console');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const store = new DeviceStore();
-    if (sub === 'mobile-config') {
+    if (sub === 'mobile-devices') {
+      console.log(JSON.stringify(store.listDevices()));
+    } else if (sub === 'mobile-upgrade') {
+      const device = a._[2] ?? '';
+      console.log(
+        JSON.stringify({
+          device,
+          scope: 'managed-approvals',
+          upgraded: store.upgrade(device),
+          next: '人工 console stop/start 后生效',
+        })
+      );
+    } else if (sub === 'mobile-config') {
       const { checkOrigin } = await import('./decision-adapter');
       const origin = checkOrigin(a._[2] ?? '').origin;
       const file = join(dir, 'decision-origin');
