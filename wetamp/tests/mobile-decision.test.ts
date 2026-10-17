@@ -504,19 +504,32 @@ test('operator saves COORD intent while supervise lock is held and next tick tra
     );
     expect(store.transaction(s => s.receipts[0].stage)).toBe('intent');
     deviceGuard.release();
+    let writebackGuard: ReturnType<typeof archonModule.lock> | undefined;
     const originalAnswer = f.c.answerEscalation.bind(f.c),
       answer = spyOn(f.c, 'answerEscalation').mockImplementation((...args) => {
         expect(store.transaction(s => s.receipts.length)).toBe(1);
-        return originalAnswer(...args);
+        const applied = originalAnswer(...args);
+        writebackGuard = archonModule.lock(join(store.root, 'state.lock'));
+        if (!writebackGuard.ok) throw new Error('failed to hold receipt writeback lock');
+        return applied;
       });
     try {
-      cliModule.superviseTick();
+      const retryable = cliModule.superviseTick();
+      if (!('actions' in retryable)) throw new Error('unexpected skipped tick');
+      expect(retryable.actions).toContainEqual(
+        expect.objectContaining({ run_id: 'coord', action: 'error', ok: false })
+      );
     } finally {
       answer.mockRestore();
     }
     expect(
       Object.values(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0]
     ).toMatchObject({ status: 'yes' });
+    expect(writebackGuard?.ok).toBe(true);
+    writebackGuard?.ok && writebackGuard.release();
+    writebackGuard = undefined;
+    expect(store.transaction(s => s.receipts[0].stage)).toBe('intent');
+    cliModule.superviseTick();
     expect(store.transaction(s => s.receipts[0].stage)).toBe('accepted');
     expect(f.c.owner(f.scope).owner).toMatchObject(f.sender);
   } finally {
@@ -547,6 +560,41 @@ test('tick rejects revoked-device COORD intent without changing ask', async () =
       status: 'pending',
     });
     expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
+  } finally {
+    f.presence.mockRestore();
+    restoreEnv('SUPERAGENT_HOME', previous[0]);
+    restoreEnv('ARCHON_HOME', previous[1]);
+  }
+}, 15000);
+test('tick rejects stale COORD intent without changing ask', async () => {
+  const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
+    f = coordDecisionFixture();
+  try {
+    const store = new DeviceStore(),
+      operator = pair(store, operatorGrant()),
+      decision = coordinationDecisions(f.c)[0],
+      replacement = { ...f.owner, session_id: 'replacement', pid: 1003, pid_start: 'new-start' };
+    expect(
+      (
+        await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
+          decisions: [decision],
+          unknown: [],
+        }))
+      ).stage
+    ).toBe('intent');
+    const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
+    f.c.claim(f.scope, replacement, true, 'generation changed');
+    cliModule.superviseTick();
+    expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
+      status: 'pending',
+    });
+    expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
+    expect(
+      await decisionState(operator.device, decision.id, store, {
+        decisions: coordinationDecisions(f.c),
+        unknown: [],
+      })
+    ).toMatchObject({ receipt: { stage: 'rejected' }, status: 'completed' });
   } finally {
     f.presence.mockRestore();
     restoreEnv('SUPERAGENT_HOME', previous[0]);

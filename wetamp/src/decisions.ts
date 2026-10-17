@@ -262,8 +262,14 @@ export function applyCoordIntents(
         );
       const choice = intent.receipt.decision;
       const staleAsk = new Error('stale coord ask');
-      let accepted = false;
-      if (authorized && (choice === 'yes' || choice === 'no'))
+      const keyPrefix = `${intent.receipt.run}:${intent.receipt.pause}:`,
+        validChoice = choice === 'yes' || choice === 'no';
+      let accepted =
+        validChoice &&
+        Object.entries(asks).some(
+          ([key, ask]) => key.startsWith(keyPrefix) && ask?.status === choice
+        );
+      if (!accepted && authorized && validChoice)
         try {
           accepted = answer(intent.receipt.run.slice(6), Number(intent.receipt.pause), key => {
             const ask = asks[key];
