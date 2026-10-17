@@ -153,6 +153,30 @@ export function runRevision(id: string): string | null {
   }
 }
 
+/** One SQLite pass for report caches; null keeps PostgreSQL and test stubs on the live path. */
+export function reportRunRevisions(): Map<string, string> | null {
+  const path = join(home().archon, 'archon.db');
+  if (process.env.DATABASE_URL || !existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
+  try {
+    const rows = db
+      .query(
+        `SELECT id, status, last_activity_at, completed_at, metadata,
+      (SELECT COUNT(*) FROM remote_agent_workflow_events WHERE workflow_run_id = r.id) AS events
+      FROM remote_agent_workflow_runs r`
+      )
+      .all() as Record<string, unknown>[];
+    return new Map(
+      rows.map(row => [
+        String(row.id),
+        new Bun.CryptoHasher('sha256').update(JSON.stringify(row)).digest('hex'),
+      ])
+    );
+  } finally {
+    db.close();
+  }
+}
+
 /** Report snapshot: read-only SQLite, complete histories of runs selected by started_at.
  * No provider/CLI processes, and no truncation of attempts crossing the window boundary. */
 // prettier-ignore

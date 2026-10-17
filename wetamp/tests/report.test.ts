@@ -27,6 +27,7 @@ import { archonRunIds } from '../src/archon';
 import { main, type Ledger } from '../src/cli';
 import { tmp } from './helpers';
 import { WETAMP } from '../src/config';
+import { currentDecisions } from '../src/decisions';
 
 const plan = {
   packages: [
@@ -499,6 +500,57 @@ describe('F-22 report', () => {
       expect(readFileSync(join(root, 'archon.db'))).toEqual(before);
       expect(report.provider_timing).toMatchObject({ '0': [{ cmds: 85, explore_ratio: 1, model_turns: 84 }] });
     } finally { keys.forEach((k,i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; }); }
+  });
+
+  test('terminal decision scans reuse unchanged cache and invalidate when the ledger changes', () => {
+    const root = tmp(),
+      keys = ['SUPERAGENT_HOME', 'ARCHON_HOME', 'DATABASE_URL'] as const,
+      saved = keys.map(k => process.env[k]);
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, DATABASE_URL: '' });
+    mkdirSync(join(root, 'runs'));
+    const ledger = {
+      run_id: 'r',
+      archon_run_id: 'engine',
+      repo: root,
+      gen_dir: root,
+      branch: 'task',
+      workflow: 'fixture',
+      recoveries: [],
+    };
+    const file = join(root, 'runs/r.json');
+    writeFileSync(file, JSON.stringify(ledger));
+    const db = new Database(join(root, 'archon.db'));
+    db.run(
+      'CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, last_activity_at TEXT, completed_at TEXT, metadata TEXT)'
+    );
+    db.run('CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT)');
+    db.run(
+      "INSERT INTO remote_agent_workflow_runs VALUES ('engine', 'completed', 'now', 'now', '{}')"
+    );
+    db.close();
+    let calls = 0;
+    const query = () => {
+      calls++;
+      return {
+        id: 'engine',
+        status: 'completed',
+        metadata: {},
+        nodes: [],
+      } as unknown as import('../src/archon').RunView;
+    };
+    try {
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(calls).toBe(1);
+      writeFileSync(file, JSON.stringify({ ...ledger, reason: 'changed' }));
+      expect(currentDecisions(query)).toEqual({ decisions: [], unknown: [] });
+      expect(calls).toBe(2);
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
   });
 
   test('EFFICIENCY_BUDGET buildReport ranks slow attempts across runs and limits to five', () => {

@@ -1,5 +1,7 @@
 import { approvalContextSchema } from '@archon/workflows/schemas/workflow-run';
-import { getRun, archonJson, type RunView } from './archon';
+import { getRun, archonJson, reportRunRevisions, type RunView } from './archon';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   classifyRun,
   holdOf,
@@ -21,6 +23,7 @@ import {
   type Receipt,
 } from './web/device-store';
 import type { Snapshot } from './board/data';
+import { home, writeAtomic } from './config';
 
 export interface Decision {
   id: string;
@@ -97,18 +100,71 @@ export function describeDecision(
     disabled,
   };
 }
-export function currentDecisions(): { decisions: Decision[]; unknown: string[] } {
+const DECISION_CACHE_VERSION = 1;
+interface DecisionCache {
+  version: number;
+  terminal: Record<string, string>;
+}
+const decisionCachePath = (): string => join(home().sa, 'report-decisions.json');
+function readDecisionCache(): DecisionCache {
+  const path = decisionCachePath();
+  if (!existsSync(path)) return { version: DECISION_CACHE_VERSION, terminal: {} };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+      throw new Error('version or shape mismatch');
+    const value = parsed as Record<string, unknown>;
+    if (
+      value.version !== DECISION_CACHE_VERSION ||
+      value.terminal === null ||
+      typeof value.terminal !== 'object' ||
+      Array.isArray(value.terminal)
+    )
+      throw new Error('version or shape mismatch');
+    return { version: DECISION_CACHE_VERSION, terminal: value.terminal as Record<string, string> };
+  } catch (e) {
+    console.error(`superagent report cache ignored: ${(e as Error).message}`);
+    return { version: DECISION_CACHE_VERSION, terminal: {} };
+  }
+}
+export function currentDecisions(query = getRun): { decisions: Decision[]; unknown: string[] } {
   const decisions: Decision[] = [],
     unknown: string[] = [];
+  const cache = readDecisionCache(),
+    revisions = reportRunRevisions();
+  const terminal: Record<string, string> = {};
   for (const id of ledgerIds()) {
     try {
       const l = loadLedger(id),
-        d = describeDecision(l, getRun(l.archon_run_id, l.repo));
+        stamp = statSync(join(home().sa, 'runs', `${id}.json`)),
+        revision = revisions?.get(l.archon_run_id),
+        fingerprint = revision
+          ? JSON.stringify([l.archon_run_id, stamp.mtimeMs, stamp.size, revision])
+          : null;
+      if (fingerprint && cache.terminal[id] === fingerprint) {
+        terminal[id] = fingerprint;
+        continue;
+      }
+      const run = query(l.archon_run_id, l.repo);
+      if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+        if (fingerprint) terminal[id] = fingerprint;
+        continue;
+      }
+      const d = describeDecision(l, run);
       if (d) decisions.push(d);
     } catch {
       unknown.push(id);
     }
   }
+  if (revisions)
+    try {
+      writeAtomic(
+        decisionCachePath(),
+        JSON.stringify({ version: DECISION_CACHE_VERSION, terminal })
+      );
+    } catch (e) {
+      console.error(`superagent report cache write failed: ${(e as Error).message}`);
+    }
   return { decisions: decisions.sort((a, b) => a.run.localeCompare(b.run)), unknown };
 }
 export type DecisionInbox = ReturnType<typeof currentDecisions>;
