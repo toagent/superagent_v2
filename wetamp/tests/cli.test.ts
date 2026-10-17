@@ -710,6 +710,8 @@ describe('HF3 latest-engine recovery', () => {
     'invalid-settle',
     'settle-repair',
     'no-worktree',
+    'coded',
+    'coded-unrelated',
   ])('P2: adoption carries only accepted ancestors (%s)', sample => {
     const s = setup('old');
     const worktree = gitRepo(s.root);
@@ -721,7 +723,7 @@ describe('HF3 latest-engine recovery', () => {
     ).trim();
     const art = join(s.root, 'artifacts', 'runs', 'r');
     mkdirSync(art, { recursive: true });
-    if (sample !== 'missing')
+    if (!['missing', 'coded', 'coded-unrelated'].includes(sample))
       writeFileSync(
         join(art, 'verify-core.json'),
         sample === 'invalid'
@@ -760,6 +762,25 @@ describe('HF3 latest-engine recovery', () => {
           output_root: s.root,
           nodes: [
             { nodeId: 'code-core', state: 'completed' },
+            ...(sample.startsWith('coded')
+              ? [
+                  {
+                    nodeId: 'verify-core',
+                    state: 'failed',
+                    execution: {
+                      attempt: {
+                        checkoutStart: {
+                          kind: 'git',
+                          sampledAt: new Date().toISOString(),
+                          commit: sample === 'coded-unrelated' ? unrelated : head,
+                          tree: head,
+                          worktree: { status: 'clean' },
+                        },
+                      },
+                    } as never,
+                  },
+                ]
+              : []),
             { nodeId: 'gate-m1-r1', state: 'failed' },
           ],
         })
@@ -789,7 +810,9 @@ describe('HF3 latest-engine recovery', () => {
     expect(nodes.find(n => n.id === 'verify-core')?.with?.delta_base).toBe('$start-m1.output.head');
     const carried = sample === 'verify' || sample === 'settle';
     expect(l.adoptions?.at(-1)?.carried).toEqual(carried ? ['core'] : []);
-    if (carried) {
+    const coded = sample === 'coded';
+    expect(l.adoptions?.at(-1)?.coded).toEqual(coded ? ['core'] : []);
+    if (carried || coded) {
       expect(code?.when).toBe("$package-attempt-core.output.attempt != '0'");
       const binding = nodes.find(n => n.id === 'verify-core')?.with?.coder as {
         if_skipped: string;
@@ -797,7 +820,7 @@ describe('HF3 latest-engine recovery', () => {
       expect(JSON.parse(binding.if_skipped)).toMatchObject({
         status: 'done',
         error_class: null,
-        notes: 'carried from r',
+        notes: `${carried ? 'carried' : 'coded'} from r`,
       });
     } else expect(code?.when).toBeUndefined();
     expect(code?.command).toBe('sa-code');

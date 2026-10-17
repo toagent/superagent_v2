@@ -474,10 +474,11 @@ describe('buildWorkflow', () => {
     }
   });
   test('P2: carry changes only code/verify wiring; an empty carry preserves every byte', () => {
-    const make = (packages: string[]) =>
+    const make = (packages: string[], coded?: string[]) =>
       buildWorkflow(fixture, milestones(fixture), 'golden-0001', '/GEN', false, NOW, loadTiers(), {
         from: "old'run",
         packages,
+        coded,
       });
     const normal = build(false);
     expect(JSON.stringify(make([]))).toBe(JSON.stringify(normal));
@@ -503,6 +504,16 @@ describe('buildWorkflow', () => {
       nodesOf(normal).filter(n => !['code-core', 'verify-core', 'repair-core'].includes(n.id))
     );
     expect(code?.depends_on).toEqual(nodesOf(normal).find(n => n.id === 'code-core')?.depends_on);
+    expect(nodesOf(make([], ['core'])).find(n => n.id === 'code-core')?.when).toBe(code?.when);
+    expect(
+      JSON.parse(
+        (
+          nodesOf(make([], ['core'])).find(n => n.id === 'verify-core')?.with?.coder as {
+            if_skipped: string;
+          }
+        ).if_skipped
+      ).notes
+    ).toBe("coded from old'run");
   });
   test('P2 R2: incrementing a carried package attempt enables sa-code with its hint', () => {
     const gen = tmp();

@@ -246,6 +246,7 @@ export interface Ledger {
     reason: string;
     engine_commit?: string;
     carried?: string[];
+    coded?: string[];
   }[];
   launcher?: Launcher;
   controller?: Controller;
@@ -720,6 +721,20 @@ const coderBudgetExceeded = (run: RunView, c: Classified): boolean => {
   );
 };
 
+/** A successor's immutable start sample is the first durable HEAD evidence after coding. */
+const codedHead = (run: RunView, pkg: string): string | undefined => {
+  const latest = (id: string) => [...(run.nodes ?? [])].reverse().find(n => n.nodeId === id);
+  const successor =
+    latest(`repair-${pkg}`)?.state === 'completed'
+      ? `settle-${pkg}`
+      : latest(`code-${pkg}`)?.state === 'completed'
+        ? `verify-${pkg}`
+        : undefined;
+  const sample = [...(run.nodes ?? [])].reverse().find(n => n.nodeId === successor)?.execution
+    ?.attempt.checkoutStart;
+  return sample?.kind === 'git' && typeof sample.commit === 'string' ? sample.commit : undefined;
+};
+
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
   l: Ledger,
@@ -735,6 +750,7 @@ function recoverRun(
         engine_from: string | null;
         commit: string | undefined;
         carried: string[];
+        coded: string[];
         dir: string;
       }
     | undefined;
@@ -763,6 +779,7 @@ function recoverRun(
               : 'engine_stale',
           engine_commit: adopted.commit,
           carried: adopted.carried,
+          coded: adopted.coded,
         });
         l.archon_run_id = to;
         l.engine_hash = adopted.hash;
@@ -803,6 +820,7 @@ function recoverRun(
               engine_from: l.engine_hash ?? null,
               commit: l.engine_commit,
               carried: [],
+              coded: [],
               dir: l.gen_dir,
             };
             // prettier-ignore
@@ -859,6 +877,25 @@ function recoverRun(
             }
           })
           .map(p => p.id);
+        const coded = plan.packages
+          .filter(p => {
+            if (!run.working_path || carried.includes(p.id)) return false;
+            try {
+              const head = codedHead(run, p.id);
+              return (
+                head !== undefined &&
+                Bun.spawnSync(['git', 'merge-base', '--is-ancestor', '--', head, 'HEAD'], {
+                  cwd: run.working_path,
+                  stdout: 'pipe',
+                  stderr: 'pipe',
+                  timeout: QUERY_TIMEOUT_MS,
+                }).exitCode === 0
+              );
+            } catch {
+              return false;
+            }
+          })
+          .map(p => p.id);
         const gen = generate(
           plan,
           l.run_id,
@@ -867,6 +904,7 @@ function recoverRun(
           {
             from: run.id,
             packages: carried,
+            coded,
             ...(recovery
               ? {
                   recovery: {
@@ -885,6 +923,7 @@ function recoverRun(
           engine_from: l.engine_hash ?? null,
           commit: gen.engine_commit,
           carried,
+          coded,
           dir: gen.dir,
         };
         return [
