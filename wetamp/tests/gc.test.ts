@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -126,11 +127,15 @@ test('merged completed run removes only its worktree and branch; second GC is id
   expect(f.git('worktree', 'list', '--porcelain')).not.toContain(f.path);
   expect(existsSync(unregistered)).toBe(true);
   expect(existsSync(join(f.gen, 'plan.json'))).toBe(true);
-  const bytes = readFileSync(ledgerPath(f.id), 'utf8');
+  const path = ledgerPath(f.id),
+    bytes = readFileSync(path, 'utf8'),
+    old = new Date(1_000_000);
+  utimesSync(path, old, old);
   query?.mockClear();
   expect(gc()).toEqual([]);
   expect(query).toHaveBeenCalled();
-  expect(readFileSync(ledgerPath(f.id), 'utf8')).toBe(bytes);
+  expect(readFileSync(path, 'utf8')).toBe(bytes);
+  expect(statSync(path).mtimeMs).toBe(old.getTime());
   expect(loadLedger(f.id).gc).toHaveLength(2);
 });
 

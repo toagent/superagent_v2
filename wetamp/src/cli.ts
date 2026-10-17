@@ -308,8 +308,9 @@ export interface AutoRetry {
 }
 
 export const ledgerPath = (run: string): string => join(home().sa, 'runs', `${run}.json`);
-const saveLedger = (l: Ledger): void => {
-  writeAtomic(ledgerPath(l.run_id), JSON.stringify(l, null, 2) + '\n');
+const serializeLedger = (l: Ledger): string => JSON.stringify(l, null, 2) + '\n';
+const saveLedger = (l: Ledger, content = serializeLedger(l)): void => {
+  writeAtomic(ledgerPath(l.run_id), content);
 };
 
 const LEDGER_STRINGS = ['run_id', 'archon_run_id', 'gen_dir', 'repo', 'branch', 'workflow'];
@@ -344,8 +345,10 @@ export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
     if (k.ok) {
       try {
         const cur = loadLedger(l.run_id);
+        const before = serializeLedger(cur);
         f(cur);
-        saveLedger(cur);
+        const after = serializeLedger(cur);
+        if (after !== before) saveLedger(cur, after);
         Object.assign(l, cur);
         return;
       } finally {

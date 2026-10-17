@@ -16,6 +16,8 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -925,6 +927,14 @@ describe('HF3 latest-engine recovery', () => {
     } finally {
       held.release();
     }
+  });
+  test('no-op ledger update does not rewrite the file', () => {
+    const s = setup('old'),
+      path = ledgerPath(s.ledger.run_id),
+      old = new Date(1_000_000);
+    utimesSync(path, old, old);
+    updateLedger(s.ledger, () => {});
+    expect(statSync(path).mtimeMs).toBe(old.getTime());
   });
   test('an unconfirmed adoption does not publish its engine or consume a recovery; repeat launch is held', () => {
     const s = setup('old');
