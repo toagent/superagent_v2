@@ -530,11 +530,15 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
   });
   for (const l of ls) {
     const events: Event[] = [];
+    const reportPlan = planOf(l) as {
+      packages?: { accept?: { cmd: string }[] }[];
+    } | null;
+    const acceptCommands = reportPlan?.packages?.flatMap(p => p.accept?.map(c => c.cmd) ?? []) ?? [];
     for (const id of archonRunIds(l)) {
       try {
         const j = batch ? view(id) : archonJson(['workflow', 'get', id, '--verbose', '--events'], cwdOf(l));
         const rows = (j.events ?? []) as Event[];
-        const timing = providerTiming(id, rows);
+        const timing = providerTiming(id, rows, acceptCommands);
         timings[`${l.run_id}/${id}`] = timing;
         attempts.push(...timing);
         events.push(...rows.map(e => ({ ...e, workflow_run_id: e.workflow_run_id ?? id })));
@@ -599,6 +603,7 @@ export function buildReport(ls: Ledger[], engine?: { commit: string; baselineDay
     critical_path: paths,
     measurement,
     provider_timing: timings,
+    agent_ran_acceptance: attempts.reduce((sum, attempt) => sum + attempt.agent_ran_acceptance, 0),
     slow_nodes: slowNodes(attempts),
     jobs: {
       receipts,

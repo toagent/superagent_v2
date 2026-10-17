@@ -572,17 +572,39 @@ describe('F-22 report', () => {
     const saved = keys.map(k => process.env[k]);
     Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
     try {
-      writeFileSync(join(root, 'plan.json'), JSON.stringify(plan));
+      const acceptCommand = 'bun test focused';
+      writeFileSync(
+        join(root, 'plan.json'),
+        JSON.stringify({
+          ...plan,
+          packages: plan.packages.map((p, i) => ({
+            ...p,
+            accept: i === 0 ? [{ cmd: acceptCommand, timeout_s: 10 }] : [],
+          })),
+        })
+      );
       const arrival = (seq: number, second: number, event: Record<string, unknown>) => ({
         event_type: 'provider_event',
         step_name: 'code-core',
         data: { attemptId: 'code-core-a', seq, observedAt: `2026-10-10T00:00:0${second}Z`, event },
       });
       const events = [
-        arrival(0, 1, { type: 'tool_call', toolCallId: 'x', name: 'shell' }),
+        arrival(0, 1, {
+          type: 'tool_call',
+          toolCallId: 'x',
+          name: 'shell',
+          rawInput: { command: acceptCommand },
+        }),
         arrival(1, 3, { type: 'tool_call_update', toolCallId: 'x', status: 'completed' }),
-        arrival(2, 4, { type: 'agent_message_chunk', text: 'answer' }),
-        { ...ev('node_completed', 'code-core'), created_at: '2026-10-10T00:00:05Z' },
+        arrival(2, 4, {
+          type: 'tool_call',
+          toolCallId: 'y',
+          name: 'shell',
+          rawInput: { command: `${acceptCommand} ` },
+        }),
+        arrival(3, 5, { type: 'tool_call_update', toolCallId: 'y', status: 'completed' }),
+        arrival(4, 6, { type: 'agent_message_chunk', text: 'answer' }),
+        { ...ev('node_completed', 'code-core'), created_at: '2026-10-10T00:00:07Z' },
       ];
       const run = { id: 'engine', status: 'completed', output_root: root, nodes: [], events };
       writeFileSync(
@@ -598,15 +620,18 @@ describe('F-22 report', () => {
         workflow: 'fixture',
         recoveries: [],
       } as unknown as Ledger;
-      expect(buildReport([ledger]).provider_timing).toMatchObject({
+      const report = buildReport([ledger]);
+      expect(report.agent_ran_acceptance).toBe(1);
+      expect(report.provider_timing).toMatchObject({
         'r/engine': [
           {
             run: 'engine',
             node: 'code-core',
             attempt_id: 'code-core-a',
-            tool_union_ms: 2000,
-            non_tool_gap_ms: 1000,
-            final_answer_at: '2026-10-10T00:00:04Z',
+            agent_ran_acceptance: 1,
+            tool_union_ms: 3000,
+            non_tool_gap_ms: 2000,
+            final_answer_at: '2026-10-10T00:00:06Z',
             request_at: 'unknown',
           },
         ],

@@ -18,13 +18,22 @@ const baselines = {
 const baseline = (node: string) =>
   Object.entries(baselines).find(([role]) => node === role || node.startsWith(`${role}-`))?.[1];
 
+function providerCommand(event: ProviderEventEnvelope['event']): string | undefined {
+  if (event.type !== 'tool_call') return undefined;
+  if (!['command_execution', 'shell', 'exec_command', 'Bash'].includes(event.name))
+    return undefined;
+  const input = object(event.rawInput),
+    command = input?.command ?? input?.cmd ?? event.title;
+  return typeof command === 'string' ? command : undefined;
+}
+
 // prettier-ignore
 function editAction(event: ProviderEventEnvelope['event']): boolean | 'unknown' {
   if (event.type !== 'tool_call') return false;
   if (['file_change', 'fileChange', 'apply_patch'].includes(event.name)) return true;
   if (!['command_execution', 'shell', 'exec_command', 'Bash'].includes(event.name)) return false;
-  const input = object(event.rawInput), command = input?.command ?? input?.cmd ?? event.title;
-  if (typeof command !== 'string') return 'unknown';
+  const command = providerCommand(event);
+  if (command === undefined) return 'unknown';
   try {
     const parsed = shell.parse(command);
     return parsed.writes.length > 0 || parsed.argvs.some(argv =>
@@ -58,7 +67,8 @@ const clock = (x: unknown): string =>
 
 /** Client arrival boundaries only: neither a request clock nor server reasoning time. */
 // prettier-ignore
-export function providerTiming(runId: string, rows: readonly TimingRow[]) {
+export function providerTiming(runId: string, rows: readonly TimingRow[], acceptCommands: readonly string[] = []) {
+  const acceptance = new Set(acceptCommands);
   const groups = new Map<string, { run: string; node: string; attempt: string; rows: TimingRow[] }>();
   for (const row of rows) {
     if (!['provider_event', 'node_completed', 'node_failed'].includes(row.event_type)) continue;
@@ -180,6 +190,10 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
       e.event.type === 'subtask' && e.event.taskType === 'command_execution' && e.event.status === 'started'
         ? [{ name: 'command_execution', title: e.event.description }] : []);
     const commands = actions.filter(e => ['Bash', 'shell', 'exec_command', 'command_execution'].includes(e.name));
+    const agentRanAcceptance = unique.filter(e => {
+      const command = providerCommand(e.event);
+      return command !== undefined && acceptance.has(command);
+    }).length;
     const reads = new Set(['rg', 'grep', 'cat', 'sed', 'head', 'tail', 'ls', 'find', 'pwd', 'git', 'codegraph']);
     let explore = actions.filter(e => ['Read', 'Glob', 'Grep'].includes(e.name)).length, unrecognized = 0;
     for (const command of commands) {
@@ -200,6 +214,7 @@ export function providerTiming(runId: string, rows: readonly TimingRow[]) {
     if (longest && longest.ms > 180000) reasons.push(`longest_gap_ms ${String(longest.ms)} > 180000`);
     return {
       run: group.run, node: group.node, attempt_id: group.attempt,
+      agent_ran_acceptance: agentRanAcceptance,
       invocation_id: typeof invocation === 'string' ? invocation : 'unknown',
       cmds: recognized ? commands.length : missing,
       explore_ratio: recognized ? explore / actions.length : missing, unrecognized_actions: complete ? unrecognized : missing,

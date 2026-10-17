@@ -1073,6 +1073,10 @@ describe('renderBrief', () => {
       '/H/core.md',
     ])
       expect(b).toContain(s);
+    expect(b).toContain(
+      '以下命令由引擎在你交付后执行，结果与失败用例会回传给修复节点；你只运行与本次改动直接相关的聚焦测试。'
+    );
+    expect(b).not.toContain('跑长时测试（全量、E2E）');
   });
   test('lists the package permissions and the execution-layer red lines', () => {
     const p = { ...fixture.packages[0], caps: { network: false, git: 'commit' as const } };

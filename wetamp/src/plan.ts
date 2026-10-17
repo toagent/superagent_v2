@@ -85,6 +85,13 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
     throw new Error(`plan invalid: ${errs.join('; ')}`);
   }
   const input = data as PlanInput;
+  if (
+    input.caps?.long_tests !== undefined ||
+    input.packages.some(p => p.caps?.long_tests !== undefined)
+  )
+    console.warn(
+      "plan: 'long_tests' is deprecated and retained for compatibility; it no longer grants agents permission to run acceptance commands"
+    );
   const plan: Plan = {
     ...input,
     budget: input.budget ?? { weighted_tokens: 0, unlimited_tokens: true },

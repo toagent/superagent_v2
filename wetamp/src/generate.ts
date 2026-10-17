@@ -627,12 +627,11 @@ export function buildWorkflow(
   };
 }
 
-const CAP_TEXT: Record<Exclude<keyof Caps, 'read' | 'git' | 'mcp'>, string> = {
+const CAP_TEXT: Record<Exclude<keyof Caps, 'read' | 'git' | 'mcp' | 'long_tests'>, string> = {
   network: '访问网络（curl/wget、包仓库）',
   web: '联网搜索与抓取网页（WebSearch/WebFetch）',
   install: '安装或新增依赖',
   services: '启动本地服务与容器（docker 等）',
-  long_tests: '跑长时测试（全量、E2E）',
 };
 const renderCaps = (c: Caps): string =>
   [

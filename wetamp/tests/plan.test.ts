@@ -54,6 +54,22 @@ test('owner contracts reject optional keys, types and optionality drift', () => 
 }, 30000);
 
 describe('loadPlan', () => {
+  test('accepts explicit long_tests with one deprecation warning', () => {
+    const { path, root } = setup(p => {
+      p.caps = { long_tests: false };
+      pkgs(p)[0].caps = { long_tests: true };
+    });
+    const warnings: unknown[][] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args);
+    try {
+      expect(loadPlan(path, [root]).packages[0].caps?.long_tests).toBe(true);
+    } finally {
+      console.warn = warn;
+    }
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0]?.[0])).toContain("'long_tests'");
+  });
   test('request_ref is optional and caller-owned', () => {
     const legacy = setup();
     expect(loadPlan(legacy.path, [legacy.root]).request_ref).toBeUndefined();
