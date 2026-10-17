@@ -2916,11 +2916,9 @@ interface CommandUsage {
 }
 
 // task-kind is globally parsed only to preserve its targeted compatibility error.
-export const CLI_GLOBAL_OPTIONS = [
-  'help',
-  'json',
-  'task-kind',
-] as const satisfies readonly OptionName[];
+// prettier-ignore
+export const CLI_GLOBAL_OPTIONS = ['help', 'json', 'task-kind'] as const satisfies readonly OptionName[];
+// prettier-ignore
 export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'owner', positionals: '[path|run]', flags: [] },
   { command: 'claim', positionals: '[path|run]', flags: ['takeover', 'reason'] },
@@ -2929,25 +2927,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note'] },
   { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
   { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap'] },
-  {
-    command: 'quick',
-    flags: [
-      'goal',
-      'card',
-      'accept',
-      'accept-timeout',
-      'environment',
-      'console',
-      'scope',
-      'risk',
-      'review',
-      'no-cache',
-      'base',
-      'repo',
-      'request-ref',
-      'allow-overlap',
-    ],
-  },
+  { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'wait', positionals: '<run>', flags: ['timeout'] },
   { command: 'status', flags: [] },
   { command: 'brief', flags: [] },
@@ -2955,11 +2935,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'resume', positionals: '<run>', flags: ['reconciled'] },
   { command: 'cancel', positionals: '<run>', flags: ['reason'] },
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
-  {
-    command: 'decide',
-    positionals: '<run> approve|reject|retry',
-    flags: ['pkg', 'hint', 'all-held'],
-  },
+  { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'by-engine', 'baseline-days'] },
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
@@ -2972,23 +2948,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'health', flags: ['cwd', 'verbose'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
   { command: 'models', flags: ['mode'] },
-  {
-    command: 'job exec',
-    positionals: '-- <cmd...>',
-    flags: [
-      'title',
-      'request-ref',
-      'card',
-      'log',
-      'role',
-      'mode',
-      'risk',
-      'round',
-      'author-model',
-      'worktree',
-      'base',
-    ],
-  },
+  { command: 'job exec', positionals: '-- <cmd...>', flags: ['title', 'request-ref', 'card', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'worktree', 'base'] },
   { command: 'job clean', positionals: '<id>', flags: [] },
   { command: 'jobs', flags: ['all'] },
 ];
