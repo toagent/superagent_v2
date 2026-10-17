@@ -1526,7 +1526,7 @@ function runScript(
   script = SCRIPT,
   extraEnv: Record<string, string> = {},
   directQueries = script === SCRIPT
-): { code: number; out: unknown; err: string; art: string } {
+): { code: number; out: unknown; err: string; art: string; stdoutBytes: number } {
   const art = join(cwd, '..', 'art');
   mkdirSync(art, { recursive: true });
   // An engine accept node runs this suite with its own INPUTS_*/WORKFLOW_ID; inheriting them points
@@ -1571,6 +1571,7 @@ function runScript(
     out: out ? (JSON.parse(out) as unknown) : null,
     err: p.stderr.toString(),
     art,
+    stdoutBytes: p.stdout.byteLength,
   };
 }
 
@@ -2733,6 +2734,29 @@ describe('sa-check script', () => {
       prev: out.diff_hash,
     });
     expect(again.out).toMatchObject({ diff_hash: out.diff_hash, same: true });
+  });
+  test('accept keeps binary patch and checkout evidence on disk with bounded stdout', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      base = sh('git rev-parse HEAD', repo).trim();
+    sh(
+      'head -c 2300000 /dev/urandom > image.png && git add image.png && git -c user.name=t -c user.email=t@l commit -qm image',
+      repo
+    );
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan: planFile(root, 'head -c 2300000 /dev/urandom > image.png'),
+      pkgs: 'a',
+      tag: 'diff-large',
+      base,
+    });
+    const out = r.out as { patch: string; checkout_fingerprint: string };
+    expect(r.stdoutBytes).toBeLessThan(64 * 1024);
+    expect(statSync(out.patch).size).toBeGreaterThan(2 * 1024 * 1024);
+    expect(statSync(out.checkout_fingerprint).size).toBeGreaterThan(2 * 1024 * 1024);
+    expect(readFileSync(out.checkout_fingerprint, 'utf8')).toBe(
+      checkoutFingerprint(args => Bun.spawnSync(['git', '-C', repo, ...args]))
+    );
   });
   test.each(['unchanged', 'dirty-content', 'commit', 'missing', 'git-failure', 'probe-failure'])(
     'gate checkout integrity: %s',

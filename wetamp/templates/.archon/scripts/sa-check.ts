@@ -198,6 +198,17 @@ const emit = (o: unknown): void => {
 };
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
+const readCheckoutFingerprint = (value?: string): string => {
+  if (!value || value.startsWith('[')) return value ?? '';
+  try {
+    const path = realpathSync(value);
+    return dirname(path) === realpathSync(artifacts) && basename(path).endsWith('.fingerprint.json')
+      ? readFileSync(path, 'utf8')
+      : '';
+  } catch {
+    return '';
+  }
+};
 // prettier-ignore
 const xmlText = (s: string): string => s.replace(/&(?:lt|gt|amp|quot|apos);/g,
   x => ({ '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&apos;': "'" })[x] ?? x);
@@ -818,6 +829,11 @@ function acceptOnce(
       decision: { ...result.decision, kind: 'block', reason: 'acceptance_failed+review_limit' },
     });
   saveCoder(tag, coder, result.error_class_ignored);
+  const fingerprint = join(artifacts, `${tag}.fingerprint.json`);
+  writeFileSync(
+    fingerprint,
+    checkoutFingerprint(args => auxiliary(['git', ...args]))
+  );
   // 存档一份：supervise-tick 自动重试时据此写失败命令与日志尾的提示
   return {
     ok,
@@ -841,7 +857,7 @@ function acceptOnce(
     ...baseline,
     ...scope,
     head: git('rev-parse', 'HEAD').trim(),
-    checkout_fingerprint: checkoutFingerprint(args => auxiliary(['git', ...args])),
+    checkout_fingerprint: fingerprint,
   };
 }
 
@@ -2169,7 +2185,7 @@ function gate(): void {
     if (
       !rechecks.at(-1)?.checkout_fingerprint ||
       checkoutFingerprint(args => auxiliary(['git', ...args])) !==
-        rechecks.at(-1)?.checkout_fingerprint
+        readCheckoutFingerprint(rechecks.at(-1)?.checkout_fingerprint)
     )
       throw new Error('tracked checkout changed or review fingerprint missing');
   } catch (error) {
