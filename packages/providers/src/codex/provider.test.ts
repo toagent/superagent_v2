@@ -1234,6 +1234,71 @@ describe('CodexProvider', () => {
       const chunks = await streamOf({ notifications: [agentMessage('{"a":1}')] });
       expect(resultOf(chunks).structuredOutput).toBeUndefined();
     });
+
+    test('interrupts runaway whitespace and retries compact JSON once in the same thread', async () => {
+      const script: FakeTurnScript = { completion: null };
+      const { provider, server } = providerWith(script);
+      const chunks: MessageChunk[] = [];
+      const running = (async () => {
+        for await (const chunk of provider.sendQuery('p', '/workspace', undefined, {
+          outputFormat: { type: 'json_schema', schema },
+        })) {
+          chunks.push(chunk);
+          if (chunk.type === 'warning' && chunk.code === 'codex.structured_output_runaway') {
+            script.notifications = [
+              tokenUsage({ input: 20, output: 2005 }, { input: 10, output: 4 }),
+              agentMessage('{"summary":"ok"}'),
+            ];
+            script.completion = { status: 'completed' };
+          }
+        }
+      })();
+      while (!server.processes[0]) await new Promise<void>(resolve => setImmediate(resolve));
+      server.processes[0].send(tokenUsage({ input: 10, output: 2001 }));
+      server.processes[0].send({
+        method: 'item/agentMessage/delta',
+        params: { threadId: THREAD_ID, turnId: TURN_ID, itemId: 'm-1', delta: ' '.repeat(2001) },
+      });
+      await running;
+      expect(resultOf(chunks).structuredOutput).toEqual({ summary: 'ok' });
+      expect(resultOf(chunks).tokens).toEqual({
+        input: 20,
+        output: 2005,
+        cacheRead: 0,
+        cacheWrite: 0,
+      });
+      expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(1);
+      const starts = server.processes[0].requests.filter(r => r.method === 'turn/start');
+      expect(starts).toHaveLength(2);
+      expect(starts[1].params.input).toEqual([
+        expect.objectContaining({ text: expect.stringContaining('compact single-line JSON') }),
+      ]);
+    });
+
+    test('fails after one compact JSON retry when whitespace runs away again', async () => {
+      const script: FakeTurnScript = { completion: null };
+      const { provider, server } = providerWith(script);
+      const running = run(provider, { outputFormat: { type: 'json_schema', schema } });
+      while (!server.processes[0]) await new Promise<void>(resolve => setImmediate(resolve));
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        server.processes[0].send({
+          method: 'item/agentMessage/delta',
+          params: {
+            threadId: THREAD_ID,
+            turnId: TURN_ID,
+            itemId: `m-${String(attempt)}`,
+            delta: '\t'.repeat(2001),
+          },
+        });
+        while (server.processes[0].methods.filter(m => m === 'turn/interrupt').length <= attempt)
+          await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      const chunks = await running;
+      expect(resultOf(chunks).failure).toMatchObject({ class: 'unknown' });
+      expect(resultOf(chunks).failure?.evidence).toContain('structured_output_runaway');
+      expect(server.processes[0].methods.filter(m => m === 'turn/start')).toHaveLength(2);
+      expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(2);
+    });
   });
 
   describe('systemPrompt delivery (issue #1837)', () => {

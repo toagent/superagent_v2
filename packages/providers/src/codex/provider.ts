@@ -536,6 +536,15 @@ interface TurnRequest {
 }
 
 const STALL_MS = 180_000;
+// A compact JSON result has no reason to emit this much uninterrupted whitespace. Catching
+// the structural output itself avoids depending on untyped, vendor-authored error prose.
+const STRUCTURED_OUTPUT_WHITESPACE_LIMIT = 2_000;
+
+function trailingWhitespace(previous: number, delta: string): number {
+  const withoutTrailing = delta.trimEnd();
+  const trailing = delta.length - withoutTrailing.length;
+  return withoutTrailing.length === 0 ? previous + trailing : trailing;
+}
 
 /**
  * Keeps observing background work after the parent completes.
@@ -617,7 +626,10 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
   let retries = 0;
 
   let stallInterrupts = 0;
-  let interrupting = false;
+  let interrupting: 'stall' | 'structured_output_runaway' | undefined;
+  let retriedStructuredOutput = false;
+  let structuredWhitespace = 0;
+  let structuredMessageItemId: string | undefined;
   let lastProgressAt = Date.now();
   let since = Date.now();
   const delta = (): { count: number; lastAt: string | null } => ({ count: 0, lastAt: null });
@@ -669,9 +681,9 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
     })();
     if (observed === null) {
       yield* progress();
-      if (interrupting || stallInterrupts >= 2)
+      if (interrupting !== undefined || stallInterrupts >= 2)
         throw new Error('Codex model stream stalled after interrupt recovery');
-      interrupting = true;
+      interrupting = 'stall';
       stallInterrupts += 1;
       yield {
         type: 'warning',
@@ -710,6 +722,29 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
           const activity = notification.method === 'item/agentMessage/delta' ? message : reasoning;
           activity.count++;
           activity.lastAt = new Date(lastProgressAt).toISOString();
+          if (notification.method === 'item/agentMessage/delta' && request.hasOutputFormat) {
+            if (structuredMessageItemId !== notification.params.itemId) structuredWhitespace = 0;
+            structuredMessageItemId = notification.params.itemId;
+            structuredWhitespace = trailingWhitespace(
+              structuredWhitespace,
+              notification.params.delta
+            );
+            if (
+              structuredWhitespace > STRUCTURED_OUTPUT_WHITESPACE_LIMIT &&
+              interrupting === undefined
+            ) {
+              interrupting = 'structured_output_runaway';
+              yield {
+                type: 'warning',
+                code: 'codex.structured_output_runaway',
+                message: `Codex structured output emitted more than ${String(STRUCTURED_OUTPUT_WHITESPACE_LIMIT)} consecutive whitespace characters; interrupting the turn`,
+              };
+              const interrupt = connection.request('turn/interrupt', { threadId, turnId });
+              if (!(await settlesWithin(interrupt, STALL_MS)))
+                throw new Error('Codex structured_output_runaway interrupt was not answered');
+              await interrupt;
+            }
+          }
         }
         break;
 
@@ -815,14 +850,22 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
         const { turn, threadId: completedThreadId } = notification.params;
         if (completedThreadId !== threadId || turn.id !== turnId || parentCompleted) break;
         lastProgressAt = Date.now();
-        if (interrupting && turn.status === 'interrupted') {
+        if (interrupting !== undefined && turn.status === 'interrupted') {
+          if (interrupting === 'structured_output_runaway' && retriedStructuredOutput)
+            throw new Error(
+              'Codex structured_output_runaway repeated after one compact JSON retry'
+            );
+          const retryStructuredOutput = interrupting === 'structured_output_runaway';
+          if (retryStructuredOutput) retriedStructuredOutput = true;
           const resumed = await connection.request('turn/start', {
             ...request.turnParams,
             threadId,
             input: [
               {
                 type: 'text',
-                text: 'Continue from where you were interrupted.',
+                text: retryStructuredOutput
+                  ? 'Return only the requested schema as compact single-line JSON with short string fields. Do not call tools or modify files.'
+                  : 'Continue from where you were interrupted.',
                 text_elements: [],
               },
             ],
@@ -830,9 +873,11 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
           turnId = idAt(resumed, 'turn');
           if (!turnId) throw new Error('Codex app-server returned a turn without an id');
           request.onTurn(turnId);
-          interrupting = false;
+          interrupting = undefined;
           lastProgressAt = Date.now();
           lastAgentMessage = '';
+          structuredWhitespace = 0;
+          structuredMessageItemId = undefined;
           break;
         }
         parentCompleted = true;
