@@ -466,6 +466,16 @@ describe('classify', () => {
       event: 'sa.human.m1',
     });
   });
+  test('paused after a native signoff rejection → held:rework', () => {
+    const approval = { nodeId: 'human-m1', resolved: 'rejected' } as NonNullable<
+      NonNullable<RunView['metadata']>['approval']
+    >;
+    expect(classify(run('paused', { metadata: { approval } }))).toEqual({
+      state: 'held:rework',
+      exit: EXIT.held,
+      node: 'human-m1',
+    });
+  });
   test('paused elsewhere → held:paused', () =>
     expect(classify(run('paused')).state).toBe('held:paused'));
   test('failed environment → held:environment', () => {
@@ -1710,6 +1720,29 @@ describe('health upstream reporting', () => {
 });
 
 describe('decide (archon stub)', () => {
+  const packageRework = (s: ReturnType<typeof stub>): void => {
+    writeFileSync(
+      join(s.ledger.gen_dir, 'plan.json'),
+      JSON.stringify({
+        packages: [
+          { id: 'core', risk: 'G1', milestone: 'm1', signoff: 'human' },
+          { id: 'api', risk: 'G1', milestone: 'm1', deps: ['core'] },
+        ],
+      })
+    );
+    const workflow = join(s.ledger.gen_dir, '.archon/workflows', s.ledger.workflow);
+    mkdirSync(workflow, { recursive: true });
+    writeFileSync(
+      join(workflow, `${s.ledger.workflow}.yaml`),
+      Bun.YAML.stringify({
+        nodes: [
+          { id: 'package-attempt-core' },
+          { id: 'package-attempt-api' },
+          { id: 'attempt-m1' },
+        ],
+      })
+    );
+  };
   test('approve signals the exact wait occurrence in the background', async () => {
     const s = stub([humanWait(), run('running')]);
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
@@ -1742,6 +1775,30 @@ describe('decide (archon stub)', () => {
       ok: true,
     });
     expect(s.calls()).toContain('workflow abandon r --json');
+  });
+  test('reject --pkg advances the target and later packages, rejects natively, then resumes', () => {
+    const approval = { nodeId: 'human-m1' };
+    const s = stub([run('paused', { metadata: { approval } })]);
+    packageRework(s);
+    expect(
+      captured(() => main(['decide', 'sa1', 'reject', '--pkg', 'core', '--hint', 'use X'])).code
+    ).toBe(0);
+    expect(s.calls()).toContain('workflow reject r use X --json');
+    expect(s.calls()).toContain('workflow resume r --detach --json');
+    expect(readFileSync(join(s.ledger.gen_dir, 'hints/core.md'), 'utf8')).toBe('use X\n');
+    for (const scope of ['.packages/core', '.packages/api', 'm1'])
+      expect(readFileSync(join(s.ledger.gen_dir, 'attempts', scope), 'utf8')).toBe('1');
+  });
+  test('reject --pkg rolls counters back when native reject fails', () => {
+    const s = stub([run('paused', { metadata: { approval: { nodeId: 'human-m1' } } })]);
+    packageRework(s);
+    fixtureOptions(s.dir, { rejectReply: { ok: false, error: 'injected reject failure' } });
+    expect(() => main(['decide', 'sa1', 'reject', '--pkg', 'core', '--hint', 'use X'])).toThrow(
+      /injected reject failure/
+    );
+    for (const scope of ['.packages/core', '.packages/api', 'm1'])
+      expect(existsSync(join(s.ledger.gen_dir, 'attempts', scope))).toBe(false);
+    expect(s.calls().some(call => call.startsWith('workflow resume'))).toBe(false);
   });
   test('retry --hint writes the package hint, then resumes', () => {
     const failed = run('failed', {

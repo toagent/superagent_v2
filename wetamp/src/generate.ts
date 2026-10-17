@@ -207,10 +207,15 @@ export function buildWorkflow(
   let after: Node = { depends_on: ['environment'] };
   const signoff = (m: Milestone, gates: Node): Node => {
     if (m.human) {
+      const attempt = `attempt-${m.id}`;
       nodes.push({
         id: `human-${m.id}`,
-        approval: { message: `Approve delivery milestone ${m.id}` },
+        approval: {
+          message: `Approve delivery milestone ${m.id}`,
+          decisions: [{ id: 'approve' }, { id: 'reject' }],
+        },
         ...gates,
+        depends_on: [...((gates.depends_on as string[] | undefined) ?? []), attempt],
       });
       // Native approval owns the decision; the absolute plan deadline still guards delivery.
       const until =
@@ -224,6 +229,7 @@ export function buildWorkflow(
                 `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${String(plan.deadline)} passed' >&2; exit 1; }`,
               ].join('\n'),
         depends_on: [`human-${m.id}`],
+        when: `$human-${m.id}.output.decision == 'approve'`,
       });
       return { depends_on: [`signoff-${m.id}`] };
     }

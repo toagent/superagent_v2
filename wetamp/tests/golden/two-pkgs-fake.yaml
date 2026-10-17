@@ -5706,6 +5706,9 @@ nodes:
   - id: human-m2
     approval:
       message: Approve delivery milestone m2
+      decisions:
+        - id: approve
+        - id: reject
     depends_on:
       - gate-m2-r1
       - gate-m2-r2
@@ -5713,11 +5716,13 @@ nodes:
       - gate-m2-r4
       - gate-m2-r5
       - gate-m2-r6
+      - attempt-m2
     trigger_rule: none_failed_min_one_success
   - id: signoff-m2
     bash: '[ "$(date +%s)" -le 4070908800 ] || { echo ''signoff m2: plan deadline 2099-01-01T00:00:00Z passed'' >&2; exit 1; }'
     depends_on:
       - human-m2
+    when: $human-m2.output.decision == 'approve'
   - id: land
     script: sa-check
     runtime: bun

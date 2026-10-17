@@ -92,7 +92,7 @@ import {
   writeAtomic,
 } from './config';
 import { engineHash, generate, newRunId } from './generate';
-import { loadPlan, type Plan } from './plan';
+import { loadPlan, milestones, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport, reportSummary } from './report';
 import { jobCli } from './jobs';
@@ -416,6 +416,11 @@ export function classify(run: RunView): Classified {
     case 'paused': {
       const event = run.metadata?.wait?.event;
       const approval = run.metadata?.approval;
+      if (
+        approval?.nodeId.startsWith('human-') &&
+        (approval as typeof approval & { resolved?: string }).resolved === 'rejected'
+      )
+        return { state: 'held:rework', exit: EXIT.held, node: approval.nodeId };
       if (approval?.nodeId.startsWith('human-'))
         return { state: 'held:human', exit: EXIT.held, node: approval.nodeId };
       return event?.startsWith('sa.human.')
@@ -1496,6 +1501,26 @@ const retry = (
     ? retryGate(l, c.node ?? '', prepare, onEffect)
     : recoverRun(l, prepare, onEffect);
 
+function advanceAttempts(paths: string[]): () => void {
+  const snapshots = paths.map(path => ({
+    path,
+    ...(existsSync(path) ? { raw: readFileSync(path, 'utf8') } : {}),
+  }));
+  const rollback = (): void => {
+    for (const snapshot of [...snapshots].reverse()) {
+      if (snapshot.raw === undefined) rmSync(snapshot.path, { force: true });
+      else writeAtomic(snapshot.path, snapshot.raw);
+    }
+  };
+  try {
+    for (const path of paths) advanceExecutionAttempt(path);
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+  return rollback;
+}
+
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
 function retryAllHeld(): number {
   const out = ledgers().flatMap((l): Record<string, unknown>[] => {
@@ -1518,7 +1543,7 @@ function retryAllHeld(): number {
   return out.every(x => x.ok === true || x.busy === true) ? 0 : 1;
 }
 
-/** approve：放行 sa.human.* 签收门；reject：终止 run（cancelRun）；retry：可选写 hint 后 resume（held:gate 重跑整个里程碑）。 */
+/** approve：放行签收；reject --pkg：从目标包返工；无 --pkg 的 reject 终止 run。 */
 function decide(l: Ledger, a: Args): number {
   const action = need(a._[2], 'decide <run> approve|reject|retry [--pkg id --hint text]');
   const run = getRun(l.archon_run_id, l.repo);
@@ -1529,6 +1554,10 @@ function decide(l: Ledger, a: Args): number {
       ok: false,
       reason: `decide refused: run ${run.status} is not currently held`,
     });
+    return 1;
+  }
+  if (c.state === 'held:rework' && action !== 'retry') {
+    print({ run_id: l.run_id, ok: false, reason: 'signoff rework only accepts decide retry' });
     return 1;
   }
   if (action === 'approve') {
@@ -1550,6 +1579,35 @@ function decide(l: Ledger, a: Args): number {
     });
   }
   if (action === 'reject') {
+    const { hint, pkg } = a.flags;
+    if (pkg !== undefined) {
+      if (hint === undefined) throw new Error('decide reject --pkg needs --hint <text>');
+      if (c.state !== 'held:human' || !run.metadata?.approval)
+        throw new Error('decide reject --pkg requires a native human signoff gate');
+      const plan = planOf(l);
+      const milestone = milestones(plan).find(m => `human-${m.id}` === c.node);
+      const index = milestone?.packages.findIndex(p => p.id === pkg) ?? -1;
+      if (!milestone || index < 0)
+        throw new Error(`decide reject: package ${pkg} is not in signoff ${c.node ?? 'unknown'}`);
+      const scopes = [...milestone.packages.slice(index).map(p => `pkg/${p.id}`), milestone.id];
+      const unavailable = scopes.find(scope => !attemptable(l, scope));
+      if (unavailable)
+        throw new Error(
+          `decide reject: ${unavailable} escalated; fix on ${l.branch} or start a new run`
+        );
+      writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
+      const rollback = advanceAttempts(scopes.map(scope => attemptPath(l.gen_dir, scope)));
+      try {
+        const rejected = rejectRun(l, hint);
+        if (!rejected.ok) throw new Error(rejected.reason ?? 'native reject failed');
+      } catch (error) {
+        rollback();
+        throw error;
+      }
+      const res = recoverRun(l);
+      print({ run_id: l.run_id, decision: 'reject', package: pkg, ...res });
+      return res.ok ? 0 : res.held ? EXIT.held : 1;
+    }
     const ok = intervention(
       l,
       'cancel',
@@ -1566,6 +1624,8 @@ function decide(l: Ledger, a: Args): number {
     return ok ? 0 : 1;
   }
   if (action !== 'retry') throw new Error(`decide: unknown action ${action}`);
+  if (c.state === 'held:rework' && (a.flags.pkg !== undefined || a.flags.hint !== undefined))
+    throw new Error('decide retry after signoff rejection does not accept --pkg or --hint');
   const { hint, pkg } = a.flags;
   if (hint !== undefined) {
     if (pkg === undefined || !planOf(l).packages.some(p => p.id === pkg))
@@ -2135,6 +2195,13 @@ function approveRun(l: Ledger): RecoverResult {
   const ack = archonJson(['workflow', 'approve', l.archon_run_id, '--detach'], l.repo);
   return ack.ok === true
     ? { ok: true, resumed: ack }
+    : { ok: false, reason: tail(JSON.stringify(ack)) };
+}
+
+function rejectRun(l: Ledger, reason: string): { ok: boolean; reason?: string } {
+  const ack = archonJson(['workflow', 'reject', l.archon_run_id, reason], l.repo);
+  return ack.ok === true && ack.cancelled === false
+    ? { ok: true }
     : { ok: false, reason: tail(JSON.stringify(ack)) };
 }
 

@@ -205,7 +205,7 @@ type N = {
   trigger_rule?: string;
   when?: string;
   timeout?: number;
-  approval?: { message: string };
+  approval?: { message: string; decisions?: { id: string }[] };
   retry?: { max_attempts?: number; on_error: string };
   with?: Record<string, unknown>;
 };
@@ -337,7 +337,7 @@ test('RECOVERY_CONTINUATION generates acceptance, gate and land without AI nodes
   expect(gate.with?.C3).toBe('null');
   expect(gate.with?.C4).toBe(`$${accept.id}.output`);
   expect(gate.with?.operator_id).toBe('original-id');
-  expect(nodes.find(n => n.id.startsWith('human-'))?.depends_on).toEqual([gate.id]);
+  expect(nodes.find(n => n.id.startsWith('human-'))?.depends_on).toEqual([gate.id, 'attempt-m1']);
   expect(nodes.at(-1)?.with?.kind).toBe('land');
 });
 
@@ -943,10 +943,15 @@ describe('buildWorkflow', () => {
       trigger_rule: 'none_failed_min_one_success',
     });
     expect(n('human-m2')).toMatchObject({
-      approval: { message: 'Approve delivery milestone m2' },
+      approval: {
+        message: 'Approve delivery milestone m2',
+        decisions: [{ id: 'approve' }, { id: 'reject' }],
+      },
       trigger_rule: 'none_failed_min_one_success',
     });
+    expect(n('human-m2')?.depends_on).toContain('attempt-m2');
     expect(n('signoff-m2')?.depends_on).toEqual(['human-m2']);
+    expect(n('signoff-m2')?.when).toBe("$human-m2.output.decision == 'approve'");
     expect(n('land')?.depends_on).toEqual(['signoff-m2']);
     expect(nodes.at(-1)?.id).toBe('land');
   });
@@ -1019,7 +1024,10 @@ describe('buildWorkflow', () => {
   test('native approval owns signoff; passed plan deadlines fail generation', () => {
     const approval = (deadline: string) =>
       nodesOf(build(false, { ...fixture, deadline })).find(x => x.id === 'human-m2')?.approval;
-    expect(approval('2026-10-10T00:00:00Z')).toEqual({ message: 'Approve delivery milestone m2' });
+    expect(approval('2026-10-10T00:00:00Z')).toEqual({
+      message: 'Approve delivery milestone m2',
+      decisions: [{ id: 'approve' }, { id: 'reject' }],
+    });
     expect(() => approval('2026-10-09T00:00:00Z')).toThrow(/already passed/);
   });
   test('all generated nodes preserve native agent tools', () => {
@@ -1426,6 +1434,7 @@ test('delivery defaults: no deadline survives >24h and preserves explicit human 
   );
   expect(nodes.find(n => n.id === 'human-m2')?.approval).toEqual({
     message: 'Approve delivery milestone m2',
+    decisions: [{ id: 'approve' }, { id: 'reject' }],
   });
   expect(nodes.find(n => n.id === 'signoff-m2')?.bash).toBe('true');
   expect(nodes.find(n => n.id === 'land')).toBeDefined();
