@@ -169,7 +169,15 @@ export function unknownEffects(run: ExecutionRunView): string[] {
   // Prompt, bash and script bodies can all write external state; a missing completion
   // record is not evidence of rollback. Engine-recorded failures keep their ordinary
   // retry contract; an interrupted execution has no such settled outcome.
-  return (run.nodes ?? []).filter(n => n.state === 'running').map(n => n.nodeId);
+  const approval = run.metadata?.approval;
+  const wait = run.metadata?.wait;
+  const pausedNode =
+    run.status === 'paused' && Boolean(approval) !== Boolean(wait)
+      ? (approval ?? wait)?.nodeId
+      : undefined;
+  return (run.nodes ?? [])
+    .filter(n => n.state === 'running' && n.nodeId !== pausedNode)
+    .map(n => n.nodeId);
 }
 
 export type ResumeExecutionResult =

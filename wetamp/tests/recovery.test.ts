@@ -378,6 +378,9 @@ describe('recovery ownership and effects', () => {
       { nodeId: 'verify-W2', state: 'running' }
     );
     expect(unknownEffects(run)).toEqual(['code-W1', 'verify-W2']);
+    run.status = 'paused';
+    run.metadata = { approval: { nodeId: 'code-W1' } };
+    expect(unknownEffects(run)).toEqual(['verify-W2']);
   });
 
   test.each(['land', 'deliver'])(
