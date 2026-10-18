@@ -553,6 +553,7 @@ nodes:
       risk: G1
       milestone: m1
       tag: diff-m1-r1
+      acceptance_evidence: $ARTIFACTS_DIR/settle-core.json
       archon: /GEN/archon
     output_format:
       type: object
@@ -1072,6 +1073,7 @@ nodes:
       risk: G1
       milestone: m1
       tag: diff-m1-r2
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m1-r1.json
       archon: /GEN/archon
       prev: $diff-m1-r1.output.diff_hash
       coder: $fix-m1-r2.output
@@ -1595,6 +1597,7 @@ nodes:
       risk: G1
       milestone: m1
       tag: diff-m1-r3
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m1-r2.json
       archon: /GEN/archon
       prev: $diff-m1-r2.output.diff_hash
       coder: $fix-m1-r3.output
@@ -2122,6 +2125,7 @@ nodes:
       risk: G1
       milestone: m1
       tag: diff-m1-r4
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m1-r3.json
       archon: /GEN/archon
       prev: $diff-m1-r3.output.diff_hash
       coder: $fix-m1-r4.output
@@ -2653,6 +2657,7 @@ nodes:
       risk: G1
       milestone: m1
       tag: diff-m1-r5
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m1-r4.json
       archon: /GEN/archon
       prev: $diff-m1-r4.output.diff_hash
       coder: $fix-m1-r5.output
@@ -3188,6 +3193,7 @@ nodes:
       risk: G1
       milestone: m1
       tag: diff-m1-r6
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m1-r5.json
       archon: /GEN/archon
       prev: $diff-m1-r5.output.diff_hash
       coder: $fix-m1-r6.output
@@ -4150,6 +4156,7 @@ nodes:
       risk: G2
       milestone: m2
       tag: diff-m2-r1
+      acceptance_evidence: $ARTIFACTS_DIR/settle-api.json
       archon: /GEN/archon
     output_format:
       type: object
@@ -4669,6 +4676,7 @@ nodes:
       risk: G2
       milestone: m2
       tag: diff-m2-r2
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m2-r1.json
       archon: /GEN/archon
       prev: $diff-m2-r1.output.diff_hash
       coder: $fix-m2-r2.output
@@ -5192,6 +5200,7 @@ nodes:
       risk: G2
       milestone: m2
       tag: diff-m2-r3
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m2-r2.json
       archon: /GEN/archon
       prev: $diff-m2-r2.output.diff_hash
       coder: $fix-m2-r3.output
@@ -5719,6 +5728,7 @@ nodes:
       risk: G2
       milestone: m2
       tag: diff-m2-r4
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m2-r3.json
       archon: /GEN/archon
       prev: $diff-m2-r3.output.diff_hash
       coder: $fix-m2-r4.output
@@ -6250,6 +6260,7 @@ nodes:
       risk: G2
       milestone: m2
       tag: diff-m2-r5
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m2-r4.json
       archon: /GEN/archon
       prev: $diff-m2-r4.output.diff_hash
       coder: $fix-m2-r5.output
@@ -6785,6 +6796,7 @@ nodes:
       risk: G2
       milestone: m2
       tag: diff-m2-r6
+      acceptance_evidence: $ARTIFACTS_DIR/diff-m2-r5.json
       archon: /GEN/archon
       prev: $diff-m2-r5.output.diff_hash
       coder: $fix-m2-r6.output
