@@ -907,6 +907,7 @@ export function generate(
     'execution.json',
     'learning.json',
     'accept-inputs.json',
+    'capabilities.json',
     'briefs',
     '.gitignore',
     'run-config.yaml',

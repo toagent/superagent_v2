@@ -1652,6 +1652,10 @@ function auxiliaryFixture(
     readFileSync(join(import.meta.dir, '../templates/.archon/scripts/sa-context.ts'))
   );
   cpSync(
+    join(import.meta.dir, '../templates/.archon/scripts/capabilities.ts'),
+    join(root, 'capabilities.ts')
+  );
+  cpSync(
     join(import.meta.dir, '../templates/.archon/scripts/native-models.ts'),
     join(root, 'native-models.ts')
   );
@@ -1677,19 +1681,19 @@ function auxiliaryFixture(
     );
   const instrument = `
 process.env.WORKFLOW_ID = 'fixture';
-const spawn = Bun.spawnSync;
+const rawSpawnSync = Bun.spawnSync;
 Bun.spawnSync = (actual, opts) => {
   const wrapped = actual[0] === 'python3' && actual[1] === '-c';
   const cmd = wrapped ? actual.slice(4) : actual;
   appendFileSync(${JSON.stringify(trace)}, JSON.stringify({cmd, timeout: opts?.timeout, watchdog: wrapped}) + '\\n');
   const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
   if (key === ${JSON.stringify(hang)})
-    return spawn([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
+    return rawSpawnSync([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
   // Only the stalled auxiliary (or the hook-bearing checkout) needs a real
   // process-group watchdog. Keep every production request in the trace.
   if (wrapped && key !== ${JSON.stringify(hang)} && !(${JSON.stringify(hook)} && key === 'worktree add'))
-    return spawn(cmd, opts);
-  return spawn(actual, opts);
+    return rawSpawnSync(cmd, opts);
+  return rawSpawnSync(actual, opts);
 };
 `;
   let source = readFileSync(SCRIPT, 'utf8').replace('const env =', `${instrument}\nconst env =`);
@@ -1716,6 +1720,7 @@ Bun.spawnSync = (actual, opts) => {
     },
     script
   );
+  if (!existsSync(trace)) throw new Error(`auxiliary fixture did not start: ${r.err}`);
   const calls = readFileSync(trace, 'utf8')
     .trim()
     .split('\n')
