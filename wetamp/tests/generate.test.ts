@@ -200,6 +200,7 @@ const build = (fake: boolean, plan = fixture): unknown =>
   );
 type N = {
   id: string;
+  always_run?: boolean;
   command?: string;
   script?: string;
   bash?: string;
@@ -319,6 +320,79 @@ const runAttempt = (node: N, cwd: string, artifacts: string) =>
       stderr: 'pipe',
     }
   );
+
+test('approval resume preserves reviews while a changed attempt refreshes failed review setup', () => {
+  const run = (retry: boolean) => {
+    const root = tmp(),
+      repo = gitRepo(join(root, 'repo')),
+      source = join(root, 'source'),
+      counter = join(root, 'attempt'),
+      setupCalls = join(root, 'setup-calls'),
+      reviewCalls = join(root, 'review-calls'),
+      allowReview = join(root, 'allow-review');
+    fs.mkdirSync(join(source, '.archon', 'workflows'), { recursive: true });
+    fs.writeFileSync(counter, '0');
+    fs.writeFileSync(
+      join(source, '.archon', 'workflows', 'review-resume.yaml'),
+      Bun.YAML.stringify({
+        name: 'review-resume',
+        description: 'Review attempt resume contract',
+        nodes: [
+          { id: 'attempt-m1', bash: `cat '${counter}'`, always_run: true },
+          { id: 'diff-m1-r1', bash: 'printf stable', depends_on: ['attempt-m1'] },
+          {
+            id: 'attempt-review-m1-r1',
+            bash: `echo setup >> '${setupCalls}'; printf prepared`,
+            depends_on: ['diff-m1-r1', 'attempt-m1'],
+          },
+          {
+            id: 'review-m1-r1',
+            bash: `echo review >> '${reviewCalls}'; test -f '${allowReview}'`,
+            depends_on: ['attempt-review-m1-r1'],
+          },
+          ...(retry
+            ? []
+            : [
+                {
+                  id: 'human-m1',
+                  approval: { message: 'Approve review' },
+                  depends_on: ['review-m1-r1'],
+                },
+              ]),
+        ],
+      })
+    );
+    if (!retry) fs.writeFileSync(allowReview, '1');
+    const env = fixtureEnv({
+      SUPERAGENT_HOME: join(root, 'home'),
+      ARCHON_HOME: join(root, 'home/archon'),
+    });
+    const invoke = (...args: string[]) => workflowCli(repo, env, ...args);
+    const ack = invoke(
+      'run',
+      'review-resume',
+      '--workflow-source',
+      source,
+      '--cwd',
+      repo,
+      '--no-worktree',
+      '--detach'
+    );
+    const id = String(ack?.runId);
+    invoke('wait', id, '--timeout', '20');
+    if (retry) {
+      fs.writeFileSync(counter, '1');
+      fs.writeFileSync(allowReview, '1');
+      invoke('resume', id, '--detach');
+    } else invoke('approve', id, '--detach');
+    invoke('wait', id, '--timeout', '20');
+    const count = (path: string) => readFileSync(path, 'utf8').trim().split('\n').length;
+    expect(count(setupCalls)).toBe(retry ? 2 : 1);
+    expect(count(reviewCalls)).toBe(retry ? 2 : 1);
+  };
+  run(false);
+  run(true);
+}, 30_000);
 
 test('RECOVERY_CONTINUATION generates acceptance, gate and land without AI nodes', () => {
   const p = structuredClone(fixture);
@@ -867,6 +941,8 @@ describe('buildWorkflow', () => {
       ).filter(n => n.id.startsWith('attempt-review-'));
       expect(nodes).toHaveLength(milestones(fixture).length * MAX_ROUNDS);
       const node = nodes.find(n => n.id === id)!;
+      expect(node.always_run).toBeUndefined();
+      expect(node.depends_on).toContain(`attempt-${id.slice(15).replace(/-r\d+$/, '')}`);
       const path = join(gen, 'attempts', node.id.slice('attempt-'.length));
       if (counter === 'directory') {
         fs.mkdirSync(path);

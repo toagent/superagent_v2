@@ -542,9 +542,10 @@ export function buildWorkflow(
             `${reviewEligible} && $diff-${t}.output.reviewed != 'true'`;
       nodes.push({
         id: reviewAttempt,
-        always_run: true,
         when: reviewWhen,
-        depends_on: [`diff-${t}`],
+        // A retry bumps the milestone attempt and refreshes review context. Other resumes,
+        // including human approval, retain completed review rounds and their frozen refs.
+        depends_on: [`diff-${t}`, attempt],
         ...attemptInputs(attemptPath(gen, `review-${t}`), '', fake ? '' : `review-${t}`),
         output_format: outputSchema('attempt'),
       });

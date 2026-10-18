@@ -755,10 +755,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r1
-    always_run: true
     when: $diff-m1-r1.output.disposition == 'advance'
     depends_on:
       - diff-m1-r1
+      - attempt-m1
     script: sa-context
     runtime: bun
     with:
@@ -1258,10 +1258,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r2
-    always_run: true
     when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'
     depends_on:
       - diff-m1-r2
+      - attempt-m1
     script: sa-context
     runtime: bun
     with:
@@ -1761,10 +1761,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r3
-    always_run: true
     when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.reviewed != 'true'
     depends_on:
       - diff-m1-r3
+      - attempt-m1
     script: sa-context
     runtime: bun
     with:
@@ -2268,10 +2268,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r4
-    always_run: true
     when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.reviewed != 'true'
     depends_on:
       - diff-m1-r4
+      - attempt-m1
     script: sa-context
     runtime: bun
     with:
@@ -2779,10 +2779,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r5
-    always_run: true
     when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.reviewed != 'true'
     depends_on:
       - diff-m1-r5
+      - attempt-m1
     script: sa-context
     runtime: bun
     with:
@@ -3294,10 +3294,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r6
-    always_run: true
     when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.reviewed != 'true'
     depends_on:
       - diff-m1-r6
+      - attempt-m1
     script: sa-context
     runtime: bun
     with:
@@ -4218,10 +4218,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r1
-    always_run: true
     when: $diff-m2-r1.output.disposition == 'advance'
     depends_on:
       - diff-m2-r1
+      - attempt-m2
     script: sa-context
     runtime: bun
     with:
@@ -4721,10 +4721,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r2
-    always_run: true
     when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.reviewed != 'true'
     depends_on:
       - diff-m2-r2
+      - attempt-m2
     script: sa-context
     runtime: bun
     with:
@@ -5224,10 +5224,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r3
-    always_run: true
     when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.reviewed != 'true'
     depends_on:
       - diff-m2-r3
+      - attempt-m2
     script: sa-context
     runtime: bun
     with:
@@ -5731,10 +5731,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r4
-    always_run: true
     when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.reviewed != 'true'
     depends_on:
       - diff-m2-r4
+      - attempt-m2
     script: sa-context
     runtime: bun
     with:
@@ -6242,10 +6242,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r5
-    always_run: true
     when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.reviewed != 'true'
     depends_on:
       - diff-m2-r5
+      - attempt-m2
     script: sa-context
     runtime: bun
     with:
@@ -6757,10 +6757,10 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r6
-    always_run: true
     when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.reviewed != 'true'
     depends_on:
       - diff-m2-r6
+      - attempt-m2
     script: sa-context
     runtime: bun
     with:
