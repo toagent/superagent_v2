@@ -3513,10 +3513,17 @@ export function main(argv: string[]): number {
       }
       return controlled(l, () => {
         const run = getRun(l.archon_run_id, l.repo);
-        const evidence = landEvidence(run);
+        const c = classify(run);
+        const diagnosticNode = /^land(?:-.+)?$/.test(c.node ?? '')
+          ? c.node
+          : !run.nodes?.length
+            ? 'land'
+            : undefined;
+        const evidence =
+          landEvidence(run) ?? (diagnosticNode ? landEvidence(run, diagnosticNode) : undefined);
         let land = evidence && evidenceJson(l, artifactsOf(run), evidence.file);
         if (land === undefined) {
-          console.error(`land: no land.json yet (state ${classify(run).state})`);
+          console.error(`land: no land.json yet (state ${c.state})`);
           return 1;
         }
         const receipt = deliveryProjection(l, run);
