@@ -125,6 +125,26 @@ interface Policy {
   exempt_paths: string[];
   budget_floor: Record<string, number>;
 }
+interface ReviewEffortPolicy {
+  effort: {
+    reviewer: Record<string, string>;
+    G2_reviewer: Record<string, string>;
+  };
+}
+
+/** The shared R1..Rn policy ladder is the sole owner of the review-round limit. */
+export function reviewRoundLimit(policy: ReviewEffortPolicy): number {
+  const rounds = (values: Record<string, string>): string[] =>
+    Object.keys(values).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  const expected = rounds(policy.effort.reviewer);
+  if (
+    !expected.length ||
+    expected.some((round, index) => round !== `R${String(index + 1)}`) ||
+    JSON.stringify(rounds(policy.effort.G2_reviewer)) !== JSON.stringify(expected)
+  )
+    throw new Error('tiers.policy.effort: reviewer round ladders must be equal and contiguous');
+  return expected.length;
+}
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
@@ -725,7 +745,7 @@ function acceptOnce(
   // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
     Array.from(
-      { length: MAX_ROUNDS },
+      { length: maxRounds() },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
   const baseResults =
@@ -823,7 +843,7 @@ function acceptOnce(
     env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : [],
     join(artifacts, `${tag}.coder.json`)
   );
-  if (reviewRound >= MAX_ROUNDS && result.disposition === 'repair')
+  if (reviewRound >= maxRounds() && result.disposition === 'repair')
     Object.assign(result, {
       disposition: 'fail',
       reason: 'acceptance_failed+review_limit',
@@ -876,7 +896,7 @@ function finish(
   if (existsSync(join(gen, 'execution.json'))) {
     const reviewRound =
       Array.from(
-        { length: MAX_ROUNDS },
+        { length: maxRounds() },
         (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
       ).indexOf(tag) + 1;
     const node = reviewRound
@@ -1208,7 +1228,16 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
   ]),
 ];
 
-export const MAX_ROUNDS = 6;
+const maxRounds = (): number => {
+  const source = env('POLICY')
+    ? policy()
+    : (
+        JSON.parse(readFileSync(join(import.meta.dir, '../../../tiers.json'), 'utf8')) as {
+          policy: unknown;
+        }
+      ).policy;
+  return reviewRoundLimit(source as ReviewEffortPolicy);
+};
 type Verdict = 'pass' | 'fix' | 'escalate';
 type DecisionCandidate = Pick<DeliveryDecision, 'kind' | 'reason'>;
 interface DecisionFacts {
@@ -1506,7 +1535,7 @@ export function deliveryDecision(input: {
           last.status
         ];
   }
-  if (rounds >= MAX_ROUNDS) return out('block', `${reason}+review_limit`, debt);
+  if (rounds >= maxRounds()) return out('block', `${reason}+review_limit`, debt);
   return out(last?.status === 'INCOMPLETE' ? 'block' : 'repair', reason, debt);
 }
 
@@ -1555,7 +1584,7 @@ export function permissionEvidence(events: RunEvent[], pkgs: string[], m: string
   for (const id of pkgs)
     for (const node of [`code-${id}`, `repair-${id}`]) nodes.set(node, `package-attempt-${id}`);
   const scope = `attempt-${m}`;
-  for (let r = 1; r <= MAX_ROUNDS; r++) nodes.set(`fix-${m}-r${String(r)}`, scope);
+  for (let r = 1; r <= maxRounds(); r++) nodes.set(`fix-${m}-r${String(r)}`, scope);
   const attempts = new Map<string, string>(),
     counters = new Map<string, string>(),
     denied = new Map<string, string>();
@@ -1773,7 +1802,7 @@ export function readAuthorEvidence(
     [milestone]
       .flat()
       .some(m =>
-        Array.from({ length: MAX_ROUNDS }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node)
+        Array.from({ length: maxRounds() }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node)
       );
   for (;;) {
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
@@ -1929,7 +1958,7 @@ export function validateRecovery(
   require(typeof limit === 'number' &&
     Number.isInteger(limit) &&
     limit > 0 &&
-    limit <= MAX_ROUNDS &&
+    limit <= maxRounds() &&
     e.rounds.length === limit + 1, 'complete rounds through recorded limit + 1 required');
   require(e.author_coverage, 'support author coverage required');
   const roster = source(e.author_coverage) as Omit<RecoveryAuthorCoverage, 'rounds'> & {
@@ -2176,7 +2205,7 @@ function gate(): void {
   };
   let d = decide(decision);
   if (d.verdict === 'escalate' && !decision.expired && nextDisposition(d.decision) === 'repair')
-    Object.assign(d, { verdict: d.rounds >= MAX_ROUNDS ? 'escalate' : 'fix' });
+    Object.assign(d, { verdict: d.rounds >= maxRounds() ? 'escalate' : 'fix' });
   const tested = d.reason === 'review_not_required';
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))

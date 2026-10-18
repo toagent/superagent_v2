@@ -69,7 +69,7 @@ function runtimeExecution(
   if (!node) throw new Error('policy: node id missing');
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
-  const route = executionForNode(table, node);
+  const route = executionForNode(table, node, tiers);
   const archonHome = process.env.ARCHON_HOME;
   if (!archonHome) throw new Error('policy: ARCHON_HOME missing');
   const db = new Database(join(archonHome, 'archon.db'), { readonly: true });

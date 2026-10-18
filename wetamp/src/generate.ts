@@ -19,10 +19,10 @@ import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import { REASONS } from './reasons';
 import { injectMemory } from './memory';
 import {
-  MAX_ROUNDS,
   attemptPath,
   CHECK_AUX_BUDGET_MS,
   environmentChecks,
+  reviewRoundLimit,
   type RecoveryEvidence,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
@@ -144,7 +144,7 @@ const acceptTimeout = (pkgs: Pkg[], plan: Plan): Node =>
 
 /**
  * 纯函数：plan + 里程碑 → 工作流对象（黄金测试比对此结果；now 固定以得到确定的 deadline_ms）。
- * 每个里程碑：start → 逐包 code/verify/[repair]/settle → 至多 MAX_ROUNDS 轮 diff → review → gate（后续各轮前有 when 守卫的
+ * 每个里程碑：start → 逐包 code/verify/[repair]/settle → 至多 policy 轮次的 diff → review → gate（后续各轮前有 when 守卫的
  * fix）。verify 不 advance 时包内修复一次（repair），settle 复验；失败（fail）即该节点失败、run 终止，后续包与
  * 评审都不启动。验收未 advance 的轮次跳过评审，gate 按验收原因直接进入修复。未走到的轮次被条件跳过，下一里程碑以
  * none_failed_min_one_success 汇合各轮 gate；escalate 即 gate 失败、run 停下。
@@ -166,6 +166,7 @@ export function buildWorkflow(
     throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
   const executions = executionTable(plan, tiers);
+  const maxRounds = reviewRoundLimit(tiers.policy);
   const execution = (id: string): Node => {
     if (fake) return {};
     const descriptor = executions[id];
@@ -446,7 +447,7 @@ export function buildWorkflow(
     }
     const briefs = covered.map(brief).join(' ');
     const rounds: Node = {};
-    for (let r = 1; r <= MAX_ROUNDS; r++) {
+    for (let r = 1; r <= maxRounds; r++) {
       const t = `${m.id}-r${String(r)}`;
       const before = `${m.id}-r${String(r - 1)}`;
       if (r > 1) {
@@ -610,7 +611,7 @@ export function buildWorkflow(
       prev = `gate-${t}`;
     }
     const gates: Node = {
-      depends_on: Array.from({ length: MAX_ROUNDS }, (_, i) => `gate-${m.id}-r${String(i + 1)}`),
+      depends_on: Array.from({ length: maxRounds }, (_, i) => `gate-${m.id}-r${String(i + 1)}`),
       trigger_rule: 'none_failed_min_one_success',
     };
     after = signoff(m, gates);

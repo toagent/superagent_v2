@@ -18,7 +18,7 @@ import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
-import { MAX_ROUNDS, CHECK_AUX_BUDGET_MS } from '../templates/.archon/scripts/sa-check';
+import { CHECK_AUX_BUDGET_MS, reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
 import { integrationLockTimeout } from '../src/land';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
@@ -29,6 +29,8 @@ import {
   substituteNodeOutputRefs,
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
+
+const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
 test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through stable attempt paths', () => {
   const gen = tmp(),
@@ -730,6 +732,7 @@ describe('buildWorkflow', () => {
     fs.writeFileSync(
       policy,
       JSON.stringify({
+        effort: snapshotPolicy(loadTiers()).effort,
         risk_paths: [],
         code_extensions: [],
         exempt_paths: [],
@@ -827,6 +830,18 @@ describe('buildWorkflow', () => {
   });
   test('golden: fake mode swaps coder nodes for bash stubs only', () => {
     expect(build(true)).toEqual(golden('two-pkgs-fake'));
+  });
+  test('review rounds are derived from the configured policy ladder', () => {
+    const tiers = structuredClone(loadTiers());
+    for (const ladder of [tiers.policy.effort.reviewer, tiers.policy.effort.G2_reviewer])
+      for (const round of ['R3', 'R4', 'R5', 'R6']) delete ladder[round];
+    const nodes = nodesOf(
+      buildWorkflow(fixture, milestones(fixture), 'round-policy', '/GEN', false, NOW, tiers)
+    );
+    expect(nodes.filter(node => node.id.startsWith('gate-m1-r')).map(node => node.id)).toEqual([
+      'gate-m1-r1',
+      'gate-m1-r2',
+    ]);
   });
   const reviewAttempts = [false, true].flatMap(fake =>
     nodesOf(build(fake))

@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   budgetUsage,
-  MAX_ROUNDS,
+  reviewRoundLimit,
   decide,
   disposition,
   nextDisposition,
@@ -31,6 +31,7 @@ import {
   CHECK_AUX_TIMEOUT_MS,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
+const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 import {
   acceptanceNodeEnvironment,
   directAuxiliaryPreload,
@@ -1577,6 +1578,11 @@ function runScript(
     ARTIFACTS_DIR: art,
     ...extraEnv,
   };
+  if (!inputs.policy) {
+    const policy = join(art, 'policy.json');
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+    env.INPUTS_POLICY = policy;
+  }
   for (const [k, v] of Object.entries(inputs)) {
     // Synthetic gate fixtures bind the real checkout just like accept artifacts do.
     let value = v;
@@ -1636,6 +1642,7 @@ function auxiliaryFixture(
   writeFileSync(
     policy,
     JSON.stringify({
+      effort: snapshotPolicy(loadTiers()).effort,
       risk_paths: [],
       code_extensions: [],
       exempt_paths: [],
@@ -2496,6 +2503,7 @@ describe('sa-check script', () => {
       writeFileSync(
         policy,
         JSON.stringify({
+          effort: snapshotPolicy(loadTiers()).effort,
           risk_paths: [],
           code_extensions: ['.ts'],
           exempt_paths: [],
@@ -3718,6 +3726,7 @@ describe('sa-check script', () => {
     writeFileSync(
       pol,
       JSON.stringify({
+        effort: snapshotPolicy(loadTiers()).effort,
         risk_paths: ['**/auth/**'],
         code_extensions: ['.ts'],
         exempt_paths: [],

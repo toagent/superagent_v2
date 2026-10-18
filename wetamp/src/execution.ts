@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { resolveRoute, type Alias, type Console, type Tiers } from './config';
 import { capsOf, milestones, type Caps, type Plan, type Pkg } from './plan';
 import { workflowLaunchPolicy, type LaunchPolicy } from '@archon/providers/launch-policy';
-import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
+import { reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 
 export type ExecutionRole = Parameters<typeof resolveRoute>[3];
 /** Wrapper observations only; missing fields are unknown, never inferred from terminal state. */
@@ -33,7 +33,7 @@ export function describeExecution(
   pkgs: Pkg[] = [],
   plan?: Plan
 ): ExecutionDescriptor {
-  if (!Number.isInteger(round) || round < 1 || round > MAX_ROUNDS)
+  if (!Number.isInteger(round) || round < 1 || round > reviewRoundLimit(tiers.policy))
     throw new Error('execution: invalid round');
   return structuredClone({
     role,
@@ -54,7 +54,7 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
     for (const p of m.packages)
       for (const role of ['code', 'repair'] as const)
         table[`${role}-${p.id}`] = describeExecution(tiers, role, p.risk, 1, m.id, [p], plan);
-    for (let round = 1; round <= MAX_ROUNDS; round++) {
+    for (let round = 1; round <= reviewRoundLimit(tiers.policy); round++) {
       table[`review-${m.id}-r${String(round)}`] = describeExecution(
         tiers,
         'review',
@@ -107,7 +107,8 @@ export function readExecutionTable(
 
 export function executionForNode(
   table: Record<string, ExecutionDescriptor>,
-  node: string
+  node: string,
+  tiers: Tiers
 ): ExecutionDescriptor {
   const descriptor = Object.hasOwn(table, node) ? table[node] : undefined;
   if (!descriptor) throw new Error(`policy: unknown node ${node}`);
@@ -116,7 +117,7 @@ export function executionForNode(
     !['G0', 'G1', 'G2'].includes(descriptor.risk) ||
     !Number.isInteger(descriptor.round) ||
     descriptor.round < 1 ||
-    descriptor.round > MAX_ROUNDS
+    descriptor.round > reviewRoundLimit(tiers.policy)
   )
     throw new Error(`policy: invalid execution descriptor ${node}`);
   return structuredClone(descriptor);
@@ -127,7 +128,7 @@ export const readExecution = (
   plan: Plan,
   tiers: Tiers,
   node: string
-): ExecutionDescriptor => executionForNode(readExecutionTable(path, plan, tiers), node);
+): ExecutionDescriptor => executionForNode(readExecutionTable(path, plan, tiers), node, tiers);
 
 export function executionRoute(
   tiers: Tiers,
