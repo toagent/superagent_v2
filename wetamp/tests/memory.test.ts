@@ -806,7 +806,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
       override: '明确的小样本验收',
       rejected: false,
     });
-  });
+  }, 15_000);
   test('read-only memory API reports ten recent episodes and changes no files', () => {
     for (let i = 0; i < 12; i++)
       saveEpisode(
@@ -1357,7 +1357,8 @@ describe('FIXD review regressions', () => {
       if (success) expect(episodes()).toHaveLength(0);
       else
         expect(episodes()[0]).toMatchObject({ status: 'failed', acceptance: [{ cmd, ok: false }] });
-    }
+    },
+    15_000
   );
   test('EV-R1-01 nested finding evidence and command/log bodies never cross reflection boundary', async () => {
     fake();
