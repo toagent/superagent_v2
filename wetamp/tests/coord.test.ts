@@ -226,6 +226,19 @@ test('6: delivery and ack are idempotent; only recipient acks; sender receives d
   expect(s.c.messages().filter(m => m.type === 'receipt')).toHaveLength(2);
   expect(() => s.c.ack(String(one.id), a, 'accepted', 'again')).toThrow(/invalid state/);
 });
+test('handoff can fail immediately when the registry is busy', () => {
+  const s = setup();
+  mkdirSync(join(s.sa, 'coord'));
+  const held = native.lock(join(s.sa, 'coord/registry.lock'));
+  expect(held.ok).toBe(true);
+  try {
+    const started = Date.now();
+    expect(() => s.c.handoff(s.scope, b, input, 0, false)).toThrow('coord: registry busy');
+    expect(Date.now() - started).toBeLessThan(100);
+  } finally {
+    if (held.ok) held.release();
+  }
+});
 test('7: handoff wakes A wait before querying provider', async () => {
   const s = setup(),
     project = gitRepo(tmp());

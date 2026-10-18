@@ -22,6 +22,7 @@ import { readUsage } from './usage';
 import { readJobs } from './jobs';
 import { reasonOf } from './reasons';
 import { redact } from './redact';
+import { caller, coord, repoScope } from './coord';
 import { budgetUsage } from '../templates/.archon/scripts/sa-check';
 import type { Plan, Pkg } from './plan';
 import { recallLearning, selectLearning, type LearningEntry } from './learning';
@@ -253,7 +254,7 @@ function mechanize(signature: string, reasons: string[], episode: string): void 
   mkdirSync(join(root(), 'mechanize'), { recursive: true });
   const id = signature.replace(/[^a-zA-Z0-9_-]/g, '_'),
     file = join(root(), 'mechanize', `${id}.json`),
-    previous = memoryJson<{ episodes: string[]; reasons: string[] }>(file, {
+    previous = memoryJson<Mechanism>(file, {
       episodes: [],
       reasons: [],
     });
@@ -264,10 +265,57 @@ function mechanize(signature: string, reasons: string[], episode: string): void 
       signature,
       episodes: [...new Set([...previous.episodes, episode])],
       reasons: [...new Set([...previous.reasons, ...reasons])],
+      ...(previous.handoff ? { handoff: previous.handoff } : {}),
       invariant: 'I1/I2/I5/I6',
       requirement: '用 episode 证据建立事故回放，将重复失败转为确定性机制。',
     })
   );
+}
+type Mechanism = { episodes: string[]; reasons: string[]; signature?: string } & {
+  handoff?: { id: string; state: string; episodes: number };
+};
+export function deliverEngineDefects(): void {
+  for (const name of files(join(root(), 'mechanize'))) {
+    const file = join(root(), 'mechanize', name),
+      mechanism = memoryJson<Mechanism>(file, { episodes: [], reasons: [] }),
+      signature = mechanism.signature ?? name.slice(0, -5),
+      evidence = mechanism.episodes.flatMap(id => {
+        const episode = episodeOf(id);
+        return episode && !privateProject(episode.project) ? [episode] : [];
+      }),
+      previous = mechanism.handoff,
+      message = previous
+        ? coord()
+            .messages()
+            .find(m => m.id === previous.id)
+        : undefined,
+      state = message?.state ?? previous?.state;
+    if (
+      !evidence.length ||
+      (previous && (state !== 'done' || evidence.length <= previous.episodes))
+    ) {
+      if (previous && state !== previous.state)
+        writeAtomic(file, JSON.stringify({ ...mechanism, handoff: { ...previous, state } }));
+      continue;
+    }
+    const paths = evidence.map(e => join(root(), 'episodes', `${e.id}.json`)),
+      regression = state === 'done';
+    const sent = coord().handoff(
+      repoScope(WETAMP),
+      caller(true),
+      {
+        kind: 'bug',
+        title: `engine defect${regression ? ' regression' : ''}: ${signature}`,
+        body: `signature: ${signature}\nreason_codes: ${mechanism.reasons.join(',')}\noccurrences: ${String(evidence.length)}\nprojects: ${[...new Set(evidence.map(e => e.project))].join(',')}\nrun_ids: ${evidence.map(e => e.id).join(',')}\nepisode_evidence:\n${paths.join('\n')}`,
+        evidence: paths,
+        severity: 'normal',
+      },
+      0,
+      false
+    );
+    mechanism.handoff = { id: String(sent.id), state: 'queued', episodes: evidence.length };
+    writeAtomic(file, JSON.stringify(mechanism));
+  }
 }
 export function saveEpisode(e: Episode): boolean {
   if (basename(e.id) !== e.id || !e.id || e.id === '..') throw new Error('invalid episode id');
@@ -1252,6 +1300,11 @@ export function memoryTick(
         error(`job-${j.id}`, e);
       }
     if (!dryRun) {
+      try {
+        deliverEngineDefects();
+      } catch {
+        memoryLog('engine handoff skipped; next tick retries');
+      }
       mkdirSync(root(), { recursive: true });
       if (changed) {
         writeAtomic(join(root(), 'priors.json'), JSON.stringify(priors));

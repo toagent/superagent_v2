@@ -18,6 +18,7 @@ import {
 import { join } from 'node:path';
 import {
   diagnosis,
+  deliverEngineDefects,
   episodes,
   foldEpisode,
   injectMemory,
@@ -261,6 +262,32 @@ describe('EV1 incident replay', () => {
     });
     saveEpisode(e);
     expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
+  });
+  test('engine mechanisms queue once, accumulate, and reopen after done', () => {
+    const first = episode({ id: 'defect-a', category: 'engine', signature: 'engine_suspect' });
+    saveEpisode(first);
+    deliverEngineDefects();
+    expect(coordination.coord().messages()).toHaveLength(1);
+    const message = coordination.coord().messages()[0];
+    expect(message).toMatchObject({ kind: 'bug', recipient: null });
+    expect(message.body).not.toContain('SECRET');
+    saveEpisode({ ...first, id: 'defect-b', project: '/another/project' });
+    deliverEngineDefects();
+    expect(coordination.coord().messages()).toHaveLength(1);
+    const owner = { ...message.sender, client: 'engine-owner' };
+    expect(coordination.coord().claim(message.scope, owner).inbox).toHaveLength(1);
+    coordination.coord().ack(message.id, owner, 'done', 'fixed');
+    deliverEngineDefects();
+    const defects = coordination
+      .coord()
+      .messages()
+      .filter(m => !m.type);
+    expect(defects).toHaveLength(2);
+    const regression = defects.find(m => m.title.includes('regression'))!;
+    expect(regression.title).toBe('engine defect regression: engine_suspect');
+    expect(
+      JSON.parse(readFileSync(join(sa, 'memory/mechanize/engine_suspect.json'), 'utf8'))
+    ).toMatchObject({ handoff: { id: regression.id, state: 'queued', episodes: 2 } });
   });
   test('M2-01 and xiaopan 57e6 become mechanisms', async () => {
     fake();

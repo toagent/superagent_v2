@@ -217,7 +217,7 @@ export class Coordination {
       writeAtomic(file, JSON.stringify(value) + '\n');
     });
   }
-  locked<T>(f: () => T): T {
+  locked<T>(f: () => T, waitMs = 10_000): T {
     if (this.depth) return f();
     const root = join(this.d.sa, 'coord');
     mkdirSync(root, { recursive: true });
@@ -232,7 +232,7 @@ export class Coordination {
           k.release();
         }
       }
-      if (n >= 200) throw new Error('coord: registry busy');
+      if (n * 50 >= waitMs) throw new Error('coord: registry busy');
       Bun.sleepSync(50);
     }
   }
@@ -541,20 +541,27 @@ export class Coordination {
   handoff(
     scope: Scope,
     sender: Identity,
-    input: Pick<Message, 'kind' | 'title' | 'body' | 'evidence' | 'severity'>
+    input: Pick<Message, 'kind' | 'title' | 'body' | 'evidence' | 'severity'>,
+    waitMs = 120_000,
+    claimUnowned = true
   ): Record<string, unknown> {
-    return this.scoped(scope, () =>
+    const deliver = (): Record<string, unknown> =>
       this.locked(() => {
         let view = this.owner(scope),
           claimed = false;
         if (view.conflicts.length) throw new Error(view.next);
-        if (!view.owner) {
+        if (!view.owner && claimUnowned) {
           this.claim(scope, sender);
           view = this.owner(scope);
           claimed = true;
         }
         if (same(view.owner, sender) && !claimed)
-          return { routed_to: sender, presence: view.presence, delivery: 'self', next: '自己处理' };
+          return {
+            routed_to: sender,
+            presence: view.presence,
+            delivery: 'self',
+            next: '自己处理',
+          };
         const id = shared.hash([scope, input.kind, input.title, [...input.evidence].sort()]);
         if (!shared.read(this.path('inbox', id)))
           this.save('inbox', id, {
@@ -574,8 +581,8 @@ export class Coordination {
           delivery: 'queued',
           next: claimed ? '已认领，由你处理' : '收件人必须通过 inbox --ack 答复',
         };
-      })
-    );
+      }, waitMs);
+    return this.scoped(scope, deliver, waitMs);
   }
   surfaced(who: Identity): Message[] {
     return this.locked(() =>
