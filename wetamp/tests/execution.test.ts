@@ -42,6 +42,36 @@ test('frozen descriptors and both entry points share risk/round effort and nativ
   );
 });
 
+test('soldier and general dispatch pools remain isolated during vendor failover', () => {
+  const configured = tiers.routing.soldier?.models ?? [];
+  const soldier = executionRoute(
+    tiers,
+    'codex',
+    'auto',
+    describeExecution(tiers, 'soldier'),
+    [],
+    true
+  ).candidates;
+  const general = executionRoute(
+    tiers,
+    'codex',
+    'auto',
+    describeExecution(tiers, 'code'),
+    [],
+    true
+  ).candidates;
+  expect(configured.length).toBeGreaterThan(0);
+  expect(soldier.map(candidate => candidate.model)).toEqual(configured);
+  expect(soldier.every(candidate => candidate.provider === 'codex')).toBe(true);
+  expect(
+    executionRoute(tiers, 'claude', 'single:claude', describeExecution(tiers, 'soldier')).candidates
+  ).toEqual(soldier);
+  expect(general.every(candidate => !configured.includes(candidate.model))).toBe(true);
+  expect(soldier.every(candidate => !tiers.routing.coder.models.includes(candidate.model))).toBe(
+    true
+  );
+});
+
 test('new runs read persisted identities; only missing tables use the historical adapter', () => {
   const path = join(tmp(), 'execution.json');
   const table = executionTable(plan, tiers);

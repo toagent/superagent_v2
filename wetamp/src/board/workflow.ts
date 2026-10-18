@@ -25,7 +25,7 @@ export type Role = 'coder' | 'reviewer' | 'human' | 'script';
 
 /** Shared by BT9 display and EV1 generation: role belongs to the node definition. */
 export const nodeRole = (n: { model?: unknown; wait?: unknown }): Role =>
-  n.model === '@sa-coder'
+  n.model === '@sa-coder' || n.model === '@sa-soldier'
     ? 'coder'
     : n.model === '@sa-reviewer' || n.model === '@sa-reviewer-alt'
       ? 'reviewer'

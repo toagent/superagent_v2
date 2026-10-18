@@ -196,9 +196,16 @@ const golden = (name: string): unknown =>
   Bun.YAML.parse(readFileSync(join(import.meta.dir, 'golden', `${name}.yaml`), 'utf8'));
 // 语义比对：lint-staged 会对 YAML 跑 prettier，字节比对没有意义。
 const NOW = Date.parse('2026-10-09T00:00:00Z');
+const legacyTiers = () => {
+  const tiers = loadTiers();
+  if (tiers.routing.soldier) tiers.routing.soldier.models = [];
+  return tiers;
+};
 const build = (fake: boolean, plan = fixture): unknown =>
   JSON.parse(
-    JSON.stringify(buildWorkflow(plan, milestones(plan), 'golden-0001', '/GEN', fake, NOW))
+    JSON.stringify(
+      buildWorkflow(plan, milestones(plan), 'golden-0001', '/GEN', fake, NOW, legacyTiers())
+    )
   );
 type N = {
   id: string;
@@ -210,6 +217,9 @@ type N = {
   trigger_rule?: string;
   when?: string;
   timeout?: number;
+  idle_timeout?: number;
+  model?: string;
+  provider?: string;
   approval?: { message: string; decisions?: { id: string }[] };
   retry?: { max_attempts?: number; on_error: string };
   maxBudgetUsd?: number;
@@ -567,6 +577,36 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 });
 
 describe('buildWorkflow', () => {
+  test('soldier is one bounded optional node and general tolerates its failure', () => {
+    const tiers = loadTiers();
+    const nodes = nodesOf(
+      buildWorkflow(fixture, milestones(fixture), 'soldier', '/GEN', false, NOW, tiers)
+    );
+    expect(nodes.find(n => n.id === 'soldier-core')).toMatchObject({
+      command: 'sa-soldier',
+      model: '@sa-soldier',
+      depends_on: ['start-m1', 'package-attempt-core'],
+      idle_timeout: 600_000,
+    });
+    expect(nodes.find(n => n.id === 'code-core')).toMatchObject({
+      depends_on: ['start-m1', 'package-attempt-core', 'soldier-core'],
+      trigger_rule: 'all_done',
+    });
+    expect(
+      nodesOf(buildWorkflow(fixture, milestones(fixture), 'fake', '/GEN', true, NOW, tiers)).some(
+        n => n.id.startsWith('soldier-')
+      )
+    ).toBe(false);
+    expect(
+      nodesOf(
+        buildWorkflow(fixture, milestones(fixture), 'carry', '/GEN', false, NOW, tiers, {
+          from: 'old',
+          packages: ['core'],
+        })
+      ).some(n => n.id === 'soldier-core')
+    ).toBe(false);
+    expect(validateDagStructure(nodes as DagNode[])).toBeNull();
+  });
   test('P2: two-package data dependencies exclude milestone and review retry counters', () => {
     for (const sameMilestone of [false, true]) {
       const plan = structuredClone(fixture);
@@ -599,12 +639,21 @@ describe('buildWorkflow', () => {
   });
   test('P2: carry changes only code/verify wiring; an empty carry preserves every byte', () => {
     const make = (packages: string[], coded?: string[]) =>
-      buildWorkflow(fixture, milestones(fixture), 'golden-0001', '/GEN', false, NOW, loadTiers(), {
-        from: "old'run",
-        packages,
-        evidence: Object.fromEntries(packages.map(id => [id, `/OLD/${id}.json`])),
-        coded,
-      });
+      buildWorkflow(
+        fixture,
+        milestones(fixture),
+        'golden-0001',
+        '/GEN',
+        false,
+        NOW,
+        legacyTiers(),
+        {
+          from: "old'run",
+          packages,
+          evidence: Object.fromEntries(packages.map(id => [id, `/OLD/${id}.json`])),
+          coded,
+        }
+      );
     const normal = build(false);
     expect(JSON.stringify(make([]))).toBe(JSON.stringify(normal));
     const nodes = nodesOf(make(['core']));
@@ -1613,6 +1662,7 @@ function checkGeneratedRepo(): void {
     'sa-repair',
     'sa-review',
     'sa-review-delta',
+    'sa-soldier',
   ]);
   for (const n of ai) {
     const prompt = readFileSync(join(g.dir, '.archon', 'commands', `${n.command}.md`), 'utf8');
@@ -1687,7 +1737,7 @@ function checkGeneratedRepo(): void {
   for (const n of nodesOf(singleWorkflow).filter(n => n.command)) {
     const model = (n as N & { model: string }).model;
     expect(singleConfig.aliases[model].provider).toBe(
-      n.command!.startsWith('sa-review') ? 'codex' : 'claude'
+      n.command!.startsWith('sa-review') || n.command === 'sa-soldier' ? 'codex' : 'claude'
     );
   }
   const thin = loadPlan(
@@ -1884,6 +1934,7 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
       ).result
     ).toBe(needed);
     expect(nodes.filter(n => n.command).map(n => n.command)).toEqual([
+      'sa-soldier',
       'sa-code',
       'sa-repair',
       'sa-review',

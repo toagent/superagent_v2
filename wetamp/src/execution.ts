@@ -51,9 +51,12 @@ export function describeExecution(
 export function executionTable(plan: Plan, tiers: Tiers): Record<string, ExecutionDescriptor> {
   const table: Record<string, ExecutionDescriptor> = {};
   for (const m of milestones(plan)) {
-    for (const p of m.packages)
+    for (const p of m.packages) {
+      if (tiers.routing.soldier?.models.length)
+        table[`soldier-${p.id}`] = describeExecution(tiers, 'soldier', p.risk, 1, m.id, [p], plan);
       for (const role of ['code', 'repair'] as const)
         table[`${role}-${p.id}`] = describeExecution(tiers, role, p.risk, 1, m.id, [p], plan);
+    }
     for (let round = 1; round <= reviewRoundLimit(tiers.policy); round++) {
       table[`review-${m.id}-r${String(round)}`] = describeExecution(
         tiers,
@@ -113,7 +116,7 @@ export function executionForNode(
   const descriptor = Object.hasOwn(table, node) ? table[node] : undefined;
   if (!descriptor) throw new Error(`policy: unknown node ${node}`);
   if (
-    !['code', 'repair', 'review', 'command'].includes(descriptor.role) ||
+    !['soldier', 'code', 'repair', 'review', 'command'].includes(descriptor.role) ||
     !['G0', 'G1', 'G2'].includes(descriptor.risk) ||
     !Number.isInteger(descriptor.round) ||
     descriptor.round < 1 ||

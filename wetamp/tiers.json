@@ -170,6 +170,10 @@
         "gpt-6-astra"
       ]
     },
+    "soldier": {
+      "provider": "codex",
+      "models": ["deepseek-v4.1-flash", "deepseek-v4-flash"]
+    },
     "reviewer": {
       "by_risk": {
         "G0": [

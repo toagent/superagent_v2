@@ -14,6 +14,8 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 
 上下文文件：$$INPUTS.context_node.output.context_pack_path
 
+编码前检查当前 worktree 的实际 `git diff`：若士兵已留下改动，逐项核对、修订并补齐测试；若没有士兵改动，从零实现。士兵输出不是契约或验收证据，不解析其自然语言结论。
+
 ## 要求
 
 1. 在当前工作目录（本 run 的 worktree）内修改代码。预期改动范围只是预期：为达成目标必须改范围外的文件时直接改，并在 `deviations` 逐条登记 `{path, why}`。完成后 `git add <改动文件> && git commit -m "$INPUTS.pkg: <摘要>"`，验收时工作区必须干净。

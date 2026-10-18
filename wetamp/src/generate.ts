@@ -101,6 +101,7 @@ const contextOutputSchema = (): unknown => {
 };
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
+const SOLDIER_IDLE_MS = 10 * 60 * 1000;
 
 const skippable = (from: string): Node => ({ from, if_skipped: null });
 export interface Carried {
@@ -372,6 +373,19 @@ export function buildWorkflow(
       const carriedEvidence = carried?.evidence?.[p.id]
         ? join(gen, 'carried-evidence', `${p.id}.json`)
         : undefined;
+      const soldier =
+        !fake && !carry && tiers.routing.soldier?.models.length ? `soldier-${p.id}` : undefined;
+      if (soldier)
+        nodes.push({
+          id: soldier,
+          command: 'sa-soldier',
+          retry: { on_error: 'transient' },
+          model: '@sa-soldier',
+          ...execution(soldier),
+          idle_timeout: SOLDIER_IDLE_MS,
+          depends_on: [prev, pkgAttempt],
+          with: { pkg: p.id, context_node: pkgAttempt },
+        });
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
         : {
@@ -390,8 +404,15 @@ export function buildWorkflow(
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
-        depends_on: [prev, pkgAttempt],
-        ...(carry ? { when: `$${pkgAttempt}.output.attempt != '0'` } : {}),
+        depends_on: [prev, pkgAttempt, ...(soldier ? [soldier] : [])],
+        ...(soldier
+          ? {
+              trigger_rule: 'all_done',
+              when: `$${prev}.output.head != '' && $${pkgAttempt}.output.attempt != ''`,
+            }
+          : carry
+            ? { when: `$${pkgAttempt}.output.attempt != '0'` }
+            : {}),
         output_format: outputSchema('coder'),
       });
       const accept = {
