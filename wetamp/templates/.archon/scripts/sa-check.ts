@@ -788,7 +788,7 @@ function acceptOnce(
   const ids = env('PKGS').split(',').filter(Boolean);
   const p = plan();
   const pkgs = p.packages.filter(k => ids.includes(k.id));
-  // 全量评审覆盖 base_ref 以来的累计交付，前序包的已批准写入范围仍有效。
+  // 后续里程碑的 BASE 是前序 land head；前序包的已批准写入范围对本次增量仍有效。
   const scopeIds = (env('SCOPE_PKGS') || env('PKGS')).split(',');
   const covered = p.packages.filter(k => scopeIds.includes(k.id));
   const checks = pkgs.flatMap(k => k.accept);

@@ -90,7 +90,7 @@ test('ROOT_ACCEPT prepared R2 preserves requirements and open carry-over without
   const plan = JSON.parse(
     readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
   ) as Plan;
-  plan.packages[0].requirements = [{ id: 'core', text: 'Write core.txt', verified_by: [0] }];
+  plan.packages[1].requirements = [{ id: 'api', text: 'Write api.txt', verified_by: [0] }];
   cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
   cpSync(
     join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
@@ -182,14 +182,15 @@ test('ROOT_ACCEPT prepared R2 preserves requirements and open carry-over without
   const path = prepareContext(input),
     bytes = readFileSync(path, 'utf8'),
     context = JSON.parse(bytes);
-  expect(context.tasks.map((p: { goal: string }) => p.goal)).toEqual(
-    plan.packages.map(p => p.goal)
-  );
+  // 评审基线是前序里程碑的 land head：只带本里程碑的任务，不重放已落地的前序任务。
+  const reviewed = plan.packages.filter(p => p.milestone === 'm2');
+  expect(reviewed.map(p => p.id)).toEqual(['api']);
+  expect(context.tasks.map((p: { goal: string }) => p.goal)).toEqual(reviewed.map(p => p.goal));
   expect(context.tasks.map((p: { accept: unknown }) => p.accept)).toEqual(
-    plan.packages.map(p => p.accept)
+    reviewed.map(p => p.accept)
   );
   expect(context.carry_over).toEqual({ blocking: ledger.blocking, debt: ledger.debt });
-  expect(context.tasks[0].requirements).toEqual(plan.packages[0].requirements);
+  expect(context.tasks[0].requirements).toEqual(reviewed[0].requirements);
   expect(context.diff).toBe('/delta.patch');
   expect(bytes).not.toContain('old-99');
   expect(prepareContext(input)).toBe(path);

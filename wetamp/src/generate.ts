@@ -278,10 +278,20 @@ export function buildWorkflow(
     const start = `start-${m.id}`;
     const startRef = carried?.recovery?.base ?? plan.base_ref;
     const base = `$${start}.output.head`;
+    const landed = ms.indexOf(m) > 0 ? ms[ms.indexOf(m) - 1] : undefined;
     nodes.push({
       id: start,
-      // adopt 从已有提交起跑；共同祖先保留此前交付，不能把当前 HEAD 当评审基线。
-      bash: `base=$(git merge-base '${startRef.replaceAll("'", "'\\''")}' HEAD) || exit $?; printf '{"head":"%s"}' "$base"`,
+      ...(landed && !carried?.recovery
+        ? {
+            // 前序里程碑已过 gate 并落地：基线取其 land head，评审与 diff 只覆盖本里程碑增量，
+            // 否则每个里程碑都重审全部前序改动，代价随里程碑数平方增长。
+            // bash 节点不接收 with:，引擎把输出引用按 shell 单引号转义后内联。
+            bash: `head=$land-${landed.id}.output.head; base=$(git rev-parse --verify "$head^{commit}") || exit $?; printf '{"head":"%s"}' "$base"`,
+          }
+        : {
+            // adopt 从已有提交起跑；共同祖先保留此前交付，不能把当前 HEAD 当评审基线。
+            bash: `base=$(git merge-base '${startRef.replaceAll("'", "'\\''")}' HEAD) || exit $?; printf '{"head":"%s"}' "$base"`,
+          }),
       ...after,
       output_format: outputSchema('head'),
     });
@@ -409,8 +419,8 @@ export function buildWorkflow(
           {
             id: soldierOk,
             depends_on: [soldier],
-            with: { result: `$${soldier}.output` },
-            bash: `bun -e 'try{const v=JSON.parse(process.env.INPUTS_RESULT??"");if(Array.isArray(v)&&v.length===1&&v[0]!==""&&v[0]!==null&&!v.some(x=>x?.archon_failed===true))process.stdout.write("used")}catch{}'`,
+            // bash 节点不接收 with:；引擎把输出内联为单引号串或 $(cat …)，前缀赋值不做分词。
+            bash: `RESULT=$${soldier}.output bun -e 'try{const v=JSON.parse(process.env.RESULT??"");if(Array.isArray(v)&&v.length===1&&v[0]!==""&&v[0]!==null&&!v.some(x=>x?.archon_failed===true))process.stdout.write("used")}catch{}'`,
           },
           {
             id: soldierReset,
@@ -549,7 +559,7 @@ export function buildWorkflow(
       );
       prev = `settle-${p.id}`;
     }
-    const briefs = covered.map(brief).join(' ');
+    const briefs = m.packages.map(brief).join(' ');
     const rounds: Node = {};
     for (let r = 1; r <= maxRounds; r++) {
       const t = `${m.id}-r${String(r)}`;
@@ -564,7 +574,7 @@ export function buildWorkflow(
               counter: attemptPath(gen, m.id),
               gen,
               context_node: `fix-${t}`,
-              context_packages: covered.map(p => p.id),
+              context_packages: m.packages.map(p => p.id),
               handoff: '1',
               work_keys:
                 r === 2 ? m.packages.flatMap(p => [`code_${p.id}`, `repair_${p.id}`]) : ['fix'],
@@ -722,7 +732,6 @@ export function buildWorkflow(
           [`diff-${t}`, `review-${t}`],
           {
             kind: 'gate',
-            scope_pkgs,
             review: m.review ? '1' : '0',
             round: r,
             ...rounds,

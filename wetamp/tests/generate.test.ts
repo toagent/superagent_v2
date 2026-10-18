@@ -584,6 +584,8 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(
       buildWorkflow(plan, milestones(plan), 'soldier', '/GEN', false, NOW, tiers)
     );
+    // toMatchObject 会把 asymmetric matcher 写回被比较节点，先取出原始 bash。
+    const okSource = String(nodes.find(n => n.id === 'soldier-ok-core')!.bash);
     expect(nodes.find(n => n.id === 'soldier-core')).toMatchObject({
       include: 'sa-soldier-core',
       depends_on: ['soldier-items-core'],
@@ -601,7 +603,6 @@ describe('buildWorkflow', () => {
     expect(nodes.find(n => n.id === 'soldier-ok-core')).toMatchObject({
       id: 'soldier-ok-core',
       depends_on: ['soldier-core'],
-      with: { result: '$soldier-core.output' },
       bash: expect.stringContaining('archon_failed===true'),
     });
     expect(nodes.find(n => n.id === 'soldier-reset-core')).toEqual({
@@ -611,6 +612,15 @@ describe('buildWorkflow', () => {
       when: "$soldier-ok-core.output != 'used'",
       bash: 'git stash push --include-untracked -m soldier-leftover-core >/dev/null && printf reset',
     });
+    // 真实替换后执行：bash 节点不接收 with:，草稿结果必须内联进 bash 才能判成 used。
+    const okBash = (output: string): string =>
+      substituteNodeOutputRefs(
+        okSource,
+        new Map([['soldier-core', { state: 'completed' as const, output }]]),
+        true
+      );
+    expect(sh(okBash(JSON.stringify([{ ok: "it's" }])), tmp())).toBe('used');
+    expect(sh(okBash(JSON.stringify([{ archon_failed: true }])), tmp())).toBe('');
     const resetWhen = nodes.find(n => n.id === 'soldier-reset-core')!.when!;
     expect(
       evaluateCondition(
@@ -1327,12 +1337,16 @@ describe('buildWorkflow', () => {
     );
     const nodes = nodesOf(build(false));
     const n = (id: string): N => nodes.find(x => x.id === id)!;
-    for (const id of ['start-m1', 'start-m2']) {
-      const start = JSON.parse(sh(n(id).bash!, repo)) as { head: string };
-      expect(start.head).toBe(original);
-      expect(sh(`git diff --binary ${start.head} HEAD`, repo)).toContain('+delivered');
-      expect(sh('git diff HEAD HEAD', repo)).toBe('');
-    }
+    const first = JSON.parse(sh(n('start-m1').bash!, repo)) as { head: string };
+    expect(first.head).toBe(original);
+    expect(sh(`git diff --binary ${first.head} HEAD`, repo)).toContain('+delivered');
+    // 后续里程碑只评审前序 land head 之后的增量，不再重审已落地的前序改动。
+    const landed = sh('git rev-parse HEAD', repo).trim();
+    const startM2 = (head: string): string =>
+      n('start-m2').bash!.replace('$land-m1.output.head', `'${head}'`);
+    expect(n('start-m2').bash).toContain('head=$land-m1.output.head;');
+    expect(JSON.parse(sh(startM2(landed), repo))).toEqual({ head: landed });
+    expect(() => sh(startM2(''), repo)).toThrow();
     sh(`git branch "base'quoted" ${original}`, repo);
     const quoted = nodesOf(build(false, { ...fixture, base_ref: "base'quoted" }));
     const start = JSON.parse(sh(quoted.find(x => x.id === 'start-m1')!.bash!, repo)) as {
@@ -1342,7 +1356,7 @@ describe('buildWorkflow', () => {
     expect(n('diff-m1-r1').with?.base).toBe('$start-m1.output.head');
     expect(n('review-m1-r1').with?.diff).toBe('$diff-m1-r1.output.patch');
     expect(n('review-m1-r1').when).not.toContain('same');
-    expect(n('review-m2-r1').with?.briefs).toBe('/GEN/briefs/core.md /GEN/briefs/api.md');
+    expect(n('review-m2-r1').with?.briefs).toBe('/GEN/briefs/api.md');
     expect(n('verify-api').with?.scope_pkgs).toBe('core,api');
     expect(n('diff-m2-r1').with?.scope_pkgs).toBe('core,api');
     const reversed = nodesOf(

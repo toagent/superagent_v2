@@ -914,7 +914,6 @@ nodes:
       - review-m1-r1
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 1
       R1:
@@ -1440,7 +1439,6 @@ nodes:
       - review-m1-r2
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 2
       R1:
@@ -1964,7 +1962,6 @@ nodes:
       - review-m1-r3
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 3
       R1:
@@ -2492,7 +2489,6 @@ nodes:
       - review-m1-r4
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 4
       R1:
@@ -3024,7 +3020,6 @@ nodes:
       - review-m1-r5
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 5
       R1:
@@ -3560,7 +3555,6 @@ nodes:
       - review-m1-r6
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 6
       R1:
@@ -3616,7 +3610,7 @@ nodes:
       - gate-m1-r6
     trigger_rule: none_failed_min_one_success
   - id: start-m2
-    bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
+    bash: head=$land-m1.output.head; base=$(git rev-parse --verify "$head^{commit}") || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:
       - land-m1
     output_format:
@@ -4411,7 +4405,7 @@ nodes:
       risk: $diff-m2-r1.output.risk
       round: 1
       context: $ARTIFACTS_DIR/review-m2-r1.context.json
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       accept_log: $diff-m2-r1.output.log
       diff: $diff-m2-r1.output.patch
     depends_on:
@@ -4517,7 +4511,6 @@ nodes:
       - review-m2-r1
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 1
       R1:
@@ -4540,7 +4533,6 @@ nodes:
       gen: /GEN
       context_node: fix-m2-r2
       context_packages:
-        - core
         - api
       handoff: '1'
       work_keys:
@@ -4569,7 +4561,7 @@ nodes:
       round: 2
       ledger: $gate-m2-r1.output.ledger_file
       accept_log: $diff-m2-r1.output.log
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       hints: /GEN/hints
     depends_on:
       - gate-m2-r1
@@ -4935,7 +4927,7 @@ nodes:
       risk: $diff-m2-r2.output.risk
       round: 2
       context: $ARTIFACTS_DIR/review-m2-r2.context.json
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       accept_log: $diff-m2-r2.output.log
       diff: $diff-m2-r2.output.delta
       full_diff: $diff-m2-r2.output.patch
@@ -5043,7 +5035,6 @@ nodes:
       - review-m2-r2
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 2
       R1:
@@ -5070,7 +5061,6 @@ nodes:
       gen: /GEN
       context_node: fix-m2-r3
       context_packages:
-        - core
         - api
       handoff: '1'
       work_keys:
@@ -5093,7 +5083,7 @@ nodes:
       round: 3
       ledger: $gate-m2-r2.output.ledger_file
       accept_log: $diff-m2-r2.output.log
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       hints: /GEN/hints
     depends_on:
       - gate-m2-r2
@@ -5459,7 +5449,7 @@ nodes:
       risk: $diff-m2-r3.output.risk
       round: 3
       context: $ARTIFACTS_DIR/review-m2-r3.context.json
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       accept_log: $diff-m2-r3.output.log
       diff: $diff-m2-r3.output.delta
       full_diff: $diff-m2-r3.output.patch
@@ -5567,7 +5557,6 @@ nodes:
       - review-m2-r3
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 3
       R1:
@@ -5598,7 +5587,6 @@ nodes:
       gen: /GEN
       context_node: fix-m2-r4
       context_packages:
-        - core
         - api
       handoff: '1'
       work_keys:
@@ -5621,7 +5609,7 @@ nodes:
       round: 4
       ledger: $gate-m2-r3.output.ledger_file
       accept_log: $diff-m2-r3.output.log
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       hints: /GEN/hints
     depends_on:
       - gate-m2-r3
@@ -5987,7 +5975,7 @@ nodes:
       risk: $diff-m2-r4.output.risk
       round: 4
       context: $ARTIFACTS_DIR/review-m2-r4.context.json
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       accept_log: $diff-m2-r4.output.log
       diff: $diff-m2-r4.output.delta
       full_diff: $diff-m2-r4.output.patch
@@ -6095,7 +6083,6 @@ nodes:
       - review-m2-r4
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 4
       R1:
@@ -6130,7 +6117,6 @@ nodes:
       gen: /GEN
       context_node: fix-m2-r5
       context_packages:
-        - core
         - api
       handoff: '1'
       work_keys:
@@ -6153,7 +6139,7 @@ nodes:
       round: 5
       ledger: $gate-m2-r4.output.ledger_file
       accept_log: $diff-m2-r4.output.log
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       hints: /GEN/hints
     depends_on:
       - gate-m2-r4
@@ -6519,7 +6505,7 @@ nodes:
       risk: $diff-m2-r5.output.risk
       round: 5
       context: $ARTIFACTS_DIR/review-m2-r5.context.json
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       accept_log: $diff-m2-r5.output.log
       diff: $diff-m2-r5.output.delta
       full_diff: $diff-m2-r5.output.patch
@@ -6627,7 +6613,6 @@ nodes:
       - review-m2-r5
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 5
       R1:
@@ -6666,7 +6651,6 @@ nodes:
       gen: /GEN
       context_node: fix-m2-r6
       context_packages:
-        - core
         - api
       handoff: '1'
       work_keys:
@@ -6689,7 +6673,7 @@ nodes:
       round: 6
       ledger: $gate-m2-r5.output.ledger_file
       accept_log: $diff-m2-r5.output.log
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       hints: /GEN/hints
     depends_on:
       - gate-m2-r5
@@ -7055,7 +7039,7 @@ nodes:
       risk: $diff-m2-r6.output.risk
       round: 6
       context: $ARTIFACTS_DIR/review-m2-r6.context.json
-      briefs: /GEN/briefs/core.md /GEN/briefs/api.md
+      briefs: /GEN/briefs/api.md
       accept_log: $diff-m2-r6.output.log
       diff: $diff-m2-r6.output.delta
       full_diff: $diff-m2-r6.output.patch
@@ -7163,7 +7147,6 @@ nodes:
       - review-m2-r6
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 6
       R1:

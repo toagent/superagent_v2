@@ -64,9 +64,8 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
         m.risk,
         round,
         m.id,
-        milestones(plan)
-          .slice(0, milestones(plan).findIndex(k => k.id === m.id) + 1)
-          .flatMap(k => k.packages),
+        // 评审基线是前序里程碑的 land head，只覆盖本里程碑增量；作者排除与 gate 的 PKGS 一致。
+        m.packages,
         plan
       );
       if (round > 1)

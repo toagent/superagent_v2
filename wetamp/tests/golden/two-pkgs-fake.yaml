@@ -842,7 +842,6 @@ nodes:
       - review-m1-r1
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 1
       R1:
@@ -1297,7 +1296,6 @@ nodes:
       - review-m1-r2
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 2
       R1:
@@ -1756,7 +1754,6 @@ nodes:
       - review-m1-r3
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 3
       R1:
@@ -2219,7 +2216,6 @@ nodes:
       - review-m1-r4
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 4
       R1:
@@ -2686,7 +2682,6 @@ nodes:
       - review-m1-r5
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 5
       R1:
@@ -3157,7 +3152,6 @@ nodes:
       - review-m1-r6
     with:
       kind: gate
-      scope_pkgs: core
       review: '1'
       round: 6
       R1:
@@ -3212,7 +3206,7 @@ nodes:
       - gate-m1-r6
     trigger_rule: none_failed_min_one_success
   - id: start-m2
-    bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
+    bash: head=$land-m1.output.head; base=$(git rev-parse --verify "$head^{commit}") || exit $?; printf '{"head":"%s"}' "$base"
     depends_on:
       - land-m1
     output_format:
@@ -4042,7 +4036,6 @@ nodes:
       - review-m2-r1
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 1
       R1:
@@ -4496,7 +4489,6 @@ nodes:
       - review-m2-r2
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 2
       R1:
@@ -4954,7 +4946,6 @@ nodes:
       - review-m2-r3
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 3
       R1:
@@ -5416,7 +5407,6 @@ nodes:
       - review-m2-r4
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 4
       R1:
@@ -5882,7 +5872,6 @@ nodes:
       - review-m2-r5
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 5
       R1:
@@ -6352,7 +6341,6 @@ nodes:
       - review-m2-r6
     with:
       kind: gate
-      scope_pkgs: core,api
       review: '1'
       round: 6
       R1:
