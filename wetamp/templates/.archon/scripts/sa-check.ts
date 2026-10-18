@@ -1790,6 +1790,7 @@ export function readAuthorEvidence(
   attempts: PolicyAttempt[],
   pkgs: string[],
   milestone: string | string[],
+  reviewRounds: number,
   load: (id: string) => AuthorRun
 ): Ident[] {
   const authors: Ident[] = [],
@@ -1802,7 +1803,7 @@ export function readAuthorEvidence(
     [milestone]
       .flat()
       .some(m =>
-        Array.from({ length: maxRounds() }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node)
+        Array.from({ length: reviewRounds }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node)
       );
   for (;;) {
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
@@ -1950,7 +1951,7 @@ export function validateRecovery(
   require(command('rev-parse', p.base_ref) === e.base &&
     command('merge-base', e.base, e.candidate) === e.base, 'base drift');
   require(JSON.stringify(source(e.plan)) === JSON.stringify(p), 'plan drift');
-  source(e.policy);
+  const reviewRounds = reviewRoundLimit(source(e.policy) as ReviewEffortPolicy);
   source(e.contracts);
   require(JSON.stringify([...e.packages].sort()) ===
     JSON.stringify(p.packages.map(k => k.id).sort()), 'package coverage');
@@ -1958,7 +1959,7 @@ export function validateRecovery(
   require(typeof limit === 'number' &&
     Number.isInteger(limit) &&
     limit > 0 &&
-    limit <= maxRounds() &&
+    limit <= reviewRounds &&
     e.rounds.length === limit + 1, 'complete rounds through recorded limit + 1 required');
   require(e.author_coverage, 'support author coverage required');
   const roster = source(e.author_coverage) as Omit<RecoveryAuthorCoverage, 'rounds'> & {
@@ -1989,6 +1990,7 @@ export function validateRecovery(
     readPolicyAttempts(join(original.output_root, 'artifacts', 'runs', engineId)),
     e.packages,
     milestones,
+    reviewRounds,
     load
   );
   const permissions = [
@@ -2230,7 +2232,14 @@ function gate(): void {
       reused?.identity ??
       (env('ARCHON')
         ? {
-            authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
+            authors: readAuthorEvidence(
+              runEvidence(),
+              attempts,
+              pkgs,
+              milestones,
+              maxRounds(),
+              runEvidence
+            ),
             reviewer: attemptIdentity(
               attempts,
               reviewer,
