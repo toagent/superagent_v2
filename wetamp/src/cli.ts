@@ -2364,11 +2364,12 @@ function askHold(
   asks: Asks,
   extra: Record<string, unknown>
 ): Action {
-  const key = askKey(l.run_id, hold, holdEpisode(l, run, c));
+  const episode = holdEpisode(l, run, c, hold);
+  const key = askKey(l.run_id, hold, episode);
   const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
   const r = pollAsk(
     key,
-    () => decisionQuestion(l, run, c, hold),
+    () => decisionQuestion(l, run, c, hold, key),
     ttlHours(Date.parse(planOf(l).deadline ?? '')),
     asks,
     question => decisionContext(l, run, c, hold, key, question)
@@ -2681,8 +2682,16 @@ const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
 };
 export const reasonHold = (reason: string): Hold => reasonOf(reason)?.hold ?? 'engine_suspect';
 
-/** Entry timestamp is stable across polls; node distinguishes milestone signoffs. */
-function holdEpisode(l: Ledger, run: RunView, c: Classified): string {
+/** Entry timestamp is stable across polls; stalled episodes follow provider progress, not heartbeats. */
+function holdEpisode(l: Ledger, run: RunView, c: Classified, hold?: Hold): string {
+  if (hold === 'stalled') {
+    const attention = runAttention(run as Parameters<typeof runAttention>[0]);
+    if (attention?.kind !== 'stalled_tool_calls') throw new Error('stalled attention missing');
+    return attention.calls
+      .map(call => `${call.nodeId}@${call.lastProgressAt}`)
+      .sort()
+      .join('|');
+  }
   return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${
     run.metadata?.wait?.waitingSince ??
     run.completed_at ??
@@ -2743,7 +2752,13 @@ function blocker(l: Ledger, hold: Hold): { reason: string; next: string } | unde
     : undefined;
 }
 /** 只展示注册原因、闭集枚举与数字；将军/评审自由文本只在 brief 中读取。 */
-export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: Hold): string {
+export function decisionQuestion(
+  l: Ledger,
+  run: RunView,
+  c: Classified,
+  hold: Hold,
+  requestKey?: string
+): string {
   const blocked = blocker(l, hold);
   if (blocked) return `${blocked.reason}；${blocked.next}`;
   if (hold === 'stalled') {
@@ -2756,7 +2771,7 @@ export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: H
       [basename(l.repo), call.nodeId],
       [detail, detail],
       () => ['', ''],
-      askMarker(askKey(l.run_id, hold, `${call.nodeId}@${call.lastProgressAt}`))
+      askMarker(requestKey ?? askKey(l.run_id, hold, holdEpisode(l, run, c, hold)))
     );
   }
   const plan = planOf(l),
@@ -2835,10 +2850,7 @@ function dispose(
       run: workflowIdentity(l) ?? null,
       current: engineHash(),
     });
-  if (
-    attention?.kind !== 'stalled_tool_calls' &&
-    (c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown')
-  )
+  if (c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown')
     return {
       run_id: l.run_id,
       action: 'none',
@@ -2847,7 +2859,7 @@ function dispose(
       state: c.state,
       next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.`,
     };
-  if (attention?.kind !== 'stalled_tool_calls' && c.state === 'owner_lost')
+  if (c.state === 'owner_lost')
     return {
       run_id: l.run_id,
       action: 'none',
@@ -2891,7 +2903,7 @@ function dispose(
       ['ask', 'signoff'].includes(p.do) &&
       !(hold === 'signoff' && pastDeadline(l))
     )
-      supersedeAsks(asks, l.run_id, hold, holdEpisode(l, run, c));
+      supersedeAsks(asks, l.run_id, hold, holdEpisode(l, run, c, hold));
     const x =
       p.do === 'signoff'
         ? human(l, run, need())

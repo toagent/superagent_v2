@@ -3956,6 +3956,10 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         expect(q).toContain(`${s.ledger.repo.split('/').at(-1)}/code-core`);
         expect(q).toContain('沉默');
         expect(q).toContain('否=继续等待');
+        expect(q.match(/\[sa:/g)).toHaveLength(1);
+        const current = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+        current.last_activity_at = new Date().toISOString();
+        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(current));
       }
       expect(tick()[0]).toMatchObject({ action: 'none', reason: hold, ask: 'pending' });
       expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
@@ -4012,6 +4016,16 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       );
     });
   }
+  test('owner loss takes priority over stale progress attention', () => {
+    const { s } = scenes.stalled();
+    const current = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+    current.metadata!.execution_owner = LOST;
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(current));
+    const sup = supervisor(s.root, 'pending');
+
+    expect(tick(1)[0]).toMatchObject({ action: 'none', ok: false, state: 'owner_lost' });
+    expect(sup()).toEqual([]);
+  });
 
   for (const node of ['verify-core', 'settle-core']) {
     for (const reason of ['coder_redline', 'future_reason', '']) {
