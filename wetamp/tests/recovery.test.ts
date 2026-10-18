@@ -368,6 +368,11 @@ describe('recovery ownership and effects', () => {
     expect(unknownEffects(run)).toEqual(['land']);
     writeFileSync(join(artifacts, 'land.json'), JSON.stringify(receipt));
     expect(unknownEffects(run)).toEqual([]);
+    run.nodes = [{ nodeId: 'land-m2', state: 'running' }];
+    writeFileSync(join(artifacts, 'land-m1.json'), JSON.stringify(receipt));
+    expect(unknownEffects(run)).toEqual(['land-m2']);
+    writeFileSync(join(artifacts, 'land-m2.json'), JSON.stringify(receipt));
+    expect(unknownEffects(run)).toEqual([]);
     run.nodes?.push(
       { nodeId: 'code-W1', state: 'running' },
       { nodeId: 'verify-W2', state: 'running' }

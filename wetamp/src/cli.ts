@@ -12,6 +12,7 @@ import {
   acceptRun,
   finalizeDelivery,
   deliveryProjection,
+  landEvidence,
   type DeliveryTarget,
 } from './land';
 export { finalizeDelivery } from './land';
@@ -637,6 +638,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
   const nodes = run.nodes ?? [];
   const art = artifactsOf(run);
+  const landFile = landEvidence(run)?.file;
   confined(l, art);
   const needs = needsOf(art, undefined, l);
   const hold = holdOf(l, run, c);
@@ -669,8 +671,9 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     ...(c.state === 'failed' ? failure(l, run, c.node) : {}),
     ...(c.state === 'completed'
       ? {
-          land: (evidenceJson(l, art, 'land.json') as { commands?: string[] } | undefined)
-            ?.commands,
+          land: landFile
+            ? (evidenceJson(l, art, landFile) as { commands?: string[] } | undefined)?.commands
+            : undefined,
         }
       : {}),
     evidence: art,
@@ -3510,7 +3513,8 @@ export function main(argv: string[]): number {
       }
       return controlled(l, () => {
         const run = getRun(l.archon_run_id, l.repo);
-        let land = evidenceJson(l, artifactsOf(run), 'land.json');
+        const evidence = landEvidence(run);
+        let land = evidence && evidenceJson(l, artifactsOf(run), evidence.file);
         if (land === undefined) {
           console.error(`land: no land.json yet (state ${classify(run).state})`);
           return 1;

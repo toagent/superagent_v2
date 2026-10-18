@@ -1,5 +1,5 @@
 // Compatibility imports for old callers; execution admission belongs to Archon.
-import { captureDelivery, deliveryRecoverable } from './land';
+import { captureDelivery, deliveryRecoverable, landEvidence } from './land';
 import { inspectProcess } from './launcher';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,11 +19,13 @@ export const executionOwnership = (run: RunView) => ownership(run, inspectProces
 export const ownershipUnknown = (run: RunView) => unknown(run, inspectProcess);
 
 /** Legacy instruction output must still agree with its checkout. */
-function landReconciled(run: RunView): boolean {
+function landReconciled(run: RunView, node: string): boolean {
   if (!run.working_path || !run.output_root) return false;
   try {
+    const evidence = landEvidence(run, node);
+    if (!evidence) return false;
     const data = JSON.parse(
-      readFileSync(join(run.output_root, 'artifacts', 'runs', run.id, 'land.json'), 'utf8')
+      readFileSync(join(run.output_root, 'artifacts', 'runs', run.id, evidence.file), 'utf8')
     ) as { head?: unknown; branch?: unknown; commands?: unknown };
     const checkout = captureDelivery(run.working_path);
     return (
@@ -41,5 +43,7 @@ function landReconciled(run: RunView): boolean {
 /** Read-only delivery reconciliation; admission and transitions stay in Archon. */
 export const unknownEffects = (run: RunView): string[] =>
   engineUnknownEffects(run).filter(node =>
-    node === 'deliver' ? !deliveryRecoverable(run) : node !== 'land' || !landReconciled(run)
+    node.startsWith('deliver')
+      ? !deliveryRecoverable(run)
+      : !node.startsWith('land') || !landReconciled(run, node)
   );

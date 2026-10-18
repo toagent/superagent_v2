@@ -2459,12 +2459,13 @@ function land() {
       ...(g.grade === 'DEGRADED_PASS' ? [`DEGRADED_PASS ${g.reason ?? ''}`] : []),
     ]);
   }
+  const head = git('rev-parse', 'HEAD').trim();
   const out = {
     branch,
     repo,
     target,
     ff,
-    head: git('rev-parse', 'HEAD').trim(),
+    head,
     ...(!target
       ? {
           reason: 'land_target_unknown',
@@ -2476,12 +2477,13 @@ function land() {
     commands: target
       ? [
           `git -C ${q(repo)} switch ${q(target)}`,
-          `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(branch)}`,
+          `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(env('MILESTONE') ? head : branch)}`,
         ]
       : [],
     debt: [...last.values()].flat(),
+    ...(env('MILESTONE') ? { milestone: env('MILESTONE'), packages: env('PKGS').split(',') } : {}),
   };
-  writeFileSync(join(artifacts, 'land.json'), JSON.stringify(out, null, 2));
+  writeFileSync(join(artifacts, env('OUTPUT') || 'land.json'), JSON.stringify(out, null, 2));
   emit(out);
   if (!target) process.exit(1);
   return out;

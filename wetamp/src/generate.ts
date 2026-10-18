@@ -215,6 +215,22 @@ export function buildWorkflow(
     runtime: 'bun',
     with: { counter, gen, pkg, review, ...(gate ? { gate } : {}) },
   });
+  const operator_ledger = join(
+    gen,
+    ...(carried?.recovery ? ['..', '..', '..', '..'] : ['..', '..']),
+    'runs',
+    `${run}.json`
+  );
+  const landInputs = {
+    kind: 'land',
+    base_ref: plan.base_ref,
+    plan: planPath,
+    operator_ledger,
+    ...(delivery ? { target_checkout: delivery.checkout, target_branch: delivery.branch } : {}),
+  };
+  const deliveryTimeout = (pkgs: Pkg[]): number =>
+    20 * 60_000 +
+    3 * Number(acceptTimeout(pkgs, plan).timeout ?? ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS);
   let after: Node = { depends_on: ['environment'] };
   const signoff = (m: Milestone, gates: Node): Node => {
     if (m.human) {
@@ -663,20 +679,35 @@ export function buildWorkflow(
       trigger_rule: 'none_failed_min_one_success',
     };
     after = signoff(m, gates);
+    if (ms.length > 1) {
+      const land = `land-${m.id}`;
+      nodes.push(
+        check(
+          land,
+          [],
+          { ...landInputs, milestone: m.id, pkgs: scope_pkgs, output: `${land}.json` },
+          after
+        )
+      );
+      const deliver = `deliver-${m.id}`;
+      if (delivery && !fake) {
+        if (!run || /[^0-9a-f-]/.test(run)) throw new Error('delivery: invalid run id');
+        nodes.push({
+          id: deliver,
+          depends_on: [land],
+          bash: `INPUTS_RUN='${run}' bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`,
+          timeout: deliveryTimeout(covered),
+        });
+      }
+      after = { depends_on: [delivery && !fake ? deliver : land] };
+    }
   }
-  const operator_ledger = join(
-    gen,
-    ...(carried?.recovery ? ['..', '..', '..', '..'] : ['..', '..']),
-    'runs',
-    `${run}.json`
-  );
-  const landInputs = {
-    kind: 'land',
-    base_ref: plan.base_ref,
-    plan: planPath,
-    operator_ledger,
-    ...(delivery ? { target_checkout: delivery.checkout, target_branch: delivery.branch } : {}),
-  };
+  if (ms.length > 1)
+    return {
+      name: `sa-${run}`,
+      description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
+      nodes,
+    };
   nodes.push(check('land', [], landInputs, after));
   if (delivery && !fake) {
     if (!run || /[^0-9a-f-]/.test(run)) throw new Error('delivery: invalid run id');
@@ -684,12 +715,7 @@ export function buildWorkflow(
       id: 'deliver',
       depends_on: ['land'],
       bash: `INPUTS_RUN='${run}' bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`,
-      timeout:
-        20 * 60_000 +
-        3 *
-          Number(
-            acceptTimeout(plan.packages, plan).timeout ?? ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS
-          ),
+      timeout: deliveryTimeout(plan.packages),
     });
   }
   return {

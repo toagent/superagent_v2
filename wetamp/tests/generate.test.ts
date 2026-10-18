@@ -671,7 +671,8 @@ describe('buildWorkflow', () => {
     expect(nodes.find(n => n.id === 'gate-m1-r1')?.when).toContain(
       `.contract_hash != '${checkpoint.check.contract_hash}'`
     );
-    expect(nodes.find(n => n.id === 'start-m2')?.depends_on).toContain(carried.id);
+    expect(nodes.find(n => n.id === 'land-m1')?.depends_on).toContain(carried.id);
+    expect(nodes.find(n => n.id === 'start-m2')?.depends_on).toEqual(['land-m1']);
   });
   test('engine-stale adoption rejects checkpoint when reviewed_head or contract hash drifts', () => {
     const checkpoint = {
@@ -1044,6 +1045,16 @@ describe('buildWorkflow', () => {
   test('golden: two packages across two milestones', () => {
     expect(build(false)).toEqual(golden('two-pkgs'));
   });
+  test('multi-milestone delivery lands each cumulative prefix before the next starts', () => {
+    const nodes = nodesOf(build(false));
+    expect(nodes.find(n => n.id === 'land-m1')).toMatchObject({
+      with: { milestone: 'm1', pkgs: 'core', output: 'land-m1.json' },
+    });
+    expect(nodes.find(n => n.id === 'start-m2')?.depends_on).toEqual(['land-m1']);
+    expect(nodes.find(n => n.id === 'land-m2')).toMatchObject({
+      with: { milestone: 'm2', pkgs: 'core,api', output: 'land-m2.json' },
+    });
+  });
   test('golden: fake mode swaps coder nodes for bash stubs only', () => {
     expect(build(true)).toEqual(golden('two-pkgs-fake'));
   });
@@ -1197,15 +1208,16 @@ describe('buildWorkflow', () => {
       });
     }
   });
-  test('packages run serially; milestones join every gate; signed-off milestone waits for a human; land is last', () => {
+  test('packages run serially; each milestone lands after its gate and optional signoff', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('start-m1')?.depends_on).toEqual(['environment']);
     expect(n('code-core')?.depends_on).toEqual(['start-m1', 'package-attempt-core']);
-    expect(n('start-m2')).toMatchObject({
+    expect(n('land-m1')).toMatchObject({
       depends_on: Array.from({ length: MAX_ROUNDS }, (_, i) => `gate-m1-r${String(i + 1)}`),
       trigger_rule: 'none_failed_min_one_success',
     });
+    expect(n('start-m2')?.depends_on).toEqual(['land-m1']);
     expect(n('human-m2')).toMatchObject({
       approval: {
         message: 'Approve delivery milestone m2',
@@ -1216,8 +1228,8 @@ describe('buildWorkflow', () => {
     expect(n('human-m2')?.depends_on).toContain('attempt-m2');
     expect(n('signoff-m2')?.depends_on).toEqual(['human-m2']);
     expect(n('signoff-m2')?.when).toBe("$human-m2.output.decision == 'approve'");
-    expect(n('land')?.depends_on).toEqual(['signoff-m2']);
-    expect(nodes.at(-1)?.id).toBe('land');
+    expect(n('land-m2')?.depends_on).toEqual(['signoff-m2']);
+    expect(nodes.at(-1)?.id).toBe('land-m2');
   });
   test('review rounds: fix only when the previous gate says fix; later gates see every earlier round', () => {
     const nodes = nodesOf(build(false));
@@ -1286,7 +1298,7 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(build(false, { ...fixture, deadline: '2026-10-10T00:00:00Z' }));
     const signoff = nodes.find(x => x.id === 'signoff-m2') as N & { bash: string };
     expect(signoff.bash).toContain(`-le ${String(Date.parse('2026-10-10T00:00:00Z') / 1000)} ]`);
-    expect(nodes.find(x => x.id === 'land')?.with).toMatchObject({
+    expect(nodes.find(x => x.id === 'land-m2')?.with).toMatchObject({
       kind: 'land',
       plan: '/GEN/plan.json',
       base_ref: fixture.base_ref,
@@ -1300,7 +1312,7 @@ describe('buildWorkflow', () => {
     };
     const nodes = nodesOf(build(false, plan));
     expect(nodes.find(x => x.id === 'human-m2')).toBeUndefined();
-    expect(nodes.find(x => x.id === 'land')?.depends_on).toEqual(
+    expect(nodes.find(x => x.id === 'land-m2')?.depends_on).toEqual(
       Array.from({ length: MAX_ROUNDS }, (_, i) => `gate-m2-r${String(i + 1)}`)
     );
   });
@@ -1585,7 +1597,7 @@ function checkGeneratedRepo(): void {
       .filter(n => n.with?.kind === 'accept')
       .map(n => n.with)
   );
-  expect(nodesOf(generated).find(n => n.id === 'land')?.with?.operator_ledger).toBe(
+  expect(nodesOf(generated).find(n => n.id === 'land-m1')?.with?.operator_ledger).toBe(
     join(env.SUPERAGENT_HOME, 'runs', 'gen-0001.json')
   );
   expect([...new Set(ai.map(n => n.command))].sort()).toEqual([
@@ -1730,7 +1742,7 @@ test('delivery defaults: no deadline survives >24h and preserves explicit human 
     decisions: [{ id: 'approve' }, { id: 'reject' }],
   });
   expect(nodes.find(n => n.id === 'signoff-m2')?.bash).toBe('true');
-  expect(nodes.find(n => n.id === 'land')).toBeDefined();
+  expect(nodes.find(n => n.id === 'land-m2')).toBeDefined();
   expect(() =>
     buildWorkflow(
       fixture,
@@ -1901,10 +1913,12 @@ test('DURABLE_DELIVERY generated node receives run id through real Archon execut
     repo = gitRepo(join(root, 'repo')),
     run = newRunId(new Date(NOW));
   const delivery = { checkout: '/repo', branch: 'feature', head: 'a'.repeat(40) };
+  const single = structuredClone(fixture);
+  single.packages[1].milestone = 'm1';
   const nodes = nodesOf(
     buildWorkflow(
-      fixture,
-      milestones(fixture),
+      single,
+      milestones(single),
       run,
       '/GEN',
       false,
@@ -1918,7 +1932,7 @@ test('DURABLE_DELIVERY generated node receives run id through real Archon execut
   expect(deliver).toMatchObject({ depends_on: ['land'] });
   expect(Number(deliver.timeout)).toBeGreaterThanOrEqual(
     integrationLockTimeout() +
-      fixture.packages.flatMap(p => p.accept).reduce((ms, c) => ms + c.timeout_s * 1000, 0)
+      single.packages.flatMap(p => p.accept).reduce((ms, c) => ms + c.timeout_s * 1000, 0)
   );
   const observed = join(root, 'received-run.json');
   const preload = join(root, 'delivery-probe.ts');
