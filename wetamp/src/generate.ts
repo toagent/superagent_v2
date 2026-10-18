@@ -390,16 +390,28 @@ export function buildWorkflow(
       if (soldier && soldierOk && soldierReset)
         nodes.push(
           {
-            id: soldier,
-            command: 'sa-soldier',
-            retry: { on_error: 'transient' },
-            model: '@sa-soldier',
-            ...execution(soldier),
-            idle_timeout: SOLDIER_IDLE_MS,
+            id: `soldier-items-${p.id}`,
             depends_on: [prev, pkgAttempt],
-            with: { pkg: p.id, context_node: pkgAttempt },
+            bash: `printf '%s' '[{"pkg":"${p.id}"}]'`,
           },
-          { id: soldierOk, depends_on: [soldier], bash: 'printf used' },
+          {
+            id: soldier,
+            include: `sa-soldier-${p.id}`,
+            depends_on: [`soldier-items-${p.id}`],
+            with: { pkg: p.id, context_node: pkgAttempt },
+            fan_out: {
+              items: `$soldier-items-${p.id}.output`,
+              as: 'draft',
+              max_parallel: 1,
+              join: 'all_done',
+            },
+          },
+          {
+            id: soldierOk,
+            depends_on: [soldier],
+            with: { result: `$${soldier}.output` },
+            bash: `bun -e 'try{const v=JSON.parse(process.env.INPUTS_RESULT??"");if(Array.isArray(v)&&v.length===1&&v[0]!==""&&v[0]!==null&&!v.some(x=>x?.archon_failed===true))process.stdout.write("used")}catch{}'`,
+          },
           {
             id: soldierReset,
             depends_on: [soldierOk],
@@ -610,6 +622,8 @@ export function buildWorkflow(
             risk: m.risk,
             milestone: m.id,
             tag: `diff-${t}`,
+            acceptance_evidence:
+              r === 1 ? `$ARTIFACTS_DIR/${prev}.json` : `$ARTIFACTS_DIR/diff-${before}.json`,
             ...ledger,
             ...(r > 1
               ? {
@@ -989,6 +1003,50 @@ export function generate(
         '\n' +
         renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p), tiers.policy.test_budget)
     );
+  }
+  if (!fake) {
+    const executions = executionTable(plan, tiers);
+    for (const p of plan.packages) {
+      if (draftFor(p) !== 'soldier' || !tiers.routing.soldier?.models.length) continue;
+      const id = `soldier-${p.id}`;
+      const descriptor = executions[id];
+      const candidate = executionRoute(tiers, plan.console ?? 'claude', plan.mode, descriptor)
+        .candidates[0];
+      const launch = {
+        ...executionNode(descriptor, candidate),
+        ...(candidate.provider === 'claude'
+          ? { maxBudgetUsd: tiers.policy.coder_budget_usd.claude }
+          : {}),
+      };
+      writeFileSync(
+        join(dir, '.archon', 'workflows', `sa-soldier-${p.id}.yaml`),
+        YAML.stringify(
+          {
+            name: `sa-soldier-${p.id}`,
+            description: `Optional draft for ${p.id}`,
+            mutates_checkout: true,
+            inputs: {
+              pkg: { required: true },
+              context_node: { required: true },
+              draft: { required: true },
+            },
+            returns: 'draft',
+            nodes: [
+              {
+                id: 'draft',
+                command: 'sa-soldier',
+                retry: { on_error: 'transient' },
+                model: '@sa-soldier',
+                ...launch,
+                idle_timeout: SOLDIER_IDLE_MS,
+                with: { pkg: '$INPUTS.pkg', context_node: '$INPUTS.context_node' },
+              },
+            ],
+          },
+          { lineWidth: 0, aliasDuplicateObjects: false }
+        )
+      );
+    }
   }
   const lessons = injectMemory(
     plan,

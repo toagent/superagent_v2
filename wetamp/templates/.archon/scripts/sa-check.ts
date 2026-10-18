@@ -427,16 +427,22 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
     if (check.cache === false) return false;
     const path = acceptanceCachePath(tree.stdout.toString().trim(), check, envKey, environment);
     if (!existsSync(path)) return false;
-    if (!check.report) return true;
     try {
-      const saved: unknown = JSON.parse(readFileSync(path, 'utf8'));
-      const structured =
-        saved && typeof saved === 'object' && 'structured' in saved ? saved.structured : undefined;
+      const saved = JSON.parse(readFileSync(path, 'utf8')) as {
+        failure?: CheckFailure | null;
+        pass?: boolean;
+        exit?: number | string;
+        structured?: StructuredCases;
+      };
+      if (saved.failure || saved.pass === false || (saved.exit !== undefined && saved.exit !== 0))
+        return false;
+      if (!check.report) return true;
+      const structured = saved.structured;
       return (
         !!structured &&
         typeof structured === 'object' &&
         'complete' in structured &&
-        structured.complete === true
+        structured.complete
       );
     } catch {
       return false;
@@ -481,21 +487,21 @@ function run(
         stderr?: string;
         structured?: StructuredCases;
       };
-      if (c.report && saved.structured?.complete !== true) {
+      if (
+        saved.failure ||
+        saved.pass === false ||
+        (saved.exit !== undefined && saved.exit !== 0) ||
+        (c.report && saved.structured?.complete !== true)
+      ) {
         // Older or incomplete adapter output cannot prove structured acceptance.
       } else {
         appendFileSync(
           log,
-          `$ ${c.cmd}\n# reused ${saved.failure ? 'failure' : 'pass'} from ${saved.tag}\n${saved.stdout ?? ''}${saved.stderr ?? ''}\n`
+          `$ ${c.cmd}\n# reused pass from ${saved.tag}\n${saved.stdout ?? ''}${saved.stderr ?? ''}\n`
         );
-        if (saved.failure) {
-          failed.push(c.cmd);
-          failures.push(saved.failure);
-        }
         results.push({
           check: c,
-          pass:
-            saved.pass ?? (saved.exit === undefined ? null : !saved.failure && saved.exit === 0),
+          pass: saved.pass ?? (saved.exit === undefined ? null : true),
           exit: saved.exit,
           evidence: log,
           ...(saved.structured ? { structured: saved.structured } : {}),
@@ -588,13 +594,13 @@ function run(
       if (structured?.complete) failure.failure_class = 'unknown';
       failures.push(failure);
     }
-    if (hit) {
+    if (hit && passed) {
       mkdirSync(dirname(hit), { recursive: true });
       writeFileSync(
         hit,
         JSON.stringify({
           tag: env('TAG'),
-          failure: passed ? null : failures.at(-1),
+          failure: null,
           pass: passed,
           exit: code,
           stdout: p.stdout.toString(),
@@ -746,6 +752,31 @@ export function reusableAcceptance(prior: Accept | undefined, head: string): boo
   return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) && prior.command_results?.every(r => r.pass === true) === true;
 }
 
+/** Node-bound evidence may cover cache:false checks; it is not a cross-execution cache. */
+function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolean {
+  const checks = plan()
+    .packages.filter(k => env('PKGS').split(',').includes(k.id))
+    .flatMap(k => k.accept);
+  return (
+    prior?.ok === true &&
+    prior.workspace_clean === true &&
+    prior.head === head &&
+    prior.contract_hash === acceptanceContractHash() &&
+    JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) &&
+    prior.command_results?.every(r => r.pass === true) === true
+  );
+}
+
+function nodeAcceptance(path: string, head: string): Accept | undefined {
+  if (!path) return undefined;
+  try {
+    const prior = JSON.parse(readFileSync(path, 'utf8')) as Accept;
+    return reusableNodeAcceptance(prior, head) ? prior : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 一次验收：coder 处置 + 命令 + 干净工作区；有 BASE 时另存全量 patch、相对 DELTA_BASE 的增量 patch 与交付范围。 */
 function acceptOnce(
   tag: string,
@@ -795,7 +826,15 @@ function acceptOnce(
   const delta = env('DELTA_BASE') ? save(`${tag}.delta.patch`, env('DELTA_BASE')) : patch;
   const noChanges = delta ? readFileSync(delta, 'utf8').length === 0 : undefined;
   const hash = patch ? sha(readFileSync(patch, 'utf8')).slice(0, 16) : '';
-  const failed = run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
+  const head = git('rev-parse', 'HEAD').trim();
+  const prior = dirty ? undefined : nodeAcceptance(env('ACCEPTANCE_EVIDENCE'), head);
+  const failed = prior
+    ? []
+    : run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
+  if (prior?.command_results) {
+    commandResults.push(...prior.command_results);
+    appendFileSync(log, `# reused stable acceptance from ${env('ACCEPTANCE_EVIDENCE')}\n`);
+  }
   const scope =
     base && env('RISK')
       ? scopeRisk(
@@ -947,7 +986,7 @@ function acceptOnce(
     base_results: baseResults,
     ...baseline,
     ...scope,
-    head: git('rev-parse', 'HEAD').trim(),
+    head,
     checkout_fingerprint: fingerprint,
   };
 }
@@ -1358,6 +1397,43 @@ function convergenceDecision(facts: DecisionFacts): DecisionCandidate {
   return rule ? rule.decide(facts) : facts.candidate;
 }
 
+function rotatingFailures(rechecks: (Accept | null)[], reviews: (Review | null)[]): boolean {
+  const recent = rechecks.slice(-3);
+  if (
+    recent.length !== 3 ||
+    recent.some(c => !c?.head || !c.contract_hash) ||
+    new Set(recent.map(c => c?.head)).size !== 1 ||
+    new Set(recent.map(c => c?.contract_hash)).size !== 1
+  )
+    return false;
+  const identities = recent.map(c => {
+    const ids = new Set<string>();
+    c?.failed?.forEach(command => ids.add(`command:${command}`));
+    c?.failures?.forEach(failure => {
+      failure.failed_tests?.forEach(id => ids.add(`test:${id}`));
+      if (!failure.failed_tests?.length && failure.failure_digest)
+        ids.add(`digest:${failure.failure_digest}`);
+    });
+    c?.command_results?.forEach(result =>
+      result.structured?.failures.forEach(failure => ids.add(`test:${failure.id}`))
+    );
+    return JSON.stringify([...ids].sort());
+  });
+  if (identities.some(identity => identity === '[]') || new Set(identities).size !== 3)
+    return false;
+  const productIds = reviews
+    .slice(-3)
+    .map(
+      review =>
+        new Set(
+          review?.findings
+            .filter(f => f.status === 'open' && f.failure_class === 'product')
+            .map(f => f.id) ?? []
+        )
+    );
+  return ![...productIds[0]].some(id => productIds[1].has(id) && productIds[2].has(id));
+}
+
 /** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，未完成自报只阻断已证实的空交付。 */
 export function deliveryDecision(input: {
   approved?: { check?: Accept; decision?: DeliveryDecision };
@@ -1543,6 +1619,10 @@ export function deliveryDecision(input: {
     coder.needs.some(n => n && typeof n === 'object' && 'cap' in n && n.cap === 'environment')
   ) {
     if (input.selfReportPath) evidence.push(input.selfReportPath);
+    return out('block', 'environment');
+  }
+  if (rotatingFailures(input.rechecks, reviews)) {
+    evidence.push('structured failures rotated across three checks at the same head and contract');
     return out('block', 'environment');
   }
   if (ledger.blocking.some(e => e.failure_class === 'unknown')) {

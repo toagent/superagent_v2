@@ -585,15 +585,24 @@ describe('buildWorkflow', () => {
       buildWorkflow(plan, milestones(plan), 'soldier', '/GEN', false, NOW, tiers)
     );
     expect(nodes.find(n => n.id === 'soldier-core')).toMatchObject({
-      command: 'sa-soldier',
-      model: '@sa-soldier',
-      depends_on: ['start-m1', 'package-attempt-core'],
-      idle_timeout: 600_000,
+      include: 'sa-soldier-core',
+      depends_on: ['soldier-items-core'],
+      with: { pkg: 'core', context_node: 'package-attempt-core' },
+      fan_out: {
+        items: '$soldier-items-core.output',
+        as: 'draft',
+        max_parallel: 1,
+        join: 'all_done',
+      },
     });
-    expect(nodes.find(n => n.id === 'soldier-ok-core')).toEqual({
+    expect(nodes.find(n => n.id === 'soldier-items-core')).toMatchObject({
+      depends_on: ['start-m1', 'package-attempt-core'],
+    });
+    expect(nodes.find(n => n.id === 'soldier-ok-core')).toMatchObject({
       id: 'soldier-ok-core',
       depends_on: ['soldier-core'],
-      bash: 'printf used',
+      with: { result: '$soldier-core.output' },
+      bash: expect.stringContaining('archon_failed===true'),
     });
     expect(nodes.find(n => n.id === 'soldier-reset-core')).toEqual({
       id: 'soldier-reset-core',

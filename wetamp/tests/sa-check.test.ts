@@ -521,6 +521,41 @@ const ids = (reviews: (Rv | null)[], risk = 'G1'): string[] =>
     .sort();
 
 describe('NONCONVERGENCE delivery gate', () => {
+  test('three rotating structured failure sets stop as environment unless one product finding persists', () => {
+    const checks = ['A', 'B', 'C'].map(id => ({
+      ...C(id, false),
+      head: 'same-head',
+      contract_hash: 'same-contract',
+      failed: ['bun test'],
+      failures: [
+        {
+          command: 'bun test',
+          failure_class: 'product' as const,
+          evidence: `/tmp/${id}.log`,
+          failed_tests: [id],
+        },
+      ],
+    }));
+    expect(
+      deliveryDecision({ reviews: [null, null, null], rechecks: checks, reviewRounds: MAX_ROUNDS })
+    ).toMatchObject({
+      decision: {
+        kind: 'block',
+        reason: 'environment',
+        evidence: expect.arrayContaining([expect.stringContaining('rotated')]),
+      },
+    });
+    const persistent = R('FAIL', [
+      f('high', { id: 'persistent', failure_class: 'product', evidence: '/tmp/product.log' }),
+    ]);
+    expect(
+      deliveryDecision({
+        reviews: [persistent, persistent, persistent],
+        rechecks: checks,
+        reviewRounds: MAX_ROUNDS,
+      }).decision.reason
+    ).toBe('acceptance_failed');
+  });
   test('G1 done + error_class advances in one round without review', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -3350,7 +3385,7 @@ describe('sa-check script', () => {
       reason: 'repair_exhausted:acceptance_failed',
     });
   });
-  test('F-21: omitted cache reuses a pass on the same tree; cache:false always runs; new trees rerun', () => {
+  test('F-21: node evidence reuses cache:false checks on the same head; a new head reruns', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const p = join(root, 'plan.json');
@@ -3369,19 +3404,21 @@ describe('sa-check script', () => {
         ],
       })
     );
-    const go = (tag: string) => runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag }).out;
+    const go = (tag: string, acceptance_evidence = '') =>
+      runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag, acceptance_evidence }).out;
     expect(go('verify-a')).toMatchObject({ ok: true });
-    expect(go('diff-m1-r1')).toMatchObject({ ok: true });
-    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\n');
+    const evidence = join(root, 'art', 'verify-a.json');
+    expect(go('diff-m1-r1', evidence)).toMatchObject({ ok: true });
+    expect(readFileSync(counter, 'utf8')).toBe('c\nu\n');
     expect(readFileSync(join(root, 'art', 'diff-m1-r1.log'), 'utf8')).toContain(
-      'reused pass from verify-a'
+      'reused stable acceptance from'
     );
     sh(
       'echo z > z.txt && git add z.txt && git -c user.name=t -c user.email=t@l commit -qm z',
       repo
     );
-    go('diff-m1-r2');
-    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\nc\nu\n');
+    go('diff-m1-r2', evidence);
+    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nc\nu\n');
   });
   test('delivery-truth: cache binds filtered command environment and private context, never legacy identity', () => {
     const root = tmp(),
@@ -3718,7 +3755,7 @@ describe('sa-check script', () => {
     });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
   });
-  test('P2: cached failures survive cumulative checks; contract and environment changes rerun', () => {
+  test('P2: failures never enter the acceptance cache', () => {
     const root = tmp(),
       repo = gitRepo(root),
       p = join(root, 'plan.json'),
@@ -3739,38 +3776,23 @@ describe('sa-check script', () => {
       writeFileSync(p, JSON.stringify(plan));
       return runScript(repo, { kind: 'accept', plan: p, pkgs, tag });
     };
-    const first = go('verify-a');
-    const evidence = (first.out as { failures: { evidence: string }[] }).failures[0].evidence;
+    go('verify-a');
     const cumulative = go('diff-m1-r1', 'a,b');
-    expect(readFileSync(counter, 'utf8')).toBe('x\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
     expect(cumulative.out).toMatchObject({
       failed: [check.cmd, check.cmd],
-      failures: [
-        { failure_class: 'fixture', evidence },
-        { failure_class: 'fixture', evidence },
-      ],
+      failures: [{ failure_class: 'fixture' }, { failure_class: 'fixture' }],
     });
-    expect(evidence).toBe(join(first.art, 'verify-a.log'));
-    const originalLog = readFileSync(evidence, 'utf8');
-    expect(originalLog).toContain('{"failure_class":"fixture","evidence":"fixture"}\n');
-    expect(originalLog).toContain('# exit=1');
-    expect(readFileSync(join(cumulative.art, 'diff-m1-r1.log'), 'utf8')).toContain(
-      '# reused failure from verify-a'
-    );
-    // retrying the originating tag must retain the cached failure's diagnostic.
-    const retried = go('verify-a');
-    expect(retried.out).toMatchObject({ failures: [{ failure_class: 'fixture', evidence }] });
-    expect(readFileSync(counter, 'utf8')).toBe('x\n');
-    expect(readFileSync(evidence, 'utf8')).toBe(
-      `${originalLog}$ ${check.cmd}\n# reused failure from verify-a\n${JSON.stringify({ failure_class: 'fixture', evidence: 'fixture' })}\n\n`
-    );
+    expect(readFileSync(join(cumulative.art, 'diff-m1-r1.log'), 'utf8')).not.toContain('# reused');
+    go('verify-a');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
     plan.environment = [{ cmd: 'true', timeout_s: 5 }];
     go('environment-change');
     check.timeout_s++;
     go('contract-change');
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
   });
-  test('P2: structured probes cache the second check using the execution cwd tree', () => {
+  test('P2: structured probe failures rerun each check in the execution cwd tree', () => {
     const root = tmp(),
       repo = gitRepo(root),
       p = planFile(root, 'false', ['true']),
@@ -3791,10 +3813,10 @@ describe('sa-check script', () => {
     plan.packages[0].accept = [check, check];
     writeFileSync(p, JSON.stringify(plan));
     runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a', base });
-    expect(readFileSync(trees, 'utf8')).toBe(`${candidateTree}\n${baseTree}\n`);
-    expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).toContain(
-      '# reused failure from verify-a'
+    expect(readFileSync(trees, 'utf8')).toBe(
+      `${candidateTree}\n${candidateTree}\n${baseTree}\n${baseTree}\n`
     );
+    expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).not.toContain('# reused');
   });
   test('F-20/F-13: delta patch retains out-of-scope evidence; risk paths raise the risk', () => {
     const root = tmp();
