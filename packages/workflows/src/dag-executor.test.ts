@@ -76,17 +76,21 @@ mock.module('@archon/paths', () => ({
 mock.module('./subprocess-output', () => ({
   ...realSubprocessOutput,
   runStreamingSubprocess: async (options: StreamingOptions) => {
+    const isolatedOptions = {
+      ...options,
+      env: { ...options.env, HOME: options.cwd, BASH_ENV: '/dev/null' },
+    };
     // Legacy unit tests deliberately spy execFileAsync to synthesize Docker and errno
     // outcomes. All other tests, including the >2 MiB DAG integration, use the real runner.
     if (!('mock' in git.execFileAsync)) {
-      return realSubprocessOutput.runStreamingSubprocess(options);
+      return realSubprocessOutput.runStreamingSubprocess(isolatedOptions);
     }
     let result: { stdout: string; stderr: string };
     try {
-      result = await git.execFileAsync(options.cmd, options.args, {
-        cwd: options.cwd,
-        env: { ...options.env, BASH_ENV: '' },
-        timeout: options.timeout,
+      result = await git.execFileAsync(isolatedOptions.cmd, isolatedOptions.args, {
+        cwd: isolatedOptions.cwd,
+        env: isolatedOptions.env,
+        timeout: isolatedOptions.timeout,
       });
     } catch (caught) {
       const error = caught as Error & Record<string, unknown>;
