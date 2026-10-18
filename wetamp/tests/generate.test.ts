@@ -29,6 +29,8 @@ import {
   substituteNodeOutputRefs,
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
+import { validateDagStructure } from '../../packages/workflows/src/loader';
+import type { DagNode } from '../../packages/workflows/src/schemas';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
@@ -613,11 +615,10 @@ describe('buildWorkflow', () => {
     expect(verify?.trigger_rule).toBe('none_failed_min_one_success');
     const binding = verify?.with?.coder as { from: string; if_skipped: string };
     expect(binding.from).toBe('$code-core.output');
-    expect(verify?.with?.carried_evidence).toEqual({
-      from: '$code-core.output.carried_evidence',
-      if_skipped: '/GEN/carried-evidence/core.json',
-    });
+    expect(verify?.with?.carried_evidence).toBe('/GEN/carried-evidence/core.json');
+    expect(verify?.with?.attempt).toBe('$package-attempt-core.output.attempt');
     expect(nodes.find(n => n.id === 'verify-api')?.with?.carried_evidence).toBeUndefined();
+    expect(validateDagStructure(nodes as DagNode[])).toBeNull();
     expect(JSON.parse(binding.if_skipped)).toEqual({
       status: 'done',
       changed_files: [],

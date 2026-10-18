@@ -419,10 +419,8 @@ export function buildWorkflow(
               : `$code-${p.id}.output`,
             ...(carriedEvidence
               ? {
-                  carried_evidence: {
-                    from: `$code-${p.id}.output.carried_evidence`,
-                    if_skipped: carriedEvidence,
-                  },
+                  carried_evidence: carriedEvidence,
+                  attempt: `$${pkgAttempt}.output.attempt`,
                 }
               : {}),
           },

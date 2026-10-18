@@ -1886,14 +1886,18 @@ describe('sa-check script', () => {
       risk: 'G1', out_of_scope: [], tag: 'verify-old',
       decision: { kind: 'advance', reason: null, evidence: ['/old.log'], debt: [] },
     };
-    const run = () => runScript(repo, {
-      kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a', carried_evidence: carried,
+    const run = (attempt = '0') => runScript(repo, {
+      kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a', carried_evidence: carried, attempt,
     });
     writeFileSync(carried, JSON.stringify(evidence));
     const replay = run();
     expect(replay.code, replay.err).toBe(0);
     expect(replay.out).toEqual({ ...evidence, tag: 'verify-a' });
     expect(existsSync(counter)).toBe(false);
+    const retry = run('1');
+    expect(retry.code, retry.err).toBe(0);
+    expect(retry.out).toMatchObject({ disposition: 'repair' });
+    expect(readFileSync(counter, 'utf8')).toBe('ran\n');
     const unrelated = sh('git commit-tree HEAD^{tree} -m unrelated', repo).trim();
     for (const [decision, carriedHead, error] of [
       ['repair', head, 'decision must be advance/debt'],

@@ -1008,8 +1008,9 @@ function finish(
 
 function accept(): void {
   const tag = env('TAG'),
-    carried = env('CARRIED_EVIDENCE');
-  if (!carried) {
+    carried = env('CARRIED_EVIDENCE'),
+    attempt = env('ATTEMPT');
+  if (!carried || attempt !== '0') {
     finish(tag, acceptOnce(tag, env('CODER')));
     return;
   }
