@@ -523,6 +523,16 @@ export const decisionsOf = (art: string, m?: string, l?: Ledger) =>
       return { tag: file.slice(0, -5), milestone: out?.milestone, decision: decisionOf(out) };
     })
     .filter(d => m === undefined || d.milestone === m);
+const outOfScopeOf = (l: Ledger, art: string): string[] => [
+  ...new Set(
+    decisionsOf(art, undefined, l).flatMap(({ tag }) => {
+      const value = evidenceJson(l, art, `${tag}.json`) as { out_of_scope?: unknown } | undefined;
+      return tag.startsWith('diff-') && Array.isArray(value?.out_of_scope)
+        ? value.out_of_scope.filter((path): path is string => typeof path === 'string')
+        : [];
+    })
+  ),
+];
 /** Current evidence supersedes process history without removing it from decisionsOf. */
 export const currentDecisions = (decisions: ReturnType<typeof decisionsOf>) =>
   decisions.filter(
@@ -639,6 +649,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
   const art = artifactsOf(run);
   confined(l, art);
   const needs = needsOf(art, undefined, l);
+  const outOfScope = c.exit === EXIT.running ? [] : outOfScopeOf(l, art);
   const hold = holdOf(l, run, c);
   return {
     run_id: l.run_id,
@@ -678,6 +689,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
       tag: d.tag,
       decision: d.decision ?? 'unknown',
     })),
+    ...(outOfScope.length ? { out_of_scope: outOfScope } : {}),
     ...(c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown'
       ? {
           action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.`,

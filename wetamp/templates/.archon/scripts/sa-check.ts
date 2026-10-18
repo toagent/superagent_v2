@@ -97,6 +97,7 @@ export interface Accept {
   checkout_fingerprint?: string;
   contract_hash?: string;
   risk?: string | null;
+  out_of_scope?: string[];
   disposition?: Disposition;
   reason?: string | null;
   failed?: string[];
@@ -708,8 +709,8 @@ function changes(base: string): { modes: string[]; paths: string[] }[] {
 }
 
 /**
- * F-13 交付门禁（不是沙箱）：实际 candidate tree 对照 scope.write。越界、gitlink/symlink 变动、命中 risk_paths
- * 一律推断 G2；声明 G0 却改了代码文件推断 G1。有效风险 = max(声明, 推断)，评审与 gate 都按它执行。
+ * F-13 交付证据（不是沙箱）：实际 candidate tree 对照 scope.write 并记录越界路径。
+ * gitlink/symlink 或 risk_paths 推断 G2；代码文件推断 G1。有效风险 = max(声明, 推断)。
  */
 export function scopeRisk(
   ch: { modes: string[]; paths: string[] }[],
@@ -731,7 +732,7 @@ export function scopeRisk(
         ? 'G1'
         : 'G0'
   );
-  return { risk: maxRisk(declared, out_of_scope.length ? 'G2' : 'G0', ...inferred), out_of_scope };
+  return { risk: maxRisk(declared, ...inferred), out_of_scope };
 }
 
 /** Shared with land's read-only reuse probe; a commit binds the accepted tree. */
