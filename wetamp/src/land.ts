@@ -96,6 +96,19 @@ export interface DeliveryTarget {
   branch: string;
   head: string;
 }
+export function landEvidence(
+  run: Pick<RunView, 'nodes'> & Partial<Pick<RunView, 'status'>>,
+  node?: string
+): { node: string; file: string } | undefined {
+  const selected =
+    node ??
+    run.nodes?.filter(n => n.state === 'completed' && /^land(?:-.+)?$/.test(n.nodeId)).at(-1)
+      ?.nodeId ??
+    (run.status === 'completed' && !run.nodes?.length ? 'land' : undefined);
+  return selected && /^land(?:-.+)?$/.test(selected)
+    ? { node: selected, file: selected === 'land' ? 'land.json' : `${selected}.json` }
+    : undefined;
+}
 export const protectedTarget = (branch: string): boolean =>
   /^(main|master|dev|develop|release-.*)$/.test(branch);
 export interface LocalDelivery {
@@ -155,9 +168,14 @@ export const integrationLockTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
   20 * 60_000;
 // prettier-ignore
-export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan; cacheReady?: (cwd: string) => boolean }): DeliveryOutcome | undefined {
-  if ((!['completed', 'running'].includes(run.status) || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed')) ||
-    (run.status !== 'completed' && (!context?.delivery || !run.nodes.some(n => n.nodeId === 'deliver' && n.state === 'running') || run.nodes.some(n => n.nodeId !== 'deliver' && !['completed', 'skipped'].includes(n.state)))))
+export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan; cacheReady?: (cwd: string) => boolean; evidence?: ReturnType<typeof landEvidence> }): DeliveryOutcome | undefined {
+  const evidence = context?.evidence ?? landEvidence(run);
+  const deliver = evidence?.node.replace(/^land/, 'deliver');
+  const deliverIndex = run.nodes?.findIndex(n => n.nodeId === deliver) ?? -1;
+  if (!evidence || !run.nodes?.some(n => n.nodeId === evidence.node && n.state === 'completed') ||
+    (!['completed', 'failed', 'cancelled'].includes(run.status) &&
+      (run.status !== 'running' || !context?.delivery || deliverIndex < 0 || run.nodes[deliverIndex]?.state !== 'running' ||
+       run.nodes.slice(0, deliverIndex).some(n => !['completed', 'skipped'].includes(n.state)))))
     throw new LandError('not_ready', 'land: run is not ready for integration');
   const delivery = context?.delivery;
   const repo = delivery?.target.checkout ?? land.repo ?? context?.repo; if (!repo) throw new LandError('repository_missing', 'land: missing repository');
@@ -191,9 +209,14 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   clean();
   const tree = git('rev-parse', `${land.head}^{tree}`);
   const sameTree = () => {
-    if (delivery && git('rev-parse', land.branch) !== land.head) throw new LandError('source_head_drifted', 'delivery: source HEAD drifted');
-    if (delivery && run.working_path && gitAt(run.working_path, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('source_dirty', 'delivery: source checkout is dirty');
-    if (git('rev-parse', `${land.branch}^{tree}`) !== tree) throw new LandError('source_tree_changed', 'land: branch tree differs from accepted tree');
+    const source = git('rev-parse', land.branch);
+    const prefix = ['failed', 'cancelled'].includes(run.status) && Bun.spawnSync(
+      ['git', '-C', repo, 'merge-base', '--is-ancestor', land.head, source],
+      { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
+    ).exitCode === 0;
+    if (delivery && source !== land.head && !prefix) throw new LandError('source_head_drifted', 'delivery: source HEAD drifted');
+    if (delivery && !prefix && run.working_path && gitAt(run.working_path, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('source_dirty', 'delivery: source checkout is dirty');
+    if (!prefix && git('rev-parse', `${land.branch}^{tree}`) !== tree) throw new LandError('source_tree_changed', 'land: branch tree differs from accepted tree');
   };
   sameTree();
   const targetHistory = (tip: string) => {
@@ -317,7 +340,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     finally { rmSync(root, { recursive: true, force: true }); }
   }
   }
-  for (const args of delivery ? [] : [...(run.working_path ? [['worktree', 'remove', run.working_path]] : []), ['branch', '-d', land.branch]]) {
+  for (const args of delivery || ['failed', 'cancelled'].includes(run.status) ? [] : [...(run.working_path ? [['worktree', 'remove', run.working_path]] : []), ['branch', '-d', land.branch]]) {
     try { git(...args); } catch (e) { console.error(`land: kept ${String(args.at(-1))}: ${(e as Error).message}`); }
   }
   return receipt;
@@ -331,7 +354,8 @@ export function acceptRun(
   cwd?: string,
   cacheArt?: string,
   report = true,
-  cacheOnly = false
+  cacheOnly = false,
+  through?: string
 ): number {
   const { artifactsOf, decisionOf, evidenceJson, planOf, print, readJson } = operator();
   const run = archonJson(
@@ -348,18 +372,22 @@ export function acceptRun(
   const art = cacheArt ?? artifactsOf(run);
   const contracts = readJson(join(l.gen_dir, 'accept-inputs.json')) as Record<string, string>[];
   if (!Array.isArray(contracts)) throw new Error('accept: missing generated acceptance contract');
+  const milestoneIds = [...new Set(contracts.map(c => c.milestone))];
+  const throughIndex = through ? milestoneIds.indexOf(through) : milestoneIds.length - 1;
   const selected = pkg
     ? contracts.filter(c => c.tag === `verify-${pkg}`)
-    : [...new Set(contracts.map(c => c.milestone))].map(m =>
-        [...contracts]
-          .reverse()
-          .find(
-            c =>
-              c.milestone === m &&
-              c.tag.startsWith('diff-') &&
-              evidenceJson(l, art, `${c.tag}.json`)
-          )
-      );
+    : milestoneIds
+        .slice(0, throughIndex + 1)
+        .map(m =>
+          [...contracts]
+            .reverse()
+            .find(
+              c =>
+                c.milestone === m &&
+                c.tag.startsWith('diff-') &&
+                evidenceJson(l, art, `${c.tag}.json`)
+            )
+        );
   if (!selected.length || selected.some(c => !c))
     throw new Error('accept: missing acceptance evidence');
   const resolved = Bun.spawnSync([process.execPath, join(import.meta.dir, 'role-context.ts')], {
@@ -477,21 +505,29 @@ export function finalizeDelivery(
         const target = l.delivery;
         const run = getRun(l.archon_run_id, l.repo),
           art = artifactsOf(run);
-        const land = evidenceJson(l, art, 'land.json') as Land | undefined;
+        const evidence = landEvidence(run);
+        const land = evidence && (evidenceJson(l, art, evidence.file) as Land | undefined);
         if (!land) throw new Error('delivery: missing generated land evidence');
         let receipt: ReturnType<typeof applyLand>;
         intervention(
           l,
           'land',
           () => {
-            receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
-              repo: l.repo,
-              plan: planOf(l),
-              cacheReady: cwd => acceptRun(l, undefined, cwd, art, false, true) === 0,
-              base_ref: planOf(l).base_ref,
-              launch_branch: l.launch_branch,
-              delivery: target ? localDelivery(l, art, target) : undefined,
-            });
+            receipt = applyLand(
+              run,
+              land,
+              cwd => acceptRun(l, undefined, cwd, art, false, false, land.milestone),
+              {
+                repo: l.repo,
+                plan: planOf(l),
+                cacheReady: cwd =>
+                  acceptRun(l, undefined, cwd, art, false, true, land.milestone) === 0,
+                base_ref: planOf(l).base_ref,
+                launch_branch: l.launch_branch,
+                delivery: target ? localDelivery(l, art, target) : undefined,
+                evidence,
+              }
+            );
             return 0;
           },
           undefined,
@@ -540,7 +576,8 @@ export function deliveryProjection(l: Ledger, run: RunView): DeliveryReceipt | u
   const { artifactsOf, evidenceJson } = operator();
   if (!l.delivery) return;
   const art = artifactsOf(run),
-    land = evidenceJson(l, art, 'land.json') as Land | undefined;
+    evidence = landEvidence(run),
+    land = evidence && (evidenceJson(l, art, evidence.file) as Land | undefined);
   const inputs = join(l.gen_dir, 'accept-inputs.json');
   if (!land || !existsSync(inputs)) return;
   return integratedReceipt(
@@ -567,12 +604,15 @@ export function deliveryRecoverable(run: RunView): boolean {
     const ref = coord().resolveRun(run.id);
     if (!ref) return false;
     const l = operator().loadLedger(ref.run_id);
+    const evidence = landEvidence(run);
     return (
       l.archon_run_id === run.id &&
       !!l.delivery &&
       existsSync(join(l.gen_dir, 'delivery-authorization.json')) &&
-      !!run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed') &&
-      run.nodes.every(n => n.nodeId === 'deliver' || ['completed', 'skipped'].includes(n.state))
+      !!evidence &&
+      run.nodes?.some(
+        n => n.nodeId === evidence.node.replace(/^land/, 'deliver') && n.state === 'running'
+      ) === true
     );
   } catch {
     return false;

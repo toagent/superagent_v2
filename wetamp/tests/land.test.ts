@@ -17,6 +17,7 @@ import {
   captureDelivery,
   excludeCodegraph,
   integratedReceipt,
+  landEvidence,
   protectedTarget,
   type LocalDelivery,
 } from '../src/land';
@@ -38,6 +39,35 @@ test.each([
 ] as const)('protectedTarget(%s) = %s', (branch, expected) => {
   expect(protectedTarget(branch)).toBe(expected);
 });
+
+test.each(['failed', 'cancelled'] as const)(
+  'failed/cancelled run lands its passed milestone head and preserves later work: %s',
+  status => {
+    const f = fixture();
+    const passed = f.land.head;
+    writeFileSync(join(f.worktree, 'later.txt'), 'later\n');
+    sh('git add later.txt && git commit -qm later', f.worktree);
+    const run = {
+      ...f.run,
+      status,
+      nodes: [
+        { nodeId: 'land-m1', state: 'completed' as const },
+        { nodeId: 'code-later', state: 'failed' as const },
+      ],
+    };
+    expect(landEvidence({ nodes: [] })).toBeUndefined();
+    expect(landEvidence({ nodes: [{ nodeId: 'land-m1', state: 'skipped' }] })).toBeUndefined();
+    expect(landEvidence(run)).toEqual({ node: 'land-m1', file: 'land-m1.json' });
+    applyLand(run, f.land, () => 0, {
+      repo: f.repo,
+      base_ref: 'main',
+    });
+    expect(sh('git merge-base --is-ancestor ' + passed + ' main', f.repo)).toBe('');
+    expect(existsSync(join(f.repo, 'later.txt'))).toBe(false);
+    expect(existsSync(f.worktree)).toBe(true);
+    expect(readFileSync(join(f.worktree, 'later.txt'), 'utf8')).toBe('later\n');
+  }
+);
 
 test.each(['unknown run', 'missing durable authorization', 'authorization/run mismatch'])(
   'delivery entry loads operator and rejects %s',

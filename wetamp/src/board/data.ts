@@ -8,6 +8,7 @@ import { getRunsAsync, RunQueryError, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
 import { loadActivity, type Activity } from './activity';
+import { landEvidence } from '../land';
 import { milestones } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
 import { readEta, type Estimate } from './eta';
@@ -257,7 +258,10 @@ export function rowOf(
     landed: (() => {
       if (l.delivery_result) return l.delivery_result.status === 'integrated';
       if (c.state !== 'completed' || !plan?.base_ref) return false;
-      const land = evidenceJson(l, artifactsOf(run), 'land.json') as { head?: string } | undefined;
+      const evidence = landEvidence(run);
+      const land =
+        evidence &&
+        (evidenceJson(l, artifactsOf(run), evidence.file) as { head?: string } | undefined);
       return (
         !!land?.head &&
         /^[a-f0-9]{40,64}$/.test(land.head) &&

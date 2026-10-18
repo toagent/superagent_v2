@@ -12,6 +12,7 @@ import {
   acceptRun,
   finalizeDelivery,
   deliveryProjection,
+  landEvidence,
   type DeliveryTarget,
 } from './land';
 export { finalizeDelivery } from './land';
@@ -632,7 +633,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
       ledgerPath(l.run_id),
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
-    blocked = landReason ?? (['land', 'deliver'].includes(c.node ?? '') && node?.state === 'failed'),
+    blocked = landReason ?? (/^(?:land|deliver)(?:-.+)?$/.test(c.node ?? '') && node?.state === 'failed'),
     action = reason === 'target_protected' ? '在 feature 分支重跑'
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
@@ -647,6 +648,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
   const nodes = run.nodes ?? [];
   const art = artifactsOf(run);
+  const landFile = landEvidence(run)?.file;
   confined(l, art);
   const needs = needsOf(art, undefined, l);
   const outOfScope = c.exit === EXIT.running ? [] : outOfScopeOf(l, art);
@@ -680,8 +682,9 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     ...(c.state === 'failed' ? failure(l, run, c.node) : {}),
     ...(c.state === 'completed'
       ? {
-          land: (evidenceJson(l, art, 'land.json') as { commands?: string[] } | undefined)
-            ?.commands,
+          land: landFile
+            ? (evidenceJson(l, art, landFile) as { commands?: string[] } | undefined)?.commands
+            : undefined,
         }
       : {}),
     evidence: art,
@@ -3522,9 +3525,17 @@ export function main(argv: string[]): number {
       }
       return controlled(l, () => {
         const run = getRun(l.archon_run_id, l.repo);
-        let land = evidenceJson(l, artifactsOf(run), 'land.json');
+        const c = classify(run);
+        const diagnosticNode = /^land(?:-.+)?$/.test(c.node ?? '')
+          ? c.node
+          : !run.nodes?.length
+            ? 'land'
+            : undefined;
+        const evidence =
+          landEvidence(run) ?? (diagnosticNode ? landEvidence(run, diagnosticNode) : undefined);
+        let land = evidence && evidenceJson(l, artifactsOf(run), evidence.file);
         if (land === undefined) {
-          console.error(`land: no land.json yet (state ${classify(run).state})`);
+          console.error(`land: no land.json yet (state ${c.state})`);
           return 1;
         }
         const receipt = deliveryProjection(l, run);

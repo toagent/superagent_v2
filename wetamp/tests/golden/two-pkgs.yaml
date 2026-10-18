@@ -3589,8 +3589,17 @@ nodes:
       archon: /GEN/archon
       next: '1'
     trigger_rule: none_failed_min_one_success
-  - id: start-m2
-    bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
+  - id: land-m1
+    script: sa-check
+    runtime: bun
+    with:
+      kind: land
+      base_ref: main
+      plan: /GEN/plan.json
+      operator_ledger: /runs/golden-0001.json
+      milestone: m1
+      pkgs: core
+      output: land-m1.json
     depends_on:
       - gate-m1-r1
       - gate-m1-r2
@@ -3599,6 +3608,10 @@ nodes:
       - gate-m1-r5
       - gate-m1-r6
     trigger_rule: none_failed_min_one_success
+  - id: start-m2
+    bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
+    depends_on:
+      - land-m1
     output_format:
       type: object
       properties:
@@ -7191,7 +7204,7 @@ nodes:
     depends_on:
       - human-m2
     when: $human-m2.output.decision == 'approve'
-  - id: land
+  - id: land-m2
     script: sa-check
     runtime: bun
     with:
@@ -7199,5 +7212,8 @@ nodes:
       base_ref: main
       plan: /GEN/plan.json
       operator_ledger: /runs/golden-0001.json
+      milestone: m2
+      pkgs: core,api
+      output: land-m2.json
     depends_on:
       - signoff-m2
