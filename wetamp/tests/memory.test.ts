@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-import { readJobs, type Job } from '../src/jobs';
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spyOn, afterAll } from 'bun:test';
@@ -12,7 +10,6 @@ import {
   readdirSync,
   writeFileSync,
   statSync,
-  utimesSync,
   symlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -41,17 +38,9 @@ import {
   type Episode,
   type Lesson,
 } from '../src/memory';
-import {
-  curate,
-  reflectOne,
-  reflectionCommand,
-  reflectionFailure,
-  reflectionInput,
-  reflectionUsage,
-} from '../src/memory-reflect';
-import { roleCommandArgs } from '@archon/providers/launch-policy';
+import { curate, reconcileReflection, reflectOne, reflectionInput } from '../src/memory-reflect';
 import { artifactsOf, main, type Ledger } from '../src/cli';
-import { lock, type RunView } from '../src/archon';
+import { type RunView } from '../src/archon';
 import { engineHash, generate } from '../src/generate';
 import { install, loadTiers, snapshotPolicy } from '../src/config';
 import { type Plan } from '../src/plan';
@@ -86,18 +75,9 @@ const keys = [
   'SUPERAGENT_HOME',
   'ARCHON_HOME',
   'SUPERAGENT_MEMORY',
-  'SUPERAGENT_REFLECT_CMD',
   'SA_ARCHON_BIN',
   'SUPERAGENT_WRITE_ROOTS',
-  'FAKE_MEMORY_STARTED',
-  'FAKE_MEMORY_DELAY',
-  'FAKE_MEMORY_OVERSIZE',
   'FAKE_EV1_RUN',
-  'FAKE_MEMORY_INPUT',
-  'FAKE_MEMORY_TOKENS',
-  'FAKE_MEMORY_EXIT',
-  'FAKE_MEMORY_EMPTY',
-  'FAKE_MEMORY_UNKNOWN_USAGE',
 ];
 beforeEach(() => {
   for (const k of keys) saved.set(k, process.env[k]);
@@ -107,14 +87,6 @@ beforeEach(() => {
   process.env.SUPERAGENT_HOME = sa;
   process.env.ARCHON_HOME = join(sa, 'archon');
   process.env.SUPERAGENT_MEMORY = 'on';
-  delete process.env.SUPERAGENT_REFLECT_CMD;
-  delete process.env.FAKE_MEMORY_DELAY;
-  delete process.env.FAKE_MEMORY_OVERSIZE;
-  delete process.env.FAKE_MEMORY_TOKENS;
-  delete process.env.FAKE_MEMORY_INPUT;
-  delete process.env.FAKE_MEMORY_EXIT;
-  delete process.env.FAKE_MEMORY_EMPTY;
-  delete process.env.FAKE_MEMORY_UNKNOWN_USAGE;
   plan = JSON.parse(
     readFileSync(
       fixturePlan(root, root, p => {
@@ -186,13 +158,6 @@ const lesson = (id: string, patch: Partial<Lesson> = {}): Lesson => ({
   ...patch,
 });
 const seed = (...lessons: Lesson[]): void => memoryWrite(() => ({ lessons }));
-const fake = (): void => {
-  process.env.SUPERAGENT_REFLECT_CMD = JSON.stringify([
-    process.execPath,
-    join(import.meta.dir, 'fixtures/fake-memory-reflector.ts'),
-  ]);
-  process.env.FAKE_MEMORY_STARTED = join(root, 'started');
-};
 // Real Archon validation is covered by generate.test.ts and selftest; these tests inspect memory injection.
 const fakeValidation = (): void => {
   const bin = join(root, 'validate-archon');
@@ -202,6 +167,46 @@ const fakeValidation = (): void => {
   );
   chmodSync(bin, 0o755);
   process.env.SA_ARCHON_BIN = bin;
+};
+const reflectionHarness = (e: Episode, output: unknown = { operations: [], reason: 'none' }) => {
+  let status = 'running',
+    launched = 0,
+    failLaunch = false;
+  const query = (args: string[]): Record<string, unknown> => {
+    if (args[1] === 'runs')
+      return {
+        runs: launched
+          ? [
+              {
+                id: 'reflect-run',
+                status,
+                workflow_name: 'memory-reflect',
+                user_message: `memory-reflect:${e.id}\ninput`,
+              },
+            ]
+          : [],
+      };
+    if (args[1] === 'run') {
+      if (failLaunch) throw new Error('launch failed');
+      launched++;
+      return { id: 'reflect-run' };
+    }
+    return {
+      events: [
+        {
+          event_type: 'node_completed',
+          step_name: 'reflect',
+          data: { structured_output: output, tokens: { input: 8, output: 2 } },
+        },
+      ],
+    };
+  };
+  return {
+    query,
+    terminal: (next: string) => (status = next),
+    rejectLaunch: (next: boolean) => (failLaunch = next),
+    launches: () => launched,
+  };
 };
 
 describe('EV1 incident replay', () => {
@@ -224,7 +229,6 @@ describe('EV1 incident replay', () => {
     expect(() => episode()).toThrow('路径越界');
   });
   test('E1 actual settle evidence wins over task self-report, mechanizes without reflection', async () => {
-    fake();
     for (const [i, sample] of e1.entries()) {
       raw.nodes = [{ nodeId: sample.node, state: 'failed' }];
       writeFileSync(join(artifactsOf(raw), `${sample.node}.json`), JSON.stringify(sample.settle));
@@ -243,7 +247,6 @@ describe('EV1 incident replay', () => {
       expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
     }
     expect(await reflectOne(NOW)).toBe(false);
-    expect(existsSync(process.env.FAKE_MEMORY_STARTED!)).toBe(false);
   });
   test('E2 real duplicate-ask shape and deterministic retries classify engine', () => {
     const asks: Asks = Object.fromEntries(
@@ -331,7 +334,6 @@ describe('EV1 incident replay', () => {
     log.mockRestore();
   });
   test('M2-01 and xiaopan 57e6 become mechanisms', async () => {
-    fake();
     for (const key of ['M2-01', 'xiaopan-57e6'] as const) {
       const sample = replay[key],
         e = episode({ id: key, status: sample.status, reasons: [sample.reason] });
@@ -361,67 +363,31 @@ describe('EV1 incident replay', () => {
     expect(failure.reason).toContain('worktree.baseBranch');
     expect(existsSync(join(sa, 'runs'))).toBe(false);
   });
-  test('background reflection preserves historical jobs while recording its own completion', async () => {
-    fake();
-    saveEpisode(episode());
-    const dir = join(sa, 'jobs');
-    mkdirSync(dir, { recursive: true });
-    for (const state of ['done', 'running'] as const) {
-      const job: Job = {
-        id: `history-${state}`,
-        title: 'history',
-        card: null,
-        log: null,
-        cwd: root,
-        kind: 'other',
-        model: null,
-        wrapper_pid: 99999999,
-        pid: 99999999,
-        started_at: '2026-10-08T10:00:00Z',
-        state,
-        ...(state === 'done' ? { ended_at: '2026-10-08T11:00:00Z', exit_code: 0 } : {}),
-      };
-      const file = join(dir, `${job.id}.json`);
-      writeFileSync(file, JSON.stringify(job));
-      utimesSync(file, 1, 1);
-    }
-    const snapshot = () =>
-      readdirSync(dir)
-        .filter(n => n.startsWith('history-'))
-        .sort()
-        .map(name => {
-          const file = join(dir, name);
-          return {
-            name,
-            hash: createHash('sha256').update(readFileSync(file)).digest('hex'),
-            mtime: statSync(file).mtimeMs,
-          };
-        });
-    const before = snapshot();
-    expect(await reflectOne(NOW)).toBe(true);
-    expect(memoryState().lessons).toHaveLength(1);
-    expect(snapshot()).toEqual(before);
-    // The reflector registers one new job through job exec; historical files remain unchanged.
-    expect(readdirSync(dir)).toHaveLength(before.length + 1);
-    const jobs = readJobs().jobs;
-    expect(jobs.find(j => j.id === 'history-running')).toMatchObject({ state: 'lost' });
-    expect(jobs.find(j => j.id === 'history-running')?.ended_at).toBeUndefined();
-    expect(JSON.parse(readFileSync(join(dir, 'history-running.json'), 'utf8')).state).toBe(
-      'running'
-    );
-    expect(jobs.find(j => j.title.startsWith('memory-reflect:'))).toMatchObject({
-      state: 'done',
-      exit_code: 0,
-    });
-    expect(snapshot()).toEqual(before);
-  });
   test('reflection produces candidates without authorizing production prompts or rewriting status', async () => {
     fakeValidation();
-    fake();
     const e = episode();
     expect(e.category).toBe('project');
     saveEpisode(e);
-    expect(await reflectOne(NOW)).toBe(true);
+    const harness = reflectionHarness(e, {
+      operations: [
+        {
+          op: 'ADD',
+          lesson: {
+            tier: 'project',
+            scope: root,
+            when: 'port',
+            do: 'free',
+            dont: 'busy',
+            why: 'test',
+            evidence: [e.id],
+            mechanizable: false,
+          },
+        },
+      ],
+    });
+    expect(reflectOne(NOW, harness.query)).toBe(true);
+    harness.terminal('completed');
+    expect(reflectOne(NOW, harness.query)).toBe(true);
     const learned = memoryState().lessons[0];
     expect(learned.scope).toBe(root);
     expect(learned.status).toBe('trial');
@@ -462,117 +428,73 @@ describe('EV1 incident replay', () => {
 });
 
 describe('EV1 budgets and deterministic matching', () => {
-  test('production reflection launch obeys role policy and failures use machine tokens', () => {
-    const model = loadTiers().tiers.general.pools.chatgpt[0];
-    expect(() =>
-      roleCommandArgs(reflectionCommand(model, '/tmp/result', 'input'), 'codex', model)
-    ).not.toThrow();
-    expect(reflectionFailure(1, null, false)).toEqual({
-      kind: 'launch_rejected',
-      exit_code: 1,
-    });
-    expect(reflectionFailure(143, 'SIGTERM', true)).toEqual({ kind: 'signal', signal: 'SIGTERM' });
+  test('durable run is unique across repeated ticks and launch failure retries', () => {
+    const e = episode();
+    saveEpisode(e);
+    const harness = reflectionHarness(e);
+    harness.rejectLaunch(true);
+    expect(reconcileReflection(NOW, at => reflectOne(at, harness.query))).toBe(false);
+    expect(memoryState().entries).toHaveLength(0);
+    harness.rejectLaunch(false);
+    expect(reflectOne(NOW, harness.query)).toBe(true);
+    expect(reflectOne(NOW, harness.query)).toBe(false);
+    expect(harness.launches()).toBe(1);
   });
-  test('daily ceiling queues then resumes next day, counts cached input once', async () => {
-    fake();
+  test('completed and exhausted runs write exactly one distilled or degraded terminal', () => {
+    const success = episode({ id: 'success' });
+    saveEpisode(success);
+    const done = reflectionHarness(success, {
+      operations: [
+        {
+          op: 'ADD',
+          lesson: {
+            tier: 'project',
+            scope: root,
+            when: 'w',
+            do: 'd',
+            dont: '',
+            why: 'y',
+            evidence: [success.id],
+            mechanizable: false,
+          },
+        },
+      ],
+    });
+    reflectOne(NOW, done.query);
+    done.terminal('completed');
+    expect(reflectOne(NOW, done.query)).toBe(true);
+    expect(memoryState().entries.at(-1)?.reflection?.state).toBe('produced');
+    const failed = episode({ id: 'failed', signature: 'other' });
+    saveEpisode(failed);
+    const exhausted = reflectionHarness(failed);
+    reflectOne(NOW, exhausted.query);
+    exhausted.terminal('failed');
+    expect(reflectOne(NOW, exhausted.query)).toBe(true);
+    expect(memoryState().entries.filter(e => e.reflected === failed.id)).toHaveLength(1);
+    expect(memoryState().entries.at(-1)).toMatchObject({ reflection: { state: 'degraded' } });
+  });
+  test('daily ceiling leaves work queued and starts it next day', () => {
     mkdirSync(join(sa, 'memory'));
     writeFileSync(join(sa, 'memory/config.json'), JSON.stringify({ daily_tokens: 9216 }));
-    saveEpisode(episode({ id: 'first' }));
-    saveEpisode(episode({ id: 'second', signature: 'different-problem' }));
-    expect(await reflectOne(NOW)).toBe(true);
-    expect(memoryData(NOW)).toMatchObject({
-      reflection: { tokens: 9216, limit: 9216, yellow: true },
-      queued: 1,
-    });
-    expect(await reflectOne(NOW)).toBe(false);
-    expect(await reflectOne(NOW + 86400000)).toBe(true);
-    expect(memoryData(NOW + 86400000).queued).toBe(0);
-    expect(reflectionUsage(JSON.stringify(replay['codex-usage']))).toBe(9216);
-    expect(reflectionUsage('{"type":"item.completed","item":{"text":"never kept"}}')).toBeNull();
-    expect(readFileSync(process.env.FAKE_MEMORY_STARTED!, 'utf8').trim().split('\n')).toHaveLength(
-      2
-    );
-    const jobs = readdirSync(join(sa, 'jobs')).map(f =>
-      JSON.parse(readFileSync(join(sa, 'jobs', f), 'utf8'))
-    );
-    expect(jobs.every(j => j.role === 'general' && j.kind === 'other' && j.state === 'done')).toBe(
-      true
-    );
+    const e = episode({ id: 'queued' });
+    saveEpisode(e);
+    memoryWrite(() => ({ lessons: [], day: memoryData(NOW).reflection.day, tokens: 9216 }));
+    const harness = reflectionHarness(e);
+    expect(reflectOne(NOW, harness.query)).toBe(false);
+    expect(reflectOne(NOW + 86400000, harness.query)).toBe(true);
+    expect(harness.launches()).toBe(1);
   });
-  test('repeat problems deduplicate and ordinary first success requires no reflection', async () => {
-    fake();
-    saveEpisode(episode({ id: 'a' }));
-    saveEpisode(episode({ id: 'b' }));
-    saveEpisode(
-      episode({
-        id: 'ordinary',
-        status: 'completed',
-        signature: 'success',
-        reasons: [],
-        findings: [],
-        asks: [],
-        dispositions: [],
-        p50_ratio: null,
-        signals: zeros,
-      })
-    );
-    expect(memoryData(NOW).queued).toBe(1);
-    expect(await reflectOne(NOW)).toBe(true);
-    expect(await reflectOne(NOW)).toBe(false);
-    expect(memoryData(NOW).queued).toBe(0);
-    expect(readFileSync(process.env.FAKE_MEMORY_STARTED!, 'utf8').trim().split('\n')).toHaveLength(
-      1
-    );
-  });
-  for (const [mode, value, state] of [
-    ['FAKE_MEMORY_EXIT', '1', 'failed'],
-    ['FAKE_MEMORY_EXIT', '143', 'interrupted'],
-    ['FAKE_MEMORY_EMPTY', '1', 'rejected'],
-    ['FAKE_MEMORY_UNKNOWN_USAGE', '1', 'produced'],
-  ] as const)
-    test(`reflection ${state} is an explicit receipt with no automatic retry`, async () => {
-      fake();
-      process.env[mode] = value;
-      saveEpisode(episode());
-      expect(await reflectOne(NOW)).toBe(true);
-      const entries = memoryState().entries;
-      expect(entries.filter(e => e.reflection).map(e => e.reflection!.state)).toEqual([
-        'queued',
-        'running',
-        state,
-      ]);
-      const last = entries.at(-1)!;
-      expect(last.reflection).toMatchObject({ state, usage: state === 'rejected' ? 9216 : null });
-      if (state === 'failed' || state === 'interrupted') {
-        expect(Date.parse(last.reflection!.at!)).not.toBeNaN();
-        expect(last.reflection!.failure).toEqual({ kind: 'exit_code', exit_code: Number(value) });
-      }
-      expect(memoryData(NOW).reflection.tokens).toBe(9216);
-      if (state === 'failed' || state === 'interrupted') expect(last.reflected).toBeUndefined();
-      if (state !== 'produced') expect(memoryState().lessons).toEqual([]);
-      expect(await reflectOne(NOW)).toBe(false);
-      expect(reflectionQueue(episodes(), entries, NOW)).toEqual([]);
-    });
-  test('oversized reflection output is discarded but its actual usage is charged', async () => {
-    fake();
-    process.env.FAKE_MEMORY_OVERSIZE = '1';
-    saveEpisode(episode());
-    expect(await reflectOne(NOW)).toBe(true);
-    expect(memoryState().lessons).toHaveLength(0);
-    expect(memoryData(NOW)).toMatchObject({ reflection: { tokens: 9216 }, queued: 0 });
-    expect(memoryData(NOW).recent[0].result).toContain('不合格');
-  });
-  test('the worker lock prevents a concurrent reflection', async () => {
-    fake();
-    saveEpisode(episode());
-    const held = lock(join(sa, 'memory/reflect.lock'));
-    expect(held.ok).toBe(true);
-    try {
-      expect(await reflectOne(NOW)).toBe(false);
-      expect(existsSync(process.env.FAKE_MEMORY_STARTED!)).toBe(false);
-    } finally {
-      if (held.ok) held.release();
-    }
+  test('ordinary merges do not deduplicate by signature; abnormal episodes do', () => {
+    const complete = (id: string) => episode({ id, status: 'completed', signature: 'same' });
+    const abnormal = (id: string) => episode({ id, status: 'failed', signature: 'bad' });
+    const all = [complete('a'), complete('b'), abnormal('x'), abnormal('y')];
+    expect(reflectionQueue(all, [], NOW).map(e => e.id)).toEqual(['a', 'b', 'x']);
+    memoryWrite(() => ({
+      lessons: [],
+      reflected: 'a',
+      reflection: { episode: 'a', state: 'rejected' },
+    }));
+    expect(reflectionQueue(all, memoryState().entries, NOW).map(e => e.id)).toEqual(['b', 'x']);
   });
   test('five lessons maximum, two trials maximum, Chinese byte estimate <=600', () => {
     const stable = Array.from({ length: 6 }, (_, i) => lesson(`s${i}`, { status: 'stable' }));
@@ -614,7 +536,6 @@ describe('EV1 budgets and deterministic matching', () => {
   });
   test('memory off means no injection or reflection, and data does not change engine hash', async () => {
     fakeValidation();
-    fake();
     seed(lesson('x'));
     saveEpisode(episode());
     const before = engineHash();
@@ -675,7 +596,6 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(Buffer.byteLength(reflectionInput(episode()))).toBeLessThanOrEqual(8000);
   });
   test('private and iCloud projects only triage, never invoke reflection', async () => {
-    fake();
     process.env.HOME = root;
     const cloud = join(root, 'Library/CloudStorage/iClOuD Drive');
     mkdirSync(cloud, { recursive: true });
@@ -693,7 +613,6 @@ describe('EV1 lifecycle, privacy and priors', () => {
       saveEpisode(episode({ id: `private-${p.includes('_private') ? 'a' : 'b'}`, project: p }));
     }
     expect(await reflectOne(NOW)).toBe(false);
-    expect(existsSync(process.env.FAKE_MEMORY_STARTED!)).toBe(false);
     expect(memoryData(NOW).queued).toBe(0);
   });
   test('each trigger and five categories use evidence and registered policy', () => {
@@ -1420,8 +1339,6 @@ describe('FIXD review regressions', () => {
     15_000
   );
   test('EV-R1-01 nested finding evidence and command/log bodies never cross reflection boundary', async () => {
-    fake();
-    process.env.FAKE_MEMORY_INPUT = join(root, 'reflect-input');
     writeFileSync(
       join(artifactsOf(raw), 'gate-m1-r1.review.json'),
       JSON.stringify({
@@ -1447,8 +1364,14 @@ describe('FIXD review regressions', () => {
     // Old episodes can still contain evidence text; the boundary must exclude it independently.
     e.findings.push('LEGACY-SECRET');
     saveEpisode(e);
-    expect(await reflectOne(NOW)).toBe(true);
-    const input = readFileSync(process.env.FAKE_MEMORY_INPUT!, 'utf8');
+    let input = '';
+    expect(
+      reflectOne(NOW, args => {
+        if (args[1] === 'runs') return { runs: [] };
+        input = args[3] ?? '';
+        return { id: 'reflect-run' };
+      })
+    ).toBe(true);
     for (const secret of [
       'CLIENT-FILE',
       'CUSTOMER-SECRET',
@@ -1619,20 +1542,6 @@ describe('FIXD review regressions', () => {
     ).toBe(false);
     expect(Object.values(memoryData(NOW).deliveries)).toEqual(
       Array(5).fill({ status: 'completed', packages: 1, tokens: 110 })
-    );
-  });
-  test('EV-R1-07 over-reservation usage is charged and stops the next call; hard ceiling remains debt', async () => {
-    fake();
-    process.env.FAKE_MEMORY_TOKENS = '10000';
-    mkdirSync(join(sa, 'memory'));
-    writeFileSync(join(sa, 'memory/config.json'), JSON.stringify({ daily_tokens: 9216 }));
-    saveEpisode(episode({ id: 'overspend' }));
-    saveEpisode(episode({ id: 'queued' }));
-    expect(await reflectOne(NOW)).toBe(true);
-    expect(memoryData(NOW).reflection.tokens).toBe(11024);
-    expect(await reflectOne(NOW)).toBe(false);
-    expect(readFileSync(process.env.FAKE_MEMORY_STARTED!, 'utf8').trim().split('\n')).toHaveLength(
-      1
     );
   });
 });
