@@ -29,6 +29,7 @@ import {
   deliveryDecision,
   readAttempt,
   CHECK_AUX_TIMEOUT_MS,
+  projectEnvironment,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
 import {
@@ -3284,6 +3285,27 @@ describe('sa-check script', () => {
       cache = join(art, 'accept-cache');
     const cmd = `echo x >> ${counter}; test "$SA_REVIEW_MODE" = good && bun -e 'if (Object.keys(process.env).some(k => k.startsWith("INPUTS_") || ["ARCHON_NODE_EXECUTION", "TYPED_ARTIFACTS_FILE", "STATE_DIR", "LOG_DIR", "BASE_BRANCH", "USER_MESSAGE", "CONTEXT"].includes(k))) process.exit(1)'`;
     const check = { cmd, timeout_s: 5, cache: true };
+    const claudeEnv = {
+      CLAUDECODE: '1',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_USE_VERTEX: '1',
+      PATH: '/bin',
+    };
+    const owner = Bun.spawnSync(
+      [
+        process.execPath,
+        '--no-env-file',
+        '-e',
+        `import { stripCwdEnv } from ${JSON.stringify(join(import.meta.dir, '../../packages/paths/src/strip-cwd-env.ts'))}; stripCwdEnv(${JSON.stringify(root)}); console.log(JSON.stringify(process.env));`,
+      ],
+      { env: claudeEnv, stdout: 'pipe', stderr: 'pipe' }
+    );
+    expect(owner.exitCode).toBe(0);
+    const ownerEnv = JSON.parse(owner.stdout.toString()) as NodeJS.ProcessEnv;
+    for (const key of Object.keys(claudeEnv))
+      expect(projectEnvironment(claudeEnv)[key]).toBe(ownerEnv[key]);
     writeFileSync(p, JSON.stringify({ packages: [{ id: 'a', accept: [check] }] }));
     const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
     mkdirSync(cache, { recursive: true });

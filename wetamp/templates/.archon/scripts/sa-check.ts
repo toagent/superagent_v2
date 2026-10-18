@@ -319,19 +319,29 @@ export const NODE_CONTRACT_ENV: readonly string[] = [
   'ARCHON_NODE_EXECUTION',
 ];
 // Shell/session and engine invocation metadata is not part of the project command contract.
+// Keep this auth exception aligned with packages/paths/src/strip-cwd-env.ts.
+const CLAUDE_CODE_AUTH_ENV = new Set([
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+]);
 const RUNTIME_ENVIRONMENT = [
   /^_$/,
   /^(?:PWD|OLDPWD|SHLVL|TERM.*|COLORTERM|TTY|TMUX.*|ZELLIJ.*|ITERM_.*|SSH_TTY|LC_TERMINAL.*)$/,
   /^(?:ARCHON|SUPERAGENT)_(?:RUN|SESSION|NODE|WORKFLOW|DETACHED)(?:_.*)?$/,
-  /^(?:CLAUDE_CODE(?:_.*)?|CLAUDE_PID|AI_AGENT|CODEX_COMPANION(?:_.*)?)$/,
+  /^(?:CLAUDE_PID|AI_AGENT|CODEX_COMPANION(?:_.*)?)$/,
 ];
+const runtimeEnvironment = (key: string): boolean =>
+  RUNTIME_ENVIRONMENT.some(pattern => pattern.test(key)) ||
+  key === 'CLAUDECODE' ||
+  (key.startsWith('CLAUDE_CODE_') && !CLAUDE_CODE_AUTH_ENV.has(key));
 export const projectEnvironment = (values: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(
     Object.entries(values).filter(
       ([k]) =>
         !k.startsWith('INPUTS_') &&
         !NODE_CONTRACT_ENV.includes(k) &&
-        !RUNTIME_ENVIRONMENT.some(pattern => pattern.test(k)) &&
+        !runtimeEnvironment(k) &&
         !['SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k)
     )
   ),
