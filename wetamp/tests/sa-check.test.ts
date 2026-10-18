@@ -600,7 +600,7 @@ describe('NONCONVERGENCE delivery gate', () => {
     };
     expect(gate([check, changed])).toMatchObject({ code: 0, out: { verdict: 'fix' } });
   });
-  test('verified requirements and an empty ledger outrank a repeated signature', () => {
+  test('a current PASS review lets verified requirements outrank an unchanged diff', () => {
     const command = { cmd: 'true', timeout_s: 5 };
     const check: Accept = {
       ok: true,
@@ -621,7 +621,7 @@ describe('NONCONVERGENCE delivery gate', () => {
     };
     expect(
       decide({
-        reviews: [R('PASS'), null],
+        reviews: [R('PASS'), R('PASS')],
         rechecks: [check, check],
         risk: 'G2',
         qualifiedReview: true,
@@ -630,6 +630,10 @@ describe('NONCONVERGENCE delivery gate', () => {
       verdict: 'pass',
       decision: { kind: 'advance', reason: null, requirements: { status: 'verified' } },
       ledger: { blocking: [], debt: [] },
+    });
+    expect(decide({ reviews: [null, null], rechecks: [check, check], risk: 'G2' })).toMatchObject({
+      verdict: 'escalate',
+      decision: { kind: 'block' },
     });
   });
   test('unchanged diff stops unknown diagnosis even after an empty commit', () => {

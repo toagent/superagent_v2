@@ -530,10 +530,14 @@ export function buildWorkflow(
         )
       );
       const reviewAttempt = `attempt-review-${t}`;
-      const reviewWhen =
+      const reviewEligible =
         `$diff-${t}.output.disposition == 'advance'` +
-        (r > 1 ? ` && $diff-${t}.output.same != 'true'` : '') +
         (m.review ? '' : ` && $diff-${t}.output.risk == 'G2'`);
+      const reviewWhen =
+        r === 1
+          ? reviewEligible
+          : `${reviewEligible} && $diff-${t}.output.same != 'true' || ` +
+            `${reviewEligible} && $gate-${before}.output.reviewed_head == ''`;
       nodes.push({
         id: reviewAttempt,
         always_run: true,
@@ -544,7 +548,7 @@ export function buildWorkflow(
       });
       nodes.push({
         id: `review-${t}`,
-        // 验收未 advance 不烧评审调用；修复无变化（same）同样跳过，gate 直接 escalate
+        // A same-diff round may skip only after an earlier review; otherwise G2 never gets reviewed.
         when: reviewWhen,
         ...(fake
           ? { bash: fakeReview(r) }

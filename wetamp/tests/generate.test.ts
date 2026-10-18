@@ -1003,15 +1003,36 @@ describe('buildWorkflow', () => {
       command: 'sa-review-delta',
     });
   });
-  test('unchanged fix diff: diff-rN compares with the previous hash, review is skipped, gate still runs', () => {
+  test('unchanged fix diff skips review only when an earlier review exists', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('diff-m1-r1')?.with?.prev).toBeUndefined();
     expect(n('diff-m1-r2')?.with?.prev).toBe('$diff-m1-r1.output.diff_hash');
     expect(n('review-m1-r1')?.when).toBe("$diff-m1-r1.output.disposition == 'advance'");
     expect(n('review-m1-r2')?.when).toBe(
-      "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'"
+      "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || " +
+        "$diff-m1-r2.output.disposition == 'advance' && $gate-m1-r1.output.reviewed_head == ''"
     );
+    const when = n('review-m1-r2')!.when!;
+    const outputs = new Map([
+      [
+        'diff-m1-r2',
+        {
+          state: 'completed' as const,
+          output: JSON.stringify({ disposition: 'advance', same: true }),
+        },
+      ],
+      [
+        'gate-m1-r1',
+        { state: 'completed' as const, output: JSON.stringify({ reviewed_head: '' }) },
+      ],
+    ]);
+    expect(evaluateCondition(when, outputs)).toMatchObject({ parsed: true, result: true });
+    outputs.set('gate-m1-r1', {
+      state: 'completed',
+      output: JSON.stringify({ reviewed_head: 'reviewed-candidate' }),
+    });
+    expect(evaluateCondition(when, outputs)).toMatchObject({ parsed: true, result: false });
     expect(n('gate-m1-r2')).toMatchObject({
       depends_on: ['diff-m1-r2', 'review-m1-r2'],
       trigger_rule: 'none_failed_min_one_success',

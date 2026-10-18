@@ -1160,7 +1160,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m1-r2
     always_run: true
-    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $gate-m1-r1.output.reviewed_head == ''
     depends_on:
       - diff-m1-r2
     script: sa-context
@@ -1178,7 +1178,7 @@ nodes:
       required:
         - attempt
   - id: review-m1-r2
-    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $gate-m1-r1.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r2
@@ -1614,7 +1614,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m1-r3
     always_run: true
-    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $gate-m1-r2.output.reviewed_head == ''
     depends_on:
       - diff-m1-r3
     script: sa-context
@@ -1632,7 +1632,7 @@ nodes:
       required:
         - attempt
   - id: review-m1-r3
-    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true'
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $gate-m1-r2.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r3
@@ -2072,7 +2072,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m1-r4
     always_run: true
-    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true'
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $gate-m1-r3.output.reviewed_head == ''
     depends_on:
       - diff-m1-r4
     script: sa-context
@@ -2090,7 +2090,7 @@ nodes:
       required:
         - attempt
   - id: review-m1-r4
-    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true'
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $gate-m1-r3.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r4
@@ -2534,7 +2534,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m1-r5
     always_run: true
-    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true'
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $gate-m1-r4.output.reviewed_head == ''
     depends_on:
       - diff-m1-r5
     script: sa-context
@@ -2552,7 +2552,7 @@ nodes:
       required:
         - attempt
   - id: review-m1-r5
-    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true'
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $gate-m1-r4.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r5
@@ -3000,7 +3000,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m1-r6
     always_run: true
-    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true'
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $gate-m1-r5.output.reviewed_head == ''
     depends_on:
       - diff-m1-r6
     script: sa-context
@@ -3018,7 +3018,7 @@ nodes:
       required:
         - attempt
   - id: review-m1-r6
-    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true'
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $gate-m1-r5.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r6
@@ -4312,7 +4312,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m2-r2
     always_run: true
-    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $gate-m2-r1.output.reviewed_head == ''
     depends_on:
       - diff-m2-r2
     script: sa-context
@@ -4330,7 +4330,7 @@ nodes:
       required:
         - attempt
   - id: review-m2-r2
-    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true'
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $gate-m2-r1.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r2
@@ -4765,7 +4765,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m2-r3
     always_run: true
-    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $gate-m2-r2.output.reviewed_head == ''
     depends_on:
       - diff-m2-r3
     script: sa-context
@@ -4783,7 +4783,7 @@ nodes:
       required:
         - attempt
   - id: review-m2-r3
-    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true'
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $gate-m2-r2.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r3
@@ -5222,7 +5222,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m2-r4
     always_run: true
-    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true'
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $gate-m2-r3.output.reviewed_head == ''
     depends_on:
       - diff-m2-r4
     script: sa-context
@@ -5240,7 +5240,7 @@ nodes:
       required:
         - attempt
   - id: review-m2-r4
-    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true'
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $gate-m2-r3.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r4
@@ -5683,7 +5683,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m2-r5
     always_run: true
-    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true'
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $gate-m2-r4.output.reviewed_head == ''
     depends_on:
       - diff-m2-r5
     script: sa-context
@@ -5701,7 +5701,7 @@ nodes:
       required:
         - attempt
   - id: review-m2-r5
-    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true'
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $gate-m2-r4.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r5
@@ -6148,7 +6148,7 @@ nodes:
     timeout: 195000
   - id: attempt-review-m2-r6
     always_run: true
-    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true'
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $gate-m2-r5.output.reviewed_head == ''
     depends_on:
       - diff-m2-r6
     script: sa-context
@@ -6166,7 +6166,7 @@ nodes:
       required:
         - attempt
   - id: review-m2-r6
-    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true'
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $gate-m2-r5.output.reviewed_head == ''
     bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r6
