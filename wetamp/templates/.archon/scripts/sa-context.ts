@@ -329,22 +329,25 @@ if (import.meta.main) {
             | { path: string; attempt?: number }
             | 'unknown')
         : 'unknown';
-      // A gate completes only the attempt whose frozen context it consumed. Approval resumes
-      // replay that value; a later attempt must validate or rebuild its own context.
+      const context =
+        pointer === 'unknown' ? 'unknown' : (read(pointer.path) as RoleContext | 'unknown');
+      const completedGate = gate
+        ? (read(join(artifacts, `${gate}.json`)) as { reviewed_head?: string } | 'unknown')
+        : 'unknown';
+      const head = git.stdout.toString().trim();
+      // Approval resumes may reuse a gate only while its frozen candidate is still HEAD.
       const completedReview =
         review &&
         gate &&
         pointer !== 'unknown' &&
         pointer.attempt === Number(attempt) &&
-        existsSync(join(artifacts, `${gate}.json`));
+        context !== 'unknown' &&
+        completedGate !== 'unknown' &&
+        completedGate.reviewed_head === context.refs.head &&
+        context.refs.head === head;
       if (review && !completedReview) {
         if (pointer === 'unknown') throw new Error('context: missing prepared review');
-        const context = read(pointer.path) as RoleContext | 'unknown';
-        if (
-          context === 'unknown' ||
-          context.node !== review ||
-          context.refs.head !== git.stdout.toString().trim()
-        )
+        if (context === 'unknown' || context.node !== review || context.refs.head !== head)
           throw new Error('context: stale review refs');
         if (context.carry_over === 'unknown') throw new Error('context: missing carry-over');
         const environment = environmentIdentity(projectEnvironment(process.env));

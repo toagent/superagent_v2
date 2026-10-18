@@ -332,10 +332,15 @@ test('completed review context replay keeps stale refs fail-closed only for unfi
     join(artifacts, '.archon/scripts/policy-attempts.ts')
   );
   fs.writeFileSync(counter, '0');
+  const reviewedHead = sh('git rev-parse HEAD', repo).trim();
   const frozen = join(artifacts, 'frozen.json');
   fs.writeFileSync(
     frozen,
-    JSON.stringify({ node: 'review-m1-r1', refs: { head: 'stale' }, carry_over: {} })
+    JSON.stringify({
+      node: 'review-m1-r1',
+      refs: { head: reviewedHead },
+      carry_over: 'unknown',
+    })
   );
   fs.writeFileSync(
     join(artifacts, 'review-m1-r1.context.json'),
@@ -346,9 +351,12 @@ test('completed review context replay keeps stale refs fail-closed only for unfi
     with: { counter, gen, review: 'review-m1-r1', gate: 'gate-m1-r1' },
   };
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(1);
-  fs.writeFileSync(join(artifacts, 'gate-m1-r1.json'), '{}');
+  fs.writeFileSync(
+    join(artifacts, 'gate-m1-r1.json'),
+    JSON.stringify({ reviewed_head: reviewedHead })
+  );
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(0);
-  fs.writeFileSync(counter, '1');
+  sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm drift', repo);
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(1);
 });
 
