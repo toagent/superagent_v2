@@ -179,7 +179,7 @@
           },
           "draft": {
             "enum": ["soldier", "general"],
-            "description": "Initial author: soldier drafts for general review; general writes directly. Defaults from size and risk"
+            "description": "Initial author: general by default; set soldier explicitly for a non-G2 package to draft for general review"
           },
           "signoff": {
             "enum": ["auto", "human"],

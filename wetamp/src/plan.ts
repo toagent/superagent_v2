@@ -11,8 +11,9 @@ export type Plan = Omit<PlanInput, 'budget'> & { budget: NonNullable<PlanInput['
 export type Pkg = Plan['packages'][number];
 export type Requirement = NonNullable<Pkg['requirements']>[number];
 export type Check = Pkg['accept'][number];
+/** Soldier drafting is opt-in; G2 always routes directly to a general. */
 export const draftFor = (p: Pkg): 'soldier' | 'general' =>
-  p.risk === 'G2' ? 'general' : (p.draft ?? (p.size === 'L' ? 'general' : 'soldier'));
+  p.risk === 'G2' ? 'general' : (p.draft ?? 'general');
 /** Resolved capability defaults; the wire schema keeps every override optional. */
 export type Caps = Required<NonNullable<Plan['caps']>>;
 

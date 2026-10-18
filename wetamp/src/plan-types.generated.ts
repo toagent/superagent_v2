@@ -82,7 +82,7 @@ export interface Plan {
     risk: 'G0' | 'G1' | 'G2';
     size: 'S' | 'M' | 'L';
     /**
-     * Initial author: soldier drafts for general review; general writes directly. Defaults from size and risk
+     * Initial author: general by default; set soldier explicitly for a non-G2 package to draft for general review
      */
     draft?: 'soldier' | 'general';
     /**

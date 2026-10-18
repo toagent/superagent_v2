@@ -16,7 +16,7 @@ import * as coord from '../src/coord';
 import * as archon from '../src/archon';
 import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
-import { fixturePlan, gitRepo, fixtureEnv, sh, tmp } from './helpers';
+import { fixturePlan, fixtureTiers, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import { CHECK_AUX_BUDGET_MS, reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
@@ -578,9 +578,11 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 
 describe('buildWorkflow', () => {
   test('soldier branch records use, stashes failed leftovers, and fails closed on reset error', () => {
-    const tiers = loadTiers();
+    const tiers = fixtureTiers();
+    const plan = structuredClone(fixture);
+    plan.packages[0].draft = 'soldier';
     const nodes = nodesOf(
-      buildWorkflow(fixture, milestones(fixture), 'soldier', '/GEN', false, NOW, tiers)
+      buildWorkflow(plan, milestones(plan), 'soldier', '/GEN', false, NOW, tiers)
     );
     expect(nodes.find(n => n.id === 'soldier-core')).toMatchObject({
       command: 'sa-soldier',
@@ -650,13 +652,13 @@ describe('buildWorkflow', () => {
       )
     ).toThrow("references node 'soldier-reset-core', but it failed");
     expect(
-      nodesOf(buildWorkflow(fixture, milestones(fixture), 'fake', '/GEN', true, NOW, tiers)).some(
-        n => n.id.startsWith('soldier-')
+      nodesOf(buildWorkflow(plan, milestones(plan), 'fake', '/GEN', true, NOW, tiers)).some(n =>
+        n.id.startsWith('soldier-')
       )
     ).toBe(false);
     expect(
       nodesOf(
-        buildWorkflow(fixture, milestones(fixture), 'carry', '/GEN', false, NOW, tiers, {
+        buildWorkflow(plan, milestones(plan), 'carry', '/GEN', false, NOW, tiers, {
           from: 'old',
           packages: ['core'],
         })
@@ -668,7 +670,7 @@ describe('buildWorkflow', () => {
     );
   });
   test('draft routing emits soldiers only for eligible packages', () => {
-    const tiers = loadTiers();
+    const tiers = fixtureTiers();
     const plan = structuredClone(fixture) as Plan;
     const core = plan.packages[0],
       api = plan.packages[1];
@@ -691,7 +693,6 @@ describe('buildWorkflow', () => {
     );
     expect(drafted.filter(n => /^soldier-(core|api)$/.test(n.id)).map(n => n.id)).toEqual([
       'soldier-core',
-      'soldier-api',
     ]);
     expect(
       drafted.some(
@@ -1755,7 +1756,6 @@ function checkGeneratedRepo(): void {
     'sa-repair',
     'sa-review',
     'sa-review-delta',
-    'sa-soldier',
   ]);
   for (const n of ai) {
     const prompt = readFileSync(join(g.dir, '.archon', 'commands', `${n.command}.md`), 'utf8');
@@ -2003,6 +2003,7 @@ test('role efficiency handoff resolves prior work without model calls or skipped
 });
 
 test('role efficiency preserves ordinary, explicit review, G2 and strict gates and routed effort', () => {
+  const tiers = fixtureTiers();
   for (const [risk, mode, review, needed] of [
     ['G1', undefined, false, false],
     ['G1', undefined, true, true],
@@ -2013,7 +2014,7 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
     p.packages = [{ ...p.packages[0], risk, review }];
     if (mode) p.mode = mode;
     const ms = milestones(p);
-    const nodes = nodesOf(buildWorkflow(p, ms, 'roles', '/GEN', false, NOW));
+    const nodes = nodesOf(buildWorkflow(p, ms, 'roles', '/GEN', false, NOW, tiers));
     const condition = nodes.find(n => n.id === 'review-m1-r1')!.when!;
     expect(
       evaluateCondition(
@@ -2027,7 +2028,6 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
       ).result
     ).toBe(needed);
     expect(nodes.filter(n => n.command).map(n => n.command)).toEqual([
-      ...(risk === 'G2' ? [] : ['sa-soldier']),
       'sa-code',
       'sa-repair',
       'sa-review',

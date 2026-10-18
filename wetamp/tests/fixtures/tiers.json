@@ -28,6 +28,10 @@
     "coder": {
       "models": ["gpt-6.1-sol", "gpt-6-sol", "claude-opus-5"]
     },
+    "soldier": {
+      "provider": "codex",
+      "models": ["gpt-5.6-sol"]
+    },
     "reviewer": {
       "by_console": {
         "claude": ["gpt-6-astra", "claude-opus-5-5"],

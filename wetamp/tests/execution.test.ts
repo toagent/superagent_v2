@@ -12,7 +12,7 @@ import {
 import { effortFor, loadTiers } from '../src/config';
 import type { Plan } from '../src/plan';
 import { reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
-import { tmp } from './helpers';
+import { fixtureTiers, tmp } from './helpers';
 import { executePolicy } from '../src/policy-executor';
 
 const tiers = loadTiers();
@@ -43,20 +43,21 @@ test('frozen descriptors and both entry points share risk/round effort and nativ
 });
 
 test('soldier and general dispatch pools remain isolated during vendor failover', () => {
-  const configured = tiers.routing.soldier?.models ?? [];
+  const soldierTiers = fixtureTiers();
+  const configured = soldierTiers.routing.soldier?.models ?? [];
   const soldier = executionRoute(
-    tiers,
+    soldierTiers,
     'codex',
     'auto',
-    describeExecution(tiers, 'soldier'),
+    describeExecution(soldierTiers, 'soldier'),
     [],
     true
   ).candidates;
   const general = executionRoute(
-    tiers,
+    soldierTiers,
     'codex',
     'auto',
-    describeExecution(tiers, 'code'),
+    describeExecution(soldierTiers, 'code'),
     [],
     true
   ).candidates;
@@ -64,12 +65,17 @@ test('soldier and general dispatch pools remain isolated during vendor failover'
   expect(soldier.map(candidate => candidate.model)).toEqual(configured);
   expect(soldier.every(candidate => candidate.provider === 'codex')).toBe(true);
   expect(
-    executionRoute(tiers, 'claude', 'single:claude', describeExecution(tiers, 'soldier')).candidates
+    executionRoute(
+      soldierTiers,
+      'claude',
+      'single:claude',
+      describeExecution(soldierTiers, 'soldier')
+    ).candidates
   ).toEqual(soldier);
   expect(general.every(candidate => !configured.includes(candidate.model))).toBe(true);
-  expect(soldier.every(candidate => !tiers.routing.coder.models.includes(candidate.model))).toBe(
-    true
-  );
+  expect(
+    soldier.every(candidate => !soldierTiers.routing.coder.models.includes(candidate.model))
+  ).toBe(true);
 });
 
 test('new runs read persisted identities; only missing tables use the historical adapter', () => {

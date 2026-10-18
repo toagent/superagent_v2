@@ -320,7 +320,7 @@ describe('milestones', () => {
   });
 });
 
-test('draft routing defaults by risk and size, honors explicit choice, and rejects G2 soldier', () => {
+test('draft routing defaults to general, honors explicit choice, and rejects G2 soldier', () => {
   const route = (risk: 'G0' | 'G1' | 'G2', size: 'S' | 'M' | 'L', draft?: 'soldier' | 'general') =>
     draftFor({ risk, size, ...(draft ? { draft } : {}) } as Plan['packages'][number]);
   expect([
@@ -330,7 +330,7 @@ test('draft routing defaults by risk and size, honors explicit choice, and rejec
     route('G1', 'L', 'soldier'),
     route('G1', 'S', 'general'),
     route('G2', 'S'),
-  ]).toEqual(['soldier', 'soldier', 'general', 'soldier', 'general', 'general']);
+  ]).toEqual(['general', 'general', 'general', 'soldier', 'general', 'general']);
   const invalid = setup(p => Object.assign(pkgs(p)[0], { risk: 'G2', draft: 'soldier' }));
   expect(() => loadPlan(invalid.path, [invalid.root])).toThrow('draft soldier is forbidden for G2');
 });
