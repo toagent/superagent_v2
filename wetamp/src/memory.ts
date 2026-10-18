@@ -335,7 +335,8 @@ function evidenceRows(
   return files(art)
     .filter(
       f =>
-        /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)
+        /^(verify-|settle-|gate-|environment\.json$)/.test(f) &&
+        !/\.(coder|fingerprint|ledger)\.json$/.test(f)
     )
     .flatMap(file => {
       const raw = memoryJson<unknown>(join(art, file), null, l);

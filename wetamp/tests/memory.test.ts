@@ -52,7 +52,7 @@ import { roleCommandArgs } from '@archon/providers/launch-policy';
 import { artifactsOf, main, type Ledger } from '../src/cli';
 import { lock, type RunView } from '../src/archon';
 import { engineHash, generate } from '../src/generate';
-import { install, loadTiers } from '../src/config';
+import { install, loadTiers, snapshotPolicy } from '../src/config';
 import { type Plan } from '../src/plan';
 import { inspectBase } from '../src/preflight';
 import { cockpitSignals, type Asks } from '../src/cockpit-signals';
@@ -141,6 +141,7 @@ beforeEach(() => {
   };
   mkdirSync(ledger.gen_dir, { recursive: true });
   writeFileSync(join(ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(ledger.gen_dir, 'policy.json'), JSON.stringify(snapshotPolicy(loadTiers())));
   raw = {
     id: ledger.archon_run_id,
     status: 'failed',
@@ -1256,6 +1257,7 @@ describe('FIXD review regressions', () => {
             INPUTS_KIND: kind,
             INPUTS_TAG: tag,
             INPUTS_PLAN: join(ledger.gen_dir, 'plan.json'),
+            INPUTS_POLICY: join(ledger.gen_dir, 'policy.json'),
             INPUTS_PKGS: 'core',
             INPUTS_RISK: 'G1',
             INPUTS_ARCHON: '',
@@ -1267,7 +1269,7 @@ describe('FIXD review regressions', () => {
           stdout: 'pipe',
           stderr: 'pipe',
         });
-        expect(child.exitCode).toBe(exitCode);
+        expect(child.exitCode, child.stderr.toString()).toBe(exitCode);
         return readFileSync(join(artifactsOf(raw), `${tag}.json`), 'utf8');
       };
       const accept = runCheck('accept', 'verify-core');
@@ -1287,7 +1289,7 @@ describe('FIXD review regressions', () => {
         'settle',
         'settle-core',
         {
-          INPUTS_FIRST: accept,
+          INPUTS_FIRST: success ? 'advance' : 'repair',
           INPUTS_REPAIRED: success ? 'null' : JSON.stringify({ status: 'done', error_class: null }),
         },
         success ? 0 : 1
@@ -1416,6 +1418,7 @@ describe('FIXD review regressions', () => {
         INPUTS_RISK: 'G1',
         INPUTS_TAG: 'gate-m1-r1',
         INPUTS_PLAN: join(ledger.gen_dir, 'plan.json'),
+        INPUTS_POLICY: join(ledger.gen_dir, 'policy.json'),
         INPUTS_MILESTONE: 'm1',
       },
       stdout: 'pipe',
