@@ -3306,6 +3306,11 @@ describe('sa-check script', () => {
         WORKFLOW_ID: 'changed',
         SA_COORD_ADMISSION: 'changed',
         SUPERAGENT_ROLE: 'changed',
+        PWD: '/changed',
+        SHLVL: '99',
+        TERM_SESSION_ID: 'changed',
+        ARCHON_RUN_ID: 'changed',
+        SUPERAGENT_SESSION_ID: 'changed',
         ARCHON_NODE_EXECUTION: 'changed',
         TYPED_ARTIFACTS_FILE: 'changed',
         STATE_DIR: 'changed',
@@ -3316,8 +3321,12 @@ describe('sa-check script', () => {
       }).out
     ).toMatchObject({ ok: true });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
-    expect(go('changed', 'worse').out).toMatchObject({ ok: false });
+    expect(go('path-changed', 'good', { PATH: `${process.env.PATH}:/changed` }).out).toMatchObject({
+      ok: true,
+    });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
+    expect(go('changed', 'worse').out).toMatchObject({ ok: false });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
     const keyPath = join(cache, '.key'),
       key = readFileSync(keyPath);
     expect(key.length).toBe(32);
@@ -3335,10 +3344,10 @@ describe('sa-check script', () => {
     unlinkSync(keyPath);
     expect(go('lost-context').out).toMatchObject({ ok: true });
     expect(readFileSync(keyPath).equals(key)).toBe(false);
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
   }, 10_000);
   test('U5: hmac-v1 cache entries cannot satisfy the new identity version', () => {
     const root = tmp(),

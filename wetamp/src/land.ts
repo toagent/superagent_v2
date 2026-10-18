@@ -154,7 +154,7 @@ export const integrationLockTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
   20 * 60_000;
 // prettier-ignore
-export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan }): DeliveryOutcome | undefined {
+export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan; cacheReady?: (cwd: string) => boolean }): DeliveryOutcome | undefined {
   if ((!['completed', 'running'].includes(run.status) || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed')) ||
     (run.status !== 'completed' && (!context?.delivery || !run.nodes.some(n => n.nodeId === 'deliver' && n.state === 'running') || run.nodes.some(n => n.nodeId !== 'deliver' && !['completed', 'skipped'].includes(n.state)))))
     throw new LandError('not_ready', 'land: run is not ready for integration');
@@ -274,6 +274,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       finally { appendFileSync(log, `# land stage=${stage} attempt=${String(attempt)} ms=${String(performance.now() - start)}\n`); }
     };
     timed('environment', () => {
+    if (context?.cacheReady?.(candidate)) return;
     prepareSubmodules(candidate, [...new Set([repo, ...(run.working_path ? [run.working_path] : [])])]);
     const script = `import { prepareEnvironment } from ${JSON.stringify(join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts'))}; const { plan, log } = await Bun.stdin.json(); const out = await prepareEnvironment(process.cwd(), plan, log, true); console.log(JSON.stringify(out)); process.exitCode = out.ok ? 0 : 1;`;
     const prepared = Bun.spawnSync([process.execPath, '-e', script], { cwd: candidate, env: { ...process.env, INPUTS_KIND: 'env' }, stdin: Buffer.from(JSON.stringify({ plan: context?.plan ?? { packages: [] }, log })), stdout: 'pipe', stderr: 'pipe' });
@@ -328,7 +329,8 @@ export function acceptRun(
   pkg: string | undefined,
   cwd?: string,
   cacheArt?: string,
-  report = true
+  report = true,
+  cacheOnly = false
 ): number {
   const { artifactsOf, decisionOf, evidenceJson, planOf, print, readJson } = operator();
   const run = archonJson(
@@ -373,7 +375,9 @@ export function acceptRun(
     const gate = evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.json`);
     // prettier-ignore
     const p = Bun.spawnSync(
-      [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
+      cacheOnly
+        ? [process.execPath, '-e', `import { acceptanceCacheReady } from ${JSON.stringify(join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts'))}; process.exitCode = acceptanceCacheReady(process.cwd()) ? 0 : 1;`]
+        : [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
       {
         cwd: cwd ?? run.working_path,
         env: {
@@ -390,6 +394,10 @@ export function acceptRun(
         stderr: 'pipe',
       }
     );
+    if (cacheOnly) {
+      if (p.exitCode !== 0) code = 1;
+      continue;
+    }
     const out = lastJson(p.stdout.toString()) as (Record<string, unknown> & Accept) | undefined;
     const same =
       !!out?.contract_hash &&
@@ -474,6 +482,7 @@ export function finalizeDelivery(
             receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
               repo: l.repo,
               plan: planOf(l),
+              cacheReady: cwd => acceptRun(l, undefined, cwd, art, false, true) === 0,
               base_ref: planOf(l).base_ref,
               launch_branch: l.launch_branch,
               delivery: target ? localDelivery(l, art, target) : undefined,

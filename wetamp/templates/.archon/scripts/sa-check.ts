@@ -318,12 +318,18 @@ export const NODE_CONTRACT_ENV: readonly string[] = [
   'TYPED_ARTIFACTS_FILE',
   'ARCHON_NODE_EXECUTION',
 ];
+// Shell/session and engine invocation metadata is not part of the project command contract.
+const RUNTIME_ENVIRONMENT = [
+  /^(?:PWD|OLDPWD|SHLVL|TERM.*|COLORTERM|TTY|TMUX.*|ZELLIJ.*|ITERM_.*|SSH_TTY|LC_TERMINAL.*)$/,
+  /^(?:ARCHON|SUPERAGENT)_(?:RUN|SESSION|NODE|WORKFLOW)(?:_.*)?$/,
+];
 export const projectEnvironment = (values: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(
     Object.entries(values).filter(
       ([k]) =>
         !k.startsWith('INPUTS_') &&
         !NODE_CONTRACT_ENV.includes(k) &&
+        !RUNTIME_ENVIRONMENT.some(pattern => pattern.test(k)) &&
         !['SA_COORD_ADMISSION', 'SUPERAGENT_ROLE'].includes(k)
     )
   ),
@@ -339,6 +345,77 @@ export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
       )
     )
     .digest('hex');
+
+const acceptanceCachePath = (
+  tree: string,
+  check: Check,
+  envKey: string,
+  environment: string
+): string =>
+  join(
+    artifacts,
+    'accept-cache',
+    sha(
+      JSON.stringify([
+        'hmac-v2',
+        FAILURE_CLASSES,
+        tree,
+        check.cmd,
+        check.timeout_s,
+        'junit-v2',
+        check.report ?? null,
+        check.known_failures ?? null,
+        envKey,
+        environment,
+      ])
+    )
+  );
+
+/** Read-only landing probe: preparation is unnecessary only when every check has usable evidence. */
+export function acceptanceCacheReady(cwd = process.cwd()): boolean {
+  const p = plan(),
+    ids = env('PKGS').split(',').filter(Boolean);
+  const packages = p.packages.filter(pkg => ids.includes(pkg.id));
+  const checks = packages.flatMap(pkg => pkg.accept);
+  const requirements = packages.map(({ id, accept, requirements }) => ({
+    id,
+    accept,
+    ...(requirements ? { requirements } : {}),
+  }));
+  const envKey = sha(
+    JSON.stringify(
+      packages.some(pkg => pkg.requirements)
+        ? [environmentChecks(p), requirements]
+        : environmentChecks(p)
+    )
+  );
+  const tree = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD^{tree}'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: CHECK_AUX_TIMEOUT_MS,
+  });
+  if (tree.exitCode !== 0) return false;
+  const environment = environmentIdentity(projectEnvironment(process.env));
+  return checks.every(check => {
+    if (check.cache === false) return false;
+    const path = acceptanceCachePath(tree.stdout.toString().trim(), check, envKey, environment);
+    if (!existsSync(path)) return false;
+    if (!check.report) return true;
+    try {
+      const saved: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      const structured =
+        saved && typeof saved === 'object' && 'structured' in saved ? saved.structured : undefined;
+      return (
+        !!structured &&
+        typeof structured === 'object' &&
+        'complete' in structured &&
+        structured.complete === true
+      );
+    } catch {
+      return false;
+    }
+  });
+}
 
 /**
  * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
@@ -366,27 +443,7 @@ function run(
   const environment =
     tree && checks.some(c => c.cache !== false) ? environmentIdentity(commandEnv) : '';
   for (const c of checks) {
-    const hit =
-      tree && c.cache !== false
-        ? join(
-            artifacts,
-            'accept-cache',
-            sha(
-              JSON.stringify([
-                'hmac-v2',
-                FAILURE_CLASSES,
-                tree,
-                c.cmd,
-                c.timeout_s,
-                'junit-v2',
-                c.report ?? null,
-                c.known_failures ?? null,
-                envKey,
-                environment,
-              ])
-            )
-          )
-        : '';
+    const hit = tree && c.cache !== false ? acceptanceCachePath(tree, c, envKey, environment) : '';
     if (hit && existsSync(hit)) {
       const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
         tag: string;

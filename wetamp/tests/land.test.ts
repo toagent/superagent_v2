@@ -142,14 +142,16 @@ test.each(['all-hit', 'partial', 'uncacheable', 'tree-changed'])(
     const checks = ['a', 'b'].map(name => ({ cmd: `echo ${name} >> '${counter}'`, timeout_s: 2, cache: kind !== 'uncacheable' }));
     // prettier-ignore
     const planPath = fixturePlan(f.root, f.repo, p => {
-      p.environment = [];
+      p.environment = kind === 'all-hit' ? [{ cmd: 'exit 99', timeout_s: 2 }] : [];
       p.packages = [{ id: 'p', accept: checks }];
     });
     const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
     const preload = directAuxiliaryPreload();
     // prettier-ignore
+    const commandEnv = (tag: string) => fixtureEnv({ ARTIFACTS_DIR: f.art, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`, INPUTS_KIND: 'accept', INPUTS_PLAN: planPath, INPUTS_PKGS: 'p', INPUTS_TAG: tag, PWD: `/${tag}`, ARCHON_RUN_ID: tag, SUPERAGENT_SESSION_ID: tag });
+    // prettier-ignore
     const accept = (cwd: string, tag: string) => Bun.spawnSync([process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')], {
-      cwd, env: fixtureEnv({ ARTIFACTS_DIR: f.art, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`, INPUTS_KIND: 'accept', INPUTS_PLAN: planPath, INPUTS_PKGS: 'p', INPUTS_TAG: tag }), stdout: 'pipe', stderr: 'pipe',
+      cwd, env: commandEnv(tag), stdout: 'pipe', stderr: 'pipe',
     });
     expect(accept(f.worktree, 'verify-p').exitCode).toBe(0);
     if (kind === 'partial') {
@@ -163,7 +165,21 @@ test.each(['all-hit', 'partial', 'uncacheable', 'tree-changed'])(
     }
     const before = readFileSync(counter, 'utf8');
     const verify = mock((cwd: string) => accept(cwd, 'landing').exitCode);
-    expect(applyLand(f.run, f.land, verify, { ...f.context, plan })?.status).toBe('manual_push');
+    const cacheReady = mock(
+      (cwd: string) =>
+        Bun.spawnSync(
+          [
+            process.execPath,
+            '-e',
+            `import { acceptanceCacheReady } from ${JSON.stringify(join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts'))}; process.exitCode = acceptanceCacheReady(process.cwd()) ? 0 : 1;`,
+          ],
+          { cwd, env: commandEnv('landing') }
+        ).exitCode === 0
+    );
+    expect(applyLand(f.run, f.land, verify, { ...f.context, plan, cacheReady })?.status).toBe(
+      'manual_push'
+    );
+    expect(cacheReady).toHaveBeenCalledTimes(1);
     expect(
       readFileSync(counter, 'utf8').slice(before.length).trim().split('\n').filter(Boolean)
     ).toHaveLength(kind === 'all-hit' ? 0 : kind === 'partial' ? 1 : 2);
