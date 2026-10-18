@@ -9,7 +9,6 @@ import {
   statSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
-import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import type { infer as Infer } from '../../packages/workflows/node_modules/zod';
 import { archonJson, lock, runRevision, type RunView } from './archon';
@@ -100,7 +99,7 @@ interface Entry {
   reflected?: string;
   reflection?: {
     episode: string;
-    state: 'queued' | 'running' | 'produced' | 'rejected' | 'failed' | 'interrupted';
+    state: 'produced' | 'rejected' | 'degraded';
     usage?: number | null;
     at?: string;
     failure?:
@@ -849,20 +848,20 @@ export const reflectionLimit = (): number =>
       memoryJson<{ daily_tokens?: number }>(join(root(), 'config.json'), {}).daily_tokens ?? 5000000
     );
 export function reflectionQueue(all: Episode[], entries: Entry[], now: number): Episode[] {
-  const done = new Set(entries.map(e => e.reflected ?? e.reflection?.episode));
+  const done = new Set(entries.flatMap(e => (e.reflected ? [e.reflected] : [])));
   const key = (e: Episode): string => JSON.stringify([e.project, e.tag, e.category, e.signature]);
   const attempted = new Set(all.filter(e => done.has(e.id)).map(key));
   const seen = new Set<string>();
   return all.filter(e => {
     const identity = key(e);
+    const ordinary = ['completed', 'done'].includes(e.status);
     if (
       done.has(e.id) ||
-      attempted.has(identity) ||
-      seen.has(identity) ||
+      (!ordinary && (attempted.has(identity) || seen.has(identity))) ||
       ['engine', 'transient'].includes(e.category) ||
       privateProject(e.project) ||
-      (e.fake && !process.env.SUPERAGENT_REFLECT_CMD) ||
-      (['completed', 'done'].includes(e.status) && !triggered(e, undefined, undefined, now))
+      e.fake ||
+      (!ordinary && !triggered(e, undefined, undefined, now))
     )
       return false;
     seen.add(identity);
@@ -888,7 +887,7 @@ export function memoryData(now = Date.now()): {
     tokens = s.entries.filter(e => e.day === day).reduce((n, e) => n + (e.tokens ?? 0), 0),
     done = new Map(
       s.entries
-        .filter(e => Boolean(e.reflected) || Boolean(e.reflection))
+        .filter(e => Boolean(e.reflected))
         .map(e => [
           e.reflected ?? e.reflection?.episode ?? '',
           e.result ?? e.reflection?.state ?? '未提炼',
@@ -992,6 +991,7 @@ export function memoryTick(
   episodes: Episode[];
   errors: { id: string; reason: string }[];
 } {
+  void kick;
   const result = {
     categories: { engine: 0, plan: 0, project: 0, role: 0, transient: 0 },
     episodes: [] as Episode[],
@@ -1367,18 +1367,6 @@ export function memoryTick(
       }
       index.day = day;
       writeAtomic(indexFile, JSON.stringify(index));
-      if (
-        kick &&
-        memoryData(now).queued &&
-        (process.env.NODE_ENV !== 'test' || process.env.SUPERAGENT_REFLECT_CMD)
-      ) {
-        const child = spawn(process.execPath, [join(WETAMP, 'src/memory-reflect.ts')], {
-          detached: true,
-          stdio: 'ignore',
-          env: process.env,
-        });
-        child.unref();
-      }
     }
   } catch (e) {
     error('tick', e);

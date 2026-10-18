@@ -21,6 +21,7 @@ import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick } from './memory';
+import { reconcileReflection } from './memory-reflect';
 import { publishLearning, proposeLearning, type LearningRequest } from './learning';
 import {
   askKey,
@@ -2713,6 +2714,7 @@ function tick(sa: string): {
     saveAsks(asks);
   }
   memoryTick(asks instanceof Error ? {} : asks);
+  reconcileReflection();
   // supervise.lock serializes the persisted throttle; reserve before the slow GC.
   const gcStamp = join(sa, 'gc-tick'),
     due = !existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000;

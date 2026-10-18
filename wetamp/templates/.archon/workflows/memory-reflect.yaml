@@ -1,0 +1,24 @@
+name: memory-reflect
+description: Distill bounded episode metadata into reusable memory operations.
+model: '@sa-coder'
+
+nodes:
+  - id: reflect
+    idle_timeout: 120000
+    retry:
+      max_attempts: 5
+      delay_ms: 1000
+      on_error: all
+    prompt: $ARGUMENTS
+    output_format:
+      type: object
+      additionalProperties: false
+      properties:
+        operations:
+          type: array
+          maxItems: 3
+          items: {}
+        reason:
+          type: [string, 'null']
+          maxLength: 240
+      required: [operations, reason]
