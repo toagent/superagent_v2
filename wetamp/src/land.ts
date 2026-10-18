@@ -33,6 +33,7 @@ import { loadTiers } from './config';
 import { redact } from './redact';
 import {
   deliveryDecision,
+  reviewRoundLimit,
   budgetUsage,
   landTarget,
   type Accept,
@@ -342,6 +343,9 @@ export function acceptRun(
   ) as unknown as RunView & { events: Parameters<typeof budgetUsage>[0] };
   if (!run.working_path) throw new Error(`accept: run ${l.run_id} has no worktree`);
   const plan = planOf(l);
+  const reviewRounds = reviewRoundLimit(
+    readJson(join(l.gen_dir, 'policy.json')) as Parameters<typeof reviewRoundLimit>[0]
+  );
   if (pkg && !plan.packages.some(p => p.id === pkg))
     throw new Error(`accept: unknown package ${pkg}`);
   const art = cacheArt ?? artifactsOf(run);
@@ -415,6 +419,7 @@ export function acceptRun(
       approved: { check: prior, decision: decisionOf(gate) },
       risk: out?.risk ?? inputs.risk,
       strict: plan.mode === 'strict',
+      reviewRounds,
       ...(reviews ? { reviews: [reviews] } : {}),
     });
     const limits = plan.budget;

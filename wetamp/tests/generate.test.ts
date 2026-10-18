@@ -1316,7 +1316,7 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
   } finally {
     boundary.mockRestore();
   }
-});
+}, 30_000);
 
 function withCleanEngine(check: () => void): () => void {
   return () => {

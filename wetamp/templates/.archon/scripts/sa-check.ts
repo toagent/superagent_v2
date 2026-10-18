@@ -210,7 +210,8 @@ const git = (...args: string[]): string => {
   return p.stdout.toString();
 };
 const plan = (): Plan => JSON.parse(readFileSync(env('PLAN'), 'utf8')) as Plan;
-const policy = (): Policy => JSON.parse(readFileSync(env('POLICY'), 'utf8')) as Policy;
+const policy = (): Policy & ReviewEffortPolicy =>
+  JSON.parse(readFileSync(env('POLICY'), 'utf8')) as Policy & ReviewEffortPolicy;
 const emit = (o: unknown): void => {
   const code = (o as { reason?: unknown }).reason;
   if (typeof code === 'string' && !reasons.some(r => r.code === code))
@@ -593,13 +594,15 @@ export function disposition(
   ok: boolean,
   check?: Accept,
   permissions: string[] = [],
-  selfReportPath?: string
+  selfReportPath?: string,
+  reviewRounds = maxRounds()
 ) {
   const { decision: judged, audit } = deliveryDecision({
     rechecks: [check ?? { ok, diff_hash: '', same: false }],
     permissions,
     selfReport: raw,
     selfReportPath,
+    reviewRounds,
   });
   const decision = judged;
   return {
@@ -741,11 +744,12 @@ function acceptOnce(
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
+  const reviewRounds = maxRounds();
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
   // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
     Array.from(
-      { length: maxRounds() },
+      { length: reviewRounds },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
   const baseResults =
@@ -840,10 +844,11 @@ function acceptOnce(
       log,
       ...baseline,
     },
-    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : [],
-    join(artifacts, `${tag}.coder.json`)
+    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE'), reviewRounds) : [],
+    join(artifacts, `${tag}.coder.json`),
+    reviewRounds
   );
-  if (reviewRound >= maxRounds() && result.disposition === 'repair')
+  if (reviewRound >= reviewRounds && result.disposition === 'repair')
     Object.assign(result, {
       disposition: 'fail',
       reason: 'acceptance_failed+review_limit',
@@ -1228,16 +1233,7 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
   ]),
 ];
 
-const maxRounds = (): number => {
-  const source = env('POLICY')
-    ? policy()
-    : (
-        JSON.parse(readFileSync(join(import.meta.dir, '../../../tiers.json'), 'utf8')) as {
-          policy: unknown;
-        }
-      ).policy;
-  return reviewRoundLimit(source as ReviewEffortPolicy);
-};
+const maxRounds = (): number => reviewRoundLimit(policy());
 type Verdict = 'pass' | 'fix' | 'escalate';
 type DecisionCandidate = Pick<DeliveryDecision, 'kind' | 'reason'>;
 interface DecisionFacts {
@@ -1289,6 +1285,7 @@ export function deliveryDecision(input: {
   qualifiedReview?: boolean;
   strict?: boolean;
   packages?: RequirementContract[];
+  reviewRounds: number;
 }) {
   let coder: Coder | undefined;
   try {
@@ -1535,7 +1532,7 @@ export function deliveryDecision(input: {
           last.status
         ];
   }
-  if (rounds >= maxRounds()) return out('block', `${reason}+review_limit`, debt);
+  if (rounds >= input.reviewRounds) return out('block', `${reason}+review_limit`, debt);
   return out(last?.status === 'INCOMPLETE' ? 'block' : 'repair', reason, debt);
 }
 
@@ -1579,12 +1576,17 @@ interface RunEvent {
   };
 }
 /** Counter changes clear their scope; an unchanged always_run counter preserves denials. */
-export function permissionEvidence(events: RunEvent[], pkgs: string[], m: string): string[] {
+export function permissionEvidence(
+  events: RunEvent[],
+  pkgs: string[],
+  m: string,
+  reviewRounds: number
+): string[] {
   const nodes = new Map<string, string>();
   for (const id of pkgs)
     for (const node of [`code-${id}`, `repair-${id}`]) nodes.set(node, `package-attempt-${id}`);
   const scope = `attempt-${m}`;
-  for (let r = 1; r <= maxRounds(); r++) nodes.set(`fix-${m}-r${String(r)}`, scope);
+  for (let r = 1; r <= reviewRounds; r++) nodes.set(`fix-${m}-r${String(r)}`, scope);
   const attempts = new Map<string, string>(),
     counters = new Map<string, string>(),
     denied = new Map<string, string>();
@@ -1994,7 +1996,9 @@ export function validateRecovery(
     load
   );
   const permissions = [
-    ...new Set(milestones.flatMap(m => permissionEvidence(original.events, e.packages, m))),
+    ...new Set(
+      milestones.flatMap(m => permissionEvidence(original.events, e.packages, m, reviewRounds))
+    ),
   ];
   const actor = (a: RecoveryActor, role: 'general' | 'strategist') => {
     require(a.job.path === join(jobs, `${a.job_id}.json`), 'job registry binding');
@@ -2185,6 +2189,7 @@ function gate(): void {
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
   const risk = effectiveRisk(env('RISK'), rechecks);
+  const reviewRounds = maxRounds();
   const decision = {
     reviews,
     rechecks,
@@ -2199,15 +2204,16 @@ function gate(): void {
     strict: plan().mode === 'strict',
     expired: expired(),
     reviewRequired: env('REVIEW') !== '0',
+    reviewRounds,
     permissions:
       reused?.permissions ??
       (env('ARCHON') && !expired()
-        ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'))
+        ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'), reviewRounds)
         : []),
   };
   let d = decide(decision);
   if (d.verdict === 'escalate' && !decision.expired && nextDisposition(d.decision) === 'repair')
-    Object.assign(d, { verdict: d.rounds >= maxRounds() ? 'escalate' : 'fix' });
+    Object.assign(d, { verdict: d.rounds >= reviewRounds ? 'escalate' : 'fix' });
   const tested = d.reason === 'review_not_required';
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
@@ -2237,7 +2243,7 @@ function gate(): void {
               attempts,
               pkgs,
               milestones,
-              maxRounds(),
+              reviewRounds,
               runEvidence
             ),
             reviewer: attemptIdentity(

@@ -3400,8 +3400,10 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       },
       'gate-m1-r1.json': {
         ...gate('coder_redline'),
-        decision: saCheck.deliveryDecision({ rechecks: [{ ok: true, diff_hash: '', same: false }] })
-          .decision,
+        decision: saCheck.deliveryDecision({
+          rechecks: [{ ok: true, diff_hash: '', same: false }],
+          reviewRounds: saCheck.reviewRoundLimit(loadTiers().policy),
+        }).decision,
       },
     });
     const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);

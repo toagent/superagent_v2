@@ -8,13 +8,24 @@ import { askKey, cockpitSignals, supersedeAsks, type Asks } from '../src/cockpit
 import { decisionFields, saveIncident } from '../src/incidents';
 import { buildWorkflow, generate } from '../src/generate';
 import { inspectBase } from '../src/preflight';
-import { disposition, decide, independence } from '../templates/.archon/scripts/sa-check';
+import {
+  disposition as rawDisposition,
+  decide as rawDecide,
+  independence,
+  reviewRoundLimit,
+} from '../templates/.archon/scripts/sa-check';
 import mirror from '../templates/.archon/scripts/reasons.json';
 import golden from './golden/fake-coder-scenarios.json';
 import e5 from './incidents/e5-base.json';
 import e7 from './incidents/e7-adopt.json';
 import { milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
+import { loadTiers } from '../src/config';
+const CONTRACT_ROUNDS = reviewRoundLimit(loadTiers().policy);
+const decide = (input: Omit<Parameters<typeof rawDecide>[0], 'reviewRounds'>) =>
+  rawDecide({ ...input, reviewRounds: CONTRACT_ROUNDS });
+const disposition = (...args: Parameters<typeof rawDisposition>) =>
+  rawDisposition(args[0], args[1], args[2], args[3], args[4], args[5] ?? CONTRACT_ROUNDS);
 const fixtureEngine = gitRepo(tmp());
 const originalCleanEngine = coordination.cleanEngine;
 const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() =>

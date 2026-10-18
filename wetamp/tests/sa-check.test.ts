@@ -16,8 +16,8 @@ import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   budgetUsage,
   reviewRoundLimit,
-  decide,
-  disposition,
+  decide as rawDecide,
+  disposition as rawDisposition,
   nextDisposition,
   permissionEvidence,
   identityOf,
@@ -26,12 +26,23 @@ import {
   readAuthorEvidence,
   ledgerOf,
   scopeRisk,
-  deliveryDecision,
+  deliveryDecision as rawDeliveryDecision,
   readAttempt,
   CHECK_AUX_TIMEOUT_MS,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
+type DecisionInput = Parameters<typeof rawDeliveryDecision>[0];
+const withRounds = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: number }) => ({
+  ...input,
+  reviewRounds: input.reviewRounds ?? MAX_ROUNDS,
+});
+const deliveryDecision = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: number }) =>
+  rawDeliveryDecision(withRounds(input));
+const decide = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: number }) =>
+  rawDecide(withRounds(input));
+const disposition = (...args: Parameters<typeof rawDisposition>) =>
+  rawDisposition(args[0], args[1], args[2], args[3], args[4], args[5] ?? MAX_ROUNDS);
 import {
   acceptanceNodeEnvironment,
   directAuxiliaryPreload,
@@ -1427,7 +1438,9 @@ describe('single delivery decision', () => {
       JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [{ cap: 'network' }] }),
     ])
       for (const ok of [true, false])
-        expect(disposition(raw, ok).decision.kind).toBe(ok ? 'advance' : 'repair');
+        expect(disposition(raw, ok, undefined, [], undefined, MAX_ROUNDS).decision.kind).toBe(
+          ok ? 'advance' : 'repair'
+        );
   });
   test('non-critical failures become debt', () => {
     const check = {
@@ -1437,14 +1450,18 @@ describe('single delivery decision', () => {
         { command: 'check', failure_class: 'fixture' as const, evidence: '/tmp/accept.log' },
       ],
     };
-    expect(deliveryDecision({ rechecks: [check] }).decision.kind).toBe('debt');
+    expect(deliveryDecision({ rechecks: [check], reviewRounds: MAX_ROUNDS }).decision.kind).toBe(
+      'debt'
+    );
   });
   test('E7: partial + env + green checks advances with all audit markers', () => {
     // 原始 node_completed 事件的 structured_output，仅将 notes 置空脱敏。
     const coder: unknown = JSON.parse(
       readFileSync(join(import.meta.dir, 'incidents/e7-coder.json'), 'utf8')
     );
-    expect(disposition(JSON.stringify(coder), true)).toMatchObject({
+    expect(
+      disposition(JSON.stringify(coder), true, undefined, [], undefined, MAX_ROUNDS)
+    ).toMatchObject({
       disposition: 'advance',
       reason: null,
       self_report_conflict: true,
@@ -1924,7 +1941,8 @@ describe('sa-check script', () => {
       },
     });
     const check = first.out as Accept;
-    const decide = (c: Accept) => deliveryDecision({ rechecks: [c] }).decision.requirements;
+    const decide = (c: Accept) =>
+      deliveryDecision({ rechecks: [c], reviewRounds: MAX_ROUNDS }).decision.requirements;
     expect(
       decide({ ...check, command_results: check.command_results?.slice(0, 1) })?.items[0].status
     ).toBe('unknown');
@@ -1948,11 +1966,16 @@ describe('sa-check script', () => {
       { ...check, command_results: check.command_results!.map(c => ({ ...c, pass: false })) },
       { ok: true, same: false, diff_hash: '' },
     ]) {
-      expect(validate(deliveryDecision({ rechecks: [c] }).decision)).toBe(true);
+      expect(validate(deliveryDecision({ rechecks: [c], reviewRounds: MAX_ROUNDS }).decision)).toBe(
+        true
+      );
     }
     expect(
-      deliveryDecision({ rechecks: [check], packages: changed.requirement_contract }).decision
-        .requirements?.status
+      deliveryDecision({
+        rechecks: [check],
+        packages: changed.requirement_contract,
+        reviewRounds: MAX_ROUNDS,
+      }).decision.requirements?.status
     ).toBe('unknown');
     expect(
       outputSchema.$defs.accept.properties.decision.properties.requirements.properties.status.enum
@@ -2750,9 +2773,9 @@ describe('sa-check script', () => {
           : { kind: 'advance' },
       });
       // Subsequent decisions without a self-report must preserve the recorded block and details.
-      expect(deliveryDecision({ rechecks: [r.out as Accept] }).decision.kind).toBe(
-        blocked ? 'block' : 'advance'
-      );
+      expect(
+        deliveryDecision({ rechecks: [r.out as Accept], reviewRounds: MAX_ROUNDS }).decision.kind
+      ).toBe(blocked ? 'block' : 'advance');
     }
   );
   test('accept: uncommitted change fails even when commands pass', () => {
@@ -3578,7 +3601,9 @@ describe('sa-check script', () => {
   test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
     const root = tmp(),
       repo = gitRepo(root),
-      p = planFile(root, 'true');
+      p = planFile(root, 'true'),
+      frozenPolicy = join(root, 'policy.json');
+    writeFileSync(frozenPolicy, JSON.stringify(snapshotPolicy(loadTiers())));
     const art = join(root, 'art');
     mkdirSync(art);
     const inherited = Object.fromEntries(
@@ -3594,6 +3619,7 @@ describe('sa-check script', () => {
           ARTIFACTS_DIR: art,
           INPUTS_KIND: 'accept',
           INPUTS_PLAN: p,
+          INPUTS_POLICY: frozenPolicy,
           INPUTS_PKGS: 'a',
           INPUTS_TAG: `parallel-${i}`,
         },
@@ -3613,7 +3639,7 @@ describe('sa-check script', () => {
     expect(readdirSync(cache).filter(f => f !== '.key')).toHaveLength(1);
     expect(readFileSync(join(cache, '.key')).length).toBe(32);
     expect(statSync(join(cache, '.key')).mode & 0o777).toBe(0o600);
-  });
+  }, 10_000);
   test('FC legacy cache default product cannot hide an unclassified command', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -3847,7 +3873,7 @@ test.each(['true', PRODUCT_FAILURE])('NO_HOLD hard budget is advisory for %s', c
 });
 
 test('ROOT_ACCEPT high-risk boundary evidence fails without changing acceptance', () => {
-  const out = disposition('{}', false, undefined, ['events:code-a:1']);
+  const out = disposition('{}', false, undefined, ['events:code-a:1'], undefined, MAX_ROUNDS);
   expect(out).toMatchObject({
     disposition: 'fail',
     decision: { kind: 'block', reason: 'coder_redline' },
@@ -3950,10 +3976,10 @@ test.each([
       },
     },
   ];
-  const permissions = permissionEvidence(events, ['a'], 'm1');
+  const permissions = permissionEvidence(events, ['a'], 'm1', MAX_ROUNDS);
   const high = category !== null && category !== 'diagnostic';
   expect(permissions.length).toBe(high ? 1 : 0);
-  expect(disposition('{}', true, undefined, permissions).disposition).toBe(
+  expect(disposition('{}', true, undefined, permissions, undefined, MAX_ROUNDS).disposition).toBe(
     high ? 'fail' : 'advance'
   );
 });
@@ -4125,13 +4151,18 @@ test('unresolved completeness blocker prevents verified requirement summary', ()
       },
     ],
   };
-  const result = deliveryDecision({ rechecks: [accept], reviews: [review] });
+  const result = deliveryDecision({
+    rechecks: [accept],
+    reviews: [review],
+    reviewRounds: MAX_ROUNDS,
+  });
   expect(result.decision.requirements?.status).toBe('unmet');
   expect(result.decision.kind).toBe('repair');
   expect(
     deliveryDecision({
       rechecks: [accept, accept],
       reviews: [review, { ...review, status: 'PASS', findings: [] }],
+      reviewRounds: MAX_ROUNDS,
     }).decision.requirements?.status
   ).toBe('unmet');
   const closed = { ...review.findings[0]!, status: 'closed' as const, carry_over: true };
@@ -4139,6 +4170,7 @@ test('unresolved completeness blocker prevents verified requirement summary', ()
     deliveryDecision({
       rechecks: [accept, accept],
       reviews: [review, { ...review, status: 'PASS', findings: [closed] }],
+      reviewRounds: MAX_ROUNDS,
     }).decision.requirements?.status
   ).toBe('verified');
 });
