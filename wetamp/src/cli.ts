@@ -623,7 +623,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
       ledgerPath(l.run_id),
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
-    blocked = landReason ?? (['land', 'deliver'].includes(c.node ?? '') && node?.state === 'failed'),
+    blocked = landReason ?? (/^(?:land|deliver)(?:-.+)?$/.test(c.node ?? '') && node?.state === 'failed'),
     action = reason === 'target_protected' ? '在 feature 分支重跑'
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`

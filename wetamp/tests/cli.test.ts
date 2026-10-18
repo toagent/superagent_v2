@@ -1354,6 +1354,15 @@ describe('waitRun (archon stub)', () => {
       },
     });
   });
+  test.each(['land-m1', 'deliver-m1'])('%s failure is a blocked delivery', nodeId => {
+    const s = stub([
+      run('failed', { nodes: [{ nodeId, state: 'failed', error: 'Bash node failed' }] }),
+    ]);
+    expect(waitRun(s.ledger, 5)).toMatchObject({
+      delivery_state: 'blocked',
+      receipt: { failed_node: nodeId },
+    });
+  });
   test('early failure: metadata.error when no terminal record; a signal joins the reason; a non-enum reason is dropped', () => {
     const s = stub([
       run('failed', {
