@@ -18,6 +18,7 @@ import {
   excludeCodegraph,
   integratedReceipt,
   landEvidence,
+  pendingMilestones,
   protectedTarget,
   type LocalDelivery,
 } from '../src/land';
@@ -115,6 +116,16 @@ test.each(['unknown run', 'missing durable authorization', 'authorization/run mi
   }
 );
 
+test('milestone delivery accepts only milestones after the last delivered one', () => {
+  const ms = ['w1', 'w2', 'w3', 'r0a'];
+  const done = (...ids: string[]) => ids.map(m => ({ nodeId: `deliver-${m}`, state: 'completed' }));
+  expect(pendingMilestones(ms, 'r0a', done('w1', 'w2', 'w3'))).toEqual(['r0a']);
+  // An undelivered earlier milestone still needs its acceptance on this candidate.
+  expect(pendingMilestones(ms, 'r0a', done('w1'))).toEqual(['w2', 'w3', 'r0a']);
+  expect(pendingMilestones(ms, 'w3', [])).toEqual(['w1', 'w2', 'w3']);
+  expect(pendingMilestones(ms, 'w2', done('w1', 'w2', 'w3'))).toEqual(['w2']);
+  expect(() => pendingMilestones(ms, 'nope', [])).toThrow('unknown milestone');
+});
 test('delivery entry rejects missing run id', () => {
   const root = tmp();
   const result = Bun.spawnSync(

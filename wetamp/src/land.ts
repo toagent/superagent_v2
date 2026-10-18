@@ -108,6 +108,26 @@ export function landEvidence(
     ? { node: selected, file: selected === 'land' ? 'land.json' : `${selected}.json` }
     : undefined;
 }
+/**
+ * Milestones whose acceptance a delivery through `through` must prove: those after the last
+ * milestone this run already delivered. A completed `deliver-*` node already accepted its
+ * prefix on its own candidate; re-running it on every later delivery makes cost quadratic.
+ */
+export function pendingMilestones(
+  milestones: readonly string[],
+  through: string,
+  nodes: RunView['nodes']
+): string[] {
+  const end = milestones.indexOf(through);
+  if (end < 0) throw new Error(`accept: unknown milestone ${through}`);
+  let start = end;
+  while (
+    start > 0 &&
+    !nodes?.some(n => n.nodeId === `deliver-${milestones[start - 1]}` && n.state === 'completed')
+  )
+    start--;
+  return milestones.slice(start, end + 1);
+}
 export const protectedTarget = (branch: string): boolean =>
   /^(main|master|dev|develop|release-.*)$/.test(branch);
 export interface LocalDelivery {
@@ -371,21 +391,18 @@ export function acceptRun(
   const contracts = readJson(join(l.gen_dir, 'accept-inputs.json')) as Record<string, string>[];
   if (!Array.isArray(contracts)) throw new Error('accept: missing generated acceptance contract');
   const milestoneIds = [...new Set(contracts.map(c => c.milestone))];
-  const throughIndex = through ? milestoneIds.indexOf(through) : milestoneIds.length - 1;
   const selected = pkg
     ? contracts.filter(c => c.tag === `verify-${pkg}`)
-    : milestoneIds
-        .slice(0, throughIndex + 1)
-        .map(m =>
-          [...contracts]
-            .reverse()
-            .find(
-              c =>
-                c.milestone === m &&
-                c.tag.startsWith('diff-') &&
-                evidenceJson(l, art, `${c.tag}.json`)
-            )
-        );
+    : (through ? pendingMilestones(milestoneIds, through, run.nodes) : milestoneIds).map(m =>
+        [...contracts]
+          .reverse()
+          .find(
+            c =>
+              c.milestone === m &&
+              c.tag.startsWith('diff-') &&
+              evidenceJson(l, art, `${c.tag}.json`)
+          )
+      );
   if (!selected.length || selected.some(c => !c))
     throw new Error('accept: missing acceptance evidence');
   const resolved = Bun.spawnSync([process.execPath, join(import.meta.dir, 'role-context.ts')], {
