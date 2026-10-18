@@ -266,7 +266,11 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   for (let attempt = 0; ; attempt++) {
   const tip = git('rev-parse', `refs/heads/${target}`);
   targetHistory(tip);
-  const root = mkdtempSync(join(tmpdir(), 'sa-land-')), candidate = join(root, 'wt');
+  // 候选检出须与 run worktree 同在引擎目录下：colima/lima 默认只把 $HOME 挂进容器，系统临时目录里的
+  // 候选对 Docker 验收不可见，每次交付都会失败。SUPERAGENT_HOME 由 wetamp/bin 设置；仅库内直调（测试）回落 tmpdir。
+  const scratch = process.env.SUPERAGENT_HOME ? join(process.env.SUPERAGENT_HOME, 'land') : tmpdir();
+  mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(join(scratch, 'sa-land-')), candidate = join(root, 'wt');
   try {
     git('worktree', 'add', '--detach', candidate, tip);
     const ff = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', tip, land.head], { stdout: 'pipe', stderr: 'pipe' });

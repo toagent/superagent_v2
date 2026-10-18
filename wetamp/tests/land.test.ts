@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -908,6 +909,25 @@ test('delivery defaults: land needs no selftest receipt and never triggers diagn
     expect(existsSync(join(f.root, 'selftest-land.log'))).toBe(false);
   } finally {
     diagnosis.mockRestore();
+  }
+});
+
+test('delivery candidate lives under SUPERAGENT_HOME so $HOME-only container mounts can see it', () => {
+  const f = fixture(),
+    saved = process.env.SUPERAGENT_HOME;
+  process.env.SUPERAGENT_HOME = f.root;
+  let candidate = '';
+  try {
+    applyLand(f.run, f.land, cwd => {
+      candidate = cwd;
+      return 0;
+    });
+    expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(f.land.head);
+    expect(candidate.startsWith(join(f.root, 'land', 'sa-land-'))).toBe(true);
+    expect(readdirSync(join(f.root, 'land'))).toEqual([]);
+  } finally {
+    if (saved === undefined) delete process.env.SUPERAGENT_HOME;
+    else process.env.SUPERAGENT_HOME = saved;
   }
 });
 
