@@ -606,6 +606,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
   let turnId = idAt(turnResponse, 'turn');
   if (!turnId) throw new Error('Codex app-server returned a turn without an id');
   request.onTurn(turnId);
+  const requestTurnIds = new Set([turnId]);
 
   const startedToolIds = new Set<string>();
   const activeToolIds = new Set<string>();
@@ -792,7 +793,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
       case 'item/started':
       case 'item/completed': {
         const { item, threadId: itemThreadId, turnId: itemTurnId } = notification.params;
-        const parentItem = itemThreadId === threadId && itemTurnId === turnId;
+        const parentItem = itemThreadId === threadId && requestTurnIds.has(itemTurnId);
         if (!parentItem && !agentThreads.has(itemThreadId)) break;
         lastProgressAt = Date.now();
         const completed = notification.method === 'item/completed';
@@ -872,6 +873,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
           });
           turnId = idAt(resumed, 'turn');
           if (!turnId) throw new Error('Codex app-server returned a turn without an id');
+          requestTurnIds.add(turnId);
           request.onTurn(turnId);
           interrupting = undefined;
           lastProgressAt = Date.now();

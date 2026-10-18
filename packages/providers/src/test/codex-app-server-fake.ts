@@ -53,6 +53,8 @@ export interface FakeTurnScript {
   ignoreAccountRead?: boolean;
   /** Notifications sent after `turn/start` answers, in order. */
   notifications?: ServerNotification[];
+  /** Turn ids returned by successive `turn/start` requests. */
+  turnIds?: string[];
   /** End the turn with this `turn/completed` status (default `completed`); `null` sends none. */
   completion?: { status: TurnStatus; error?: TurnError | null } | null;
   /** Exit the process with this code after the notifications instead of completing. */
@@ -127,6 +129,8 @@ export function createFakeAppServer(script: () => FakeTurnScript = () => ({})): 
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     let activeThreadId = THREAD_ID;
+    let activeTurnId = TURN_ID;
+    let turnStarts = 0;
     const record: FakeProcess = {
       args,
       env: options.env,
@@ -190,7 +194,7 @@ export function createFakeAppServer(script: () => FakeTurnScript = () => ({})): 
       stdout.write(`${JSON.stringify(outgoing)}\n`);
     };
     const completeTurn = (status: TurnStatus, error: TurnError | null = null): void => {
-      send(turnCompleted(status, error));
+      send(turnCompleted(status, error, activeTurnId));
     };
 
     // Like the real server, nothing but `initialize` is served before the client
@@ -245,7 +249,14 @@ export function createFakeAppServer(script: () => FakeTurnScript = () => ({})): 
           }
           case 'turn/start':
             activeThreadId = (message.params as { threadId: string }).threadId;
-            send({ id, result: { turn: turnOf('inProgress', null) } satisfies TurnStartResponse });
+            activeTurnId = turn.turnIds?.[turnStarts] ?? TURN_ID;
+            turnStarts += 1;
+            send({
+              id,
+              result: {
+                turn: turnOf('inProgress', null, activeTurnId),
+              } satisfies TurnStartResponse,
+            });
             for (const frame of turn.notifications ?? []) send(frame);
             if (turn.exitCode !== undefined) {
               close(turn.exitCode, null);

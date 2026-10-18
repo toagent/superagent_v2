@@ -1275,6 +1275,43 @@ describe('CodexProvider', () => {
       ]);
     });
 
+    test('settles an earlier turn background task after a runaway retry', async () => {
+      const bg = {
+        ...command('exec-old', 'sleep 20'),
+        source: 'unifiedExecStartup' as const,
+        processId: '4243',
+      };
+      const script: FakeTurnScript = {
+        completion: null,
+        turnIds: ['turn-a', 'turn-b'],
+      };
+      const { provider, server } = providerWith(script);
+      const running = run(provider, { outputFormat: { type: 'json_schema', schema } });
+      while (!server.processes[0]) await new Promise<void>(resolve => setImmediate(resolve));
+      server.processes[0].send(itemStarted(bg, THREAD_ID, 'turn-a'));
+      server.processes[0].send({
+        method: 'item/agentMessage/delta',
+        params: { threadId: THREAD_ID, turnId: 'turn-a', itemId: 'm-1', delta: ' '.repeat(2001) },
+      });
+      while (server.processes[0].methods.filter(m => m === 'turn/start').length < 2)
+        await new Promise<void>(resolve => setImmediate(resolve));
+      server.processes[0].send(itemStarted(command('foreign-turn', 'true'), THREAD_ID, 'turn-x'));
+      server.processes[0].send(
+        itemStarted(command('foreign-thread', 'true'), 'thread-x', 'turn-a')
+      );
+      server.processes[0].send(
+        itemCompleted({ ...bg, status: 'completed', exitCode: 0 }, THREAD_ID, 'turn-a')
+      );
+      server.processes[0].send(turnCompleted('completed', null, 'turn-b'));
+
+      const chunks = await running;
+      expect(chunks.filter(chunk => chunk.type === 'subtask').map(chunk => chunk.status)).toEqual([
+        'started',
+        'completed',
+      ]);
+      expect(chunks.at(-1)).toEqual({ type: 'settled' });
+    });
+
     test('fails after one compact JSON retry when whitespace runs away again', async () => {
       const script: FakeTurnScript = { completion: null };
       const { provider, server } = providerWith(script);
