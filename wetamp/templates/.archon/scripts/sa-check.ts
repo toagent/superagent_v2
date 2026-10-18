@@ -986,7 +986,13 @@ function finish(
         delta: out.delta ?? '',
         environment: environmentIdentity(projectEnvironment(process.env)),
       });
-      writeFileSync(join(artifacts, `${node}.context.json`), JSON.stringify({ path: context }));
+      writeFileSync(
+        join(artifacts, `${node}.context.json`),
+        JSON.stringify({
+          path: context,
+          attempt: readAttempt(attemptPath(gen, env('MILESTONE'))),
+        })
+      );
     }
   }
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));

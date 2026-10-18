@@ -324,14 +324,19 @@ if (import.meta.main) {
         stderr: 'pipe',
       });
       if (git.exitCode !== 0) throw new Error(git.stderr.toString());
-      // A completed gate proves this review round already finished. On later resumes the
-      // validator must replay a stable value without reopening that round against a newer HEAD.
+      const pointer = review
+        ? (read(join(artifacts, `${review}.context.json`)) as
+            | { path: string; attempt?: number }
+            | 'unknown')
+        : 'unknown';
+      // A gate completes only the attempt whose frozen context it consumed. Approval resumes
+      // replay that value; a later attempt must validate or rebuild its own context.
       const completedReview =
-        review && existsSync(join(artifacts, `${review.replace(/^review-/, 'gate-')}.json`));
+        review &&
+        pointer !== 'unknown' &&
+        pointer.attempt === Number(attempt) &&
+        existsSync(join(artifacts, `${review.replace(/^review-/, 'gate-')}.json`));
       if (review && !completedReview) {
-        const pointer = read(join(artifacts, `${review}.context.json`)) as
-          | { path: string }
-          | 'unknown';
         if (pointer === 'unknown') throw new Error('context: missing prepared review');
         const context = read(pointer.path) as RoleContext | 'unknown';
         if (
@@ -363,9 +368,13 @@ if (import.meta.main) {
           const path = freezeContext(artifacts, rebuilt);
           writeFileSync(
             join(artifacts, `${review}.context.json`),
-            JSON.stringify({ path, rebuilt_from: pointer.path })
+            JSON.stringify({ path, attempt: Number(attempt), rebuilt_from: pointer.path })
           );
-        }
+        } else if (pointer.attempt !== Number(attempt))
+          writeFileSync(
+            join(artifacts, `${review}.context.json`),
+            JSON.stringify({ ...pointer, attempt: Number(attempt) })
+          );
       }
       if (contextNode || pkg) {
         const node = contextNode?.length ? contextNode : `code-${pkg}`;

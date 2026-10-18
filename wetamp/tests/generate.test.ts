@@ -337,11 +337,16 @@ test('completed review context replay keeps stale refs fail-closed only for unfi
     frozen,
     JSON.stringify({ node: 'review-m1-r1', refs: { head: 'stale' }, carry_over: {} })
   );
-  fs.writeFileSync(join(artifacts, 'review-m1-r1.context.json'), JSON.stringify({ path: frozen }));
+  fs.writeFileSync(
+    join(artifacts, 'review-m1-r1.context.json'),
+    JSON.stringify({ path: frozen, attempt: 0 })
+  );
   const node: N = { id: 'review-context-m1-r1', with: { counter, gen, review: 'review-m1-r1' } };
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(1);
   fs.writeFileSync(join(artifacts, 'gate-m1-r1.json'), '{}');
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(0);
+  fs.writeFileSync(counter, '1');
+  expect(runAttempt(node, repo, artifacts).exitCode).toBe(1);
 });
 
 test('approval resume preserves review attempts while failed reviews refresh context', () => {
@@ -625,7 +630,12 @@ describe('buildWorkflow', () => {
     const checkpoint = {
       gate: {
         verdict: 'pass',
-        decision: { kind: 'debt' as const, reason: null, evidence: [], debt: ['known'] },
+        decision: {
+          kind: 'debt' as const,
+          reason: null,
+          evidence: [],
+          debt: ["audit $code-core.output and 'quotes'"],
+        },
         reviewed_head: 'a'.repeat(40),
         reviewed_diff_hash: 'd'.repeat(16),
         ledger_file: '/OLD/gate-m1-r4.ledger.json',
@@ -641,6 +651,8 @@ describe('buildWorkflow', () => {
     );
     const carried = nodes.find(n => n.id === 'carried-gate-m1')!;
     expect(carried.bash).toContain('$ARTIFACTS_DIR/gate-m1-r1.json');
+    expect(carried.bash).not.toContain('$code-core.output');
+    expect(carried.bash).toContain('/GEN/review-checkpoints/m1.json');
     expect(carried.when).toContain(`.contract_hash == '${checkpoint.check.contract_hash}'`);
     expect(nodes.find(n => n.id === 'review-m1-r1')?.when).toContain(
       `.contract_hash != '${checkpoint.check.contract_hash}'`

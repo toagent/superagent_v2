@@ -547,9 +547,10 @@ export function buildWorkflow(
         )
       );
       if (r === 1 && checkpointMatch && checkpoint) {
+        const checkpointPath = join(gen, 'review-checkpoints', `${m.id}.json`);
         nodes.push({
           id: `carried-gate-${m.id}`,
-          bash: `printf '%s' '${JSON.stringify(checkpoint.gate).replaceAll("'", "'\\''")}' | tee "$ARTIFACTS_DIR/gate-${m.id}-r1.json"`,
+          bash: `cp '${checkpointPath.replaceAll("'", "'\\''")}' "$ARTIFACTS_DIR/gate-${m.id}-r1.json" && cat "$ARTIFACTS_DIR/gate-${m.id}-r1.json"`,
           depends_on: [`diff-${t}`],
           when: `$diff-${t}.output.disposition == 'advance' && ${checkpointMatch}`,
         });
@@ -842,6 +843,13 @@ export function generate(
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
+  if (carried?.reviews) {
+    const checkpointDir = join(dir, 'review-checkpoints');
+    mkdirSync(checkpointDir, { recursive: true });
+    for (const [milestone, checkpoint] of Object.entries(carried.reviews))
+      if (checkpoint)
+        writeFileSync(join(checkpointDir, `${milestone}.json`), JSON.stringify(checkpoint.gate));
+  }
   if (delivery && !fake)
     writeFileSync(
       join(dir, 'delivery-authorization.json'),

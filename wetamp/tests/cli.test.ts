@@ -843,6 +843,58 @@ describe('HF3 latest-engine recovery', () => {
     expect(nodes.find(n => n.id === 'settle-core')?.script).toBe('sa-check');
     expect(sh('git rev-parse HEAD', worktree).trim()).not.toBe(head);
   });
+  test.each([
+    ['valid', true],
+    ['block', false],
+    ['reviewed-head-drift', false],
+  ] as const)('review checkpoint admission is fail-closed at recovery (%s)', (sample, admitted) => {
+    const s = setup('old');
+    const worktree = gitRepo(s.root);
+    const head = sh('git rev-parse HEAD', worktree).trim();
+    const reviewedHead = sample === 'reviewed-head-drift' ? 'f'.repeat(40) : head;
+    const art = join(s.root, 'artifacts', 'runs', 'r');
+    mkdirSync(art, { recursive: true });
+    const ledger = join(art, 'gate-m1-r1.ledger.json');
+    writeFileSync(ledger, '{}');
+    writeFileSync(
+      join(art, 'gate-m1-r1.json'),
+      JSON.stringify({
+        decision: fixtureDecision(
+          sample === 'block' ? 'block' : 'advance',
+          sample === 'block' ? 'no_change' : null
+        ),
+        head_trusted: true,
+        reviewed_head: reviewedHead,
+        reviewed_diff_hash: 'd'.repeat(16),
+        ledger_file: ledger,
+      })
+    );
+    writeFileSync(
+      join(art, 'diff-m1-r1.json'),
+      JSON.stringify({
+        head: reviewedHead,
+        diff_hash: 'd'.repeat(16),
+        contract_hash: 'c'.repeat(64),
+      })
+    );
+    writeFileSync(
+      join(s.dir, 'get-000.json'),
+      JSON.stringify(
+        run('failed', {
+          working_path: worktree,
+          output_root: s.root,
+          nodes: [{ nodeId: 'gate-m1-r1', state: 'completed' }],
+        })
+      )
+    );
+    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+    const l = loadLedger('sa1');
+    const workflow = readFileSync(
+      join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`),
+      'utf8'
+    );
+    expect(workflow.includes('id: carried-gate-m1')).toBe(admitted);
+  });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();
     const engine = gitRepo(tmp());
