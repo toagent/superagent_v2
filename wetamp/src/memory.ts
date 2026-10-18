@@ -100,6 +100,11 @@ interface Entry {
     episode: string;
     state: 'queued' | 'running' | 'produced' | 'rejected' | 'failed' | 'interrupted';
     usage?: number | null;
+    at?: string;
+    failure?:
+      | { kind: 'signal'; signal: string }
+      | { kind: 'exit_code' | 'launch_rejected'; exit_code: number }
+      | { kind: 'output' };
   };
   result?: string;
   day?: string;

@@ -186,6 +186,21 @@ export function reflectionUsage(line: string): number | null {
     .safeParse(JSON.parse(line) as unknown);
   return s.success ? s.data.usage.input_tokens + s.data.usage.output_tokens : null;
 }
+export const reflectionCommand = (model: string, out: string, input: string): string[] => [
+  'codex',
+  'exec',
+  '--json',
+  '--skip-git-repo-check',
+  '-m',
+  model,
+  '-o',
+  out,
+  input,
+];
+export const reflectionFailure = (code: number, signal: string | null, launched: boolean) =>
+  signal
+    ? ({ kind: 'signal', signal } as const)
+    : ({ kind: launched ? 'exit_code' : 'launch_rejected', exit_code: code } as const);
 export async function reflectOne(now = Date.now()): Promise<boolean> {
   if (!memoryOn()) return false;
   const root = join(home().sa, 'memory');
@@ -215,23 +230,7 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
           out,
           input,
         ]
-      : [
-          'codex',
-          'exec',
-          '--json',
-          '--skip-git-repo-check',
-          '-s',
-          'read-only',
-          '-m',
-          model,
-          '-c',
-          'model_reasoning_effort="low"',
-          '-c',
-          'model_max_output_tokens=1024',
-          '-o',
-          out,
-          input,
-        ];
+      : reflectionCommand(model, out, input);
     const day = budget.day;
     attempt = e.id;
     memoryWrite(() => ({
@@ -262,9 +261,9 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
         env: { ...process.env, SUPERAGENT_ROLE: 'general' },
       }
     );
-    let interrupted = false;
+    const timeout = new AbortController();
     const timer = setTimeout(() => {
-      interrupted = true;
+      timeout.abort();
       child.kill('SIGTERM');
     }, 120000);
     let usage = 0,
@@ -307,35 +306,36 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
           lessons: [],
           reflection: { episode: e.id, state: 'running', usage: null },
         }));
-      const decoded =
-        code === 0 && memoryOn()
-          ? curate(
-              e,
-              existsSync(out) && Buffer.byteLength(readFileSync(out)) <= 1024
-                ? memoryJson<unknown>(out, null)
-                : null,
-              now
-            )
-          : { lessons: [], result: '未提炼：反思失败或开关已关闭' };
+      const signal = job?.signal ?? child.signalCode,
+        state =
+          timeout.signal.aborted || signal || code === 143 || code === 130 || code === 129
+            ? 'interrupted'
+            : code !== 0
+              ? 'failed'
+              : undefined,
+        decoded =
+          code === 0 && memoryOn()
+            ? curate(
+                e,
+                existsSync(out) && Buffer.byteLength(readFileSync(out)) <= 1024
+                  ? memoryJson<unknown>(out, null)
+                  : null,
+                now
+              )
+            : { lessons: [], result: '未提炼：反思失败或开关已关闭' };
       memoryWrite(() => ({
         ...decoded,
-        ...(code === 0 && !interrupted ? { reflected: e.id } : {}),
+        ...(code === 0 && !timeout.signal.aborted ? { reflected: e.id } : {}),
         reflection: {
           episode: e.id,
-          state:
-            interrupted ||
-            !!job?.signal ||
-            !!child.signalCode ||
-            code === 143 ||
-            code === 130 ||
-            code === 129
-              ? 'interrupted'
-              : code !== 0
-                ? 'failed'
-                : decoded.lessons.length
-                  ? 'produced'
-                  : 'rejected',
+          state: state ?? (decoded.lessons.length ? 'produced' : 'rejected'),
           usage: known ? usage : null,
+          ...(state
+            ? {
+                at: new Date().toISOString(),
+                failure: reflectionFailure(code, signal, !!job?.receipt?.spawned_at),
+              }
+            : {}),
         },
         day,
         tokens: (known ? usage : 9216) - 9216,
@@ -346,8 +346,10 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
         lessons: [],
         reflection: {
           episode: e.id,
-          state: interrupted ? 'interrupted' : 'failed',
+          state: timeout.signal.aborted ? 'interrupted' : 'failed',
           usage: known ? usage : null,
+          at: new Date().toISOString(),
+          failure: { kind: 'output' },
         },
         result: '未提炼：反思输出失败',
         day,
@@ -362,7 +364,13 @@ export async function reflectOne(now = Date.now()): Promise<boolean> {
     const episode = attempt;
     memoryWrite(() => ({
       lessons: [],
-      reflection: { episode, state: 'failed', usage: null },
+      reflection: {
+        episode,
+        state: 'failed',
+        usage: null,
+        at: new Date().toISOString(),
+        failure: { kind: 'launch_rejected', exit_code: 1 },
+      },
       result: '未提炼：反思启动失败',
     }));
     return true;

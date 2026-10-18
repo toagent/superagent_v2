@@ -40,7 +40,15 @@ import {
   type Episode,
   type Lesson,
 } from '../src/memory';
-import { curate, reflectOne, reflectionInput, reflectionUsage } from '../src/memory-reflect';
+import {
+  curate,
+  reflectOne,
+  reflectionCommand,
+  reflectionFailure,
+  reflectionInput,
+  reflectionUsage,
+} from '../src/memory-reflect';
+import { roleCommandArgs } from '@archon/providers/launch-policy';
 import { artifactsOf, main, type Ledger } from '../src/cli';
 import { lock, type RunView } from '../src/archon';
 import { engineHash, generate } from '../src/generate';
@@ -385,6 +393,17 @@ describe('EV1 incident replay', () => {
 });
 
 describe('EV1 budgets and deterministic matching', () => {
+  test('production reflection launch obeys role policy and failures use machine tokens', () => {
+    const model = loadTiers().tiers.general.pools.chatgpt[0];
+    expect(() =>
+      roleCommandArgs(reflectionCommand(model, '/tmp/result', 'input'), 'codex', model)
+    ).not.toThrow();
+    expect(reflectionFailure(1, null, false)).toEqual({
+      kind: 'launch_rejected',
+      exit_code: 1,
+    });
+    expect(reflectionFailure(143, 'SIGTERM', true)).toEqual({ kind: 'signal', signal: 'SIGTERM' });
+  });
   test('daily ceiling queues then resumes next day, counts cached input once', async () => {
     fake();
     mkdirSync(join(sa, 'memory'));
@@ -455,6 +474,10 @@ describe('EV1 budgets and deterministic matching', () => {
       ]);
       const last = entries.at(-1)!;
       expect(last.reflection).toMatchObject({ state, usage: state === 'rejected' ? 9216 : null });
+      if (state === 'failed' || state === 'interrupted') {
+        expect(Date.parse(last.reflection!.at!)).not.toBeNaN();
+        expect(last.reflection!.failure).toEqual({ kind: 'exit_code', exit_code: Number(value) });
+      }
       expect(memoryData(NOW).reflection.tokens).toBe(9216);
       if (state === 'failed' || state === 'interrupted') expect(last.reflected).toBeUndefined();
       if (state !== 'produced') expect(memoryState().lessons).toEqual([]);
