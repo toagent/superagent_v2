@@ -138,11 +138,8 @@ test.each(['all-hit', 'partial', 'uncacheable', 'tree-changed'])(
   kind => {
     const f = deliveryFixture();
     const counter = join(f.root, 'counter');
-    const checks = ['a', 'b'].map(name => ({
-      cmd: `echo ${name} >> '${counter}'`,
-      timeout_s: 2,
-      cache: kind !== 'uncacheable',
-    }));
+    // prettier-ignore
+    const checks = ['a', 'b'].map(name => ({ cmd: `echo ${name} >> '${counter}'`, timeout_s: 2, cache: kind !== 'uncacheable' }));
     // prettier-ignore
     const planPath = fixturePlan(f.root, f.repo, p => {
       p.environment = [];
