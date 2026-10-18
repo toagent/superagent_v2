@@ -376,9 +376,8 @@ function evidenceRows(
   const art = confined(l, artifactsOf(run));
   if (!art) return [];
   return files(art)
-    .filter(
-      f =>
-        /^(verify-|settle-|gate-|environment\.json$)/.test(f) && !/\.(coder|ledger)\.json$/.test(f)
+    .filter(f =>
+      /^(?!.*\.(coder|fingerprint|ledger)\.json$)(verify-|settle-|gate-|environment\.json$)/.test(f)
     )
     .flatMap(file => {
       const raw = memoryJson<unknown>(join(art, file), null, l);

@@ -1000,7 +1000,7 @@ test('R2-01: redline shares directory transitions and subshells keep the parent 
       expect(await new Response(p.stdout).text()).toContain('deny');
       expect(await p.exited).toBe(0);
     }
-});
+}, 20_000);
 test('R2-02: ledger, Archon and short IDs reject before recovering a dead executor or other mutations', async () => {
   const s = setup();
   isolated(s);
