@@ -4582,6 +4582,8 @@ export interface components {
         streamId: string;
         nodeId: string;
         provider: string;
+        /** @enum {string} */
+        kind?: 'tool_call' | 'progress';
         toolCallId: string;
         name: string;
         title?: string;
