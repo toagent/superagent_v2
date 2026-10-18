@@ -290,6 +290,38 @@ describe('EV1 incident replay', () => {
       JSON.parse(readFileSync(join(sa, 'memory/mechanize/engine_suspect.json'), 'utf8'))
     ).toMatchObject({ handoff: { id: regression.id, state: 'queued', episodes: 2 } });
   });
+  test('engine handoff caps evidence at the ten newest episodes while retaining total occurrences', () => {
+    for (let i = 0; i < 12; i++)
+      saveEpisode(
+        episode({
+          id: `capped-${String(i).padStart(2, '0')}`,
+          at: new Date(NOW + i).toISOString(),
+          category: 'engine',
+          signature: 'evidence_conflict',
+        })
+      );
+    deliverEngineDefects();
+    const message = coordination.coord().messages()[0];
+    expect(message.evidence).toHaveLength(10);
+    expect(message.body).toContain('occurrences: 12');
+    expect(message.body).toContain('run_ids: capped-11,capped-10');
+    expect(message.body).not.toContain('capped-01');
+  });
+  test('a corrupt mechanism does not block another engine signature', () => {
+    const valid = episode({ id: 'valid-defect', category: 'engine', signature: 'zz-valid' });
+    saveEpisode(valid);
+    writeFileSync(join(sa, 'memory/mechanize/00-bad.json'), '{');
+    const log = spyOn(console, 'error').mockImplementation(() => undefined);
+    deliverEngineDefects();
+    expect(
+      coordination
+        .coord()
+        .messages()
+        .map(m => m.title)
+    ).toContain('engine defect: zz-valid');
+    expect(log).toHaveBeenCalledWith('memory: engine_handoff_failed');
+    log.mockRestore();
+  });
   test('M2-01 and xiaopan 57e6 become mechanisms', async () => {
     fake();
     for (const key of ['M2-01', 'xiaopan-57e6'] as const) {
