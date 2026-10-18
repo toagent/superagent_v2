@@ -1597,6 +1597,7 @@ function auxiliaryFixture(
   writeFileSync(plan, JSON.stringify(p));
   const policy = join(root, 'policy.json'),
     archon = join(root, 'archon-stub');
+  cpSync(join(import.meta.dir, '../templates/.archon/scripts'), root, { recursive: true });
   writeFileSync(
     policy,
     JSON.stringify({
@@ -1607,35 +1608,11 @@ function auxiliaryFixture(
     })
   );
   writeFileSync(archon, '#!/bin/sh\necho \'{"events":[]}\'\n', { mode: 0o755 });
-  cpSync(
-    join(import.meta.dir, '../templates/.archon/scripts/checkout-integrity.ts'),
-    join(root, 'checkout-integrity.ts')
-  );
   const script = join(root, 'sa-check.ts');
-  writeFileSync(
-    join(root, 'reasons.json'),
-    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/reasons.json'))
-  );
-  writeFileSync(
-    join(root, 'sa-context.ts'),
-    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/sa-context.ts'))
-  );
-  cpSync(
-    join(import.meta.dir, '../templates/.archon/scripts/native-models.ts'),
-    join(root, 'native-models.ts')
-  );
   // Runtime sibling import of sa-check.ts; type-only imports are erased and need no copy.
   writeFileSync(
     join(root, 'policy-attempts.ts'),
     readFileSync(join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'))
-  );
-  writeFileSync(
-    join(root, 'failure-class.ts'),
-    readFileSync(join(import.meta.dir, '../templates/.archon/scripts/failure-class.ts'))
-  );
-  cpSync(
-    join(import.meta.dir, '../templates/.archon/scripts/env-precheck.ts'),
-    join(root, 'env-precheck.ts')
   );
   if (hook) sh(`git config core.hooksPath '${join(repo, '.git/hooks')}'`, repo);
   if (hook)
