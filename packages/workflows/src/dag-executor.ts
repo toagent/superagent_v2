@@ -3081,10 +3081,6 @@ async function runSubprocess(
     await logExecOutput(logDir, workflowRunId, nodeId, label, {
       stdoutTail: retainStreamTail(rejection.stdoutTail ?? rejection.stdout),
       stderrTail: retainStreamTail(rejection.stderrTail ?? rejection.stderr),
-      // A timeout kill reports `code: null` and names the signal instead. An
-      // `until_bash` probe has no sibling `node_error` row to say so, and a probe that
-      // was killed is exactly the case a reader needs distinguished from one that
-      // simply answered "not yet".
       exitCode: rejection.code ?? rejection.signal ?? 'unknown',
     });
     throw rejection;
