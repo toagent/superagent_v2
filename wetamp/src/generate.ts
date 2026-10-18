@@ -106,6 +106,7 @@ const skippable = (from: string): Node => ({ from, if_skipped: null });
 export interface Carried {
   from: string;
   packages: string[];
+  evidence?: Record<string, string>;
   coded?: string[];
   reviews?: Partial<Record<string, ReviewCheckpoint>>;
   recovery?: RecoveryEvidence & { admitted_by: unknown; admitted_at: string };
@@ -368,6 +369,9 @@ export function buildWorkflow(
               needs: [],
             })
           : undefined;
+      const carriedEvidence = carried?.evidence?.[p.id]
+        ? join(gen, 'carried-evidence', `${p.id}.json`)
+        : undefined;
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
         : {
@@ -413,6 +417,14 @@ export function buildWorkflow(
             coder: carry
               ? { from: `$code-${p.id}.output`, if_skipped: carry }
               : `$code-${p.id}.output`,
+            ...(carriedEvidence
+              ? {
+                  carried_evidence: {
+                    from: `$code-${p.id}.output.carried_evidence`,
+                    if_skipped: carriedEvidence,
+                  },
+                }
+              : {}),
           },
           {
             ...(carry ? { trigger_rule: 'none_failed_min_one_success' } : {}),
@@ -876,6 +888,12 @@ export function generate(
       if (checkpoint)
         writeFileSync(join(checkpointDir, `${milestone}.json`), JSON.stringify(checkpoint.gate));
   }
+  if (carried?.evidence && Object.keys(carried.evidence).length) {
+    const evidenceDir = join(dir, 'carried-evidence');
+    mkdirSync(evidenceDir, { recursive: true });
+    for (const [pkg, source] of Object.entries(carried.evidence))
+      cpSync(source, join(evidenceDir, `${pkg}.json`));
+  }
   if (delivery && !fake)
     writeFileSync(
       join(dir, 'delivery-authorization.json'),
@@ -995,6 +1013,7 @@ export function generate(
     'learning.json',
     'accept-inputs.json',
     'capabilities.json',
+    ...(carried?.evidence && Object.keys(carried.evidence).length ? ['carried-evidence'] : []),
     'briefs',
     '.gitignore',
     'run-config.yaml',

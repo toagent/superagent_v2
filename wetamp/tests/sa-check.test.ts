@@ -1874,6 +1874,38 @@ function planFile(
 }
 
 describe('sa-check script', () => {
+  // prettier-ignore
+  test('carried acceptance replays accepted ancestor evidence without running checks', () => {
+    const root = tmp(), repo = gitRepo(root), counter = join(root, 'ran');
+    const path = planFile(root, `echo ran >> '${counter}'; false`, [], false);
+    const head = sh('git rev-parse HEAD', repo).trim(), carried = join(root, 'carried.json');
+    const evidence = {
+      ok: true, failed: [], log: '/old.log', patch: '/old.patch', delta: '/old.delta',
+      diff_hash: 'old', same: false, reviewed: false, base_pass: null, head,
+      checkout_fingerprint: '/old.fingerprint', disposition: 'advance', reason: null,
+      risk: 'G1', out_of_scope: [], tag: 'verify-old',
+      decision: { kind: 'advance', reason: null, evidence: ['/old.log'], debt: [] },
+    };
+    const run = () => runScript(repo, {
+      kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a', carried_evidence: carried,
+    });
+    writeFileSync(carried, JSON.stringify(evidence));
+    const replay = run();
+    expect(replay.code, replay.err).toBe(0);
+    expect(replay.out).toEqual({ ...evidence, tag: 'verify-a' });
+    expect(existsSync(counter)).toBe(false);
+    const unrelated = sh('git commit-tree HEAD^{tree} -m unrelated', repo).trim();
+    for (const [decision, carriedHead, error] of [
+      ['repair', head, 'decision must be advance/debt'],
+      ['advance', unrelated, 'head is not an ancestor'],
+    ] as const) {
+      writeFileSync(carried, JSON.stringify({ ...evidence, head: carriedHead,
+        decision: { ...evidence.decision, kind: decision } }));
+      const rejected = run();
+      expect(rejected.code).toBe(1);
+      expect(rejected.err).toContain(error);
+    }
+  });
   test('req-evidence: mapped evidence, cache identity, legacy and portable installed runtime', () => {
     const root = tmp(),
       repo = gitRepo(root),

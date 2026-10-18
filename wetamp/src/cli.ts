@@ -940,6 +940,7 @@ function recoverRun(
             ) as unknown as AuthorRun;
           validateRecovery(recovery, plan, run.working_path, l.run_id, run.id, load);
         }
+        const carriedEvidence: Record<string, string> = {};
         const carried = plan.packages
           .filter(p => {
             if (!run.working_path || !run.output_root) return false;
@@ -948,10 +949,12 @@ function recoverRun(
               const file = existsSync(join(art, `settle-${p.id}.json`))
                 ? `settle-${p.id}.json`
                 : `verify-${p.id}.json`;
-              const evidence = evidenceJson(l, art, file) as
+              const evidencePath = confined(l, join(art, file));
+              if (!evidencePath) return false;
+              const evidence = readJson(evidencePath) as
                 | { disposition?: unknown; head?: unknown }
                 | undefined;
-              return (
+              const accepted =
                 ['advance', 'debt'].includes(decisionOf(evidence)?.kind ?? '') &&
                 typeof evidence?.head === 'string' &&
                 Bun.spawnSync(['git', 'merge-base', '--is-ancestor', '--', evidence.head, 'HEAD'], {
@@ -959,8 +962,9 @@ function recoverRun(
                   stdout: 'pipe',
                   stderr: 'pipe',
                   timeout: QUERY_TIMEOUT_MS,
-                }).exitCode === 0
-              );
+                }).exitCode === 0;
+              if (accepted) carriedEvidence[p.id] = evidencePath;
+              return accepted;
             } catch {
               // Missing, invalid or inaccessible acceptance evidence never skips coding.
               return false;
@@ -1003,6 +1007,7 @@ function recoverRun(
           {
             from: run.id,
             packages: carried,
+            evidence: carriedEvidence,
             coded,
             reviews,
             ...(recovery

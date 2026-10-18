@@ -600,6 +600,7 @@ describe('buildWorkflow', () => {
       buildWorkflow(fixture, milestones(fixture), 'golden-0001', '/GEN', false, NOW, loadTiers(), {
         from: "old'run",
         packages,
+        evidence: Object.fromEntries(packages.map(id => [id, `/OLD/${id}.json`])),
         coded,
       });
     const normal = build(false);
@@ -612,6 +613,11 @@ describe('buildWorkflow', () => {
     expect(verify?.trigger_rule).toBe('none_failed_min_one_success');
     const binding = verify?.with?.coder as { from: string; if_skipped: string };
     expect(binding.from).toBe('$code-core.output');
+    expect(verify?.with?.carried_evidence).toEqual({
+      from: '$code-core.output.carried_evidence',
+      if_skipped: '/GEN/carried-evidence/core.json',
+    });
+    expect(nodes.find(n => n.id === 'verify-api')?.with?.carried_evidence).toBeUndefined();
     expect(JSON.parse(binding.if_skipped)).toEqual({
       status: 'done',
       changed_files: [],

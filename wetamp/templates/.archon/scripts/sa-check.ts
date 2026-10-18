@@ -1007,7 +1007,23 @@ function finish(
 }
 
 function accept(): void {
-  finish(env('TAG'), acceptOnce(env('TAG'), env('CODER')));
+  const tag = env('TAG'),
+    carried = env('CARRIED_EVIDENCE');
+  if (!carried) {
+    finish(tag, acceptOnce(tag, env('CODER')));
+    return;
+  }
+  const prior = JSON.parse(readFileSync(carried, 'utf8')) as Record<string, unknown> & Accept;
+  const kind = prior.decision?.kind;
+  if (kind !== 'advance' && kind !== 'debt')
+    throw new Error(`carried evidence decision must be advance/debt, got ${String(kind)}`);
+  if (typeof prior.head !== 'string') throw new Error('carried evidence head is missing');
+  const ancestor = auxiliary(['git', 'merge-base', '--is-ancestor', '--', prior.head, 'HEAD']);
+  if (ancestor.exitCode !== 0 || ancestor.signalCode)
+    throw new Error(`carried evidence head is not an ancestor of HEAD: ${prior.head}`);
+  const out = { ...prior, tag };
+  writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
+  emit(out);
 }
 
 /**
