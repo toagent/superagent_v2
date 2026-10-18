@@ -320,8 +320,10 @@ export const NODE_CONTRACT_ENV: readonly string[] = [
 ];
 // Shell/session and engine invocation metadata is not part of the project command contract.
 const RUNTIME_ENVIRONMENT = [
+  /^_$/,
   /^(?:PWD|OLDPWD|SHLVL|TERM.*|COLORTERM|TTY|TMUX.*|ZELLIJ.*|ITERM_.*|SSH_TTY|LC_TERMINAL.*)$/,
-  /^(?:ARCHON|SUPERAGENT)_(?:RUN|SESSION|NODE|WORKFLOW)(?:_.*)?$/,
+  /^(?:ARCHON|SUPERAGENT)_(?:RUN|SESSION|NODE|WORKFLOW|DETACHED)(?:_.*)?$/,
+  /^(?:CLAUDE_CODE(?:_.*)?|CLAUDE_PID|AI_AGENT|CODEX_COMPANION(?:_.*)?)$/,
 ];
 export const projectEnvironment = (values: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(
