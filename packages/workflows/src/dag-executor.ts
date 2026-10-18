@@ -3047,8 +3047,11 @@ async function runSubprocess(
           }),
         }
       : { cmd, args };
-  const outputDir = joinPath(options.artifactsDir, RUN_ARTIFACTS_ENGINE_SUBDIR);
-  const streamDir = joinPath(outputDir, 'subprocess-output');
+  const streamDir = joinPath(
+    options.artifactsDir,
+    RUN_ARTIFACTS_ENGINE_SUBDIR,
+    'subprocess-output'
+  );
   const stdoutPath = joinPath(streamDir, `${options.artifactKey}.stdout`);
   const stderrPath = joinPath(streamDir, `${options.artifactKey}.stderr`);
   try {
