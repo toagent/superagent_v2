@@ -131,7 +131,14 @@ export async function runStreamingSubprocess(options: {
   const streams = Promise.all([
     capture(child.stdout, options.stdoutPath, options.credentialValues, options.retainRawStdout),
     capture(child.stderr, options.stderrPath, options.credentialValues),
-  ]);
+  ]).catch(error => {
+    if (spawnError)
+      return [
+        { preview: '', tail: '', bytes: 0 },
+        { preview: '', tail: '', bytes: 0 },
+      ];
+    throw error;
+  });
   let killed = false;
   const timer = setTimeout(() => {
     killed = child.kill();

@@ -800,12 +800,14 @@ describe('formatSubprocessFailure', () => {
   });
 
   it('keeps the tail of diagnostics larger than 2 KB and bounds the output', () => {
-    const big = 'x'.repeat(5000) + '\nactual error at end';
+    const preview = 'preview-only'.repeat(3000);
+    const tail = 'x'.repeat(5000) + '\nactual error at end';
     const { userMessage } = formatSubprocessFailure(
-      { message: 'Command failed: cmd\n', stderr: big, code: 1 },
+      { message: 'Command failed: cmd\n', stderr: preview, stderrTail: tail, code: 1 },
       "Script node 'n1'"
     );
     expect(userMessage).toContain('actual error at end');
+    expect(userMessage).not.toContain('preview-only');
     // Tight bound: ~2 KB diagnostic + label prefix should fit well under 2.1 KB.
     // Bumping SUBPROCESS_ERROR_MAX_CHARS would trip this.
     expect(userMessage.length).toBeLessThan(2100);

@@ -186,6 +186,8 @@ interface RawSubprocessError {
   message?: string;
   stderr?: string;
   stdout?: string;
+  stderrTail?: string;
+  stdoutTail?: string;
   // Numeric exit code OR errno symbol (e.g. 'ENOENT') — mirrors ExecFileException.
   code?: number | string | null;
   killed?: boolean;
@@ -207,8 +209,8 @@ export function formatSubprocessFailure(
   err: RawSubprocessError,
   label: string
 ): { userMessage: string; logFields: Record<string, unknown> } {
-  const stderr = (err.stderr ?? '').trim();
-  const stdout = (err.stdout ?? '').trim();
+  const stderr = (err.stderrTail ?? err.stderr ?? '').trim();
+  const stdout = (err.stdoutTail ?? err.stdout ?? '').trim();
   const rawMessage = (err.message ?? '').trim();
 
   // The first line of Node's ExecFileException.message is `Command failed: <cmd>`,

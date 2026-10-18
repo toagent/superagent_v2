@@ -3026,6 +3026,7 @@ async function runSubprocess(
 ): Promise<{ stdout: string; stderr: string; credentialValues: readonly string[] }> {
   const subprocessEnv =
     execContext.kind === 'container' ? options.env : { ...process.env, ...options.env };
+  const launchEnv = execContext.kind === 'container' ? process.env : subprocessEnv;
   if (execContext.kind === 'host' && cmd === resolveBashPath()) subprocessEnv.BASH_ENV = '';
   // Both outcomes redact against the same values, so the credential set is resolved
   // once here rather than separately per path — a success path that redacted less than
@@ -3056,7 +3057,7 @@ async function runSubprocess(
       args: command.args,
       cwd: options.cwd,
       timeout: options.timeout,
-      env: subprocessEnv,
+      env: launchEnv,
       credentialValues,
       stdoutPath,
       stderrPath,
