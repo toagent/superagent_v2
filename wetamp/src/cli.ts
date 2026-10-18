@@ -736,12 +736,21 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if (coderBudgetExceeded(run, c)) return { ...c, state: 'held:gate', exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
-    const decision = decisionOf(evidenceJson(l, artifactsOf(run), `${c.node}.json`));
-    if (
-      decision?.kind === 'block' &&
-      ['coder_partial', 'coder_needs', 'acceptance_adjudication'].includes(decision.reason ?? '')
-    )
-      return { ...c, state: 'held:gate', exit: EXIT.held };
+    const art = artifactsOf(run);
+    const controlNode = [
+      c.node,
+      ...(run.status === 'failed'
+        ? (run.nodes ?? []).filter(n => n.state === 'failed').map(n => n.nodeId)
+        : []),
+    ].find(node => {
+      const decision = decisionOf(evidenceJson(l, art, `${node}.json`));
+      return (
+        decision?.kind === 'block' &&
+        ['coder_partial', 'coder_needs', 'acceptance_adjudication'].includes(decision.reason ?? '')
+      );
+    });
+    if (controlNode) return { ...c, node: controlNode, state: 'held:gate', exit: EXIT.held };
+    const decision = decisionOf(evidenceJson(l, art, `${c.node}.json`));
     if (
       /^(verify|settle|gate)-/.test(c.node) &&
       (!decision || decision.kind === 'advance' || decision.kind === 'debt')

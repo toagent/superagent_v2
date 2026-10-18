@@ -3511,6 +3511,33 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       expect(out.delivery[0].decision).toMatchObject({ reason: 'coder_needs', blockers, needs });
     }
   });
+  test('later coder_needs outrank an earlier failure and retry the existing package scope', () => {
+    const blockers = ['scope conflict'];
+    const needs = [{ cap: 'scope_decision', why: 'conflict', minimal_ask: 'choose scope' }];
+    const result = gate('coder_needs');
+    Object.assign(result.decision, { blockers, needs });
+    const s = held('soldier-core', { 'verify-core.json': { ...result, milestone: 'm1' } });
+    const view = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
+    view.nodes!.push({ nodeId: 'verify-core', state: 'failed' });
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(view));
+    appendFileSync(
+      join(s.root, 'gen/.archon/workflows/sa-sa1/sa-sa1.yaml'),
+      '  - id: package-attempt-core\n'
+    );
+    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    expect(status).toMatchObject({ state: 'held:gate', node: 'verify-core' });
+    expect(status.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('held:gate @verify-core');
+    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+    expect(readFileSync(join(s.root, 'gen/attempts/.packages/core'), 'utf8')).toBe('1');
+    expect(existsSync(join(s.root, 'gen/attempts/m1'))).toBe(false);
+  });
+  test('decide stays refused when an earlier failure has no structured control artifact', () => {
+    held('soldier-core');
+    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    expect(status).toMatchObject({ state: 'failed', node: 'soldier-core' });
+    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(1);
+  });
   test('single delivery decision: green redline self-report has identical status, brief and board projections', () => {
     const s = held('gate-m1-r1', {
       'verify-core.coder.json': {
