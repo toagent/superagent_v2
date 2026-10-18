@@ -113,12 +113,41 @@ v['checksum']=m.digest(v); print(json.dumps(v))`,
     ) as Plan;
     plan.repo = root;
     for (const p of plan.packages) p.goal = 'contract boundaries';
+    memoryWrite(() => ({
+      lessons: Array.from({ length: 5 }, (_, i) => ({
+        id: `reflection-${String(i)}`,
+        tier: 'project' as const,
+        scope: root,
+        tag: 'docs',
+        category: 'project' as const,
+        reasons: ['acceptance_failed'],
+        when: 'same project',
+        do: i ? `local lesson ${String(i)}` : 'x'.repeat(12000),
+        dont: 'cross projects',
+        why: 'fixture',
+        evidence: ['run'],
+        mechanizable: false,
+        status: 'trial' as const,
+        helpful: 5 - i,
+        harmful: 0,
+        created_at: new Date().toISOString(),
+        last_hit: new Date().toISOString(),
+      })),
+    }));
     writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
     const table = executionTable(plan, loadTiers());
     writeFileSync(join(gen, 'execution.json'), JSON.stringify(table));
     expect(injectMemory(plan, gen, [])).toEqual(
-      Object.fromEntries(plan.packages.map(p => [p.id, ['qualified']]))
+      Object.fromEntries(
+        plan.packages.map(p => [
+          p.id,
+          ['qualified', ...Array.from({ length: 4 }, (_, i) => `reflection-${String(i + 1)}`)],
+        ])
+      )
     );
+    const selected = JSON.parse(readFileSync(join(gen, 'learning.json'), 'utf8')).selections.core;
+    expect(Buffer.byteLength(JSON.stringify(selected.entries))).toBeLessThanOrEqual(12000);
+    expect(selected.entries[1]).toMatchObject({ source: 'reflection', status: 'trial' });
     const contexts = Object.entries(table)
       .filter(([, e]) => e.role === 'code' || e.role === 'review')
       .map(([node]) =>
@@ -149,7 +178,7 @@ v['checksum']=m.digest(v); print(json.dumps(v))`,
     mkdirSync(next);
     writeFileSync(join(next, 'plan.json'), JSON.stringify(plan));
     writeFileSync(join(next, 'execution.json'), JSON.stringify(table));
-    expect(Object.values(injectMemory(plan, next, [])).flat()).toEqual([]);
+    expect(Object.values(injectMemory(plan, next, [])).flat()).toHaveLength(8);
     const [node] = Object.entries(table).find(([, e]) => e.role === 'code')!;
     expect(
       readFileSync(

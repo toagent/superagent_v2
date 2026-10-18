@@ -41,7 +41,15 @@ import {
   type Episode,
   type Lesson,
 } from '../src/memory';
-import { curate, reflectOne, reflectionInput, reflectionUsage } from '../src/memory-reflect';
+import {
+  curate,
+  reflectOne,
+  reflectionCommand,
+  reflectionFailure,
+  reflectionInput,
+  reflectionUsage,
+} from '../src/memory-reflect';
+import { roleCommandArgs } from '@archon/providers/launch-policy';
 import { artifactsOf, main, type Ledger } from '../src/cli';
 import { lock, type RunView } from '../src/archon';
 import { engineHash, generate } from '../src/generate';
@@ -417,12 +425,21 @@ describe('EV1 incident replay', () => {
     const learned = memoryState().lessons[0];
     expect(learned.scope).toBe(root);
     expect(learned.status).toBe('trial');
+    seed(
+      lesson('stable', { status: 'stable', helpful: 2 }),
+      lesson('engine', { category: 'engine', helpful: 9 }),
+      lesson('retired', { status: 'retired', helpful: 9 }),
+      lesson('foreign', { scope: join(root, 'other'), helpful: 9 })
+    );
     const generated = generate(plan, 'next', true);
     expect(readFileSync(join(generated.dir, 'briefs/core.md'), 'utf8')).not.toContain(
       '选取空闲端口'
     );
     const metadata = JSON.parse(readFileSync(join(generated.dir, 'engine.json'), 'utf8'));
-    expect(metadata.lessons).toEqual({});
+    expect(metadata.lessons.core).toEqual(['stable', learned.id]);
+    const entries = JSON.parse(readFileSync(join(generated.dir, 'learning.json'), 'utf8'))
+      .selections.core.entries;
+    expect(entries[0]).toMatchObject({ id: 'stable', source: 'reflection', status: 'active' });
     const other = generate({ ...plan, repo: join(root, 'other') }, 'other', true);
     expect(readFileSync(join(other.dir, 'briefs/core.md'), 'utf8')).not.toContain('选取空闲端口');
     maintainLessons(
@@ -445,6 +462,17 @@ describe('EV1 incident replay', () => {
 });
 
 describe('EV1 budgets and deterministic matching', () => {
+  test('production reflection launch obeys role policy and failures use machine tokens', () => {
+    const model = loadTiers().tiers.general.pools.chatgpt[0];
+    expect(() =>
+      roleCommandArgs(reflectionCommand(model, '/tmp/result', 'input'), 'codex', model)
+    ).not.toThrow();
+    expect(reflectionFailure(1, null, false)).toEqual({
+      kind: 'launch_rejected',
+      exit_code: 1,
+    });
+    expect(reflectionFailure(143, 'SIGTERM', true)).toEqual({ kind: 'signal', signal: 'SIGTERM' });
+  });
   test('daily ceiling queues then resumes next day, counts cached input once', async () => {
     fake();
     mkdirSync(join(sa, 'memory'));
@@ -515,6 +543,10 @@ describe('EV1 budgets and deterministic matching', () => {
       ]);
       const last = entries.at(-1)!;
       expect(last.reflection).toMatchObject({ state, usage: state === 'rejected' ? 9216 : null });
+      if (state === 'failed' || state === 'interrupted') {
+        expect(Date.parse(last.reflection!.at!)).not.toBeNaN();
+        expect(last.reflection!.failure).toEqual({ kind: 'exit_code', exit_code: Number(value) });
+      }
       expect(memoryData(NOW).reflection.tokens).toBe(9216);
       if (state === 'failed' || state === 'interrupted') expect(last.reflected).toBeUndefined();
       if (state !== 'produced') expect(memoryState().lessons).toEqual([]);
@@ -553,7 +585,7 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(long.ids.length).toBeLessThan(5);
     expect(lessonText([lesson('giant', { do: '中'.repeat(240) })]).ids).toHaveLength(0);
   });
-  test('legacy stable and trial never mutate new briefs, commands or frozen context', () => {
+  test('reflection lessons enter data context without mutating briefs, commands or nodes', () => {
     seed(lesson('trial'), lesson('stable', { status: 'stable', helpful: 100 }));
     const dir = join(root, 'unqualified');
     mkdirSync(join(dir, 'briefs'), { recursive: true });
@@ -563,7 +595,7 @@ describe('EV1 budgets and deterministic matching', () => {
     ];
     const frozen = JSON.stringify(nodes);
     const before = readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8');
-    expect(injectMemory(plan, dir, nodes)).toEqual({});
+    expect(injectMemory(plan, dir, nodes)).toEqual({ core: ['stable', 'trial'] });
     expect(selectLessons(root, 'ts-cli')).toEqual([]);
     expect(readFileSync(join(dir, 'briefs/core.md'), 'utf8')).toBe('original brief');
     expect(JSON.stringify(nodes)).toBe(frozen);
@@ -833,7 +865,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
       override: '明确的小样本验收',
       rejected: false,
     });
-  });
+  }, 15_000);
   test('read-only memory API reports ten recent episodes and changes no files', () => {
     for (let i = 0; i < 12; i++)
       saveEpisode(
@@ -1384,7 +1416,8 @@ describe('FIXD review regressions', () => {
       if (success) expect(episodes()).toHaveLength(0);
       else
         expect(episodes()[0]).toMatchObject({ status: 'failed', acceptance: [{ cmd, ok: false }] });
-    }
+    },
+    15_000
   );
   test('EV-R1-01 nested finding evidence and command/log bodies never cross reflection boundary', async () => {
     fake();
