@@ -762,6 +762,54 @@ const codedHead = (run: RunView, pkg: string): string | undefined => {
     : undefined;
 };
 
+export function recoveryReviewCheckpoint(
+  l: Ledger,
+  art: string,
+  file: string,
+  head: string
+): { milestone: string; checkpoint?: ReviewCheckpoint } | undefined {
+  const match = /^gate-(.+)-r(\d+)\.json$/.exec(file);
+  if (!match) return undefined;
+  try {
+    const gate = evidenceJson(l, art, file) as Record<string, unknown> | undefined;
+    const diff = evidenceJson(l, art, file.replace('gate-', 'diff-')) as
+      | Record<string, unknown>
+      | undefined;
+    const decision = decisionOf(gate),
+      inferredLedger = join(art, file.replace('.json', '.ledger.json')),
+      ledger = confined(
+        l,
+        typeof gate?.ledger_file === 'string' ? gate.ledger_file : inferredLedger
+      );
+    const valid =
+      decision &&
+      ['advance', 'debt'].includes(decision.kind) &&
+      gate?.head_trusted === true &&
+      gate.reviewed_head === head &&
+      typeof gate.reviewed_diff_hash === 'string' &&
+      /^[0-9a-f]{16}$/.test(gate.reviewed_diff_hash) &&
+      typeof diff?.contract_hash === 'string' &&
+      /^[0-9a-f]{64}$/.test(diff.contract_hash) &&
+      diff.head === gate.reviewed_head &&
+      diff.diff_hash === gate.reviewed_diff_hash &&
+      ledger &&
+      readJson(ledger);
+    return {
+      milestone: match[1],
+      ...(valid
+        ? {
+            checkpoint: {
+              gate: { ...gate, decision, ledger_file: ledger },
+              check: diff,
+            } as ReviewCheckpoint,
+          }
+        : {}),
+    };
+  } catch {
+    return { milestone: match[1] };
+  }
+}
+
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
   l: Ledger,
@@ -928,26 +976,8 @@ function recoverRun(
         if (run.working_path) {
           const art = artifactsOf(run), head = gitHead(run.working_path);
           for (const file of evidenceGates(l, art)) {
-            const match = /^gate-(.+)-r(\d+)\.json$/.exec(file);
-            try {
-              const gate = evidenceJson(l, art, file) as Record<string, unknown> | undefined;
-              const diff = evidenceJson(l, art, file.replace('gate-', 'diff-')) as Record<string, unknown> | undefined;
-              const decision = decisionOf(gate), inferredLedger = join(art, file.replace('.json', '.ledger.json'));
-              const ledger = confined(l, typeof gate?.ledger_file === 'string' ? gate.ledger_file : inferredLedger);
-              if (match && decision &&
-                ['advance', 'debt'].includes(decision.kind) &&
-                gate?.head_trusted === true &&
-                gate.reviewed_head === head &&
-                typeof gate.reviewed_diff_hash === 'string' && /^[0-9a-f]{16}$/.test(gate.reviewed_diff_hash) &&
-                typeof diff?.contract_hash === 'string' && /^[0-9a-f]{64}$/.test(diff.contract_hash) &&
-                diff.head === gate.reviewed_head &&
-                diff.diff_hash === gate.reviewed_diff_hash &&
-                ledger && readJson(ledger)
-              ) reviews[match[1]] = { gate: { ...gate, decision, ledger_file: ledger }, check: diff } as ReviewCheckpoint;
-              else if (match) reviews[match[1]] = undefined;
-            } catch {
-              if (match) reviews[match[1]] = undefined;
-            }
+            const admitted = recoveryReviewCheckpoint(l, art, file, head);
+            if (admitted) reviews[admitted.milestone] = admitted.checkpoint;
           }
         }
         const gen = generate(

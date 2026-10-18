@@ -49,7 +49,14 @@ import {
   type Ledger,
   type Policy,
 } from '../src/cli';
-import { gitHead, renderAliases, loadTiers, resolveRoute, WETAMP } from '../src/config';
+import {
+  gitHead,
+  renderAliases,
+  loadTiers,
+  resolveRoute,
+  snapshotPolicy,
+  WETAMP,
+} from '../src/config';
 import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate, renderBrief } from '../src/generate';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
@@ -73,7 +80,10 @@ const engineRecoverLock = () => {
 };
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
 const supervisorTransport = cliMod.supervisor;
-const fixtureDecision = (kind: 'advance' | 'repair' | 'block', reason: string | null = null) => ({
+const fixtureDecision = (
+  kind: 'advance' | 'debt' | 'repair' | 'block',
+  reason: string | null = null
+) => ({
   kind,
   reason,
   evidence: [],
@@ -843,57 +853,76 @@ describe('HF3 latest-engine recovery', () => {
     expect(nodes.find(n => n.id === 'settle-core')?.script).toBe('sa-check');
     expect(sh('git rev-parse HEAD', worktree).trim()).not.toBe(head);
   });
-  test.each([
-    ['valid', true],
-    ['block', false],
-    ['reviewed-head-drift', false],
-  ] as const)('review checkpoint admission is fail-closed at recovery (%s)', (sample, admitted) => {
-    const s = setup('old');
-    const worktree = gitRepo(s.root);
-    const head = sh('git rev-parse HEAD', worktree).trim();
-    const reviewedHead = sample === 'reviewed-head-drift' ? 'f'.repeat(40) : head;
-    const art = join(s.root, 'artifacts', 'runs', 'r');
+  test('review checkpoint admission accepts only complete matching evidence', () => {
+    const cases: {
+      name: string;
+      admitted: boolean;
+      edit?: (gate: Record<string, unknown>, diff: Record<string, unknown>) => void;
+      gateRaw?: string;
+      ledgerRaw?: string | null;
+    }[] = [
+      { name: 'advance', admitted: true },
+      { name: 'debt', admitted: true, edit: gate => (gate.decision = fixtureDecision('debt')) },
+      { name: 'block', admitted: false, edit: gate => (gate.decision = fixtureDecision('block')) },
+      { name: 'untrusted-head', admitted: false, edit: gate => (gate.head_trusted = false) },
+      {
+        name: 'reviewed-head-drift',
+        admitted: false,
+        edit: gate => (gate.reviewed_head = 'f'.repeat(40)),
+      },
+      {
+        name: 'diff-head-drift',
+        admitted: false,
+        edit: (_gate, diff) => (diff.head = 'f'.repeat(40)),
+      },
+      {
+        name: 'diff-hash-drift',
+        admitted: false,
+        edit: (_gate, diff) => (diff.diff_hash = 'e'.repeat(16)),
+      },
+      {
+        name: 'invalid-review-hash',
+        admitted: false,
+        edit: gate => (gate.reviewed_diff_hash = 'not-a-hash'),
+      },
+      {
+        name: 'invalid-contract-hash',
+        admitted: false,
+        edit: (_gate, diff) => (diff.contract_hash = 'not-a-hash'),
+      },
+      { name: 'missing-ledger', admitted: false, ledgerRaw: null },
+      { name: 'unreadable-gate', admitted: false, gateRaw: '{' },
+    ];
+    const s = setup('old'),
+      worktree = gitRepo(s.root),
+      head = sh('git rev-parse HEAD', worktree).trim(),
+      art = join(s.root, 'artifacts', 'runs', 'r'),
+      ledger = join(art, 'gate-m1-r1.ledger.json');
     mkdirSync(art, { recursive: true });
-    const ledger = join(art, 'gate-m1-r1.ledger.json');
-    writeFileSync(ledger, '{}');
-    writeFileSync(
-      join(art, 'gate-m1-r1.json'),
-      JSON.stringify({
-        decision: fixtureDecision(
-          sample === 'block' ? 'block' : 'advance',
-          sample === 'block' ? 'no_change' : null
-        ),
+    for (const sample of cases) {
+      if (sample.ledgerRaw === null) rmSync(ledger, { force: true });
+      else writeFileSync(ledger, sample.ledgerRaw ?? '{}');
+      const gate: Record<string, unknown> = {
+        decision: fixtureDecision('advance'),
         head_trusted: true,
-        reviewed_head: reviewedHead,
+        reviewed_head: head,
         reviewed_diff_hash: 'd'.repeat(16),
         ledger_file: ledger,
-      })
-    );
-    writeFileSync(
-      join(art, 'diff-m1-r1.json'),
-      JSON.stringify({
-        head: reviewedHead,
+      };
+      const diff: Record<string, unknown> = {
+        head,
         diff_hash: 'd'.repeat(16),
         contract_hash: 'c'.repeat(64),
-      })
-    );
-    writeFileSync(
-      join(s.dir, 'get-000.json'),
-      JSON.stringify(
-        run('failed', {
-          working_path: worktree,
-          output_root: s.root,
-          nodes: [{ nodeId: 'gate-m1-r1', state: 'completed' }],
-        })
-      )
-    );
-    expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
-    const l = loadLedger('sa1');
-    const workflow = readFileSync(
-      join(l.gen_dir, '.archon', 'workflows', l.workflow, `${l.workflow}.yaml`),
-      'utf8'
-    );
-    expect(workflow.includes('id: carried-gate-m1')).toBe(admitted);
+      };
+      sample.edit?.(gate, diff);
+      writeFileSync(join(art, 'gate-m1-r1.json'), sample.gateRaw ?? JSON.stringify(gate));
+      writeFileSync(join(art, 'diff-m1-r1.json'), JSON.stringify(diff));
+      expect(
+        cliMod.recoveryReviewCheckpoint(s.ledger, art, 'gate-m1-r1.json', head)?.checkpoint !==
+          undefined,
+        sample.name
+      ).toBe(sample.admitted);
+    }
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();
@@ -2206,6 +2235,7 @@ test.each([
     scripts = join(s.ledger.gen_dir, '.archon/scripts');
   mkdirSync(art, { recursive: true });
   mkdirSync(scripts, { recursive: true });
+  writeFileSync(join(s.ledger.gen_dir, 'policy.json'), JSON.stringify(snapshotPolicy(loadTiers())));
   writeFileSync(
     join(s.ledger.gen_dir, 'accept-inputs.json'),
     JSON.stringify([{ tag: 'diff-m1-r1', milestone: 'm1', risk: 'G1' }])

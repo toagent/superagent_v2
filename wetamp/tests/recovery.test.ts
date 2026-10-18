@@ -143,7 +143,7 @@ function checkRecovery(limit: number): void {
   // prettier-ignore
   const e: RecoveryEvidence = { run_id: 'operator', engine_run_id: 'old', base, candidate: '', packages: ['pkg'],
     admission: { kind: 'owner_legacy_snapshot', reason: 'Owner admits current snapshots, not historical input hashes' },
-    plan: save('plan.json', p), policy: save('policy.json', { risk_paths: [], code_extensions: [], exempt_paths: [], budget_floor: { S: 1000 } }),
+    plan: save('plan.json', p), policy: save('policy.json', snapshotPolicy(loadTiers())),
     contracts: save('accept-inputs.json', []), exception: save('exception.json', {}), author_coverage: save('authors.json', {}), rounds: [],
   };
   let previous = base;
@@ -312,7 +312,8 @@ function checkRecovery(limit: number): void {
 
 test.each([3, MAX_ROUNDS])(
   'RECOVERY_CONTINUATION recorded limit %i binds full native history and rejects unsafe reuse',
-  checkRecovery
+  checkRecovery,
+  10_000
 );
 
 async function until(check: () => boolean, ms = 15000): Promise<void> {

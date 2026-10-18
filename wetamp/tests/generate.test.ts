@@ -341,7 +341,10 @@ test('completed review context replay keeps stale refs fail-closed only for unfi
     join(artifacts, 'review-m1-r1.context.json'),
     JSON.stringify({ path: frozen, attempt: 0 })
   );
-  const node: N = { id: 'review-context-m1-r1', with: { counter, gen, review: 'review-m1-r1' } };
+  const node: N = {
+    id: 'review-context-m1-r1',
+    with: { counter, gen, review: 'review-m1-r1', gate: 'gate-m1-r1' },
+  };
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(1);
   fs.writeFileSync(join(artifacts, 'gate-m1-r1.json'), '{}');
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(0);
@@ -1082,6 +1085,7 @@ describe('buildWorkflow', () => {
       else {
         expect(reviewContextNode.always_run).toBeTrue();
         expect(reviewContextNode.depends_on).toEqual([id]);
+        expect(reviewContextNode.with?.gate).toBe(id.replace('attempt-review-', 'gate-'));
         expect(allNodes.find(n => n.id === id.slice('attempt-'.length))?.depends_on).toContain(
           reviewContextNode.id
         );

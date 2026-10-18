@@ -210,10 +210,10 @@ export function buildWorkflow(
       }
     ),
   ];
-  const attemptInputs = (counter: string, pkg = '', review = ''): Node => ({
+  const attemptInputs = (counter: string, pkg = '', review = '', gate = ''): Node => ({
     script: 'sa-context',
     runtime: 'bun',
-    with: { counter, gen, pkg, review },
+    with: { counter, gen, pkg, review, ...(gate ? { gate } : {}) },
   });
   let after: Node = { depends_on: ['environment'] };
   const signoff = (m: Milestone, gates: Node): Node => {
@@ -585,7 +585,7 @@ export function buildWorkflow(
           when: reviewWhen,
           always_run: true,
           depends_on: [reviewAttempt],
-          ...attemptInputs(attemptPath(gen, `review-${t}`), '', `review-${t}`),
+          ...attemptInputs(attemptPath(gen, `review-${t}`), '', `review-${t}`, `gate-${t}`),
           output_format: outputSchema('attempt'),
         });
       nodes.push({

@@ -307,9 +307,9 @@ export function contextPack(
 if (import.meta.main) {
   try {
     // Native script nodes use the engine's input channel; frozen CLI callers keep positional args.
-    const [counter, gen, pkg, review] =
+    const [counter, gen, pkg, review, gate] =
       process.env.INPUTS_COUNTER !== undefined
-        ? ['COUNTER', 'GEN', 'PKG', 'REVIEW'].map(k => process.env[`INPUTS_${k}`] ?? '')
+        ? ['COUNTER', 'GEN', 'PKG', 'REVIEW', 'GATE'].map(k => process.env[`INPUTS_${k}`] ?? '')
         : process.argv.slice(2);
     if (!counter || !gen) throw new Error('context: attempt arguments missing');
     const attempt = String(readAttempt(counter));
@@ -333,9 +333,10 @@ if (import.meta.main) {
       // replay that value; a later attempt must validate or rebuild its own context.
       const completedReview =
         review &&
+        gate &&
         pointer !== 'unknown' &&
         pointer.attempt === Number(attempt) &&
-        existsSync(join(artifacts, `${review.replace(/^review-/, 'gate-')}.json`));
+        existsSync(join(artifacts, `${gate}.json`));
       if (review && !completedReview) {
         if (pointer === 'unknown') throw new Error('context: missing prepared review');
         const context = read(pointer.path) as RoleContext | 'unknown';
