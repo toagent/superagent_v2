@@ -1608,6 +1608,9 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
     expect(nodes.find(n => n.id === 'fix-m1-r2')?.when).toBe("$gate-m1-r1.output.verdict == 'fix'");
     expect(nodes.find(n => n.id === 'verify-core')?.with?.kind).toBe('accept');
     expect(nodes.find(n => n.id === 'settle-core')?.with?.kind).toBe('settle');
+    expect(nodes.find(n => n.id === 'settle-core')?.with?.first).toBe(
+      '$verify-core.output.disposition'
+    );
   }
 });
 

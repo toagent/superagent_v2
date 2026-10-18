@@ -432,7 +432,7 @@ export function buildWorkflow(
             ...accept,
             kind: 'settle',
             tag: `settle-${p.id}`,
-            first: `$${verify}.output`,
+            first: `$${verify}.output.disposition`,
             repaired: skippable(`$repair-${p.id}.output`),
           },
           {

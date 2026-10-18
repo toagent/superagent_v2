@@ -600,6 +600,38 @@ describe('NONCONVERGENCE delivery gate', () => {
     };
     expect(gate([check, changed])).toMatchObject({ code: 0, out: { verdict: 'fix' } });
   });
+  test('verified requirements and an empty ledger outrank a repeated signature', () => {
+    const command = { cmd: 'true', timeout_s: 5 };
+    const check: Accept = {
+      ok: true,
+      same: true,
+      diff_hash: 'candidate',
+      head: 'head',
+      contract_hash: 'contract',
+      risk: 'G2',
+      decision: { kind: 'advance', reason: null, evidence: [], debt: [] },
+      requirement_contract: [
+        {
+          id: 'w5',
+          accept: [command],
+          requirements: [{ id: 'verified', text: 'W5 verified', verified_by: [0] }],
+        },
+      ],
+      command_results: [{ check: command, pass: true, evidence: 'accept.log' }],
+    };
+    expect(
+      decide({
+        reviews: [R('PASS'), null],
+        rechecks: [check, check],
+        risk: 'G2',
+        qualifiedReview: true,
+      })
+    ).toMatchObject({
+      verdict: 'pass',
+      decision: { kind: 'advance', reason: null, requirements: { status: 'verified' } },
+      ledger: { blocking: [], debt: [] },
+    });
+  });
   test('unchanged diff stops unknown diagnosis even after an empty commit', () => {
     const unknown = R('PASS', [f('high', { failure_class: 'unknown' })]);
     const result = decide({
@@ -3205,26 +3237,32 @@ describe('sa-check script', () => {
       head: sh('git rev-parse HEAD', repo).trim(),
       same: false,
     };
+    mkdirSync(join(root, 'art'));
+    writeFileSync(join(root, 'art', 'verify-a.json'), JSON.stringify(first));
     const pass = runScript(repo, {
       kind: 'settle',
       plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'settle-a',
-      first: JSON.stringify(first),
+      first: 'advance',
       repaired: 'null',
     });
     expect(pass.code).toBe(0);
     expect(pass.out).toEqual({ diff_hash: 'delivered', head: first.head });
+    writeFileSync(
+      join(root, 'art', 'verify-a.json'),
+      JSON.stringify({
+        ...first,
+        log: '/changed.log',
+        decision: { kind: 'debt', reason: null, evidence: ['/changed.log'], debt: ['fixture'] },
+      })
+    );
     const auditChanged = runScript(repo, {
       kind: 'settle',
       plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'settle-a',
-      first: JSON.stringify({
-        ...first,
-        log: '/changed.log',
-        decision: { kind: 'debt', reason: null, evidence: ['/changed.log'], debt: ['fixture'] },
-      }),
+      first: 'advance',
       repaired: 'null',
     });
     expect(auditChanged.out).toEqual(pass.out);

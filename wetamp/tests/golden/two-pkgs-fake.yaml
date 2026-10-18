@@ -479,7 +479,7 @@ nodes:
       risk: G1
       milestone: m1
       tag: settle-core
-      first: $verify-core.output
+      first: $verify-core.output.disposition
       repaired:
         from: $repair-core.output
         if_skipped: null
@@ -3632,7 +3632,7 @@ nodes:
       risk: G2
       milestone: m2
       tag: settle-api
-      first: $verify-api.output
+      first: $verify-api.output.disposition
       repaired:
         from: $repair-api.output
         if_skipped: null

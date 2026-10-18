@@ -919,12 +919,15 @@ function accept(): void {
  */
 function settle(): void {
   const tag = env('TAG');
-  const first = json('FIRST') as Record<string, unknown> & Accept;
+  const first = env('FIRST');
   const repaired = env('REPAIRED');
   if (!repaired || repaired === 'null') {
-    if (first.disposition !== 'advance')
-      throw new Error(`${tag}: repair skipped but verify did not advance`);
-    finish(tag, first);
+    if (first !== 'advance') throw new Error(`${tag}: repair skipped but verify did not advance`);
+    const verifyArtifact = join(artifacts, `${tag.replace(/^settle-/, 'verify-')}.json`);
+    finish(
+      tag,
+      JSON.parse(readFileSync(verifyArtifact, 'utf8')) as Record<string, unknown> & Accept
+    );
     return;
   }
   const out = acceptOnce(tag, repaired);
@@ -1205,6 +1208,41 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
 
 export const MAX_ROUNDS = 6;
 type Verdict = 'pass' | 'fix' | 'escalate';
+type DecisionCandidate = Pick<DeliveryDecision, 'kind' | 'reason'>;
+interface DecisionFacts {
+  candidate: DecisionCandidate;
+  verified: boolean;
+  unchanged: boolean;
+}
+const CONVERGENCE_REASONS = new Set([
+  'acceptance_failed',
+  'review_failed',
+  'review_inconsistent',
+  'no_change',
+]);
+const DECISION_RULES: {
+  when: (facts: DecisionFacts) => boolean;
+  decide: (facts: DecisionFacts) => DecisionCandidate;
+}[] = [
+  {
+    when: facts => facts.verified && CONVERGENCE_REASONS.has(facts.candidate.reason ?? ''),
+    decide: () => ({ kind: 'advance', reason: null }),
+  },
+  {
+    when: facts =>
+      facts.unchanged &&
+      ['repair', 'block'].includes(facts.candidate.kind) &&
+      CONVERGENCE_REASONS.has(facts.candidate.reason ?? ''),
+    decide: () => ({ kind: 'block', reason: 'no_change' }),
+  },
+  { when: () => true, decide: facts => facts.candidate },
+];
+
+/** Ordered convergence policy: verified delivery wins; unchanged real failures stop repair. */
+function convergenceDecision(facts: DecisionFacts): DecisionCandidate {
+  const rule = DECISION_RULES.find(candidate => candidate.when(facts));
+  return rule ? rule.decide(facts) : facts.candidate;
+}
 
 /** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，未完成自报只阻断已证实的空交付。 */
 export function deliveryDecision(input: {
@@ -1298,21 +1336,59 @@ export function deliveryDecision(input: {
   // prettier-ignore
   const signature = (i: number) => { const c = input.rechecks.at(i); return JSON.stringify([c?.head, c?.diff_hash, c?.contract_hash, c?.ok, c?.workspace_clean, c?.failed, c?.failures, c?.decision?.evidence, reviews.at(i)]); };
   const repeated = !!check?.head && input.rechecks.length > 1 && signature(-1) === signature(-2);
+  const unchanged = !!check && (check.same || repeated);
+  const accepted = !!(
+    completion.status !== 'unmet' &&
+    check?.workspace_clean !== false &&
+    ((check?.ok ?? false) ||
+      ((check?.failed?.length ?? 0) > 0 &&
+        check?.failed?.every(command =>
+          ledger.debt.some(e => e.command === command && e.debt_reason === 'non_product')
+        )))
+  );
+  const prior = reviews
+    .map((review, i) => (review ? i : -1))
+    .filter(i => i >= 0)
+    .at(-1);
+  const priorCheck = prior === undefined ? undefined : input.rechecks[prior];
+  const priorReview = prior === undefined ? undefined : reviews[prior];
+  const reusable =
+    input.qualifiedReview === true &&
+    reviews.at(-1) === null &&
+    check?.ok === true &&
+    check.decision?.kind === 'advance' &&
+    ledger.blocking.length === 0 &&
+    ledger.debt.length === 0 &&
+    priorReview?.status === 'PASS' &&
+    priorReview.debt.length === 0 &&
+    !!check.head &&
+    priorCheck?.head === check.head &&
+    !!check.diff_hash &&
+    priorCheck.diff_hash === check.diff_hash &&
+    !!check.contract_hash &&
+    priorCheck.contract_hash === check.contract_hash &&
+    priorCheck.risk === check.risk &&
+    check.risk === input.risk;
+  const reviewSatisfied =
+    !input.reviews ||
+    reviews.at(-1)?.status === 'PASS' ||
+    reusable ||
+    (input.reviewRequired === false && !input.strict && input.risk !== 'G2');
+  const verified =
+    reusable ||
+    (accepted &&
+      completion.status === 'verified' &&
+      ledger.blocking.length === 0 &&
+      ledger.debt.length === 0 &&
+      reviewSatisfied);
   const out = (kind: DeliveryDecision['kind'], reason: string | null, debt: string[] = []) => {
-    if (
-      (kind === 'repair' || kind === 'block') &&
-      ['acceptance_failed', 'review_failed', 'review_inconsistent'].includes(reason ?? '') &&
-      (check?.same || repeated)
-    ) {
-      kind = 'block';
-      reason = 'no_change';
-    }
-    if (reason === 'no_change')
+    const selected = convergenceDecision({ candidate: { kind, reason }, verified, unchanged });
+    if (selected.reason === 'no_change')
       evidence.push('repair input unchanged: same diff or identical adjacent head and evidence');
     return {
       decision: {
-        kind: kind === 'advance' && debt.length ? 'debt' : kind,
-        reason,
+        kind: selected.kind === 'advance' && debt.length ? 'debt' : selected.kind,
+        reason: selected.reason,
         evidence,
         debt,
         requirements: completion,
@@ -1389,14 +1465,6 @@ export function deliveryDecision(input: {
       check.failed?.some(command => !approved.failed?.includes(command)))
   )
     return out('block', 'acceptance_failed');
-  const accepted =
-    completion.status !== 'unmet' &&
-    check.workspace_clean !== false &&
-    (check.ok ||
-      ((check.failed?.length ?? 0) > 0 &&
-        check.failed?.every(command =>
-          ledger.debt.some(e => e.command === command && e.debt_reason === 'non_product')
-        )));
   if (!input.reviews) {
     const debt = debtOf(reviews, ledger);
     return accepted ? out('advance', null, debt) : out('repair', 'acceptance_failed', debt);
@@ -1413,33 +1481,6 @@ export function deliveryDecision(input: {
     input.risk !== 'G2'
   )
     return out('advance', 'review_not_required', debtOf(reviews, ledger));
-  if (check.same) {
-    const prior = reviews
-      .map((r, i) => (r ? i : -1))
-      .filter(i => i >= 0)
-      .at(-1);
-    const accepted = prior === undefined ? undefined : input.rechecks[prior];
-    const review = prior === undefined ? undefined : reviews[prior];
-    // Missing legacy evidence cannot prove equivalence; open debt also forbids reuse.
-    const reusable =
-      input.qualifiedReview === true &&
-      reviews.at(-1) === null &&
-      check.ok &&
-      check.decision?.kind === 'advance' &&
-      review?.status === 'PASS' &&
-      ledger.blocking.length === 0 &&
-      ledger.debt.length === 0 &&
-      review.debt.length === 0 &&
-      !!check.head &&
-      accepted?.head === check.head &&
-      !!check.diff_hash &&
-      accepted.diff_hash === check.diff_hash &&
-      !!check.contract_hash &&
-      accepted.contract_hash === check.contract_hash &&
-      accepted.risk === check.risk &&
-      check.risk === input.risk;
-    return reusable ? out('advance', null) : out('block', 'no_change');
-  }
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
   // Non-blocking findings remain debt even when the reviewer labels the review FAIL.
@@ -1450,10 +1491,11 @@ export function deliveryDecision(input: {
   if (accepted && debtOnly) return out('advance', null, debt);
   let reason: string;
   if (!last) {
+    if (accepted && unchanged) return out('block', 'review_failed', debt);
     if (accepted) throw new Error('gate: no review');
     reason = check.reason ?? 'acceptance_failed';
   } else {
-    const ok = accepted ?? false;
+    const ok = accepted;
     if (last.status === 'PASS' && ledger.blocking.length === 0 && ok)
       return out('advance', null, debt);
     reason = !ok
