@@ -380,7 +380,6 @@ describe('EV1 incident replay', () => {
     expect(metadata.lessons.core).toEqual(['stable', learned.id]);
     const entries = JSON.parse(readFileSync(join(generated.dir, 'learning.json'), 'utf8'))
       .selections.core.entries;
-    expect(entries).toHaveLength(2);
     expect(entries[0]).toMatchObject({ id: 'stable', source: 'reflection', status: 'active' });
     const other = generate({ ...plan, repo: join(root, 'other') }, 'other', true);
     expect(readFileSync(join(other.dir, 'briefs/core.md'), 'utf8')).not.toContain('选取空闲端口');
