@@ -917,6 +917,7 @@ export const toolCallAttentionSchema = z
     streamId: z.string().min(1),
     nodeId: z.string().min(1),
     provider: z.string().min(1),
+    kind: z.enum(['tool_call', 'progress']).optional(),
     toolCallId: z.string().min(1),
     name: z.string().min(1).max(1024),
     title: z.string().max(1024).optional(),

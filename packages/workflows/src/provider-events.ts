@@ -81,6 +81,7 @@ export interface ProviderEventHandler {
   /** Subtasks that started and have not ended: the work a stream cut short would lose. */
   liveSubtaskIds(): string[];
   hasOpenTools(): boolean;
+  observeProgress(): Promise<void>;
   refreshAttention(): Promise<void>;
   clearAttention(): Promise<void>;
 }
@@ -190,6 +191,7 @@ export function createProviderEventHandler(deps: ProviderEventHandlerDeps): Prov
       }
     },
     hasOpenTools: () => deps.toolAttention.hasOpenTools(),
+    observeProgress: () => deps.toolAttention.observeProgress(),
     refreshAttention: async (): Promise<void> => {
       await deps.toolAttention.refresh();
     },

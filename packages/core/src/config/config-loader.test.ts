@@ -198,14 +198,19 @@ ${field}:
     );
 
     test.each([0, 60000])('accepts tool attention policy %s at config ingress', async threshold => {
-      mockFsReadFile.mockResolvedValue(`workflows:\n  toolCallAttentionMs: ${threshold}\n`);
-      expect((await loadGlobalConfig()).workflows?.toolCallAttentionMs).toBe(threshold);
+      mockFsReadFile.mockResolvedValue(
+        `workflows:\n  toolCallAttentionMs: ${threshold}\n  progressAttentionMs: ${threshold}\n`
+      );
+      expect((await loadGlobalConfig()).workflows).toMatchObject({
+        toolCallAttentionMs: threshold,
+        progressAttentionMs: threshold,
+      });
     });
 
     test.each([-1, 1.5])(
       'rejects invalid tool attention policy %s at config ingress',
       async threshold => {
-        mockFsReadFile.mockResolvedValue(`workflows:\n  toolCallAttentionMs: ${threshold}\n`);
+        mockFsReadFile.mockResolvedValue(`workflows:\n  progressAttentionMs: ${threshold}\n`);
         expect(await loadGlobalConfig()).toEqual({});
       }
     );
@@ -468,6 +473,7 @@ recommendedWorkflows: "archon-plan"
       expect(config.concurrency.maxConversations).toBe(10);
       expect(config.workflows).toEqual({
         toolCallAttentionMs: 1800000,
+        progressAttentionMs: 1800000,
         autoResumeOnQuotaReset: false,
         quotaMaxAttempts: 1,
         quotaDeadlineMs: 86_400_000,
@@ -478,12 +484,14 @@ recommendedWorkflows: "archon-plan"
       mockFsReadFile.mockResolvedValueOnce(`
 workflows:
   toolCallAttentionMs: 60000
+  progressAttentionMs: 120000
   autoResumeOnQuotaReset: true
   quotaFallbackDelayMs: 3600000
   quotaMaxAttempts: 2
 `).mockResolvedValueOnce(`
 workflows:
   toolCallAttentionMs: 0
+  progressAttentionMs: 0
   quotaMaxAttempts: 3
   quotaDeadlineMs: 43200000
 `);
@@ -492,6 +500,7 @@ workflows:
 
       expect(config.workflows).toEqual({
         toolCallAttentionMs: 0,
+        progressAttentionMs: 0,
         autoResumeOnQuotaReset: true,
         quotaFallbackDelayMs: 3_600_000,
         quotaMaxAttempts: 3,

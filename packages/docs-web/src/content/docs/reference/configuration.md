@@ -116,6 +116,7 @@ concurrency:
 # Live tool attention is enabled by default; quota continuation is opt-in.
 workflows:
   toolCallAttentionMs: 1800000  # 30 minutes; 0 disables tool-call advisories
+  progressAttentionMs: 1800000  # 30 minutes; 0 disables no-progress advisories
   autoResumeOnQuotaReset: false
   # quotaFallbackDelayMs: 3600000
   quotaMaxAttempts: 1
@@ -824,6 +825,7 @@ DISCORD_STREAMING_MODE=batch
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `toolCallAttentionMs` | `1800000` | Milliseconds without reported progress before an open provider tool call or reported background subtask raises advisory run attention. `0` disables publication; positive safe integers override the default |
+| `progressAttentionMs` | `1800000` | Milliseconds without a provider event or node transition before a running node raises durable advisory attention. Activity heartbeats do not reset it. `0` disables publication; positive safe integers override the default |
 | `autoResumeOnQuotaReset` | `false` | Schedule a failed workflow for continuation when a node's provider reported a `quota_exhausted` failure |
 | `quotaFallbackDelayMs` | unset | Explicit delay to use when the provider's quota failure reports no reset time, or a reset time that has already passed, capped at 1000 years. When unset, Archon records that automatic continuation was skipped instead of guessing |
 | `quotaMaxAttempts` | `1` | Maximum number of scheduled continuation attempts for one run |

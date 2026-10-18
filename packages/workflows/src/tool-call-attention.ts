@@ -14,6 +14,7 @@ interface ToolCallAttentionOptions {
   provider: string;
   reportedBackgroundWork: boolean;
   thresholdMs: number;
+  progressThresholdMs: number;
   env: Readonly<Record<string, string | undefined>>;
   protectedEnvKeys?: readonly string[];
   protectedCredentialValues?: readonly string[];
@@ -51,6 +52,7 @@ function createToolCallAttention(
   retainCleanup: (retry: () => Promise<boolean>) => void
 ): {
   hasOpenTools(): boolean;
+  observeProgress(): Promise<void>;
   observe(event: ProviderEvent): Promise<void>;
   refresh(): Promise<void>;
   clear(): Promise<void>;
@@ -67,6 +69,13 @@ function createToolCallAttention(
   const tools = new Map<string, Omit<ToolCallAttention, 'raisedAt'> & { raisedAt?: string }>();
   const subtasks = new Map<string, Omit<ToolCallAttention, 'raisedAt'> & { raisedAt?: string }>();
   const parents = new Map<string, string>();
+  const startedAt = new Date(now()).toISOString();
+  let progress = {
+    startedAt,
+    lastProgressAt: startedAt,
+    raisedAt: undefined as string | undefined,
+  };
+  let progressActive = true;
   let persisted = '[]';
 
   async function persist(): Promise<boolean> {
@@ -88,6 +97,25 @@ function createToolCallAttention(
           calls.push({ ...tool, raisedAt: tool.raisedAt });
         }
       }
+    if (
+      progressActive &&
+      options.progressThresholdMs > 0 &&
+      (progress.raisedAt !== undefined ||
+        time - Date.parse(progress.lastProgressAt) >= options.progressThresholdMs)
+    ) {
+      progress.raisedAt ??= new Date(time).toISOString();
+      calls.push({
+        streamId,
+        nodeId: options.nodeId,
+        provider: options.provider,
+        kind: 'progress',
+        toolCallId: `progress:${streamId}`,
+        name: 'node progress',
+        ...progress,
+        raisedAt: progress.raisedAt,
+        thresholdMs: options.progressThresholdMs,
+      });
+    }
     const snapshot = JSON.stringify(calls);
     if (snapshot === persisted) return true;
     try {
@@ -112,9 +140,16 @@ function createToolCallAttention(
 
   return {
     hasOpenTools: () => tools.size > 0,
+    async observeProgress(): Promise<void> {
+      const at = new Date(now()).toISOString();
+      progress = { startedAt: at, lastProgressAt: at, raisedAt: undefined };
+      await refresh();
+    },
     async observe(event: ProviderEvent): Promise<void> {
+      const at = new Date(now()).toISOString();
+      progress.lastProgressAt = at;
+      delete progress.raisedAt;
       if (event.type === 'tool_call' && !tools.has(event.toolCallId)) {
-        const at = new Date(now()).toISOString();
         tools.set(event.toolCallId, {
           streamId,
           nodeId: options.nodeId,
@@ -139,7 +174,6 @@ function createToolCallAttention(
         if (options.reportedBackgroundWork) {
           if (terminalSubtasks.has(event.status)) subtasks.delete(event.taskId);
           else {
-            const at = new Date(now()).toISOString();
             const task = subtasks.get(event.taskId);
             if (task) {
               if (event.status === 'running') {
@@ -169,6 +203,7 @@ function createToolCallAttention(
       tools.clear();
       subtasks.clear();
       parents.clear();
+      progressActive = false;
       if (!(await persist())) retainCleanup(persist);
     },
   };

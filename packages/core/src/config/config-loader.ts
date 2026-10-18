@@ -1,4 +1,7 @@
-import { DEFAULT_TOOL_CALL_ATTENTION_MS } from '@archon/workflows/schemas/run-config';
+import {
+  DEFAULT_PROGRESS_ATTENTION_MS,
+  DEFAULT_TOOL_CALL_ATTENTION_MS,
+} from '@archon/workflows/schemas/run-config';
 /**
  * Configuration loader for Archon YAML config files
  *
@@ -529,6 +532,7 @@ function getDefaults(): MergedConfig {
     },
     workflows: {
       toolCallAttentionMs: DEFAULT_TOOL_CALL_ATTENTION_MS,
+      progressAttentionMs: DEFAULT_PROGRESS_ATTENTION_MS,
       autoResumeOnQuotaReset: false,
       quotaMaxAttempts: 1,
       quotaDeadlineMs: 24 * 60 * 60 * 1000,

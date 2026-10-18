@@ -6,9 +6,10 @@ import { runAttention, type ToolCallAttention } from './schemas/workflow-run';
 import {
   workflowRunContinuationConfigSchema,
   DEFAULT_TOOL_CALL_ATTENTION_MS,
+  DEFAULT_PROGRESS_ATTENTION_MS,
 } from './schemas/run-config';
 
-function harness(thresholdMs = 100, reportedBackgroundWork = false) {
+function harness(thresholdMs = 100, reportedBackgroundWork = false, progressThresholdMs = 0) {
   let time = Date.parse('2026-10-01T00:00:00Z');
   const snapshots: ToolCallAttention[][] = [];
   const write = mock(async (_run: string, _stream: string, calls: ToolCallAttention[]) => {
@@ -24,6 +25,7 @@ function harness(thresholdMs = 100, reportedBackgroundWork = false) {
     nodeId: 'group.node',
     provider: 'codex',
     thresholdMs,
+    progressThresholdMs,
     env: { API_TOKEN: 'secret-value', SPECIAL: 'file-key' },
     protectedEnvKeys: ['SPECIAL'],
     protectedCredentialValues: ['file-credential'],
@@ -314,6 +316,7 @@ describe('tool call attention', () => {
       provider: 'codex',
       reportedBackgroundWork: true,
       thresholdMs: 100,
+      progressThresholdMs: 0,
       env: {},
       now: h.now,
     });
@@ -326,16 +329,39 @@ describe('tool call attention', () => {
     expect(h.write.mock.calls).toHaveLength(writes);
   });
 
+  test('raises node progress attention without heartbeat resets and renews after result progress', async () => {
+    const h = harness(0, false, 100);
+    h.advance(60);
+    await h.tracker.refresh();
+    h.advance(40);
+    await h.tracker.refresh();
+    expect(h.snapshots.at(-1)).toMatchObject([{ kind: 'progress', name: 'node progress' }]);
+    await h.tracker.observe({ type: 'agent_message_chunk', text: 'progress' });
+    expect(h.snapshots.at(-1)).toEqual([]);
+    h.advance(100);
+    await h.tracker.refresh();
+    await h.tracker.observeProgress();
+    expect(h.snapshots.at(-1)).toEqual([]);
+    h.advance(100);
+    await h.tracker.refresh();
+    expect(h.snapshots.at(-1)).toMatchObject([{ kind: 'progress' }]);
+    await h.tracker.clear();
+    expect(h.snapshots.at(-1)).toEqual([]);
+  });
+
   test('policy has a 30-minute default and accepts only safe nonnegative integer overrides', () => {
     expect(DEFAULT_TOOL_CALL_ATTENTION_MS).toBe(1800000);
+    expect(DEFAULT_PROGRESS_ATTENTION_MS).toBe(1800000);
     for (const value of [0, 1, 60000])
       expect(
-        workflowRunContinuationConfigSchema.parse({ toolCallAttentionMs: value })
-          .toolCallAttentionMs
-      ).toBe(value);
+        workflowRunContinuationConfigSchema.parse({
+          toolCallAttentionMs: value,
+          progressAttentionMs: value,
+        })
+      ).toMatchObject({ toolCallAttentionMs: value, progressAttentionMs: value });
     for (const value of [-1, 0.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1])
       expect(
-        workflowRunContinuationConfigSchema.safeParse({ toolCallAttentionMs: value }).success
+        workflowRunContinuationConfigSchema.safeParse({ progressAttentionMs: value }).success
       ).toBe(false);
   });
 });

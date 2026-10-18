@@ -44,6 +44,7 @@ async function makeHandler(
       nodeId: 'node-1',
       provider: 'test',
       thresholdMs: 0,
+      progressThresholdMs: 0,
       env: {},
     }),
     store: {

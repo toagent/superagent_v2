@@ -3,12 +3,14 @@ import { MAX_DURABLE_WAIT_MS } from './durable-wait';
 import { runAliasesConfigSchema, runTiersConfigSchema } from './model-binding';
 
 export const DEFAULT_TOOL_CALL_ATTENTION_MS = 30 * 60 * 1000;
+export const DEFAULT_PROGRESS_ATTENTION_MS = 30 * 60 * 1000;
 
 const providerDefaultsSchema = z.record(z.string(), z.unknown());
 
 export const workflowRunContinuationConfigSchema = z
   .object({
     toolCallAttentionMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    progressAttentionMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     autoResumeOnQuotaReset: z.boolean().optional(),
     quotaFallbackDelayMs: z.number().finite().positive().max(MAX_DURABLE_WAIT_MS).optional(),
     quotaMaxAttempts: z.number().int().positive().optional(),

@@ -1,6 +1,9 @@
 import { createRunToolCallAttention } from './tool-call-attention';
 import { DEFAULT_NODE_MAX_RETRIES } from './schemas/retry';
-import { DEFAULT_TOOL_CALL_ATTENTION_MS } from './schemas/run-config';
+import {
+  DEFAULT_PROGRESS_ATTENTION_MS,
+  DEFAULT_TOOL_CALL_ATTENTION_MS,
+} from './schemas/run-config';
 import { type ProviderRegistry, requireProvider } from '@archon/provider-contract';
 import { randomUUID } from 'node:crypto';
 import { nodeInvocationKey } from './node-record-reader';
@@ -2388,6 +2391,8 @@ async function executeNodeInternal(
         reportedBackgroundWork: aiClient.getCapabilities().backgroundWork === 'reported',
         provider: provider,
         thresholdMs: ctx.config.workflows?.toolCallAttentionMs ?? DEFAULT_TOOL_CALL_ATTENTION_MS,
+        progressThresholdMs:
+          ctx.config.workflows?.progressAttentionMs ?? DEFAULT_PROGRESS_ATTENTION_MS,
         env: { ...(ctx.execContext.kind === 'host' ? process.env : {}), ...nodeOptions?.env },
         protectedEnvKeys: ctx.config.protectedEnvKeys,
         protectedCredentialValues: ctx.config.protectedCredentialValues,
@@ -2495,6 +2500,7 @@ async function executeNodeInternal(
         }
 
         if (msg.type === 'result') {
+          await providerEvents.observeProgress();
           if (pass.threadsSession) {
             newSessionId = msg.sessionId;
             if (msg.resumed !== undefined) nodeResumed = msg.resumed;
@@ -5897,6 +5903,8 @@ async function executeLoopNode(
             provider: workflowProvider,
             thresholdMs:
               ctx.config.workflows?.toolCallAttentionMs ?? DEFAULT_TOOL_CALL_ATTENTION_MS,
+            progressThresholdMs:
+              ctx.config.workflows?.progressAttentionMs ?? DEFAULT_PROGRESS_ATTENTION_MS,
             env: {
               ...(ctx.execContext.kind === 'host' ? process.env : {}),
               ...resolvedOptions?.env,
@@ -6100,6 +6108,7 @@ async function executeLoopNode(
               if (await shouldStopStream()) break;
 
               if (msg.type === 'result') {
+                await providerEvents.observeProgress();
                 // A reask's throwaway session is not the thread (structuredOutputPass):
                 // adopting it would silently discard iterations 1…N and break the
                 // `fresh_context: false` contract ("each iteration resumes the prior

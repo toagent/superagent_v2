@@ -118,6 +118,7 @@ describe('waitForRunAttention', () => {
           streamId: 'stream',
           nodeId: 'implement',
           provider: 'codex',
+          kind: 'progress',
           toolCallId: 'tool',
           name: 'bash',
           startedAt: '2026-10-01T00:00:00.000Z',
@@ -139,7 +140,7 @@ describe('waitForRunAttention', () => {
           kind: 'stalled_tool_calls',
           runId: 'affected',
           status: 'running',
-          calls: [{ nodeId: 'implement', toolCallId: 'tool' }],
+          calls: [{ nodeId: 'implement', toolCallId: 'tool', kind: 'progress' }],
         },
       });
       expect(affected.status).toBe('running');
