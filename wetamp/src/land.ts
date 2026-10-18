@@ -56,7 +56,6 @@ export class LandError extends Error {
       | 'delivery_target_changed'
       | 'target_dirty'
       | 'source_head_drifted'
-      | 'source_dirty'
       | 'source_tree_changed'
       | 'target_history_changed'
       | 'target_history_check_failed'
@@ -215,7 +214,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
     ).exitCode === 0;
     if (delivery && source !== land.head && !prefix) throw new LandError('source_head_drifted', 'delivery: source HEAD drifted');
-    if (delivery && !prefix && run.working_path && gitAt(run.working_path, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('source_dirty', 'delivery: source checkout is dirty');
     if (!prefix && git('rev-parse', `${land.branch}^{tree}`) !== tree) throw new LandError('source_tree_changed', 'land: branch tree differs from accepted tree');
   };
   sameTree();
@@ -498,60 +496,103 @@ export function finalizeDelivery(
       process.env.WORKFLOW_ID !== l.archon_run_id)
   )
     throw new Error('delivery: authorization/run mismatch');
-  const deliver = () =>
-    control(
-      l,
-      controller => {
-        const target = l.delivery;
-        const run = getRun(l.archon_run_id, l.repo),
-          art = artifactsOf(run);
-        const evidence = landEvidence(run);
-        const land = evidence && (evidenceJson(l, art, evidence.file) as Land | undefined);
-        if (!land) throw new Error('delivery: missing generated land evidence');
-        let receipt: ReturnType<typeof applyLand>;
-        intervention(
-          l,
-          'land',
-          () => {
-            receipt = applyLand(
-              run,
-              land,
-              cwd => acceptRun(l, undefined, cwd, art, false, false, land.milestone),
-              {
-                repo: l.repo,
-                plan: planOf(l),
-                cacheReady: cwd =>
-                  acceptRun(l, undefined, cwd, art, false, true, land.milestone) === 0,
-                base_ref: planOf(l).base_ref,
-                launch_branch: l.launch_branch,
-                delivery: target ? localDelivery(l, art, target) : undefined,
-                evidence,
-              }
-            );
-            return 0;
-          },
-          undefined,
-          undefined,
-          undefined,
-          automatic || authorization ? 'engine' : 'operator'
-        );
-        updateLedger(l, cur => {
-          cur.controller = controller;
-          cur.delivery_result =
-            receipt?.status === 'manual_push' ? { ...receipt, status: 'integrated' } : receipt;
-        });
-        return receipt;
-      },
-      who,
-      authorization?.run.generation ?? (automatic ? (l.controller?.generation ?? 0) : undefined)
-    );
-  return coord().mutate(
-    repoScope(l.repo),
+  const scope = repoScope(l.repo);
+  let repoController!: Controller,
+    runController!: Controller,
+    intent!: Parameters<typeof applyLand>,
+    intentRevision = '';
+  const revision = (ledger: Ledger) =>
+    JSON.stringify({
+      delivery_result: ledger.delivery_result,
+      rejected: ledger.rejected,
+      decisions: ledger.intervention_events?.filter(e =>
+        ['answer', 'cancel', 'decide'].includes(e.action)
+      ),
+    });
+  coord().mutate(
+    scope,
     who,
-    deliver,
-    authorization?.repo.generation,
-    integrationLockTimeout()
+    controller => {
+      repoController = controller;
+      control(
+        l,
+        current => {
+          runController = current;
+          Object.assign(l, loadLedger(l.run_id));
+          intentRevision = revision(l);
+          const target = l.delivery,
+            run = getRun(l.archon_run_id, l.repo),
+            art = artifactsOf(run),
+            evidence = landEvidence(run),
+            land = evidence && (evidenceJson(l, art, evidence.file) as Land | undefined),
+            plan = planOf(l);
+          if (!land) throw new Error('delivery: missing generated land evidence');
+          intent = [
+            run,
+            land,
+            cwd => acceptRun(l, undefined, cwd, art, false, false, land.milestone),
+            {
+              repo: l.repo,
+              plan,
+              cacheReady: cwd =>
+                acceptRun(l, undefined, cwd, art, false, true, land.milestone) === 0,
+              base_ref: plan.base_ref,
+              launch_branch: l.launch_branch,
+              delivery: target ? localDelivery(l, art, target) : undefined,
+              evidence,
+            },
+          ];
+        },
+        who,
+        authorization?.run.generation ?? (automatic ? (l.controller?.generation ?? 0) : undefined)
+      );
+    },
+    authorization?.repo.generation
   );
+  const commit = (receipt: ReturnType<typeof applyLand>, error?: unknown) =>
+    coord().mutate(
+      scope,
+      who,
+      () =>
+        control(
+          l,
+          controller => {
+            updateLedger(l, cur => {
+              if (revision(cur) !== intentRevision)
+                throw new Error('delivery: operator decision changed during integration');
+            });
+            intervention(
+              l,
+              'land',
+              () => {
+                if (error)
+                  throw error instanceof Error ? error : new Error('delivery: non-Error failure');
+                return 0;
+              },
+              undefined,
+              undefined,
+              undefined,
+              automatic || authorization ? 'engine' : 'operator'
+            );
+            updateLedger(l, cur => {
+              cur.controller = controller;
+              cur.delivery_result =
+                receipt?.status === 'manual_push' ? { ...receipt, status: 'integrated' } : receipt;
+            });
+            return receipt;
+          },
+          who,
+          runController.generation
+        ),
+      repoController.generation
+    );
+  let receipt: ReturnType<typeof applyLand>;
+  try {
+    receipt = applyLand(...intent);
+  } catch (error) {
+    return commit(undefined, error);
+  }
+  return commit(receipt);
 }
 
 export interface DeliveryAuthorization {
