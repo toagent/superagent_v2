@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
+import { capsOf, draftFor, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const setup = (patch?: (p: Record<string, unknown>) => void): { path: string; root: string } => {
@@ -318,6 +318,21 @@ describe('milestones', () => {
     ]);
     expect(() => milestones(p)).toThrow(/milestone dependency cycle/);
   });
+});
+
+test('draft routing defaults by risk and size, honors explicit choice, and rejects G2 soldier', () => {
+  const route = (risk: 'G0' | 'G1' | 'G2', size: 'S' | 'M' | 'L', draft?: 'soldier' | 'general') =>
+    draftFor({ risk, size, ...(draft ? { draft } : {}) } as Plan['packages'][number]);
+  expect([
+    route('G1', 'S'),
+    route('G1', 'M'),
+    route('G1', 'L'),
+    route('G1', 'L', 'soldier'),
+    route('G1', 'S', 'general'),
+    route('G2', 'S'),
+  ]).toEqual(['soldier', 'soldier', 'general', 'soldier', 'general', 'general']);
+  const invalid = setup(p => Object.assign(pkgs(p)[0], { risk: 'G2', draft: 'soldier' }));
+  expect(() => loadPlan(invalid.path, [invalid.root])).toThrow('draft soldier is forbidden for G2');
 });
 
 test('BYPASS_CAPACITY legacy enforcement is ignored', () => {

@@ -14,7 +14,7 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 
 上下文文件：$$INPUTS.context_node.output.context_pack_path
 
-编码前检查当前 worktree 的实际 `git diff`：若士兵已留下改动，逐项核对、修订并补齐测试；若没有士兵改动，从零实现。士兵输出不是契约或验收证据，不解析其自然语言结论。
+读取 `$$INPUTS.soldier_ok.output` 的引擎值：值为 `used` 时核对士兵改动、修订 bug 并补齐测试；值为空时没有可用士兵初稿（失败残留已由引擎收起），从零完成全部编码。若士兵初稿方向或接口与任务书不符，执行 `git stash push --include-untracked -m soldier-rejected-$INPUTS.pkg` 整体放弃后从零实现，并在 commit message 注明 `soldier draft rejected`。士兵输出不是契约或验收证据，不解析其自然语言结论。
 
 ## 要求
 

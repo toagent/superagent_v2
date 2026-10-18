@@ -72,6 +72,7 @@ nodes:
       brief: /GEN/briefs/core.md
       hint: /GEN/hints/core.md
       context_node: package-attempt-core
+      soldier_ok: ''
     depends_on:
       - start-m1
       - package-attempt-core
@@ -3668,6 +3669,7 @@ nodes:
       brief: /GEN/briefs/api.md
       hint: /GEN/hints/api.md
       context_node: package-attempt-api
+      soldier_ok: ''
     depends_on:
       - start-m2
       - package-attempt-api

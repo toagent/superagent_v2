@@ -577,7 +577,7 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 });
 
 describe('buildWorkflow', () => {
-  test('soldier is one bounded optional node and general tolerates its failure', () => {
+  test('soldier branch records use, stashes failed leftovers, and fails closed on reset error', () => {
     const tiers = loadTiers();
     const nodes = nodesOf(
       buildWorkflow(fixture, milestones(fixture), 'soldier', '/GEN', false, NOW, tiers)
@@ -588,10 +588,67 @@ describe('buildWorkflow', () => {
       depends_on: ['start-m1', 'package-attempt-core'],
       idle_timeout: 600_000,
     });
-    expect(nodes.find(n => n.id === 'code-core')).toMatchObject({
-      depends_on: ['start-m1', 'package-attempt-core', 'soldier-core'],
-      trigger_rule: 'all_done',
+    expect(nodes.find(n => n.id === 'soldier-ok-core')).toEqual({
+      id: 'soldier-ok-core',
+      depends_on: ['soldier-core'],
+      bash: 'printf used',
     });
+    expect(nodes.find(n => n.id === 'soldier-reset-core')).toEqual({
+      id: 'soldier-reset-core',
+      depends_on: ['soldier-ok-core'],
+      trigger_rule: 'all_done',
+      when: "$soldier-ok-core.output != 'used'",
+      bash: 'git stash push --include-untracked -m soldier-leftover-core >/dev/null && printf reset',
+    });
+    const resetWhen = nodes.find(n => n.id === 'soldier-reset-core')!.when!;
+    expect(
+      evaluateCondition(
+        resetWhen,
+        new Map([['soldier-ok-core', { state: 'completed' as const, output: 'used' }]])
+      ).result
+    ).toBe(false);
+    expect(
+      evaluateCondition(
+        resetWhen,
+        new Map([
+          [
+            'soldier-ok-core',
+            {
+              state: 'skipped' as const,
+              output: '',
+              cause: { kind: 'upstream_failed' as const, origin: 'soldier-core' },
+            },
+          ],
+        ])
+      ).result
+    ).toBe(true);
+    expect(nodes.find(n => n.id === 'code-core')).toMatchObject({
+      depends_on: [
+        'start-m1',
+        'package-attempt-core',
+        'soldier-core',
+        'soldier-ok-core',
+        'soldier-reset-core',
+      ],
+      trigger_rule: 'all_done',
+      with: { soldier_ok: 'soldier-ok-core' },
+    });
+    expect(() =>
+      evaluateCondition(
+        nodes.find(n => n.id === 'code-core')!.when!,
+        new Map([
+          ['start-m1', { state: 'completed' as const, output: JSON.stringify({ head: 'abc' }) }],
+          [
+            'package-attempt-core',
+            { state: 'completed' as const, output: JSON.stringify({ attempt: '1' }) },
+          ],
+          [
+            'soldier-reset-core',
+            { state: 'failed' as const, output: 'stale', error: 'stash failed' },
+          ],
+        ])
+      )
+    ).toThrow("references node 'soldier-reset-core', but it failed");
     expect(
       nodesOf(buildWorkflow(fixture, milestones(fixture), 'fake', '/GEN', true, NOW, tiers)).some(
         n => n.id.startsWith('soldier-')
@@ -606,6 +663,41 @@ describe('buildWorkflow', () => {
       ).some(n => n.id === 'soldier-core')
     ).toBe(false);
     expect(validateDagStructure(nodes as DagNode[])).toBeNull();
+    expect(readFileSync(join(WETAMP, 'templates/.archon/commands/sa-code.md'), 'utf8')).toContain(
+      '`$$INPUTS.soldier_ok.output`'
+    );
+  });
+  test('draft routing emits soldiers only for eligible packages', () => {
+    const tiers = loadTiers();
+    const plan = structuredClone(fixture) as Plan;
+    const core = plan.packages[0],
+      api = plan.packages[1];
+    core.size = 'L';
+    api.risk = 'G1';
+    api.size = 'M';
+    api.draft = 'general';
+    const direct = nodesOf(
+      buildWorkflow(plan, milestones(plan), 'direct', '/GEN', false, NOW, tiers)
+    );
+    expect(direct.some(n => n.id.startsWith('soldier-'))).toBe(false);
+    expect(direct.filter(n => n.id.startsWith('code-')).map(n => n.with?.soldier_ok)).toEqual([
+      '',
+      '',
+    ]);
+    core.draft = 'soldier';
+    api.draft = undefined;
+    const drafted = nodesOf(
+      buildWorkflow(plan, milestones(plan), 'drafted', '/GEN', false, NOW, tiers)
+    );
+    expect(drafted.filter(n => /^soldier-(core|api)$/.test(n.id)).map(n => n.id)).toEqual([
+      'soldier-core',
+      'soldier-api',
+    ]);
+    expect(
+      drafted.some(
+        n => /^(repair|fix)-/.test(n.id) && n.depends_on?.some(d => d.startsWith('soldier-'))
+      )
+    ).toBe(false);
   });
   test('P2: two-package data dependencies exclude milestone and review retry counters', () => {
     for (const sameMilestone of [false, true]) {
@@ -862,6 +954,7 @@ describe('buildWorkflow', () => {
       brief: join(gen, 'briefs/core.md'),
       hint: join(gen, 'hints/core.md'),
       context_node: 'package-attempt-core',
+      soldier_ok: '',
     });
     const retryOutput = JSON.stringify({ status: 'done', notes: 'retried' });
     ctx.nodeOutputs.set(code.id, { state: 'completed', output: retryOutput });
@@ -1934,7 +2027,7 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
       ).result
     ).toBe(needed);
     expect(nodes.filter(n => n.command).map(n => n.command)).toEqual([
-      'sa-soldier',
+      ...(risk === 'G2' ? [] : ['sa-soldier']),
       'sa-code',
       'sa-repair',
       'sa-review',

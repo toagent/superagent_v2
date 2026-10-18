@@ -65,6 +65,8 @@ nodes:
       mkdir -p "$(dirname 'core.txt')" && echo 'core' >> 'core.txt'
       git add 'core.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake core'
       echo '{"status":"done","changed_files":["core.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    with:
+      soldier_ok: ''
     depends_on:
       - start-m1
       - package-attempt-core
@@ -3257,6 +3259,8 @@ nodes:
       mkdir -p "$(dirname 'api.txt')" && echo 'api' >> 'api.txt'
       git add 'api.txt' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake api'
       echo '{"status":"done","changed_files":["api.txt"],"quick_checks":[],"notes":"fake","blockers":[],"error_class":null,"deviations":[],"needs":[]}'
+    with:
+      soldier_ok: ''
     depends_on:
       - start-m2
       - package-attempt-api

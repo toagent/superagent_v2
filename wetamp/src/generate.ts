@@ -39,7 +39,15 @@ import {
   snapshotPolicy,
   type Tiers,
 } from './config';
-import { capsOf, milestones, type Caps, type Milestone, type Pkg, type Plan } from './plan';
+import {
+  capsOf,
+  draftFor,
+  milestones,
+  type Caps,
+  type Milestone,
+  type Pkg,
+  type Plan,
+} from './plan';
 
 const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.json'))('yaml') as {
   stringify(v: unknown, opts: Record<string, unknown>): string;
@@ -374,18 +382,32 @@ export function buildWorkflow(
         ? join(gen, 'carried-evidence', `${p.id}.json`)
         : undefined;
       const soldier =
-        !fake && !carry && tiers.routing.soldier?.models.length ? `soldier-${p.id}` : undefined;
-      if (soldier)
-        nodes.push({
-          id: soldier,
-          command: 'sa-soldier',
-          retry: { on_error: 'transient' },
-          model: '@sa-soldier',
-          ...execution(soldier),
-          idle_timeout: SOLDIER_IDLE_MS,
-          depends_on: [prev, pkgAttempt],
-          with: { pkg: p.id, context_node: pkgAttempt },
-        });
+        !fake && !carry && draftFor(p) === 'soldier' && tiers.routing.soldier?.models.length
+          ? `soldier-${p.id}`
+          : undefined;
+      const soldierOk = soldier ? `soldier-ok-${p.id}` : undefined;
+      const soldierReset = soldier ? `soldier-reset-${p.id}` : undefined;
+      if (soldier && soldierOk && soldierReset)
+        nodes.push(
+          {
+            id: soldier,
+            command: 'sa-soldier',
+            retry: { on_error: 'transient' },
+            model: '@sa-soldier',
+            ...execution(soldier),
+            idle_timeout: SOLDIER_IDLE_MS,
+            depends_on: [prev, pkgAttempt],
+            with: { pkg: p.id, context_node: pkgAttempt },
+          },
+          { id: soldierOk, depends_on: [soldier], bash: 'printf used' },
+          {
+            id: soldierReset,
+            depends_on: [soldierOk],
+            trigger_rule: 'all_done',
+            when: `$${soldierOk}.output != 'used'`,
+            bash: `git stash push --include-untracked -m soldier-leftover-${p.id} >/dev/null && printf reset`,
+          }
+        );
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
         : {
@@ -399,16 +421,24 @@ export function buildWorkflow(
               brief: brief(p),
               hint: join(gen, 'hints', `${p.id}.md`),
               context_node: pkgAttempt,
+              soldier_ok: soldierOk ?? '',
             },
           };
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
-        depends_on: [prev, pkgAttempt, ...(soldier ? [soldier] : [])],
-        ...(soldier
+        ...(fake ? { with: { soldier_ok: '' } } : {}),
+        depends_on: [
+          prev,
+          pkgAttempt,
+          ...(soldier && soldierOk && soldierReset ? [soldier, soldierOk, soldierReset] : []),
+        ],
+        ...(soldier && soldierReset
           ? {
               trigger_rule: 'all_done',
-              when: `$${prev}.output.head != '' && $${pkgAttempt}.output.attempt != ''`,
+              when:
+                `$${prev}.output.head != '' && $${pkgAttempt}.output.attempt != '' && ` +
+                `$${soldierReset}.output != '__failed__'`,
             }
           : carry
             ? { when: `$${pkgAttempt}.output.attempt != '0'` }

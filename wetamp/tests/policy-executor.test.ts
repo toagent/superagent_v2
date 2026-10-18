@@ -13,6 +13,7 @@ import { codexDescriptor } from '@archon/providers';
 import {
   executePolicy,
   MODEL_FAILURE_COOLDOWN_MS,
+  SOLDIER_BUDGET_MS,
   wrapPolicyProvider,
 } from '../src/policy-executor';
 import { loadTiers, snapshotPolicy, type Alias } from '../src/config';
@@ -228,6 +229,51 @@ test('untyped failure, unknown/auth classes and throws never trigger fallback', 
     )
   ).rejects.toThrow('quota exhausted');
   expect(readPolicyAttempts(s.artifacts)[0].status).toBe('failed');
+});
+
+test('soldier wall-clock budget aborts once without cooldown or fallback', async () => {
+  const s = setup(success);
+  let calls = 0;
+  const hanging = fake(async options => {
+    calls++;
+    await new Promise<void>(resolve =>
+      options.abortSignal?.addEventListener('abort', () => resolve(), { once: true })
+    );
+    return success;
+  });
+  await expect(
+    collect(
+      executePolicy(
+        {
+          ...s.execution,
+          role: 'soldier',
+          soldierBudgetMs: 5,
+          sendQuery: hanging.sendQuery,
+        },
+        'p',
+        '/scratch'
+      )
+    )
+  ).rejects.toThrow('soldier_budget_exceeded: 5ms');
+  expect(SOLDIER_BUDGET_MS).toBe(600_000);
+  expect(calls).toBe(1);
+  const attempts = readPolicyAttempts(s.artifacts);
+  expect(attempts).toHaveLength(1);
+  expect(attempts[0].status).toBe('failed');
+  expect(attempts[0].cooldown_until).toBeUndefined();
+  let signal: AbortSignal | undefined;
+  const ordinary = setup(success);
+  await collect(
+    executePolicy(
+      {
+        ...ordinary.execution,
+        sendQuery: fake(options => ((signal = options.abortSignal), success)).sendQuery,
+      },
+      'p',
+      '/scratch'
+    )
+  );
+  expect(signal).toBeUndefined();
 });
 
 function runtimeFixture() {

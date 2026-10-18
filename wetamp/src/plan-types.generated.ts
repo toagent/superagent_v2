@@ -82,6 +82,10 @@ export interface Plan {
     risk: 'G0' | 'G1' | 'G2';
     size: 'S' | 'M' | 'L';
     /**
+     * Initial author: soldier drafts for general review; general writes directly. Defaults from size and risk
+     */
+    draft?: 'soldier' | 'general';
+    /**
      * G2 qualified PASS integrates automatically unless human signoff is requested
      */
     signoff?: 'auto' | 'human';

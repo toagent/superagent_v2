@@ -177,6 +177,10 @@
           "size": {
             "enum": ["S", "M", "L"]
           },
+          "draft": {
+            "enum": ["soldier", "general"],
+            "description": "Initial author: soldier drafts for general review; general writes directly. Defaults from size and risk"
+          },
           "signoff": {
             "enum": ["auto", "human"],
             "default": "auto",
