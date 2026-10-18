@@ -377,18 +377,10 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
     ids = env('PKGS').split(',').filter(Boolean);
   const packages = p.packages.filter(pkg => ids.includes(pkg.id));
   const checks = packages.flatMap(pkg => pkg.accept);
-  const requirements = packages.map(({ id, accept, requirements }) => ({
-    id,
-    accept,
-    ...(requirements ? { requirements } : {}),
-  }));
-  const envKey = sha(
-    JSON.stringify(
-      packages.some(pkg => pkg.requirements)
-        ? [environmentChecks(p), requirements]
-        : environmentChecks(p)
-    )
-  );
+  // prettier-ignore
+  const requirements = packages.map(({ id, accept, requirements }) => ({ id, accept, ...(requirements ? { requirements } : {}) }));
+  // prettier-ignore
+  const envKey = sha(JSON.stringify(packages.some(pkg => pkg.requirements) ? [environmentChecks(p), requirements] : environmentChecks(p)));
   const tree = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD^{tree}'], {
     stdout: 'pipe',
     stderr: 'pipe',
