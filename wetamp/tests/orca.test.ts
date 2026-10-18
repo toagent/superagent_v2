@@ -266,6 +266,7 @@ describe('syncOrca (injected only)', () => {
     const s = harness(frame(['active']));
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     s.deps.now = () => Date.parse('2026-10-11T00:10:00Z');
+    s.h.snapshot.rows[0].stale = true;
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     const args = s.sets().at(-1)?.args;
     expect(args).toContain('in-progress');

@@ -71,6 +71,7 @@ function snapshot(): Snapshot {
     },
     dead = row('zombie');
   dead.lastEvent = iso(-1800);
+  dead.stale = true;
   a.activeNodes = [
     { id: 'code-a', role: 'coder', model: 'gpt-6.1-sol' },
     { id: 'review-b', role: 'reviewer', model: 'gpt-6-astra' },
@@ -173,7 +174,7 @@ test('activity projects exact bound heartbeat and observed child PID; stale/futu
     expect(cockpit(x, ms).tree.at(-1)?.children).toHaveLength(1);
   }
   const x = snapshot();
-  x.rows[0].lastEvent = iso(-600);
+  x.rows[0].stale = true;
   expect(cockpit(x, ms).zombies).toBe(2);
 });
 function setupMemory() {
@@ -535,7 +536,11 @@ test('pane shows only live cards among terminal, owner-lost and zombie history',
   s.rows.unshift(
     ...Array.from({ length: 20 }, (_, i) => {
       const state = ['completed', 'failed', 'cancelled', 'owner_lost', 'running'][i % 5];
-      return { ...row(`history-${i}`, state), lastEvent: iso(-1800) };
+      return {
+        ...row(`history-${i}`, state),
+        lastEvent: iso(-1800),
+        stale: state === 'running',
+      };
     })
   );
   s.rows.push(

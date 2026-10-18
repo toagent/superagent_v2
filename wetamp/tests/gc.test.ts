@@ -13,9 +13,10 @@ import { join } from 'node:path';
 import * as archon from '../src/archon';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import * as coordination from '../src/coord';
+import { snapshotPolicy } from '../src/config';
 import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
 import { gc as collect } from '../src/gc';
-import { fixturePlan, gitRepo, tmp } from './helpers';
+import { fixturePlan, fixtureTiers, gitRepo, tmp } from './helpers';
 
 const keys = [
   'SUPERAGENT_HOME',
@@ -246,6 +247,7 @@ test.each(['full', 'partial', 'failed'] as const)(
         pkg.accept = [{ cmd: mode === 'failed' ? 'false' : 'true', timeout_s: 5 }];
     });
     writeFileSync(join(f.gen, 'plan.json'), readFileSync(f.ledger.plan));
+    writeFileSync(join(f.gen, 'policy.json'), JSON.stringify(snapshotPolicy(fixtureTiers())));
     mkdirSync(join(f.gen, '.archon'));
     symlinkSync(
       join(import.meta.dir, '..', 'templates', '.archon', 'scripts'),

@@ -126,8 +126,9 @@ for (const width of [62, 46])
     const roles = cockpit(snap, now.getTime()).active.map(r => r.role);
     expect(roles).toContain('将军·sol6.1');
     expect(roles).toContain('军师·astra');
-    expect(frame).toContain('是=批准 否=终止 已等1h02m');
-    expect(frame).toContain(width >= 60 ? '等待批准' : '等待…');
+    expect(frame).toContain('是=批准 否=终止');
+    expect(frame).toContain('手机决策');
+    expect(frame).toContain('等待批准');
     expect(frame).not.toMatch(/tok |今日结果|终端|预算|q退出/);
     for (const line of frame.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   });

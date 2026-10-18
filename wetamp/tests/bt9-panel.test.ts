@@ -388,7 +388,13 @@ test('2 runs, 1 job, pending/superseded and all four token roles render the shar
       firstPass: 0,
       firstPass_unknown: 0,
     },
-    needs: [{ project: 'demo', question: '等待批准 是=批准 否=终止', waiting: '5m00s' }],
+    needs: [
+      {
+        project: 'demo',
+        question: '等待批准 是=批准 否=终止；手机决策信息未知，请在 Mac 核实',
+        waiting: '5m00s',
+      },
+    ],
   });
   expect(d.runs.map(r => [r.id, r.role, r.state, r.url])).toEqual([
     ['b', '军师·astra', '进行中', '/console/r/archon-b'],

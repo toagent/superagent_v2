@@ -3,7 +3,8 @@
 exports[`62 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
 "跑 3 · 等你 1 · 僵死 0 · ETA ~14m · 异常 0
 需要你
-? xiaopan·xia…/revi…·等待批准 是=批准 否=终止 已等1h02m
+? xiaopan · 启动配置烘焙
+等待批准 是=批准 否=终止；手机决策信息未知，请在 Mac 核实
 任务 · 3
 IIQE 题目清单报告 · sinan
   编码 m2/3 · 62% 剩~14m
@@ -21,7 +22,8 @@ exports[`46 columns: 2 runs + job + pending/superseded ask snapshot 1`] = `
 "跑 3 · 等你 1 · 僵死 0
 ETA ~14m · 异常 0
 需要你
-? xiao…·x…/r…·等待… 是=批准 否=终止 已等1h02m
+? xiaopan · 启动配置烘焙
+等待批准 是=批准 否=终止；手机决策信息未知，…
 任务 · 3
 IIQE 题目清单报告 · sinan
   编码 m2/3 · 62% 剩~14m
