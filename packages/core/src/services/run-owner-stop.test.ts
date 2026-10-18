@@ -16,5 +16,6 @@ describe('detached run control', () => {
     const runId = `missing-${crypto.randomUUID()}`;
     const error = await rejectionFrom(() => requestDetachedRunStop(runId));
     expect(error).toBeInstanceOf(DetachedRunOwnerUnavailableError);
+    expect(error).toMatchObject({ reason: 'unreachable', detail: expect.any(String) });
   });
 });

@@ -1,10 +1,10 @@
 // 原因与处置的唯一注册表；generate 将 REASONS 写入冻结模板。
-export type Yes = 'retry' | 'resume' | 'approve' | 'review' | 'adjudicate';
+export type Yes = 'retry' | 'resume' | 'approve' | 'review' | 'adjudicate' | 'cancel';
 export type Policy =
   | { do: 'expire' | 'resume' }
   | { do: 'blocked'; text: string; next: string }
   | { do: 'signoff'; text: string; yesText: string }
-  | { do: 'ask'; yes: Yes; text: string; yesText: string };
+  | { do: 'ask'; yes: Yes; text: string; yesText: string; noText?: string };
 /**
  * 挂起原因 → 处置：supervise-tick 对非终态 run 的唯一分派表（docs/00「挂起处置」），每行都有单测。
  * signoff 走 human()；expire 按 plan 截止终止、不提醒；paused 等待 Archon 原生 wake；失败由原生 retry 处理，停止后只接受明确决定；
@@ -46,6 +46,13 @@ export const HOLD_POLICY = {
     next: '检查incident证据并修复引擎判定',
   },
   approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
+  stalled: {
+    do: 'ask',
+    yes: 'cancel',
+    text: '进展停滞',
+    yesText: '精确取消该run',
+    noText: '继续等待',
+  },
   acceptance_adjudication: {
     do: 'ask',
     yes: 'adjudicate',
@@ -75,7 +82,7 @@ export function askQuestion(
       const q =
         `${names.map(n => askName(n, limit)).join('/')}：${p.text}` +
         (stage < 3 ? `；${detail || '证据缺失'}` : '') +
-        `；是=${p.yesText.replace('{target}', target)}${consequence}；否=终止整个run（保留证据）` +
+        `；是=${p.yesText.replace('{target}', target)}${consequence}；否=${p.do === 'ask' && 'noText' in p ? p.noText : '终止整个run（保留证据）'}` +
         (stage < 3 ? '；详情superagent brief <run>' : '') +
         `；${marker}`;
       if (Array.from(q).length <= 200) return q;

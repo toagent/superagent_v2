@@ -26,6 +26,7 @@ export const REASONS = {
   review_not_independent: '评审不独立',
   engine_suspect: '引擎嫌疑',
   approval: '等待批准',
+  stalled: '进展停滞',
   acceptance_adjudication: '等待验收裁决',
 } satisfies Record<keyof typeof HOLD_POLICY, string> & Record<string, string>;
 export const reasonText = (s: string): string =>
@@ -156,8 +157,9 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
               approve: '批准',
               review: '重评',
               adjudicate: '按证据记债',
+              cancel: '取消',
             }[policy.yes],
-            no: '终止',
+            no: 'noText' in policy ? policy.noText : '终止',
           }
         : key === 'signoff' || r.state === 'held:human'
           ? { event: '等待签收', yes: '批准', no: '终止' }

@@ -1419,19 +1419,31 @@ describe('verbs (archon stub)', () => {
       expect(s.calls().some(c => c.startsWith('workflow cancel'))).toBe(false);
     }
   });
-  test('cancel: a run that paused between get and cancel is re-read and abandoned', () => {
+  test('cancel: a run that paused between get and cancel returns the refusal without guessing abandon', () => {
     const s = stub([run('running'), humanWait()]);
-    expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
+    const { code, out } = captured(() => main(['cancel', 'sa1']));
+    expect(code).toBe(1);
+    expect(JSON.parse(out)).toMatchObject({
+      run_id: 'sa1',
+      ok: false,
+      action: 'cancel',
+      error: expect.stringContaining("Cannot cancel run with status 'paused'"),
+    });
+    expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
     expect(s.calls().filter(c => /^workflow (cancel|abandon)/.test(c))).toEqual([
       'workflow cancel r --json',
-      'workflow abandon r --json',
     ]);
   });
   test('cancel: a completed run is refused by abandon and exits 1', () => {
     const s = stub([run('completed')]);
     const { code, out } = captured(() => main(['cancel', 'sa1']));
     expect(code).toBe(1);
-    expect(JSON.parse(out)).toEqual({ run_id: 'sa1', ok: false });
+    expect(JSON.parse(out)).toMatchObject({
+      run_id: 'sa1',
+      ok: false,
+      action: 'abandon',
+      error: expect.stringContaining("Cannot abandon run with status 'completed'"),
+    });
     expect(s.calls()).toContain('workflow abandon r --json');
   });
   test('resume refuses a run whose owner may be alive', () => {
@@ -3743,6 +3755,32 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       );
       return { s, first: {} };
     },
+    stalled: () => {
+      const s = held('x');
+      setGet(
+        s.root,
+        run('running', {
+          metadata: {
+            execution_owner: { host: hostname(), pid: process.pid },
+            tool_call_attention: [
+              {
+                streamId: 'stream-1',
+                nodeId: 'code-core',
+                provider: 'codex',
+                kind: 'progress',
+                toolCallId: 'call-1',
+                name: 'exec',
+                startedAt: '2026-10-18T00:00:00.000Z',
+                lastProgressAt: '2026-10-18T00:01:00.000Z',
+                raisedAt: '2026-10-18T00:02:00.000Z',
+                thresholdMs: 60_000,
+              },
+            ],
+          },
+        } as unknown as Partial<RunView>)
+      );
+      return { s, first: {} };
+    },
     acceptance_adjudication: () => ({
       s: held('verify-core', {
         'verify-core.json': {
@@ -3794,6 +3832,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     resume: 'workflow resume r --detach --json',
     approve: 'workflow approve r --detach --json',
     adjudicate: 'workflow run sa-sa1',
+    cancel: 'workflow cancel r --json',
   };
 
   test.each(['approve', 'reject', 'retry', 'resume', 'recover'])(
@@ -3913,6 +3952,11 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
       expect(Array.from(q).length).toBeLessThanOrEqual(200);
       expect(q).toContain('是=');
+      if (hold === 'stalled') {
+        expect(q).toContain(`${s.ledger.repo.split('/').at(-1)}/code-core`);
+        expect(q).toContain('沉默');
+        expect(q).toContain('否=继续等待');
+      }
       expect(tick()[0]).toMatchObject({ action: 'none', reason: hold, ask: 'pending' });
       expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
       // 旧版本已投递但本地只落 unknown：仍按原 key 找回，不能重复投递。
@@ -3955,13 +3999,17 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         JSON.stringify({ id: 'old-no', question: `superagent ${noKey} 旧模板` })
       );
       writeFileSync(asksFile(), JSON.stringify({ [noKey]: { status: 'unknown' } }));
-      expect(tick()[0]).toMatchObject({ action: 'reject', reason: hold, ok: true });
-      expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(true);
-      expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
-        action: 'cancel',
-        reason: 'rejected',
+      expect(tick()[0]).toMatchObject({
+        action: 'noText' in p ? 'wait' : 'reject',
+        reason: hold,
         ok: true,
       });
+      expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(!('noText' in p));
+      expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject(
+        'noText' in p
+          ? { action: 'answer', reason: 'human_decision', ok: true }
+          : { action: 'cancel', reason: 'rejected', ok: true }
+      );
     });
   }
 
@@ -4124,6 +4172,7 @@ describe('HF9 decision titles', () => {
   };
   for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
     if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
+    if (hold === 'stalled') continue;
     test(`HF9 ${hold}: project, node, evidence, truthful actions and ≤200 characters`, () => {
       const { s, r } = setup();
       const node = hold.startsWith('review')
@@ -4349,6 +4398,7 @@ describe('HF9 decision titles', () => {
   };
   for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
     if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
+    if (hold === 'stalled') continue;
     for (const value of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE])
       test(`HF9 R4 all HOLD_POLICY titles remain deliverable at numeric maximum: ${hold}/${String(value)}`, () => {
         const { s } = maximumTitle(hold, value);

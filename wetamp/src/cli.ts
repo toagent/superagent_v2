@@ -1,5 +1,6 @@
 import { applyCoordIntents, describeDecision, type DecisionInbox } from './decisions';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
+import { runAttention } from '../../packages/workflows/src/schemas/workflow-run';
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
@@ -1497,18 +1498,10 @@ function busyExit(l: Ledger, res: RecoverResult): number {
   return c.exit;
 }
 
-/**
- * 终止 run 的唯一入口（cancel、decide reject、supervise-tick 的截止与“否”）。引擎的 cancel 只停 running 的 run，
- * paused/failed 须 abandon（同样记 cancelled 并释放 worktree 与 slot）。cancel 被拒时不解析拒绝文本：重读状态，
- * 期间已离开 running（如刚停在事件门）就改走 abandon。
- */
-function cancelRun(id: string, status: RunView['status'], cwd?: string): boolean {
-  const end = (s: RunView['status']): boolean =>
-    archonJson(['workflow', s === 'running' ? 'cancel' : 'abandon', id], cwd).ok === true;
-  if (end(status)) return true;
-  if (status !== 'running') return false;
-  const now = getRun(id, cwd).status;
-  return now !== 'running' && end(now);
+/** Running cancel preserves core's exact-owner stop result; abandon remains explicit by status. */
+function cancelRun(id: string, status: RunView['status'], cwd?: string) {
+  const result = archonJson(['workflow', status === 'running' ? 'cancel' : 'abandon', id], cwd);
+  return { ...result, ok: result.ok === true };
 }
 
 export const planOf = (l: Ledger): Plan =>
@@ -1730,7 +1723,7 @@ function decide(l: Ledger, a: Args): number {
     const ok = intervention(
       l,
       'cancel',
-      () => cancelRun(l.archon_run_id, run.status, l.repo),
+      () => cancelRun(l.archon_run_id, run.status, l.repo).ok,
       undefined,
       undefined,
       'rejected'
@@ -1862,7 +1855,7 @@ function brief(l: Ledger, json = false): number {
 export const ANSWERS = ['pending', 'yes', 'no', 'expired', 'superseded'];
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 type DecisionEffect =
-  | { action: 'approve' | 'reject' | 'resume' | 'adopt' | 'restart'; engine_run: string }
+  | { action: 'approve' | 'reject' | 'resume' | 'adopt' | 'restart' | 'wait'; engine_run: string }
   | { action: 'retry_package' | 'retry_milestone' | 'review'; engine_run: string; target: string };
 /** Only engine identifiers and the acknowledged execution branch enter a receipt. */
 function decisionReceipt(
@@ -1888,6 +1881,9 @@ function decisionReceipt(
       break;
     case 'restart':
       action = '已提交同分支重启（保留旧run证据）';
+      break;
+    case 'wait':
+      action = '已确认继续等待';
       break;
     case 'retry_package':
       action = `已提交包${name(effect.target)}编码→验收重跑`;
@@ -2083,7 +2079,7 @@ function consumeAnswer(
   a.receipt = {
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
     body: decisionReceipt(l.run_id, node, answer, effect),
-    stage: 'executing',
+    stage: effect.action === 'wait' ? 'succeeded' : 'executing',
     effect,
     delivery: 'pending',
     terminal_before: a.decision?.terminal_before,
@@ -2260,7 +2256,7 @@ function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): A
     !intervention(
       l,
       'cancel',
-      () => cancelRun(l.archon_run_id, run.status, l.repo),
+      () => cancelRun(l.archon_run_id, run.status, l.repo).ok,
       undefined,
       undefined,
       'deadline'
@@ -2322,8 +2318,8 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
     }
     if (p.a.status === 'no') {
       beginAnswer(l, w.nodeId, p.a, 'no', asks);
-      const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-      if (ok)
+      const result = cancelRun(l.archon_run_id, run.status, l.repo);
+      if (result.ok)
         consumeAnswer(
           l,
           w.nodeId,
@@ -2333,7 +2329,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
           { action: 'reject', engine_run: l.archon_run_id },
           asks
         );
-      return { ...b, action: 'reject', ok };
+      return { ...b, action: 'reject', ...result };
     }
     // expired：不替用户决定；事件门到期后 signoff 节点失败，run 停在 failed 等元帅
     return { ...b, action: 'none', ok: true, ask: p.a.status };
@@ -2391,6 +2387,20 @@ function askHold(
         if (r.a.decision) r.a.decision.effect = actual;
         saveAsks(asks);
       };
+      if (p.yes === 'cancel') {
+        const result = cancelRun(l.archon_run_id, run.status, l.repo);
+        if (result.ok)
+          consumeAnswer(
+            l,
+            c.node ?? '',
+            key,
+            r.a,
+            'yes',
+            { action: 'reject', engine_run: l.archon_run_id },
+            asks
+          );
+        return { ...b, action: 'cancel', ok: result.ok, result };
+      }
       const res =
         p.yes === 'approve'
           ? approveRun(l)
@@ -2416,8 +2426,20 @@ function askHold(
     }
     if (r.a.status === 'no') {
       beginAnswer(l, c.node ?? '', r.a, 'no', asks);
-      const ok = cancelRun(l.archon_run_id, run.status, l.repo);
-      if (ok)
+      if ('noText' in p) {
+        consumeAnswer(
+          l,
+          c.node ?? '',
+          key,
+          r.a,
+          'no',
+          { action: 'wait', engine_run: l.archon_run_id },
+          asks
+        );
+        return { ...b, action: 'wait', ok: true };
+      }
+      const result = cancelRun(l.archon_run_id, run.status, l.repo);
+      if (result.ok)
         consumeAnswer(
           l,
           c.node ?? '',
@@ -2427,7 +2449,7 @@ function askHold(
           { action: 'reject', engine_run: l.archon_run_id },
           asks
         );
-      return { ...b, action: 'reject', ok };
+      return { ...b, action: 'reject', ...result };
     }
     return { ...b, action: 'none', ok: true, ask: r.a.status };
   });
@@ -2707,7 +2729,7 @@ function decisionContext(
     recommendation: { choice: 'no', reason: '需操作员确认本次审批；未答复保持阻断' },
     consequences: {
       yes: p.yesText,
-      no: '终止整个run（保留证据）',
+      no: p.do === 'ask' && 'noText' in p ? p.noText : '终止整个run（保留证据）',
     },
   };
 }
@@ -2724,6 +2746,19 @@ function blocker(l: Ledger, hold: Hold): { reason: string; next: string } | unde
 export function decisionQuestion(l: Ledger, run: RunView, c: Classified, hold: Hold): string {
   const blocked = blocker(l, hold);
   if (blocked) return `${blocked.reason}；${blocked.next}`;
+  if (hold === 'stalled') {
+    const attention = runAttention(run as Parameters<typeof runAttention>[0]);
+    if (attention?.kind !== 'stalled_tool_calls') throw new Error('stalled attention missing');
+    const call = attention.calls.reduce((a, b) => (a.stalledForMs >= b.stalledForMs ? a : b));
+    const detail = `沉默${String(Math.floor(call.stalledForMs / 1000))}秒`;
+    return askQuestion(
+      hold,
+      [basename(l.repo), call.nodeId],
+      [detail, detail],
+      () => ['', ''],
+      askMarker(askKey(l.run_id, hold, `${call.nodeId}@${call.lastProgressAt}`))
+    );
+  }
   const plan = planOf(l),
     node = c.node ?? run.metadata?.approval?.nodeId ?? '恢复节点';
   const m = hold === 'signoff' ? node.replace(/^human-/, '') : milestoneOf(l, node);
@@ -2787,6 +2822,7 @@ function dispose(
   run: RunView
 ): Action | undefined {
   const c = classifyRun(l, run);
+  const attention = runAttention(run as Parameters<typeof runAttention>[0]);
   const row: HoldSignal = {
     run_id: l.run_id,
     since:
@@ -2799,7 +2835,10 @@ function dispose(
       run: workflowIdentity(l) ?? null,
       current: engineHash(),
     });
-  if (c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown')
+  if (
+    attention?.kind !== 'stalled_tool_calls' &&
+    (c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown')
+  )
     return {
       run_id: l.run_id,
       action: 'none',
@@ -2808,7 +2847,7 @@ function dispose(
       state: c.state,
       next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.`,
     };
-  if (c.state === 'owner_lost')
+  if (attention?.kind !== 'stalled_tool_calls' && c.state === 'owner_lost')
     return {
       run_id: l.run_id,
       action: 'none',
@@ -2877,6 +2916,7 @@ function dispose(
       supersedeAsks(asks, l.run_id);
     return x && record(l, hold, x);
   };
+  if (attention?.kind === 'stalled_tool_calls') return act('stalled');
   const hold = holdOf(l, run, c);
   if (!hold && !(asks instanceof Error)) supersedeAsks(asks, l.run_id);
   return hold && act(hold);
@@ -3339,7 +3379,7 @@ export function main(argv: string[]): number {
         throw new Error(`cancel --reason must be an operational label: ${CANCELLATION_REASONS.join('|')}`);
       // 未登记：按 archon run id 处理（selftest 用）
       const resolved = resolveTarget(id);
-      const ok =
+      const result =
         'run_id' in resolved
           ? control(resolved, () =>
               intervention(
@@ -3364,7 +3404,7 @@ export function main(argv: string[]): number {
                 { run_id: run.id, archon_run_id: run.id, repo: run.working_path },
                 () => {
                   const cancelled = cancelRun(run.id, run.status, run.working_path ?? undefined);
-                  if (cancelled) {
+                  if (cancelled.ok) {
                     const dir = join(home().sa, 'cancellations');
                     mkdirSync(dir, { recursive: true });
                     writeAtomic(
@@ -3376,8 +3416,8 @@ export function main(argv: string[]): number {
                 }
               );
             })();
-      print({ run_id: id, ok });
-      return ok ? 0 : 1;
+      print({ run_id: id, ...result });
+      return result.ok ? 0 : 1;
     }
     case 'decide':
       if (a.flags['all-held']) {

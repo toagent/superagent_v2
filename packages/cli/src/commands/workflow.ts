@@ -5884,7 +5884,19 @@ export async function workflowCancelCommand(
           : {}),
       });
     } catch (error) {
-      await printJsonWriteError(runId, 'cancel', error);
+      const refusal =
+        error instanceof CancelRefusedError
+          ? error
+          : error instanceof Error && error.cause instanceof CancelRefusedError
+            ? error.cause
+            : undefined;
+      await writeJsonLine({
+        ok: false,
+        runId,
+        action: 'cancel',
+        ...(refusal ? { reason: refusal.reason } : {}),
+        error: cliRefusalText(error),
+      });
     }
     return;
   }
