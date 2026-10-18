@@ -154,7 +154,7 @@ export const integrationLockTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
   20 * 60_000;
 // prettier-ignore
-export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan; reuse?: () => string[] | undefined }): DeliveryOutcome | undefined {
+export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan }): DeliveryOutcome | undefined {
   if ((!['completed', 'running'].includes(run.status) || !run.nodes?.some(n => n.nodeId === 'land' && n.state === 'completed')) ||
     (run.status !== 'completed' && (!context?.delivery || !run.nodes.some(n => n.nodeId === 'deliver' && n.state === 'running') || run.nodes.some(n => n.nodeId !== 'deliver' && !['completed', 'skipped'].includes(n.state)))))
     throw new LandError('not_ready', 'land: run is not ready for integration');
@@ -273,9 +273,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
       try { return action(); }
       finally { appendFileSync(log, `# land stage=${stage} attempt=${String(attempt)} ms=${String(performance.now() - start)}\n`); }
     };
-    const paths = delivery && gitAt(candidate, 'rev-parse', 'HEAD^{tree}') === tree ? context.reuse?.() : undefined;
-    const reused = paths?.length ? { paths, tree } : undefined;
-    if (!reused) {
     timed('environment', () => {
     prepareSubmodules(candidate, [...new Set([repo, ...(run.working_path ? [run.working_path] : [])])]);
     const script = `import { prepareEnvironment } from ${JSON.stringify(join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts'))}; const { plan, log } = await Bun.stdin.json(); const out = await prepareEnvironment(process.cwd(), plan, log, true); console.log(JSON.stringify(out)); process.exitCode = out.ok ? 0 : 1;`;
@@ -283,7 +280,6 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     if (prepared.exitCode !== 0) throw new LandError('environment_failed', `land: environment preparation failed; log: ${log}; ${redact(prepared.stdout.toString() + prepared.stderr.toString()).slice(-4000)}`);
     });
     if (timed('acceptance', () => verify(candidate)) !== 0) throw new LandError('acceptance_failed', 'land: acceptance failed');
-    } else for (const stage of ['environment', 'acceptance'] as const) timed(stage, () => undefined);
     if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('candidate_changed', 'land: acceptance changed candidate checkout');
     sameTree(); clean();
     if (targetCheckout() !== checkout) throw new LandError('target_checkout_changed', 'land: target checkout changed during acceptance; retry land --apply');
@@ -308,7 +304,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     if (delivery) {
       const integrated = git('rev-parse', `refs/heads/${target}`);
       if (integrated !== accepted) throw new LandError('integration_outcome_unknown', 'delivery: target changed after integration; outcome unknown');
-      receipt = { task: delivery.task, source: land.head, target: delivery.target, target_tip: tip, contract: delivery.contract, evidence: delivery.evidence, accepted, integrated, status: 'manual_push', push, ...(reused ? { reused } : {}) };
+      receipt = { task: delivery.task, source: land.head, target: delivery.target, target_tip: tip, contract: delivery.contract, evidence: delivery.evidence, accepted, integrated, status: 'manual_push', push };
       const temp = `${delivery.receipt}.${String(process.pid)}.tmp`;
       writeFileSync(temp, JSON.stringify(receipt, null, 2));
       renameSync(temp, delivery.receipt);
@@ -332,8 +328,7 @@ export function acceptRun(
   pkg: string | undefined,
   cwd?: string,
   cacheArt?: string,
-  report = true,
-  reuse?: { head: string; paths: string[] }
+  report = true
 ): number {
   const { artifactsOf, decisionOf, evidenceJson, planOf, print, readJson } = operator();
   const run = archonJson(
@@ -378,9 +373,8 @@ export function acceptRun(
     const gate = evidenceJson(l, art, `${inputs.tag.replace('diff-', 'gate-')}.json`);
     // prettier-ignore
     const p = Bun.spawnSync(
-      reuse ? [process.execPath, '-e', `import { reusableAcceptance } from ${JSON.stringify(join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts'))}; const { prior, head } = await Bun.stdin.json(); process.exitCode = reusableAcceptance(prior, head) ? 0 : 1;`] : [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
+      [process.execPath, join(l.gen_dir, '.archon', 'scripts', 'sa-check.ts')],
       {
-        stdin: reuse ? Buffer.from(JSON.stringify({ prior, head: reuse.head })) : undefined,
         cwd: cwd ?? run.working_path,
         env: {
           ...process.env,
@@ -396,8 +390,6 @@ export function acceptRun(
         stderr: 'pipe',
       }
     );
-    // prettier-ignore
-    if (reuse) { if (p.exitCode !== 0) return 1; reuse.paths.push(join(art, `${inputs.tag}.json`)); continue; }
     const out = lastJson(p.stdout.toString()) as (Record<string, unknown> & Accept) | undefined;
     const same =
       !!out?.contract_hash &&
@@ -482,12 +474,6 @@ export function finalizeDelivery(
             receipt = applyLand(run, land, cwd => acceptRun(l, undefined, cwd, art, false), {
               repo: l.repo,
               plan: planOf(l),
-              reuse: () => {
-                const reuse = { head: land.head, paths: [] as string[] };
-                return acceptRun(l, undefined, undefined, art, false, reuse) === 0
-                  ? reuse.paths
-                  : undefined;
-              },
               base_ref: planOf(l).base_ref,
               launch_branch: l.launch_branch,
               delivery: target ? localDelivery(l, art, target) : undefined,

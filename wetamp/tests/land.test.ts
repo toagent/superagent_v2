@@ -133,106 +133,46 @@ const deliveryFixture = () => {
   return { ...f, delivery, context: { repo: f.repo, base_ref: 'main', delivery } };
 };
 
-test.each([
-  'pass',
-  'advanced-tree',
-  'missing',
-  'head',
-  'contract',
-  'commands',
-  'failed-command',
-  'failed',
-  'dirty',
-  'uncacheable',
-  'environment',
-  'policy',
-])('LAND_REUSE requires complete commit-bound acceptance: %s', kind => {
-  const f = deliveryFixture();
-  const planPath = fixturePlan(f.root, f.repo, p => {
-    p.environment = [{ cmd: 'exit 99', timeout_s: 2 }];
-    p.packages = [
-      { id: 'p', accept: [{ cmd: 'true', timeout_s: 2, cache: kind !== 'uncacheable' }] },
-    ];
-  });
-  const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
-  const policy = join(f.root, 'policy.json');
-  writeFileSync(policy, '{}');
-  const env = {
-    ...process.env,
-    INPUTS_PLAN: planPath,
-    INPUTS_PKGS: 'p',
-    INPUTS_POLICY: policy,
-    ARTIFACTS_DIR: f.art,
-  };
-  const module = join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts');
-  const hash = Bun.spawnSync(
-    [
-      process.execPath,
-      '-e',
-      `import { acceptanceContractHash } from ${JSON.stringify(module)}; console.log(acceptanceContractHash());`,
-    ],
-    { cwd: f.worktree, env }
-  );
-  expect(hash.exitCode).toBe(0);
-  const prior = {
-    ok: kind !== 'failed',
-    workspace_clean: kind !== 'dirty',
-    head: kind === 'head' ? f.delivery.target.head : f.land.head,
-    contract_hash: kind === 'contract' ? 'wrong' : hash.stdout.toString().trim(),
-    command_results: [
-      {
-        check: kind === 'commands' ? { cmd: 'false' } : plan.packages[0]!.accept[0],
-        pass: kind !== 'failed-command',
-      },
-    ],
-  };
-  const path = join(f.art, 'diff-m1-r1.json');
-  if (kind !== 'missing') writeFileSync(path, JSON.stringify(prior));
-  if (kind === 'policy') writeFileSync(policy, '{"changed":true}');
-  if (kind === 'environment') Object.assign(env, { LAND_REUSE_TEST: 'changed' });
-  if (kind === 'advanced-tree') {
-    writeFileSync(join(f.repo, 'concurrent.txt'), 'concurrent');
-    sh('git add concurrent.txt && git commit -qm concurrent', f.repo);
-  }
-  const reuse = mock(() => {
-    const probe = Bun.spawnSync(
-      [
-        process.execPath,
-        '-e',
-        `import { reusableAcceptance } from ${JSON.stringify(module)}; const { prior, head } = await Bun.stdin.json(); process.exitCode = reusableAcceptance(prior, head) ? 0 : 1;`,
-      ],
-      {
-        cwd: f.worktree,
-        env,
-        stdin: Buffer.from(
-          JSON.stringify({
-            prior: existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : undefined,
-            head: f.land.head,
-          })
-        ),
-      }
-    );
-    return probe.exitCode === 0 ? [path] : undefined;
-  });
-  const verify = mock(() => 0);
-  // A failing setup proves the valid reuse path skips preparation as well as verification.
-  const receipt = applyLand(f.run, f.land, verify, {
-    ...f.context,
-    reuse,
-    ...(kind === 'pass' ? { plan } : {}),
-  });
-  expect(verify).toHaveBeenCalledTimes(kind === 'pass' ? 0 : 1);
-  expect(reuse).toHaveBeenCalledTimes(kind === 'advanced-tree' ? 0 : 1);
-  expect(receipt?.reused).toEqual(
-    kind === 'pass'
-      ? { paths: [path], tree: sh('git rev-parse HEAD^{tree}', f.worktree).trim() }
-      : undefined
-  );
-  expect(JSON.parse(readFileSync(f.delivery.receipt, 'utf8')).reused).toEqual(receipt?.reused);
-  const log = readFileSync(join(f.art, 'land-environment.log'), 'utf8');
-  for (const stage of ['environment', 'acceptance', 'integrate'])
-    expect(log).toContain(`stage=${stage} attempt=0 ms=`);
-});
+test.each(['all-hit', 'partial', 'uncacheable', 'tree-changed'])(
+  'LAND_ACCEPT_CACHE reruns only checks whose fingerprint changed: %s',
+  kind => {
+    const f = deliveryFixture();
+    const counter = join(f.root, 'counter');
+    const checks = ['a', 'b'].map(name => ({
+      cmd: `echo ${name} >> '${counter}'`,
+      timeout_s: 2,
+      cache: kind !== 'uncacheable',
+    }));
+    // prettier-ignore
+    const planPath = fixturePlan(f.root, f.repo, p => {
+      p.environment = [];
+      p.packages = [{ id: 'p', accept: checks }];
+    });
+    const plan = JSON.parse(readFileSync(planPath, 'utf8')) as Plan;
+    const preload = directAuxiliaryPreload();
+    // prettier-ignore
+    const accept = (cwd: string, tag: string) => Bun.spawnSync([process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')], {
+      cwd, env: fixtureEnv({ ARTIFACTS_DIR: f.art, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`, INPUTS_KIND: 'accept', INPUTS_PLAN: planPath, INPUTS_PKGS: 'p', INPUTS_TAG: tag }), stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(accept(f.worktree, 'verify-p').exitCode).toBe(0);
+    if (kind === 'partial') {
+      plan.packages[0]!.accept[1]!.cmd = `echo changed >> '${counter}'`;
+      writeFileSync(planPath, JSON.stringify(plan));
+    }
+    if (kind === 'tree-changed') {
+      writeFileSync(join(f.worktree, 'change'), 'tree');
+      sh('git add change && git commit -qm change', f.worktree);
+      f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
+    }
+    const before = readFileSync(counter, 'utf8');
+    const verify = mock((cwd: string) => accept(cwd, 'landing').exitCode);
+    expect(applyLand(f.run, f.land, verify, { ...f.context, plan })?.status).toBe('manual_push');
+    expect(
+      readFileSync(counter, 'utf8').slice(before.length).trim().split('\n').filter(Boolean)
+    ).toHaveLength(kind === 'all-hit' ? 0 : kind === 'partial' ? 1 : 2);
+  },
+  20_000
+);
 
 test.each(['same-tree', 'advanced-tree', 'acceptance-failed', 'acceptance-threw'])(
   'LAND_TIMING measures actual stages without reusable evidence: %s',
