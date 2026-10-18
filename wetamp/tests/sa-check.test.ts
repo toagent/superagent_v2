@@ -2774,8 +2774,9 @@ describe('sa-check script', () => {
       tag: 'diff-m1-r2',
       base,
       prev: out.diff_hash,
+      reviewed_diff_hash: out.diff_hash,
     });
-    expect(again.out).toMatchObject({ diff_hash: out.diff_hash, same: true });
+    expect(again.out).toMatchObject({ diff_hash: out.diff_hash, same: true, reviewed: true });
   });
   test('accept keeps binary patch and checkout evidence on disk with bounded stdout', () => {
     const root = tmp(),

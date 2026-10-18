@@ -1003,15 +1003,16 @@ describe('buildWorkflow', () => {
       command: 'sa-review-delta',
     });
   });
-  test('unchanged fix diff skips review only when an earlier review exists', () => {
+  test('unchanged fix diff skips review only when an earlier review covered its hash', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('diff-m1-r1')?.with?.prev).toBeUndefined();
     expect(n('diff-m1-r2')?.with?.prev).toBe('$diff-m1-r1.output.diff_hash');
+    expect(n('diff-m1-r2')?.with?.reviewed_diff_hash).toBe('$gate-m1-r1.output.reviewed_diff_hash');
     expect(n('review-m1-r1')?.when).toBe("$diff-m1-r1.output.disposition == 'advance'");
     expect(n('review-m1-r2')?.when).toBe(
       "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || " +
-        "$diff-m1-r2.output.disposition == 'advance' && $gate-m1-r1.output.reviewed_head == ''"
+        "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'"
     );
     const when = n('review-m1-r2')!.when!;
     const outputs = new Map([
@@ -1019,18 +1020,15 @@ describe('buildWorkflow', () => {
         'diff-m1-r2',
         {
           state: 'completed' as const,
-          output: JSON.stringify({ disposition: 'advance', same: true }),
+          output: JSON.stringify({ disposition: 'advance', same: true, reviewed: false }),
         },
       ],
-      [
-        'gate-m1-r1',
-        { state: 'completed' as const, output: JSON.stringify({ reviewed_head: '' }) },
-      ],
+      ['gate-m1-r1', { state: 'completed' as const, output: '{}' }],
     ]);
     expect(evaluateCondition(when, outputs)).toMatchObject({ parsed: true, result: true });
-    outputs.set('gate-m1-r1', {
+    outputs.set('diff-m1-r2', {
       state: 'completed',
-      output: JSON.stringify({ reviewed_head: 'reviewed-candidate' }),
+      output: JSON.stringify({ disposition: 'advance', same: true, reviewed: true }),
     });
     expect(evaluateCondition(when, outputs)).toMatchObject({ parsed: true, result: false });
     expect(n('gate-m1-r2')).toMatchObject({

@@ -523,6 +523,7 @@ export function buildWorkflow(
                   prev: `$diff-${before}.output.diff_hash`,
                   coder: `$fix-${t}.output`,
                   delta_base: `$gate-${before}.output.reviewed_head`,
+                  reviewed_diff_hash: `$gate-${before}.output.reviewed_diff_hash`,
                 }
               : {}),
           },
@@ -537,7 +538,7 @@ export function buildWorkflow(
         r === 1
           ? reviewEligible
           : `${reviewEligible} && $diff-${t}.output.same != 'true' || ` +
-            `${reviewEligible} && $gate-${before}.output.reviewed_head == ''`;
+            `${reviewEligible} && $diff-${t}.output.reviewed != 'true'`;
       nodes.push({
         id: reviewAttempt,
         always_run: true,
@@ -548,7 +549,7 @@ export function buildWorkflow(
       });
       nodes.push({
         id: `review-${t}`,
-        // A same-diff round may skip only after an earlier review; otherwise G2 never gets reviewed.
+        // A same-diff round may skip only when an earlier review covered this exact candidate.
         when: reviewWhen,
         ...(fake
           ? { bash: fakeReview(r) }

@@ -271,6 +271,9 @@
         "same": {
           "type": "boolean"
         },
+        "reviewed": {
+          "type": "boolean"
+        },
         "base_pass": {
           "type": ["boolean", "null"]
         },
@@ -331,6 +334,7 @@
         "patch",
         "diff_hash",
         "same",
+        "reviewed",
         "base_pass",
         "head",
         "checkout_fingerprint",

@@ -91,6 +91,7 @@ export interface Accept {
   milestone?: string;
   diff_hash: string;
   same: boolean;
+  reviewed?: boolean;
   no_changes?: boolean;
   head?: string;
   checkout_fingerprint?: string;
@@ -853,6 +854,7 @@ function acceptOnce(
     contract_hash: acceptanceContractHash(),
     // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
+    reviewed: env('REVIEWED_DIFF_HASH') !== '' && hash === env('REVIEWED_DIFF_HASH'),
     base_results: baseResults,
     ...baseline,
     ...scope,
@@ -2271,8 +2273,10 @@ function gate(): void {
     milestone: env('MILESTONE'),
     review_file: reviewFile,
     ledger_file: ledgerFile,
-    // 末份非空评审所见的 HEAD：下一轮 diff 以它为增量起点（F-20）；尚无评审为空，下一轮评审做全量
+    // 末份非空评审所见的 HEAD：下一轮 diff 以它为增量起点（F-20）。
     reviewed_head: reviewed === undefined ? '' : (rechecks[reviewed]?.head ?? ''),
+    // 与 reviewed_head 分开记录：只有 hash 相同才能证明当前候选已经评审。
+    reviewed_diff_hash: reviewed === undefined ? '' : (rechecks[reviewed]?.diff_hash ?? ''),
     head: git('rev-parse', 'HEAD').trim(),
     head_trusted: d.reason !== 'review_modified_checkout',
   };
