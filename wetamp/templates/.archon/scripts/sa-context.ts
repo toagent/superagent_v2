@@ -324,7 +324,11 @@ if (import.meta.main) {
         stderr: 'pipe',
       });
       if (git.exitCode !== 0) throw new Error(git.stderr.toString());
-      if (review) {
+      // A completed gate proves this review round already finished. On later resumes the
+      // validator must replay a stable value without reopening that round against a newer HEAD.
+      const completedReview =
+        review && existsSync(join(artifacts, `${review.replace(/^review-/, 'gate-')}.json`));
+      if (review && !completedReview) {
         const pointer = read(join(artifacts, `${review}.context.json`)) as
           | { path: string }
           | 'unknown';

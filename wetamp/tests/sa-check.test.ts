@@ -703,7 +703,7 @@ describe('FC failure classification', () => {
           expect(node.output_format).toEqual(outputSchema.$defs.accept);
         if (node.id.startsWith('settle-'))
           expect(node.output_format).toEqual(outputSchema.$defs.delivery);
-        if (/^review-/.test(node.id)) {
+        if (/^review-(?!context-)/.test(node.id)) {
           expect(node.output_format).toEqual(outputSchema.$defs.reviewer);
           if (node.bash) expect(node.bash).toContain('"failure_class":"product","command":null');
         }

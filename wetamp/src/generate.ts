@@ -543,12 +543,20 @@ export function buildWorkflow(
       nodes.push({
         id: reviewAttempt,
         when: reviewWhen,
-        // A retry bumps the milestone attempt and refreshes review context. Other resumes,
-        // including human approval, retain completed review rounds and their frozen refs.
         depends_on: [`diff-${t}`, attempt],
-        ...attemptInputs(attemptPath(gen, `review-${t}`), '', fake ? '' : `review-${t}`),
+        ...attemptInputs(attemptPath(gen, `review-${t}`)),
         output_format: outputSchema('attempt'),
       });
+      const reviewContext = `review-context-${t}`;
+      if (!fake)
+        nodes.push({
+          id: reviewContext,
+          when: reviewWhen,
+          always_run: true,
+          depends_on: [reviewAttempt],
+          ...attemptInputs(attemptPath(gen, `review-${t}`), '', `review-${t}`),
+          output_format: outputSchema('attempt'),
+        });
       nodes.push({
         id: `review-${t}`,
         // A same-diff round may skip only when an earlier review covered this exact candidate.
@@ -580,7 +588,7 @@ export function buildWorkflow(
                   : { diff: `$diff-${t}.output.patch` }),
               },
             }),
-        depends_on: [`diff-${t}`, reviewAttempt],
+        depends_on: [`diff-${t}`, fake ? reviewAttempt : reviewContext],
         output_format: outputSchema('reviewer'),
       });
       rounds[`R${String(r)}`] = skippable(`$review-${t}.output`);

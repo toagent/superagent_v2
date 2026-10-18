@@ -765,6 +765,25 @@ nodes:
       counter: /GEN/attempts/review-m1-r1
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m1-r1
+    when: $diff-m1-r1.output.disposition == 'advance'
+    always_run: true
+    depends_on:
+      - attempt-review-m1-r1
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r1
+      gen: /GEN
+      pkg: ''
       review: review-m1-r1
     output_format:
       type: object
@@ -791,7 +810,7 @@ nodes:
       diff: $diff-m1-r1.output.patch
     depends_on:
       - diff-m1-r1
-      - attempt-review-m1-r1
+      - review-context-m1-r1
     output_format:
       type: object
       properties:
@@ -1268,6 +1287,25 @@ nodes:
       counter: /GEN/attempts/review-m1-r2
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m1-r2
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m1-r2
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r2
+      gen: /GEN
+      pkg: ''
       review: review-m1-r2
     output_format:
       type: object
@@ -1296,7 +1334,7 @@ nodes:
       ledger: $gate-m1-r1.output.ledger_file
     depends_on:
       - diff-m1-r2
-      - attempt-review-m1-r2
+      - review-context-m1-r2
     output_format:
       type: object
       properties:
@@ -1771,6 +1809,25 @@ nodes:
       counter: /GEN/attempts/review-m1-r3
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m1-r3
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m1-r3
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r3
+      gen: /GEN
+      pkg: ''
       review: review-m1-r3
     output_format:
       type: object
@@ -1799,7 +1856,7 @@ nodes:
       ledger: $gate-m1-r2.output.ledger_file
     depends_on:
       - diff-m1-r3
-      - attempt-review-m1-r3
+      - review-context-m1-r3
     output_format:
       type: object
       properties:
@@ -2278,6 +2335,25 @@ nodes:
       counter: /GEN/attempts/review-m1-r4
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m1-r4
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m1-r4
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r4
+      gen: /GEN
+      pkg: ''
       review: review-m1-r4
     output_format:
       type: object
@@ -2306,7 +2382,7 @@ nodes:
       ledger: $gate-m1-r3.output.ledger_file
     depends_on:
       - diff-m1-r4
-      - attempt-review-m1-r4
+      - review-context-m1-r4
     output_format:
       type: object
       properties:
@@ -2789,6 +2865,25 @@ nodes:
       counter: /GEN/attempts/review-m1-r5
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m1-r5
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m1-r5
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r5
+      gen: /GEN
+      pkg: ''
       review: review-m1-r5
     output_format:
       type: object
@@ -2817,7 +2912,7 @@ nodes:
       ledger: $gate-m1-r4.output.ledger_file
     depends_on:
       - diff-m1-r5
-      - attempt-review-m1-r5
+      - review-context-m1-r5
     output_format:
       type: object
       properties:
@@ -3304,6 +3399,25 @@ nodes:
       counter: /GEN/attempts/review-m1-r6
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m1-r6
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m1-r6
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m1-r6
+      gen: /GEN
+      pkg: ''
       review: review-m1-r6
     output_format:
       type: object
@@ -3332,7 +3446,7 @@ nodes:
       ledger: $gate-m1-r5.output.ledger_file
     depends_on:
       - diff-m1-r6
-      - attempt-review-m1-r6
+      - review-context-m1-r6
     output_format:
       type: object
       properties:
@@ -4228,6 +4342,25 @@ nodes:
       counter: /GEN/attempts/review-m2-r1
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m2-r1
+    when: $diff-m2-r1.output.disposition == 'advance'
+    always_run: true
+    depends_on:
+      - attempt-review-m2-r1
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r1
+      gen: /GEN
+      pkg: ''
       review: review-m2-r1
     output_format:
       type: object
@@ -4254,7 +4387,7 @@ nodes:
       diff: $diff-m2-r1.output.patch
     depends_on:
       - diff-m2-r1
-      - attempt-review-m2-r1
+      - review-context-m2-r1
     output_format:
       type: object
       properties:
@@ -4731,6 +4864,25 @@ nodes:
       counter: /GEN/attempts/review-m2-r2
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m2-r2
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m2-r2
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r2
+      gen: /GEN
+      pkg: ''
       review: review-m2-r2
     output_format:
       type: object
@@ -4759,7 +4911,7 @@ nodes:
       ledger: $gate-m2-r1.output.ledger_file
     depends_on:
       - diff-m2-r2
-      - attempt-review-m2-r2
+      - review-context-m2-r2
     output_format:
       type: object
       properties:
@@ -5234,6 +5386,25 @@ nodes:
       counter: /GEN/attempts/review-m2-r3
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m2-r3
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m2-r3
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r3
+      gen: /GEN
+      pkg: ''
       review: review-m2-r3
     output_format:
       type: object
@@ -5262,7 +5433,7 @@ nodes:
       ledger: $gate-m2-r2.output.ledger_file
     depends_on:
       - diff-m2-r3
-      - attempt-review-m2-r3
+      - review-context-m2-r3
     output_format:
       type: object
       properties:
@@ -5741,6 +5912,25 @@ nodes:
       counter: /GEN/attempts/review-m2-r4
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m2-r4
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m2-r4
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r4
+      gen: /GEN
+      pkg: ''
       review: review-m2-r4
     output_format:
       type: object
@@ -5769,7 +5959,7 @@ nodes:
       ledger: $gate-m2-r3.output.ledger_file
     depends_on:
       - diff-m2-r4
-      - attempt-review-m2-r4
+      - review-context-m2-r4
     output_format:
       type: object
       properties:
@@ -6252,6 +6442,25 @@ nodes:
       counter: /GEN/attempts/review-m2-r5
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m2-r5
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m2-r5
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r5
+      gen: /GEN
+      pkg: ''
       review: review-m2-r5
     output_format:
       type: object
@@ -6280,7 +6489,7 @@ nodes:
       ledger: $gate-m2-r4.output.ledger_file
     depends_on:
       - diff-m2-r5
-      - attempt-review-m2-r5
+      - review-context-m2-r5
     output_format:
       type: object
       properties:
@@ -6767,6 +6976,25 @@ nodes:
       counter: /GEN/attempts/review-m2-r6
       gen: /GEN
       pkg: ''
+      review: ''
+    output_format:
+      type: object
+      properties:
+        attempt:
+          type: string
+      required:
+        - attempt
+  - id: review-context-m2-r6
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.reviewed != 'true'
+    always_run: true
+    depends_on:
+      - attempt-review-m2-r6
+    script: sa-context
+    runtime: bun
+    with:
+      counter: /GEN/attempts/review-m2-r6
+      gen: /GEN
+      pkg: ''
       review: review-m2-r6
     output_format:
       type: object
@@ -6795,7 +7023,7 @@ nodes:
       ledger: $gate-m2-r5.output.ledger_file
     depends_on:
       - diff-m2-r6
-      - attempt-review-m2-r6
+      - review-context-m2-r6
     output_format:
       type: object
       properties:

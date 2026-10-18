@@ -321,12 +321,36 @@ const runAttempt = (node: N, cwd: string, artifacts: string) =>
     }
   );
 
-test('approval resume preserves reviews while a changed attempt refreshes failed review setup', () => {
+test('completed review context replay keeps stale refs fail-closed only for unfinished rounds', () => {
+  const gen = tmp(),
+    repo = gitRepo(tmp()),
+    artifacts = tmp(),
+    counter = join(gen, 'attempt');
+  fs.cpSync(join(WETAMP, 'templates/.archon'), join(artifacts, '.archon'), { recursive: true });
+  fs.copyFileSync(
+    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+    join(artifacts, '.archon/scripts/policy-attempts.ts')
+  );
+  fs.writeFileSync(counter, '0');
+  const frozen = join(artifacts, 'frozen.json');
+  fs.writeFileSync(
+    frozen,
+    JSON.stringify({ node: 'review-m1-r1', refs: { head: 'stale' }, carry_over: {} })
+  );
+  fs.writeFileSync(join(artifacts, 'review-m1-r1.context.json'), JSON.stringify({ path: frozen }));
+  const node: N = { id: 'review-context-m1-r1', with: { counter, gen, review: 'review-m1-r1' } };
+  expect(runAttempt(node, repo, artifacts).exitCode).toBe(1);
+  fs.writeFileSync(join(artifacts, 'gate-m1-r1.json'), '{}');
+  expect(runAttempt(node, repo, artifacts).exitCode).toBe(0);
+});
+
+test('approval resume preserves review attempts while failed reviews refresh context', () => {
   const run = (retry: boolean) => {
     const root = tmp(),
       repo = gitRepo(join(root, 'repo')),
       source = join(root, 'source'),
       counter = join(root, 'attempt'),
+      attemptCalls = join(root, 'attempt-calls'),
       setupCalls = join(root, 'setup-calls'),
       reviewCalls = join(root, 'review-calls'),
       allowReview = join(root, 'allow-review');
@@ -342,13 +366,19 @@ test('approval resume preserves reviews while a changed attempt refreshes failed
           { id: 'diff-m1-r1', bash: 'printf stable', depends_on: ['attempt-m1'] },
           {
             id: 'attempt-review-m1-r1',
-            bash: `echo setup >> '${setupCalls}'; printf prepared`,
+            bash: `echo attempt >> '${attemptCalls}'; printf prepared`,
             depends_on: ['diff-m1-r1', 'attempt-m1'],
+          },
+          {
+            id: 'review-context-m1-r1',
+            bash: `echo setup >> '${setupCalls}'; printf prepared`,
+            always_run: true,
+            depends_on: ['attempt-review-m1-r1'],
           },
           {
             id: 'review-m1-r1',
             bash: `echo review >> '${reviewCalls}'; test -f '${allowReview}'`,
-            depends_on: ['attempt-review-m1-r1'],
+            depends_on: ['review-context-m1-r1'],
           },
           ...(retry
             ? []
@@ -381,13 +411,13 @@ test('approval resume preserves reviews while a changed attempt refreshes failed
     const id = String(ack?.runId);
     invoke('wait', id, '--timeout', '20');
     if (retry) {
-      fs.writeFileSync(counter, '1');
       fs.writeFileSync(allowReview, '1');
       invoke('resume', id, '--detach');
     } else invoke('approve', id, '--detach');
     invoke('wait', id, '--timeout', '20');
     const count = (path: string) => readFileSync(path, 'utf8').trim().split('\n').length;
-    expect(count(setupCalls)).toBe(retry ? 2 : 1);
+    expect(count(attemptCalls)).toBe(1);
+    expect(count(setupCalls)).toBe(2);
     expect(count(reviewCalls)).toBe(retry ? 2 : 1);
   };
   run(false);
@@ -936,13 +966,25 @@ describe('buildWorkflow', () => {
         join(gen, '.archon/scripts/policy-attempts.ts')
       );
       fs.mkdirSync(join(gen, 'attempts'));
-      const nodes = nodesOf(
+      const allNodes = nodesOf(
         buildWorkflow(fixture, milestones(fixture), 'hf10b', gen, fake, NOW)
-      ).filter(n => n.id.startsWith('attempt-review-'));
+      );
+      const nodes = allNodes.filter(n => n.id.startsWith('attempt-review-'));
       expect(nodes).toHaveLength(milestones(fixture).length * MAX_ROUNDS);
       const node = nodes.find(n => n.id === id)!;
       expect(node.always_run).toBeUndefined();
       expect(node.depends_on).toContain(`attempt-${id.slice(15).replace(/-r\d+$/, '')}`);
+      const reviewContextNode = allNodes.find(
+        n => n.id === id.replace('attempt-review-', 'review-context-')
+      )!;
+      if (fake) expect(reviewContextNode).toBeUndefined();
+      else {
+        expect(reviewContextNode.always_run).toBeTrue();
+        expect(reviewContextNode.depends_on).toEqual([id]);
+        expect(allNodes.find(n => n.id === id.slice('attempt-'.length))?.depends_on).toContain(
+          reviewContextNode.id
+        );
+      }
       const path = join(gen, 'attempts', node.id.slice('attempt-'.length));
       if (counter === 'directory') {
         fs.mkdirSync(path);
