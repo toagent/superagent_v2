@@ -3582,6 +3582,9 @@ describe('sa-check script', () => {
       counter = join(root, 'count');
     const command = `echo x >> '${counter}'; false`;
     const legacy = join(root, 'legacy.ts');
+    const currentScript = readFileSync(SCRIPT, 'utf8');
+    const legacyScript = currentScript.replace('        FAILURE_CLASSES,\n', '');
+    expect(legacyScript).not.toBe(currentScript);
     cpSync(join(import.meta.dir, '../templates/.archon/scripts'), root, { recursive: true });
     writeFileSync(
       join(root, 'policy-attempts.ts'),
@@ -3589,9 +3592,10 @@ describe('sa-check script', () => {
     );
     writeFileSync(
       legacy,
-      readFileSync(SCRIPT, 'utf8')
-        .replace('                FAILURE_CLASSES,\n', '')
-        .replace('failure_class: failureClass(classification)', "failure_class: 'product'")
+      legacyScript.replace(
+        'failure_class: failureClass(classification)',
+        "failure_class: 'product'"
+      )
     );
     const plan = planFile(root, command, [], true);
     expect(
