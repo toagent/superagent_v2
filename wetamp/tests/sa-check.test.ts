@@ -633,7 +633,8 @@ describe('NONCONVERGENCE delivery gate', () => {
     });
     expect(decide({ reviews: [null, null], rechecks: [check, check], risk: 'G2' })).toMatchObject({
       verdict: 'escalate',
-      decision: { kind: 'block' },
+      reason: 'no_change',
+      decision: { kind: 'block', reason: 'no_change' },
     });
   });
   test('unchanged diff stops unknown diagnosis even after an empty commit', () => {
