@@ -656,14 +656,14 @@ export function disposition(
   check?: Accept,
   permissions: string[] = [],
   selfReportPath?: string,
-  reviewRounds = maxRounds()
+  reviewRounds?: number
 ) {
   const { decision: judged, audit } = deliveryDecision({
     rechecks: [check ?? { ok, diff_hash: '', same: false }],
     permissions,
     selfReport: raw,
     selfReportPath,
-    reviewRounds,
+    reviewRounds: reviewRounds ?? null,
   });
   const decision = judged;
   return {
@@ -805,12 +805,12 @@ function acceptOnce(
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
-  const reviewRounds = maxRounds();
+  const reviewRounds = env('MILESTONE') || env('ARCHON') ? maxRounds() : undefined;
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
   // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
     Array.from(
-      { length: reviewRounds },
+      { length: reviewRounds ?? 0 },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
   const baseResults =
@@ -905,11 +905,13 @@ function acceptOnce(
       log,
       ...baseline,
     },
-    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE'), reviewRounds) : [],
+    env('ARCHON') && reviewRounds !== undefined
+      ? permissionEvidence(runEvents(), ids, env('MILESTONE'), reviewRounds)
+      : [],
     join(artifacts, `${tag}.coder.json`),
     reviewRounds
   );
-  if (reviewRound >= reviewRounds && result.disposition === 'repair')
+  if (reviewRounds !== undefined && reviewRound >= reviewRounds && result.disposition === 'repair')
     Object.assign(result, {
       disposition: 'fail',
       reason: 'acceptance_failed+review_limit',
@@ -1346,7 +1348,7 @@ export function deliveryDecision(input: {
   qualifiedReview?: boolean;
   strict?: boolean;
   packages?: RequirementContract[];
-  reviewRounds: number;
+  reviewRounds: number | null;
 }) {
   let coder: Coder | undefined;
   try {
@@ -1593,7 +1595,8 @@ export function deliveryDecision(input: {
           last.status
         ];
   }
-  if (rounds >= input.reviewRounds) return out('block', `${reason}+review_limit`, debt);
+  if (input.reviewRounds !== null && rounds >= input.reviewRounds)
+    return out('block', `${reason}+review_limit`, debt);
   return out(last?.status === 'INCOMPLETE' ? 'block' : 'repair', reason, debt);
 }
 
