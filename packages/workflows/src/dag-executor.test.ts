@@ -21,10 +21,21 @@ import {
 import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { removeTempTree, testTimeout } from '@archon/paths/test-utils';
 import { existsSync, unlinkSync } from 'fs';
-import { isAbsolute, join } from 'path';
+import { dirname, isAbsolute, join } from 'path';
 import { tmpdir } from 'os';
 import * as git from '@archon/git';
+import { redactCredentialValues } from '@archon/paths/credential-redaction';
 import { RATE_LIMIT_MAX_RETRIES } from './executor-shared';
+
+const bashStartupStderr = (
+  await git.execFileAsync(git.resolveBashPath(), ['-c', 'true'], {
+    env: { ...process.env, BASH_ENV: '' },
+  })
+).stderr;
+const withoutBashStartup = (cmd: string, stderr: string): string =>
+  cmd === git.resolveBashPath() && stderr.startsWith(bashStartupStderr)
+    ? stderr.slice(bashStartupStderr.length)
+    : stderr;
 
 // --- Mock logger (MUST come before imports of modules under test) ---
 
@@ -65,6 +76,68 @@ mock.module('@archon/paths', () => ({
     isPathInside(mockArtifactHome, candidate, { includeRoot: true, lexical: true }),
   getRunArtifactsDirForRoot: (root: string, runId: string): string =>
     join(root, 'artifacts', 'runs', runId),
+}));
+
+mock.module('./subprocess-output', () => ({
+  runStreamingSubprocess: async (options: {
+    cmd: string;
+    args: string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeout: number;
+    credentialValues: readonly string[];
+    stdoutPath: string;
+    stderrPath: string;
+    retainRawStdout?: boolean;
+  }) => {
+    let result: { stdout: string; stderr: string };
+    try {
+      result = await git.execFileAsync(options.cmd, options.args, {
+        cwd: options.cwd,
+        env: { ...options.env, BASH_ENV: '' },
+        timeout: options.timeout,
+      });
+    } catch (caught) {
+      const error = caught as Error & Record<string, unknown>;
+      for (const key of ['message', 'stack', 'stdout', 'stderr', 'cmd'] as const) {
+        if (typeof error[key] === 'string')
+          error[key] = redactCredentialValues(error[key] as string, options.credentialValues);
+      }
+      if (Array.isArray(error.spawnargs))
+        error.spawnargs = error.spawnargs.map(arg =>
+          redactCredentialValues(String(arg), options.credentialValues)
+        );
+      if (typeof error.stderr === 'string')
+        error.stderr = withoutBashStartup(options.cmd, error.stderr);
+      if (typeof error.code === 'number')
+        error.message = `Command failed: ${String(error.cmd ?? options.cmd)}`;
+      error.stdoutTail = error.stdout;
+      error.stderrTail = error.stderr;
+      throw error;
+    }
+    const stdout = redactCredentialValues(result.stdout, options.credentialValues);
+    const stderr = redactCredentialValues(
+      withoutBashStartup(options.cmd, result.stderr),
+      options.credentialValues
+    );
+    await Promise.all([
+      mkdir(dirname(options.stdoutPath), { recursive: true }),
+      mkdir(dirname(options.stderrPath), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(options.stdoutPath, stdout),
+      writeFile(options.stderrPath, stderr),
+    ]);
+    const output = (text: string) => ({
+      preview: text,
+      tail: text,
+      bytes: Buffer.byteLength(text),
+    });
+    return {
+      stdout: { ...output(stdout), ...(options.retainRawStdout ? { raw: result.stdout } : {}) },
+      stderr: output(stderr),
+    };
+  },
 }));
 
 // --- Bootstrap provider registry (after path mocks, before dag-executor import) ---

@@ -190,6 +190,7 @@ import {
   type JsonValue,
 } from './output-ref';
 import { buildTruncationMarker } from './utils/output-truncation';
+import { runStreamingSubprocess, type StreamedSubprocessError } from './subprocess-output';
 import { writeNodeArtifact, readNodeArtifacts, writeNodeArtifactsListing } from './artifacts-index';
 import { validateArtifactPointers } from './artifact-pointer';
 import {
@@ -2977,61 +2978,10 @@ export function buildSubprocessDockerArgs(
 }
 
 /** The shape `execFile` rejects with: argv-bearing fields plus the classifier fields. */
-type RawSubprocessRejection = Error & {
-  stdout?: string;
-  stderr?: string;
-  cmd?: string;
-  spawnargs?: string[];
-  /**
-   * Numeric exit code, or a symbol (`'ENOENT'`, `'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'`).
-   * `null` on a timeout kill — Node reports that one through `signal` instead.
-   */
-  code?: number | string | null;
-  /** True when Node killed the child after the configured `execFile` timeout elapsed. */
-  killed?: boolean;
-  /** Set (with `code: null`) when the child was killed, which for `execFile` is a timeout. */
-  signal?: string | null;
-};
+type RawSubprocessRejection = StreamedSubprocessError;
 
 function isSubprocessTimeout(error: RawSubprocessRejection): boolean {
   return error.killed === true && error.code === null;
-}
-
-/**
- * Scrub credentials from every subprocess rejection field that can carry
- * subprocess text. The exact values come from the engine's injected-credential
- * provenance plus secret-named project env entries, so provider credentials are
- * removed even when the failed process echoes them without their env key.
- *
- * Mutates in place rather than returning a fresh Error: callers classify the
- * rejection by reading `killed` (timeout) and `code` (ENOENT/EACCES) off
- * the original object, and a replacement would silently drop those and turn every
- * timeout into a generic failure.
- *
- * `cmd` and `spawnargs` are not redundant with `message`. They can be the only
- * carriers when the rejection
- * is not a non-zero exit: a maxBuffer overflow rejects with `message` = 'stdout
- * maxBuffer length exceeded' — no argv at all — so the credentials survive solely
- * in `cmd`. Pino serializes every enumerable `err` property, so an unredacted `cmd`
- * writes the token to the detached-run log even when `message` is already clean.
- */
-function redactSubprocessError(
-  e: RawSubprocessRejection,
-  credentialValues: readonly string[]
-): RawSubprocessRejection {
-  e.message = redactCredentialValues(e.message, credentialValues);
-  if (e.stack) e.stack = redactCredentialValues(e.stack, credentialValues);
-  if (typeof e.stdout === 'string') {
-    e.stdout = redactCredentialValues(e.stdout, credentialValues);
-  }
-  if (typeof e.stderr === 'string') {
-    e.stderr = redactCredentialValues(e.stderr, credentialValues);
-  }
-  if (typeof e.cmd === 'string') e.cmd = redactCredentialValues(e.cmd, credentialValues);
-  if (Array.isArray(e.spawnargs)) {
-    e.spawnargs = e.spawnargs.map(arg => redactCredentialValues(arg, credentialValues));
-  }
-  return e;
 }
 
 /**
@@ -3068,11 +3018,15 @@ async function runSubprocess(
     env: NodeJS.ProcessEnv;
     protectedEnvKeys?: readonly string[];
     protectedCredentialValues?: readonly string[];
+    artifactsDir: string;
+    artifactKey: string;
+    retainRawStdout?: boolean;
     retention: SubprocessRetention;
   }
 ): Promise<{ stdout: string; stderr: string; credentialValues: readonly string[] }> {
   const subprocessEnv =
     execContext.kind === 'container' ? options.env : { ...process.env, ...options.env };
+  if (execContext.kind === 'host' && cmd === resolveBashPath()) subprocessEnv.BASH_ENV = '';
   // Both outcomes redact against the same values, so the credential set is resolved
   // once here rather than separately per path — a success path that redacted less than
   // the failure path would be the security hole, not a style difference.
@@ -3082,47 +3036,47 @@ async function runSubprocess(
     options.protectedCredentialValues
   );
   const { logDir, workflowRunId, nodeId, label } = options.retention;
-  // Container env is delivered in argv, while either execution mode can echo a
-  // credential in output. Sanitize at the shared boundaries below so every downstream
-  // reader — the rejection's consumers and the retained evidence alike — sees the same
-  // safe text.
-  try {
-    const result =
-      execContext.kind === 'container'
-        ? await execFileAsync(
-            'docker',
-            buildSubprocessDockerArgs(execContext, cmd, args, {
-              cwd: options.cwd,
-              env: options.env,
-            }),
-            { timeout: options.timeout }
-          )
-        : await execFileAsync(cmd, args, {
+  const command: { cmd: string; args: string[] } =
+    execContext.kind === 'container'
+      ? {
+          cmd: 'docker',
+          args: buildSubprocessDockerArgs(execContext, cmd, args, {
             cwd: options.cwd,
-            timeout: options.timeout,
-            env: subprocessEnv,
-          });
-
-    result.stderr = redactCredentialValues(result.stderr, credentialValues);
-    // Retention is the EVIDENCE copy, taken from a redacted-then-capped copy of the
-    // streams. The caller's `stdout` remains the node's full-fidelity value channel
-    // (#2726), while `stderr` shares the exact redacted copy used for retention because
-    // callers broadcast it to the operator.
+            env: options.env,
+          }),
+        }
+      : { cmd, args };
+  const outputDir = joinPath(options.artifactsDir, RUN_ARTIFACTS_ENGINE_SUBDIR);
+  const streamDir = joinPath(outputDir, 'subprocess-output');
+  const stdoutPath = joinPath(streamDir, `${options.artifactKey}.stdout`);
+  const stderrPath = joinPath(streamDir, `${options.artifactKey}.stderr`);
+  try {
+    const result = await runStreamingSubprocess({
+      cmd: command.cmd,
+      args: command.args,
+      cwd: options.cwd,
+      timeout: options.timeout,
+      env: subprocessEnv,
+      credentialValues,
+      stdoutPath,
+      stderrPath,
+      retainRawStdout: options.retainRawStdout,
+    });
     await logExecOutput(logDir, workflowRunId, nodeId, label, {
-      stdoutTail: retainStreamTail(redactCredentialValues(result.stdout, credentialValues)),
-      stderrTail: retainStreamTail(result.stderr),
+      stdoutTail: retainStreamTail(result.stdout.tail),
+      stderrTail: retainStreamTail(result.stderr.tail),
       exitCode: 0,
     });
-    // `credentialValues` rides along so a caller that quotes stdout back (a contract
-    // failure's preview) redacts against exactly this set rather than resolving its own.
-    return { ...result, credentialValues };
+    return {
+      stdout: result.stdout.raw ?? result.stdout.preview,
+      stderr: result.stderr.preview,
+      credentialValues,
+    };
   } catch (err) {
-    const rejection = redactSubprocessError(err as RawSubprocessRejection, credentialValues);
-    // `redactSubprocessError` already scrubbed these fields in place, so retention reads
-    // the same safe values every other failure consumer sees.
+    const rejection = err as RawSubprocessRejection;
     await logExecOutput(logDir, workflowRunId, nodeId, label, {
-      stdoutTail: retainStreamTail(rejection.stdout),
-      stderrTail: retainStreamTail(rejection.stderr),
+      stdoutTail: retainStreamTail(rejection.stdoutTail ?? rejection.stdout),
+      stderrTail: retainStreamTail(rejection.stderrTail ?? rejection.stderr),
       // A timeout kill reports `code: null` and names the signal instead. An
       // `until_bash` probe has no sibling `node_error` row to say so, and a probe that
       // was killed is exactly the case a reader needs distinguished from one that
@@ -3551,6 +3505,9 @@ async function executeBashNode(
         env: { ...subprocessEnv, BASH_ENV: '' },
         protectedEnvKeys,
         protectedCredentialValues,
+        artifactsDir,
+        artifactKey: stepName,
+        retainRawStdout: true,
         retention: {
           logDir,
           workflowRunId: workflowRun.id,
@@ -3907,6 +3864,9 @@ async function executeScriptNode(
       env: subprocessEnv,
       protectedEnvKeys,
       protectedCredentialValues,
+      artifactsDir,
+      artifactKey: stepName,
+      retainRawStdout: true,
       retention: {
         logDir,
         workflowRunId: workflowRun.id,
@@ -4615,6 +4575,8 @@ async function executeLoopGroupBody(
             timeout: node.timeout ?? SUBPROCESS_DEFAULT_TIMEOUT,
             protectedEnvKeys: config.protectedEnvKeys,
             protectedCredentialValues: config.protectedCredentialValues,
+            artifactsDir,
+            artifactKey: `${node.id}-iteration-${String(resumedIteration)}`,
             retention: {
               logDir,
               workflowRunId: workflowRun.id,
@@ -5090,6 +5052,8 @@ async function executeLoopGroupBody(
           timeout: node.timeout ?? SUBPROCESS_DEFAULT_TIMEOUT,
           protectedEnvKeys: config.protectedEnvKeys,
           protectedCredentialValues: config.protectedCredentialValues,
+          artifactsDir,
+          artifactKey: `${node.id}-iteration-${String(i)}`,
           retention: {
             logDir,
             workflowRunId: workflowRun.id,
@@ -6628,6 +6592,8 @@ async function executeLoopNode(
           timeout: node.timeout ?? SUBPROCESS_DEFAULT_TIMEOUT,
           protectedEnvKeys: config.protectedEnvKeys,
           protectedCredentialValues: config.protectedCredentialValues,
+          artifactsDir,
+          artifactKey: `${node.id}-iteration-${String(i)}`,
           retention: {
             logDir,
             workflowRunId: workflowRun.id,
