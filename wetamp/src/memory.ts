@@ -1,10 +1,11 @@
-// Episodes and legacy lessons are evidence projections; only owner publications feed learning.
+// Episodes and lessons are evidence projections; qualified publications and scoped lessons feed learning.
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -24,7 +25,7 @@ import { reasonOf } from './reasons';
 import { redact } from './redact';
 import { budgetUsage } from '../templates/.archon/scripts/sa-check';
 import type { Plan, Pkg } from './plan';
-import { recallLearning, selectLearning, type LearningEntry } from './learning';
+import { recallLearning, selectLearning, type Learning, type LearningEntry } from './learning';
 // Reuse the workflows package's existing schema dependency, as plan.ts does for Ajv.
 export const z: typeof import('../../packages/workflows/node_modules/zod').z = (
   createRequire(join(WETAMP, '..', 'packages/workflows/package.json'))(
@@ -669,19 +670,64 @@ export function injectMemory(
   const path = join(dir, 'learning.json');
   if (existsSync(path))
     return (JSON.parse(readFileSync(path, 'utf8')) as { ids: Record<string, string[]> }).ids;
-  const selections = selectLearning(
-    plan.repo,
-    Object.fromEntries(
+  const queries = Object.fromEntries(
       plan.packages.map(p => [
         p.id,
         [p.goal, ...(p.requirements ?? []).map(r => r.text)].join('\n'),
       ])
-    )
-  );
+    ),
+    disabled = !memoryOn() || privateProject(plan.repo),
+    selections = disabled
+      ? (Object.fromEntries(
+          plan.packages.map(p => [
+            p.id,
+            { status: 'disabled', data_only: true, entries: [] } as const,
+          ])
+        ) as Record<string, Learning>)
+      : selectLearning(plan.repo, queries);
+  if (!disabled) {
+    let project: string | undefined;
+    try {
+      project = realpathSync(plan.repo);
+    } catch {
+      // A disappearing checkout must not make memory injection block generation.
+    }
+    for (const p of plan.packages) {
+      const selection = selections[p.id],
+        entries = [...selection.entries];
+      let candidates: Lesson[] = [];
+      try {
+        if (project)
+          candidates = selectCandidates(project, taskTag(p.scope.write), undefined, 'project');
+      } catch {
+        // Corrupt or concurrently replaced local reflection data is optional input.
+      }
+      for (const l of candidates) {
+        if (entries.length === 5) break;
+        const entry: LearningEntry = {
+          id: l.id,
+          scope: `project:${l.scope}`,
+          domain: 'engineering',
+          claim: l.do,
+          applies_when: l.when,
+          not_when: l.dont,
+          evidence: l.evidence,
+          source: 'reflection',
+          status: l.status === 'stable' ? 'active' : 'trial',
+        };
+        if (
+          !entries.some((e: LearningEntry) => e.id === entry.id) &&
+          Buffer.byteLength(JSON.stringify([...entries, entry])) <= 12000
+        )
+          entries.push(entry);
+      }
+      if (entries.length) selections[p.id] = { ...selection, status: 'available', entries };
+    }
+  }
   const ids = Object.fromEntries(
     Object.entries(selections)
       .filter(([, s]) => s.entries.length)
-      .map(([id, s]) => [id, s.entries.map(e => e.id)])
+      .map(([id, s]) => [id, s.entries.map((e: LearningEntry) => e.id)])
   );
   writeAtomic(path, JSON.stringify({ version: 1, data_only: true, selections, ids }) + '\n');
   return ids;

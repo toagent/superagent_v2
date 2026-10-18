@@ -366,12 +366,22 @@ describe('EV1 incident replay', () => {
     const learned = memoryState().lessons[0];
     expect(learned.scope).toBe(root);
     expect(learned.status).toBe('trial');
+    seed(
+      lesson('stable', { status: 'stable', helpful: 2 }),
+      lesson('engine', { category: 'engine', helpful: 9 }),
+      lesson('retired', { status: 'retired', helpful: 9 }),
+      lesson('foreign', { scope: join(root, 'other'), helpful: 9 })
+    );
     const generated = generate(plan, 'next', true);
     expect(readFileSync(join(generated.dir, 'briefs/core.md'), 'utf8')).not.toContain(
       '选取空闲端口'
     );
     const metadata = JSON.parse(readFileSync(join(generated.dir, 'engine.json'), 'utf8'));
-    expect(metadata.lessons).toEqual({});
+    expect(metadata.lessons.core).toEqual(['stable', learned.id]);
+    const entries = JSON.parse(readFileSync(join(generated.dir, 'learning.json'), 'utf8'))
+      .selections.core.entries;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ id: 'stable', source: 'reflection', status: 'active' });
     const other = generate({ ...plan, repo: join(root, 'other') }, 'other', true);
     expect(readFileSync(join(other.dir, 'briefs/core.md'), 'utf8')).not.toContain('选取空闲端口');
     maintainLessons(
@@ -517,7 +527,7 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(long.ids.length).toBeLessThan(5);
     expect(lessonText([lesson('giant', { do: '中'.repeat(240) })]).ids).toHaveLength(0);
   });
-  test('legacy stable and trial never mutate new briefs, commands or frozen context', () => {
+  test('reflection lessons enter data context without mutating briefs, commands or nodes', () => {
     seed(lesson('trial'), lesson('stable', { status: 'stable', helpful: 100 }));
     const dir = join(root, 'unqualified');
     mkdirSync(join(dir, 'briefs'), { recursive: true });
@@ -527,7 +537,7 @@ describe('EV1 budgets and deterministic matching', () => {
     ];
     const frozen = JSON.stringify(nodes);
     const before = readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8');
-    expect(injectMemory(plan, dir, nodes)).toEqual({});
+    expect(injectMemory(plan, dir, nodes)).toEqual({ core: ['stable', 'trial'] });
     expect(selectLessons(root, 'ts-cli')).toEqual([]);
     expect(readFileSync(join(dir, 'briefs/core.md'), 'utf8')).toBe('original brief');
     expect(JSON.stringify(nodes)).toBe(frozen);

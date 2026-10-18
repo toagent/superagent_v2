@@ -18,7 +18,7 @@ import { artifactsOf, type Ledger } from './cli';
 import { memoryState } from './memory';
 import { callsOf } from './report';
 
-// Qualification and recall belong exclusively to this installed owner, not wetamp feedback.
+// Qualification belongs to the installed owner; recall may also include local reflection data.
 export const evolutionScript = join(
   homedir(),
   '.ai-agent-shared/skills/agent-evolution/scripts/evolution.py'
@@ -30,8 +30,12 @@ export interface LearningEntry {
   claim: string;
   applies_when: string;
   not_when: string;
-  expires_at: string;
-  evidence: { kind: string; source: string; sha256: string; verified_at: string; result: string }[];
+  expires_at?: string;
+  evidence:
+    | { kind: string; source: string; sha256: string; verified_at: string; result: string }[]
+    | string[];
+  source?: 'reflection';
+  status?: 'trial' | 'active';
 }
 export interface Learning {
   status: 'available' | 'unavailable' | 'disabled';
