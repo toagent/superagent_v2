@@ -96,13 +96,14 @@ import {
   budgetState,
   aliasDrift,
   codexWorkerProblem,
+  gitHead,
   home,
   loadTiers,
   resolveRoute,
   runAliases,
   writeAtomic,
 } from './config';
-import { engineHash, generate, newRunId } from './generate';
+import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { redact } from './redact';
 import { buildReport, reportSummary } from './report';
@@ -922,6 +923,33 @@ function recoverRun(
             }
           })
           .map(p => p.id);
+        const reviews: Partial<Record<string, ReviewCheckpoint>> = {};
+        // prettier-ignore
+        if (run.working_path) {
+          const art = artifactsOf(run), head = gitHead(run.working_path);
+          for (const file of evidenceGates(l, art)) {
+            const match = /^gate-(.+)-r(\d+)\.json$/.exec(file);
+            try {
+              const gate = evidenceJson(l, art, file) as Record<string, unknown> | undefined;
+              const diff = evidenceJson(l, art, file.replace('gate-', 'diff-')) as Record<string, unknown> | undefined;
+              const decision = decisionOf(gate), inferredLedger = join(art, file.replace('.json', '.ledger.json'));
+              const ledger = confined(l, typeof gate?.ledger_file === 'string' ? gate.ledger_file : inferredLedger);
+              if (match && decision &&
+                ['advance', 'debt'].includes(decision.kind) &&
+                gate?.head_trusted === true &&
+                gate.reviewed_head === head &&
+                typeof gate.reviewed_diff_hash === 'string' && /^[0-9a-f]{16}$/.test(gate.reviewed_diff_hash) &&
+                typeof diff?.contract_hash === 'string' && /^[0-9a-f]{64}$/.test(diff.contract_hash) &&
+                diff.head === gate.reviewed_head &&
+                diff.diff_hash === gate.reviewed_diff_hash &&
+                ledger && readJson(ledger)
+              ) reviews[match[1]] = { gate: { ...gate, decision, ledger_file: ledger }, check: diff } as ReviewCheckpoint;
+              else if (match) reviews[match[1]] = undefined;
+            } catch {
+              if (match) reviews[match[1]] = undefined;
+            }
+          }
+        }
         const gen = generate(
           plan,
           l.run_id,
@@ -931,6 +959,7 @@ function recoverRun(
             from: run.id,
             packages: carried,
             coded,
+            reviews,
             ...(recovery
               ? {
                   recovery: {

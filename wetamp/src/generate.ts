@@ -23,6 +23,7 @@ import {
   CHECK_AUX_BUDGET_MS,
   environmentChecks,
   reviewRoundLimit,
+  type DeliveryDecision,
   type RecoveryEvidence,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
@@ -106,8 +107,11 @@ export interface Carried {
   from: string;
   packages: string[];
   coded?: string[];
+  reviews?: Partial<Record<string, ReviewCheckpoint>>;
   recovery?: RecoveryEvidence & { admitted_by: unknown; admitted_at: string };
 }
+// prettier-ignore
+export interface ReviewCheckpoint { gate: Record<string, unknown> & { decision: DeliveryDecision; reviewed_head: string; reviewed_diff_hash: string; ledger_file: string }; check: Record<string, unknown> & { contract_hash: string } }
 
 const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node => ({
   id,
@@ -308,6 +312,17 @@ export function buildWorkflow(
       continue;
     }
     let prev = start;
+    const rawCheckpoint = carried?.reviews?.[m.id];
+    // prettier-ignore
+    const checkpoint = rawCheckpoint?.gate.decision && ['advance', 'debt'].includes(rawCheckpoint.gate.decision.kind) ? rawCheckpoint : undefined;
+    // prettier-ignore
+    const checkpointAtoms = checkpoint ? [['head', checkpoint.gate.reviewed_head], ['diff_hash', checkpoint.gate.reviewed_diff_hash],
+      ['contract_hash', checkpoint.check.contract_hash]] as const : [];
+    // prettier-ignore
+    const checkpointCondition = (operator: '==' | '!=', joiner: string): string | undefined => checkpoint
+      ? checkpointAtoms.map(([field, value]) => `$diff-${m.id}-r1.output.${field} ${operator} '${value}'`).join(joiner) : undefined;
+    const checkpointMatch = checkpointCondition('==', ' && '),
+      checkpointDrift = checkpointCondition('!=', ' || ');
     const last = ms.at(-1) === m;
     for (const p of m.packages) {
       const pkgAttempt = `package-attempt-${p.id}`;
@@ -531,13 +546,28 @@ export function buildWorkflow(
           { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
         )
       );
+      if (r === 1 && checkpointMatch && checkpoint) {
+        nodes.push({
+          id: `carried-gate-${m.id}`,
+          bash: `printf '%s' '${JSON.stringify(checkpoint.gate).replaceAll("'", "'\\''")}' | tee "$ARTIFACTS_DIR/gate-${m.id}-r1.json"`,
+          depends_on: [`diff-${t}`],
+          when: `$diff-${t}.output.disposition == 'advance' && ${checkpointMatch}`,
+        });
+      }
       const reviewAttempt = `attempt-review-${t}`;
       const reviewEligible =
         `$diff-${t}.output.disposition == 'advance'` +
         (m.review ? '' : ` && $diff-${t}.output.risk == 'G2'`);
       const reviewWhen =
         r === 1
-          ? reviewEligible
+          ? checkpointDrift
+            ? checkpointAtoms
+                .map(
+                  ([field, value]) =>
+                    `${reviewEligible} && $diff-${t}.output.${field} != '${value}'`
+                )
+                .join(' || ')
+            : reviewEligible
           : `${reviewEligible} && $diff-${t}.output.same != 'true' || ` +
             `${reviewEligible} && $diff-${t}.output.reviewed != 'true'`;
       nodes.push({
@@ -614,13 +644,21 @@ export function buildWorkflow(
             // 非末里程碑 PASS 后还会启动下一里程碑的模型调用：先过预算
             ...(last ? {} : { next: '1' }),
           },
-          { trigger_rule: 'none_failed_min_one_success' }
+          {
+            trigger_rule: 'none_failed_min_one_success',
+            ...(r === 1 && checkpointDrift
+              ? { when: `$diff-${t}.output.disposition != 'advance' || ${checkpointDrift}` }
+              : {}),
+          }
         )
       );
       prev = `gate-${t}`;
     }
     const gates: Node = {
-      depends_on: Array.from({ length: maxRounds }, (_, i) => `gate-${m.id}-r${String(i + 1)}`),
+      depends_on: [
+        ...Array.from({ length: maxRounds }, (_, i) => `gate-${m.id}-r${String(i + 1)}`),
+        ...(checkpointMatch ? [`carried-gate-${m.id}`] : []),
+      ],
       trigger_rule: 'none_failed_min_one_success',
     };
     after = signoff(m, gates);

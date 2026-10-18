@@ -621,6 +621,95 @@ describe('buildWorkflow', () => {
       ).notes
     ).toBe("coded from old'run");
   });
+  test('engine-stale adoption carries terminal review checkpoint without restarting R1', () => {
+    const checkpoint = {
+      gate: {
+        verdict: 'pass',
+        decision: { kind: 'debt' as const, reason: null, evidence: [], debt: ['known'] },
+        reviewed_head: 'a'.repeat(40),
+        reviewed_diff_hash: 'd'.repeat(16),
+        ledger_file: '/OLD/gate-m1-r4.ledger.json',
+      },
+      check: { contract_hash: 'c'.repeat(64) },
+    };
+    const nodes = nodesOf(
+      buildWorkflow(fixture, milestones(fixture), 'continued', '/GEN', false, NOW, loadTiers(), {
+        from: 'old-run',
+        packages: [],
+        reviews: { m1: checkpoint },
+      })
+    );
+    const carried = nodes.find(n => n.id === 'carried-gate-m1')!;
+    expect(carried.bash).toContain('$ARTIFACTS_DIR/gate-m1-r1.json');
+    expect(carried.when).toContain(`.contract_hash == '${checkpoint.check.contract_hash}'`);
+    expect(nodes.find(n => n.id === 'review-m1-r1')?.when).toContain(
+      `.contract_hash != '${checkpoint.check.contract_hash}'`
+    );
+    expect(nodes.find(n => n.id === 'gate-m1-r1')?.when).toContain(
+      `.contract_hash != '${checkpoint.check.contract_hash}'`
+    );
+    expect(nodes.find(n => n.id === 'start-m2')?.depends_on).toContain(carried.id);
+  });
+  test('engine-stale adoption rejects checkpoint when reviewed_head or contract hash drifts', () => {
+    const checkpoint = {
+      gate: {
+        decision: { kind: 'advance' as const, reason: null, evidence: [], debt: [] },
+        reviewed_head: 'head',
+        reviewed_diff_hash: 'd'.repeat(16),
+        ledger_file: '/ledger',
+      },
+      check: { contract_hash: 'c'.repeat(64) },
+    };
+    const nodes = nodesOf(
+      buildWorkflow(fixture, milestones(fixture), 'continued', '/GEN', false, NOW, loadTiers(), {
+        from: 'old',
+        packages: [],
+        reviews: { m1: checkpoint },
+      })
+    );
+    const carry = nodes.find(n => n.id === 'carried-gate-m1')!;
+    const review = nodes.find(n => n.id === 'review-m1-r1')!;
+    const outputs = new Map([
+      [
+        'diff-m1-r1',
+        {
+          state: 'completed' as const,
+          output: JSON.stringify({
+            disposition: 'advance',
+            head: 'head',
+            diff_hash: checkpoint.gate.reviewed_diff_hash,
+            contract_hash: checkpoint.check.contract_hash,
+          }),
+        },
+      ],
+    ]);
+    expect(evaluateCondition(carry.when!, outputs).result).toBe(true);
+    expect(evaluateCondition(review.when!, outputs).result).toBe(false);
+    outputs.set('diff-m1-r1', {
+      state: 'completed',
+      output: JSON.stringify({
+        disposition: 'repair',
+        head: 'head',
+        diff_hash: checkpoint.gate.reviewed_diff_hash,
+        contract_hash: checkpoint.check.contract_hash,
+      }),
+    });
+    expect(evaluateCondition(carry.when!, outputs).result).toBe(false);
+    for (const drift of [{ head: 'other' }, { contract_hash: 'other' }]) {
+      outputs.set('diff-m1-r1', {
+        state: 'completed',
+        output: JSON.stringify({
+          disposition: 'advance',
+          head: 'head',
+          diff_hash: checkpoint.gate.reviewed_diff_hash,
+          contract_hash: checkpoint.check.contract_hash,
+          ...drift,
+        }),
+      });
+      expect(evaluateCondition(carry.when!, outputs).result).toBe(false);
+      expect(evaluateCondition(review.when!, outputs).result).toBe(true);
+    }
+  });
   test('P2 R2: incrementing a carried package attempt enables sa-code with its hint', () => {
     const gen = tmp();
     fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
