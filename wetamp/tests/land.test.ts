@@ -587,7 +587,6 @@ test.each(
     'protected',
     'switched',
     'dirty',
-    'source-dirty',
     'source-drift',
     'target-rewrite',
     'missing-launch',
@@ -604,7 +603,6 @@ test.each(
     }
     if (kind === 'switched') sh('git switch -qc other', f.repo);
     if (kind === 'dirty') writeFileSync(join(f.repo, 'user.txt'), 'keep');
-    if (kind === 'source-dirty') writeFileSync(join(f.worktree, 'user.txt'), 'keep');
     if (kind === 'source-drift') sh('git commit --allow-empty -qm drift', f.worktree);
     if (kind === 'target-rewrite')
       sh('git reset --hard "$(git commit-tree HEAD^{tree} -m rewritten)"', f.repo);
@@ -632,6 +630,15 @@ test.each(
     expect(existsSync(f.delivery.receipt)).toBe(false);
   }
 );
+
+test('delivery accepts a dirty source checkout when the accepted ref and tree are stable', () => {
+  const f = deliveryFixture();
+  writeFileSync(join(f.worktree, 'user.txt'), 'keep');
+  const receipt = applyLand(f.run, f.land, () => 0, f.context);
+  expect(receipt?.status).toBe('manual_push');
+  expect(sh('git rev-parse HEAD', f.repo).trim()).toBe(f.land.head);
+  expect(readFileSync(join(f.worktree, 'user.txt'), 'utf8')).toBe('keep');
+});
 
 // prettier-ignore
 test.each(['pass', 'accept-fail', 'rewrite-race'])('same-base deliveries integrate serially: %s', kind => {

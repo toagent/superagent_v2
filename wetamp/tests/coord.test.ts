@@ -29,7 +29,14 @@ import {
 import { ownerLost } from '../src/archon';
 import * as native from '../src/archon';
 import * as landing from '../src/land';
-import { finalizeDelivery, main, scopeOverlaps, waitRun, type Ledger } from '../src/cli';
+import {
+  finalizeDelivery,
+  main,
+  scopeOverlaps,
+  updateLedger,
+  waitRun,
+  type Ledger,
+} from '../src/cli';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const req = createRequire(import.meta.url);
@@ -1647,7 +1654,7 @@ for (const mode of [
   });
 }
 
-for (const failure of ['none', 'repo', 'run']) {
+for (const failure of ['none', 'repo', 'run', 'stale', 'decision']) {
   test(`finalizeDelivery renews both scopes before applyLand (failure=${failure})`, () => {
     const s = renewalFixture();
     process.env.ARCHON_HOME = join(s.sa, 'archon');
@@ -1682,20 +1689,42 @@ for (const failure of ['none', 'repo', 'run']) {
     const apply = spyOn(landing, 'applyLand').mockImplementation(() => {
       expect(s.actual.owner(s.scope)).toMatchObject({ owner: a, generation: 2 });
       expect(s.actual.owner(run)).toMatchObject({ owner: a, generation: 2 });
+      expect(s.actual.mutate(run, a, () => 'decided', 2)).toBe('decided');
+      if (failure === 'stale') s.actual.claim(s.scope, b, true, 'decision changed generation');
+      if (failure === 'decision')
+        updateLedger({ run_id: 'target', archon_run_id: 'engine' } as Ledger, cur => {
+          (cur.intervention_events ??= []).push({
+            at: new Date().toISOString(),
+            action: 'decide',
+            origin: 'operator',
+            source: 'cli',
+            ok: true,
+            reason: 'approve',
+          });
+        });
       return undefined;
     });
     const mutation = spyOn(Coordination.prototype, 'mutate');
     try {
       const action = () => finalizeDelivery('target', true);
-      if (failure !== 'none')
+      if (failure !== 'none' && !['stale', 'decision'].includes(failure))
         expect(action).toThrow(failure === 'repo' ? `repo:${s.scope.id}` : `run:${run.id}`);
+      else if (failure === 'stale') expect(action).toThrow('fencing');
+      else if (failure === 'decision') expect(action).toThrow('operator decision changed');
       else action();
-      expect(mutation.mock.calls[0]?.[4]).toBe(landing.integrationLockTimeout());
-      expect(apply).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
-      expect(get).toHaveBeenCalledTimes(failure === 'none' ? 1 : 0);
-      expect(s.actual.owner(s.scope).generation).toBe(2);
-      expect(s.actual.owner(run).generation).toBe(failure === 'none' ? 2 : 1);
-      expect(s.actual.owner(s.scope).owner).toMatchObject(failure === 'repo' ? b : a);
+      expect(mutation.mock.calls.every(call => call[4] === undefined)).toBe(true);
+      expect(apply).toHaveBeenCalledTimes(['none', 'stale', 'decision'].includes(failure) ? 1 : 0);
+      expect(get).toHaveBeenCalledTimes(['none', 'stale', 'decision'].includes(failure) ? 1 : 0);
+      expect(s.actual.owner(s.scope).generation).toBe(failure === 'stale' ? 3 : 2);
+      expect(s.actual.owner(run).generation).toBe(
+        ['none', 'stale', 'decision'].includes(failure) ? 2 : 1
+      );
+      expect(s.actual.owner(s.scope).owner).toMatchObject(
+        ['repo', 'stale'].includes(failure) ? b : a
+      );
+      expect(
+        JSON.parse(readFileSync(join(s.sa, 'runs/target.json'), 'utf8')).delivery_result
+      ).toBeUndefined();
     } finally {
       mutation.mockRestore();
       apply.mockRestore();
