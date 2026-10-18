@@ -1159,6 +1159,24 @@ describe('HF5 episode regressions', () => {
 });
 
 describe('waitRun (archon stub)', () => {
+  test('terminal status and wait expose non-empty out-of-scope evidence', () => {
+    const s = stub([run('completed')]);
+    const output = join(s.root, 'out'),
+      art = join(output, 'artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(s.dir, 'get-000.json'),
+      JSON.stringify(run('completed', { output_root: output }))
+    );
+    const diff = join(art, 'diff-m1-r1.json');
+    writeFileSync(diff, JSON.stringify({ out_of_scope: [] }));
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).out_of_scope).toBeUndefined();
+    writeFileSync(diff, JSON.stringify({ out_of_scope: ['fixtures/golden.json'] }));
+    for (const command of ['status', 'wait'])
+      expect(
+        JSON.parse(captured(() => main([command, 'sa1', '--timeout', '1'])).out).out_of_scope
+      ).toEqual(['fixtures/golden.json']);
+  });
   test('wait --json retains long errors at node, terminal record and metadata boundaries', () => {
     const first =
       'TypeError: require() async module "/workspace/wetamp/src/cli.ts" is unsupported. use "await import()" instead.';

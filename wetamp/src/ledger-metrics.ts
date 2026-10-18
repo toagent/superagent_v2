@@ -195,7 +195,7 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
     const triggers = node.startsWith('review-') ? [
       ...(packages?.some(p => p.risk === 'G2') ? ['plan G2'] : []), ...(plan?.mode === 'strict' ? ['strict'] : []),
       ...(packages?.some(p => p.review) ? ['review:true'] : []),
-      ...(check?.structured_output?.risk === 'G2' && packages && !packages.some(p => p.risk === 'G2') ? [check.structured_output.out_of_scope?.length ? 'runtime:out_of_scope' : 'runtime:other'] : [])] : [];
+      ...(check?.structured_output?.risk === 'G2' && packages && !packages.some(p => p.risk === 'G2') ? ['runtime:other'] : [])] : [];
     return [{ node, type: node.split('-')[0], invocation: (d?.invocation?.id ?? '').length ? d?.invocation?.id : 'unknown', attempt: (d?.attempt?.id ?? '').length ? d?.attempt?.id : 'unknown', terminal: e.event_type,
       cumulative_ms: measured ? duration : 'unknown', cmds: timing?.cmds ?? missing, explore_ratio: timing?.explore_ratio ?? missing, mcp_calls: timing?.mcp_calls ?? missing, model_turns: timing?.model_turns ?? missing, think_gap_ms: timing?.think_gap_ms ?? missing,
       review_trigger: node.startsWith('review-') ? { reasons: triggers.length ? triggers : ['unknown'], glob: 'unknown', symlink: 'unknown', gitlink: 'unknown' } : undefined }];

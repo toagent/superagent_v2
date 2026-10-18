@@ -1514,9 +1514,9 @@ describe('F-13 delivery scope', () => {
       out_of_scope: [],
     });
   });
-  test('out-of-scope (incl. rename source), risk paths, gitlinks and symlinks raise to G2', () => {
+  test('out-of-scope paths remain evidence while risk paths, gitlinks and symlinks raise G2', () => {
     expect(scopeRisk([ch(['lib/x.ts', 'src/x.ts'])], ['src/**'], pol, 'G1')).toEqual({
-      risk: 'G2',
+      risk: 'G1',
       out_of_scope: ['lib/x.ts'],
     });
     expect(scopeRisk([ch(['src/auth/k.ts'])], ['src'], pol, 'G1').risk).toBe('G2');
@@ -2519,7 +2519,7 @@ describe('sa-check script', () => {
         policy,
         JSON.stringify({
           effort: snapshotPolicy(loadTiers()).effort,
-          risk_paths: [],
+          risk_paths: mode === 'effective G2' ? ['README.md'] : [],
           code_extensions: ['.ts'],
           exempt_paths: [],
           budget_floor: {},
@@ -3760,7 +3760,7 @@ describe('sa-check script', () => {
       '# reused failure from verify-a'
     );
   });
-  test('F-20/F-13: delta patch against delta_base; out-of-scope and risk paths raise the risk', () => {
+  test('F-20/F-13: delta patch retains out-of-scope evidence; risk paths raise the risk', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const commit = (f: string) =>
@@ -3847,7 +3847,7 @@ describe('sa-check script', () => {
     ).toMatchObject({ ok: true, risk: 'G1', out_of_scope: [] });
     // 原包顺序不能决定累计范围；SCOPE_PKGS 由生成器按实际里程碑拓扑提供。
     write(['src/a.ts']);
-    expect(go('G0')).toMatchObject({ risk: 'G2', out_of_scope: ['src/b.md'] });
+    expect(go('G0')).toMatchObject({ risk: 'G1', out_of_scope: ['src/b.md'] });
     write(['src/']);
     commit('src/auth/x.md');
     expect(go('G1')).toMatchObject({ risk: 'G2', out_of_scope: [] });

@@ -478,7 +478,7 @@ describe('F-22 report', () => {
     const reviewPlan = { mode: 'strict', packages: [{ id: 'core', risk: 'G2', review: true }] } as Plan;
     const reviews = measurementOf(run, [ev('node_completed', 'review-m1-r1'), ev('node_completed', 'diff-m1-r1', { structured_output: { risk: 'G2', out_of_scope: ['outside'] } })], reviewPlan);
     expect(reviews.nodes[0].review_trigger).toEqual({ reasons: ['plan G2', 'strict', 'review:true'], glob: 'unknown', symlink: 'unknown', gitlink: 'unknown' });
-    expect(measurementOf(run, [ev('node_completed', 'review-m1-r1'), ev('node_completed', 'diff-m1-r1', { structured_output: { risk: 'G2', out_of_scope: ['outside'] } })], { packages: [{ id: 'core', risk: 'G1' }] } as Plan).nodes[0].review_trigger?.reasons).toEqual(['runtime:out_of_scope']);
+    expect(measurementOf(run, [ev('node_completed', 'review-m1-r1'), ev('node_completed', 'diff-m1-r1', { structured_output: { risk: 'G2', out_of_scope: ['outside'] } })], { packages: [{ id: 'core', risk: 'G1' }] } as Plan).nodes[0].review_trigger?.reasons).toEqual(['runtime:other']);
   });
   // prettier-ignore
   test('readonly report processes 300 runs / 51000 events in under five seconds', () => {
