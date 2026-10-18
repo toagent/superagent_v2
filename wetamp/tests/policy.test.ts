@@ -13,7 +13,7 @@ import {
 } from '../src/config';
 import { buildWorkflow, engineHash } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
-import { decide } from '../templates/.archon/scripts/sa-check';
+import { decide as rawDecide, reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 import { fixturePlan, fixtureTiers, fixtureTiersEnv, gitRepo, tmp } from './helpers';
 const { loadPolicy } = createRequire(import.meta.url)('../bin/policy-snapshot.cjs') as {
   loadPolicy(path: string): Record<string, unknown>;
@@ -21,6 +21,9 @@ const { loadPolicy } = createRequire(import.meta.url)('../bin/policy-snapshot.cj
 const plan = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
 ) as Plan;
+const POLICY_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
+const decide = (input: Omit<Parameters<typeof rawDecide>[0], 'reviewRounds'>) =>
+  rawDecide({ ...input, reviewRounds: POLICY_ROUNDS });
 
 describe('B1-POLICY frozen routing', () => {
   // prettier-ignore

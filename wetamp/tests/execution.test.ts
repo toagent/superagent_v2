@@ -11,11 +11,12 @@ import {
 } from '../src/execution';
 import { effortFor, loadTiers } from '../src/config';
 import type { Plan } from '../src/plan';
-import { MAX_ROUNDS } from '../templates/.archon/scripts/sa-check';
+import { reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 import { tmp } from './helpers';
 import { executePolicy } from '../src/policy-executor';
 
 const tiers = loadTiers();
+const MAX_ROUNDS = reviewRoundLimit(tiers.policy);
 const plan = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
 ) as Plan;

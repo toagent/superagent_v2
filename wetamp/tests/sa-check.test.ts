@@ -15,9 +15,9 @@ import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import {
   budgetUsage,
-  MAX_ROUNDS,
-  decide,
-  disposition,
+  reviewRoundLimit,
+  decide as rawDecide,
+  disposition as rawDisposition,
   nextDisposition,
   permissionEvidence,
   identityOf,
@@ -26,12 +26,24 @@ import {
   readAuthorEvidence,
   ledgerOf,
   scopeRisk,
-  deliveryDecision,
+  deliveryDecision as rawDeliveryDecision,
   readAttempt,
   CHECK_AUX_TIMEOUT_MS,
   projectEnvironment,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
+const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
+type DecisionInput = Parameters<typeof rawDeliveryDecision>[0];
+const withRounds = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: number }) => ({
+  ...input,
+  reviewRounds: input.reviewRounds ?? MAX_ROUNDS,
+});
+const deliveryDecision = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: number }) =>
+  rawDeliveryDecision(withRounds(input));
+const decide = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: number }) =>
+  rawDecide(withRounds(input));
+const disposition = (...args: Parameters<typeof rawDisposition>) =>
+  rawDisposition(args[0], args[1], args[2], args[3], args[4], args[5] ?? MAX_ROUNDS);
 import {
   acceptanceNodeEnvironment,
   directAuxiliaryPreload,
@@ -259,6 +271,7 @@ test('R1-1 author reservation persists tracking before provider execution and su
       [],
       ['core'],
       'm1',
+      MAX_ROUNDS,
       () => ({
         id: 'prior',
         codebase_id: 'repo',
@@ -342,7 +355,8 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
     status: 'started' as const,
   };
   writePolicyAttempts(art, [attempt]);
-  const read = () => readAuthorEvidence(runs.current!, [], ['core'], 'm1', id => runs[id]!);
+  const read = () =>
+    readAuthorEvidence(runs.current!, [], ['core'], 'm1', MAX_ROUNDS, id => runs[id]!);
   expect(read()).toEqual([
     { model: 'repair', strength: 'pinned' },
     { model: 'author', strength: 'pinned' },
@@ -357,12 +371,13 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
     [{ ...attempt, node: 'fix-m0-r2', model: 'fix-author' }],
     ['core'],
     ['m0', 'm1'],
+    MAX_ROUNDS,
     id => runs[id]!
   );
   expect(independence(cumulative, { model: 'fix-author', strength: 'pinned' })).toBe('same_model');
   expect(
     independence(
-      readAuthorEvidence(runs.current!, [], ['core', 'missing'], 'm1', id => runs[id]!),
+      readAuthorEvidence(runs.current!, [], ['core', 'missing'], 'm1', MAX_ROUNDS, id => runs[id]!),
       { model: 'reviewer', strength: 'pinned' }
     )
   ).toBe('author_unknown');
@@ -403,10 +418,25 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   runs.old.events[0]!.data!.binding = undefined;
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   expect(
-    readAuthorEvidence({ ...old, events: [event('local')] }, [], ['core'], 'm1', () => {
+    readAuthorEvidence({ ...old, events: [event('local')] }, [], ['core'], 'm1', MAX_ROUNDS, () => {
       throw new Error('unexpected ancestry');
     })
   ).toEqual([{ model: 'local', strength: 'pinned' }]);
+});
+
+test('author evidence uses the frozen review ladder for late fix rounds', () => {
+  const run = { id: 'current', codebase_id: 'repo', events: [] };
+  const attempt = {
+    id: 'late-fix',
+    node: 'fix-m1-r5',
+    provider: 'codex' as const,
+    model: 'late-author',
+    status: 'started' as const,
+    rerouted_models: [] as string[],
+  };
+  expect(readAuthorEvidence(run, [attempt], [], 'm1', 6, () => run)).toEqual([
+    { model: 'late-author', strength: 'pinned' },
+  ]);
 });
 
 test('P3 missing provider and node receipts reserve spend instead of counting zero', () => {
@@ -600,6 +630,43 @@ describe('NONCONVERGENCE delivery gate', () => {
       failures: [{ ...check.failures[0], evidence: 'different failure' }],
     };
     expect(gate([check, changed])).toMatchObject({ code: 0, out: { verdict: 'fix' } });
+  });
+  test('a current PASS review lets verified requirements outrank an unchanged diff', () => {
+    const command = { cmd: 'true', timeout_s: 5 };
+    const check: Accept = {
+      ok: true,
+      same: true,
+      diff_hash: 'candidate',
+      head: 'head',
+      contract_hash: 'contract',
+      risk: 'G2',
+      decision: { kind: 'advance', reason: null, evidence: [], debt: [] },
+      requirement_contract: [
+        {
+          id: 'w5',
+          accept: [command],
+          requirements: [{ id: 'verified', text: 'W5 verified', verified_by: [0] }],
+        },
+      ],
+      command_results: [{ check: command, pass: true, evidence: 'accept.log' }],
+    };
+    expect(
+      decide({
+        reviews: [R('PASS'), R('PASS')],
+        rechecks: [check, check],
+        risk: 'G2',
+        qualifiedReview: true,
+      })
+    ).toMatchObject({
+      verdict: 'pass',
+      decision: { kind: 'advance', reason: null, requirements: { status: 'verified' } },
+      ledger: { blocking: [], debt: [] },
+    });
+    expect(decide({ reviews: [null, null], rechecks: [check, check], risk: 'G2' })).toMatchObject({
+      verdict: 'escalate',
+      reason: 'no_change',
+      decision: { kind: 'block', reason: 'no_change' },
+    });
   });
   test('unchanged diff stops unknown diagnosis even after an empty commit', () => {
     const unknown = R('PASS', [f('high', { failure_class: 'unknown' })]);
@@ -1372,7 +1439,9 @@ describe('single delivery decision', () => {
       JSON.stringify({ status: 'blocked', error_class: 'redline', needs: [{ cap: 'network' }] }),
     ])
       for (const ok of [true, false])
-        expect(disposition(raw, ok).decision.kind).toBe(ok ? 'advance' : 'repair');
+        expect(disposition(raw, ok, undefined, [], undefined, MAX_ROUNDS).decision.kind).toBe(
+          ok ? 'advance' : 'repair'
+        );
   });
   test('non-critical failures become debt', () => {
     const check = {
@@ -1382,14 +1451,18 @@ describe('single delivery decision', () => {
         { command: 'check', failure_class: 'fixture' as const, evidence: '/tmp/accept.log' },
       ],
     };
-    expect(deliveryDecision({ rechecks: [check] }).decision.kind).toBe('debt');
+    expect(deliveryDecision({ rechecks: [check], reviewRounds: MAX_ROUNDS }).decision.kind).toBe(
+      'debt'
+    );
   });
   test('E7: partial + env + green checks advances with all audit markers', () => {
     // 原始 node_completed 事件的 structured_output，仅将 notes 置空脱敏。
     const coder: unknown = JSON.parse(
       readFileSync(join(import.meta.dir, 'incidents/e7-coder.json'), 'utf8')
     );
-    expect(disposition(JSON.stringify(coder), true)).toMatchObject({
+    expect(
+      disposition(JSON.stringify(coder), true, undefined, [], undefined, MAX_ROUNDS)
+    ).toMatchObject({
       disposition: 'advance',
       reason: null,
       self_report_conflict: true,
@@ -1541,6 +1614,11 @@ function runScript(
     ARTIFACTS_DIR: art,
     ...extraEnv,
   };
+  if (!inputs.policy) {
+    const policy = join(art, 'policy.json');
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+    env.INPUTS_POLICY = policy;
+  }
   for (const [k, v] of Object.entries(inputs)) {
     // Synthetic gate fixtures bind the real checkout just like accept artifacts do.
     let value = v;
@@ -1601,6 +1679,7 @@ function auxiliaryFixture(
   writeFileSync(
     policy,
     JSON.stringify({
+      effort: snapshotPolicy(loadTiers()).effort,
       risk_paths: [],
       code_extensions: [],
       exempt_paths: [],
@@ -1623,19 +1702,19 @@ function auxiliaryFixture(
     );
   const instrument = `
 process.env.WORKFLOW_ID = 'fixture';
-const spawn = Bun.spawnSync;
+const rawSpawnSync = Bun.spawnSync;
 Bun.spawnSync = (actual, opts) => {
   const wrapped = actual[0] === 'python3' && actual[1] === '-c';
   const cmd = wrapped ? actual.slice(4) : actual;
   appendFileSync(${JSON.stringify(trace)}, JSON.stringify({cmd, timeout: opts?.timeout, watchdog: wrapped}) + '\\n');
   const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
   if (key === ${JSON.stringify(hang)})
-    return spawn([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
+    return rawSpawnSync([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
   // Only the stalled auxiliary (or the hook-bearing checkout) needs a real
   // process-group watchdog. Keep every production request in the trace.
   if (wrapped && key !== ${JSON.stringify(hang)} && !(${JSON.stringify(hook)} && key === 'worktree add'))
-    return spawn(cmd, opts);
-  return spawn(actual, opts);
+    return rawSpawnSync(cmd, opts);
+  return rawSpawnSync(actual, opts);
 };
 `;
   let source = readFileSync(SCRIPT, 'utf8').replace('const env =', `${instrument}\nconst env =`);
@@ -1662,6 +1741,7 @@ Bun.spawnSync = (actual, opts) => {
     },
     script
   );
+  if (!existsSync(trace)) throw new Error(`auxiliary fixture did not start: ${r.err}`);
   const calls = readFileSync(trace, 'utf8')
     .trim()
     .split('\n')
@@ -1835,7 +1915,8 @@ describe('sa-check script', () => {
       },
     });
     const check = first.out as Accept;
-    const decide = (c: Accept) => deliveryDecision({ rechecks: [c] }).decision.requirements;
+    const decide = (c: Accept) =>
+      deliveryDecision({ rechecks: [c], reviewRounds: MAX_ROUNDS }).decision.requirements;
     expect(
       decide({ ...check, command_results: check.command_results?.slice(0, 1) })?.items[0].status
     ).toBe('unknown');
@@ -1859,11 +1940,16 @@ describe('sa-check script', () => {
       { ...check, command_results: check.command_results!.map(c => ({ ...c, pass: false })) },
       { ok: true, same: false, diff_hash: '' },
     ]) {
-      expect(validate(deliveryDecision({ rechecks: [c] }).decision)).toBe(true);
+      expect(validate(deliveryDecision({ rechecks: [c], reviewRounds: MAX_ROUNDS }).decision)).toBe(
+        true
+      );
     }
     expect(
-      deliveryDecision({ rechecks: [check], packages: changed.requirement_contract }).decision
-        .requirements?.status
+      deliveryDecision({
+        rechecks: [check],
+        packages: changed.requirement_contract,
+        reviewRounds: MAX_ROUNDS,
+      }).decision.requirements?.status
     ).toBe('unknown');
     expect(
       outputSchema.$defs.accept.properties.decision.properties.requirements.properties.status.enum
@@ -2432,6 +2518,7 @@ describe('sa-check script', () => {
       writeFileSync(
         policy,
         JSON.stringify({
+          effort: snapshotPolicy(loadTiers()).effort,
           risk_paths: [],
           code_extensions: ['.ts'],
           exempt_paths: [],
@@ -2660,9 +2747,9 @@ describe('sa-check script', () => {
           : { kind: 'advance' },
       });
       // Subsequent decisions without a self-report must preserve the recorded block and details.
-      expect(deliveryDecision({ rechecks: [r.out as Accept] }).decision.kind).toBe(
-        blocked ? 'block' : 'advance'
-      );
+      expect(
+        deliveryDecision({ rechecks: [r.out as Accept], reviewRounds: MAX_ROUNDS }).decision.kind
+      ).toBe(blocked ? 'block' : 'advance');
     }
   );
   test('accept: uncommitted change fails even when commands pass', () => {
@@ -2710,8 +2797,9 @@ describe('sa-check script', () => {
       tag: 'diff-m1-r2',
       base,
       prev: out.diff_hash,
+      reviewed_diff_hash: out.diff_hash,
     });
-    expect(again.out).toMatchObject({ diff_hash: out.diff_hash, same: true });
+    expect(again.out).toMatchObject({ diff_hash: out.diff_hash, same: true, reviewed: true });
   });
   test('accept keeps binary patch and checkout evidence on disk with bounded stdout', () => {
     const root = tmp(),
@@ -3183,26 +3271,32 @@ describe('sa-check script', () => {
       head: sh('git rev-parse HEAD', repo).trim(),
       same: false,
     };
+    mkdirSync(join(root, 'art'));
+    writeFileSync(join(root, 'art', 'verify-a.json'), JSON.stringify(first));
     const pass = runScript(repo, {
       kind: 'settle',
       plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'settle-a',
-      first: JSON.stringify(first),
+      first: 'advance',
       repaired: 'null',
     });
     expect(pass.code).toBe(0);
     expect(pass.out).toEqual({ diff_hash: 'delivered', head: first.head });
+    writeFileSync(
+      join(root, 'art', 'verify-a.json'),
+      JSON.stringify({
+        ...first,
+        log: '/changed.log',
+        decision: { kind: 'debt', reason: null, evidence: ['/changed.log'], debt: ['fixture'] },
+      })
+    );
     const auditChanged = runScript(repo, {
       kind: 'settle',
       plan: planFile(root, PRODUCT_FAILURE),
       pkgs: 'a',
       tag: 'settle-a',
-      first: JSON.stringify({
-        ...first,
-        log: '/changed.log',
-        decision: { kind: 'debt', reason: null, evidence: ['/changed.log'], debt: ['fixture'] },
-      }),
+      first: 'advance',
       repaired: 'null',
     });
     expect(auditChanged.out).toEqual(pass.out);
@@ -3517,7 +3611,9 @@ describe('sa-check script', () => {
   test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
     const root = tmp(),
       repo = gitRepo(root),
-      p = planFile(root, 'true');
+      p = planFile(root, 'true'),
+      frozenPolicy = join(root, 'policy.json');
+    writeFileSync(frozenPolicy, JSON.stringify(snapshotPolicy(loadTiers())));
     const art = join(root, 'art');
     mkdirSync(art);
     const inherited = Object.fromEntries(
@@ -3533,6 +3629,7 @@ describe('sa-check script', () => {
           ARTIFACTS_DIR: art,
           INPUTS_KIND: 'accept',
           INPUTS_PLAN: p,
+          INPUTS_POLICY: frozenPolicy,
           INPUTS_PKGS: 'a',
           INPUTS_TAG: `parallel-${i}`,
         },
@@ -3552,7 +3649,7 @@ describe('sa-check script', () => {
     expect(readdirSync(cache).filter(f => f !== '.key')).toHaveLength(1);
     expect(readFileSync(join(cache, '.key')).length).toBe(32);
     expect(statSync(join(cache, '.key')).mode & 0o777).toBe(0o600);
-  });
+  }, 10_000);
   test('FC legacy cache default product cannot hide an unclassified command', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -3687,6 +3784,7 @@ describe('sa-check script', () => {
     writeFileSync(
       pol,
       JSON.stringify({
+        effort: snapshotPolicy(loadTiers()).effort,
         risk_paths: ['**/auth/**'],
         code_extensions: ['.ts'],
         exempt_paths: [],
@@ -3789,7 +3887,7 @@ test.each(['true', PRODUCT_FAILURE])('NO_HOLD hard budget is advisory for %s', c
 });
 
 test('ROOT_ACCEPT high-risk boundary evidence fails without changing acceptance', () => {
-  const out = disposition('{}', false, undefined, ['events:code-a:1']);
+  const out = disposition('{}', false, undefined, ['events:code-a:1'], undefined, MAX_ROUNDS);
   expect(out).toMatchObject({
     disposition: 'fail',
     decision: { kind: 'block', reason: 'coder_redline' },
@@ -3892,10 +3990,10 @@ test.each([
       },
     },
   ];
-  const permissions = permissionEvidence(events, ['a'], 'm1');
+  const permissions = permissionEvidence(events, ['a'], 'm1', MAX_ROUNDS);
   const high = category !== null && category !== 'diagnostic';
   expect(permissions.length).toBe(high ? 1 : 0);
-  expect(disposition('{}', true, undefined, permissions).disposition).toBe(
+  expect(disposition('{}', true, undefined, permissions, undefined, MAX_ROUNDS).disposition).toBe(
     high ? 'fail' : 'advance'
   );
 });
@@ -4067,13 +4165,18 @@ test('unresolved completeness blocker prevents verified requirement summary', ()
       },
     ],
   };
-  const result = deliveryDecision({ rechecks: [accept], reviews: [review] });
+  const result = deliveryDecision({
+    rechecks: [accept],
+    reviews: [review],
+    reviewRounds: MAX_ROUNDS,
+  });
   expect(result.decision.requirements?.status).toBe('unmet');
   expect(result.decision.kind).toBe('repair');
   expect(
     deliveryDecision({
       rechecks: [accept, accept],
       reviews: [review, { ...review, status: 'PASS', findings: [] }],
+      reviewRounds: MAX_ROUNDS,
     }).decision.requirements?.status
   ).toBe('unmet');
   const closed = { ...review.findings[0]!, status: 'closed' as const, carry_over: true };
@@ -4081,6 +4184,7 @@ test('unresolved completeness blocker prevents verified requirement summary', ()
     deliveryDecision({
       rechecks: [accept, accept],
       reviews: [review, { ...review, status: 'PASS', findings: [closed] }],
+      reviewRounds: MAX_ROUNDS,
     }).decision.requirements?.status
   ).toBe('verified');
 });

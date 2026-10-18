@@ -18,7 +18,7 @@ import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
-import { MAX_ROUNDS, CHECK_AUX_BUDGET_MS } from '../templates/.archon/scripts/sa-check';
+import { CHECK_AUX_BUDGET_MS, reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
 import { integrationLockTimeout } from '../src/land';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
@@ -29,6 +29,8 @@ import {
   substituteNodeOutputRefs,
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
+
+const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
 test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through stable attempt paths', () => {
   const gen = tmp(),
@@ -730,6 +732,7 @@ describe('buildWorkflow', () => {
     fs.writeFileSync(
       policy,
       JSON.stringify({
+        effort: snapshotPolicy(loadTiers()).effort,
         risk_paths: [],
         code_extensions: [],
         exempt_paths: [],
@@ -827,6 +830,18 @@ describe('buildWorkflow', () => {
   });
   test('golden: fake mode swaps coder nodes for bash stubs only', () => {
     expect(build(true)).toEqual(golden('two-pkgs-fake'));
+  });
+  test('review rounds are derived from the configured policy ladder', () => {
+    const tiers = structuredClone(loadTiers());
+    for (const ladder of [tiers.policy.effort.reviewer, tiers.policy.effort.G2_reviewer])
+      for (const round of ['R3', 'R4', 'R5', 'R6']) delete ladder[round];
+    const nodes = nodesOf(
+      buildWorkflow(fixture, milestones(fixture), 'round-policy', '/GEN', false, NOW, tiers)
+    );
+    expect(nodes.filter(node => node.id.startsWith('gate-m1-r')).map(node => node.id)).toEqual([
+      'gate-m1-r1',
+      'gate-m1-r2',
+    ]);
   });
   const reviewAttempts = [false, true].flatMap(fake =>
     nodesOf(build(fake))
@@ -1003,15 +1018,34 @@ describe('buildWorkflow', () => {
       command: 'sa-review-delta',
     });
   });
-  test('unchanged fix diff: diff-rN compares with the previous hash, review is skipped, gate still runs', () => {
+  test('unchanged fix diff skips review only when an earlier review covered its hash', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('diff-m1-r1')?.with?.prev).toBeUndefined();
     expect(n('diff-m1-r2')?.with?.prev).toBe('$diff-m1-r1.output.diff_hash');
+    expect(n('diff-m1-r2')?.with?.reviewed_diff_hash).toBe('$gate-m1-r1.output.reviewed_diff_hash');
     expect(n('review-m1-r1')?.when).toBe("$diff-m1-r1.output.disposition == 'advance'");
     expect(n('review-m1-r2')?.when).toBe(
-      "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true'"
+      "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || " +
+        "$diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'"
     );
+    const when = n('review-m1-r2')!.when!;
+    const outputs = new Map([
+      [
+        'diff-m1-r2',
+        {
+          state: 'completed' as const,
+          output: JSON.stringify({ disposition: 'advance', same: true, reviewed: false }),
+        },
+      ],
+      ['gate-m1-r1', { state: 'completed' as const, output: '{}' }],
+    ]);
+    expect(evaluateCondition(when, outputs)).toMatchObject({ parsed: true, result: true });
+    outputs.set('diff-m1-r2', {
+      state: 'completed',
+      output: JSON.stringify({ disposition: 'advance', same: true, reviewed: true }),
+    });
+    expect(evaluateCondition(when, outputs)).toMatchObject({ parsed: true, result: false });
     expect(n('gate-m1-r2')).toMatchObject({
       depends_on: ['diff-m1-r2', 'review-m1-r2'],
       trigger_rule: 'none_failed_min_one_success',
@@ -1282,7 +1316,7 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
   } finally {
     boundary.mockRestore();
   }
-});
+}, 30_000);
 
 function withCleanEngine(check: () => void): () => void {
   return () => {
@@ -1608,6 +1642,9 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
     expect(nodes.find(n => n.id === 'fix-m1-r2')?.when).toBe("$gate-m1-r1.output.verdict == 'fix'");
     expect(nodes.find(n => n.id === 'verify-core')?.with?.kind).toBe('accept');
     expect(nodes.find(n => n.id === 'settle-core')?.with?.kind).toBe('settle');
+    expect(nodes.find(n => n.id === 'settle-core')?.with?.first).toBe(
+      '$verify-core.output.disposition'
+    );
   }
 });
 

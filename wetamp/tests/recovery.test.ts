@@ -18,10 +18,9 @@ import { join } from 'node:path';
 import { lastJson, recover, reusedOwnerPid, type RunView } from '../src/archon';
 import { classify, EXIT, main, loadLedger, type Ledger } from '../src/cli';
 import { recoverySnapshot, unknownEffects } from '../src/recovery';
-import { WETAMP } from '../src/config';
+import { loadTiers, snapshotPolicy, WETAMP } from '../src/config';
 import { gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import {
-  MAX_ROUNDS,
   validateRecovery,
   recoveryHash,
   ledgerOf,
@@ -29,8 +28,11 @@ import {
   type RecoveryAuthorCoverage,
   type Review,
   type Accept,
+  reviewRoundLimit,
 } from '../templates/.archon/scripts/sa-check';
 import type { Plan } from '../src/plan';
+
+const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
 test.each([false, true])(
   'RETRY_NODE_PROGRESS completed=%s selects restart or resume',

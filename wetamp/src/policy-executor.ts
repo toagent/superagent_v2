@@ -15,6 +15,7 @@ import { readExecutionTable, executionForNode, executionRoute, executionNode } f
 import { type Plan } from './plan';
 import {
   readAuthorEvidence,
+  reviewRoundLimit,
   budgetUsage,
   effectiveRisk,
 } from '../templates/.archon/scripts/sa-check';
@@ -69,7 +70,7 @@ function runtimeExecution(
   if (!node) throw new Error('policy: node id missing');
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
-  const route = executionForNode(table, node);
+  const route = executionForNode(table, node, tiers);
   const archonHome = process.env.ARCHON_HOME;
   if (!archonHome) throw new Error('policy: ARCHON_HOME missing');
   const db = new Database(join(archonHome, 'archon.db'), { readonly: true });
@@ -98,6 +99,7 @@ function runtimeExecution(
         readPolicyAttempts(join(run.output_root, 'artifacts', 'runs', run.id)),
         route.packages,
         plan.packages.filter(p => route.packages.includes(p.id)).map(p => p.milestone ?? 'm1'),
+        reviewRoundLimit(policy),
         id => {
           const prior = db
             .query<

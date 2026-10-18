@@ -91,6 +91,7 @@ export interface Accept {
   milestone?: string;
   diff_hash: string;
   same: boolean;
+  reviewed?: boolean;
   no_changes?: boolean;
   head?: string;
   checkout_fingerprint?: string;
@@ -123,6 +124,26 @@ interface Policy {
   code_extensions: string[];
   exempt_paths: string[];
   budget_floor: Record<string, number>;
+}
+interface ReviewEffortPolicy {
+  effort: {
+    reviewer: Record<string, string>;
+    G2_reviewer: Record<string, string>;
+  };
+}
+
+/** The shared R1..Rn policy ladder is the sole owner of the review-round limit. */
+export function reviewRoundLimit(policy: ReviewEffortPolicy): number {
+  const rounds = (values: Record<string, string>): string[] =>
+    Object.keys(values).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  const expected = rounds(policy.effort.reviewer);
+  if (
+    !expected.length ||
+    expected.some((round, index) => round !== `R${String(index + 1)}`) ||
+    JSON.stringify(rounds(policy.effort.G2_reviewer)) !== JSON.stringify(expected)
+  )
+    throw new Error('tiers.policy.effort: reviewer round ladders must be equal and contiguous');
+  return expected.length;
 }
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
@@ -189,7 +210,8 @@ const git = (...args: string[]): string => {
   return p.stdout.toString();
 };
 const plan = (): Plan => JSON.parse(readFileSync(env('PLAN'), 'utf8')) as Plan;
-const policy = (): Policy => JSON.parse(readFileSync(env('POLICY'), 'utf8')) as Policy;
+const policy = (): Policy & ReviewEffortPolicy =>
+  JSON.parse(readFileSync(env('POLICY'), 'utf8')) as Policy & ReviewEffortPolicy;
 const emit = (o: unknown): void => {
   const code = (o as { reason?: unknown }).reason;
   if (typeof code === 'string' && !reasons.some(r => r.code === code))
@@ -633,13 +655,15 @@ export function disposition(
   ok: boolean,
   check?: Accept,
   permissions: string[] = [],
-  selfReportPath?: string
+  selfReportPath?: string,
+  reviewRounds = maxRounds()
 ) {
   const { decision: judged, audit } = deliveryDecision({
     rechecks: [check ?? { ok, diff_hash: '', same: false }],
     permissions,
     selfReport: raw,
     selfReportPath,
+    reviewRounds,
   });
   const decision = judged;
   return {
@@ -781,11 +805,12 @@ function acceptOnce(
         )
       : { risk: env('RISK') || null, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
+  const reviewRounds = maxRounds();
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
   // On the final allowed round, unresolved acceptance must stop dispatching repairs.
   const reviewRound =
     Array.from(
-      { length: MAX_ROUNDS },
+      { length: reviewRounds },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
   const baseResults =
@@ -880,10 +905,11 @@ function acceptOnce(
       log,
       ...baseline,
     },
-    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE')) : [],
-    join(artifacts, `${tag}.coder.json`)
+    env('ARCHON') ? permissionEvidence(runEvents(), ids, env('MILESTONE'), reviewRounds) : [],
+    join(artifacts, `${tag}.coder.json`),
+    reviewRounds
   );
-  if (reviewRound >= MAX_ROUNDS && result.disposition === 'repair')
+  if (reviewRound >= reviewRounds && result.disposition === 'repair')
     Object.assign(result, {
       disposition: 'fail',
       reason: 'acceptance_failed+review_limit',
@@ -914,6 +940,7 @@ function acceptOnce(
     contract_hash: acceptanceContractHash(),
     // 相同 diff 跳过新评审；gate 仍须核验候选、契约与既有独立评审证据。
     same: env('PREV') !== '' && hash === env('PREV'),
+    reviewed: env('REVIEWED_DIFF_HASH') !== '' && hash === env('REVIEWED_DIFF_HASH'),
     base_results: baseResults,
     ...baseline,
     ...scope,
@@ -935,7 +962,7 @@ function finish(
   if (existsSync(join(gen, 'execution.json'))) {
     const reviewRound =
       Array.from(
-        { length: MAX_ROUNDS },
+        { length: maxRounds() },
         (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
       ).indexOf(tag) + 1;
     const node = reviewRound
@@ -980,12 +1007,15 @@ function accept(): void {
  */
 function settle(): void {
   const tag = env('TAG');
-  const first = json('FIRST') as Record<string, unknown> & Accept;
+  const first = env('FIRST');
   const repaired = env('REPAIRED');
   if (!repaired || repaired === 'null') {
-    if (first.disposition !== 'advance')
-      throw new Error(`${tag}: repair skipped but verify did not advance`);
-    finish(tag, first);
+    if (first !== 'advance') throw new Error(`${tag}: repair skipped but verify did not advance`);
+    const verifyArtifact = join(artifacts, `${tag.replace(/^settle-/, 'verify-')}.json`);
+    finish(
+      tag,
+      JSON.parse(readFileSync(verifyArtifact, 'utf8')) as Record<string, unknown> & Accept
+    );
     return;
   }
   const out = acceptOnce(tag, repaired);
@@ -1264,8 +1294,43 @@ const debtOf = (reviews: (Review | null)[], l: Ledger): string[] => [
   ]),
 ];
 
-export const MAX_ROUNDS = 6;
+const maxRounds = (): number => reviewRoundLimit(policy());
 type Verdict = 'pass' | 'fix' | 'escalate';
+type DecisionCandidate = Pick<DeliveryDecision, 'kind' | 'reason'>;
+interface DecisionFacts {
+  candidate: DecisionCandidate;
+  verified: boolean;
+  unchanged: boolean;
+}
+const CONVERGENCE_REASONS = new Set([
+  'acceptance_failed',
+  'review_failed',
+  'review_inconsistent',
+  'no_change',
+]);
+const DECISION_RULES: {
+  when: (facts: DecisionFacts) => boolean;
+  decide: (facts: DecisionFacts) => DecisionCandidate;
+}[] = [
+  {
+    when: facts => facts.verified && CONVERGENCE_REASONS.has(facts.candidate.reason ?? ''),
+    decide: () => ({ kind: 'advance', reason: null }),
+  },
+  {
+    when: facts =>
+      facts.unchanged &&
+      ['repair', 'block'].includes(facts.candidate.kind) &&
+      CONVERGENCE_REASONS.has(facts.candidate.reason ?? ''),
+    decide: () => ({ kind: 'block', reason: 'no_change' }),
+  },
+  { when: () => true, decide: facts => facts.candidate },
+];
+
+/** Ordered convergence policy: verified delivery wins; unchanged real failures stop repair. */
+function convergenceDecision(facts: DecisionFacts): DecisionCandidate {
+  const rule = DECISION_RULES.find(candidate => candidate.when(facts));
+  return rule ? rule.decide(facts) : facts.candidate;
+}
 
 /** reviews[i]/rechecks[i] 对应第 i+1 轮；权限拒绝优先，未完成自报只阻断已证实的空交付。 */
 export function deliveryDecision(input: {
@@ -1281,6 +1346,7 @@ export function deliveryDecision(input: {
   qualifiedReview?: boolean;
   strict?: boolean;
   packages?: RequirementContract[];
+  reviewRounds: number;
 }) {
   let coder: Coder | undefined;
   try {
@@ -1359,21 +1425,59 @@ export function deliveryDecision(input: {
   // prettier-ignore
   const signature = (i: number) => { const c = input.rechecks.at(i); return JSON.stringify([c?.head, c?.diff_hash, c?.contract_hash, c?.ok, c?.workspace_clean, c?.failed, c?.failures, c?.decision?.evidence, reviews.at(i)]); };
   const repeated = !!check?.head && input.rechecks.length > 1 && signature(-1) === signature(-2);
+  const unchanged = !!check && (check.same || repeated);
+  const accepted = !!(
+    completion.status !== 'unmet' &&
+    check?.workspace_clean !== false &&
+    ((check?.ok ?? false) ||
+      ((check?.failed?.length ?? 0) > 0 &&
+        check?.failed?.every(command =>
+          ledger.debt.some(e => e.command === command && e.debt_reason === 'non_product')
+        )))
+  );
+  const prior = reviews
+    .map((review, i) => (review ? i : -1))
+    .filter(i => i >= 0)
+    .at(-1);
+  const priorCheck = prior === undefined ? undefined : input.rechecks[prior];
+  const priorReview = prior === undefined ? undefined : reviews[prior];
+  const reusable =
+    input.qualifiedReview === true &&
+    reviews.at(-1) === null &&
+    check?.ok === true &&
+    check.decision?.kind === 'advance' &&
+    ledger.blocking.length === 0 &&
+    ledger.debt.length === 0 &&
+    priorReview?.status === 'PASS' &&
+    priorReview.debt.length === 0 &&
+    !!check.head &&
+    priorCheck?.head === check.head &&
+    !!check.diff_hash &&
+    priorCheck.diff_hash === check.diff_hash &&
+    !!check.contract_hash &&
+    priorCheck.contract_hash === check.contract_hash &&
+    priorCheck.risk === check.risk &&
+    check.risk === input.risk;
+  const reviewSatisfied =
+    !input.reviews ||
+    reviews.at(-1)?.status === 'PASS' ||
+    reusable ||
+    (input.reviewRequired === false && !input.strict && input.risk !== 'G2');
+  const verified =
+    reusable ||
+    (accepted &&
+      completion.status === 'verified' &&
+      ledger.blocking.length === 0 &&
+      ledger.debt.length === 0 &&
+      reviewSatisfied);
   const out = (kind: DeliveryDecision['kind'], reason: string | null, debt: string[] = []) => {
-    if (
-      (kind === 'repair' || kind === 'block') &&
-      ['acceptance_failed', 'review_failed', 'review_inconsistent'].includes(reason ?? '') &&
-      (check?.same || repeated)
-    ) {
-      kind = 'block';
-      reason = 'no_change';
-    }
-    if (reason === 'no_change')
+    const selected = convergenceDecision({ candidate: { kind, reason }, verified, unchanged });
+    if (selected.reason === 'no_change')
       evidence.push('repair input unchanged: same diff or identical adjacent head and evidence');
     return {
       decision: {
-        kind: kind === 'advance' && debt.length ? 'debt' : kind,
-        reason,
+        kind: selected.kind === 'advance' && debt.length ? 'debt' : selected.kind,
+        reason: selected.reason,
         evidence,
         debt,
         requirements: completion,
@@ -1450,14 +1554,6 @@ export function deliveryDecision(input: {
       check.failed?.some(command => !approved.failed?.includes(command)))
   )
     return out('block', 'acceptance_failed');
-  const accepted =
-    completion.status !== 'unmet' &&
-    check.workspace_clean !== false &&
-    (check.ok ||
-      ((check.failed?.length ?? 0) > 0 &&
-        check.failed?.every(command =>
-          ledger.debt.some(e => e.command === command && e.debt_reason === 'non_product')
-        )));
   if (!input.reviews) {
     const debt = debtOf(reviews, ledger);
     return accepted ? out('advance', null, debt) : out('repair', 'acceptance_failed', debt);
@@ -1474,33 +1570,6 @@ export function deliveryDecision(input: {
     input.risk !== 'G2'
   )
     return out('advance', 'review_not_required', debtOf(reviews, ledger));
-  if (check.same) {
-    const prior = reviews
-      .map((r, i) => (r ? i : -1))
-      .filter(i => i >= 0)
-      .at(-1);
-    const accepted = prior === undefined ? undefined : input.rechecks[prior];
-    const review = prior === undefined ? undefined : reviews[prior];
-    // Missing legacy evidence cannot prove equivalence; open debt also forbids reuse.
-    const reusable =
-      input.qualifiedReview === true &&
-      reviews.at(-1) === null &&
-      check.ok &&
-      check.decision?.kind === 'advance' &&
-      review?.status === 'PASS' &&
-      ledger.blocking.length === 0 &&
-      ledger.debt.length === 0 &&
-      review.debt.length === 0 &&
-      !!check.head &&
-      accepted?.head === check.head &&
-      !!check.diff_hash &&
-      accepted.diff_hash === check.diff_hash &&
-      !!check.contract_hash &&
-      accepted.contract_hash === check.contract_hash &&
-      accepted.risk === check.risk &&
-      check.risk === input.risk;
-    return reusable ? out('advance', null) : out('block', 'no_change');
-  }
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
   // Non-blocking findings remain debt even when the reviewer labels the review FAIL.
@@ -1511,10 +1580,11 @@ export function deliveryDecision(input: {
   if (accepted && debtOnly) return out('advance', null, debt);
   let reason: string;
   if (!last) {
+    if (accepted && unchanged) return out('block', 'review_failed', debt);
     if (accepted) throw new Error('gate: no review');
     reason = check.reason ?? 'acceptance_failed';
   } else {
-    const ok = accepted ?? false;
+    const ok = accepted;
     if (last.status === 'PASS' && ledger.blocking.length === 0 && ok)
       return out('advance', null, debt);
     reason = !ok
@@ -1523,7 +1593,7 @@ export function deliveryDecision(input: {
           last.status
         ];
   }
-  if (rounds >= MAX_ROUNDS) return out('block', `${reason}+review_limit`, debt);
+  if (rounds >= input.reviewRounds) return out('block', `${reason}+review_limit`, debt);
   return out(last?.status === 'INCOMPLETE' ? 'block' : 'repair', reason, debt);
 }
 
@@ -1567,12 +1637,17 @@ interface RunEvent {
   };
 }
 /** Counter changes clear their scope; an unchanged always_run counter preserves denials. */
-export function permissionEvidence(events: RunEvent[], pkgs: string[], m: string): string[] {
+export function permissionEvidence(
+  events: RunEvent[],
+  pkgs: string[],
+  m: string,
+  reviewRounds: number
+): string[] {
   const nodes = new Map<string, string>();
   for (const id of pkgs)
     for (const node of [`code-${id}`, `repair-${id}`]) nodes.set(node, `package-attempt-${id}`);
   const scope = `attempt-${m}`;
-  for (let r = 1; r <= MAX_ROUNDS; r++) nodes.set(`fix-${m}-r${String(r)}`, scope);
+  for (let r = 1; r <= reviewRounds; r++) nodes.set(`fix-${m}-r${String(r)}`, scope);
   const attempts = new Map<string, string>(),
     counters = new Map<string, string>(),
     denied = new Map<string, string>();
@@ -1778,6 +1853,7 @@ export function readAuthorEvidence(
   attempts: PolicyAttempt[],
   pkgs: string[],
   milestone: string | string[],
+  reviewRounds: number,
   load: (id: string) => AuthorRun
 ): Ident[] {
   const authors: Ident[] = [],
@@ -1790,7 +1866,7 @@ export function readAuthorEvidence(
     [milestone]
       .flat()
       .some(m =>
-        Array.from({ length: MAX_ROUNDS }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node)
+        Array.from({ length: reviewRounds }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node)
       );
   for (;;) {
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
@@ -1938,7 +2014,7 @@ export function validateRecovery(
   require(command('rev-parse', p.base_ref) === e.base &&
     command('merge-base', e.base, e.candidate) === e.base, 'base drift');
   require(JSON.stringify(source(e.plan)) === JSON.stringify(p), 'plan drift');
-  source(e.policy);
+  const reviewRounds = reviewRoundLimit(source(e.policy) as ReviewEffortPolicy);
   source(e.contracts);
   require(JSON.stringify([...e.packages].sort()) ===
     JSON.stringify(p.packages.map(k => k.id).sort()), 'package coverage');
@@ -1946,7 +2022,7 @@ export function validateRecovery(
   require(typeof limit === 'number' &&
     Number.isInteger(limit) &&
     limit > 0 &&
-    limit <= MAX_ROUNDS &&
+    limit <= reviewRounds &&
     e.rounds.length === limit + 1, 'complete rounds through recorded limit + 1 required');
   require(e.author_coverage, 'support author coverage required');
   const roster = source(e.author_coverage) as Omit<RecoveryAuthorCoverage, 'rounds'> & {
@@ -1977,10 +2053,13 @@ export function validateRecovery(
     readPolicyAttempts(join(original.output_root, 'artifacts', 'runs', engineId)),
     e.packages,
     milestones,
+    reviewRounds,
     load
   );
   const permissions = [
-    ...new Set(milestones.flatMap(m => permissionEvidence(original.events, e.packages, m))),
+    ...new Set(
+      milestones.flatMap(m => permissionEvidence(original.events, e.packages, m, reviewRounds))
+    ),
   ];
   const actor = (a: RecoveryActor, role: 'general' | 'strategist') => {
     require(a.job.path === join(jobs, `${a.job_id}.json`), 'job registry binding');
@@ -2171,6 +2250,7 @@ function gate(): void {
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
   const risk = effectiveRisk(env('RISK'), rechecks);
+  const reviewRounds = maxRounds();
   const decision = {
     reviews,
     rechecks,
@@ -2185,15 +2265,16 @@ function gate(): void {
     strict: plan().mode === 'strict',
     expired: expired(),
     reviewRequired: env('REVIEW') !== '0',
+    reviewRounds,
     permissions:
       reused?.permissions ??
       (env('ARCHON') && !expired()
-        ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'))
+        ? permissionEvidence(runEvents(), env('PKGS').split(','), env('MILESTONE'), reviewRounds)
         : []),
   };
   let d = decide(decision);
   if (d.verdict === 'escalate' && !decision.expired && nextDisposition(d.decision) === 'repair')
-    Object.assign(d, { verdict: d.rounds >= MAX_ROUNDS ? 'escalate' : 'fix' });
+    Object.assign(d, { verdict: d.rounds >= reviewRounds ? 'escalate' : 'fix' });
   const tested = d.reason === 'review_not_required';
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
@@ -2218,7 +2299,14 @@ function gate(): void {
       reused?.identity ??
       (env('ARCHON')
         ? {
-            authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
+            authors: readAuthorEvidence(
+              runEvidence(),
+              attempts,
+              pkgs,
+              milestones,
+              reviewRounds,
+              runEvidence
+            ),
             reviewer: attemptIdentity(
               attempts,
               reviewer,
@@ -2290,8 +2378,10 @@ function gate(): void {
     milestone: env('MILESTONE'),
     review_file: reviewFile,
     ledger_file: ledgerFile,
-    // 末份非空评审所见的 HEAD：下一轮 diff 以它为增量起点（F-20）；尚无评审为空，下一轮评审做全量
+    // 末份非空评审所见的 HEAD：下一轮 diff 以它为增量起点（F-20）。
     reviewed_head: reviewed === undefined ? '' : (rechecks[reviewed]?.head ?? ''),
+    // 与 reviewed_head 分开记录：只有 hash 相同才能证明当前候选已经评审。
+    reviewed_diff_hash: reviewed === undefined ? '' : (rechecks[reviewed]?.diff_hash ?? ''),
     head: git('rev-parse', 'HEAD').trim(),
     head_trusted: d.reason !== 'review_modified_checkout',
   };
