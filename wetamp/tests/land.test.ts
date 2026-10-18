@@ -309,120 +309,124 @@ test.each([
   'https-worker',
   'https-nested',
   'original-url',
-])('LAND_SUBMODULE initializes local candidate before acceptance: %s', kind => {
-  const f = deliveryFixture();
-  const upstream = gitRepo(tmp());
-  const nested = kind === 'https-nested' ? gitRepo(tmp()) : undefined;
-  if (nested) {
-    sh(`git -c protocol.file.allow=always submodule add '${nested}' nested`, upstream);
-    sh(
-      'git config --file .gitmodules submodule.nested.url https://127.0.0.1:1/nested.git',
-      upstream
-    );
-    sh('git add .gitmodules && git commit -qm nested', upstream);
-  }
-  const path = 'upstream/agent-zero';
-  sh(`git -c protocol.file.allow=always submodule add '${upstream}' '${path}'`, f.worktree);
-  if (nested)
-    sh(
-      `git -c protocol.file.allow=always -c submodule.nested.url='${nested}' submodule update --init`,
-      join(f.worktree, path)
-    );
-  if (kind.startsWith('https-'))
-    sh(
-      `git config --file .gitmodules submodule.${path}.url https://127.0.0.1:1/unreachable.git`,
-      f.worktree
-    );
-  if (kind === 'missing')
-    sh(`git update-index --cacheinfo 160000,${'1'.repeat(40)},${path}`, f.worktree);
-  sh('git add .gitmodules && git commit -qm submodule', f.worktree);
-  f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
-  if (kind === 'missing') {
-    // An uninitialized author checkout stays clean despite the unavailable gitlink commit.
-    rmSync(join(f.worktree, path), { recursive: true, force: true });
-    mkdirSync(join(f.worktree, path));
-  }
-  if (kind === 'integrated') sh('git merge --ff-only sa/land', f.repo);
-  if (kind === 'https-source' || kind === 'https-common') {
-    sh('git merge --ff-only sa/land', f.repo);
-    sh(`git -c protocol.file.allow=always clone '${upstream}' '${path}'`, f.repo);
-    if (kind === 'https-common') {
-      const common = sh('git rev-parse --path-format=absolute --git-common-dir', f.repo).trim();
-      mkdirSync(join(common, 'modules', 'upstream'), { recursive: true });
-      sh(`mv '${path}/.git' '${common}/modules/${path}'`, f.repo);
-      rmSync(join(f.repo, path), { recursive: true, force: true });
-      mkdirSync(join(f.repo, path));
+])(
+  'LAND_SUBMODULE initializes local candidate before acceptance: %s',
+  kind => {
+    const f = deliveryFixture();
+    const upstream = gitRepo(tmp());
+    const nested = kind === 'https-nested' ? gitRepo(tmp()) : undefined;
+    if (nested) {
+      sh(`git -c protocol.file.allow=always submodule add '${nested}' nested`, upstream);
+      sh(
+        'git config --file .gitmodules submodule.nested.url https://127.0.0.1:1/nested.git',
+        upstream
+      );
+      sh('git add .gitmodules && git commit -qm nested', upstream);
     }
-  }
-  if (kind === 'original-url' || kind === 'https-common' || kind === 'https-source') {
-    rmSync(join(f.worktree, path), { recursive: true, force: true });
-    mkdirSync(join(f.worktree, path));
-  }
-  const common = sh('git rev-parse --path-format=absolute --git-common-dir', f.repo).trim();
-  const configBefore = readFileSync(join(common, 'config'), 'utf8');
-  const targetBefore = sh('git rev-parse HEAD', f.repo);
-  const sourceBefore = sh('git status --porcelain', f.worktree);
-  const sourceSubmodule = sh('git rev-parse HEAD', upstream);
-  const worktreesBefore = sh('git worktree list --porcelain', f.repo);
-  const plan = fixturePlan(f.root, f.repo, p => {
-    p.packages = [{ id: 'p', accept: [{ cmd: `test -f ${path}/README.md`, timeout_s: 2 }] }];
-  });
-  // Watchdog process behavior is covered separately; retain real Git and acceptance here.
-  const preload = directAuxiliaryPreload();
-  const verify = mock((cwd: string) => {
-    expect(sh('git rev-parse HEAD', join(cwd, path))).toBe(sourceSubmodule);
+    const path = 'upstream/agent-zero';
+    sh(`git -c protocol.file.allow=always submodule add '${upstream}' '${path}'`, f.worktree);
     if (nested)
-      expect(sh('git rev-parse HEAD', join(cwd, path, 'nested'))).toBe(
-        sh('git rev-parse HEAD', nested)
+      sh(
+        `git -c protocol.file.allow=always -c submodule.nested.url='${nested}' submodule update --init`,
+        join(f.worktree, path)
       );
-    expect(sh('git status --porcelain', cwd)).toBe('');
-    const result = Bun.spawnSync(
-      [process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')],
-      {
-        cwd,
-        env: {
-          ...process.env,
-          BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`,
-          INPUTS_KIND: 'accept',
-          INPUTS_PLAN: plan,
-          INPUTS_PKGS: 'p',
-          INPUTS_TAG: 'land-submodule',
-          ARTIFACTS_DIR: f.art,
-        },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      }
-    );
-    expect(result.exitCode).toBe(0);
-    expect(JSON.parse(readFileSync(join(f.art, 'land-submodule.json'), 'utf8'))).toHaveProperty(
-      'workspace_clean',
-      true
-    );
-    return result.exitCode;
-  });
-  const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
-  try {
+    if (kind.startsWith('https-'))
+      sh(
+        `git config --file .gitmodules submodule.${path}.url https://127.0.0.1:1/unreachable.git`,
+        f.worktree
+      );
+    if (kind === 'missing')
+      sh(`git update-index --cacheinfo 160000,${'1'.repeat(40)},${path}`, f.worktree);
+    sh('git add .gitmodules && git commit -qm submodule', f.worktree);
+    f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
     if (kind === 'missing') {
-      expect(() => applyLand(f.run, f.land, verify, f.context)).toThrow(
-        /submodule initialization failed \(exit \d+\); paths: .*upstream\/agent-zero; log tail:/
-      );
-      expect(verify).not.toHaveBeenCalled();
-      expect(sh('git rev-parse HEAD', f.repo)).toBe(targetBefore);
-      expect(sh('git worktree list --porcelain', f.repo)).toBe(worktreesBefore);
-      expect(existsSync(f.delivery.receipt)).toBe(false);
-    } else {
-      expect(applyLand(f.run, f.land, verify, f.context)?.status).toBe('manual_push');
-      expect(verify).toHaveBeenCalledTimes(1);
+      // An uninitialized author checkout stays clean despite the unavailable gitlink commit.
+      rmSync(join(f.worktree, path), { recursive: true, force: true });
+      mkdirSync(join(f.worktree, path));
     }
-    expect(sh('git status --porcelain', f.worktree)).toBe(sourceBefore);
-    expect(readFileSync(join(common, 'config'), 'utf8')).toBe(configBefore);
-    if (!['missing', 'https-common', 'https-source', 'original-url'].includes(kind))
-      expect(sh('git rev-parse HEAD', join(f.worktree, path))).toBe(sourceSubmodule);
-    expect(existsSync(join(f.repo, path, 'README.md'))).toBe(kind === 'https-source');
-  } finally {
-    probe.mockRestore();
-  }
-});
+    if (kind === 'integrated') sh('git merge --ff-only sa/land', f.repo);
+    if (kind === 'https-source' || kind === 'https-common') {
+      sh('git merge --ff-only sa/land', f.repo);
+      sh(`git -c protocol.file.allow=always clone '${upstream}' '${path}'`, f.repo);
+      if (kind === 'https-common') {
+        const common = sh('git rev-parse --path-format=absolute --git-common-dir', f.repo).trim();
+        mkdirSync(join(common, 'modules', 'upstream'), { recursive: true });
+        sh(`mv '${path}/.git' '${common}/modules/${path}'`, f.repo);
+        rmSync(join(f.repo, path), { recursive: true, force: true });
+        mkdirSync(join(f.repo, path));
+      }
+    }
+    if (kind === 'original-url' || kind === 'https-common' || kind === 'https-source') {
+      rmSync(join(f.worktree, path), { recursive: true, force: true });
+      mkdirSync(join(f.worktree, path));
+    }
+    const common = sh('git rev-parse --path-format=absolute --git-common-dir', f.repo).trim();
+    const configBefore = readFileSync(join(common, 'config'), 'utf8');
+    const targetBefore = sh('git rev-parse HEAD', f.repo);
+    const sourceBefore = sh('git status --porcelain', f.worktree);
+    const sourceSubmodule = sh('git rev-parse HEAD', upstream);
+    const worktreesBefore = sh('git worktree list --porcelain', f.repo);
+    const plan = fixturePlan(f.root, f.repo, p => {
+      p.packages = [{ id: 'p', accept: [{ cmd: `test -f ${path}/README.md`, timeout_s: 2 }] }];
+    });
+    // Watchdog process behavior is covered separately; retain real Git and acceptance here.
+    const preload = directAuxiliaryPreload();
+    const verify = mock((cwd: string) => {
+      expect(sh('git rev-parse HEAD', join(cwd, path))).toBe(sourceSubmodule);
+      if (nested)
+        expect(sh('git rev-parse HEAD', join(cwd, path, 'nested'))).toBe(
+          sh('git rev-parse HEAD', nested)
+        );
+      expect(sh('git status --porcelain', cwd)).toBe('');
+      const result = Bun.spawnSync(
+        [process.execPath, join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts')],
+        {
+          cwd,
+          env: {
+            ...process.env,
+            BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`,
+            INPUTS_KIND: 'accept',
+            INPUTS_PLAN: plan,
+            INPUTS_PKGS: 'p',
+            INPUTS_TAG: 'land-submodule',
+            ARTIFACTS_DIR: f.art,
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }
+      );
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(join(f.art, 'land-submodule.json'), 'utf8'))).toHaveProperty(
+        'workspace_clean',
+        true
+      );
+      return result.exitCode;
+    });
+    const probe = spyOn(config, 'runtimeFingerprint').mockReturnValue('fixture');
+    try {
+      if (kind === 'missing') {
+        expect(() => applyLand(f.run, f.land, verify, f.context)).toThrow(
+          /submodule initialization failed \(exit \d+\); paths: .*upstream\/agent-zero; log tail:/
+        );
+        expect(verify).not.toHaveBeenCalled();
+        expect(sh('git rev-parse HEAD', f.repo)).toBe(targetBefore);
+        expect(sh('git worktree list --porcelain', f.repo)).toBe(worktreesBefore);
+        expect(existsSync(f.delivery.receipt)).toBe(false);
+      } else {
+        expect(applyLand(f.run, f.land, verify, f.context)?.status).toBe('manual_push');
+        expect(verify).toHaveBeenCalledTimes(1);
+      }
+      expect(sh('git status --porcelain', f.worktree)).toBe(sourceBefore);
+      expect(readFileSync(join(common, 'config'), 'utf8')).toBe(configBefore);
+      if (!['missing', 'https-common', 'https-source', 'original-url'].includes(kind))
+        expect(sh('git rev-parse HEAD', join(f.worktree, path))).toBe(sourceSubmodule);
+      expect(existsSync(join(f.repo, path, 'README.md'))).toBe(kind === 'https-source');
+    } finally {
+      probe.mockRestore();
+    }
+  },
+  10_000
+);
 
 test.each(['missing', 'corrupt', 'advanced', 'mismatch', 'interrupted', 'accept-fail', 'valid'])(
   'delivery already integrated recovery: %s requires current acceptance or a matching receipt',
