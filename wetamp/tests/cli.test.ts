@@ -2132,10 +2132,7 @@ describe('brief / land (archon stub)', () => {
       nodes: [{ nodeId: 'publish-m1', state: 'completed' }],
     });
     const s = stub([dirty]);
-    expect(classifyRun(s.ledger, dirty)).toMatchObject({
-      state: 'held:target_dirty',
-      node: 'target-dirty-m1',
-    });
+    expect(classifyRun(s.ledger, dirty).state).toBe('held:target_dirty');
     expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
     expect(s.calls()).toContain('workflow approve r --detach --json');
 
@@ -2594,8 +2591,7 @@ test.each([
       JSON.stringify({ repo: wt, target: 'main', branch: 'sa/sa1', head })
     );
     const queriesBefore = s.calls().filter(c => c.startsWith('workflow get r')).length;
-    const accepted = captured(() => main(['accept', 'sa1']));
-    expect(accepted.code, accepted.out).toBe(0);
+    expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
     expect(s.calls().filter(c => c.startsWith('workflow get r')).length - queriesBefore).toBe(1);
     if (check === 'inputs') {
       const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;

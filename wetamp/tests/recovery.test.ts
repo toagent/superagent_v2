@@ -395,13 +395,8 @@ describe('recovery ownership and effects', () => {
       archon_run_id: 'r',
       repo,
       branch: 'sa/r',
-      plan: '',
       gen_dir: gen,
       workflow: 'sa-r',
-      console: 'codex',
-      started_at: '',
-      transcript: '',
-      log: '',
       delivery: { checkout: repo, branch: 'main', head: sh('git rev-parse HEAD', repo).trim() },
     };
     writeFileSync(join(sa, 'runs/r.json'), JSON.stringify(ledger));
@@ -411,7 +406,6 @@ describe('recovery ownership and effects', () => {
       const run: RunView = {
         id: 'r',
         status: 'running',
-        output_root: sa,
         working_path: repo,
         nodes: [{ nodeId: 'publish-m1', state: 'running' }],
       };

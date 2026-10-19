@@ -69,11 +69,7 @@ describe('F-22 report', () => {
       join(output, 'publish-m1.json'),
       JSON.stringify({
         task: 'published',
-        source: 'source',
         target: { checkout: root, branch: 'main' },
-        target_tip: 'tip',
-        contract: 'contract',
-        evidence: output,
         integrated: 'head',
         status: 'published',
       })
@@ -90,21 +86,23 @@ describe('F-22 report', () => {
         repo: '/repo',
         delivery_result: { status: 'blocked', reason: 'dirty\ndetail' },
       },
-      {
+    ].map(l => ({
+      ledger: l as Ledger,
+      run: { id: l.run_id, status: 'completed' } as import('../src/archon').RunView,
+    }));
+    pairs.push({
+      ledger: {
         run_id: 'published',
         repo: root,
         delivery: { checkout: root, branch: 'main', head: 'base' },
-      },
-    ].map(l => ({
-      ledger: l as Ledger,
+      } as Ledger,
       run: {
-        id: l.run_id,
-        status: 'completed' as const,
-        ...(l.run_id === 'published'
-          ? { output_root: root, nodes: [{ nodeId: 'publish-m1', state: 'completed' as const }] }
-          : {}),
+        id: 'published',
+        status: 'completed',
+        output_root: root,
+        nodes: [{ nodeId: 'publish-m1', state: 'completed' }],
       },
-    }));
+    });
     const before = JSON.stringify(pairs);
     const saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
     Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root });

@@ -188,19 +188,13 @@ describe('data rows', () => {
     writeFileSync(
       join(output, 'publish-m1.json'),
       JSON.stringify({
-        task: 'delivery',
-        source: 'source',
-        target: { checkout: repo, branch: 'main' },
-        target_tip: sh('git rev-parse HEAD', repo).trim(),
-        contract: 'contract',
-        evidence: output,
-        integrated: sh('git rev-parse HEAD', repo).trim(),
+        ...integrated,
         status: 'published',
       })
     );
     expect(
       rowOf(
-        { ...legacy, delivery: { checkout: repo, branch: 'main', head: 'base' } },
+        { ...legacy, delivery: integrated.target },
         { ...landedRun, nodes: [{ nodeId: 'publish-m1', state: 'completed' }] },
         { now }
       ).landed
