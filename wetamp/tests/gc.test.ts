@@ -264,6 +264,7 @@ test.each(['full', 'partial', 'failed'] as const)(
       milestone: 'm1',
       pkgs: mode === 'partial' ? 'core' : 'core,web',
       plan: join(f.gen, 'plan.json'),
+      policy: join(f.gen, 'policy.json'),
       risk: 'G1',
     }));
     writeFileSync(join(f.gen, 'accept-inputs.json'), JSON.stringify(contracts));
