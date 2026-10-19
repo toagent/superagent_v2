@@ -1968,12 +1968,15 @@ export function readAuthorEvidence(
     covered = new Set<string>(),
     repo = run.codebase_id;
   const unknown: Ident = { model: null, strength: 'unknown' };
+  const authored = (node: string): string => node.split('.').at(-1) ?? node;
   const owns = (node: string) =>
-    pkgs.some(p => node === `code-${p}` || node === `repair-${p}`) ||
+    pkgs.some(p => authored(node) === `code-${p}` || authored(node) === `repair-${p}`) ||
     [milestone]
       .flat()
       .some(m =>
-        Array.from({ length: reviewRounds }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(node)
+        Array.from({ length: reviewRounds }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(
+          authored(node)
+        )
       );
   for (;;) {
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
@@ -2001,7 +2004,9 @@ export function readAuthorEvidence(
     // R1-2: evidence for one package cannot stand in for another carried package.
     for (const p of pkgs)
       if (
-        [...receipts.map(a => a.node), ...nodes].some(n => n === `code-${p}` || n === `repair-${p}`)
+        [...receipts.map(a => a.node), ...nodes].some(
+          n => authored(n) === `code-${p}` || authored(n) === `repair-${p}`
+        )
       )
         covered.add(p);
     for (const node of nodes) {
@@ -2396,7 +2401,7 @@ function gate(): void {
       (d.reason === 'no_change' && rechecks.at(-1)?.ok && reviews.at(-1) === null))
   ) {
     const done = env('ARCHON') ? runEvents().filter(e => e.event_type === 'node_completed') : [];
-    const reviewer = `review-${m}-r${String(reviewed + 1)}`;
+    const reviewer = env('REVIEW_NODE') || `review-${m}-r${String(reviewed + 1)}`;
     const attempts = readPolicyAttempts(artifacts);
     const pkgs = (env('SCOPE_PKGS') || env('PKGS')).split(',');
     const milestones = plan()
@@ -2417,7 +2422,11 @@ function gate(): void {
             reviewer: attemptIdentity(
               attempts,
               reviewer,
-              done.filter(e => e.step_name === reviewer).at(-1)?.data?.binding
+              done
+                .filter(
+                  e => e.step_name === reviewer || e.step_name?.endsWith(`.${reviewer}`) === true
+                )
+                .at(-1)?.data?.binding
             ),
           }
         : { authors: [fake], reviewer: { ...fake, model: 'fake-reviewer' } });

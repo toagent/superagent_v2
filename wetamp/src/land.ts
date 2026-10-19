@@ -18,6 +18,11 @@ const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof impo
 
 type SyncEvidence = SyncResult & { generation: number };
 
+/** Runtime events qualify loop body nodes as `<group>.<node>`; artifacts keep the authored id. */
+export const authoredNodeId = (nodeId: string): string => nodeId.split('.').at(-1) ?? nodeId;
+
+const isPublishNode = (nodeId: string): boolean => /^publish-.+$/.test(authoredNodeId(nodeId));
+
 const evidencePath = (name: string): string =>
   join(process.env.ARTIFACTS_DIR ?? '', `${name}.json`);
 
@@ -27,9 +32,9 @@ export function publishEvidence(
 ): { node: string; file: string } | undefined {
   const selected =
     node ??
-    run.nodes?.filter(n => n.state === 'completed' && /^publish-.+$/.test(n.nodeId)).at(-1)?.nodeId;
-  return selected && /^publish-.+$/.test(selected)
-    ? { node: selected, file: `${selected}.json` }
+    run.nodes?.filter(n => n.state === 'completed' && isPublishNode(n.nodeId)).at(-1)?.nodeId;
+  return selected && isPublishNode(selected)
+    ? { node: selected, file: `${authoredNodeId(selected)}.json` }
     : undefined;
 }
 
@@ -66,9 +71,9 @@ export function publishRecoverable(run: RunView): boolean {
     )
       return false;
     if (publishProjection(ledger, run)) return true;
-    const active = run.nodes?.find(n => /^publish-.+$/.test(n.nodeId) && n.state === 'running');
+    const active = run.nodes?.find(n => isPublishNode(n.nodeId) && n.state === 'running');
     if (!active || !run.working_path) return false;
-    const receipt = join(operator().artifactsOf(run), `${active.nodeId}.json`);
+    const receipt = join(operator().artifactsOf(run), `${authoredNodeId(active.nodeId)}.json`);
     if (existsSync(receipt)) return false; // Invalid durable evidence must remain unknown.
     const rev = (cwd: string, ref: string): string | undefined => {
       const result = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', '--verify', ref], {
@@ -151,6 +156,20 @@ const lastGate = (
       throw new Error(`integration: invalid evidence ${path}`);
     return value as Record<string, unknown>;
   };
+  const publishGate = join(artifacts, `publish-gate-${milestone}.json`);
+  if (existsSync(publishGate)) {
+    const gate = record(publishGate);
+    if (gate.verdict === 'pass')
+      return {
+        gate,
+        diff: record(
+          [
+            join(artifacts, `final-settle-${milestone}.json`),
+            join(artifacts, `final-accept-${milestone}.json`),
+          ].find(existsSync) ?? ''
+        ),
+      };
+  }
   const file = readdirSync(artifacts)
     .filter(name => new RegExp(`^gate-${milestone}-r\\d+\\.json$`).test(name))
     .sort((a, b) => Number(/r(\d+)/.exec(a)?.[1]) - Number(/r(\d+)/.exec(b)?.[1]))

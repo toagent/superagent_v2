@@ -448,11 +448,83 @@ export function buildWorkflow(
           { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
         )
       );
+      const reviewRequired = m.review || m.risk === 'G2';
+      let finalDependency = finalAccept;
+      if (reviewRequired) {
+        const reviewId = `integration-review-${m.id}`;
+        const reviewAttempt = `attempt-publish-review-${m.id}`;
+        const reviewContext = `publish-review-context-${m.id}`;
+        integrationNodes.push({
+          id: reviewAttempt,
+          depends_on: [finalAccept],
+          ...attemptInputs(attemptPath(gen, `publish-review-${m.id}`)),
+          output_format: outputSchema('attempt'),
+        });
+        if (!fake)
+          integrationNodes.push({
+            id: reviewContext,
+            always_run: true,
+            depends_on: [reviewAttempt],
+            ...attemptInputs(
+              attemptPath(gen, `publish-review-${m.id}`),
+              '',
+              reviewId,
+              `publish-gate-${m.id}`
+            ),
+            output_format: outputSchema('attempt'),
+          });
+        integrationNodes.push({
+          id: reviewId,
+          ...(fake
+            ? { bash: fakePassReview() }
+            : {
+                command: 'sa-review',
+                retry: { on_error: 'transient' },
+                model: tiers.routing.reviewer.by_risk?.[m.risk]
+                  ? `@sa-reviewer-${m.risk}`
+                  : '@sa-reviewer',
+                ...execution(`review-${m.id}-r1`),
+                idle_timeout: REVIEW_IDLE_MS,
+                with: {
+                  milestone: m.id,
+                  risk: m.risk,
+                  round: 1,
+                  context: `$ARTIFACTS_DIR/${reviewId}.context.json`,
+                  briefs: m.packages.map(brief).join(' '),
+                  accept_log: `$ARTIFACTS_DIR/${finalAccept}.log`,
+                  diff: `$ARTIFACTS_DIR/${finalAccept}.patch`,
+                },
+              }),
+          depends_on: [finalAccept, fake ? reviewAttempt : reviewContext],
+          output_format: outputSchema('reviewer'),
+        });
+        const publishGate = `publish-gate-${m.id}`;
+        integrationNodes.push(
+          check(
+            publishGate,
+            [finalAccept, reviewId],
+            {
+              ...common,
+              kind: 'gate',
+              review: '1',
+              round: 1,
+              R1: `$${reviewId}.output`,
+              C1: `$${finalAccept}.output`,
+              review_node: reviewId,
+              tag: publishGate,
+            },
+            { trigger_rule: 'none_failed_min_one_success' }
+          )
+        );
+        finalDependency = publishGate;
+      }
       const finalReady = `final-ready-${m.id}`;
       integrationNodes.push({
         id: finalReady,
-        depends_on: [finalAccept],
-        bash: `case $${finalAccept}.output.disposition in advance) true;; *) echo 'recovery acceptance requires repair' >&2; exit 1;; esac`,
+        depends_on: [finalDependency],
+        bash:
+          `case $${finalAccept}.output.disposition in advance) true;; *) echo 'recovery acceptance requires repair' >&2; exit 1;; esac` +
+          (reviewRequired ? ` && test "$publish-gate-${m.id}.output.verdict" = pass` : ''),
       });
       const publishId = `publish-${m.id}`;
       integrationNodes.push({
@@ -463,7 +535,7 @@ export function buildWorkflow(
             ? integrationCommand(
                 'publish',
                 m.id,
-                `INPUTS_TARGET_TIP=$${resyncReady}.output.target_tip INPUTS_REVIEW_REQUIRED=${m.review || m.risk === 'G2' ? '1' : '0'} `
+                `INPUTS_TARGET_TIP=$${resyncReady}.output.target_tip INPUTS_REVIEW_REQUIRED=${reviewRequired ? '1' : '0'} `
               )
             : `printf '{"status":"published","target_tip":"%s"}' "$${resyncReady}.output.target_tip"`,
         timeout: integrationLockTimeout(),
@@ -478,18 +550,14 @@ export function buildWorkflow(
         depends_on: [publishId],
         when: `$${publishId}.output.status == 'dirty'`,
       });
-      integrationNodes.push({
-        id: `target-dirty-decision-${m.id}`,
-        depends_on: [`target-dirty-${m.id}`],
-        when: `$${publishId}.output.status == 'dirty'`,
-        bash: `test "$target-dirty-${m.id}.output.decision" = approve`,
-      });
       nodes.push({
         id: `integrate-${m.id}`,
         ...approved,
         loop_group: {
           max_iterations: 3,
-          until_bash: `test "$${publishId}.output.status" = published`,
+          until_bash:
+            `test "$${publishId}.output.status" = published || ` +
+            `{ test "$${publishId}.output.status" = dirty && test "$target-dirty-${m.id}.output.decision" = reject; }`,
           nodes: integrationNodes,
         },
       });
@@ -1024,16 +1092,97 @@ export function buildWorkflow(
         }
       )
     );
+    const reviewRequired = m.review || m.risk === 'G2';
+    let publishDependency = finalSettle;
+    if (reviewRequired) {
+      const reviewId = `integration-review-${m.id}`;
+      const reviewAttempt = `attempt-publish-review-${m.id}`;
+      const reviewContext = `publish-review-context-${m.id}`;
+      integrationNodes.push({
+        id: reviewAttempt,
+        depends_on: [finalSettle],
+        ...attemptInputs(attemptPath(gen, `publish-review-${m.id}`)),
+        output_format: outputSchema('attempt'),
+      });
+      if (!fake)
+        integrationNodes.push({
+          id: reviewContext,
+          always_run: true,
+          depends_on: [reviewAttempt],
+          ...attemptInputs(
+            attemptPath(gen, `publish-review-${m.id}`),
+            '',
+            reviewId,
+            `publish-gate-${m.id}`
+          ),
+          output_format: outputSchema('attempt'),
+        });
+      integrationNodes.push({
+        id: reviewId,
+        ...(fake
+          ? { bash: fakePassReview() }
+          : {
+              command: 'sa-review',
+              retry: { on_error: 'transient' },
+              model: tiers.routing.reviewer.by_risk?.[m.risk]
+                ? `@sa-reviewer-${m.risk}`
+                : '@sa-reviewer',
+              ...execution(`review-${m.id}-r1`),
+              idle_timeout: REVIEW_IDLE_MS,
+              with: {
+                milestone: m.id,
+                risk: m.risk,
+                round: 1,
+                context: `$ARTIFACTS_DIR/${reviewId}.context.json`,
+                briefs,
+                accept_log: `$ARTIFACTS_DIR/${finalSettle}.log`,
+                diff: `$ARTIFACTS_DIR/${finalSettle}.patch`,
+              },
+            }),
+        depends_on: [finalSettle, fake ? reviewAttempt : reviewContext],
+        output_format: outputSchema('reviewer'),
+      });
+      const publishGate = `publish-gate-${m.id}`;
+      integrationNodes.push(
+        check(
+          publishGate,
+          [finalSettle, reviewId],
+          {
+            kind: 'gate',
+            review: '1',
+            round: 1,
+            R1: `$${reviewId}.output`,
+            C1: `$${finalSettle}.output`,
+            review_node: reviewId,
+            risk: m.risk,
+            milestone: m.id,
+            pkgs: ids,
+            scope_pkgs,
+            plan: planPath,
+            policy: policyPath,
+            tag: publishGate,
+            ...ledger,
+          },
+          { trigger_rule: 'none_failed_min_one_success' }
+        )
+      );
+      publishDependency = `publish-ready-${m.id}`;
+      integrationNodes.push({
+        id: publishDependency,
+        depends_on: [publishGate],
+        bash: `test "$${publishGate}.output.verdict" = pass`,
+      });
+    }
     const publishId = `publish-${m.id}`;
     integrationNodes.push({
       id: publishId,
-      depends_on: [finalSettle],
+      depends_on: [publishDependency],
       bash:
         delivery && !fake
           ? integrationCommand(
               'publish',
               m.id,
-              `INPUTS_TARGET_TIP=$${resyncReady}.output.target_tip INPUTS_REVIEW_REQUIRED=${m.review || m.risk === 'G2' ? '1' : '0'} `
+              `INPUTS_TARGET_TIP=$${resyncReady}.output.target_tip INPUTS_REVIEW_REQUIRED=${reviewRequired ? '1' : '0'} `
             )
           : `printf '{"status":"published","target_tip":"%s"}' "$${resyncReady}.output.target_tip"`,
       timeout: integrationLockTimeout(),
@@ -1049,18 +1198,14 @@ export function buildWorkflow(
       depends_on: [publishId],
       when: `$${publishId}.output.status == 'dirty'`,
     });
-    integrationNodes.push({
-      id: `target-dirty-decision-${m.id}`,
-      depends_on: [dirtyApproval],
-      when: `$${publishId}.output.status == 'dirty'`,
-      bash: `test "$${dirtyApproval}.output.decision" = approve`,
-    });
     nodes.push({
       id: `integrate-${m.id}`,
       ...approved,
       loop_group: {
         max_iterations: 3,
-        until_bash: `test "$${publishId}.output.status" = published`,
+        until_bash:
+          `test "$${publishId}.output.status" = published || ` +
+          `{ test "$${publishId}.output.status" = dirty && test "$${dirtyApproval}.output.decision" = reject; }`,
         nodes: integrationNodes,
       },
     });
@@ -1069,6 +1214,7 @@ export function buildWorkflow(
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
+    interactive: true,
     nodes,
   };
 }
@@ -1125,6 +1271,9 @@ const fakeReview = (r: number): string => {
   const out = { status, notes: 'fake', findings, fixture_confirmations: [], debt: [] };
   return `echo '${JSON.stringify(out)}'`;
 };
+
+const fakePassReview = (): string =>
+  `echo '${JSON.stringify({ status: 'PASS', notes: 'fake', findings: [], fixture_confirmations: [], debt: [] })}'`;
 
 /** 单趟替换：计划文本里出现的 `{{x}}` 不会被再次展开。 */
 export function renderBrief(

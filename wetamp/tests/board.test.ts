@@ -195,7 +195,7 @@ describe('data rows', () => {
     expect(
       rowOf(
         { ...legacy, delivery: integrated.target },
-        { ...landedRun, nodes: [{ nodeId: 'publish-m1', state: 'completed' }] },
+        { ...landedRun, nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'completed' }] },
         { now }
       ).landed
     ).toBe(true);

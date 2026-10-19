@@ -1,5 +1,6 @@
 name: sa-golden-0001
 description: 'superagent run golden-0001: 2 package(s), 2 milestone(s)'
+interactive: true
 nodes:
   - id: environment
     script: sa-check
@@ -1417,7 +1418,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r2
-    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same !=
+      'true' || $diff-m1-r2.output.disposition == 'advance' &&
+      $diff-m1-r2.output.reviewed != 'true'
     depends_on:
       - diff-m1-r2
       - attempt-m1
@@ -1436,7 +1439,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m1-r2
-    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same !=
+      'true' || $diff-m1-r2.output.disposition == 'advance' &&
+      $diff-m1-r2.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m1-r2
@@ -1456,7 +1461,9 @@ nodes:
       required:
         - attempt
   - id: review-m1-r2
-    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same !=
+      'true' || $diff-m1-r2.output.disposition == 'advance' &&
+      $diff-m1-r2.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -1944,7 +1951,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r3
-    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.reviewed != 'true'
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same !=
+      'true' || $diff-m1-r3.output.disposition == 'advance' &&
+      $diff-m1-r3.output.reviewed != 'true'
     depends_on:
       - diff-m1-r3
       - attempt-m1
@@ -1963,7 +1972,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m1-r3
-    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.reviewed != 'true'
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same !=
+      'true' || $diff-m1-r3.output.disposition == 'advance' &&
+      $diff-m1-r3.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m1-r3
@@ -1983,7 +1994,9 @@ nodes:
       required:
         - attempt
   - id: review-m1-r3
-    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.reviewed != 'true'
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same !=
+      'true' || $diff-m1-r3.output.disposition == 'advance' &&
+      $diff-m1-r3.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -2475,7 +2488,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r4
-    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.reviewed != 'true'
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same !=
+      'true' || $diff-m1-r4.output.disposition == 'advance' &&
+      $diff-m1-r4.output.reviewed != 'true'
     depends_on:
       - diff-m1-r4
       - attempt-m1
@@ -2494,7 +2509,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m1-r4
-    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.reviewed != 'true'
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same !=
+      'true' || $diff-m1-r4.output.disposition == 'advance' &&
+      $diff-m1-r4.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m1-r4
@@ -2514,7 +2531,9 @@ nodes:
       required:
         - attempt
   - id: review-m1-r4
-    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.reviewed != 'true'
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same !=
+      'true' || $diff-m1-r4.output.disposition == 'advance' &&
+      $diff-m1-r4.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -3010,7 +3029,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r5
-    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.reviewed != 'true'
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same !=
+      'true' || $diff-m1-r5.output.disposition == 'advance' &&
+      $diff-m1-r5.output.reviewed != 'true'
     depends_on:
       - diff-m1-r5
       - attempt-m1
@@ -3029,7 +3050,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m1-r5
-    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.reviewed != 'true'
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same !=
+      'true' || $diff-m1-r5.output.disposition == 'advance' &&
+      $diff-m1-r5.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m1-r5
@@ -3049,7 +3072,9 @@ nodes:
       required:
         - attempt
   - id: review-m1-r5
-    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.reviewed != 'true'
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same !=
+      'true' || $diff-m1-r5.output.disposition == 'advance' &&
+      $diff-m1-r5.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -3549,7 +3574,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r6
-    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.reviewed != 'true'
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same !=
+      'true' || $diff-m1-r6.output.disposition == 'advance' &&
+      $diff-m1-r6.output.reviewed != 'true'
     depends_on:
       - diff-m1-r6
       - attempt-m1
@@ -3568,7 +3595,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m1-r6
-    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.reviewed != 'true'
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same !=
+      'true' || $diff-m1-r6.output.disposition == 'advance' &&
+      $diff-m1-r6.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m1-r6
@@ -3588,7 +3617,9 @@ nodes:
       required:
         - attempt
   - id: review-m1-r6
-    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.reviewed != 'true'
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same !=
+      'true' || $diff-m1-r6.output.disposition == 'advance' &&
+      $diff-m1-r6.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -3754,7 +3785,9 @@ nodes:
     trigger_rule: none_failed_min_one_success
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m1.output.status" = published
+      until_bash: test "$publish-m1.output.status" = published || { test
+        "$publish-m1.output.status" = dirty && test
+        "$target-dirty-m1.output.decision" = reject; }
       nodes:
         - id: resync-m1
           bash: |-
@@ -4200,10 +4233,183 @@ nodes:
             required:
               - diff_hash
           timeout: 195000
-        - id: publish-m1
+        - id: attempt-publish-review-m1
           depends_on:
             - final-settle-m1
-          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m1-ready.output.target_tip"
+          script: sa-context
+          runtime: bun
+          with:
+            counter: /GEN/attempts/publish-review-m1
+            gen: /GEN
+            pkg: ''
+            review: ''
+          output_format:
+            type: object
+            properties:
+              attempt:
+                type: string
+            required:
+              - attempt
+        - id: publish-review-context-m1
+          always_run: true
+          depends_on:
+            - attempt-publish-review-m1
+          script: sa-context
+          runtime: bun
+          with:
+            counter: /GEN/attempts/publish-review-m1
+            gen: /GEN
+            pkg: ''
+            review: integration-review-m1
+            gate: publish-gate-m1
+          output_format:
+            type: object
+            properties:
+              attempt:
+                type: string
+            required:
+              - attempt
+        - id: integration-review-m1
+          command: sa-review
+          retry:
+            on_error: transient
+          model: '@sa-reviewer'
+          effort: high
+          idle_timeout: 900000
+          with:
+            milestone: m1
+            risk: G1
+            round: 1
+            context: $ARTIFACTS_DIR/integration-review-m1.context.json
+            briefs: /GEN/briefs/core.md
+            accept_log: $ARTIFACTS_DIR/final-settle-m1.log
+            diff: $ARTIFACTS_DIR/final-settle-m1.patch
+          depends_on:
+            - final-settle-m1
+            - publish-review-context-m1
+          output_format:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - PASS
+                  - FAIL
+                  - INCOMPLETE
+              notes:
+                type: string
+              findings:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    severity:
+                      type: string
+                      enum:
+                        - blocker
+                        - high
+                        - medium
+                        - low
+                    file:
+                      type: string
+                    line:
+                      type: integer
+                    status:
+                      type: string
+                      enum:
+                        - open
+                        - closed
+                    evidence:
+                      type: string
+                    failure_class:
+                      type: string
+                      enum:
+                        - product
+                        - test_env
+                        - fixture
+                        - baseline
+                        - test_data
+                        - unknown
+                    command:
+                      type:
+                        - string
+                        - 'null'
+                    carry_over:
+                      type: boolean
+                  required:
+                    - id
+                    - severity
+                    - file
+                    - line
+                    - status
+                    - evidence
+                    - carry_over
+                    - failure_class
+                    - command
+              fixture_confirmations:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    path:
+                      type: string
+                    purpose:
+                      type: string
+                    isolated_fixture:
+                      type: boolean
+                    no_data_operations:
+                      type: boolean
+                    evidence:
+                      type: string
+                  required:
+                    - path
+                    - purpose
+                    - isolated_fixture
+                    - no_data_operations
+                    - evidence
+              debt:
+                type: array
+                items:
+                  type: string
+            required:
+              - status
+              - notes
+              - findings
+              - fixture_confirmations
+              - debt
+        - id: publish-gate-m1
+          script: sa-check
+          runtime: bun
+          depends_on:
+            - final-settle-m1
+            - integration-review-m1
+          with:
+            kind: gate
+            review: '1'
+            round: 1
+            R1: $integration-review-m1.output
+            C1: $final-settle-m1.output
+            review_node: integration-review-m1
+            risk: G1
+            milestone: m1
+            pkgs: core
+            scope_pkgs: core
+            plan: /GEN/plan.json
+            policy: /GEN/policy.json
+            tag: publish-gate-m1
+            archon: /GEN/archon
+          trigger_rule: none_failed_min_one_success
+        - id: publish-ready-m1
+          depends_on:
+            - publish-gate-m1
+          bash: test "$publish-gate-m1.output.verdict" = pass
+        - id: publish-m1
+          depends_on:
+            - publish-ready-m1
+          bash: printf '{"status":"published","target_tip":"%s"}'
+            "$resync-m1-ready.output.target_tip"
           timeout: 1200000
           output_format:
             type: object
@@ -4230,18 +4436,14 @@ nodes:
               - status
         - id: target-dirty-m1
           approval:
-            message: Target checkout is dirty for milestone m1; clean it and approve to retry publish
+            message: Target checkout is dirty for milestone m1; clean it and approve to
+              retry publish
             decisions:
               - id: approve
               - id: reject
           depends_on:
             - publish-m1
           when: $publish-m1.output.status == 'dirty'
-        - id: target-dirty-decision-m1
-          depends_on:
-            - target-dirty-m1
-          when: $publish-m1.output.status == 'dirty'
-          bash: test "$target-dirty-m1.output.decision" = approve
   - id: sync-m2
     bash: |-
       tip=$(git rev-parse --verify 'main^{commit}') || exit $?
@@ -5646,7 +5848,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r2
-    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.reviewed != 'true'
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same !=
+      'true' || $diff-m2-r2.output.disposition == 'advance' &&
+      $diff-m2-r2.output.reviewed != 'true'
     depends_on:
       - diff-m2-r2
       - attempt-m2
@@ -5665,7 +5869,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m2-r2
-    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.reviewed != 'true'
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same !=
+      'true' || $diff-m2-r2.output.disposition == 'advance' &&
+      $diff-m2-r2.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m2-r2
@@ -5685,7 +5891,9 @@ nodes:
       required:
         - attempt
   - id: review-m2-r2
-    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.reviewed != 'true'
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same !=
+      'true' || $diff-m2-r2.output.disposition == 'advance' &&
+      $diff-m2-r2.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -6172,7 +6380,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r3
-    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.reviewed != 'true'
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same !=
+      'true' || $diff-m2-r3.output.disposition == 'advance' &&
+      $diff-m2-r3.output.reviewed != 'true'
     depends_on:
       - diff-m2-r3
       - attempt-m2
@@ -6191,7 +6401,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m2-r3
-    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.reviewed != 'true'
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same !=
+      'true' || $diff-m2-r3.output.disposition == 'advance' &&
+      $diff-m2-r3.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m2-r3
@@ -6211,7 +6423,9 @@ nodes:
       required:
         - attempt
   - id: review-m2-r3
-    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.reviewed != 'true'
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same !=
+      'true' || $diff-m2-r3.output.disposition == 'advance' &&
+      $diff-m2-r3.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -6702,7 +6916,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r4
-    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.reviewed != 'true'
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same !=
+      'true' || $diff-m2-r4.output.disposition == 'advance' &&
+      $diff-m2-r4.output.reviewed != 'true'
     depends_on:
       - diff-m2-r4
       - attempt-m2
@@ -6721,7 +6937,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m2-r4
-    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.reviewed != 'true'
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same !=
+      'true' || $diff-m2-r4.output.disposition == 'advance' &&
+      $diff-m2-r4.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m2-r4
@@ -6741,7 +6959,9 @@ nodes:
       required:
         - attempt
   - id: review-m2-r4
-    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.reviewed != 'true'
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same !=
+      'true' || $diff-m2-r4.output.disposition == 'advance' &&
+      $diff-m2-r4.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -7236,7 +7456,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r5
-    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.reviewed != 'true'
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same !=
+      'true' || $diff-m2-r5.output.disposition == 'advance' &&
+      $diff-m2-r5.output.reviewed != 'true'
     depends_on:
       - diff-m2-r5
       - attempt-m2
@@ -7255,7 +7477,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m2-r5
-    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.reviewed != 'true'
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same !=
+      'true' || $diff-m2-r5.output.disposition == 'advance' &&
+      $diff-m2-r5.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m2-r5
@@ -7275,7 +7499,9 @@ nodes:
       required:
         - attempt
   - id: review-m2-r5
-    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.reviewed != 'true'
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same !=
+      'true' || $diff-m2-r5.output.disposition == 'advance' &&
+      $diff-m2-r5.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -7774,7 +8000,9 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r6
-    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.reviewed != 'true'
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same !=
+      'true' || $diff-m2-r6.output.disposition == 'advance' &&
+      $diff-m2-r6.output.reviewed != 'true'
     depends_on:
       - diff-m2-r6
       - attempt-m2
@@ -7793,7 +8021,9 @@ nodes:
       required:
         - attempt
   - id: review-context-m2-r6
-    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.reviewed != 'true'
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same !=
+      'true' || $diff-m2-r6.output.disposition == 'advance' &&
+      $diff-m2-r6.output.reviewed != 'true'
     always_run: true
     depends_on:
       - attempt-review-m2-r6
@@ -7813,7 +8043,9 @@ nodes:
       required:
         - attempt
   - id: review-m2-r6
-    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.reviewed != 'true'
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same !=
+      'true' || $diff-m2-r6.output.disposition == 'advance' &&
+      $diff-m2-r6.output.reviewed != 'true'
     command: sa-review-delta
     retry:
       on_error: transient
@@ -7983,7 +8215,8 @@ nodes:
       - attempt-m2
     trigger_rule: none_failed_min_one_success
   - id: signoff-m2
-    bash: '[ "$(date +%s)" -le 4070908800 ] || { echo ''signoff m2: plan deadline 2099-01-01T00:00:00Z passed'' >&2; exit 1; }'
+    bash: '[ "$(date +%s)" -le 4070908800 ] || { echo ''signoff m2: plan deadline
+      2099-01-01T00:00:00Z passed'' >&2; exit 1; }'
     depends_on:
       - human-m2
     when: $human-m2.output.decision == 'approve'
@@ -7992,7 +8225,9 @@ nodes:
       - signoff-m2
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m2.output.status" = published
+      until_bash: test "$publish-m2.output.status" = published || { test
+        "$publish-m2.output.status" = dirty && test
+        "$target-dirty-m2.output.decision" = reject; }
       nodes:
         - id: resync-m2
           bash: |-
@@ -8438,10 +8673,183 @@ nodes:
             required:
               - diff_hash
           timeout: 195000
-        - id: publish-m2
+        - id: attempt-publish-review-m2
           depends_on:
             - final-settle-m2
-          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m2-ready.output.target_tip"
+          script: sa-context
+          runtime: bun
+          with:
+            counter: /GEN/attempts/publish-review-m2
+            gen: /GEN
+            pkg: ''
+            review: ''
+          output_format:
+            type: object
+            properties:
+              attempt:
+                type: string
+            required:
+              - attempt
+        - id: publish-review-context-m2
+          always_run: true
+          depends_on:
+            - attempt-publish-review-m2
+          script: sa-context
+          runtime: bun
+          with:
+            counter: /GEN/attempts/publish-review-m2
+            gen: /GEN
+            pkg: ''
+            review: integration-review-m2
+            gate: publish-gate-m2
+          output_format:
+            type: object
+            properties:
+              attempt:
+                type: string
+            required:
+              - attempt
+        - id: integration-review-m2
+          command: sa-review
+          retry:
+            on_error: transient
+          model: '@sa-reviewer'
+          effort: high
+          idle_timeout: 900000
+          with:
+            milestone: m2
+            risk: G2
+            round: 1
+            context: $ARTIFACTS_DIR/integration-review-m2.context.json
+            briefs: /GEN/briefs/api.md
+            accept_log: $ARTIFACTS_DIR/final-settle-m2.log
+            diff: $ARTIFACTS_DIR/final-settle-m2.patch
+          depends_on:
+            - final-settle-m2
+            - publish-review-context-m2
+          output_format:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - PASS
+                  - FAIL
+                  - INCOMPLETE
+              notes:
+                type: string
+              findings:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    severity:
+                      type: string
+                      enum:
+                        - blocker
+                        - high
+                        - medium
+                        - low
+                    file:
+                      type: string
+                    line:
+                      type: integer
+                    status:
+                      type: string
+                      enum:
+                        - open
+                        - closed
+                    evidence:
+                      type: string
+                    failure_class:
+                      type: string
+                      enum:
+                        - product
+                        - test_env
+                        - fixture
+                        - baseline
+                        - test_data
+                        - unknown
+                    command:
+                      type:
+                        - string
+                        - 'null'
+                    carry_over:
+                      type: boolean
+                  required:
+                    - id
+                    - severity
+                    - file
+                    - line
+                    - status
+                    - evidence
+                    - carry_over
+                    - failure_class
+                    - command
+              fixture_confirmations:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    path:
+                      type: string
+                    purpose:
+                      type: string
+                    isolated_fixture:
+                      type: boolean
+                    no_data_operations:
+                      type: boolean
+                    evidence:
+                      type: string
+                  required:
+                    - path
+                    - purpose
+                    - isolated_fixture
+                    - no_data_operations
+                    - evidence
+              debt:
+                type: array
+                items:
+                  type: string
+            required:
+              - status
+              - notes
+              - findings
+              - fixture_confirmations
+              - debt
+        - id: publish-gate-m2
+          script: sa-check
+          runtime: bun
+          depends_on:
+            - final-settle-m2
+            - integration-review-m2
+          with:
+            kind: gate
+            review: '1'
+            round: 1
+            R1: $integration-review-m2.output
+            C1: $final-settle-m2.output
+            review_node: integration-review-m2
+            risk: G2
+            milestone: m2
+            pkgs: api
+            scope_pkgs: core,api
+            plan: /GEN/plan.json
+            policy: /GEN/policy.json
+            tag: publish-gate-m2
+            archon: /GEN/archon
+          trigger_rule: none_failed_min_one_success
+        - id: publish-ready-m2
+          depends_on:
+            - publish-gate-m2
+          bash: test "$publish-gate-m2.output.verdict" = pass
+        - id: publish-m2
+          depends_on:
+            - publish-ready-m2
+          bash: printf '{"status":"published","target_tip":"%s"}'
+            "$resync-m2-ready.output.target_tip"
           timeout: 1200000
           output_format:
             type: object
@@ -8468,15 +8876,11 @@ nodes:
               - status
         - id: target-dirty-m2
           approval:
-            message: Target checkout is dirty for milestone m2; clean it and approve to retry publish
+            message: Target checkout is dirty for milestone m2; clean it and approve to
+              retry publish
             decisions:
               - id: approve
               - id: reject
           depends_on:
             - publish-m2
           when: $publish-m2.output.status == 'dirty'
-        - id: target-dirty-decision-m2
-          depends_on:
-            - target-dirty-m2
-          when: $publish-m2.output.status == 'dirty'
-          bash: test "$target-dirty-m2.output.decision" = approve

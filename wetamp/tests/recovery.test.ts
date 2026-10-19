@@ -407,9 +407,9 @@ describe('recovery ownership and effects', () => {
         id: 'r',
         status: 'running',
         working_path: repo,
-        nodes: [{ nodeId: 'publish-m1', state: 'running' }],
+        nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'running' }],
       };
-      expect(unknownEffects(run)).toEqual(['publish-m1']);
+      expect(unknownEffects(run)).toEqual(['integrate-m1.publish-m1']);
       writeFileSync(join(gen, 'delivery-authorization.json'), '{}');
       expect(unknownEffects(run)).toEqual([]);
     } finally {

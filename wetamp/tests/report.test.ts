@@ -100,7 +100,7 @@ describe('F-22 report', () => {
         id: 'published',
         status: 'completed',
         output_root: root,
-        nodes: [{ nodeId: 'publish-m1', state: 'completed' }],
+        nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'completed' }],
       },
     });
     const before = JSON.stringify(pairs);

@@ -15,6 +15,7 @@ import {
   deliveryProjection,
   landEvidence,
   publishProjection,
+  authoredNodeId,
   type DeliveryTarget,
 } from './land';
 export { finalizeDelivery } from './land';
@@ -447,6 +448,8 @@ export function classify(run: RunView): Classified {
     case 'paused': {
       const event = run.metadata?.wait?.event;
       const approval = run.metadata?.approval;
+      const bodyGateId = (approval as (typeof approval & { bodyGateId?: string }) | undefined)
+        ?.bodyGateId;
       if (
         approval?.nodeId.startsWith('human-') &&
         (approval as typeof approval & { resolved?: string }).resolved === 'rejected'
@@ -454,7 +457,10 @@ export function classify(run: RunView): Classified {
         return { state: 'held:rework', exit: EXIT.held, node: approval.nodeId };
       if (approval?.nodeId.startsWith('human-'))
         return { state: 'held:human', exit: EXIT.held, node: approval.nodeId };
-      if (approval?.nodeId.startsWith('target-dirty-'))
+      if (
+        approval?.nodeId.startsWith('target-dirty-') ||
+        (approval?.nodeId.startsWith('integrate-') && bodyGateId?.startsWith('target-dirty-'))
+      )
         return { state: 'held:target_dirty', exit: EXIT.held, node: approval.nodeId };
       return event?.startsWith('sa.human.')
         ? { state: 'held:human', exit: EXIT.held, node: run.metadata?.wait?.nodeId, event }
@@ -643,7 +649,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       ledgerPath(l.run_id),
     published = publishProjection(l, run),
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
-    blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(c.node ?? '') && node?.state === 'failed'),
+    blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
     action = reason === 'target_protected' ? '在 feature 分支重跑'
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' || c.state === 'held:target_dirty' ? `superagent decide ${l.run_id} approve`
@@ -680,7 +686,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     exit: c.exit,
     ...projection,
     ...(l.deferred_deliveries?.length &&
-    !nodes.some(n => /^publish-.+$/.test(n.nodeId)) &&
+    !nodes.some(n => /^publish-.+$/.test(authoredNodeId(n.nodeId))) &&
     projection.delivery_state !== 'integrated'
       ? { deferred_deliveries: l.deferred_deliveries }
       : {}),
@@ -754,11 +760,12 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const art = artifactsOf(run);
     if (run.status === 'failed') {
-      const publish = /^publish-.+$/.test(c.node)
-        ? (evidenceJson(l, art, `${c.node}.json`) as { reason?: unknown } | undefined)
+      const authored = authoredNodeId(c.node);
+      const publish = /^publish-.+$/.test(authored)
+        ? (evidenceJson(l, art, `${authored}.json`) as { reason?: unknown } | undefined)
         : undefined;
       if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
-      const sync = c.node
+      const sync = authored
         .replace(/^resolve-context-/, '')
         .replace(/^resolve-/, '')
         .replace(/-ready$/, '');
@@ -3613,7 +3620,7 @@ export function main(argv: string[]): number {
       if (a.flags.apply) {
         const run = getRun(l.archon_run_id, l.repo);
         const c = classifyRun(l, run);
-        if (run.nodes?.some(n => /^(?:sync|publish)-.+$/.test(n.nodeId))) {
+        if (run.nodes?.some(n => /^(?:sync|publish)-.+$/.test(authoredNodeId(n.nodeId)))) {
           const receipt = publishProjection(l, run);
           if (receipt) {
             print(receipt);

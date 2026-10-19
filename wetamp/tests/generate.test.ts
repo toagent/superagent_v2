@@ -30,6 +30,7 @@ import {
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
 import { validateDagStructure } from '../../packages/workflows/src/loader';
+import { collectLoopGroupSinkWarnings } from '../../packages/workflows/src/loader';
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
@@ -1256,11 +1257,21 @@ describe('buildWorkflow', () => {
   });
   test('multi-milestone delivery publishes each cumulative prefix before the next sync', () => {
     const nodes = nodesOf(build(false));
-    expect(
-      (nodes.find(n => n.id === 'integrate-m1') as N & { loop_group: unknown }).loop_group
-    ).toMatchObject({
+    const integration = nodes.find(n => n.id === 'integrate-m1') as N & {
+      loop_group: { nodes: N[] };
+    };
+    expect(integration.loop_group).toMatchObject({
       max_iterations: 3,
     });
+    expect((build(false) as { interactive?: boolean }).interactive).toBe(true);
+    expect(integration.loop_group.nodes.at(-1)?.id).toBe('target-dirty-m1');
+    expect(integration.loop_group.nodes.some(n => n.id === 'target-dirty-decision-m1')).toBe(false);
+    expect(integration.loop_group.nodes.find(n => n.id === 'publish-m1')?.depends_on).toEqual([
+      'publish-ready-m1',
+    ]);
+    const warnings: string[] = [];
+    collectLoopGroupSinkWarnings(nodes as never, warnings);
+    expect(warnings.filter(w => w.includes("Node 'target-dirty-m1'"))).toEqual([]);
     expect(nodes.find(n => n.id === 'sync-m2')?.depends_on).toEqual(['integrate-m1']);
     expect(allNodesOf(build(false)).find(n => n.id === 'publish-m2')).toBeDefined();
   });

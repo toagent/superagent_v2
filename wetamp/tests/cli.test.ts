@@ -2128,8 +2128,10 @@ describe('brief / land (archon stub)', () => {
   });
   test('integration states stay typed and land --apply retries PUBLISH without legacy delivery', () => {
     const dirty = run('paused', {
-      metadata: { approval: { nodeId: 'target-dirty-m1' } },
-      nodes: [{ nodeId: 'publish-m1', state: 'completed' }],
+      metadata: {
+        approval: { nodeId: 'integrate-m1', bodyGateId: 'target-dirty-m1' } as never,
+      },
+      nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'completed' }],
     });
     const s = stub([dirty]);
     expect(classifyRun(s.ledger, dirty).state).toBe('held:target_dirty');
@@ -2142,13 +2144,13 @@ describe('brief / land (archon stub)', () => {
     writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'target_advanced' }));
     const advanced = run('failed', {
       output_root: output,
-      nodes: [{ nodeId: 'publish-m1', state: 'failed' }],
+      nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'failed' }],
     });
     expect(classifyRun(s.ledger, advanced).state).toBe('target_advanced');
-    writeFileSync(join(art, 'sync-m1.json'), JSON.stringify({ status: 'conflict' }));
+    writeFileSync(join(art, 'resync-m1.json'), JSON.stringify({ status: 'conflict' }));
     const conflict = run('failed', {
       output_root: output,
-      nodes: [{ nodeId: 'sync-m1-ready', state: 'failed' }],
+      nodes: [{ nodeId: 'integrate-m1.resync-m1-ready', state: 'failed' }],
     });
     expect(classifyRun(s.ledger, conflict).state).toBe('sync_conflict');
   });
