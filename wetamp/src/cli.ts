@@ -1157,7 +1157,9 @@ export const waitClock = {
 export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
   const deadline = waitClock.now() + timeoutS * 1000;
   for (;;) {
-    const inbox = coord().surfaced(who);
+    const inbox = coord()
+      .surfaced(who)
+      .filter(message => ['queued', 'surfaced', 'escalated'].includes(message.state));
     if (inbox.length) return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox };
     const run = getRun(l.archon_run_id, l.repo);
     const c = classifyRun(l, run);
