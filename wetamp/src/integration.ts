@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS } from './archon';
+import { diffHash } from '../templates/.archon/scripts/sa-check';
 
 /** Fixed codes are safe for intervention persistence; diagnostics stay in message. */
 export class LandError extends Error {
@@ -119,7 +120,7 @@ export type PublishResult =
   | { status: 'dirty'; paths: string[] }
   | {
       status: 'rejected';
-      reason: 'protected_target' | 'not_descendant' | 'review_drift' | 'target_checkout_changed';
+      reason: 'protected_target' | 'not_descendant' | 'review_stale' | 'target_checkout_changed';
       evidence: string;
     };
 
@@ -274,29 +275,23 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
             ? `${head} is not a descendant of ${targetTip}`
             : ancestor.stderr.toString().trim(),
       };
-    const diffHash = createHash('sha256')
-      .update(
-        gitBytes(
-          run.worktree,
-          'diff',
-          '--no-ext-diff',
-          '--no-textconv',
-          '--binary',
-          targetTip,
-          'HEAD',
-          '--'
-        )
+    const currentDiffHash = diffHash(
+      gitBytes(
+        run.worktree,
+        'diff',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--binary',
+        targetTip,
+        'HEAD',
+        '--'
       )
-      .digest('hex')
-      .slice(0, 16);
-    if (
-      run.review.required &&
-      (run.review.reviewed_head !== head || run.review.reviewed_diff_hash !== diffHash)
-    )
+    );
+    if (run.review.required && run.review.reviewed_diff_hash !== currentDiffHash)
       return {
         status: 'rejected',
-        reason: 'review_drift',
-        evidence: 'current head or diff hash does not match the reviewed gate evidence',
+        reason: 'review_stale',
+        evidence: 'current diff hash does not match the reviewed gate evidence',
       };
 
     run.fence();

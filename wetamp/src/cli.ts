@@ -639,7 +639,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       : landError?.startsWith('land_') ? reasonToken(landError.slice(5)) : undefined,
     registered = reasonToken(c.node ? nodeReason(l, run, c) : undefined),
     integrationReason = ['held:target_dirty', 'target_dirty'].includes(c.state) ? 'target_dirty'
-      : ['sync_conflict', 'target_advanced'].includes(c.state) ? c.state : undefined,
+      : ['sync_conflict', 'target_advanced', 'review_stale'].includes(c.state) ? c.state : undefined,
     reason = landReason ?? integrationReason ?? (registered && reasonOf(registered) ? registered : undefined) ??
       holdOf(l, run, c) ?? reasonToken(run.metadata?.stop_reason?.reason) ?? 'unclassified',
     evidence = [
@@ -658,7 +658,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
       : c.state.startsWith('held:') ? `superagent decide ${l.run_id} retry`
-      : ['sync_conflict', 'target_advanced'].includes(c.state) ? `superagent recover ${l.run_id}`
+      : ['sync_conflict', 'target_advanced', 'review_stale'].includes(c.state) ? `superagent recover ${l.run_id}`
       : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}` : '读 evidence_path';
   const delivery_state = published ? 'published' as const : integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
   return { delivery_state, receipt: { state: c.state, failed_node: c.node ?? null, reason, evidence_path: evidence, action } };
@@ -769,6 +769,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
         : undefined;
       if (publish?.reason === 'target_dirty') return { ...c, state: 'target_dirty' };
       if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
+      if (publish?.reason === 'review_stale') return { ...c, state: 'review_stale' };
       const sync = authored
         .replace(/^resolve-context-/, '')
         .replace(/^resolve-/, '')

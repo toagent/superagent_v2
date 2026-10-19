@@ -2156,6 +2156,8 @@ describe('brief / land (archon stub)', () => {
       nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'failed' }],
     });
     expect(classifyRun(s.ledger, advanced).state).toBe('target_advanced');
+    writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'review_stale' }));
+    expect(classifyRun(s.ledger, advanced).state).toBe('review_stale');
     writeFileSync(join(art, 'resync-m1.json'), JSON.stringify({ status: 'conflict' }));
     const conflict = run('failed', {
       output_root: output,

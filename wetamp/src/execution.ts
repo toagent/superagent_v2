@@ -69,8 +69,6 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
         plan
       );
       table[`review-${m.id}-r${String(round)}`] = review;
-      if (round === 1 && (m.review || m.risk === 'G2'))
-        table[`integration-review-${m.id}`] = structuredClone(review);
       if (round > 1)
         table[`fix-${m.id}-r${String(round)}`] = describeExecution(
           tiers,

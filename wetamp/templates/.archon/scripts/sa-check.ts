@@ -200,8 +200,18 @@ function auxiliary(cmd: string[]) {
   return result;
 }
 const artifacts = process.env.ARTIFACTS_DIR ?? '';
-const json = (k: string): unknown =>
-  env(k) && env(k) !== 'null' ? (JSON.parse(env(k)) as unknown) : null;
+const json = (k: string): unknown => {
+  const value = env(k);
+  if (!value || value === 'null') return null;
+  try {
+    const path = realpathSync(value);
+    if (dirname(path) === realpathSync(artifacts) && basename(path).endsWith('.json'))
+      return JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  } catch {
+    /* Inline JSON is the legacy and non-artifact path. */
+  }
+  return JSON.parse(value) as unknown;
+};
 const git = (...args: string[]): string => {
   const p = auxiliary(['git', ...args]);
   if (p.exitCode !== 0 || p.signalCode)
@@ -220,6 +230,9 @@ const emit = (o: unknown): void => {
   console.log(JSON.stringify(o));
 };
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
+/** One raw-byte diff identity shared by acceptance and publication. */
+export const diffHash = (bytes: Uint8Array): string =>
+  createHash('sha256').update(bytes).digest('hex').slice(0, 16);
 const glob = (g: string, p: string): boolean => new Bun.Glob(g).match(p);
 const readCheckoutFingerprint = (value?: string): string => {
   if (!value || value.startsWith('[')) return value ?? '';
@@ -825,7 +838,7 @@ function acceptOnce(
   const patch = save(`${tag}.patch`, base);
   const delta = env('DELTA_BASE') ? save(`${tag}.delta.patch`, env('DELTA_BASE')) : patch;
   const noChanges = delta ? readFileSync(delta, 'utf8').length === 0 : undefined;
-  const hash = patch ? sha(readFileSync(patch, 'utf8')).slice(0, 16) : '';
+  const hash = patch ? diffHash(readFileSync(patch)) : '';
   const head = git('rev-parse', 'HEAD').trim();
   const prior = dirty ? undefined : nodeAcceptance(env('ACCEPTANCE_EVIDENCE'), head);
   const failed = prior
@@ -1056,7 +1069,13 @@ function accept(): void {
     carried = env('CARRIED_EVIDENCE'),
     attempt = env('ATTEMPT');
   if (!carried || attempt !== '0') {
-    finish(tag, acceptOnce(tag, env('CODER')));
+    const out = acceptOnce(tag, env('CODER'));
+    if (tag.startsWith('final-accept-') && out.disposition === 'repair')
+      Object.assign(out, {
+        disposition: 'fail',
+        decision: { ...out.decision, kind: 'block' },
+      });
+    finish(tag, out);
     return;
   }
   const prior = JSON.parse(readFileSync(carried, 'utf8')) as Record<string, unknown> & Accept;

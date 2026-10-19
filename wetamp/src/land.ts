@@ -139,12 +139,15 @@ const integrationSync = (): void => {
   const { ledger, fence } = authorized();
   if (!ledger.delivery) throw new Error('integration: missing delivery target');
   fence();
+  const generation = nextCounter(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}`);
   const result: SyncEvidence = {
     ...sync(process.cwd(), ledger.delivery),
-    generation: nextCounter(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}`),
+    generation,
   };
   fence();
-  emit(process.env.INPUTS_OUTPUT ?? `sync-${process.env.INPUTS_MILESTONE ?? 'run'}`, result);
+  emit(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}-${String(generation)}`, result);
+  if (process.env.INPUTS_FAIL_CONFLICT === '1' && result.status === 'conflict')
+    process.exitCode = 1;
 };
 
 const lastGate = (milestone: string): Record<string, unknown> => {
@@ -155,11 +158,6 @@ const lastGate = (milestone: string): Record<string, unknown> => {
       throw new Error(`integration: invalid evidence ${path}`);
     return value as Record<string, unknown>;
   };
-  const publishGate = join(artifacts, `publish-gate-${milestone}.json`);
-  if (existsSync(publishGate)) {
-    const gate = record(publishGate);
-    if (gate.verdict === 'pass') return gate;
-  }
   const file = readdirSync(artifacts)
     .filter(name => new RegExp(`^gate-${milestone}-r\\d+\\.json$`).test(name))
     .sort((a, b) => Number(/r(\d+)/.exec(a)?.[1]) - Number(/r(\d+)/.exec(b)?.[1]))

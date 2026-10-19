@@ -11,6 +11,7 @@ export async function startCanary(
   process.env.SUPERAGENT_HOME = join(root, 'sa');
   process.env.ARCHON_HOME = join(root, 'sa/archon');
   process.env.DATABASE_URL = '';
+  process.env.SA_ARCHON_BIN = '';
   const repo = join(root, 'project'),
     gen = join(root, 'sa/gen');
   for (const path of [repo, gen, join(root, 'sa/runs'), process.env.ARCHON_HOME])

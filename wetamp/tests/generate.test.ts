@@ -491,7 +491,7 @@ test('RECOVERY_CONTINUATION generates acceptance and gate without AI nodes', () 
   const gate = nodes.find(n => n.with?.kind === 'gate')!;
   expect(gate.with?.round).toBe(4);
   expect(gate.with?.C3).toBe('null');
-  expect(gate.with?.C4).toBe(`$${accept.id}.output`);
+  expect(gate.with?.C4).toBe(`$ARTIFACTS_DIR/${accept.id}.json`);
   expect(gate.with?.operator_id).toBe('original-id');
   expect(nodes.find(n => n.id.startsWith('human-'))?.depends_on).toEqual([gate.id, 'attempt-m1']);
   expect(nodes.at(-1)?.id).toBe('integrate-m1');
@@ -1269,19 +1269,15 @@ describe('buildWorkflow', () => {
     expect((build(false) as { interactive?: boolean }).interactive).toBeUndefined();
     expect(integration.loop_group.nodes.some(n => n.approval)).toBe(false);
     expect(integration.loop_group.nodes.some(n => n.id.startsWith('target-dirty-'))).toBe(false);
-    expect(integration.loop_group.nodes.find(n => n.id === 'publish-m1')?.depends_on).toEqual([
-      'publish-ready-m1',
+    expect(integration.loop_group.nodes.map(n => n.id)).toEqual([
+      'resync-m1',
+      'final-accept-m1',
+      'publish-m1',
     ]);
-    expect(integration.loop_group.nodes.find(n => n.id === 'final-settle-m1')?.with).toMatchObject({
-      full_output: '1',
-      context_node: 'integration-review-m1',
-      context_counter: '/GEN/attempts/publish-review-m1',
-    });
-    expect(executionTable(fixture, loadTiers())['integration-review-m1']).toMatchObject({
-      role: 'review',
-      round: 1,
-      milestone: 'm1',
-    });
+    expect(integration.loop_group.nodes.find(n => n.id === 'publish-m1')?.depends_on).toEqual([
+      'final-accept-m1',
+    ]);
+    expect(executionTable(fixture, loadTiers())['integration-review-m1']).toBeUndefined();
     const warnings: string[] = [];
     collectLoopGroupSinkWarnings(nodes as never, warnings);
     expect(warnings.filter(w => w.includes("Node 'target-dirty-m1'"))).toEqual([]);

@@ -1,8 +1,8 @@
 import { expect, spyOn, test } from 'bun:test';
-import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { publish, sync, type PublishRun } from '../src/integration';
+import { diffHash } from '../templates/.archon/scripts/sa-check';
 import { gitRepo, sh, tmp } from './helpers';
 
 const fixture = () => {
@@ -32,13 +32,13 @@ const commit = (cwd: string, file: string, value: string): string => {
   return sh('git rev-parse HEAD', cwd).trim();
 };
 
-const diffHash = (cwd: string, base: string): string => {
+const gitDiffHash = (cwd: string, base: string): string => {
   const result = Bun.spawnSync(
     ['git', '-C', cwd, 'diff', '--no-ext-diff', '--no-textconv', '--binary', base, 'HEAD', '--'],
     { stdout: 'pipe', stderr: 'pipe' }
   );
   expect(result.exitCode, result.stderr.toString()).toBe(0);
-  return createHash('sha256').update(result.stdout).digest('hex').slice(0, 16);
+  return diffHash(result.stdout);
 };
 
 test('sync reports noop when the target tip is already present', () => {
@@ -196,7 +196,7 @@ test('publish rejects protected targets and non-descendant history', () => {
         review: {
           required: true,
           reviewed_head: reviewHead,
-          reviewed_diff_hash: diffHash(review.worktree, reviewBefore),
+          reviewed_diff_hash: gitDiffHash(review.worktree, reviewBefore),
         },
       },
       review.expected()
@@ -218,7 +218,7 @@ test('publish rejects protected targets and non-descendant history', () => {
       },
       drifted.expected()
     )
-  ).toMatchObject({ status: 'rejected', reason: 'review_drift' });
+  ).toMatchObject({ status: 'rejected', reason: 'review_stale' });
   expect(sh('git rev-parse wetamp', drifted.target).trim()).toBe(driftedBefore);
   expect(existsSync(drifted.run().receipt)).toBe(false);
 

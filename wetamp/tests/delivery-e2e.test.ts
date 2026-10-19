@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generate } from '../src/generate';
 import { ledgerPath } from '../src/cli';
+import { diffHash } from '../templates/.archon/scripts/sa-check';
 import * as coordination from '../src/coord';
 import type { Plan } from '../src/plan';
 import { fixtureEnv, fixturePlan, gitRepo, sh, tmp } from './helpers';
@@ -77,7 +78,7 @@ const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
             goal: 'Integrate feature.txt.',
             scope: { write: ['feature.txt', 'README.md'] },
             accept: [{ cmd: 'test "$(cat feature.txt)" = integrated', timeout_s: 5 }],
-            risk: 'G0',
+            risk: 'G2',
             size: 'S',
           },
         ];
@@ -139,7 +140,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
   mode => {
     const f = setup(mode);
     try {
-      const sync = f.nodes.find(node => node.id === 'sync-m1')!;
+      const sync = f.nodes.find(node => node.id === 'resync-m1')!;
       const publish = f.nodes.find(node => node.id === 'publish-m1')!;
       const env = fixtureEnv({
         SUPERAGENT_HOME: process.env.SUPERAGENT_HOME!,
@@ -150,45 +151,58 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
         SUPERAGENT_ROLE: 'worker',
         SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
       });
-      let synced = runBash(sync.bash!, f.worker, env);
       if (mode === 'conflict') {
-        expect(synced.status).toBe('conflict');
-        const tip = String(synced.target_tip);
-        const merge = Bun.spawnSync(['git', 'merge', '--no-edit', tip], {
+        const failed = Bun.spawnSync(['bash', '-c', sync.bash!], {
           cwd: f.worker,
+          env,
           stdout: 'pipe',
           stderr: 'pipe',
         });
-        expect(merge.exitCode).not.toBe(0);
-        writeFileSync(join(f.worker, 'README.md'), 'resolved\n');
-        sh('git add README.md && git commit -qm resolved', f.worker);
-        synced = {
-          ...synced,
-          status: 'resolved',
-          merge_base: tip,
-          head: sh('git rev-parse HEAD', f.worker).trim(),
-        };
+        expect(failed.exitCode).toBe(1);
+        expect(JSON.parse(failed.stdout.toString()).status).toBe('conflict');
+        expect(readFileSync(join(f.artifact, 'sync-m1-1.json'), 'utf8')).toContain(
+          '"status": "conflict"'
+        );
+        return;
       }
-      const writeGate = (): void => {
+      let synced = runBash(sync.bash!, f.worker, env);
+      const writeGate = (base: string): void => {
         const head = sh('git rev-parse HEAD', f.worker).trim();
+        const patch = Bun.spawnSync(
+          [
+            'git',
+            '-C',
+            f.worker,
+            'diff',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--binary',
+            base,
+            'HEAD',
+            '--',
+          ],
+          { stdout: 'pipe' }
+        ).stdout;
         writeFileSync(
           join(f.artifact, 'gate-m1-r1.json'),
-          JSON.stringify({ verdict: 'pass', reviewed_head: head, reviewed_diff_hash: 'accepted' })
-        );
-        writeFileSync(
-          join(f.artifact, 'diff-m1-r1.json'),
-          JSON.stringify({ diff_hash: 'accepted' })
+          JSON.stringify({
+            verdict: 'pass',
+            reviewed_head: head,
+            reviewed_diff_hash: diffHash(patch),
+          })
         );
       };
-      writeGate();
+      writeGate(String(synced.target_tip));
       const publishAt = (tip: string) =>
-        runBash(publish.bash!.replace('$resync-m1-ready.output.target_tip', tip), f.worker, env);
+        runBash(publish.bash!.replace('$resync-m1.output.target_tip', tip), f.worker, env);
       if (mode === 'advanced') {
         writeFileSync(join(f.repo, 'advanced.txt'), 'advanced\n');
         sh('git add advanced.txt && git commit -qm advanced', f.repo);
         expect(publishAt(String(synced.target_tip)).status).toBe('advanced');
         synced = runBash(sync.bash!, f.worker, env);
-        writeGate();
+        expect(readFileSync(join(f.artifact, 'sync-m1-2.json'), 'utf8')).toContain(
+          '"generation": 2'
+        );
       }
       if (mode === 'dirty') {
         const dirty = join(f.repo, 'dirty.txt');
@@ -197,7 +211,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
           [
             'bash',
             '-c',
-            publish.bash!.replace('$resync-m1-ready.output.target_tip', String(synced.target_tip)),
+            publish.bash!.replace('$resync-m1.output.target_tip', String(synced.target_tip)),
           ],
           { cwd: f.worker, env, stdout: 'pipe', stderr: 'pipe' }
         );
@@ -230,7 +244,7 @@ test.each(['sync', 'publish'] as const)(
       const node = f.nodes.find(candidate => candidate.id === `${action}-m1`)!;
       const command =
         action === 'publish'
-          ? node.bash!.replace('$resync-m1-ready.output.target_tip', 'unused')
+          ? node.bash!.replace('$resync-m1.output.target_tip', 'unused')
           : node.bash!;
       const env = fixtureEnv({
         SUPERAGENT_HOME: process.env.SUPERAGENT_HOME!,
