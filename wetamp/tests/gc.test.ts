@@ -264,6 +264,7 @@ test.each(['full', 'partial', 'failed'] as const)(
       milestone: 'm1',
       pkgs: mode === 'partial' ? 'core' : 'core,web',
       plan: join(f.gen, 'plan.json'),
+      policy: join(f.gen, 'policy.json'),
       risk: 'G1',
     }));
     writeFileSync(join(f.gen, 'accept-inputs.json'), JSON.stringify(contracts));
@@ -336,20 +337,37 @@ test.each(['completed', 'cancelled'] as const)(
   }
 );
 
-test.each(['tracked', 'untracked'] as const)(
-  'dirty %s worktree is retained with original git stderr',
-  dirty => {
-    const f = fixture();
-    writeFileSync(join(f.path, dirty === 'tracked' ? 'change.txt' : 'untracked.txt'), 'dirty');
-    const result = gc();
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ object: 'worktree', action: 'skipped' });
-    expect(result[0].reason).toContain('contains modified or untracked files');
-    expect(loadLedger(f.id).gc?.[0].reason).toBe(result[0].reason);
-    expect(existsSync(f.path)).toBe(true);
-    expect(f.branchExists()).toBe(true);
+test.each(['tracked', 'untracked'] as const)('dirty %s worktree is retained', dirty => {
+  const f = fixture();
+  writeFileSync(join(f.path, dirty === 'tracked' ? 'change.txt' : 'untracked.txt'), 'dirty');
+  const result = gc();
+  expect(result).toHaveLength(1);
+  expect(result[0]).toMatchObject({ object: 'worktree', action: 'skipped' });
+  expect(result[0].reason).toBe('worktree dirty');
+  expect(loadLedger(f.id).gc?.[0].reason).toBe(result[0].reason);
+  expect(existsSync(f.path)).toBe(true);
+  expect(f.branchExists()).toBe(true);
+});
+
+// prettier-ignore
+test('submodule worktrees are force-removed only when the submodule is clean', () => {
+  for (const dirty of [false, true]) {
+    const f = fixture(),
+      module = join(f.root, 'module');
+    mkdirSync(module);
+    f.git('-C', module, 'init', '-q', '-b', 'main');
+    writeFileSync(join(module, 'README.md'), 'module');
+    f.git('-C', module, 'add', 'README.md');
+    f.git('-C', module, '-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'init');
+    f.git('-c', 'protocol.file.allow=always', '-C', f.path, 'submodule', 'add', '-q', module, 'module');
+    f.git('-C', f.path, '-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qam', 'submodule');
+    f.git('merge', '--ff-only', `sa/${f.id}`);
+    if (dirty) writeFileSync(join(f.path, 'module', 'README.md'), 'dirty');
+    expect(gc(true)[0].action).toBe(dirty ? 'skipped' : 'would_remove');
+    expect(gc()[0].action).toBe(dirty ? 'skipped' : 'removed');
+    expect(existsSync(f.path)).toBe(dirty);
   }
-);
+});
 
 test.each(['path', 'branch', 'outside', 'symlink'] as const)(
   '%s registration mismatch is retained',

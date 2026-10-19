@@ -398,6 +398,22 @@ test('a relative launch plan path falls back to the gen copy instead of blocking
   expect(scratchClean(f.session)[0].action).toBe('removed');
 });
 
+// prettier-ignore
+test('a missing absolute launch plan does not block unrelated scratch cleanup', () => {
+  const f = setup();
+  f.exited();
+  mkdirSync(join(f.root, 'sa', 'runs'), { recursive: true });
+  mkdirSync(join(f.root, 'gen'));
+  writeFileSync(join(f.root, 'gen', 'plan.json'), '{}');
+  const l: Ledger = {
+    run_id: 'missing-launch', archon_run_id: 'engine-missing', plan: join(f.root, 'missing.json'),
+    gen_dir: join(f.root, 'gen'), repo: f.root, branch: 'sa/missing-launch', workflow: 'missing',
+    console: 'codex', started_at: '', transcript: '', log: '', recoveries: [],
+  };
+  writeFileSync(ledgerPath(l.run_id), JSON.stringify(l));
+  expect(scratchClean(f.session)[0].action).toBe('removed');
+});
+
 test('CLI dry-run leaves the worktree, symlink, owner and log unchanged', () => {
   const f = setup(),
     repo = gitRepo(f.root),
