@@ -118,7 +118,15 @@ const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
       'utf8'
     )
   ) as { nodes: WorkflowNode[] };
-  return { saved, repo, worker, runId, artifact, nodes: allNodes(workflow.nodes) };
+  return {
+    saved,
+    repo,
+    worker,
+    runId,
+    artifact,
+    authorization: join(generated.dir, 'delivery-authorization.json'),
+    nodes: allNodes(workflow.nodes),
+  };
 };
 
 const restoreEnv = (saved: NodeJS.ProcessEnv): void => {
@@ -139,6 +147,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
         WORKFLOW_ID: f.runId,
         ARTIFACTS_DIR: f.artifact,
         NODE_ENV: 'test',
+        SUPERAGENT_ROLE: 'worker',
         SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
       });
       let synced = runBash(sync.bash!, f.worker, env);
@@ -211,6 +220,48 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
     }
   },
   30_000
+);
+
+test.each(['sync', 'publish'] as const)(
+  '%s entry rejects missing authorization and mismatched workflow under worker role',
+  action => {
+    const f = setup('normal');
+    try {
+      const node = f.nodes.find(candidate => candidate.id === `${action}-m1`)!;
+      const command =
+        action === 'publish'
+          ? node.bash!.replace('$resync-m1-ready.output.target_tip', 'unused')
+          : node.bash!;
+      const env = fixtureEnv({
+        SUPERAGENT_HOME: process.env.SUPERAGENT_HOME!,
+        ARCHON_HOME: process.env.ARCHON_HOME!,
+        WORKFLOW_ID: 'other-run',
+        ARTIFACTS_DIR: f.artifact,
+        NODE_ENV: 'test',
+        SUPERAGENT_ROLE: 'worker',
+        SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
+      });
+      const invoke = () =>
+        Bun.spawnSync(['bash', '-c', command], {
+          cwd: f.worker,
+          env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: 15_000,
+        });
+      let result = invoke();
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain('integration: authorization/run mismatch');
+
+      env.WORKFLOW_ID = f.runId;
+      unlinkSync(f.authorization);
+      result = invoke();
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain('integration: authorization/run mismatch');
+    } finally {
+      restoreEnv(f.saved);
+    }
+  }
 );
 
 test('land.ts without INPUTS_ACTION keeps the legacy delivery entrypoint', () => {

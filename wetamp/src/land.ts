@@ -7,12 +7,17 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { caller, control, coord, repoScope, same } from './coord';
+import { control, coord, repoScope } from './coord';
 import { publish, sync, type PublishResult, type SyncResult } from './integration';
 import type { PublishReceipt } from './integration';
 import type { RunView } from './archon';
 import type { Ledger } from './cli';
-import { runDeliveryEntry, runLegacyDeliveryMain, type DeliveryAuthorization } from './land-legacy';
+import {
+  deliveryAuthorized,
+  runDeliveryEntry,
+  runLegacyDeliveryMain,
+  type DeliveryAuthorization,
+} from './land-legacy';
 
 const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
 
@@ -105,13 +110,9 @@ const authorized = () => {
   const authorization = readJson(join(ledger.gen_dir, 'delivery-authorization.json')) as
     | DeliveryAuthorization
     | undefined;
-  const who = caller();
-  if (
-    !authorization ||
-    !same(who, authorization.run) ||
-    !same(who, authorization.repo) ||
-    process.env.WORKFLOW_ID !== ledger.archon_run_id
-  )
+  if (!authorization) throw new Error('integration: authorization/run mismatch');
+  const who = authorization.run;
+  if (!deliveryAuthorized(who, authorization, ledger.archon_run_id))
     throw new Error('integration: authorization/run mismatch');
   const fence = (): void => {
     coord().mutate(

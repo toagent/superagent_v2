@@ -494,15 +494,7 @@ export function finalizeDelivery(
     operator();
   if (!authorization) assertCommander();
   const l = loadLedger(coord().resolveRun(id)?.run_id ?? id);
-  if (
-    authorization &&
-    (!same(who, authorization.run) ||
-      !same(who, authorization.repo) ||
-      ![authorization.run, authorization.repo].every(
-        c => Number.isSafeInteger(c.generation) && c.generation > 0
-      ) ||
-      process.env.WORKFLOW_ID !== l.archon_run_id)
-  )
+  if (authorization && !deliveryAuthorized(who, authorization, l.archon_run_id))
     throw new Error('delivery: authorization/run mismatch');
   const scope = repoScope(l.repo);
   let repoController!: Controller,
@@ -629,6 +621,20 @@ export function finalizeDelivery(
 export interface DeliveryAuthorization {
   run: Controller;
   repo: Controller;
+}
+export function deliveryAuthorized(
+  who: Identity,
+  authorization: DeliveryAuthorization,
+  archonRunId: string
+): boolean {
+  return (
+    same(who, authorization.run) &&
+    same(who, authorization.repo) &&
+    [authorization.run, authorization.repo].every(
+      controller => Number.isSafeInteger(controller.generation) && controller.generation > 0
+    ) &&
+    process.env.WORKFLOW_ID === archonRunId
+  );
 }
 const localDelivery = (l: Ledger, evidence: string, target: DeliveryTarget): LocalDelivery => ({
   task: l.run_id,
