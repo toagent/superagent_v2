@@ -28,6 +28,7 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { caller, cleanEngine, coord, repoScope, runScope } from './coord';
+import { integrationLockTimeout } from './integration';
 import {
   WETAMP,
   CODEX_WORKER,
@@ -107,6 +108,32 @@ const contextOutputSchema = (): unknown => {
   const schema = outputSchema('attempt') as { properties: Record<string, unknown> };
   return { ...schema, properties: { ...schema.properties, context_pack_path: { type: 'string' } } };
 };
+
+const syncOutputSchema = (): unknown => ({
+  type: 'object',
+  properties: {
+    status: { enum: ['noop', 'merged', 'conflict', 'resolved'] },
+    target_tip: { type: 'string' },
+    merge_base: { type: 'string' },
+    head: { type: 'string' },
+    generation: { type: 'integer' },
+    files: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['status', 'target_tip', 'generation'],
+});
+
+const publishOutputSchema = (): unknown => ({
+  type: 'object',
+  properties: {
+    status: { enum: ['published', 'advanced', 'dirty', 'rejected'] },
+    target_tip: { type: 'string' },
+    paths: { type: 'array', items: { type: 'string' } },
+    reason: { type: 'string' },
+    evidence: { type: 'string' },
+    receipt: { type: 'object' },
+  },
+  required: ['status'],
+});
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const SOLDIER_IDLE_MS = 10 * 60 * 1000;
@@ -225,39 +252,30 @@ export function buildWorkflow(
     runtime: 'bun',
     with: { counter, gen, pkg, review, ...(gate ? { gate } : {}) },
   });
-  const operator_ledger = join(
-    gen,
-    ...(carried?.recovery ? ['..', '..', '..', '..'] : ['..', '..']),
-    'runs',
-    `${run}.json`
-  );
-  const landInputs = {
-    kind: 'land',
-    base_ref: plan.base_ref,
-    plan: planPath,
-    operator_ledger,
-    ...(delivery ? { target_checkout: delivery.checkout, target_branch: delivery.branch } : {}),
-  };
-  const deliveryTimeout = (pkgs: Pkg[]): number =>
-    20 * 60_000 +
-    3 * Number(acceptTimeout(pkgs, plan).timeout ?? ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS);
+  const integrationCommand = (action: 'sync' | 'publish', milestone: string, extra = ''): string =>
+    `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${action}-${milestone} ${extra}bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`;
+  if (delivery && (!run || /[^0-9a-f-]/.test(run))) throw new Error('delivery: invalid run id');
   let after: Node = { depends_on: ['environment'] };
-  const signoff = (m: Milestone, gates: Node): Node => {
+  const signoff = (
+    m: Milestone,
+    gates: Node,
+    target = nodes,
+    attemptId = `attempt-${m.id}`
+  ): Node => {
     if (m.human) {
-      const attempt = `attempt-${m.id}`;
-      nodes.push({
+      target.push({
         id: `human-${m.id}`,
         approval: {
           message: `Approve delivery milestone ${m.id}`,
           decisions: [{ id: 'approve' }, { id: 'reject' }],
         },
         ...gates,
-        depends_on: [...((gates.depends_on as string[] | undefined) ?? []), attempt],
+        depends_on: [...((gates.depends_on as string[] | undefined) ?? []), attemptId],
       });
       // Native approval owns the decision; the absolute plan deadline still guards delivery.
       const until =
         plan.deadline === undefined ? undefined : Math.floor(Date.parse(plan.deadline) / 1000);
-      nodes.push({
+      target.push({
         id: `signoff-${m.id}`,
         bash:
           until === undefined
@@ -272,35 +290,100 @@ export function buildWorkflow(
     }
     return gates;
   };
+  const addSync = (
+    target: Node[],
+    m: Milestone,
+    id: string,
+    deps: string[],
+    resumable: boolean,
+    localRef = plan.base_ref
+  ): string => {
+    const local = [
+      `tip=$(git rev-parse --verify '${localRef.replaceAll("'", "'\\''")}^{commit}') || exit $?`,
+      'base=$(git merge-base HEAD "$tip") || exit $?',
+      `printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"`,
+    ].join('\n');
+    target.push({
+      id,
+      bash: delivery && !fake ? integrationCommand('sync', m.id) : local,
+      ...(deps.length ? { depends_on: deps } : {}),
+      output_format: syncOutputSchema(),
+    });
+    const resolve = `resolve-${id}`;
+    if (delivery && !fake) {
+      const context = `resolve-context-${id}`;
+      target.push({
+        id: context,
+        ...attemptInputs(attemptPath(gen, `sync/${m.id}`)),
+        with: {
+          counter: attemptPath(gen, `sync/${m.id}`),
+          gen,
+          context_node: resolve,
+          context_packages: m.packages.map(p => p.id),
+        },
+        depends_on: [id],
+        when: `$${id}.output.status == 'conflict'`,
+        output_format: contextOutputSchema(),
+      });
+      const owner = m.packages[0];
+      target.push({
+        id: resolve,
+        ...(resumable && m.packages.length === 1
+          ? { context: { resume: `code-${owner.id}` } }
+          : {}),
+        command: 'sa-repair',
+        retry: { on_error: 'transient' },
+        model: '@sa-coder',
+        ...execution(`repair-${owner.id}`),
+        with: {
+          pkg: owner.id,
+          brief: brief(owner),
+          hint: join(gen, 'hints', `${owner.id}.md`),
+          context_node: context,
+          prior_work: `$${id}.output`,
+          reason: 'sync_conflict',
+          accept_log: `$ARTIFACTS_DIR/${id}.json`,
+        },
+        depends_on: [id, context],
+        when: `$${id}.output.status == 'conflict'`,
+        output_format: outputSchema('coder'),
+      });
+    }
+    const ready = `${id}-ready`;
+    target.push({
+      id: ready,
+      depends_on: [id, ...(delivery && !fake ? [resolve] : [])],
+      trigger_rule: 'none_failed_min_one_success',
+      bash: [
+        `tip=$${id}.output.target_tip`,
+        `status=$${id}.output.status`,
+        `generation=$${id}.output.generation`,
+        `if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi`,
+        'base=$(git merge-base HEAD "$tip") || exit $?',
+        `printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"`,
+      ].join('\n'),
+      output_format: syncOutputSchema(),
+    });
+    return ready;
+  };
   for (const m of ms) {
     const covered = ms.slice(0, ms.indexOf(m) + 1).flatMap(k => k.packages);
     const scope_pkgs = covered.map(p => p.id).join(',');
-    const start = `start-${m.id}`;
-    const startRef = carried?.recovery?.base ?? plan.base_ref;
-    const base = `$${start}.output.head`;
-    const landed = ms.indexOf(m) > 0 ? ms[ms.indexOf(m) - 1] : undefined;
-    nodes.push({
-      id: start,
-      ...(landed && !carried?.recovery
-        ? {
-            // 前序里程碑已过 gate 并落地：基线取其 land head，评审与 diff 只覆盖本里程碑增量，
-            // 否则每个里程碑都重审全部前序改动，代价随里程碑数平方增长。
-            // bash 节点不接收 with:，引擎把输出引用按 shell 单引号转义后内联。
-            bash: `head=$land-${landed.id}.output.head; base=$(git rev-parse --verify "$head^{commit}") || exit $?; printf '{"head":"%s"}' "$base"`,
-          }
-        : {
-            // adopt 从已有提交起跑；共同祖先保留此前交付，不能把当前 HEAD 当评审基线。
-            bash: `base=$(git merge-base '${startRef.replaceAll("'", "'\\''")}' HEAD) || exit $?; printf '{"head":"%s"}' "$base"`,
-          }),
-      ...after,
-      output_format: outputSchema('head'),
-    });
+    const syncReady = addSync(
+      nodes,
+      m,
+      `sync-${m.id}`,
+      after.depends_on as string[],
+      false,
+      carried?.recovery?.base ?? plan.base_ref
+    );
+    let base = `$${syncReady}.output.merge_base`;
     // Milestone retries invalidate only cumulative acceptance and review/fix rounds.
     const attempt = `attempt-${m.id}`;
     nodes.push({
       id: attempt,
       ...attemptInputs(attemptPath(gen, m.id)),
-      depends_on: [start],
+      depends_on: [syncReady],
       always_run: true,
       output_format: outputSchema('attempt'),
     });
@@ -322,12 +405,14 @@ export function buildWorkflow(
         scope_pkgs,
         risk: m.risk,
         milestone: m.id,
+        target_tip: `$${syncReady}.output.target_tip`,
+        sync_generation: `$${syncReady}.output.generation`,
         ...ledger,
       };
       nodes.push(
         check(
           `diff-${tag}`,
-          [start, attempt],
+          [syncReady, attempt],
           { ...common, kind: 'accept', base, tag: `diff-${tag}` },
           { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
         )
@@ -344,10 +429,74 @@ export function buildWorkflow(
           operator_id: run,
         })
       );
-      after = signoff(m, { depends_on: [`gate-${tag}`] });
+      const approved = signoff(m, { depends_on: [`gate-${tag}`] });
+      const integrationNodes: Node[] = [];
+      const resyncReady = addSync(integrationNodes, m, `resync-${m.id}`, [], false);
+      const finalAccept = `final-accept-${m.id}`;
+      integrationNodes.push(
+        check(
+          finalAccept,
+          [resyncReady],
+          {
+            ...common,
+            kind: 'accept',
+            base: `$${resyncReady}.output.merge_base`,
+            target_tip: `$${resyncReady}.output.target_tip`,
+            sync_generation: `$${resyncReady}.output.generation`,
+            tag: finalAccept,
+          },
+          { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
+        )
+      );
+      const finalReady = `final-ready-${m.id}`;
+      integrationNodes.push({
+        id: finalReady,
+        depends_on: [finalAccept],
+        bash: `case $${finalAccept}.output.disposition in advance) true;; *) echo 'recovery acceptance requires repair' >&2; exit 1;; esac`,
+      });
+      const publishId = `publish-${m.id}`;
+      integrationNodes.push({
+        id: publishId,
+        depends_on: [finalReady],
+        bash:
+          delivery && !fake
+            ? integrationCommand(
+                'publish',
+                m.id,
+                `INPUTS_TARGET_TIP=$${resyncReady}.output.target_tip INPUTS_REVIEW_REQUIRED=${m.review || m.risk === 'G2' ? '1' : '0'} `
+              )
+            : `printf '{"status":"published","target_tip":"%s"}' "$${resyncReady}.output.target_tip"`,
+        timeout: integrationLockTimeout(),
+        output_format: publishOutputSchema(),
+      });
+      integrationNodes.push({
+        id: `target-dirty-${m.id}`,
+        approval: {
+          message: `Target checkout is dirty for milestone ${m.id}; clean it and approve to retry publish`,
+          decisions: [{ id: 'approve' }, { id: 'reject' }],
+        },
+        depends_on: [publishId],
+        when: `$${publishId}.output.status == 'dirty'`,
+      });
+      integrationNodes.push({
+        id: `target-dirty-decision-${m.id}`,
+        depends_on: [`target-dirty-${m.id}`],
+        when: `$${publishId}.output.status == 'dirty'`,
+        bash: `test "$target-dirty-${m.id}.output.decision" = approve`,
+      });
+      nodes.push({
+        id: `integrate-${m.id}`,
+        ...approved,
+        loop_group: {
+          max_iterations: 3,
+          until_bash: `test "$${publishId}.output.status" = published`,
+          nodes: integrationNodes,
+        },
+      });
+      after = { depends_on: [`integrate-${m.id}`] };
       continue;
     }
-    let prev = start;
+    let prev = syncReady;
     const rawCheckpoint = carried?.reviews?.[m.id];
     // prettier-ignore
     const checkpoint = rawCheckpoint?.gate.decision && ['advance', 'debt'].includes(rawCheckpoint.gate.decision.kind) ? rawCheckpoint : undefined;
@@ -475,6 +624,8 @@ export function buildWorkflow(
         scope_pkgs,
         base,
         delta_base: `$${prev}.output.head`,
+        target_tip: `$${syncReady}.output.target_tip`,
+        sync_generation: `$${syncReady}.output.generation`,
         risk: p.risk,
         milestone: m.id,
         ...ledger,
@@ -560,6 +711,9 @@ export function buildWorkflow(
       );
       prev = `settle-${p.id}`;
     }
+    const reviewSyncReady = addSync(nodes, m, `sync-review-${m.id}`, [prev], true);
+    prev = reviewSyncReady;
+    base = `$${reviewSyncReady}.output.merge_base`;
     const briefs = m.packages.map(brief).join(' '),
       resumeFixes =
         m.packages.length === 1 &&
@@ -636,6 +790,8 @@ export function buildWorkflow(
             pkgs: ids,
             scope_pkgs,
             base,
+            target_tip: `$${syncReady}.output.target_tip`,
+            sync_generation: `$${syncReady}.output.generation`,
             risk: m.risk,
             milestone: m.id,
             tag: `diff-${t}`,
@@ -769,45 +925,146 @@ export function buildWorkflow(
       ],
       trigger_rule: 'none_failed_min_one_success',
     };
-    after = signoff(m, gates);
-    if (ms.length > 1) {
-      const land = `land-${m.id}`;
-      nodes.push(
-        check(
-          land,
-          [],
-          { ...landInputs, milestone: m.id, pkgs: scope_pkgs, output: `${land}.json` },
-          after
-        )
-      );
-      const deliver = `deliver-${m.id}`;
-      if (delivery && !fake) {
-        if (!run || /[^0-9a-f-]/.test(run)) throw new Error('delivery: invalid run id');
-        nodes.push({
-          id: deliver,
-          depends_on: [land],
-          bash: `INPUTS_RUN='${run}' bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`,
-          timeout: deliveryTimeout(covered),
-        });
-      }
-      after = { depends_on: [delivery && !fake ? deliver : land] };
+    const approved = signoff(m, gates);
+    const integrationNodes: Node[] = [];
+    const resyncReady = addSync(integrationNodes, m, `resync-${m.id}`, [], true);
+    const ids = m.packages.map(p => p.id).join(',');
+    const finalAccept = `final-accept-${m.id}`;
+    integrationNodes.push(
+      check(
+        finalAccept,
+        [resyncReady],
+        {
+          kind: 'accept',
+          plan: planPath,
+          policy: policyPath,
+          pkgs: ids,
+          scope_pkgs,
+          base: `$${resyncReady}.output.merge_base`,
+          target_tip: `$${resyncReady}.output.target_tip`,
+          sync_generation: `$${resyncReady}.output.generation`,
+          risk: m.risk,
+          milestone: m.id,
+          tag: finalAccept,
+          ...ledger,
+        },
+        { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
+      )
+    );
+    const finalRepair = `final-repair-${m.id}`;
+    if (!fake) {
+      const finalContext = `final-repair-context-${m.id}`;
+      integrationNodes.push({
+        id: finalContext,
+        ...attemptInputs(attemptPath(gen, `integration/${m.id}`)),
+        with: {
+          counter: attemptPath(gen, `integration/${m.id}`),
+          gen,
+          context_node: finalRepair,
+          context_packages: m.packages.map(p => p.id),
+        },
+        depends_on: [finalAccept],
+        when: `$${finalAccept}.output.disposition == 'repair'`,
+        output_format: contextOutputSchema(),
+      });
+      integrationNodes.push({
+        id: finalRepair,
+        ...(m.packages.length === 1 ? { context: { resume: `code-${m.packages[0].id}` } } : {}),
+        command: 'sa-repair',
+        retry: { on_error: 'transient' },
+        model: '@sa-coder',
+        ...execution(`repair-${m.packages[0].id}`),
+        with: {
+          pkg: m.packages[0].id,
+          brief: brief(m.packages[0]),
+          hint: join(gen, 'hints', `${m.packages[0].id}.md`),
+          context_node: finalContext,
+          prior_work: `$${finalAccept}.output`,
+          reason: `$${finalAccept}.output.reason`,
+          accept_log: `$${finalAccept}.output.log`,
+        },
+        depends_on: [finalAccept, finalContext],
+        when: `$${finalAccept}.output.disposition == 'repair'`,
+        output_format: outputSchema('coder'),
+      });
+    } else {
+      integrationNodes.push({
+        id: finalRepair,
+        bash: fakeEdit(m.packages[0], `final repair ${m.id}`),
+        depends_on: [finalAccept],
+        when: `$${finalAccept}.output.disposition == 'repair'`,
+        output_format: outputSchema('coder'),
+      });
     }
-  }
-  if (ms.length > 1)
-    return {
-      name: `sa-${run}`,
-      description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
-      nodes,
-    };
-  nodes.push(check('land', [], landInputs, after));
-  if (delivery && !fake) {
-    if (!run || /[^0-9a-f-]/.test(run)) throw new Error('delivery: invalid run id');
-    nodes.push({
-      id: 'deliver',
-      depends_on: ['land'],
-      bash: `INPUTS_RUN='${run}' bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`,
-      timeout: deliveryTimeout(plan.packages),
+    const finalSettle = `final-settle-${m.id}`;
+    integrationNodes.push(
+      check(
+        finalSettle,
+        [finalAccept, finalRepair],
+        {
+          kind: 'settle',
+          plan: planPath,
+          policy: policyPath,
+          pkgs: ids,
+          scope_pkgs,
+          base: `$${resyncReady}.output.merge_base`,
+          target_tip: `$${resyncReady}.output.target_tip`,
+          sync_generation: `$${resyncReady}.output.generation`,
+          risk: m.risk,
+          milestone: m.id,
+          tag: finalSettle,
+          first: `$${finalAccept}.output.disposition`,
+          repaired: skippable(`$${finalRepair}.output`),
+          ...ledger,
+        },
+        {
+          trigger_rule: 'none_failed_min_one_success',
+          output_format: outputSchema('delivery'),
+          ...acceptTimeout(m.packages, plan),
+        }
+      )
+    );
+    const publishId = `publish-${m.id}`;
+    integrationNodes.push({
+      id: publishId,
+      depends_on: [finalSettle],
+      bash:
+        delivery && !fake
+          ? integrationCommand(
+              'publish',
+              m.id,
+              `INPUTS_TARGET_TIP=$${resyncReady}.output.target_tip INPUTS_REVIEW_REQUIRED=${m.review || m.risk === 'G2' ? '1' : '0'} `
+            )
+          : `printf '{"status":"published","target_tip":"%s"}' "$${resyncReady}.output.target_tip"`,
+      timeout: integrationLockTimeout(),
+      output_format: publishOutputSchema(),
     });
+    const dirtyApproval = `target-dirty-${m.id}`;
+    integrationNodes.push({
+      id: dirtyApproval,
+      approval: {
+        message: `Target checkout is dirty for milestone ${m.id}; clean it and approve to retry publish`,
+        decisions: [{ id: 'approve' }, { id: 'reject' }],
+      },
+      depends_on: [publishId],
+      when: `$${publishId}.output.status == 'dirty'`,
+    });
+    integrationNodes.push({
+      id: `target-dirty-decision-${m.id}`,
+      depends_on: [dirtyApproval],
+      when: `$${publishId}.output.status == 'dirty'`,
+      bash: `test "$${dirtyApproval}.output.decision" = approve`,
+    });
+    nodes.push({
+      id: `integrate-${m.id}`,
+      ...approved,
+      loop_group: {
+        max_iterations: 3,
+        until_bash: `test "$${publishId}.output.status" = published`,
+        nodes: integrationNodes,
+      },
+    });
+    after = { depends_on: [`integrate-${m.id}`] };
   }
   return {
     name: `sa-${run}`,
@@ -979,12 +1236,19 @@ export function generate(
       JSON.stringify({
         run: coord().admit(runScope({ run_id: run, repo: plan.repo }), caller()),
         repo: coord().admit(repoScope(plan.repo), caller()),
+        sync_generation: 0,
+        target_tip: delivery.head,
       })
     );
+  const generatedNodes = (values: Node[]): Node[] =>
+    values.flatMap(node => {
+      const loop = node.loop_group as { nodes?: Node[] } | undefined;
+      return [node, ...generatedNodes(loop?.nodes ?? [])];
+    });
   writeFileSync(
     join(dir, 'accept-inputs.json'),
     JSON.stringify(
-      (definition.nodes as Node[])
+      generatedNodes(definition.nodes as Node[])
         .filter(n => (n.with as Node | undefined)?.kind === 'accept')
         .map(n => n.with)
     )

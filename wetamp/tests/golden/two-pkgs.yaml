@@ -12,17 +12,74 @@ nodes:
     retry:
       max_attempts: 5
       on_error: all
-  - id: start-m1
-    bash: base=$(git merge-base 'main' HEAD) || exit $?; printf '{"head":"%s"}' "$base"
+  - id: sync-m1
+    bash: |-
+      tip=$(git rev-parse --verify 'main^{commit}') || exit $?
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
     depends_on:
       - environment
     output_format:
       type: object
       properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
         head:
           type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
       required:
-        - head
+        - status
+        - target_tip
+        - generation
+  - id: sync-m1-ready
+    depends_on:
+      - sync-m1
+    trigger_rule: none_failed_min_one_success
+    bash: |-
+      tip=$sync-m1.output.target_tip
+      status=$sync-m1.output.status
+      generation=$sync-m1.output.generation
+      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    output_format:
+      type: object
+      properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
+        head:
+          type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - target_tip
+        - generation
   - id: attempt-m1
     script: sa-context
     runtime: bun
@@ -32,7 +89,7 @@ nodes:
       pkg: ''
       review: ''
     depends_on:
-      - start-m1
+      - sync-m1-ready
     always_run: true
     output_format:
       type: object
@@ -50,7 +107,7 @@ nodes:
       pkg: core
       review: ''
     depends_on:
-      - start-m1
+      - sync-m1-ready
     always_run: true
     output_format:
       type: object
@@ -74,7 +131,7 @@ nodes:
       context_node: package-attempt-core
       soldier_ok: ''
     depends_on:
-      - start-m1
+      - sync-m1-ready
       - package-attempt-core
     output_format:
       type: object
@@ -172,8 +229,10 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
-      delta_base: $start-m1.output.head
+      base: $sync-m1-ready.output.merge_base
+      delta_base: $sync-m1-ready.output.head
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       archon: /GEN/archon
@@ -518,8 +577,10 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
-      delta_base: $start-m1.output.head
+      base: $sync-m1-ready.output.merge_base
+      delta_base: $sync-m1-ready.output.head
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       archon: /GEN/archon
@@ -539,11 +600,79 @@ nodes:
       required:
         - diff_hash
     timeout: 195000
+  - id: sync-review-m1
+    bash: |-
+      tip=$(git rev-parse --verify 'main^{commit}') || exit $?
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
+    depends_on:
+      - settle-core
+    output_format:
+      type: object
+      properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
+        head:
+          type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - target_tip
+        - generation
+  - id: sync-review-m1-ready
+    depends_on:
+      - sync-review-m1
+    trigger_rule: none_failed_min_one_success
+    bash: |-
+      tip=$sync-review-m1.output.target_tip
+      status=$sync-review-m1.output.status
+      generation=$sync-review-m1.output.generation
+      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    output_format:
+      type: object
+      properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
+        head:
+          type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - target_tip
+        - generation
   - id: diff-m1-r1
     script: sa-check
     runtime: bun
     depends_on:
-      - settle-core
+      - sync-review-m1-ready
       - attempt-m1
     with:
       kind: accept
@@ -551,11 +680,13 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
+      base: $sync-review-m1-ready.output.merge_base
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       tag: diff-m1-r1
-      acceptance_evidence: $ARTIFACTS_DIR/settle-core.json
+      acceptance_evidence: $ARTIFACTS_DIR/sync-review-m1-ready.json
       archon: /GEN/archon
     output_format:
       type: object
@@ -1072,7 +1203,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
+      base: $sync-review-m1-ready.output.merge_base
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       tag: diff-m1-r2
@@ -1597,7 +1730,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
+      base: $sync-review-m1-ready.output.merge_base
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       tag: diff-m1-r3
@@ -2126,7 +2261,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
+      base: $sync-review-m1-ready.output.merge_base
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       tag: diff-m1-r4
@@ -2659,7 +2796,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
+      base: $sync-review-m1-ready.output.merge_base
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       tag: diff-m1-r5
@@ -3196,7 +3335,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: core
       scope_pkgs: core
-      base: $start-m1.output.head
+      base: $sync-review-m1-ready.output.merge_base
+      target_tip: $sync-m1-ready.output.target_tip
+      sync_generation: $sync-m1-ready.output.generation
       risk: G1
       milestone: m1
       tag: diff-m1-r6
@@ -3602,17 +3743,7 @@ nodes:
       archon: /GEN/archon
       next: '1'
     trigger_rule: none_failed_min_one_success
-  - id: land-m1
-    script: sa-check
-    runtime: bun
-    with:
-      kind: land
-      base_ref: main
-      plan: /GEN/plan.json
-      operator_ledger: /runs/golden-0001.json
-      milestone: m1
-      pkgs: core
-      output: land-m1.json
+  - id: integrate-m1
     depends_on:
       - gate-m1-r1
       - gate-m1-r2
@@ -3621,17 +3752,564 @@ nodes:
       - gate-m1-r5
       - gate-m1-r6
     trigger_rule: none_failed_min_one_success
-  - id: start-m2
-    bash: head=$land-m1.output.head; base=$(git rev-parse --verify "$head^{commit}") || exit $?; printf '{"head":"%s"}' "$base"
+    loop_group:
+      max_iterations: 3
+      until_bash: test "$publish-m1.output.status" = published
+      nodes:
+        - id: resync-m1
+          bash: |-
+            tip=$(git rev-parse --verify 'main^{commit}') || exit $?
+            base=$(git merge-base HEAD "$tip") || exit $?
+            printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
+          output_format:
+            type: object
+            properties:
+              status:
+                enum:
+                  - noop
+                  - merged
+                  - conflict
+                  - resolved
+              target_tip:
+                type: string
+              merge_base:
+                type: string
+              head:
+                type: string
+              generation:
+                type: integer
+              files:
+                type: array
+                items:
+                  type: string
+            required:
+              - status
+              - target_tip
+              - generation
+        - id: resync-m1-ready
+          depends_on:
+            - resync-m1
+          trigger_rule: none_failed_min_one_success
+          bash: |-
+            tip=$resync-m1.output.target_tip
+            status=$resync-m1.output.status
+            generation=$resync-m1.output.generation
+            if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
+            base=$(git merge-base HEAD "$tip") || exit $?
+            printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+          output_format:
+            type: object
+            properties:
+              status:
+                enum:
+                  - noop
+                  - merged
+                  - conflict
+                  - resolved
+              target_tip:
+                type: string
+              merge_base:
+                type: string
+              head:
+                type: string
+              generation:
+                type: integer
+              files:
+                type: array
+                items:
+                  type: string
+            required:
+              - status
+              - target_tip
+              - generation
+        - id: final-accept-m1
+          script: sa-check
+          runtime: bun
+          depends_on:
+            - resync-m1-ready
+          with:
+            kind: accept
+            plan: /GEN/plan.json
+            policy: /GEN/policy.json
+            pkgs: core
+            scope_pkgs: core
+            base: $resync-m1-ready.output.merge_base
+            target_tip: $resync-m1-ready.output.target_tip
+            sync_generation: $resync-m1-ready.output.generation
+            risk: G1
+            milestone: m1
+            tag: final-accept-m1
+            archon: /GEN/archon
+          output_format:
+            type: object
+            properties:
+              decision:
+                type: object
+                properties:
+                  kind:
+                    enum:
+                      - advance
+                      - debt
+                      - repair
+                      - block
+                  reason:
+                    type:
+                      - string
+                      - 'null'
+                  evidence:
+                    type: array
+                    items:
+                      type: string
+                  debt:
+                    type: array
+                    items:
+                      type: string
+                  requirements:
+                    type: object
+                    required:
+                      - status
+                      - items
+                    properties:
+                      status:
+                        enum:
+                          - legacy
+                          - verified
+                          - unmet
+                          - unknown
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required:
+                            - package
+                            - id
+                            - text
+                            - status
+                            - evidence
+                          properties:
+                            package:
+                              type: string
+                            id:
+                              type: string
+                            text:
+                              type: string
+                            status:
+                              enum:
+                                - verified
+                                - unmet
+                                - unknown
+                            evidence:
+                              type: array
+                              items:
+                                type: string
+                required:
+                  - kind
+                  - reason
+                  - evidence
+                  - debt
+              workspace_clean:
+                type: boolean
+              failures:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    command:
+                      type: string
+                    failure_class:
+                      type: string
+                      enum:
+                        - product
+                        - test_env
+                        - fixture
+                        - baseline
+                        - test_data
+                        - unknown
+                    evidence:
+                      type: string
+                    failed_tests:
+                      type: array
+                      items:
+                        type: string
+                    failure_digest:
+                      type: string
+                    adjudicated:
+                      type: boolean
+                  required:
+                    - command
+                    - failure_class
+                    - evidence
+              coder_partial:
+                type: boolean
+              self_report_conflict:
+                type: boolean
+              error_class_ignored:
+                type: boolean
+              ok:
+                type: boolean
+              failed:
+                type: array
+                items:
+                  type: string
+              log:
+                type: string
+              patch:
+                type: string
+              diff_hash:
+                type: string
+              same:
+                type: boolean
+              reviewed:
+                type: boolean
+              base_pass:
+                type:
+                  - boolean
+                  - 'null'
+              checkout_fingerprint:
+                type: string
+              head:
+                type: string
+              disposition:
+                enum:
+                  - advance
+                  - repair
+                  - adjudicate
+                  - fail
+                  - suspend
+              adjudication:
+                type: object
+                required:
+                  - diff_hash
+                  - contract_hash
+                  - command
+                  - failed_tests
+                  - failure_digest
+                  - report
+                  - counts
+                  - known
+                  - cases
+                properties:
+                  diff_hash:
+                    type: string
+                  contract_hash:
+                    type: string
+                  command:
+                    type: string
+                  failed_tests:
+                    type: array
+                    items:
+                      type: string
+                  failure_digest:
+                    type: string
+                  report:
+                    type: string
+                  counts:
+                    type: object
+                  known:
+                    type: array
+                  cases:
+                    type: array
+              reason:
+                type:
+                  - string
+                  - 'null'
+              delta:
+                type: string
+              risk:
+                type:
+                  - string
+                  - 'null'
+              out_of_scope:
+                type: array
+                items:
+                  type: string
+            required:
+              - ok
+              - failed
+              - log
+              - patch
+              - diff_hash
+              - same
+              - reviewed
+              - base_pass
+              - head
+              - checkout_fingerprint
+              - disposition
+              - reason
+              - delta
+              - risk
+              - out_of_scope
+              - decision
+          timeout: 195000
+        - id: final-repair-context-m1
+          script: sa-context
+          runtime: bun
+          with:
+            counter: /GEN/attempts/integration/m1
+            gen: /GEN
+            context_node: final-repair-m1
+            context_packages:
+              - core
+          depends_on:
+            - final-accept-m1
+          when: $final-accept-m1.output.disposition == 'repair'
+          output_format:
+            type: object
+            properties:
+              attempt:
+                type: string
+              context_pack_path:
+                type: string
+            required:
+              - attempt
+        - id: final-repair-m1
+          context:
+            resume: code-core
+          command: sa-repair
+          retry:
+            on_error: transient
+          model: '@sa-coder'
+          effort: medium
+          with:
+            pkg: core
+            brief: /GEN/briefs/core.md
+            hint: /GEN/hints/core.md
+            context_node: final-repair-context-m1
+            prior_work: $final-accept-m1.output
+            reason: $final-accept-m1.output.reason
+            accept_log: $final-accept-m1.output.log
+          depends_on:
+            - final-accept-m1
+            - final-repair-context-m1
+          when: $final-accept-m1.output.disposition == 'repair'
+          output_format:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - done
+                  - blocked
+                  - partial
+              changed_files:
+                type: array
+                items:
+                  type: string
+              quick_checks:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    cmd:
+                      type: string
+                    exit:
+                      type: integer
+                  required:
+                    - cmd
+                    - exit
+              notes:
+                type: string
+              blockers:
+                type: array
+                items:
+                  type: string
+              error_class:
+                description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+                type:
+                  - string
+                  - 'null'
+                enum:
+                  - scope_violation
+                  - budget_exhausted
+                  - plan_invalid
+                  - sandbox_denied
+                  - permission_denied
+                  - vendor_unavailable_all
+                  - task
+                  - env
+                  - timeout
+                  - redline
+                  - null
+              deviations:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    path:
+                      type: string
+                    why:
+                      type: string
+                  required:
+                    - path
+                    - why
+              needs:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    cap:
+                      type: string
+                    why:
+                      type: string
+                    minimal_ask:
+                      type: string
+                  required:
+                    - cap
+                    - why
+                    - minimal_ask
+            required:
+              - status
+              - changed_files
+              - quick_checks
+              - notes
+              - blockers
+              - error_class
+              - deviations
+              - needs
+        - id: final-settle-m1
+          script: sa-check
+          runtime: bun
+          depends_on:
+            - final-accept-m1
+            - final-repair-m1
+          with:
+            kind: settle
+            plan: /GEN/plan.json
+            policy: /GEN/policy.json
+            pkgs: core
+            scope_pkgs: core
+            base: $resync-m1-ready.output.merge_base
+            target_tip: $resync-m1-ready.output.target_tip
+            sync_generation: $resync-m1-ready.output.generation
+            risk: G1
+            milestone: m1
+            tag: final-settle-m1
+            first: $final-accept-m1.output.disposition
+            repaired:
+              from: $final-repair-m1.output
+              if_skipped: null
+            archon: /GEN/archon
+          trigger_rule: none_failed_min_one_success
+          output_format:
+            type: object
+            properties:
+              diff_hash:
+                type: string
+              head:
+                type: string
+            required:
+              - diff_hash
+          timeout: 195000
+        - id: publish-m1
+          depends_on:
+            - final-settle-m1
+          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m1-ready.output.target_tip"
+          timeout: 1200000
+          output_format:
+            type: object
+            properties:
+              status:
+                enum:
+                  - published
+                  - advanced
+                  - dirty
+                  - rejected
+              target_tip:
+                type: string
+              paths:
+                type: array
+                items:
+                  type: string
+              reason:
+                type: string
+              evidence:
+                type: string
+              receipt:
+                type: object
+            required:
+              - status
+        - id: target-dirty-m1
+          approval:
+            message: Target checkout is dirty for milestone m1; clean it and approve to retry publish
+            decisions:
+              - id: approve
+              - id: reject
+          depends_on:
+            - publish-m1
+          when: $publish-m1.output.status == 'dirty'
+        - id: target-dirty-decision-m1
+          depends_on:
+            - target-dirty-m1
+          when: $publish-m1.output.status == 'dirty'
+          bash: test "$target-dirty-m1.output.decision" = approve
+  - id: sync-m2
+    bash: |-
+      tip=$(git rev-parse --verify 'main^{commit}') || exit $?
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
     depends_on:
-      - land-m1
+      - integrate-m1
     output_format:
       type: object
       properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
         head:
           type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
       required:
-        - head
+        - status
+        - target_tip
+        - generation
+  - id: sync-m2-ready
+    depends_on:
+      - sync-m2
+    trigger_rule: none_failed_min_one_success
+    bash: |-
+      tip=$sync-m2.output.target_tip
+      status=$sync-m2.output.status
+      generation=$sync-m2.output.generation
+      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    output_format:
+      type: object
+      properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
+        head:
+          type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - target_tip
+        - generation
   - id: attempt-m2
     script: sa-context
     runtime: bun
@@ -3641,7 +4319,7 @@ nodes:
       pkg: ''
       review: ''
     depends_on:
-      - start-m2
+      - sync-m2-ready
     always_run: true
     output_format:
       type: object
@@ -3659,7 +4337,7 @@ nodes:
       pkg: api
       review: ''
     depends_on:
-      - start-m2
+      - sync-m2-ready
     always_run: true
     output_format:
       type: object
@@ -3683,7 +4361,7 @@ nodes:
       context_node: package-attempt-api
       soldier_ok: ''
     depends_on:
-      - start-m2
+      - sync-m2-ready
       - package-attempt-api
     output_format:
       type: object
@@ -3781,8 +4459,10 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
-      delta_base: $start-m2.output.head
+      base: $sync-m2-ready.output.merge_base
+      delta_base: $sync-m2-ready.output.head
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       archon: /GEN/archon
@@ -4127,8 +4807,10 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
-      delta_base: $start-m2.output.head
+      base: $sync-m2-ready.output.merge_base
+      delta_base: $sync-m2-ready.output.head
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       archon: /GEN/archon
@@ -4148,11 +4830,79 @@ nodes:
       required:
         - diff_hash
     timeout: 195000
+  - id: sync-review-m2
+    bash: |-
+      tip=$(git rev-parse --verify 'main^{commit}') || exit $?
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
+    depends_on:
+      - settle-api
+    output_format:
+      type: object
+      properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
+        head:
+          type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - target_tip
+        - generation
+  - id: sync-review-m2-ready
+    depends_on:
+      - sync-review-m2
+    trigger_rule: none_failed_min_one_success
+    bash: |-
+      tip=$sync-review-m2.output.target_tip
+      status=$sync-review-m2.output.status
+      generation=$sync-review-m2.output.generation
+      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
+      base=$(git merge-base HEAD "$tip") || exit $?
+      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    output_format:
+      type: object
+      properties:
+        status:
+          enum:
+            - noop
+            - merged
+            - conflict
+            - resolved
+        target_tip:
+          type: string
+        merge_base:
+          type: string
+        head:
+          type: string
+        generation:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - target_tip
+        - generation
   - id: diff-m2-r1
     script: sa-check
     runtime: bun
     depends_on:
-      - settle-api
+      - sync-review-m2-ready
       - attempt-m2
     with:
       kind: accept
@@ -4160,11 +4910,13 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
+      base: $sync-review-m2-ready.output.merge_base
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       tag: diff-m2-r1
-      acceptance_evidence: $ARTIFACTS_DIR/settle-api.json
+      acceptance_evidence: $ARTIFACTS_DIR/sync-review-m2-ready.json
       archon: /GEN/archon
     output_format:
       type: object
@@ -4680,7 +5432,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
+      base: $sync-review-m2-ready.output.merge_base
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       tag: diff-m2-r2
@@ -5204,7 +5958,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
+      base: $sync-review-m2-ready.output.merge_base
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       tag: diff-m2-r3
@@ -5732,7 +6488,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
+      base: $sync-review-m2-ready.output.merge_base
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       tag: diff-m2-r4
@@ -6264,7 +7022,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
+      base: $sync-review-m2-ready.output.merge_base
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       tag: diff-m2-r5
@@ -6800,7 +7560,9 @@ nodes:
       policy: /GEN/policy.json
       pkgs: api
       scope_pkgs: core,api
-      base: $start-m2.output.head
+      base: $sync-review-m2-ready.output.merge_base
+      target_tip: $sync-m2-ready.output.target_tip
+      sync_generation: $sync-m2-ready.output.generation
       risk: G2
       milestone: m2
       tag: diff-m2-r6
@@ -7225,16 +7987,496 @@ nodes:
     depends_on:
       - human-m2
     when: $human-m2.output.decision == 'approve'
-  - id: land-m2
-    script: sa-check
-    runtime: bun
-    with:
-      kind: land
-      base_ref: main
-      plan: /GEN/plan.json
-      operator_ledger: /runs/golden-0001.json
-      milestone: m2
-      pkgs: core,api
-      output: land-m2.json
+  - id: integrate-m2
     depends_on:
       - signoff-m2
+    loop_group:
+      max_iterations: 3
+      until_bash: test "$publish-m2.output.status" = published
+      nodes:
+        - id: resync-m2
+          bash: |-
+            tip=$(git rev-parse --verify 'main^{commit}') || exit $?
+            base=$(git merge-base HEAD "$tip") || exit $?
+            printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
+          output_format:
+            type: object
+            properties:
+              status:
+                enum:
+                  - noop
+                  - merged
+                  - conflict
+                  - resolved
+              target_tip:
+                type: string
+              merge_base:
+                type: string
+              head:
+                type: string
+              generation:
+                type: integer
+              files:
+                type: array
+                items:
+                  type: string
+            required:
+              - status
+              - target_tip
+              - generation
+        - id: resync-m2-ready
+          depends_on:
+            - resync-m2
+          trigger_rule: none_failed_min_one_success
+          bash: |-
+            tip=$resync-m2.output.target_tip
+            status=$resync-m2.output.status
+            generation=$resync-m2.output.generation
+            if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
+            base=$(git merge-base HEAD "$tip") || exit $?
+            printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+          output_format:
+            type: object
+            properties:
+              status:
+                enum:
+                  - noop
+                  - merged
+                  - conflict
+                  - resolved
+              target_tip:
+                type: string
+              merge_base:
+                type: string
+              head:
+                type: string
+              generation:
+                type: integer
+              files:
+                type: array
+                items:
+                  type: string
+            required:
+              - status
+              - target_tip
+              - generation
+        - id: final-accept-m2
+          script: sa-check
+          runtime: bun
+          depends_on:
+            - resync-m2-ready
+          with:
+            kind: accept
+            plan: /GEN/plan.json
+            policy: /GEN/policy.json
+            pkgs: api
+            scope_pkgs: core,api
+            base: $resync-m2-ready.output.merge_base
+            target_tip: $resync-m2-ready.output.target_tip
+            sync_generation: $resync-m2-ready.output.generation
+            risk: G2
+            milestone: m2
+            tag: final-accept-m2
+            archon: /GEN/archon
+          output_format:
+            type: object
+            properties:
+              decision:
+                type: object
+                properties:
+                  kind:
+                    enum:
+                      - advance
+                      - debt
+                      - repair
+                      - block
+                  reason:
+                    type:
+                      - string
+                      - 'null'
+                  evidence:
+                    type: array
+                    items:
+                      type: string
+                  debt:
+                    type: array
+                    items:
+                      type: string
+                  requirements:
+                    type: object
+                    required:
+                      - status
+                      - items
+                    properties:
+                      status:
+                        enum:
+                          - legacy
+                          - verified
+                          - unmet
+                          - unknown
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required:
+                            - package
+                            - id
+                            - text
+                            - status
+                            - evidence
+                          properties:
+                            package:
+                              type: string
+                            id:
+                              type: string
+                            text:
+                              type: string
+                            status:
+                              enum:
+                                - verified
+                                - unmet
+                                - unknown
+                            evidence:
+                              type: array
+                              items:
+                                type: string
+                required:
+                  - kind
+                  - reason
+                  - evidence
+                  - debt
+              workspace_clean:
+                type: boolean
+              failures:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    command:
+                      type: string
+                    failure_class:
+                      type: string
+                      enum:
+                        - product
+                        - test_env
+                        - fixture
+                        - baseline
+                        - test_data
+                        - unknown
+                    evidence:
+                      type: string
+                    failed_tests:
+                      type: array
+                      items:
+                        type: string
+                    failure_digest:
+                      type: string
+                    adjudicated:
+                      type: boolean
+                  required:
+                    - command
+                    - failure_class
+                    - evidence
+              coder_partial:
+                type: boolean
+              self_report_conflict:
+                type: boolean
+              error_class_ignored:
+                type: boolean
+              ok:
+                type: boolean
+              failed:
+                type: array
+                items:
+                  type: string
+              log:
+                type: string
+              patch:
+                type: string
+              diff_hash:
+                type: string
+              same:
+                type: boolean
+              reviewed:
+                type: boolean
+              base_pass:
+                type:
+                  - boolean
+                  - 'null'
+              checkout_fingerprint:
+                type: string
+              head:
+                type: string
+              disposition:
+                enum:
+                  - advance
+                  - repair
+                  - adjudicate
+                  - fail
+                  - suspend
+              adjudication:
+                type: object
+                required:
+                  - diff_hash
+                  - contract_hash
+                  - command
+                  - failed_tests
+                  - failure_digest
+                  - report
+                  - counts
+                  - known
+                  - cases
+                properties:
+                  diff_hash:
+                    type: string
+                  contract_hash:
+                    type: string
+                  command:
+                    type: string
+                  failed_tests:
+                    type: array
+                    items:
+                      type: string
+                  failure_digest:
+                    type: string
+                  report:
+                    type: string
+                  counts:
+                    type: object
+                  known:
+                    type: array
+                  cases:
+                    type: array
+              reason:
+                type:
+                  - string
+                  - 'null'
+              delta:
+                type: string
+              risk:
+                type:
+                  - string
+                  - 'null'
+              out_of_scope:
+                type: array
+                items:
+                  type: string
+            required:
+              - ok
+              - failed
+              - log
+              - patch
+              - diff_hash
+              - same
+              - reviewed
+              - base_pass
+              - head
+              - checkout_fingerprint
+              - disposition
+              - reason
+              - delta
+              - risk
+              - out_of_scope
+              - decision
+          timeout: 195000
+        - id: final-repair-context-m2
+          script: sa-context
+          runtime: bun
+          with:
+            counter: /GEN/attempts/integration/m2
+            gen: /GEN
+            context_node: final-repair-m2
+            context_packages:
+              - api
+          depends_on:
+            - final-accept-m2
+          when: $final-accept-m2.output.disposition == 'repair'
+          output_format:
+            type: object
+            properties:
+              attempt:
+                type: string
+              context_pack_path:
+                type: string
+            required:
+              - attempt
+        - id: final-repair-m2
+          context:
+            resume: code-api
+          command: sa-repair
+          retry:
+            on_error: transient
+          model: '@sa-coder'
+          effort: medium
+          with:
+            pkg: api
+            brief: /GEN/briefs/api.md
+            hint: /GEN/hints/api.md
+            context_node: final-repair-context-m2
+            prior_work: $final-accept-m2.output
+            reason: $final-accept-m2.output.reason
+            accept_log: $final-accept-m2.output.log
+          depends_on:
+            - final-accept-m2
+            - final-repair-context-m2
+          when: $final-accept-m2.output.disposition == 'repair'
+          output_format:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - done
+                  - blocked
+                  - partial
+              changed_files:
+                type: array
+                items:
+                  type: string
+              quick_checks:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    cmd:
+                      type: string
+                    exit:
+                      type: integer
+                  required:
+                    - cmd
+                    - exit
+              notes:
+                type: string
+              blockers:
+                type: array
+                items:
+                  type: string
+              error_class:
+                description: 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+                type:
+                  - string
+                  - 'null'
+                enum:
+                  - scope_violation
+                  - budget_exhausted
+                  - plan_invalid
+                  - sandbox_denied
+                  - permission_denied
+                  - vendor_unavailable_all
+                  - task
+                  - env
+                  - timeout
+                  - redline
+                  - null
+              deviations:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    path:
+                      type: string
+                    why:
+                      type: string
+                  required:
+                    - path
+                    - why
+              needs:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    cap:
+                      type: string
+                    why:
+                      type: string
+                    minimal_ask:
+                      type: string
+                  required:
+                    - cap
+                    - why
+                    - minimal_ask
+            required:
+              - status
+              - changed_files
+              - quick_checks
+              - notes
+              - blockers
+              - error_class
+              - deviations
+              - needs
+        - id: final-settle-m2
+          script: sa-check
+          runtime: bun
+          depends_on:
+            - final-accept-m2
+            - final-repair-m2
+          with:
+            kind: settle
+            plan: /GEN/plan.json
+            policy: /GEN/policy.json
+            pkgs: api
+            scope_pkgs: core,api
+            base: $resync-m2-ready.output.merge_base
+            target_tip: $resync-m2-ready.output.target_tip
+            sync_generation: $resync-m2-ready.output.generation
+            risk: G2
+            milestone: m2
+            tag: final-settle-m2
+            first: $final-accept-m2.output.disposition
+            repaired:
+              from: $final-repair-m2.output
+              if_skipped: null
+            archon: /GEN/archon
+          trigger_rule: none_failed_min_one_success
+          output_format:
+            type: object
+            properties:
+              diff_hash:
+                type: string
+              head:
+                type: string
+            required:
+              - diff_hash
+          timeout: 195000
+        - id: publish-m2
+          depends_on:
+            - final-settle-m2
+          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m2-ready.output.target_tip"
+          timeout: 1200000
+          output_format:
+            type: object
+            properties:
+              status:
+                enum:
+                  - published
+                  - advanced
+                  - dirty
+                  - rejected
+              target_tip:
+                type: string
+              paths:
+                type: array
+                items:
+                  type: string
+              reason:
+                type: string
+              evidence:
+                type: string
+              receipt:
+                type: object
+            required:
+              - status
+        - id: target-dirty-m2
+          approval:
+            message: Target checkout is dirty for milestone m2; clean it and approve to retry publish
+            decisions:
+              - id: approve
+              - id: reject
+          depends_on:
+            - publish-m2
+          when: $publish-m2.output.status == 'dirty'
+        - id: target-dirty-decision-m2
+          depends_on:
+            - target-dirty-m2
+          when: $publish-m2.output.status == 'dirty'
+          bash: test "$target-dirty-m2.output.decision" = approve

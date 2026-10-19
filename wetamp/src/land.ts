@@ -3,6 +3,158 @@
 export * from './land-legacy';
 export * from './integration';
 
-import { runLegacyDeliveryMain } from './land-legacy';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { caller, control, coord, repoScope, same } from './coord';
+import { publish, sync, type PublishResult, type SyncResult } from './integration';
+import { runDeliveryEntry, runLegacyDeliveryMain, type DeliveryAuthorization } from './land-legacy';
 
-if (import.meta.main) runLegacyDeliveryMain();
+const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
+
+type SyncEvidence = SyncResult & { generation: number };
+
+const evidencePath = (name: string): string =>
+  join(process.env.ARTIFACTS_DIR ?? '', `${name}.json`);
+
+const emit = (name: string, value: unknown, write = true): void => {
+  if (write) writeFileSync(evidencePath(name), JSON.stringify(value, null, 2));
+  process.stdout.write(JSON.stringify(value));
+};
+
+const authorized = () => {
+  const runId = process.env.INPUTS_RUN;
+  if (!runId) throw new Error('integration: missing run id');
+  const { loadLedger, readJson } = operator();
+  const ledger = loadLedger(runId);
+  const authorization = readJson(join(ledger.gen_dir, 'delivery-authorization.json')) as
+    | DeliveryAuthorization
+    | undefined;
+  const who = caller();
+  if (
+    !authorization ||
+    !same(who, authorization.run) ||
+    !same(who, authorization.repo) ||
+    process.env.WORKFLOW_ID !== ledger.archon_run_id
+  )
+    throw new Error('integration: authorization/run mismatch');
+  const fence = (): void => {
+    coord().mutate(
+      repoScope(ledger.repo),
+      who,
+      () => {
+        control(ledger, () => undefined, who, authorization.run.generation);
+      },
+      authorization.repo.generation
+    );
+  };
+  return { ledger, fence };
+};
+
+const nextCounter = (name: string): number => {
+  const path = join(process.env.ARTIFACTS_DIR ?? '', `.${name}`);
+  const current = existsSync(path) ? Number(readFileSync(path, 'utf8')) : 0;
+  const next = Number.isSafeInteger(current) && current >= 0 ? current + 1 : 1;
+  writeFileSync(path, String(next));
+  return next;
+};
+
+const integrationSync = (): void => {
+  const { ledger, fence } = authorized();
+  if (!ledger.delivery) throw new Error('integration: missing delivery target');
+  fence();
+  const result: SyncEvidence = {
+    ...sync(process.cwd(), ledger.delivery),
+    generation: nextCounter(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}`),
+  };
+  fence();
+  emit(process.env.INPUTS_OUTPUT ?? `sync-${process.env.INPUTS_MILESTONE ?? 'run'}`, result);
+};
+
+const lastGate = (
+  milestone: string
+): { gate: Record<string, unknown>; diff: Record<string, unknown> } => {
+  const artifacts = process.env.ARTIFACTS_DIR ?? '';
+  const record = (path: string): Record<string, unknown> => {
+    const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (value === null || typeof value !== 'object' || Array.isArray(value))
+      throw new Error(`integration: invalid evidence ${path}`);
+    return value as Record<string, unknown>;
+  };
+  const file = readdirSync(artifacts)
+    .filter(name => new RegExp(`^gate-${milestone}-r\\d+\\.json$`).test(name))
+    .sort((a, b) => Number(/r(\d+)/.exec(a)?.[1]) - Number(/r(\d+)/.exec(b)?.[1]))
+    .filter(name => record(join(artifacts, name)).verdict === 'pass')
+    .at(-1);
+  if (!file) throw new Error(`integration: missing passing gate for ${milestone}`);
+  const round = /r(\d+)/.exec(file)?.[1];
+  if (!round) throw new Error(`integration: invalid gate evidence name ${file}`);
+  return {
+    gate: record(join(artifacts, file)),
+    diff: record(join(artifacts, `diff-${milestone}-r${round}.json`)),
+  };
+};
+
+const integrationPublish = (): void => {
+  const { ledger, fence } = authorized();
+  if (!ledger.delivery) throw new Error('integration: missing delivery target');
+  const milestone = process.env.INPUTS_MILESTONE ?? 'run';
+  const tag = process.env.INPUTS_OUTPUT ?? `publish-${milestone}`;
+  const { gate, diff } = lastGate(milestone);
+  const stringField = (value: Record<string, unknown>, key: string): string =>
+    typeof value[key] === 'string' ? value[key] : '';
+  const reviewRequired = process.env.INPUTS_REVIEW_REQUIRED === '1';
+  const receipt = evidencePath(tag);
+  const result: PublishResult = publish(
+    {
+      worktree: process.cwd(),
+      target: ledger.delivery,
+      task: ledger.run_id,
+      contract: createHash('sha256')
+        .update(readFileSync(join(ledger.gen_dir, 'accept-inputs.json')))
+        .digest('hex'),
+      evidence: process.env.ARTIFACTS_DIR ?? '',
+      receipt,
+      review: reviewRequired
+        ? {
+            required: true,
+            reviewed_head: stringField(gate, 'reviewed_head'),
+            reviewed_diff_hash: stringField(gate, 'reviewed_diff_hash'),
+            diff_hash: stringField(diff, 'diff_hash'),
+          }
+        : { required: false },
+      fence,
+    },
+    { target_tip: process.env.INPUTS_TARGET_TIP ?? '' }
+  );
+  if (result.status === 'advanced' && nextCounter(`advanced-${milestone}`) >= 3) {
+    const exhausted = {
+      status: 'rejected',
+      reason: 'target_advanced',
+      target_tip: result.target_tip,
+    };
+    emit(tag, exhausted);
+    process.exitCode = 1;
+    return;
+  }
+  emit(tag, result, result.status !== 'published');
+  if (result.status === 'rejected') process.exitCode = 1;
+};
+
+export function runIntegrationMain(action: string): void {
+  queueMicrotask(() => {
+    const ok = runDeliveryEntry(() => {
+      if (action === 'sync') integrationSync();
+      else if (action === 'publish') integrationPublish();
+      else throw new Error(`integration: unknown action ${action}`);
+    });
+    if (!ok) process.exitCode = 1;
+  });
+}
+
+if (import.meta.main) {
+  const action = process.env.INPUTS_ACTION;
+  if (action) runIntegrationMain(action);
+  else runLegacyDeliveryMain();
+}

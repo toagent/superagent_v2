@@ -1,242 +1,203 @@
 import { expect, spyOn, test } from 'bun:test';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generate } from '../src/generate';
-import { ledgerPath, loadLedger } from '../src/cli';
+import { ledgerPath } from '../src/cli';
 import * as coordination from '../src/coord';
 import type { Plan } from '../src/plan';
-import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
-import { directAuxiliaryPreload, fixtureEnv, fixturePlan, gitRepo, sh, tmp } from './helpers';
-test.each([
-  [false, false],
-  [true, false],
-  [true, true],
-])(
-  'generated deliver command integrates the run branch into its target (prefix=%s, conflict=%s)',
-  (prefix, conflict) => {
-    const saved = { ...process.env };
-    const root = tmp(),
-      home = join(root, 'home'),
-      repo = gitRepo(root),
-      worker = join(root, 'worker'),
-      runId = 'de1e-e2e';
+import { fixtureEnv, fixturePlan, gitRepo, sh, tmp } from './helpers';
+
+type WorkflowNode = {
+  id: string;
+  bash?: string;
+  loop_group?: { nodes: WorkflowNode[] };
+};
+
+const allNodes = (nodes: WorkflowNode[]): WorkflowNode[] =>
+  nodes.flatMap(node => [node, ...allNodes(node.loop_group?.nodes ?? [])]);
+
+const runBash = (command: string, cwd: string, env: NodeJS.ProcessEnv) => {
+  const result = Bun.spawnSync(['bash', '-c', command], {
+    cwd,
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: 15_000,
+  });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  return JSON.parse(result.stdout.toString()) as Record<string, unknown>;
+};
+
+const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
+  const saved = { ...process.env };
+  const root = tmp(),
+    home = join(root, 'home'),
+    repo = gitRepo(root),
+    worker = join(root, 'worker'),
+    runId = `de1e-${({ normal: '0001', advanced: '0002', dirty: '0003', conflict: '0004' } as const)[mode]}`;
+  sh('git branch -m delivery-target && git config user.name t && git config user.email t@l', repo);
+  const targetHead = sh('git rev-parse HEAD', repo).trim();
+  sh(`git worktree add -qb sa/${runId} '${worker}' delivery-target`, repo);
+  writeFileSync(join(worker, 'feature.txt'), 'integrated\n');
+  sh('git add feature.txt && git commit -qm feature', worker);
+  if (mode === 'conflict') {
+    writeFileSync(join(repo, 'README.md'), 'target\n');
+    sh('git add README.md && git commit -qm target-conflict', repo);
+    writeFileSync(join(worker, 'README.md'), 'run\n');
+    sh('git add README.md && git commit -qm run-conflict', worker);
+  }
+  Object.assign(process.env, {
+    SUPERAGENT_HOME: home,
+    ARCHON_HOME: join(home, 'archon'),
+    SUPERAGENT_MEMORY: 'off',
+    SUPERAGENT_ROLE: '',
+    WORKFLOW_ID: runId,
+    NODE_ENV: 'test',
+    SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+  });
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  const plan = JSON.parse(
+    readFileSync(
+      fixturePlan(root, repo, p => {
+        p.base_ref = 'delivery-target';
+        p.environment = [];
+        p.packages = [
+          {
+            id: 'p',
+            title: 'Delivery E2E',
+            goal: 'Integrate feature.txt.',
+            scope: { write: ['feature.txt', 'README.md'] },
+            accept: [{ cmd: 'test "$(cat feature.txt)" = integrated', timeout_s: 5 }],
+            risk: 'G0',
+            size: 'S',
+          },
+        ];
+      }),
+      'utf8'
+    )
+  ) as Plan;
+  const delivery = { checkout: repo, branch: 'delivery-target', head: targetHead };
+  const who = coordination.caller();
+  coordination.coord().claim(coordination.repoScope(repo), who);
+  coordination.coord().claim(coordination.runScope({ run_id: runId, repo }), who);
+  const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(targetHead);
+  let generated: ReturnType<typeof generate>;
+  try {
+    generated = generate(plan, runId, false, undefined, undefined, delivery);
+  } finally {
+    engine.mockRestore();
+  }
+  writeFileSync(
+    ledgerPath(runId),
+    JSON.stringify({
+      run_id: runId,
+      archon_run_id: runId,
+      repo,
+      branch: `sa/${runId}`,
+      plan: join(generated.dir, 'plan.json'),
+      gen_dir: generated.dir,
+      workflow: generated.workflow,
+      delivery,
+    })
+  );
+  const artifact = join(home, 'artifacts', 'runs', runId);
+  mkdirSync(artifact, { recursive: true });
+  const workflow = Bun.YAML.parse(
+    readFileSync(
+      join(generated.dir, '.archon/workflows', generated.workflow, `${generated.workflow}.yaml`),
+      'utf8'
+    )
+  ) as { nodes: WorkflowNode[] };
+  return { saved, repo, worker, runId, artifact, nodes: allNodes(workflow.nodes) };
+};
+
+const restoreEnv = (saved: NodeJS.ProcessEnv): void => {
+  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+  Object.assign(process.env, saved);
+};
+
+test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
+  'generated sync/final-accept/publish handles %s target state',
+  mode => {
+    const f = setup(mode);
     try {
-      sh(
-        'git branch -m delivery-target && git config user.name t && git config user.email t@l',
-        repo
-      );
-      const targetHead = sh('git rev-parse HEAD', repo).trim();
-      sh(`git worktree add -qb sa/${runId} '${worker}' delivery-target`, repo);
-      writeFileSync(join(worker, 'feature.txt'), 'integrated\n');
-      sh('git add feature.txt && git commit -qm feature', worker);
-      const sourceHead = sh('git rev-parse HEAD', worker).trim();
-      mkdirSync(join(home, 'runs'), { recursive: true });
-      const stub = join(root, 'archon-stub');
-      mkdirSync(stub);
-      const bin = join(stub, 'archon');
-      writeFileSync(
-        bin,
-        `#!/bin/sh\nexec '${process.execPath}' '${join(import.meta.dir, 'fixtures/archon-stub.ts')}' '${stub}' "$@"\n`
-      );
-      chmodSync(bin, 0o755);
-      Object.assign(process.env, {
-        SUPERAGENT_HOME: home,
-        ARCHON_HOME: join(home, 'archon'),
-        SUPERAGENT_MEMORY: 'off',
-        SUPERAGENT_ROLE: '',
-        SA_ARCHON_BIN: bin,
-        WORKFLOW_ID: runId,
+      const sync = f.nodes.find(node => node.id === 'sync-m1')!;
+      const publish = f.nodes.find(node => node.id === 'publish-m1')!;
+      const env = fixtureEnv({
+        SUPERAGENT_HOME: process.env.SUPERAGENT_HOME!,
+        ARCHON_HOME: process.env.ARCHON_HOME!,
+        WORKFLOW_ID: f.runId,
+        ARTIFACTS_DIR: f.artifact,
         NODE_ENV: 'test',
         SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
-        GIT_CONFIG_GLOBAL: '/dev/null',
-        GIT_CONFIG_NOSYSTEM: '1',
-        BUN_OPTIONS:
-          `${process.env.BUN_OPTIONS ?? ''} --preload=${directAuxiliaryPreload()}`.trim(),
       });
-      const plan = JSON.parse(
-        readFileSync(
-          fixturePlan(root, repo, p => {
-            p.base_ref = 'delivery-target';
-            p.environment = [];
-            p.packages = [
-              {
-                id: 'p',
-                title: 'Delivery E2E',
-                goal: 'Integrate feature.txt.',
-                scope: { write: ['feature.txt'] },
-                accept: [{ cmd: 'test "$(cat feature.txt)" = integrated', timeout_s: 5 }],
-                risk: 'G0',
-                size: 'S',
-              },
-            ];
-          }),
-          'utf8'
-        )
-      ) as Plan;
-      if (prefix) {
-        plan.packages[0].milestone = 'm1';
-        plan.packages.push({
-          ...plan.packages[0],
-          id: 'later',
-          milestone: 'm2',
-          accept: [{ cmd: 'exit 1', timeout_s: 5 }],
-        });
-      }
-      const landNode = prefix ? 'land-m1' : 'land',
-        deliverNode = prefix ? 'deliver-m1' : 'deliver';
-      const delivery = { checkout: repo, branch: 'delivery-target', head: targetHead };
-      const who = coordination.caller();
-      coordination.coord().claim(coordination.repoScope(repo), who);
-      coordination.coord().claim(coordination.runScope({ run_id: runId, repo }), who);
-      const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(targetHead);
-      let gen: ReturnType<typeof generate>;
-      try {
-        gen = generate(plan, runId, false, undefined, undefined, delivery);
-      } finally {
-        engine.mockRestore();
-      }
-      const ledger = {
-        run_id: runId,
-        archon_run_id: runId,
-        repo,
-        branch: `sa/${runId}`,
-        plan: join(gen.dir, 'plan.json'),
-        gen_dir: gen.dir,
-        workflow: gen.workflow,
-        delivery,
-      };
-      writeFileSync(ledgerPath(runId), JSON.stringify(ledger));
-      const art = join(home, 'artifacts', 'runs', runId);
-      mkdirSync(art, { recursive: true });
-      writeFileSync(
-        join(art, `${landNode}.json`),
-        JSON.stringify({
-          branch: ledger.branch,
-          head: sourceHead,
-          ...(prefix ? { milestone: 'm1' } : {}),
-        })
-      );
-      const contracts = JSON.parse(
-        readFileSync(join(gen.dir, 'accept-inputs.json'), 'utf8')
-      ) as Record<string, string>[];
-      const contract = contracts.find(c => c.tag === 'diff-m1-r1')!;
-      writeFileSync(join(art, `${contract.tag}.json`), JSON.stringify({ ok: true }));
-      // prettier-ignore
-      const output = { head: sourceHead, reviewed_head: sourceHead, status: 'done', error_class: null, needs: [] };
-      const producers = new Set(
-        Object.values(contract)
-          .map(value => parseWholeOutputRef(value)?.nodeId)
-          .filter(Boolean)
-      );
-      writeFileSync(
-        join(stub, 'get-000.json'),
-        JSON.stringify({
-          id: runId,
-          status: 'running',
-          working_path: worker,
-          output_root: home,
-          nodes: [
-            { nodeId: landNode, state: 'completed' },
-            { nodeId: deliverNode, state: 'running' },
-          ],
-          events: [...producers].map(step_name => ({
-            step_name,
-            event_type: 'node_completed',
-            data: { node_output: JSON.stringify(output), structured_output: output },
-          })),
-        })
-      );
-      const workflow = Bun.YAML.parse(
-        readFileSync(
-          join(gen.dir, '.archon/workflows', gen.workflow, `${gen.workflow}.yaml`),
-          'utf8'
-        )
-      ) as { nodes: { id: string; bash?: string; with?: Record<string, string> }[] };
-      if (prefix) {
-        const inputs = workflow.nodes.find(n => n.id === landNode)!.with!;
-        const produced = Bun.spawnSync(
-          [process.execPath, join(gen.dir, '.archon/scripts/sa-check.ts')],
-          {
-            cwd: worker,
-            env: {
-              ...fixtureEnv(),
-              ARTIFACTS_DIR: art,
-              ...Object.fromEntries(
-                Object.entries(inputs).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])
-              ),
-            },
-            stdout: 'pipe',
-            stderr: 'pipe',
-          }
-        );
-        expect(produced.exitCode, produced.stderr.toString()).toBe(0);
-        const evidence = JSON.parse(readFileSync(join(art, `${landNode}.json`), 'utf8'));
-        expect(evidence).toMatchObject({ head: sourceHead, milestone: 'm1', packages: ['p'] });
-        expect(evidence.commands[1]).toContain(sourceHead);
-      }
-      if (conflict) {
-        writeFileSync(join(repo, 'feature.txt'), 'target\n');
-        sh('git add feature.txt && git commit -qm target-feature', repo);
-      }
-      const command = workflow.nodes.find(node => node.id === deliverNode)?.bash!;
-      const result = Bun.spawnSync(['bash', '-c', command], {
-        cwd: repo,
-        env: fixtureEnv(),
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: 15_000,
-      });
-      const outputText = result.stdout.toString() + result.stderr.toString();
-      expect(result.exitCode, outputText).toBe(0);
-      if (conflict) {
-        // 非末里程碑冲突只推迟：节点成功、后续里程碑可启动，目标分支不动，下次交付补验收它。
-        const deferred = loadLedger(runId);
-        expect(JSON.parse(result.stdout.toString())).toEqual({
-          status: 'deferred',
-          reason: 'merge_conflicts',
-          milestone: 'm1',
-        });
-        expect(deferred.deferred_deliveries).toEqual(['m1']);
-        expect(deferred.delivery_result).toBeUndefined();
-        expect(sh('git log -1 --format=%s delivery-target', repo).trim()).toBe('target-feature');
-        expect(sh('git status --porcelain', repo)).toBe('');
-        return;
-      }
-      expect(sh(`git merge-base --is-ancestor ${sourceHead} delivery-target`, repo)).toBe('');
-      expect(loadLedger(runId).delivery_result).toMatchObject({
-        status: 'integrated',
-        source: sourceHead,
-      });
-      if (prefix) {
-        writeFileSync(join(worker, 'later.txt'), 'unaccepted');
-        sh('git add later.txt && git commit -qm later', worker);
-        const stateFile = join(stub, 'get-000.json');
-        const state = JSON.parse(readFileSync(stateFile, 'utf8'));
-        state.status = 'failed';
-        state.nodes[1].state = 'completed';
-        state.nodes.push(
-          { nodeId: 'code-later', state: 'failed' },
-          { nodeId: 'land-m2', state: 'skipped' }
-        );
-        writeFileSync(stateFile, JSON.stringify(state));
-        const retried = Bun.spawnSync(['bash', '-c', command], {
-          cwd: repo,
-          env: fixtureEnv(),
+      let synced = runBash(sync.bash!, f.worker, env);
+      if (mode === 'conflict') {
+        expect(synced.status).toBe('conflict');
+        const tip = String(synced.target_tip);
+        const merge = Bun.spawnSync(['git', 'merge', '--no-edit', tip], {
+          cwd: f.worker,
           stdout: 'pipe',
           stderr: 'pipe',
-          timeout: 15000,
         });
-        expect(retried.exitCode, retried.stderr.toString()).toBe(0);
-        expect(sh('git rev-parse HEAD', repo).trim()).toBe(sourceHead);
-        expect(loadLedger(runId).delivery_result).toMatchObject({
-          status: 'integrated',
-          source: sourceHead,
-        });
+        expect(merge.exitCode).not.toBe(0);
+        writeFileSync(join(f.worker, 'README.md'), 'resolved\n');
+        sh('git add README.md && git commit -qm resolved', f.worker);
+        synced = {
+          ...synced,
+          status: 'resolved',
+          merge_base: tip,
+          head: sh('git rev-parse HEAD', f.worker).trim(),
+        };
       }
+      const writeGate = (): void => {
+        const head = sh('git rev-parse HEAD', f.worker).trim();
+        writeFileSync(
+          join(f.artifact, 'gate-m1-r1.json'),
+          JSON.stringify({ verdict: 'pass', reviewed_head: head, reviewed_diff_hash: 'accepted' })
+        );
+        writeFileSync(
+          join(f.artifact, 'diff-m1-r1.json'),
+          JSON.stringify({ diff_hash: 'accepted' })
+        );
+      };
+      writeGate();
+      const publishAt = (tip: string) =>
+        runBash(publish.bash!.replace('$resync-m1-ready.output.target_tip', tip), f.worker, env);
+      if (mode === 'advanced') {
+        writeFileSync(join(f.repo, 'advanced.txt'), 'advanced\n');
+        sh('git add advanced.txt && git commit -qm advanced', f.repo);
+        expect(publishAt(String(synced.target_tip)).status).toBe('advanced');
+        synced = runBash(sync.bash!, f.worker, env);
+        writeGate();
+      }
+      if (mode === 'dirty') {
+        const dirty = join(f.repo, 'dirty.txt');
+        writeFileSync(dirty, 'dirty\n');
+        expect(publishAt(String(synced.target_tip)).status).toBe('dirty');
+        unlinkSync(dirty);
+      }
+      expect(publishAt(String(synced.target_tip)).status).toBe('published');
+      const head = sh('git rev-parse HEAD', f.worker).trim();
+      expect(sh('git rev-parse delivery-target', f.repo).trim()).toBe(head);
+      expect(sh(`git diff --name-only ${String(synced.target_tip)} HEAD`, f.worker)).not.toContain(
+        'advanced.txt'
+      );
     } finally {
-      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
-      Object.assign(process.env, saved);
+      restoreEnv(f.saved);
     }
   },
   30_000
 );
+
+test('land.ts without INPUTS_ACTION keeps the legacy delivery entrypoint', () => {
+  const result = Bun.spawnSync([process.execPath, join(import.meta.dir, '../src/land.ts')], {
+    env: fixtureEnv({ INPUTS_ACTION: '', INPUTS_RUN: '' }),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain('delivery: missing run id');
+});

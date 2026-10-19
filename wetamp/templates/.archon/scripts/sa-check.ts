@@ -715,7 +715,7 @@ function changes(base: string): { modes: string[]; paths: string[] }[] {
 }
 
 /**
- * F-13 交付证据（不是沙箱）：实际 candidate tree 对照 scope.write 并记录越界路径。
+ * F-13 交付证据（不是沙箱）：同步后的 run tree 对照 scope.write 并记录越界路径。
  * gitlink/symlink 或 risk_paths 推断 G2；代码文件推断 G1。有效风险 = max(声明, 推断)。
  */
 export function scopeRisk(
@@ -744,7 +744,7 @@ export function scopeRisk(
 /** Shared with land's read-only reuse probe; a commit binds the accepted tree. */
 // prettier-ignore
 export function acceptanceContractHash(): string {
-  return sha(JSON.stringify([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
+  return sha(JSON.stringify([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('TARGET_TIP'), env('SYNC_GENERATION'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
 }
 // prettier-ignore
 export function reusableAcceptance(prior: Accept | undefined, head: string): boolean {
