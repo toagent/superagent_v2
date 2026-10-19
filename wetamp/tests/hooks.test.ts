@@ -202,6 +202,19 @@ describe('两条底线', () => {
   const privatePaths = [
     '.ssh/id_ed25519',
     '.aws/credentials',
+    '.m2/settings.xml',
+    '.m2/settings-security.xml',
+    '.cloudflared/cert.pem',
+    '.codex/auth.json',
+    '.local/share/opencode/auth.json',
+    '.zsh_history',
+    '.bash_history',
+    '.local/share/atuin/history.db',
+    '.config/code-server/config.yaml',
+    '.kube/config',
+    '.git-credentials',
+    '.aliyun/config.json',
+    '.alibabacloud/config.json',
     '.netrc',
     '.config/gh/hosts.yml',
     '.npmrc',
@@ -228,6 +241,18 @@ describe('两条底线', () => {
     ).toContain('已拦截：');
     expect(sh(`cat "${target}"`)).toContain('已拦截：');
     expect(sh(`bash -c 'cat "${target}"'`)).toContain('已拦截：');
+  });
+  test.each([
+    '.m2/repository/x.jar',
+    '.cloudflared/config.yml',
+    '.cloudflared',
+    '.codex/config.toml',
+    '.kube/cache/x',
+  ])('凭据相邻路径放行：%s', file => {
+    const { home, repo, env } = boundary();
+    expect(
+      redline.reason({ name: 'Read', input: { file_path: join(home, file) }, cwd: repo, env }) ?? ''
+    ).not.toContain('已拦截：');
   });
   test('隐私保留 cwd、变量、软链、大小写及重定向', () => {
     const { home, repo, sh } = boundary();

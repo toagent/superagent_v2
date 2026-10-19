@@ -29,6 +29,11 @@ const expand = (word, env) =>
 const SSH_PUBLIC = ['known_hosts', 'known_hosts.old', 'config'];
 const SECRET_FILES = [
   ['.aws', 'credentials'],
+  ['.m2', 'settings.xml'], ['.m2', 'settings-security.xml'],
+  ['.codex', 'auth.json'], ['.local', 'share', 'opencode', 'auth.json'],
+  ['.zsh_history'], ['.bash_history'], ['.local', 'share', 'atuin'],
+  ['.config', 'code-server', 'config.yaml'], ['.kube', 'config'], ['.git-credentials'],
+  ['.aliyun'], ['.alibabacloud'],
   ['.netrc'],
   ['.config', 'gh', 'hosts.yml'],
   ['.npmrc'],
@@ -57,6 +62,12 @@ function secretKind(abs, env) {
     const base = path.basename(p);
     if (!base.endsWith('.pub') && !SSH_PUBLIC.includes(base)) return 'ssh 私钥';
   }
+  const cloudflared = path.join(home, '.cloudflared');
+  if (
+    p.startsWith(cloudflared + '/') &&
+    !['config.yml', 'config.yaml'].includes(path.relative(cloudflared, p))
+  )
+    return '凭据文件';
   if (under(['Library', 'Keychains'])) return '钥匙串';
   if (SECRET_FILES.some(under)) return '凭据文件';
   if (under(['Library', 'Mobile Documents'])) return 'iCloud';
