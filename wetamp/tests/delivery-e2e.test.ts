@@ -57,6 +57,13 @@ const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
   });
+  const who = coordination.caller();
+  const launcherPreload = join(root, 'launcher.cjs');
+  writeFileSync(
+    launcherPreload,
+    `require(${JSON.stringify(join(import.meta.dir, '../hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`
+  );
+  process.env.BUN_OPTIONS = `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim();
   mkdirSync(join(home, 'runs'), { recursive: true });
   const plan = JSON.parse(
     readFileSync(
@@ -79,14 +86,15 @@ const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
     )
   ) as Plan;
   const delivery = { checkout: repo, branch: 'delivery-target', head: targetHead };
-  const who = coordination.caller();
   coordination.coord().claim(coordination.repoScope(repo), who);
   coordination.coord().claim(coordination.runScope({ run_id: runId, repo }), who);
   const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(targetHead);
+  const identity = spyOn(coordination, 'caller').mockReturnValue(who);
   let generated: ReturnType<typeof generate>;
   try {
     generated = generate(plan, runId, false, undefined, undefined, delivery);
   } finally {
+    identity.mockRestore();
     engine.mockRestore();
   }
   writeFileSync(
