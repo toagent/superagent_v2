@@ -7,9 +7,13 @@ import * as coordination from '../src/coord';
 import type { Plan } from '../src/plan';
 import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
 import { directAuxiliaryPreload, fixtureEnv, fixturePlan, gitRepo, sh, tmp } from './helpers';
-test.each([false, true])(
-  'generated deliver command integrates the run branch into its target (prefix=%s)',
-  prefix => {
+test.each([
+  [false, false],
+  [true, false],
+  [true, true],
+])(
+  'generated deliver command integrates the run branch into its target (prefix=%s, conflict=%s)',
+  (prefix, conflict) => {
     const saved = { ...process.env };
     const root = tmp(),
       home = join(root, 'home'),
@@ -170,6 +174,10 @@ test.each([false, true])(
         expect(evidence).toMatchObject({ head: sourceHead, milestone: 'm1', packages: ['p'] });
         expect(evidence.commands[1]).toContain(sourceHead);
       }
+      if (conflict) {
+        writeFileSync(join(repo, 'feature.txt'), 'target\n');
+        sh('git add feature.txt && git commit -qm target-feature', repo);
+      }
       const command = workflow.nodes.find(node => node.id === deliverNode)?.bash!;
       const result = Bun.spawnSync(['bash', '-c', command], {
         cwd: repo,
@@ -180,6 +188,20 @@ test.each([false, true])(
       });
       const outputText = result.stdout.toString() + result.stderr.toString();
       expect(result.exitCode, outputText).toBe(0);
+      if (conflict) {
+        // 非末里程碑冲突只推迟：节点成功、后续里程碑可启动，目标分支不动，下次交付补验收它。
+        const deferred = loadLedger(runId);
+        expect(JSON.parse(result.stdout.toString())).toEqual({
+          status: 'deferred',
+          reason: 'merge_conflicts',
+          milestone: 'm1',
+        });
+        expect(deferred.deferred_deliveries).toEqual(['m1']);
+        expect(deferred.delivery_result).toBeUndefined();
+        expect(sh('git log -1 --format=%s delivery-target', repo).trim()).toBe('target-feature');
+        expect(sh('git status --porcelain', repo)).toBe('');
+        return;
+      }
       expect(sh(`git merge-base --is-ancestor ${sourceHead} delivery-target`, repo)).toBe('');
       expect(loadLedger(runId).delivery_result).toMatchObject({
         status: 'integrated',

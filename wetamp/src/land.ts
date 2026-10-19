@@ -112,21 +112,30 @@ export function landEvidence(
  * Milestones whose acceptance a delivery through `through` must prove: those after the last
  * milestone this run already delivered. A completed `deliver-*` node already accepted its
  * prefix on its own candidate; re-running it on every later delivery makes cost quadratic.
+ * A deferred delivery completed its node without integrating, so its milestone stays pending.
  */
 export function pendingMilestones(
-  milestones: readonly string[],
+  ids: readonly string[],
   through: string,
-  nodes: RunView['nodes']
+  nodes: RunView['nodes'],
+  deferred: readonly string[] = []
 ): string[] {
-  const end = milestones.indexOf(through);
+  const end = ids.indexOf(through);
   if (end < 0) throw new Error(`accept: unknown milestone ${through}`);
   let start = end;
   while (
     start > 0 &&
-    !nodes?.some(n => n.nodeId === `deliver-${milestones[start - 1]}` && n.state === 'completed')
+    (deferred.includes(ids[start - 1]) ||
+      !nodes?.some(n => n.nodeId === `deliver-${ids[start - 1]}` && n.state === 'completed'))
   )
     start--;
-  return milestones.slice(start, end + 1);
+  return ids.slice(start, end + 1);
+}
+/** In-run delivery of a non-final milestone that conflicts with the target; the run continues. */
+export interface DeferredDelivery {
+  status: 'deferred';
+  reason: 'merge_conflicts';
+  milestone: string;
 }
 export const protectedTarget = (branch: string): boolean =>
   /^(main|master|dev|develop|release-.*)$/.test(branch);
@@ -397,7 +406,10 @@ export function acceptRun(
   const milestoneIds = [...new Set(contracts.map(c => c.milestone))];
   const selected = pkg
     ? contracts.filter(c => c.tag === `verify-${pkg}`)
-    : (through ? pendingMilestones(milestoneIds, through, run.nodes) : milestoneIds).map(m =>
+    : (through
+        ? pendingMilestones(milestoneIds, through, run.nodes, l.deferred_deliveries)
+        : milestoneIds
+      ).map(m =>
         [...contracts]
           .reverse()
           .find(
@@ -504,7 +516,8 @@ export function finalizeDelivery(
   who: Identity = caller(),
   authorization?: DeliveryAuthorization
 ) {
-  const { artifactsOf, evidenceJson, intervention, loadLedger, planOf, updateLedger } = operator();
+  const { artifactsOf, evidenceJson, intervention, loadLedger, planOf, readJson, updateLedger } =
+    operator();
   if (!authorization) assertCommander();
   const l = loadLedger(coord().resolveRun(id)?.run_id ?? id);
   if (
@@ -521,7 +534,8 @@ export function finalizeDelivery(
   let repoController!: Controller,
     runController!: Controller,
     intent!: Parameters<typeof applyLand>,
-    intentRevision = '';
+    intentRevision = '',
+    deferrable: string | undefined;
   const revision = (ledger: Ledger) =>
     JSON.stringify({
       delivery_result: ledger.delivery_result,
@@ -548,6 +562,15 @@ export function finalizeDelivery(
             land = evidence && (evidenceJson(l, art, evidence.file) as Land | undefined),
             plan = planOf(l);
           if (!land) throw new Error('delivery: missing generated land evidence');
+          // 只有引擎在 run 内交付非末里程碑时才可推迟：后续里程碑照常推进，末次交付再带上它；
+          // 末里程碑或操作者手动 land 的冲突仍是阻断，由操作者在主检出合并。
+          const order = (readJson(join(l.gen_dir, 'accept-inputs.json')) ?? []) as {
+            milestone?: string;
+          }[];
+          deferrable =
+            authorization && land.milestone && order.at(-1)?.milestone !== land.milestone
+              ? land.milestone
+              : undefined;
           intent = [
             run,
             land,
@@ -570,7 +593,7 @@ export function finalizeDelivery(
     },
     authorization?.repo.generation
   );
-  const commit = (receipt: ReturnType<typeof applyLand>, error?: unknown) =>
+  const commit = (receipt: ReturnType<typeof applyLand> | DeferredDelivery, error?: unknown) =>
     coord().mutate(
       scope,
       who,
@@ -582,6 +605,15 @@ export function finalizeDelivery(
               if (revision(cur) !== intentRevision)
                 throw new Error('delivery: operator decision changed during integration');
             });
+            if (receipt?.status === 'deferred') {
+              updateLedger(l, cur => {
+                cur.controller = controller;
+                cur.deferred_deliveries = [
+                  ...new Set([...(cur.deferred_deliveries ?? []), receipt.milestone]),
+                ];
+              });
+              return receipt;
+            }
             intervention(
               l,
               'land',
@@ -611,6 +643,10 @@ export function finalizeDelivery(
   try {
     receipt = applyLand(...intent);
   } catch (error) {
+    if (deferrable && error instanceof LandError && error.name === 'land_merge_conflicts') {
+      console.error(`delivery: deferred ${deferrable}; ${error.message}`);
+      return commit({ status: 'deferred', reason: 'merge_conflicts', milestone: deferrable });
+    }
     return commit(undefined, error);
   }
   return commit(receipt);
