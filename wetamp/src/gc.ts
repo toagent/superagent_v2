@@ -28,13 +28,28 @@ const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as {
   ) => ScratchAction[];
 };
 export function scratchClean(session?: string, dryRun = false): ScratchAction[] {
+  let ledgers: Ledger[] | undefined;
+  const cachedPlans = new Map<string, string[]>();
   return scratch.clean(session, dryRun, path =>
-    ledgerIds().some(id => {
-      const l = loadLedger(id);
+    (ledgers ??= ledgerIds().map(loadLedger)).some(l => {
       // l.plan keeps the launch argument verbatim; a relative one only resolves in the launch
       // cwd, so the absolute gen copy (same parsed plan) stands in for it.
-      const plans = [join(l.gen_dir, 'plan.json'), ...(isAbsolute(l.plan) ? [l.plan] : [])];
-      if (!plans.some(file => readFileSync(file, 'utf8').includes(path))) return false;
+      const plans = [
+        ...new Set([join(l.gen_dir, 'plan.json'), ...(isAbsolute(l.plan) ? [l.plan] : [])]),
+      ];
+      let texts = cachedPlans.get(l.run_id);
+      if (!texts) {
+        texts = plans.flatMap(file => {
+          try {
+            return [readFileSync(file, 'utf8')];
+          } catch (e) {
+            if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return [];
+            throw e;
+          }
+        });
+        cachedPlans.set(l.run_id, texts);
+      }
+      if (texts.length && !texts.some(text => text.includes(path))) return false;
       const run = getRun(l.archon_run_id, l.repo);
       if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
       return !['completed', 'failed', 'cancelled'].includes(run.status);
@@ -297,7 +312,18 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
           if (!merged && !disposable && l.rejected !== run.id)
             throw new GcSkip(`run ${run.status} branch not merged; remains recoverable`);
           if (tree) {
-            if (!dryRun) git('worktree', 'remove', path);
+            if (
+              git(
+                '-C',
+                path,
+                'status',
+                '--porcelain=v1',
+                '--untracked-files=all',
+                '--ignore-submodules=none'
+              ) !== ''
+            )
+              throw new GcSkip('worktree dirty');
+            if (!dryRun) git('worktree', 'remove', '--force', path);
             event(dryRun ? 'would_remove' : 'removed', 'terminal run worktree', path);
           }
           object = 'branch';
