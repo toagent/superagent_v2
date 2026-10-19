@@ -348,6 +348,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -420,6 +423,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -764,6 +768,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -836,6 +843,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -981,6 +989,7 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m1-r1.json
       C1_HEAD: $diff-m1-r1.output.head
       C1_DIFF_HASH: $diff-m1-r1.output.diff_hash
+      C1_SHA256: $diff-m1-r1.output.artifact_sha256
       risk: G1
       milestone: m1
       pkgs: core
@@ -1222,6 +1231,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -1294,6 +1306,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -1439,12 +1452,14 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m1-r1.json
       C1_HEAD: $diff-m1-r1.output.head
       C1_DIFF_HASH: $diff-m1-r1.output.diff_hash
+      C1_SHA256: $diff-m1-r1.output.artifact_sha256
       R2:
         from: $review-m1-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m1-r2.json
       C2_HEAD: $diff-m1-r2.output.head
       C2_DIFF_HASH: $diff-m1-r2.output.diff_hash
+      C2_SHA256: $diff-m1-r2.output.artifact_sha256
       risk: G1
       milestone: m1
       pkgs: core
@@ -1686,6 +1701,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -1758,6 +1776,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -1903,18 +1922,21 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m1-r1.json
       C1_HEAD: $diff-m1-r1.output.head
       C1_DIFF_HASH: $diff-m1-r1.output.diff_hash
+      C1_SHA256: $diff-m1-r1.output.artifact_sha256
       R2:
         from: $review-m1-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m1-r2.json
       C2_HEAD: $diff-m1-r2.output.head
       C2_DIFF_HASH: $diff-m1-r2.output.diff_hash
+      C2_SHA256: $diff-m1-r2.output.artifact_sha256
       R3:
         from: $review-m1-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m1-r3.json
       C3_HEAD: $diff-m1-r3.output.head
       C3_DIFF_HASH: $diff-m1-r3.output.diff_hash
+      C3_SHA256: $diff-m1-r3.output.artifact_sha256
       risk: G1
       milestone: m1
       pkgs: core
@@ -2156,6 +2178,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -2228,6 +2253,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -2373,24 +2399,28 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m1-r1.json
       C1_HEAD: $diff-m1-r1.output.head
       C1_DIFF_HASH: $diff-m1-r1.output.diff_hash
+      C1_SHA256: $diff-m1-r1.output.artifact_sha256
       R2:
         from: $review-m1-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m1-r2.json
       C2_HEAD: $diff-m1-r2.output.head
       C2_DIFF_HASH: $diff-m1-r2.output.diff_hash
+      C2_SHA256: $diff-m1-r2.output.artifact_sha256
       R3:
         from: $review-m1-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m1-r3.json
       C3_HEAD: $diff-m1-r3.output.head
       C3_DIFF_HASH: $diff-m1-r3.output.diff_hash
+      C3_SHA256: $diff-m1-r3.output.artifact_sha256
       R4:
         from: $review-m1-r4.output
         if_skipped: null
       C4: $ARTIFACTS_DIR/diff-m1-r4.json
       C4_HEAD: $diff-m1-r4.output.head
       C4_DIFF_HASH: $diff-m1-r4.output.diff_hash
+      C4_SHA256: $diff-m1-r4.output.artifact_sha256
       risk: G1
       milestone: m1
       pkgs: core
@@ -2632,6 +2662,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -2704,6 +2737,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -2849,30 +2883,35 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m1-r1.json
       C1_HEAD: $diff-m1-r1.output.head
       C1_DIFF_HASH: $diff-m1-r1.output.diff_hash
+      C1_SHA256: $diff-m1-r1.output.artifact_sha256
       R2:
         from: $review-m1-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m1-r2.json
       C2_HEAD: $diff-m1-r2.output.head
       C2_DIFF_HASH: $diff-m1-r2.output.diff_hash
+      C2_SHA256: $diff-m1-r2.output.artifact_sha256
       R3:
         from: $review-m1-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m1-r3.json
       C3_HEAD: $diff-m1-r3.output.head
       C3_DIFF_HASH: $diff-m1-r3.output.diff_hash
+      C3_SHA256: $diff-m1-r3.output.artifact_sha256
       R4:
         from: $review-m1-r4.output
         if_skipped: null
       C4: $ARTIFACTS_DIR/diff-m1-r4.json
       C4_HEAD: $diff-m1-r4.output.head
       C4_DIFF_HASH: $diff-m1-r4.output.diff_hash
+      C4_SHA256: $diff-m1-r4.output.artifact_sha256
       R5:
         from: $review-m1-r5.output
         if_skipped: null
       C5: $ARTIFACTS_DIR/diff-m1-r5.json
       C5_HEAD: $diff-m1-r5.output.head
       C5_DIFF_HASH: $diff-m1-r5.output.diff_hash
+      C5_SHA256: $diff-m1-r5.output.artifact_sha256
       risk: G1
       milestone: m1
       pkgs: core
@@ -3114,6 +3153,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -3186,6 +3228,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -3331,36 +3374,42 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m1-r1.json
       C1_HEAD: $diff-m1-r1.output.head
       C1_DIFF_HASH: $diff-m1-r1.output.diff_hash
+      C1_SHA256: $diff-m1-r1.output.artifact_sha256
       R2:
         from: $review-m1-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m1-r2.json
       C2_HEAD: $diff-m1-r2.output.head
       C2_DIFF_HASH: $diff-m1-r2.output.diff_hash
+      C2_SHA256: $diff-m1-r2.output.artifact_sha256
       R3:
         from: $review-m1-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m1-r3.json
       C3_HEAD: $diff-m1-r3.output.head
       C3_DIFF_HASH: $diff-m1-r3.output.diff_hash
+      C3_SHA256: $diff-m1-r3.output.artifact_sha256
       R4:
         from: $review-m1-r4.output
         if_skipped: null
       C4: $ARTIFACTS_DIR/diff-m1-r4.json
       C4_HEAD: $diff-m1-r4.output.head
       C4_DIFF_HASH: $diff-m1-r4.output.diff_hash
+      C4_SHA256: $diff-m1-r4.output.artifact_sha256
       R5:
         from: $review-m1-r5.output
         if_skipped: null
       C5: $ARTIFACTS_DIR/diff-m1-r5.json
       C5_HEAD: $diff-m1-r5.output.head
       C5_DIFF_HASH: $diff-m1-r5.output.diff_hash
+      C5_SHA256: $diff-m1-r5.output.artifact_sha256
       R6:
         from: $review-m1-r6.output
         if_skipped: null
       C6: $ARTIFACTS_DIR/diff-m1-r6.json
       C6_HEAD: $diff-m1-r6.output.head
       C6_DIFF_HASH: $diff-m1-r6.output.diff_hash
+      C6_SHA256: $diff-m1-r6.output.artifact_sha256
       risk: G1
       milestone: m1
       pkgs: core
@@ -3548,6 +3597,9 @@ nodes:
                 type: string
               diff_hash:
                 type: string
+              artifact_sha256:
+                type: string
+                pattern: ^[0-9a-f]{64}$
               same:
                 type: boolean
               reviewed:
@@ -3620,6 +3672,7 @@ nodes:
               - log
               - patch
               - diff_hash
+              - artifact_sha256
               - same
               - reviewed
               - base_pass
@@ -3997,6 +4050,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -4069,6 +4125,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -4413,6 +4470,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -4485,6 +4545,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -4630,6 +4691,7 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m2-r1.json
       C1_HEAD: $diff-m2-r1.output.head
       C1_DIFF_HASH: $diff-m2-r1.output.diff_hash
+      C1_SHA256: $diff-m2-r1.output.artifact_sha256
       risk: G2
       milestone: m2
       pkgs: api
@@ -4870,6 +4932,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -4942,6 +5007,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -5087,12 +5153,14 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m2-r1.json
       C1_HEAD: $diff-m2-r1.output.head
       C1_DIFF_HASH: $diff-m2-r1.output.diff_hash
+      C1_SHA256: $diff-m2-r1.output.artifact_sha256
       R2:
         from: $review-m2-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m2-r2.json
       C2_HEAD: $diff-m2-r2.output.head
       C2_DIFF_HASH: $diff-m2-r2.output.diff_hash
+      C2_SHA256: $diff-m2-r2.output.artifact_sha256
       risk: G2
       milestone: m2
       pkgs: api
@@ -5333,6 +5401,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -5405,6 +5476,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -5550,18 +5622,21 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m2-r1.json
       C1_HEAD: $diff-m2-r1.output.head
       C1_DIFF_HASH: $diff-m2-r1.output.diff_hash
+      C1_SHA256: $diff-m2-r1.output.artifact_sha256
       R2:
         from: $review-m2-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m2-r2.json
       C2_HEAD: $diff-m2-r2.output.head
       C2_DIFF_HASH: $diff-m2-r2.output.diff_hash
+      C2_SHA256: $diff-m2-r2.output.artifact_sha256
       R3:
         from: $review-m2-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m2-r3.json
       C3_HEAD: $diff-m2-r3.output.head
       C3_DIFF_HASH: $diff-m2-r3.output.diff_hash
+      C3_SHA256: $diff-m2-r3.output.artifact_sha256
       risk: G2
       milestone: m2
       pkgs: api
@@ -5802,6 +5877,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -5874,6 +5952,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -6019,24 +6098,28 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m2-r1.json
       C1_HEAD: $diff-m2-r1.output.head
       C1_DIFF_HASH: $diff-m2-r1.output.diff_hash
+      C1_SHA256: $diff-m2-r1.output.artifact_sha256
       R2:
         from: $review-m2-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m2-r2.json
       C2_HEAD: $diff-m2-r2.output.head
       C2_DIFF_HASH: $diff-m2-r2.output.diff_hash
+      C2_SHA256: $diff-m2-r2.output.artifact_sha256
       R3:
         from: $review-m2-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m2-r3.json
       C3_HEAD: $diff-m2-r3.output.head
       C3_DIFF_HASH: $diff-m2-r3.output.diff_hash
+      C3_SHA256: $diff-m2-r3.output.artifact_sha256
       R4:
         from: $review-m2-r4.output
         if_skipped: null
       C4: $ARTIFACTS_DIR/diff-m2-r4.json
       C4_HEAD: $diff-m2-r4.output.head
       C4_DIFF_HASH: $diff-m2-r4.output.diff_hash
+      C4_SHA256: $diff-m2-r4.output.artifact_sha256
       risk: G2
       milestone: m2
       pkgs: api
@@ -6277,6 +6360,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -6349,6 +6435,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -6494,30 +6581,35 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m2-r1.json
       C1_HEAD: $diff-m2-r1.output.head
       C1_DIFF_HASH: $diff-m2-r1.output.diff_hash
+      C1_SHA256: $diff-m2-r1.output.artifact_sha256
       R2:
         from: $review-m2-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m2-r2.json
       C2_HEAD: $diff-m2-r2.output.head
       C2_DIFF_HASH: $diff-m2-r2.output.diff_hash
+      C2_SHA256: $diff-m2-r2.output.artifact_sha256
       R3:
         from: $review-m2-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m2-r3.json
       C3_HEAD: $diff-m2-r3.output.head
       C3_DIFF_HASH: $diff-m2-r3.output.diff_hash
+      C3_SHA256: $diff-m2-r3.output.artifact_sha256
       R4:
         from: $review-m2-r4.output
         if_skipped: null
       C4: $ARTIFACTS_DIR/diff-m2-r4.json
       C4_HEAD: $diff-m2-r4.output.head
       C4_DIFF_HASH: $diff-m2-r4.output.diff_hash
+      C4_SHA256: $diff-m2-r4.output.artifact_sha256
       R5:
         from: $review-m2-r5.output
         if_skipped: null
       C5: $ARTIFACTS_DIR/diff-m2-r5.json
       C5_HEAD: $diff-m2-r5.output.head
       C5_DIFF_HASH: $diff-m2-r5.output.diff_hash
+      C5_SHA256: $diff-m2-r5.output.artifact_sha256
       risk: G2
       milestone: m2
       pkgs: api
@@ -6758,6 +6850,9 @@ nodes:
           type: string
         diff_hash:
           type: string
+        artifact_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
         same:
           type: boolean
         reviewed:
@@ -6830,6 +6925,7 @@ nodes:
         - log
         - patch
         - diff_hash
+        - artifact_sha256
         - same
         - reviewed
         - base_pass
@@ -6975,36 +7071,42 @@ nodes:
       C1: $ARTIFACTS_DIR/diff-m2-r1.json
       C1_HEAD: $diff-m2-r1.output.head
       C1_DIFF_HASH: $diff-m2-r1.output.diff_hash
+      C1_SHA256: $diff-m2-r1.output.artifact_sha256
       R2:
         from: $review-m2-r2.output
         if_skipped: null
       C2: $ARTIFACTS_DIR/diff-m2-r2.json
       C2_HEAD: $diff-m2-r2.output.head
       C2_DIFF_HASH: $diff-m2-r2.output.diff_hash
+      C2_SHA256: $diff-m2-r2.output.artifact_sha256
       R3:
         from: $review-m2-r3.output
         if_skipped: null
       C3: $ARTIFACTS_DIR/diff-m2-r3.json
       C3_HEAD: $diff-m2-r3.output.head
       C3_DIFF_HASH: $diff-m2-r3.output.diff_hash
+      C3_SHA256: $diff-m2-r3.output.artifact_sha256
       R4:
         from: $review-m2-r4.output
         if_skipped: null
       C4: $ARTIFACTS_DIR/diff-m2-r4.json
       C4_HEAD: $diff-m2-r4.output.head
       C4_DIFF_HASH: $diff-m2-r4.output.diff_hash
+      C4_SHA256: $diff-m2-r4.output.artifact_sha256
       R5:
         from: $review-m2-r5.output
         if_skipped: null
       C5: $ARTIFACTS_DIR/diff-m2-r5.json
       C5_HEAD: $diff-m2-r5.output.head
       C5_DIFF_HASH: $diff-m2-r5.output.diff_hash
+      C5_SHA256: $diff-m2-r5.output.artifact_sha256
       R6:
         from: $review-m2-r6.output
         if_skipped: null
       C6: $ARTIFACTS_DIR/diff-m2-r6.json
       C6_HEAD: $diff-m2-r6.output.head
       C6_DIFF_HASH: $diff-m2-r6.output.diff_hash
+      C6_SHA256: $diff-m2-r6.output.artifact_sha256
       risk: G2
       milestone: m2
       pkgs: api
@@ -7205,6 +7307,9 @@ nodes:
                 type: string
               diff_hash:
                 type: string
+              artifact_sha256:
+                type: string
+                pattern: ^[0-9a-f]{64}$
               same:
                 type: boolean
               reviewed:
@@ -7277,6 +7382,7 @@ nodes:
               - log
               - patch
               - diff_hash
+              - artifact_sha256
               - same
               - reviewed
               - base_pass

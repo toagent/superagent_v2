@@ -371,11 +371,22 @@ export function buildWorkflow(
     });
     return ready;
   };
-  const integrationNode = (m: Milestone, approved: Node, acceptInputs: Node): Node => {
+  const integrationNode = (
+    m: Milestone,
+    approved: Node,
+    acceptInputs: Node,
+    gateBindings: { round: number; node: string; carried?: boolean }[]
+  ): Node => {
     const reviewRequired = m.review || m.risk === 'G2';
     const syncId = `resync-${m.id}`;
     const finalAccept = `final-accept-${m.id}`;
     const publishId = `publish-${m.id}`;
+    const gateHashes = gateBindings
+      .map(
+        binding =>
+          `INPUTS_GATE_${String(binding.round)}${binding.carried ? '_CARRIED' : ''}_SHA256=$${binding.node}.output.artifact_sha256 `
+      )
+      .join('');
     const integrationNodes: Node[] = [
       {
         id: syncId,
@@ -412,7 +423,7 @@ export function buildWorkflow(
             ? integrationCommand(
                 'publish',
                 m.id,
-                `INPUTS_TARGET_TIP=$${syncId}.output.target_tip INPUTS_REVIEW_REQUIRED=${reviewRequired ? '1' : '0'} `
+                `${gateHashes}INPUTS_TARGET_TIP=$${syncId}.output.target_tip INPUTS_REVIEW_REQUIRED=${reviewRequired ? '1' : '0'} `
               )
             : `printf '{"status":"published","target_tip":"%s"}' "$${syncId}.output.target_tip"`,
         timeout: integrationLockTimeout(),
@@ -464,6 +475,7 @@ export function buildWorkflow(
             [`C${n}`, i + 1 === r ? `$ARTIFACTS_DIR/diff-${tag}.json` : 'null'],
             [`C${n}_HEAD`, i + 1 === r ? `$${diff}.output.head` : ''],
             [`C${n}_DIFF_HASH`, i + 1 === r ? `$${diff}.output.diff_hash` : ''],
+            [`C${n}_SHA256`, i + 1 === r ? `$${diff}.output.artifact_sha256` : ''],
           ];
         })
       );
@@ -498,7 +510,11 @@ export function buildWorkflow(
           operator_id: run,
         })
       );
-      nodes.push(integrationNode(m, signoff(m, { depends_on: [`gate-${tag}`] }), common));
+      nodes.push(
+        integrationNode(m, signoff(m, { depends_on: [`gate-${tag}`] }), common, [
+          { round: r, node: `gate-${tag}` },
+        ])
+      );
       after = { depends_on: [`integrate-${m.id}`] };
       continue;
     }
@@ -818,9 +834,10 @@ export function buildWorkflow(
       );
       if (r === 1 && checkpointMatch && checkpoint) {
         const checkpointPath = join(gen, 'review-checkpoints', `${m.id}.json`);
+        const gatePath = `$ARTIFACTS_DIR/gate-${m.id}-r1.json`;
         nodes.push({
           id: `carried-gate-${m.id}`,
-          bash: `cp '${checkpointPath.replaceAll("'", "'\\''")}' "$ARTIFACTS_DIR/gate-${m.id}-r1.json" && cat "$ARTIFACTS_DIR/gate-${m.id}-r1.json"`,
+          bash: `cp '${checkpointPath.replaceAll("'", "'\\''")}' "${gatePath}" && EVIDENCE_PATH="${gatePath}" bun -e 'const b = new Uint8Array(await Bun.file(process.env.EVIDENCE_PATH).arrayBuffer()); const o = JSON.parse(new TextDecoder().decode(b)); o.artifact_sha256 = new Bun.CryptoHasher("sha256").update(b).digest("hex"); process.stdout.write(JSON.stringify(o))'`,
           depends_on: [`diff-${t}`],
           when: `$diff-${t}.output.disposition == 'advance' && ${checkpointMatch}`,
         });
@@ -896,6 +913,7 @@ export function buildWorkflow(
       rounds[`C${String(r)}`] = `$ARTIFACTS_DIR/diff-${t}.json`;
       rounds[`C${String(r)}_HEAD`] = `$diff-${t}.output.head`;
       rounds[`C${String(r)}_DIFF_HASH`] = `$diff-${t}.output.diff_hash`;
+      rounds[`C${String(r)}_SHA256`] = `$diff-${t}.output.artifact_sha256`;
       // 评审被跳过（验收未 advance 或修复无变化）时 gate 仍要运行；diff 也被跳过则本轮整体不走
       nodes.push(
         check(
@@ -936,15 +954,26 @@ export function buildWorkflow(
     const approved = signoff(m, gates);
     const ids = m.packages.map(p => p.id).join(',');
     nodes.push(
-      integrationNode(m, approved, {
-        plan: planPath,
-        policy: policyPath,
-        pkgs: ids,
-        scope_pkgs,
-        risk: m.risk,
-        milestone: m.id,
-        ...ledger,
-      })
+      integrationNode(
+        m,
+        approved,
+        {
+          plan: planPath,
+          policy: policyPath,
+          pkgs: ids,
+          scope_pkgs,
+          risk: m.risk,
+          milestone: m.id,
+          ...ledger,
+        },
+        [
+          ...Array.from({ length: maxRounds }, (_, i) => ({
+            round: i + 1,
+            node: `gate-${m.id}-r${String(i + 1)}`,
+          })),
+          ...(checkpointMatch ? [{ round: 1, node: `carried-gate-${m.id}`, carried: true }] : []),
+        ]
+      )
     );
     after = { depends_on: [`integrate-${m.id}`] };
   }

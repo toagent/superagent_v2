@@ -160,21 +160,34 @@ const integrationSync = (): void => {
 
 const lastGate = (milestone: string): Record<string, unknown> => {
   const artifacts = process.env.ARTIFACTS_DIR ?? '';
-  const record = (path: string): Record<string, unknown> => {
-    const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  const record = (file: string): Record<string, unknown> | undefined => {
+    const round = /-r(\d+)\.json$/.exec(file)?.[1];
+    if (!round) throw new Error(`integration: invalid gate evidence name ${file}`);
+    const expected = [
+      process.env[`INPUTS_GATE_${round}_SHA256`],
+      process.env[`INPUTS_GATE_${round}_CARRIED_SHA256`],
+    ].filter((value): value is string => Boolean(value));
+    if (!expected.length) return undefined;
+    const path = join(artifacts, file),
+      bytes = readFileSync(path),
+      actual = createHash('sha256').update(bytes).digest('hex');
+    if (!expected.includes(actual)) throw new Error(`integration: gate evidence mismatch ${file}`);
+    const value: unknown = JSON.parse(bytes.toString('utf8'));
     if (value === null || typeof value !== 'object' || Array.isArray(value))
       throw new Error(`integration: invalid evidence ${path}`);
     return value as Record<string, unknown>;
   };
-  const file = readdirSync(artifacts)
+  const selected = readdirSync(artifacts)
     .filter(name => new RegExp(`^gate-${milestone}-r\\d+\\.json$`).test(name))
     .sort((a, b) => Number(/r(\d+)/.exec(a)?.[1]) - Number(/r(\d+)/.exec(b)?.[1]))
-    .filter(name => record(join(artifacts, name)).verdict === 'pass')
+    .map(file => ({ file, value: record(file) }))
+    .filter(
+      (entry): entry is { file: string; value: Record<string, unknown> } =>
+        entry.value?.verdict === 'pass'
+    )
     .at(-1);
-  if (!file) throw new Error(`integration: missing passing gate for ${milestone}`);
-  const round = /r(\d+)/.exec(file)?.[1];
-  if (!round) throw new Error(`integration: invalid gate evidence name ${file}`);
-  return record(join(artifacts, file));
+  if (!selected) throw new Error(`integration: missing passing gate for ${milestone}`);
+  return selected.value;
 };
 
 const integrationPublish = (): void => {

@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generate } from '../src/generate';
@@ -171,7 +172,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
       }
       let synced = runBash(sync.bash!, f.worker, env);
       expect(readFileSync(join(f.artifact, 'resync-m1.json'), 'utf8')).toContain('"generation": 1');
-      const writeGate = (base: string): void => {
+      const writeGate = (base: string): string => {
         const head = sh('git rev-parse HEAD', f.worker).trim();
         const patch = Bun.spawnSync(
           [
@@ -188,18 +189,20 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
           ],
           { stdout: 'pipe' }
         ).stdout;
-        writeFileSync(
-          join(f.artifact, 'gate-m1-r1.json'),
-          JSON.stringify({
-            verdict: 'pass',
-            reviewed_head: head,
-            reviewed_diff_hash: diffHash(patch),
-          })
-        );
+        const serialized = JSON.stringify({
+          verdict: 'pass',
+          reviewed_head: head,
+          reviewed_diff_hash: diffHash(patch),
+        });
+        writeFileSync(join(f.artifact, 'gate-m1-r1.json'), serialized);
+        return createHash('sha256').update(serialized).digest('hex');
       };
-      writeGate(String(synced.target_tip));
-      const publishAt = (tip: string) =>
-        runBash(publish.bash!.replace('$resync-m1.output.target_tip', tip), f.worker, env);
+      let gateSha256 = writeGate(String(synced.target_tip));
+      const publishCommand = (tip: string) =>
+        publish
+          .bash!.replace('$resync-m1.output.target_tip', tip)
+          .replace('$gate-m1-r1.output.artifact_sha256', gateSha256);
+      const publishAt = (tip: string) => runBash(publishCommand(tip), f.worker, env);
       if (mode === 'advanced') {
         writeFileSync(join(f.repo, 'advanced.txt'), 'advanced\n');
         sh('git add advanced.txt && git commit -qm advanced', f.repo);
@@ -215,14 +218,12 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
       if (mode === 'dirty') {
         const dirty = join(f.repo, 'dirty.txt');
         writeFileSync(dirty, 'dirty\n');
-        const failed = Bun.spawnSync(
-          [
-            'bash',
-            '-c',
-            publish.bash!.replace('$resync-m1.output.target_tip', String(synced.target_tip)),
-          ],
-          { cwd: f.worker, env, stdout: 'pipe', stderr: 'pipe' }
-        );
+        const failed = Bun.spawnSync(['bash', '-c', publishCommand(String(synced.target_tip))], {
+          cwd: f.worker,
+          env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
         expect(failed.exitCode).toBe(1);
         expect(JSON.parse(failed.stdout.toString())).toEqual({
           status: 'dirty',
@@ -230,6 +231,25 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
           reason: 'target_dirty',
         });
         unlinkSync(dirty);
+      }
+      if (mode === 'normal') {
+        const gatePath = join(f.artifact, 'gate-m1-r1.json');
+        writeFileSync(
+          gatePath,
+          JSON.stringify({
+            ...JSON.parse(readFileSync(gatePath, 'utf8')),
+            reviewed_diff_hash: 'tampered',
+          })
+        );
+        const rejected = Bun.spawnSync(['bash', '-c', publishCommand(String(synced.target_tip))], {
+          cwd: f.worker,
+          env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        expect(rejected.exitCode).toBe(1);
+        expect(rejected.stderr.toString()).toContain('integration: gate evidence mismatch');
+        gateSha256 = writeGate(String(synced.target_tip));
       }
       expect(publishAt(String(synced.target_tip)).status).toBe('published');
       const head = sh('git rev-parse HEAD', f.worker).trim();

@@ -591,7 +591,10 @@ describe('NONCONVERGENCE delivery gate', () => {
       out: { verdict: 'pass', reason: 'review_not_required', rounds: 1 },
     });
   });
-  test('gate rejects an acceptance artifact that differs from captured node identity', () => {
+  test.each([
+    ['ok', false],
+    ['risk', 'G1'],
+  ] as const)('gate rejects acceptance artifact with tampered %s', (field, value) => {
     const root = tmp(),
       repo = gitRepo(root),
       plan = planFile(root, 'true');
@@ -599,12 +602,61 @@ describe('NONCONVERGENCE delivery gate', () => {
       kind: 'accept',
       plan,
       pkgs: 'a',
+      risk: 'G2',
       tag: 'diff-m1-r1',
       coder: '{"status":"done","error_class":null}',
     });
-    const check = accepted.out as { head: string; diff_hash: string };
+    const check = accepted.out as {
+      head: string;
+      diff_hash: string;
+      artifact_sha256: string;
+    };
     const path = join(accepted.art, 'diff-m1-r1.json');
-    writeFileSync(path, JSON.stringify({ ...check, head: 'tampered' }));
+    const artifact = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...artifact, [field]: value }));
+    expect(
+      runScript(repo, {
+        kind: 'gate',
+        plan,
+        pkgs: 'a',
+        risk: 'G2',
+        review: '0',
+        round: '1',
+        milestone: 'm1',
+        tag: 'gate-m1-r1',
+        r1: 'null',
+        c1: path,
+        c1_head: check.head,
+        c1_diff_hash: check.diff_hash,
+        c1_sha256: check.artifact_sha256,
+      })
+    ).toMatchObject({
+      code: 1,
+      out: {
+        verdict: 'escalate',
+        reason: 'acceptance_evidence_mismatch',
+        decision: { kind: 'block' },
+        head_trusted: false,
+      },
+    });
+  });
+  test('gate accepts an artifact matching the captured full-file sha256', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      plan = planFile(root, 'true');
+    const accepted = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      risk: 'G1',
+      tag: 'diff-m1-r1',
+      coder: '{"status":"done","error_class":null}',
+    });
+    const check = accepted.out as {
+      head: string;
+      diff_hash: string;
+      artifact_sha256: string;
+    };
     expect(
       runScript(repo, {
         kind: 'gate',
@@ -616,19 +668,12 @@ describe('NONCONVERGENCE delivery gate', () => {
         milestone: 'm1',
         tag: 'gate-m1-r1',
         r1: 'null',
-        c1: path,
+        c1: join(accepted.art, 'diff-m1-r1.json'),
         c1_head: check.head,
         c1_diff_hash: check.diff_hash,
+        c1_sha256: check.artifact_sha256,
       })
-    ).toMatchObject({
-      code: 1,
-      out: {
-        verdict: 'escalate',
-        reason: 'acceptance_evidence_mismatch',
-        decision: { kind: 'block' },
-        head_trusted: false,
-      },
-    });
+    ).toMatchObject({ code: 0, out: { verdict: 'pass', reason: 'review_not_required' } });
   });
   test.each(['G1', 'G2'])('%s low unknown self-report finding remains debt', risk => {
     for (const status of ['PASS', 'FAIL'] as const) {
@@ -1699,12 +1744,14 @@ function runScript(
     if (inputs.kind === 'gate' && /^c\d+$/.test(k)) {
       const file = existsSync(v) ? v : undefined;
       const check = JSON.parse(file ? readFileSync(file, 'utf8') : v);
-      if (check && !Object.hasOwn(check, 'checkout_fingerprint'))
+      const needsFingerprint = check && !Object.hasOwn(check, 'checkout_fingerprint');
+      if (needsFingerprint)
         check.checkout_fingerprint = checkoutFingerprint(args =>
           Bun.spawnSync(['git', '-C', cwd, ...args])
         );
-      if (file) writeFileSync(file, JSON.stringify(check));
-      else value = JSON.stringify(check);
+      if (file) {
+        if (needsFingerprint) writeFileSync(file, JSON.stringify(check));
+      } else value = JSON.stringify(check);
     }
     env[`INPUTS_${k.toUpperCase()}`] = value;
   }
@@ -4041,14 +4088,14 @@ test.each(['settle', 'accept'])('NO_HOLD %s repair exhaustion exits failed with 
       evidence: expect.arrayContaining([expect.stringContaining('.log')]),
     },
   });
-  expect(
-    JSON.parse(
-      readFileSync(
-        join(r.art, kind === 'settle' ? 'settle-a.json' : `diff-m1-r${String(MAX_ROUNDS)}.json`),
-        'utf8'
-      )
-    )
-  ).toEqual(r.out);
+  const path = join(
+      r.art,
+      kind === 'settle' ? 'settle-a.json' : `diff-m1-r${String(MAX_ROUNDS)}.json`
+    ),
+    bytes = readFileSync(path),
+    { artifact_sha256: artifactSha256, ...emitted } = r.out as Record<string, unknown>;
+  expect(JSON.parse(bytes.toString('utf8'))).toEqual(emitted);
+  expect(artifactSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
 });
 
 test('ROOT_ACCEPT unfinished redline self-report with green empty diff holds as coder_partial', () => {

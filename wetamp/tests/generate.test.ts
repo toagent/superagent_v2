@@ -1486,6 +1486,7 @@ describe('buildWorkflow', () => {
       C3: '$ARTIFACTS_DIR/diff-m1-r3.json',
       C3_HEAD: '$diff-m1-r3.output.head',
       C3_DIFF_HASH: '$diff-m1-r3.output.diff_hash',
+      C3_SHA256: '$diff-m1-r3.output.artifact_sha256',
     });
     for (let r = 4; r <= MAX_ROUNDS; r++) {
       const t = `m1-r${String(r)}`,

@@ -1055,13 +1055,15 @@ function finish(
       );
     }
   }
-  writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
+  const serialized = JSON.stringify(out, null, 2);
+  writeFileSync(join(artifacts, `${tag}.json`), serialized);
+  const emitted = { ...out, artifact_sha256: sha(serialized) };
   // Audit/control evidence stays in the artifact; downstream packages consume only delivered data.
   const delivered = { diff_hash: out.diff_hash, head: out.head };
   emit(
     env('KIND') === 'settle' && out.disposition !== 'fail' && env('FULL_OUTPUT') !== '1'
       ? delivered
-      : out
+      : emitted
   );
   if (out.disposition === 'fail' || out.disposition === 'adjudicate') {
     console.error(`${tag}: failed (${out.reason ?? ''})`);
@@ -2388,15 +2390,25 @@ function gate(): void {
       )
     : null;
   const reviews = reused?.reviews ?? (pick('R') as (Review | null)[]);
-  const rechecks = pick('C') as Accept[];
-  const bindingErrors = rechecks.flatMap((check, i) => {
-    const key = `C${String(i + 1)}`;
-    if (!artifactJsonPath(env(key))) return [];
+  const bindingErrors: string[] = [];
+  const rechecks = Array.from({ length: round }, (_, i) => {
+    const key = `C${String(i + 1)}`,
+      value = env(key),
+      path = artifactJsonPath(value);
+    if (!path) return json(key) as Accept | null;
+    const bytes = readFileSync(path),
+      actualSha256 = createHash('sha256').update(bytes).digest('hex'),
+      expectedSha256 = env(`${key}_SHA256`);
+    if (!expectedSha256 || actualSha256 !== expectedSha256) {
+      bindingErrors.push(`${key}: artifact sha256 does not match captured node output`);
+      return null;
+    }
+    const check = JSON.parse(bytes.toString('utf8')) as Accept;
     const expectedHead = env(`${key}_HEAD`),
       expectedDiffHash = env(`${key}_DIFF_HASH`);
-    return check.head === expectedHead && check.diff_hash === expectedDiffHash
-      ? []
-      : [`${key}: artifact head/diff_hash does not match captured node output`];
+    if (check.head !== expectedHead || check.diff_hash !== expectedDiffHash)
+      bindingErrors.push(`${key}: artifact head/diff_hash does not match captured node output`);
+    return check;
   });
   if (recovery && rechecks.at(-1)?.head !== recovery.candidate)
     throw new Error('recovery: acceptance candidate drift');
@@ -2548,8 +2560,9 @@ function gate(): void {
     head_trusted:
       d.reason !== 'review_modified_checkout' && d.reason !== 'acceptance_evidence_mismatch',
   };
-  writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
-  emit(out);
+  const serialized = JSON.stringify(out, null, 2);
+  writeFileSync(join(artifacts, `${tag}.json`), serialized);
+  emit({ ...out, artifact_sha256: sha(serialized) });
   if (out.verdict === 'escalate') {
     console.error(
       `${tag}: escalate (${out.reason ?? ''}) after ${String(out.rounds)} review round(s)`
