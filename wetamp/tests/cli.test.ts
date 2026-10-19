@@ -1206,7 +1206,7 @@ describe('waitRun (archon stub)', () => {
       expect(out.error.length).toBeLessThanOrEqual(200);
     }
   });
-  test('wait native block surfaces inbox before another get', () => {
+  test('wait ignores accepted inbox and wakes when a new queued message arrives', () => {
     const s = stub([run('running')]);
     const message: coordModule.Message = {
       id: 'fixture',
@@ -1219,11 +1219,12 @@ describe('waitRun (archon stub)', () => {
       body: '',
       evidence: [],
       severity: 'normal',
-      state: 'surfaced',
+      state: 'queued',
       at: '',
     };
+    const accepted = { ...message, id: 'accepted', state: 'accepted' as const };
     const inbox = spyOn(coordModule.coord(), 'surfaced')
-      .mockReturnValueOnce([])
+      .mockReturnValueOnce([accepted])
       .mockReturnValue([message]);
     try {
       expect(waitRun(s.ledger, 60)).toMatchObject({ state: 'inbox', exit: EXIT.held });
