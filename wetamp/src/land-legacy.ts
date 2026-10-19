@@ -41,40 +41,15 @@ import {
   type Land,
 } from '../templates/.archon/scripts/sa-check';
 import type { Plan } from './plan';
-/** Fixed codes are safe for intervention persistence; diagnostics stay in message. */
-export class LandError extends Error {
-  constructor(
-    code:
-      | 'codegraph_exclude_failed'
-      | 'delivery_git_failed'
-      | 'not_ready'
-      | 'repository_missing'
-      | 'target_missing'
-      | 'target_protected'
-      | 'git_failed'
-      | 'integration_lock_timeout'
-      | 'delivery_target_changed'
-      | 'target_dirty'
-      | 'source_head_drifted'
-      | 'source_tree_changed'
-      | 'target_history_changed'
-      | 'target_history_check_failed'
-      | 'integration_ancestry_failed'
-      | 'candidate_ancestry_failed'
-      | 'merge_conflicts'
-      | 'submodule_init_failed'
-      | 'environment_failed'
-      | 'acceptance_failed'
-      | 'candidate_changed'
-      | 'target_checkout_changed'
-      | 'target_advanced'
-      | 'integration_outcome_unknown',
-    message: string
-  ) {
-    super(message);
-    this.name = `land_${code}`;
-  }
-}
+import {
+  checkoutChanges,
+  integrationLockPath,
+  integrationLockTimeout,
+  LandError,
+  protectedTarget,
+  targetCheckout,
+  type DeliveryTarget,
+} from './integration';
 /** Shared Git metadata keeps the main index out of every worktree's clean checks. */
 export function excludeCodegraph(repo: string): void {
   const result = Bun.spawnSync(
@@ -89,11 +64,6 @@ export function excludeCodegraph(repo: string): void {
   const file = result.stdout.toString().trim();
   if (!existsSync(file) || !readFileSync(file, 'utf8').split('\n').includes('.codegraph/'))
     appendFileSync(file, '\n.codegraph/\n');
-}
-export interface DeliveryTarget {
-  checkout: string;
-  branch: string;
-  head: string;
 }
 export function landEvidence(
   run: Pick<RunView, 'nodes'> & Partial<Pick<RunView, 'status'>>,
@@ -137,8 +107,6 @@ export interface DeferredDelivery {
   reason: 'merge_conflicts';
   milestone: string;
 }
-export const protectedTarget = (branch: string): boolean =>
-  /^(main|master|dev|develop|release-.*)$/.test(branch);
 export interface LocalDelivery {
   task: string;
   target: DeliveryTarget;
@@ -193,21 +161,6 @@ export function captureDelivery(checkout: string): DeliveryTarget {
   };
 }
 // prettier-ignore
-export function checkoutChanges(checkout: string): string[] {
-  const p = Bun.spawnSync(['git', '-C', checkout, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
-  if (p.exitCode !== 0) throw new LandError('git_failed', `land: ${p.stderr.toString().trim()}`);
-  const records = p.stdout.toString().split('\0'), paths: string[] = [];
-  for (let i = 0; i < records.length; i++) {
-    const row = records[i]; if (!row) continue;
-    paths.push(`${row.startsWith('??') ? 'untracked' : 'tracked'}: ${JSON.stringify(row.slice(3))}`);
-    if (/[RC]/.test(row.slice(0, 2))) i++; // porcelain -z includes a second rename/copy path.
-  }
-  return paths;
-}
-export const integrationLockTimeout = (): number =>
-  (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
-  20 * 60_000;
-// prettier-ignore
 export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Partial<Land>, verify: (cwd: string) => number, context?: { repo: string; base_ref: string; launch_branch?: string; delivery?: LocalDelivery; plan?: Plan; cacheReady?: (cwd: string) => boolean; evidence?: ReturnType<typeof landEvidence> }): DeliveryOutcome | undefined {
   const evidence = context?.evidence ?? landEvidence(run);
   const deliver = evidence?.node.replace(/^land/, 'deliver');
@@ -227,14 +180,14 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     return p.stdout.toString().trimEnd();
   };
   const git = (...args: string[]): string => gitAt(repo, ...args);
-  const targetCheckout = () => git('worktree', 'list', '--porcelain', '-z').split('\0\0').find(record => record.split('\0').includes(`branch refs/heads/${target}`))?.split('\0').find(line => line.startsWith('worktree '))?.slice(9);
-  const lockfile = join(git('rev-parse', '--path-format=absolute', '--git-common-dir'), `sa-land-${createHash('sha256').update(target).digest('hex')}.lock`);
+  const currentTargetCheckout = () => targetCheckout(git('worktree', 'list', '--porcelain', '-z'), target);
+  const lockfile = integrationLockPath(git('rev-parse', '--path-format=absolute', '--git-common-dir'), target);
   let lease = lock(lockfile);
   const deadline = Date.now() + integrationLockTimeout();
   while (!lease.ok && Date.now() < deadline) { Bun.sleepSync(50); lease = lock(lockfile); }
   if (!lease.ok) throw new LandError('integration_lock_timeout', 'land: timed out waiting for integration lock');
   try {
-  const checkout = targetCheckout();
+  const checkout = currentTargetCheckout();
   if (delivery && (!checkout || realpathSync(checkout) !== delivery.target.checkout || gitAt(checkout, 'symbolic-ref', '--short', 'HEAD') !== target)) throw new LandError('delivery_target_changed', 'delivery: target checkout/branch changed');
   const clean = () => {
     const paths = checkout ? checkoutChanges(checkout) : [];
@@ -359,7 +312,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     if (timed('acceptance', () => verify(candidate)) !== 0) throw new LandError('acceptance_failed', 'land: acceptance failed');
     if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('candidate_changed', 'land: acceptance changed candidate checkout');
     sameTree(); clean();
-    if (targetCheckout() !== checkout) throw new LandError('target_checkout_changed', 'land: target checkout changed during acceptance; retry land --apply');
+    if (currentTargetCheckout() !== checkout) throw new LandError('target_checkout_changed', 'land: target checkout changed during acceptance; retry land --apply');
     if (git('rev-parse', `refs/heads/${target}`) !== tip) {
       if (attempt < 2) continue;
       throw new LandError('target_advanced', 'land: target advanced during acceptance after 2 retries');

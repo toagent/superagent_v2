@@ -2,12 +2,78 @@ import { createHash } from 'node:crypto';
 import { realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS } from './archon';
-import {
-  checkoutChanges,
-  integrationLockTimeout,
-  protectedTarget,
-  type DeliveryTarget,
-} from './land-legacy';
+
+/** Fixed codes are safe for intervention persistence; diagnostics stay in message. */
+export class LandError extends Error {
+  constructor(
+    code:
+      | 'codegraph_exclude_failed'
+      | 'delivery_git_failed'
+      | 'not_ready'
+      | 'repository_missing'
+      | 'target_missing'
+      | 'target_protected'
+      | 'git_failed'
+      | 'integration_lock_timeout'
+      | 'delivery_target_changed'
+      | 'target_dirty'
+      | 'source_head_drifted'
+      | 'source_tree_changed'
+      | 'target_history_changed'
+      | 'target_history_check_failed'
+      | 'integration_ancestry_failed'
+      | 'candidate_ancestry_failed'
+      | 'merge_conflicts'
+      | 'submodule_init_failed'
+      | 'environment_failed'
+      | 'acceptance_failed'
+      | 'candidate_changed'
+      | 'target_checkout_changed'
+      | 'target_advanced'
+      | 'integration_outcome_unknown',
+    message: string
+  ) {
+    super(message);
+    this.name = `land_${code}`;
+  }
+}
+
+export interface DeliveryTarget {
+  checkout: string;
+  branch: string;
+  head: string;
+}
+
+export const protectedTarget = (branch: string): boolean =>
+  /^(main|master|dev|develop|release-.*)$/.test(branch);
+
+// prettier-ignore
+export function checkoutChanges(checkout: string): string[] {
+  const p = Bun.spawnSync(['git', '-C', checkout, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+  if (p.exitCode !== 0) throw new LandError('git_failed', `land: ${p.stderr.toString().trim()}`);
+  const records = p.stdout.toString().split('\0'), paths: string[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const row = records[i]; if (!row) continue;
+    paths.push(`${row.startsWith('??') ? 'untracked' : 'tracked'}: ${JSON.stringify(row.slice(3))}`);
+    if (/[RC]/.test(row.slice(0, 2))) i++;
+  }
+  return paths;
+}
+
+export const integrationLockTimeout = (): number =>
+  (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
+  20 * 60_000;
+
+export const integrationLockPath = (commonDir: string, branch: string): string =>
+  join(commonDir, `sa-land-${createHash('sha256').update(branch).digest('hex')}.lock`);
+
+export const targetCheckout = (worktrees: string, branch: string): string | undefined =>
+  worktrees
+    .split('\0\0')
+    .find(record => record.split('\0').includes(`branch refs/heads/${branch}`))
+    ?.split('\0')
+    .find(line => line.startsWith('worktree '))
+    ?.slice(9);
 
 export type SyncResult =
   | {
@@ -137,14 +203,6 @@ export function sync(
   };
 }
 
-const targetCheckout = (repo: string, branch: string): string | undefined =>
-  git(repo, 'worktree', 'list', '--porcelain', '-z')
-    .split('\0\0')
-    .find(record => record.split('\0').includes(`branch refs/heads/${branch}`))
-    ?.split('\0')
-    .find(line => line.startsWith('worktree '))
-    ?.slice(9);
-
 const writeReceipt = (file: string, receipt: PublishReceipt): void => {
   const temp = `${file}.${String(process.pid)}.tmp`;
   writeFileSync(temp, JSON.stringify(receipt, null, 2));
@@ -160,10 +218,7 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
       evidence: `target branch ${run.target.branch} is protected`,
     };
   const common = git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir');
-  const lockfile = join(
-    common,
-    `sa-land-${createHash('sha256').update(run.target.branch).digest('hex')}.lock`
-  );
+  const lockfile = integrationLockPath(common, run.target.branch);
   let lease = lock(lockfile);
   const deadline = Date.now() + integrationLockTimeout();
   while (!lease.ok && Date.now() < deadline) {
@@ -176,7 +231,10 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
     const ref = `refs/heads/${run.target.branch}`;
     const targetTip = git(repo, 'rev-parse', ref);
     if (targetTip !== expected.target_tip) return { status: 'advanced', target_tip: targetTip };
-    const checkout = targetCheckout(repo, run.target.branch);
+    const checkout = targetCheckout(
+      git(repo, 'worktree', 'list', '--porcelain', '-z'),
+      run.target.branch
+    );
     if (
       !checkout ||
       realpathSync(checkout) !== repo ||
@@ -217,25 +275,20 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
 
     run.fence();
     if (head !== targetTip) {
-      const updated = Bun.spawnSync(['git', '-C', repo, 'update-ref', ref, head, targetTip], {
+      const merged = Bun.spawnSync(['git', '-C', checkout, 'merge', '--ff-only', head], {
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: QUERY_TIMEOUT_MS,
       });
-      if (updated.exitCode !== 0) {
+      if (merged.exitCode !== 0) {
         const current = git(repo, 'rev-parse', ref);
         if (current !== targetTip) return { status: 'advanced', target_tip: current };
-        throw new IntegrationError('git_failed', updated.stderr.toString().trim());
+        throw new IntegrationError('git_failed', merged.stderr.toString().trim());
       }
-      const aligned = Bun.spawnSync(['git', '-C', checkout, 'reset', '--hard', head], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: QUERY_TIMEOUT_MS,
-      });
-      if (aligned.exitCode !== 0)
+      if (git(repo, 'rev-parse', ref) !== head)
         throw new IntegrationError(
           'publish_outcome_unknown',
-          `target ref advanced but checkout alignment failed: ${aligned.stderr.toString().trim()}`
+          'target ref does not match the published head'
         );
     }
     const receipt: PublishReceipt = {
