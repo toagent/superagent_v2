@@ -145,7 +145,7 @@ test('merged completed run removes only its worktree and branch; second GC is id
 });
 
 test('unchanged skipped ledger uses cache and branch SHA changes invalidate it', () => {
-  const f = fixture('completed', false);
+  const f = fixture('failed', false);
   revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
   expect(gc()[0].reason).toContain('not merged');
   query?.mockClear();
@@ -173,7 +173,7 @@ test('another sa worktree advancing does not invalidate a cached ledger', () => 
 });
 
 test('a non-sa branch advancing invalidates a cached ledger', () => {
-  const f = fixture('completed', false);
+  const f = fixture('failed', false);
   revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
   expect(gc()[0].reason).toContain('not merged');
   writeFileSync(join(f.repo, 'main.txt'), 'main');
@@ -184,13 +184,12 @@ test('a non-sa branch advancing invalidates a cached ledger', () => {
   expect(query).toHaveBeenCalledTimes(1);
 });
 
-test('unmerged completed run is retained and the same skip is recorded only once', () => {
+test('unmerged completed run removes its clean worktree but retains its branch', () => {
   const f = fixture('completed', false);
-  expect(gc()[0].reason).toContain('not merged');
-  expect(gc()[0].action).toBe('skipped');
-  expect(existsSync(f.path)).toBe(true);
+  expect(gc(true).map(e => e.action)).toEqual(['would_remove', 'skipped']);
+  expect(gc().map(e => e.action)).toEqual(['removed', 'skipped']);
+  expect(existsSync(f.path)).toBe(false);
   expect(f.branchExists()).toBe(true);
-  expect(loadLedger(f.id).gc).toHaveLength(1);
 });
 
 test.each(['completed', 'cancelled', 'failed'] as const)(
@@ -210,7 +209,7 @@ test('any local non-sa branch containing HEAD authorizes GC', () => {
 });
 
 test('sa branches and remote refs alone do not authorize GC', () => {
-  const f = fixture('completed', false);
+  const f = fixture('failed', false);
   f.git('branch', 'sa/other', `sa/${f.id}`);
   f.git('update-ref', 'refs/remotes/origin/landed', f.git('rev-parse', `sa/${f.id}`));
   expect(gc()[0].reason).toContain('not merged');
@@ -219,7 +218,7 @@ test('sa branches and remote refs alone do not authorize GC', () => {
 });
 
 test.each([true, false])('missing engine.json is non-fake (merged=%s)', merged => {
-  const f = fixture('completed', merged);
+  const f = fixture('failed', merged);
   rmSync(join(f.gen, 'engine.json'));
   expect(gc().map(e => e.action)).toEqual(merged ? ['removed', 'removed'] : ['skipped']);
   expect(existsSync(f.path)).toBe(!merged);
@@ -298,7 +297,7 @@ test('rejected terminal run removes its worktree but retains its unmerged branch
   expect(loadLedger(f.id).gc).toHaveLength(2);
 });
 
-test.each(['completed', 'failed', 'cancelled', 'running', 'paused', 'pending'] as const)(
+test.each(['failed', 'cancelled', 'running', 'paused', 'pending'] as const)(
   '%s non-rejected run is retained',
   status => {
     const f = fixture(status, false);
@@ -338,7 +337,7 @@ test.each(['completed', 'cancelled'] as const)(
 );
 
 test.each(['tracked', 'untracked'] as const)('dirty %s worktree is retained', dirty => {
-  const f = fixture();
+  const f = fixture('completed', false);
   writeFileSync(join(f.path, dirty === 'tracked' ? 'change.txt' : 'untracked.txt'), 'dirty');
   const result = gc();
   expect(result).toHaveLength(1);
@@ -527,7 +526,8 @@ test.each(['completed', 'failed', 'cancelled'] as const)(
     ).toBe(true);
     expect(existsSync(p.probe)).toBe(false);
     expect(existsSync(p.trash)).toBe(false);
-    expect(existsSync(f.path)).toBe(true);
+    expect(existsSync(f.path)).toBe(status !== 'completed');
+    expect(f.branchExists()).toBe(true);
     expect(f.git('worktree', 'list', '--porcelain')).not.toContain(p.art);
   }
 );

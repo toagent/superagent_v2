@@ -309,7 +309,7 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
             .some(r => r.startsWith('refs/heads/') && !r.startsWith('refs/heads/sa/'));
           // A failed run stays retryable through tick/decide whether or not it is fake.
           const disposable = engine.fake === true && run.status !== 'failed';
-          if (!merged && !disposable && l.rejected !== run.id)
+          if (!merged && !disposable && l.rejected !== run.id && run.status !== 'completed')
             throw new GcSkip(`run ${run.status} branch not merged; remains recoverable`);
           if (tree) {
             if (
