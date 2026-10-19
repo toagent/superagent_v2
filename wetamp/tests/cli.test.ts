@@ -1619,6 +1619,21 @@ describe('run (archon stub)', () => {
     expect(readdirSync(join(s.root, 'home/runs'))).toEqual(before);
     expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(false);
   });
+  // prettier-ignore
+  test('run rejects an untracked delivery target before generation', () => {
+    const s = stub([]), repo = featureRepo(s.root);
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    writeFileSync(join(repo, 'untracked.txt'), 'local');
+    const before = readdirSync(join(s.root, 'home/runs'));
+    const result = captured(() => main(['run', fixturePlan(s.root, repo)]));
+    expect(result.code).toBe(EXIT_USAGE);
+    expect(JSON.parse(result.out)).toEqual({
+      ok: false, status: 'rejected', reason: 'target_dirty', paths: ['untracked: "untracked.txt"'],
+      action: '先 commit/stash 目标检出的改动后重跑',
+    });
+    expect(readdirSync(join(s.root, 'home/runs'))).toEqual(before);
+    expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(false);
+  });
   test('BYPASS_CAPACITY run launches with eight active runs and observes low disk', () => {
     const s = stub([]),
       repo = featureRepo(s.root);

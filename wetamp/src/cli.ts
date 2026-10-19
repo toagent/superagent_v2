@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import {
   captureDelivery,
+  checkoutChanges,
   protectedTarget,
   acceptRun,
   finalizeDelivery,
@@ -1328,6 +1329,17 @@ function startRun(planPath: string, a: Args): number {
             reason: 'target_protected',
             target: delivery.branch,
             action: '在非保护分支（feature 分支）上启动：git switch -c <新分支> 后重跑',
+          });
+          return EXIT_USAGE;
+        }
+        const paths = delivery ? checkoutChanges(delivery.checkout) : [];
+        if (paths.length) {
+          print({
+            ok: false,
+            status: 'rejected',
+            reason: 'target_dirty',
+            paths: paths.slice(0, 20),
+            action: '先 commit/stash 目标检出的改动后重跑',
           });
           return EXIT_USAGE;
         }

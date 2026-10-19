@@ -21,6 +21,8 @@ import {
   landEvidence,
   pendingMilestones,
   protectedTarget,
+  runDeliveryEntry,
+  LandError,
   type LocalDelivery,
 } from '../src/land';
 import * as config from '../src/config';
@@ -129,6 +131,7 @@ test('milestone delivery accepts only milestones after the last delivered one', 
   // A deferred delivery completed its node without integrating; the next delivery carries it.
   expect(pendingMilestones(ms, 'w3', done('w1', 'w2'), ['w2'])).toEqual(['w2', 'w3']);
 });
+// prettier-ignore
 test('delivery entry rejects missing run id', () => {
   const root = tmp();
   const result = Bun.spawnSync(
@@ -146,7 +149,15 @@ test('delivery entry rejects missing run id', () => {
     }
   );
   expect(result.exitCode).not.toBe(0);
-  expect(result.stderr.toString()).toContain('delivery: missing run id');
+  expect(result.stderr.toString().trim()).toBe('Error: delivery: missing run id');
+  const error = spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    expect(runDeliveryEntry(() => { throw new LandError('target_dirty', 'land: target checkout is dirty\nuntracked: "x"'); })).toBe(false);
+    expect(error).toHaveBeenCalledWith('land_target_dirty: land: target checkout is dirty\nuntracked: "x"');
+    expect(String(error.mock.calls[0]?.[0])).not.toMatch(/^\s*at /m);
+  } finally {
+    error.mockRestore();
+  }
 });
 
 // prettier-ignore

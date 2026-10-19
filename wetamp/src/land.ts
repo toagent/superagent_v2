@@ -192,6 +192,18 @@ export function captureDelivery(checkout: string): DeliveryTarget {
     head: git('rev-parse', 'HEAD'),
   };
 }
+// prettier-ignore
+export function checkoutChanges(checkout: string): string[] {
+  const p = Bun.spawnSync(['git', '-C', checkout, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+  if (p.exitCode !== 0) throw new LandError('git_failed', `land: ${p.stderr.toString().trim()}`);
+  const records = p.stdout.toString().split('\0'), paths: string[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const row = records[i]; if (!row) continue;
+    paths.push(`${row.startsWith('??') ? 'untracked' : 'tracked'}: ${JSON.stringify(row.slice(3))}`);
+    if (/[RC]/.test(row.slice(0, 2))) i++; // porcelain -z includes a second rename/copy path.
+  }
+  return paths;
+}
 export const integrationLockTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
   20 * 60_000;
@@ -225,13 +237,7 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
   const checkout = targetCheckout();
   if (delivery && (!checkout || realpathSync(checkout) !== delivery.target.checkout || gitAt(checkout, 'symbolic-ref', '--short', 'HEAD') !== target)) throw new LandError('delivery_target_changed', 'delivery: target checkout/branch changed');
   const clean = () => {
-    const records = checkout ? gitAt(checkout, 'status', '--porcelain=v1', '-z', '--untracked-files=all').split('\0') : [];
-    const paths: string[] = [];
-    for (let i = 0; i < records.length; i++) {
-      const row = records[i]; if (!row) continue;
-      paths.push(`${row.startsWith('??') ? 'untracked' : 'tracked'}: ${JSON.stringify(row.slice(3))}`);
-      if (/[RC]/.test(row.slice(0, 2))) i++; // porcelain -z includes a second rename/copy path.
-    }
+    const paths = checkout ? checkoutChanges(checkout) : [];
     if (paths.length) throw new LandError('target_dirty', `land: target checkout is dirty\n${paths.slice(0, 20).join('\n')}${paths.length > 20 ? `\n... ${String(paths.length - 20)} more paths` : ''}`);
   };
   clean();
@@ -684,16 +690,27 @@ export function deliveryProjection(l: Ledger, run: RunView): DeliveryReceipt | u
     localDelivery(l, art, l.delivery)
   );
 }
+// prettier-ignore
+export function runDeliveryEntry(action: () => void): boolean {
+  try { action(); return true; } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    console.error(`${failure.name}: ${failure.message}`);
+    return false;
+  }
+}
 // Finish entry evaluation before loading the operator's circular import.
 if (import.meta.main)
   queueMicrotask(() => {
-    if (!process.env.INPUTS_RUN) throw new Error('delivery: missing run id');
-    const { loadLedger, print, readJson } = operator();
-    const l = loadLedger(process.env.INPUTS_RUN);
-    const { run, repo } = (readJson(join(l.gen_dir, 'delivery-authorization.json')) ??
-      {}) as Partial<DeliveryAuthorization>;
-    if (!run || !repo) throw new Error('delivery: missing durable authorization');
-    print(finalizeDelivery(l.run_id, false, run, { run, repo }));
+    const ok = runDeliveryEntry(() => {
+      if (!process.env.INPUTS_RUN) throw new Error('delivery: missing run id');
+      const { loadLedger, print, readJson } = operator();
+      const l = loadLedger(process.env.INPUTS_RUN);
+      const { run, repo } = (readJson(join(l.gen_dir, 'delivery-authorization.json')) ??
+        {}) as Partial<DeliveryAuthorization>;
+      if (!run || !repo) throw new Error('delivery: missing durable authorization');
+      print(finalizeDelivery(l.run_id, false, run, { run, repo }));
+    });
+    if (!ok) process.exit(1);
   });
 
 /** Re-entry is safe only for our generated, authorized delivery, after all gates. */
