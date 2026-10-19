@@ -1277,6 +1277,29 @@ describe('buildWorkflow', () => {
     expect(integration.loop_group.nodes.find(n => n.id === 'publish-m1')?.depends_on).toEqual([
       'final-accept-m1',
     ]);
+    const deliveryNodes = nodesOf(
+      buildWorkflow(
+        fixture,
+        milestones(fixture),
+        'de1e-0001',
+        '/GEN',
+        false,
+        NOW,
+        legacyTiers(),
+        undefined,
+        { checkout: '/target', branch: 'delivery-target', head: 'a'.repeat(40) }
+      )
+    );
+    const deliveryIntegration = deliveryNodes.find(n => n.id === 'integrate-m1') as N & {
+      loop_group: { nodes: N[] };
+    };
+    expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
+      runtime: 'bun',
+      with: {
+        gate_1_sha256: { from: '$gate-m1-r1.output.artifact_sha256', if_skipped: '' },
+        gate_2_sha256: { from: '$gate-m1-r2.output.artifact_sha256', if_skipped: '' },
+      },
+    });
     expect(executionTable(fixture, loadTiers())['integration-review-m1']).toBeUndefined();
     const warnings: string[] = [];
     collectLoopGroupSinkWarnings(nodes as never, warnings);
@@ -1484,9 +1507,9 @@ describe('buildWorkflow', () => {
     ).toEqual(['C1', 'C2', 'C3', 'R1', 'R2', 'R3']);
     expect(n('gate-m1-r3')?.with).toMatchObject({
       C3: '$ARTIFACTS_DIR/diff-m1-r3.json',
-      C3_HEAD: '$diff-m1-r3.output.head',
-      C3_DIFF_HASH: '$diff-m1-r3.output.diff_hash',
-      C3_SHA256: '$diff-m1-r3.output.artifact_sha256',
+      C3_HEAD: { from: '$diff-m1-r3.output.head', if_skipped: '' },
+      C3_DIFF_HASH: { from: '$diff-m1-r3.output.diff_hash', if_skipped: '' },
+      C3_SHA256: { from: '$diff-m1-r3.output.artifact_sha256', if_skipped: '' },
     });
     for (let r = 4; r <= MAX_ROUNDS; r++) {
       const t = `m1-r${String(r)}`,

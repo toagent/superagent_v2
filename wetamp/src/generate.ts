@@ -138,7 +138,7 @@ const publishOutputSchema = (): unknown => ({
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const SOLDIER_IDLE_MS = 10 * 60 * 1000;
 
-const skippable = (from: string): Node => ({ from, if_skipped: null });
+const skippable = (from: string, if_skipped: unknown = null): Node => ({ from, if_skipped });
 export interface Carried {
   from: string;
   packages: string[];
@@ -259,6 +259,19 @@ export function buildWorkflow(
     output = `${action}-${milestone}`
   ): string =>
     `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${output} ${extra}bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`;
+  const integrationScript = (milestone: string, output: string): string =>
+    [
+      `const child = Bun.spawn([process.execPath, ${JSON.stringify(join(WETAMP, 'src/land.ts'))}], {`,
+      `  env: { ...process.env, INPUTS_ACTION: 'publish', INPUTS_RUN: '${run}', INPUTS_MILESTONE: '${milestone}', INPUTS_OUTPUT: '${output}' },`,
+      `  stdout: 'pipe', stderr: 'pipe',`,
+      `});`,
+      `const [stdout, stderr, exitCode] = await Promise.all([`,
+      `  new Response(child.stdout).arrayBuffer(), new Response(child.stderr).arrayBuffer(), child.exited,`,
+      `]);`,
+      `process.stdout.write(new Uint8Array(stdout));`,
+      `process.stderr.write(new Uint8Array(stderr));`,
+      `if (exitCode !== 0) process.exit(exitCode);`,
+    ].join('\n');
   if (delivery && (!run || /[^0-9a-f-]/.test(run))) throw new Error('delivery: invalid run id');
   let after: Node = { depends_on: ['environment'] };
   const signoff = (
@@ -381,12 +394,12 @@ export function buildWorkflow(
     const syncId = `resync-${m.id}`;
     const finalAccept = `final-accept-${m.id}`;
     const publishId = `publish-${m.id}`;
-    const gateHashes = gateBindings
-      .map(
-        binding =>
-          `INPUTS_GATE_${String(binding.round)}${binding.carried ? '_CARRIED' : ''}_SHA256=$${binding.node}.output.artifact_sha256 `
-      )
-      .join('');
+    const gateHashes = Object.fromEntries(
+      gateBindings.map(binding => [
+        `gate_${String(binding.round)}${binding.carried ? '_carried' : ''}_sha256`,
+        skippable(`$${binding.node}.output.artifact_sha256`, ''),
+      ])
+    );
     const integrationNodes: Node[] = [
       {
         id: syncId,
@@ -418,14 +431,19 @@ export function buildWorkflow(
       {
         id: publishId,
         depends_on: [finalAccept],
-        bash:
-          delivery && !fake
-            ? integrationCommand(
-                'publish',
-                m.id,
-                `${gateHashes}INPUTS_TARGET_TIP=$${syncId}.output.target_tip INPUTS_REVIEW_REQUIRED=${reviewRequired ? '1' : '0'} `
-              )
-            : `printf '{"status":"published","target_tip":"%s"}' "$${syncId}.output.target_tip"`,
+        ...(delivery && !fake
+          ? {
+              script: integrationScript(m.id, publishId),
+              runtime: 'bun',
+              with: {
+                ...gateHashes,
+                target_tip: `$${syncId}.output.target_tip`,
+                review_required: reviewRequired ? '1' : '0',
+              },
+            }
+          : {
+              bash: `printf '{"status":"published","target_tip":"%s"}' "$${syncId}.output.target_tip"`,
+            }),
         timeout: integrationLockTimeout(),
         output_format: publishOutputSchema(),
       },
@@ -473,9 +491,9 @@ export function buildWorkflow(
           return [
             [`R${n}`, 'null'],
             [`C${n}`, i + 1 === r ? `$ARTIFACTS_DIR/diff-${tag}.json` : 'null'],
-            [`C${n}_HEAD`, i + 1 === r ? `$${diff}.output.head` : ''],
-            [`C${n}_DIFF_HASH`, i + 1 === r ? `$${diff}.output.diff_hash` : ''],
-            [`C${n}_SHA256`, i + 1 === r ? `$${diff}.output.artifact_sha256` : ''],
+            [`C${n}_HEAD`, i + 1 === r ? skippable(`$${diff}.output.head`, '') : ''],
+            [`C${n}_DIFF_HASH`, i + 1 === r ? skippable(`$${diff}.output.diff_hash`, '') : ''],
+            [`C${n}_SHA256`, i + 1 === r ? skippable(`$${diff}.output.artifact_sha256`, '') : ''],
           ];
         })
       );
@@ -911,9 +929,9 @@ export function buildWorkflow(
       });
       rounds[`R${String(r)}`] = skippable(`$review-${t}.output`);
       rounds[`C${String(r)}`] = `$ARTIFACTS_DIR/diff-${t}.json`;
-      rounds[`C${String(r)}_HEAD`] = `$diff-${t}.output.head`;
-      rounds[`C${String(r)}_DIFF_HASH`] = `$diff-${t}.output.diff_hash`;
-      rounds[`C${String(r)}_SHA256`] = `$diff-${t}.output.artifact_sha256`;
+      rounds[`C${String(r)}_HEAD`] = skippable(`$diff-${t}.output.head`, '');
+      rounds[`C${String(r)}_DIFF_HASH`] = skippable(`$diff-${t}.output.diff_hash`, '');
+      rounds[`C${String(r)}_SHA256`] = skippable(`$diff-${t}.output.artifact_sha256`, '');
       // 评审被跳过（验收未 advance 或修复无变化）时 gate 仍要运行；diff 也被跳过则本轮整体不走
       nodes.push(
         check(

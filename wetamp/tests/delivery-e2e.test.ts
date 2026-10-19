@@ -1,4 +1,8 @@
 import { expect, spyOn, test } from 'bun:test';
+import type { WorkflowDeps, IWorkflowPlatform, WorkflowConfig } from '@archon/workflows/deps';
+import type { WorkflowRun } from '@archon/workflows/schemas/workflow-run';
+import type { IWorkflowStore, WorkflowEventInput } from '@archon/workflows/store';
+import { executeTestDagWorkflow, makeTestResolvedWorkflow } from '@archon/workflows/test-utils';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,6 +16,12 @@ import { fixtureEnv, fixturePlan, gitRepo, sh, tmp } from './helpers';
 type WorkflowNode = {
   id: string;
   bash?: string;
+  script?: string;
+  runtime?: string;
+  depends_on?: string[];
+  when?: string;
+  with?: Record<string, unknown>;
+  output_format?: unknown;
   loop_group?: { nodes: WorkflowNode[] };
 };
 
@@ -127,6 +137,7 @@ const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
     runId,
     artifact,
     authorization: join(generated.dir, 'delivery-authorization.json'),
+    workflow,
     nodes: allNodes(workflow.nodes),
   };
 };
@@ -199,9 +210,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
       };
       let gateSha256 = writeGate(String(synced.target_tip));
       const publishCommand = (tip: string) =>
-        publish
-          .bash!.replace('$resync-m1.output.target_tip', tip)
-          .replace('$gate-m1-r1.output.artifact_sha256', gateSha256);
+        `INPUTS_GATE_1_SHA256=${gateSha256} INPUTS_TARGET_TIP=${tip} INPUTS_REVIEW_REQUIRED=1 bun -e '${publish.script!.replaceAll("'", "'\\''")}'`;
       const publishAt = (tip: string) => runBash(publishCommand(tip), f.worker, env);
       if (mode === 'advanced') {
         writeFileSync(join(f.repo, 'advanced.txt'), 'advanced\n');
@@ -272,7 +281,7 @@ test.each(['sync', 'publish'] as const)(
       const node = f.nodes.find(candidate => candidate.id === `${action}-m1`)!;
       const command =
         action === 'publish'
-          ? node.bash!.replace('$resync-m1.output.target_tip', 'unused')
+          ? `INPUTS_TARGET_TIP=unused INPUTS_REVIEW_REQUIRED=1 bun -e '${node.script!.replaceAll("'", "'\\''")}'`
           : node.bash!;
       const env = fixtureEnv({
         SUPERAGENT_HOME: process.env.SUPERAGENT_HOME!,
@@ -304,6 +313,231 @@ test.each(['sync', 'publish'] as const)(
       restoreEnv(f.saved);
     }
   }
+);
+
+const workflowRun = (id: string): WorkflowRun => ({
+  origin: { conversationId: 'delivery-e2e' },
+  id,
+  workflow_name: 'delivery-e2e',
+  conversation_id: 'delivery-e2e',
+  parent_conversation_id: null,
+  codebase_id: null,
+  status: 'running',
+  outcome: null,
+  user_message: 'delivery e2e',
+  metadata: {},
+  started_at: new Date(),
+  completed_at: null,
+  last_activity_at: null,
+  working_path: null,
+  user_id: null,
+  parent_run_id: null,
+  output_root: null,
+  checkout_baseline: null,
+  adopted_from_run_id: null,
+});
+
+const executorDeps = (run: WorkflowRun) => {
+  const events: WorkflowEventInput[] = [];
+  const observe: IWorkflowStore['createWorkflowEvent'] = async event => {
+    events.push(event);
+  };
+  const persist: IWorkflowStore['persistWorkflowEvent'] = async event => {
+    events.push(event);
+  };
+  const persistIfRunning: IWorkflowStore['persistWorkflowEventIfRunning'] = async event => {
+    events.push(event);
+    return { persisted: true };
+  };
+  const store = {
+    createWorkflowEvent: observe,
+    persistWorkflowEvent: persist,
+    persistWorkflowEventIfRunning: persistIfRunning,
+    getWorkflowRunStatus: async () => 'running' as const,
+    getWorkflowRun: async () => run,
+    updateWorkflowActivity: async () => {},
+    updateWorkflowRun: async () => {},
+    completeWorkflowRun: async () => {},
+    failWorkflowRun: async () => {},
+    findChildRuns: async () => [],
+    listWorkflowNodeSessions: async () => [],
+    listWorkflowRunNodeSessions: async () => [],
+    upsertWorkflowNodeSession: async () => {},
+    upsertWorkflowRunNodeSession: async () => {},
+  } satisfies Partial<IWorkflowStore>;
+  const provider = {
+    id: 'claude',
+    displayName: 'Test',
+    builtIn: true,
+    credentials: { kind: 'static' as const, specs: [], vendorFor: () => undefined },
+    parseConfig: (raw: Record<string, unknown>) => raw,
+    capabilities: {
+      backgroundWork: 'none' as const,
+      sessionResume: false,
+      mcp: false,
+      hooks: false,
+      skills: false,
+      plugins: false,
+      agents: false,
+      toolRestrictions: false,
+      structuredOutput: false as const,
+      requiresAllPropertiesRequired: false,
+      envInjection: false,
+      costControl: false,
+      costReporting: false,
+      effortControl: false,
+      fallbackModel: false,
+      sandbox: false,
+      settingSources: false,
+      nativeTools: false,
+      containerExec: false,
+    },
+  };
+  const deps: WorkflowDeps = {
+    providers: { get: id => (id === provider.id ? provider : undefined), list: () => [provider] },
+    store: store as unknown as IWorkflowStore,
+    getAgentProvider: () => {
+      throw new Error('delivery executor fixture has no AI nodes');
+    },
+    loadConfig: async () => ({
+      assistant: 'claude',
+      assistants: { claude: {}, codex: {} },
+      commands: {},
+    }),
+  };
+  return { deps, events };
+};
+
+const executorPlatform: IWorkflowPlatform = {
+  sendMessage: async () => {},
+  getStreamingMode: () => 'batch',
+  getPlatformType: () => 'test',
+  sendStructuredEvent: async () => {},
+};
+
+const executorConfig: WorkflowConfig = {
+  assistant: 'claude',
+  assistants: { claude: {}, codex: {} },
+  commands: {},
+};
+
+const gateOutputSchema = {
+  type: 'object',
+  properties: {
+    verdict: { enum: ['pass', 'fix'] },
+    reviewed_head: { type: 'string' },
+    reviewed_diff_hash: { type: 'string' },
+    artifact_sha256: { type: 'string' },
+  },
+  required: ['verdict', 'reviewed_head', 'reviewed_diff_hash', 'artifact_sha256'],
+};
+
+const executorWorkflow = (f: ReturnType<typeof setup>, passRound: 1 | 2) => {
+  const integration = structuredClone(f.workflow.nodes.find(node => node.id === 'integrate-m1')!);
+  const body = integration.loop_group!.nodes;
+  const finalAccept = body.find(node => node.id === 'final-accept-m1')!;
+  delete finalAccept.script;
+  delete finalAccept.runtime;
+  delete finalAccept.with;
+  delete finalAccept.output_format;
+  finalAccept.bash = 'printf accepted';
+
+  const head = sh('git rev-parse HEAD', f.worker).trim();
+  const target = sh('git rev-parse delivery-target', f.repo).trim();
+  const patch = Bun.spawnSync(
+    [
+      'git',
+      '-C',
+      f.worker,
+      'diff',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--binary',
+      target,
+      'HEAD',
+      '--',
+    ],
+    { stdout: 'pipe' }
+  ).stdout;
+  const reviewedDiffHash = diffHash(patch);
+  const gateIds = integration.depends_on!;
+  const gates = gateIds.map((id, index): WorkflowNode => {
+    const round = index + 1;
+    const verdict = round < passRound ? 'fix' : 'pass';
+    const evidence = JSON.stringify({
+      verdict,
+      reviewed_head: head,
+      reviewed_diff_hash: reviewedDiffHash,
+    });
+    writeFileSync(join(f.artifact, `${id}.json`), evidence);
+    const output = JSON.stringify({
+      ...JSON.parse(evidence),
+      artifact_sha256: createHash('sha256').update(evidence).digest('hex'),
+    });
+    return {
+      id,
+      bash: `printf '%s' '${output}'`,
+      ...(round > 1
+        ? {
+            depends_on: [gateIds[index - 1]!],
+            when: `$${gateIds[index - 1]!}.output.verdict == 'fix'`,
+          }
+        : {}),
+      output_format: gateOutputSchema,
+    };
+  });
+  return makeTestResolvedWorkflow({
+    name: `delivery-pass-r${String(passRound)}`,
+    nodes: [...gates, integration],
+  });
+};
+
+test.each([1, 2] as const)(
+  'real DAG executor publishes G2 milestone when gate r%s passes and later rounds skip',
+  async passRound => {
+    const f = setup('normal');
+    try {
+      const run = workflowRun(f.runId);
+      const { deps, events } = executorDeps(run);
+      const stateDir = join(process.env.SUPERAGENT_HOME!, 'state');
+      const logDir = join(process.env.SUPERAGENT_HOME!, 'logs');
+      mkdirSync(stateDir, { recursive: true });
+      mkdirSync(logDir, { recursive: true });
+      await executeTestDagWorkflow({
+        deps,
+        platform: executorPlatform,
+        conversationId: 'delivery-e2e',
+        cwd: f.worker,
+        workflow: executorWorkflow(f, passRound),
+        workflowRun: run,
+        workflowProvider: 'claude',
+        workflowModel: undefined,
+        artifactsDir: f.artifact,
+        stateDir,
+        logDir,
+        baseBranch: 'delivery-target',
+        docsDir: 'docs/',
+        config: executorConfig,
+      });
+      expect(events.map(event => `${event.event_type}:${event.step_name ?? ''}`)).toContain(
+        'node_completed:integrate-m1.publish-m1'
+      );
+      expect(sh('git rev-parse delivery-target', f.repo).trim()).toBe(
+        sh('git rev-parse HEAD', f.worker).trim()
+      );
+      for (let round = passRound + 1; round <= 6; round++) {
+        expect(
+          events.some(
+            event =>
+              event.event_type === 'node_skipped' && event.step_name === `gate-m1-r${String(round)}`
+          )
+        ).toBeTrue();
+      }
+    } finally {
+      restoreEnv(f.saved);
+    }
+  },
+  60_000
 );
 
 test('land.ts without INPUTS_ACTION keeps the legacy delivery entrypoint', () => {
