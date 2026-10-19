@@ -866,13 +866,14 @@ describe('HF3 latest-engine recovery', () => {
       edit?: (gate: Record<string, unknown>, diff: Record<string, unknown>) => void;
       gateRaw?: string;
       ledgerRaw?: string | null;
+      hash?: 'missing';
     }[] = [
       { name: 'advance', admitted: true },
       { name: 'debt', admitted: true, edit: gate => (gate.decision = fixtureDecision('debt')) },
       { name: 'block', admitted: false, edit: gate => (gate.decision = fixtureDecision('block')) },
       { name: 'untrusted-head', admitted: false, edit: gate => (gate.head_trusted = false) },
       {
-        name: 'reviewed-head-drift',
+        name: 'forged-gate',
         admitted: false,
         edit: gate => (gate.reviewed_head = 'f'.repeat(40)),
       },
@@ -898,6 +899,7 @@ describe('HF3 latest-engine recovery', () => {
       },
       { name: 'missing-ledger', admitted: false, ledgerRaw: null },
       { name: 'unreadable-gate', admitted: false, gateRaw: '{' },
+      { name: 'missing-engine-hash', admitted: false, hash: 'missing' },
     ];
     const s = setup('old'),
       worktree = gitRepo(s.root),
@@ -920,14 +922,28 @@ describe('HF3 latest-engine recovery', () => {
         diff_hash: 'd'.repeat(16),
         contract_hash: 'c'.repeat(64),
       };
+      const originalGate = JSON.stringify(gate);
       sample.edit?.(gate, diff);
-      writeFileSync(join(art, 'gate-m1-r1.json'), sample.gateRaw ?? JSON.stringify(gate));
-      writeFileSync(join(art, 'diff-m1-r1.json'), JSON.stringify(diff));
-      expect(
-        cliMod.recoveryReviewCheckpoint(s.ledger, art, 'gate-m1-r1.json', head)?.checkpoint !==
-          undefined,
-        sample.name
-      ).toBe(sample.admitted);
+      const gateRaw = sample.gateRaw ?? JSON.stringify(gate),
+        diffRaw = JSON.stringify(diff),
+        sha = (text: string) => new Bun.CryptoHasher('sha256').update(text).digest('hex'),
+        hashes =
+          sample.hash === 'missing'
+            ? {}
+            : {
+                'gate-m1-r1': sha(sample.name === 'forged-gate' ? originalGate : gateRaw),
+                'diff-m1-r1': sha(diffRaw),
+              };
+      writeFileSync(join(art, 'gate-m1-r1.json'), gateRaw);
+      writeFileSync(join(art, 'diff-m1-r1.json'), diffRaw);
+      const result = cliMod.recoveryReviewCheckpoint(
+        s.ledger,
+        art,
+        'gate-m1-r1.json',
+        head,
+        hashes
+      );
+      expect(result?.checkpoint !== undefined, sample.name).toBe(sample.admitted);
     }
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {

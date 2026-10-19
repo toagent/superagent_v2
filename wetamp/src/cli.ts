@@ -833,15 +833,34 @@ export function recoveryReviewCheckpoint(
   l: Ledger,
   art: string,
   file: string,
-  head: string
-): { milestone: string; checkpoint?: ReviewCheckpoint } | undefined {
+  head: string,
+  outputHashes: Readonly<Partial<Record<string, string>>>
+):
+  | {
+      milestone: string;
+      checkpoint?: ReviewCheckpoint;
+      reason?: `${'gate' | 'diff'}_hash_${'missing' | 'mismatch'}`;
+    }
+  | undefined {
   const match = /^gate-(.+)-r(\d+)\.json$/.exec(file);
   if (!match) return undefined;
   try {
-    const gate = evidenceJson(l, art, file) as Record<string, unknown> | undefined;
-    const diff = evidenceJson(l, art, file.replace('gate-', 'diff-')) as
-      | Record<string, unknown>
-      | undefined;
+    const readBound = (name: string, kind: 'gate' | 'diff') => {
+      const path = confined(l, join(art, name)),
+        expected = outputHashes[name.replace('.json', '')];
+      if (!expected) return { reason: `${kind}_hash_missing` as const };
+      if (!path) return { reason: `${kind}_hash_mismatch` as const };
+      const bytes = readFileSync(path);
+      if (createHash('sha256').update(bytes).digest('hex') !== expected)
+        return { reason: `${kind}_hash_mismatch` as const };
+      return { value: JSON.parse(bytes.toString('utf8')) as unknown };
+    };
+    const gateBound = readBound(file, 'gate');
+    if ('reason' in gateBound) return { milestone: match[1], reason: gateBound.reason };
+    const diffBound = readBound(file.replace('gate-', 'diff-'), 'diff');
+    if ('reason' in diffBound) return { milestone: match[1], reason: diffBound.reason };
+    const gate = gateBound.value as Record<string, unknown> | undefined;
+    const diff = diffBound.value as Record<string, unknown> | undefined;
     const decision = decisionOf(gate),
       inferredLedger = join(art, file.replace('.json', '.ledger.json')),
       ledger = confined(
@@ -876,6 +895,30 @@ export function recoveryReviewCheckpoint(
     return { milestone: match[1] };
   }
 }
+
+const recoveryOutputHashes = (runId: string, repo: string): Record<string, string> => {
+  try {
+    const view = archonJson(['workflow', 'get', runId, '--verbose', '--events'], repo) as {
+      events?: unknown;
+    };
+    if (!Array.isArray(view.events)) return {};
+    return Object.fromEntries(
+      view.events.flatMap(event => {
+        const row = event as { event_type?: unknown; step_name?: unknown; data?: unknown },
+          output = (row.data as { structured_output?: unknown } | null)?.structured_output,
+          hash = (output as { artifact_sha256?: unknown } | null)?.artifact_sha256;
+        return row.event_type === 'node_completed' &&
+          typeof row.step_name === 'string' &&
+          typeof hash === 'string' &&
+          /^[0-9a-f]{64}$/.test(hash)
+          ? [[row.step_name, hash]]
+          : [];
+      })
+    );
+  } catch {
+    return {};
+  }
+};
 
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
@@ -1045,9 +1088,10 @@ function recoverRun(
         const reviews: Partial<Record<string, ReviewCheckpoint>> = {};
         // prettier-ignore
         if (run.working_path) {
-          const art = artifactsOf(run), head = gitHead(run.working_path);
+          const art = artifactsOf(run), head = gitHead(run.working_path), hashes = recoveryOutputHashes(run.id, l.repo);
           for (const file of evidenceGates(l, art)) {
-            const admitted = recoveryReviewCheckpoint(l, art, file, head);
+            const admitted = recoveryReviewCheckpoint(l, art, file, head, hashes);
+            if (admitted?.reason) console.warn(JSON.stringify({ code: 'superagent.checkpoint_rejected', ...admitted }));
             if (admitted) reviews[admitted.milestone] = admitted.checkpoint;
           }
         }
