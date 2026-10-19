@@ -591,6 +591,45 @@ describe('NONCONVERGENCE delivery gate', () => {
       out: { verdict: 'pass', reason: 'review_not_required', rounds: 1 },
     });
   });
+  test('gate rejects an acceptance artifact that differs from captured node identity', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      plan = planFile(root, 'true');
+    const accepted = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      tag: 'diff-m1-r1',
+      coder: '{"status":"done","error_class":null}',
+    });
+    const check = accepted.out as { head: string; diff_hash: string };
+    const path = join(accepted.art, 'diff-m1-r1.json');
+    writeFileSync(path, JSON.stringify({ ...check, head: 'tampered' }));
+    expect(
+      runScript(repo, {
+        kind: 'gate',
+        plan,
+        pkgs: 'a',
+        risk: 'G1',
+        review: '0',
+        round: '1',
+        milestone: 'm1',
+        tag: 'gate-m1-r1',
+        r1: 'null',
+        c1: path,
+        c1_head: check.head,
+        c1_diff_hash: check.diff_hash,
+      })
+    ).toMatchObject({
+      code: 1,
+      out: {
+        verdict: 'escalate',
+        reason: 'acceptance_evidence_mismatch',
+        decision: { kind: 'block' },
+        head_trusted: false,
+      },
+    });
+  });
   test.each(['G1', 'G2'])('%s low unknown self-report finding remains debt', risk => {
     for (const status of ['PASS', 'FAIL'] as const) {
       const result = decide({
@@ -1658,12 +1697,14 @@ function runScript(
     // Synthetic gate fixtures bind the real checkout just like accept artifacts do.
     let value = v;
     if (inputs.kind === 'gate' && /^c\d+$/.test(k)) {
-      const check = JSON.parse(v);
+      const file = existsSync(v) ? v : undefined;
+      const check = JSON.parse(file ? readFileSync(file, 'utf8') : v);
       if (check && !Object.hasOwn(check, 'checkout_fingerprint'))
         check.checkout_fingerprint = checkoutFingerprint(args =>
           Bun.spawnSync(['git', '-C', cwd, ...args])
         );
-      value = JSON.stringify(check);
+      if (file) writeFileSync(file, JSON.stringify(check));
+      else value = JSON.stringify(check);
     }
     env[`INPUTS_${k.toUpperCase()}`] = value;
   }
@@ -3395,6 +3436,22 @@ describe('sa-check script', () => {
     expect(red.out).toMatchObject({
       disposition: 'fail',
       reason: 'repair_exhausted:acceptance_failed',
+    });
+  });
+  test('final accept explicitly makes repair terminal', () => {
+    const root = tmp();
+    const result = runScript(gitRepo(root), {
+      kind: 'accept',
+      plan: planFile(root, PRODUCT_FAILURE),
+      pkgs: 'a',
+      tag: 'final-accept-m1',
+      terminal: '1',
+      coder: '{"status":"done","error_class":null}',
+    });
+    expect(result.code).toBe(1);
+    expect(result.out).toMatchObject({
+      disposition: 'fail',
+      decision: { kind: 'block' },
     });
   });
   test('F-21: node evidence reuses cache:false checks on the same head; a new head reruns', () => {

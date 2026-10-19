@@ -310,7 +310,7 @@ export function buildWorkflow(
     ].join('\n');
     target.push({
       id,
-      bash: delivery && !fake ? integrationCommand('sync', m.id) : local,
+      bash: delivery && !fake ? integrationCommand('sync', m.id, '', id) : local,
       ...(deps.length ? { depends_on: deps } : {}),
       output_format: syncOutputSchema(),
     });
@@ -400,6 +400,7 @@ export function buildWorkflow(
           target_tip: `$${syncId}.output.target_tip`,
           sync_generation: `$${syncId}.output.generation`,
           tag: finalAccept,
+          terminal: '1',
         },
         { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
       ),
@@ -455,10 +456,16 @@ export function buildWorkflow(
         tag = `${m.id}-r${String(r)}`;
       const ids = m.packages.map(p => p.id).join(',');
       const rounds = Object.fromEntries(
-        e.rounds.flatMap((_, i) => [
-          [`R${String(i + 1)}`, 'null'],
-          [`C${String(i + 1)}`, i + 1 === r ? `$ARTIFACTS_DIR/diff-${tag}.json` : 'null'],
-        ])
+        e.rounds.flatMap((_, i) => {
+          const n = String(i + 1),
+            diff = `diff-${m.id}-r${n}`;
+          return [
+            [`R${n}`, 'null'],
+            [`C${n}`, i + 1 === r ? `$ARTIFACTS_DIR/diff-${tag}.json` : 'null'],
+            [`C${n}_HEAD`, i + 1 === r ? `$${diff}.output.head` : ''],
+            [`C${n}_DIFF_HASH`, i + 1 === r ? `$${diff}.output.diff_hash` : ''],
+          ];
+        })
       );
       const common = {
         plan: planPath,
@@ -887,6 +894,8 @@ export function buildWorkflow(
       });
       rounds[`R${String(r)}`] = skippable(`$review-${t}.output`);
       rounds[`C${String(r)}`] = `$ARTIFACTS_DIR/diff-${t}.json`;
+      rounds[`C${String(r)}_HEAD`] = `$diff-${t}.output.head`;
+      rounds[`C${String(r)}_DIFF_HASH`] = `$diff-${t}.output.diff_hash`;
       // 评审被跳过（验收未 advance 或修复无变化）时 gate 仍要运行；diff 也被跳过则本轮整体不走
       nodes.push(
         check(

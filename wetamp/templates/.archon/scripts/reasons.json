@@ -147,6 +147,13 @@
     "description": "评审未通过"
   },
   {
+    "code": "acceptance_evidence_mismatch",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "验收 artifact 与引擎捕获输出不一致"
+  },
+  {
     "code": "review_modified_checkout",
     "hold": "gate",
     "determinism": "deterministic",
@@ -341,6 +348,13 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "评审未通过"
+  },
+  {
+    "code": "acceptance_evidence_mismatch+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "engine",
+    "description": "验收 artifact 与引擎捕获输出不一致"
   },
   {
     "code": "review_modified_checkout+review_limit",

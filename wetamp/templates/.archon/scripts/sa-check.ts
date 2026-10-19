@@ -200,16 +200,21 @@ function auxiliary(cmd: string[]) {
   return result;
 }
 const artifacts = process.env.ARTIFACTS_DIR ?? '';
+const artifactJsonPath = (value: string): string | undefined => {
+  try {
+    const path = realpathSync(value);
+    return dirname(path) === realpathSync(artifacts) && basename(path).endsWith('.json')
+      ? path
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 const json = (k: string): unknown => {
   const value = env(k);
   if (!value || value === 'null') return null;
-  try {
-    const path = realpathSync(value);
-    if (dirname(path) === realpathSync(artifacts) && basename(path).endsWith('.json'))
-      return JSON.parse(readFileSync(path, 'utf8')) as unknown;
-  } catch {
-    /* Inline JSON is the legacy and non-artifact path. */
-  }
+  const path = artifactJsonPath(value);
+  if (path) return JSON.parse(readFileSync(path, 'utf8')) as unknown;
   return JSON.parse(value) as unknown;
 };
 const git = (...args: string[]): string => {
@@ -1070,7 +1075,7 @@ function accept(): void {
     attempt = env('ATTEMPT');
   if (!carried || attempt !== '0') {
     const out = acceptOnce(tag, env('CODER'));
-    if (tag.startsWith('final-accept-') && out.disposition === 'repair')
+    if (env('TERMINAL') === '1' && out.disposition === 'repair')
       Object.assign(out, {
         disposition: 'fail',
         decision: { ...out.decision, kind: 'block' },
@@ -2384,6 +2389,15 @@ function gate(): void {
     : null;
   const reviews = reused?.reviews ?? (pick('R') as (Review | null)[]);
   const rechecks = pick('C') as Accept[];
+  const bindingErrors = rechecks.flatMap((check, i) => {
+    const key = `C${String(i + 1)}`;
+    if (!artifactJsonPath(env(key))) return [];
+    const expectedHead = env(`${key}_HEAD`),
+      expectedDiffHash = env(`${key}_DIFF_HASH`);
+    return check.head === expectedHead && check.diff_hash === expectedDiffHash
+      ? []
+      : [`${key}: artifact head/diff_hash does not match captured node output`];
+  });
   if (recovery && rechecks.at(-1)?.head !== recovery.candidate)
     throw new Error('recovery: acceptance candidate drift');
   const tag = env('TAG');
@@ -2485,6 +2499,10 @@ function gate(): void {
     Object.assign(d, { verdict: 'escalate', reason: 'review_modified_checkout' });
     d.decision.evidence.push(String(error));
   }
+  if (bindingErrors.length) {
+    Object.assign(d, { verdict: 'escalate', reason: 'acceptance_evidence_mismatch' });
+    d.decision.evidence.push(...bindingErrors);
+  }
   const over =
     d.verdict === 'fix' || d.verdict === 'pass'
       ? budget(d.verdict === 'fix' || Boolean(env('NEXT')))
@@ -2527,7 +2545,8 @@ function gate(): void {
     // 与 reviewed_head 分开记录：只有 hash 相同才能证明当前候选已经评审。
     reviewed_diff_hash: reviewed === undefined ? '' : (rechecks[reviewed]?.diff_hash ?? ''),
     head: git('rev-parse', 'HEAD').trim(),
-    head_trusted: d.reason !== 'review_modified_checkout',
+    head_trusted:
+      d.reason !== 'review_modified_checkout' && d.reason !== 'acceptance_evidence_mismatch',
   };
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   emit(out);

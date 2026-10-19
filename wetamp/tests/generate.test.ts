@@ -1482,6 +1482,11 @@ describe('buildWorkflow', () => {
         .filter(k => /^[RC]\d$/.test(k))
         .sort()
     ).toEqual(['C1', 'C2', 'C3', 'R1', 'R2', 'R3']);
+    expect(n('gate-m1-r3')?.with).toMatchObject({
+      C3: '$ARTIFACTS_DIR/diff-m1-r3.json',
+      C3_HEAD: '$diff-m1-r3.output.head',
+      C3_DIFF_HASH: '$diff-m1-r3.output.diff_hash',
+    });
     for (let r = 4; r <= MAX_ROUNDS; r++) {
       const t = `m1-r${String(r)}`,
         before = `m1-r${String(r - 1)}`;
@@ -2161,6 +2166,10 @@ test('DURABLE_DELIVERY generated sync receives run id through real Archon execut
   );
   const sync = nodesOf(workflow).find(n => n.id === 'sync-m1')!;
   expect(sync).toMatchObject({ depends_on: ['environment'] });
+  expect(nodesOf(workflow).find(n => n.id === 'sync-review-m1')?.bash).toContain(
+    'INPUTS_OUTPUT=sync-review-m1'
+  );
+  expect(allNodesOf(workflow).find(n => n.id === 'final-accept-m1')?.with?.terminal).toBe('1');
   const observed = join(root, 'received-run.json');
   const preload = join(root, 'delivery-probe.ts');
   // Observe the stable integration entry before authorization can run.
