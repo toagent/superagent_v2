@@ -401,6 +401,8 @@ nodes:
       required:
         - attempt
   - id: repair-core
+    context:
+      resume: code-core
     command: sa-repair
     retry:
       on_error: transient
@@ -953,6 +955,8 @@ nodes:
       - attempt-m1
     when: $gate-m1-r1.output.verdict == 'fix'
   - id: fix-m1-r2
+    context:
+      resume: code-core
     command: sa-fix
     retry:
       on_error: transient
@@ -1476,6 +1480,8 @@ nodes:
       - attempt-m1
     when: $gate-m1-r2.output.verdict == 'fix'
   - id: fix-m1-r3
+    context:
+      resume: fix-m1-r2
     command: sa-fix
     retry:
       on_error: transient
@@ -2003,6 +2009,8 @@ nodes:
       - attempt-m1
     when: $gate-m1-r3.output.verdict == 'fix'
   - id: fix-m1-r4
+    context:
+      resume: fix-m1-r3
     command: sa-fix
     retry:
       on_error: transient
@@ -2534,6 +2542,8 @@ nodes:
       - attempt-m1
     when: $gate-m1-r4.output.verdict == 'fix'
   - id: fix-m1-r5
+    context:
+      resume: fix-m1-r4
     command: sa-fix
     retry:
       on_error: transient
@@ -3069,6 +3079,8 @@ nodes:
       - attempt-m1
     when: $gate-m1-r5.output.verdict == 'fix'
   - id: fix-m1-r6
+    context:
+      resume: fix-m1-r5
     command: sa-fix
     retry:
       on_error: transient
@@ -3998,6 +4010,8 @@ nodes:
       required:
         - attempt
   - id: repair-api
+    context:
+      resume: code-api
     command: sa-repair
     retry:
       on_error: transient
@@ -4549,6 +4563,8 @@ nodes:
       - attempt-m2
     when: $gate-m2-r1.output.verdict == 'fix'
   - id: fix-m2-r2
+    context:
+      resume: code-api
     command: sa-fix
     retry:
       on_error: transient
@@ -5071,6 +5087,8 @@ nodes:
       - attempt-m2
     when: $gate-m2-r2.output.verdict == 'fix'
   - id: fix-m2-r3
+    context:
+      resume: fix-m2-r2
     command: sa-fix
     retry:
       on_error: transient
@@ -5597,6 +5615,8 @@ nodes:
       - attempt-m2
     when: $gate-m2-r3.output.verdict == 'fix'
   - id: fix-m2-r4
+    context:
+      resume: fix-m2-r3
     command: sa-fix
     retry:
       on_error: transient
@@ -6127,6 +6147,8 @@ nodes:
       - attempt-m2
     when: $gate-m2-r4.output.verdict == 'fix'
   - id: fix-m2-r5
+    context:
+      resume: fix-m2-r4
     command: sa-fix
     retry:
       on_error: transient
@@ -6661,6 +6683,8 @@ nodes:
       - attempt-m2
     when: $gate-m2-r5.output.verdict == 'fix'
   - id: fix-m2-r6
+    context:
+      resume: fix-m2-r5
     command: sa-fix
     retry:
       on_error: transient

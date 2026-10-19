@@ -10,6 +10,7 @@ import {
   generate,
   newRunId,
   renderBrief,
+  type Carried,
 } from '../src/generate';
 import { install, loadTiers, snapshotPolicy, WETAMP } from '../src/config';
 import * as coord from '../src/coord';
@@ -30,7 +31,7 @@ import {
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
 import { validateDagStructure } from '../../packages/workflows/src/loader';
-import type { DagNode } from '../../packages/workflows/src/schemas';
+import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
@@ -220,12 +221,15 @@ type N = {
   idle_timeout?: number;
   model?: string;
   provider?: string;
+  context?: { resume: string };
   approval?: { message: string; decisions?: { id: string }[] };
   retry?: { max_attempts?: number; on_error: string };
   maxBudgetUsd?: number;
   with?: Record<string, unknown>;
 };
 const nodesOf = (w: unknown): N[] => (w as { nodes: N[] }).nodes;
+const validNodes = (nodes: N[]) =>
+  nodes.map(n => (n.command ? dagNodeSchema.parse(n) : (n as DagNode)));
 test('Claude coder nodes use the policy cost cap while Codex and review nodes stay uncapped', () => {
   for (const console of ['codex', 'claude'] as const) {
     const mode = console === 'claude' ? 'single:claude' : 'single:chatgpt';
@@ -683,7 +687,7 @@ describe('buildWorkflow', () => {
         })
       ).some(n => n.id === 'soldier-core')
     ).toBe(false);
-    expect(validateDagStructure(nodes as DagNode[])).toBeNull();
+    expect(validateDagStructure(validNodes(nodes))).toBeNull();
     expect(readFileSync(join(WETAMP, 'templates/.archon/commands/sa-code.md'), 'utf8')).toContain(
       '`$$INPUTS.soldier_ok.output`'
     );
@@ -749,6 +753,29 @@ describe('buildWorkflow', () => {
         ]);
     }
   });
+  test('coder repairs resume only guaranteed single-owner sessions', () => {
+    const plan = structuredClone(fixture);
+    plan.packages = [plan.packages[0]];
+    const buildNodes = (p: Plan, fake = false, carried?: Carried) =>
+      nodesOf(
+        buildWorkflow(p, milestones(p), 'resume', '/GEN', fake, NOW, fixtureTiers(), carried)
+      );
+    const resumed = buildNodes(plan);
+    expect(resumed.find(n => n.id === 'repair-core')?.context).toEqual({ resume: 'code-core' });
+    expect(resumed.find(n => n.id === 'fix-m1-r2')?.context).toEqual({ resume: 'code-core' });
+    expect(resumed.find(n => n.id === 'fix-m1-r3')?.context).toEqual({ resume: 'fix-m1-r2' });
+    expect(resumed.filter(n => n.id.startsWith('review-')).every(n => !n.context)).toBeTrue();
+    expect(validateDagStructure(validNodes(resumed))).toBeNull();
+    const multi = structuredClone(fixture);
+    multi.packages[1].milestone = 'm1';
+    expect(buildNodes(multi).some(n => n.id.startsWith('fix-') && n.context)).toBeFalse();
+    const carry = buildNodes(plan, false, { from: 'old', packages: ['core'] });
+    const fake = buildNodes(plan, true);
+    plan.packages[0].draft = 'soldier';
+    const soldier = buildNodes(plan);
+    for (const nodes of [carry, fake, soldier])
+      expect(nodes.filter(n => /^(repair|fix)-/.test(n.id)).every(n => !n.context)).toBeTrue();
+  });
   test('P2: carry changes only code/verify wiring; an empty carry preserves every byte', () => {
     const make = (packages: string[], coded?: string[]) =>
       buildWorkflow(
@@ -779,7 +806,7 @@ describe('buildWorkflow', () => {
     expect(verify?.with?.carried_evidence).toBe('/GEN/carried-evidence/core.json');
     expect(verify?.with?.attempt).toBe('$package-attempt-core.output.attempt');
     expect(nodes.find(n => n.id === 'verify-api')?.with?.carried_evidence).toBeUndefined();
-    expect(validateDagStructure(nodes as DagNode[])).toBeNull();
+    expect(validateDagStructure(validNodes(nodes))).toBeNull();
     expect(JSON.parse(binding.if_skipped)).toEqual({
       status: 'done',
       changed_files: [],
@@ -790,9 +817,8 @@ describe('buildWorkflow', () => {
       deviations: [],
       needs: [],
     });
-    expect(nodes.filter(n => !['code-core', 'verify-core', 'repair-core'].includes(n.id))).toEqual(
-      nodesOf(normal).filter(n => !['code-core', 'verify-core', 'repair-core'].includes(n.id))
-    );
+    const unchanged = (n: N): boolean => !/^(code-core|verify-core|repair-core|fix-m1-)/.test(n.id);
+    expect(nodes.filter(unchanged)).toEqual(nodesOf(normal).filter(unchanged));
     expect(code?.depends_on).toEqual(nodesOf(normal).find(n => n.id === 'code-core')?.depends_on);
     expect(nodesOf(make([], ['core'])).find(n => n.id === 'code-core')?.when).toBe(code?.when);
     expect(
