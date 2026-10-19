@@ -339,6 +339,7 @@ const workflowRun = (id: string): WorkflowRun => ({
 
 const executorDeps = (run: WorkflowRun) => {
   const events: WorkflowEventInput[] = [];
+  const terminal = { completed: [] as string[], failed: [] as string[] };
   const observe: IWorkflowStore['createWorkflowEvent'] = async event => {
     events.push(event);
   };
@@ -357,8 +358,12 @@ const executorDeps = (run: WorkflowRun) => {
     getWorkflowRun: async () => run,
     updateWorkflowActivity: async () => {},
     updateWorkflowRun: async () => {},
-    completeWorkflowRun: async () => {},
-    failWorkflowRun: async () => {},
+    completeWorkflowRun: async id => {
+      terminal.completed.push(id);
+    },
+    failWorkflowRun: async id => {
+      terminal.failed.push(id);
+    },
     findChildRuns: async () => [],
     listWorkflowNodeSessions: async () => [],
     listWorkflowRunNodeSessions: async () => [],
@@ -405,7 +410,7 @@ const executorDeps = (run: WorkflowRun) => {
       commands: {},
     }),
   };
-  return { deps, events };
+  return { deps, events, terminal };
 };
 
 const executorPlatform: IWorkflowPlatform = {
@@ -498,7 +503,7 @@ test.each([1, 2] as const)(
     const f = setup('normal');
     try {
       const run = workflowRun(f.runId);
-      const { deps, events } = executorDeps(run);
+      const { deps, events, terminal } = executorDeps(run);
       const stateDir = join(process.env.SUPERAGENT_HOME!, 'state');
       const logDir = join(process.env.SUPERAGENT_HOME!, 'logs');
       mkdirSync(stateDir, { recursive: true });
@@ -519,9 +524,19 @@ test.each([1, 2] as const)(
         docsDir: 'docs/',
         config: executorConfig,
       });
-      expect(events.map(event => `${event.event_type}:${event.step_name ?? ''}`)).toContain(
-        'node_completed:integrate-m1.publish-m1'
-      );
+      expect(events.some(event => event.event_type === 'node_failed')).toBeFalse();
+      expect(
+        events.some(
+          event => event.event_type === 'node_completed' && event.step_name === 'integrate-m1'
+        )
+      ).toBeTrue();
+      expect(terminal).toEqual({ completed: [run.id], failed: [] });
+      expect(
+        events.filter(
+          event =>
+            event.event_type === 'node_completed' && event.step_name === 'integrate-m1.publish-m1'
+        )
+      ).toHaveLength(1);
       expect(sh('git rev-parse delivery-target', f.repo).trim()).toBe(
         sh('git rev-parse HEAD', f.worker).trim()
       );

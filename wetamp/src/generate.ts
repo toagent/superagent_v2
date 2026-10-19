@@ -442,7 +442,7 @@ export function buildWorkflow(
               },
             }
           : {
-              bash: `printf '{"status":"published","target_tip":"%s"}' "$${syncId}.output.target_tip"`,
+              bash: `printf '{"status":"published","target_tip":"%s"}' $${syncId}.output.target_tip`,
             }),
         timeout: integrationLockTimeout(),
         output_format: publishOutputSchema(),
@@ -453,7 +453,7 @@ export function buildWorkflow(
       ...approved,
       loop_group: {
         max_iterations: 3,
-        until_bash: `test "$${publishId}.output.status" = published`,
+        until_bash: `test $${publishId}.output.status = published`,
         nodes: integrationNodes,
       },
     };

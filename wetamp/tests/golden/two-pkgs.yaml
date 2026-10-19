@@ -3971,7 +3971,7 @@ nodes:
     trigger_rule: none_failed_min_one_success
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m1.output.status" = published
+      until_bash: test $publish-m1.output.status = published
       nodes:
         - id: resync-m1
           bash: |-
@@ -4231,7 +4231,7 @@ nodes:
         - id: publish-m1
           depends_on:
             - final-accept-m1
-          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m1.output.target_tip"
+          bash: printf '{"status":"published","target_tip":"%s"}' $resync-m1.output.target_tip
           timeout: 1200000
           output_format:
             type: object
@@ -8223,7 +8223,7 @@ nodes:
       - signoff-m2
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m2.output.status" = published
+      until_bash: test $publish-m2.output.status = published
       nodes:
         - id: resync-m2
           bash: |-
@@ -8483,7 +8483,7 @@ nodes:
         - id: publish-m2
           depends_on:
             - final-accept-m2
-          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m2.output.target_tip"
+          bash: printf '{"status":"published","target_tip":"%s"}' $resync-m2.output.target_tip
           timeout: 1200000
           output_format:
             type: object
