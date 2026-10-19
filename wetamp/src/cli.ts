@@ -896,17 +896,24 @@ export function recoveryReviewCheckpoint(
   }
 }
 
-const recoveryOutputHashes = (runId: string, repo: string): Record<string, string> => {
+export const recoveryOutputHashes = (
+  runId: string,
+  repo: string,
+  query: typeof archonJson = archonJson
+): Record<string, string> => {
   try {
-    const view = archonJson(['workflow', 'get', runId, '--verbose', '--events'], repo) as {
+    const view = query(['workflow', 'get', runId, '--verbose', '--events'], repo) as {
       events?: unknown;
     };
     if (!Array.isArray(view.events)) return {};
     return Object.fromEntries(
       view.events.flatMap(event => {
         const row = event as { event_type?: unknown; step_name?: unknown; data?: unknown },
-          output = (row.data as { structured_output?: unknown } | null)?.structured_output,
-          hash = (output as { artifact_sha256?: unknown } | null)?.artifact_sha256;
+          data = row.data as { structured_output?: unknown; node_output?: unknown } | null,
+          output =
+            data?.structured_output ??
+            (typeof data?.node_output === 'string' ? lastJson(data.node_output) : undefined);
+        const hash = (output as { artifact_sha256?: unknown } | null)?.artifact_sha256;
         return row.event_type === 'node_completed' &&
           typeof row.step_name === 'string' &&
           typeof hash === 'string' &&

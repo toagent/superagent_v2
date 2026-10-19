@@ -866,7 +866,7 @@ describe('HF3 latest-engine recovery', () => {
       edit?: (gate: Record<string, unknown>, diff: Record<string, unknown>) => void;
       gateRaw?: string;
       ledgerRaw?: string | null;
-      hash?: 'missing';
+      hash?: 'missing' | 'gate' | 'diff';
     }[] = [
       { name: 'advance', admitted: true },
       { name: 'debt', admitted: true, edit: gate => (gate.decision = fixtureDecision('debt')) },
@@ -875,7 +875,8 @@ describe('HF3 latest-engine recovery', () => {
       {
         name: 'forged-gate',
         admitted: false,
-        edit: gate => (gate.reviewed_head = 'f'.repeat(40)),
+        hash: 'gate',
+        edit: (gate, diff) => (gate.reviewed_head = diff.head),
       },
       {
         name: 'diff-head-drift',
@@ -883,9 +884,10 @@ describe('HF3 latest-engine recovery', () => {
         edit: (_gate, diff) => (diff.head = 'f'.repeat(40)),
       },
       {
-        name: 'diff-hash-drift',
+        name: 'forged-diff',
         admitted: false,
-        edit: (_gate, diff) => (diff.diff_hash = 'e'.repeat(16)),
+        hash: 'diff',
+        edit: (_gate, diff) => (diff.contract_hash = 'c'.repeat(64)),
       },
       {
         name: 'invalid-review-hash',
@@ -913,16 +915,17 @@ describe('HF3 latest-engine recovery', () => {
       const gate: Record<string, unknown> = {
         decision: fixtureDecision('advance'),
         head_trusted: true,
-        reviewed_head: head,
+        reviewed_head: sample.hash === 'gate' ? 'f'.repeat(40) : head,
         reviewed_diff_hash: 'd'.repeat(16),
         ledger_file: ledger,
       };
       const diff: Record<string, unknown> = {
         head,
         diff_hash: 'd'.repeat(16),
-        contract_hash: 'c'.repeat(64),
+        contract_hash: sample.hash === 'diff' ? 'e'.repeat(64) : 'c'.repeat(64),
       };
-      const originalGate = JSON.stringify(gate);
+      const originalGate = JSON.stringify(gate),
+        originalDiff = JSON.stringify(diff);
       sample.edit?.(gate, diff);
       const gateRaw = sample.gateRaw ?? JSON.stringify(gate),
         diffRaw = JSON.stringify(diff),
@@ -931,8 +934,8 @@ describe('HF3 latest-engine recovery', () => {
           sample.hash === 'missing'
             ? {}
             : {
-                'gate-m1-r1': sha(sample.name === 'forged-gate' ? originalGate : gateRaw),
-                'diff-m1-r1': sha(diffRaw),
+                'gate-m1-r1': sha(sample.hash === 'gate' ? originalGate : gateRaw),
+                'diff-m1-r1': sha(sample.hash === 'diff' ? originalDiff : diffRaw),
               };
       writeFileSync(join(art, 'gate-m1-r1.json'), gateRaw);
       writeFileSync(join(art, 'diff-m1-r1.json'), diffRaw);
@@ -943,8 +946,25 @@ describe('HF3 latest-engine recovery', () => {
         head,
         hashes
       );
+      if (sample.hash)
+        expect(result?.reason).toBe(
+          sample.hash === 'missing' ? 'gate_hash_missing' : `${sample.hash}_hash_mismatch`
+        );
       expect(result?.checkpoint !== undefined, sample.name).toBe(sample.admitted);
     }
+    const event = (step_name: string, data: Record<string, unknown>) => ({
+      event_type: 'node_completed',
+      step_name,
+      data,
+    });
+    expect(
+      cliMod.recoveryOutputHashes('r', s.root, () => ({
+        events: [
+          event('gate-m1-r1', { node_output: JSON.stringify({ artifact_sha256: 'a'.repeat(64) }) }),
+          event('diff-m1-r1', { structured_output: { artifact_sha256: 'b'.repeat(64) } }),
+        ],
+      }))
+    ).toEqual({ 'gate-m1-r1': 'a'.repeat(64), 'diff-m1-r1': 'b'.repeat(64) });
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup();
