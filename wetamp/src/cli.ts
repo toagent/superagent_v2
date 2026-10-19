@@ -3204,8 +3204,27 @@ export const USAGE = [
 
 function tickOutput(consoleError?: string): number {
   const actions = superviseTick();
-  print({ ...actions, ...(consoleError !== undefined ? { console_error: consoleError } : {}) });
-  if (!('actions' in actions)) return 0;
+  if (!('actions' in actions)) {
+    console.log(
+      JSON.stringify({
+        ...actions,
+        ...(consoleError !== undefined ? { console_error: consoleError } : {}),
+      })
+    );
+    return 0;
+  }
+  const gc = actions.gc.filter(item => item.action !== 'skipped'),
+    scratch = actions.scratch.filter(item => item.action !== 'skipped');
+  console.log(
+    JSON.stringify({
+      ...actions,
+      gc,
+      scratch,
+      gc_skipped: actions.gc.length - gc.length,
+      scratch_skipped: actions.scratch.length - scratch.length,
+      ...(consoleError !== undefined ? { console_error: consoleError } : {}),
+    })
+  );
   return actions.actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
 }
 

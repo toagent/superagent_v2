@@ -567,6 +567,8 @@ function stub(responses: RunView[]): {
   ledger: Ledger;
   calls: () => string[];
   due: ReturnType<typeof spyOn<typeof archonMod, 'dueWorkflowContinuations'>>;
+  gc: ReturnType<typeof spyOn<typeof gcMod, 'gc'>>;
+  scratch: ReturnType<typeof spyOn<typeof gcMod, 'scratchClean'>>;
 } {
   restoreFixtures();
   fixtureSpies.push(spyOn(launcherModule, 'launcher').mockReturnValue(undefined));
@@ -598,12 +600,14 @@ function stub(responses: RunView[]): {
     AGENT_SUPERVISOR_STATE: join(root, 'sv-state'),
   });
   let elapsed = 0;
-  const due = spyOn(archonMod, 'dueWorkflowContinuations').mockReturnValue(['r']);
+  const due = spyOn(archonMod, 'dueWorkflowContinuations').mockReturnValue(['r']),
+    scratch = spyOn(gcMod, 'scratchClean').mockReturnValue([]),
+    gc = spyOn(gcMod, 'gc').mockReturnValue([]);
   fixtureSpies.push(
     // Scratch cleanup has dedicated real-process coverage in scratch.test.ts.
     // Control fixtures must not scan or clean unrelated operator sessions.
-    spyOn(gcMod, 'scratchClean').mockReturnValue([]),
-    spyOn(gcMod, 'gc').mockReturnValue([]),
+    scratch,
+    gc,
     spyOn(cliMod.waitClock, 'now').mockImplementation(() => Date.now() + elapsed),
     spyOn(cliMod.waitClock, 'sleep').mockImplementation(ms => {
       elapsed += ms;
@@ -660,7 +664,7 @@ function stub(responses: RunView[]): {
       ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n')
       : [];
   supervisor(root, 'pending');
-  return { dir, root, ledger, calls, due };
+  return { dir, root, ledger, calls, due, gc, scratch };
 }
 
 describe('HF3 latest-engine recovery', () => {
@@ -2664,6 +2668,29 @@ test('supervise tick reports due query errors without waking', () => {
 });
 
 describe('supervise-tick (archon + supervisor stubs)', () => {
+  test('CLI compacts skipped cleanup details into counts on one line', () => {
+    const s = stub([run('completed')]);
+    s.gc.mockReturnValue([
+      { run_id: 'old', object: 'run', action: 'skipped', reason: 'retained' },
+      { run_id: 'gone', object: 'run', action: 'removed', reason: 'terminal' },
+    ]);
+    s.scratch.mockReturnValue([
+      { path: '/tmp/kept', action: 'skipped', reason: 'live' },
+      { path: '/tmp/gone', action: 'removed', reason: 'exited' },
+    ]);
+    const { code, out } = captured(() => main(['supervise-tick'])),
+      result = JSON.parse(out);
+    expect(code).toBe(0);
+    expect(out.split('\n')).toHaveLength(1);
+    expect(result).toMatchObject({
+      actions: [],
+      skipped_terminal: 0,
+      gc: [{ run_id: 'gone', action: 'removed' }],
+      scratch: [{ path: '/tmp/gone', action: 'removed' }],
+      gc_skipped: 1,
+      scratch_skipped: 1,
+    });
+  });
   test('terminal cache skips unchanged runs and invalidates on ledger or revision changes', () => {
     const s = stub([run('completed')]),
       db = revisionDb();
