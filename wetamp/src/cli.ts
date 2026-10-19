@@ -2587,6 +2587,7 @@ function tick(sa: string): {
   gc: GcAction[];
   scratch: ScratchAction[];
   skipped_terminal: number;
+  repeated_errors: number;
 } & ReturnType<typeof cockpitSignals> {
   let asks: Asks | Error;
   try {
@@ -2619,20 +2620,29 @@ function tick(sa: string): {
     console.error(`supervise-tick revision cache unavailable: ${(e as Error).message}`);
   }
   const cached = readTickCache(sa),
-    terminal: Record<string, string> = {},
+    terminal: Record<string, string> = revisions ? {} : { ...cached },
     live = new Set<string>();
-  let skippedTerminal = 0;
+  let skippedTerminal = 0,
+    repeatedErrors = 0,
+    errorCached = false;
   for (const l of ledgers()) {
     live.add(l.run_id);
+    let errorInput = l.run_id;
     try {
+      const stamp = statSync(ledgerPath(l.run_id));
+      errorInput = JSON.stringify([
+        l.run_id,
+        stamp.mtimeMs,
+        stamp.size,
+        'error' in l ? null : (revisions?.get(l.archon_run_id) ?? null),
+      ]);
       if ('error' in l) throw new Error(l.error);
       const actor = l.controller ?? l.launcher;
       if (!actor)
         throw new Error(
           'coord: run 没有可验证 controller/launcher；请先 claim 并显式 resume/decide'
         );
-      const stamp = statSync(ledgerPath(l.run_id)),
-        revision = revisions?.get(l.archon_run_id),
+      const revision = revisions?.get(l.archon_run_id),
         fingerprint = revision
           ? JSON.stringify([l.archon_run_id, stamp.mtimeMs, stamp.size, revision])
           : undefined,
@@ -2680,15 +2690,20 @@ function tick(sa: string): {
       if (x) out.push(x);
       else if (confirmedTerminal && !hasAsk) terminal[l.run_id] = confirmedTerminal;
     } catch (e) {
-      out.push({
+      const action = {
         run_id: l.run_id,
         action: 'error',
         ok: false,
         error: tail((e as Error).message, 200),
-      });
+      } satisfies Action;
+      const signature = `error:${JSON.stringify([errorInput, action.error])}`;
+      if (cached[l.run_id] === signature) repeatedErrors++;
+      else out.push(action);
+      terminal[l.run_id] = signature;
+      errorCached = true;
     }
   }
-  if (revisions)
+  if (revisions || errorCached)
     try {
       writeAtomic(join(sa, 'supervise-terminal.json'), JSON.stringify(terminal));
     } catch (e) {
@@ -2737,6 +2752,7 @@ function tick(sa: string): {
   return {
     actions: out,
     skipped_terminal: skippedTerminal,
+    repeated_errors: repeatedErrors,
     ...cockpitSignals(observed, asks instanceof Error ? {} : asks),
     gc: due ? gc() : [],
     scratch: scratchClean(),

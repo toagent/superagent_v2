@@ -2707,6 +2707,23 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(gets()).toBe(3);
     db.close();
   });
+  test('unchanged permanent errors are counted until their ledger input changes', () => {
+    const s = stub([run('completed')]),
+      path = ledgerPath('sa1');
+    writeFileSync(path, JSON.stringify({ ...s.ledger, controller: undefined }));
+    expect(captured(() => main(['supervise-tick'])).code).toBe(1);
+    const repeated = captured(() => main(['supervise-tick']));
+    expect(repeated.code).toBe(0);
+    expect(JSON.parse(repeated.out)).toMatchObject({ actions: [], repeated_errors: 1 });
+    writeFileSync(
+      path,
+      JSON.stringify({ ...s.ledger, controller: undefined, transcript: 'changed' })
+    );
+    expect(captured(() => main(['supervise-tick']))).toMatchObject({ code: 1 });
+    writeFileSync(path, JSON.stringify(s.ledger));
+    expect(captured(() => main(['supervise-tick'])).code).toBe(0);
+    expect(s.calls().some(call => call.startsWith('workflow get r '))).toBe(true);
+  });
   test('an unresolved ask prevents terminal skipping and remains live', () => {
     const s = stub([run('cancelled')]),
       db = revisionDb();
@@ -2746,6 +2763,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
           async () => undefined,
           async () => undefined
         );
+        expect(baseline).toBe(failed ? 1 : 0);
         for (const returned of [false, true]) {
           const printed = out.mock.calls.length;
           const exit = await superviseTickCli(
@@ -2760,8 +2778,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
               throw new Error('injected\nreason');
             }
           );
-          expect(exit).toBe(baseline);
-          expect(exit).toBe(failed ? 1 : 0);
+          expect(exit).toBe(0);
           expect(String(err.mock.calls.at(-1)?.[0])).toBe(
             'supervise-tick: orca sync failed: injected reason'
           );
