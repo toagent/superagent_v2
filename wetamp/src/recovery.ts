@@ -1,5 +1,5 @@
 // Compatibility imports for old callers; execution admission belongs to Archon.
-import { captureDelivery, deliveryRecoverable, landEvidence } from './land';
+import { captureDelivery, deliveryRecoverable, landEvidence, publishRecoverable } from './land';
 import { inspectProcess } from './launcher';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -43,7 +43,9 @@ function landReconciled(run: RunView, node: string): boolean {
 /** Read-only delivery reconciliation; admission and transitions stay in Archon. */
 export const unknownEffects = (run: RunView): string[] =>
   engineUnknownEffects(run).filter(node =>
-    node.startsWith('deliver')
-      ? !deliveryRecoverable(run)
-      : !node.startsWith('land') || !landReconciled(run, node)
+    node.startsWith('publish-')
+      ? !publishRecoverable(run)
+      : node.startsWith('deliver')
+        ? !deliveryRecoverable(run)
+        : !node.startsWith('land') || !landReconciled(run, node)
   );

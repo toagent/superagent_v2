@@ -834,7 +834,9 @@ describe('HF3 latest-engine recovery', () => {
       }
     ).nodes;
     const code = nodes.find(n => n.id === 'code-core');
-    expect(nodes.find(n => n.id === 'verify-core')?.with?.delta_base).toBe('$start-m1.output.head');
+    expect(nodes.find(n => n.id === 'verify-core')?.with?.delta_base).toBe(
+      '$sync-m1-ready.output.head'
+    );
     const carried = sample === 'verify' || sample === 'settle';
     expect(l.adoptions?.at(-1)?.carried).toEqual(carried ? ['core'] : []);
     const coded = sample === 'coded';
@@ -2124,6 +2126,35 @@ describe('brief / land (archon stub)', () => {
     withArtifacts('running', {});
     expect(captured(() => main(['land', 'sa1'])).code).toBe(1);
   });
+  test('integration states stay typed and land --apply retries PUBLISH without legacy delivery', () => {
+    const dirty = run('paused', {
+      metadata: { approval: { nodeId: 'target-dirty-m1' } },
+      nodes: [{ nodeId: 'publish-m1', state: 'completed' }],
+    });
+    const s = stub([dirty]);
+    expect(classifyRun(s.ledger, dirty)).toMatchObject({
+      state: 'held:target_dirty',
+      node: 'target-dirty-m1',
+    });
+    expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
+    expect(s.calls()).toContain('workflow approve r --detach --json');
+
+    const output = join(s.root, 'out'),
+      art = join(output, 'artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'target_advanced' }));
+    const advanced = run('failed', {
+      output_root: output,
+      nodes: [{ nodeId: 'publish-m1', state: 'failed' }],
+    });
+    expect(classifyRun(s.ledger, advanced).state).toBe('target_advanced');
+    writeFileSync(join(art, 'sync-m1.json'), JSON.stringify({ status: 'conflict' }));
+    const conflict = run('failed', {
+      output_root: output,
+      nodes: [{ nodeId: 'sync-m1-ready', state: 'failed' }],
+    });
+    expect(classifyRun(s.ledger, conflict).state).toBe('sync_conflict');
+  });
   test('LAND CLI prints a missing-target reason and returns failure without merge commands', () => {
     withArtifacts('failed', {
       'land.json': { commands: [], reason: 'land_target_unknown', action: 'Choose a local branch' },
@@ -2492,6 +2523,9 @@ test.each([
     const input = contracts.find(c => c.tag.startsWith('diff-') && c.tag.endsWith(`-r${round}`))!;
     const producerOutput = {
       head: base,
+      target_tip: base,
+      merge_base: base,
+      generation: 1,
       reviewed_head: base,
       diff_hash: 'previous',
       status: 'done',
@@ -2531,6 +2565,8 @@ test.each([
             Object.entries(input).map(([k, v]) => [`INPUTS_${k.toUpperCase()}`, v])
           ),
           INPUTS_BASE: base,
+          INPUTS_TARGET_TIP: base,
+          INPUTS_SYNC_GENERATION: '1',
           INPUTS_PREV: 'previous',
           INPUTS_CODER: JSON.stringify(producerOutput),
           INPUTS_DELTA_BASE: base,
@@ -2558,7 +2594,8 @@ test.each([
       JSON.stringify({ repo: wt, target: 'main', branch: 'sa/sa1', head })
     );
     const queriesBefore = s.calls().filter(c => c.startsWith('workflow get r')).length;
-    expect(captured(() => main(['accept', 'sa1'])).code).toBe(0);
+    const accepted = captured(() => main(['accept', 'sa1']));
+    expect(accepted.code, accepted.out).toBe(0);
     expect(s.calls().filter(c => c.startsWith('workflow get r')).length - queriesBefore).toBe(1);
     if (check === 'inputs') {
       const missing = round > 1 ? `gate-${input.milestone}-r${round - 1}` : start;

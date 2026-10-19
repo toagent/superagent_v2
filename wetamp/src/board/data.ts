@@ -8,7 +8,7 @@ import { getRunsAsync, RunQueryError, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
 import { loadActivity, type Activity } from './activity';
-import { landEvidence } from '../land';
+import { landEvidence, publishProjection } from '../land';
 import { milestones } from '../plan';
 import { readUsage, type UsageCache } from '../usage';
 import { readEta, type Estimate } from './eta';
@@ -256,6 +256,7 @@ export function rowOf(
       dispositions: l.dispositions ?? [],
     },
     landed: (() => {
+      if (publishProjection(l, run)) return true;
       if (l.delivery_result) return l.delivery_result.status === 'integrated';
       if (c.state !== 'completed' || !plan?.base_ref) return false;
       const evidence = landEvidence(run);

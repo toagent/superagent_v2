@@ -185,6 +185,26 @@ describe('data rows', () => {
     expect(
       rowOf({ ...legacy, delivery_result: l.delivery_result }, landedRun, { now }).landed
     ).toBe(false);
+    writeFileSync(
+      join(output, 'publish-m1.json'),
+      JSON.stringify({
+        task: 'delivery',
+        source: 'source',
+        target: { checkout: repo, branch: 'main' },
+        target_tip: sh('git rev-parse HEAD', repo).trim(),
+        contract: 'contract',
+        evidence: output,
+        integrated: sh('git rev-parse HEAD', repo).trim(),
+        status: 'published',
+      })
+    );
+    expect(
+      rowOf(
+        { ...legacy, delivery: { checkout: repo, branch: 'main', head: 'base' } },
+        { ...landedRun, nodes: [{ nodeId: 'publish-m1', state: 'completed' }] },
+        { now }
+      ).landed
+    ).toBe(true);
   });
   test('interventions use explicit events, never automatic asks or legacy booleans', () => {
     const run: RunView = { id: 'a-sa1', status: 'failed' };

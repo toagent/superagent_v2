@@ -9,6 +9,9 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { caller, control, coord, repoScope, same } from './coord';
 import { publish, sync, type PublishResult, type SyncResult } from './integration';
+import type { PublishReceipt } from './integration';
+import type { RunView } from './archon';
+import type { Ledger } from './cli';
 import { runDeliveryEntry, runLegacyDeliveryMain, type DeliveryAuthorization } from './land-legacy';
 
 const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
@@ -17,6 +20,72 @@ type SyncEvidence = SyncResult & { generation: number };
 
 const evidencePath = (name: string): string =>
   join(process.env.ARTIFACTS_DIR ?? '', `${name}.json`);
+
+export function publishEvidence(
+  run: Pick<RunView, 'nodes'>,
+  node?: string
+): { node: string; file: string } | undefined {
+  const selected =
+    node ??
+    run.nodes?.filter(n => n.state === 'completed' && /^publish-.+$/.test(n.nodeId)).at(-1)?.nodeId;
+  return selected && /^publish-.+$/.test(selected)
+    ? { node: selected, file: `${selected}.json` }
+    : undefined;
+}
+
+/** Read-only projection of a durable PUBLISH receipt. */
+export function publishProjection(l: Ledger, run: RunView): PublishReceipt | undefined {
+  try {
+    const evidence = publishEvidence(run);
+    if (!l.delivery || !evidence) return;
+    const value = operator().evidenceJson(l, operator().artifactsOf(run), evidence.file) as
+      | Partial<PublishReceipt>
+      | undefined;
+    return value?.status === 'published' &&
+      value.task === l.run_id &&
+      value.target?.checkout === l.delivery.checkout &&
+      value.target.branch === l.delivery.branch &&
+      typeof value.integrated === 'string'
+      ? (value as PublishReceipt)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** PUBLISH is retryable under its durable fencing, or already reconciled by its receipt. */
+export function publishRecoverable(run: RunView): boolean {
+  try {
+    const ref = coord().resolveRun(run.id);
+    if (!ref) return false;
+    const ledger = operator().loadLedger(ref.run_id);
+    if (
+      ledger.archon_run_id !== run.id ||
+      !ledger.delivery ||
+      !existsSync(join(ledger.gen_dir, 'delivery-authorization.json'))
+    )
+      return false;
+    if (publishProjection(ledger, run)) return true;
+    const active = run.nodes?.find(n => /^publish-.+$/.test(n.nodeId) && n.state === 'running');
+    if (!active || !run.working_path) return false;
+    const receipt = join(operator().artifactsOf(run), `${active.nodeId}.json`);
+    if (existsSync(receipt)) return false; // Invalid durable evidence must remain unknown.
+    const rev = (cwd: string, ref: string): string | undefined => {
+      const result = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', '--verify', ref], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 3000,
+      });
+      return result.exitCode === 0 ? result.stdout.toString().trim() : undefined;
+    };
+    const target = rev(ledger.delivery.checkout, `refs/heads/${ledger.delivery.branch}`);
+    const source = rev(run.working_path, 'HEAD');
+    // Equal refs reconcile a lost receipt; unequal refs leave the fenced CAS safe to replay.
+    return !!target && !!source;
+  } catch {
+    return false;
+  }
+}
 
 const emit = (name: string, value: unknown, write = true): void => {
   if (write) writeFileSync(evidencePath(name), JSON.stringify(value, null, 2));

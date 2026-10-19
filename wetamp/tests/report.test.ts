@@ -62,6 +62,22 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 
 describe('F-22 report', () => {
   test('delivery separates legacy, missing and blocked without mutating ledger evidence', () => {
+    const root = tmp(),
+      output = join(root, 'artifacts/runs/published');
+    mkdirSync(output, { recursive: true });
+    writeFileSync(
+      join(output, 'publish-m1.json'),
+      JSON.stringify({
+        task: 'published',
+        source: 'source',
+        target: { checkout: root, branch: 'main' },
+        target_tip: 'tip',
+        contract: 'contract',
+        evidence: output,
+        integrated: 'head',
+        status: 'published',
+      })
+    );
     const pairs = [
       { run_id: 'legacy', repo: '/repo' },
       {
@@ -74,24 +90,49 @@ describe('F-22 report', () => {
         repo: '/repo',
         delivery_result: { status: 'blocked', reason: 'dirty\ndetail' },
       },
-    ].map(l => ({ ledger: l as Ledger, run: { id: l.run_id, status: 'completed' as const } }));
+      {
+        run_id: 'published',
+        repo: root,
+        delivery: { checkout: root, branch: 'main', head: 'base' },
+      },
+    ].map(l => ({
+      ledger: l as Ledger,
+      run: {
+        id: l.run_id,
+        status: 'completed' as const,
+        ...(l.run_id === 'published'
+          ? { output_root: root, nodes: [{ nodeId: 'publish-m1', state: 'completed' as const }] }
+          : {}),
+      },
+    }));
     const before = JSON.stringify(pairs);
-    const stats = deliveryStats(pairs);
-    expect(stats.delivery).toEqual({ legacy: 1, missing: 1, blocked: 1 });
-    expect(stats.undelivered.map(r => r.status)).toEqual(['legacy', 'missing', 'blocked']);
-    expect(stats.undelivered[2].reason).toBe('dirty');
-    expect(JSON.stringify(pairs)).toBe(before);
-    expect(deliveryStats([{ ...pairs[2], run: new Error('unavailable') }]).undelivered).toEqual([]);
-    const summary = reportSummary({
-      ...stats,
-      usage: { unreadable: [] },
-      jobs: { unreadable: [] },
-      interventions: {},
-      demands: { unknown_runs: [] },
-      repo_missing: [],
-      unreadable: [],
-    });
-    expect(summary).toMatchObject(stats);
+    const saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root });
+    try {
+      const stats = deliveryStats(pairs);
+      expect(stats.delivery).toEqual({ legacy: 1, missing: 1, blocked: 1, published: 1 });
+      expect(stats.undelivered.map(r => r.status)).toEqual(['legacy', 'missing', 'blocked']);
+      expect(stats.undelivered[2].reason).toBe('dirty');
+      expect(JSON.stringify(pairs)).toBe(before);
+      expect(deliveryStats([{ ...pairs[2], run: new Error('unavailable') }]).undelivered).toEqual(
+        []
+      );
+      const summary = reportSummary({
+        ...stats,
+        usage: { unreadable: [] },
+        jobs: { unreadable: [] },
+        interventions: {},
+        demands: { unknown_runs: [] },
+        repo_missing: [],
+        unreadable: [],
+      });
+      expect(summary).toMatchObject(stats);
+    } finally {
+      for (const [i, key] of ['SUPERAGENT_HOME', 'ARCHON_HOME'].entries()) {
+        if (saved[i] === undefined) delete process.env[key];
+        else process.env[key] = saved[i];
+      }
+    }
   });
   test('standalone and historical jobs appear in summary with inferred usage and unknown gaps', () => {
     const root = tmp();

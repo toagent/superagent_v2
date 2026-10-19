@@ -56,6 +56,7 @@ import {
 import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
 import type { RunView } from './archon';
 import { workflowSourceMetadataSchema } from '../../packages/workflows/src/schemas/workflow-run';
+import { publishProjection } from './land';
 import {
   capturedSourceRoots,
   DEFAULT_WORKFLOW_SOURCE_CONFIG,
@@ -468,9 +469,14 @@ export function deliveryStats(pairs: Pair[]) {
   const undelivered: { run: string; repo: string; status: string; reason: string }[] = [];
   for (const { ledger: l, run } of pairs) {
     const receipt = l.delivery_result;
-    const status = receipt?.status ?? (l.delivery ? 'missing' : 'legacy');
+    const published = run instanceof Error ? undefined : publishProjection(l, run);
+    const status = published?.status ?? receipt?.status ?? (l.delivery ? 'missing' : 'legacy');
     counts[status] = (counts[status] ?? 0) + 1;
-    if (!(run instanceof Error) && run.status === 'completed' && status !== 'integrated')
+    if (
+      !(run instanceof Error) &&
+      run.status === 'completed' &&
+      !['integrated', 'published'].includes(status)
+    )
       undelivered.push({
         run: l.run_id,
         repo: l.repo,

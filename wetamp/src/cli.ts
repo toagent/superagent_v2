@@ -14,6 +14,7 @@ import {
   finalizeDelivery,
   deliveryProjection,
   landEvidence,
+  publishProjection,
   type DeliveryTarget,
 } from './land';
 export { finalizeDelivery } from './land';
@@ -453,6 +454,8 @@ export function classify(run: RunView): Classified {
         return { state: 'held:rework', exit: EXIT.held, node: approval.nodeId };
       if (approval?.nodeId.startsWith('human-'))
         return { state: 'held:human', exit: EXIT.held, node: approval.nodeId };
+      if (approval?.nodeId.startsWith('target-dirty-'))
+        return { state: 'held:target_dirty', exit: EXIT.held, node: approval.nodeId };
       return event?.startsWith('sa.human.')
         ? { state: 'held:human', exit: EXIT.held, node: run.metadata?.wait?.nodeId, event }
         : {
@@ -629,22 +632,26 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       ? reasonToken(l.delivery_result.reason)
       : landError?.startsWith('land_') ? reasonToken(landError.slice(5)) : undefined,
     registered = reasonToken(c.node ? nodeReason(l, run, c) : undefined),
-    reason = landReason ?? (registered && reasonOf(registered) ? registered : undefined) ??
+    integrationReason = c.state === 'held:target_dirty' ? 'target_dirty'
+      : ['sync_conflict', 'target_advanced'].includes(c.state) ? c.state : undefined,
+    reason = landReason ?? integrationReason ?? (registered && reasonOf(registered) ? registered : undefined) ??
       holdOf(l, run, c) ?? reasonToken(run.metadata?.stop_reason?.reason) ?? 'unclassified',
     evidence = [
       landReason && join(art, 'delivery.json'), c.node && join(art, `${c.node}.json`),
       run.transcript_path, l.log, l.transcript, art, ledgerPath(l.run_id),
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
       ledgerPath(l.run_id),
+    published = publishProjection(l, run),
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
-    blocked = landReason ?? (/^(?:land|deliver)(?:-.+)?$/.test(c.node ?? '') && node?.state === 'failed'),
+    blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(c.node ?? '') && node?.state === 'failed'),
     action = reason === 'target_protected' ? '在 feature 分支重跑'
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
-      : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
+      : c.state === 'held:human' || c.state === 'held:target_dirty' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
       : c.state.startsWith('held:') ? `superagent decide ${l.run_id} retry`
+      : ['sync_conflict', 'target_advanced'].includes(c.state) ? `superagent recover ${l.run_id}`
       : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}` : '读 evidence_path';
-  const delivery_state = integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
+  const delivery_state = published ? 'published' as const : integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
   return { delivery_state, receipt: { state: c.state, failed_node: c.node ?? null, reason, evidence_path: evidence, action } };
 }
 
@@ -672,7 +679,9 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     state: c.state,
     exit: c.exit,
     ...projection,
-    ...(l.deferred_deliveries?.length && projection.delivery_state !== 'integrated'
+    ...(l.deferred_deliveries?.length &&
+    !nodes.some(n => /^publish-.+$/.test(n.nodeId)) &&
+    projection.delivery_state !== 'integrated'
       ? { deferred_deliveries: l.deferred_deliveries }
       : {}),
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
@@ -744,6 +753,20 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   if (coderBudgetExceeded(run, c)) return { ...c, state: 'held:gate', exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const art = artifactsOf(run);
+    if (run.status === 'failed') {
+      const publish = /^publish-.+$/.test(c.node)
+        ? (evidenceJson(l, art, `${c.node}.json`) as { reason?: unknown } | undefined)
+        : undefined;
+      if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
+      const sync = c.node
+        .replace(/^resolve-context-/, '')
+        .replace(/^resolve-/, '')
+        .replace(/-ready$/, '');
+      if (/^(?:re)?sync-.+$/.test(sync)) {
+        const evidence = evidenceJson(l, art, `${sync}.json`) as { status?: unknown } | undefined;
+        if (evidence?.status === 'conflict') return { ...c, state: 'sync_conflict' };
+      }
+    }
     const controlNode = [
       c.node,
       ...(run.status === 'failed'
@@ -1784,7 +1807,7 @@ function decide(l: Ledger, a: Args): number {
       print({ run_id: l.run_id, decision: 'approve', ...res });
       return res.ok ? 0 : res.held ? EXIT.held : 1;
     }
-    if (c.state !== 'held:human') {
+    if (c.state !== 'held:human' && c.state !== 'held:target_dirty') {
       print({ run_id: l.run_id, ok: false, reason: 'run is not waiting for a human signoff' });
       return 1;
     }
@@ -2780,7 +2803,7 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
       ? reasonHold(nodeReason(l, run, c))
       : c.state === 'held:environment'
         ? 'environment'
-        : c.state === 'held:paused'
+        : c.state === 'held:paused' || c.state === 'held:target_dirty'
           ? run.metadata?.approval
             ? 'approval'
             : 'paused'
@@ -3588,6 +3611,27 @@ export function main(argv: string[]): number {
     case 'land': {
       const l = ledger(true);
       if (a.flags.apply) {
+        const run = getRun(l.archon_run_id, l.repo);
+        const c = classifyRun(l, run);
+        if (run.nodes?.some(n => /^(?:sync|publish)-.+$/.test(n.nodeId))) {
+          const receipt = publishProjection(l, run);
+          if (receipt) {
+            print(receipt);
+            return 0;
+          }
+          return controlled(
+            l,
+            () => {
+              if (c.state === 'held:target_dirty') {
+                const result = intervention(l, 'land', () => approveRun(l));
+                print({ run_id: l.run_id, action: 'retry_publish', ...result });
+                return result.ok ? 0 : result.held ? EXIT.held : 1;
+              }
+              return resumeRun(l, undefined, 'land');
+            },
+            false
+          );
+        }
         const receipt = finalizeDelivery(l.run_id);
         if (receipt) print(receipt);
         return 0;
