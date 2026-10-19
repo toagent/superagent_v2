@@ -1007,11 +1007,13 @@ function finish(
         { length: maxRounds() },
         (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
       ).indexOf(tag) + 1;
-    const node = reviewRound
-      ? `review-${env('MILESTONE')}-r${String(reviewRound)}`
-      : tag === `verify-${env('PKGS')}`
-        ? `repair-${env('PKGS')}`
-        : '';
+    const node =
+      env('CONTEXT_NODE') ||
+      (reviewRound
+        ? `review-${env('MILESTONE')}-r${String(reviewRound)}`
+        : tag === `verify-${env('PKGS')}`
+          ? `repair-${env('PKGS')}`
+          : '');
     if (node) {
       const context = prepareContext({
         gen,
@@ -1030,7 +1032,7 @@ function finish(
         join(artifacts, `${node}.context.json`),
         JSON.stringify({
           path: context,
-          attempt: readAttempt(attemptPath(gen, env('MILESTONE'))),
+          attempt: readAttempt(env('CONTEXT_COUNTER') || attemptPath(gen, env('MILESTONE'))),
         })
       );
     }
@@ -1038,7 +1040,11 @@ function finish(
   writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
   // Audit/control evidence stays in the artifact; downstream packages consume only delivered data.
   const delivered = { diff_hash: out.diff_hash, head: out.head };
-  emit(env('KIND') === 'settle' && out.disposition !== 'fail' ? delivered : out);
+  emit(
+    env('KIND') === 'settle' && out.disposition !== 'fail' && env('FULL_OUTPUT') !== '1'
+      ? delivered
+      : out
+  );
   if (out.disposition === 'fail' || out.disposition === 'adjudicate') {
     console.error(`${tag}: failed (${out.reason ?? ''})`);
     process.exit(1);
@@ -1076,7 +1082,10 @@ function settle(): void {
   const repaired = env('REPAIRED');
   if (!repaired || repaired === 'null') {
     if (first !== 'advance') throw new Error(`${tag}: repair skipped but verify did not advance`);
-    const verifyArtifact = join(artifacts, `${tag.replace(/^settle-/, 'verify-')}.json`);
+    const sourceTag = tag.startsWith('final-settle-')
+      ? tag.replace(/^final-settle-/, 'final-accept-')
+      : tag.replace(/^settle-/, 'verify-');
+    const verifyArtifact = join(artifacts, `${sourceTag}.json`);
     finish(
       tag,
       JSON.parse(readFileSync(verifyArtifact, 'utf8')) as Record<string, unknown> & Accept

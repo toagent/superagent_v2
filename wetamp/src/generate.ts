@@ -433,6 +433,9 @@ export function buildWorkflow(
       const integrationNodes: Node[] = [];
       const resyncReady = addSync(integrationNodes, m, `resync-${m.id}`, [], false);
       const finalAccept = `final-accept-${m.id}`;
+      const reviewRequired = m.review || m.risk === 'G2';
+      const reviewId = `integration-review-${m.id}`;
+      const reviewCounter = attemptPath(gen, `publish-review-${m.id}`);
       integrationNodes.push(
         check(
           finalAccept,
@@ -444,20 +447,21 @@ export function buildWorkflow(
             target_tip: `$${resyncReady}.output.target_tip`,
             sync_generation: `$${resyncReady}.output.generation`,
             tag: finalAccept,
+            ...(reviewRequired && !fake
+              ? { context_node: reviewId, context_counter: reviewCounter }
+              : {}),
           },
           { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
         )
       );
-      const reviewRequired = m.review || m.risk === 'G2';
       let finalDependency = finalAccept;
       if (reviewRequired) {
-        const reviewId = `integration-review-${m.id}`;
         const reviewAttempt = `attempt-publish-review-${m.id}`;
         const reviewContext = `publish-review-context-${m.id}`;
         integrationNodes.push({
           id: reviewAttempt,
           depends_on: [finalAccept],
-          ...attemptInputs(attemptPath(gen, `publish-review-${m.id}`)),
+          ...attemptInputs(reviewCounter),
           output_format: outputSchema('attempt'),
         });
         if (!fake)
@@ -465,12 +469,7 @@ export function buildWorkflow(
             id: reviewContext,
             always_run: true,
             depends_on: [reviewAttempt],
-            ...attemptInputs(
-              attemptPath(gen, `publish-review-${m.id}`),
-              '',
-              reviewId,
-              `publish-gate-${m.id}`
-            ),
+            ...attemptInputs(reviewCounter, '', reviewId, `publish-gate-${m.id}`),
             output_format: outputSchema('attempt'),
           });
         integrationNodes.push({
@@ -483,7 +482,7 @@ export function buildWorkflow(
                 model: tiers.routing.reviewer.by_risk?.[m.risk]
                   ? `@sa-reviewer-${m.risk}`
                   : '@sa-reviewer',
-                ...execution(`review-${m.id}-r1`),
+                ...execution(reviewId),
                 idle_timeout: REVIEW_IDLE_MS,
                 with: {
                   milestone: m.id,
@@ -998,6 +997,9 @@ export function buildWorkflow(
     const resyncReady = addSync(integrationNodes, m, `resync-${m.id}`, [], true);
     const ids = m.packages.map(p => p.id).join(',');
     const finalAccept = `final-accept-${m.id}`;
+    const reviewRequired = m.review || m.risk === 'G2';
+    const reviewId = `integration-review-${m.id}`;
+    const reviewCounter = attemptPath(gen, `publish-review-${m.id}`);
     integrationNodes.push(
       check(
         finalAccept,
@@ -1083,25 +1085,27 @@ export function buildWorkflow(
           tag: finalSettle,
           first: `$${finalAccept}.output.disposition`,
           repaired: skippable(`$${finalRepair}.output`),
+          full_output: reviewRequired ? '1' : '0',
+          ...(reviewRequired && !fake
+            ? { context_node: reviewId, context_counter: reviewCounter }
+            : {}),
           ...ledger,
         },
         {
           trigger_rule: 'none_failed_min_one_success',
-          output_format: outputSchema('delivery'),
+          output_format: outputSchema(reviewRequired ? 'accept' : 'delivery'),
           ...acceptTimeout(m.packages, plan),
         }
       )
     );
-    const reviewRequired = m.review || m.risk === 'G2';
     let publishDependency = finalSettle;
     if (reviewRequired) {
-      const reviewId = `integration-review-${m.id}`;
       const reviewAttempt = `attempt-publish-review-${m.id}`;
       const reviewContext = `publish-review-context-${m.id}`;
       integrationNodes.push({
         id: reviewAttempt,
         depends_on: [finalSettle],
-        ...attemptInputs(attemptPath(gen, `publish-review-${m.id}`)),
+        ...attemptInputs(reviewCounter),
         output_format: outputSchema('attempt'),
       });
       if (!fake)
@@ -1109,12 +1113,7 @@ export function buildWorkflow(
           id: reviewContext,
           always_run: true,
           depends_on: [reviewAttempt],
-          ...attemptInputs(
-            attemptPath(gen, `publish-review-${m.id}`),
-            '',
-            reviewId,
-            `publish-gate-${m.id}`
-          ),
+          ...attemptInputs(reviewCounter, '', reviewId, `publish-gate-${m.id}`),
           output_format: outputSchema('attempt'),
         });
       integrationNodes.push({
@@ -1127,7 +1126,7 @@ export function buildWorkflow(
               model: tiers.routing.reviewer.by_risk?.[m.risk]
                 ? `@sa-reviewer-${m.risk}`
                 : '@sa-reviewer',
-              ...execution(`review-${m.id}-r1`),
+              ...execution(reviewId),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,

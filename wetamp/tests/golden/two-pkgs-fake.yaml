@@ -870,8 +870,7 @@ nodes:
         - attempt
   - id: review-m1-r1
     when: $diff-m1-r1.output.disposition == 'advance'
-    bash: echo
-      '{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'
+    bash: echo '{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r1
       - attempt-review-m1-r1
@@ -1307,9 +1306,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r2
-    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same !=
-      'true' || $diff-m1-r2.output.disposition == 'advance' &&
-      $diff-m1-r2.output.reviewed != 'true'
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'
     depends_on:
       - diff-m1-r2
       - attempt-m1
@@ -1328,12 +1325,8 @@ nodes:
       required:
         - attempt
   - id: review-m1-r2
-    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same !=
-      'true' || $diff-m1-r2.output.disposition == 'advance' &&
-      $diff-m1-r2.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.same != 'true' || $diff-m1-r2.output.disposition == 'advance' && $diff-m1-r2.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r2
       - attempt-review-m1-r2
@@ -1773,9 +1766,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r3
-    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same !=
-      'true' || $diff-m1-r3.output.disposition == 'advance' &&
-      $diff-m1-r3.output.reviewed != 'true'
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.reviewed != 'true'
     depends_on:
       - diff-m1-r3
       - attempt-m1
@@ -1794,12 +1785,8 @@ nodes:
       required:
         - attempt
   - id: review-m1-r3
-    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same !=
-      'true' || $diff-m1-r3.output.disposition == 'advance' &&
-      $diff-m1-r3.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.same != 'true' || $diff-m1-r3.output.disposition == 'advance' && $diff-m1-r3.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r3
       - attempt-review-m1-r3
@@ -2243,9 +2230,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r4
-    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same !=
-      'true' || $diff-m1-r4.output.disposition == 'advance' &&
-      $diff-m1-r4.output.reviewed != 'true'
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.reviewed != 'true'
     depends_on:
       - diff-m1-r4
       - attempt-m1
@@ -2264,12 +2249,8 @@ nodes:
       required:
         - attempt
   - id: review-m1-r4
-    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same !=
-      'true' || $diff-m1-r4.output.disposition == 'advance' &&
-      $diff-m1-r4.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.same != 'true' || $diff-m1-r4.output.disposition == 'advance' && $diff-m1-r4.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r4
       - attempt-review-m1-r4
@@ -2717,9 +2698,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r5
-    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same !=
-      'true' || $diff-m1-r5.output.disposition == 'advance' &&
-      $diff-m1-r5.output.reviewed != 'true'
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.reviewed != 'true'
     depends_on:
       - diff-m1-r5
       - attempt-m1
@@ -2738,12 +2717,8 @@ nodes:
       required:
         - attempt
   - id: review-m1-r5
-    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same !=
-      'true' || $diff-m1-r5.output.disposition == 'advance' &&
-      $diff-m1-r5.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.same != 'true' || $diff-m1-r5.output.disposition == 'advance' && $diff-m1-r5.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r5
       - attempt-review-m1-r5
@@ -3195,9 +3170,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m1-r6
-    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same !=
-      'true' || $diff-m1-r6.output.disposition == 'advance' &&
-      $diff-m1-r6.output.reviewed != 'true'
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.reviewed != 'true'
     depends_on:
       - diff-m1-r6
       - attempt-m1
@@ -3216,12 +3189,8 @@ nodes:
       required:
         - attempt
   - id: review-m1-r6
-    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same !=
-      'true' || $diff-m1-r6.output.disposition == 'advance' &&
-      $diff-m1-r6.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.same != 'true' || $diff-m1-r6.output.disposition == 'advance' && $diff-m1-r6.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m1-r6
       - attempt-review-m1-r6
@@ -3370,9 +3339,7 @@ nodes:
     trigger_rule: none_failed_min_one_success
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m1.output.status" = published || { test
-        "$publish-m1.output.status" = dirty && test
-        "$target-dirty-m1.output.decision" = reject; }
+      until_bash: test "$publish-m1.output.status" = published || { test "$publish-m1.output.status" = dirty && test "$target-dirty-m1.output.decision" = reject; }
       nodes:
         - id: resync-m1
           bash: |-
@@ -3772,16 +3739,208 @@ nodes:
             repaired:
               from: $final-repair-m1.output
               if_skipped: null
+            full_output: '1'
           trigger_rule: none_failed_min_one_success
           output_format:
             type: object
             properties:
+              decision:
+                type: object
+                properties:
+                  kind:
+                    enum:
+                      - advance
+                      - debt
+                      - repair
+                      - block
+                  reason:
+                    type:
+                      - string
+                      - 'null'
+                  evidence:
+                    type: array
+                    items:
+                      type: string
+                  debt:
+                    type: array
+                    items:
+                      type: string
+                  requirements:
+                    type: object
+                    required:
+                      - status
+                      - items
+                    properties:
+                      status:
+                        enum:
+                          - legacy
+                          - verified
+                          - unmet
+                          - unknown
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required:
+                            - package
+                            - id
+                            - text
+                            - status
+                            - evidence
+                          properties:
+                            package:
+                              type: string
+                            id:
+                              type: string
+                            text:
+                              type: string
+                            status:
+                              enum:
+                                - verified
+                                - unmet
+                                - unknown
+                            evidence:
+                              type: array
+                              items:
+                                type: string
+                required:
+                  - kind
+                  - reason
+                  - evidence
+                  - debt
+              workspace_clean:
+                type: boolean
+              failures:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    command:
+                      type: string
+                    failure_class:
+                      type: string
+                      enum:
+                        - product
+                        - test_env
+                        - fixture
+                        - baseline
+                        - test_data
+                        - unknown
+                    evidence:
+                      type: string
+                    failed_tests:
+                      type: array
+                      items:
+                        type: string
+                    failure_digest:
+                      type: string
+                    adjudicated:
+                      type: boolean
+                  required:
+                    - command
+                    - failure_class
+                    - evidence
+              coder_partial:
+                type: boolean
+              self_report_conflict:
+                type: boolean
+              error_class_ignored:
+                type: boolean
+              ok:
+                type: boolean
+              failed:
+                type: array
+                items:
+                  type: string
+              log:
+                type: string
+              patch:
+                type: string
               diff_hash:
+                type: string
+              same:
+                type: boolean
+              reviewed:
+                type: boolean
+              base_pass:
+                type:
+                  - boolean
+                  - 'null'
+              checkout_fingerprint:
                 type: string
               head:
                 type: string
+              disposition:
+                enum:
+                  - advance
+                  - repair
+                  - adjudicate
+                  - fail
+                  - suspend
+              adjudication:
+                type: object
+                required:
+                  - diff_hash
+                  - contract_hash
+                  - command
+                  - failed_tests
+                  - failure_digest
+                  - report
+                  - counts
+                  - known
+                  - cases
+                properties:
+                  diff_hash:
+                    type: string
+                  contract_hash:
+                    type: string
+                  command:
+                    type: string
+                  failed_tests:
+                    type: array
+                    items:
+                      type: string
+                  failure_digest:
+                    type: string
+                  report:
+                    type: string
+                  counts:
+                    type: object
+                  known:
+                    type: array
+                  cases:
+                    type: array
+              reason:
+                type:
+                  - string
+                  - 'null'
+              delta:
+                type: string
+              risk:
+                type:
+                  - string
+                  - 'null'
+              out_of_scope:
+                type: array
+                items:
+                  type: string
             required:
+              - ok
+              - failed
+              - log
+              - patch
               - diff_hash
+              - same
+              - reviewed
+              - base_pass
+              - head
+              - checkout_fingerprint
+              - disposition
+              - reason
+              - delta
+              - risk
+              - out_of_scope
+              - decision
           timeout: 195000
         - id: attempt-publish-review-m1
           depends_on:
@@ -3801,8 +3960,7 @@ nodes:
             required:
               - attempt
         - id: integration-review-m1
-          bash: echo
-            '{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'
+          bash: echo '{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'
           depends_on:
             - final-settle-m1
             - attempt-publish-review-m1
@@ -3926,8 +4084,7 @@ nodes:
         - id: publish-m1
           depends_on:
             - publish-ready-m1
-          bash: printf '{"status":"published","target_tip":"%s"}'
-            "$resync-m1-ready.output.target_tip"
+          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m1-ready.output.target_tip"
           timeout: 1200000
           output_format:
             type: object
@@ -3954,8 +4111,7 @@ nodes:
               - status
         - id: target-dirty-m1
           approval:
-            message: Target checkout is dirty for milestone m1; clean it and approve to
-              retry publish
+            message: Target checkout is dirty for milestone m1; clean it and approve to retry publish
             decisions:
               - id: approve
               - id: reject
@@ -4820,8 +4976,7 @@ nodes:
         - attempt
   - id: review-m2-r1
     when: $diff-m2-r1.output.disposition == 'advance'
-    bash: echo
-      '{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'
+    bash: echo '{"status":"FAIL","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"open","evidence":"fake","carry_over":false}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r1
       - attempt-review-m2-r1
@@ -5256,9 +5411,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r2
-    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same !=
-      'true' || $diff-m2-r2.output.disposition == 'advance' &&
-      $diff-m2-r2.output.reviewed != 'true'
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.reviewed != 'true'
     depends_on:
       - diff-m2-r2
       - attempt-m2
@@ -5277,12 +5430,8 @@ nodes:
       required:
         - attempt
   - id: review-m2-r2
-    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same !=
-      'true' || $diff-m2-r2.output.disposition == 'advance' &&
-      $diff-m2-r2.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.same != 'true' || $diff-m2-r2.output.disposition == 'advance' && $diff-m2-r2.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r2
       - attempt-review-m2-r2
@@ -5721,9 +5870,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r3
-    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same !=
-      'true' || $diff-m2-r3.output.disposition == 'advance' &&
-      $diff-m2-r3.output.reviewed != 'true'
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.reviewed != 'true'
     depends_on:
       - diff-m2-r3
       - attempt-m2
@@ -5742,12 +5889,8 @@ nodes:
       required:
         - attempt
   - id: review-m2-r3
-    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same !=
-      'true' || $diff-m2-r3.output.disposition == 'advance' &&
-      $diff-m2-r3.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.same != 'true' || $diff-m2-r3.output.disposition == 'advance' && $diff-m2-r3.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r3
       - attempt-review-m2-r3
@@ -6190,9 +6333,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r4
-    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same !=
-      'true' || $diff-m2-r4.output.disposition == 'advance' &&
-      $diff-m2-r4.output.reviewed != 'true'
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.reviewed != 'true'
     depends_on:
       - diff-m2-r4
       - attempt-m2
@@ -6211,12 +6352,8 @@ nodes:
       required:
         - attempt
   - id: review-m2-r4
-    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same !=
-      'true' || $diff-m2-r4.output.disposition == 'advance' &&
-      $diff-m2-r4.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.same != 'true' || $diff-m2-r4.output.disposition == 'advance' && $diff-m2-r4.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r4
       - attempt-review-m2-r4
@@ -6663,9 +6800,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r5
-    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same !=
-      'true' || $diff-m2-r5.output.disposition == 'advance' &&
-      $diff-m2-r5.output.reviewed != 'true'
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.reviewed != 'true'
     depends_on:
       - diff-m2-r5
       - attempt-m2
@@ -6684,12 +6819,8 @@ nodes:
       required:
         - attempt
   - id: review-m2-r5
-    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same !=
-      'true' || $diff-m2-r5.output.disposition == 'advance' &&
-      $diff-m2-r5.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.same != 'true' || $diff-m2-r5.output.disposition == 'advance' && $diff-m2-r5.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r5
       - attempt-review-m2-r5
@@ -7140,9 +7271,7 @@ nodes:
         - decision
     timeout: 195000
   - id: attempt-review-m2-r6
-    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same !=
-      'true' || $diff-m2-r6.output.disposition == 'advance' &&
-      $diff-m2-r6.output.reviewed != 'true'
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.reviewed != 'true'
     depends_on:
       - diff-m2-r6
       - attempt-m2
@@ -7161,12 +7290,8 @@ nodes:
       required:
         - attempt
   - id: review-m2-r6
-    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same !=
-      'true' || $diff-m2-r6.output.disposition == 'advance' &&
-      $diff-m2-r6.output.reviewed != 'true'
-    bash: echo
-      '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake
-      fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
+    when: $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.same != 'true' || $diff-m2-r6.output.disposition == 'advance' && $diff-m2-r6.output.reviewed != 'true'
+    bash: echo '{"status":"PASS","notes":"fake","findings":[{"id":"R1-1","severity":"high","file":"fake","line":1,"failure_class":"product","command":null,"status":"closed","evidence":"fake fix verified","carry_over":true}],"fixture_confirmations":[],"debt":[]}'
     depends_on:
       - diff-m2-r6
       - attempt-review-m2-r6
@@ -7319,8 +7444,7 @@ nodes:
       - attempt-m2
     trigger_rule: none_failed_min_one_success
   - id: signoff-m2
-    bash: '[ "$(date +%s)" -le 4070908800 ] || { echo ''signoff m2: plan deadline
-      2099-01-01T00:00:00Z passed'' >&2; exit 1; }'
+    bash: '[ "$(date +%s)" -le 4070908800 ] || { echo ''signoff m2: plan deadline 2099-01-01T00:00:00Z passed'' >&2; exit 1; }'
     depends_on:
       - human-m2
     when: $human-m2.output.decision == 'approve'
@@ -7329,9 +7453,7 @@ nodes:
       - signoff-m2
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m2.output.status" = published || { test
-        "$publish-m2.output.status" = dirty && test
-        "$target-dirty-m2.output.decision" = reject; }
+      until_bash: test "$publish-m2.output.status" = published || { test "$publish-m2.output.status" = dirty && test "$target-dirty-m2.output.decision" = reject; }
       nodes:
         - id: resync-m2
           bash: |-
@@ -7731,16 +7853,208 @@ nodes:
             repaired:
               from: $final-repair-m2.output
               if_skipped: null
+            full_output: '1'
           trigger_rule: none_failed_min_one_success
           output_format:
             type: object
             properties:
+              decision:
+                type: object
+                properties:
+                  kind:
+                    enum:
+                      - advance
+                      - debt
+                      - repair
+                      - block
+                  reason:
+                    type:
+                      - string
+                      - 'null'
+                  evidence:
+                    type: array
+                    items:
+                      type: string
+                  debt:
+                    type: array
+                    items:
+                      type: string
+                  requirements:
+                    type: object
+                    required:
+                      - status
+                      - items
+                    properties:
+                      status:
+                        enum:
+                          - legacy
+                          - verified
+                          - unmet
+                          - unknown
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required:
+                            - package
+                            - id
+                            - text
+                            - status
+                            - evidence
+                          properties:
+                            package:
+                              type: string
+                            id:
+                              type: string
+                            text:
+                              type: string
+                            status:
+                              enum:
+                                - verified
+                                - unmet
+                                - unknown
+                            evidence:
+                              type: array
+                              items:
+                                type: string
+                required:
+                  - kind
+                  - reason
+                  - evidence
+                  - debt
+              workspace_clean:
+                type: boolean
+              failures:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    command:
+                      type: string
+                    failure_class:
+                      type: string
+                      enum:
+                        - product
+                        - test_env
+                        - fixture
+                        - baseline
+                        - test_data
+                        - unknown
+                    evidence:
+                      type: string
+                    failed_tests:
+                      type: array
+                      items:
+                        type: string
+                    failure_digest:
+                      type: string
+                    adjudicated:
+                      type: boolean
+                  required:
+                    - command
+                    - failure_class
+                    - evidence
+              coder_partial:
+                type: boolean
+              self_report_conflict:
+                type: boolean
+              error_class_ignored:
+                type: boolean
+              ok:
+                type: boolean
+              failed:
+                type: array
+                items:
+                  type: string
+              log:
+                type: string
+              patch:
+                type: string
               diff_hash:
+                type: string
+              same:
+                type: boolean
+              reviewed:
+                type: boolean
+              base_pass:
+                type:
+                  - boolean
+                  - 'null'
+              checkout_fingerprint:
                 type: string
               head:
                 type: string
+              disposition:
+                enum:
+                  - advance
+                  - repair
+                  - adjudicate
+                  - fail
+                  - suspend
+              adjudication:
+                type: object
+                required:
+                  - diff_hash
+                  - contract_hash
+                  - command
+                  - failed_tests
+                  - failure_digest
+                  - report
+                  - counts
+                  - known
+                  - cases
+                properties:
+                  diff_hash:
+                    type: string
+                  contract_hash:
+                    type: string
+                  command:
+                    type: string
+                  failed_tests:
+                    type: array
+                    items:
+                      type: string
+                  failure_digest:
+                    type: string
+                  report:
+                    type: string
+                  counts:
+                    type: object
+                  known:
+                    type: array
+                  cases:
+                    type: array
+              reason:
+                type:
+                  - string
+                  - 'null'
+              delta:
+                type: string
+              risk:
+                type:
+                  - string
+                  - 'null'
+              out_of_scope:
+                type: array
+                items:
+                  type: string
             required:
+              - ok
+              - failed
+              - log
+              - patch
               - diff_hash
+              - same
+              - reviewed
+              - base_pass
+              - head
+              - checkout_fingerprint
+              - disposition
+              - reason
+              - delta
+              - risk
+              - out_of_scope
+              - decision
           timeout: 195000
         - id: attempt-publish-review-m2
           depends_on:
@@ -7760,8 +8074,7 @@ nodes:
             required:
               - attempt
         - id: integration-review-m2
-          bash: echo
-            '{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'
+          bash: echo '{"status":"PASS","notes":"fake","findings":[],"fixture_confirmations":[],"debt":[]}'
           depends_on:
             - final-settle-m2
             - attempt-publish-review-m2
@@ -7885,8 +8198,7 @@ nodes:
         - id: publish-m2
           depends_on:
             - publish-ready-m2
-          bash: printf '{"status":"published","target_tip":"%s"}'
-            "$resync-m2-ready.output.target_tip"
+          bash: printf '{"status":"published","target_tip":"%s"}' "$resync-m2-ready.output.target_tip"
           timeout: 1200000
           output_format:
             type: object
@@ -7913,8 +8225,7 @@ nodes:
               - status
         - id: target-dirty-m2
           approval:
-            message: Target checkout is dirty for milestone m2; clean it and approve to
-              retry publish
+            message: Target checkout is dirty for milestone m2; clean it and approve to retry publish
             decisions:
               - id: approve
               - id: reject

@@ -1269,6 +1269,16 @@ describe('buildWorkflow', () => {
     expect(integration.loop_group.nodes.find(n => n.id === 'publish-m1')?.depends_on).toEqual([
       'publish-ready-m1',
     ]);
+    expect(integration.loop_group.nodes.find(n => n.id === 'final-settle-m1')?.with).toMatchObject({
+      full_output: '1',
+      context_node: 'integration-review-m1',
+      context_counter: '/GEN/attempts/publish-review-m1',
+    });
+    expect(executionTable(fixture, loadTiers())['integration-review-m1']).toMatchObject({
+      role: 'review',
+      round: 1,
+      milestone: 'm1',
+    });
     const warnings: string[] = [];
     collectLoopGroupSinkWarnings(nodes as never, warnings);
     expect(warnings.filter(w => w.includes("Node 'target-dirty-m1'"))).toEqual([]);

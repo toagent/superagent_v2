@@ -3354,6 +3354,18 @@ describe('sa-check script', () => {
     });
     expect(pass.code).toBe(0);
     expect(pass.out).toEqual({ diff_hash: 'delivered', head: first.head });
+    writeFileSync(join(root, 'art', 'final-accept-m1.json'), JSON.stringify(first));
+    const final = runScript(repo, {
+      kind: 'settle',
+      plan: planFile(root, PRODUCT_FAILURE),
+      pkgs: 'a',
+      tag: 'final-settle-m1',
+      first: 'advance',
+      repaired: 'null',
+      full_output: '1',
+    });
+    expect(final.code).toBe(0);
+    expect(final.out).toMatchObject(first);
     writeFileSync(
       join(root, 'art', 'verify-a.json'),
       JSON.stringify({

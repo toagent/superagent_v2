@@ -146,9 +146,7 @@ const integrationSync = (): void => {
   emit(process.env.INPUTS_OUTPUT ?? `sync-${process.env.INPUTS_MILESTONE ?? 'run'}`, result);
 };
 
-const lastGate = (
-  milestone: string
-): { gate: Record<string, unknown>; diff: Record<string, unknown> } => {
+const lastGate = (milestone: string): Record<string, unknown> => {
   const artifacts = process.env.ARTIFACTS_DIR ?? '';
   const record = (path: string): Record<string, unknown> => {
     const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
@@ -159,16 +157,7 @@ const lastGate = (
   const publishGate = join(artifacts, `publish-gate-${milestone}.json`);
   if (existsSync(publishGate)) {
     const gate = record(publishGate);
-    if (gate.verdict === 'pass')
-      return {
-        gate,
-        diff: record(
-          [
-            join(artifacts, `final-settle-${milestone}.json`),
-            join(artifacts, `final-accept-${milestone}.json`),
-          ].find(existsSync) ?? ''
-        ),
-      };
+    if (gate.verdict === 'pass') return gate;
   }
   const file = readdirSync(artifacts)
     .filter(name => new RegExp(`^gate-${milestone}-r\\d+\\.json$`).test(name))
@@ -178,10 +167,7 @@ const lastGate = (
   if (!file) throw new Error(`integration: missing passing gate for ${milestone}`);
   const round = /r(\d+)/.exec(file)?.[1];
   if (!round) throw new Error(`integration: invalid gate evidence name ${file}`);
-  return {
-    gate: record(join(artifacts, file)),
-    diff: record(join(artifacts, `diff-${milestone}-r${round}.json`)),
-  };
+  return record(join(artifacts, file));
 };
 
 const integrationPublish = (): void => {
@@ -189,7 +175,7 @@ const integrationPublish = (): void => {
   if (!ledger.delivery) throw new Error('integration: missing delivery target');
   const milestone = process.env.INPUTS_MILESTONE ?? 'run';
   const tag = process.env.INPUTS_OUTPUT ?? `publish-${milestone}`;
-  const { gate, diff } = lastGate(milestone);
+  const gate = lastGate(milestone);
   const stringField = (value: Record<string, unknown>, key: string): string =>
     typeof value[key] === 'string' ? value[key] : '';
   const reviewRequired = process.env.INPUTS_REVIEW_REQUIRED === '1';
@@ -209,7 +195,6 @@ const integrationPublish = (): void => {
             required: true,
             reviewed_head: stringField(gate, 'reviewed_head'),
             reviewed_diff_hash: stringField(gate, 'reviewed_diff_hash'),
-            diff_hash: stringField(diff, 'diff_hash'),
           }
         : { required: false },
       fence,

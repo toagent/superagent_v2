@@ -93,7 +93,7 @@ export interface PublishRun {
   receipt: string;
   review:
     | { required: false }
-    | { required: true; reviewed_head: string; reviewed_diff_hash: string; diff_hash: string };
+    | { required: true; reviewed_head: string; reviewed_diff_hash: string };
   /** Revalidates owner/generation immediately before the ref mutation and receipt write. */
   fence: () => void;
 }
@@ -142,6 +142,17 @@ const git = (cwd: string, ...args: string[]): string => {
   if (result.exitCode !== 0)
     throw new IntegrationError('git_failed', result.stderr.toString().trim() || args.join(' '));
   return result.stdout.toString().trimEnd();
+};
+
+const gitBytes = (cwd: string, ...args: string[]): Buffer => {
+  const result = Bun.spawnSync(['git', '-C', cwd, ...args], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: QUERY_TIMEOUT_MS,
+  });
+  if (result.exitCode !== 0)
+    throw new IntegrationError('git_failed', result.stderr.toString().trim() || args.join(' '));
+  return result.stdout;
 };
 
 const conflicts = (worktree: string): string[] =>
@@ -263,9 +274,24 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
             ? `${head} is not a descendant of ${targetTip}`
             : ancestor.stderr.toString().trim(),
       };
+    const diffHash = createHash('sha256')
+      .update(
+        gitBytes(
+          run.worktree,
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--binary',
+          targetTip,
+          'HEAD',
+          '--'
+        )
+      )
+      .digest('hex')
+      .slice(0, 16);
     if (
       run.review.required &&
-      (run.review.reviewed_head !== head || run.review.reviewed_diff_hash !== run.review.diff_hash)
+      (run.review.reviewed_head !== head || run.review.reviewed_diff_hash !== diffHash)
     )
       return {
         status: 'rejected',

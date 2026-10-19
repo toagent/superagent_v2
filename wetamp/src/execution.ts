@@ -58,7 +58,7 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
         table[`${role}-${p.id}`] = describeExecution(tiers, role, p.risk, 1, m.id, [p], plan);
     }
     for (let round = 1; round <= reviewRoundLimit(tiers.policy); round++) {
-      table[`review-${m.id}-r${String(round)}`] = describeExecution(
+      const review = describeExecution(
         tiers,
         'review',
         m.risk,
@@ -68,6 +68,9 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
         m.packages,
         plan
       );
+      table[`review-${m.id}-r${String(round)}`] = review;
+      if (round === 1 && (m.review || m.risk === 'G2'))
+        table[`integration-review-${m.id}`] = structuredClone(review);
       if (round > 1)
         table[`fix-${m.id}-r${String(round)}`] = describeExecution(
           tiers,

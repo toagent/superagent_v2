@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { publish, sync, type PublishRun } from '../src/integration';
@@ -29,6 +30,15 @@ const commit = (cwd: string, file: string, value: string): string => {
   writeFileSync(join(cwd, file), value);
   sh(`git add '${file}' && git commit -qm '${file}'`, cwd);
   return sh('git rev-parse HEAD', cwd).trim();
+};
+
+const diffHash = (cwd: string, base: string): string => {
+  const result = Bun.spawnSync(
+    ['git', '-C', cwd, 'diff', '--no-ext-diff', '--no-textconv', '--binary', base, 'HEAD', '--'],
+    { stdout: 'pipe', stderr: 'pipe' }
+  );
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  return createHash('sha256').update(result.stdout).digest('hex').slice(0, 16);
 };
 
 test('sync reports noop when the target tip is already present', () => {
@@ -186,15 +196,31 @@ test('publish rejects protected targets and non-descendant history', () => {
         review: {
           required: true,
           reviewed_head: reviewHead,
-          reviewed_diff_hash: 'reviewed',
-          diff_hash: 'current',
+          reviewed_diff_hash: diffHash(review.worktree, reviewBefore),
         },
       },
       review.expected()
     )
+  ).toMatchObject({ status: 'published' });
+
+  const drifted = fixture();
+  const driftedHead = commit(drifted.worktree, 'feature.txt', 'feature\n');
+  const driftedBefore = drifted.expected().target_tip;
+  expect(
+    publish(
+      {
+        ...drifted.run(),
+        review: {
+          required: true,
+          reviewed_head: driftedHead,
+          reviewed_diff_hash: 'reviewed',
+        },
+      },
+      drifted.expected()
+    )
   ).toMatchObject({ status: 'rejected', reason: 'review_drift' });
-  expect(sh('git rev-parse wetamp', review.target).trim()).toBe(reviewBefore);
-  expect(existsSync(review.run().receipt)).toBe(false);
+  expect(sh('git rev-parse wetamp', drifted.target).trim()).toBe(driftedBefore);
+  expect(existsSync(drifted.run().receipt)).toBe(false);
 
   const fenced = fixture();
   commit(fenced.worktree, 'feature.txt', 'feature\n');
