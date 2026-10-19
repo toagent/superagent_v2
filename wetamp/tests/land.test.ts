@@ -347,6 +347,38 @@ test.each(['pass', 'fail'])('LAND_ENVIRONMENT reuses plan setup only in candidat
   expect(existsSync(join(f.repo, '.prepared'))).toBe(false);
 });
 
+test('LAND_ENVIRONMENT carries ignored files without overlaying tracked files', () => {
+  const f = deliveryFixture();
+  writeFileSync(join(f.worktree, '.gitignore'), 'node_modules/\n');
+  sh('git add .gitignore && git commit -qm ignore-dependencies', f.worktree);
+  f.land.head = sh('git rev-parse HEAD', f.worktree).trim();
+  mkdirSync(join(f.worktree, 'node_modules/x'), { recursive: true });
+  writeFileSync(join(f.worktree, 'node_modules/x/index.js'), 'module.exports = 42;\n');
+  writeFileSync(join(f.worktree, 'delivery.txt'), 'dirty worker copy\n');
+  expect(
+    applyLand(
+      f.run,
+      f.land,
+      cwd => {
+        expect(readFileSync(join(cwd, 'node_modules/x/index.js'), 'utf8')).toContain('42');
+        expect(readFileSync(join(cwd, 'delivery.txt'), 'utf8')).toBe('delivery\n');
+        expect(sh('git status --porcelain --untracked-files=all', cwd)).toBe('');
+        return 0;
+      },
+      f.context
+    )?.status
+  ).toBe('manual_push');
+
+  const missing = deliveryFixture();
+  rmSync(missing.worktree, { recursive: true, force: true });
+  expect(applyLand(missing.run, missing.land, () => 0, missing.context)?.status).toBe(
+    'manual_push'
+  );
+  expect(readFileSync(join(missing.art, 'land-environment.log'), 'utf8')).toContain(
+    'run worktree missing'
+  );
+});
+
 test.each(['valid', 'unmerged', 'foreign', 'contract', 'launch', 'advanced', 'missing'])(
   'CARD_Y integration projection requires bound receipt and Git history: %s',
   kind => {

@@ -336,10 +336,25 @@ export function applyLand(run: RunView, land: Pick<Land, 'branch' | 'head'> & Pa
     };
     timed('environment', () => {
     if (context?.cacheReady?.(candidate)) return;
+    const source = run.working_path;
+    const sourceMissing = !source || !existsSync(source);
+    if (source && existsSync(source)) {
+      const listed = Bun.spawnSync(['git', '-C', source, 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory'], { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+      if (listed.exitCode !== 0) throw new LandError('environment_failed', `land: cannot list ignored environment at ${redact(source)}: ${redact(listed.stderr.toString().trim())}`);
+      for (const path of listed.stdout.toString().split('\0').filter(Boolean)) {
+        if (path === '.git' || path.startsWith('.git/')) continue;
+        const relative = path.replace(/\/$/, ''), from = join(source, relative), to = join(candidate, relative);
+        mkdirSync(join(to, '..'), { recursive: true });
+        const clone = Bun.spawnSync(['cp', '-cR', '--', from, to], { stdout: 'pipe', stderr: 'pipe' });
+        const copied = clone.exitCode === 0 ? clone : Bun.spawnSync(['cp', '-R', '--', from, to], { stdout: 'pipe', stderr: 'pipe' });
+        if (copied.exitCode !== 0) throw new LandError('environment_failed', `land: failed to copy ignored environment path ${redact(path)}: ${redact(copied.stderr.toString().trim())}`);
+      }
+    }
     prepareSubmodules(candidate, [...new Set([repo, ...(run.working_path ? [run.working_path] : [])])]);
     const script = `import { prepareEnvironment } from ${JSON.stringify(join(import.meta.dir, '../templates/.archon/scripts/sa-check.ts'))}; const { plan, log } = await Bun.stdin.json(); const out = await prepareEnvironment(process.cwd(), plan, log, true); console.log(JSON.stringify(out)); process.exitCode = out.ok ? 0 : 1;`;
     const prepared = Bun.spawnSync([process.execPath, '-e', script], { cwd: candidate, env: { ...process.env, INPUTS_KIND: 'env' }, stdin: Buffer.from(JSON.stringify({ plan: context?.plan ?? { packages: [] }, log })), stdout: 'pipe', stderr: 'pipe' });
     if (prepared.exitCode !== 0) throw new LandError('environment_failed', `land: environment preparation failed; log: ${log}; ${redact(prepared.stdout.toString() + prepared.stderr.toString()).slice(-4000)}`);
+    if (sourceMissing) appendFileSync(log, '# land ignored environment skipped: run worktree missing\n');
     });
     if (timed('acceptance', () => verify(candidate)) !== 0) throw new LandError('acceptance_failed', 'land: acceptance failed');
     if (gitAt(candidate, 'rev-parse', 'HEAD') !== accepted || gitAt(candidate, 'status', '--porcelain', '--untracked-files=all')) throw new LandError('candidate_changed', 'land: acceptance changed candidate checkout');
