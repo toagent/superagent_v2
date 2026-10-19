@@ -71,8 +71,12 @@ class GcSkip extends Error {}
 type RepoState = [git: (...args: string[]) => string, trees: string[][], refs: string];
 interface GcInput {
   fingerprint: string;
+  rule_version: string;
   working_path: string;
 }
+
+const gcRuleVersion = (): string =>
+  new Bun.CryptoHasher('sha256').update(readFileSync(import.meta.path)).digest('hex');
 
 // Only engine probe directories enter this path; run/user worktrees keep their existing guards.
 function collectProbe(path: string, id: string, dryRun: boolean, repo?: string): GcAction {
@@ -173,7 +177,11 @@ function collectGen(dryRun: boolean): GcAction[] {
 }
 
 /** Registered runs use the recovery lock; unreferenced gen snapshots use age and path guards. */
-export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] {
+export function gc(
+  dryRun = false,
+  probeRoots = [tmpdir(), '/tmp'],
+  ruleVersion = gcRuleVersion()
+): GcAction[] {
   const out: GcAction[] = [];
   let revisions: Map<string, string> | null = null;
   try {
@@ -366,13 +374,14 @@ export function gc(dryRun = false, probeRoots = [tmpdir(), '/tmp']): GcAction[] 
             }
           })(),
           fp = state && fingerprint(id, l, state, workingPath);
-        if (fp && cached[id]?.fingerprint === fp) next[id] = cached[id];
+        if (fp && cached[id]?.rule_version === ruleVersion && cached[id].fingerprint === fp)
+          next[id] = cached[id];
         else if (dryRun) collect(l);
         else {
           updateLedger(l, collect);
           const after = state && fingerprint(id, l, state, workingPath);
           if (!failures.length && after && workingPath && events.every(e => e.action === 'skipped'))
-            next[id] = { fingerprint: after, working_path: workingPath };
+            next[id] = { fingerprint: after, rule_version: ruleVersion, working_path: workingPath };
         }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

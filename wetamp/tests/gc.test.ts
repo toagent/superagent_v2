@@ -28,7 +28,8 @@ const keys = [
   'SA_JOB_ID',
 ] as const;
 const originalEnv = keys.map(k => process.env[k]);
-const gc = (dryRun = false) => collect(dryRun, [process.env.TMPDIR!]);
+const gc = (dryRun = false, ruleVersion?: string) =>
+  collect(dryRun, [process.env.TMPDIR!], ruleVersion);
 const realTrees = () => Bun.spawnSync(['git', 'worktree', 'list', '--porcelain']).stdout.toString();
 const initialTrees = realTrees();
 afterAll(() => expect(realTrees()).toBe(initialTrees));
@@ -151,11 +152,23 @@ test('unchanged skipped ledger uses cache and branch SHA changes invalidate it',
   query?.mockClear();
   expect(gc()).toEqual([]);
   expect(query).not.toHaveBeenCalled();
+  expect(gc(false, 'changed')[0].reason).toContain('not merged');
+  expect(query).toHaveBeenCalledTimes(1);
+  const cache = join(f.root, 'sa', 'gc-inputs.json');
+  writeFileSync(
+    cache,
+    JSON.stringify({
+      [f.id]: { ...JSON.parse(readFileSync(cache, 'utf8'))[f.id], rule_version: undefined },
+    })
+  );
+  query?.mockClear();
+  expect(gc()[0].reason).toContain('not merged');
+  expect(query).toHaveBeenCalledTimes(1);
   writeFileSync(join(f.path, 'next.txt'), 'next');
   f.git('-C', f.path, 'add', 'next.txt');
   f.git('-C', f.path, '-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'next');
   expect(gc()[0].reason).toContain('not merged');
-  expect(query).toHaveBeenCalledTimes(1);
+  expect(query).toHaveBeenCalledTimes(2);
 });
 
 test('another sa worktree advancing does not invalidate a cached ledger', () => {
