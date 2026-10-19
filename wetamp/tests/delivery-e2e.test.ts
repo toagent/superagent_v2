@@ -142,6 +142,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
     try {
       const sync = f.nodes.find(node => node.id === 'resync-m1')!;
       const publish = f.nodes.find(node => node.id === 'publish-m1')!;
+      expect(sync.bash).toContain('INPUTS_OUTPUT=resync-m1');
       const env = fixtureEnv({
         SUPERAGENT_HOME: process.env.SUPERAGENT_HOME!,
         ARCHON_HOME: process.env.ARCHON_HOME!,
@@ -163,9 +164,13 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
         expect(readFileSync(join(f.artifact, 'sync-m1-1.json'), 'utf8')).toContain(
           '"status": "conflict"'
         );
+        expect(readFileSync(join(f.artifact, 'resync-m1.json'), 'utf8')).toContain(
+          '"status": "conflict"'
+        );
         return;
       }
       let synced = runBash(sync.bash!, f.worker, env);
+      expect(readFileSync(join(f.artifact, 'resync-m1.json'), 'utf8')).toContain('"generation": 1');
       const writeGate = (base: string): void => {
         const head = sh('git rev-parse HEAD', f.worker).trim();
         const patch = Bun.spawnSync(
@@ -201,6 +206,9 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
         expect(publishAt(String(synced.target_tip)).status).toBe('advanced');
         synced = runBash(sync.bash!, f.worker, env);
         expect(readFileSync(join(f.artifact, 'sync-m1-2.json'), 'utf8')).toContain(
+          '"generation": 2'
+        );
+        expect(readFileSync(join(f.artifact, 'resync-m1.json'), 'utf8')).toContain(
           '"generation": 2'
         );
       }

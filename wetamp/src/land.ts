@@ -97,8 +97,12 @@ export function publishRecoverable(run: RunView): boolean {
   }
 }
 
+const writeEvidence = (name: string, value: unknown): void => {
+  writeFileSync(evidencePath(name), JSON.stringify(value, null, 2));
+};
+
 const emit = (name: string, value: unknown, write = true): void => {
-  if (write) writeFileSync(evidencePath(name), JSON.stringify(value, null, 2));
+  if (write) writeEvidence(name, value);
   process.stdout.write(JSON.stringify(value));
 };
 
@@ -145,6 +149,10 @@ const integrationSync = (): void => {
     generation,
   };
   fence();
+  writeEvidence(
+    process.env.INPUTS_OUTPUT ?? `sync-${process.env.INPUTS_MILESTONE ?? 'run'}`,
+    result
+  );
   emit(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}-${String(generation)}`, result);
   if (process.env.INPUTS_FAIL_CONFLICT === '1' && result.status === 'conflict')
     process.exitCode = 1;

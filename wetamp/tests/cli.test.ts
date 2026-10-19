@@ -2161,7 +2161,7 @@ describe('brief / land (archon stub)', () => {
     writeFileSync(join(art, 'resync-m1.json'), JSON.stringify({ status: 'conflict' }));
     const conflict = run('failed', {
       output_root: output,
-      nodes: [{ nodeId: 'integrate-m1.resync-m1-ready', state: 'failed' }],
+      nodes: [{ nodeId: 'integrate-m1.resync-m1', state: 'failed' }],
     });
     expect(classifyRun(s.ledger, conflict).state).toBe('sync_conflict');
     writeFileSync(

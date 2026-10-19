@@ -252,8 +252,13 @@ export function buildWorkflow(
     runtime: 'bun',
     with: { counter, gen, pkg, review, ...(gate ? { gate } : {}) },
   });
-  const integrationCommand = (action: 'sync' | 'publish', milestone: string, extra = ''): string =>
-    `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${action}-${milestone} ${extra}bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`;
+  const integrationCommand = (
+    action: 'sync' | 'publish',
+    milestone: string,
+    extra = '',
+    output = `${action}-${milestone}`
+  ): string =>
+    `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${output} ${extra}bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`;
   if (delivery && (!run || /[^0-9a-f-]/.test(run))) throw new Error('delivery: invalid run id');
   let after: Node = { depends_on: ['environment'] };
   const signoff = (
@@ -376,7 +381,7 @@ export function buildWorkflow(
         id: syncId,
         bash:
           delivery && !fake
-            ? integrationCommand('sync', m.id, 'INPUTS_FAIL_CONFLICT=1 ')
+            ? integrationCommand('sync', m.id, 'INPUTS_FAIL_CONFLICT=1 ', syncId)
             : [
                 `tip=$(git rev-parse --verify '${plan.base_ref.replaceAll("'", "'\\''")}^{commit}') || exit $?`,
                 'base=$(git merge-base HEAD "$tip") || exit $?',
