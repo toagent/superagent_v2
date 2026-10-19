@@ -29,8 +29,11 @@ import {
   substituteNodeOutputRefs,
   type ShellInputContext,
 } from '../../packages/workflows/src/dag-executor';
-import { validateDagStructure } from '../../packages/workflows/src/loader';
-import { collectLoopGroupSinkWarnings } from '../../packages/workflows/src/loader';
+import {
+  collectLoopGroupSinkWarnings,
+  parseWorkflow,
+  validateDagStructure,
+} from '../../packages/workflows/src/loader';
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
@@ -1263,9 +1266,9 @@ describe('buildWorkflow', () => {
     expect(integration.loop_group).toMatchObject({
       max_iterations: 3,
     });
-    expect((build(false) as { interactive?: boolean }).interactive).toBe(true);
-    expect(integration.loop_group.nodes.at(-1)?.id).toBe('target-dirty-m1');
-    expect(integration.loop_group.nodes.some(n => n.id === 'target-dirty-decision-m1')).toBe(false);
+    expect((build(false) as { interactive?: boolean }).interactive).toBeUndefined();
+    expect(integration.loop_group.nodes.some(n => n.approval)).toBe(false);
+    expect(integration.loop_group.nodes.some(n => n.id.startsWith('target-dirty-'))).toBe(false);
     expect(integration.loop_group.nodes.find(n => n.id === 'publish-m1')?.depends_on).toEqual([
       'publish-ready-m1',
     ]);
@@ -1284,6 +1287,16 @@ describe('buildWorkflow', () => {
     expect(warnings.filter(w => w.includes("Node 'target-dirty-m1'"))).toEqual([]);
     expect(nodes.find(n => n.id === 'sync-m2')?.depends_on).toEqual(['integrate-m1']);
     expect(allNodesOf(build(false)).find(n => n.id === 'publish-m2')).toBeDefined();
+  });
+  test('generated workflow passes the upstream loader as non-interactive', () => {
+    const plan = structuredClone(fixture);
+    delete plan.packages[1]!.signoff;
+    const parsed = parseWorkflow(Bun.YAML.stringify(build(false, plan)), 'generated.yaml', {
+      get: () => undefined,
+      list: () => [],
+    });
+    if (parsed.workflow === null) throw new Error(parsed.error.error);
+    expect(parsed.workflow.interactive).not.toBe(true);
   });
   test('golden: fake mode swaps coder nodes for bash stubs only', () => {
     expect(build(true)).toEqual(golden('two-pkgs-fake'));

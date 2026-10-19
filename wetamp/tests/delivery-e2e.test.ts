@@ -184,7 +184,20 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
       if (mode === 'dirty') {
         const dirty = join(f.repo, 'dirty.txt');
         writeFileSync(dirty, 'dirty\n');
-        expect(publishAt(String(synced.target_tip)).status).toBe('dirty');
+        const failed = Bun.spawnSync(
+          [
+            'bash',
+            '-c',
+            publish.bash!.replace('$resync-m1-ready.output.target_tip', String(synced.target_tip)),
+          ],
+          { cwd: f.worker, env, stdout: 'pipe', stderr: 'pipe' }
+        );
+        expect(failed.exitCode).toBe(1);
+        expect(JSON.parse(failed.stdout.toString())).toEqual({
+          status: 'dirty',
+          paths: ['untracked: "dirty.txt"'],
+          reason: 'target_dirty',
+        });
         unlinkSync(dirty);
       }
       expect(publishAt(String(synced.target_tip)).status).toBe('published');

@@ -540,23 +540,12 @@ export function buildWorkflow(
         timeout: integrationLockTimeout(),
         output_format: publishOutputSchema(),
       });
-      integrationNodes.push({
-        id: `target-dirty-${m.id}`,
-        approval: {
-          message: `Target checkout is dirty for milestone ${m.id}; clean it and approve to retry publish`,
-          decisions: [{ id: 'approve' }, { id: 'reject' }],
-        },
-        depends_on: [publishId],
-        when: `$${publishId}.output.status == 'dirty'`,
-      });
       nodes.push({
         id: `integrate-${m.id}`,
         ...approved,
         loop_group: {
           max_iterations: 3,
-          until_bash:
-            `test "$${publishId}.output.status" = published || ` +
-            `{ test "$${publishId}.output.status" = dirty && test "$target-dirty-${m.id}.output.decision" = reject; }`,
+          until_bash: `test "$${publishId}.output.status" = published`,
           nodes: integrationNodes,
         },
       });
@@ -1187,24 +1176,12 @@ export function buildWorkflow(
       timeout: integrationLockTimeout(),
       output_format: publishOutputSchema(),
     });
-    const dirtyApproval = `target-dirty-${m.id}`;
-    integrationNodes.push({
-      id: dirtyApproval,
-      approval: {
-        message: `Target checkout is dirty for milestone ${m.id}; clean it and approve to retry publish`,
-        decisions: [{ id: 'approve' }, { id: 'reject' }],
-      },
-      depends_on: [publishId],
-      when: `$${publishId}.output.status == 'dirty'`,
-    });
     nodes.push({
       id: `integrate-${m.id}`,
       ...approved,
       loop_group: {
         max_iterations: 3,
-        until_bash:
-          `test "$${publishId}.output.status" = published || ` +
-          `{ test "$${publishId}.output.status" = dirty && test "$${dirtyApproval}.output.decision" = reject; }`,
+        until_bash: `test "$${publishId}.output.status" = published`,
         nodes: integrationNodes,
       },
     });
@@ -1213,7 +1190,6 @@ export function buildWorkflow(
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
-    interactive: true,
     nodes,
   };
 }

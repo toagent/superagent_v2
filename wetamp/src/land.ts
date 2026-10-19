@@ -211,6 +211,11 @@ const integrationPublish = (): void => {
     process.exitCode = 1;
     return;
   }
+  if (result.status === 'dirty') {
+    emit(tag, { ...result, reason: 'target_dirty' });
+    process.exitCode = 1;
+    return;
+  }
   emit(tag, result, result.status !== 'published');
   if (result.status === 'rejected') process.exitCode = 1;
 };

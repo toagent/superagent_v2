@@ -638,12 +638,14 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       ? reasonToken(l.delivery_result.reason)
       : landError?.startsWith('land_') ? reasonToken(landError.slice(5)) : undefined,
     registered = reasonToken(c.node ? nodeReason(l, run, c) : undefined),
-    integrationReason = c.state === 'held:target_dirty' ? 'target_dirty'
+    integrationReason = ['held:target_dirty', 'target_dirty'].includes(c.state) ? 'target_dirty'
       : ['sync_conflict', 'target_advanced'].includes(c.state) ? c.state : undefined,
     reason = landReason ?? integrationReason ?? (registered && reasonOf(registered) ? registered : undefined) ??
       holdOf(l, run, c) ?? reasonToken(run.metadata?.stop_reason?.reason) ?? 'unclassified',
     evidence = [
-      landReason && join(art, 'delivery.json'), c.node && join(art, `${c.node}.json`),
+      landReason && join(art, 'delivery.json'),
+      reason === 'target_dirty' && c.node && join(art, `${authoredNodeId(c.node)}.json`),
+      c.node && join(art, `${c.node}.json`),
       run.transcript_path, l.log, l.transcript, art, ledgerPath(l.run_id),
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
       ledgerPath(l.run_id),
@@ -651,8 +653,9 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
     blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
     action = reason === 'target_protected' ? '在 feature 分支重跑'
+      : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
-      : c.state === 'held:human' || c.state === 'held:target_dirty' ? `superagent decide ${l.run_id} approve`
+      : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
       : c.state.startsWith('held:') ? `superagent decide ${l.run_id} retry`
       : ['sync_conflict', 'target_advanced'].includes(c.state) ? `superagent recover ${l.run_id}`
@@ -764,6 +767,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
       const publish = /^publish-.+$/.test(authored)
         ? (evidenceJson(l, art, `${authored}.json`) as { reason?: unknown } | undefined)
         : undefined;
+      if (publish?.reason === 'target_dirty') return { ...c, state: 'target_dirty' };
       if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
       const sync = authored
         .replace(/^resolve-context-/, '')

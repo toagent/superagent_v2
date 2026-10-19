@@ -1,6 +1,5 @@
 name: sa-golden-0001
 description: 'superagent run golden-0001: 2 package(s), 2 milestone(s)'
-interactive: true
 nodes:
   - id: environment
     script: sa-check
@@ -3339,7 +3338,7 @@ nodes:
     trigger_rule: none_failed_min_one_success
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m1.output.status" = published || { test "$publish-m1.output.status" = dirty && test "$target-dirty-m1.output.decision" = reject; }
+      until_bash: test "$publish-m1.output.status" = published
       nodes:
         - id: resync-m1
           bash: |-
@@ -4109,15 +4108,6 @@ nodes:
                 type: object
             required:
               - status
-        - id: target-dirty-m1
-          approval:
-            message: Target checkout is dirty for milestone m1; clean it and approve to retry publish
-            decisions:
-              - id: approve
-              - id: reject
-          depends_on:
-            - publish-m1
-          when: $publish-m1.output.status == 'dirty'
   - id: sync-m2
     bash: |-
       tip=$(git rev-parse --verify 'main^{commit}') || exit $?
@@ -7453,7 +7443,7 @@ nodes:
       - signoff-m2
     loop_group:
       max_iterations: 3
-      until_bash: test "$publish-m2.output.status" = published || { test "$publish-m2.output.status" = dirty && test "$target-dirty-m2.output.decision" = reject; }
+      until_bash: test "$publish-m2.output.status" = published
       nodes:
         - id: resync-m2
           bash: |-
@@ -8223,12 +8213,3 @@ nodes:
                 type: object
             required:
               - status
-        - id: target-dirty-m2
-          approval:
-            message: Target checkout is dirty for milestone m2; clean it and approve to retry publish
-            decisions:
-              - id: approve
-              - id: reject
-          depends_on:
-            - publish-m2
-          when: $publish-m2.output.status == 'dirty'

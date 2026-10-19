@@ -2127,20 +2127,29 @@ describe('brief / land (archon stub)', () => {
     expect(captured(() => main(['land', 'sa1'])).code).toBe(1);
   });
   test('integration states stay typed and land --apply retries PUBLISH without legacy delivery', () => {
-    const dirty = run('paused', {
-      metadata: {
-        approval: { nodeId: 'integrate-m1', bodyGateId: 'target-dirty-m1' } as never,
-      },
-      nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'completed' }],
-    });
-    const s = stub([dirty]);
-    expect(classifyRun(s.ledger, dirty).state).toBe('held:target_dirty');
-    expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
-    expect(s.calls()).toContain('workflow approve r --detach --json');
-
-    const output = join(s.root, 'out'),
+    const s = stub([run('failed')]),
+      output = join(s.root, 'home'),
+      dirty = run('failed', {
+        output_root: output,
+        nodes: [
+          { nodeId: 'integrate-m1.resync-m1', state: 'completed' },
+          { nodeId: 'integrate-m1.publish-m1', state: 'failed' },
+        ],
+      }),
       art = join(output, 'artifacts/runs/r');
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(dirty));
     mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(art, 'publish-m1.json'),
+      JSON.stringify({ status: 'dirty', reason: 'target_dirty', paths: ['untracked: "dirty.txt"'] })
+    );
+    expect(classifyRun(s.ledger, dirty).state).toBe('target_dirty');
+    const status = captured(() => main(['wait', 'sa1', '--timeout', '1']));
+    expect(JSON.parse(status.out).receipt).toMatchObject({
+      reason: 'target_dirty',
+      evidence_path: join(art, 'publish-m1.json'),
+      action: 'superagent land --apply sa1',
+    });
     writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'target_advanced' }));
     const advanced = run('failed', {
       output_root: output,
@@ -2153,6 +2162,12 @@ describe('brief / land (archon stub)', () => {
       nodes: [{ nodeId: 'integrate-m1.resync-m1-ready', state: 'failed' }],
     });
     expect(classifyRun(s.ledger, conflict).state).toBe('sync_conflict');
+    writeFileSync(
+      join(art, 'publish-m1.json'),
+      JSON.stringify({ status: 'dirty', reason: 'target_dirty', paths: ['untracked: "dirty.txt"'] })
+    );
+    expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
+    expect(s.calls()).toContain('workflow resume r --detach --json');
   });
   test('LAND CLI prints a missing-target reason and returns failure without merge commands', () => {
     withArtifacts('failed', {
