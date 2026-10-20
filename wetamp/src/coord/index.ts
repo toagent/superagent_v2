@@ -408,6 +408,26 @@ export class Coordination {
         this.notice('takeover', scope, who ?? previous, previous, c.generation, reason);
     return c;
   }
+  private claimState(scope: Scope, who: Identity, takeover: boolean) {
+    const view = this.owner(scope);
+    if (view.conflicts.length && !takeover) throw new Error(view.next);
+    if (view.owner && !same(view.owner, who) && view.presence.state !== 'offline' && !takeover)
+      throw new Error(shared.refusal('普通认领', view.owner, view.presence.state, scope));
+    return { view, existing: this.claimOf(scope) };
+  }
+  private applyClaim(
+    scope: Scope,
+    who: Identity,
+    reason: string,
+    state: ReturnType<Coordination['claimState']>
+  ): Controller {
+    const claim =
+      same(state.view.owner, who) && state.existing
+        ? state.existing
+        : this.transfer(scope, who, reason);
+    this.save('leases', this.leaseKey(scope, who), { generation: claim.generation });
+    return { ...who, generation: claim.generation };
+  }
   claim(
     scope: Scope,
     who: Identity,
@@ -418,14 +438,32 @@ export class Coordination {
       this.locked(() => {
         if (!who.host || !who.pid_start) throw new Error('coord: claim needs verifiable identity');
         if (takeover && !reason.trim()) throw new Error('claim --takeover needs --reason "<原话>"');
-        const view = this.owner(scope);
-        if (view.conflicts.length && !takeover) throw new Error(view.next);
-        if (view.owner && !same(view.owner, who) && view.presence.state !== 'offline' && !takeover)
-          throw new Error(shared.refusal('普通认领', view.owner, view.presence.state, scope));
-        const existing = this.claimOf(scope);
-        const c = same(view.owner, who) && existing ? existing : this.transfer(scope, who, reason);
-        this.save('leases', this.leaseKey(scope, who), { generation: c.generation });
-        return { controller: { ...who, generation: c.generation }, inbox: this.inbox(who) };
+        const controller = this.applyClaim(
+          scope,
+          who,
+          reason,
+          this.claimState(scope, who, takeover)
+        );
+        return { controller, inbox: this.inbox(who) };
+      })
+    );
+  }
+  claimRun(
+    scope: Extract<Scope, { kind: 'run' }>,
+    who: Identity,
+    takeover = false,
+    reason = '认领'
+  ): { controller: Controller; repository: Controller; inbox: Message[] } {
+    return this.scoped(scope, () =>
+      this.locked(() => {
+        if (!who.host || !who.pid_start) throw new Error('coord: claim needs verifiable identity');
+        if (takeover && !reason.trim()) throw new Error('claim --takeover needs --reason "<原话>"');
+        const repo = { kind: 'repo' as const, id: scope.repo };
+        const runState = this.claimState(scope, who, takeover),
+          repoState = this.claimState(repo, who, takeover);
+        const controller = this.applyClaim(scope, who, reason, runState),
+          repository = this.applyClaim(repo, who, reason, repoState);
+        return { controller, repository, inbox: this.inbox(who) };
       })
     );
   }

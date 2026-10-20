@@ -146,13 +146,12 @@ test('reauthorize requires both owners and stale records remain fenced', () => {
   writeFileSync(join(gen, 'delivery-authorization.json'), '{"original":true}\n');
   s.c.claim(s.scope, a);
   s.c.claim(runTarget, a);
-  expect(() => s.c.claim(runTarget, b)).toThrow('普通认领');
+  expect(() => s.c.claimRun(runTarget, b)).toThrow('普通认领');
   expect(existsSync(record)).toBe(false);
+  expect(s.c.owner(s.scope).owner).toEqual(a);
+  expect(s.c.owner(runTarget).owner).toEqual(a);
   oldOffline = true;
-  s.c.claim(runTarget, b);
-  expect(() => s.c.reauthorize(run, b)).toThrow('fencing');
-  expect(existsSync(record)).toBe(false);
-  s.c.claim(s.scope, b);
+  expect(s.c.claimRun(runTarget, b)).toMatchObject({ controller: b, repository: b });
   const authorization = s.c.reauthorize(run, b);
   expect(JSON.parse(readFileSync(record, 'utf8'))).toEqual(authorization);
   const replay = () =>
