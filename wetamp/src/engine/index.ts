@@ -103,20 +103,28 @@ interface EngineLedger {
   engine_adoptions?: { at: string; from: string | null; to: string }[];
 }
 
-const runLedgers = (): EngineLedger[] => {
+const ledgerPaths = (): string[] => {
   const runs = join(home().sa, 'runs');
-  return (existsSync(runs) ? readdirSync(runs).filter(x => x.endsWith('.json')) : []).flatMap(
-    file => {
-      try {
-        const value = JSON.parse(readFileSync(join(runs, file), 'utf8')) as EngineLedger;
-        return typeof value.run_id === 'string' && typeof value.archon_run_id === 'string'
-          ? [value]
-          : [];
-      } catch {
-        return [];
-      }
-    }
+  return (existsSync(runs) ? readdirSync(runs).filter(x => x.endsWith('.json')) : []).map(file =>
+    join(runs, file)
   );
+};
+
+const readEngineLedger = (path: string): EngineLedger => {
+  const value = JSON.parse(readFileSync(path, 'utf8')) as Partial<EngineLedger>;
+  if (typeof value.run_id !== 'string' || typeof value.archon_run_id !== 'string')
+    throw new Error('ledger missing run identity');
+  return value as EngineLedger;
+};
+
+const runLedgers = (): EngineLedger[] => {
+  return ledgerPaths().flatMap(path => {
+    try {
+      return [readEngineLedger(path)];
+    } catch {
+      return [];
+    }
+  });
 };
 
 export function bootstrapEngineSnapshot(): string | undefined {
@@ -326,12 +334,24 @@ export function adoptEngineSnapshot(
 export interface LegacyGateResult {
   ok: boolean;
   count: number;
-  runs: { run_id: string; status: string; reason?: string }[];
+  runs: { run_id: string; status: string; path?: string; reason?: string }[];
 }
 
 export function gateLegacyRuns(): LegacyGateResult {
   const runs: LegacyGateResult['runs'] = [];
-  for (const ledger of runLedgers()) {
+  for (const path of ledgerPaths()) {
+    let ledger: EngineLedger;
+    try {
+      ledger = readEngineLedger(path);
+    } catch (error) {
+      runs.push({
+        run_id: basename(path, '.json'),
+        status: 'unknown',
+        path,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
     if (ledger.engine_snapshot || ledger.rejected === ledger.archon_run_id) continue;
     try {
       const run = getRun(ledger.archon_run_id, ledger.repo);
@@ -456,7 +476,18 @@ export function assertEngineAccess(argv: string[]): void {
   if (!current) return;
   const running = runningEngineSnapshot();
   const verb = argv[0] ?? 'help';
-  const production = resolve(home().sa) === resolve(process.env.HOME ?? homedir(), '.superagent');
+  const canonical = (path: string): string => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  const defaults = join(process.env.HOME ?? homedir(), '.superagent');
+  const state = home();
+  const production =
+    canonical(state.sa) === canonical(defaults) ||
+    canonical(state.archon) === canonical(join(defaults, 'archon'));
   if (!production) return;
   const mutatingRun = new Set(['resume', 'recover', 'decide', 'cancel', 'accept']);
   if (verb === 'land' && argv.includes('--apply')) mutatingRun.add('land');
