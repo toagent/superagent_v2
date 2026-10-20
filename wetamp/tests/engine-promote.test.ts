@@ -57,10 +57,8 @@ const commit = (source: string, name: string): string => {
   return sh('git rev-parse HEAD', source).trim();
 };
 
-const successfulProbe = (): ProbeEvidence =>
-  JSON.parse(
-    '{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}'
-  );
+// prettier-ignore
+const successfulProbe = (): ProbeEvidence => JSON.parse('{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}');
 
 // prettier-ignore
 test('snapshot probe executes the candidate with isolated homes and preserves failed output', () => {

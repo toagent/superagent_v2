@@ -1,9 +1,8 @@
 import { expect, test } from 'bun:test';
 import { judgeProbe, type ProbeJudgement } from '../src/probe';
 
-const valid = JSON.parse(
-  '{"launch_exit":0,"launch_run_id":"run-1","wait_exit":0,"wait_run_id":"run-1","state":"completed","delivery_state":"published","ledger_run_id":"run-1","engine_commit":"abc","engine_snapshot":"/engine/abc","expected_commit":"abc","expected_snapshot":"/engine/abc"}'
-) as ProbeJudgement;
+// prettier-ignore
+const valid = JSON.parse('{"launch_exit":0,"launch_run_id":"run-1","wait_exit":0,"wait_run_id":"run-1","state":"completed","delivery_state":"published","ledger_run_id":"run-1","engine_commit":"abc","engine_snapshot":"/engine/abc","expected_commit":"abc","expected_snapshot":"/engine/abc"}') as ProbeJudgement;
 
 // prettier-ignore
 test('judgeProbe accepts exact real-run evidence and rejects every missing identity boundary', () => {
