@@ -17,10 +17,13 @@ import { dirname, join } from 'node:path';
 import { receiptPath } from '../../../packages/plugin-manifest/src/store';
 import { fixtureEnv, gitRepo, sh, tmp } from '../helpers';
 
+// prettier-ignore
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13';
+
 export interface ScenarioSpec {
-  id: 'S1' | 'S2';
+  id: ScenarioId;
   risk: 'G1' | 'G2';
-  passRound: 1;
+  passRound: 1 | 2;
   plan: { goal: string; accept: string };
   agents: { code: { path: string; content: string } };
   expected: { terminal: 'completed'; publishCount: 1 };
@@ -75,15 +78,15 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
   return {
     ...base,
     async *sendQuery(prompt: string, cwd: string, resume?: string, options?: SendQueryOptions) {
-      if (prompt === 'scenario:S2:code') {
+      if (prompt === `scenario:${f.spec.id}:code`) {
         expect(process.env.SUPERAGENT_ROLE).toBe('worker');
         const edit = f.spec.agents.code;
         writeFileSync(join(cwd, edit.path), edit.content);
         sh(
-          `git add '${edit.path}' && git -c user.name=scenario -c user.email=scenario@local commit -qm scenario-S2`,
+          `git add '${edit.path}' && git -c user.name=scenario -c user.email=scenario@local commit -qm scenario-${f.spec.id}`,
           cwd
         );
-        yield { type: 'result', text: 'applied', sessionId: 'scenario-s2' };
+        yield { type: 'result', text: 'applied', sessionId: `scenario-${f.spec.id.toLowerCase()}` };
         yield { type: 'settled' };
         return;
       }
@@ -182,7 +185,7 @@ const platform: IWorkflowPlatform = {
 };
 
 export async function runInProcess(f: ScenarioFixture) {
-  const id = 'scenario-s2';
+  const id = `scenario-${f.spec.id.toLowerCase()}`;
   const run = workflowRun(id);
   const d = deps(run, scriptedProvider(f));
   const publish = `test "$SUPERAGENT_ROLE" = worker && expected=$(git -C '${f.target}' rev-parse scenario-target) && head=$(git rev-parse HEAD) && test "$expected" = '${f.initial}' && git -C '${f.target}' update-ref refs/heads/scenario-target "$head" "$expected" && printf '{"status":"published"}'`;
@@ -191,17 +194,20 @@ export async function runInProcess(f: ScenarioFixture) {
     description: f.spec.plan.goal,
     provider: descriptor.id,
     nodes: [
-      { id: 'code', prompt: 'scenario:S2:code' },
+      { id: 'code', prompt: `scenario:${f.spec.id}:code` },
       {
         id: 'accept-r1',
         depends_on: ['code'],
-        bash: `test "$SUPERAGENT_ROLE" = worker && ${f.spec.plan.accept} && printf pass`,
+        bash:
+          f.spec.passRound === 1
+            ? `test "$SUPERAGENT_ROLE" = worker && ${f.spec.plan.accept} && printf pass`
+            : 'printf retry',
       },
       {
         id: 'accept-r2',
         depends_on: ['accept-r1'],
         when: "$accept-r1.output != 'pass'",
-        bash: 'exit 91',
+        bash: `test "$SUPERAGENT_ROLE" = worker && ${f.spec.plan.accept} && printf pass`,
       },
       {
         id: 'publish',
