@@ -105,12 +105,14 @@ test('candidate access checks the real path of Archon state independently', () =
   const root = tmp(),
     sa = join(root, 'isolated-sa'),
     candidate = join(root, 'candidate'),
-    productionArchon = join(root, '.superagent', 'archon'),
+    productionSa = join(root, '.superagent'),
+    productionArchon = join(productionSa, 'archon'),
     archonAlias = join(root, 'archon-alias');
-  mkdirSync(join(sa, 'engine'), { recursive: true });
+  mkdirSync(sa);
+  mkdirSync(join(productionSa, 'engine'), { recursive: true });
   mkdirSync(candidate);
   mkdirSync(productionArchon, { recursive: true });
-  symlinkSync(candidate, join(sa, 'engine', 'current'));
+  symlinkSync(candidate, join(productionSa, 'engine', 'current'));
   symlinkSync(productionArchon, archonAlias);
   Object.assign(process.env, { HOME: root, SUPERAGENT_HOME: sa, ARCHON_HOME: archonAlias });
   expect(() => assertEngineAccess(['run', 'plan.json'])).toThrow('candidate checkout');

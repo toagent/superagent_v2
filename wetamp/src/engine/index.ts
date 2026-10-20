@@ -46,12 +46,16 @@ export const runningEngineSnapshot = (): string => {
   }
 };
 
-export function currentEngineSnapshot(): string | undefined {
+function currentEngineSnapshotAt(sa: string): string | undefined {
   try {
-    return realpathSync(currentLink());
+    return realpathSync(join(sa, 'engine', 'current'));
   } catch {
     return undefined;
   }
+}
+
+export function currentEngineSnapshot(): string | undefined {
+  return currentEngineSnapshotAt(home().sa);
 }
 
 export type EngineSnapshotIdentity = 'current' | 'served' | 'candidate';
@@ -472,10 +476,6 @@ const READ_ONLY = new Set([
 
 /** Fence production writes by the identity of the checkout executing this CLI. */
 export function assertEngineAccess(argv: string[]): void {
-  const current = currentEngineSnapshot();
-  if (!current) return;
-  const running = runningEngineSnapshot();
-  const verb = argv[0] ?? 'help';
   const canonical = (path: string): string => {
     try {
       return realpathSync(path);
@@ -485,10 +485,14 @@ export function assertEngineAccess(argv: string[]): void {
   };
   const defaults = join(process.env.HOME ?? homedir(), '.superagent');
   const state = home();
-  const production =
-    canonical(state.sa) === canonical(defaults) ||
-    canonical(state.archon) === canonical(join(defaults, 'archon'));
-  if (!production) return;
+  const saProduction = canonical(state.sa) === canonical(defaults);
+  const archonProduction = canonical(state.archon) === canonical(join(defaults, 'archon'));
+  if (!saProduction && !archonProduction) return;
+  const engineSa = saProduction ? state.sa : defaults;
+  const current = currentEngineSnapshotAt(engineSa);
+  if (!current) return;
+  const running = runningEngineSnapshot();
+  const verb = argv[0] ?? 'help';
   const mutatingRun = new Set(['resume', 'recover', 'decide', 'cancel', 'accept']);
   if (verb === 'land' && argv.includes('--apply')) mutatingRun.add('land');
   if (running === current) {
@@ -503,7 +507,9 @@ export function assertEngineAccess(argv: string[]): void {
     return;
   }
   const served = process.env.SA_SERVED_RUN;
-  const isServedSnapshot = existsSync(receiptPath(basename(running)));
+  const isServedSnapshot = existsSync(
+    join(engineSa, 'engine', 'receipts', `${basename(running)}.json`)
+  );
   if (!isServedSnapshot)
     throw new Error('engine identity: candidate checkout cannot access production state');
   if (!served) throw new Error('engine identity: non-current snapshot requires SA_SERVED_RUN');
