@@ -111,7 +111,7 @@ import {
 import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { redact } from './redact';
-import { buildReport, reportSummary } from './report';
+import { buildReport, consolidationMetrics, reportSummary } from './report';
 import { jobCli } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
@@ -3194,7 +3194,20 @@ export interface Pair {
 
 /** 计数（token 用量后置）：state:*、各里程碑末轮 rounds:*、first_pass（首轮即 pass 的里程碑）、failed:<节点 id 前缀>、
  *  escalate:<原因>、node_s:<前缀>（累计秒）、debt（末轮评审债条数）、recoveries。读不到的 run 单列，不吞错。report 与 board 共用。 */
-export function summarize(pairs: Pair[]): Record<string, unknown> {
+export function reportSince(argv: readonly string[] = process.argv): string {
+  const flag =
+    argv.find(a => a.startsWith('--since='))?.slice(8) ?? argv[argv.indexOf('--since') + 1];
+  const since = argv.some(a => a === '--since' || a.startsWith('--since='))
+    ? /^\d{8}$/.test(flag)
+      ? `${flag.slice(0, 4)}-${flag.slice(4, 6)}-${flag.slice(6, 8)}T00:00:00.000Z`
+      : flag
+    : '';
+  if (since && !Number.isFinite(Date.parse(since)))
+    throw new Error('--since must be YYYYMMDD or an ISO timestamp');
+  return since;
+}
+
+export function summarize(pairs: Pair[], includeConsolidation = true): Record<string, unknown> {
   const n: Count = {};
   const unreadable: string[] = [];
   for (const { ledger: l, run } of pairs) {
@@ -3223,7 +3236,33 @@ export function summarize(pairs: Pair[]): Record<string, unknown> {
       unreadable.push(`${l.run_id}: ${tail((e as Error).message, 200)}`);
     }
   }
-  return { runs: pairs.length, ...Object.fromEntries(Object.entries(n).sort()), unreadable };
+  const summary = {
+    runs: pairs.length,
+    ...Object.fromEntries(Object.entries(n).sort()),
+    unreadable,
+  };
+  if (!includeConsolidation) return summary;
+  const since = reportSince();
+  const titles = Bun.spawnSync(
+    [
+      'git',
+      'log',
+      ...(since ? [`--since=${since}`] : []),
+      '--until=now',
+      '--format=%s',
+      '--',
+      'wetamp',
+    ],
+    { cwd: join(WETAMP, '..'), stdout: 'pipe', stderr: 'pipe' }
+  );
+  return {
+    ...summary,
+    consolidation: consolidationMetrics(
+      pairs,
+      titles.exitCode === 0 ? titles.stdout.toString().trim().split('\n').filter(Boolean) : null,
+      { since: since || 'all', until: 'now' }
+    ),
+  };
 }
 
 /** 全部登记 run 的计数摘要与用量台账（F-22，见 report.ts）。 */
@@ -3288,7 +3327,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
-  { command: 'report', flags: ['full', 'by-engine', 'baseline-days'] },
+  { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days'] },
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
   { command: 'quota', flags: [] },
   { command: 'usage', flags: ['since', 'repo', 'refresh'] },

@@ -37,6 +37,7 @@ import {
   evidenceGates,
   decisionOf,
   intakeEvidence,
+  reportSince,
 } from './cli';
 import { Intake, intakeRoot } from './intake';
 import { type Plan } from './plan';
@@ -568,9 +569,7 @@ export function buildReport(
   engine?: { commit: string; baselineDays: number },
   options: { humanDecisions?: boolean } = {}
 ): Record<string, unknown> {
-  const flag = process.argv.find(a => a.startsWith('--since='))?.slice(8) ?? process.argv[process.argv.indexOf('--since') + 1];
-  const since = process.argv.some(a => a === '--since' || a.startsWith('--since=')) ? (/^\d{8}$/.test(flag) ? `${flag.slice(0,4)}-${flag.slice(4,6)}-${flag.slice(6,8)}T00:00:00.000Z` : flag) : '';
-  if (since && !Number.isFinite(Date.parse(since))) throw new Error('--since must be YYYYMMDD or an ISO timestamp');
+  const since = reportSince();
   const decisionLedgers = ls;
   const batch = process.env.SA_ARCHON_BIN && process.env.SA_ARCHON_BIN !== '' ? null : reportRuns(since, '9999-12-31T23:59:59.999Z');
   const decisionBatch = options.humanDecisions && batch && since ? reportRuns('', '9999-12-31T23:59:59.999Z') : batch;
@@ -699,25 +698,6 @@ export function buildReport(
       ])
     ),
     metrics: metricsOf(snapshot.rows, snapshot.summary, Date.now()),
-    consolidation: consolidationMetrics(
-      pairs,
-      (() => {
-        const result = spawnSync(
-          'git',
-          [
-            'log',
-            ...(since ? [`--since=${since}`] : []),
-            `--until=${snapshot.at}`,
-            '--format=%s',
-            '--',
-            'wetamp',
-          ],
-          { cwd: join(WETAMP, '..'), encoding: 'utf8' }
-        );
-        return result.status === 0 ? result.stdout.trim().split('\n').filter(Boolean) : null;
-      })(),
-      { since: since || 'all', until: snapshot.at }
-    ),
     cancellations,
     interventions: interventionStats(ls),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations, evidenceFor), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },

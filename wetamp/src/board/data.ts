@@ -168,7 +168,7 @@ export function rowOf(
           k => current === `${k}-${m}` || current?.startsWith(`${k}-${m}-`)
         )
       ) ?? (current === 'land' ? ms.at(-1) : null));
-  const stats = summarize([{ ledger: l, run }]);
+  const stats = summarize([{ ledger: l, run }], false);
   let nodeReason = '';
   try {
     const file = current ? confined(l, join(artifactsOf(run), current + '.json')) : null;
