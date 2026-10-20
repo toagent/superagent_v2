@@ -33,6 +33,8 @@ test('S12: promotion and rollback keep old runs on their pinned engine', async (
   cpSync(repo, source, { recursive: true, filter: path => !path.includes('/node_modules') && !path.includes('/.git/') && !path.endsWith('/.git') });
   const cliPath = join(source, 'wetamp/src/cli.ts'), cli = readFileSync(cliPath, 'utf8');
   writeFileSync(cliPath, cli.replace('const argv = process.argv.slice(2);', `const argv = process.argv.slice(2);\n    if (process.env.S12_PROBE) require('node:fs').appendFileSync(process.env.S12_PROBE, JSON.stringify({ snapshot: require('node:fs').realpathSync(require('node:path').join(import.meta.dir, '../..')), args: argv }) + '\\n');`));
+  const frameworkPath = join(source, 'wetamp/tests/scenarios/framework.ts'), framework = readFileSync(frameworkPath, 'utf8');
+  writeFileSync(frameworkPath, framework.replace('export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {', `export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {\n  if (process.env.S12_PROBE) require('node:fs').appendFileSync(process.env.S12_PROBE, JSON.stringify({ snapshot: require('node:fs').realpathSync(require('node:path').join(import.meta.dir, '../../..')), executor: f.runId }) + '\\n');`));
   sh('git init -q -b 1.0.0 && git config core.hooksPath /dev/null && git config user.name test && git config user.email test@example.com && git add packages wetamp package.json bun.lock && git commit -qm engine-A', source);
   symlinkSync(join(repo, 'node_modules'), join(source, 'node_modules'));
   symlinkSync(join(repo, 'wetamp/node_modules'), join(source, 'wetamp/node_modules'));
@@ -55,7 +57,7 @@ if [ "$1 $2" = "workflow resume" ]; then
     *-2) kind=crashed ;;
     *) exit 64 ;;
   esac
-  printf '{"snapshot":"%s","executor":"%s"}\n' "$S12_ENGINE_A" "$kind" >> "$S12_EXECUTION_PROBE"
+  (SCENARIO_ID=S12 SCENARIO_RESUME_STATE="$S12_STATE_DIR/$kind.json" SCENARIO_RESULT="$S12_STATE_DIR/$kind.result" SCENARIO_ENGINE_SNAPSHOT="$S12_ENGINE_A" "$S12_BUN" test "$S12_RUNNER") </dev/null >"$S12_STATE_DIR/$kind.log" 2>&1 &
   printf '{"ok":true,"runId":"%s"}\n' "$3"
   exit 0
 fi
@@ -76,29 +78,29 @@ exec "$S12_REAL_ARCHON" "$@"
     sh('git add engine-b && git commit -qm engine-B', source);
     const b = sh('git rev-parse HEAD', source).trim();
     promote(b);
-    Object.assign(process.env, { SA_ARCHON_BIN: archon, S12_ENGINE_A: aPath, S12_EXECUTION_PROBE: probe, S12_REAL_ARCHON: join(aPath, 'wetamp/bin/archon') });
-    const who = coordination.caller();
+    Object.assign(process.env, { SA_ARCHON_BIN: archon, S12_BUN: process.execPath, S12_ENGINE_A: aPath, S12_PROBE: probe, S12_REAL_ARCHON: join(aPath, 'wetamp/bin/archon'), S12_RUNNER: runner, S12_STATE_DIR: root });
+    const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs');
+    writeFileSync(launcherPreload, `require(${JSON.stringify(join(repo, 'wetamp/hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`);
     for (const run of ['5ce0-0012-1', '5ce0-0012-2']) {
       const ledger = JSON.parse(readFileSync(join(home, 'runs', `${run}.json`), 'utf8'));
       coordination.coord().claim(coordination.repoScope(ledger.repo), who, true, 'scenario continuation');
       coordination.coord().claim(coordination.runScope(ledger), who, true, 'scenario continuation');
       coordination.coord().reauthorize(ledger, who);
     }
-    const invoke = (...args: string[]) => Bun.spawnSync([SHIM, ...args], { env: { ...process.env, S12_PROBE: probe }, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 });
+    const invoke = (...args: string[]) => Bun.spawnSync([SHIM, ...args], { env: { ...process.env, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(), S12_PROBE: probe }, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 });
     for (const [verb, run] of [['resume', '5ce0-0012-1'], ['recover', '5ce0-0012-2']]) {
       const result = invoke(verb, run); expect(result.exitCode, result.stdout.toString() + result.stderr.toString()).toBe(0);
     }
-    const { resumeInProcess } = await import(join(aPath, 'wetamp/tests/scenarios/framework.ts'));
-    for (const kind of ['paused', 'crashed']) {
-      const state = JSON.parse(readFileSync(join(root, `${kind}.json`), 'utf8'));
-      const resumed = await resumeInProcess({ ...state, saved: { ...process.env }, roles: [], spec: { id: 'S12', risk: 'G1', passRound: 1, plan: { goal: 'S12 engine scenario', accept: 'test "$(cat scenario.txt)" = S12' }, agents: { code: { path: 'scenario.txt', content: 'S12\n' } }, expected: { terminal: 'completed', publishCount: 1 } }, engineSnapshot: aPath });
-      expect(resumed.terminal.completed).toEqual([state.runId]);
+    for (const end = Date.now() + 120_000; Date.now() < end; ) {
+      const statuses = await Promise.all(['5ce0-0012-1', '5ce0-0012-2'].map(id => store.getWorkflowRunStatus(id)));
+      if (statuses.every(status => status === 'completed')) break;
+      await Bun.sleep(25);
     }
     expect(rollback()).toEqual({ from: b, to: a });
     writeFileSync(join(root, 'running.release'), 'go'); await children[0].exited;
     const calls = readFileSync(probe, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(calls.filter(call => Array.isArray(call.args) && ['resume', 'recover'].includes(call.args[0])).map(call => call.snapshot)).toEqual([aPath, aPath]);
-    expect(calls.filter(call => call.executor).map(call => [call.snapshot, call.executor])).toEqual([[aPath, 'paused'], [aPath, 'crashed']]);
+    expect(calls.filter(call => call.executor).map(call => [call.snapshot, call.executor])).toEqual([[aPath, '5ce0-0012-1'], [aPath, '5ce0-0012-2']]);
     expect((await Promise.all(['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2'].map(id => store.getWorkflowRun(id)))).map(run => run?.status)).toEqual(['completed', 'completed', 'completed']);
   } finally {
     for (const child of children) if (child.exitCode === null) child.kill('SIGKILL');
