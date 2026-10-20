@@ -167,6 +167,8 @@ test('legacy gate counts every executable or unknown run and excludes completed 
   } as const;
   for (const run of [...Object.keys(statuses), 'unknown']) ledger(sa, run);
   ledger(sa, 'rejected', { rejected: true });
+  writeFileSync(join(sa, 'runs', 'broken.json'), '{');
+  writeFileSync(join(sa, 'runs', 'identityless.json'), '{}');
   query = spyOn(archon, 'getRun').mockImplementation(id => {
     const name = id.slice('archon-'.length) as keyof typeof statuses;
     if (name === ('unknown' as keyof typeof statuses)) throw new Error('state unavailable');
@@ -175,10 +177,20 @@ test('legacy gate counts every executable or unknown run and excludes completed 
 
   expect(gateLegacyRuns()).toMatchObject({
     ok: false,
-    count: 7,
+    count: 9,
     runs: expect.arrayContaining([
       { run_id: 'cancelled', status: 'cancelled' },
       expect.objectContaining({ run_id: 'unknown', status: 'unknown' }),
+      expect.objectContaining({
+        run_id: 'broken',
+        status: 'unknown',
+        path: join(sa, 'runs', 'broken.json'),
+      }),
+      expect.objectContaining({
+        run_id: 'identityless',
+        status: 'unknown',
+        path: join(sa, 'runs', 'identityless.json'),
+      }),
     ]),
   });
 });

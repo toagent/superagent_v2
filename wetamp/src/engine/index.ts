@@ -46,12 +46,16 @@ export const runningEngineSnapshot = (): string => {
   }
 };
 
-export function currentEngineSnapshot(): string | undefined {
+function currentEngineSnapshotAt(sa: string): string | undefined {
   try {
-    return realpathSync(currentLink());
+    return realpathSync(join(sa, 'engine', 'current'));
   } catch {
     return undefined;
   }
+}
+
+export function currentEngineSnapshot(): string | undefined {
+  return currentEngineSnapshotAt(home().sa);
 }
 
 export type EngineSnapshotIdentity = 'current' | 'served' | 'candidate';
@@ -103,20 +107,28 @@ interface EngineLedger {
   engine_adoptions?: { at: string; from: string | null; to: string }[];
 }
 
-const runLedgers = (): EngineLedger[] => {
+const ledgerPaths = (): string[] => {
   const runs = join(home().sa, 'runs');
-  return (existsSync(runs) ? readdirSync(runs).filter(x => x.endsWith('.json')) : []).flatMap(
-    file => {
-      try {
-        const value = JSON.parse(readFileSync(join(runs, file), 'utf8')) as EngineLedger;
-        return typeof value.run_id === 'string' && typeof value.archon_run_id === 'string'
-          ? [value]
-          : [];
-      } catch {
-        return [];
-      }
-    }
+  return (existsSync(runs) ? readdirSync(runs).filter(x => x.endsWith('.json')) : []).map(file =>
+    join(runs, file)
   );
+};
+
+const readEngineLedger = (path: string): EngineLedger => {
+  const value = JSON.parse(readFileSync(path, 'utf8')) as Partial<EngineLedger>;
+  if (typeof value.run_id !== 'string' || typeof value.archon_run_id !== 'string')
+    throw new Error('ledger missing run identity');
+  return value as EngineLedger;
+};
+
+const runLedgers = (): EngineLedger[] => {
+  return ledgerPaths().flatMap(path => {
+    try {
+      return [readEngineLedger(path)];
+    } catch {
+      return [];
+    }
+  });
 };
 
 export function bootstrapEngineSnapshot(): string | undefined {
@@ -326,12 +338,24 @@ export function adoptEngineSnapshot(
 export interface LegacyGateResult {
   ok: boolean;
   count: number;
-  runs: { run_id: string; status: string; reason?: string }[];
+  runs: { run_id: string; status: string; path?: string; reason?: string }[];
 }
 
 export function gateLegacyRuns(): LegacyGateResult {
   const runs: LegacyGateResult['runs'] = [];
-  for (const ledger of runLedgers()) {
+  for (const path of ledgerPaths()) {
+    let ledger: EngineLedger;
+    try {
+      ledger = readEngineLedger(path);
+    } catch (error) {
+      runs.push({
+        run_id: basename(path, '.json'),
+        status: 'unknown',
+        path,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
     if (ledger.engine_snapshot || ledger.rejected === ledger.archon_run_id) continue;
     try {
       const run = getRun(ledger.archon_run_id, ledger.repo);
@@ -452,12 +476,23 @@ const READ_ONLY = new Set([
 
 /** Fence production writes by the identity of the checkout executing this CLI. */
 export function assertEngineAccess(argv: string[]): void {
-  const current = currentEngineSnapshot();
+  const canonical = (path: string): string => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  const defaults = join(process.env.HOME ?? homedir(), '.superagent');
+  const state = home();
+  const saProduction = canonical(state.sa) === canonical(defaults);
+  const archonProduction = canonical(state.archon) === canonical(join(defaults, 'archon'));
+  if (!saProduction && !archonProduction) return;
+  const engineSa = saProduction ? state.sa : defaults;
+  const current = currentEngineSnapshotAt(engineSa);
   if (!current) return;
   const running = runningEngineSnapshot();
   const verb = argv[0] ?? 'help';
-  const production = resolve(home().sa) === resolve(process.env.HOME ?? homedir(), '.superagent');
-  if (!production) return;
   const mutatingRun = new Set(['resume', 'recover', 'decide', 'cancel', 'accept']);
   if (verb === 'land' && argv.includes('--apply')) mutatingRun.add('land');
   if (running === current) {
@@ -472,7 +507,9 @@ export function assertEngineAccess(argv: string[]): void {
     return;
   }
   const served = process.env.SA_SERVED_RUN;
-  const isServedSnapshot = existsSync(receiptPath(basename(running)));
+  const isServedSnapshot = existsSync(
+    join(engineSa, 'engine', 'receipts', `${basename(running)}.json`)
+  );
   if (!isServedSnapshot)
     throw new Error('engine identity: candidate checkout cannot access production state');
   if (!served) throw new Error('engine identity: non-current snapshot requires SA_SERVED_RUN');

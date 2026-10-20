@@ -68,6 +68,10 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
       stderr: 'pipe',
     });
 
+  const defaultEnv: Record<string, string | undefined> = { ...process.env, HOME: root };
+  delete defaultEnv.SUPERAGENT_HOME;
+  delete defaultEnv.ARCHON_HOME;
+  expect(Bun.spawnSync([SHIM, 'help'], { env: defaultEnv }).exitCode).toBe(0);
   expect(invoke('models').exitCode).toBe(0);
   expect(invoke('status', 'run-1').exitCode).toBe(0);
   expect(invoke('status', 'legacy').exitCode).toBe(0);
@@ -95,6 +99,23 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
       served: 'run-1',
     },
   ]);
+});
+
+test('candidate access checks the real path of Archon state independently', () => {
+  const root = tmp(),
+    sa = join(root, 'isolated-sa'),
+    candidate = join(root, 'candidate'),
+    productionSa = join(root, '.superagent'),
+    productionArchon = join(productionSa, 'archon'),
+    archonAlias = join(root, 'archon-alias');
+  mkdirSync(sa);
+  mkdirSync(join(productionSa, 'engine'), { recursive: true });
+  mkdirSync(candidate);
+  mkdirSync(productionArchon, { recursive: true });
+  symlinkSync(candidate, join(productionSa, 'engine', 'current'));
+  symlinkSync(productionArchon, archonAlias);
+  Object.assign(process.env, { HOME: root, SUPERAGENT_HOME: sa, ARCHON_HOME: archonAlias });
+  expect(() => assertEngineAccess(['run', 'plan.json'])).toThrow('candidate checkout');
 });
 
 test('candidate and mismatched served snapshot writes are refused', () => {

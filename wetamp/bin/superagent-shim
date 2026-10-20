@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sa_home=${SUPERAGENT_HOME:?SUPERAGENT_HOME is required}
+sa_home=${SUPERAGENT_HOME:-$HOME/.superagent}
+archon_home=${ARCHON_HOME:-$sa_home/archon}
+export SUPERAGENT_HOME=$sa_home
+export ARCHON_HOME=$archon_home
 engine_home="$sa_home/engine"
 self_root=$(cd "$(dirname "$0")/../.." && pwd -P)
 current=$(readlink "$engine_home/current" 2>/dev/null || true)
