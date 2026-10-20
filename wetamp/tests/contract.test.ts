@@ -2,11 +2,15 @@ import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  acceptOutputFormat,
   conditionalOutput,
+  deliveryOutputFormat,
   output,
   publishOutputFormat,
   ref,
   syncOutputFormat,
+  type AcceptOutput,
+  type DeliveryOutput,
   type SyncOutput,
 } from '../src/contract';
 import { assertGeneratedWorkflow, buildWorkflow } from '../src/generate';
@@ -21,6 +25,12 @@ test('generated node contracts match their JSON schema owners', () => {
   );
   expect(publishOutputFormat).toEqual(
     JSON.parse(readFileSync(join(root, 'schemas/nodes/publish.schema.json'), 'utf8'))
+  );
+  expect(acceptOutputFormat).toEqual(
+    JSON.parse(readFileSync(join(root, 'schemas/nodes/accept.schema.json'), 'utf8'))
+  );
+  expect(deliveryOutputFormat).toEqual(
+    JSON.parse(readFileSync(join(root, 'schemas/nodes/delivery.schema.json'), 'utf8'))
   );
   const check = Bun.spawnSync([process.execPath, 'scripts/generate-node-contracts.ts', '--check'], {
     cwd: root,
@@ -37,6 +47,13 @@ test('typed refs render required and skipped bindings', () => {
   expect(ref.optional(optional, 'generation', 0)).toEqual({
     from: '$maybe-sync.output.generation',
     if_skipped: 0,
+  });
+  expect(ref.required(output<DeliveryOutput>('settle'), 'diff_hash')).toBe(
+    '$settle.output.diff_hash'
+  );
+  expect(ref.optional(conditionalOutput<AcceptOutput>('diff'), 'log', '')).toEqual({
+    from: '$diff.output.log',
+    if_skipped: '',
   });
 });
 

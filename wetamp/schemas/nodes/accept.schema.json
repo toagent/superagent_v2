@@ -1,0 +1,269 @@
+{
+  "title": "AcceptOutput",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "object",
+      "properties": {
+        "kind": { "enum": ["advance", "debt", "repair", "block"] },
+        "reason": { "type": ["string", "null"] },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "debt": { "type": "array", "items": { "type": "string" } },
+        "requirements": {
+          "type": "object",
+          "required": ["status", "items"],
+          "properties": {
+            "status": { "enum": ["legacy", "verified", "unmet", "unknown"] },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["package", "id", "text", "status", "evidence"],
+                "properties": {
+                  "package": { "type": "string" },
+                  "id": { "type": "string" },
+                  "text": { "type": "string" },
+                  "status": { "enum": ["verified", "unmet", "unknown"] },
+                  "evidence": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "blockers": { "type": "array", "items": { "type": "string" } },
+        "needs": { "type": "array" }
+      },
+      "required": ["kind", "reason", "evidence", "debt"]
+    },
+    "workspace_clean": { "type": "boolean" },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" },
+          "failure_class": {
+            "type": "string",
+            "enum": ["product", "test_env", "fixture", "baseline", "test_data", "unknown"]
+          },
+          "evidence": { "type": "string" },
+          "repair_rounds": { "type": "integer" },
+          "debt_reason": { "const": "repair_limit" },
+          "failed_tests": { "type": "array", "items": { "type": "string" } },
+          "failure_digest": { "type": "string" },
+          "adjudicated": { "type": "boolean" }
+        },
+        "required": ["command", "failure_class", "evidence"]
+      }
+    },
+    "coder_partial": { "type": "boolean" },
+    "self_report_conflict": { "type": "boolean" },
+    "error_class_ignored": { "type": "boolean" },
+    "ok": { "type": "boolean" },
+    "failed": { "type": "array", "items": { "type": "string" } },
+    "log": { "type": "string" },
+    "patch": { "type": "string" },
+    "delta": { "type": "string" },
+    "diff_hash": { "type": "string" },
+    "artifact_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "same": { "type": "boolean" },
+    "reviewed": { "type": "boolean" },
+    "no_changes": { "type": "boolean" },
+    "base_pass": { "type": ["boolean", "null"] },
+    "checkout_fingerprint": { "type": "string" },
+    "head": { "type": "string" },
+    "milestone": { "type": "string" },
+    "contract_hash": { "type": "string" },
+    "disposition": { "enum": ["advance", "repair", "adjudicate", "fail", "suspend"] },
+    "reason": { "type": ["string", "null"] },
+    "risk": { "type": ["string", "null"] },
+    "out_of_scope": { "type": "array", "items": { "type": "string" } },
+    "baseline": { "enum": ["comparable", "incomparable"] },
+    "baseline_reason": { "type": "string" },
+    "base_results": { "type": "array", "items": { "$ref": "#/$defs/BaseResult" } },
+    "requirement_contract": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/RequirementContract" }
+    },
+    "command_results": { "type": "array", "items": { "$ref": "#/$defs/CommandResult" } },
+    "adjudication": { "$ref": "#/$defs/Adjudication" },
+    "net_lines": {
+      "type": "object",
+      "properties": {
+        "used": { "type": "integer" },
+        "limit": { "type": "integer" }
+      },
+      "required": ["used", "limit"]
+    }
+  },
+  "$defs": {
+    "Check": {
+      "type": "object",
+      "properties": {
+        "cmd": { "type": "string" },
+        "timeout_s": { "type": "number" },
+        "cache": { "type": "boolean" },
+        "report": {
+          "type": "object",
+          "properties": {
+            "junit": { "type": "string" },
+            "collect": { "type": "string" }
+          },
+          "required": ["junit"]
+        },
+        "known_failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["id", "reason"]
+          }
+        }
+      },
+      "required": ["cmd", "timeout_s"]
+    },
+    "StructuredCases": {
+      "type": "object",
+      "properties": {
+        "complete": { "type": "boolean" },
+        "tests": { "type": "integer" },
+        "ids": { "type": "array", "items": { "type": "string" } },
+        "skipped": { "type": "array", "items": { "type": "string" } },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string" },
+              "message": { "type": "string" },
+              "body_hash": { "type": "string" }
+            },
+            "required": ["id", "type", "message", "body_hash"]
+          }
+        },
+        "failure_digest": { "type": "string" },
+        "report": { "type": "string" }
+      },
+      "required": ["complete", "tests", "ids", "skipped", "failures", "failure_digest", "report"]
+    },
+    "CommandResult": {
+      "type": "object",
+      "properties": {
+        "check": { "$ref": "#/$defs/Check" },
+        "pass": { "type": ["boolean", "null"] },
+        "evidence": { "type": "string" },
+        "exit": { "type": ["number", "string"] },
+        "structured": { "$ref": "#/$defs/StructuredCases" }
+      },
+      "required": ["check", "pass", "evidence"]
+    },
+    "BaseResult": {
+      "type": "object",
+      "properties": {
+        "cmd": { "type": "string" },
+        "pass": { "type": ["boolean", "null"] },
+        "reason": { "type": "string" },
+        "structured": { "$ref": "#/$defs/StructuredCases" }
+      },
+      "required": ["cmd", "pass"]
+    },
+    "RequirementContract": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "accept": { "type": "array", "items": { "$ref": "#/$defs/Check" } },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" },
+              "verified_by": { "type": "array", "items": { "type": "integer" } }
+            },
+            "required": ["id", "text", "verified_by"]
+          }
+        }
+      },
+      "required": ["id", "accept"]
+    },
+    "Adjudication": {
+      "type": "object",
+      "properties": {
+        "diff_hash": { "type": "string" },
+        "contract_hash": { "type": "string" },
+        "command": { "type": "string" },
+        "failed_tests": { "type": "array", "items": { "type": "string" } },
+        "failure_digest": { "type": "string" },
+        "report": { "type": "string" },
+        "counts": {
+          "type": "object",
+          "properties": {
+            "candidate": { "type": "integer" },
+            "base": { "type": "integer" },
+            "expected": { "type": "integer" },
+            "expected_base": { "type": "integer" }
+          },
+          "required": ["candidate", "base", "expected", "expected_base"]
+        },
+        "known": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["id", "reason"]
+          }
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "message": { "type": "string" },
+              "base": { "enum": ["failed", "passed"] }
+            },
+            "required": ["id", "message", "base"]
+          }
+        }
+      },
+      "required": [
+        "diff_hash",
+        "contract_hash",
+        "command",
+        "failed_tests",
+        "failure_digest",
+        "report",
+        "counts",
+        "known",
+        "cases"
+      ]
+    }
+  },
+  "required": [
+    "ok",
+    "failed",
+    "log",
+    "patch",
+    "diff_hash",
+    "artifact_sha256",
+    "same",
+    "reviewed",
+    "base_pass",
+    "head",
+    "checkout_fingerprint",
+    "disposition",
+    "reason",
+    "delta",
+    "risk",
+    "out_of_scope",
+    "decision"
+  ]
+}

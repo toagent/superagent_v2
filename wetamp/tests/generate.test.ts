@@ -176,13 +176,14 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
     prior_work: '{"changed_files":["range.ts"]}',
     reason: 'product_failure',
     accept_log: '/failure.log',
-  }))
+  })) {
+    const binding = nodes.find(n => n.id === 'repair-core')!.with![field] as
+      | string
+      | { from: string };
     expect(
-      substituteNodeOutputRefs(
-        String(nodes.find(n => n.id === 'repair-core')!.with![field]),
-        evidence
-      )
+      substituteNodeOutputRefs(typeof binding === 'string' ? binding : binding.from, evidence)
     ).toBe(expected);
+  }
   const repair = prompt('repair-core', 'repair-context-core');
   expect(repair).toContain('REPAIR_CURRENT_SOURCE');
   expect(repair).toContain('REPAIR_CURRENT_HINT');
@@ -1481,7 +1482,10 @@ describe('buildWorkflow', () => {
     };
     expect(start.merge_base).toBe(original);
     expect(n('diff-m1-r1').with?.base).toBe('$sync-review-m1-ready.output.merge_base');
-    expect(n('review-m1-r1').with?.diff).toBe('$diff-m1-r1.output.patch');
+    expect(n('review-m1-r1').with?.diff).toEqual({
+      from: '$diff-m1-r1.output.patch',
+      if_skipped: '',
+    });
     expect(n('review-m1-r1').when).not.toContain('same');
     expect(n('review-m2-r1').with?.briefs).toBe('/GEN/briefs/api.md');
     expect(n('verify-api').with?.scope_pkgs).toBe('core,api');
@@ -1490,8 +1494,14 @@ describe('buildWorkflow', () => {
       build(false, { ...fixture, packages: [...fixture.packages].reverse() })
     );
     expect(reversed.find(x => x.id === 'verify-api')?.with?.scope_pkgs).toBe('core,api');
-    expect(n('review-m1-r2').with?.full_diff).toBe('$diff-m1-r2.output.patch');
-    expect(n('review-m1-r2').with?.diff).toBe('$diff-m1-r2.output.delta');
+    expect(n('review-m1-r2').with?.full_diff).toEqual({
+      from: '$diff-m1-r2.output.patch',
+      if_skipped: '',
+    });
+    expect(n('review-m1-r2').with?.diff).toEqual({
+      from: '$diff-m1-r2.output.delta',
+      if_skipped: '',
+    });
   });
   test('every $INPUTS.<name> a command template reads is bound by its node', () => {
     const nodes = nodesOf(build(false)) as (N & { command?: string })[];
@@ -1571,7 +1581,10 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(build(false));
     const n = (id: string): N | undefined => nodes.find(x => x.id === id);
     expect(n('diff-m1-r1')?.with?.prev).toBeUndefined();
-    expect(n('diff-m1-r2')?.with?.prev).toBe('$diff-m1-r1.output.diff_hash');
+    expect(n('diff-m1-r2')?.with?.prev).toEqual({
+      from: '$diff-m1-r1.output.diff_hash',
+      if_skipped: '',
+    });
     expect(n('diff-m1-r2')?.with?.reviewed_diff_hash).toBe('$gate-m1-r1.output.reviewed_diff_hash');
     expect(n('review-m1-r1')?.when).toBe("$diff-m1-r1.output.disposition == 'advance'");
     expect(n('review-m1-r2')?.when).toBe(
@@ -2187,9 +2200,10 @@ test('role efficiency preserves ordinary, explicit review, G2 and strict gates a
     expect(nodes.find(n => n.id === 'fix-m1-r2')?.when).toBe("$gate-m1-r1.output.verdict == 'fix'");
     expect(nodes.find(n => n.id === 'verify-core')?.with?.kind).toBe('accept');
     expect(nodes.find(n => n.id === 'settle-core')?.with?.kind).toBe('settle');
-    expect(nodes.find(n => n.id === 'settle-core')?.with?.first).toBe(
-      '$verify-core.output.disposition'
-    );
+    expect(nodes.find(n => n.id === 'settle-core')?.with?.first).toEqual({
+      from: '$verify-core.output.disposition',
+      if_skipped: 'fail',
+    });
   }
 });
 

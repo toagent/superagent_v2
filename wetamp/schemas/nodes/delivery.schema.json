@@ -1,0 +1,9 @@
+{
+  "title": "DeliveryOutput",
+  "type": "object",
+  "properties": {
+    "diff_hash": { "type": "string" },
+    "head": { "type": "string" }
+  },
+  "required": ["diff_hash"]
+}

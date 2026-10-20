@@ -28,7 +28,6 @@ import {
   CHECK_AUX_BUDGET_MS,
   environmentChecks,
   reviewRoundLimit,
-  type DeliveryDecision,
   type RecoveryEvidence,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
@@ -55,12 +54,17 @@ import {
   type Plan,
 } from './plan';
 import {
+  acceptOutputFormat,
   conditionalOutput,
+  deliveryOutputFormat,
   output,
   publishOutputFormat,
   ref,
   syncOutputFormat,
   untilStatus,
+  type AcceptOutput,
+  type DeliveryDecision,
+  type DeliveryOutput,
   type PublishOutput,
   type SyncOutput,
 } from './contract';
@@ -110,9 +114,7 @@ export function newRunId(now = new Date()): string {
   return `${ts}-${crypto.getRandomValues(new Uint16Array(1))[0].toString(16).padStart(4, '0')}`;
 }
 
-const outputSchema = (
-  kind: 'coder' | 'reviewer' | 'accept' | 'delivery' | 'head' | 'attempt'
-): unknown =>
+const outputSchema = (kind: 'coder' | 'reviewer' | 'head' | 'attempt'): unknown =>
   (
     JSON.parse(readFileSync(join(WETAMP, 'schemas', 'output.schema.json'), 'utf8')) as {
       $defs: Record<string, unknown>;
@@ -432,7 +434,7 @@ export function buildWorkflow(
           tag: finalAccept,
           terminal: '1',
         },
-        { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
+        { output_format: acceptOutputFormat, ...acceptTimeout(m.packages, plan) }
       ),
       {
         id: publishId,
@@ -503,12 +505,13 @@ export function buildWorkflow(
         e.rounds.flatMap((_, i) => {
           const n = String(i + 1),
             diff = `diff-${m.id}-r${n}`;
+          const diffHandle = conditionalOutput<AcceptOutput>(diff);
           return [
             [`R${n}`, 'null'],
             [`C${n}`, i + 1 === r ? `$ARTIFACTS_DIR/diff-${tag}.json` : 'null'],
-            [`C${n}_HEAD`, i + 1 === r ? skippable(`$${diff}.output.head`, '') : ''],
-            [`C${n}_DIFF_HASH`, i + 1 === r ? skippable(`$${diff}.output.diff_hash`, '') : ''],
-            [`C${n}_SHA256`, i + 1 === r ? skippable(`$${diff}.output.artifact_sha256`, '') : ''],
+            [`C${n}_HEAD`, i + 1 === r ? ref.optional(diffHandle, 'head', '') : ''],
+            [`C${n}_DIFF_HASH`, i + 1 === r ? ref.optional(diffHandle, 'diff_hash', '') : ''],
+            [`C${n}_SHA256`, i + 1 === r ? ref.optional(diffHandle, 'artifact_sha256', '') : ''],
           ];
         })
       );
@@ -528,7 +531,7 @@ export function buildWorkflow(
           `diff-${tag}`,
           [syncReady, attempt],
           { ...common, kind: 'accept', base, tag: `diff-${tag}` },
-          { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
+          { output_format: acceptOutputFormat, ...acceptTimeout(m.packages, plan) }
         )
       );
       nodes.push(
@@ -677,6 +680,7 @@ export function buildWorkflow(
             : {}),
         output_format: outputSchema('coder'),
       });
+      const previousHandle = output<DeliveryOutput>(prev);
       const accept = {
         kind: 'accept',
         plan: planPath,
@@ -684,7 +688,7 @@ export function buildWorkflow(
         pkgs: p.id,
         scope_pkgs,
         base,
-        delta_base: `$${prev}.output.head`,
+        delta_base: ref.required(previousHandle, 'head'),
         ...(p.max_net_lines === undefined
           ? {}
           : {
@@ -698,6 +702,7 @@ export function buildWorkflow(
         ...ledger,
       };
       const verify = `verify-${p.id}`;
+      const verifyHandle = conditionalOutput<AcceptOutput>(verify);
       nodes.push(
         check(
           verify,
@@ -717,7 +722,7 @@ export function buildWorkflow(
           },
           {
             ...(carry ? { trigger_rule: 'none_failed_min_one_success' } : {}),
-            output_format: outputSchema('accept'),
+            output_format: acceptOutputFormat,
             ...acceptTimeout([p], plan),
           }
         )
@@ -761,8 +766,8 @@ export function buildWorkflow(
                 prior_work: carry
                   ? { from: `$code-${p.id}.output`, if_skipped: carry }
                   : `$code-${p.id}.output`,
-                reason: `$${verify}.output.reason`,
-                accept_log: `$${verify}.output.log`,
+                reason: ref.optional(verifyHandle, 'reason', null),
+                accept_log: ref.optional(verifyHandle, 'log', ''),
               },
             }),
         depends_on: [verify, pkgAttempt, ...(!fake ? [repairContext] : [])],
@@ -777,12 +782,12 @@ export function buildWorkflow(
             ...accept,
             kind: 'settle',
             tag: `settle-${p.id}`,
-            first: `$${verify}.output.disposition`,
+            first: ref.optional(verifyHandle, 'disposition', 'fail'),
             repaired: skippable(`$repair-${p.id}.output`),
           },
           {
             trigger_rule: 'none_failed_min_one_success',
-            output_format: outputSchema('delivery'),
+            output_format: deliveryOutputFormat,
             ...acceptTimeout([p], plan),
           }
         )
@@ -845,7 +850,11 @@ export function buildWorkflow(
                   milestone: m.id,
                   round: r,
                   ledger: `$gate-${before}.output.ledger_file`,
-                  accept_log: `$diff-${before}.output.log`,
+                  accept_log: ref.optional(
+                    conditionalOutput<AcceptOutput>(`diff-${before}`),
+                    'log',
+                    ''
+                  ),
                   briefs,
                   hints: join(gen, 'hints'),
                 },
@@ -857,6 +866,7 @@ export function buildWorkflow(
         prev = `fix-${t}`;
       }
       const ids = m.packages.map(p => p.id).join(',');
+      const diffHandle = conditionalOutput<AcceptOutput>(`diff-${t}`);
       nodes.push(
         check(
           `diff-${t}`,
@@ -878,14 +888,18 @@ export function buildWorkflow(
             ...ledger,
             ...(r > 1
               ? {
-                  prev: `$diff-${before}.output.diff_hash`,
+                  prev: ref.optional(
+                    conditionalOutput<AcceptOutput>(`diff-${before}`),
+                    'diff_hash',
+                    ''
+                  ),
                   coder: `$fix-${t}.output`,
                   delta_base: `$gate-${before}.output.reviewed_head`,
                   reviewed_diff_hash: `$gate-${before}.output.reviewed_diff_hash`,
                 }
               : {}),
           },
-          { output_format: outputSchema('accept'), ...acceptTimeout(m.packages, plan) }
+          { output_format: acceptOutputFormat, ...acceptTimeout(m.packages, plan) }
         )
       );
       if (r === 1 && checkpointMatch && checkpoint) {
@@ -947,19 +961,19 @@ export function buildWorkflow(
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
-                risk: `$diff-${t}.output.risk`,
+                risk: ref.optional(diffHandle, 'risk', ''),
                 round: r,
                 context: `$ARTIFACTS_DIR/review-${t}.context.json`,
                 briefs,
-                accept_log: `$diff-${t}.output.log`,
+                accept_log: ref.optional(diffHandle, 'log', ''),
                 // 第 2 轮及以后只看上次评审以来的增量与累计台账；全量 diff 只给路径（F-20）
                 ...(r > 1
                   ? {
-                      diff: `$diff-${t}.output.delta`,
-                      full_diff: `$diff-${t}.output.patch`,
+                      diff: ref.optional(diffHandle, 'delta', ''),
+                      full_diff: ref.optional(diffHandle, 'patch', ''),
                       ledger: `$gate-${before}.output.ledger_file`,
                     }
-                  : { diff: `$diff-${t}.output.patch` }),
+                  : { diff: ref.optional(diffHandle, 'patch', '') }),
               },
             }),
         depends_on: [`diff-${t}`, fake ? reviewAttempt : reviewContext],
@@ -967,9 +981,9 @@ export function buildWorkflow(
       });
       rounds[`R${String(r)}`] = skippable(`$review-${t}.output`);
       rounds[`C${String(r)}`] = `$ARTIFACTS_DIR/diff-${t}.json`;
-      rounds[`C${String(r)}_HEAD`] = skippable(`$diff-${t}.output.head`, '');
-      rounds[`C${String(r)}_DIFF_HASH`] = skippable(`$diff-${t}.output.diff_hash`, '');
-      rounds[`C${String(r)}_SHA256`] = skippable(`$diff-${t}.output.artifact_sha256`, '');
+      rounds[`C${String(r)}_HEAD`] = ref.optional(diffHandle, 'head', '');
+      rounds[`C${String(r)}_DIFF_HASH`] = ref.optional(diffHandle, 'diff_hash', '');
+      rounds[`C${String(r)}_SHA256`] = ref.optional(diffHandle, 'artifact_sha256', '');
       // 评审被跳过（验收未 advance 或修复无变化）时 gate 仍要运行；diff 也被跳过则本轮整体不走
       nodes.push(
         check(

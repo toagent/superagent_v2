@@ -150,3 +150,412 @@ export const publishOutputFormat = {
     },
   },
 } as const;
+export interface AcceptOutput {
+  decision: {
+    kind: 'advance' | 'debt' | 'repair' | 'block';
+    reason: string | null;
+    evidence: string[];
+    debt: string[];
+    requirements?: {
+      status: 'legacy' | 'verified' | 'unmet' | 'unknown';
+      items: {
+        package: string;
+        id: string;
+        text: string;
+        status: 'verified' | 'unmet' | 'unknown';
+        evidence: string[];
+      }[];
+    };
+    blockers?: string[];
+    needs?: unknown[];
+  };
+  workspace_clean?: boolean;
+  failures?: {
+    command: string;
+    failure_class: 'product' | 'test_env' | 'fixture' | 'baseline' | 'test_data' | 'unknown';
+    evidence: string;
+    repair_rounds?: number;
+    debt_reason?: 'repair_limit';
+    failed_tests?: string[];
+    failure_digest?: string;
+    adjudicated?: boolean;
+  }[];
+  coder_partial?: boolean;
+  self_report_conflict?: boolean;
+  error_class_ignored?: boolean;
+  ok: boolean;
+  failed: string[];
+  log: string;
+  patch: string;
+  delta: string;
+  diff_hash: string;
+  artifact_sha256: string;
+  same: boolean;
+  reviewed: boolean;
+  no_changes?: boolean;
+  base_pass: boolean | null;
+  checkout_fingerprint: string;
+  head: string;
+  milestone?: string;
+  contract_hash?: string;
+  disposition: 'advance' | 'repair' | 'adjudicate' | 'fail' | 'suspend';
+  reason: string | null;
+  risk: string | null;
+  out_of_scope: string[];
+  baseline?: 'comparable' | 'incomparable';
+  baseline_reason?: string;
+  base_results?: BaseResult[];
+  requirement_contract?: RequirementContract[];
+  command_results?: CommandResult[];
+  adjudication?: Adjudication;
+  net_lines?: {
+    used: number;
+    limit: number;
+  };
+}
+export interface BaseResult {
+  cmd: string;
+  pass: boolean | null;
+  reason?: string;
+  structured?: StructuredCases;
+}
+export interface StructuredCases {
+  complete: boolean;
+  tests: number;
+  ids: string[];
+  skipped: string[];
+  failures: {
+    id: string;
+    type: string;
+    message: string;
+    body_hash: string;
+  }[];
+  failure_digest: string;
+  report: string;
+}
+export interface RequirementContract {
+  id: string;
+  accept: Check[];
+  requirements?: {
+    id: string;
+    text: string;
+    verified_by: number[];
+  }[];
+}
+export interface Check {
+  cmd: string;
+  timeout_s: number;
+  cache?: boolean;
+  report?: {
+    junit: string;
+    collect?: string;
+  };
+  known_failures?: {
+    id: string;
+    reason: string;
+  }[];
+}
+export interface CommandResult {
+  check: Check;
+  pass: boolean | null;
+  evidence: string;
+  exit?: number | string;
+  structured?: StructuredCases;
+}
+export interface Adjudication {
+  diff_hash: string;
+  contract_hash: string;
+  command: string;
+  failed_tests: string[];
+  failure_digest: string;
+  report: string;
+  counts: {
+    candidate: number;
+    base: number;
+    expected: number;
+    expected_base: number;
+  };
+  known: {
+    id: string;
+    reason: string;
+  }[];
+  cases: {
+    id: string;
+    message: string;
+    base: 'failed' | 'passed';
+  }[];
+}
+
+export type DeliveryDecision = AcceptOutput['decision'];
+export type Completion = NonNullable<DeliveryDecision['requirements']>;
+export type CheckFailure = NonNullable<AcceptOutput['failures']>[number];
+export type Disposition = Exclude<AcceptOutput['disposition'], 'suspend'>;
+export type Accept = Pick<AcceptOutput, 'ok' | 'diff_hash' | 'same'> &
+  Partial<Omit<AcceptOutput, 'ok' | 'diff_hash' | 'same' | 'disposition'>> & {
+    disposition?: Disposition;
+  };
+export const acceptOutputFormat = {
+  title: 'AcceptOutput',
+  type: 'object',
+  properties: {
+    decision: {
+      type: 'object',
+      properties: {
+        kind: { enum: ['advance', 'debt', 'repair', 'block'] },
+        reason: { type: ['string', 'null'] },
+        evidence: { type: 'array', items: { type: 'string' } },
+        debt: { type: 'array', items: { type: 'string' } },
+        requirements: {
+          type: 'object',
+          required: ['status', 'items'],
+          properties: {
+            status: { enum: ['legacy', 'verified', 'unmet', 'unknown'] },
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['package', 'id', 'text', 'status', 'evidence'],
+                properties: {
+                  package: { type: 'string' },
+                  id: { type: 'string' },
+                  text: { type: 'string' },
+                  status: { enum: ['verified', 'unmet', 'unknown'] },
+                  evidence: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+        blockers: { type: 'array', items: { type: 'string' } },
+        needs: { type: 'array' },
+      },
+      required: ['kind', 'reason', 'evidence', 'debt'],
+    },
+    workspace_clean: { type: 'boolean' },
+    failures: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+          failure_class: {
+            type: 'string',
+            enum: ['product', 'test_env', 'fixture', 'baseline', 'test_data', 'unknown'],
+          },
+          evidence: { type: 'string' },
+          repair_rounds: { type: 'integer' },
+          debt_reason: { const: 'repair_limit' },
+          failed_tests: { type: 'array', items: { type: 'string' } },
+          failure_digest: { type: 'string' },
+          adjudicated: { type: 'boolean' },
+        },
+        required: ['command', 'failure_class', 'evidence'],
+      },
+    },
+    coder_partial: { type: 'boolean' },
+    self_report_conflict: { type: 'boolean' },
+    error_class_ignored: { type: 'boolean' },
+    ok: { type: 'boolean' },
+    failed: { type: 'array', items: { type: 'string' } },
+    log: { type: 'string' },
+    patch: { type: 'string' },
+    delta: { type: 'string' },
+    diff_hash: { type: 'string' },
+    artifact_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+    same: { type: 'boolean' },
+    reviewed: { type: 'boolean' },
+    no_changes: { type: 'boolean' },
+    base_pass: { type: ['boolean', 'null'] },
+    checkout_fingerprint: { type: 'string' },
+    head: { type: 'string' },
+    milestone: { type: 'string' },
+    contract_hash: { type: 'string' },
+    disposition: { enum: ['advance', 'repair', 'adjudicate', 'fail', 'suspend'] },
+    reason: { type: ['string', 'null'] },
+    risk: { type: ['string', 'null'] },
+    out_of_scope: { type: 'array', items: { type: 'string' } },
+    baseline: { enum: ['comparable', 'incomparable'] },
+    baseline_reason: { type: 'string' },
+    base_results: { type: 'array', items: { $ref: '#/$defs/BaseResult' } },
+    requirement_contract: { type: 'array', items: { $ref: '#/$defs/RequirementContract' } },
+    command_results: { type: 'array', items: { $ref: '#/$defs/CommandResult' } },
+    adjudication: { $ref: '#/$defs/Adjudication' },
+    net_lines: {
+      type: 'object',
+      properties: { used: { type: 'integer' }, limit: { type: 'integer' } },
+      required: ['used', 'limit'],
+    },
+  },
+  $defs: {
+    Check: {
+      type: 'object',
+      properties: {
+        cmd: { type: 'string' },
+        timeout_s: { type: 'number' },
+        cache: { type: 'boolean' },
+        report: {
+          type: 'object',
+          properties: { junit: { type: 'string' }, collect: { type: 'string' } },
+          required: ['junit'],
+        },
+        known_failures: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { id: { type: 'string' }, reason: { type: 'string' } },
+            required: ['id', 'reason'],
+          },
+        },
+      },
+      required: ['cmd', 'timeout_s'],
+    },
+    StructuredCases: {
+      type: 'object',
+      properties: {
+        complete: { type: 'boolean' },
+        tests: { type: 'integer' },
+        ids: { type: 'array', items: { type: 'string' } },
+        skipped: { type: 'array', items: { type: 'string' } },
+        failures: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              type: { type: 'string' },
+              message: { type: 'string' },
+              body_hash: { type: 'string' },
+            },
+            required: ['id', 'type', 'message', 'body_hash'],
+          },
+        },
+        failure_digest: { type: 'string' },
+        report: { type: 'string' },
+      },
+      required: ['complete', 'tests', 'ids', 'skipped', 'failures', 'failure_digest', 'report'],
+    },
+    CommandResult: {
+      type: 'object',
+      properties: {
+        check: { $ref: '#/$defs/Check' },
+        pass: { type: ['boolean', 'null'] },
+        evidence: { type: 'string' },
+        exit: { type: ['number', 'string'] },
+        structured: { $ref: '#/$defs/StructuredCases' },
+      },
+      required: ['check', 'pass', 'evidence'],
+    },
+    BaseResult: {
+      type: 'object',
+      properties: {
+        cmd: { type: 'string' },
+        pass: { type: ['boolean', 'null'] },
+        reason: { type: 'string' },
+        structured: { $ref: '#/$defs/StructuredCases' },
+      },
+      required: ['cmd', 'pass'],
+    },
+    RequirementContract: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        accept: { type: 'array', items: { $ref: '#/$defs/Check' } },
+        requirements: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              text: { type: 'string' },
+              verified_by: { type: 'array', items: { type: 'integer' } },
+            },
+            required: ['id', 'text', 'verified_by'],
+          },
+        },
+      },
+      required: ['id', 'accept'],
+    },
+    Adjudication: {
+      type: 'object',
+      properties: {
+        diff_hash: { type: 'string' },
+        contract_hash: { type: 'string' },
+        command: { type: 'string' },
+        failed_tests: { type: 'array', items: { type: 'string' } },
+        failure_digest: { type: 'string' },
+        report: { type: 'string' },
+        counts: {
+          type: 'object',
+          properties: {
+            candidate: { type: 'integer' },
+            base: { type: 'integer' },
+            expected: { type: 'integer' },
+            expected_base: { type: 'integer' },
+          },
+          required: ['candidate', 'base', 'expected', 'expected_base'],
+        },
+        known: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { id: { type: 'string' }, reason: { type: 'string' } },
+            required: ['id', 'reason'],
+          },
+        },
+        cases: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              message: { type: 'string' },
+              base: { enum: ['failed', 'passed'] },
+            },
+            required: ['id', 'message', 'base'],
+          },
+        },
+      },
+      required: [
+        'diff_hash',
+        'contract_hash',
+        'command',
+        'failed_tests',
+        'failure_digest',
+        'report',
+        'counts',
+        'known',
+        'cases',
+      ],
+    },
+  },
+  required: [
+    'ok',
+    'failed',
+    'log',
+    'patch',
+    'diff_hash',
+    'artifact_sha256',
+    'same',
+    'reviewed',
+    'base_pass',
+    'head',
+    'checkout_fingerprint',
+    'disposition',
+    'reason',
+    'delta',
+    'risk',
+    'out_of_scope',
+    'decision',
+  ],
+} as const;
+export interface DeliveryOutput {
+  diff_hash: string;
+  head?: string;
+}
+
+export const deliveryOutputFormat = {
+  title: 'DeliveryOutput',
+  type: 'object',
+  properties: { diff_hash: { type: 'string' }, head: { type: 'string' } },
+  required: ['diff_hash'],
+} as const;

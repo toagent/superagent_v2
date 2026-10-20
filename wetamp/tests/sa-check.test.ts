@@ -54,6 +54,8 @@ import {
 } from './helpers';
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
+import acceptOutputSchema from '../schemas/nodes/accept.schema.json';
+import deliveryOutputSchema from '../schemas/nodes/delivery.schema.json';
 import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 import { envPrecheck } from '../templates/.archon/scripts/env-precheck';
 import {
@@ -808,26 +810,10 @@ describe('FC failure classification', () => {
     expect(outputSchema.$defs.reviewer.properties.findings.items.properties.failure_class).toEqual(
       outputSchema.$defs.failure_class
     );
-    expect(outputSchema.$defs.accept.properties.failures.items.properties.failure_class).toEqual(
+    expect(acceptOutputSchema.properties.failures.items.properties.failure_class).toEqual(
       outputSchema.$defs.failure_class
     );
-    for (const name of ['two-pkgs', 'two-pkgs-fake']) {
-      const snapshot = Bun.YAML.parse(
-        readFileSync(join(import.meta.dir, 'golden', `${name}.yaml`), 'utf8')
-      ) as {
-        nodes: { id: string; output_format?: unknown; bash?: string }[];
-      };
-      for (const node of snapshot.nodes) {
-        if (/^(verify|diff)-/.test(node.id))
-          expect(node.output_format).toEqual(outputSchema.$defs.accept);
-        if (node.id.startsWith('settle-'))
-          expect(node.output_format).toEqual(outputSchema.$defs.delivery);
-        if (/^review-(?!context-)/.test(node.id)) {
-          expect(node.output_format).toEqual(outputSchema.$defs.reviewer);
-          if (node.bash) expect(node.bash).toContain('"failure_class":"product","command":null');
-        }
-      }
-    }
+    expect(deliveryOutputSchema.required).toEqual(['diff_hash']);
   });
   test('product and missing/invalid/no-evidence classifications remain blocking', () => {
     for (const extra of [
@@ -2096,7 +2082,7 @@ describe('sa-check script', () => {
     const changed = accept().out as Accept;
     expect(changed.contract_hash).not.toBe(check.contract_hash);
     expect(readdirSync(join(first.art, 'accept-cache')).filter(f => f !== '.key').length).toBe(4);
-    const validate = new Ajv2020().compile(outputSchema.$defs.accept.properties.decision);
+    const validate = new Ajv2020().compile(acceptOutputSchema.properties.decision);
     for (const c of [
       check,
       { ...check, command_results: [] },
@@ -2115,7 +2101,7 @@ describe('sa-check script', () => {
       }).decision.requirements?.status
     ).toBe('unknown');
     expect(
-      outputSchema.$defs.accept.properties.decision.properties.requirements.properties.status.enum
+      acceptOutputSchema.properties.decision.properties.requirements.properties.status.enum
     ).toEqual(['legacy', 'verified', 'unmet', 'unknown']);
   });
   test('RA: non-product advance passes TESTED with command debt visible in land', () => {

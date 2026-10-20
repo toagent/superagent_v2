@@ -22,6 +22,18 @@ import { spawn } from 'node:child_process';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan, Pkg } from '../../../src/plan';
+import type {
+  Accept,
+  Adjudication,
+  CheckFailure,
+  CommandResult,
+  Completion,
+  DeliveryDecision,
+  Disposition,
+  RequirementContract,
+  StructuredCases,
+} from '../../../src/contract';
+export type { Accept, CheckFailure, Completion, DeliveryDecision } from '../../../src/contract';
 import type { Ledger as OperatorLedger } from '../../../src/cli';
 import { budgetReason, readPolicyAttempts, type PolicyAttempt } from './policy-attempts';
 import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-class';
@@ -50,75 +62,6 @@ interface Coder {
   error_class: string | null;
   needs?: unknown[];
   blockers?: string[];
-}
-type Disposition = 'advance' | 'repair' | 'adjudicate' | 'fail';
-type RequirementContract = Pick<Pkg, 'id' | 'accept' | 'requirements'>;
-interface CommandResult {
-  check: Check;
-  pass: boolean | null;
-  evidence: string;
-  exit?: number | string;
-  structured?: StructuredCases;
-}
-// prettier-ignore
-interface StructuredCases { complete: boolean; tests: number; ids: string[]; skipped: string[]; failures: { id: string; type: string; message: string; body_hash: string }[]; failure_digest: string; report: string }
-// prettier-ignore
-interface Adjudication { diff_hash: string; contract_hash: string; command: string; failed_tests: string[]; failure_digest: string; report: string; counts: { candidate: number; base: number; expected: number; expected_base: number }; known: { id: string; reason: string }[]; cases: { id: string; message: string; base: 'failed' | 'passed' }[] }
-export interface Completion {
-  status: 'legacy' | 'verified' | 'unmet' | 'unknown';
-  items: {
-    package: string;
-    id: string;
-    text: string;
-    status: 'verified' | 'unmet' | 'unknown';
-    evidence: string[];
-  }[];
-}
-export type DeliveryDecision = {
-  [K in 'advance' | 'debt' | 'repair' | 'block']: {
-    kind: K;
-    reason: string | null;
-    evidence: string[];
-    debt: string[];
-    requirements?: Completion;
-    blockers?: Coder['blockers'];
-    needs?: Coder['needs'];
-  };
-}['advance' | 'debt' | 'repair' | 'block'];
-export interface Accept {
-  ok: boolean;
-  decision?: DeliveryDecision;
-  milestone?: string;
-  diff_hash: string;
-  same: boolean;
-  reviewed?: boolean;
-  no_changes?: boolean;
-  head?: string;
-  checkout_fingerprint?: string;
-  contract_hash?: string;
-  risk?: string | null;
-  out_of_scope?: string[];
-  disposition?: Disposition;
-  reason?: string | null;
-  failed?: string[];
-  log?: string;
-  base_pass?: boolean | null;
-  // prettier-ignore
-  base_results?: { cmd: string; pass: boolean | null; reason?: string; structured?: StructuredCases }[];
-  baseline?: 'comparable' | 'incomparable';
-  baseline_reason?: string;
-  failures?: CheckFailure[];
-  workspace_clean?: boolean;
-  requirement_contract?: RequirementContract[];
-  command_results?: CommandResult[];
-  adjudication?: Adjudication;
-  net_lines?: { used: number; limit: number };
-}
-// prettier-ignore
-export interface CheckFailure {
-  command: string; failure_class: FailureClass; evidence: string;
-  repair_rounds?: number; debt_reason?: 'repair_limit';
-  failed_tests?: string[]; failure_digest?: string; adjudicated?: boolean;
 }
 /** sa-check uses these fields from the complete frozen <gen>/policy.json. */
 interface Policy {
