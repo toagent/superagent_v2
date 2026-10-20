@@ -1,0 +1,99 @@
+import { afterEach, expect, test } from 'bun:test';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { assertEngineAccess, runningEngineSnapshot } from '../src/engine';
+import { tmp } from './helpers';
+
+const SHIM = join(import.meta.dir, '..', 'bin', 'superagent-shim');
+const saved = { ...process.env };
+afterEach(() => {
+  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+  Object.assign(process.env, saved);
+});
+
+function fakeEngine(root: string, name: string, marker: string, schedule?: object): string {
+  const engine = join(root, name);
+  mkdirSync(join(engine, 'wetamp', 'src'), { recursive: true });
+  writeFileSync(
+    join(engine, 'wetamp', 'src', 'cli.ts'),
+    `import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ engine: ${JSON.stringify(name)}, args, served: process.env.SA_SERVED_RUN }) + '\\n');
+if (args.includes('--schedule')) console.log(JSON.stringify(${JSON.stringify(schedule ?? {})}));
+else console.log(JSON.stringify({ ok: true }));
+`
+  );
+  return engine;
+}
+
+test('shim dispatches current, pinned run, and grouped tick without scheduler lock reentry', () => {
+  const root = tmp(),
+    home = join(root, 'home'),
+    marker = join(root, 'calls.jsonl');
+  mkdirSync(join(home, 'engine'), { recursive: true });
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  const pinned = fakeEngine(root, 'pinned', marker);
+  const bootstrap = fakeEngine(root, 'bootstrap', marker);
+  const current = fakeEngine(root, 'current', marker, {
+    groups: [{ snapshot: pinned, runs: ['run-1'] }],
+  });
+  symlinkSync(current, join(home, 'engine', 'current'));
+  mkdirSync(join(home, 'engine', 'receipts'));
+  writeFileSync(
+    join(home, 'engine', 'receipts', 'bootstrap.json'),
+    JSON.stringify({ sha: 'bootstrap', at: '2026-01-01T00:00:00.000Z' })
+  );
+  symlinkSync(bootstrap, join(home, 'engine', 'bootstrap'));
+  writeFileSync(join(home, 'runs', 'run-1.json'), JSON.stringify({ engine_snapshot: pinned }));
+  writeFileSync(join(home, 'runs', 'legacy.json'), '{}');
+  const invoke = (...args: string[]) =>
+    Bun.spawnSync([SHIM, ...args], {
+      env: { ...process.env, SUPERAGENT_HOME: home },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+  expect(invoke('models').exitCode).toBe(0);
+  expect(invoke('status', 'run-1').exitCode).toBe(0);
+  expect(invoke('status', 'legacy').exitCode).toBe(0);
+  expect(invoke('supervise-tick').exitCode).toBe(0);
+  const calls = readFileSync(marker, 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line));
+  expect(calls).toEqual([
+    { engine: 'current', args: ['models'] },
+    { engine: 'pinned', args: ['status', 'run-1'], served: 'run-1' },
+    { engine: 'bootstrap', args: ['status', 'legacy'], served: 'legacy' },
+    { engine: 'current', args: ['supervise-tick', '--schedule'] },
+    {
+      engine: 'pinned',
+      args: ['supervise-tick', '--no-global', '--runs', 'run-1'],
+      served: 'run-1',
+    },
+  ]);
+});
+
+test('candidate and mismatched served snapshot writes are refused', () => {
+  const root = tmp(),
+    sa = join(root, '.superagent'),
+    engine = join(sa, 'engine');
+  mkdirSync(join(engine, 'receipts'), { recursive: true });
+  mkdirSync(join(sa, 'runs'), { recursive: true });
+  mkdirSync(join(root, 'other-engine'));
+  symlinkSync(join(root, 'other-engine'), join(engine, 'current'));
+  Object.assign(process.env, {
+    HOME: root,
+    SUPERAGENT_HOME: sa,
+    ARCHON_HOME: join(root, 'archon'),
+  });
+  expect(() => assertEngineAccess(['run', 'plan.json'])).toThrow('candidate checkout');
+
+  writeFileSync(join(engine, 'receipts', `${basename(runningEngineSnapshot())}.json`), '{}');
+  writeFileSync(
+    join(sa, 'runs', 'served.json'),
+    JSON.stringify({ engine_snapshot: join(root, 'wrong') })
+  );
+  process.env.SA_SERVED_RUN = 'served';
+  expect(() => assertEngineAccess(['resume', 'served'])).toThrow('snapshot mismatch');
+});

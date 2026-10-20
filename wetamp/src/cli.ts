@@ -118,6 +118,15 @@ import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
 import { refreshBudgetQuota, relayQuota } from './relay-quota';
 import { capabilityDrift } from './capabilities';
+import {
+  assertEngineAccess,
+  autoPromote,
+  bootstrapEngineSnapshot,
+  currentEngineSnapshot,
+  engineCommand,
+  runEngineSnapshot,
+  runningEngineSnapshot,
+} from './engine';
 
 const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
 if (
@@ -218,6 +227,10 @@ export const OPTIONS = {
   session: { type: 'string' },
   'dry-run': { type: 'boolean' },
   open: { type: 'boolean' },
+  schedule: { type: 'boolean' },
+  runs: { type: 'string', multiple: true },
+  'no-global': { type: 'boolean' },
+  'bootstrap-evidence': { type: 'string' },
 } as const;
 interface Args {
   _: string[];
@@ -255,6 +268,9 @@ export interface Ledger {
   workflow_hash?: string;
   engine_hash?: string;
   engine_commit?: string;
+  /** Absolute engine checkout pinned when this run was launched. */
+  engine_snapshot?: string;
+  engine_snapshot_identity?: 'current' | 'candidate';
   adoptions?: {
     at: string;
     from: string;
@@ -1123,7 +1139,8 @@ function recoverRun(
                 }
               : {}),
           },
-          l.delivery
+          l.delivery,
+          l.engine_snapshot
         );
         adopted = {
           from: run.id,
@@ -1433,7 +1450,16 @@ function startRun(planPath: string, a: Args): number {
         }
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
-        const gen = generate(plan, run, a.flags.fake ?? false, undefined, undefined, delivery);
+        const engine = runEngineSnapshot();
+        const gen = generate(
+          plan,
+          run,
+          a.flags.fake ?? false,
+          undefined,
+          undefined,
+          delivery,
+          engine.path
+        );
         const branch = `sa/${run}`;
         const args = [
           'workflow',
@@ -1451,6 +1477,8 @@ function startRun(planPath: string, a: Args): number {
           run_id: run,
           engine_hash: gen.engine_hash,
           engine_commit: gen.engine_commit,
+          engine_snapshot: engine.path,
+          engine_snapshot_identity: engine.identity,
           workflow_hash: gen.engine_hash,
           archon_run_id: '',
           plan: planPath,
@@ -1880,7 +1908,7 @@ function decide(l: Ledger, a: Args): number {
     return intervention(l, 'decide', () => {
       const r = run.metadata?.approval
         ? approveRun(l)
-        : signalHuman(run, { decision: 'approve' }, log, l.repo);
+        : signalHuman(run, { decision: 'approve' }, log, l.repo, l.engine_snapshot);
       print({ run_id: l.run_id, ...r });
       return r.ok ? 0 : 1;
     });
@@ -2498,7 +2526,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
       const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
       const r = run.metadata?.approval
         ? approveRun(l)
-        : signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
+        : signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo, l.engine_snapshot);
       if (r.ok)
         consumeAnswer(
           l,
@@ -2651,14 +2679,64 @@ function askHold(
   });
 }
 
-/** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。asks.json 的唯一写者。 */
-export function superviseTick(): ReturnType<typeof tick> | { skipped: 'locked' } {
+interface TickMode {
+  schedule?: boolean;
+  runs?: string[];
+  noGlobal?: boolean;
+}
+
+/** Activated engines separate the global scheduler from snapshot-scoped executors. */
+export function superviseTick(mode: TickMode = {}):
+  | ReturnType<typeof tick>
+  | { skipped: 'locked' }
+  | {
+      groups: { snapshot: string; runs: string[] }[];
+      global: ReturnType<typeof tick>;
+      promotion?: ReturnType<typeof autoPromote>;
+    } {
   const { sa } = home();
   mkdirSync(sa, { recursive: true });
+  const current = currentEngineSnapshot();
+  if (!current) {
+    const l = lock(join(sa, 'supervise.lock'));
+    if (!l.ok) return { skipped: 'locked' };
+    try {
+      return tick(sa);
+    } finally {
+      l.release();
+    }
+  }
+  if (mode.noGlobal) {
+    const runs = new Set(mode.runs ?? []);
+    const version = basename(runEngineSnapshot().path).replaceAll(/[^0-9A-Za-z.-]/g, '_');
+    const l = lock(join(sa, `supervise.${version}.lock`));
+    if (!l.ok) return { skipped: 'locked' };
+    const asks = lock(join(sa, 'asks.lock'));
+    if (!asks.ok) {
+      l.release();
+      return { skipped: 'locked' };
+    }
+    try {
+      return tick(sa, runs, false);
+    } finally {
+      asks.release();
+      l.release();
+    }
+  }
   const l = lock(join(sa, 'supervise.lock'));
   if (!l.ok) return { skipped: 'locked' };
   try {
-    return tick(sa);
+    const grouped = new Map<string, string[]>();
+    for (const ledger of ledgers()) {
+      if ('error' in ledger) continue;
+      const snapshot = ledger.engine_snapshot ?? bootstrapEngineSnapshot() ?? current;
+      grouped.set(snapshot, [...(grouped.get(snapshot) ?? []), ledger.run_id]);
+    }
+    return {
+      groups: [...grouped].map(([snapshot, runs]) => ({ snapshot, runs })),
+      global: tick(sa, new Set(), true),
+      promotion: autoPromote(),
+    };
   } finally {
     l.release();
   }
@@ -2682,7 +2760,11 @@ const readTickCache = (sa: string): Record<string, string> => {
 
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
-function tick(sa: string): {
+function tick(
+  sa: string,
+  selected?: Set<string>,
+  global = true
+): {
   actions: Action[];
   gc: GcAction[];
   scratch: ScratchAction[];
@@ -2696,7 +2778,7 @@ function tick(sa: string): {
     asks = e as Error;
   }
   const observed: HoldSignal[] = [];
-  const out: Action[] = reconcileIntents();
+  const out: Action[] = global ? reconcileIntents() : [];
   let dueContinuations: Set<string> | Error | undefined;
   const continuations = (): Set<string> | Error => {
     if (dueContinuations !== undefined) return dueContinuations;
@@ -2721,11 +2803,11 @@ function tick(sa: string): {
   }
   const cached = readTickCache(sa),
     terminal: Record<string, string> = revisions ? {} : { ...cached },
-    live = new Set<string>();
+    live = new Set<string>(global ? ledgerIds() : []);
   let skippedTerminal = 0,
     repeatedErrors = 0,
     errorCached = false;
-  for (const l of ledgers()) {
+  for (const l of ledgers().filter(item => selected === undefined || selected.has(item.run_id))) {
     live.add(l.run_id);
     let errorInput = l.run_id;
     try {
@@ -2737,6 +2819,11 @@ function tick(sa: string): {
         'error' in l ? null : (revisions?.get(l.archon_run_id) ?? null),
       ]);
       if ('error' in l) throw new Error(l.error);
+      if (
+        !global &&
+        resolve(l.engine_snapshot ?? currentEngineSnapshot() ?? '') !== runningEngineSnapshot()
+      )
+        throw new Error('engine identity: executor run snapshot mismatch');
       const actor = l.controller ?? l.launcher;
       if (!actor)
         throw new Error(
@@ -2774,7 +2861,9 @@ function tick(sa: string): {
             archonDetached(
               ['workflow', 'wake', l.archon_run_id, '--json'],
               join(sa, 'wake.log'),
-              l.repo
+              l.repo,
+              false,
+              l.engine_snapshot
             );
           if (!(asks instanceof Error)) {
             for (const [key, a] of Object.entries(asks))
@@ -2809,7 +2898,7 @@ function tick(sa: string): {
     } catch (e) {
       console.error(`supervise-tick cache write failed: ${(e as Error).message}`);
     }
-  if (!(asks instanceof Error)) {
+  if (global && !(asks instanceof Error)) {
     const mobile = existsSync(join(sa, 'console/decision-origin')),
       currentAsks = asks;
     if (mobile) out.push(...applyCoordIntents(currentAsks));
@@ -2843,11 +2932,13 @@ function tick(sa: string): {
     }
     saveAsks(asks);
   }
-  memoryTick(asks instanceof Error ? {} : asks);
-  reconcileReflection();
+  if (global) {
+    memoryTick(asks instanceof Error ? {} : asks);
+    reconcileReflection();
+  }
   // supervise.lock serializes the persisted throttle; reserve before the slow GC.
   const gcStamp = join(sa, 'gc-tick'),
-    due = !existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000;
+    due = global && (!existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000);
   if (due) writeAtomic(gcStamp, String(Date.now()));
   return {
     actions: out,
@@ -2855,7 +2946,7 @@ function tick(sa: string): {
     repeated_errors: repeatedErrors,
     ...cockpitSignals(observed, asks instanceof Error ? {} : asks),
     gc: due ? gc() : [],
-    scratch: scratchClean(),
+    scratch: global ? scratchClean() : [],
   };
 }
 
@@ -3318,8 +3409,8 @@ export const USAGE = [
   '  global: [--help] [--json] (--task-kind is rejected)',
 ].join('\n');
 
-function tickOutput(consoleError?: string): number {
-  const actions = superviseTick();
+function tickOutput(consoleError?: string, mode: TickMode = {}): number {
+  const actions = superviseTick(mode);
   if (!('actions' in actions)) {
     console.log(
       JSON.stringify({
@@ -3347,7 +3438,8 @@ function tickOutput(consoleError?: string): number {
 /** Console availability must not gate the unattended heartbeat. */
 export async function superviseTickCli(
   refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(),
-  sync = async (): Promise<unknown> => (await import('./orca')).syncOrca()
+  sync = async (): Promise<unknown> => (await import('./orca')).syncOrca(),
+  mode: TickMode = {}
 ): Promise<number> {
   let error: string | undefined;
   try {
@@ -3356,7 +3448,7 @@ export async function superviseTickCli(
     error = e instanceof Error ? e.message : String(e);
     console.error(`supervise-tick: console refresh failed: ${error.replace(/[\r\n]+/g, ' ')}`);
   }
-  const exit = tickOutput(error);
+  const exit = tickOutput(error, mode);
   try {
     const result = await sync();
     if (result && typeof result === 'object' && 'error' in result)
@@ -3377,6 +3469,7 @@ export function main(argv: string[]): number {
     return EXIT_USAGE;
   }
   const [verb, target] = a._;
+  assertEngineAccess(argv);
   if (a.flags.help || verb === 'help') {
     console.log(
       USAGE +
@@ -3739,7 +3832,21 @@ export function main(argv: string[]): number {
       print({ scratch: scratchClean(a.flags.session, a.flags['dry-run']) });
       return 0;
     case 'supervise-tick':
-      return tickOutput();
+      return tickOutput(undefined, {
+        schedule: a.flags.schedule,
+        runs: a.flags.runs,
+        noGlobal: a.flags['no-global'],
+      });
+    case 'engine':
+      print(
+        engineCommand([
+          ...a._.slice(1),
+          ...(a.flags['bootstrap-evidence']
+            ? ['--bootstrap-evidence', a.flags['bootstrap-evidence']]
+            : []),
+        ])
+      );
+      return 0;
     case 'report': {
       if (a.flags['by-engine'] !== undefined) {
         const commit = a.flags['by-engine'],
@@ -3807,6 +3914,7 @@ function need<T>(v: T | undefined, usage: string): T {
 async function runCli(): Promise<void> {
   try {
     const argv = process.argv.slice(2);
+    assertEngineAccess(argv);
     // board（带 ink/react 依赖）与 job/jobs 是异步动词：在这里分流，其余动词启动时不加载 React。
     // 参数非法时 verb 取不到，交给 main 报用法
     const verb = ((): string | undefined => {
@@ -3818,7 +3926,16 @@ async function runCli(): Promise<void> {
     })();
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
-    if (verb === 'supervise-tick') process.exit(await superviseTickCli());
+    if (verb === 'supervise-tick') {
+      const parsed = parseArgs(argv);
+      process.exit(
+        await superviseTickCli(undefined, undefined, {
+          schedule: parsed.flags.schedule,
+          runs: parsed.flags.runs,
+          noGlobal: parsed.flags['no-global'],
+        })
+      );
+    }
     if (verb === 'console' || verb === 'web')
       process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs') process.exit(await jobCli(argv));

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sa_home=${SUPERAGENT_HOME:?SUPERAGENT_HOME is required}
+engine_home="$sa_home/engine"
+self_root=$(cd "$(dirname "$0")/../.." && pwd -P)
+current=$(readlink "$engine_home/current" 2>/dev/null || true)
+if [[ -n "$current" && "$current" != /* ]]; then current="$engine_home/$current"; fi
+current=${current:-$self_root}
+
+run_cli() {
+  local snapshot=$1
+  shift
+  exec bun "$snapshot/wetamp/src/cli.ts" "$@"
+}
+
+verb=${1:-}
+if [[ "$verb" == supervise-tick ]]; then
+  schedule=$(bun "$current/wetamp/src/cli.ts" supervise-tick --schedule)
+  printf '%s\n' "$schedule"
+  while IFS=$'\t' read -r snapshot ids; do
+    [[ -n "$snapshot" && -n "$ids" ]] || continue
+    IFS=',' read -r -a run_ids <<< "$ids"
+    args=(supervise-tick --no-global)
+    for run in "${run_ids[@]}"; do args+=(--runs "$run"); done
+    SA_SERVED_RUN="${run_ids[0]}" bun "$snapshot/wetamp/src/cli.ts" "${args[@]}"
+  done < <(bun -e '
+    const chunks = await Bun.stdin.text();
+    const lines = chunks.trim().split("\n");
+    const value = JSON.parse(lines.at(-1) || "{}");
+    for (const group of value.groups || []) console.log(`${group.snapshot}\t${group.runs.join(",")}`);
+  ' <<< "$schedule")
+  exit 0
+fi
+
+case "$verb" in
+  wait|resume|recover|decide|land|cancel|brief|accept|status)
+    run=${2:-}
+    if [[ -n "$run" && "$run" != --* && -f "$sa_home/runs/$run.json" ]]; then
+      snapshot=$(bun -e '
+        const value = JSON.parse(await Bun.file(process.argv[1]).text());
+        if (value.engine_snapshot) process.stdout.write(value.engine_snapshot);
+        else {
+          const dir = process.argv[2];
+          const receipts = Array.from(new Bun.Glob("*.json").scanSync(dir)).flatMap(file => {
+            try { return [JSON.parse(require("node:fs").readFileSync(`${dir}/${file}`, "utf8"))]; }
+            catch { return []; }
+          }).sort((a, b) => a.at.localeCompare(b.at));
+          if (receipts[0]) process.stdout.write(`${process.argv[3]}/${receipts[0].sha}`);
+        }
+      ' "$sa_home/runs/$run.json" "$engine_home/receipts" "$engine_home")
+      if [[ -n "$snapshot" ]]; then
+        export SA_SERVED_RUN=$run
+        run_cli "$snapshot" "$@"
+      fi
+    fi
+    ;;
+esac
+run_cli "$current" "$@"

@@ -31,7 +31,6 @@ import { caller, cleanEngine, coord, repoScope, runScope } from './coord';
 import { integrationLockTimeout } from './integration';
 import {
   WETAMP,
-  CODEX_WORKER,
   assertSQLite,
   home,
   loadTiers,
@@ -200,8 +199,10 @@ export function buildWorkflow(
   now = Date.now(),
   tiers: Tiers = loadTiers(),
   carried?: Carried,
-  delivery?: import('./land').DeliveryTarget
+  delivery?: import('./land').DeliveryTarget,
+  engineSnapshot?: string
 ): Node {
+  const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   // 只拒绝显式 deadline 已过的 plan；缺省没有交付期限。
   if (plan.deadline !== undefined && Date.parse(plan.deadline) <= now)
     throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
@@ -258,10 +259,10 @@ export function buildWorkflow(
     extra = '',
     output = `${action}-${milestone}`
   ): string =>
-    `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${output} ${extra}bun '${join(WETAMP, 'src/land.ts').replaceAll("'", "'\\''")}'`;
+    `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${output} ${extra}bun '${join(engineWetamp, 'src/land.ts').replaceAll("'", "'\\''")}'`;
   const integrationScript = (milestone: string, output: string): string =>
     [
-      `const child = Bun.spawn([process.execPath, ${JSON.stringify(join(WETAMP, 'src/land.ts'))}], {`,
+      `const child = Bun.spawn([process.execPath, ${JSON.stringify(join(engineWetamp, 'src/land.ts'))}], {`,
       `  env: { ...process.env, INPUTS_ACTION: 'publish', INPUTS_RUN: '${run}', INPUTS_MILESTONE: '${milestone}', INPUTS_OUTPUT: '${output}' },`,
       `  stdout: 'pipe', stderr: 'pipe',`,
       `});`,
@@ -1115,8 +1116,10 @@ export function generate(
   fake = false,
   previousHash?: string,
   carried?: Carried,
-  delivery?: import('./land').DeliveryTarget
+  delivery?: import('./land').DeliveryTarget,
+  engineSnapshot?: string
 ): Gen {
+  const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   const engine_commit = cleanEngine();
   assertSQLite(plan.repo);
   const tiers = loadTiers();
@@ -1142,7 +1145,18 @@ export function generate(
   }
   const workflow = `sa-${run}`;
   const ms = milestones(plan);
-  const definition = buildWorkflow(plan, ms, run, dir, fake, Date.now(), tiers, carried, delivery);
+  const definition = buildWorkflow(
+    plan,
+    ms,
+    run,
+    dir,
+    fake,
+    Date.now(),
+    tiers,
+    carried,
+    delivery,
+    engineSnapshot
+  );
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
@@ -1204,7 +1218,7 @@ export function generate(
   writeFileSync(join(dir, 'policy.json'), JSON.stringify(policy, null, 2) + '\n');
   // sa-check 经它查本 run 的 spend/binding（F-14/F-16）；gen 目录可脱离 wetamp 安装位置被引用
   if (!fake && !existsSync(join(dir, 'archon')))
-    symlinkSync(join(WETAMP, 'bin', 'archon'), join(dir, 'archon'));
+    symlinkSync(join(engineWetamp, 'bin', 'archon'), join(dir, 'archon'));
   for (const p of plan.packages) {
     writeFileSync(
       join(dir, 'briefs', `${p.id}.md`),
@@ -1305,7 +1319,7 @@ export function generate(
   const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
   writeFileSync(
     worker,
-    `#!/usr/bin/env bash\nSA_POLICY_PATH=${quote(join(dir, 'policy.json'))} exec ${quote(CODEX_WORKER)} "$@"\n`
+    `#!/usr/bin/env bash\nSA_POLICY_PATH=${quote(join(dir, 'policy.json'))} exec ${quote(join(engineWetamp, 'bin', 'codex-worker'))} "$@"\n`
   );
   chmodSync(worker, 0o755);
   const runConfig = YAML.stringify(

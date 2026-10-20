@@ -424,15 +424,20 @@ export function archonDetached(
   args: string[],
   log: string,
   cwd?: string,
-  inheritLock = false
+  inheritLock = false,
+  engineSnapshot?: string
 ): number {
   const fd = openSync(log, 'a');
-  const p = spawn(archonBin(), args, {
-    cwd,
-    detached: true,
-    stdio: ['ignore', fd, fd],
-    env: { ...workerEnv(), ...(archonMutation(args) ? coord().admissionEnv(inheritLock) : {}) },
-  });
+  const p = spawn(
+    engineSnapshot ? join(engineSnapshot, 'wetamp', 'bin', 'archon') : archonBin(),
+    args,
+    {
+      cwd,
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      env: { ...workerEnv(), ...(archonMutation(args) ? coord().admissionEnv(inheritLock) : {}) },
+    }
+  );
   closeSync(fd); // 子进程已继承 fd；不关的话 tick/wait 每次调用泄漏一个
   p.unref();
   return p.pid ?? -1;
@@ -445,14 +450,21 @@ export function signalHuman(
   run: RunView,
   data: unknown,
   log: string,
-  cwd: string
+  cwd: string,
+  engineSnapshot?: string
 ): { ok: true; pid: number; log: string } | { ok: false; reason: string } {
   const w = run.metadata?.wait;
   if (run.status !== 'paused' || !w?.event?.startsWith('sa.human.'))
     return { ok: false, reason: `run ${run.id} is not waiting for a human signoff` };
   const args = ['workflow', 'signal', run.id, '--event', w.event, '--resume-at', w.resumeAt];
   // This parent waits for the signal acknowledgement while holding admission; verify and inherit its lock.
-  const pid = archonDetached([...args, '--data', JSON.stringify(data), '--json'], log, cwd, true);
+  const pid = archonDetached(
+    [...args, '--data', JSON.stringify(data), '--json'],
+    log,
+    cwd,
+    true,
+    engineSnapshot
+  );
   for (const end = Date.now() + SIGNAL_ACK_MS; Date.now() < end; ) {
     const now = getRun(run.id, cwd);
     if (now.status !== 'paused' || now.metadata?.wait?.resumeAt !== w.resumeAt)
