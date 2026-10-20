@@ -18,7 +18,10 @@ function sourceFixture(): { root: string; source: string; evidence: string; sha:
   sh('git config user.name test && git config user.email test@example.com', source);
   sh('git branch -M 1.0.0', source);
   const acceptance = join(source, 'wetamp', 'scripts', 'engine-acceptance.sh');
-  writeFileSync(acceptance, '#!/usr/bin/env bash\nexit 0\n');
+  writeFileSync(
+    acceptance,
+    '#!/usr/bin/env bash\nprobe=.acceptance-writable\n: > "$probe"\nrm "$probe"\n'
+  );
   chmodSync(acceptance, 0o755);
   sh('git add wetamp/scripts/engine-acceptance.sh && git commit -qm acceptance', source);
   const evidence = join(root, 'evidence.json');
@@ -53,6 +56,7 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
     'wetamp/scripts/engine-acceptance.sh'
   );
   expect(statSync(installedAcceptance).mode & 0o111).not.toBe(0);
+  expect(statSync(installedAcceptance).mode & 0o222).toBe(0);
   expect(Bun.spawnSync(['bash', '-n', installedAcceptance]).exitCode).toBe(0);
   sh(`git switch -qc side '${first}'`, f.source);
   const divergent = commit(f.source, 'divergent');
@@ -106,9 +110,8 @@ test('auto promotion follows 1.0.0 HEAD and records a failed attempt once', () =
   const third = f.sha(),
     failed = autoPromote();
   expect(failed).toMatchObject({ sha: third, promoted: false, error: expect.any(String) });
-  expect(
-    existsSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${third}.json`))
-  ).toBe(false);
+  // prettier-ignore
+  expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${third}.json`))).toBe(false);
   const marker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${third}.json`),
     before = readFileSync(marker, 'utf8');
   expect(autoPromote()).toEqual(failed);

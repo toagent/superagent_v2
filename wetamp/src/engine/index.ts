@@ -177,7 +177,6 @@ function prepareSnapshot(sha: string): string {
     stderr: 'pipe',
   });
   if (install.exitCode !== 0) throw new Error(`bun install: ${install.stderr.toString().trim()}`);
-  makeReadonly(snapshot);
   return snapshot;
 }
 
@@ -234,6 +233,7 @@ export function promote(sha: string, bootstrapEvidence?: string): EngineReceipt 
           } satisfies EngineReceipt;
         })()
       : automaticReceipt(sha, snapshot);
+    makeReadonly(snapshot);
     const currentSha = current && shaOfSnapshot(current);
     if (currentSha && !isAncestor(currentSha, sha))
       throw new Error('engine promote: candidate is not a current descendant');

@@ -50,6 +50,7 @@ export interface ScenarioFixture {
   blockMarker?: string;
   targetAfterInjection?: string;
   carried?: Carried;
+  engineSnapshot?: string;
 }
 
 export function scenario(
@@ -390,11 +391,8 @@ export async function runInProcess(f: ScenarioFixture) {
   const identity = spyOn(coordination, 'caller').mockReturnValue(who);
   let generated: ReturnType<typeof generate>;
   try {
-    generated = generate(plan, id, false, undefined, f.carried, {
-      checkout: f.target,
-      branch: 'scenario-target',
-      head: f.initial,
-    });
+    // prettier-ignore
+    generated = generate(plan, id, false, undefined, f.carried, { checkout: f.target, branch: 'scenario-target', head: f.initial }, f.engineSnapshot);
   } finally {
     identity.mockRestore();
     engine.mockRestore();
@@ -424,6 +422,7 @@ export async function runInProcess(f: ScenarioFixture) {
       plan: join(generated.dir, 'plan.json'),
       gen_dir: generated.dir,
       workflow: generated.workflow,
+      engine_snapshot: f.engineSnapshot,
       delivery: { checkout: f.target, branch: 'scenario-target', head: f.initial },
       controller,
     })
