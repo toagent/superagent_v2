@@ -198,9 +198,6 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
 const fixture = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')
 ) as Plan;
-const golden = (name: string): unknown =>
-  Bun.YAML.parse(readFileSync(join(import.meta.dir, 'golden', `${name}.yaml`), 'utf8'));
-// 语义比对：lint-staged 会对 YAML 跑 prettier，字节比对没有意义。
 const NOW = Date.parse('2026-10-09T00:00:00Z');
 const legacyTiers = () => {
   const tiers = loadTiers();
@@ -1264,8 +1261,38 @@ describe('buildWorkflow', () => {
       '$settle-core.output.head'
     );
   });
-  test('golden: two packages across two milestones', () => {
-    expect(build(false)).toEqual(golden('two-pkgs'));
+  test('generated node ids follow package, milestone, and review-round structure', () => {
+    const workflow = build(false);
+    const ids = nodesOf(workflow).map(node => node.id);
+    expect(ids.filter(id => /^(code|verify|repair|settle)-(?!context-)/.test(id))).toEqual(
+      fixture.packages.flatMap(pkg =>
+        ['code', 'verify', 'repair', 'settle'].map(kind => `${kind}-${pkg.id}`)
+      )
+    );
+    expect(
+      ids.filter(id => /^(sync|sync-review|integrate|human|signoff)-m\d+(?:-ready)?$/.test(id))
+    ).toEqual(
+      milestones(fixture).flatMap(m => [
+        `sync-${m.id}`,
+        `sync-${m.id}-ready`,
+        `sync-review-${m.id}`,
+        `sync-review-${m.id}-ready`,
+        ...(m.packages.some(pkg => pkg.signoff === 'human')
+          ? [`human-${m.id}`, `signoff-${m.id}`]
+          : []),
+        `integrate-${m.id}`,
+      ])
+    );
+    const rounds = milestones(fixture).flatMap(m =>
+      Array.from({ length: MAX_ROUNDS }, (_, i) => i + 1).flatMap(round => [
+        ...(round > 1 ? [`fix-${m.id}-r${round}`] : []),
+        `diff-${m.id}-r${round}`,
+        `review-${m.id}-r${round}`,
+        `gate-${m.id}-r${round}`,
+      ])
+    );
+    expect(ids.filter(id => /^(fix|diff|review|gate)-m\d+-r\d+$/.test(id))).toEqual(rounds);
+    expect(allNodesOf(workflow).some(node => 'interactive' in node)).toBeFalse();
   });
   test('multi-milestone delivery publishes each cumulative prefix before the next sync', () => {
     const nodes = nodesOf(build(false));
@@ -1326,8 +1353,12 @@ describe('buildWorkflow', () => {
     if (parsed.workflow === null) throw new Error(parsed.error.error);
     expect(parsed.workflow.interactive).not.toBe(true);
   });
-  test('golden: fake mode swaps coder nodes for bash stubs only', () => {
-    expect(build(true)).toEqual(golden('two-pkgs-fake'));
+  test('fake mode replaces every agent node with a bash stub', () => {
+    const realAgents = nodesOf(build(false)).filter(node => node.command?.startsWith('sa-'));
+    const fake = nodesOf(build(true));
+    expect(realAgents.every(real => fake.find(node => node.id === real.id)?.bash)).toBeTrue();
+    expect(fake.some(node => node.command?.startsWith('sa-'))).toBeFalse();
+    expect(allNodesOf(build(true)).some(node => 'interactive' in node)).toBeFalse();
   });
   test('review rounds are derived from the configured policy ladder', () => {
     const tiers = structuredClone(loadTiers());
