@@ -24,6 +24,11 @@ if [[ "$verb" == supervise-tick ]]; then
     IFS=',' read -r -a run_ids <<< "$ids"
     args=(supervise-tick --no-global)
     for run in "${run_ids[@]}"; do args+=(--runs "$run"); done
+    if [[ ! -d "$snapshot" ]]; then
+      printf 'engine snapshot unavailable; run superagent engine adopt %s <sha>\n' "${run_ids[0]}" >&2
+      tick_status=1
+      continue
+    fi
     if ! SA_SERVED_RUN="${run_ids[0]}" bun "$snapshot/wetamp/src/cli.ts" "${args[@]}"; then
       tick_status=1
     fi
@@ -53,6 +58,22 @@ case "$verb" in
         }
       ' "$sa_home/runs/$run.json" "$engine_home/receipts" "$engine_home")
       if [[ -n "$snapshot" ]]; then
+        if [[ ! -d "$snapshot" ]]; then
+          historical=0
+          case "$verb" in
+            brief|status|report) historical=1 ;;
+            land)
+              historical=1
+              for arg in "$@"; do [[ "$arg" == --apply ]] && historical=0; done
+              ;;
+          esac
+          if [[ "$historical" == 1 ]]; then
+            export SA_HISTORICAL_RUN=$run
+            run_cli "$current" "$@"
+          fi
+          printf 'engine snapshot unavailable; run superagent engine adopt %s <sha>\n' "$run" >&2
+          exit 1
+        fi
         export SA_SERVED_RUN=$run
         run_cli "$snapshot" "$@"
       fi

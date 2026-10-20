@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { assertEngineAccess, runningEngineSnapshot } from '../src/engine';
 import { tmp } from './helpers';
@@ -24,7 +24,7 @@ function fakeEngine(
     join(engine, 'wetamp', 'src', 'cli.ts'),
     `import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ engine: ${JSON.stringify(name)}, args, served: process.env.SA_SERVED_RUN }) + '\\n');
+appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ engine: ${JSON.stringify(name)}, args, served: process.env.SA_SERVED_RUN, historical: process.env.SA_HISTORICAL_RUN }) + '\\n');
 if (args.includes('--schedule')) console.log(JSON.stringify(${JSON.stringify(schedule ?? {})}));
 else console.log(JSON.stringify({ ok: true }));
 if (${String(failExecutor)} && args.includes('--no-global')) process.exit(1);
@@ -57,6 +57,10 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
   symlinkSync(bootstrap, join(home, 'engine', 'bootstrap'));
   writeFileSync(join(home, 'runs', 'run-1.json'), JSON.stringify({ engine_snapshot: pinned }));
   writeFileSync(join(home, 'runs', 'legacy.json'), '{}');
+  writeFileSync(
+    join(home, 'runs', 'archived.json'),
+    JSON.stringify({ engine_snapshot: join(root, 'collected') })
+  );
   const invoke = (...args: string[]) =>
     Bun.spawnSync([SHIM, ...args], {
       env: { ...process.env, SUPERAGENT_HOME: home },
@@ -67,6 +71,8 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
   expect(invoke('models').exitCode).toBe(0);
   expect(invoke('status', 'run-1').exitCode).toBe(0);
   expect(invoke('status', 'legacy').exitCode).toBe(0);
+  expect(invoke('status', 'archived').exitCode).toBe(0);
+  expect(invoke('resume', 'archived').exitCode).toBe(1);
   expect(invoke('supervise-tick').exitCode).toBe(1);
   const calls = readFileSync(marker, 'utf8')
     .trim()
@@ -76,6 +82,7 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
     { engine: 'current', args: ['models'] },
     { engine: 'pinned', args: ['status', 'run-1'], served: 'run-1' },
     { engine: 'bootstrap', args: ['status', 'legacy'], served: 'legacy' },
+    { engine: 'current', args: ['status', 'archived'], historical: 'archived' },
     { engine: 'current', args: ['supervise-tick', '--schedule'] },
     {
       engine: 'failed',
@@ -125,4 +132,14 @@ test('candidate and mismatched served snapshot writes are refused', () => {
   writeFileSync(join(sa, 'runs', 'legacy.json'), '{}');
   process.env.SA_SERVED_RUN = 'legacy';
   expect(() => assertEngineAccess(['resume', 'legacy'])).not.toThrow();
+
+  unlinkSync(join(engine, 'current'));
+  symlinkSync(running, join(engine, 'current'));
+  delete process.env.SA_SERVED_RUN;
+  writeFileSync(
+    join(sa, 'runs', 'archived.json'),
+    JSON.stringify({ engine_snapshot: join(root, 'collected') })
+  );
+  expect(() => assertEngineAccess(['status', 'archived'])).not.toThrow();
+  expect(() => assertEngineAccess(['resume', 'archived'])).toThrow('engine adopt archived');
 });

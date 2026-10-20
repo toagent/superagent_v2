@@ -270,7 +270,9 @@ export interface Ledger {
   engine_commit?: string;
   /** Absolute engine checkout pinned when this run was launched. */
   engine_snapshot?: string;
-  engine_snapshot_identity?: 'current' | 'candidate';
+  engine_snapshot_identity?: 'current' | 'served' | 'candidate';
+  /** Append-only record of explicit `engine adopt`; workflow-run adoption is separate. */
+  engine_adoptions?: { at: string; from: string | null; to: string }[];
   adoptions?: {
     at: string;
     from: string;
@@ -951,6 +953,12 @@ function recoverRun(
   reconciled?: string,
   evidenceFile?: string
 ): RecoverResult {
+  const currentSnapshot = currentEngineSnapshot(),
+    pinnedSnapshot = l.engine_snapshot ?? bootstrapEngineSnapshot();
+  if (currentSnapshot && pinnedSnapshot && resolve(pinnedSnapshot) !== runningEngineSnapshot())
+    throw new Error(
+      `engine identity: run ${l.run_id} is pinned to another snapshot; use engine adopt first`
+    );
   let adopted:
     | {
         from: string;
@@ -3472,7 +3480,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'gc', flags: ['dry-run'] },
   { command: 'scratch-clean', flags: ['session', 'dry-run'] },
   { command: 'supervise-tick', flags: ['schedule', 'runs', 'no-global'] },
-  { command: 'engine', positionals: 'promote <sha> | rollback | status', flags: ['bootstrap-evidence'] },
+  { command: 'engine', positionals: 'promote <sha> | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence'] },
   { command: 'health', flags: ['cwd', 'verbose'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
   { command: 'models', flags: ['mode'] },
@@ -3852,7 +3860,8 @@ export function main(argv: string[]): number {
     case 'brief':
       return brief(ledger(), !!a.flags.json);
     case 'land': {
-      const l = ledger(true);
+      const historical = process.env.SA_HISTORICAL_RUN === target && !a.flags.apply;
+      const l = ledger(!historical);
       if (a.flags.apply) {
         const run = getRun(l.archon_run_id, l.repo);
         const c = classifyRun(l, run);
@@ -3879,7 +3888,7 @@ export function main(argv: string[]): number {
         if (receipt) print(receipt);
         return 0;
       }
-      return controlled(l, () => {
+      const display = (): number => {
         const run = getRun(l.archon_run_id, l.repo);
         const c = classify(run);
         const diagnosticNode = /^land(?:-.+)?$/.test(c.node ?? '')
@@ -3904,7 +3913,8 @@ export function main(argv: string[]): number {
         if (!a.flags.json)
           for (const n of needs) console.log(`need ${n.cap} (${n.tag}): ${n.minimal_ask}`);
         return (land as { reason?: string }).reason === 'land_target_unknown' ? 1 : 0;
-      });
+      };
+      return historical ? display() : controlled(l, display);
     }
     case 'accept': {
       const l = ledger(true);
@@ -3922,16 +3932,16 @@ export function main(argv: string[]): number {
         runs: a.flags.runs,
         noGlobal: a.flags['no-global'],
       });
-    case 'engine':
-      print(
-        engineCommand([
-          ...a._.slice(1),
-          ...(a.flags['bootstrap-evidence']
-            ? ['--bootstrap-evidence', a.flags['bootstrap-evidence']]
-            : []),
-        ])
-      );
-      return 0;
+    case 'engine': {
+      const result = engineCommand([
+        ...a._.slice(1),
+        ...(a.flags['bootstrap-evidence']
+          ? ['--bootstrap-evidence', a.flags['bootstrap-evidence']]
+          : []),
+      ]);
+      print(result);
+      return a._[1] === 'gate-legacy' && !(result as { ok?: boolean }).ok ? 1 : 0;
+    }
     case 'report': {
       if (a.flags['by-engine'] !== undefined) {
         const commit = a.flags['by-engine'],
