@@ -30,14 +30,7 @@ import {
 import { ownerLost } from '../src/archon';
 import * as native from '../src/archon';
 import * as landing from '../src/land';
-import {
-  finalizeDelivery,
-  main,
-  scopeOverlaps,
-  updateLedger,
-  waitRun,
-  type Ledger,
-} from '../src/cli';
+import { main, scopeOverlaps, waitRun, type Ledger } from '../src/cli';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const req = createRequire(import.meta.url);
@@ -383,89 +376,6 @@ test('presence active/idle/offline/unknown comes from one verifier, not heartbea
   expect(presence({ ...a, pid: 99999999 }, s.sa)).toEqual({ state: 'offline' });
   expect(presence({ ...a, pid_start: undefined }, s.sa)).toEqual({ state: 'unknown' });
 });
-test('automatic delivery verifies the live owner through background children after heartbeat expiry', async () => {
-  const s = setup();
-  const module = (file: string) => JSON.stringify(join(import.meta.dir, '../src', file));
-  const child = join(s.root, 'deliver.ts');
-  writeFileSync(
-    child,
-    `import {spyOn} from 'bun:test';
-import * as native from ${module('archon.ts')};
-import * as land from ${module('land.ts')};
-import {caller} from ${module('coord/index.ts')};
-import {finalizeDelivery} from ${module('cli.ts')};
-let landed = false;
-spyOn(native, 'getRun').mockReturnValue({id:'engine',status:'completed',output_root:process.env.SUPERAGENT_HOME});
-spyOn(land, 'applyLand').mockImplementation(() => { landed = true; return {status:'manual_push'}; });
-try {
-  const receipt = finalizeDelivery('background', true);
-  console.log(JSON.stringify({ok:landed && receipt.status === 'manual_push',who:caller()}));
-} catch (e) { console.log(JSON.stringify({ok:false,error:e.message,landed})); }
-`
-  );
-  const parent = join(s.root, 'claude');
-  writeFileSync(
-    parent,
-    `import {writeFileSync,mkdirSync} from 'node:fs';
-import {hostname} from 'node:os';
-import {join} from 'node:path';
-import {Coordination,runScope,presence} from ${module('coord/index.ts')};
-import {inspectProcess} from ${module('launcher.ts')};
-const sa=process.env.SUPERAGENT_HOME, repo=${JSON.stringify(s.repo)};
-mkdirSync(join(sa,'live'),{recursive:true}); mkdirSync(join(sa,'runs'),{recursive:true});
-const who={client:'claude',session_id:'owner-session',host:hostname(),pid:process.pid,pid_start:inspectProcess(process.pid).start};
-const c=new Coordination({sa,runs:()=>[]});
-const controller=c.claim(runScope({run_id:'background',repo}),who).controller;
-const ledger={run_id:'background',archon_run_id:'engine',repo,controller,gen_dir:sa,branch:'feature',workflow:'fixture',delivery:{}};
-writeFileSync(join(sa,'runs/background.json'),JSON.stringify(ledger));
-writeFileSync(join(sa,'plan.json'),JSON.stringify({base_ref:'main',packages:[]}));
-writeFileSync(join(sa,'accept-inputs.json'),'{}');
-const art=join(sa,'artifacts/runs/engine'); mkdirSync(art,{recursive:true});
-writeFileSync(join(art,'land.json'),'{}');
-const results={};
-for (const mode of ['fresh','expired','foreign','reused','remote','unverified','ambiguous','generation','general','strategist','reviewer','worker']) {
-  const beat={...who,at:new Date(mode==='fresh'?Date.now():Date.now()-120001).toISOString()};
-  if(mode==='foreign') beat.session_id='other-session';
-  if(mode==='reused') beat.pid_start='old-lifetime';
-  if(mode==='remote') beat.host='other-host';
-  if(mode==='unverified') delete beat.pid_start;
-  writeFileSync(join(sa,'live/owner.json'),JSON.stringify(beat));
-  writeFileSync(join(sa,'live/other.json'),JSON.stringify({...beat,session_id:mode==='ambiguous'?'second-session':beat.session_id}));
-  writeFileSync(join(sa,'runs/background.json'),JSON.stringify({...ledger,controller:{...controller,generation:mode==='generation'?controller.generation+1:controller.generation}}));
-  const p=Bun.spawn(['bash','-c','"$1" "$2" & wait $!', '_',process.execPath,${JSON.stringify(child)}],{
-    env:{...process.env,SUPERAGENT_ROLE:['general','strategist','reviewer','worker'].includes(mode)?mode:''},stdout:'pipe',stderr:'pipe'});
-  const out=await new Response(p.stdout).text(), err=await new Response(p.stderr).text();
-  if(await p.exited!==0) throw new Error(err);
-  results[mode]=JSON.parse(out);
-}
-console.log(JSON.stringify({results,presence:presence(who,sa),who}));
-`
-  );
-  const p = Bun.spawn([process.execPath, parent], {
-    env: {
-      ...process.env,
-      SUPERAGENT_HOME: s.sa,
-      ARCHON_HOME: join(s.sa, 'archon'),
-    },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const out = await new Response(p.stdout).text();
-  const err = await new Response(p.stderr).text();
-  expect({ code: await p.exited, err }).toEqual({ code: 0, err: '' });
-  const result = JSON.parse(out);
-  expect(result.presence.state).toBe('online');
-  expect(result.results.fresh).toMatchObject({ ok: true, who: result.who });
-  expect(result.results.expired).toMatchObject({ ok: true, who: result.who });
-  for (const mode of ['foreign', 'reused', 'remote', 'unverified', 'ambiguous', 'generation']) {
-    expect(result.results[mode]).toMatchObject({ ok: false, landed: false });
-    expect(result.results[mode].error).toContain('fencing');
-  }
-  for (const mode of ['general', 'strategist', 'reviewer', 'worker']) {
-    expect(result.results[mode]).toMatchObject({ ok: false, landed: false });
-    expect(result.results[mode].error).toContain('派生会话');
-  }
-}, 30000);
 // Only engine observation is stubbed: ancestry, identity, CLI claim and coordination storage are real.
 for (const mode of ['inbox', 'takeover', 'completed'])
   test(`P5: orphaned wait retains its original inbox and fencing (${mode})`, async () => {
@@ -497,7 +407,6 @@ spyOn(native,'waitNotification').mockImplementation(() => {
   if(!existsSync(${file('resume')})) throw new Error('controller did not resume wait');
   observed=true;
 });
-spyOn(land,'applyLand').mockImplementation(() => {landed=true;throw new Error('wait must not deliver');});
 spyOn(console,'log').mockImplementation(x=>output.push(JSON.parse(x)));
 try {
   const code=main(['wait','background','--timeout','15','--json']);
@@ -1687,86 +1596,6 @@ for (const mode of [
       expect(c.owner(s.scope).generation).toBe(1);
       expect(c.messages()).toEqual([]);
     } finally {
-      s.evidence.mockRestore();
-    }
-  });
-}
-
-for (const failure of ['none', 'repo', 'run', 'stale', 'decision']) {
-  test(`finalizeDelivery renews both scopes before applyLand (failure=${failure})`, () => {
-    const s = renewalFixture();
-    process.env.ARCHON_HOME = join(s.sa, 'archon');
-    process.env.SUPERAGENT_ROLE = '';
-    const run = runScope({ run_id: 'target', repo: s.repo });
-    const controller = s.c.claim(run, failure === 'run' ? b : s.old).controller;
-    if (failure === 'repo') s.c.claim(s.scope, b, true, 'fixture conflict');
-    mkdirSync(join(s.sa, 'runs'));
-    writeFileSync(
-      join(s.sa, 'runs/target.json'),
-      JSON.stringify({
-        run_id: 'target',
-        archon_run_id: 'engine',
-        repo: s.repo,
-        controller,
-        gen_dir: s.sa,
-        branch: 'feature',
-        workflow: 'fixture',
-        delivery: {},
-      })
-    );
-    writeFileSync(join(s.sa, 'plan.json'), JSON.stringify({ base_ref: 'main', packages: [] }));
-    writeFileSync(join(s.sa, 'accept-inputs.json'), '{}');
-    const art = join(s.sa, 'artifacts/runs/engine');
-    mkdirSync(art, { recursive: true });
-    writeFileSync(join(art, 'land.json'), '{}');
-    const get = spyOn(native, 'getRun').mockReturnValue({
-      id: 'engine',
-      status: 'completed',
-      output_root: s.sa,
-    });
-    const apply = spyOn(landing, 'applyLand').mockImplementation(() => {
-      expect(s.actual.owner(s.scope)).toMatchObject({ owner: a, generation: 2 });
-      expect(s.actual.owner(run)).toMatchObject({ owner: a, generation: 2 });
-      expect(s.actual.mutate(run, a, () => 'decided', 2)).toBe('decided');
-      if (failure === 'stale') s.actual.claim(s.scope, b, true, 'decision changed generation');
-      if (failure === 'decision')
-        updateLedger({ run_id: 'target', archon_run_id: 'engine' } as Ledger, cur => {
-          (cur.intervention_events ??= []).push({
-            at: new Date().toISOString(),
-            action: 'decide',
-            origin: 'operator',
-            source: 'cli',
-            ok: true,
-            reason: 'approve',
-          });
-        });
-      return undefined;
-    });
-    const mutation = spyOn(Coordination.prototype, 'mutate');
-    try {
-      const action = () => finalizeDelivery('target', true);
-      if (failure !== 'none' && !['stale', 'decision'].includes(failure))
-        expect(action).toThrow(failure === 'repo' ? `repo:${s.scope.id}` : `run:${run.id}`);
-      else if (failure === 'stale') expect(action).toThrow('fencing');
-      else if (failure === 'decision') expect(action).toThrow('operator decision changed');
-      else action();
-      expect(mutation.mock.calls.every(call => call[4] === undefined)).toBe(true);
-      expect(apply).toHaveBeenCalledTimes(['none', 'stale', 'decision'].includes(failure) ? 1 : 0);
-      expect(get).toHaveBeenCalledTimes(['none', 'stale', 'decision'].includes(failure) ? 1 : 0);
-      expect(s.actual.owner(s.scope).generation).toBe(failure === 'stale' ? 3 : 2);
-      expect(s.actual.owner(run).generation).toBe(
-        ['none', 'stale', 'decision'].includes(failure) ? 2 : 1
-      );
-      expect(s.actual.owner(s.scope).owner).toMatchObject(
-        ['repo', 'stale'].includes(failure) ? b : a
-      );
-      expect(
-        JSON.parse(readFileSync(join(s.sa, 'runs/target.json'), 'utf8')).delivery_result
-      ).toBeUndefined();
-    } finally {
-      mutation.mockRestore();
-      apply.mockRestore();
-      get.mockRestore();
       s.evidence.mockRestore();
     }
   });

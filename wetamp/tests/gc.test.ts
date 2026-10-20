@@ -13,10 +13,9 @@ import { join } from 'node:path';
 import * as archon from '../src/archon';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import * as coordination from '../src/coord';
-import { snapshotPolicy } from '../src/config';
 import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
 import { gc as collect } from '../src/gc';
-import { fixturePlan, fixtureTiers, gitRepo, tmp } from './helpers';
+import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const keys = [
   'SUPERAGENT_HOME',
@@ -249,55 +248,6 @@ test.each(['malformed', 'directory'] as const)('engine.json %s errors retain dat
   expect(existsSync(f.path)).toBe(true);
   expect(f.branchExists()).toBe(true);
 });
-
-test.each(['full', 'partial', 'failed'] as const)(
-  '%s accept reports verification without maintaining a GC authorization marker',
-  mode => {
-    const f = fixture();
-    f.ledger.plan = fixturePlan(f.root, f.repo, p => {
-      for (const pkg of p.packages as { accept: { cmd: string; timeout_s: number }[] }[])
-        pkg.accept = [{ cmd: mode === 'failed' ? 'false' : 'true', timeout_s: 5 }];
-    });
-    writeFileSync(join(f.gen, 'plan.json'), readFileSync(f.ledger.plan));
-    writeFileSync(join(f.gen, 'policy.json'), JSON.stringify(snapshotPolicy(fixtureTiers())));
-    mkdirSync(join(f.gen, '.archon'));
-    symlinkSync(
-      join(import.meta.dir, '..', 'templates', '.archon', 'scripts'),
-      join(f.gen, '.archon', 'scripts'),
-      'dir'
-    );
-    f.ledger.controller = coordination
-      .coord()
-      .claim(coordination.repoScope(f.repo), coordination.caller()).controller;
-    f.save();
-    const contracts = ['verify-core', 'diff-m1-r1'].map(tag => ({
-      kind: 'accept',
-      tag,
-      milestone: 'm1',
-      pkgs: mode === 'partial' ? 'core' : 'core,web',
-      plan: join(f.gen, 'plan.json'),
-      policy: join(f.gen, 'policy.json'),
-      risk: 'G1',
-    }));
-    writeFileSync(join(f.gen, 'accept-inputs.json'), JSON.stringify(contracts));
-    const art = artifactsOf(f.view);
-    mkdirSync(art, { recursive: true });
-    writeFileSync(join(art, 'diff-m1-r1.json'), '{}');
-    // Manual accept reads an authoritative verbose event snapshot, not getRun.
-    const snapshot = spyOn(archon, 'archonJson').mockReturnValue({ ...f.view, events: [] });
-    const log = spyOn(console, 'log').mockImplementation(() => undefined);
-    try {
-      expect(main(['accept', f.id, ...(mode === 'partial' ? ['--pkg', 'core'] : [])])).toBe(
-        mode === 'failed' ? 1 : 0
-      );
-    } finally {
-      snapshot.mockRestore();
-      log.mockRestore();
-    }
-    expect(readFileSync(ledgerPath(f.id), 'utf8')).not.toContain('accepted');
-    expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
-  }
-);
 
 test('rejected terminal run removes its worktree but retains its unmerged branch', () => {
   const f = fixture('cancelled', false);

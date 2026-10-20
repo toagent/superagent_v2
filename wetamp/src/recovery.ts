@@ -1,11 +1,5 @@
-// Compatibility imports for old callers; execution admission belongs to Archon.
-import {
-  authoredNodeId,
-  captureDelivery,
-  deliveryRecoverable,
-  landEvidence,
-  publishRecoverable,
-} from './land';
+// Read-only reconciliation for historical nodes; execution admission belongs to Archon.
+import { authoredNodeId, captureDelivery, landEvidence, publishRecoverable } from './land';
 import { inspectProcess } from './launcher';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -52,6 +46,6 @@ export const unknownEffects = (run: RunView): string[] =>
     authoredNodeId(node).startsWith('publish-')
       ? !publishRecoverable(run)
       : node.startsWith('deliver')
-        ? !deliveryRecoverable(run)
+        ? true
         : !node.startsWith('land') || !landReconciled(run, node)
   );

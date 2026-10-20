@@ -10,15 +10,12 @@ import {
   captureDelivery,
   checkoutChanges,
   protectedTarget,
-  acceptRun,
-  finalizeDelivery,
   deliveryProjection,
   landEvidence,
   publishProjection,
   authoredNodeId,
   type DeliveryTarget,
 } from './land';
-export { finalizeDelivery } from './land';
 import { type DeliveryOutcome, type DeliveryReceipt } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
@@ -679,7 +676,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
       ledgerPath(l.run_id),
     published = publishProjection(l, run),
-    integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
+    integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l),
     blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
     reauthorize = reauthorizationHint(l, run, c),
     action = reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
@@ -3934,8 +3931,7 @@ export function main(argv: string[]): number {
       const who = caller(true);
       const l = ledger(),
         s = waitRun(l, t, who);
-      if (s.state === 'completed')
-        s.delivery = deliveryProjection(l, getRun(l.archon_run_id, l.repo));
+      if (s.state === 'completed') s.delivery = deliveryProjection(l);
       // prettier-ignore
       print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) ? relayQuota(l.gen_dir, 'end') : {}) });
       return Number(s.exit);
@@ -4076,9 +4072,7 @@ export function main(argv: string[]): number {
             false
           );
         }
-        const receipt = finalizeDelivery(l.run_id);
-        if (receipt) print(receipt);
-        return 0;
+        throw new Error('legacy delivery removed; run is terminal');
       }
       const display = (): number => {
         const run = getRun(l.archon_run_id, l.repo);
@@ -4095,7 +4089,7 @@ export function main(argv: string[]): number {
           console.error(`land: no land.json yet (state ${c.state})`);
           return 1;
         }
-        const receipt = deliveryProjection(l, run);
+        const receipt = deliveryProjection(l);
         if (receipt)
           land = { ...(land as Land), status: 'integrated', integrated: receipt.integrated };
         const needs = needsOf(artifactsOf(run), undefined, l);
@@ -4109,8 +4103,8 @@ export function main(argv: string[]): number {
       return historical ? display() : controlled(l, display);
     }
     case 'accept': {
-      const l = ledger(true);
-      return controlled(l, () => acceptRun(l, a.flags.pkg));
+      ledger();
+      throw new Error('legacy delivery removed; run is terminal');
     }
     case 'gc':
       print({ gc: gc(a.flags['dry-run']) });

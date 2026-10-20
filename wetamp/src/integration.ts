@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
-import { realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS } from './archon';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
@@ -10,31 +18,7 @@ export type { PublishReceipt, PublishResult, SyncResult } from './contract';
 /** Fixed codes are safe for intervention persistence; diagnostics stay in message. */
 export class LandError extends Error {
   constructor(
-    code:
-      | 'codegraph_exclude_failed'
-      | 'delivery_git_failed'
-      | 'not_ready'
-      | 'repository_missing'
-      | 'target_missing'
-      | 'target_protected'
-      | 'git_failed'
-      | 'integration_lock_timeout'
-      | 'delivery_target_changed'
-      | 'target_dirty'
-      | 'source_head_drifted'
-      | 'source_tree_changed'
-      | 'target_history_changed'
-      | 'target_history_check_failed'
-      | 'integration_ancestry_failed'
-      | 'candidate_ancestry_failed'
-      | 'merge_conflicts'
-      | 'submodule_init_failed'
-      | 'environment_failed'
-      | 'acceptance_failed'
-      | 'candidate_changed'
-      | 'target_checkout_changed'
-      | 'target_advanced'
-      | 'integration_outcome_unknown',
+    code: 'codegraph_exclude_failed' | 'delivery_git_failed' | 'git_failed',
     message: string
   ) {
     super(message);
@@ -46,6 +30,61 @@ export interface DeliveryTarget {
   checkout: string;
   branch: string;
   head: string;
+}
+
+export interface DeliveryReceipt {
+  task: string;
+  source: string;
+  target: DeliveryTarget;
+  contract: string;
+  evidence: string;
+  accepted: string;
+  reused?: { paths: string[]; tree: string };
+  integrated: string;
+  target_tip: string;
+  status: 'manual_push';
+  push: string;
+}
+
+export type DeliveryOutcome =
+  | DeliveryReceipt
+  | (Omit<DeliveryReceipt, 'accepted' | 'target_tip' | 'status'> & {
+      status: 'unknown';
+      reason: string;
+    });
+
+/** Capture the immutable target identity stored in a run ledger. */
+export function captureDelivery(checkout: string): DeliveryTarget {
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(['git', '-C', checkout, ...args], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    if (result.exitCode !== 0)
+      throw new LandError('delivery_git_failed', `delivery: ${result.stderr.toString().trim()}`);
+    return result.stdout.toString().trim();
+  };
+  return {
+    checkout: realpathSync(git('rev-parse', '--show-toplevel')),
+    branch: git('symbolic-ref', '--short', 'HEAD'),
+    head: git('rev-parse', 'HEAD'),
+  };
+}
+
+/** Shared Git metadata keeps the main index out of every worktree's clean checks. */
+export function excludeCodegraph(repo: string): void {
+  const result = Bun.spawnSync(
+    ['git', '-C', repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
+    { stdout: 'pipe', stderr: 'pipe' }
+  );
+  if (result.exitCode !== 0)
+    throw new LandError(
+      'codegraph_exclude_failed',
+      'codegraph: cannot resolve common info/exclude'
+    );
+  const file = result.stdout.toString().trim();
+  if (!existsSync(file) || !readFileSync(file, 'utf8').split('\n').includes('.codegraph/'))
+    appendFileSync(file, '\n.codegraph/\n');
 }
 
 export const protectedTarget = (branch: string): boolean =>
