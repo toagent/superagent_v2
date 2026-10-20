@@ -359,15 +359,6 @@
       },
       "required": ["diff_hash"]
     },
-    "head": {
-      "type": "object",
-      "properties": {
-        "head": {
-          "type": "string"
-        }
-      },
-      "required": ["head"]
-    },
     "attempt": {
       "type": "object",
       "properties": {
