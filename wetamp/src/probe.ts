@@ -9,6 +9,7 @@ import {
 import { basename, join, resolve, sep } from 'node:path';
 import { lastJson } from './archon';
 import { WETAMP } from './config';
+import { redact } from './redact';
 
 export type ProbeLevel = 'G1' | 'G2';
 
@@ -67,7 +68,12 @@ const git = (repo: string, args: string[]): void => {
     throw new Error(`git ${args.join(' ')}: ${result.stderr.toString().trim()}`);
 };
 
-export function runProbe(level: ProbeLevel): ProbeEvidence {
+const outputTail = (result: ReturnType<typeof Bun.spawnSync>): string => {
+  const tail = (value: string): string => redact(value).trim().slice(-500);
+  return `stdout:\n${tail(result.stdout?.toString() ?? '')}\nstderr:\n${tail(result.stderr?.toString() ?? '')}`;
+};
+
+export function runProbe(level: ProbeLevel, shimOverride?: string): ProbeEvidence {
   const started = Date.now(),
     limit = level === 'G1' ? 15 * 60_000 : 30 * 60_000,
     sa = process.env.SUPERAGENT_HOME,
@@ -86,7 +92,7 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
     repo = join(root, `probe-${basename(root)}`),
     evidencePath = join(root, 'evidence.json'),
     snapshot = realpathSync(resolve(WETAMP, '..')),
-    shim = join(snapshot, 'wetamp', 'bin', 'superagent-shim'),
+    shim = shimOverride ?? join(snapshot, 'wetamp', 'bin', 'superagent-shim'),
     expectedCommit = Bun.spawnSync(['git', '-C', snapshot, 'rev-parse', 'HEAD'], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -109,13 +115,14 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
     expected_commit: expectedCommit,
     expected_snapshot: snapshot,
   };
+  let latest: ReturnType<typeof Bun.spawnSync> | undefined;
   const run = (args: string[]): ReturnType<typeof Bun.spawnSync> => {
     const remaining = limit - (Date.now() - started);
     if (remaining <= 0) {
       judgement.timed_out = true;
       throw new Error('timeout');
     }
-    return Bun.spawnSync([shim, ...args], {
+    latest = Bun.spawnSync([shim, ...args], {
       cwd: repo,
       env,
       stdin: 'ignore',
@@ -124,6 +131,7 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
       timeout: remaining,
       killSignal: 'SIGKILL',
     });
+    return latest;
   };
   try {
     const goal =
@@ -142,16 +150,10 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
         ...(level === 'G2' ? ['--review'] : []),
         '--json',
       ]),
-      launch = lastJson((launched.stdout?.toString() ?? '') + (launched.stderr?.toString() ?? '')),
+      launch = lastJson(launched.stdout?.toString() ?? ''),
       runId = typeof launch?.run_id === 'string' ? launch.run_id : undefined;
     judgement.launch_exit = launched.exitCode;
     judgement.launch_run_id = runId;
-    if (launched.exitCode !== 0)
-      judgement.diagnostic = (
-        (launched.stderr?.toString() ?? '') + (launched.stdout?.toString() ?? '')
-      )
-        .trim()
-        .slice(-500);
     if (launched.exitCode === 0 && runId) {
       for (;;) {
         const remaining = limit - (Date.now() - started),
@@ -161,18 +163,12 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
             '--timeout',
             String(Math.max(1, Math.floor(remaining / 1000))),
           ]),
-          value = lastJson((waited.stdout?.toString() ?? '') + (waited.stderr?.toString() ?? ''));
+          value = lastJson(waited.stdout?.toString() ?? '');
         judgement.wait_exit = waited.exitCode;
         judgement.wait_run_id = typeof value?.run_id === 'string' ? value.run_id : undefined;
         judgement.state = typeof value?.state === 'string' ? value.state : undefined;
         judgement.delivery_state =
           typeof value?.delivery_state === 'string' ? value.delivery_state : undefined;
-        if (waited.exitCode !== 0)
-          judgement.diagnostic = (
-            (waited.stderr?.toString() ?? '') + (waited.stdout?.toString() ?? '')
-          )
-            .trim()
-            .slice(-500);
         if (!['running', 'inbox'].includes(judgement.state ?? '') || Date.now() - started >= limit)
           break;
       }
@@ -193,16 +189,18 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
     judgement.diagnostic = diagnostic;
     judgement.timed_out = true;
   }
-  const decision = judgeProbe(judgement),
-    evidence: ProbeEvidence = {
-      ok: decision.ok,
-      level,
-      ...(judgement.launch_run_id ? { run_id: judgement.launch_run_id } : {}),
-      duration_ms: Date.now() - started,
-      ...(decision.reason ? { reason: decision.reason } : {}),
-      ...(judgement.diagnostic ? { error: judgement.diagnostic } : {}),
-      evidence_path: evidencePath,
-    };
+  const decision = judgeProbe(judgement);
+  if (!decision.ok && latest)
+    judgement.diagnostic = [judgement.diagnostic, outputTail(latest)].filter(Boolean).join('\n');
+  const evidence: ProbeEvidence = {
+    ok: decision.ok,
+    level,
+    ...(judgement.launch_run_id ? { run_id: judgement.launch_run_id } : {}),
+    duration_ms: Date.now() - started,
+    ...(decision.reason ? { reason: decision.reason } : {}),
+    ...(judgement.diagnostic ? { error: judgement.diagnostic } : {}),
+    evidence_path: evidencePath,
+  };
   writeFileSync(evidencePath, JSON.stringify({ ...evidence, judgement }, null, 2) + '\n');
   chmodSync(evidencePath, 0o444);
   return evidence;
