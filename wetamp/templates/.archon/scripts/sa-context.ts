@@ -332,10 +332,12 @@ if (import.meta.main) {
       const context =
         pointer === 'unknown' ? 'unknown' : (read(pointer.path) as RoleContext | 'unknown');
       const completedGate = gate
-        ? (read(join(artifacts, `${gate}.json`)) as { reviewed_head?: string } | 'unknown')
+        ? (read(join(artifacts, `${gate}.json`)) as
+            | { reviewed_head?: string; verdict?: string }
+            | 'unknown')
         : 'unknown';
       const head = git.stdout.toString().trim();
-      // Approval resumes may reuse a gate only while its frozen candidate is still HEAD.
+      // A fix hands HEAD to the next round; approval resumes still require the frozen candidate.
       const completedReview =
         review &&
         gate &&
@@ -344,7 +346,7 @@ if (import.meta.main) {
         context !== 'unknown' &&
         completedGate !== 'unknown' &&
         completedGate.reviewed_head === context.refs.head &&
-        context.refs.head === head;
+        (context.refs.head === head || completedGate.verdict === 'fix');
       if (review && !completedReview) {
         if (pointer === 'unknown') throw new Error('context: missing prepared review');
         if (context === 'unknown' || context.node !== review || context.refs.head !== head)

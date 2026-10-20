@@ -257,6 +257,22 @@ test('ROOT_ACCEPT prepared R2 preserves requirements and open carry-over without
   const stale = startReview();
   expect(stale.exitCode).not.toBe(0);
   expect(stale.stderr.toString()).toContain('stale review refs');
+  const completedGate = join(art, 'gate-m2-r2.json');
+  const resumeCompletedGate = (verdict: 'fix' | 'pass') => {
+    writeFileSync(completedGate, JSON.stringify({ verdict, reviewed_head: context.refs.head }));
+    return startReview({
+      INPUTS_COUNTER: join(gen, 'attempt'),
+      INPUTS_GEN: gen,
+      INPUTS_REVIEW: 'review-m2-r2',
+      INPUTS_GATE: 'gate-m2-r2',
+    });
+  };
+  const fixed = resumeCompletedGate('fix');
+  expect(fixed.exitCode, fixed.stderr.toString()).toBe(0);
+  expect(fixed.stdout.toString().trim()).toBe('{"attempt":"0"}');
+  const passed = resumeCompletedGate('pass');
+  expect(passed.exitCode).not.toBe(0);
+  expect(passed.stderr.toString()).toContain('stale review refs');
   // Reproducible read-volume comparison on the same fixture, including complete requirements.
   const before =
     Buffer.byteLength(JSON.stringify(ledger)) +
