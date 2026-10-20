@@ -465,7 +465,8 @@ export function assertEngineAccess(argv: string[]): void {
       path = run && join(home().sa, 'runs', `${run}.json`);
     if (mutatingRun.has(verb) && path && existsSync(path)) {
       const ledger = JSON.parse(readFileSync(path, 'utf8')) as { engine_snapshot?: string };
-      if (ledger.engine_snapshot && !existsSync(ledger.engine_snapshot))
+      const pinned = ledger.engine_snapshot ?? bootstrapEngineSnapshot();
+      if (!pinned || resolve(pinned) !== running)
         throw new Error(`engine snapshot unavailable; run superagent engine adopt ${run} <sha>`);
     }
     return;

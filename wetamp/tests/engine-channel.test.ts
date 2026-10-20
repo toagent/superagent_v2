@@ -1,11 +1,20 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, join } from 'node:path';
 import * as archon from '../src/archon';
 import {
   adoptEngineSnapshot,
+  assertEngineAccess,
   engineStatus,
   gateLegacyRuns,
+  runningEngineSnapshot,
   type EngineReceipt,
 } from '../src/engine';
 import { collectEngineSnapshots } from '../src/gc';
@@ -22,11 +31,15 @@ afterEach(() => {
 
 function engineHome() {
   const root = tmp(),
-    sa = join(root, 'sa'),
+    sa = join(root, '.superagent'),
     engine = join(sa, 'engine');
   mkdirSync(join(engine, 'receipts'), { recursive: true });
   mkdirSync(join(sa, 'runs'), { recursive: true });
-  Object.assign(process.env, { SUPERAGENT_HOME: sa, ARCHON_HOME: join(root, 'archon') });
+  Object.assign(process.env, {
+    HOME: root,
+    SUPERAGENT_HOME: sa,
+    ARCHON_HOME: join(root, 'archon'),
+  });
   return { root, sa, engine };
 }
 
@@ -114,6 +127,31 @@ test('explicit adopt is the only operation that changes a run snapshot', () => {
     engine_snapshot_identity: 'current',
     engine_adoptions: [{ from: old, to: target }],
   });
+  unlinkSync(join(engine, 'current'));
+  symlinkSync(runningEngineSnapshot(), join(engine, 'current'));
+  expect(() => assertEngineAccess(['recover', 'run'])).toThrow('engine adopt run');
+});
+
+test('served runs remain scoped across promotion rejection and rollback', () => {
+  const { sa, engine } = engineHome(),
+    running = runningEngineSnapshot(),
+    sha = basename(running),
+    other = join(engine, 'f'.repeat(40));
+  mkdirSync(other);
+  receipt(engine, sha, '2026-01-01T00:00:00.000Z');
+  symlinkSync(running, join(engine, sha));
+  symlinkSync(other, join(engine, 'current'));
+  writeFileSync(join(engine, 'rejected.json'), JSON.stringify([sha]));
+  for (const run of ['running', 'paused', 'crashed']) {
+    ledger(sa, run, { snapshot: running });
+    process.env.SA_SERVED_RUN = run;
+    expect(() => assertEngineAccess(['resume', run])).not.toThrow();
+  }
+  unlinkSync(join(engine, 'current'));
+  symlinkSync(running, join(engine, 'current'));
+  delete process.env.SA_SERVED_RUN;
+  for (const run of ['running', 'paused', 'crashed'])
+    expect(() => assertEngineAccess(['resume', run])).not.toThrow();
 });
 
 test('legacy gate counts every executable or unknown run and excludes completed and rejected', () => {
@@ -156,11 +194,14 @@ test('snapshot gc keeps current, previous and recoverable references, then colle
   }
   symlinkSync(join(engine, third), join(engine, 'current'));
   ledger(sa, 'history', { snapshot: join(engine, first) });
-  let state: archon.RunView['status'] = 'failed';
-  query = spyOn(archon, 'getRun').mockImplementation(id => ({ id, status: state }));
+  ledger(sa, 'legacy');
+  query = spyOn(archon, 'getRun').mockImplementation(id => ({
+    id,
+    status: id.endsWith('legacy') ? 'failed' : 'completed',
+  }));
 
   expect(collectEngineSnapshots(true)).toEqual([]);
-  state = 'completed';
+  ledger(sa, 'legacy', { rejected: true });
   expect(collectEngineSnapshots(true)).toEqual([
     expect.objectContaining({
       object: 'engine',
@@ -172,4 +213,33 @@ test('snapshot gc keeps current, previous and recoverable references, then colle
   expect(existsSync(join(engine, first))).toBe(false);
   expect(existsSync(join(engine, second))).toBe(true);
   expect(existsSync(join(engine, third))).toBe(true);
+  expect(engineStatus()).toMatchObject({ runs: { [first]: { completed: 1 } } });
+});
+
+test('snapshot gc resolves symlinked homes and fails closed on an unreadable ledger', () => {
+  const { root, sa, engine } = engineHome(),
+    first = '1'.repeat(40),
+    second = '2'.repeat(40),
+    third = '3'.repeat(40);
+  for (const [index, sha] of [first, second, third].entries()) {
+    mkdirSync(join(engine, sha));
+    receipt(engine, sha, `2026-01-0${String(index + 1)}T00:00:00.000Z`);
+  }
+  symlinkSync(join(engine, first), join(engine, 'current'));
+  ledger(sa, 'history', { snapshot: join(engine, first) });
+  query = spyOn(archon, 'getRun').mockImplementation(id => ({ id, status: 'completed' }));
+  const alias = join(root, 'sa-alias');
+  symlinkSync(sa, alias);
+  process.env.SUPERAGENT_HOME = alias;
+  expect(collectEngineSnapshots(true)).toEqual([]);
+
+  unlinkSync(join(engine, 'current'));
+  symlinkSync(join(engine, third), join(engine, 'current'));
+  writeFileSync(join(sa, 'runs', 'broken.json'), '{');
+  expect(collectEngineSnapshots(false)[0]).toMatchObject({
+    run_id: 'broken',
+    object: 'engine',
+    action: 'skipped',
+  });
+  expect(existsSync(join(engine, first))).toBe(true);
 });

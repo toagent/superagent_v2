@@ -953,6 +953,12 @@ function recoverRun(
   reconciled?: string,
   evidenceFile?: string
 ): RecoverResult {
+  const currentSnapshot = currentEngineSnapshot(),
+    pinnedSnapshot = l.engine_snapshot ?? bootstrapEngineSnapshot();
+  if (currentSnapshot && pinnedSnapshot && resolve(pinnedSnapshot) !== runningEngineSnapshot())
+    throw new Error(
+      `engine identity: run ${l.run_id} is pinned to another snapshot; use engine adopt first`
+    );
   let adopted:
     | {
         from: string;

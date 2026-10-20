@@ -79,13 +79,21 @@ const gcRuleVersion = (): string =>
   new Bun.CryptoHasher('sha256').update(readFileSync(import.meta.path)).digest('hex');
 
 export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
-  const engineRoot = resolve(home().sa, 'engine');
-  if (!existsSync(engineRoot)) return [];
-  let current: string | undefined;
+  const configuredRoot = resolve(home().sa, 'engine');
+  if (!existsSync(configuredRoot)) return [];
+  let engineRoot: string, current: string;
   try {
-    current = realpathSync(join(engineRoot, 'current'));
-  } catch {
-    // An unset current is not permission to collect a served snapshot.
+    engineRoot = realpathSync(configuredRoot);
+    current = realpathSync(join(configuredRoot, 'current'));
+  } catch (error) {
+    return [
+      {
+        run_id: '*',
+        object: 'engine',
+        action: 'skipped',
+        reason: `engine identity unavailable: ${String(error)}`,
+      },
+    ];
   }
   const receiptRoot = join(engineRoot, 'receipts');
   const receipts = (
@@ -97,30 +105,55 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
           sha?: unknown;
           at?: unknown;
         };
-        return typeof value.sha === 'string' && typeof value.at === 'string' ? [value] : [];
+        return typeof value.sha === 'string' && typeof value.at === 'string'
+          ? [{ sha: value.sha, at: value.at }]
+          : [];
       } catch {
         return [];
       }
     })
-    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
-  const currentSha = current?.startsWith(engineRoot + '/')
+    .sort((a, b) => a.at.localeCompare(b.at));
+  const currentSha = current.startsWith(engineRoot + '/')
     ? current.slice(engineRoot.length + 1)
     : undefined;
+  if (!currentSha)
+    return [
+      {
+        run_id: '*',
+        object: 'engine',
+        action: 'skipped',
+        reason: 'current engine snapshot is outside engine root',
+      },
+    ];
   const previous = receipts.filter(value => value.sha !== currentSha).at(-1)?.sha;
-  const ledgers = ledgerIds().flatMap(id => {
+  const ledgers: Ledger[] = [];
+  for (const id of ledgerIds()) {
     try {
-      return [loadLedger(id)];
-    } catch {
-      return [];
+      ledgers.push(loadLedger(id));
+    } catch (error) {
+      return [
+        {
+          run_id: id,
+          object: 'engine',
+          action: 'skipped',
+          reason: `ledger unreadable; all engine snapshots retained: ${String(error)}`,
+        },
+      ];
     }
-  });
+  }
+  const bootstrap = receipts.at(0)?.sha;
   return readdirSync(engineRoot, { withFileTypes: true }).flatMap(entry => {
     if (!entry.isDirectory() || !/^[0-9a-f]{7,40}$/i.test(entry.name)) return [];
     const path = join(engineRoot, entry.name);
     if (entry.name === currentSha || entry.name === previous) return [];
     const references = ledgers.filter(ledger => {
-      const pinned = ledger.engine_snapshot;
-      return pinned !== undefined && resolve(pinned) === path;
+      const pinned = ledger.engine_snapshot ?? (bootstrap && join(engineRoot, bootstrap));
+      if (!pinned) return false;
+      try {
+        return realpathSync(pinned) === path;
+      } catch {
+        return resolve(pinned) === path;
+      }
     });
     if (!references.length) return [];
     for (const ledger of references) {
