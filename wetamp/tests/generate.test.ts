@@ -1332,8 +1332,8 @@ describe('buildWorkflow', () => {
     expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
       runtime: 'bun',
       with: {
-        gate_r1_sha256: { from: '$gate-m1-r1.output.artifact_sha256', if_skipped: '' },
-        gate_r2_sha256: { from: '$gate-m1-r2.output.artifact_sha256', if_skipped: '' },
+        gate_1_sha256: { from: '$gate-m1-r1.output.artifact_sha256', if_skipped: '' },
+        gate_2_sha256: { from: '$gate-m1-r2.output.artifact_sha256', if_skipped: '' },
       },
     });
     expect(executionTable(fixture, loadTiers())['integration-review-m1']).toBeUndefined();

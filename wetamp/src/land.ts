@@ -29,7 +29,12 @@ import type { Controller, DeliveryReauthorization, Identity } from './coord';
 import { home } from './config';
 import { publish, sync } from './integration';
 import type { DeliveryReceipt } from './integration';
-import type { PublishReceipt, PublishResult, SyncOutput } from './contract';
+import {
+  gateHashInput,
+  type PublishReceipt,
+  type PublishResult,
+  type SyncOutput,
+} from './contract';
 import type { RunView } from './archon';
 import type { Ledger } from './cli';
 
@@ -216,6 +221,11 @@ const nextCounter = (name: string): number => {
   return next;
 };
 
+export const gateHashes = (round: string, env: NodeJS.ProcessEnv = process.env): string[] =>
+  [false, true]
+    .map(carried => env[gateHashInput(round, carried).env])
+    .filter((value): value is string => Boolean(value));
+
 const integrationSync = (): void => {
   const { ledger, fence } = authorized();
   if (!ledger.delivery) throw new Error('integration: missing delivery target');
@@ -240,10 +250,7 @@ const lastGate = (milestone: string): Record<string, unknown> => {
   const record = (file: string): Record<string, unknown> | undefined => {
     const round = /-r(\d+)\.json$/.exec(file)?.[1];
     if (!round) throw new Error(`integration: invalid gate evidence name ${file}`);
-    const expected = [
-      process.env[`INPUTS_GATE_R${round}_SHA256`],
-      process.env[`INPUTS_GATE_R${round}_CARRIED_SHA256`],
-    ].filter((value): value is string => Boolean(value));
+    const expected = gateHashes(round);
     if (!expected.length) return undefined;
     const path = join(artifacts, file),
       bytes = readFileSync(path),

@@ -60,6 +60,7 @@ import {
   conditionalOutput,
   contextOutputFormat,
   deliveryOutputFormat,
+  gateHashInput,
   output,
   publishOutputFormat,
   ref,
@@ -400,7 +401,7 @@ export function buildWorkflow(
     const publishHandle = output<PublishOutput>(publishId);
     const gateHashes = Object.fromEntries(
       gateBindings.map(binding => [
-        `gate_r${String(binding.round)}${binding.carried ? '_carried' : ''}_sha256`,
+        gateHashInput(binding.round, binding.carried).workflow,
         ref.optional(
           conditionalOutput<{ artifact_sha256: string }>(binding.node),
           'artifact_sha256',
