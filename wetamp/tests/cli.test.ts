@@ -15,8 +15,10 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -665,6 +667,17 @@ function stub(responses: RunView[]): {
       : [];
   supervisor(root, 'pending');
   return { dir, root, ledger, calls, due, gc, scratch };
+}
+
+function activateEngineFixture(s: ReturnType<typeof stub>): string {
+  const snapshot = realpathSync(join(WETAMP, '..')),
+    engine = join(s.root, 'home', 'engine');
+  mkdirSync(engine, { recursive: true });
+  symlinkSync(snapshot, join(engine, 'current'));
+  process.env.SA_ENGINE_AUTO_PROMOTE = '0';
+  s.ledger.engine_snapshot = snapshot;
+  writeFileSync(ledgerPath(s.ledger.run_id), JSON.stringify(s.ledger));
+  return snapshot;
 }
 
 describe('HF3 latest-engine recovery', () => {
@@ -2828,6 +2841,40 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(captured(() => main(['supervise-tick'])).code).toBe(0);
     expect(s.calls().some(call => call.startsWith('workflow get r '))).toBe(true);
   });
+  test('snapshot executors merge terminal cache entries from other groups', () => {
+    const s = stub([run('completed')]),
+      snapshot = activateEngineFixture(s);
+    for (const id of ['sa1', 'sa2'])
+      writeFileSync(
+        ledgerPath(id),
+        JSON.stringify({
+          ...s.ledger,
+          run_id: id,
+          engine_snapshot: snapshot,
+          controller: undefined,
+        })
+      );
+    expect(cliMod.superviseTick({ runs: ['sa1'], noGlobal: true })).toMatchObject({
+      actions: [{ run_id: 'sa1', action: 'error' }],
+    });
+    expect(cliMod.superviseTick({ runs: ['sa2'], noGlobal: true })).toMatchObject({
+      actions: [{ run_id: 'sa2', action: 'error' }],
+    });
+    expect(
+      Object.keys(
+        JSON.parse(readFileSync(join(s.root, 'home/supervise-terminal.json'), 'utf8'))
+      ).sort()
+    ).toEqual(['sa1', 'sa2']);
+  });
+  test('activated scheduler groups real ledgers without entering an executor', () => {
+    const s = stub([run('completed')]),
+      snapshot = activateEngineFixture(s);
+    expect(cliMod.superviseTick({ schedule: true })).toMatchObject({
+      groups: [{ snapshot, runs: ['sa1'] }],
+      global: { actions: [] },
+    });
+    expect(s.calls().some(call => call.startsWith('workflow get'))).toBe(false);
+  });
   test('an unresolved ask prevents terminal skipping and remains live', () => {
     const s = stub([run('cancelled')]),
       db = revisionDb();
@@ -3490,7 +3537,13 @@ describe('RCPT consumed decision receipts', () => {
   test('RCPT exit after cancellation before consumption is reconciled from terminal engine state', () => {
     const s = stub([humanWait()]),
       sup = supervisor(s.root, 'no');
-    tick();
+    activateEngineFixture(s);
+    const executorTick = (code = 0): Record<string, unknown>[] => {
+      const result = captured(() => main(['supervise-tick', '--runs', 'sa1', '--no-global']));
+      expect(result.code, result.out).toBe(code);
+      return JSON.parse(result.out).actions;
+    };
+    executorTick();
     const script = join(s.root, 'crash.ts');
     writeFileSync(
       script,
@@ -3502,7 +3555,7 @@ spyOn(config,'writeAtomic').mockImplementation((path,body)=>{
   if(path.endsWith('/asks.json') && body.includes('"action": "reject"')) process.exit(73);
   return original(path,body);
 });
-process.exit(main(['supervise-tick']));`
+process.exit(main(['supervise-tick', '--runs', 'sa1', '--no-global']));`
     );
     // The fake engine persists cancellation before acknowledging it, independently of asks.json.
     fixtureOptions(s.dir, { persistCancellation: true });
@@ -3519,13 +3572,13 @@ process.exit(main(['supervise-tick']));`
     });
     expect(Object.values(asks(s.root))[0]).not.toHaveProperty('decision.effect');
     expect(Object.values(asks(s.root))[0].receipt.stage).toBe('received');
-    expect(tick()[0]).toMatchObject({ action: 'receipt_reconciled', ok: true });
+    expect(executorTick()[0]).toMatchObject({ action: 'receipt_reconciled', ok: true });
     expect(body(s.root)).toContain('已终止整个run');
     expect(Object.values(asks(s.root))[0]).toMatchObject({
       status: 'rejected',
       receipt: { body: expect.stringContaining('已终止整个run') },
     });
-    tick();
+    executorTick();
     expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
     expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
   });

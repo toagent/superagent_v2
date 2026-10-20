@@ -118,6 +118,15 @@ import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
 import { refreshBudgetQuota, relayQuota } from './relay-quota';
 import { capabilityDrift } from './capabilities';
+import {
+  assertEngineAccess,
+  autoPromote,
+  bootstrapEngineSnapshot,
+  currentEngineSnapshot,
+  engineCommand,
+  runEngineSnapshot,
+  runningEngineSnapshot,
+} from './engine';
 
 const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
 if (
@@ -218,6 +227,10 @@ export const OPTIONS = {
   session: { type: 'string' },
   'dry-run': { type: 'boolean' },
   open: { type: 'boolean' },
+  schedule: { type: 'boolean' },
+  runs: { type: 'string', multiple: true },
+  'no-global': { type: 'boolean' },
+  'bootstrap-evidence': { type: 'string' },
 } as const;
 interface Args {
   _: string[];
@@ -255,6 +268,9 @@ export interface Ledger {
   workflow_hash?: string;
   engine_hash?: string;
   engine_commit?: string;
+  /** Absolute engine checkout pinned when this run was launched. */
+  engine_snapshot?: string;
+  engine_snapshot_identity?: 'current' | 'candidate';
   adoptions?: {
     at: string;
     from: string;
@@ -1123,7 +1139,8 @@ function recoverRun(
                 }
               : {}),
           },
-          l.delivery
+          l.delivery,
+          l.engine_snapshot
         );
         adopted = {
           from: run.id,
@@ -1433,7 +1450,16 @@ function startRun(planPath: string, a: Args): number {
         }
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
-        const gen = generate(plan, run, a.flags.fake ?? false, undefined, undefined, delivery);
+        const engine = runEngineSnapshot();
+        const gen = generate(
+          plan,
+          run,
+          a.flags.fake ?? false,
+          undefined,
+          undefined,
+          delivery,
+          engine.path
+        );
         const branch = `sa/${run}`;
         const args = [
           'workflow',
@@ -1451,6 +1477,8 @@ function startRun(planPath: string, a: Args): number {
           run_id: run,
           engine_hash: gen.engine_hash,
           engine_commit: gen.engine_commit,
+          engine_snapshot: engine.path,
+          engine_snapshot_identity: engine.identity,
           workflow_hash: gen.engine_hash,
           archon_run_id: '',
           plan: planPath,
@@ -1880,7 +1908,7 @@ function decide(l: Ledger, a: Args): number {
     return intervention(l, 'decide', () => {
       const r = run.metadata?.approval
         ? approveRun(l)
-        : signalHuman(run, { decision: 'approve' }, log, l.repo);
+        : signalHuman(run, { decision: 'approve' }, log, l.repo, l.engine_snapshot);
       print({ run_id: l.run_id, ...r });
       return r.ok ? 0 : 1;
     });
@@ -2149,8 +2177,46 @@ const loadAsks = (): Asks => {
     throw new Error(`asks ${p}: ${(e as Error).message}`);
   }
 };
-const saveAsks = (asks: Asks): void => {
+const withAsksLock = <T>(operation: () => T): T => {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const held = lock(join(home().sa, 'asks.lock'));
+    if (!held.ok) {
+      Bun.sleepSync(5);
+      continue;
+    }
+    try {
+      return operation();
+    } finally {
+      held.release();
+    }
+  }
+  throw new Error('asks: lock busy');
+};
+const writeAsks = (asks: Asks): void => {
   writeAtomic(asksPath(), JSON.stringify(asks, null, 2) + '\n');
+};
+/** Persist exactly one decision key; other runs and coord writers retain their latest values. */
+const saveAsk = (asks: Asks, key: string): void => {
+  withAsksLock(() => {
+    const latest = loadAsks();
+    if (asks[key] === undefined) Reflect.deleteProperty(latest, key);
+    else latest[key] = asks[key];
+    writeAsks(latest);
+  });
+};
+/** Apply only changes made by the global scheduler, without overwriting concurrent run updates. */
+const saveAsksDelta = (before: Asks, after: Asks): void => {
+  withAsksLock(() => {
+    const latest = loadAsks();
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      const oldValue = JSON.stringify(before[key]);
+      if (oldValue === JSON.stringify(after[key]) || oldValue !== JSON.stringify(latest[key]))
+        continue;
+      if (after[key] === undefined) Reflect.deleteProperty(latest, key);
+      else latest[key] = after[key];
+    }
+    writeAsks(latest);
+  });
 };
 
 /** 某个 run 的提问；键 `<run>:<挂起类别>`：resumeAt 变了也不重投。 */
@@ -2198,9 +2264,11 @@ function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks
     delivery: 'pending',
     at: new Date().toISOString(),
   };
-  saveAsks(asks);
   const key = Object.entries(asks).find(([, value]) => value === a)?.[0];
-  if (key) deliverReceipt(l, key, a, asks);
+  if (key) {
+    saveAsk(asks, key);
+    deliverReceipt(l, key, a, asks);
+  }
 }
 
 /** Cancellation has a terminal engine fact. Other unacknowledged effects remain explicitly unknown. */
@@ -2229,7 +2297,7 @@ function reconcileAnswers(l: Ledger, asks: Asks, out: Action[]): boolean {
         a.receipt.key += ':unknown';
         a.receipt.body += '；执行效果未确认，请检查引擎证据，不会自动重放';
         a.receipt.delivery = 'pending';
-        saveAsks(asks);
+        saveAsk(asks, key);
         deliverReceipt(l, key, a, asks);
       }
       out.push({
@@ -2268,7 +2336,7 @@ function consumeAnswer(
     });
   if (a.decision) {
     a.decision.effect = effect;
-    saveAsks(asks);
+    saveAsk(asks, key);
   }
   a.status = answer === 'yes' ? 'approved' : 'rejected';
   a.receipt = {
@@ -2281,7 +2349,7 @@ function consumeAnswer(
     at: new Date().toISOString(),
   };
   delete a.decision;
-  saveAsks(asks);
+  saveAsk(asks, key);
   deliverReceipt(l, key, a, asks);
 }
 
@@ -2313,7 +2381,7 @@ function deliverReceipt(l: Ledger, key: string, a: Ask, asks: Asks): void {
             : `；执行=${r.effect.engine_run}；引擎结果=${stage}（不代表已合入或部署）`;
         r.delivery = 'pending';
         r.at = new Date().toISOString();
-        saveAsks(asks);
+        saveAsk(asks, key);
       }
     }
     if (r.delivery === 'sent') return;
@@ -2334,7 +2402,7 @@ function deliverReceipt(l: Ledger, key: string, a: Ask, asks: Asks): void {
     r.delivery = 'failed';
     r.error = tail((e as Error).message, 200);
   }
-  saveAsks(asks);
+  saveAsk(asks, key);
 }
 
 /**
@@ -2394,11 +2462,11 @@ function pollAsk(
   }
   if (!a) {
     asks[key] = { status: 'unknown' };
-    saveAsks(asks);
+    saveAsk(asks, key);
     const title = text();
     const ctx = context(title);
     asks[key] = { status: 'unknown', context: ctx };
-    saveAsks(asks);
+    saveAsk(asks, key);
     const marker = `；${askMarker(key)}`;
     const question = title.endsWith(marker)
       ? title
@@ -2413,7 +2481,7 @@ function pollAsk(
       JSON.stringify(ctx),
     ]);
     asks[key] = { id, status: 'pending', context: ctx };
-    saveAsks(asks);
+    saveAsk(asks, key);
     return { a: asks[key], asked: id, note };
   }
   if (a.status === 'pending' && a.id) {
@@ -2421,6 +2489,7 @@ function pollAsk(
     if (!ANSWERS.includes(st))
       throw new Error(`supervisor ask-status: unexpected ${st.slice(0, 40)}`);
     a.status = st;
+    saveAsk(asks, key);
   }
   return { a, note };
 }
@@ -2430,7 +2499,7 @@ function pollCoordAsk(sa: string, asks: Asks, key: string, title: string) {
     const current = asks[key];
     if (current) return { id: current.id, status: current.status };
     asks[key] = { status: 'pending' };
-    saveAsks(asks);
+    saveAsk(asks, key);
     return { status: 'pending' };
   }
   const result = pollAsk(
@@ -2460,8 +2529,10 @@ function expireRun(l: Ledger, run: RunView, asks: Asks | Error, base: object): A
     return { ...x, ok: false };
   if (!(asks instanceof Error))
     for (const [k, a] of Object.entries(asks))
-      if (k.startsWith(`${l.run_id}:`) && a && !['approved', 'rejected'].includes(a.status))
+      if (k.startsWith(`${l.run_id}:`) && a && !['approved', 'rejected'].includes(a.status)) {
         asks[k] = { ...a, status: 'expired' };
+        saveAsk(asks, k);
+      }
   updateLedger(l, cur => {
     Object.assign(cur, { state: 'failed', reason: 'deadline' });
   });
@@ -2498,7 +2569,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
       const log = join(l.gen_dir, `signal-${w.nodeId}.log`);
       const r = run.metadata?.approval
         ? approveRun(l)
-        : signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo);
+        : signalHuman(run, { decision: 'approve', ask: p.a.id }, log, l.repo, l.engine_snapshot);
       if (r.ok)
         consumeAnswer(
           l,
@@ -2581,7 +2652,7 @@ function askHold(
       const onEffect = (actual: DecisionEffect): void => {
         effect = actual;
         if (r.a.decision) r.a.decision.effect = actual;
-        saveAsks(asks);
+        saveAsk(asks, key);
       };
       if (p.yes === 'cancel') {
         const result = cancelRun(l.archon_run_id, run.status, l.repo);
@@ -2613,7 +2684,7 @@ function askHold(
       }
       if (!res.ok && (res.busy || res.refused)) {
         delete r.a.decision;
-        saveAsks(asks);
+        saveAsk(asks, key);
       }
       const out = res.ok
         ? { ok: true }
@@ -2651,17 +2722,65 @@ function askHold(
   });
 }
 
-/** 单实例：launchd 与手动调用重叠时，后到者跳过（exit 0），不重复投递或恢复。asks.json 的唯一写者。 */
-export function superviseTick(): ReturnType<typeof tick> | { skipped: 'locked' } {
+interface TickMode {
+  schedule?: boolean;
+  runs?: string[];
+  noGlobal?: boolean;
+}
+
+/** Activated engines separate the global scheduler from snapshot-scoped executors. */
+export function superviseTick(mode: TickMode = {}):
+  | ReturnType<typeof tick>
+  | { skipped: 'locked' }
+  | {
+      groups: { snapshot: string; runs: string[] }[];
+      global: ReturnType<typeof tick>;
+      promotion?: ReturnType<typeof autoPromote>;
+    } {
   const { sa } = home();
   mkdirSync(sa, { recursive: true });
+  const current = currentEngineSnapshot();
+  if (!current) {
+    const l = lock(join(sa, 'supervise.lock'));
+    if (!l.ok) return { skipped: 'locked' };
+    try {
+      return tick(sa);
+    } finally {
+      l.release();
+    }
+  }
+  if (mode.noGlobal) {
+    const runs = new Set(mode.runs ?? []);
+    const version = basename(runEngineSnapshot().path).replaceAll(/[^0-9A-Za-z.-]/g, '_');
+    const l = lock(join(sa, `supervise.${version}.lock`));
+    if (!l.ok) return { skipped: 'locked' };
+    try {
+      return tick(sa, runs, false);
+    } finally {
+      l.release();
+    }
+  }
   const l = lock(join(sa, 'supervise.lock'));
   if (!l.ok) return { skipped: 'locked' };
+  let scheduled: {
+    groups: { snapshot: string; runs: string[] }[];
+    global: ReturnType<typeof tick>;
+  };
   try {
-    return tick(sa);
+    const grouped = new Map<string, string[]>();
+    for (const ledger of ledgers()) {
+      if ('error' in ledger) continue;
+      const snapshot = ledger.engine_snapshot ?? bootstrapEngineSnapshot() ?? current;
+      grouped.set(snapshot, [...(grouped.get(snapshot) ?? []), ledger.run_id]);
+    }
+    scheduled = {
+      groups: [...grouped].map(([snapshot, runs]) => ({ snapshot, runs })),
+      global: tick(sa, new Set(), true),
+    };
   } finally {
     l.release();
   }
+  return { ...scheduled, promotion: autoPromote() };
 }
 
 const readTickCache = (sa: string): Record<string, string> => {
@@ -2682,7 +2801,11 @@ const readTickCache = (sa: string): Record<string, string> => {
 
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
-function tick(sa: string): {
+function tick(
+  sa: string,
+  selected?: Set<string>,
+  global = true
+): {
   actions: Action[];
   gc: GcAction[];
   scratch: ScratchAction[];
@@ -2695,8 +2818,9 @@ function tick(sa: string): {
   } catch (e) {
     asks = e as Error;
   }
+  const initialAsks = asks instanceof Error ? undefined : structuredClone(asks);
   const observed: HoldSignal[] = [];
-  const out: Action[] = reconcileIntents();
+  const out: Action[] = global ? reconcileIntents() : [];
   let dueContinuations: Set<string> | Error | undefined;
   const continuations = (): Set<string> | Error => {
     if (dueContinuations !== undefined) return dueContinuations;
@@ -2720,12 +2844,12 @@ function tick(sa: string): {
     console.error(`supervise-tick revision cache unavailable: ${(e as Error).message}`);
   }
   const cached = readTickCache(sa),
-    terminal: Record<string, string> = revisions ? {} : { ...cached },
-    live = new Set<string>();
+    terminal: Record<string, string> = { ...cached },
+    live = new Set<string>(global ? ledgerIds() : []);
   let skippedTerminal = 0,
     repeatedErrors = 0,
     errorCached = false;
-  for (const l of ledgers()) {
+  for (const l of ledgers().filter(item => selected === undefined || selected.has(item.run_id))) {
     live.add(l.run_id);
     let errorInput = l.run_id;
     try {
@@ -2737,6 +2861,11 @@ function tick(sa: string): {
         'error' in l ? null : (revisions?.get(l.archon_run_id) ?? null),
       ]);
       if ('error' in l) throw new Error(l.error);
+      if (
+        !global &&
+        resolve(l.engine_snapshot ?? bootstrapEngineSnapshot() ?? '') !== runningEngineSnapshot()
+      )
+        throw new Error('engine identity: executor run snapshot mismatch');
       const actor = l.controller ?? l.launcher;
       if (!actor)
         throw new Error(
@@ -2774,7 +2903,9 @@ function tick(sa: string): {
             archonDetached(
               ['workflow', 'wake', l.archon_run_id, '--json'],
               join(sa, 'wake.log'),
-              l.repo
+              l.repo,
+              false,
+              l.engine_snapshot
             );
           if (!(asks instanceof Error)) {
             for (const [key, a] of Object.entries(asks))
@@ -2803,13 +2934,16 @@ function tick(sa: string): {
       errorCached = true;
     }
   }
+  if (global)
+    for (const run of Object.keys(terminal))
+      if (!live.has(run)) Reflect.deleteProperty(terminal, run);
   if (revisions || errorCached)
     try {
       writeAtomic(join(sa, 'supervise-terminal.json'), JSON.stringify(terminal));
     } catch (e) {
       console.error(`supervise-tick cache write failed: ${(e as Error).message}`);
     }
-  if (!(asks instanceof Error)) {
+  if (global && !(asks instanceof Error)) {
     const mobile = existsSync(join(sa, 'console/decision-origin')),
       currentAsks = asks;
     if (mobile) out.push(...applyCoordIntents(currentAsks));
@@ -2841,13 +2975,16 @@ function tick(sa: string): {
         });
       }
     }
-    saveAsks(asks);
+    if (initialAsks) saveAsksDelta(initialAsks, asks);
   }
-  memoryTick(asks instanceof Error ? {} : asks);
-  reconcileReflection();
+  if (!global && initialAsks && !(asks instanceof Error)) saveAsksDelta(initialAsks, asks);
+  if (global) {
+    memoryTick(asks instanceof Error ? {} : asks);
+    reconcileReflection();
+  }
   // supervise.lock serializes the persisted throttle; reserve before the slow GC.
   const gcStamp = join(sa, 'gc-tick'),
-    due = !existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000;
+    due = global && (!existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000);
   if (due) writeAtomic(gcStamp, String(Date.now()));
   return {
     actions: out,
@@ -2855,7 +2992,7 @@ function tick(sa: string): {
     repeated_errors: repeatedErrors,
     ...cockpitSignals(observed, asks instanceof Error ? {} : asks),
     gc: due ? gc() : [],
-    scratch: scratchClean(),
+    scratch: global ? scratchClean() : [],
   };
 }
 
@@ -3334,7 +3471,8 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'console', positionals: 'start|stop|status|url', flags: ['open'] },
   { command: 'gc', flags: ['dry-run'] },
   { command: 'scratch-clean', flags: ['session', 'dry-run'] },
-  { command: 'supervise-tick', flags: [] },
+  { command: 'supervise-tick', flags: ['schedule', 'runs', 'no-global'] },
+  { command: 'engine', positionals: 'promote <sha> | rollback | status', flags: ['bootstrap-evidence'] },
   { command: 'health', flags: ['cwd', 'verbose'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
   { command: 'models', flags: ['mode'] },
@@ -3357,8 +3495,8 @@ export const USAGE = [
   '  global: [--help] [--json] (--task-kind is rejected)',
 ].join('\n');
 
-function tickOutput(consoleError?: string): number {
-  const actions = superviseTick();
+function tickOutput(consoleError?: string, mode: TickMode = {}): number {
+  const actions = superviseTick(mode);
   if (!('actions' in actions)) {
     console.log(
       JSON.stringify({
@@ -3386,7 +3524,8 @@ function tickOutput(consoleError?: string): number {
 /** Console availability must not gate the unattended heartbeat. */
 export async function superviseTickCli(
   refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(),
-  sync = async (): Promise<unknown> => (await import('./orca')).syncOrca()
+  sync = async (): Promise<unknown> => (await import('./orca')).syncOrca(),
+  mode: TickMode = {}
 ): Promise<number> {
   let error: string | undefined;
   try {
@@ -3395,7 +3534,7 @@ export async function superviseTickCli(
     error = e instanceof Error ? e.message : String(e);
     console.error(`supervise-tick: console refresh failed: ${error.replace(/[\r\n]+/g, ' ')}`);
   }
-  const exit = tickOutput(error);
+  const exit = tickOutput(error, mode);
   try {
     const result = await sync();
     if (result && typeof result === 'object' && 'error' in result)
@@ -3416,6 +3555,7 @@ export function main(argv: string[]): number {
     return EXIT_USAGE;
   }
   const [verb, target] = a._;
+  assertEngineAccess(argv);
   if (a.flags.help || verb === 'help') {
     console.log(
       USAGE +
@@ -3567,7 +3707,6 @@ export function main(argv: string[]): number {
             try {
               const asks = loadAsks();
               coord().tick((key, title) => pollCoordAsk(home().sa, asks, key, title));
-              saveAsks(asks);
             } finally {
               k.release();
             }
@@ -3778,7 +3917,21 @@ export function main(argv: string[]): number {
       print({ scratch: scratchClean(a.flags.session, a.flags['dry-run']) });
       return 0;
     case 'supervise-tick':
-      return tickOutput();
+      return tickOutput(undefined, {
+        schedule: a.flags.schedule,
+        runs: a.flags.runs,
+        noGlobal: a.flags['no-global'],
+      });
+    case 'engine':
+      print(
+        engineCommand([
+          ...a._.slice(1),
+          ...(a.flags['bootstrap-evidence']
+            ? ['--bootstrap-evidence', a.flags['bootstrap-evidence']]
+            : []),
+        ])
+      );
+      return 0;
     case 'report': {
       if (a.flags['by-engine'] !== undefined) {
         const commit = a.flags['by-engine'],
@@ -3846,6 +3999,7 @@ function need<T>(v: T | undefined, usage: string): T {
 async function runCli(): Promise<void> {
   try {
     const argv = process.argv.slice(2);
+    assertEngineAccess(argv);
     // board（带 ink/react 依赖）与 job/jobs 是异步动词：在这里分流，其余动词启动时不加载 React。
     // 参数非法时 verb 取不到，交给 main 报用法
     const verb = ((): string | undefined => {
@@ -3857,7 +4011,16 @@ async function runCli(): Promise<void> {
     })();
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
-    if (verb === 'supervise-tick') process.exit(await superviseTickCli());
+    if (verb === 'supervise-tick') {
+      const parsed = parseArgs(argv);
+      process.exit(
+        await superviseTickCli(undefined, undefined, {
+          schedule: parsed.flags.schedule,
+          runs: parsed.flags.runs,
+          noGlobal: parsed.flags['no-global'],
+        })
+      );
+    }
     if (verb === 'console' || verb === 'web')
       process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs') process.exit(await jobCli(argv));
