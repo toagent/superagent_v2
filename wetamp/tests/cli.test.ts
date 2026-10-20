@@ -1519,6 +1519,43 @@ describe('waitRun (archon stub)', () => {
 });
 
 describe('verbs (archon stub)', () => {
+  test('abandon marks an owned failed run, blocks recovery, and rejects an active run', () => {
+    stub([run('failed')]);
+    expect(captured(() => main(['abandon', 'sa1', '--reason', 'obsolete'])).code).toBe(0);
+    expect(loadLedger('sa1')).toMatchObject({ rejected: 'r' });
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+      action: 'abandon',
+      reason: 'obsolete',
+      ok: true,
+    });
+    expect(captured(() => main(['recover', 'sa1'])).out).toContain('run was abandoned');
+    stub([run('running')]);
+    const active = captured(() => main(['abandon', 'sa1', '--reason', 'obsolete']));
+    expect(active.code).toBe(1);
+    expect(active.out).toContain('"type": "active"');
+  });
+  test('abandon refuses another controller and --mine selects only owned matching runs', () => {
+    const s = stub([run('failed')]);
+    const other = { ...s.ledger.controller!, pid: s.ledger.controller!.pid + 1 };
+    writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...s.ledger, controller: other }));
+    expect(captured(() => main(['abandon', 'sa1', '--reason', 'obsolete'])).out).toContain(
+      '"type": "not_controller"'
+    );
+    const own = stub([run('failed')]);
+    const started_at = '2026-01-01T00:00:00Z';
+    writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...own.ledger, started_at }));
+    writeFileSync(
+      ledgerPath('sa2'),
+      JSON.stringify({ ...own.ledger, run_id: 'sa2', controller: other, started_at })
+    );
+    const selected = captured(() =>
+      main(['abandon', '--mine', '--status', 'failed,cancelled', '--reason', 'obsolete'])
+    );
+    expect(selected.out).toContain('"runs": [\n    "sa1"');
+    expect(selected.out).not.toContain('"sa2"');
+    expect(loadLedger('sa1').rejected).toBe('r');
+    expect(loadLedger('sa2').rejected).toBeUndefined();
+  });
   test('cancel records an operational reason on its append-only receipt', () => {
     stub([run('running')]);
     expect(captured(() => main(['cancel', 'sa1', '--reason', 'superseded'])).code).toBe(0);

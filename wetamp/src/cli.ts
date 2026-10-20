@@ -36,7 +36,7 @@ import {
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
-import { caller, control, coord, repoScope, runScope, type Controller } from './coord';
+import { caller, control, coord, repoScope, runScope, same, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import {
   askQuestion,
@@ -204,6 +204,9 @@ export const OPTIONS = {
   'by-engine': { type: 'string' },
   'baseline-days': { type: 'string' },
   'all-held': { type: 'boolean' },
+  mine: { type: 'boolean' },
+  status: { type: 'string' },
+  before: { type: 'string' },
   title: { type: 'string' },
   'request-ref': { type: 'string' },
   card: { type: 'string' },
@@ -1686,6 +1689,75 @@ function resumeRun(
   return res.ok ? 0 : res.held ? EXIT.held : 1;
 }
 
+const abandoned = (l: Ledger): boolean => l.rejected === l.archon_run_id;
+const refuseAbandoned = (l: Ledger): boolean => {
+  if (!abandoned(l)) return false;
+  print({ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' });
+  return true;
+};
+
+function abandon(a: Args): number {
+  const reason = a.flags.reason?.trim();
+  if (!reason) throw new Error('abandon requires --reason <text>');
+  const who = caller();
+  let entries: Ledger[];
+  if (a.flags.mine) {
+    if (a._.length !== 1 || !a.flags.status)
+      throw new Error(
+        'usage: superagent abandon --mine --status failed,cancelled [--before YYYY-MM-DD] --reason <text>'
+      );
+    const statuses = new Set(a.flags.status.split(',').filter(Boolean));
+    const before = a.flags.before ? Date.parse(`${a.flags.before}T00:00:00Z`) : Infinity;
+    if (
+      !statuses.size ||
+      (a.flags.before && !/^\d{4}-\d{2}-\d{2}$/.test(a.flags.before)) ||
+      Number.isNaN(before)
+    )
+      throw new Error('abandon: invalid --status or --before');
+    entries = ledgers().flatMap(l => {
+      if ('error' in l || !same(coord().owner(runScope(l)).owner, who)) return [];
+      const run = getRun(l.archon_run_id, l.repo);
+      return statuses.has(run.status) && Date.parse(l.started_at) < before ? [l] : [];
+    });
+    print({ runs: entries.map(l => l.run_id) });
+  } else {
+    if (a._.length < 2) throw new Error('usage: superagent abandon <run>... --reason <text>');
+    entries = a._.slice(1).map(id => loadLedger(coord().resolveRun(id)?.run_id ?? id));
+  }
+  const results = entries.map(l => {
+    try {
+      return control(
+        l,
+        () => {
+          const run = getRun(l.archon_run_id, l.repo);
+          if (['running', 'pending'].includes(run.status))
+            return { run_id: l.run_id, ok: false, type: 'active', reason: run.status };
+          if (run.status === 'completed')
+            return { run_id: l.run_id, ok: false, type: 'completed', reason: run.status };
+          const prior = abandoned(l);
+          if (!prior) {
+            intervention(l, 'abandon', () => true, undefined, undefined, reason);
+            updateLedger(l, cur => {
+              cur.rejected = run.id;
+            });
+          }
+          return { run_id: l.run_id, ok: true, type: prior ? 'already_abandoned' : 'abandoned' };
+        },
+        who
+      );
+    } catch (e) {
+      return {
+        run_id: l.run_id,
+        ok: false,
+        type: 'not_controller',
+        reason: tail((e as Error).message, 200),
+      };
+    }
+  });
+  print(results);
+  return results.every(result => result.ok) ? 0 : 1;
+}
+
 /** 手动 resume / decide retry 撞上 recover 锁：重读状态后按当前状态退出（多为运行中 4 或 held 3），不当业务失败 1。 */
 function busyExit(l: Ledger, res: RecoverResult): number {
   const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
@@ -1827,6 +1899,8 @@ function retryAllHeld(): number {
   const out = ledgers().flatMap((l): Record<string, unknown>[] => {
     try {
       if ('error' in l) throw new Error(l.error);
+      if (abandoned(l))
+        return [{ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' }];
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
@@ -3286,6 +3360,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'resume', positionals: '<run>', flags: ['reconciled'] },
   { command: 'cancel', positionals: '<run>', flags: ['reason'] },
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
+  { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'by-engine', 'baseline-days'] },
@@ -3607,6 +3682,7 @@ export function main(argv: string[]): number {
         throw new Error('recovery: exactly one evidence file required');
       if (a.flags.evidence && verb !== 'recover')
         throw new Error('recovery: use recover --evidence');
+      if (refuseAbandoned(resolved)) return 1;
       return controlled(
         resolved,
         () => resumeRun(resolved, a.flags.reconciled, verb, a.flags.evidence?.[0]),
@@ -3662,6 +3738,8 @@ export function main(argv: string[]): number {
       print({ run_id: id, ...result });
       return result.ok ? 0 : 1;
     }
+    case 'abandon':
+      return abandon(a);
     case 'decide':
       if (a.flags['all-held']) {
         if (target !== 'retry') throw new Error('usage: superagent decide --all-held retry');
@@ -3669,6 +3747,7 @@ export function main(argv: string[]): number {
       }
       {
         const l = ledger(true);
+        if (refuseAbandoned(l)) return 1;
         return controlled(l, () => decide(l, a), false);
       }
     case 'brief':
@@ -3676,6 +3755,7 @@ export function main(argv: string[]): number {
     case 'land': {
       const l = ledger(true);
       if (a.flags.apply) {
+        if (refuseAbandoned(l)) return 1;
         const run = getRun(l.archon_run_id, l.repo);
         const c = classifyRun(l, run);
         if (run.nodes?.some(n => /^(?:sync|publish)-.+$/.test(authoredNodeId(n.nodeId)))) {
