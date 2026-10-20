@@ -80,7 +80,7 @@ exec "$S12_REAL_ARCHON" "$@"
     promote(b);
     Object.assign(process.env, { SA_ARCHON_BIN: archon, S12_BUN: process.execPath, S12_ENGINE_A: aPath, S12_PROBE: probe, S12_REAL_ARCHON: join(aPath, 'wetamp/bin/archon'), S12_RUNNER: runner, S12_STATE_DIR: root });
     const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs');
-    writeFileSync(launcherPreload, `require(${JSON.stringify(join(repo, 'wetamp/hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`);
+    writeFileSync(launcherPreload, `require(${JSON.stringify(join(aPath, 'wetamp/hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`);
     for (const run of ['5ce0-0012-1', '5ce0-0012-2']) {
       const ledger = JSON.parse(readFileSync(join(home, 'runs', `${run}.json`), 'utf8'));
       coordination.coord().claim(coordination.repoScope(ledger.repo), who, true, 'scenario continuation');
