@@ -561,7 +561,7 @@ describe('NONCONVERGENCE delivery gate', () => {
         rechecks: checks,
         reviewRounds: MAX_ROUNDS,
       }).decision.reason
-    ).toBe('acceptance_failed');
+    ).toBe('finding_stuck');
   });
   test('G1 done + error_class advances in one round without review', () => {
     const root = tmp(),
@@ -868,7 +868,7 @@ describe('FC failure classification', () => {
     for (const protectedInput of [{}, { strict: true }, { risk: 'G2' }])
       expect(decide({ ...input, ...protectedInput })).toMatchObject({
         verdict: 'escalate',
-        reason: 'review_failed+review_limit',
+        reason: 'finding_stuck',
         ledger: { blocking: [{ id: 'stable', repair_rounds: MAX_ROUNDS - 1 }], debt: [] },
       });
     const newer = R('FAIL', [f('blocker', { id: 'new', evidence: '/tmp/new.log' })]);
@@ -1035,7 +1035,7 @@ describe('FC failure classification', () => {
         });
         expect(d).toMatchObject({
           verdict: 'escalate',
-          reason: 'no_change',
+          reason: 'finding_stuck',
           ledger: {
             blocking: [{ id: 'stable', repair_rounds: 2 }],
             debt: [],
@@ -1148,7 +1148,7 @@ describe('FC failure classification', () => {
           reviews: Array.from({ length: MAX_ROUNDS }, () => R('PASS')),
           rechecks: Array.from({ length: MAX_ROUNDS }, () => check),
         })
-      ).toMatchObject({ verdict: 'escalate', reason: 'acceptance_failed+review_limit' });
+      ).toMatchObject({ verdict: 'escalate', reason: 'finding_stuck' });
     }
   }, 30_000);
 });
@@ -1366,8 +1366,8 @@ describe('gate rules', () => {
         risk: 'G1',
       })
     ).toMatchObject({
-      verdict: 'fix',
-      reason: 'review_inconsistent',
+      verdict: 'escalate',
+      reason: 'finding_stuck',
       ledger: { blocking: [{ id: 'R1-1' }], debt: [] },
     });
   });

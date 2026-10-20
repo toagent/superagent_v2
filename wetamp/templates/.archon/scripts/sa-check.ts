@@ -1274,6 +1274,7 @@ export interface Ledger {
   blocking: Entry[];
   debt: Entry[];
   closed: Entry[];
+  review_rounds_used?: Record<string, number>;
 }
 
 /**
@@ -1287,12 +1288,19 @@ export function ledgerOf(
   options: {
     strict?: boolean;
     rechecks?: (Accept | null)[];
+    initial?: Ledger;
+    roundOffset?: number;
   } = {}
 ): Ledger {
   const sev = severities(risk);
   const open = new Map<string, Entry & { blocks: boolean; eligible: boolean }>();
-  const closed: Entry[] = [];
-  let base = true;
+  for (const entry of options.initial?.blocking ?? [])
+    open.set(entry.id, { ...entry, blocks: true, eligible: true });
+  for (const entry of options.initial?.debt ?? [])
+    open.set(entry.id, { ...entry, blocks: false, eligible: false });
+  const closed: Entry[] = [...(options.initial?.closed ?? [])];
+  const roundOffset = options.roundOffset ?? 0;
+  let base = open.size === 0 && closed.length === 0;
   reviews.forEach((r, i) => {
     for (const e of open.values()) if (e.blocks) e.repair_rounds = (e.repair_rounds ?? 0) + 1;
     const check = options.rechecks?.[i];
@@ -1342,7 +1350,7 @@ export function ledgerOf(
         void _;
         void __;
         const ev = current.findings.find(f => f.id === id)?.evidence ?? '';
-        closed.push({ ...entry, evidence: ev, closed_round: i + 1 });
+        closed.push({ ...entry, evidence: ev, closed_round: roundOffset + i + 1 });
       }
     for (const f of [...current.findings, ...checks]) {
       if (f.status !== 'open') continue;
@@ -1363,7 +1371,7 @@ export function ledgerOf(
           severity: f.severity,
           file: f.file,
           line: f.line,
-          round: i + 1,
+          round: roundOffset + i + 1,
           evidence: f.evidence,
           failure_class: classification,
           command: f.command,
@@ -1383,7 +1391,14 @@ export function ledgerOf(
         void __;
         return e;
       });
-  return { blocking: strip(true), debt: strip(false), closed };
+  return {
+    blocking: strip(true),
+    debt: strip(false),
+    closed,
+    ...(options.initial?.review_rounds_used
+      ? { review_rounds_used: options.initial.review_rounds_used }
+      : {}),
+  };
 }
 
 /** 评审债 = 末份评审员 debt[] ∪ 台账里 open 且不阻塞的条目（派生项始终并入，不信任评审员只登记部分）。 */
@@ -1490,6 +1505,8 @@ export function deliveryDecision(input: {
   strict?: boolean;
   packages?: RequirementContract[];
   reviewRounds: number | null;
+  initialLedger?: Ledger;
+  reviewRoundOffset?: number;
 }) {
   let coder: Coder | undefined;
   try {
@@ -1552,6 +1569,8 @@ export function deliveryDecision(input: {
   const ledger = ledgerOf(reviews.length ? reviews : [null], input.risk ?? 'G1', {
     strict: input.strict,
     rechecks: input.rechecks,
+    initial: input.initialLedger,
+    roundOffset: input.reviewRoundOffset,
   });
   if (ledger.blocking.length && completion.status === 'verified') completion.status = 'unmet';
   const evidence = [
@@ -1716,6 +1735,18 @@ export function deliveryDecision(input: {
   // 同一份评审里 id 重复（含同 id 既 closed 又 open）：账本无法唯一解释，不放行也不降为债务
   if (reviews.some(r => r && new Set(r.findings.map(f => f.id)).size !== r.findings.length))
     return out('block', 'invalid_review');
+  const stuck = reviews.length >= 3 ? ledger.blocking.filter(e => (e.repair_rounds ?? 0) >= 2) : [];
+  if (stuck.length) {
+    const first = reviews.length - 3;
+    for (const entry of stuck)
+      for (let i = first; i < reviews.length; i++) {
+        const finding = reviews[i]?.findings.find(f => f.id === entry.id && f.status === 'open');
+        evidence.push(
+          `${entry.id} r${String((input.reviewRoundOffset ?? 0) + i + 1)}: ${finding?.evidence ?? 'omitted; remains open'}`
+        );
+      }
+    return out('block', 'finding_stuck', debtOf(reviews, ledger));
+  }
   if (
     accepted &&
     input.reviewRequired === false &&
@@ -2431,7 +2462,19 @@ function gate(): void {
   const reviewFile = join(artifacts, `${tag}.review.json`);
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
   const risk = effectiveRisk(env('RISK'), rechecks);
-  const reviewRounds = maxRounds();
+  const m = env('MILESTONE');
+  const priorLedgers = readdirSync(artifacts)
+    .filter(file => file.startsWith(`gate-${m}-r`) && file.endsWith('.ledger.json'))
+    .flatMap(file => {
+      const value = JSON.parse(readFileSync(join(artifacts, file), 'utf8')) as Ledger;
+      const used = value.review_rounds_used?.[m];
+      return typeof used === 'number' && Number.isSafeInteger(used) && used > 0
+        ? [{ value, used }]
+        : [];
+    })
+    .sort((a, b) => b.used - a.used);
+  const priorLedger = priorLedgers.length ? priorLedgers[0] : undefined;
+  const reviewRounds = Math.max(0, maxRounds() - (priorLedger?.used ?? 0));
   const decision = {
     reviews,
     rechecks,
@@ -2447,6 +2490,8 @@ function gate(): void {
     expired: expired(),
     reviewRequired: env('REVIEW') !== '0',
     reviewRounds,
+    initialLedger: priorLedger?.value,
+    reviewRoundOffset: priorLedger?.used ?? 0,
     permissions:
       reused?.permissions ??
       (env('ARCHON') && !expired()
@@ -2454,14 +2499,23 @@ function gate(): void {
         : []),
   };
   let d = decide(decision);
-  if (d.verdict === 'escalate' && !decision.expired && nextDisposition(d.decision) === 'repair')
+  if (
+    d.verdict === 'escalate' &&
+    d.reason !== 'finding_stuck' &&
+    !decision.expired &&
+    nextDisposition(d.decision) === 'repair'
+  )
     Object.assign(d, { verdict: d.rounds >= reviewRounds ? 'escalate' : 'fix' });
   const tested = d.reason === 'review_not_required';
   const reviewed = reviews
     .map((r, i) => (r ? i : -1))
     .filter(i => i >= 0)
     .at(-1);
-  const m = env('MILESTONE');
+  if (d.reason === 'finding_stuck')
+    d.ledger.review_rounds_used = {
+      ...(priorLedger?.value.review_rounds_used ?? {}),
+      [m]: (priorLedger?.used ?? 0) + d.rounds,
+    };
   const fake = { model: 'fake', strength: 'fake' } as const;
   let identity: { authors: Ident[]; reviewer: Ident } | null = null;
   if (

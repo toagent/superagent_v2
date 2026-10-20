@@ -26,7 +26,8 @@ import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
 import { generate, type Carried } from '../../src/generate';
-import { loadLedger, ledgerPath, main } from '../../src/cli';
+import { classifyRun, loadLedger, ledgerPath, main } from '../../src/cli';
+import type { RunView } from '../../src/archon';
 import * as coordination from '../../src/coord';
 import * as archonModule from '../../src/archon';
 import { adoptEngineSnapshot } from '../../src/engine';
@@ -38,7 +39,7 @@ import { failWorkflowRun } from '../../../packages/core/src/db/workflows';
 import { createCodebase } from '../../../packages/core/src/db/codebases';
 
 // prettier-ignore
-export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16';
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16' | 'S17';
 
 export interface ScenarioSpec {
   id: ScenarioId;
@@ -68,6 +69,8 @@ export interface ScenarioFixture {
   targetAfterInjection?: string;
   carried?: Carried;
   engineSnapshot?: string;
+  omitNewFindingOnRetry?: boolean;
+  reviewCalls?: Record<string, number>;
 }
 
 export interface GeneratedContinuation {
@@ -244,6 +247,9 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         id,
         editFiles(f)
       ) as Record<string, unknown>;
+      const reviewCall = id.startsWith('review-')
+        ? ((f.reviewCalls ??= {})[id] = (f.reviewCalls?.[id] ?? 0) + 1)
+        : 0;
       if (id === 'review-m1-r1' && f.spec.passRound === 2) {
         sample.status = 'FAIL';
         sample.findings = [
@@ -274,6 +280,29 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
             carry_over: true,
           },
         ];
+      if (f.spec.id === 'S17' && id.startsWith('review-m1-r')) {
+        const finding = (findingId: string, status: 'open' | 'closed') => ({
+          id: findingId,
+          severity: 'blocker',
+          file: f.spec.agents.code.path,
+          line: 1,
+          status,
+          evidence: `${findingId} ${status} in ${id}`,
+          failure_class: 'product',
+          command: null,
+          carry_over: reviewCall > 1,
+        });
+        sample.status = reviewCall === 1 ? 'FAIL' : 'PASS';
+        sample.findings =
+          reviewCall === 1
+            ? [finding('A', 'open'), ...(id.endsWith('-r3') ? [finding('B', 'open')] : [])]
+            : id.endsWith('-r1')
+              ? [
+                  finding('A', 'closed'),
+                  ...(f.omitNewFindingOnRetry ? [] : [finding('B', 'closed')]),
+                ]
+              : [];
+      }
       yield {
         type: 'result',
         text: JSON.stringify(sample),
@@ -496,6 +525,7 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
         node.provider = descriptor.id;
         delete node.model;
       }
+      if (f.spec.id === 'S17' && node.context) delete node.context;
       const group = node.loop_group as { nodes?: Array<Record<string, unknown>> } | undefined;
       if (group?.nodes) routeAi(group.nodes);
     }
@@ -706,6 +736,7 @@ export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvide
         node.provider = descriptor.id;
         delete node.model;
       }
+      if (f.spec.id === 'S17' && node.context) delete node.context;
       const group = node.loop_group as { nodes?: Array<Record<string, unknown>> } | undefined;
       if (group?.nodes) routeAi(group.nodes);
     }
@@ -746,6 +777,43 @@ export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvide
       failed: persisted?.status === 'failed' ? [id] : [],
     },
   };
+}
+
+/** Exercise the public retry command while the real scenario store remains the execution owner. */
+export function retryScenario(f: ScenarioFixture, result: ScenarioEvidence): string {
+  const ledger = loadLedger(result.runId);
+  const states = new Map<string, 'completed' | 'failed'>();
+  for (const event of result.events)
+    if (
+      event.step_name &&
+      (event.event_type === 'node_completed' || event.event_type === 'node_failed')
+    )
+      states.set(event.step_name, event.event_type === 'node_failed' ? 'failed' : 'completed');
+  const view: RunView = {
+    id: result.runId,
+    status: 'failed',
+    output_root: f.archonHome,
+    nodes: [...states].map(([nodeId, state]) => ({ nodeId, state })),
+  };
+  const original = archonModule.archon;
+  const identity = spyOn(coordination, 'caller').mockReturnValue(ledger.controller!);
+  const stub = spyOn(archonModule, 'archon').mockImplementation((args, cwd, intent, timeout) =>
+    args[0] === 'workflow' && args[1] === 'get'
+      ? { code: 0, out: JSON.stringify(view), err: '' }
+      : args[0] === 'workflow' && args[1] === 'resume'
+        ? { code: 0, out: JSON.stringify({ ok: true, runId: result.runId }), err: '' }
+        : original(args, cwd, intent, timeout)
+  );
+  try {
+    const state = classifyRun(ledger, view).state;
+    expect(main(['decide', result.runId, 'retry', '--pkg', 'p', '--hint', 'close findings'])).toBe(
+      0
+    );
+    return state;
+  } finally {
+    stub.mockRestore();
+    identity.mockRestore();
+  }
 }
 
 export function expectOutcome(

@@ -18,6 +18,7 @@ import {
   expectOutcome,
   expectPublishedGate,
   restore,
+  retryScenario,
   resumeInProcess,
   runInProcess,
   scenario,
@@ -40,6 +41,39 @@ const fixture = (id: ScenarioId, passRound: 1 | 2 = 1) =>
     agents: { code: { path: 'scenario.txt', content: `${id}\n` } },
     expected: { terminal: 'completed', publishCount: 1 },
   });
+
+test.each([false, true])(
+  'S17 finding_stuck retry preserves ledger (omit B=%s)',
+  async omit => {
+    const f = fixture('S17');
+    f.omitNewFindingOnRetry = omit;
+    try {
+      const first = await runInProcess(f);
+      const stuck = JSON.parse(readFileSync(join(first.artifactsDir, 'gate-m1-r3.json'), 'utf8'));
+      expect(stuck).toMatchObject({ verdict: 'escalate', reason: 'finding_stuck' });
+      expect(stuck.decision.evidence.filter((line: string) => line.startsWith('A r'))).toHaveLength(
+        3
+      );
+      expect(retryScenario(f, first)).toBe('held:gate');
+      expect(readFileSync(join(f.home, 'gen', first.runId, 'hints/p.md'), 'utf8')).toBe(
+        'close findings\n'
+      );
+      const retried = await resumeInProcess(f);
+      expect(retried.terminal[omit ? 'failed' : 'completed']).toEqual([first.runId]);
+      expect(existsSync(join(retried.artifactsDir, 'publish-m1.json'))).toBe(!omit);
+      const ledger = JSON.parse(
+        readFileSync(join(retried.artifactsDir, `gate-m1-r${omit ? 3 : 1}.ledger.json`), 'utf8')
+      );
+      expect(
+        ledger[omit ? 'blocking' : 'closed'].map((entry: { id: string }) => entry.id)
+      ).toContain('B');
+      expect(ledger.review_rounds_used?.m1).toBe(omit ? 6 : 3);
+    } finally {
+      restore(f);
+    }
+  },
+  120_000
+);
 
 const waitFor = async (path: string): Promise<void> => {
   for (const end = Date.now() + 60_000; Date.now() < end; ) {
