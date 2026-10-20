@@ -51,9 +51,16 @@ const mutations: Mutation[] = [
     test: 'tests/scenarios/scenario-core.test.ts',
     name: 'S2',
   },
+  {
+    file: 'templates/.archon/scripts/sa-context.ts',
+    from: "(context.refs.head === head || completedGate.verdict === 'fix');",
+    to: 'context.refs.head === head;',
+    test: 'tests/execution-lifecycle-auto-recover.test.ts',
+    name: 'S14a',
+  },
 ];
 
-test('five known accident mutations each fail a real generated scenario', () => {
+test('known accident mutations each fail a real generated scenario', () => {
   const repo = join(import.meta.dir, '../../..');
   const selected = process.env.SCENARIO_MUTATION_ONLY
     ? mutations.filter(value => value.file === process.env.SCENARIO_MUTATION_ONLY)

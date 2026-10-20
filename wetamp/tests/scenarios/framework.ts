@@ -23,7 +23,7 @@ import { createWorkflowStore } from '../../../packages/core/src/workflows/store-
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 
 // prettier-ignore
-export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13';
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13' | 'S14a';
 
 export interface ScenarioSpec {
   id: ScenarioId;

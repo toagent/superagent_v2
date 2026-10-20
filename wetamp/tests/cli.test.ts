@@ -1,5 +1,9 @@
 import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
-import { admitExecution, resumeExecution } from '@archon/workflows/execution-lifecycle';
+import {
+  admitExecution,
+  recoverySnapshot,
+  resumeExecution,
+} from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
 import * as launcherModule from '../src/launcher';
@@ -96,6 +100,7 @@ const cleanEngine = coordModule.cleanEngine;
 const originalBunOptions = process.env.BUN_OPTIONS;
 const originalMemory = process.env.SUPERAGENT_MEMORY;
 const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
+const originalArchonBin = process.env.SA_ARCHON_BIN;
 beforeEach(() => {
   // Scratch commits must not execute the operator's unrelated global Git hooks
   // or signing setup. Repository-local configuration still applies.
@@ -114,6 +119,8 @@ afterEach(() => {
   else process.env.SUPERAGENT_MEMORY = originalMemory;
   if (originalGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
   else process.env.GIT_CONFIG_GLOBAL = originalGitConfig;
+  if (originalArchonBin === undefined) delete process.env.SA_ARCHON_BIN;
+  else process.env.SA_ARCHON_BIN = originalArchonBin;
   engineBoundary?.mockRestore();
   engineBoundary = undefined;
 });
@@ -1458,25 +1465,70 @@ describe('waitRun (archon stub)', () => {
     expect(out).toMatchObject({ error: '' });
     expect(out.stop_reason).toBeUndefined();
   });
-  test('owner_lost stays observable; wait and tick do not mutate the engine or legacy controls', () => {
+  test('S14b held automatic recovery pauses, asks once, and explicit recover clears it', () => {
+    const lost = run('running', {
+      metadata: { execution_owner: LOST },
+      nodes: [{ nodeId: 'fix-core', state: 'running' }],
+    });
+    const s = stub([lost]),
+      sup = supervisor(s.root, 'pending'),
+      db = runsDb(LOST);
+    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({
+      action: 'ask',
+      reason: 'auto_recover',
+      ok: true,
+    });
+    expect(loadLedger('sa1').auto_recover_paused).toBe('effects_unknown');
+    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(0);
+    captured(() => main(['supervise-tick']));
+    expect(
+      loadLedger('sa1').intervention_events?.filter(e => e.action === 'auto_recover')
+    ).toHaveLength(1);
+    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
+    expect(
+      captured(() => main(['recover', 'sa1', '--reconciled', recoverySnapshot(lost)])).code
+    ).toBe(0);
+    expect(loadLedger('sa1').auto_recover_paused).toBeUndefined();
+    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(1);
+    db.close();
+  });
+  test('S14c automatic recovery rate limit and reused PID perform no recovery', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost]);
-    const db = runsDb(LOST);
-    const before = readFileSync(ledgerPath('sa1'), 'utf8');
-    expect(waitRun(s.ledger, 30)).toMatchObject({
-      state: 'owner_lost',
-      action: 'superagent recover sa1',
+    writeFileSync(
+      ledgerPath('sa1'),
+      JSON.stringify({
+        ...loadLedger('sa1'),
+        intervention_events: [0, 1].map(() => ({
+          at: new Date().toISOString(),
+          action: 'auto_recover',
+          source: 'superagent',
+          origin: 'engine',
+          ok: true,
+        })),
+      })
+    );
+    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({
+      action: 'none',
+      next: 'auto_recover_rate_limited',
     });
+    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(0);
+
+    const foreign = stub([
+      run('running', {
+        started_at: '2020-01-01T00:00:00.000Z',
+        metadata: { execution_owner: { host: hostname(), pid: process.pid } },
+      }),
+    ]);
+    fixtureSpies.push(
+      spyOn(launcherModule, 'inspectProcess').mockReturnValue({
+        state: 'online',
+        start: '2026-01-01T00:00:00.000Z',
+      })
+    );
     captured(() => main(['supervise-tick']));
-    expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
-      status: 'running',
-    });
-    expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
-    const historical = JSON.parse(before);
-    const after = loadLedger('sa1');
-    for (const field of ['recoveries', 'auto_retries', 'progress_fp', 'stalled'] as const)
-      expect(after[field]).toEqual(historical[field]);
-    db.close();
+    expect(foreign.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(0);
+    expect(loadLedger('sa1').intervention_events).toBeUndefined();
   });
   test('owner changed before explicit continuation: CAS refuses with no resume', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
@@ -4158,6 +4210,14 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       );
       return { s, first: {} };
     },
+    auto_recover: () => {
+      const lost = run('running', { metadata: { execution_owner: LOST } });
+      const s = held('x');
+      setGet(s.root, lost);
+      runsDb(LOST);
+      patchLedger(s.root, { auto_recover_paused: 'effects_unknown' });
+      return { s, first: {} };
+    },
     acceptance_adjudication: () => ({
       s: held('verify-core', {
         'verify-core.json': {
@@ -4393,15 +4453,22 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       );
     });
   }
-  test('owner loss takes priority over stale progress attention', () => {
+  test('S14a owner loss takes priority over stale progress and resumes once', () => {
     const { s } = scenes.stalled();
     const current = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
     current.metadata!.execution_owner = LOST;
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(current));
     const sup = supervisor(s.root, 'pending');
+    const db = runsDb(LOST);
 
-    expect(tick(1)[0]).toMatchObject({ action: 'none', ok: false, state: 'owner_lost' });
+    expect(tick(0)[0]).toMatchObject({ action: 'auto_recover', ok: true });
     expect(sup()).toEqual([]);
+    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(1);
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
+      action: 'auto_recover',
+      origin: 'engine',
+    });
+    db.close();
   });
 
   for (const node of ['verify-core', 'settle-core']) {
@@ -4563,7 +4630,7 @@ describe('HF9 decision titles', () => {
   };
   for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
     if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
-    if (hold === 'stalled') continue;
+    if (hold === 'stalled' || hold === 'auto_recover') continue;
     test(`HF9 ${hold}: project, node, evidence, truthful actions and ≤200 characters`, () => {
       const { s, r } = setup();
       const node = hold.startsWith('review')
@@ -4789,7 +4856,7 @@ describe('HF9 decision titles', () => {
   };
   for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
     if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
-    if (hold === 'stalled') continue;
+    if (hold === 'stalled' || hold === 'auto_recover') continue;
     for (const value of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE])
       test(`HF9 R4 all HOLD_POLICY titles remain deliverable at numeric maximum: ${hold}/${String(value)}`, () => {
         const { s } = maximumTitle(hold, value);

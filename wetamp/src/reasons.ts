@@ -53,6 +53,12 @@ export const HOLD_POLICY = {
     yesText: '精确取消该run',
     noText: '继续等待',
   },
+  auto_recover: {
+    do: 'ask',
+    yes: 'resume',
+    text: '自动恢复被准入拦截',
+    yesText: '显式重试恢复',
+  },
   acceptance_adjudication: {
     do: 'ask',
     yes: 'adjudicate',
