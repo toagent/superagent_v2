@@ -555,12 +555,12 @@ test.each([1, 2] as const)(
   60_000
 );
 
-test('land.ts without INPUTS_ACTION keeps the legacy delivery entrypoint', () => {
+test('land.ts without INPUTS_ACTION rejects the removed legacy delivery entrypoint', () => {
   const result = Bun.spawnSync([process.execPath, join(import.meta.dir, '../src/land.ts')], {
     env: fixtureEnv({ INPUTS_ACTION: '', INPUTS_RUN: '' }),
     stdout: 'pipe',
     stderr: 'pipe',
   });
   expect(result.exitCode).toBe(1);
-  expect(result.stderr.toString()).toContain('delivery: missing run id');
+  expect(result.stderr.toString()).toContain('legacy delivery removed; run is terminal');
 });

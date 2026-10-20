@@ -1,25 +1,95 @@
-// Generated deliver-* nodes import this stable entrypoint. Their candidate-based
-// behavior stays isolated until those runs have drained.
-export * from './land-legacy';
-export * from './integration';
+export {
+  captureDelivery,
+  checkoutChanges,
+  excludeCodegraph,
+  integrationLockPath,
+  integrationLockTimeout,
+  IntegrationError,
+  LandError,
+  protectedTarget,
+  publish,
+  sync,
+  targetCheckout,
+  type DeliveryOutcome,
+  type DeliveryReceipt,
+  type DeliveryTarget,
+  type PublishExpected,
+  type PublishRun,
+  type PublishReceipt,
+  type PublishResult,
+  type SyncResult,
+} from './integration';
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { control, coord, repoScope } from './coord';
+import { control, coord, repoScope, same } from './coord';
+import type { Controller, DeliveryReauthorization, Identity } from './coord';
+import { home } from './config';
 import { publish, sync } from './integration';
+import type { DeliveryReceipt } from './integration';
 import type { PublishReceipt, PublishResult, SyncOutput } from './contract';
 import type { RunView } from './archon';
 import type { Ledger } from './cli';
-import {
-  deliveryAuthorized,
-  runDeliveryEntry,
-  runLegacyDeliveryMain,
-  type DeliveryAuthorization,
-} from './land-legacy';
 
 const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
+
+export interface DeliveryAuthorization {
+  run: Controller;
+  repo: Controller;
+}
+
+export function deliveryAuthorized(
+  who: Identity,
+  authorization: DeliveryAuthorization,
+  archonRunId: string
+): boolean {
+  return (
+    same(who, authorization.run) &&
+    same(who, authorization.repo) &&
+    [authorization.run, authorization.repo].every(
+      controller => Number.isSafeInteger(controller.generation) && controller.generation > 0
+    ) &&
+    process.env.WORKFLOW_ID === archonRunId
+  );
+}
+
+export function landEvidence(
+  run: Pick<RunView, 'nodes'> & Partial<Pick<RunView, 'status'>>,
+  node?: string
+): { node: string; file: string } | undefined {
+  const selected =
+    node ??
+    run.nodes?.filter(n => n.state === 'completed' && /^land(?:-.+)?$/.test(n.nodeId)).at(-1)
+      ?.nodeId ??
+    (run.status === 'completed' && !run.nodes?.length ? 'land' : undefined);
+  return selected && /^land(?:-.+)?$/.test(selected)
+    ? { node: selected, file: selected === 'land' ? 'land.json' : `${selected}.json` }
+    : undefined;
+}
+
+/** Historical delivery state is ledger-owned; reading it must never replay delivery. */
+export function deliveryProjection(l: Ledger): DeliveryReceipt | undefined {
+  const result = l.delivery_result;
+  if (!result || !('integrated' in result)) return;
+  return result.status === 'integrated'
+    ? ({ ...result, status: 'manual_push' } as DeliveryReceipt)
+    : result.status === 'manual_push'
+      ? result
+      : undefined;
+}
+
+export function runDeliveryEntry(action: () => void): boolean {
+  try {
+    action();
+    return true;
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    console.error(`${failure.name}: ${failure.message}`);
+    return false;
+  }
+}
 
 /** Runtime events qualify loop body nodes as `<group>.<node>`; artifacts keep the authored id. */
 export const authoredNodeId = (nodeId: string): string => nodeId.split('.').at(-1) ?? nodeId;
@@ -109,9 +179,18 @@ const authorized = () => {
   if (!runId) throw new Error('integration: missing run id');
   const { loadLedger, readJson } = operator();
   const ledger = loadLedger(runId);
-  const authorization = readJson(join(ledger.gen_dir, 'delivery-authorization.json')) as
-    | DeliveryAuthorization
+  const originalPath = join(ledger.gen_dir, 'delivery-authorization.json');
+  const original = readJson(originalPath) as DeliveryAuthorization | undefined;
+  const renewed = readJson(join(home().sa, 'coord', 'authorizations', `${runId}.json`)) as
+    | Partial<DeliveryReauthorization>
     | undefined;
+  const originalSha256 = existsSync(originalPath)
+    ? createHash('sha256').update(readFileSync(originalPath)).digest('hex')
+    : '';
+  const authorization: DeliveryAuthorization | undefined =
+    renewed?.run && renewed.repo && renewed.original_sha256 === originalSha256
+      ? { run: renewed.run, repo: renewed.repo }
+      : original;
   if (!authorization) throw new Error('integration: authorization/run mismatch');
   const who = authorization.run;
   if (!deliveryAuthorized(who, authorization, ledger.archon_run_id))
@@ -252,5 +331,13 @@ export function runIntegrationMain(action: string): void {
 if (import.meta.main) {
   const action = process.env.INPUTS_ACTION;
   if (action) runIntegrationMain(action);
-  else runLegacyDeliveryMain();
+  else
+    queueMicrotask(() => {
+      if (
+        !runDeliveryEntry(() => {
+          throw new Error('legacy delivery removed; run is terminal');
+        })
+      )
+        process.exitCode = 1;
+    });
 }

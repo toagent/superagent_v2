@@ -263,6 +263,20 @@ test('S6/S13: acceptance regression and stale coordination ownership block publi
   }
 }, 90_000);
 
+test('S16: restarted controller claims, reauthorizes and publishes through real executors', async () => {
+  const f = fixture('S16');
+  try {
+    const result = await runInProcess(f);
+    expectOutcome(f, result, {
+      terminal: 'completed',
+      counts: { 'integrate-m1.publish-m1': 1 },
+      published: true,
+    });
+  } finally {
+    restore(f);
+  }
+}, 90_000);
+
 test('S8: changing diff evidence between review and gate fails closed', async () => {
   const f = fixture('S8');
   try {

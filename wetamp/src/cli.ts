@@ -10,15 +10,12 @@ import {
   captureDelivery,
   checkoutChanges,
   protectedTarget,
-  acceptRun,
-  finalizeDelivery,
   deliveryProjection,
   landEvidence,
   publishProjection,
   authoredNodeId,
   type DeliveryTarget,
 } from './land';
-export { finalizeDelivery } from './land';
 import { type DeliveryOutcome, type DeliveryReceipt } from './land';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
@@ -679,18 +676,33 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
       ledgerPath(l.run_id),
     published = publishProjection(l, run),
-    integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l, run),
+    integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l),
     blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
-    action = reason === 'target_protected' ? '在 feature 分支重跑'
+    reauthorize = reauthorizationHint(l, run, c),
+    action = reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
       : c.state.startsWith('held:') ? `superagent decide ${l.run_id} retry`
       : ['sync_conflict', 'target_advanced', 'review_stale'].includes(c.state) ? `superagent recover ${l.run_id}`
-      : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}` : '读 evidence_path';
+      : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}` : '读 evidence_path');
   const delivery_state = published ? 'published' as const : integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
   return { delivery_state, receipt: { state: c.state, failed_node: c.node ?? null, reason, evidence_path: evidence, action } };
+}
+
+function reauthorizationHint(l: Ledger, run: RunView, c: Classified): string | undefined {
+  const error = c.node ? run.nodes?.find(n => n.nodeId === c.node)?.error : undefined;
+  if (!error?.includes('owner/generation fencing')) return;
+  try {
+    const original = JSON.parse(
+      readFileSync(join(l.gen_dir, 'delivery-authorization.json'), 'utf8')
+    ) as { run?: Controller };
+    if (!original.run || coord().d.presence(original.run).state !== 'offline') return;
+    return `superagent claim ${l.run_id}\nsuperagent reauthorize ${l.run_id}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
@@ -3394,6 +3406,9 @@ function dispose(
       ...(result.ok ? {} : { error: result.reason }),
     };
   }
+  const reauthorize = reauthorizationHint(l, run, c);
+  if (reauthorize)
+    return { run_id: l.run_id, action: 'none', ok: false, state: c.state, next: reauthorize };
   const act = (hold: Hold, extra: Record<string, unknown> = {}): Action | undefined => {
     row.hold = hold;
     row.disposed =
@@ -3623,6 +3638,7 @@ export const CLI_GLOBAL_OPTIONS = ['help', 'json', 'task-kind'] as const satisfi
 export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'owner', positionals: '[path|run]', flags: [] },
   { command: 'claim', positionals: '[path|run]', flags: ['takeover', 'reason'] },
+  { command: 'reauthorize', positionals: '<run>', flags: [] },
   { command: 'release', positionals: '[path|run]', flags: [] },
   { command: 'handoff', flags: ['to', 'kind', 'title', 'body-file', 'evidence', 'severity'] },
   { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note'] },
@@ -3871,6 +3887,7 @@ export function main(argv: string[]): number {
     }
     case 'owner':
     case 'claim':
+    case 'reauthorize':
     case 'release':
     case 'handoff':
     case 'inbox':
@@ -3914,8 +3931,7 @@ export function main(argv: string[]): number {
       const who = caller(true);
       const l = ledger(),
         s = waitRun(l, t, who);
-      if (s.state === 'completed')
-        s.delivery = deliveryProjection(l, getRun(l.archon_run_id, l.repo));
+      if (s.state === 'completed') s.delivery = deliveryProjection(l);
       // prettier-ignore
       print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) ? relayQuota(l.gen_dir, 'end') : {}) });
       return Number(s.exit);
@@ -4056,9 +4072,7 @@ export function main(argv: string[]): number {
             false
           );
         }
-        const receipt = finalizeDelivery(l.run_id);
-        if (receipt) print(receipt);
-        return 0;
+        throw new Error('legacy delivery removed; run is terminal');
       }
       const display = (): number => {
         const run = getRun(l.archon_run_id, l.repo);
@@ -4075,7 +4089,7 @@ export function main(argv: string[]): number {
           console.error(`land: no land.json yet (state ${c.state})`);
           return 1;
         }
-        const receipt = deliveryProjection(l, run);
+        const receipt = deliveryProjection(l);
         if (receipt)
           land = { ...(land as Land), status: 'integrated', integrated: receipt.integrated };
         const needs = needsOf(artifactsOf(run), undefined, l);
@@ -4089,8 +4103,8 @@ export function main(argv: string[]): number {
       return historical ? display() : controlled(l, display);
     }
     case 'accept': {
-      const l = ledger(true);
-      return controlled(l, () => acceptRun(l, a.flags.pkg));
+      ledger();
+      throw new Error('legacy delivery removed; run is terminal');
     }
     case 'gc':
       print({ gc: gc(a.flags['dry-run']) });
