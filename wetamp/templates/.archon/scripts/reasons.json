@@ -21,6 +21,13 @@
     "description": "净增行数超过工作包上限"
   },
   {
+    "code": "git_lock_held",
+    "hold": "environment",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "run worktree 的 git index 锁仍被持有或无法确认陈旧"
+  },
+  {
     "code": "base_branch_missing",
     "hold": "engine_suspect",
     "determinism": "deterministic",

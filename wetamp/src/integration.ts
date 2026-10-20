@@ -6,9 +6,10 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS } from './archon';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
 import type { PublishReceipt, PublishResult, SyncResult } from './contract';
@@ -138,7 +139,11 @@ export interface PublishExpected {
 
 export class IntegrationError extends Error {
   constructor(
-    public readonly code: 'git_failed' | 'lock_timeout' | 'publish_outcome_unknown',
+    public readonly code:
+      | 'git_failed'
+      | 'git_lock_held'
+      | 'lock_timeout'
+      | 'publish_outcome_unknown',
     message: string
   ) {
     super(message);
@@ -146,26 +151,113 @@ export class IntegrationError extends Error {
   }
 }
 
+const worktreeIndexLock = (cwd: string): string | undefined => {
+  const dotGit = join(cwd, '.git');
+  if (!existsSync(dotGit) || !statSync(dotGit).isFile()) return;
+  const match = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, 'utf8'));
+  return match ? join(realpathSync(resolve(cwd, match[1])), 'index.lock') : undefined;
+};
+
+const gitResult = (cwd: string, args: string[]) => {
+  const started = Date.now();
+  const run = () =>
+    Bun.spawnSync(['git', '-C', cwd, ...args], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: QUERY_TIMEOUT_MS,
+    });
+  let result = run();
+  const lockPath = worktreeIndexLock(cwd);
+  if (
+    result.exitCode === 0 ||
+    !lockPath ||
+    !existsSync(lockPath) ||
+    !result.stderr.toString().includes(lockPath)
+  )
+    return result;
+
+  const lsof = Bun.which('lsof', { PATH: process.env.PATH });
+  if (!lsof)
+    throw new IntegrationError(
+      'git_lock_held',
+      `git lock ${lockPath}; holder unknown (lsof unavailable)`
+    );
+  const holders = Bun.spawnSync([lsof, '-t', lockPath], { stdout: 'pipe', stderr: 'pipe' });
+  const pids = holders.stdout.toString().trim().split(/\s+/).filter(Boolean);
+  if (holders.exitCode === 0 && pids.length)
+    throw new IntegrationError(
+      'git_lock_held',
+      `git lock ${lockPath}; holder pid ${pids.join(',')}`
+    );
+  const artifacts = process.env.ARTIFACTS_DIR;
+  if (
+    holders.exitCode !== 1 ||
+    holders.stderr.length > 0 ||
+    statSync(lockPath).mtimeMs >= started ||
+    !artifacts ||
+    !existsSync(artifacts)
+  )
+    throw new IntegrationError('git_lock_held', `git lock ${lockPath}; holder unknown`);
+
+  renameSync(
+    lockPath,
+    join(realpathSync(artifacts), `stale-index-lock-${String(started)}-${String(process.pid)}`)
+  );
+  result = run();
+  return result;
+};
+
 const git = (cwd: string, ...args: string[]): string => {
-  const result = Bun.spawnSync(['git', '-C', cwd, ...args], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: QUERY_TIMEOUT_MS,
-  });
+  const result = gitResult(cwd, args);
   if (result.exitCode !== 0)
     throw new IntegrationError('git_failed', result.stderr.toString().trim() || args.join(' '));
   return result.stdout.toString().trimEnd();
 };
 
 const gitBytes = (cwd: string, ...args: string[]): Buffer => {
-  const result = Bun.spawnSync(['git', '-C', cwd, ...args], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: QUERY_TIMEOUT_MS,
-  });
+  const result = gitResult(cwd, args);
   if (result.exitCode !== 0)
     throw new IntegrationError('git_failed', result.stderr.toString().trim() || args.join(' '));
   return result.stdout;
+};
+
+const diffBytes = (cwd: string, base: string, head: string): Buffer =>
+  gitBytes(
+    cwd,
+    'diff',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--binary',
+    '--find-renames',
+    base,
+    head,
+    '--'
+  );
+
+const normalizedChange = (diff: Buffer): string => {
+  const kept: string[] = [];
+  let hunk = false,
+    binary = false;
+  for (const line of diff.toString().split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      hunk = false;
+      binary = false;
+      kept.push(line);
+    } else if (line.startsWith('@@')) hunk = true;
+    else if (line === 'GIT binary patch') {
+      binary = true;
+      kept.push(line);
+    } else if (
+      binary ||
+      (hunk && /^[+-]/.test(line)) ||
+      line === '\\ No newline at end of file' ||
+      /^(?:old mode|new mode|new file mode|deleted file mode|similarity index|rename from|rename to|copy from|copy to|Binary files )/.test(
+        line
+      )
+    )
+      kept.push(line);
+  }
+  return kept.join('\n');
 };
 
 const conflicts = (worktree: string): string[] =>
@@ -178,13 +270,7 @@ export function sync(
   git(worktree, 'fetch', '--quiet', '--no-tags', target.checkout, `refs/heads/${target.branch}`);
   const targetTip = git(worktree, 'rev-parse', 'FETCH_HEAD');
   const before = git(worktree, 'rev-parse', 'HEAD');
-  if (
-    Bun.spawnSync(['git', '-C', worktree, 'merge-base', '--is-ancestor', targetTip, before], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: QUERY_TIMEOUT_MS,
-    }).exitCode === 0
-  )
+  if (gitResult(worktree, ['merge-base', '--is-ancestor', targetTip, before]).exitCode === 0)
     return {
       status: 'noop',
       target_tip: targetTip,
@@ -192,11 +278,7 @@ export function sync(
       head: before,
     };
 
-  const merged = Bun.spawnSync(['git', '-C', worktree, 'merge', '--no-edit', targetTip], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: QUERY_TIMEOUT_MS,
-  });
+  const merged = gitResult(worktree, ['merge', '--no-edit', targetTip]);
   if (merged.exitCode !== 0) {
     let files = conflicts(worktree);
     const solver = Bun.which('mergiraf', { PATH: process.env.PATH });
@@ -287,24 +369,26 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
             ? `${head} is not a descendant of ${targetTip}`
             : ancestor.stderr.toString().trim(),
       };
-    const currentDiffHash = diffHash(
-      gitBytes(
-        run.worktree,
-        'diff',
-        '--no-ext-diff',
-        '--no-textconv',
-        '--binary',
-        targetTip,
-        'HEAD',
-        '--'
-      )
-    );
-    if (run.review.required && run.review.reviewed_diff_hash !== currentDiffHash)
-      return {
-        status: 'rejected',
-        reason: 'review_stale',
-        evidence: 'current diff hash does not match the reviewed gate evidence',
-      };
+    const currentDiff = diffBytes(run.worktree, targetTip, 'HEAD');
+    const currentDiffHash = diffHash(currentDiff);
+    let reviewPath = 'not_required';
+    if (run.review.required) {
+      reviewPath = 'diff_hash';
+      if (run.review.reviewed_diff_hash !== currentDiffHash) {
+        reviewPath = 'normalized_diff';
+        const reviewedBase = git(run.worktree, 'merge-base', run.review.reviewed_head, targetTip);
+        const reviewedDiff = diffBytes(run.worktree, reviewedBase, run.review.reviewed_head);
+        if (
+          diffHash(reviewedDiff) !== run.review.reviewed_diff_hash ||
+          normalizedChange(reviewedDiff) !== normalizedChange(currentDiff)
+        )
+          return {
+            status: 'rejected',
+            reason: 'review_stale',
+            evidence: 'review=normalized_diff; reviewed and current changes differ',
+          };
+      }
+    }
 
     run.fence();
     if (head !== targetTip) {
@@ -330,7 +414,7 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
       target: run.target,
       target_tip: targetTip,
       contract: run.contract,
-      evidence: run.evidence,
+      evidence: `review=${reviewPath}; artifacts=${run.evidence}`,
       integrated: head,
       status: 'published',
     };
