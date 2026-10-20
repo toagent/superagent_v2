@@ -247,7 +247,8 @@ export function resumeExecution(
     resolveId: () => string;
     adopt: (run: ExecutionRunView) => string[] | undefined;
   },
-  reconciled?: string
+  reconciled?: string,
+  admit?: (run: ExecutionRunView) => string | undefined
 ): ResumeExecutionResult {
   const l = executionAdmissionLock(host.root, strategy?.lockId ?? id);
   if (!l.ok) return { ok: false, reason: 'recover_locked', busy: true };
@@ -255,6 +256,8 @@ export function resumeExecution(
     const run = host.getRun(strategy?.resolveId() ?? id, cwd);
     const veto = guard?.(run);
     if (veto) return { ok: false, reason: veto };
+    const refused = admit?.(run);
+    if (refused) return { ok: false, reason: refused, refused: true };
     const journalPath = join(host.root, 'execution-admissions', `${run.id}.json`);
     const held = (reason: string): Extract<ResumeExecutionResult, { ok: false }> => ({
       ok: false,

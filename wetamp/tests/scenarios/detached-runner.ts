@@ -6,12 +6,12 @@ import { sh } from '../helpers';
 
 const output = process.env.SCENARIO_RESULT;
 if (!output) throw new Error('missing detached scenario result path');
-const id = (process.env.SCENARIO_ID ?? 'S1') as 'S1' | 'S4';
+const id = (process.env.SCENARIO_ID ?? 'S1') as 'S1' | 'S4' | 'S14b' | 'S14c';
 const f = scenario(
   {
     id,
-    risk: 'G1',
-    passRound: 1,
+    risk: id.startsWith('S14') ? 'G2' : 'G1',
+    passRound: id.startsWith('S14') ? 2 : 1,
     plan: {
       goal: `${id} detached generated delivery`,
       accept: `test "$(cat scenario.txt)" = ${id}`,
@@ -19,9 +19,29 @@ const f = scenario(
     agents: { code: { path: 'scenario.txt', content: `${id}\n` } },
     expected: { terminal: 'completed', publishCount: 1 },
   },
-  { target: process.env.SCENARIO_TARGET, suffix: process.env.SCENARIO_SUFFIX }
+  {
+    target: process.env.SCENARIO_TARGET,
+    suffix: process.env.SCENARIO_SUFFIX,
+    blockNode: process.env.SCENARIO_BLOCK_NODE,
+    blockAfterCompletedNode: process.env.SCENARIO_BLOCK_AFTER_COMPLETED_NODE,
+    blockMarker: process.env.SCENARIO_BLOCK_MARKER,
+  }
 );
 try {
+  if (process.env.SCENARIO_READY)
+    writeFileSync(
+      process.env.SCENARIO_READY,
+      JSON.stringify({
+        root: f.root,
+        home: f.home,
+        archonHome: f.archonHome,
+        target: f.target,
+        worker: f.worker,
+        runId: `5ce0-${id.slice(1).padStart(4, '0')}`,
+        blockNode: f.blockNode,
+        blockMarker: f.blockMarker,
+      })
+    );
   const result = await runInProcess(f);
   writeFileSync(
     output,

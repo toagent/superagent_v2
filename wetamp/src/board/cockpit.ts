@@ -27,6 +27,7 @@ export const REASONS = {
   engine_suspect: '引擎嫌疑',
   approval: '等待批准',
   stalled: '进展停滞',
+  auto_recover: '自动恢复已暂停',
   acceptance_adjudication: '等待验收裁决',
 } satisfies Record<keyof typeof HOLD_POLICY, string> & Record<string, string>;
 export const reasonText = (s: string): string =>
