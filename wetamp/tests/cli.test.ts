@@ -853,9 +853,9 @@ describe('HF3 latest-engine recovery', () => {
     if (carried || coded) {
       expect(code?.when).toBe("$package-attempt-core.output.attempt != '0'");
       const binding = nodes.find(n => n.id === 'verify-core')?.with?.coder as {
-        if_skipped: string;
+        if_skipped: unknown;
       };
-      expect(JSON.parse(binding.if_skipped)).toMatchObject({
+      expect(binding.if_skipped).toMatchObject({
         status: 'done',
         error_class: null,
         notes: `${carried ? 'carried' : 'coded'} from r`,

@@ -3746,7 +3746,6 @@ export function main(argv: string[]): number {
     return EXIT_USAGE;
   }
   const [verb, target] = a._;
-  assertEngineAccess(argv);
   if (a.flags.help || verb === 'help') {
     console.log(
       USAGE +
@@ -3774,6 +3773,7 @@ export function main(argv: string[]): number {
     });
     return EXIT_USAGE;
   }
+  assertEngineAccess(argv);
   const resolveTarget = (id: string): Ledger | RunView => {
     const registered = coord().resolveRun(id);
     if (registered) return loadLedger(registered.run_id);
@@ -4195,7 +4195,6 @@ function need<T>(v: T | undefined, usage: string): T {
 async function runCli(): Promise<void> {
   try {
     const argv = process.argv.slice(2);
-    assertEngineAccess(argv);
     // board（带 ink/react 依赖）与 job/jobs 是异步动词：在这里分流，其余动词启动时不加载 React。
     // 参数非法时 verb 取不到，交给 main 报用法
     const verb = ((): string | undefined => {
@@ -4205,6 +4204,8 @@ async function runCli(): Promise<void> {
         return undefined;
       }
     })();
+    if (['board', 'usage', 'supervise-tick', 'console', 'web', 'job', 'jobs'].includes(verb ?? ''))
+      assertEngineAccess(argv);
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
     if (verb === 'supervise-tick') {
