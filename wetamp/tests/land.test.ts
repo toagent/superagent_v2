@@ -2,12 +2,37 @@ import { expect, spyOn, test } from 'bun:test';
 import { join } from 'node:path';
 import {
   deliveryProjection,
+  gateHashes,
   landEvidence,
   runDeliveryEntry,
   type DeliveryReceipt,
 } from '../src/land';
 import type { Ledger } from '../src/cli';
+import { inputEnvVars, type ShellInputContext } from '../../packages/workflows/src/dag-executor';
 import { fixtureEnv } from './helpers';
+
+test('1.0.0 gate hash bindings remain readable by publish', () => {
+  const ctx: ShellInputContext = {
+    workflowRun: { id: 'legacy', user_message: '', metadata: {} },
+    artifactsDir: '/art',
+    stateDir: '/state',
+    baseBranch: 'dev',
+    docsDir: '/docs',
+    nodeOutputs: new Map(),
+  };
+  const env = inputEnvVars(
+    {
+      id: 'publish-m1',
+      kind: 'exec',
+      script: 'land',
+      runtime: 'bun',
+      with: { gate_1_sha256: 'legacy-sha', gate_1_carried_sha256: 'carried-sha' },
+    },
+    ctx
+  );
+  expect(gateHashes('1', env)).toEqual(['legacy-sha', 'carried-sha']);
+  expect(gateHashes('2', env)).toEqual([]);
+});
 
 test('completed legacy land evidence remains readable', () => {
   expect(landEvidence({ status: 'completed', nodes: [] })).toEqual({
