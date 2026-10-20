@@ -237,6 +237,7 @@ function runAcceptance(snapshot: string): EngineReceipt['results'][number] {
     cwd: join(snapshot, 'wetamp'),
     env: {
       ...process.env,
+      SA_ENGINE_PROMOTER_TOKEN: '',
       SUPERAGENT_HOME: join(scratch, 'sa'),
       ARCHON_HOME: join(scratch, 'sa', 'archon'),
     },
@@ -331,6 +332,7 @@ export function runSnapshotProbe(snapshot: string): ProbeEvidence {
       cwd: join(snapshot, 'wetamp'),
       env: {
         ...process.env,
+        SA_ENGINE_PROMOTER_TOKEN: '',
         DATABASE_URL: '',
         SUPERAGENT_HOME: join(scratch, 'sa'),
         ARCHON_HOME: join(scratch, 'sa', 'archon'),

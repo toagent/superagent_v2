@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
+import { inspectProcess } from '../src/launcher';
 import {
   autoPromote,
   currentEngineSnapshot,
@@ -47,6 +48,7 @@ function sourceFixture(): { root: string; source: string; evidence: string; sha:
     ARCHON_HOME: join(root, 'archon'),
     SA_ENGINE_SOURCE: source,
     SA_ENGINE_AUTO_PROMOTE: '0',
+    SA_ENGINE_PROMOTER_TOKEN: '',
   });
   return { root, source, evidence, sha: () => sh('git rev-parse HEAD', source).trim() };
 }
@@ -68,22 +70,13 @@ test('snapshot probe executes the candidate with isolated homes and preserves fa
     trace = join(root, 'trace.json');
   mkdirSync(join(snapshot, 'wetamp', 'src'), { recursive: true });
   process.env.SA_ENGINE_PROBE_TRACE = trace;
-  writeFileSync(
-    cli,
-    `import { mkdirSync, writeFileSync } from 'node:fs';
-const home = process.env.SUPERAGENT_HOME!;
-mkdirSync(home, { recursive: true });
-const evidence = home + '/candidate-evidence.json';
-writeFileSync(evidence, '{}');
-writeFileSync(process.env.SA_ENGINE_PROBE_TRACE!, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), home, archon: process.env.ARCHON_HOME }));
-console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: evidence }));
-`
-  );
+  process.env.SA_ENGINE_PROMOTER_TOKEN = 'leaked';
+  writeFileSync(cli, `import { mkdirSync, writeFileSync } from 'node:fs'; const home = process.env.SUPERAGENT_HOME!; mkdirSync(home, { recursive: true }); const evidence = home + '/candidate-evidence.json'; writeFileSync(evidence, '{}'); writeFileSync(process.env.SA_ENGINE_PROBE_TRACE!, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), home, archon: process.env.ARCHON_HOME, token: process.env.SA_ENGINE_PROMOTER_TOKEN })); console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: evidence }));`);
   const evidence = runSnapshotProbe(snapshot),
     invoked = JSON.parse(readFileSync(trace, 'utf8'));
   expect(evidence.ok).toBe(true); expect(invoked.argv).toEqual(['engine', 'probe', 'G1']); expect(invoked.cwd).toBe(join(snapshot, 'wetamp'));
   expect(invoked.home).not.toBe(process.env.SUPERAGENT_HOME);
-  expect(invoked.archon).toBe(join(invoked.home, 'archon'));
+  expect(invoked.archon).toBe(join(invoked.home, 'archon')); expect(invoked.token).toBe('');
   writeFileSync(cli, `console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: '/forged' }));
 console.error('candidate probe stderr');
 process.exit(7);
@@ -104,6 +97,14 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
     sha: second,
     results: [{ command: 'wetamp/scripts/engine-acceptance.sh' }, { run_id: 'probe-run' }],
   });
+  expect(
+    JSON.parse(
+      readFileSync(
+        join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`),
+        'utf8'
+      )
+    ).status
+  ).toBe('promoted');
   const installedAcceptance = join(
     process.env.SUPERAGENT_HOME!,
     'engine',
@@ -159,11 +160,12 @@ test('failed read-only candidate retries explicitly while in-service snapshots s
     first = f.sha();
   promote(first, f.evidence);
   const second = commit(f.source, 'second');
-  expect(() => promote(second, undefined, { probe: () => ({ ...successfulProbe(), ok: false, reason: 'not_published' }) })).toThrow('probe_failed');
+  expect(() => promote(second, undefined, { probe: path => { expect(statSync(path).mode & 0o222).toBe(0); return { ...successfulProbe(), ok: false, reason: 'not_published' }; } })).toThrow('probe_failed');
   const snapshot = join(process.env.SUPERAGENT_HOME!, 'engine', second),
     receipt = join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${second}.json`),
     mode = statSync(snapshot).mode;
   expect(statSync(snapshot).mode & 0o222).toBe(0); expect(existsSync(receipt)).toBe(false); expect(currentEngineSnapshot()).toEndWith(first);
+  expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`), 'utf8'))).toMatchObject({ status: 'failed', error: 'probe_failed', evidence_path: '/probe/evidence.json' });
   const ledger = join(process.env.SUPERAGENT_HOME!, 'runs', 'referenced.json');
   mkdirSync(join(process.env.SUPERAGENT_HOME!, 'runs'));
   writeFileSync(ledger, JSON.stringify({ run_id: 'referenced', archon_run_id: 'a', repo: f.source, engine_snapshot: snapshot }));
@@ -179,7 +181,7 @@ test('failed read-only candidate retries explicitly while in-service snapshots s
 });
 
 // prettier-ignore
-test('auto promotion detaches once and marks a lost promoter with an explicit retry', () => {
+test('auto promotion detaches once and marks a lost promoter with an explicit retry', async () => {
   const f = sourceFixture(),
     first = f.sha();
   promote(first, f.evidence);
@@ -196,4 +198,9 @@ test('auto promotion detaches once and marks a lost promoter with an explicit re
   state = 'offline';
   expect(autoPromote(deps)).toMatchObject({ sha: second, error: expect.stringContaining('superagent engine promote') });
   expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('failed');
+  const h = sourceFixture(), sha = h.sha(), token = 'handshake', child = Bun.spawn([process.execPath, join(import.meta.dir, '../src/cli.ts'), 'engine', 'promote', sha, '--bootstrap-evidence', h.evidence], { env: { ...process.env, SA_ENGINE_PROMOTER_TOKEN: token }, stdout: 'pipe', stderr: 'pipe' }), identity = inspectProcess(child.pid);
+  if (identity.state !== 'online') throw new Error('fixture promoter unavailable');
+  const childMarker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${sha}.json`); mkdirSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions'), { recursive: true });
+  writeFileSync(childMarker, JSON.stringify({ sha, status: 'running', pid: child.pid, pid_start: identity.start, host: 'fixture', token, at: new Date().toISOString() }));
+  expect(await child.exited, (await new Response(child.stderr).text())).toBe(0); expect(JSON.parse(readFileSync(childMarker, 'utf8')).status).toBe('promoted');
 });
