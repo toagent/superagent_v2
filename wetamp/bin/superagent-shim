@@ -18,19 +18,22 @@ verb=${1:-}
 if [[ "$verb" == supervise-tick ]]; then
   schedule=$(bun "$current/wetamp/src/cli.ts" supervise-tick --schedule)
   printf '%s\n' "$schedule"
+  tick_status=0
   while IFS=$'\t' read -r snapshot ids; do
     [[ -n "$snapshot" && -n "$ids" ]] || continue
     IFS=',' read -r -a run_ids <<< "$ids"
     args=(supervise-tick --no-global)
     for run in "${run_ids[@]}"; do args+=(--runs "$run"); done
-    SA_SERVED_RUN="${run_ids[0]}" bun "$snapshot/wetamp/src/cli.ts" "${args[@]}"
+    if ! SA_SERVED_RUN="${run_ids[0]}" bun "$snapshot/wetamp/src/cli.ts" "${args[@]}"; then
+      tick_status=1
+    fi
   done < <(bun -e '
     const chunks = await Bun.stdin.text();
     const lines = chunks.trim().split("\n");
     const value = JSON.parse(lines.at(-1) || "{}");
     for (const group of value.groups || []) console.log(`${group.snapshot}\t${group.runs.join(",")}`);
   ' <<< "$schedule")
-  exit 0
+  exit "$tick_status"
 fi
 
 case "$verb" in

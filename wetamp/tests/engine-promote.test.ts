@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
-import { currentEngineSnapshot, promote, rollback } from '../src/engine';
+import { autoPromote, currentEngineSnapshot, promote, rollback } from '../src/engine';
 import { sh, tmp } from './helpers';
 
 const original = { ...process.env };
@@ -16,6 +16,7 @@ function sourceFixture(): { root: string; source: string; evidence: string; sha:
     source = join(root, 'source');
   sh(`git clone -q --no-hardlinks '${join(import.meta.dir, '..', '..')}' '${source}'`, root);
   sh('git config user.name test && git config user.email test@example.com', source);
+  sh('git branch -M 1.0.0', source);
   const acceptance = join(source, 'wetamp', 'scripts', 'engine-acceptance.sh');
   writeFileSync(acceptance, '#!/usr/bin/env bash\nexit 0\n');
   chmodSync(acceptance, 0o755);
@@ -45,14 +46,29 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   expect(() => promote(first, f.evidence)).toThrow('first-use only');
   const second = commit(f.source, 'second');
   expect(promote(second).sha).toBe(second);
+  const installedAcceptance = join(
+    process.env.SUPERAGENT_HOME!,
+    'engine',
+    second,
+    'wetamp/scripts/engine-acceptance.sh'
+  );
+  expect(statSync(installedAcceptance).mode & 0o111).not.toBe(0);
+  expect(Bun.spawnSync(['bash', '-n', installedAcceptance]).exitCode).toBe(0);
+  sh(`git switch -qc side '${first}'`, f.source);
+  const divergent = commit(f.source, 'divergent');
+  expect(() => promote(divergent)).toThrow('not 1.0.0 HEAD');
+  expect(
+    existsSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${divergent}.json`))
+  ).toBe(false);
+  sh('git switch -q 1.0.0', f.source);
   expect(rollback()).toEqual({ from: second, to: first });
-  expect(() => promote(second)).toThrow('sha is rejected');
+  expect(() => promote(second.slice(0, 8))).toThrow('sha is rejected');
   const third = commit(f.source, 'third');
   expect(promote(third).sha).toBe(third);
   expect(currentEngineSnapshot()).toEndWith(third);
 });
 
-test('promotion lock, newest receipt, and protocol downgrade fail closed', () => {
+test('promotion lock and protocol downgrade fail closed without publishing a receipt', () => {
   const f = sourceFixture(),
     first = f.sha();
   promote(first, f.evidence);
@@ -65,22 +81,33 @@ test('promotion lock, newest receipt, and protocol downgrade fail closed', () =>
     if (held.ok) held.release();
   }
 
-  const second = commit(f.source, 'second'),
-    third = commit(f.source, 'third');
+  const second = commit(f.source, 'second');
   const receipts = join(engine, 'receipts');
-  writeFileSync(
-    join(receipts, `${third}.json`),
-    JSON.stringify({
-      sha: third,
-      protocol_version: 1,
-      acceptance_hash: 'x',
-      results: [],
-      at: new Date().toISOString(),
-    })
-  );
-  expect(() => promote(second)).toThrow('newer verified sha exists');
   const firstReceipt = JSON.parse(readFileSync(join(receipts, `${first}.json`), 'utf8'));
   firstReceipt.protocol_version = 2;
   writeFileSync(join(receipts, `${first}.json`), JSON.stringify(firstReceipt));
-  expect(() => promote(third)).toThrow('protocol downgrade');
+  expect(() => promote(second)).toThrow('protocol downgrade');
+  expect(existsSync(join(receipts, `${second}.json`))).toBe(false);
+});
+
+test('auto promotion follows 1.0.0 HEAD and records a failed attempt once', () => {
+  const f = sourceFixture(),
+    first = f.sha();
+  promote(first, f.evidence);
+  delete process.env.SA_ENGINE_AUTO_PROMOTE;
+  const second = commit(f.source, 'second');
+  expect(autoPromote()).toMatchObject({ sha: second, promoted: true });
+
+  writeFileSync(
+    join(f.source, 'wetamp/scripts/engine-acceptance.sh'),
+    '#!/usr/bin/env bash\nexit 9\n'
+  );
+  sh('git add wetamp/scripts/engine-acceptance.sh && git commit -qm failing-acceptance', f.source);
+  const third = f.sha(),
+    failed = autoPromote();
+  expect(failed).toMatchObject({ sha: third, promoted: false, error: expect.any(String) });
+  const marker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${third}.json`),
+    before = readFileSync(marker, 'utf8');
+  expect(autoPromote()).toEqual(failed);
+  expect(readFileSync(marker, 'utf8')).toBe(before);
 });

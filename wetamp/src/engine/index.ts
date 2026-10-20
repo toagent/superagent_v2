@@ -29,6 +29,7 @@ export interface EngineReceipt {
 const root = (): string => join(home().sa, 'engine');
 const receiptsDir = (): string => join(root(), 'receipts');
 const currentLink = (): string => join(root(), 'current');
+const promotionDir = (): string => join(root(), 'promotions');
 const sourceRoot = (): string =>
   resolve(
     process.env.SA_ENGINE_SOURCE !== undefined && process.env.SA_ENGINE_SOURCE !== ''
@@ -66,6 +67,8 @@ const git = (args: string[], cwd = sourceRoot()): string => {
   if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${p.stderr.toString().trim()}`);
   return p.stdout.toString().trim();
 };
+const canonicalSha = (value: string): string => git(['rev-parse', '--verify', `${value}^{commit}`]);
+const releaseHead = (): string => git(['rev-parse', '--verify', 'refs/heads/1.0.0^{commit}']);
 
 const receiptPath = (sha: string): string => join(receiptsDir(), `${sha}.json`);
 const receipt = (sha: string): EngineReceipt | undefined => {
@@ -89,7 +92,8 @@ const receipts = (): EngineReceipt[] =>
 export function bootstrapEngineSnapshot(): string | undefined {
   const first = receipts().at(0);
   if (first === undefined) return undefined;
-  return existsSync(join(root(), first.sha)) ? join(root(), first.sha) : undefined;
+  const snapshot = join(root(), first.sha);
+  return existsSync(snapshot) ? realpathSync(snapshot) : undefined;
 }
 
 const rejected = (): string[] => {
@@ -100,6 +104,14 @@ const rejected = (): string[] => {
     return [];
   }
 };
+const isRejected = (sha: string): boolean =>
+  rejected().some(value => {
+    try {
+      return canonicalSha(value) === sha;
+    } catch {
+      return value === sha;
+    }
+  });
 
 const shaOfSnapshot = (path: string): string => basename(path);
 const isAncestor = (older: string, newer: string): boolean =>
@@ -127,7 +139,6 @@ const makeReadonly = (path: string): void => {
 function prepareSnapshot(sha: string): string {
   const snapshot = join(root(), sha);
   if (existsSync(snapshot)) return snapshot;
-  git(['rev-parse', '--verify', `${sha}^{commit}`]);
   mkdirSync(root(), { recursive: true });
   git(['worktree', 'add', '--detach', snapshot, sha]);
   const install = Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], {
@@ -172,10 +183,12 @@ export function promote(sha: string, bootstrapEvidence?: string): EngineReceipt 
   const held = lock(join(root(), 'engine.lock'));
   if (!held.ok) throw new Error('engine promote: locked');
   try {
+    sha = canonicalSha(sha);
     const current = currentEngineSnapshot();
     if (bootstrapEvidence && current)
       throw new Error('engine promote: bootstrap evidence is first-use only');
-    if (rejected().includes(sha)) throw new Error('engine promote: sha is rejected');
+    if (isRejected(sha)) throw new Error('engine promote: sha is rejected');
+    if (sha !== releaseHead()) throw new Error('engine promote: candidate is not 1.0.0 HEAD');
     const snapshot = prepareSnapshot(sha);
     const next = bootstrapEvidence
       ? (() => {
@@ -191,7 +204,6 @@ export function promote(sha: string, bootstrapEvidence?: string): EngineReceipt 
           } satisfies EngineReceipt;
         })()
       : automaticReceipt(sha, snapshot);
-    writeAtomic(receiptPath(sha), JSON.stringify(next, null, 2) + '\n');
     const currentSha = current && shaOfSnapshot(current);
     if (currentSha && !isAncestor(currentSha, sha))
       throw new Error('engine promote: candidate is not a current descendant');
@@ -200,6 +212,9 @@ export function promote(sha: string, bootstrapEvidence?: string): EngineReceipt 
     const currentReceipt = currentSha && receipt(currentSha);
     if (currentReceipt && next.protocol_version < currentReceipt.protocol_version)
       throw new Error('engine promote: protocol downgrade');
+    if (sha !== releaseHead())
+      throw new Error('engine promote: 1.0.0 HEAD changed during acceptance');
+    writeAtomic(receiptPath(sha), JSON.stringify(next, null, 2) + '\n');
     switchCurrent(snapshot);
     return next;
   } finally {
@@ -280,17 +295,43 @@ export function engineCommand(args: string[]): unknown {
 export function autoPromote(): { sha: string; promoted: boolean; error?: string } | undefined {
   const current = currentEngineSnapshot();
   if (process.env.SA_ENGINE_AUTO_PROMOTE === '0' || current === undefined) return undefined;
+  mkdirSync(promotionDir(), { recursive: true });
   try {
-    const sha = git(['rev-parse', 'HEAD']);
+    const sha = releaseHead();
     if (shaOfSnapshot(current) === sha) return { sha, promoted: false };
+    const marker = join(promotionDir(), `${sha}.json`);
+    if (existsSync(marker)) {
+      const prior = JSON.parse(readFileSync(marker, 'utf8')) as { error?: string };
+      return { sha, promoted: false, error: prior.error ?? 'promotion already attempted' };
+    }
     promote(sha);
+    writeAtomic(
+      marker,
+      JSON.stringify({ sha, status: 'promoted', at: new Date().toISOString() }) + '\n'
+    );
     return { sha, promoted: true };
   } catch (error) {
-    return {
+    const result = {
       sha: 'unknown',
       promoted: false,
       error: error instanceof Error ? error.message : String(error),
     };
+    try {
+      const sha = releaseHead();
+      writeAtomic(
+        join(promotionDir(), `${sha}.json`),
+        JSON.stringify({
+          sha,
+          status: 'failed',
+          error: result.error,
+          at: new Date().toISOString(),
+        }) + '\n'
+      );
+      result.sha = sha;
+    } catch {
+      // A missing release ref is already preserved in result.error.
+    }
+    return result;
   }
 }
 
@@ -320,9 +361,13 @@ export function assertEngineAccess(argv: string[]): void {
     throw new Error('engine identity: candidate checkout cannot write production state');
   if (!mutating || (verb === 'supervise-tick' && argv.includes('--no-global'))) return;
   if (!served) throw new Error('engine identity: non-current snapshot requires SA_SERVED_RUN');
+  const runVerbs = new Set(['resume', 'recover', 'decide', 'land', 'cancel', 'accept']);
+  if (!runVerbs.has(verb) || argv[1] !== served)
+    throw new Error('engine identity: non-current snapshot cannot execute an unscoped write');
   const ledger = JSON.parse(readFileSync(join(home().sa, 'runs', `${served}.json`), 'utf8')) as {
     engine_snapshot?: string;
   };
-  if (!ledger.engine_snapshot || resolve(ledger.engine_snapshot) !== running)
+  const pinned = ledger.engine_snapshot ?? bootstrapEngineSnapshot();
+  if (!pinned || resolve(pinned) !== running)
     throw new Error('engine identity: SA_SERVED_RUN snapshot mismatch');
 }
