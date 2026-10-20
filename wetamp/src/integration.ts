@@ -3,6 +3,9 @@ import { realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS } from './archon';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
+import type { PublishReceipt, PublishResult, SyncResult } from './contract';
+
+export type { PublishReceipt, PublishResult, SyncResult } from './contract';
 
 /** Fixed codes are safe for intervention persistence; diagnostics stay in message. */
 export class LandError extends Error {
@@ -76,15 +79,6 @@ export const targetCheckout = (worktrees: string, branch: string): string | unde
     .find(line => line.startsWith('worktree '))
     ?.slice(9);
 
-export type SyncResult =
-  | {
-      status: 'noop' | 'merged';
-      target_tip: string;
-      merge_base: string;
-      head: string;
-    }
-  | { status: 'conflict'; target_tip: string; files: string[] };
-
 export interface PublishRun {
   worktree: string;
   target: Pick<DeliveryTarget, 'checkout' | 'branch'>;
@@ -102,27 +96,6 @@ export interface PublishRun {
 export interface PublishExpected {
   target_tip: string;
 }
-
-export interface PublishReceipt {
-  task: string;
-  source: string;
-  target: Pick<DeliveryTarget, 'checkout' | 'branch'>;
-  target_tip: string;
-  contract: string;
-  evidence: string;
-  integrated: string;
-  status: 'published';
-}
-
-export type PublishResult =
-  | { status: 'published'; receipt: PublishReceipt }
-  | { status: 'advanced'; target_tip: string }
-  | { status: 'dirty'; paths: string[] }
-  | {
-      status: 'rejected';
-      reason: 'protected_target' | 'not_descendant' | 'review_stale' | 'target_checkout_changed';
-      evidence: string;
-    };
 
 export class IntegrationError extends Error {
   constructor(

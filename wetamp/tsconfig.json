@@ -7,5 +7,6 @@
     "scripts/**/*.ts",
     "templates/.archon/scripts/**/*",
     "../packages/workflows/src/defaults/text-imports.d.ts"
-  ]
+  ],
+  "exclude": ["tests/contract-negative.ts"]
 }
