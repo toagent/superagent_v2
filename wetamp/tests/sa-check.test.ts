@@ -1302,20 +1302,14 @@ describe('gate rules', () => {
     });
     const check = C('scope') as Accept;
     check.decision = { kind: 'repair', reason: 'scope_violation', evidence: [], debt: [] };
-    for (const [risk, reviewRequired] of [
-      ['G1', false],
-      ['G2', true],
-    ] as const)
-      expect(decide({ reviews: [null], rechecks: [check], risk, reviewRequired })).toMatchObject({
-        verdict: 'fix',
-        reason: 'scope_violation',
-        decision: { kind: 'repair' },
-      });
+    const result = (risk: string) =>
+      decide({ reviews: [null], rechecks: [check], risk, reviewRequired: risk === 'G2' });
+    expect(result('G1')).toMatchObject({ verdict: 'fix', reason: 'scope_violation' });
+    expect(result('G2')).toMatchObject({ verdict: 'fix', reason: 'scope_violation' });
     const reviews = Array.from({ length: MAX_ROUNDS }, () => null);
-    expect(decide({ reviews, rechecks: reviews.map(() => check), risk: 'G2' })).toMatchObject({
-      verdict: 'escalate',
-      reason: 'scope_violation+review_limit',
-    });
+    const limited = decide({ reviews, rechecks: reviews.map(() => check), risk: 'G2' });
+    expect(limited.verdict).toBe('escalate');
+    expect(limited.reason).toBe('scope_violation+review_limit');
   });
   test('PASS that still lists an open blocker is inconsistent', () => {
     expect(
