@@ -3,13 +3,14 @@ import { join } from 'node:path';
 import {
   deliveryProjection,
   gateHashes,
+  IntegrationError,
   landEvidence,
   runDeliveryEntry,
   type DeliveryReceipt,
 } from '../src/land';
 import type { Ledger } from '../src/cli';
 import { inputEnvVars, type ShellInputContext } from '../../packages/workflows/src/dag-executor';
-import { fixtureEnv } from './helpers';
+import { fixtureEnv, tmp } from './helpers';
 
 test('1.0.0 gate hash bindings remain readable by publish', () => {
   const ctx: ShellInputContext = {
@@ -81,15 +82,20 @@ test('legacy delivery entry fails clearly without loading a run', () => {
   expect(result.stderr.toString()).toContain('legacy delivery removed; run is terminal');
 });
 
-test('delivery entry reports failures without a stack trace', () => {
+test('delivery entry reports failures without a stack trace', async () => {
   const error = spyOn(console, 'error').mockImplementation(() => {});
+  const artifacts = tmp();
   try {
-    expect(
-      runDeliveryEntry(() => {
-        throw new Error('legacy delivery removed; run is terminal');
-      })
-    ).toBe(false);
-    expect(error).toHaveBeenCalledWith('Error: legacy delivery removed; run is terminal');
+    runDeliveryEntry(
+      () => {
+        throw new IntegrationError('git_lock_held', 'holder unknown');
+      },
+      fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'sync-m1' })
+    );
+    expect(error).toHaveBeenCalledWith('integration_git_lock_held: holder unknown');
+    expect(await Bun.file(join(artifacts, 'sync-m1.json')).text()).toContain(
+      '"reason": "git_lock_held"'
+    );
   } finally {
     error.mockRestore();
   }
