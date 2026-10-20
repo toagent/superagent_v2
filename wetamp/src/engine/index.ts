@@ -320,7 +320,7 @@ export interface PromotionDependencies {
   probe?: (snapshot: string) => ProbeEvidence;
 }
 
-function runSnapshotProbe(snapshot: string): ProbeEvidence {
+export function runSnapshotProbe(snapshot: string): ProbeEvidence {
   const scratch = join(tmpdir(), `sa-engine-probe-${crypto.randomUUID()}`),
     evidencePath = join(scratch, 'evidence.json'),
     started = Date.now();
@@ -345,6 +345,7 @@ function runSnapshotProbe(snapshot: string): ProbeEvidence {
   const output = result.stdout.toString() + result.stderr.toString(),
     value = lastJson(output);
   if (
+    result.exitCode === 0 &&
     value &&
     typeof value.ok === 'boolean' &&
     value.level === 'G1' &&

@@ -10,7 +10,13 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
-import { autoPromote, currentEngineSnapshot, promote, rollback } from '../src/engine';
+import {
+  autoPromote,
+  currentEngineSnapshot,
+  promote,
+  rollback,
+  runSnapshotProbe,
+} from '../src/engine';
 import type { ProbeEvidence } from '../src/probe';
 import { sh, tmp } from './helpers';
 
@@ -55,6 +61,48 @@ const successfulProbe = (): ProbeEvidence =>
   JSON.parse(
     '{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}'
   );
+
+test('snapshot probe executes the candidate with isolated homes and preserves failed output', () => {
+  const root = tmp(),
+    snapshot = join(root, 'candidate'),
+    cli = join(snapshot, 'wetamp', 'src', 'cli.ts'),
+    trace = join(root, 'trace.json');
+  mkdirSync(join(snapshot, 'wetamp', 'src'), { recursive: true });
+  process.env.SA_ENGINE_PROBE_TRACE = trace;
+  writeFileSync(
+    cli,
+    `import { mkdirSync, writeFileSync } from 'node:fs';
+const home = process.env.SUPERAGENT_HOME!;
+mkdirSync(home, { recursive: true });
+const evidence = home + '/candidate-evidence.json';
+writeFileSync(evidence, '{}');
+writeFileSync(process.env.SA_ENGINE_PROBE_TRACE!, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), home, archon: process.env.ARCHON_HOME }));
+console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: evidence }));
+`
+  );
+  const evidence = runSnapshotProbe(snapshot),
+    invoked = JSON.parse(readFileSync(trace, 'utf8'));
+  expect(evidence.ok).toBe(true);
+  expect(invoked.argv).toEqual(['engine', 'probe', 'G1']);
+  expect(invoked.cwd).toBe(join(snapshot, 'wetamp'));
+  expect(invoked.home).not.toBe(process.env.SUPERAGENT_HOME);
+  expect(invoked.archon).toBe(join(invoked.home, 'archon'));
+
+  writeFileSync(
+    cli,
+    `console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: '/forged' }));
+console.error('candidate probe stderr');
+process.exit(7);
+`
+  );
+  const failed = runSnapshotProbe(snapshot);
+  expect(failed).toMatchObject({ ok: false, reason: 'probe_process_failed' });
+  expect(failed.error).toContain('candidate probe stderr');
+  expect(JSON.parse(readFileSync(failed.evidence_path, 'utf8'))).toMatchObject({
+    ok: false,
+    reason: 'probe_process_failed',
+  });
+});
 
 test('bootstrap, descendant promotion, rollback rejection, and a newer descendant', () => {
   const f = sourceFixture(),
