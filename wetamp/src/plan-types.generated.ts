@@ -82,6 +82,10 @@ export interface Plan {
     risk: 'G0' | 'G1' | 'G2';
     size: 'S' | 'M' | 'L';
     /**
+     * Maximum net added non-test, non-generated lines since the run start merge-base
+     */
+    max_net_lines?: number;
+    /**
      * Initial author: general by default; set soldier explicitly for a non-G2 package to draft for general review
      */
     draft?: 'soldier' | 'general';
@@ -152,3 +156,9 @@ export interface Caps1 {
   git?: 'branch' | 'commit';
   mcp?: string[];
 }
+
+export const GENERATED_OUTPUT_PATHS = [
+  'wetamp/src/plan-types.generated.ts',
+  'wetamp/templates/.archon/scripts/failure-class.ts',
+  'wetamp/templates/.archon/scripts/reasons.json',
+] as const;

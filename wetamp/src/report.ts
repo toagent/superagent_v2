@@ -57,6 +57,7 @@ import type { SerializedNodeData } from '../../packages/workflows/src/node-recor
 import type { RunView } from './archon';
 import { workflowSourceMetadataSchema } from '../../packages/workflows/src/schemas/workflow-run';
 import { publishProjection } from './land';
+import { reasonOf } from './reasons';
 import {
   capturedSourceRoots,
   DEFAULT_WORKFLOW_SOURCE_CONFIG,
@@ -128,6 +129,7 @@ export function reportSummary(report: Record<string, unknown>): Record<string, u
     ...Object.fromEntries(Object.entries(report).filter(([, v]) => typeof v === 'number' || typeof v === 'string')),
     delivery: report.delivery, undelivered: report.undelivered,
     metrics: report.metrics, cancellations: report.cancellations, interventions,
+    consolidation: report.consolidation,
     demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length, by_request: demands.by_request, unattributed: demands.unattributed },
     usage: Object.fromEntries(['total', 'investment', 'supplemental', 'learning', 'window'].map(k => [k, usage[k]])),
     jobs: { phase_coverage: jobs.phase_coverage }, repo_missing: (report.repo_missing as unknown[]).length,
@@ -514,6 +516,48 @@ export function interventionStats(ls: Ledger[]): Record<string, unknown> {
   };
 }
 
+export function consolidationMetrics(
+  pairs: Pair[],
+  titles: string[] | null,
+  window: { since: string; until: string }
+): Record<string, unknown> {
+  const first = pairs.map(pair => firstPassOf(pair));
+  let engine_failures = 0;
+  for (const { ledger, run } of pairs) {
+    if (run instanceof Error) continue;
+    const artifacts = artifactsOf(run);
+    for (const node of run.nodes ?? []) {
+      if (node.state !== 'failed' || /^(code|repair|fix|review)-/.test(node.nodeId)) continue;
+      const evidence = evidenceJson(ledger, artifacts, `${node.nodeId}.json`) as {
+        reason?: unknown;
+        decision?: { reason?: unknown };
+      } | null;
+      const reason = decisionOf(evidence)?.reason ?? evidence?.reason;
+      if (typeof reason === 'string' && reasonOf(reason)?.owner === 'engine') engine_failures++;
+    }
+  }
+  const known = first.filter((value): value is boolean => typeof value === 'boolean');
+  const fixes = titles?.filter(title => /fix|repair/i.test(title)).length ?? 0;
+  return {
+    window,
+    fix_commit_share:
+      titles === null
+        ? 'unknown'
+        : {
+            matching: fixes,
+            commits: titles.length,
+            ratio: titles.length ? fixes / titles.length : 0,
+          },
+    first_pass_rate: {
+      passed: known.filter(Boolean).length,
+      known: known.length,
+      unknown: first.length - known.length,
+      ratio: known.length ? known.filter(Boolean).length / known.length : 'unknown',
+    },
+    engine_failure_count: engine_failures,
+  };
+}
+
 /**
  * 全部登记 run：summarize 计数 + usage（总计、按 run / 里程碑 / 角色 / 第几次调用）。`--events` 的输出不带 nodes，
  * 所以当前代际 getRun 供 summarize，全部代际事件流供用量；事件查不到的代际记入 usage.unreadable，不吞错。
@@ -655,6 +699,25 @@ export function buildReport(
       ])
     ),
     metrics: metricsOf(snapshot.rows, snapshot.summary, Date.now()),
+    consolidation: consolidationMetrics(
+      pairs,
+      (() => {
+        const result = spawnSync(
+          'git',
+          [
+            'log',
+            ...(since ? [`--since=${since}`] : []),
+            `--until=${snapshot.at}`,
+            '--format=%s',
+            '--',
+            'wetamp',
+          ],
+          { cwd: join(WETAMP, '..'), encoding: 'utf8' }
+        );
+        return result.status === 0 ? result.stdout.trim().split('\n').filter(Boolean) : null;
+      })(),
+      { since: since || 'all', until: snapshot.at }
+    ),
     cancellations,
     interventions: interventionStats(ls),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations, evidenceFor), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },

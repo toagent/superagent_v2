@@ -177,6 +177,11 @@
           "size": {
             "enum": ["S", "M", "L"]
           },
+          "max_net_lines": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Maximum net added non-test, non-generated lines since the run start merge-base"
+          },
           "draft": {
             "enum": ["soldier", "general"],
             "description": "Initial author: general by default; set soldier explicitly for a non-G2 package to draft for general review"

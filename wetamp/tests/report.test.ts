@@ -20,6 +20,7 @@ import {
   firstPassOf,
   planOf,
   cancellationStats,
+  consolidationMetrics,
 } from '../src/report';
 import type { Job } from '../src/jobs';
 import type { UsageSession } from '../src/usage';
@@ -1296,6 +1297,59 @@ test('engine comparison uses disjoint nearest matches and requires both cohorts'
     verdict: 'insufficient_sample',
     groups: { old: { runs: 0 } },
   });
+});
+
+test('consolidation metrics use titles, first-round evidence and typed engine reasons', () => {
+  const root = tmp();
+  const saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root });
+  writeFileSync(
+    join(root, 'plan.json'),
+    JSON.stringify({ packages: [{ id: 'core', title: 'core', risk: 'G1' }] })
+  );
+  const pair = (id: string, status: 'completed' | 'failed', nodeId: string) => {
+    const art = join(root, 'artifacts/runs', id);
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(art, `${status === 'completed' ? 'gate-m1-r1' : nodeId}.json`),
+      JSON.stringify({
+        decision: {
+          kind: status === 'completed' ? 'advance' : 'block',
+          reason: status === 'completed' ? null : 'review_inconsistent',
+          evidence: [],
+          debt: [],
+        },
+      })
+    );
+    return {
+      ledger: { gen_dir: root, repo: root, run_id: id } as Ledger,
+      run: {
+        id,
+        status,
+        output_root: root,
+        nodes: [{ nodeId, state: status }],
+      } as Parameters<typeof criticalPath>[0],
+    };
+  };
+  try {
+    expect(
+      consolidationMetrics(
+        [pair('pass', 'completed', 'code-core'), pair('fail', 'failed', 'gate-m1-r1')],
+        ['fix(core): repair', 'feature', 'repair(api)'],
+        { since: '2026-10-13', until: '2026-10-20' }
+      )
+    ).toEqual({
+      window: { since: '2026-10-13', until: '2026-10-20' },
+      fix_commit_share: { matching: 2, commits: 3, ratio: 2 / 3 },
+      first_pass_rate: { passed: 1, known: 2, unknown: 0, ratio: 1 / 2 },
+      engine_failure_count: 1,
+    });
+  } finally {
+    ['SUPERAGENT_HOME', 'ARCHON_HOME'].forEach((key, index) => {
+      if (saved[index] === undefined) delete process.env[key];
+      else process.env[key] = saved[index];
+    });
+  }
 });
 
 test('engine projection groups ledger commits and unions retry silences without emitting bodies', () => {

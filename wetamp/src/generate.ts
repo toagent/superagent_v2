@@ -43,6 +43,7 @@ import {
 import {
   capsOf,
   draftFor,
+  GENERATED_OUTPUT_PATHS,
   milestones,
   type Caps,
   type Milestone,
@@ -274,6 +275,7 @@ export function buildWorkflow(
     ].join('\n');
   if (delivery && (!run || /[^0-9a-f-]/.test(run))) throw new Error('delivery: invalid run id');
   let after: Node = { depends_on: ['environment'] };
+  let runBase = '';
   const signoff = (
     m: Milestone,
     gates: Node,
@@ -469,6 +471,7 @@ export function buildWorkflow(
       false,
       carried?.recovery?.base ?? plan.base_ref
     );
+    runBase ||= `$${syncReady}.output.merge_base`;
     let base = `$${syncReady}.output.merge_base`;
     // Milestone retries invalidate only cumulative acceptance and review/fix rounds.
     const attempt = `attempt-${m.id}`;
@@ -664,6 +667,12 @@ export function buildWorkflow(
         scope_pkgs,
         base,
         delta_base: `$${prev}.output.head`,
+        ...(p.max_net_lines === undefined
+          ? {}
+          : {
+              run_base: runBase,
+              generated_paths: JSON.stringify(GENERATED_OUTPUT_PATHS),
+            }),
         target_tip: `$${syncReady}.output.target_tip`,
         sync_generation: `$${syncReady}.output.generation`,
         risk: p.risk,
@@ -695,6 +704,17 @@ export function buildWorkflow(
           }
         )
       );
+      const budgetGate = p.max_net_lines === undefined ? undefined : `human-budget-${p.id}`;
+      if (budgetGate)
+        nodes.push({
+          id: budgetGate,
+          approval: {
+            message: `Approve max_net_lines overage for package ${p.id}`,
+            decisions: [{ id: 'approve' }, { id: 'reject' }],
+          },
+          depends_on: [verify],
+          when: `$${verify}.output.reason == 'budget_exceeded'`,
+        });
       const repairContext = `repair-context-${p.id}`;
       if (!fake)
         nodes.push({
@@ -734,7 +754,7 @@ export function buildWorkflow(
       nodes.push(
         check(
           `settle-${p.id}`,
-          [verify, `repair-${p.id}`, pkgAttempt],
+          [verify, `repair-${p.id}`, ...(budgetGate ? [budgetGate] : []), pkgAttempt],
           {
             ...accept,
             kind: 'settle',

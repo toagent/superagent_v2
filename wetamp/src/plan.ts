@@ -5,7 +5,8 @@ import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { WETAMP, assertSQLite, type Console } from './config';
 import type { PolicyBudget } from '../../packages/workflows/src/provider-attempts';
-import type { Plan as PlanInput } from './plan-types.generated';
+import { GENERATED_OUTPUT_PATHS, type Plan as PlanInput } from './plan-types.generated';
+export { GENERATED_OUTPUT_PATHS };
 /** Runtime plans resolve the optional wire budget once at ingestion. */
 export type Plan = Omit<PlanInput, 'budget'> & { budget: NonNullable<PlanInput['budget']> };
 export type Pkg = Plan['packages'][number];

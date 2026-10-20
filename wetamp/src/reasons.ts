@@ -187,6 +187,7 @@ const repaired = base
 export const REASONS: Reason[] = [
   deterministic('review_not_required', 'gate', 'engine', '验收通过且无需评审'),
   deterministic('land_target_unknown', 'needs', 'human', '合入缺少可验证的本地目标分支'),
+  deterministic('budget_exceeded', 'signoff', 'human', '净增行数超过工作包上限'),
   ...base,
   ...repaired,
   ...[...base, ...repaired].map(r => ({

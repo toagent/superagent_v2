@@ -112,6 +112,7 @@ export interface Accept {
   requirement_contract?: RequirementContract[];
   command_results?: CommandResult[];
   adjudication?: Adjudication;
+  net_lines?: { used: number; limit: number };
 }
 // prettier-ignore
 export interface CheckFailure {
@@ -732,6 +733,45 @@ function changes(base: string): { modes: string[]; paths: string[] }[] {
   return out;
 }
 
+/** Count only authored source growth; exclusions are structural or generator-declared. */
+export function netLinesFromNumstat(raw: string, generated: readonly string[]): number {
+  const excluded = (path: string): boolean => {
+    const parts = path.split('/');
+    return (
+      parts.includes('tests') ||
+      parts.includes('golden') ||
+      path.endsWith('.test.ts') ||
+      generated.some(output => path === output || path.startsWith(output.replace(/\/*$/, '/')))
+    );
+  };
+  let net = 0;
+  for (const row of raw.split('\0').filter(Boolean)) {
+    const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(row);
+    if (!match) throw new Error('budget numstat: malformed git output');
+    if (excluded(match[3])) continue;
+    if (match[1] === '-' || match[2] === '-')
+      throw new Error(`budget numstat: binary file cannot be measured: ${match[3]}`);
+    net += Number(match[1]) - Number(match[2]);
+  }
+  return Math.max(0, net);
+}
+
+export const budgetExceeded = (limit: number | undefined, used: number): boolean =>
+  limit !== undefined && used > limit;
+
+function lineBudget(pkgs: Pkg[], tag: string): Accept['net_lines'] {
+  if (!tag.startsWith('verify-') || pkgs.length !== 1 || pkgs[0].max_net_lines === undefined)
+    return undefined;
+  const generated = json('GENERATED_PATHS');
+  if (!Array.isArray(generated) || generated.some(path => typeof path !== 'string'))
+    throw new Error('generated_paths must be a string array');
+  const used = netLinesFromNumstat(
+    git('diff', '--numstat', '-z', '--no-renames', env('RUN_BASE'), 'HEAD', '--'),
+    generated as string[]
+  );
+  return { used, limit: pkgs[0].max_net_lines };
+}
+
 /**
  * F-13 交付证据（不是沙箱）：同步后的 run tree 对照 scope.write 并记录越界路径。
  * gitlink/symlink 或 risk_paths 推断 G2；代码文件推断 G1。有效风险 = max(声明, 推断)。
@@ -969,6 +1009,12 @@ function acceptOnce(
     join(artifacts, `${tag}.coder.json`),
     reviewRounds
   );
+  const lines = lineBudget(pkgs, tag);
+  if (lines && budgetExceeded(lines.limit, lines.used) && result.disposition === 'advance')
+    Object.assign(result, {
+      reason: 'budget_exceeded',
+      decision: { ...result.decision, reason: 'budget_exceeded' },
+    });
   if (reviewRounds !== undefined && reviewRound >= reviewRounds && result.disposition === 'repair')
     Object.assign(result, {
       disposition: 'fail',
@@ -1004,6 +1050,7 @@ function acceptOnce(
     base_results: baseResults,
     ...baseline,
     ...scope,
+    ...(lines ? { net_lines: lines } : {}),
     head,
     checkout_fingerprint: fingerprint,
   };
