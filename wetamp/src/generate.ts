@@ -623,8 +623,14 @@ export function buildWorkflow(
           {
             id: soldierOk,
             depends_on: [soldier],
-            // bash 节点不接收 with:；引擎把输出内联为单引号串或 $(cat …)，前缀赋值不做分词。
-            bash: `RESULT=$${soldier}.output bun -e 'try{const v=JSON.parse(process.env.RESULT??"");if(Array.isArray(v)&&v.length===1&&v[0]!==""&&v[0]!==null&&!v.some(x=>x?.archon_failed===true))process.stdout.write("used")}catch{}'`,
+            script: [
+              'try {',
+              '  const v = JSON.parse(process.env.INPUTS_RESULT ?? "");',
+              '  if (Array.isArray(v) && v.length === 1 && v[0] !== "" && v[0] !== null && !v.some(x => x?.archon_failed === true)) process.stdout.write("used");',
+              '} catch {}',
+            ].join('\n'),
+            runtime: 'bun',
+            with: { result: ref.value(output<unknown[]>(soldier)) },
           },
           {
             id: soldierReset,

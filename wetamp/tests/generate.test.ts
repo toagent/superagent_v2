@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  assertGeneratedWorkflow,
   buildWorkflow,
   engineHash,
   residentHash,
@@ -600,8 +601,9 @@ describe('buildWorkflow', () => {
     const nodes = nodesOf(
       buildWorkflow(plan, milestones(plan), 'soldier', '/GEN', false, NOW, tiers)
     );
-    // toMatchObject 会把 asymmetric matcher 写回被比较节点，先取出原始 bash。
-    const okSource = String(nodes.find(n => n.id === 'soldier-ok-core')!.bash);
+    const ok = nodes.find(n => n.id === 'soldier-ok-core')!;
+    const okSource = String(ok.script);
+    expect(okSource).toContain('archon_failed === true');
     expect(nodes.find(n => n.id === 'soldier-core')).toMatchObject({
       include: 'sa-soldier-core',
       depends_on: ['soldier-items-core'],
@@ -619,7 +621,8 @@ describe('buildWorkflow', () => {
     expect(nodes.find(n => n.id === 'soldier-ok-core')).toMatchObject({
       id: 'soldier-ok-core',
       depends_on: ['soldier-core'],
-      bash: expect.stringContaining('archon_failed===true'),
+      runtime: 'bun',
+      with: { result: '$soldier-core.output' },
     });
     expect(nodes.find(n => n.id === 'soldier-reset-core')).toEqual({
       id: 'soldier-reset-core',
@@ -628,15 +631,20 @@ describe('buildWorkflow', () => {
       when: "$soldier-ok-core.output != 'used'",
       bash: 'git stash push --include-untracked -m soldier-leftover-core >/dev/null && printf reset',
     });
-    // 真实替换后执行：bash 节点不接收 with:，草稿结果必须内联进 bash 才能判成 used。
-    const okBash = (output: string): string =>
-      substituteNodeOutputRefs(
-        okSource,
-        new Map([['soldier-core', { state: 'completed' as const, output }]]),
-        true
-      );
-    expect(sh(okBash(JSON.stringify([{ ok: "it's" }])), tmp())).toBe('used');
-    expect(sh(okBash(JSON.stringify([{ archon_failed: true }])), tmp())).toBe('');
+    const runOk = (output: string): string => {
+      const result = Bun.spawnSync([process.execPath, '-e', okSource], {
+        env: { ...process.env, INPUTS_RESULT: output },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+      return result.stdout.toString();
+    };
+    expect(runOk(JSON.stringify([{ ok: "it's" }]))).toBe('used');
+    expect(runOk(JSON.stringify([{ archon_failed: true }]))).toBe('');
+    expect(() =>
+      assertGeneratedWorkflow({ name: 'soldier', description: 'soldier', nodes }, false)
+    ).not.toThrow();
     const resetWhen = nodes.find(n => n.id === 'soldier-reset-core')!.when!;
     expect(
       evaluateCondition(
