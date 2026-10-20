@@ -47,7 +47,7 @@ const mutations: Mutation[] = [
     to: "ref.required(\n          output<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256'\n        ),",
     test: 'tests/scenarios/scenario-rest.test.ts',
     name: 'S3',
-    expectedError: 'integration: gate evidence mismatch gate-m1-r1.json',
+    expectedError: '"reason":"producer-not-run"',
   },
   {
     file: 'src/generate.ts',
