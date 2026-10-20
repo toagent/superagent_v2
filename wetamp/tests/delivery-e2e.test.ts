@@ -210,7 +210,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
       };
       let gateSha256 = writeGate(String(synced.target_tip));
       const publishCommand = (tip: string) =>
-        `INPUTS_GATE_1_SHA256=${gateSha256} INPUTS_TARGET_TIP=${tip} INPUTS_REVIEW_REQUIRED=1 bun -e '${publish.script!.replaceAll("'", "'\\''")}'`;
+        `INPUTS_GATE_R1_SHA256=${gateSha256} INPUTS_TARGET_TIP=${tip} INPUTS_REVIEW_REQUIRED=1 bun -e '${publish.script!.replaceAll("'", "'\\''")}'`;
       const publishAt = (tip: string) => runBash(publishCommand(tip), f.worker, env);
       if (mode === 'advanced') {
         writeFileSync(join(f.repo, 'advanced.txt'), 'advanced\n');

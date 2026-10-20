@@ -20,6 +20,7 @@ nodes:
     depends_on:
       - environment
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -44,18 +45,25 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: sync-m1-ready
     depends_on:
       - sync-m1
     trigger_rule: none_failed_min_one_success
-    bash: |-
-      tip=$sync-m1.output.target_tip
-      status=$sync-m1.output.status
-      generation=$sync-m1.output.generation
-      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
-      base=$(git merge-base HEAD "$tip") || exit $?
-      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    script: |-
+      const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };
+      const tip = process.env.INPUTS_TARGET_TIP ?? '';
+      let status = process.env.INPUTS_STATUS ?? '';
+      if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }
+      const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };
+      process.stdout.write(JSON.stringify(output));
+    runtime: bun
+    with:
+      target_tip: $sync-m1.output.target_tip
+      status: $sync-m1.output.status
+      generation: $sync-m1.output.generation
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -80,6 +88,7 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: attempt-m1
     script: sa-context
     runtime: bun
@@ -612,6 +621,7 @@ nodes:
     depends_on:
       - settle-core
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -636,18 +646,25 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: sync-review-m1-ready
     depends_on:
       - sync-review-m1
     trigger_rule: none_failed_min_one_success
-    bash: |-
-      tip=$sync-review-m1.output.target_tip
-      status=$sync-review-m1.output.status
-      generation=$sync-review-m1.output.generation
-      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
-      base=$(git merge-base HEAD "$tip") || exit $?
-      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    script: |-
+      const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };
+      const tip = process.env.INPUTS_TARGET_TIP ?? '';
+      let status = process.env.INPUTS_STATUS ?? '';
+      if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }
+      const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };
+      process.stdout.write(JSON.stringify(output));
+    runtime: bun
+    with:
+      target_tip: $sync-review-m1.output.target_tip
+      status: $sync-review-m1.output.status
+      generation: $sync-review-m1.output.generation
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -672,6 +689,7 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: diff-m1-r1
     script: sa-check
     runtime: bun
@@ -3971,7 +3989,7 @@ nodes:
     trigger_rule: none_failed_min_one_success
     loop_group:
       max_iterations: 3
-      until_bash: test $publish-m1.output.status = published
+      until_bash: bun -e "const v=await Bun.file(process.env.ARTIFACTS_DIR+'/publish-m1.json').json();process.exit(v.status===\"published\"?0:1)"
       nodes:
         - id: resync-m1
           bash: |-
@@ -3980,6 +3998,7 @@ nodes:
             printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
           timeout: 1200000
           output_format:
+            title: SyncOutput
             type: object
             properties:
               status:
@@ -4004,6 +4023,7 @@ nodes:
               - status
               - target_tip
               - generation
+            additionalProperties: false
         - id: final-accept-m1
           script: sa-check
           runtime: bun
@@ -4231,31 +4251,111 @@ nodes:
         - id: publish-m1
           depends_on:
             - final-accept-m1
-          bash: printf '{"status":"published","target_tip":"%s"}' $resync-m1.output.target_tip
+          script: |-
+            const tip = process.env.INPUTS_TARGET_TIP ?? '';
+            const output = { status: 'published', receipt: { task: 'fake', source: tip, target: { checkout: 'fake', branch: 'fake' }, target_tip: tip, contract: 'fake', evidence: 'fake', integrated: tip, status: 'published' } };
+            await Bun.write(process.env.ARTIFACTS_DIR + '/publish-m1.json', JSON.stringify(output));
+            process.stdout.write(JSON.stringify(output));
+          runtime: bun
+          with:
+            target_tip: $resync-m1.output.target_tip
           timeout: 1200000
           output_format:
-            type: object
-            properties:
-              status:
-                enum:
-                  - published
-                  - advanced
-                  - dirty
-                  - rejected
-              target_tip:
-                type: string
-              paths:
-                type: array
-                items:
-                  type: string
-              reason:
-                type: string
-              evidence:
-                type: string
-              receipt:
+            title: PublishOutput
+            oneOf:
+              - type: object
+                properties:
+                  status:
+                    const: published
+                  receipt:
+                    $ref: '#/$defs/PublishReceipt'
+                required:
+                  - status
+                  - receipt
+                additionalProperties: false
+              - type: object
+                properties:
+                  status:
+                    const: advanced
+                  target_tip:
+                    type: string
+                required:
+                  - status
+                  - target_tip
+                additionalProperties: false
+              - type: object
+                properties:
+                  status:
+                    const: dirty
+                  paths:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - status
+                  - paths
+                additionalProperties: false
+              - type: object
+                properties:
+                  status:
+                    const: rejected
+                  reason:
+                    enum:
+                      - protected_target
+                      - not_descendant
+                      - review_stale
+                      - target_checkout_changed
+                      - target_advanced
+                      - target_dirty
+                  target_tip:
+                    type: string
+                  evidence:
+                    type: string
+                required:
+                  - status
+                  - reason
+                additionalProperties: false
+            $defs:
+              PublishReceipt:
                 type: object
-            required:
-              - status
+                properties:
+                  task:
+                    type: string
+                  source:
+                    type: string
+                  target:
+                    type: object
+                    properties:
+                      checkout:
+                        type: string
+                      branch:
+                        type: string
+                      head:
+                        type: string
+                    required:
+                      - checkout
+                      - branch
+                    additionalProperties: false
+                  target_tip:
+                    type: string
+                  contract:
+                    type: string
+                  evidence:
+                    type: string
+                  integrated:
+                    type: string
+                  status:
+                    const: published
+                required:
+                  - task
+                  - source
+                  - target
+                  - target_tip
+                  - contract
+                  - evidence
+                  - integrated
+                  - status
+                additionalProperties: false
   - id: sync-m2
     bash: |-
       tip=$(git rev-parse --verify 'main^{commit}') || exit $?
@@ -4264,6 +4364,7 @@ nodes:
     depends_on:
       - integrate-m1
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -4288,18 +4389,25 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: sync-m2-ready
     depends_on:
       - sync-m2
     trigger_rule: none_failed_min_one_success
-    bash: |-
-      tip=$sync-m2.output.target_tip
-      status=$sync-m2.output.status
-      generation=$sync-m2.output.generation
-      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
-      base=$(git merge-base HEAD "$tip") || exit $?
-      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    script: |-
+      const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };
+      const tip = process.env.INPUTS_TARGET_TIP ?? '';
+      let status = process.env.INPUTS_STATUS ?? '';
+      if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }
+      const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };
+      process.stdout.write(JSON.stringify(output));
+    runtime: bun
+    with:
+      target_tip: $sync-m2.output.target_tip
+      status: $sync-m2.output.status
+      generation: $sync-m2.output.generation
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -4324,6 +4432,7 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: attempt-m2
     script: sa-context
     runtime: bun
@@ -4856,6 +4965,7 @@ nodes:
     depends_on:
       - settle-api
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -4880,18 +4990,25 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: sync-review-m2-ready
     depends_on:
       - sync-review-m2
     trigger_rule: none_failed_min_one_success
-    bash: |-
-      tip=$sync-review-m2.output.target_tip
-      status=$sync-review-m2.output.status
-      generation=$sync-review-m2.output.generation
-      if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi
-      base=$(git merge-base HEAD "$tip") || exit $?
-      printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"
+    script: |-
+      const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };
+      const tip = process.env.INPUTS_TARGET_TIP ?? '';
+      let status = process.env.INPUTS_STATUS ?? '';
+      if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }
+      const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };
+      process.stdout.write(JSON.stringify(output));
+    runtime: bun
+    with:
+      target_tip: $sync-review-m2.output.target_tip
+      status: $sync-review-m2.output.status
+      generation: $sync-review-m2.output.generation
     output_format:
+      title: SyncOutput
       type: object
       properties:
         status:
@@ -4916,6 +5033,7 @@ nodes:
         - status
         - target_tip
         - generation
+      additionalProperties: false
   - id: diff-m2-r1
     script: sa-check
     runtime: bun
@@ -8223,7 +8341,7 @@ nodes:
       - signoff-m2
     loop_group:
       max_iterations: 3
-      until_bash: test $publish-m2.output.status = published
+      until_bash: bun -e "const v=await Bun.file(process.env.ARTIFACTS_DIR+'/publish-m2.json').json();process.exit(v.status===\"published\"?0:1)"
       nodes:
         - id: resync-m2
           bash: |-
@@ -8232,6 +8350,7 @@ nodes:
             printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"
           timeout: 1200000
           output_format:
+            title: SyncOutput
             type: object
             properties:
               status:
@@ -8256,6 +8375,7 @@ nodes:
               - status
               - target_tip
               - generation
+            additionalProperties: false
         - id: final-accept-m2
           script: sa-check
           runtime: bun
@@ -8483,28 +8603,108 @@ nodes:
         - id: publish-m2
           depends_on:
             - final-accept-m2
-          bash: printf '{"status":"published","target_tip":"%s"}' $resync-m2.output.target_tip
+          script: |-
+            const tip = process.env.INPUTS_TARGET_TIP ?? '';
+            const output = { status: 'published', receipt: { task: 'fake', source: tip, target: { checkout: 'fake', branch: 'fake' }, target_tip: tip, contract: 'fake', evidence: 'fake', integrated: tip, status: 'published' } };
+            await Bun.write(process.env.ARTIFACTS_DIR + '/publish-m2.json', JSON.stringify(output));
+            process.stdout.write(JSON.stringify(output));
+          runtime: bun
+          with:
+            target_tip: $resync-m2.output.target_tip
           timeout: 1200000
           output_format:
-            type: object
-            properties:
-              status:
-                enum:
-                  - published
-                  - advanced
-                  - dirty
-                  - rejected
-              target_tip:
-                type: string
-              paths:
-                type: array
-                items:
-                  type: string
-              reason:
-                type: string
-              evidence:
-                type: string
-              receipt:
+            title: PublishOutput
+            oneOf:
+              - type: object
+                properties:
+                  status:
+                    const: published
+                  receipt:
+                    $ref: '#/$defs/PublishReceipt'
+                required:
+                  - status
+                  - receipt
+                additionalProperties: false
+              - type: object
+                properties:
+                  status:
+                    const: advanced
+                  target_tip:
+                    type: string
+                required:
+                  - status
+                  - target_tip
+                additionalProperties: false
+              - type: object
+                properties:
+                  status:
+                    const: dirty
+                  paths:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - status
+                  - paths
+                additionalProperties: false
+              - type: object
+                properties:
+                  status:
+                    const: rejected
+                  reason:
+                    enum:
+                      - protected_target
+                      - not_descendant
+                      - review_stale
+                      - target_checkout_changed
+                      - target_advanced
+                      - target_dirty
+                  target_tip:
+                    type: string
+                  evidence:
+                    type: string
+                required:
+                  - status
+                  - reason
+                additionalProperties: false
+            $defs:
+              PublishReceipt:
                 type: object
-            required:
-              - status
+                properties:
+                  task:
+                    type: string
+                  source:
+                    type: string
+                  target:
+                    type: object
+                    properties:
+                      checkout:
+                        type: string
+                      branch:
+                        type: string
+                      head:
+                        type: string
+                    required:
+                      - checkout
+                      - branch
+                    additionalProperties: false
+                  target_tip:
+                    type: string
+                  contract:
+                    type: string
+                  evidence:
+                    type: string
+                  integrated:
+                    type: string
+                  status:
+                    const: published
+                required:
+                  - task
+                  - source
+                  - target
+                  - target_tip
+                  - contract
+                  - evidence
+                  - integrated
+                  - status
+                additionalProperties: false

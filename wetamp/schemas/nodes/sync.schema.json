@@ -1,0 +1,14 @@
+{
+  "title": "SyncOutput",
+  "type": "object",
+  "properties": {
+    "status": { "enum": ["noop", "merged", "conflict", "resolved"] },
+    "target_tip": { "type": "string" },
+    "merge_base": { "type": "string" },
+    "head": { "type": "string" },
+    "generation": { "type": "integer" },
+    "files": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["status", "target_tip", "generation"],
+  "additionalProperties": false
+}

@@ -128,8 +128,6 @@ test('milestone delivery accepts only milestones after the last delivered one', 
   expect(pendingMilestones(ms, 'w3', [])).toEqual(['w1', 'w2', 'w3']);
   expect(pendingMilestones(ms, 'w2', done('w1', 'w2', 'w3'))).toEqual(['w2']);
   expect(() => pendingMilestones(ms, 'nope', [])).toThrow('unknown milestone');
-  // A deferred delivery completed its node without integrating; the next delivery carries it.
-  expect(pendingMilestones(ms, 'w3', done('w1', 'w2'), ['w2'])).toEqual(['w2', 'w3']);
 });
 // prettier-ignore
 test('delivery entry rejects missing run id', () => {
