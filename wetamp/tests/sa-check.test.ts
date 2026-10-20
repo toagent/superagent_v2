@@ -3947,7 +3947,7 @@ describe('sa-check script', () => {
     );
     expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).not.toContain('# reused');
   });
-  test('F-20/F-13: delta patch retains out-of-scope evidence; risk paths raise the risk', () => {
+  test('F-20/F-13: scope violations repair, recover, honor exemptions, and fail final acceptance', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const commit = (f: string) =>
@@ -3979,7 +3979,7 @@ describe('sa-check script', () => {
       })
     );
     write(['src/']);
-    const go = (risk: string) =>
+    const go = (risk: string, extra: Record<string, string> = {}) =>
       runScript(repo, {
         kind: 'accept',
         plan: p,
@@ -3989,6 +3989,7 @@ describe('sa-check script', () => {
         delta_base: mid,
         risk,
         policy: pol,
+        ...extra,
       }).out as { patch: string; delta: string; risk: string; out_of_scope: string[] };
     const r = go('G0');
     expect(readFileSync(r.delta, 'utf8')).toContain('src/b.md');
@@ -4034,7 +4035,62 @@ describe('sa-check script', () => {
     ).toMatchObject({ ok: true, risk: 'G1', out_of_scope: [] });
     // 原包顺序不能决定累计范围；SCOPE_PKGS 由生成器按实际里程碑拓扑提供。
     write(['src/a.ts']);
-    expect(go('G0')).toMatchObject({ risk: 'G1', out_of_scope: ['src/b.md'] });
+    expect(go('G0')).toMatchObject({
+      risk: 'G1',
+      out_of_scope: ['src/b.md'],
+      disposition: 'repair',
+      reason: 'scope_violation',
+      decision: {
+        kind: 'repair',
+        evidence: expect.arrayContaining([
+          'src/b.md',
+          'Revert out-of-scope changes or report a blocker requesting expanded scope.',
+        ]),
+      },
+    });
+    write(['src/']);
+    expect(go('G0')).toMatchObject({ disposition: 'advance', out_of_scope: [] });
+    write(['src/a.ts']);
+    const configured = JSON.parse(readFileSync(pol, 'utf8'));
+    configured.exempt_paths = ['src/b.md'];
+    writeFileSync(pol, JSON.stringify(configured));
+    expect(go('G0')).toMatchObject({ disposition: 'advance', out_of_scope: [] });
+    configured.exempt_paths = [];
+    writeFileSync(pol, JSON.stringify(configured));
+    const terminal = runScript(repo, {
+      kind: 'accept',
+      plan: p,
+      pkgs: 'a',
+      tag: 'final-accept-m1',
+      base,
+      risk: 'G0',
+      policy: pol,
+      terminal: '1',
+    });
+    expect(terminal.code).toBe(1);
+    expect(terminal.out).toMatchObject({
+      disposition: 'fail',
+      reason: 'scope_violation',
+      out_of_scope: ['src/b.md'],
+    });
+    const exhausted = runScript(repo, {
+      kind: 'settle',
+      plan: p,
+      pkgs: 'a',
+      tag: 'settle-a',
+      base,
+      risk: 'G0',
+      policy: pol,
+      first: 'repair',
+      repaired: '{"status":"done","error_class":null,"needs":[]}',
+    });
+    expect(exhausted.code).toBe(1);
+    expect(exhausted.out).toMatchObject({
+      disposition: 'fail',
+      reason: 'repair_exhausted:scope_violation',
+      repair_reason: 'scope_violation',
+      out_of_scope: ['src/b.md'],
+    });
     write(['src/']);
     commit('src/auth/x.md');
     expect(go('G1')).toMatchObject({ risk: 'G2', out_of_scope: [] });

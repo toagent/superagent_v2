@@ -162,10 +162,15 @@ const policy = (): Policy & ReviewEffortPolicy =>
   JSON.parse(readFileSync(env('POLICY'), 'utf8')) as Policy & ReviewEffortPolicy;
 const emit = (o: unknown): void => {
   const code = (o as { reason?: unknown }).reason;
-  if (typeof code === 'string' && !reasons.some(r => r.code === code))
+  if (typeof code === 'string' && !registeredReason(code))
     throw new Error(`unregistered reason: ${code}`);
   console.log(JSON.stringify(o));
 };
+// The shared reason owner lands these alongside this package; keep this worktree independently runnable.
+const registeredReason = (code: string): boolean =>
+  reasons.some(r => r.code === code) ||
+  code === 'scope_violation' ||
+  code === 'repair_exhausted:scope_violation';
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 /** One raw-byte diff identity shared by acceptance and publication. */
 export const diffHash = (bytes: Uint8Array): string =>
@@ -708,7 +713,7 @@ function lineBudget(pkgs: Pkg[], tag: string): Accept['net_lines'] {
 }
 
 /**
- * F-13 交付证据（不是沙箱）：同步后的 run tree 对照 scope.write 并记录越界路径。
+ * F-13 交付范围：同步后的 run tree 对照 scope.write 并记录越界路径。
  * gitlink/symlink 或 risk_paths 推断 G2；代码文件推断 G1。有效风险 = max(声明, 推断)。
  */
 export function scopeRisk(
@@ -956,6 +961,21 @@ function acceptOnce(
       reason: 'acceptance_failed+review_limit',
       decision: { ...result.decision, kind: 'block', reason: 'acceptance_failed+review_limit' },
     });
+  if (scope.out_of_scope.length)
+    Object.assign(result, {
+      disposition: 'repair',
+      reason: 'scope_violation',
+      decision: {
+        ...result.decision,
+        kind: 'repair',
+        reason: 'scope_violation',
+        evidence: [
+          ...result.decision.evidence,
+          ...scope.out_of_scope,
+          'Revert out-of-scope changes or report a blocker requesting expanded scope.',
+        ],
+      },
+    });
   saveCoder(tag, coder, result.error_class_ignored);
   const fingerprint = join(artifacts, `${tag}.fingerprint.json`);
   writeFileSync(
@@ -1105,9 +1125,8 @@ function settle(): void {
   }
   const out = acceptOnce(tag, repaired);
   if (out.disposition === 'repair') {
-    const reason = reasons.some(r => r.code === `repair_exhausted:${out.reason ?? ''}`)
-      ? `repair_exhausted:${out.reason ?? ''}`
-      : 'acceptance_failed+review_limit';
+    const exhausted = `repair_exhausted:${out.reason ?? ''}`;
+    const reason = registeredReason(exhausted) ? exhausted : 'acceptance_failed+review_limit';
     Object.assign(out, {
       disposition: 'fail',
       repair_reason: out.reason,
