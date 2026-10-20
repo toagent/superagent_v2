@@ -36,7 +36,7 @@ import {
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
-import { caller, control, coord, repoScope, runScope, type Controller } from './coord';
+import { caller, control, coord, repoScope, runScope, same, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import {
   askQuestion,
@@ -204,6 +204,9 @@ export const OPTIONS = {
   'by-engine': { type: 'string' },
   'baseline-days': { type: 'string' },
   'all-held': { type: 'boolean' },
+  mine: { type: 'boolean' },
+  status: { type: 'string' },
+  before: { type: 'string' },
   title: { type: 'string' },
   'request-ref': { type: 'string' },
   card: { type: 'string' },
@@ -304,6 +307,7 @@ export interface Ledger {
     ask_id?: string;
     key?: string;
     reason?: string;
+    actor?: Controller;
   })[];
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
@@ -378,7 +382,8 @@ export function intervention<
   ask?: { key: string; id?: string },
   started: () => boolean = () => true,
   reason?: string,
-  origin: NonNullable<Ledger['intervention_events']>[number]['origin'] = 'operator'
+  origin: NonNullable<Ledger['intervention_events']>[number]['origin'] = 'operator',
+  actor?: Controller
 ): T {
   let ok = false;
   let skipped = false;
@@ -403,6 +408,7 @@ export function intervention<
           origin,
           source: ask ? 'superagent' : caller(true).client === 'shell' ? 'cli' : 'commander',
           ...(ask ? { key: ask.key, ask_id: ask.id } : {}),
+          ...(actor ? { actor } : {}),
           ok,
           reason: reason ?? action,
           ...(!ok ? { error } : {}),
@@ -1686,6 +1692,72 @@ function resumeRun(
   return res.ok ? 0 : res.held ? EXIT.held : 1;
 }
 
+// prettier-ignore
+const abandoned = (l: Ledger): boolean => l.rejected === l.archon_run_id && !!l.intervention_events?.some(event => event.action === 'abandon' && event.ok);
+// prettier-ignore
+const refuseAbandoned = (l: Ledger): boolean => abandoned(l) ? (print({ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' }), true) : false;
+// prettier-ignore
+const abandonError = (run_id: string, type: string, error: unknown) => ({ run_id, type, reason: tail(error instanceof Error ? error.message : String(error), 200) });
+// prettier-ignore
+function abandon(a: Args): number {
+  const reason = a.flags.reason?.trim();
+  if (!reason) throw new Error('abandon requires --reason <text>');
+  const who = caller();
+  let entries: (Ledger | ReturnType<typeof abandonError>)[];
+  if (a.flags.mine) {
+    if (a._.length !== 1 || !a.flags.status)
+      throw new Error('usage: superagent abandon --mine --status failed,cancelled [--before YYYY-MM-DD] --reason <text>');
+    const statuses = new Set(a.flags.status.split(',').filter(Boolean));
+    const before = a.flags.before ? Date.parse(`${a.flags.before}T00:00:00Z`) : Infinity;
+    if (!statuses.size || (a.flags.before && !/^\d{4}-\d{2}-\d{2}$/.test(a.flags.before)) || Number.isNaN(before))
+      throw new Error('abandon: invalid --status or --before');
+    entries = ledgers().flatMap((l): (Ledger | ReturnType<typeof abandonError>)[] => {
+      if ('error' in l) return [];
+      try {
+        if (!same(coord().owner(runScope(l)).owner, who)) return [];
+        const run = getRun(l.archon_run_id, l.repo);
+        return statuses.has(run.status) && Date.parse(l.started_at) < before ? [l] : [];
+      } catch (e) {
+        return [abandonError(l.run_id, 'run_unavailable', e)];
+      }
+    });
+    print({ runs: entries.map(entry => entry.run_id) });
+  } else {
+    if (a._.length < 2) throw new Error('usage: superagent abandon <run>... --reason <text>');
+    entries = a._.slice(1).map(run_id => {
+      try {
+        return loadLedger(coord().resolveRun(run_id)?.run_id ?? run_id);
+      } catch (e) {
+        return abandonError(run_id, 'unknown_run', e);
+      }
+    });
+  }
+  const results = entries.map(l => {
+    if ('type' in l) return { ...l, ok: false };
+    try {
+      if (!same(coord().owner(runScope(l)).owner, who))
+        return { ...abandonError(l.run_id, 'not_controller', 'caller is not controller'), ok: false };
+      return control(l, controller => {
+        let run: RunView;
+        try { run = getRun(l.archon_run_id, l.repo); }
+        catch (e) { return { ...abandonError(l.run_id, 'run_unavailable', e), ok: false }; }
+        if (['running', 'pending'].includes(run.status)) return { run_id: l.run_id, ok: false, type: 'active', reason: run.status };
+        if (run.status === 'completed') return { run_id: l.run_id, ok: false, type: 'completed', reason: run.status };
+        const prior = abandoned(l);
+        if (!prior) try {
+          intervention(l, 'abandon', () => true, undefined, undefined, reason, 'operator', controller);
+          updateLedger(l, cur => { cur.rejected = run.id; });
+        } catch (e) { return { ...abandonError(l.run_id, 'persistence_failed', e), ok: false }; }
+        return { run_id: l.run_id, ok: true, type: prior ? 'already_abandoned' : 'abandoned' };
+      }, who);
+    } catch (e) {
+      return { ...abandonError(l.run_id, 'control_refused', e), ok: false };
+    }
+  });
+  print(results);
+  return results.every(result => result.ok) ? 0 : 1;
+}
+
 /** 手动 resume / decide retry 撞上 recover 锁：重读状态后按当前状态退出（多为运行中 4 或 held 3），不当业务失败 1。 */
 function busyExit(l: Ledger, res: RecoverResult): number {
   const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
@@ -1827,6 +1899,7 @@ function retryAllHeld(): number {
   const out = ledgers().flatMap((l): Record<string, unknown>[] => {
     try {
       if ('error' in l) throw new Error(l.error);
+      if (abandoned(l)) return [];
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
@@ -2764,6 +2837,8 @@ function tick(sa: string): {
         controller => {
           const due = continuations();
           const run = getRun(l.archon_run_id, l.repo);
+          // prettier-ignore
+          if (abandoned(l)) { if (!(asks instanceof Error)) supersedeAsks(asks, l.run_id); return { run_id: l.run_id, action: 'none', ok: true, state: 'abandoned' }; }
           if (fingerprint && ['completed', 'cancelled'].includes(run.status))
             confirmedTerminal = fingerprint;
           if (
@@ -3286,6 +3361,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'resume', positionals: '<run>', flags: ['reconciled'] },
   { command: 'cancel', positionals: '<run>', flags: ['reason'] },
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
+  { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'by-engine', 'baseline-days'] },
@@ -3607,6 +3683,7 @@ export function main(argv: string[]): number {
         throw new Error('recovery: exactly one evidence file required');
       if (a.flags.evidence && verb !== 'recover')
         throw new Error('recovery: use recover --evidence');
+      if (refuseAbandoned(resolved)) return 1;
       return controlled(
         resolved,
         () => resumeRun(resolved, a.flags.reconciled, verb, a.flags.evidence?.[0]),
@@ -3662,6 +3739,8 @@ export function main(argv: string[]): number {
       print({ run_id: id, ...result });
       return result.ok ? 0 : 1;
     }
+    case 'abandon':
+      return abandon(a);
     case 'decide':
       if (a.flags['all-held']) {
         if (target !== 'retry') throw new Error('usage: superagent decide --all-held retry');
@@ -3669,6 +3748,7 @@ export function main(argv: string[]): number {
       }
       {
         const l = ledger(true);
+        if (refuseAbandoned(l)) return 1;
         return controlled(l, () => decide(l, a), false);
       }
     case 'brief':
@@ -3676,6 +3756,7 @@ export function main(argv: string[]): number {
     case 'land': {
       const l = ledger(true);
       if (a.flags.apply) {
+        if (refuseAbandoned(l)) return 1;
         const run = getRun(l.archon_run_id, l.repo);
         const c = classifyRun(l, run);
         if (run.nodes?.some(n => /^(?:sync|publish)-.+$/.test(authoredNodeId(n.nodeId)))) {
