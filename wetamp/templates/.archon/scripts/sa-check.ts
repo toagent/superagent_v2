@@ -1701,6 +1701,13 @@ export function deliveryDecision(input: {
       check.failed?.some(command => !approved.failed?.includes(command)))
   )
     return out('block', 'acceptance_failed');
+  if (check.decision?.reason === 'scope_violation') {
+    const limited = input.reviewRounds !== null && rounds >= input.reviewRounds;
+    return out(
+      limited ? 'block' : 'repair',
+      limited ? 'scope_violation+review_limit' : 'scope_violation'
+    );
+  }
   if (!input.reviews) {
     const debt = debtOf(reviews, ledger);
     return accepted ? out('advance', null, debt) : out('repair', 'acceptance_failed', debt);

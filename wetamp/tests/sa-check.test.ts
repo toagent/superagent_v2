@@ -1295,10 +1295,26 @@ describe('gate rules', () => {
       })
     ).toMatchObject({ verdict: 'pass', rounds: 2 });
   });
-  test('red acceptance outranks a PASS review and asks for a fix', () => {
+  test('red acceptance and scope violations ask for a fix before review', () => {
     expect(decide({ reviews: [R('PASS')], rechecks: [C('a', false)], risk: 'G1' })).toMatchObject({
       verdict: 'fix',
       reason: 'acceptance_failed',
+    });
+    const check = C('scope') as Accept;
+    check.decision = { kind: 'repair', reason: 'scope_violation', evidence: [], debt: [] };
+    for (const [risk, reviewRequired] of [
+      ['G1', false],
+      ['G2', true],
+    ] as const)
+      expect(decide({ reviews: [null], rechecks: [check], risk, reviewRequired })).toMatchObject({
+        verdict: 'fix',
+        reason: 'scope_violation',
+        decision: { kind: 'repair' },
+      });
+    const reviews = Array.from({ length: MAX_ROUNDS }, () => null);
+    expect(decide({ reviews, rechecks: reviews.map(() => check), risk: 'G2' })).toMatchObject({
+      verdict: 'escalate',
+      reason: 'scope_violation+review_limit',
     });
   });
   test('PASS that still lists an open blocker is inconsistent', () => {
