@@ -680,6 +680,17 @@ function activateEngineFixture(s: ReturnType<typeof stub>): string {
   return snapshot;
 }
 
+test('legacy deferred_deliveries is ignored without rewriting the ledger', () => {
+  const s = stub([run('completed')]);
+  const path = ledgerPath('sa1');
+  const historical = JSON.stringify({ ...s.ledger, deferred_deliveries: ['m1'] });
+  writeFileSync(path, historical);
+  expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).not.toHaveProperty(
+    'deferred_deliveries'
+  );
+  expect(readFileSync(path, 'utf8')).toBe(historical);
+});
+
 describe('HF3 latest-engine recovery', () => {
   const setup = (hash?: string) => {
     const s = stub([run('failed')]);

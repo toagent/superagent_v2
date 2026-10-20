@@ -298,8 +298,6 @@ export interface Ledger {
   launch_branch?: string;
   delivery?: DeliveryTarget;
   delivery_result?: DeliveryOutcome | IntegratedDelivery | { status: 'blocked'; reason: string };
-  /** Milestones whose in-run delivery hit merge conflicts; a later delivery carries them. */
-  deferred_deliveries?: string[];
   workflow: string;
   console: string;
   started_at: string;
@@ -727,11 +725,6 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     state: c.state,
     exit: c.exit,
     ...projection,
-    ...(l.deferred_deliveries?.length &&
-    !nodes.some(n => /^publish-.+$/.test(authoredNodeId(n.nodeId))) &&
-    projection.delivery_state !== 'integrated'
-      ? { deferred_deliveries: l.deferred_deliveries }
-      : {}),
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
       nodes.length
     )} completed`,
