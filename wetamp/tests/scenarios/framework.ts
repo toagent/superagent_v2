@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
-import { generate } from '../../src/generate';
+import { generate, type Carried } from '../../src/generate';
 import { ledgerPath } from '../../src/cli';
 import * as coordination from '../../src/coord';
 import type { Plan } from '../../src/plan';
@@ -24,7 +24,7 @@ import { createWorkflowStore } from '../../../packages/core/src/workflows/store-
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 
 // prettier-ignore
-export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S16';
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16';
 
 export interface ScenarioSpec {
   id: ScenarioId;
@@ -49,6 +49,7 @@ export interface ScenarioFixture {
   blockAfterCompletedNode?: string;
   blockMarker?: string;
   targetAfterInjection?: string;
+  carried?: Carried;
 }
 
 export function scenario(
@@ -389,7 +390,7 @@ export async function runInProcess(f: ScenarioFixture) {
   const identity = spyOn(coordination, 'caller').mockReturnValue(who);
   let generated: ReturnType<typeof generate>;
   try {
-    generated = generate(plan, id, false, undefined, undefined, {
+    generated = generate(plan, id, false, undefined, f.carried, {
       checkout: f.target,
       branch: 'scenario-target',
       head: f.initial,

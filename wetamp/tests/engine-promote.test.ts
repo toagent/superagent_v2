@@ -106,6 +106,9 @@ test('auto promotion follows 1.0.0 HEAD and records a failed attempt once', () =
   const third = f.sha(),
     failed = autoPromote();
   expect(failed).toMatchObject({ sha: third, promoted: false, error: expect.any(String) });
+  expect(
+    existsSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${third}.json`))
+  ).toBe(false);
   const marker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${third}.json`),
     before = readFileSync(marker, 'utf8');
   expect(autoPromote()).toEqual(failed);
