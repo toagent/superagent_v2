@@ -9,6 +9,7 @@ type Mutation = {
   to: string;
   test: string;
   name: string;
+  expectedError: string;
   also?: [string, string];
 };
 const mutations: Mutation[] = [
@@ -18,6 +19,7 @@ const mutations: Mutation[] = [
     to: 'loop_group: {\n        interactive: true,\n        max_iterations: 3,',
     test: 'tests/scenarios/scenario-core.test.ts',
     name: 'S2',
+    expectedError: 'interactive',
   },
   {
     file: 'src/land.ts',
@@ -25,6 +27,7 @@ const mutations: Mutation[] = [
     to: 'const who = caller();',
     test: 'tests/scenarios/scenario-core.test.ts',
     name: 'S2',
+    expectedError: 'integration: authorization/run mismatch',
     also: [
       "import { control, coord, repoScope } from './coord';",
       "import { caller, control, coord, repoScope } from './coord';",
@@ -36,6 +39,7 @@ const mutations: Mutation[] = [
     to: "artifact_sha256: ''",
     test: 'tests/scenarios/scenario-core.test.ts',
     name: 'S2',
+    expectedError: '"nodeId":"verify-p"',
   },
   {
     file: 'src/generate.ts',
@@ -43,6 +47,7 @@ const mutations: Mutation[] = [
     to: "ref.required(\n          output<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256'\n        ),",
     test: 'tests/scenarios/scenario-rest.test.ts',
     name: 'S3',
+    expectedError: 'integration: gate evidence mismatch gate-m1-r1.json',
   },
   {
     file: 'src/generate.ts',
@@ -50,15 +55,29 @@ const mutations: Mutation[] = [
     to: 'until_bash: `test $${publishId}.output.status = published`,',
     test: 'tests/scenarios/scenario-core.test.ts',
     name: 'S2',
+    expectedError: 'publish-m1',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-context.ts',
+    from: "(context.refs.head === head || completedGate.verdict === 'fix');",
+    to: 'context.refs.head === head;',
+    test: 'tests/scenarios/scenario-rest.test.ts',
+    name: 'S14a',
+    expectedError: 'context: stale review refs',
   },
 ];
 
-test('five known accident mutations each fail a real generated scenario', () => {
+test('known accident mutations each fail a real generated scenario', () => {
   const repo = join(import.meta.dir, '../../..');
   const selected = process.env.SCENARIO_MUTATION_ONLY
     ? mutations.filter(value => value.file === process.env.SCENARIO_MUTATION_ONLY)
     : mutations;
   for (const mutation of selected) {
+    const baseline = Bun.spawnSync(
+      [process.execPath, 'test', '--timeout', '180000', mutation.test, '-t', mutation.name],
+      { cwd: join(repo, 'wetamp'), stdout: 'pipe', stderr: 'pipe', timeout: 240_000 }
+    );
+    expect(baseline.exitCode, baseline.stderr.toString()).toBe(0);
     const root = tmp(),
       wetamp = join(root, 'wetamp');
     cpSync(join(repo, 'wetamp'), wetamp, {
@@ -103,6 +122,8 @@ test('five known accident mutations each fail a real generated scenario', () => 
         timeout: 240_000,
       }
     );
+    const failure = `${run.stdout.toString()}\n${run.stderr.toString()}`;
     expect(run.exitCode, `${mutation.file} did not break ${mutation.name}`).not.toBe(0);
+    expect(failure).toContain(mutation.expectedError);
   }
 }, 720_000);

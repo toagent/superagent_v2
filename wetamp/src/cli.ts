@@ -35,7 +35,12 @@ import {
   type Ask as BaseAsk,
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
-import { ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
+import {
+  executionOwnership,
+  ownershipUnknown,
+  recoveryAdmissionUnknown,
+  recoverySnapshot,
+} from './recovery';
 import { caller, control, coord, repoScope, runScope, same, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import {
@@ -325,6 +330,8 @@ export interface Ledger {
     reason?: string;
     actor?: Controller;
   })[];
+  /** A held automatic recovery stays paused until an explicit recovery decision clears it. */
+  auto_recover_paused?: string;
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
 }
@@ -950,7 +957,8 @@ function recoverRun(
   prepare?: () => void,
   onEffect?: (effect: DecisionEffect) => void,
   reconciled?: string,
-  evidenceFile?: string
+  evidenceFile?: string,
+  admit?: (run: RunView) => string | undefined
 ): RecoverResult {
   const currentSnapshot = currentEngineSnapshot(),
     pinnedSnapshot = l.engine_snapshot ?? bootstrapEngineSnapshot();
@@ -1172,9 +1180,47 @@ function recoverRun(
         ];
       },
     },
-    reconciled
+    reconciled,
+    admit
   );
 }
+
+const clearAutoRecoverPause = (l: Ledger): string | undefined => {
+  const current = loadLedger(l.run_id);
+  if (current.auto_recover_paused !== undefined) {
+    delete current.auto_recover_paused;
+    saveLedger(current);
+    Object.assign(l, current);
+  }
+  return undefined;
+};
+
+const AUTO_RECOVER_WINDOW_MS = 60 * 60_000;
+const AUTO_RECOVER_LIMIT = 2;
+const reserveAutoRecovery = (l: Ledger, run: RunView): string | undefined => {
+  if (executionOwnership(run).state !== 'offline') return 'auto_recover_owner_not_offline';
+  const current = loadLedger(l.run_id);
+  if (current.auto_recover_paused) return `auto_recover_paused:${current.auto_recover_paused}`;
+  const now = Date.now();
+  const recent = (current.intervention_events ?? []).filter(event => {
+    const at = Date.parse(event.at);
+    return (
+      event.action === 'auto_recover' && Number.isFinite(at) && now - at < AUTO_RECOVER_WINDOW_MS
+    );
+  });
+  if (recent.length >= AUTO_RECOVER_LIMIT) return 'auto_recover_rate_limited';
+  (current.intervention_events ??= []).push({
+    at: new Date(now).toISOString(),
+    action: 'auto_recover',
+    origin: 'engine',
+    source: 'superagent',
+    ok: true,
+    reason: 'owner_lost',
+  });
+  saveLedger(current);
+  Object.assign(l, current);
+  return undefined;
+};
 
 /** Clock seam for deterministic ledger/recovery waits; production uses wall time. */
 export const waitClock = {
@@ -1712,7 +1758,15 @@ function resumeRun(
   const res = intervention(
     l,
     action,
-    () => recoverRun(l, () => (started = true), undefined, reconciled, evidenceFile),
+    () =>
+      recoverRun(
+        l,
+        () => (started = true),
+        undefined,
+        reconciled,
+        evidenceFile,
+        () => clearAutoRecoverPause(l)
+      ),
     undefined,
     () => started
   );
@@ -2228,6 +2282,8 @@ type Ask = BaseAsk & {
   receipt?: AnswerReceipt;
   decision?: AnswerIntent;
   context?: DecisionContext;
+  /** Snapshot shown by the auto-recovery ask; a later answer reconciles exactly this state. */
+  reconciled_snapshot?: string;
 };
 export type Asks = Partial<Record<string, Ask>>;
 
@@ -2716,6 +2772,10 @@ function askHold(
   );
   if ('conflict' in r)
     return { ...base, action: 'none', ok: false, error: `${r.conflict}; decide retry|reject` };
+  if (hold === 'auto_recover' && !r.a.reconciled_snapshot) {
+    r.a.reconciled_snapshot = recoverySnapshot(run);
+    saveAsk(asks, key);
+  }
   const b = { ...base, ...(r.note ? { note: r.note } : {}) };
   if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
   return answerAction(l, key, r.a, () => {
@@ -2748,7 +2808,9 @@ function askHold(
           : p.yes === 'adjudicate'
             ? approveAdjudication(l, run, c, onEffect)
             : p.yes === 'resume'
-              ? recoverRun(l, undefined, onEffect)
+              ? recoverRun(l, undefined, onEffect, r.a.reconciled_snapshot, undefined, () =>
+                  clearAutoRecoverPause(l)
+                )
               : p.yes === 'review'
                 ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, undefined, onEffect)
                 : retry(l, c, undefined, onEffect);
@@ -3186,6 +3248,16 @@ export function decisionQuestion(
 ): string {
   const blocked = blocker(l, hold);
   if (blocked) return `${blocked.reason}；${blocked.next}`;
+  if (hold === 'auto_recover') {
+    const reason = l.auto_recover_paused ?? 'recovery_admission_unknown';
+    return askQuestion(
+      hold,
+      [basename(l.repo), l.run_id],
+      [reason, reason],
+      () => ['', ''],
+      askMarker(requestKey ?? askKey(l.run_id, hold, holdEpisode(l, run, c, hold)))
+    );
+  }
   if (hold === 'stalled') {
     const attention = runAttention(run as Parameters<typeof runAttention>[0]);
     if (attention?.kind !== 'stalled_tool_calls') throw new Error('stalled attention missing');
@@ -3254,7 +3326,7 @@ export function decisionQuestion(
     askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c)))
   );
 }
-/** 只投影引擎状态与明确决定；owner-lost 保留证据，恢复必须由操作员发起。 */
+/** Project engine state and perform only policy-authorized automatic actions. */
 function dispose(
   l: Ledger,
   asks: Asks | Error,
@@ -3275,6 +3347,10 @@ function dispose(
       run: workflowIdentity(l) ?? null,
       current: engineHash(),
     });
+  const need = (): Asks => {
+    if (asks instanceof Error) throw asks;
+    return asks;
+  };
   if (c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown')
     return {
       run_id: l.run_id,
@@ -3284,18 +3360,40 @@ function dispose(
       state: c.state,
       next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.`,
     };
-  if (c.state === 'owner_lost')
+  if (c.state === 'owner_lost') {
+    const askPaused = (): Action =>
+      record(
+        l,
+        'auto_recover',
+        askHold(l, run, c, 'auto_recover', HOLD_POLICY.auto_recover, need(), {
+          recovery_reason: l.auto_recover_paused,
+        })
+      );
+    if (l.auto_recover_paused) return askPaused();
+    const result = recoverRun(l, undefined, undefined, undefined, undefined, current =>
+      reserveAutoRecovery(l, current)
+    );
+    if (!result.ok && result.held) {
+      updateLedger(l, current => {
+        current.auto_recover_paused ??= result.reason;
+      });
+      return askPaused();
+    }
+    if (!result.ok && result.refused)
+      return {
+        run_id: l.run_id,
+        action: 'none',
+        ok: true,
+        state: c.state,
+        next: result.reason,
+      };
     return {
       run_id: l.run_id,
-      action: 'none',
-      ok: false,
-      state: c.state,
-      next: `superagent recover ${l.run_id}`,
+      action: 'auto_recover',
+      ok: result.ok,
+      ...(result.ok ? {} : { error: result.reason }),
     };
-  const need = (): Asks => {
-    if (asks instanceof Error) throw asks;
-    return asks;
-  };
+  }
   const act = (hold: Hold, extra: Record<string, unknown> = {}): Action | undefined => {
     row.hold = hold;
     row.disposed =
