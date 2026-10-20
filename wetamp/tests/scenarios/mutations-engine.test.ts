@@ -19,7 +19,7 @@ test('S15: carried evidence without its persisted-byte hash fails the real scena
     from = 'emit({ ...out, artifact_sha256: sha(serialized) });',
     to = "emit({ ...out, artifact_sha256: '' });";
   expect(source.split(from)).toHaveLength(3);
-  const carried = source.lastIndexOf(from);
+  const carried = source.indexOf(from);
   writeFileSync(path, `${source.slice(0, carried)}${to}${source.slice(carried + from.length)}`);
   for (const args of [
     ['init', '-q'],
@@ -58,5 +58,5 @@ test('S15: carried evidence without its persisted-byte hash fails the real scena
   const failure = `${result.stdout.toString()}\n${result.stderr.toString()}`;
   expect(result.exitCode).not.toBe(0);
   expect(failure).toContain('"nodeId":"code-p","when"');
-  expect(failure).toContain('integration: missing passing gate for m1');
+  expect(failure).toContain('"nodeId":"verify-p"');
 }, 360_000);

@@ -12,9 +12,11 @@ import {
   createProvider,
 } from '../../../packages/provider-contract/src/fixtures/test-provider/main';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -33,6 +35,7 @@ import { liveSourceRoots } from '../../../packages/workflows/src/workflow-source
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 import { failWorkflowRun } from '../../../packages/core/src/db/workflows';
+import { createCodebase } from '../../../packages/core/src/db/codebases';
 
 // prettier-ignore
 export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16';
@@ -59,6 +62,8 @@ export interface ScenarioFixture {
   blockNode?: string;
   blockAfterCompletedNode?: string;
   blockMarker?: string;
+  blockRelease?: string;
+  runId?: string;
   targetAfterInjection?: string;
   carried?: Carried;
   engineSnapshot?: string;
@@ -66,8 +71,11 @@ export interface ScenarioFixture {
 
 export interface GeneratedContinuation {
   runId: string;
+  from: string;
   dir: string;
   workflow: string;
+  engine_hash?: string;
+  engine_commit?: string;
 }
 
 export function scenario(
@@ -78,6 +86,9 @@ export function scenario(
     blockNode?: string;
     blockAfterCompletedNode?: string;
     blockMarker?: string;
+    blockRelease?: string;
+    home?: string;
+    runId?: string;
   } = {}
 ): ScenarioFixture {
   const root = tmp();
@@ -91,7 +102,7 @@ export function scenario(
   const initial = sh('git rev-parse HEAD', target).trim();
   const branch = `scenario-${spec.id.toLowerCase()}${options.suffix ? `-${options.suffix}` : ''}`;
   sh(`git worktree add -qb '${branch}' '${worker}' scenario-target`, target);
-  const home = join(root, 'home');
+  const home = options.home ?? join(root, 'home');
   const archonHome = join(home, 'archon');
   const saved = { ...process.env };
   Object.assign(process.env, {
@@ -120,6 +131,8 @@ export function scenario(
     blockNode: options.blockNode,
     blockAfterCompletedNode: options.blockAfterCompletedNode,
     blockMarker: options.blockMarker,
+    blockRelease: options.blockRelease,
+    runId: options.runId,
   };
 }
 
@@ -156,7 +169,7 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
       }
       if (id.startsWith('fix-')) {
-        writeFileSync(join(cwd, 'fix.txt'), `${f.spec.id}\n`);
+        writeFileSync(join(cwd, 'fix.txt'), `${f.spec.id}-${String(f.roles.length)}\n`);
         sh(
           `git add fix.txt && git -c user.name=scenario -c user.email=scenario@local commit -qm fix-${f.spec.id}`,
           cwd
@@ -166,7 +179,7 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         const marker = f.blockMarker;
         if (!marker) throw new Error('scenario block marker missing');
         writeFileSync(marker, id);
-        await Bun.sleep(3_600_000);
+        while (!f.blockRelease || !existsSync(f.blockRelease)) await Bun.sleep(25);
       }
       if (id === 'review-m1-r1' && f.spec.id === 'S8') {
         const runId = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`,
@@ -339,13 +352,27 @@ const platform: IWorkflowPlatform = {
 };
 
 export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedContinuation) {
-  const id = continuation?.runId ?? `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
+  const id = continuation?.runId ?? f.runId ?? `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
   const store = createWorkflowStore();
+  const codebaseId = continuation
+    ? (await store.getWorkflowRun(continuation.from))?.codebase_id
+    : (
+        await createCodebase({
+          name: id,
+          default_cwd: f.target,
+          default_branch: 'scenario-target',
+          ai_assistant_type: descriptor.id,
+          kind: 'repo',
+        })
+      ).id;
+  if (!codebaseId) throw new Error(`scenario run ${id} missing codebase identity`);
   await store.createWorkflowRun({
     id,
+    codebase_id: codebaseId,
     workflow_name: id,
     user_message: id,
     working_path: f.worker,
+    adopted_from_run_id: continuation?.from,
     metadata: { execution_owner: { host: hostname(), pid: process.pid } },
   });
   const run = await store.claimPendingWorkflowRun(id, f.worker);
@@ -357,7 +384,7 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
     if (event.event_type === 'node_completed' && event.step_name === f.blockAfterCompletedNode) {
       if (!f.blockMarker) throw new Error('scenario completion block marker missing');
       writeFileSync(f.blockMarker, event.step_name ?? 'unknown');
-      await Bun.sleep(3_600_000);
+      while (!f.blockRelease || !existsSync(f.blockRelease)) await Bun.sleep(25);
     }
   };
   const plan = JSON.parse(
@@ -410,7 +437,7 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
   }
   const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(f.initial);
   const identity = spyOn(coordination, 'caller').mockReturnValue(who);
-  let generated: Pick<ReturnType<typeof generate>, 'dir' | 'workflow'>;
+  let generated: ReturnType<typeof generate> | GeneratedContinuation;
   try {
     // prettier-ignore
     generated = continuation ?? generate(plan, id, false, undefined, f.carried, { checkout: f.target, branch: 'scenario-target', head: f.initial }, f.engineSnapshot);
@@ -444,6 +471,9 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
         plan: join(generated.dir, 'plan.json'),
         gen_dir: generated.dir,
         workflow: generated.workflow,
+        engine_hash: generated.engine_hash,
+        workflow_hash: generated.engine_hash,
+        engine_commit: generated.engine_commit,
         engine_snapshot: f.engineSnapshot,
         delivery: { checkout: f.target, branch: 'scenario-target', head: f.initial },
         controller,
@@ -458,6 +488,8 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
   ) as { description?: string; nodes: Array<Record<string, unknown>> };
   const routeAi = (nodes: Array<Record<string, unknown>>): void => {
     for (const node of nodes) {
+      const inputs = node.with as Record<string, unknown> | undefined;
+      if (continuation && f.spec.id === 'S15' && inputs?.risk === 'G2') inputs.risk = 'G1';
       if (node.command || node.prompt) {
         node.provider = descriptor.id;
         delete node.model;
@@ -519,23 +551,51 @@ export type ScenarioEvidence = Pick<
 export async function recoverCarriedScenario(spec: ScenarioSpec) {
   const scratch = tmp(),
     ready = join(scratch, 'ready.json'),
-    marker = join(scratch, 'blocked');
-  const child = Bun.spawn([process.execPath, 'test', join(import.meta.dir, 'detached-runner.ts')], {
-    env: {
-      ...process.env,
-      SCENARIO_ID: spec.id,
-      SCENARIO_RESULT: join(scratch, 'unused.json'),
-      SCENARIO_READY: ready,
-      SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'settle-p',
-      SCENARIO_BLOCK_MARKER: marker,
-    },
-    stdout: 'ignore',
-    stderr: 'pipe',
+    marker = join(scratch, 'blocked'),
+    root = realpathSync(join(import.meta.dir, '../../..')),
+    oldSnapshot = join(scratch, 'engine-a');
+  cpSync(root, oldSnapshot, {
+    recursive: true,
+    filter: source =>
+      !source.includes('/node_modules') && !source.includes('/.git/') && !source.endsWith('/.git'),
   });
+  sh(
+    'git init -q -b 1.0.0 && git config user.name scenario && git config user.email scenario@local && printf "\\nA\\n" >> wetamp/templates/brief.md && git add packages wetamp && git commit -qm engine-A',
+    oldSnapshot
+  );
+  symlinkSync(join(root, 'node_modules'), join(oldSnapshot, 'node_modules'));
+  symlinkSync(join(root, 'wetamp/node_modules'), join(oldSnapshot, 'wetamp/node_modules'));
+  for (const name of readdirSync(join(root, 'packages')))
+    if (
+      existsSync(join(root, 'packages', name, 'node_modules')) &&
+      !existsSync(join(oldSnapshot, 'packages', name, 'node_modules'))
+    )
+      symlinkSync(
+        join(root, 'packages', name, 'node_modules'),
+        join(oldSnapshot, 'packages', name, 'node_modules')
+      );
+  const child = Bun.spawn(
+    [process.execPath, 'test', join(oldSnapshot, 'wetamp/tests/scenarios/detached-runner.ts')],
+    {
+      env: {
+        ...process.env,
+        SCENARIO_ID: spec.id,
+        SCENARIO_PASS_ROUND: String(spec.passRound),
+        SCENARIO_RISK: spec.risk,
+        SCENARIO_ENGINE_SNAPSHOT: oldSnapshot,
+        SCENARIO_RESULT: join(scratch, 'unused.json'),
+        SCENARIO_READY: ready,
+        SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'diff-m1-r2',
+        SCENARIO_BLOCK_MARKER: marker,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }
+  );
   for (const end = Date.now() + 60_000; !existsSync(marker) && Date.now() < end; ) {
     if (child.exitCode !== null)
       throw new Error(
-        `scenario executor exited: ${(await new Response(child.stderr).text()).slice(-2000)}`
+        `scenario executor exited: ${(await new Response(child.stdout).text()).slice(-2000)} ${(await new Response(child.stderr).text()).slice(-2000)}`
       );
     await Bun.sleep(25);
   }
@@ -557,12 +617,10 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
     await failWorkflowRun(state.runId, 'scenario executor crashed', {
       exitReason: 'unhandled_error',
     });
-    const root = realpathSync(join(import.meta.dir, '../../..')),
-      sha = sh('git rev-parse HEAD', root).trim(),
+    const sha = sh('git rev-parse HEAD', root).trim(),
       engine = join(state.home, 'engine'),
-      oldSnapshot = join(state.root, 'engine-a');
+      oldEngineHash = loadLedger(state.runId).workflow_hash;
     mkdirSync(join(engine, 'receipts'), { recursive: true });
-    mkdirSync(oldSnapshot);
     symlinkSync(root, join(engine, sha));
     symlinkSync(join(engine, sha), join(engine, 'current'));
     writeFileSync(
@@ -582,7 +640,8 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
     coordination
       .coord()
       .claim(coordination.repoScope(state.target), who, true, 'scenario recovery');
-    Object.assign(old, { engine_snapshot: oldSnapshot, workflow_hash: '0'.repeat(64) });
+    expect(old.engine_snapshot).toBe(oldSnapshot);
+    expect(oldEngineHash).not.toBeUndefined();
     coordination.coord().reauthorize(old, who);
     writeFileSync(ledgerPath(state.runId), JSON.stringify(old));
     const engineAdoption = adoptEngineSnapshot(state.runId, sha),
@@ -610,6 +669,7 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
       };
     const result = await runInProcess(f, {
       runId: adoptedId,
+      from: state.runId,
       dir: adopted.gen_dir,
       workflow: adopted.workflow,
     });
@@ -623,7 +683,7 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
 
 /** Continue a killed scenario from the real store snapshot; completed nodes stay rehydrated. */
 export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {
-  const id = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`,
+  const id = f.runId ?? `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`,
     generatedDir = join(f.home, 'gen', id),
     workflowName = `sa-${id}`,
     store = createWorkflowStore(),
