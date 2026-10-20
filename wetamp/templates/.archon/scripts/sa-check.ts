@@ -1140,9 +1140,12 @@ function accept(): void {
   const ancestor = auxiliary(['git', 'merge-base', '--is-ancestor', '--', prior.head, 'HEAD']);
   if (ancestor.exitCode !== 0 || ancestor.signalCode)
     throw new Error(`carried evidence head is not an ancestor of HEAD: ${prior.head}`);
-  const out = { ...prior, tag };
-  writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out, null, 2));
-  emit(out);
+  const { artifact_sha256: _priorArtifactSha256, ...carriedEvidence } = prior;
+  void _priorArtifactSha256;
+  const out = { ...carriedEvidence, tag };
+  const serialized = JSON.stringify(out, null, 2);
+  writeFileSync(join(artifacts, `${tag}.json`), serialized);
+  emit({ ...out, artifact_sha256: sha(serialized) });
 }
 
 /**

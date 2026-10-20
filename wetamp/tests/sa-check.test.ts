@@ -2007,6 +2007,7 @@ describe('sa-check script', () => {
       diff_hash: 'old', same: false, reviewed: false, base_pass: null, head,
       checkout_fingerprint: '/old.fingerprint', disposition: 'advance', reason: null,
       risk: 'G1', out_of_scope: [], tag: 'verify-old',
+      artifact_sha256: 'old-artifact-sha256',
       decision: { kind: 'advance', reason: null, evidence: ['/old.log'], debt: [] },
     };
     const run = (attempt = '0') => runScript(repo, {
@@ -2015,7 +2016,10 @@ describe('sa-check script', () => {
     writeFileSync(carried, JSON.stringify(evidence));
     const replay = run();
     expect(replay.code, replay.err).toBe(0);
-    expect(replay.out).toEqual({ ...evidence, tag: 'verify-a' });
+    const artifact = readFileSync(join(replay.art, 'verify-a.json'), 'utf8');
+    const artifactSha256 = createHash('sha256').update(artifact).digest('hex');
+    expect(replay.out).toEqual({ ...evidence, tag: 'verify-a', artifact_sha256: artifactSha256 });
+    expect(JSON.parse(artifact)).not.toHaveProperty('artifact_sha256');
     expect(existsSync(counter)).toBe(false);
     const retry = run('1');
     expect(retry.code, retry.err).toBe(0);
