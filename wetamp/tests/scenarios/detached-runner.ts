@@ -27,6 +27,9 @@ try {
     output,
     JSON.stringify({
       terminal: result.terminal,
+      failures: result.events
+        .filter(event => event.event_type === 'node_failed')
+        .map(event => ({ step: event.step_name, data: event.data })),
       ledger: JSON.parse(readFileSync(ledgerPath(`5ce0-${id.slice(1).padStart(4, '0')}`), 'utf8')),
       receipt: JSON.parse(readFileSync(join(result.artifactsDir, 'publish-m1.json'), 'utf8')),
       target: sh('git rev-parse scenario-target', f.target).trim(),

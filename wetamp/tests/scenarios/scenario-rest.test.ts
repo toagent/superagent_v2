@@ -78,6 +78,7 @@ test('S4: two detached runs sharing one target each publish exactly once', async
     return Promise.all([child.exited, new Response(child.stderr).text()]).then(([code, error]) => {
       expect(code, error).toBe(0);
       return JSON.parse(readFileSync(output, 'utf8')) as {
+        failures: Array<{ step: string | null; data: unknown }>;
         receipt: { status: string };
         terminal: { completed: string[]; failed: string[] };
       };
@@ -85,7 +86,10 @@ test('S4: two detached runs sharing one target each publish exactly once', async
   };
   const results = await Promise.all([run('a'), run('b')]);
   for (const result of results) {
-    expect(result.terminal).toEqual({ completed: ['5ce0-0004'], failed: [] });
+    expect(result.terminal, JSON.stringify(result.failures)).toEqual({
+      completed: ['5ce0-0004'],
+      failed: [],
+    });
     expect(result.receipt.status).toBe('published');
   }
 }, 180_000);
