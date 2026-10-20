@@ -7,6 +7,7 @@ import { format, resolveConfig } from 'prettier';
 const target = fileURLToPath(new URL('../src/plan-types.generated.ts', import.meta.url));
 export const GENERATED_OUTPUT_PATHS = [
   'wetamp/src/plan-types.generated.ts',
+  'wetamp/src/contract/nodes.generated.ts',
   'wetamp/templates/.archon/scripts/failure-class.ts',
   'wetamp/templates/.archon/scripts/reasons.json',
 ] as const;

@@ -8,8 +8,8 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { control, coord, repoScope } from './coord';
-import { publish, sync, type PublishResult, type SyncResult } from './integration';
-import type { PublishReceipt } from './integration';
+import { publish, sync } from './integration';
+import type { PublishReceipt, PublishResult, SyncOutput } from './contract';
 import type { RunView } from './archon';
 import type { Ledger } from './cli';
 import {
@@ -20,8 +20,6 @@ import {
 } from './land-legacy';
 
 const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
-
-type SyncEvidence = SyncResult & { generation: number };
 
 /** Runtime events qualify loop body nodes as `<group>.<node>`; artifacts keep the authored id. */
 export const authoredNodeId = (nodeId: string): string => nodeId.split('.').at(-1) ?? nodeId;
@@ -144,7 +142,7 @@ const integrationSync = (): void => {
   if (!ledger.delivery) throw new Error('integration: missing delivery target');
   fence();
   const generation = nextCounter(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}`);
-  const result: SyncEvidence = {
+  const result: SyncOutput = {
     ...sync(process.cwd(), ledger.delivery),
     generation,
   };
@@ -164,8 +162,8 @@ const lastGate = (milestone: string): Record<string, unknown> => {
     const round = /-r(\d+)\.json$/.exec(file)?.[1];
     if (!round) throw new Error(`integration: invalid gate evidence name ${file}`);
     const expected = [
-      process.env[`INPUTS_GATE_${round}_SHA256`],
-      process.env[`INPUTS_GATE_${round}_CARRIED_SHA256`],
+      process.env[`INPUTS_GATE_R${round}_SHA256`],
+      process.env[`INPUTS_GATE_R${round}_CARRIED_SHA256`],
     ].filter((value): value is string => Boolean(value));
     if (!expected.length) return undefined;
     const path = join(artifacts, file),

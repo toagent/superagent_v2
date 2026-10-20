@@ -1,4 +1,9 @@
 import { executionTable, executionRoute, executionNode } from './execution';
+import { parseWorkflow } from '@archon/workflows/loader';
+import {
+  assertComposedGateDriveable,
+  assertInteractiveClassNotBackgrounded,
+} from '@archon/workflows/utils/workflow-requirements';
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
 // 计划文本只进 brief 文件、经绝对路径传给节点：with:/command 正文是模板，`$` 无法转义。
 import {
@@ -49,6 +54,16 @@ import {
   type Pkg,
   type Plan,
 } from './plan';
+import {
+  conditionalOutput,
+  output,
+  publishOutputFormat,
+  ref,
+  syncOutputFormat,
+  untilStatus,
+  type PublishOutput,
+  type SyncOutput,
+} from './contract';
 
 const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.json'))('yaml') as {
   stringify(v: unknown, opts: Record<string, unknown>): string;
@@ -83,6 +98,7 @@ export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(
   '../packages/workflows/src/provider-attempts.ts',
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
+  'schemas/nodes', 'src/contract',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
   'src/memory.ts', 'src/board/workflow.ts', 'src/execution.ts',
 ], policyHash);
@@ -108,32 +124,6 @@ const contextOutputSchema = (): unknown => {
   const schema = outputSchema('attempt') as { properties: Record<string, unknown> };
   return { ...schema, properties: { ...schema.properties, context_pack_path: { type: 'string' } } };
 };
-
-const syncOutputSchema = (): unknown => ({
-  type: 'object',
-  properties: {
-    status: { enum: ['noop', 'merged', 'conflict', 'resolved'] },
-    target_tip: { type: 'string' },
-    merge_base: { type: 'string' },
-    head: { type: 'string' },
-    generation: { type: 'integer' },
-    files: { type: 'array', items: { type: 'string' } },
-  },
-  required: ['status', 'target_tip', 'generation'],
-});
-
-const publishOutputSchema = (): unknown => ({
-  type: 'object',
-  properties: {
-    status: { enum: ['published', 'advanced', 'dirty', 'rejected'] },
-    target_tip: { type: 'string' },
-    paths: { type: 'array', items: { type: 'string' } },
-    reason: { type: 'string' },
-    evidence: { type: 'string' },
-    receipt: { type: 'object' },
-  },
-  required: ['status'],
-});
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const SOLDIER_IDLE_MS = 10 * 60 * 1000;
@@ -319,6 +309,7 @@ export function buildWorkflow(
     resumable: boolean,
     localRef = plan.base_ref
   ): string => {
+    const syncHandle = output<SyncOutput>(id);
     const local = [
       `tip=$(git rev-parse --verify '${localRef.replaceAll("'", "'\\''")}^{commit}') || exit $?`,
       'base=$(git merge-base HEAD "$tip") || exit $?',
@@ -328,7 +319,7 @@ export function buildWorkflow(
       id,
       bash: delivery && !fake ? integrationCommand('sync', m.id, '', id) : local,
       ...(deps.length ? { depends_on: deps } : {}),
-      output_format: syncOutputSchema(),
+      output_format: syncOutputFormat,
     });
     const resolve = `resolve-${id}`;
     if (delivery && !fake) {
@@ -361,7 +352,7 @@ export function buildWorkflow(
           brief: brief(owner),
           hint: join(gen, 'hints', `${owner.id}.md`),
           context_node: context,
-          prior_work: `$${id}.output`,
+          prior_work: ref.value(syncHandle),
           reason: 'sync_conflict',
           accept_log: `$ARTIFACTS_DIR/${id}.json`,
         },
@@ -375,15 +366,21 @@ export function buildWorkflow(
       id: ready,
       depends_on: [id, ...(delivery && !fake ? [resolve] : [])],
       trigger_rule: 'none_failed_min_one_success',
-      bash: [
-        `tip=$${id}.output.target_tip`,
-        `status=$${id}.output.status`,
-        `generation=$${id}.output.generation`,
-        `if [ "$status" = conflict ]; then git merge-base --is-ancestor "$tip" HEAD || { echo 'sync_conflict: target tip is not integrated' >&2; exit 1; }; status=resolved; fi`,
-        'base=$(git merge-base HEAD "$tip") || exit $?',
-        `printf '{"status":"%s","target_tip":"%s","merge_base":"%s","head":"%s","generation":%s}' "$status" "$tip" "$base" "$(git rev-parse HEAD)" "$generation"`,
+      script: [
+        "const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };",
+        "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
+        "let status = process.env.INPUTS_STATUS ?? '';",
+        "if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }",
+        "const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };",
+        'process.stdout.write(JSON.stringify(output));',
       ].join('\n'),
-      output_format: syncOutputSchema(),
+      runtime: 'bun',
+      with: {
+        target_tip: ref.required(syncHandle, 'target_tip'),
+        status: ref.required(syncHandle, 'status'),
+        generation: ref.required(syncHandle, 'generation'),
+      },
+      output_format: syncOutputFormat,
     });
     return ready;
   };
@@ -397,10 +394,16 @@ export function buildWorkflow(
     const syncId = `resync-${m.id}`;
     const finalAccept = `final-accept-${m.id}`;
     const publishId = `publish-${m.id}`;
+    const syncHandle = output<SyncOutput>(syncId);
+    const publishHandle = output<PublishOutput>(publishId);
     const gateHashes = Object.fromEntries(
       gateBindings.map(binding => [
-        `gate_${String(binding.round)}${binding.carried ? '_carried' : ''}_sha256`,
-        skippable(`$${binding.node}.output.artifact_sha256`, ''),
+        `gate_r${String(binding.round)}${binding.carried ? '_carried' : ''}_sha256`,
+        ref.optional(
+          conditionalOutput<{ artifact_sha256: string }>(binding.node),
+          'artifact_sha256',
+          ''
+        ),
       ])
     );
     const integrationNodes: Node[] = [
@@ -415,7 +418,7 @@ export function buildWorkflow(
                 `printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"`,
               ].join('\n'),
         timeout: integrationLockTimeout(),
-        output_format: syncOutputSchema(),
+        output_format: syncOutputFormat,
       },
       check(
         finalAccept,
@@ -423,9 +426,9 @@ export function buildWorkflow(
         {
           ...acceptInputs,
           kind: 'accept',
-          base: `$${syncId}.output.merge_base`,
-          target_tip: `$${syncId}.output.target_tip`,
-          sync_generation: `$${syncId}.output.generation`,
+          base: ref.required(syncHandle, 'merge_base'),
+          target_tip: ref.required(syncHandle, 'target_tip'),
+          sync_generation: ref.required(syncHandle, 'generation'),
           tag: finalAccept,
           terminal: '1',
         },
@@ -440,15 +443,22 @@ export function buildWorkflow(
               runtime: 'bun',
               with: {
                 ...gateHashes,
-                target_tip: `$${syncId}.output.target_tip`,
+                target_tip: ref.required(syncHandle, 'target_tip'),
                 review_required: reviewRequired ? '1' : '0',
               },
             }
           : {
-              bash: `printf '{"status":"published","target_tip":"%s"}' $${syncId}.output.target_tip`,
+              script: [
+                "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
+                "const output = { status: 'published', receipt: { task: 'fake', source: tip, target: { checkout: 'fake', branch: 'fake' }, target_tip: tip, contract: 'fake', evidence: 'fake', integrated: tip, status: 'published' } };",
+                `await Bun.write(process.env.ARTIFACTS_DIR + '/${publishId}.json', JSON.stringify(output));`,
+                'process.stdout.write(JSON.stringify(output));',
+              ].join('\n'),
+              runtime: 'bun',
+              with: { target_tip: ref.required(syncHandle, 'target_tip') },
             }),
         timeout: integrationLockTimeout(),
-        output_format: publishOutputSchema(),
+        output_format: publishOutputFormat,
       },
     ];
     return {
@@ -456,7 +466,7 @@ export function buildWorkflow(
       ...approved,
       loop_group: {
         max_iterations: 3,
-        until_bash: `test $${publishId}.output.status = published`,
+        until_bash: untilStatus(publishHandle, 'published'),
         nodes: integrationNodes,
       },
     };
@@ -472,8 +482,9 @@ export function buildWorkflow(
       false,
       carried?.recovery?.base ?? plan.base_ref
     );
-    runBase ||= `$${syncReady}.output.merge_base`;
-    let base = `$${syncReady}.output.merge_base`;
+    const syncReadyHandle = output<SyncOutput>(syncReady);
+    runBase ||= ref.required(syncReadyHandle, 'merge_base');
+    let base = ref.required(syncReadyHandle, 'merge_base');
     // Milestone retries invalidate only cumulative acceptance and review/fix rounds.
     const attempt = `attempt-${m.id}`;
     nodes.push({
@@ -508,8 +519,8 @@ export function buildWorkflow(
         scope_pkgs,
         risk: m.risk,
         milestone: m.id,
-        target_tip: `$${syncReady}.output.target_tip`,
-        sync_generation: `$${syncReady}.output.generation`,
+        target_tip: ref.required(syncReadyHandle, 'target_tip'),
+        sync_generation: ref.required(syncReadyHandle, 'generation'),
         ...ledger,
       };
       nodes.push(
@@ -674,8 +685,8 @@ export function buildWorkflow(
               run_base: runBase,
               generated_paths: JSON.stringify(GENERATED_OUTPUT_PATHS),
             }),
-        target_tip: `$${syncReady}.output.target_tip`,
-        sync_generation: `$${syncReady}.output.generation`,
+        target_tip: ref.required(syncReadyHandle, 'target_tip'),
+        sync_generation: ref.required(syncReadyHandle, 'generation'),
         risk: p.risk,
         milestone: m.id,
         ...ledger,
@@ -851,8 +862,8 @@ export function buildWorkflow(
             pkgs: ids,
             scope_pkgs,
             base,
-            target_tip: `$${syncReady}.output.target_tip`,
-            sync_generation: `$${syncReady}.output.generation`,
+            target_tip: ref.required(syncReadyHandle, 'target_tip'),
+            sync_generation: ref.required(syncReadyHandle, 'generation'),
             risk: m.risk,
             milestone: m.id,
             tag: `diff-${t}`,
@@ -1023,6 +1034,31 @@ export function buildWorkflow(
   };
 }
 
+export function assertGeneratedWorkflow(definition: Node, background = true): void {
+  const visit = (nodes: Node[]): void => {
+    for (const node of nodes) {
+      for (const field of ['bash', 'until_bash'] as const) {
+        const source = node[field];
+        if (typeof source === 'string' && /\$[A-Za-z0-9_-]+\.output(?:\.|\b)/.test(source))
+          throw new Error(`generated ${field} contains an output reference: ${String(node.id)}`);
+      }
+      const group = node.loop_group as { nodes?: Node[] } | undefined;
+      visit(group?.nodes ?? []);
+    }
+  };
+  visit(definition.nodes as Node[]);
+  const parsed = parseWorkflow(YAML.stringify(definition, { lineWidth: 0 }), 'generated.yaml', {
+    get: () => undefined,
+    list: () => [],
+  });
+  if (parsed.workflow === null)
+    throw new Error(`generated workflow invalid: ${parsed.error.error}`);
+  if (background) {
+    assertInteractiveClassNotBackgrounded(parsed.workflow);
+    assertComposedGateDriveable(parsed.workflow.nodes as never);
+  }
+}
+
 const CAP_TEXT: Record<Exclude<keyof Caps, 'read' | 'git' | 'mcp' | 'long_tests'>, string> = {
   network: '访问网络（curl/wget、包仓库）',
   web: '联网搜索与抓取网页（WebSearch/WebFetch）',
@@ -1177,6 +1213,7 @@ export function generate(
     delivery,
     engineSnapshot
   );
+  assertGeneratedWorkflow(definition, !ms.some(m => m.human));
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });

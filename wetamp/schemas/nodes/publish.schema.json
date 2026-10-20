@@ -1,0 +1,87 @@
+{
+  "title": "PublishOutput",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "published" },
+        "receipt": { "$ref": "#/$defs/PublishReceipt" }
+      },
+      "required": ["status", "receipt"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "advanced" },
+        "target_tip": { "type": "string" }
+      },
+      "required": ["status", "target_tip"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "dirty" },
+        "paths": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["status", "paths"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "rejected" },
+        "reason": {
+          "enum": [
+            "protected_target",
+            "not_descendant",
+            "review_stale",
+            "target_checkout_changed",
+            "target_advanced",
+            "target_dirty"
+          ]
+        },
+        "target_tip": { "type": "string" },
+        "evidence": { "type": "string" }
+      },
+      "required": ["status", "reason"],
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "PublishReceipt": {
+      "type": "object",
+      "properties": {
+        "task": { "type": "string" },
+        "source": { "type": "string" },
+        "target": {
+          "type": "object",
+          "properties": {
+            "checkout": { "type": "string" },
+            "branch": { "type": "string" },
+            "head": { "type": "string" }
+          },
+          "required": ["checkout", "branch"],
+          "additionalProperties": false
+        },
+        "target_tip": { "type": "string" },
+        "contract": { "type": "string" },
+        "evidence": { "type": "string" },
+        "integrated": { "type": "string" },
+        "status": { "const": "published" }
+      },
+      "required": [
+        "task",
+        "source",
+        "target",
+        "target_tip",
+        "contract",
+        "evidence",
+        "integrated",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

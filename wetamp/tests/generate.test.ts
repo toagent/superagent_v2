@@ -35,6 +35,7 @@ import {
   validateDagStructure,
 } from '../../packages/workflows/src/loader';
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
+import { isInlineScript } from '../../packages/workflows/src/executor-shared';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
@@ -1296,8 +1297,8 @@ describe('buildWorkflow', () => {
     expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
       runtime: 'bun',
       with: {
-        gate_1_sha256: { from: '$gate-m1-r1.output.artifact_sha256', if_skipped: '' },
-        gate_2_sha256: { from: '$gate-m1-r2.output.artifact_sha256', if_skipped: '' },
+        gate_r1_sha256: { from: '$gate-m1-r1.output.artifact_sha256', if_skipped: '' },
+        gate_r2_sha256: { from: '$gate-m1-r2.output.artifact_sha256', if_skipped: '' },
       },
     });
     expect(executionTable(fixture, loadTiers())['integration-review-m1']).toBeUndefined();
@@ -1880,7 +1881,7 @@ function checkGeneratedRepo(): void {
   }
   for (const n of nodesOf(generated).filter(n => n.script || n.bash)) {
     expect(n.bash ?? '').not.toContain(principles);
-    if (n.script) {
+    if (n.script && !isInlineScript(n.script)) {
       const path = join('.archon', 'scripts', `${n.script}.ts`);
       expect(readFileSync(join(g.dir, path), 'utf8')).toBe(
         readFileSync(join(WETAMP, 'templates', path), 'utf8')
