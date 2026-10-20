@@ -1,21 +1,26 @@
-import { expect } from 'bun:test';
+import { expect, spyOn } from 'bun:test';
 import type {
   IAgentProvider,
   ProviderRegistry,
   SendQueryOptions,
 } from '../../../packages/provider-contract/src';
 import type { IWorkflowPlatform, WorkflowConfig, WorkflowDeps } from '@archon/workflows/deps';
-import type { WorkflowRun } from '@archon/workflows/schemas/workflow-run';
-import type { IWorkflowStore, WorkflowEventInput } from '@archon/workflows/store';
+import type { IWorkflowStore } from '@archon/workflows/store';
 import { executeTestDagWorkflow, makeTestResolvedWorkflow } from '@archon/workflows/test-utils';
 import {
   descriptor,
   createProvider,
 } from '../../../packages/provider-contract/src/fixtures/test-provider/main';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { receiptPath } from '../../../packages/plugin-manifest/src/store';
-import { fixtureEnv, gitRepo, sh, tmp } from '../helpers';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
+import { generate } from '../../src/generate';
+import { ledgerPath } from '../../src/cli';
+import * as coordination from '../../src/coord';
+import type { Plan } from '../../src/plan';
+import { liveSourceRoots } from '../../../packages/workflows/src/workflow-source';
+import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
+import { resetDatabase } from '../../../packages/core/src/db/connection';
 
 // prettier-ignore
 export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13';
@@ -38,6 +43,7 @@ export interface ScenarioFixture {
   initial: string;
   saved: NodeJS.ProcessEnv;
   spec: ScenarioSpec;
+  roles: string[];
 }
 
 export function scenario(spec: ScenarioSpec): ScenarioFixture {
@@ -57,15 +63,15 @@ export function scenario(spec: ScenarioSpec): ScenarioFixture {
     HOME: home,
     SUPERAGENT_HOME: home,
     ARCHON_HOME: archonHome,
-    SUPERAGENT_ROLE: 'worker',
     ARCHON_TELEMETRY_DISABLED: 'true',
     DATABASE_URL: '',
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
   });
+  resetDatabase();
   expect(home).not.toBe(join(saved.HOME ?? '', '.superagent'));
   expect(archonHome).not.toBe(join(saved.HOME ?? '', '.superagent', 'archon'));
-  return { root, home, archonHome, target, worker, initial, saved, spec };
+  return { root, home, archonHome, target, worker, initial, saved, spec, roles: [] };
 }
 
 export function restore(f: ScenarioFixture): void {
@@ -77,78 +83,113 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
   const base = createProvider();
   return {
     ...base,
-    async *sendQuery(prompt: string, cwd: string, resume?: string, options?: SendQueryOptions) {
-      if (prompt === `scenario:${f.spec.id}:code`) {
-        expect(process.env.SUPERAGENT_ROLE).toBe('worker');
+    getCapabilities: () => ({ ...base.getCapabilities(), sessionFork: true }),
+    async *sendQuery(_prompt: string, cwd: string, _resume?: string, options?: SendQueryOptions) {
+      const id = options?.nodeConfig?.nodeId ?? '';
+      f.roles.push(options?.env?.SUPERAGENT_ROLE ?? '');
+      if (id.startsWith('code-')) {
         const edit = f.spec.agents.code;
-        writeFileSync(join(cwd, edit.path), edit.content);
+        writeFileSync(join(cwd, edit.path), f.spec.id === 'S6' ? 'regression\n' : edit.content);
         sh(
           `git add '${edit.path}' && git -c user.name=scenario -c user.email=scenario@local commit -qm scenario-${f.spec.id}`,
           cwd
         );
-        yield { type: 'result', text: 'applied', sessionId: `scenario-${f.spec.id.toLowerCase()}` };
-        yield { type: 'settled' };
-        return;
       }
-      yield* base.sendQuery(prompt, cwd, resume, options);
+      if (id.startsWith('fix-')) {
+        writeFileSync(join(cwd, 'fix.txt'), `${f.spec.id}\n`);
+        sh(
+          `git add fix.txt && git -c user.name=scenario -c user.email=scenario@local commit -qm fix-${f.spec.id}`,
+          cwd
+        );
+      }
+      if (id === 'review-m1-r1' && f.spec.id === 'S4') {
+        writeFileSync(join(f.target, 'advanced.txt'), 'advanced\n');
+        sh('git add advanced.txt && git commit -qm advanced', f.target);
+      }
+      if (id === 'review-m1-r1' && f.spec.id === 'S8') {
+        const path = join(f.root, 'artifacts', 'diff-m1-r1.json');
+        if (existsSync(path)) writeFileSync(path, `${readFileSync(path, 'utf8')} `);
+      }
+      const sample = schemaSample(
+        options?.outputFormat?.schema as JsonSchema | undefined,
+        id,
+        editFiles(f)
+      ) as Record<string, unknown>;
+      if (id === 'review-m1-r1' && f.spec.passRound === 2) {
+        sample.status = 'FAIL';
+        sample.findings = [
+          {
+            id: 'scenario-r1',
+            severity: 'high',
+            file: f.spec.agents.code.path,
+            line: 1,
+            status: 'open',
+            evidence: 'scripted first-round finding',
+            failure_class: 'product',
+            command: null,
+            carry_over: false,
+          },
+        ];
+      }
+      if (id === 'review-m1-r2' && f.spec.passRound === 2)
+        sample.findings = [
+          {
+            id: 'scenario-r1',
+            severity: 'high',
+            file: f.spec.agents.code.path,
+            line: 1,
+            status: 'closed',
+            evidence: 'fixed in round two',
+            failure_class: 'product',
+            command: null,
+            carry_over: true,
+          },
+        ];
+      yield {
+        type: 'result',
+        text: JSON.stringify(sample),
+        structuredOutput: sample,
+        sessionId: `scenario-${f.spec.id.toLowerCase()}-${id}`,
+        ...(_resume ? { resumed: true } : {}),
+        resolvedModel: { id: id.startsWith('review-') ? 'fixture/reviewer' : 'fixture/coder' },
+      };
+      yield { type: 'settled' };
     },
   };
 }
 
-function workflowRun(id: string): WorkflowRun {
-  return {
-    origin: { conversationId: id },
-    id,
-    workflow_name: id,
-    conversation_id: id,
-    parent_conversation_id: null,
-    codebase_id: null,
-    status: 'running',
-    outcome: null,
-    user_message: id,
-    metadata: {},
-    started_at: new Date(),
-    completed_at: null,
-    last_activity_at: null,
-    working_path: null,
-    user_id: null,
-    parent_run_id: null,
-    output_root: null,
-    checkout_baseline: null,
-    adopted_from_run_id: null,
-  };
+type JsonSchema = {
+  type?: string | string[];
+  enum?: unknown[];
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+};
+const editFiles = (f: ScenarioFixture): string[] => [f.spec.agents.code.path];
+function schemaSample(schema: JsonSchema | undefined, node: string, changed: string[]): unknown {
+  if (!schema) return 'ok';
+  if (schema.enum) return schema.enum.includes(null) ? null : schema.enum[0];
+  const type = Array.isArray(schema.type)
+    ? schema.type.find(value => value !== 'null')
+    : schema.type;
+  if (type === 'object' || schema.properties) {
+    const out: Record<string, unknown> = {};
+    for (const key of schema.required ?? Object.keys(schema.properties ?? {})) {
+      if (key === 'status') out[key] = node.startsWith('review-') ? 'PASS' : 'done';
+      else if (key === 'changed_files') out[key] = changed;
+      else if (key === 'error_class') out[key] = null;
+      else out[key] = schemaSample(schema.properties?.[key], node, changed);
+    }
+    return out;
+  }
+  if (type === 'array') return [];
+  if (type === 'integer' || type === 'number') return 0;
+  if (type === 'boolean') return false;
+  if (type === 'null') return null;
+  return '';
 }
 
-function deps(run: WorkflowRun, provider: IAgentProvider) {
-  const events: WorkflowEventInput[] = [];
-  const terminal = { completed: [] as string[], failed: [] as string[] };
-  const store = {
-    createWorkflowEvent: async (event: WorkflowEventInput) => {
-      events.push(event);
-    },
-    persistWorkflowEvent: async (event: WorkflowEventInput) => {
-      events.push(event);
-    },
-    persistWorkflowEventIfRunning: async (event: WorkflowEventInput) => {
-      events.push(event);
-      return { persisted: true as const };
-    },
-    getWorkflowRunStatus: async () => 'running' as const,
-    getWorkflowRun: async () => run,
-    updateWorkflowActivity: async () => {},
-    updateWorkflowRun: async () => {},
-    completeWorkflowRun: async (id: string) => {
-      terminal.completed.push(id);
-    },
-    failWorkflowRun: async (id: string) => {
-      terminal.failed.push(id);
-    },
-    findChildRuns: async () => [],
-    listWorkflowNodeSessions: async () => [],
-    listWorkflowRunNodeSessions: async () => [],
-    upsertWorkflowNodeSession: async () => {},
-    upsertWorkflowRunNodeSession: async () => {},
-  } satisfies Partial<IWorkflowStore>;
+function deps(store: IWorkflowStore, provider: IAgentProvider) {
   const registry: ProviderRegistry = {
     get: id =>
       id === descriptor.id
@@ -158,7 +199,7 @@ function deps(run: WorkflowRun, provider: IAgentProvider) {
             builtIn: false,
             credentials: { ...descriptor.credentials, vendorFor: () => undefined },
             parseConfig: raw => raw,
-            capabilities: descriptor.capabilities,
+            capabilities: { ...descriptor.capabilities, sessionFork: true },
           }
         : undefined,
     list: () => [],
@@ -170,11 +211,11 @@ function deps(run: WorkflowRun, provider: IAgentProvider) {
   };
   const value: WorkflowDeps = {
     providers: registry,
-    store: store as unknown as IWorkflowStore,
+    store,
     getAgentProvider: () => provider,
     loadConfig: async () => config,
   };
-  return { value, events, terminal, config };
+  return { value, config };
 }
 
 const platform: IWorkflowPlatform = {
@@ -185,37 +226,109 @@ const platform: IWorkflowPlatform = {
 };
 
 export async function runInProcess(f: ScenarioFixture) {
-  const id = `scenario-${f.spec.id.toLowerCase()}`;
-  const run = workflowRun(id);
-  const d = deps(run, scriptedProvider(f));
-  const publish = `test "$SUPERAGENT_ROLE" = worker && expected=$(git -C '${f.target}' rev-parse scenario-target) && head=$(git rev-parse HEAD) && test "$expected" = '${f.initial}' && git -C '${f.target}' update-ref refs/heads/scenario-target "$head" "$expected" && printf '{"status":"published"}'`;
+  const id = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
+  const store = createWorkflowStore();
+  await store.createWorkflowRun({
+    id,
+    workflow_name: id,
+    user_message: id,
+    working_path: f.worker,
+  });
+  const run = await store.claimPendingWorkflowRun(id, f.worker);
+  if (!run) throw new Error(`scenario run ${id} was not claimable`);
+  const d = deps(store, scriptedProvider(f));
+  const plan = JSON.parse(
+    readFileSync(
+      fixturePlan(f.root, f.target, value => {
+        value.base_ref = 'scenario-target';
+        value.environment = [];
+        value.packages = [
+          {
+            id: 'p',
+            title: f.spec.id,
+            goal: f.spec.plan.goal,
+            scope: { write: [f.spec.agents.code.path, 'fix.txt'] },
+            accept: [{ cmd: f.spec.plan.accept, timeout_s: 5 }],
+            risk: f.spec.risk,
+            size: 'S',
+          },
+        ];
+      }),
+      'utf8'
+    )
+  ) as Plan;
+  Object.assign(process.env, {
+    WORKFLOW_ID: id,
+    SUPERAGENT_MEMORY: 'off',
+    NODE_ENV: 'test',
+    SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
+  });
+  const who = coordination.caller();
+  coordination.coord().claim(coordination.repoScope(f.target), who);
+  coordination.coord().claim(coordination.runScope({ run_id: id, repo: f.target }), who);
+  const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(f.initial);
+  const identity = spyOn(coordination, 'caller').mockReturnValue(who);
+  let generated: ReturnType<typeof generate>;
+  try {
+    generated = generate(plan, id, false, undefined, undefined, {
+      checkout: f.target,
+      branch: 'scenario-target',
+      head: f.initial,
+    });
+  } finally {
+    identity.mockRestore();
+    engine.mockRestore();
+  }
+  if (f.spec.id === 'S13') {
+    const takeover = { ...who, client: `${who.client}-takeover` };
+    coordination
+      .coord()
+      .claim(coordination.repoScope(f.target), takeover, true, 'scenario takeover');
+    coordination
+      .coord()
+      .claim(
+        coordination.runScope({ run_id: id, repo: f.target }),
+        takeover,
+        true,
+        'scenario takeover'
+      );
+  }
+  mkdirSync(join(f.home, 'runs'), { recursive: true });
+  writeFileSync(
+    ledgerPath(id),
+    JSON.stringify({
+      run_id: id,
+      archon_run_id: id,
+      repo: f.target,
+      branch: `scenario-${f.spec.id.toLowerCase()}`,
+      plan: join(generated.dir, 'plan.json'),
+      gen_dir: generated.dir,
+      workflow: generated.workflow,
+      delivery: { checkout: f.target, branch: 'scenario-target', head: f.initial },
+    })
+  );
+  const raw = Bun.YAML.parse(
+    readFileSync(
+      join(generated.dir, '.archon/workflows', generated.workflow, `${generated.workflow}.yaml`),
+      'utf8'
+    )
+  ) as { description?: string; nodes: Array<Record<string, unknown>> };
+  const routeAi = (nodes: Array<Record<string, unknown>>): void => {
+    for (const node of nodes) {
+      if (node.command || node.prompt) {
+        node.provider = descriptor.id;
+        delete node.model;
+      }
+      const group = node.loop_group as { nodes?: Array<Record<string, unknown>> } | undefined;
+      if (group?.nodes) routeAi(group.nodes);
+    }
+  };
+  routeAi(raw.nodes);
   const workflow = makeTestResolvedWorkflow({
-    name: id,
-    description: f.spec.plan.goal,
+    name: generated.workflow,
+    description: raw.description,
     provider: descriptor.id,
-    nodes: [
-      { id: 'code', prompt: `scenario:${f.spec.id}:code` },
-      {
-        id: 'accept-r1',
-        depends_on: ['code'],
-        bash:
-          f.spec.passRound === 1
-            ? `test "$SUPERAGENT_ROLE" = worker && ${f.spec.plan.accept} && printf pass`
-            : 'printf retry',
-      },
-      {
-        id: 'accept-r2',
-        depends_on: ['accept-r1'],
-        when: "$accept-r1.output != 'pass'",
-        bash: `test "$SUPERAGENT_ROLE" = worker && ${f.spec.plan.accept} && printf pass`,
-      },
-      {
-        id: 'publish',
-        depends_on: ['accept-r1', 'accept-r2'],
-        trigger_rule: 'none_failed_min_one_success',
-        bash: publish,
-      },
-    ],
+    nodes: raw.nodes,
   });
   const stateDir = join(f.root, 'state'),
     logDir = join(f.root, 'logs'),
@@ -236,133 +349,49 @@ export async function runInProcess(f: ScenarioFixture) {
     baseBranch: 'scenario-target',
     docsDir: 'docs/',
     config: d.config,
+    workflowSourceRoots: liveSourceRoots(generated.dir),
   });
-  return d;
-}
-
-function installProvider(f: ScenarioFixture): void {
-  const plugins = join(f.archonHome, 'plugins');
-  const executable = join(plugins, 'archon-provider-test-provider');
-  const wrapper = join(plugins, 'scenario-provider.ts');
-  mkdirSync(plugins, { recursive: true });
-  const pluginApi = join(
-    import.meta.dir,
-    '../../../packages/provider-contract/src/plugin/index.ts'
-  );
-  const fixture = join(
-    import.meta.dir,
-    '../../../packages/provider-contract/src/fixtures/test-provider/main.ts'
-  );
-  const edit = f.spec.agents.code;
-  writeFileSync(
-    wrapper,
-    `import { writeFileSync } from 'node:fs';\nimport { join } from 'node:path';\nimport { serveProvider } from ${JSON.stringify(pluginApi)};\nimport { descriptor, createProvider } from ${JSON.stringify(fixture)};\nawait serveProvider({ descriptor, create: () => { const base = createProvider(); return { ...base, async *sendQuery(prompt,cwd,resume,options) { if (prompt === 'scenario:S1:code') { writeFileSync(join(cwd,${JSON.stringify(edit.path)}),${JSON.stringify(edit.content)}); writeFileSync(join(cwd,'role.txt'),options?.env?.SUPERAGENT_ROLE ?? ''); const a=Bun.spawnSync(['git','add',${JSON.stringify(edit.path)},'role.txt'],{cwd}); const c=Bun.spawnSync(['git','-c','user.name=scenario','-c','user.email=scenario@local','commit','-qm','scenario-S1'],{cwd}); yield {type:'result',text:a.exitCode || c.exitCode ? 'git-failed' : 'applied',sessionId:'scenario-s1'}; yield {type:'settled'}; return; } yield* base.sendQuery(prompt,cwd,resume,options); } }; } });\n`
-  );
-  writeFileSync(executable, `#!/bin/sh\nexec bun ${JSON.stringify(wrapper)}\n`, { mode: 0o755 });
-  const receipt = receiptPath(plugins, 'scenario/test-provider');
-  mkdirSync(dirname(receipt), { recursive: true });
-  writeFileSync(
-    receipt,
-    JSON.stringify({
-      schemaVersion: 1,
-      id: 'scenario/test-provider',
-      manifest: {
-        schemaVersion: 1,
-        kind: 'provider',
-        name: 'test-provider',
-        description: 'scenario fixture',
-        executable: 'archon-provider-test-provider',
-      },
-      tag: 'v1',
-      commit: 'a'.repeat(40),
-      installedAt: new Date(0).toISOString(),
-      files: [{ path: 'archon-provider-test-provider', sha256: 'b'.repeat(64) }],
-      descriptor,
-    })
-  );
-  mkdirSync(f.archonHome, { recursive: true });
-  writeFileSync(
-    join(f.archonHome, 'config.yaml'),
-    `assistant: test-provider\nenv:\n  SUPERAGENT_ROLE: worker\nassistants:\n  test-provider: {}\n`
-  );
-}
-
-export function runDetached(f: ScenarioFixture) {
-  installProvider(f);
-  const source = join(f.root, 'source'),
-    dir = join(source, '.archon', 'workflows', 'scenario-s1');
-  mkdirSync(dir, { recursive: true });
-  const target = JSON.stringify(f.target),
-    initial = JSON.stringify(f.initial);
-  const nodes = [
-    { id: 'code', prompt: 'scenario:S1:code', provider: descriptor.id },
-    {
-      id: 'accept',
-      depends_on: ['code'],
-      bash: `test "$SUPERAGENT_ROLE" = worker && test "$(cat role.txt)" = worker && ${f.spec.plan.accept} && git diff --quiet && printf accepted`,
+  const persisted = await store.getWorkflowRun(id);
+  const events = await store.listWorkflowEvents(id);
+  return {
+    ...d,
+    generated,
+    artifactsDir,
+    events,
+    terminal: {
+      completed: persisted?.status === 'completed' ? [id] : [],
+      failed: persisted?.status === 'failed' ? [id] : [],
     },
-    {
-      id: 'sync',
-      depends_on: ['accept'],
-      bash: `test "$SUPERAGENT_ROLE" = worker && tip=$(git -C ${target} rev-parse scenario-target) && test "$tip" = ${initial} && printf '{"status":"synced","target_tip":"%s"}' "$tip"`,
-    },
-    {
-      id: 'publish',
-      depends_on: ['sync'],
-      bash: `test "$SUPERAGENT_ROLE" = worker && head=$(git rev-parse HEAD) && git -C ${target} update-ref refs/heads/scenario-target "$head" ${initial} && printf '{"status":"published","target_tip":"%s"}' "$head"`,
-    },
-  ];
-  writeFileSync(
-    join(dir, 'scenario-s1.yaml'),
-    Bun.YAML.stringify({
-      name: 'scenario-s1',
-      description: f.spec.plan.goal,
-      provider: descriptor.id,
-      worktree: { enabled: false },
-      nodes,
-    })
-  );
-  const env = fixtureEnv({
-    HOME: f.home,
-    SUPERAGENT_HOME: f.home,
-    ARCHON_HOME: f.archonHome,
-    SUPERAGENT_ROLE: '',
-    ARCHON_TELEMETRY_DISABLED: 'true',
-    DATABASE_URL: '',
-  });
-  const cli = join(import.meta.dir, '../../bin/archon');
-  const launch = Bun.spawnSync(
-    [
-      cli,
-      'workflow',
-      'run',
-      'scenario-s1',
-      '--workflow-source',
-      source,
-      '--cwd',
-      f.worker,
-      '--no-worktree',
-      '--detach',
-      '--json',
-      '--config',
-      join(f.archonHome, 'config.yaml'),
-    ],
-    { cwd: f.worker, env, stdout: 'pipe', stderr: 'pipe', timeout: 30_000 }
-  );
-  expect(launch.exitCode, launch.stdout.toString() + launch.stderr.toString()).toBe(0);
-  const runId = (JSON.parse(launch.stdout.toString()) as { runId: string }).runId;
-  const wait = Bun.spawnSync(
-    [cli, 'workflow', 'wait', runId, '--cwd', f.worker, '--json', '--timeout', '60'],
-    { cwd: f.worker, env, stdout: 'pipe', stderr: 'pipe', timeout: 70_000 }
-  );
-  expect(wait.exitCode, wait.stderr.toString()).toBe(0);
-  const get = Bun.spawnSync(
-    [cli, 'workflow', 'get', runId, '--cwd', f.worker, '--json', '--verbose', '--events'],
-    { cwd: f.worker, env, stdout: 'pipe', stderr: 'pipe', timeout: 30_000 }
-  );
-  expect(get.exitCode, get.stderr.toString()).toBe(0);
-  return JSON.parse(get.stdout.toString()) as {
-    status: string;
-    events: Array<{ event_type: string; step_name?: string; data?: unknown }>;
   };
+}
+
+export type ScenarioResult = Awaited<ReturnType<typeof runInProcess>>;
+
+export function expectOutcome(
+  f: ScenarioFixture,
+  result: ScenarioResult,
+  spec: { terminal: 'completed' | 'failed'; counts: Record<string, number>; published: boolean }
+): void {
+  const id = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
+  expect(result.terminal).toEqual({
+    completed: spec.terminal === 'completed' ? [id] : [],
+    failed: spec.terminal === 'failed' ? [id] : [],
+  });
+  for (const [node, count] of Object.entries(spec.counts))
+    expect(
+      result.events.filter(
+        event => event.event_type === 'node_completed' && event.step_name === node
+      )
+    ).toHaveLength(count);
+  expect(result.events.filter(event => event.event_type === 'node_failed').length === 0).toBe(
+    spec.terminal === 'completed'
+  );
+  const receipt = join(result.artifactsDir, 'publish-m1.json');
+  expect(existsSync(receipt)).toBe(spec.published);
+  if (spec.published) {
+    expect(JSON.parse(readFileSync(receipt, 'utf8')).status).toBe('published');
+    expect(sh('git rev-parse scenario-target', f.target).trim()).toBe(
+      sh('git rev-parse HEAD', f.worker).trim()
+    );
+  } else expect(sh('git rev-parse scenario-target', f.target).trim()).toBe(f.initial);
 }
