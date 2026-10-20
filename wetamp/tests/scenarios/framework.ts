@@ -44,18 +44,24 @@ export interface ScenarioFixture {
   saved: NodeJS.ProcessEnv;
   spec: ScenarioSpec;
   roles: string[];
+  targetAfterInjection?: string;
 }
 
-export function scenario(spec: ScenarioSpec): ScenarioFixture {
+export function scenario(
+  spec: ScenarioSpec,
+  options: { target?: string; suffix?: string } = {}
+): ScenarioFixture {
   const root = tmp();
-  const target = gitRepo(root);
+  const target = options.target ?? gitRepo(root);
   const worker = join(root, 'worker');
-  sh(
-    'git branch -m scenario-target && git config user.name t && git config user.email t@l',
-    target
-  );
+  if (!options.target)
+    sh(
+      'git branch -m scenario-target && git config user.name t && git config user.email t@l',
+      target
+    );
   const initial = sh('git rev-parse HEAD', target).trim();
-  sh(`git worktree add -qb scenario-${spec.id.toLowerCase()} '${worker}' scenario-target`, target);
+  const branch = `scenario-${spec.id.toLowerCase()}${options.suffix ? `-${options.suffix}` : ''}`;
+  sh(`git worktree add -qb '${branch}' '${worker}' scenario-target`, target);
   const home = join(root, 'home');
   const archonHome = join(home, 'archon');
   const saved = { ...process.env };
@@ -67,6 +73,7 @@ export function scenario(spec: ScenarioSpec): ScenarioFixture {
     DATABASE_URL: '',
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
+    SUPERAGENT_ROLE: '',
   });
   resetDatabase();
   expect(home).not.toBe(join(saved.HOME ?? '', '.superagent'));
@@ -88,12 +95,23 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
       const id = options?.nodeConfig?.nodeId ?? '';
       f.roles.push(options?.env?.SUPERAGENT_ROLE ?? '');
       if (id.startsWith('code-')) {
-        const edit = f.spec.agents.code;
-        writeFileSync(join(cwd, edit.path), f.spec.id === 'S6' ? 'regression\n' : edit.content);
+        const edit =
+          id === 'code-p2'
+            ? { path: 'scenario-2.txt', content: `${f.spec.id}-2\n` }
+            : f.spec.agents.code;
+        writeFileSync(join(cwd, edit.path), edit.content);
         sh(
           `git add '${edit.path}' && git -c user.name=scenario -c user.email=scenario@local commit -qm scenario-${f.spec.id}`,
           cwd
         );
+        if (f.spec.id === 'S5') {
+          writeFileSync(join(f.target, edit.path), 'target-side\n');
+          sh(`git add '${edit.path}' && git commit -qm target-conflict`, f.target);
+        }
+      }
+      if (id === 'resolve-sync-review-m1' && f.spec.id === 'S5') {
+        const targetTip = sh('git rev-parse scenario-target', f.target).trim();
+        sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
       }
       if (id.startsWith('fix-')) {
         writeFileSync(join(cwd, 'fix.txt'), `${f.spec.id}\n`);
@@ -102,13 +120,14 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
           cwd
         );
       }
-      if (id === 'review-m1-r1' && f.spec.id === 'S4') {
-        writeFileSync(join(f.target, 'advanced.txt'), 'advanced\n');
-        sh('git add advanced.txt && git commit -qm advanced', f.target);
-      }
       if (id === 'review-m1-r1' && f.spec.id === 'S8') {
         const path = join(f.root, 'artifacts', 'diff-m1-r1.json');
         if (existsSync(path)) writeFileSync(path, `${readFileSync(path, 'utf8')} `);
+      }
+      if (id === 'review-m1-r1' && f.spec.id === 'S6') {
+        writeFileSync(join(f.target, 'target-regression.txt'), 'regression\n');
+        sh('git add target-regression.txt && git commit -qm target-regression', f.target);
+        f.targetAfterInjection = sh('git rev-parse scenario-target', f.target).trim();
       }
       const sample = schemaSample(
         options?.outputFormat?.schema as JsonSchema | undefined,
@@ -242,7 +261,7 @@ export async function runInProcess(f: ScenarioFixture) {
       fixturePlan(f.root, f.target, value => {
         value.base_ref = 'scenario-target';
         value.environment = [];
-        value.packages = [
+        const packages: Record<string, unknown>[] = [
           {
             id: 'p',
             title: f.spec.id,
@@ -253,6 +272,19 @@ export async function runInProcess(f: ScenarioFixture) {
             size: 'S',
           },
         ];
+        if (f.spec.id === 'S10')
+          packages.push({
+            id: 'p2',
+            title: 'S10 second milestone',
+            goal: 'S10 second generated delivery',
+            scope: { write: ['scenario-2.txt'] },
+            accept: [{ cmd: 'test "$(cat scenario-2.txt)" = S10-2', timeout_s: 5 }],
+            risk: f.spec.risk,
+            size: 'S',
+            milestone: 'm2',
+            deps: ['p'],
+          });
+        value.packages = packages;
       }),
       'utf8'
     )
@@ -263,7 +295,8 @@ export async function runInProcess(f: ScenarioFixture) {
     NODE_ENV: 'test',
     SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
   });
-  const who = coordination.caller();
+  const shell = coordination.caller();
+  const who = { ...shell, client: `${shell.client}-scenario-authorized` };
   coordination.coord().claim(coordination.repoScope(f.target), who);
   coordination.coord().claim(coordination.runScope({ run_id: id, repo: f.target }), who);
   const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(f.initial);
@@ -393,5 +426,31 @@ export function expectOutcome(
     expect(sh('git rev-parse scenario-target', f.target).trim()).toBe(
       sh('git rev-parse HEAD', f.worker).trim()
     );
-  } else expect(sh('git rev-parse scenario-target', f.target).trim()).toBe(f.initial);
+  } else
+    expect(sh('git rev-parse scenario-target', f.target).trim()).toBe(
+      f.targetAfterInjection ?? f.initial
+    );
+}
+
+export function completedOutput(result: ScenarioResult, node: string): Record<string, unknown> {
+  const event = result.events.find(
+    value => value.event_type === 'node_completed' && value.step_name === node
+  );
+  expect(event, `${node} did not complete`).toBeDefined();
+  const output =
+    event?.data?.structured_output ??
+    (typeof event?.data?.node_output === 'string' ? JSON.parse(event.data.node_output) : undefined);
+  expect(output && typeof output === 'object').toBeTrue();
+  return output as Record<string, unknown>;
+}
+
+export function expectPublishedGate(result: ScenarioResult, round: number): void {
+  const output = completedOutput(result, `gate-m1-r${String(round)}`);
+  const file = join(result.artifactsDir, `gate-m1-r${String(round)}.json`);
+  expect(output.artifact_sha256).toBe(
+    new Bun.CryptoHasher('sha256').update(readFileSync(file)).digest('hex')
+  );
+  expect(
+    JSON.parse(readFileSync(join(result.artifactsDir, 'publish-m1.json'), 'utf8'))
+  ).toMatchObject({ status: 'published' });
 }

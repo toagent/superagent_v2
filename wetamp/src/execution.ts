@@ -80,6 +80,9 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
           plan
         );
     }
+    const resolver = describeExecution(tiers, 'repair', m.risk, 1, m.id, [m.packages[0]], plan);
+    table[`resolve-sync-${m.id}`] = resolver;
+    table[`resolve-sync-review-${m.id}`] = resolver;
   }
   return table;
 }
