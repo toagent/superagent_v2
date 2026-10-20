@@ -12,12 +12,29 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const os = require('node:os');
+const { execFileSync } = require('node:child_process');
 
 const envOr = (k, d) => (process.env[k] ? process.env[k] : d);
 const codexHome = envOr('CODEX_HOME', path.join(os.homedir(), '.codex'));
 const hooksFile = path.join(codexHome, 'hooks.json');
 const configFile = path.join(codexHome, 'config.toml');
 const OURS = path.join(fs.realpathSync(path.join(__dirname, '..')), 'hooks') + '/';
+
+/** 当前检出及其 git 主工作树的 guard；git 失败或输出异常时只保留当前检出。 */
+function trustedGuardCommands() {
+  const commands = new Set([`node '${OURS}guard.cjs' codex`]);
+  try {
+    const root = fs.realpathSync(path.join(__dirname, '..', '..'));
+    const first = execFileSync('git', ['-C', root, 'worktree', 'list', '--porcelain', '-z'], {
+      encoding: 'utf8',
+      timeout: 5000,
+    }).split('\0')[0];
+    if (!first.startsWith('worktree ') || first.length === 9) return commands;
+    const mainHooks = path.join(fs.realpathSync(first.slice(9)), 'wetamp', 'hooks') + '/';
+    commands.add(`node '${mainHooks}guard.cjs' codex`);
+  } catch {}
+  return commands;
+}
 
 const snake = e => e.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
 const sorted = v =>
@@ -130,11 +147,11 @@ try {
   if (cmd === 'write') process.stdout.write(write(rest.includes('--dry-run')));
   else if (cmd === 'check') {
     const s = state();
-    const expected = `node '${OURS}guard.cjs' codex`;
+    const expected = trustedGuardCommands();
     const ok = entries().some(
       e =>
         e.event === 'PreToolUse' &&
-        e.command === expected &&
+        expected.has(e.command) &&
         !e.async &&
         [undefined, '', '*'].includes(e.matcher) &&
         s[e.key]?.enabled !== false &&
