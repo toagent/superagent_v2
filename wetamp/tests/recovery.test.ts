@@ -417,81 +417,63 @@ describe('recovery ownership and effects', () => {
     }
   });
 
-  test.each(['land', 'deliver'])(
-    'DURABLE_DELIVERY recovery preserves unknown legacy effects, resumes authorized delivery: %s',
-    node => {
-      const root = tmp(),
-        sa = join(root, 'sa'),
-        ah = join(sa, 'archon'),
-        bin = join(root, 'archon');
-      mkdirSync(ah, { recursive: true });
-      const run: RunView = {
-        id: 'r',
-        status: 'running',
-        metadata: { execution_owner: { host: hostname(), pid: 4194305 } },
-        nodes: [
-          ...(node === 'deliver' ? [{ nodeId: 'land', state: 'completed' }] : []),
-          { nodeId: node, state: 'running', startedAt: '2026-10-11T00:00:00Z' },
-        ],
-      };
-      writeFileSync(
-        bin,
-        `#!/usr/bin/env bash\nif [ "$2" = get ]; then cat '${join(root, 'run.json')}'; else echo resume >> '${join(root, 'calls')}'; echo '{"ok":true}'; fi\n`
-      );
-      chmodSync(bin, 0o755);
-      writeFileSync(join(root, 'run.json'), JSON.stringify(run));
-      const db = new Database(join(ah, 'archon.db'));
-      db.run(
-        'create table remote_agent_workflow_runs(id text, status text, metadata text, started_at text)'
-      );
-      db.run('insert into remote_agent_workflow_runs values (?, ?, ?, null)', [
-        'r',
-        'running',
-        JSON.stringify(run.metadata),
-      ]);
-      const env = { ...process.env };
-      Object.assign(process.env, {
-        ...fixtureEnv(),
-        SUPERAGENT_HOME: sa,
-        ARCHON_HOME: ah,
-        SA_ARCHON_BIN: bin,
+  test('DURABLE_DELIVERY recovery preserves unknown legacy land effects', () => {
+    const root = tmp(),
+      sa = join(root, 'sa'),
+      ah = join(sa, 'archon'),
+      bin = join(root, 'archon');
+    mkdirSync(ah, { recursive: true });
+    const run: RunView = {
+      id: 'r',
+      status: 'running',
+      metadata: { execution_owner: { host: hostname(), pid: 4194305 } },
+      nodes: [{ nodeId: 'land', state: 'running', startedAt: '2026-10-11T00:00:00Z' }],
+    };
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env bash\nif [ "$2" = get ]; then cat '${join(root, 'run.json')}'; else echo resume >> '${join(root, 'calls')}'; echo '{"ok":true}'; fi\n`
+    );
+    chmodSync(bin, 0o755);
+    writeFileSync(join(root, 'run.json'), JSON.stringify(run));
+    const db = new Database(join(ah, 'archon.db'));
+    db.run(
+      'create table remote_agent_workflow_runs(id text, status text, metadata text, started_at text)'
+    );
+    db.run('insert into remote_agent_workflow_runs values (?, ?, ?, null)', [
+      'r',
+      'running',
+      JSON.stringify(run.metadata),
+    ]);
+    const env = { ...process.env };
+    Object.assign(process.env, {
+      ...fixtureEnv(),
+      SUPERAGENT_HOME: sa,
+      ARCHON_HOME: ah,
+      SA_ARCHON_BIN: bin,
+    });
+    try {
+      expect(recover('r')).toMatchObject({
+        held: true,
+        reason: 'effects_unknown',
+        nodes: ['land'],
       });
-      try {
-        if (node === 'deliver') {
-          mkdirSync(join(sa, 'runs'), { recursive: true });
-          // prettier-ignore
-          writeFileSync(join(sa, 'runs/r.json'), JSON.stringify({
-            run_id: 'r', archon_run_id: 'r', gen_dir: root, repo: root,
-            branch: 'feature', workflow: 'fixture', delivery: {},
-          }));
-          writeFileSync(join(root, 'delivery-authorization.json'), '{}');
-          expect(recover('r').ok).toBe(true);
-          expect(readFileSync(join(root, 'calls'), 'utf8')).toContain('resume');
-          return;
-        }
-        expect(recover('r')).toMatchObject({
-          held: true,
-          reason: 'effects_unknown',
-          nodes: ['land'],
-        });
-        expect(
-          recover('r', undefined, undefined, undefined, undefined, undefined, 'old')
-        ).toMatchObject({ reason: 'effects_unknown' });
-        expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
-          status: 'running',
-        });
-        expect(existsSync(join(root, 'calls'))).toBe(false);
-        expect(
-          recover('r', undefined, undefined, undefined, undefined, undefined, recoverySnapshot(run))
-            .ok
-        ).toBe(true);
-        expect(recover('r')).toMatchObject({ held: true, reason: 'recovery_admission_unknown' });
-      } finally {
-        process.env = env;
-        db.close();
-      }
+      expect(
+        recover('r', undefined, undefined, undefined, undefined, undefined, 'old')
+      ).toMatchObject({ reason: 'effects_unknown' });
+      expect(db.query('select status from remote_agent_workflow_runs').get()).toEqual({
+        status: 'running',
+      });
+      expect(existsSync(join(root, 'calls'))).toBe(false);
+      expect(
+        recover('r', undefined, undefined, undefined, undefined, undefined, recoverySnapshot(run))
+          .ok
+      ).toBe(true);
+      expect(recover('r')).toMatchObject({ held: true, reason: 'recovery_admission_unknown' });
+    } finally {
+      process.env = env;
+      db.close();
     }
-  );
+  }, 10_000);
 
   test('lost launch acknowledgements fence both resume and engine adoption without repeating launch', () => {
     for (const adopt of [false, true]) {

@@ -10,6 +10,7 @@ import { generate } from '../src/generate';
 import { ledgerPath } from '../src/cli';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
 import * as coordination from '../src/coord';
+import { gateHashInput } from '../src/contract';
 import type { Plan } from '../src/plan';
 import { fixtureEnv, fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -210,7 +211,7 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
       };
       let gateSha256 = writeGate(String(synced.target_tip));
       const publishCommand = (tip: string) =>
-        `INPUTS_GATE_R1_SHA256=${gateSha256} INPUTS_TARGET_TIP=${tip} INPUTS_REVIEW_REQUIRED=1 bun -e '${publish.script!.replaceAll("'", "'\\''")}'`;
+        `${gateHashInput(1).env}=${gateSha256} INPUTS_TARGET_TIP=${tip} INPUTS_REVIEW_REQUIRED=1 bun -e '${publish.script!.replaceAll("'", "'\\''")}'`;
       const publishAt = (tip: string) => runBash(publishCommand(tip), f.worker, env);
       if (mode === 'advanced') {
         writeFileSync(join(f.repo, 'advanced.txt'), 'advanced\n');
