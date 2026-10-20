@@ -62,6 +62,7 @@ const successfulProbe = (): ProbeEvidence =>
     '{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}'
   );
 
+// prettier-ignore
 test('snapshot probe executes the candidate with isolated homes and preserves failed output', () => {
   const root = tmp(),
     snapshot = join(root, 'candidate'),
@@ -82,26 +83,17 @@ console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_pat
   );
   const evidence = runSnapshotProbe(snapshot),
     invoked = JSON.parse(readFileSync(trace, 'utf8'));
-  expect(evidence.ok).toBe(true);
-  expect(invoked.argv).toEqual(['engine', 'probe', 'G1']);
-  expect(invoked.cwd).toBe(join(snapshot, 'wetamp'));
+  expect(evidence.ok).toBe(true); expect(invoked.argv).toEqual(['engine', 'probe', 'G1']); expect(invoked.cwd).toBe(join(snapshot, 'wetamp'));
   expect(invoked.home).not.toBe(process.env.SUPERAGENT_HOME);
   expect(invoked.archon).toBe(join(invoked.home, 'archon'));
-
-  writeFileSync(
-    cli,
-    `console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: '/forged' }));
+  writeFileSync(cli, `console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: '/forged' }));
 console.error('candidate probe stderr');
 process.exit(7);
-`
-  );
+`);
   const failed = runSnapshotProbe(snapshot);
   expect(failed).toMatchObject({ ok: false, reason: 'probe_process_failed' });
   expect(failed.error).toContain('candidate probe stderr');
-  expect(JSON.parse(readFileSync(failed.evidence_path, 'utf8'))).toMatchObject({
-    ok: false,
-    reason: 'probe_process_failed',
-  });
+  expect(JSON.parse(readFileSync(failed.evidence_path, 'utf8'))).toMatchObject({ ok: false, reason: 'probe_process_failed' });
 });
 
 test('bootstrap, descendant promotion, rollback rejection, and a newer descendant', () => {
@@ -163,50 +155,32 @@ test('promotion lock and protocol downgrade fail closed without publishing a rec
   expect(existsSync(join(receipts, `${second}.json`))).toBe(false);
 });
 
+// prettier-ignore
 test('failed read-only candidate retries explicitly while in-service snapshots stay locked', () => {
   const f = sourceFixture(),
     first = f.sha();
   promote(first, f.evidence);
   const second = commit(f.source, 'second');
-  expect(() =>
-    promote(second, undefined, {
-      probe: () => ({ ...successfulProbe(), ok: false, reason: 'not_published' }),
-    })
-  ).toThrow('probe_failed');
+  expect(() => promote(second, undefined, { probe: () => ({ ...successfulProbe(), ok: false, reason: 'not_published' }) })).toThrow('probe_failed');
   const snapshot = join(process.env.SUPERAGENT_HOME!, 'engine', second),
     receipt = join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${second}.json`),
     mode = statSync(snapshot).mode;
-  expect(statSync(snapshot).mode & 0o222).toBe(0);
-  expect(existsSync(receipt)).toBe(false);
-  expect(currentEngineSnapshot()).toEndWith(first);
+  expect(statSync(snapshot).mode & 0o222).toBe(0); expect(existsSync(receipt)).toBe(false); expect(currentEngineSnapshot()).toEndWith(first);
   const ledger = join(process.env.SUPERAGENT_HOME!, 'runs', 'referenced.json');
   mkdirSync(join(process.env.SUPERAGENT_HOME!, 'runs'));
-  writeFileSync(
-    ledger,
-    JSON.stringify({
-      run_id: 'referenced',
-      archon_run_id: 'a',
-      repo: f.source,
-      engine_snapshot: snapshot,
-    })
-  );
-  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
-    'snapshot_in_service'
-  );
+  writeFileSync(ledger, JSON.stringify({ run_id: 'referenced', archon_run_id: 'a', repo: f.source, engine_snapshot: snapshot }));
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow('snapshot_in_service');
   rmSync(ledger);
   writeFileSync(receipt, '{}');
-  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
-    'snapshot_in_service'
-  );
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow('snapshot_in_service');
   rmSync(receipt);
   expect(statSync(snapshot).mode).toBe(mode);
   expect(promote(second, undefined, { probe: successfulProbe }).sha).toBe(second);
-  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
-    'snapshot_in_service'
-  );
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow('snapshot_in_service');
   expect(statSync(snapshot).mode).toBe(mode);
 });
 
+// prettier-ignore
 test('auto promotion detaches once and marks a lost promoter with an explicit retry', () => {
   const f = sourceFixture(),
     first = f.sha();
@@ -216,25 +190,12 @@ test('auto promotion detaches once and marks a lost promoter with an explicit re
     marker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`);
   let state: 'online' | 'offline' = 'online',
     detached = 0;
-  const deps = {
-    spawn: () => ({ pid: 424242, unref: () => detached++ }),
-    inspect: () =>
-      state === 'online'
-        ? ({ state, start: 'Mon Oct 20 00:00:00 2026' } as const)
-        : ({ state } as const),
-  };
+  const deps = { spawn: () => ({ pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start: 'Mon Oct 20 00:00:00 2026' } as const) : ({ state } as const) };
   expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
   expect(detached).toBe(1);
-  expect(JSON.parse(readFileSync(marker, 'utf8'))).toMatchObject({
-    status: 'running',
-    pid: 424242,
-    pid_start: 'Mon Oct 20 00:00:00 2026',
-  });
+  expect(JSON.parse(readFileSync(marker, 'utf8'))).toMatchObject({ status: 'running', pid: 424242, pid_start: 'Mon Oct 20 00:00:00 2026' });
   expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
   state = 'offline';
-  expect(autoPromote(deps)).toMatchObject({
-    sha: second,
-    error: expect.stringContaining('superagent engine promote'),
-  });
+  expect(autoPromote(deps)).toMatchObject({ sha: second, error: expect.stringContaining('superagent engine promote') });
   expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('failed');
 });

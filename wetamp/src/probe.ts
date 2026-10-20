@@ -189,8 +189,9 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
     }
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : String(error);
+    if (Date.now() - started < limit && diagnostic !== 'timeout') throw error;
     judgement.diagnostic = diagnostic;
-    if (Date.now() - started >= limit || diagnostic === 'timeout') judgement.timed_out = true;
+    judgement.timed_out = true;
   }
   const decision = judgeProbe(judgement),
     evidence: ProbeEvidence = {
