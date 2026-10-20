@@ -13,7 +13,7 @@ export const conditionalOutput = <T>(id: string): OutputHandle<T, true> => ({
 type Present<T> = Exclude<T, undefined>;
 
 export const ref = {
-  value<T>(handle: OutputHandle<T>): string {
+  value<T>(handle: OutputHandle<T, boolean>): string {
     return `$${handle.id}.output`;
   },
   required<T>(handle: OutputHandle<T>, field: keyof T): string {

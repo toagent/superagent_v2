@@ -3,11 +3,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   acceptOutputFormat,
+  attemptOutputFormat,
+  coderOutputFormat,
   conditionalOutput,
+  contextOutputFormat,
   deliveryOutputFormat,
   output,
   publishOutputFormat,
   ref,
+  reviewerOutputFormat,
   syncOutputFormat,
   type AcceptOutput,
   type DeliveryOutput,
@@ -20,6 +24,9 @@ import { milestones, type Plan } from '../src/plan';
 const root = join(import.meta.dir, '..');
 
 test('generated node contracts match their JSON schema owners', () => {
+  const legacySchema = JSON.parse(
+    readFileSync(join(root, 'schemas/output.schema.json'), 'utf8')
+  ) as { $defs: Record<string, unknown> };
   const acceptSchema = JSON.parse(
     readFileSync(join(root, 'schemas/nodes/accept.schema.json'), 'utf8')
   );
@@ -30,6 +37,23 @@ test('generated node contracts match their JSON schema owners', () => {
   expect(publishOutputFormat).toEqual(
     JSON.parse(readFileSync(join(root, 'schemas/nodes/publish.schema.json'), 'utf8'))
   );
+  expect(coderOutputFormat).toEqual(
+    JSON.parse(readFileSync(join(root, 'schemas/nodes/coder.schema.json'), 'utf8'))
+  );
+  expect(attemptOutputFormat).toEqual(
+    JSON.parse(readFileSync(join(root, 'schemas/nodes/attempt.schema.json'), 'utf8'))
+  );
+  expect(contextOutputFormat).toEqual({
+    ...attemptOutputFormat,
+    title: 'ContextOutput',
+    properties: { ...attemptOutputFormat.properties, context_pack_path: { type: 'string' } },
+    required: [...attemptOutputFormat.required, 'context_pack_path'],
+  });
+  expect(reviewerOutputFormat).toEqual(
+    JSON.parse(readFileSync(join(root, 'schemas/nodes/reviewer.schema.json'), 'utf8'))
+  );
+  for (const kind of ['coder', 'attempt', 'reviewer'])
+    expect(legacySchema.$defs).not.toHaveProperty(kind);
   expect(acceptSchema.$defs.Check).toEqual({ $ref: '../plan.schema.json#/$defs/check' });
   expect(acceptSchema.$defs.RequirementContract.properties.requirements).toEqual({
     $ref: '../plan.schema.json#/$defs/requirements',
@@ -109,6 +133,17 @@ test('generated workflows pass in-process validation and reject output refs in s
     Date.UTC(2026, 0, 1),
     loadTiers()
   );
+  const nodes = workflow.nodes as { id: string; output_format?: unknown }[];
+  for (const node of nodes) {
+    if (/^(code|fix)-/.test(node.id) || /^(repair|resolve)-(?!context-)/.test(node.id))
+      expect(node.output_format, node.id).toBe(coderOutputFormat);
+    if (/^review-(?!context-)/.test(node.id))
+      expect(node.output_format, node.id).toBe(reviewerOutputFormat);
+    if (/^(attempt-|review-context-)/.test(node.id))
+      expect(node.output_format, node.id).toBe(attemptOutputFormat);
+    if (/^(package-attempt-|repair-context-|resolve-context-)/.test(node.id))
+      expect(node.output_format, node.id).toBe(contextOutputFormat);
+  }
   expect(() => assertGeneratedWorkflow(workflow)).not.toThrow();
   expect(() =>
     assertGeneratedWorkflow({

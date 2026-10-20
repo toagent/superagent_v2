@@ -28,9 +28,11 @@ import type {
   CheckFailure,
   CommandResult,
   Completion,
+  CoderOutput,
   DeliveryDecision,
   Disposition,
   RequirementContract,
+  ReviewerOutput,
   StructuredCases,
 } from '../../../src/contract';
 export type { Accept, CheckFailure, Completion, DeliveryDecision } from '../../../src/contract';
@@ -41,28 +43,12 @@ import { nativeEvidence } from './native-models';
 import type { OwnedWorktree } from '@archon/workflows/schemas/workflow-run';
 import { envPrecheck, provisionEnvironment } from './env-precheck';
 
-export interface Finding {
-  id: string;
-  severity: 'blocker' | 'high' | 'medium' | 'low';
-  file: string;
-  line: number;
-  status: 'open' | 'closed';
-  evidence: string;
-  carry_over: boolean;
-  failure_class?: FailureClass;
-  command?: string | null;
-}
-export interface Review {
-  status: 'PASS' | 'FAIL' | 'INCOMPLETE';
-  findings: Finding[];
-  debt: string[];
-}
-interface Coder {
-  status: 'done' | 'blocked' | 'partial';
-  error_class: string | null;
-  needs?: unknown[];
-  blockers?: string[];
-}
+type ContractFinding = ReviewerOutput['findings'][number];
+export type Finding = Omit<ContractFinding, 'failure_class' | 'command'> &
+  Partial<Pick<ContractFinding, 'failure_class' | 'command'>>;
+export type Review = Pick<ReviewerOutput, 'status' | 'debt'> & { findings: Finding[] };
+type Coder = Pick<CoderOutput, 'status' | 'error_class'> &
+  Partial<Pick<CoderOutput, 'needs' | 'blockers'>>;
 /** sa-check uses these fields from the complete frozen <gen>/policy.json. */
 interface Policy {
   risk_paths: string[];
@@ -165,7 +151,9 @@ const git = (...args: string[]): string => {
   const p = auxiliary(['git', ...args]);
   if (p.exitCode !== 0 || p.signalCode)
     throw new Error(
-      `git ${args[0]}: ${p.stderr.toString().trim()}${p.signalCode ? ` (signal ${p.signalCode})` : ''}`
+      `git ${args[0]}: ${p.stderr.toString().trim()}${
+        p.signalCode ? ` (signal ${p.signalCode})` : ''
+      }`
     );
   return p.stdout.toString();
 };
@@ -459,7 +447,9 @@ function run(
       } else {
         appendFileSync(
           log,
-          `$ ${c.cmd}\n# reused pass from ${saved.tag}\n${saved.stdout ?? ''}${saved.stderr ?? ''}\n`
+          `$ ${c.cmd}\n# reused pass from ${saved.tag}\n${saved.stdout ?? ''}${
+            saved.stderr ?? ''
+          }\n`
         );
         results.push({
           check: c,
@@ -521,7 +511,9 @@ function run(
     });
     appendFileSync(
       log,
-      `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
+      `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(
+        Date.now() - t0
+      )}\n\n`
     );
     if (!passed) {
       failed.push(c.cmd);
@@ -1156,7 +1148,9 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
         ...(results[0]?.structured ? { structured: results[0].structured } : {}),
         ...(!comparable
           ? {
-              reason: `baseline incomparable: exit=${String(results[0]?.exit)}; failure_class=${failures[0]?.failure_class ?? 'unknown'}`,
+              reason: `baseline incomparable: exit=${String(results[0]?.exit)}; failure_class=${
+                failures[0]?.failure_class ?? 'unknown'
+              }`,
             }
           : {}),
       };
@@ -1644,7 +1638,7 @@ export function deliveryDecision(input: {
   if (
     !check.ok &&
     Array.isArray(coder?.needs) &&
-    coder.needs.some(n => n && typeof n === 'object' && 'cap' in n && n.cap === 'environment')
+    coder.needs.some(n => typeof n === 'object' && 'cap' in n && n.cap === 'environment')
   ) {
     if (input.selfReportPath) evidence.push(input.selfReportPath);
     return out('block', 'environment');
@@ -1846,7 +1840,9 @@ function runEvidence(id = process.env.WORKFLOW_ID): AuthorRun {
   const p = auxiliary([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json']);
   if (p.exitCode !== 0 || p.signalCode)
     throw new Error(
-      `archon workflow get ${id}: ${p.stderr.toString().slice(-300)}${p.signalCode ? ` (signal ${p.signalCode})` : ''}`
+      `archon workflow get ${id}: ${p.stderr.toString().slice(-300)}${
+        p.signalCode ? ` (signal ${p.signalCode})` : ''
+      }`
     );
   const lines = p.stdout.toString().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -2637,7 +2633,9 @@ function land() {
     commands: target
       ? [
           `git -C ${q(repo)} switch ${q(target)}`,
-          `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(env('MILESTONE') ? head : branch)}`,
+          `git -C ${q(repo)} merge ${ff ? '--ff-only' : '--no-ff'} ${q(
+            env('MILESTONE') ? head : branch
+          )}`,
         ]
       : [],
     debt: [...last.values()].flat(),

@@ -7,14 +7,21 @@ const root = join(import.meta.dir, '..');
 const path = join(root, 'schemas/output.schema.json');
 const schema = JSON.parse(readFileSync(path, 'utf8')) as typeof outputSchema;
 const acceptPath = join(root, 'schemas/nodes/accept.schema.json');
+const reviewerPath = join(root, 'schemas/nodes/reviewer.schema.json');
 const accept = JSON.parse(readFileSync(acceptPath, 'utf8')) as {
   properties: { failures: { items: { properties: { failure_class: unknown } } } };
 };
+const reviewer = JSON.parse(readFileSync(reviewerPath, 'utf8')) as {
+  properties: { findings: { items: { properties: { failure_class: unknown } } } };
+};
 const before = JSON.stringify(schema);
 const acceptBefore = JSON.stringify(accept);
+const reviewerBefore = JSON.stringify(reviewer);
 const failure = schema.$defs.failure_class;
-schema.$defs.reviewer.properties.findings.items.properties.failure_class = failure;
+reviewer.properties.findings.items.properties.failure_class = failure;
 if (JSON.stringify(schema) !== before) writeFileSync(path, JSON.stringify(schema, null, 2) + '\n');
+if (JSON.stringify(reviewer) !== reviewerBefore)
+  writeFileSync(reviewerPath, JSON.stringify(reviewer, null, 2) + '\n');
 accept.properties.failures.items.properties.failure_class = failure;
 if (JSON.stringify(accept) !== acceptBefore)
   writeFileSync(acceptPath, JSON.stringify(accept, null, 2) + '\n');

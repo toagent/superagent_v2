@@ -1,0 +1,90 @@
+{
+  "title": "ReviewerOutput",
+  "type": "object",
+  "properties": {
+    "status": {
+      "enum": ["PASS", "FAIL", "INCOMPLETE"]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": ["blocker", "high", "medium", "low"]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "status": {
+            "enum": ["open", "closed"]
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "failure_class": {
+            "type": "string",
+            "enum": ["product", "test_env", "fixture", "baseline", "test_data", "unknown"]
+          },
+          "command": {
+            "type": ["string", "null"]
+          },
+          "carry_over": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "file",
+          "line",
+          "status",
+          "evidence",
+          "carry_over",
+          "failure_class",
+          "command"
+        ]
+      }
+    },
+    "fixture_confirmations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "isolated_fixture": {
+            "type": "boolean"
+          },
+          "no_data_operations": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": ["path", "purpose", "isolated_fixture", "no_data_operations", "evidence"]
+      }
+    },
+    "debt": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": ["status", "notes", "findings", "fixture_confirmations", "debt"]
+}

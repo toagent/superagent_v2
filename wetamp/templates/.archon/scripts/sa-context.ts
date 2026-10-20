@@ -11,6 +11,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
 import type { Learning } from '../../../src/learning';
+import type { CoderOutput } from '../../../src/contract';
 import { capabilityGuidance, resolveCapabilities } from './capabilities';
 import {
   readAttempt,
@@ -160,7 +161,9 @@ export function roleContext(input: {
           }),
     })),
     coder: input.acceptance?.log
-      ? read(join(artifacts, `${basename(input.acceptance.log, '.log')}.coder.json`))
+      ? (read(join(artifacts, `${basename(input.acceptance.log, '.log')}.coder.json`)) as
+          | CoderOutput
+          | 'unknown')
       : 'unknown',
     evidence: incremental
       ? []
@@ -168,7 +171,7 @@ export function roleContext(input: {
           id: p.id,
           verify: read(join(artifacts, `verify-${p.id}.json`)) as Accept | 'unknown',
           settle: read(join(artifacts, `settle-${p.id}.json`)) as Accept | 'unknown',
-          coder: read(join(artifacts, `verify-${p.id}.coder.json`)),
+          coder: read(join(artifacts, `verify-${p.id}.coder.json`)) as CoderOutput | 'unknown',
         })),
     principles:
       execution.role === 'review'
@@ -263,7 +266,9 @@ export function contextPack(
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       sections.push(
-        `${title}\n未内联（${code === 'ENOENT' ? '当前 worktree 中不存在' : '无法解析或读取'}），需自行读取或请主控补全`
+        `${title}\n未内联（${
+          code === 'ENOENT' ? '当前 worktree 中不存在' : '无法解析或读取'
+        }），需自行读取或请主控补全`
       );
       continue;
     }
@@ -296,7 +301,9 @@ export function contextPack(
     }
     used += bytes;
     sections.push(
-      `${title}\n共 ${String(lines.length)} 行；行 ${String(start)}-${String(Math.min(end, lines.length))}` +
+      `${title}\n共 ${String(lines.length)} 行；行 ${String(start)}-${String(
+        Math.min(end, lines.length)
+      )}` +
         (!range && lines.length > 400 ? '；已截断：仅前 200 行' : '') +
         `\n${source}`
     );

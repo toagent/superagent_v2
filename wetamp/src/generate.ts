@@ -55,17 +55,24 @@ import {
 } from './plan';
 import {
   acceptOutputFormat,
+  attemptOutputFormat,
+  coderOutputFormat,
   conditionalOutput,
+  contextOutputFormat,
   deliveryOutputFormat,
   output,
   publishOutputFormat,
   ref,
+  reviewerOutputFormat,
   syncOutputFormat,
   untilStatus,
   type AcceptOutput,
+  type CoderOutput,
+  type ContextOutput,
   type DeliveryDecision,
   type DeliveryOutput,
   type PublishOutput,
+  type ReviewerOutput,
   type SyncOutput,
 } from './contract';
 
@@ -113,19 +120,6 @@ export function newRunId(now = new Date()): string {
   const ts = now.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   return `${ts}-${crypto.getRandomValues(new Uint16Array(1))[0].toString(16).padStart(4, '0')}`;
 }
-
-const outputSchema = (kind: 'coder' | 'reviewer' | 'head' | 'attempt'): unknown =>
-  (
-    JSON.parse(readFileSync(join(WETAMP, 'schemas', 'output.schema.json'), 'utf8')) as {
-      $defs: Record<string, unknown>;
-    }
-  ).$defs[kind];
-
-// Pack fields are declared only on runtime producers; AI output contracts stay unchanged.
-const contextOutputSchema = (): unknown => {
-  const schema = outputSchema('attempt') as { properties: Record<string, unknown> };
-  return { ...schema, properties: { ...schema.properties, context_pack_path: { type: 'string' } } };
-};
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const SOLDIER_IDLE_MS = 10 * 60 * 1000;
@@ -252,10 +246,15 @@ export function buildWorkflow(
     extra = '',
     output = `${action}-${milestone}`
   ): string =>
-    `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${output} ${extra}bun '${join(engineWetamp, 'src/land.ts').replaceAll("'", "'\\''")}'`;
+    `INPUTS_ACTION=${action} INPUTS_RUN='${run}' INPUTS_MILESTONE='${milestone}' INPUTS_OUTPUT=${output} ${extra}bun '${join(
+      engineWetamp,
+      'src/land.ts'
+    ).replaceAll("'", "'\\''")}'`;
   const integrationScript = (milestone: string, output: string): string =>
     [
-      `const child = Bun.spawn([process.execPath, ${JSON.stringify(join(engineWetamp, 'src/land.ts'))}], {`,
+      `const child = Bun.spawn([process.execPath, ${JSON.stringify(
+        join(engineWetamp, 'src/land.ts')
+      )}], {`,
       `  env: { ...process.env, INPUTS_ACTION: 'publish', INPUTS_RUN: '${run}', INPUTS_MILESTONE: '${milestone}', INPUTS_OUTPUT: '${output}' },`,
       `  stdout: 'pipe', stderr: 'pipe',`,
       `});`,
@@ -294,7 +293,9 @@ export function buildWorkflow(
           until === undefined
             ? 'true'
             : [
-                `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${m.id}: plan deadline ${String(plan.deadline)} passed' >&2; exit 1; }`,
+                `[ "$(date +%s)" -le ${String(until)} ] || { echo 'signoff ${
+                  m.id
+                }: plan deadline ${String(plan.deadline)} passed' >&2; exit 1; }`,
               ].join('\n'),
         depends_on: [`human-${m.id}`],
         when: `$human-${m.id}.output.decision == 'approve'`,
@@ -337,7 +338,7 @@ export function buildWorkflow(
         },
         depends_on: [id],
         when: `$${id}.output.status == 'conflict'`,
-        output_format: contextOutputSchema(),
+        output_format: contextOutputFormat,
       });
       const owner = m.packages[0];
       target.push({
@@ -360,7 +361,7 @@ export function buildWorkflow(
         },
         depends_on: [id, context],
         when: `$${id}.output.status == 'conflict'`,
-        output_format: outputSchema('coder'),
+        output_format: coderOutputFormat,
       });
     }
     const ready = `${id}-ready`;
@@ -415,7 +416,10 @@ export function buildWorkflow(
           delivery && !fake
             ? integrationCommand('sync', m.id, 'INPUTS_FAIL_CONFLICT=1 ', syncId)
             : [
-                `tip=$(git rev-parse --verify '${plan.base_ref.replaceAll("'", "'\\''")}^{commit}') || exit $?`,
+                `tip=$(git rev-parse --verify '${plan.base_ref.replaceAll(
+                  "'",
+                  "'\\''"
+                )}^{commit}') || exit $?`,
                 'base=$(git merge-base HEAD "$tip") || exit $?',
                 `printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"`,
               ].join('\n'),
@@ -494,7 +498,7 @@ export function buildWorkflow(
       ...attemptInputs(attemptPath(gen, m.id)),
       depends_on: [syncReady],
       always_run: true,
-      output_format: outputSchema('attempt'),
+      output_format: attemptOutputFormat,
     });
     if (carried?.recovery) {
       const e = carried.recovery,
@@ -569,12 +573,13 @@ export function buildWorkflow(
     const last = ms.at(-1) === m;
     for (const p of m.packages) {
       const pkgAttempt = `package-attempt-${p.id}`;
+      const pkgAttemptHandle = output<ContextOutput>(pkgAttempt);
       nodes.push({
         id: pkgAttempt,
         ...attemptInputs(attemptPath(gen, `pkg/${p.id}`), p.id),
         depends_on: [prev],
         always_run: true,
-        output_format: contextOutputSchema(),
+        output_format: contextOutputFormat,
       });
       // Carry only the initial package attempt; retries keep the native coder and hint binding.
       const resumed = carried?.packages.includes(p.id)
@@ -659,6 +664,7 @@ export function buildWorkflow(
               soldier_ok: soldierOk ?? '',
             },
           };
+      const codeHandle = conditionalOutput<CoderOutput>(`code-${p.id}`);
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
@@ -678,7 +684,7 @@ export function buildWorkflow(
           : carry
             ? { when: `$${pkgAttempt}.output.attempt != '0'` }
             : {}),
-        output_format: outputSchema('coder'),
+        output_format: coderOutputFormat,
       });
       const previousHandle = output<DeliveryOutput>(prev);
       const accept = {
@@ -711,12 +717,12 @@ export function buildWorkflow(
             ...accept,
             tag: verify,
             coder: carry
-              ? { from: `$code-${p.id}.output`, if_skipped: carry }
-              : `$code-${p.id}.output`,
+              ? { from: ref.value(codeHandle), if_skipped: carry }
+              : ref.value(codeHandle),
             ...(carriedEvidence
               ? {
                   carried_evidence: carriedEvidence,
-                  attempt: `$${pkgAttempt}.output.attempt`,
+                  attempt: ref.required(pkgAttemptHandle, 'attempt'),
                 }
               : {}),
           },
@@ -739,6 +745,7 @@ export function buildWorkflow(
           when: `$${verify}.output.reason == 'budget_exceeded'`,
         });
       const repairContext = `repair-context-${p.id}`;
+      const repairHandle = conditionalOutput<CoderOutput>(`repair-${p.id}`);
       if (!fake)
         nodes.push({
           id: repairContext,
@@ -746,7 +753,7 @@ export function buildWorkflow(
           with: { counter: attemptPath(gen, `pkg/${p.id}`), gen, context_node: `repair-${p.id}` },
           depends_on: [verify, pkgAttempt],
           when: `$${verify}.output.disposition == 'repair'`,
-          output_format: contextOutputSchema(),
+          output_format: contextOutputFormat,
         });
       nodes.push({
         id: `repair-${p.id}`,
@@ -764,15 +771,15 @@ export function buildWorkflow(
                 hint: join(gen, 'hints', `${p.id}.md`),
                 context_node: repairContext,
                 prior_work: carry
-                  ? { from: `$code-${p.id}.output`, if_skipped: carry }
-                  : `$code-${p.id}.output`,
+                  ? { from: ref.value(codeHandle), if_skipped: carry }
+                  : ref.value(codeHandle),
                 reason: ref.optional(verifyHandle, 'reason', null),
                 accept_log: ref.optional(verifyHandle, 'log', ''),
               },
             }),
         depends_on: [verify, pkgAttempt, ...(!fake ? [repairContext] : [])],
         when: `$${verify}.output.disposition == 'repair'`,
-        output_format: outputSchema('coder'),
+        output_format: coderOutputFormat,
       });
       nodes.push(
         check(
@@ -783,7 +790,7 @@ export function buildWorkflow(
             kind: 'settle',
             tag: `settle-${p.id}`,
             first: ref.optional(verifyHandle, 'disposition', 'fail'),
-            repaired: skippable(`$repair-${p.id}.output`),
+            repaired: skippable(ref.value(repairHandle)),
           },
           {
             trigger_rule: 'none_failed_min_one_success',
@@ -805,6 +812,7 @@ export function buildWorkflow(
     for (let r = 1; r <= maxRounds; r++) {
       const t = `${m.id}-r${String(r)}`;
       const before = `${m.id}-r${String(r - 1)}`;
+      const fixHandle = conditionalOutput<CoderOutput>(`fix-${t}`);
       if (r > 1) {
         const handoff = `handoff-${t}`;
         if (!fake) {
@@ -822,11 +830,19 @@ export function buildWorkflow(
               ...(r === 2
                 ? Object.fromEntries(
                     m.packages.flatMap(p => [
-                      [`work_code_${p.id}`, skippable(`$code-${p.id}.output`)],
-                      [`work_repair_${p.id}`, skippable(`$repair-${p.id}.output`)],
+                      [
+                        `work_code_${p.id}`,
+                        skippable(ref.value(conditionalOutput<CoderOutput>(`code-${p.id}`))),
+                      ],
+                      [
+                        `work_repair_${p.id}`,
+                        skippable(ref.value(conditionalOutput<CoderOutput>(`repair-${p.id}`))),
+                      ],
                     ])
                   )
-                : { work_fix: `$fix-${before}.output` }),
+                : {
+                    work_fix: ref.value(conditionalOutput<CoderOutput>(`fix-${before}`)),
+                  }),
             },
             depends_on: [prev, attempt],
             when: `$gate-${before}.output.verdict == 'fix'`,
@@ -861,7 +877,7 @@ export function buildWorkflow(
               }),
           depends_on: fake ? [prev, attempt] : [prev, attempt, handoff],
           when: `$gate-${before}.output.verdict == 'fix'`,
-          output_format: outputSchema('coder'),
+          output_format: coderOutputFormat,
         });
         prev = `fix-${t}`;
       }
@@ -893,7 +909,7 @@ export function buildWorkflow(
                     'diff_hash',
                     ''
                   ),
-                  coder: `$fix-${t}.output`,
+                  coder: ref.value(fixHandle),
                   delta_base: `$gate-${before}.output.reviewed_head`,
                   reviewed_diff_hash: `$gate-${before}.output.reviewed_diff_hash`,
                 }
@@ -907,7 +923,10 @@ export function buildWorkflow(
         const gatePath = `$ARTIFACTS_DIR/gate-${m.id}-r1.json`;
         nodes.push({
           id: `carried-gate-${m.id}`,
-          bash: `cp '${checkpointPath.replaceAll("'", "'\\''")}' "${gatePath}" && EVIDENCE_PATH="${gatePath}" bun -e 'const b = new Uint8Array(await Bun.file(process.env.EVIDENCE_PATH).arrayBuffer()); const o = JSON.parse(new TextDecoder().decode(b)); o.artifact_sha256 = new Bun.CryptoHasher("sha256").update(b).digest("hex"); process.stdout.write(JSON.stringify(o))'`,
+          bash: `cp '${checkpointPath.replaceAll(
+            "'",
+            "'\\''"
+          )}' "${gatePath}" && EVIDENCE_PATH="${gatePath}" bun -e 'const b = new Uint8Array(await Bun.file(process.env.EVIDENCE_PATH).arrayBuffer()); const o = JSON.parse(new TextDecoder().decode(b)); o.artifact_sha256 = new Bun.CryptoHasher("sha256").update(b).digest("hex"); process.stdout.write(JSON.stringify(o))'`,
           depends_on: [`diff-${t}`],
           when: `$diff-${t}.output.disposition == 'advance' && ${checkpointMatch}`,
         });
@@ -933,7 +952,7 @@ export function buildWorkflow(
         when: reviewWhen,
         depends_on: [`diff-${t}`, attempt],
         ...attemptInputs(attemptPath(gen, `review-${t}`)),
-        output_format: outputSchema('attempt'),
+        output_format: attemptOutputFormat,
       });
       const reviewContext = `review-context-${t}`;
       if (!fake)
@@ -943,8 +962,9 @@ export function buildWorkflow(
           always_run: true,
           depends_on: [reviewAttempt],
           ...attemptInputs(attemptPath(gen, `review-${t}`), '', `review-${t}`, `gate-${t}`),
-          output_format: outputSchema('attempt'),
+          output_format: attemptOutputFormat,
         });
+      const reviewHandle = conditionalOutput<ReviewerOutput>(`review-${t}`);
       nodes.push({
         id: `review-${t}`,
         // A same-diff round may skip only when an earlier review covered this exact candidate.
@@ -977,9 +997,9 @@ export function buildWorkflow(
               },
             }),
         depends_on: [`diff-${t}`, fake ? reviewAttempt : reviewContext],
-        output_format: outputSchema('reviewer'),
+        output_format: reviewerOutputFormat,
       });
-      rounds[`R${String(r)}`] = skippable(`$review-${t}.output`);
+      rounds[`R${String(r)}`] = skippable(ref.value(reviewHandle));
       rounds[`C${String(r)}`] = `$ARTIFACTS_DIR/diff-${t}.json`;
       rounds[`C${String(r)}_HEAD`] = ref.optional(diffHandle, 'head', '');
       rounds[`C${String(r)}_DIFF_HASH`] = ref.optional(diffHandle, 'diff_hash', '');
@@ -1049,7 +1069,9 @@ export function buildWorkflow(
   }
   return {
     name: `sa-${run}`,
-    description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(ms.length)} milestone(s)`,
+    description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(
+      ms.length
+    )} milestone(s)`,
     nodes,
   };
 }
@@ -1091,7 +1113,9 @@ const renderCaps = (c: Caps): string =>
       ([k, t]) => `- ${t}：${c[k as keyof typeof CAP_TEXT] ? '允许' : '禁止'}`
     ),
     `- 读取：${c.read === 'any' ? '整机任何非红线路径' : '只读本仓库内任务书列出的路径'}`,
-    `- git：${c.git === 'branch' ? '本分支内任意提交、rebase、reset' : '只追加提交，不 rebase/reset/amend'}`,
+    `- git：${
+      c.git === 'branch' ? '本分支内任意提交、rebase、reset' : '只追加提交，不 rebase/reset/amend'
+    }`,
     // Codex 把工作树根 AGENTS.md 当成更新的用户指令；项目给人工主仓的"不要提交"曾让将军提交后自报红线。
     '- 提交授权：在本 run 的 worktree 内提交是引擎要求的必需步骤；仓库 AGENTS.md/CLAUDE.md 中禁止 git commit 的条款面向人工主仓，此处不适用，不构成红线',
     '- skills/plugins/MCP：继承用户原生配置；guard 只拦凭据隐私与不可逆破坏',
@@ -1396,7 +1420,9 @@ export function generate(
   const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
   writeFileSync(
     worker,
-    `#!/usr/bin/env bash\nSA_POLICY_PATH=${quote(join(dir, 'policy.json'))} exec ${quote(join(engineWetamp, 'bin', 'codex-worker'))} "$@"\n`
+    `#!/usr/bin/env bash\nSA_POLICY_PATH=${quote(join(dir, 'policy.json'))} exec ${quote(
+      join(engineWetamp, 'bin', 'codex-worker')
+    )} "$@"\n`
   );
   chmodSync(worker, 0o755);
   const runConfig = YAML.stringify(

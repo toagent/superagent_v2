@@ -55,6 +55,7 @@ import {
 import { FAILURE_CLASSES } from '../templates/.archon/scripts/failure-class';
 import outputSchema from '../schemas/output.schema.json';
 import acceptOutputSchema from '../schemas/nodes/accept.schema.json';
+import reviewerOutputSchema from '../schemas/nodes/reviewer.schema.json';
 import deliveryOutputSchema from '../schemas/nodes/delivery.schema.json';
 import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 import { envPrecheck } from '../templates/.archon/scripts/env-precheck';
@@ -212,7 +213,11 @@ case "$*" in
   'install --frozen-lockfile'|'run prepare')
     echo "$*" >> '${marker}'
     echo recovery-output
-    ${status ? `exit ${status}` : `if [ "$1" = install ]; then mkdir node_modules; else mkdir .hooks/_; cp .hooks/pre-commit .hooks/_/pre-commit; fi`}
+    ${
+      status
+        ? `exit ${status}`
+        : `if [ "$1" = install ]; then mkdir node_modules; else mkdir .hooks/_; cp .hooks/pre-commit .hooks/_/pre-commit; fi`
+    }
     ;;
   *) exec '${process.execPath}' "$@" ;;
 esac
@@ -807,7 +812,7 @@ describe('NONCONVERGENCE delivery gate', () => {
 describe('FC failure classification', () => {
   test('runtime enum and embedded output schemas derive from their owning schema', () => {
     expect([...FAILURE_CLASSES] as string[]).toEqual(outputSchema.$defs.failure_class.enum);
-    expect(outputSchema.$defs.reviewer.properties.findings.items.properties.failure_class).toEqual(
+    expect(reviewerOutputSchema.properties.findings.items.properties.failure_class).toEqual(
       outputSchema.$defs.failure_class
     );
     expect(acceptOutputSchema.properties.failures.items.properties.failure_class).toEqual(
@@ -1815,13 +1820,21 @@ const rawSpawnSync = Bun.spawnSync;
 Bun.spawnSync = (actual, opts) => {
   const wrapped = actual[0] === 'python3' && actual[1] === '-c';
   const cmd = wrapped ? actual.slice(4) : actual;
-  appendFileSync(${JSON.stringify(trace)}, JSON.stringify({cmd, timeout: opts?.timeout, watchdog: wrapped}) + '\\n');
+  appendFileSync(${JSON.stringify(
+    trace
+  )}, JSON.stringify({cmd, timeout: opts?.timeout, watchdog: wrapped}) + '\\n');
   const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
   if (key === ${JSON.stringify(hang)})
-    return rawSpawnSync([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(stubborn ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done` : 'echo auxiliary-stalled >&2; exec sleep 2')}], opts);
+    return rawSpawnSync([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(
+      stubborn
+        ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done`
+        : 'echo auxiliary-stalled >&2; exec sleep 2'
+    )}], opts);
   // Only the stalled auxiliary (or the hook-bearing checkout) needs a real
   // process-group watchdog. Keep every production request in the trace.
-  if (wrapped && key !== ${JSON.stringify(hang)} && !(${JSON.stringify(hook)} && key === 'worktree add'))
+  if (wrapped && key !== ${JSON.stringify(hang)} && !(${JSON.stringify(
+    hook
+  )} && key === 'worktree add'))
     return rawSpawnSync(cmd, opts);
   return rawSpawnSync(actual, opts);
 };
@@ -2228,7 +2241,11 @@ describe('sa-check script', () => {
       archon = join(root, 'archon');
     writeFileSync(
       archon,
-      `#!/usr/bin/env node\nconst saved=JSON.parse(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8')); const prior=process.argv[4]==='ancestor'; process.stdout.write(JSON.stringify({...saved,id:prior?'ancestor':'scratch-only',codebase_id:'repo',output_root:${JSON.stringify(root)},adopted_from_run_id:prior?null:'ancestor',events:saved.events.filter(e=>prior?e.step_name==='code-a':e.step_name!=='code-a')}));\n`
+      `#!/usr/bin/env node\nconst saved=JSON.parse(require('node:fs').readFileSync(${JSON.stringify(
+        eventsFile
+      )}, 'utf8')); const prior=process.argv[4]==='ancestor'; process.stdout.write(JSON.stringify({...saved,id:prior?'ancestor':'scratch-only',codebase_id:'repo',output_root:${JSON.stringify(
+        root
+      )},adopted_from_run_id:prior?null:'ancestor',events:saved.events.filter(e=>prior?e.step_name==='code-a':e.step_name!=='code-a')}));\n`
     );
     chmodSync(archon, 0o755);
     const events = (reviewer: string) => ({
@@ -2303,7 +2320,9 @@ describe('sa-check script', () => {
       archon = join(root, 'archon');
     writeFileSync(
       archon,
-      `#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(${JSON.stringify(eventsFile)}, 'utf8'));\n`
+      `#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(${JSON.stringify(
+        eventsFile
+      )}, 'utf8'));\n`
     );
     chmodSync(archon, 0o755);
     const events = ['code-a', 'review-m1-r1'].flatMap((step_name, i) => [
@@ -2993,7 +3012,9 @@ describe('sa-check script', () => {
         mkdirSync(bin);
         writeFileSync(
           join(bin, 'git'),
-          `#!/bin/sh\nif [ "$1" = ${mode === 'probe-failure' ? 'rev-parse' : 'status'} ] ${mode === 'probe-failure' ? '&& [ "$2" = --is-inside-work-tree ]' : ''}; then echo evidence-unavailable >&2; exit 1; fi\nexec /usr/bin/git "$@"\n`,
+          `#!/bin/sh\nif [ "$1" = ${mode === 'probe-failure' ? 'rev-parse' : 'status'} ] ${
+            mode === 'probe-failure' ? '&& [ "$2" = --is-inside-work-tree ]' : ''
+          }; then echo evidence-unavailable >&2; exit 1; fi\nexec /usr/bin/git "$@"\n`,
           { mode: 0o755 }
         );
         extraEnv.PATH = `${bin}:${process.env.PATH}`;
@@ -3548,7 +3569,9 @@ describe('sa-check script', () => {
         process.execPath,
         '--no-env-file',
         '-e',
-        `import { stripCwdEnv } from ${JSON.stringify(join(import.meta.dir, '../../packages/paths/src/strip-cwd-env.ts'))}; stripCwdEnv(${JSON.stringify(root)}); console.log(JSON.stringify(process.env));`,
+        `import { stripCwdEnv } from ${JSON.stringify(
+          join(import.meta.dir, '../../packages/paths/src/strip-cwd-env.ts')
+        )}; stripCwdEnv(${JSON.stringify(root)}); console.log(JSON.stringify(process.env));`,
       ],
       { env: claudeEnv, stdout: 'pipe', stderr: 'pipe' }
     );

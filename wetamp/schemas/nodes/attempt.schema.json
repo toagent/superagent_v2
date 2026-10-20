@@ -1,0 +1,6 @@
+{
+  "title": "AttemptOutput",
+  "type": "object",
+  "properties": { "attempt": { "type": "string" } },
+  "required": ["attempt"]
+}

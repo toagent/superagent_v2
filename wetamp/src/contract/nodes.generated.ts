@@ -590,3 +590,199 @@ export const deliveryOutputFormat = {
   properties: { diff_hash: { type: 'string' }, head: { type: 'string' } },
   required: ['diff_hash'],
 } as const;
+export interface CoderOutput {
+  status: 'done' | 'blocked' | 'partial';
+  changed_files: string[];
+  quick_checks: {
+    cmd: string;
+    exit: number;
+  }[];
+  notes: string;
+  blockers: string[];
+  /**
+   * 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
+   */
+  error_class:
+    | 'scope_violation'
+    | 'budget_exhausted'
+    | 'plan_invalid'
+    | 'sandbox_denied'
+    | 'permission_denied'
+    | 'vendor_unavailable_all'
+    | 'task'
+    | 'env'
+    | 'timeout'
+    | 'redline'
+    | null;
+  deviations: {
+    path: string;
+    why: string;
+  }[];
+  needs: {
+    cap: string;
+    why: string;
+    minimal_ask: string;
+  }[];
+}
+
+export const coderOutputFormat = {
+  title: 'CoderOutput',
+  type: 'object',
+  properties: {
+    status: { enum: ['done', 'blocked', 'partial'] },
+    changed_files: { type: 'array', items: { type: 'string' } },
+    quick_checks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { cmd: { type: 'string' }, exit: { type: 'integer' } },
+        required: ['cmd', 'exit'],
+      },
+    },
+    notes: { type: 'string' },
+    blockers: { type: 'array', items: { type: 'string' } },
+    error_class: {
+      description: '仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null',
+      type: ['string', 'null'],
+      enum: [
+        'scope_violation',
+        'budget_exhausted',
+        'plan_invalid',
+        'sandbox_denied',
+        'permission_denied',
+        'vendor_unavailable_all',
+        'task',
+        'env',
+        'timeout',
+        'redline',
+        null,
+      ],
+    },
+    deviations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { path: { type: 'string' }, why: { type: 'string' } },
+        required: ['path', 'why'],
+      },
+    },
+    needs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          cap: { type: 'string' },
+          why: { type: 'string' },
+          minimal_ask: { type: 'string' },
+        },
+        required: ['cap', 'why', 'minimal_ask'],
+      },
+    },
+  },
+  required: [
+    'status',
+    'changed_files',
+    'quick_checks',
+    'notes',
+    'blockers',
+    'error_class',
+    'deviations',
+    'needs',
+  ],
+} as const;
+export interface AttemptOutput {
+  attempt: string;
+}
+
+export const attemptOutputFormat = {
+  title: 'AttemptOutput',
+  type: 'object',
+  properties: { attempt: { type: 'string' } },
+  required: ['attempt'],
+} as const;
+export type ContextOutput = AttemptOutput & { context_pack_path: string };
+export const contextOutputFormat = {
+  title: 'ContextOutput',
+  type: 'object',
+  properties: { attempt: { type: 'string' }, context_pack_path: { type: 'string' } },
+  required: ['attempt', 'context_pack_path'],
+} as const;
+export interface ReviewerOutput {
+  status: 'PASS' | 'FAIL' | 'INCOMPLETE';
+  notes: string;
+  findings: {
+    id: string;
+    severity: 'blocker' | 'high' | 'medium' | 'low';
+    file: string;
+    line: number;
+    status: 'open' | 'closed';
+    evidence: string;
+    failure_class: 'product' | 'test_env' | 'fixture' | 'baseline' | 'test_data' | 'unknown';
+    command: string | null;
+    carry_over: boolean;
+  }[];
+  fixture_confirmations: {
+    path: string;
+    purpose: string;
+    isolated_fixture: boolean;
+    no_data_operations: boolean;
+    evidence: string;
+  }[];
+  debt: string[];
+}
+
+export const reviewerOutputFormat = {
+  title: 'ReviewerOutput',
+  type: 'object',
+  properties: {
+    status: { enum: ['PASS', 'FAIL', 'INCOMPLETE'] },
+    notes: { type: 'string' },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          severity: { enum: ['blocker', 'high', 'medium', 'low'] },
+          file: { type: 'string' },
+          line: { type: 'integer' },
+          status: { enum: ['open', 'closed'] },
+          evidence: { type: 'string' },
+          failure_class: {
+            type: 'string',
+            enum: ['product', 'test_env', 'fixture', 'baseline', 'test_data', 'unknown'],
+          },
+          command: { type: ['string', 'null'] },
+          carry_over: { type: 'boolean' },
+        },
+        required: [
+          'id',
+          'severity',
+          'file',
+          'line',
+          'status',
+          'evidence',
+          'carry_over',
+          'failure_class',
+          'command',
+        ],
+      },
+    },
+    fixture_confirmations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          purpose: { type: 'string' },
+          isolated_fixture: { type: 'boolean' },
+          no_data_operations: { type: 'boolean' },
+          evidence: { type: 'string' },
+        },
+        required: ['path', 'purpose', 'isolated_fixture', 'no_data_operations', 'evidence'],
+      },
+    },
+    debt: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['status', 'notes', 'findings', 'fixture_confirmations', 'debt'],
+} as const;
