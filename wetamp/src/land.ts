@@ -8,6 +8,8 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { control, coord, repoScope } from './coord';
+import type { DeliveryReauthorization } from './coord';
+import { home } from './config';
 import { publish, sync } from './integration';
 import type { PublishReceipt, PublishResult, SyncOutput } from './contract';
 import type { RunView } from './archon';
@@ -109,9 +111,18 @@ const authorized = () => {
   if (!runId) throw new Error('integration: missing run id');
   const { loadLedger, readJson } = operator();
   const ledger = loadLedger(runId);
-  const authorization = readJson(join(ledger.gen_dir, 'delivery-authorization.json')) as
-    | DeliveryAuthorization
+  const originalPath = join(ledger.gen_dir, 'delivery-authorization.json');
+  const original = readJson(originalPath) as DeliveryAuthorization | undefined;
+  const renewed = readJson(join(home().sa, 'coord', 'authorizations', `${runId}.json`)) as
+    | Partial<DeliveryReauthorization>
     | undefined;
+  const originalSha256 = existsSync(originalPath)
+    ? createHash('sha256').update(readFileSync(originalPath)).digest('hex')
+    : '';
+  const authorization: DeliveryAuthorization | undefined =
+    renewed?.run && renewed.repo && renewed.original_sha256 === originalSha256
+      ? { run: renewed.run, repo: renewed.repo }
+      : original;
   if (!authorization) throw new Error('integration: authorization/run mismatch');
   const who = authorization.run;
   if (!deliveryAuthorized(who, authorization, ledger.archon_run_id))

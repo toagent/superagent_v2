@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   rmdirSync,
   symlinkSync,
   writeFileSync,
@@ -130,6 +131,43 @@ test('1: two actual processes race for one scope under flock; exactly one owner 
   expect(s.c.owner(s.scope).generation).toBe(1);
   s.c.claim(s.scope, a, true, 'operator takeover');
   expect(s.c.owner(s.scope).generation).toBe(2);
+});
+
+test('reauthorize requires both owners and stale records remain fenced', () => {
+  let oldOffline = false;
+  const s = setup(who =>
+    oldOffline && same(who, a) ? { state: 'offline' } : { state: 'online', activity: 'idle' }
+  );
+  const gen = join(s.root, 'gen'),
+    run = { run_id: 'target', archon_run_id: 'engine', repo: s.repo, gen_dir: gen },
+    runTarget = runScope(run),
+    record = join(s.sa, 'coord/authorizations/target.json');
+  mkdirSync(gen);
+  writeFileSync(join(gen, 'delivery-authorization.json'), '{"original":true}\n');
+  s.c.claim(s.scope, a);
+  s.c.claim(runTarget, a);
+  expect(() => s.c.claimRun(runTarget, b)).toThrow('普通认领');
+  expect(existsSync(record)).toBe(false);
+  expect(s.c.owner(s.scope).owner).toEqual(a);
+  expect(s.c.owner(runTarget).owner).toEqual(a);
+  oldOffline = true;
+  expect(s.c.claimRun(runTarget, b)).toMatchObject({ controller: b, repository: b });
+  const authorization = s.c.reauthorize(run, b);
+  expect(JSON.parse(readFileSync(record, 'utf8'))).toEqual(authorization);
+  const replay = () =>
+    s.c.mutate(
+      runTarget,
+      authorization.run,
+      () =>
+        s.c.mutate(s.scope, authorization.run, () => 'published', authorization.repo.generation),
+      authorization.run.generation
+    );
+  expect(replay()).toBe('published'); // Same-user copies of current identity + generations + leases are out of scope.
+  rmSync(join(s.sa, 'coord/leases'), { recursive: true });
+  expect(replay).toThrow('fencing');
+  s.c.claim(s.scope, a, true, 'later takeover');
+  s.c.claim(runTarget, a, true, 'later takeover');
+  expect(replay).toThrow('fencing');
 });
 test('2: PID reuse is offline and old identity/generation cannot mutate (three human-readable lines)', () => {
   const s = setup();

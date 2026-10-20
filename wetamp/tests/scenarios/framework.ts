@@ -11,7 +11,7 @@ import {
   descriptor,
   createProvider,
 } from '../../../packages/provider-contract/src/fixtures/test-provider/main';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
@@ -24,7 +24,7 @@ import { createWorkflowStore } from '../../../packages/core/src/workflows/store-
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 
 // prettier-ignore
-export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13' | 'S14a' | 'S14b' | 'S14c';
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S16';
 
 export interface ScenarioSpec {
   id: ScenarioId;
@@ -157,6 +157,51 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         writeFileSync(join(f.target, 'target-regression.txt'), 'regression\n');
         sh('git add target-regression.txt && git commit -qm target-regression', f.target);
         f.targetAfterInjection = sh('git rev-parse scenario-target', f.target).trim();
+      }
+      if (id === 'review-m1-r1' && f.spec.id === 'S16') {
+        const runId = '5ce0-0016',
+          ledger = JSON.parse(readFileSync(ledgerPath(runId), 'utf8')),
+          originalPath = join(ledger.gen_dir, 'delivery-authorization.json'),
+          original = readFileSync(originalPath),
+          old = JSON.parse(original.toString()).run,
+          current = { ...old, pid: old.pid + 100_000, pid_start: `${old.pid_start}-restart` },
+          later = { ...old, pid: old.pid + 200_000, pid_start: `${old.pid_start}-later` },
+          c = coordination.coord(),
+          repo = coordination.repoScope(f.target),
+          run = coordination.runScope({ run_id: runId, repo: f.target }),
+          artifacts = join(f.root, 'reauthorize-probe'),
+          probe = () =>
+            Bun.spawnSync([process.execPath, join(import.meta.dir, '../../src/land.ts')], {
+              cwd: f.worker,
+              env: {
+                ...process.env,
+                INPUTS_ACTION: 'sync',
+                INPUTS_RUN: runId,
+                INPUTS_MILESTONE: 'probe',
+                ARTIFACTS_DIR: artifacts,
+              },
+              stdout: 'pipe',
+              stderr: 'pipe',
+            }).exitCode;
+        mkdirSync(artifacts, { recursive: true });
+        c.claim(repo, current, true, 'controller restarted');
+        c.claim(run, current, true, 'controller restarted');
+        const failures = [probe()];
+        c.reauthorize(ledger, current);
+        writeFileSync(originalPath, Buffer.concat([original, Buffer.from(' ')]));
+        failures.push(probe());
+        writeFileSync(originalPath, original);
+        rmSync(join(f.home, 'coord/leases'), { recursive: true });
+        failures.push(probe());
+        c.claim(repo, current);
+        c.claim(run, current);
+        c.claim(repo, later, true, 'later takeover');
+        c.claim(run, later, true, 'later takeover');
+        failures.push(probe());
+        expect(failures.every(code => code !== 0)).toBeTrue();
+        c.claim(repo, current, true, 'restore controller');
+        c.claim(run, current, true, 'restore controller');
+        c.reauthorize(ledger, current);
       }
       const sample = schemaSample(
         options?.outputFormat?.schema as JsonSchema | undefined,
