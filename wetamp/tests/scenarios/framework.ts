@@ -11,17 +11,28 @@ import {
   descriptor,
   createProvider,
 } from '../../../packages/provider-contract/src/fixtures/test-provider/main';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
 import { generate, type Carried } from '../../src/generate';
-import { ledgerPath } from '../../src/cli';
+import { loadLedger, ledgerPath, main } from '../../src/cli';
 import * as coordination from '../../src/coord';
+import * as archonModule from '../../src/archon';
+import { adoptEngineSnapshot } from '../../src/engine';
 import type { Plan } from '../../src/plan';
 import { liveSourceRoots } from '../../../packages/workflows/src/workflow-source';
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
+import { failWorkflowRun } from '../../../packages/core/src/db/workflows';
 
 // prettier-ignore
 export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16';
@@ -51,6 +62,12 @@ export interface ScenarioFixture {
   targetAfterInjection?: string;
   carried?: Carried;
   engineSnapshot?: string;
+}
+
+export interface GeneratedContinuation {
+  runId: string;
+  dir: string;
+  workflow: string;
 }
 
 export function scenario(
@@ -152,7 +169,8 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         await Bun.sleep(3_600_000);
       }
       if (id === 'review-m1-r1' && f.spec.id === 'S8') {
-        const path = join(f.root, 'artifacts', 'diff-m1-r1.json');
+        const runId = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`,
+          path = join(f.archonHome, 'artifacts', 'runs', runId, 'diff-m1-r1.json');
         if (existsSync(path)) writeFileSync(path, `${readFileSync(path, 'utf8')} `);
       }
       if (id === 'review-m1-r1' && f.spec.id === 'S6') {
@@ -320,8 +338,8 @@ const platform: IWorkflowPlatform = {
   sendStructuredEvent: async () => {},
 };
 
-export async function runInProcess(f: ScenarioFixture) {
-  const id = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
+export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedContinuation) {
+  const id = continuation?.runId ?? `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
   const store = createWorkflowStore();
   await store.createWorkflowRun({
     id,
@@ -383,16 +401,19 @@ export async function runInProcess(f: ScenarioFixture) {
   });
   const shell = coordination.caller();
   const who = { ...shell, client: `${shell.client}-scenario-authorized` };
-  coordination.coord().claim(coordination.repoScope(f.target), who);
-  const controller = coordination
-    .coord()
-    .claim(coordination.runScope({ run_id: id, repo: f.target }), who).controller;
+  let controller: ReturnType<typeof coordination.caller> | undefined;
+  if (!continuation) {
+    coordination.coord().claim(coordination.repoScope(f.target), who);
+    controller = coordination
+      .coord()
+      .claim(coordination.runScope({ run_id: id, repo: f.target }), who).controller;
+  }
   const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(f.initial);
   const identity = spyOn(coordination, 'caller').mockReturnValue(who);
-  let generated: ReturnType<typeof generate>;
+  let generated: Pick<ReturnType<typeof generate>, 'dir' | 'workflow'>;
   try {
     // prettier-ignore
-    generated = generate(plan, id, false, undefined, f.carried, { checkout: f.target, branch: 'scenario-target', head: f.initial }, f.engineSnapshot);
+    generated = continuation ?? generate(plan, id, false, undefined, f.carried, { checkout: f.target, branch: 'scenario-target', head: f.initial }, f.engineSnapshot);
   } finally {
     identity.mockRestore();
     engine.mockRestore();
@@ -411,22 +432,24 @@ export async function runInProcess(f: ScenarioFixture) {
         'scenario takeover'
       );
   }
-  mkdirSync(join(f.home, 'runs'), { recursive: true });
-  writeFileSync(
-    ledgerPath(id),
-    JSON.stringify({
-      run_id: id,
-      archon_run_id: id,
-      repo: f.target,
-      branch: `scenario-${f.spec.id.toLowerCase()}`,
-      plan: join(generated.dir, 'plan.json'),
-      gen_dir: generated.dir,
-      workflow: generated.workflow,
-      engine_snapshot: f.engineSnapshot,
-      delivery: { checkout: f.target, branch: 'scenario-target', head: f.initial },
-      controller,
-    })
-  );
+  if (!continuation) {
+    mkdirSync(join(f.home, 'runs'), { recursive: true });
+    writeFileSync(
+      ledgerPath(id),
+      JSON.stringify({
+        run_id: id,
+        archon_run_id: id,
+        repo: f.target,
+        branch: `scenario-${f.spec.id.toLowerCase()}`,
+        plan: join(generated.dir, 'plan.json'),
+        gen_dir: generated.dir,
+        workflow: generated.workflow,
+        engine_snapshot: f.engineSnapshot,
+        delivery: { checkout: f.target, branch: 'scenario-target', head: f.initial },
+        controller,
+      })
+    );
+  }
   const raw = Bun.YAML.parse(
     readFileSync(
       join(generated.dir, '.archon/workflows', generated.workflow, `${generated.workflow}.yaml`),
@@ -452,8 +475,9 @@ export async function runInProcess(f: ScenarioFixture) {
   });
   const stateDir = join(f.root, 'state'),
     logDir = join(f.root, 'logs'),
-    artifactsDir = join(f.root, 'artifacts');
+    artifactsDir = join(f.archonHome, 'artifacts', 'runs', id);
   for (const path of [stateDir, logDir, artifactsDir]) mkdirSync(path, { recursive: true });
+  await store.updateWorkflowRun(id, { output_root: f.archonHome });
   await executeTestDagWorkflow({
     deps: d.value,
     platform,
@@ -474,6 +498,7 @@ export async function runInProcess(f: ScenarioFixture) {
   const persisted = await store.getWorkflowRun(id);
   const events = await store.listWorkflowEvents(id);
   return {
+    runId: id,
     ...d,
     generated,
     artifactsDir,
@@ -486,7 +511,115 @@ export async function runInProcess(f: ScenarioFixture) {
 }
 
 export type ScenarioResult = Awaited<ReturnType<typeof runInProcess>>;
-export type ScenarioEvidence = Pick<ScenarioResult, 'artifactsDir' | 'events' | 'terminal'>;
+export type ScenarioEvidence = Pick<
+  ScenarioResult,
+  'runId' | 'artifactsDir' | 'events' | 'terminal'
+>;
+
+export async function recoverCarriedScenario(spec: ScenarioSpec) {
+  const scratch = tmp(),
+    ready = join(scratch, 'ready.json'),
+    marker = join(scratch, 'blocked');
+  const child = Bun.spawn([process.execPath, 'test', join(import.meta.dir, 'detached-runner.ts')], {
+    env: {
+      ...process.env,
+      SCENARIO_ID: spec.id,
+      SCENARIO_RESULT: join(scratch, 'unused.json'),
+      SCENARIO_READY: ready,
+      SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'settle-p',
+      SCENARIO_BLOCK_MARKER: marker,
+    },
+    stdout: 'ignore',
+    stderr: 'pipe',
+  });
+  for (const end = Date.now() + 60_000; !existsSync(marker) && Date.now() < end; ) {
+    if (child.exitCode !== null)
+      throw new Error(
+        `scenario executor exited: ${(await new Response(child.stderr).text()).slice(-2000)}`
+      );
+    await Bun.sleep(25);
+  }
+  expect(existsSync(marker)).toBeTrue();
+  child.kill('SIGKILL');
+  await child.exited;
+  const state = JSON.parse(readFileSync(ready, 'utf8')) as Pick<
+      ScenarioFixture,
+      'root' | 'home' | 'archonHome' | 'target' | 'worker'
+    > & { runId: string },
+    saved = { ...process.env };
+  Object.assign(process.env, {
+    HOME: state.home,
+    SUPERAGENT_HOME: state.home,
+    ARCHON_HOME: state.archonHome,
+  });
+  resetDatabase();
+  try {
+    await failWorkflowRun(state.runId, 'scenario executor crashed', {
+      exitReason: 'unhandled_error',
+    });
+    const root = realpathSync(join(import.meta.dir, '../../..')),
+      sha = sh('git rev-parse HEAD', root).trim(),
+      engine = join(state.home, 'engine'),
+      oldSnapshot = join(state.root, 'engine-a');
+    mkdirSync(join(engine, 'receipts'), { recursive: true });
+    mkdirSync(oldSnapshot);
+    symlinkSync(root, join(engine, sha));
+    symlinkSync(join(engine, sha), join(engine, 'current'));
+    writeFileSync(
+      join(engine, 'receipts', `${sha}.json`),
+      JSON.stringify({ sha, at: new Date().toISOString(), protocol_version: 1 })
+    );
+    const old = loadLedger(state.runId),
+      who = coordination.caller();
+    old.controller = coordination
+      .coord()
+      .claim(
+        coordination.runScope({ run_id: state.runId, repo: state.target }),
+        who,
+        true,
+        'scenario recovery'
+      ).controller;
+    coordination
+      .coord()
+      .claim(coordination.repoScope(state.target), who, true, 'scenario recovery');
+    Object.assign(old, { engine_snapshot: oldSnapshot, workflow_hash: '0'.repeat(64) });
+    coordination.coord().reauthorize(old, who);
+    writeFileSync(ledgerPath(state.runId), JSON.stringify(old));
+    const engineAdoption = adoptEngineSnapshot(state.runId, sha),
+      adoptedId = `${state.runId}-adopted`,
+      original = archonModule.archon;
+    const clean = spyOn(coordination, 'cleanEngine').mockReturnValue(sha),
+      launch = spyOn(archonModule, 'archon').mockImplementation((args, cwd, intent, timeout) =>
+        args[0] === 'workflow' && args[1] === 'run' && args.includes('--adopt')
+          ? { code: 0, out: JSON.stringify({ ok: true, runId: adoptedId }), err: '' }
+          : original(args, cwd, intent, timeout)
+      );
+    try {
+      expect(main(['recover', state.runId])).toBe(0);
+    } finally {
+      launch.mockRestore();
+      clean.mockRestore();
+    }
+    const adopted = loadLedger(state.runId),
+      f: ScenarioFixture = {
+        ...state,
+        initial: sh('git rev-parse scenario-target', state.target).trim(),
+        saved: { ...process.env },
+        roles: [],
+        spec,
+      };
+    const result = await runInProcess(f, {
+      runId: adoptedId,
+      dir: adopted.gen_dir,
+      workflow: adopted.workflow,
+    });
+    return { f, result, adopted, engineAdoption, oldSnapshot, root, originalRunId: state.runId };
+  } finally {
+    resetDatabase();
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+}
 
 /** Continue a killed scenario from the real store snapshot; completed nodes stay rehydrated. */
 export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {
@@ -522,7 +655,7 @@ export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvide
     provider: descriptor.id,
     nodes: raw.nodes,
   });
-  const artifactsDir = join(f.root, 'artifacts');
+  const artifactsDir = join(f.archonHome, 'artifacts', 'runs', id);
   await executeTestDagWorkflow({
     deps: d.value,
     platform,
@@ -543,6 +676,7 @@ export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvide
   });
   const persisted = await store.getWorkflowRun(id);
   return {
+    runId: id,
     artifactsDir,
     events: await store.listWorkflowEvents(id),
     terminal: {
@@ -557,7 +691,7 @@ export function expectOutcome(
   result: ScenarioEvidence,
   spec: { terminal: 'completed' | 'failed'; counts: Record<string, number>; published: boolean }
 ): void {
-  const id = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
+  const id = result.runId;
   expect(result.terminal).toEqual({
     completed: spec.terminal === 'completed' ? [id] : [],
     failed: spec.terminal === 'failed' ? [id] : [],

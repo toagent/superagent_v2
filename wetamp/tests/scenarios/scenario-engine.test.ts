@@ -2,7 +2,14 @@ import { expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promote, rollback } from '../../src/engine';
-import { completedOutput, expectOutcome, restore, runInProcess, scenario } from './framework';
+import {
+  completedOutput,
+  expectOutcome,
+  recoverCarriedScenario,
+  restore,
+  runInProcess,
+  scenario,
+} from './framework';
 import { sh, tmp } from '../helpers';
 
 const SHIM = join(import.meta.dir, '../../bin/superagent-shim');
@@ -64,23 +71,18 @@ test('S12: promotion and rollback keep old runs on their pinned engine', async (
 }, 180_000);
 
 // prettier-ignore
-test('S15: adopted carried acceptance emits the hash of its persisted bytes', async () => {
-  const f = fixture('S15');
-  try {
-    writeFileSync(join(f.worker, 'scenario.txt'), 'S15\n');
-    sh('git add scenario.txt && git commit -qm carried-S15', f.worker);
-    const head = sh('git rev-parse HEAD', f.worker).trim(),
-      evidence = join(f.root, 'carried.json');
-    writeFileSync(
-      evidence,
-      JSON.stringify({ ok: true, failed: [], log: '/old.log', patch: '/old.patch', delta: '/old.delta', diff_hash: 'old', same: false, reviewed: false, base_pass: null, head, checkout_fingerprint: '/old.fingerprint', disposition: 'advance', reason: null, risk: 'G1', out_of_scope: [], tag: 'verify-old', artifact_sha256: 'old', decision: { kind: 'advance', reason: null, evidence: ['/old.log'], debt: [] } })
-    );
-    f.carried = { from: 'old-run', packages: ['p'], evidence: { p: evidence } };
-    const result = await runInProcess(f);
+test('S15: recover adopts accepted work and hashes the carried persisted bytes', async () => {
+  const spec = { ...fixture('S15').spec, passRound: 2 as const },
+    { f, result, adopted, engineAdoption, oldSnapshot, root, originalRunId } = await recoverCarriedScenario(spec);
+    expect(engineAdoption).toMatchObject({ from: oldSnapshot, to: root });
+    expect(adopted.engine_adoptions?.at(-1)).toMatchObject({ from: oldSnapshot, to: root });
+    expect(adopted.adoptions?.at(-1)).toMatchObject({
+      from: originalRunId,
+      to: result.runId,
+      carried: ['p'],
+    });
     expectOutcome(f, result, { terminal: 'completed', counts: { 'code-p': 0, 'verify-p': 1, 'integrate-m1.publish-m1': 1 }, published: true });
     const output = completedOutput(result, 'verify-p'),
       artifact = readFileSync(join(result.artifactsDir, 'verify-p.json'));
-    expect(output).toMatchObject({ log: '/old.log', diff_hash: 'old' });
     expect(output.artifact_sha256).toBe(new Bun.CryptoHasher('sha256').update(artifact).digest('hex'));
-  } finally { restore(f); }
-}, 120_000);
+}, 240_000);

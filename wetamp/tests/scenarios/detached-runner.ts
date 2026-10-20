@@ -6,7 +6,14 @@ import { sh } from '../helpers';
 
 const output = process.env.SCENARIO_RESULT;
 if (!output) throw new Error('missing detached scenario result path');
-const id = (process.env.SCENARIO_ID ?? 'S1') as 'S1' | 'S4' | 'S14b' | 'S14c';
+const id = (process.env.SCENARIO_ID ?? 'S1') as
+  | 'S1'
+  | 'S4'
+  | 'S12'
+  | 'S14a'
+  | 'S14b'
+  | 'S14c'
+  | 'S15';
 const f = scenario(
   {
     id,
