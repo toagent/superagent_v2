@@ -1201,6 +1201,16 @@ const git = (cwd: string, ...args: string[]): void => {
   if (p.exitCode !== 0) throw new Error(`git ${args[0]} in ${cwd}: ${tail(p.stderr.toString())}`);
 };
 
+function copyOwnerWritable(source: string, destination: string, recursive = false): void {
+  cpSync(source, destination, recursive ? { recursive: true } : undefined);
+  const makeWritable = (path: string): void => {
+    const stat = statSync(path);
+    chmodSync(path, stat.mode | 0o200);
+    if (stat.isDirectory()) for (const entry of readdirSync(path)) makeWritable(join(path, entry));
+  };
+  makeWritable(destination);
+}
+
 export interface Gen {
   dir: string;
   workflow: string;
@@ -1274,7 +1284,7 @@ export function generate(
     const evidenceDir = join(dir, 'carried-evidence');
     mkdirSync(evidenceDir, { recursive: true });
     for (const [pkg, source] of Object.entries(carried.evidence))
-      cpSync(source, join(evidenceDir, `${pkg}.json`));
+      copyOwnerWritable(source, join(evidenceDir, `${pkg}.json`));
   }
   if (delivery && !fake)
     writeFileSync(
@@ -1300,17 +1310,19 @@ export function generate(
     )
   );
   for (const sub of ['commands', 'scripts']) {
-    cpSync(join(WETAMP, 'templates', '.archon', sub), join(dir, '.archon', sub), {
-      recursive: true,
-    });
+    copyOwnerWritable(
+      join(engineWetamp, 'templates', '.archon', sub),
+      join(dir, '.archon', sub),
+      true
+    );
   }
   // Freeze the engine-owned receipt reader into portable generated workflows.
-  cpSync(
-    join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+  copyOwnerWritable(
+    join(engineWetamp, '../packages/workflows/src/provider-attempts.ts'),
     join(dir, '.archon/scripts/policy-attempts.ts')
   );
   writeFileSync(join(dir, '.archon/scripts/reasons.json'), JSON.stringify(REASONS, null, 2) + '\n');
-  cpSync(join(WETAMP, 'capabilities.json'), join(dir, 'capabilities.json'));
+  copyOwnerWritable(join(engineWetamp, 'capabilities.json'), join(dir, 'capabilities.json'));
   writeFileSync(join(dir, '.archon', 'principles.md'), principles);
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');

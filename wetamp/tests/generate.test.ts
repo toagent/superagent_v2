@@ -1773,6 +1773,46 @@ test.each(['stable', 'dirty-before', 'dirty-during', 'commit-during', 'invalid']
   }
 );
 
+test(
+  'read-only engine snapshot copies become owner-writable',
+  withCleanEngine(() => {
+    const root = tmp(),
+      snapshot = join(root, 'snapshot'),
+      source = join(snapshot, 'wetamp');
+    const sources = [
+      [join(source, 'templates/.archon/commands/fixture.md'), 'command'],
+      [join(source, 'templates/.archon/scripts/fixture.ts'), 'script'],
+      [join(snapshot, 'packages/workflows/src/provider-attempts.ts'), 'export {};'],
+      [join(source, 'capabilities.json'), '[]'],
+    ] as const;
+    for (const [path, content] of sources) {
+      fs.mkdirSync(join(path, '..'), { recursive: true });
+      fs.writeFileSync(path, content);
+      fs.chmodSync(path, 0o444);
+    }
+    for (const path of ['templates/.archon/commands', 'templates/.archon/scripts'])
+      fs.chmodSync(join(source, path), 0o555);
+    const validation = spyOn(archon, 'archon').mockReturnValue({ code: 0, out: '', err: '' });
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: join(root, 'archon') });
+    try {
+      const plan = loadPlan(fixturePlan(root, gitRepo(root)), [root]);
+      const absent = undefined;
+      const gen = generate(plan, 'readonly-snapshot', false, absent, absent, absent, snapshot);
+      for (const path of [
+        '.archon/commands/fixture.md',
+        '.archon/scripts/policy-attempts.ts',
+        'capabilities.json',
+      ])
+        expect(fs.statSync(join(gen.dir, path)).mode & 0o200).not.toBe(0);
+    } finally {
+      for (const [path] of sources) fs.chmodSync(path, 0o644);
+      for (const path of ['templates/.archon/commands', 'templates/.archon/scripts'])
+        fs.chmodSync(join(source, path), 0o755);
+      validation.mockRestore();
+    }
+  })
+);
+
 test('ENV_PRECHECK generated helper runs independently with no source checkout imports', () => {
   const root = tmp();
   const keys = ['SUPERAGENT_HOME', 'ARCHON_HOME'] as const,
