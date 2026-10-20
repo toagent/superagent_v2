@@ -1696,19 +1696,14 @@ function resumeRun(
 const abandoned = (l: Ledger): boolean => l.rejected === l.archon_run_id && !!l.intervention_events?.some(event => event.action === 'abandon' && event.ok);
 // prettier-ignore
 const refuseAbandoned = (l: Ledger): boolean => abandoned(l) ? (print({ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' }), true) : false;
-interface AbandonError {
-  run_id: string;
-  type: string;
-  reason: string;
-}
 // prettier-ignore
-const abandonError = (run_id: string, type: string, error: unknown): AbandonError => ({ run_id, type, reason: tail(error instanceof Error ? error.message : String(error), 200) });
+const abandonError = (run_id: string, type: string, error: unknown) => ({ run_id, type, reason: tail(error instanceof Error ? error.message : String(error), 200) });
 // prettier-ignore
 function abandon(a: Args): number {
   const reason = a.flags.reason?.trim();
   if (!reason) throw new Error('abandon requires --reason <text>');
   const who = caller();
-  let entries: (Ledger | AbandonError)[];
+  let entries: (Ledger | ReturnType<typeof abandonError>)[];
   if (a.flags.mine) {
     if (a._.length !== 1 || !a.flags.status)
       throw new Error('usage: superagent abandon --mine --status failed,cancelled [--before YYYY-MM-DD] --reason <text>');
@@ -1716,7 +1711,7 @@ function abandon(a: Args): number {
     const before = a.flags.before ? Date.parse(`${a.flags.before}T00:00:00Z`) : Infinity;
     if (!statuses.size || (a.flags.before && !/^\d{4}-\d{2}-\d{2}$/.test(a.flags.before)) || Number.isNaN(before))
       throw new Error('abandon: invalid --status or --before');
-    entries = ledgers().flatMap((l): (Ledger | AbandonError)[] => {
+    entries = ledgers().flatMap((l): (Ledger | ReturnType<typeof abandonError>)[] => {
       if ('error' in l) return [];
       try {
         if (!same(coord().owner(runScope(l)).owner, who)) return [];
