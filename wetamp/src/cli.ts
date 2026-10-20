@@ -3663,7 +3663,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'gc', flags: ['dry-run'] },
   { command: 'scratch-clean', flags: ['session', 'dry-run'] },
   { command: 'supervise-tick', flags: ['schedule', 'runs', 'no-global'] },
-  { command: 'engine', positionals: 'promote <sha> | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence'] },
+  { command: 'engine', positionals: 'promote <sha> | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence'] },
   { command: 'health', flags: ['cwd', 'verbose'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
   { command: 'models', flags: ['mode'] },
@@ -4126,7 +4126,9 @@ export function main(argv: string[]): number {
           : []),
       ]);
       print(result);
-      return a._[1] === 'gate-legacy' && !(result as { ok?: boolean }).ok ? 1 : 0;
+      return ['gate-legacy', 'probe'].includes(a._[1] ?? '') && !(result as { ok?: boolean }).ok
+        ? 1
+        : 0;
     }
     case 'report': {
       if (a.flags['by-engine'] !== undefined) {

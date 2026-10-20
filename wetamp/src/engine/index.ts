@@ -9,12 +9,14 @@ import {
   renameSync,
   symlinkSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import { getRun, lock } from '../archon';
 import { WETAMP, home, writeAtomic } from '../config';
+import { inspectProcess } from '../launcher';
+import { runProbe, type ProbeEvidence } from '../probe';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
 
@@ -22,7 +24,7 @@ export interface EngineReceipt {
   sha: string;
   protocol_version: number;
   acceptance_hash: string;
-  results: { command: string; exit: number }[];
+  results: { command: string; exit: number; duration_ms?: number; run_id?: string }[];
   at: string;
   bootstrap_evidence?: string;
 }
@@ -178,9 +180,44 @@ const makeReadonly = (path: string): void => {
   chmodSync(path, 0o555);
 };
 
-function prepareSnapshot(sha: string): string {
+const makeWritable = (path: string): void => {
+  chmodSync(path, lstatSync(path).mode | 0o200);
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) makeWritable(child);
+    else if (!entry.isSymbolicLink()) chmodSync(child, lstatSync(child).mode | 0o200);
+  }
+};
+
+const snapshotReferenced = (snapshot: string): boolean =>
+  ledgerPaths().some(path => {
+    try {
+      const value = readEngineLedger(path);
+      if (!value.engine_snapshot) return false;
+      try {
+        return realpathSync(value.engine_snapshot) === realpathSync(snapshot);
+      } catch {
+        return resolve(value.engine_snapshot) === resolve(snapshot);
+      }
+    } catch {
+      return true;
+    }
+  });
+
+function prepareSnapshot(sha: string, retryingFailedCandidate: boolean): string {
   const snapshot = join(root(), sha);
-  if (existsSync(snapshot)) return snapshot;
+  if (existsSync(snapshot)) {
+    const current = currentEngineSnapshot();
+    if (
+      !retryingFailedCandidate ||
+      (current && realpathSync(snapshot) === current) ||
+      existsSync(receiptPath(sha)) ||
+      snapshotReferenced(snapshot)
+    )
+      throw new Error('engine promote: snapshot_in_service');
+    makeWritable(snapshot);
+    return snapshot;
+  }
   mkdirSync(root(), { recursive: true });
   git(['worktree', 'add', '--detach', snapshot, sha]);
   const install = Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], {
@@ -192,45 +229,123 @@ function prepareSnapshot(sha: string): string {
   return snapshot;
 }
 
-function automaticReceipt(sha: string, snapshot: string): EngineReceipt {
+function runAcceptance(snapshot: string): EngineReceipt['results'][number] {
   const script = join(snapshot, 'wetamp', 'scripts', 'engine-acceptance.sh');
   const scratch = join(tmpdir(), `sa-engine-${crypto.randomUUID()}`);
+  const started = Date.now();
   const result = Bun.spawnSync(['bash', script], {
     cwd: join(snapshot, 'wetamp'),
     env: {
       ...process.env,
       SUPERAGENT_HOME: join(scratch, 'sa'),
-      ARCHON_HOME: join(scratch, 'archon'),
+      ARCHON_HOME: join(scratch, 'sa', 'archon'),
     },
     stdout: 'pipe',
     stderr: 'pipe',
+    timeout: 40 * 60_000,
+    killSignal: 'SIGKILL',
   });
   if (result.exitCode !== 0)
     throw new Error(
       `engine acceptance failed (${String(result.exitCode)}): ${result.stderr.toString().trim().slice(-500)}`
     );
   return {
-    sha,
-    protocol_version: ENGINE_PROTOCOL_VERSION,
-    acceptance_hash: createHash('sha256').update(readFileSync(script)).digest('hex'),
-    results: [{ command: 'wetamp/scripts/engine-acceptance.sh', exit: 0 }],
-    at: new Date().toISOString(),
+    command: 'wetamp/scripts/engine-acceptance.sh',
+    exit: 0,
+    duration_ms: Date.now() - started,
   };
 }
 
-export function promote(sha: string, bootstrapEvidence?: string): EngineReceipt {
+interface PromotionMarker {
+  sha: string;
+  status: 'running' | 'promoted' | 'failed';
+  pid: number;
+  pid_start: string;
+  host: string;
+  at: string;
+  token?: string;
+  error?: string;
+  evidence_path?: string;
+}
+
+const markerPath = (sha: string): string => join(promotionDir(), `${sha}.json`);
+const writeMarker = (marker: PromotionMarker): void => {
+  mkdirSync(promotionDir(), { recursive: true });
+  writeAtomic(markerPath(marker.sha), JSON.stringify(marker) + '\n');
+};
+
+function beginPromotion(sha: string): PromotionMarker {
+  const expected = process.env.SA_ENGINE_PROMOTER_TOKEN;
+  if (expected) {
+    for (let i = 0; i < 500; i++) {
+      try {
+        const marker = JSON.parse(readFileSync(markerPath(sha), 'utf8')) as PromotionMarker;
+        const identity = inspectProcess(process.pid);
+        if (
+          marker.status === 'running' &&
+          marker.token === expected &&
+          marker.pid === process.pid &&
+          identity.state === 'online' &&
+          identity.start === marker.pid_start
+        )
+          return marker;
+      } catch {
+        // Parent publishes the detached process identity immediately after spawning it.
+      }
+      Bun.sleepSync(10);
+    }
+    throw new Error('engine promote: promoter identity mismatch');
+  }
+  const identity = inspectProcess(process.pid);
+  if (identity.state !== 'online') throw new Error('engine promote: process identity unavailable');
+  const marker: PromotionMarker = {
+    sha,
+    status: 'running',
+    pid: process.pid,
+    pid_start: identity.start,
+    host: hostname(),
+    at: new Date().toISOString(),
+  };
+  writeMarker(marker);
+  return marker;
+}
+
+class ProbeFailed extends Error {
+  constructor(readonly evidence: ProbeEvidence) {
+    super(`probe_failed: ${evidence.reason ?? 'unknown'}`);
+  }
+}
+
+export interface PromotionDependencies {
+  probe?: (level: 'G1') => ProbeEvidence;
+}
+
+export function promote(
+  sha: string,
+  bootstrapEvidence?: string,
+  dependencies: PromotionDependencies = {}
+): EngineReceipt {
   if (!/^[0-9a-f]{7,40}$/i.test(sha)) throw new Error('engine promote: invalid sha');
   mkdirSync(receiptsDir(), { recursive: true });
   const held = lock(join(root(), 'engine.lock'));
   if (!held.ok) throw new Error('engine promote: locked');
+  let marker: PromotionMarker | undefined;
   try {
     sha = canonicalSha(sha);
+    let retryingFailedCandidate = false;
+    try {
+      retryingFailedCandidate =
+        (JSON.parse(readFileSync(markerPath(sha), 'utf8')) as PromotionMarker).status === 'failed';
+    } catch {
+      // No prior attempt.
+    }
+    marker = beginPromotion(sha);
     const current = currentEngineSnapshot();
     if (bootstrapEvidence && current)
       throw new Error('engine promote: bootstrap evidence is first-use only');
     if (isRejected(sha)) throw new Error('engine promote: sha is rejected');
     if (sha !== releaseHead()) throw new Error('engine promote: candidate is not 1.0.0 HEAD');
-    const snapshot = prepareSnapshot(sha);
+    const snapshot = prepareSnapshot(sha, retryingFailedCandidate);
     const next = bootstrapEvidence
       ? (() => {
           const evidence = resolve(bootstrapEvidence);
@@ -244,8 +359,30 @@ export function promote(sha: string, bootstrapEvidence?: string): EngineReceipt 
             bootstrap_evidence: evidence,
           } satisfies EngineReceipt;
         })()
-      : automaticReceipt(sha, snapshot);
-    makeReadonly(snapshot);
+      : (() => {
+          const acceptance = runAcceptance(snapshot);
+          makeReadonly(snapshot);
+          const probe = (dependencies.probe ?? runProbe)('G1');
+          if (!probe.ok) throw new ProbeFailed(probe);
+          return {
+            sha,
+            protocol_version: ENGINE_PROTOCOL_VERSION,
+            acceptance_hash: createHash('sha256')
+              .update(readFileSync(join(snapshot, 'wetamp', 'scripts', 'engine-acceptance.sh')))
+              .digest('hex'),
+            results: [
+              acceptance,
+              {
+                command: 'superagent engine probe G1',
+                exit: 0,
+                duration_ms: probe.duration_ms,
+                ...(probe.run_id ? { run_id: probe.run_id } : {}),
+              },
+            ],
+            at: new Date().toISOString(),
+          } satisfies EngineReceipt;
+        })();
+    if (bootstrapEvidence) makeReadonly(snapshot);
     const currentSha = current && shaOfSnapshot(current);
     if (currentSha && !isAncestor(currentSha, sha))
       throw new Error('engine promote: candidate is not a current descendant');
@@ -258,7 +395,19 @@ export function promote(sha: string, bootstrapEvidence?: string): EngineReceipt 
       throw new Error('engine promote: 1.0.0 HEAD changed during acceptance');
     writeAtomic(receiptPath(sha), JSON.stringify(next, null, 2) + '\n');
     switchCurrent(snapshot);
+    writeMarker({ ...marker, status: 'promoted', at: new Date().toISOString() });
     return next;
+  } catch (error) {
+    if (marker) {
+      writeMarker({
+        ...marker,
+        status: 'failed',
+        error: error instanceof ProbeFailed ? 'probe_failed' : (error as Error).message,
+        ...(error instanceof ProbeFailed ? { evidence_path: error.evidence.evidence_path } : {}),
+        at: new Date().toISOString(),
+      });
+    }
+    throw error;
   } finally {
     held.release();
   }
@@ -415,12 +564,27 @@ export function engineCommand(args: string[]): unknown {
   if (action === 'status') return engineStatus();
   if (action === 'adopt') return adoptEngineSnapshot(sha ?? '', args[2] ?? '');
   if (action === 'gate-legacy') return gateLegacyRuns();
+  if (action === 'probe') {
+    const level = sha ?? 'G1';
+    if (level !== 'G1' && level !== 'G2') throw new Error('usage: superagent engine probe [G1|G2]');
+    return runProbe(level);
+  }
   throw new Error(
-    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | rollback | status | adopt <run> <sha> | gate-legacy'
+    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy'
   );
 }
 
-export function autoPromote(): { sha: string; promoted: boolean; error?: string } | undefined {
+export interface AutoPromoteDependencies {
+  spawn?: (
+    command: string[],
+    env: Record<string, string | undefined>
+  ) => { pid: number; unref(): void };
+  inspect?: typeof inspectProcess;
+}
+
+export function autoPromote(
+  dependencies: AutoPromoteDependencies = {}
+): { sha: string; promoted: boolean; error?: string } | undefined {
   const current = currentEngineSnapshot();
   if (process.env.SA_ENGINE_AUTO_PROMOTE === '0' || current === undefined) return undefined;
   mkdirSync(promotionDir(), { recursive: true });
@@ -429,15 +593,67 @@ export function autoPromote(): { sha: string; promoted: boolean; error?: string 
     if (shaOfSnapshot(current) === sha) return { sha, promoted: false };
     const marker = join(promotionDir(), `${sha}.json`);
     if (existsSync(marker)) {
-      const prior = JSON.parse(readFileSync(marker, 'utf8')) as { error?: string };
-      return { sha, promoted: false, error: prior.error ?? 'promotion already attempted' };
+      const prior = JSON.parse(readFileSync(marker, 'utf8')) as PromotionMarker;
+      if (prior.status === 'running') {
+        const identity =
+          prior.host === hostname()
+            ? (dependencies.inspect ?? inspectProcess)(prior.pid)
+            : undefined;
+        if (!identity || identity.state === 'unknown') return { sha, promoted: false };
+        if (identity.state === 'online' && identity.start === prior.pid_start)
+          return { sha, promoted: false };
+        const failed = {
+          ...prior,
+          status: 'failed' as const,
+          error: 'promoter_lost',
+          at: new Date().toISOString(),
+        };
+        writeMarker(failed);
+        return {
+          sha,
+          promoted: false,
+          error: `promoter_lost; retry: superagent engine promote ${sha}`,
+        };
+      }
+      if (prior.status === 'promoted') return { sha, promoted: false };
+      return {
+        sha,
+        promoted: false,
+        error: `${prior.error ?? 'promotion failed'}; retry: superagent engine promote ${sha}`,
+      };
     }
-    promote(sha);
-    writeAtomic(
-      marker,
-      JSON.stringify({ sha, status: 'promoted', at: new Date().toISOString() }) + '\n'
-    );
-    return { sha, promoted: true };
+    const token = crypto.randomUUID(),
+      command = [
+        process.execPath,
+        join(current, 'wetamp', 'src', 'cli.ts'),
+        'engine',
+        'promote',
+        sha,
+      ],
+      spawned = dependencies.spawn
+        ? dependencies.spawn(command, { ...process.env, SA_ENGINE_PROMOTER_TOKEN: token })
+        : Bun.spawn(command, {
+            cwd: current,
+            env: { ...process.env, SA_ENGINE_PROMOTER_TOKEN: token },
+            stdin: 'ignore',
+            stdout: 'ignore',
+            stderr: 'ignore',
+            detached: true,
+          });
+    const identity = (dependencies.inspect ?? inspectProcess)(spawned.pid);
+    if (identity.state !== 'online')
+      throw new Error('engine auto-promote: process identity unavailable');
+    writeMarker({
+      sha,
+      status: 'running',
+      pid: spawned.pid,
+      pid_start: identity.start,
+      host: hostname(),
+      token,
+      at: new Date().toISOString(),
+    });
+    spawned.unref();
+    return { sha, promoted: false };
   } catch (error) {
     const result = {
       sha: 'unknown',
@@ -451,6 +667,10 @@ export function autoPromote(): { sha: string; promoted: boolean; error?: string 
         JSON.stringify({
           sha,
           status: 'failed',
+          pid: process.pid,
+          pid_start:
+            inspectProcess(process.pid).state === 'online' ? inspectProcess(process.pid).start : '',
+          host: hostname(),
           error: result.error,
           at: new Date().toISOString(),
         }) + '\n'

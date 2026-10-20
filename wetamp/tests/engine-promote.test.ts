@@ -1,8 +1,17 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
 import { autoPromote, currentEngineSnapshot, promote, rollback } from '../src/engine';
+import type { ProbeEvidence } from '../src/probe';
 import { sh, tmp } from './helpers';
 
 const original = { ...process.env };
@@ -42,13 +51,21 @@ const commit = (source: string, name: string): string => {
   return sh('git rev-parse HEAD', source).trim();
 };
 
+const successfulProbe = (): ProbeEvidence =>
+  JSON.parse(
+    '{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}'
+  );
+
 test('bootstrap, descendant promotion, rollback rejection, and a newer descendant', () => {
   const f = sourceFixture(),
     first = f.sha();
   expect(promote(first, f.evidence).bootstrap_evidence).toBe(f.evidence);
   expect(() => promote(first, f.evidence)).toThrow('first-use only');
   const second = commit(f.source, 'second');
-  expect(promote(second).sha).toBe(second);
+  expect(promote(second, undefined, { probe: successfulProbe })).toMatchObject({
+    sha: second,
+    results: [{ command: 'wetamp/scripts/engine-acceptance.sh' }, { run_id: 'probe-run' }],
+  });
   const installedAcceptance = join(
     process.env.SUPERAGENT_HOME!,
     'engine',
@@ -60,15 +77,17 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   expect(Bun.spawnSync(['bash', '-n', installedAcceptance]).exitCode).toBe(0);
   sh(`git switch -qc side '${first}'`, f.source);
   const divergent = commit(f.source, 'divergent');
-  expect(() => promote(divergent)).toThrow('not 1.0.0 HEAD');
+  expect(() => promote(divergent, undefined, { probe: successfulProbe })).toThrow('not 1.0.0 HEAD');
   expect(
     existsSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${divergent}.json`))
   ).toBe(false);
   sh('git switch -q 1.0.0', f.source);
   expect(rollback()).toEqual({ from: second, to: first });
-  expect(() => promote(second.slice(0, 8))).toThrow('sha is rejected');
+  expect(() => promote(second.slice(0, 8), undefined, { probe: successfulProbe })).toThrow(
+    'sha is rejected'
+  );
   const third = commit(f.source, 'third');
-  expect(promote(third).sha).toBe(third);
+  expect(promote(third, undefined, { probe: successfulProbe }).sha).toBe(third);
   expect(currentEngineSnapshot()).toEndWith(third);
 });
 
@@ -90,30 +109,84 @@ test('promotion lock and protocol downgrade fail closed without publishing a rec
   const firstReceipt = JSON.parse(readFileSync(join(receipts, `${first}.json`), 'utf8'));
   firstReceipt.protocol_version = 2;
   writeFileSync(join(receipts, `${first}.json`), JSON.stringify(firstReceipt));
-  expect(() => promote(second)).toThrow('protocol downgrade');
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
+    'protocol downgrade'
+  );
   expect(existsSync(join(receipts, `${second}.json`))).toBe(false);
 });
 
-test('auto promotion follows 1.0.0 HEAD and records a failed attempt once', () => {
+test('failed read-only candidate retries explicitly while in-service snapshots stay locked', () => {
+  const f = sourceFixture(),
+    first = f.sha();
+  promote(first, f.evidence);
+  const second = commit(f.source, 'second');
+  expect(() =>
+    promote(second, undefined, {
+      probe: () => ({ ...successfulProbe(), ok: false, reason: 'not_published' }),
+    })
+  ).toThrow('probe_failed');
+  const snapshot = join(process.env.SUPERAGENT_HOME!, 'engine', second),
+    receipt = join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${second}.json`),
+    mode = statSync(snapshot).mode;
+  expect(statSync(snapshot).mode & 0o222).toBe(0);
+  expect(existsSync(receipt)).toBe(false);
+  expect(currentEngineSnapshot()).toEndWith(first);
+  const ledger = join(process.env.SUPERAGENT_HOME!, 'runs', 'referenced.json');
+  mkdirSync(join(process.env.SUPERAGENT_HOME!, 'runs'));
+  writeFileSync(
+    ledger,
+    JSON.stringify({
+      run_id: 'referenced',
+      archon_run_id: 'a',
+      repo: f.source,
+      engine_snapshot: snapshot,
+    })
+  );
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
+    'snapshot_in_service'
+  );
+  rmSync(ledger);
+  writeFileSync(receipt, '{}');
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
+    'snapshot_in_service'
+  );
+  rmSync(receipt);
+  expect(statSync(snapshot).mode).toBe(mode);
+  expect(promote(second, undefined, { probe: successfulProbe }).sha).toBe(second);
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
+    'snapshot_in_service'
+  );
+  expect(statSync(snapshot).mode).toBe(mode);
+});
+
+test('auto promotion detaches once and marks a lost promoter with an explicit retry', () => {
   const f = sourceFixture(),
     first = f.sha();
   promote(first, f.evidence);
   delete process.env.SA_ENGINE_AUTO_PROMOTE;
-  const second = commit(f.source, 'second');
-  expect(autoPromote()).toMatchObject({ sha: second, promoted: true });
-
-  writeFileSync(
-    join(f.source, 'wetamp/scripts/engine-acceptance.sh'),
-    '#!/usr/bin/env bash\nexit 9\n'
-  );
-  sh('git add wetamp/scripts/engine-acceptance.sh && git commit -qm failing-acceptance', f.source);
-  const third = f.sha(),
-    failed = autoPromote();
-  expect(failed).toMatchObject({ sha: third, promoted: false, error: expect.any(String) });
-  // prettier-ignore
-  expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${third}.json`))).toBe(false);
-  const marker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${third}.json`),
-    before = readFileSync(marker, 'utf8');
-  expect(autoPromote()).toEqual(failed);
-  expect(readFileSync(marker, 'utf8')).toBe(before);
+  const second = commit(f.source, 'second'),
+    marker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`);
+  let state: 'online' | 'offline' = 'online',
+    detached = 0;
+  const deps = {
+    spawn: () => ({ pid: 424242, unref: () => detached++ }),
+    inspect: () =>
+      state === 'online'
+        ? ({ state, start: 'Mon Oct 20 00:00:00 2026' } as const)
+        : ({ state } as const),
+  };
+  expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
+  expect(detached).toBe(1);
+  expect(JSON.parse(readFileSync(marker, 'utf8'))).toMatchObject({
+    status: 'running',
+    pid: 424242,
+    pid_start: 'Mon Oct 20 00:00:00 2026',
+  });
+  expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
+  state = 'offline';
+  expect(autoPromote(deps)).toMatchObject({
+    sha: second,
+    error: expect.stringContaining('superagent engine promote'),
+  });
+  expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('failed');
 });
