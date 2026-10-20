@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ledgerPath } from '../../src/cli';
 import {
@@ -52,6 +52,7 @@ const f = resumeState
         blockAfterCompletedNode: process.env.SCENARIO_BLOCK_AFTER_COMPLETED_NODE,
         blockMarker: process.env.SCENARIO_BLOCK_MARKER,
         blockRelease: process.env.SCENARIO_BLOCK_RELEASE,
+        blockMs: process.env.SCENARIO_BLOCK_MS ? Number(process.env.SCENARIO_BLOCK_MS) : undefined,
         home: process.env.SCENARIO_HOME,
         runId: process.env.SCENARIO_RUN_ID,
       }
@@ -90,7 +91,9 @@ try {
         .filter(event => event.event_type === 'node_failed')
         .map(event => ({ step: event.step_name, data: event.data })),
       ledger: JSON.parse(readFileSync(ledgerPath(result.runId), 'utf8')),
-      receipt: JSON.parse(readFileSync(join(result.artifactsDir, 'publish-m1.json'), 'utf8')),
+      receipt: existsSync(join(result.artifactsDir, 'publish-m1.json'))
+        ? JSON.parse(readFileSync(join(result.artifactsDir, 'publish-m1.json'), 'utf8'))
+        : null,
       target: sh('git rev-parse scenario-target', f.target).trim(),
       worker: sh('git rev-parse HEAD', f.worker).trim(),
     })

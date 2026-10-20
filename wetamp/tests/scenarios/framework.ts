@@ -63,6 +63,7 @@ export interface ScenarioFixture {
   blockAfterCompletedNode?: string;
   blockMarker?: string;
   blockRelease?: string;
+  blockMs?: number;
   runId?: string;
   targetAfterInjection?: string;
   carried?: Carried;
@@ -87,6 +88,7 @@ export function scenario(
     blockAfterCompletedNode?: string;
     blockMarker?: string;
     blockRelease?: string;
+    blockMs?: number;
     home?: string;
     runId?: string;
   } = {}
@@ -132,6 +134,7 @@ export function scenario(
     blockAfterCompletedNode: options.blockAfterCompletedNode,
     blockMarker: options.blockMarker,
     blockRelease: options.blockRelease,
+    blockMs: options.blockMs,
     runId: options.runId,
   };
 }
@@ -384,7 +387,8 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
     if (event.event_type === 'node_completed' && event.step_name === f.blockAfterCompletedNode) {
       if (!f.blockMarker) throw new Error('scenario completion block marker missing');
       writeFileSync(f.blockMarker, event.step_name ?? 'unknown');
-      while (!f.blockRelease || !existsSync(f.blockRelease)) await Bun.sleep(25);
+      if (f.blockMs !== undefined) await Bun.sleep(f.blockMs);
+      else while (!f.blockRelease || !existsSync(f.blockRelease)) await Bun.sleep(25);
     }
   };
   const plan = JSON.parse(
@@ -488,8 +492,6 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
   ) as { description?: string; nodes: Array<Record<string, unknown>> };
   const routeAi = (nodes: Array<Record<string, unknown>>): void => {
     for (const node of nodes) {
-      const inputs = node.with as Record<string, unknown> | undefined;
-      if (continuation && f.spec.id === 'S15' && inputs?.risk === 'G2') inputs.risk = 'G1';
       if (node.command || node.prompt) {
         node.provider = descriptor.id;
         delete node.model;
@@ -645,7 +647,7 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
     coordination.coord().reauthorize(old, who);
     writeFileSync(ledgerPath(state.runId), JSON.stringify(old));
     const engineAdoption = adoptEngineSnapshot(state.runId, sha),
-      adoptedId = `${state.runId}-adopted`,
+      adoptedId = `adopted-${state.runId}`,
       original = archonModule.archon;
     const clean = spyOn(coordination, 'cleanEngine').mockReturnValue(sha),
       launch = spyOn(archonModule, 'archon').mockImplementation((args, cwd, intent, timeout) =>

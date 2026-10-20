@@ -11,7 +11,7 @@ import {
 import { join } from 'node:path';
 import { promote, rollback } from '../../src/engine';
 import { completedOutput, expectOutcome, recoverCarriedScenario, scenario } from './framework';
-import { sh, tmp } from '../helpers';
+import { gitRepo, sh, tmp } from '../helpers';
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 import * as coordination from '../../src/coord';
@@ -34,7 +34,7 @@ test('S12: promotion and rollback keep old runs on their pinned engine', async (
   const cliPath = join(source, 'wetamp/src/cli.ts'), cli = readFileSync(cliPath, 'utf8');
   writeFileSync(cliPath, cli.replace('const argv = process.argv.slice(2);', `const argv = process.argv.slice(2);\n    if (process.env.S12_PROBE) require('node:fs').appendFileSync(process.env.S12_PROBE, JSON.stringify({ snapshot: require('node:fs').realpathSync(require('node:path').join(import.meta.dir, '../..')), args: argv }) + '\\n');`));
   const frameworkPath = join(source, 'wetamp/tests/scenarios/framework.ts'), framework = readFileSync(frameworkPath, 'utf8');
-  writeFileSync(frameworkPath, framework.replace('export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {', `export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {\n  if (process.env.S12_PROBE) require('node:fs').appendFileSync(process.env.S12_PROBE, JSON.stringify({ snapshot: require('node:fs').realpathSync(require('node:path').join(import.meta.dir, '../../..')), executor: f.runId }) + '\\n');`));
+  writeFileSync(frameworkPath, framework.replace('export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedContinuation) {', `export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedContinuation) {\n  if (process.env.S12_PROBE) require('node:fs').appendFileSync(process.env.S12_PROBE, JSON.stringify({ snapshot: require('node:fs').realpathSync(require('node:path').join(import.meta.dir, '../../..')), executor: f.runId }) + '\\n');`).replace('export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {', `export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {\n  if (process.env.S12_PROBE) require('node:fs').appendFileSync(process.env.S12_PROBE, JSON.stringify({ snapshot: require('node:fs').realpathSync(require('node:path').join(import.meta.dir, '../../..')), executor: f.runId }) + '\\n');`));
   sh('git init -q -b 1.0.0 && git config core.hooksPath /dev/null && git config user.name test && git config user.email test@example.com && git add packages wetamp package.json bun.lock && git commit -qm engine-A', source);
   symlinkSync(join(repo, 'node_modules'), join(source, 'node_modules'));
   symlinkSync(join(repo, 'wetamp/node_modules'), join(source, 'wetamp/node_modules'));
@@ -51,13 +51,13 @@ test('S12: promotion and rollback keep old runs on their pinned engine', async (
     sh('chmod -R u+w .', aPath);
     writeFileSync(archon, `#!/bin/sh
 set -eu
-if [ "$1 $2" = "workflow resume" ]; then
+if [ "$1 $2" = "workflow resume" ] || [ "$1 $2" = "workflow approve" ]; then
   case "$3" in
     *-1) kind=paused ;;
     *-2) kind=crashed ;;
     *) exit 64 ;;
   esac
-  (SCENARIO_ID=S12 SCENARIO_RESUME_STATE="$S12_STATE_DIR/$kind.json" SCENARIO_RESULT="$S12_STATE_DIR/$kind.result" SCENARIO_ENGINE_SNAPSHOT="$S12_ENGINE_A" "$S12_BUN" test "$S12_RUNNER") </dev/null >"$S12_STATE_DIR/$kind.log" 2>&1 &
+  (SCENARIO_ID=S12 SCENARIO_RISK=G2 SCENARIO_PASS_ROUND=2 SCENARIO_RESUME_STATE="$S12_STATE_DIR/$kind.json" SCENARIO_RESULT="$S12_STATE_DIR/$kind.result" SCENARIO_ENGINE_SNAPSHOT="$S12_ENGINE_A" "$S12_BUN" test "$S12_RUNNER") </dev/null >"$S12_STATE_DIR/$kind.log" 2>&1 &
   printf '{"ok":true,"runId":"%s"}\n' "$3"
   exit 0
 fi
@@ -65,49 +65,68 @@ exec "$S12_REAL_ARCHON" "$@"
 `);
     chmodSync(archon, 0o755);
     for (const [i, kind] of ['running', 'paused', 'crashed'].entries()) {
-      const state = join(root, `${kind}.json`), marker = join(root, `${kind}.blocked`), release = join(root, `${kind}.release`), runId = `5ce0-0012-${String(i)}`;
-      children.push(Bun.spawn([process.execPath, 'test', runner], { env: { ...process.env, S12_PROBE: probe, SCENARIO_ID: 'S12', SCENARIO_HOME: home, SCENARIO_RUN_ID: runId, SCENARIO_SUFFIX: kind, SCENARIO_READY: state, SCENARIO_RESULT: join(root, `${kind}.result`), SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'code-p', SCENARIO_BLOCK_MARKER: marker, SCENARIO_BLOCK_RELEASE: release, SCENARIO_ENGINE_SNAPSHOT: aPath }, stdout: 'ignore', stderr: 'pipe' }));
+      const state = join(root, `${kind}.json`), marker = join(root, `${kind}.blocked`), runId = `5ce0-0012-${String(i)}`, target = gitRepo(tmp());
+      sh('git branch -m scenario-target && git config user.name t && git config user.email t@l', target);
+      children.push(Bun.spawn([process.execPath, 'test', runner], { env: { ...process.env, S12_PROBE: probe, SCENARIO_ID: 'S12', SCENARIO_RISK: 'G2', SCENARIO_PASS_ROUND: '2', SCENARIO_HOME: home, SCENARIO_TARGET: target, SCENARIO_RUN_ID: runId, SCENARIO_SUFFIX: kind, SCENARIO_READY: state, SCENARIO_RESULT: join(root, `${kind}.result`), SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'fix-m1-r2', SCENARIO_BLOCK_MARKER: marker, ...(kind === 'running' ? { SCENARIO_BLOCK_MS: '60000' } : {}), SCENARIO_ENGINE_SNAPSHOT: aPath }, stdout: 'ignore', stderr: 'pipe' }));
       for (const end = Date.now() + 60_000; !existsSync(marker) && Date.now() < end; ) await Bun.sleep(25);
       expect(existsSync(marker)).toBeTrue();
     }
-    children[1].kill('SIGKILL'); children[2].kill('SIGKILL'); await Promise.all([children[1].exited, children[2].exited]);
+    children[1].kill('SIGKILL'); children[2].kill('SIGKILL');
+    await Promise.all([children[1].exited, children[2].exited]);
     resetDatabase(); const store = createWorkflowStore();
     await store.pauseWorkflowRun('5ce0-0012-1', { nodeId: 'code-p', message: 'scenario pause', type: 'approval', pauseId: 'scenario' });
-    await store.failWorkflowRun('5ce0-0012-2', 'scenario crash');
     writeFileSync(join(source, 'engine-b'), 'B');
     sh('git add engine-b && git commit -qm engine-B', source);
     const b = sh('git rev-parse HEAD', source).trim();
     promote(b);
     Object.assign(process.env, { SA_ARCHON_BIN: archon, S12_BUN: process.execPath, S12_ENGINE_A: aPath, S12_PROBE: probe, S12_REAL_ARCHON: join(aPath, 'wetamp/bin/archon'), S12_RUNNER: runner, S12_STATE_DIR: root });
-    const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs');
+    const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs'), supervisor = join(root, 'supervisor.py');
     writeFileSync(launcherPreload, `require(${JSON.stringify(join(aPath, 'wetamp/hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`);
-    for (const run of ['5ce0-0012-1', '5ce0-0012-2']) {
-      const ledger = JSON.parse(readFileSync(join(home, 'runs', `${run}.json`), 'utf8'));
+    writeFileSync(supervisor, 'import sys\nprint("yes" if "ask-status" in sys.argv else "scenario-ask")\n');
+    for (const run of ['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2']) {
+      const path = join(home, 'runs', `${run}.json`), ledger = JSON.parse(readFileSync(path, 'utf8'));
       coordination.coord().claim(coordination.repoScope(ledger.repo), who, true, 'scenario continuation');
-      coordination.coord().claim(coordination.runScope(ledger), who, true, 'scenario continuation');
+      ledger.controller = coordination.coord().claim(coordination.runScope(ledger), who, true, 'scenario continuation').controller;
       coordination.coord().reauthorize(ledger, who);
+      writeFileSync(path, JSON.stringify(ledger));
     }
-    const invoke = (...args: string[]) => Bun.spawnSync([SHIM, ...args], { env: { ...process.env, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(), S12_PROBE: probe }, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 });
-    for (const [verb, run] of [['resume', '5ce0-0012-1'], ['recover', '5ce0-0012-2']]) {
-      const result = invoke(verb, run); expect(result.exitCode, result.stdout.toString() + result.stderr.toString()).toBe(0);
+    const invoke = (...args: string[]) => Bun.spawnSync([SHIM, ...args], { env: { ...process.env, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(), SA_SUPERVISOR: supervisor, S12_PROBE: probe }, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 });
+    const promotedTick = invoke('supervise-tick');
+    expect(promotedTick.exitCode, promotedTick.stdout.toString() + promotedTick.stderr.toString()).toBe(0);
+    for (const end = Date.now() + 30_000; Date.now() < end; ) {
+      if ((await store.getWorkflowRunStatus('5ce0-0012-2')) === 'completed') break;
+      await Bun.sleep(25);
     }
-    for (const end = Date.now() + 120_000; Date.now() < end; ) {
-      const statuses = await Promise.all(['5ce0-0012-1', '5ce0-0012-2'].map(id => store.getWorkflowRunStatus(id)));
+    expect(
+      await store.getWorkflowRunStatus('5ce0-0012-2'),
+      promotedTick.stdout.toString() + (existsSync(join(root, 'crashed.result')) ? readFileSync(join(root, 'crashed.result'), 'utf8') : '')
+    ).toBe('completed');
+    await children[0].exited;
+    expect(await store.getWorkflowRunStatus('5ce0-0012-0')).toBe('completed');
+    expect(rollback()).toEqual({ from: b, to: a });
+    const rolledBackTick = invoke('supervise-tick');
+    expect(rolledBackTick.exitCode, rolledBackTick.stdout.toString() + rolledBackTick.stderr.toString()).toBe(0);
+    for (const end = Date.now() + 30_000; Date.now() < end; ) {
+      const statuses = await Promise.all(['5ce0-0012-1'].map(id => store.getWorkflowRunStatus(id)));
       if (statuses.every(status => status === 'completed')) break;
       await Bun.sleep(25);
     }
-    expect(rollback()).toEqual({ from: b, to: a });
-    writeFileSync(join(root, 'running.release'), 'go'); await children[0].exited;
     const calls = readFileSync(probe, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    expect(calls.filter(call => Array.isArray(call.args) && ['resume', 'recover'].includes(call.args[0])).map(call => call.snapshot)).toEqual([aPath, aPath]);
-    expect(calls.filter(call => call.executor).map(call => [call.snapshot, call.executor])).toEqual([[aPath, '5ce0-0012-1'], [aPath, '5ce0-0012-2']]);
-    expect((await Promise.all(['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2'].map(id => store.getWorkflowRun(id)))).map(run => run?.status)).toEqual(['completed', 'completed', 'completed']);
+    const ticks = calls.filter(call => Array.isArray(call.args) && call.args[0] === 'supervise-tick');
+    expect(ticks.filter(call => call.args.includes('--schedule')).map(call => call.snapshot)).toEqual([join(home, 'engine', b), aPath]);
+    expect(ticks.filter(call => call.args.includes('--no-global')).map(call => [call.snapshot, new Set(call.args.filter((_arg: string, i: number) => call.args[i - 1] === '--runs'))])).toEqual([[aPath, new Set(['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2'])], [aPath, new Set(['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2'])]]);
+    expect(new Set(calls.filter(call => call.executor).map(call => `${call.snapshot}:${call.executor}`)), rolledBackTick.stdout.toString()).toEqual(new Set(['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2'].map(id => `${aPath}:${id}`)));
+    const runs = await Promise.all(['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2'].map(id => store.getWorkflowRun(id)));
+    expect(runs.map(run => run?.status)).toEqual(['completed', 'completed', 'completed']);
+    expect((await Promise.all(runs.map(run => store.listWorkflowEvents(run!.id)))).every(events => events.some(event => event.event_type === 'node_completed'))).toBeTrue();
+    expect(['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2'].map(id => JSON.parse(readFileSync(join(home, 'runs', `${id}.json`), 'utf8')).engine_snapshot)).toEqual([aPath, aPath, aPath]);
   } finally {
     for (const child of children) if (child.exitCode === null) child.kill('SIGKILL');
+    if (existsSync(home)) sh('chmod -R u+w .', home);
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
   }
-}, 180_000);
+}, 240_000);
 
 // prettier-ignore
 test('S15: recover adopts accepted work and hashes the carried persisted bytes', async () => {
@@ -121,6 +140,9 @@ test('S15: recover adopts accepted work and hashes the carried persisted bytes',
       carried: ['p'],
     });
     expectOutcome(f, result, { terminal: 'completed', counts: { 'code-p': 0, 'verify-p': 1, 'integrate-m1.publish-m1': 1 }, published: true });
+    const gate = completedOutput(result, 'gate-m1-r2') as { identity: { authors: { model: string }[]; reviewer: { model: string } } };
+    expect(gate).toMatchObject({ risk: 'G2', grade: 'PASS', identity: { reviewer: { model: 'fixture/reviewer' } } });
+    expect(gate.identity.authors.every(author => author.model === 'fixture/coder')).toBeTrue();
     const output = completedOutput(result, 'verify-p'),
       artifact = readFileSync(join(result.artifactsDir, 'verify-p.json'));
     expect(output.artifact_sha256).toBe(new Bun.CryptoHasher('sha256').update(artifact).digest('hex'));
