@@ -17,6 +17,8 @@ import { resetDatabase } from '../../../packages/core/src/db/connection';
 import * as coordination from '../../src/coord';
 
 const SHIM = join(import.meta.dir, '../../bin/superagent-shim');
+// prettier-ignore
+const passedProbe = () => ({ ok: true, level: 'G1' as const, run_id: 'scenario-probe', duration_ms: 1, evidence_path: '/scenario-probe.json' });
 
 // prettier-ignore
 const fixture = (id: 'S12' | 'S15') => scenario({ id, risk: 'G1', passRound: 1, plan: { goal: `${id} engine scenario`, accept: `test "$(cat scenario.txt)" = ${id}` }, agents: { code: { path: 'scenario.txt', content: `${id}\n` } }, expected: { terminal: 'completed', publishCount: 1 } });
@@ -81,7 +83,7 @@ exec "$S12_REAL_ARCHON" "$@"
     writeFileSync(join(source, 'engine-b'), 'B');
     sh('git add engine-b && git commit -qm engine-B', source);
     const b = sh('git rev-parse HEAD', source).trim();
-    promote(b);
+    promote(b, undefined, { probe: passedProbe });
     Object.assign(process.env, { SA_ARCHON_BIN: archon, S12_BUN: process.execPath, S12_PROBE: probe, S12_REAL_ARCHON: join(aPath, 'wetamp/bin/archon'), S12_RUNNER: runner, S12_STATE_DIR: root });
     const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs'), supervisor = join(root, 'supervisor.py');
     writeFileSync(launcherPreload, `require(${JSON.stringify(join(aPath, 'wetamp/hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`);

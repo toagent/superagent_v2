@@ -23,6 +23,7 @@ export interface ProbeJudgement {
   ledger_run_id?: string;
   engine_commit?: string;
   engine_snapshot?: string;
+  diagnostic?: string;
   expected_commit: string;
   expected_snapshot: string;
 }
@@ -33,6 +34,7 @@ export interface ProbeEvidence {
   run_id?: string;
   duration_ms: number;
   reason?: string;
+  error?: string;
   evidence_path: string;
 }
 
@@ -144,6 +146,12 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
       runId = typeof launch?.run_id === 'string' ? launch.run_id : undefined;
     judgement.launch_exit = launched.exitCode;
     judgement.launch_run_id = runId;
+    if (launched.exitCode !== 0)
+      judgement.diagnostic = (
+        (launched.stderr?.toString() ?? '') + (launched.stdout?.toString() ?? '')
+      )
+        .trim()
+        .slice(-500);
     if (launched.exitCode === 0 && runId) {
       for (;;) {
         const remaining = limit - (Date.now() - started),
@@ -159,6 +167,12 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
         judgement.state = typeof value?.state === 'string' ? value.state : undefined;
         judgement.delivery_state =
           typeof value?.delivery_state === 'string' ? value.delivery_state : undefined;
+        if (waited.exitCode !== 0)
+          judgement.diagnostic = (
+            (waited.stderr?.toString() ?? '') + (waited.stdout?.toString() ?? '')
+          )
+            .trim()
+            .slice(-500);
         if (!['running', 'inbox'].includes(judgement.state ?? '') || Date.now() - started >= limit)
           break;
       }
@@ -174,6 +188,7 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
           : undefined;
     }
   } catch (error) {
+    judgement.diagnostic = error instanceof Error ? error.message : String(error);
     if (Date.now() - started >= limit || (error as Error).message === 'timeout')
       judgement.timed_out = true;
   }
@@ -184,6 +199,7 @@ export function runProbe(level: ProbeLevel): ProbeEvidence {
       ...(judgement.launch_run_id ? { run_id: judgement.launch_run_id } : {}),
       duration_ms: Date.now() - started,
       ...(decision.reason ? { reason: decision.reason } : {}),
+      ...(judgement.diagnostic ? { error: judgement.diagnostic } : {}),
       evidence_path: evidencePath,
     };
   writeFileSync(evidencePath, JSON.stringify({ ...evidence, judgement }, null, 2) + '\n');

@@ -13,7 +13,7 @@ import { homedir, hostname, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
-import { getRun, lock } from '../archon';
+import { getRun, lastJson, lock } from '../archon';
 import { WETAMP, home, writeAtomic } from '../config';
 import { inspectProcess } from '../launcher';
 import { runProbe, type ProbeEvidence } from '../probe';
@@ -317,7 +317,52 @@ class ProbeFailed extends Error {
 }
 
 export interface PromotionDependencies {
-  probe?: (level: 'G1') => ProbeEvidence;
+  probe?: (snapshot: string) => ProbeEvidence;
+}
+
+function runSnapshotProbe(snapshot: string): ProbeEvidence {
+  const scratch = join(tmpdir(), `sa-engine-probe-${crypto.randomUUID()}`),
+    evidencePath = join(scratch, 'evidence.json'),
+    started = Date.now();
+  mkdirSync(scratch, { recursive: true });
+  const result = Bun.spawnSync(
+    [process.execPath, join(snapshot, 'wetamp', 'src', 'cli.ts'), 'engine', 'probe', 'G1'],
+    {
+      cwd: join(snapshot, 'wetamp'),
+      env: {
+        ...process.env,
+        DATABASE_URL: '',
+        SUPERAGENT_HOME: join(scratch, 'sa'),
+        ARCHON_HOME: join(scratch, 'sa', 'archon'),
+      },
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 15 * 60_000,
+      killSignal: 'SIGKILL',
+    }
+  );
+  const output = result.stdout.toString() + result.stderr.toString(),
+    value = lastJson(output);
+  if (
+    value &&
+    typeof value.ok === 'boolean' &&
+    value.level === 'G1' &&
+    typeof value.duration_ms === 'number' &&
+    typeof value.evidence_path === 'string'
+  )
+    return value as unknown as ProbeEvidence;
+  const elapsed = Date.now() - started,
+    evidence: ProbeEvidence = {
+      ok: false,
+      level: 'G1',
+      duration_ms: elapsed,
+      reason: elapsed >= 15 * 60_000 ? 'timeout' : 'probe_process_failed',
+      error: output.trim().slice(-500) || `probe process exit ${String(result.exitCode)}`,
+      evidence_path: evidencePath,
+    };
+  writeAtomic(evidencePath, JSON.stringify(evidence, null, 2) + '\n');
+  return evidence;
 }
 
 export function promote(
@@ -362,7 +407,7 @@ export function promote(
       : (() => {
           const acceptance = runAcceptance(snapshot);
           makeReadonly(snapshot);
-          const probe = (dependencies.probe ?? runProbe)('G1');
+          const probe = (dependencies.probe ?? runSnapshotProbe)(snapshot);
           if (!probe.ok) throw new ProbeFailed(probe);
           return {
             sha,
