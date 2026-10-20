@@ -35,7 +35,12 @@ import {
   type Ask as BaseAsk,
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
-import { executionOwnership, ownershipUnknown, recoveryAdmissionUnknown } from './recovery';
+import {
+  executionOwnership,
+  ownershipUnknown,
+  recoveryAdmissionUnknown,
+  recoverySnapshot,
+} from './recovery';
 import { caller, control, coord, repoScope, runScope, same, type Controller } from './coord';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import {
@@ -2284,6 +2289,8 @@ type Ask = BaseAsk & {
   receipt?: AnswerReceipt;
   decision?: AnswerIntent;
   context?: DecisionContext;
+  /** Snapshot shown by the auto-recovery ask; a later answer reconciles exactly this state. */
+  reconciled_snapshot?: string;
 };
 export type Asks = Partial<Record<string, Ask>>;
 
@@ -2772,6 +2779,10 @@ function askHold(
   );
   if ('conflict' in r)
     return { ...base, action: 'none', ok: false, error: `${r.conflict}; decide retry|reject` };
+  if (hold === 'auto_recover' && !r.a.reconciled_snapshot) {
+    r.a.reconciled_snapshot = recoverySnapshot(run);
+    saveAsk(asks, key);
+  }
   const b = { ...base, ...(r.note ? { note: r.note } : {}) };
   if (r.asked) return { ...b, action: 'ask', ok: true, ask: r.asked };
   return answerAction(l, key, r.a, () => {
@@ -2804,7 +2815,7 @@ function askHold(
           : p.yes === 'adjudicate'
             ? approveAdjudication(l, run, c, onEffect)
             : p.yes === 'resume'
-              ? recoverRun(l, undefined, onEffect, undefined, undefined, () =>
+              ? recoverRun(l, undefined, onEffect, r.a.reconciled_snapshot, undefined, () =>
                   clearAutoRecoverPause(l)
                 )
               : p.yes === 'review'

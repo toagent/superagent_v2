@@ -1,9 +1,5 @@
 import { parseWholeOutputRef } from '../../packages/workflows/src/output-ref';
-import {
-  admitExecution,
-  recoverySnapshot,
-  resumeExecution,
-} from '@archon/workflows/execution-lifecycle';
+import { admitExecution, resumeExecution } from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
 import * as launcherModule from '../src/launcher';
@@ -1465,7 +1461,7 @@ describe('waitRun (archon stub)', () => {
     expect(out).toMatchObject({ error: '' });
     expect(out.stop_reason).toBeUndefined();
   });
-  test('S14b held automatic recovery pauses, asks once, and explicit recover clears it', () => {
+  test('S14b held automatic recovery pauses, asks once, and mobile yes reconciles its snapshot', () => {
     const lost = run('running', {
       metadata: { execution_owner: LOST },
       nodes: [{ nodeId: 'fix-core', state: 'running' }],
@@ -1485,9 +1481,11 @@ describe('waitRun (archon stub)', () => {
       loadLedger('sa1').intervention_events?.filter(e => e.action === 'auto_recover')
     ).toHaveLength(1);
     expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-    expect(
-      captured(() => main(['recover', 'sa1', '--reconciled', recoverySnapshot(lost)])).code
-    ).toBe(0);
+    writeFileSync(join(s.root, 'answer'), 'yes');
+    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({
+      action: 'resume',
+      ok: true,
+    });
     expect(loadLedger('sa1').auto_recover_paused).toBeUndefined();
     expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(1);
     db.close();

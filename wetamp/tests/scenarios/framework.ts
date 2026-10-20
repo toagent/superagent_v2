@@ -13,6 +13,7 @@ import {
 } from '../../../packages/provider-contract/src/fixtures/test-provider/main';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
 import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
 import { generate } from '../../src/generate';
 import { ledgerPath } from '../../src/cli';
@@ -23,7 +24,7 @@ import { createWorkflowStore } from '../../../packages/core/src/workflows/store-
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 
 // prettier-ignore
-export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13' | 'S14a';
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S13' | 'S14a' | 'S14b' | 'S14c';
 
 export interface ScenarioSpec {
   id: ScenarioId;
@@ -44,12 +45,21 @@ export interface ScenarioFixture {
   saved: NodeJS.ProcessEnv;
   spec: ScenarioSpec;
   roles: string[];
+  blockNode?: string;
+  blockAfterCompletedNode?: string;
+  blockMarker?: string;
   targetAfterInjection?: string;
 }
 
 export function scenario(
   spec: ScenarioSpec,
-  options: { target?: string; suffix?: string } = {}
+  options: {
+    target?: string;
+    suffix?: string;
+    blockNode?: string;
+    blockAfterCompletedNode?: string;
+    blockMarker?: string;
+  } = {}
 ): ScenarioFixture {
   const root = tmp();
   const target = options.target ?? gitRepo(root);
@@ -78,7 +88,20 @@ export function scenario(
   resetDatabase();
   expect(home).not.toBe(join(saved.HOME ?? '', '.superagent'));
   expect(archonHome).not.toBe(join(saved.HOME ?? '', '.superagent', 'archon'));
-  return { root, home, archonHome, target, worker, initial, saved, spec, roles: [] };
+  return {
+    root,
+    home,
+    archonHome,
+    target,
+    worker,
+    initial,
+    saved,
+    spec,
+    roles: [],
+    blockNode: options.blockNode,
+    blockAfterCompletedNode: options.blockAfterCompletedNode,
+    blockMarker: options.blockMarker,
+  };
 }
 
 export function restore(f: ScenarioFixture): void {
@@ -119,6 +142,12 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
           `git add fix.txt && git -c user.name=scenario -c user.email=scenario@local commit -qm fix-${f.spec.id}`,
           cwd
         );
+      }
+      if (id === f.blockNode) {
+        const marker = f.blockMarker;
+        if (!marker) throw new Error('scenario block marker missing');
+        writeFileSync(marker, id);
+        await Bun.sleep(3_600_000);
       }
       if (id === 'review-m1-r1' && f.spec.id === 'S8') {
         const path = join(f.root, 'artifacts', 'diff-m1-r1.json');
@@ -252,10 +281,20 @@ export async function runInProcess(f: ScenarioFixture) {
     workflow_name: id,
     user_message: id,
     working_path: f.worker,
+    metadata: { execution_owner: { host: hostname(), pid: process.pid } },
   });
   const run = await store.claimPendingWorkflowRun(id, f.worker);
   if (!run) throw new Error(`scenario run ${id} was not claimable`);
   const d = deps(store, scriptedProvider(f));
+  const persistEvent = store.persistWorkflowEvent.bind(store);
+  store.persistWorkflowEvent = async event => {
+    await persistEvent(event);
+    if (event.event_type === 'node_completed' && event.step_name === f.blockAfterCompletedNode) {
+      if (!f.blockMarker) throw new Error('scenario completion block marker missing');
+      writeFileSync(f.blockMarker, event.step_name ?? 'unknown');
+      await Bun.sleep(3_600_000);
+    }
+  };
   const plan = JSON.parse(
     readFileSync(
       fixturePlan(f.root, f.target, value => {
@@ -298,7 +337,9 @@ export async function runInProcess(f: ScenarioFixture) {
   const shell = coordination.caller();
   const who = { ...shell, client: `${shell.client}-scenario-authorized` };
   coordination.coord().claim(coordination.repoScope(f.target), who);
-  coordination.coord().claim(coordination.runScope({ run_id: id, repo: f.target }), who);
+  const controller = coordination
+    .coord()
+    .claim(coordination.runScope({ run_id: id, repo: f.target }), who).controller;
   const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(f.initial);
   const identity = spyOn(coordination, 'caller').mockReturnValue(who);
   let generated: ReturnType<typeof generate>;
@@ -338,6 +379,7 @@ export async function runInProcess(f: ScenarioFixture) {
       gen_dir: generated.dir,
       workflow: generated.workflow,
       delivery: { checkout: f.target, branch: 'scenario-target', head: f.initial },
+      controller,
     })
   );
   const raw = Bun.YAML.parse(
@@ -399,10 +441,75 @@ export async function runInProcess(f: ScenarioFixture) {
 }
 
 export type ScenarioResult = Awaited<ReturnType<typeof runInProcess>>;
+export type ScenarioEvidence = Pick<ScenarioResult, 'artifactsDir' | 'events' | 'terminal'>;
+
+/** Continue a killed scenario from the real store snapshot; completed nodes stay rehydrated. */
+export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {
+  const id = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`,
+    generatedDir = join(f.home, 'gen', id),
+    workflowName = `sa-${id}`,
+    store = createWorkflowStore(),
+    candidate = await store.getWorkflowRun(id);
+  if (!candidate) throw new Error(`scenario run ${id} missing during resume`);
+  const snapshot = await store.getDagResumeSnapshot(id);
+  const run = await store.resumeWorkflowRun(id);
+  const d = deps(store, scriptedProvider(f));
+  const raw = Bun.YAML.parse(
+    readFileSync(
+      join(generatedDir, '.archon/workflows', workflowName, `${workflowName}.yaml`),
+      'utf8'
+    )
+  ) as { description?: string; nodes: Array<Record<string, unknown>> };
+  const routeAi = (nodes: Array<Record<string, unknown>>): void => {
+    for (const node of nodes) {
+      if (node.command || node.prompt) {
+        node.provider = descriptor.id;
+        delete node.model;
+      }
+      const group = node.loop_group as { nodes?: Array<Record<string, unknown>> } | undefined;
+      if (group?.nodes) routeAi(group.nodes);
+    }
+  };
+  routeAi(raw.nodes);
+  const workflow = makeTestResolvedWorkflow({
+    name: workflowName,
+    description: raw.description,
+    provider: descriptor.id,
+    nodes: raw.nodes,
+  });
+  const artifactsDir = join(f.root, 'artifacts');
+  await executeTestDagWorkflow({
+    deps: d.value,
+    platform,
+    conversationId: id,
+    cwd: f.worker,
+    workflow,
+    workflowRun: run,
+    workflowProvider: descriptor.id,
+    workflowModel: undefined,
+    artifactsDir,
+    stateDir: join(f.root, 'state'),
+    logDir: join(f.root, 'logs'),
+    baseBranch: 'scenario-target',
+    docsDir: 'docs/',
+    config: d.config,
+    workflowSourceRoots: liveSourceRoots(generatedDir),
+    priorCompletedNodes: snapshot.completedNodeOutputs,
+  });
+  const persisted = await store.getWorkflowRun(id);
+  return {
+    artifactsDir,
+    events: await store.listWorkflowEvents(id),
+    terminal: {
+      completed: persisted?.status === 'completed' ? [id] : [],
+      failed: persisted?.status === 'failed' ? [id] : [],
+    },
+  };
+}
 
 export function expectOutcome(
   f: ScenarioFixture,
-  result: ScenarioResult,
+  result: ScenarioEvidence,
   spec: { terminal: 'completed' | 'failed'; counts: Record<string, number>; published: boolean }
 ): void {
   const id = `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
@@ -432,7 +539,7 @@ export function expectOutcome(
     );
 }
 
-export function completedOutput(result: ScenarioResult, node: string): Record<string, unknown> {
+export function completedOutput(result: ScenarioEvidence, node: string): Record<string, unknown> {
   const event = result.events.find(
     value => value.event_type === 'node_completed' && value.step_name === node
   );
@@ -444,7 +551,7 @@ export function completedOutput(result: ScenarioResult, node: string): Record<st
   return output as Record<string, unknown>;
 }
 
-export function expectPublishedGate(result: ScenarioResult, round: number): void {
+export function expectPublishedGate(result: ScenarioEvidence, round: number): void {
   const output = completedOutput(result, `gate-m1-r${String(round)}`);
   const file = join(result.artifactsDir, `gate-m1-r${String(round)}.json`);
   expect(output.artifact_sha256).toBe(
