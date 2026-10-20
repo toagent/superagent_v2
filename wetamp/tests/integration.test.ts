@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { publish, sync, type PublishRun } from '../src/integration';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
@@ -40,7 +41,18 @@ const gitDiffHash = (cwd: string, base: string): string => {
   expect(result.exitCode, result.stderr.toString()).toBe(0);
   return diffHash(result.stdout);
 };
-
+const indexLock = (cwd: string): string =>
+  join(sh('git rev-parse --absolute-git-dir', cwd).trim(), 'index.lock');
+const withArtifacts = <T>(value: string | undefined, action: () => T): T => {
+  const previous = process.env.ARTIFACTS_DIR;
+  process.env.ARTIFACTS_DIR = value ?? '';
+  try {
+    return action();
+  } finally {
+    process.env.ARTIFACTS_DIR = previous ?? '';
+    if (previous === undefined) delete process.env.ARTIFACTS_DIR;
+  }
+};
 test('sync reports noop when the target tip is already present', () => {
   const f = fixture();
   const result = sync(f.worktree, f.targetSpec);
@@ -61,6 +73,48 @@ test('sync merges the current local target tip into the run worktree', () => {
   expect(result.target_tip).toBe(targetTip);
   expect(result.merge_base).toBe(targetTip);
   expect(readFileSync(join(f.worktree, 'target.txt'), 'utf8')).toBe('target\n');
+});
+
+test('sync preserves and recovers an unheld stale worktree index lock', () => {
+  const f = fixture();
+  commit(f.target, 'target.txt', 'target\n');
+  const lock = indexLock(f.worktree);
+  writeFileSync(lock, '');
+  utimesSync(lock, new Date(0), new Date(0));
+  withArtifacts(f.root, () => {
+    expect(sync(f.worktree, f.targetSpec).status).toBe('merged');
+  });
+  expect(existsSync(lock)).toBe(false);
+  expect(readdirSync(f.root).filter(name => name.startsWith('stale-index-lock-'))).toHaveLength(1);
+});
+
+test('sync reports the pid holding a worktree index lock without moving it', async () => {
+  const f = fixture();
+  commit(f.target, 'target.txt', 'target\n');
+  const lock = indexLock(f.worktree);
+  const holder = Bun.spawn(['sh', '-c', 'exec 9>"$1"; sleep 30', 'holder', lock]);
+  try {
+    for (let i = 0; i < 40 && !existsSync(lock); i++) Bun.sleepSync(10);
+    expect(() => sync(f.worktree, f.targetSpec)).toThrow(
+      new RegExp(`holder pid ${String(holder.pid)}`)
+    );
+    expect(existsSync(lock)).toBe(true);
+  } finally {
+    holder.kill();
+    await holder.exited;
+  }
+  for (const artifacts of [f.root, '']) {
+    const guarded = fixture();
+    commit(guarded.target, 'target.txt', 'target\n');
+    const guardedLock = indexLock(guarded.worktree);
+    writeFileSync(guardedLock, '');
+    const mtime = artifacts ? new Date(Date.now() + 60_000) : new Date(0);
+    utimesSync(guardedLock, mtime, mtime);
+    withArtifacts(artifacts || undefined, () => {
+      expect(() => sync(guarded.worktree, guarded.targetSpec)).toThrow('holder unknown');
+      expect(existsSync(guardedLock)).toBe(true);
+    });
+  }
 });
 
 test('sync aborts an unresolved conflict and leaves the worktree clean', () => {
@@ -103,6 +157,51 @@ test('publish advances the target with CAS and writes its receipt', () => {
   expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(result.receipt);
   expect(sh('git rev-parse wetamp', f.target).trim()).toBe(head);
   expect(sh('git status --porcelain', f.target)).toBe('');
+});
+
+test('publish accepts reviewed changes after sync changes the full diff', () => {
+  const f = fixture();
+  const base = '1\n2\n3\n4\n5\n6\n7\n8\n9\n';
+  commit(f.target, 'lines.txt', base);
+  sync(f.worktree, f.targetSpec);
+  const reviewedBase = f.expected().target_tip;
+  const reviewedHead = commit(f.worktree, 'lines.txt', base.replace('3\n', 'feature\n'));
+  const reviewedHash = gitDiffHash(f.worktree, reviewedBase);
+  commit(f.target, 'lines.txt', base.replace('6\n', 'target\n'));
+  expect(sync(f.worktree, f.targetSpec).status).toBe('merged');
+  const result = publish(
+    {
+      ...f.run(),
+      review: { required: true, reviewed_head: reviewedHead, reviewed_diff_hash: reviewedHash },
+    },
+    f.expected()
+  );
+  expect(result).toMatchObject({ status: 'published' });
+  if (result.status === 'published')
+    expect(result.receipt.evidence).toContain('review=normalized_diff');
+});
+
+test('publish rejects changed additions after a reviewed candidate is resynced', () => {
+  const f = fixture();
+  const reviewedBase = f.expected().target_tip;
+  const reviewedHead = commit(f.worktree, 'feature.txt', 'reviewed\n');
+  const reviewedHash = gitDiffHash(f.worktree, reviewedBase);
+  commit(f.target, 'target.txt', 'target\n');
+  sync(f.worktree, f.targetSpec);
+  commit(f.worktree, 'feature.txt', 'changed\n');
+  expect(
+    publish(
+      {
+        ...f.run(),
+        review: { required: true, reviewed_head: reviewedHead, reviewed_diff_hash: reviewedHash },
+      },
+      f.expected()
+    )
+  ).toMatchObject({
+    status: 'rejected',
+    reason: 'review_stale',
+    evidence: expect.stringContaining('normalized_diff'),
+  });
 });
 
 test('publish reports an advanced target without changing it', () => {

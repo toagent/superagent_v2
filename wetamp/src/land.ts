@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { control, coord, repoScope, same } from './coord';
 import type { Controller, DeliveryReauthorization, Identity } from './coord';
 import { home } from './config';
-import { publish, sync } from './integration';
+import { IntegrationError, publish, sync } from './integration';
 import type { DeliveryReceipt } from './integration';
 import {
   gateHashInput,
@@ -85,12 +85,22 @@ export function deliveryProjection(l: Ledger): DeliveryReceipt | undefined {
       : undefined;
 }
 
-export function runDeliveryEntry(action: () => void): boolean {
+export function runDeliveryEntry(action: () => void, env = process.env): boolean {
   try {
     action();
     return true;
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
+    if (
+      error instanceof IntegrationError &&
+      error.code === 'git_lock_held' &&
+      env.ARTIFACTS_DIR &&
+      env.INPUTS_OUTPUT
+    )
+      writeFileSync(
+        join(env.ARTIFACTS_DIR, `${env.INPUTS_OUTPUT}.json`),
+        JSON.stringify({ status: 'rejected', reason: error.code, evidence: error.message }, null, 2)
+      );
     console.error(`${failure.name}: ${failure.message}`);
     return false;
   }
