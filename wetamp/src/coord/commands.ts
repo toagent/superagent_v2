@@ -37,6 +37,11 @@ export function coordinationCommand(a: Args): unknown {
       throw new Error('claim --takeover needs --reason "<原话>"');
     return c.claim(c.scope(target), who, a.flags.takeover, a.flags.reason);
   }
+  if (verb === 'reauthorize') {
+    const run = target && c.resolveRun(target);
+    if (!run) throw new Error('reauthorize <run>');
+    return c.reauthorize(run, who);
+  }
   if (verb === 'release') {
     c.release(c.scope(target), who);
     return { ok: true };

@@ -1437,6 +1437,20 @@ describe('waitRun (archon stub)', () => {
       receipt: { failed_node: nodeId },
     });
   });
+  test('offline authorization fencing hints claim and reauthorize without acting', () => {
+    const failed = run('failed', {
+      nodes: [{ nodeId: 'publish-m1', state: 'failed', error: 'owner/generation fencing' }],
+    });
+    const s = stub([failed]),
+      old = { client: 'codex', host: hostname(), pid: 2 ** 22 + 1, pid_start: 'gone' },
+      next = 'superagent claim sa1\nsuperagent reauthorize sa1';
+    writeFileSync(
+      join(s.ledger.gen_dir, 'delivery-authorization.json'),
+      JSON.stringify({ run: old })
+    );
+    expect(waitRun(s.ledger, 0)).toMatchObject({ receipt: { action: next } });
+    expect(captured(() => main(['supervise-tick'])).out).toContain(next.replace('\n', '\\n'));
+  });
   test('early failure: metadata.error when no terminal record; a signal joins the reason; a non-enum reason is dropped', () => {
     const s = stub([
       run('failed', {

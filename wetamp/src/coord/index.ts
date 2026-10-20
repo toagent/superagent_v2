@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readdirSync, lstatSync, rmSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -40,6 +40,13 @@ export interface RunRef {
   controller?: Controller;
   launcher?: Launcher;
   state?: string;
+  gen_dir?: string;
+}
+export interface DeliveryReauthorization {
+  run: Controller;
+  repo: Controller;
+  original_sha256: string;
+  at: string;
 }
 export type MessageState = 'queued' | 'surfaced' | 'accepted' | 'rejected' | 'done' | 'escalated';
 export interface Message {
@@ -419,6 +426,24 @@ export class Coordination {
         const c = same(view.owner, who) && existing ? existing : this.transfer(scope, who, reason);
         this.save('leases', this.leaseKey(scope, who), { generation: c.generation });
         return { controller: { ...who, generation: c.generation }, inbox: this.inbox(who) };
+      })
+    );
+  }
+  reauthorize(run: RunRef, who: Identity): DeliveryReauthorization {
+    const genDir = run.gen_dir;
+    if (!genDir || !/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(run.run_id))
+      throw new Error('reauthorize: invalid run ledger');
+    return this.mutate(runScope(run), who, runController =>
+      this.mutate(repoScope(run.repo), who, repoController => {
+        const original = readFileSync(join(genDir, 'delivery-authorization.json'));
+        const authorization = {
+          run: runController,
+          repo: repoController,
+          original_sha256: createHash('sha256').update(original).digest('hex'),
+          at: new Date(this.d.now()).toISOString(),
+        };
+        this.save('authorizations', run.run_id, authorization);
+        return authorization;
       })
     );
   }
