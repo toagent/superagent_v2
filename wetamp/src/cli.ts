@@ -307,6 +307,7 @@ export interface Ledger {
     ask_id?: string;
     key?: string;
     reason?: string;
+    actor?: Controller;
   })[];
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
@@ -381,7 +382,8 @@ export function intervention<
   ask?: { key: string; id?: string },
   started: () => boolean = () => true,
   reason?: string,
-  origin: NonNullable<Ledger['intervention_events']>[number]['origin'] = 'operator'
+  origin: NonNullable<Ledger['intervention_events']>[number]['origin'] = 'operator',
+  actor?: Controller
 ): T {
   let ok = false;
   let skipped = false;
@@ -406,6 +408,7 @@ export function intervention<
           origin,
           source: ask ? 'superagent' : caller(true).client === 'shell' ? 'cli' : 'commander',
           ...(ask ? { key: ask.key, ask_id: ask.id } : {}),
+          ...(actor ? { actor } : {}),
           ok,
           reason: reason ?? action,
           ...(!ok ? { error } : {}),
@@ -1689,69 +1692,71 @@ function resumeRun(
   return res.ok ? 0 : res.held ? EXIT.held : 1;
 }
 
-const abandoned = (l: Ledger): boolean => l.rejected === l.archon_run_id;
-const refuseAbandoned = (l: Ledger): boolean => {
-  if (!abandoned(l)) return false;
-  print({ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' });
-  return true;
-};
-
+// prettier-ignore
+const abandoned = (l: Ledger): boolean => l.rejected === l.archon_run_id && !!l.intervention_events?.some(event => event.action === 'abandon' && event.ok);
+// prettier-ignore
+const refuseAbandoned = (l: Ledger): boolean => abandoned(l) ? (print({ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' }), true) : false;
+interface AbandonError {
+  run_id: string;
+  type: string;
+  reason: string;
+}
+// prettier-ignore
+const abandonError = (run_id: string, type: string, error: unknown): AbandonError => ({ run_id, type, reason: tail(error instanceof Error ? error.message : String(error), 200) });
+// prettier-ignore
 function abandon(a: Args): number {
   const reason = a.flags.reason?.trim();
   if (!reason) throw new Error('abandon requires --reason <text>');
   const who = caller();
-  let entries: Ledger[];
+  let entries: (Ledger | AbandonError)[];
   if (a.flags.mine) {
     if (a._.length !== 1 || !a.flags.status)
-      throw new Error(
-        'usage: superagent abandon --mine --status failed,cancelled [--before YYYY-MM-DD] --reason <text>'
-      );
+      throw new Error('usage: superagent abandon --mine --status failed,cancelled [--before YYYY-MM-DD] --reason <text>');
     const statuses = new Set(a.flags.status.split(',').filter(Boolean));
     const before = a.flags.before ? Date.parse(`${a.flags.before}T00:00:00Z`) : Infinity;
-    if (
-      !statuses.size ||
-      (a.flags.before && !/^\d{4}-\d{2}-\d{2}$/.test(a.flags.before)) ||
-      Number.isNaN(before)
-    )
+    if (!statuses.size || (a.flags.before && !/^\d{4}-\d{2}-\d{2}$/.test(a.flags.before)) || Number.isNaN(before))
       throw new Error('abandon: invalid --status or --before');
-    entries = ledgers().flatMap(l => {
-      if ('error' in l || !same(coord().owner(runScope(l)).owner, who)) return [];
-      const run = getRun(l.archon_run_id, l.repo);
-      return statuses.has(run.status) && Date.parse(l.started_at) < before ? [l] : [];
+    entries = ledgers().flatMap((l): (Ledger | AbandonError)[] => {
+      if ('error' in l) return [];
+      try {
+        if (!same(coord().owner(runScope(l)).owner, who)) return [];
+        const run = getRun(l.archon_run_id, l.repo);
+        return statuses.has(run.status) && Date.parse(l.started_at) < before ? [l] : [];
+      } catch (e) {
+        return [abandonError(l.run_id, 'run_unavailable', e)];
+      }
     });
-    print({ runs: entries.map(l => l.run_id) });
+    print({ runs: entries.map(entry => entry.run_id) });
   } else {
     if (a._.length < 2) throw new Error('usage: superagent abandon <run>... --reason <text>');
-    entries = a._.slice(1).map(id => loadLedger(coord().resolveRun(id)?.run_id ?? id));
+    entries = a._.slice(1).map(run_id => {
+      try {
+        return loadLedger(coord().resolveRun(run_id)?.run_id ?? run_id);
+      } catch (e) {
+        return abandonError(run_id, 'unknown_run', e);
+      }
+    });
   }
   const results = entries.map(l => {
+    if ('type' in l) return { ...l, ok: false };
     try {
-      return control(
-        l,
-        () => {
-          const run = getRun(l.archon_run_id, l.repo);
-          if (['running', 'pending'].includes(run.status))
-            return { run_id: l.run_id, ok: false, type: 'active', reason: run.status };
-          if (run.status === 'completed')
-            return { run_id: l.run_id, ok: false, type: 'completed', reason: run.status };
-          const prior = abandoned(l);
-          if (!prior) {
-            intervention(l, 'abandon', () => true, undefined, undefined, reason);
-            updateLedger(l, cur => {
-              cur.rejected = run.id;
-            });
-          }
-          return { run_id: l.run_id, ok: true, type: prior ? 'already_abandoned' : 'abandoned' };
-        },
-        who
-      );
+      if (!same(coord().owner(runScope(l)).owner, who))
+        return { ...abandonError(l.run_id, 'not_controller', 'caller is not controller'), ok: false };
+      return control(l, controller => {
+        let run: RunView;
+        try { run = getRun(l.archon_run_id, l.repo); }
+        catch (e) { return { ...abandonError(l.run_id, 'run_unavailable', e), ok: false }; }
+        if (['running', 'pending'].includes(run.status)) return { run_id: l.run_id, ok: false, type: 'active', reason: run.status };
+        if (run.status === 'completed') return { run_id: l.run_id, ok: false, type: 'completed', reason: run.status };
+        const prior = abandoned(l);
+        if (!prior) try {
+          intervention(l, 'abandon', () => true, undefined, undefined, reason, 'operator', controller);
+          updateLedger(l, cur => { cur.rejected = run.id; });
+        } catch (e) { return { ...abandonError(l.run_id, 'persistence_failed', e), ok: false }; }
+        return { run_id: l.run_id, ok: true, type: prior ? 'already_abandoned' : 'abandoned' };
+      }, who);
     } catch (e) {
-      return {
-        run_id: l.run_id,
-        ok: false,
-        type: 'not_controller',
-        reason: tail((e as Error).message, 200),
-      };
+      return { ...abandonError(l.run_id, 'control_refused', e), ok: false };
     }
   });
   print(results);
@@ -1899,8 +1904,7 @@ function retryAllHeld(): number {
   const out = ledgers().flatMap((l): Record<string, unknown>[] => {
     try {
       if ('error' in l) throw new Error(l.error);
-      if (abandoned(l))
-        return [{ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' }];
+      if (abandoned(l)) return [];
       const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
@@ -2838,6 +2842,8 @@ function tick(sa: string): {
         controller => {
           const due = continuations();
           const run = getRun(l.archon_run_id, l.repo);
+          // prettier-ignore
+          if (abandoned(l)) { if (!(asks instanceof Error)) supersedeAsks(asks, l.run_id); return { run_id: l.run_id, action: 'none', ok: true, state: 'abandoned' }; }
           if (fingerprint && ['completed', 'cancelled'].includes(run.status))
             confirmedTerminal = fingerprint;
           if (

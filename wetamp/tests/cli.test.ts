@@ -1519,42 +1519,43 @@ describe('waitRun (archon stub)', () => {
 });
 
 describe('verbs (archon stub)', () => {
-  test('abandon marks an owned failed run, blocks recovery, and rejects an active run', () => {
-    stub([run('failed')]);
-    expect(captured(() => main(['abandon', 'sa1', '--reason', 'obsolete'])).code).toBe(0);
+  const abandon = (...ids: string[]) =>
+    captured(() => main(['abandon', ...ids, '--reason', 'obsolete']));
+  // prettier-ignore
+  test('abandon records its owner, blocks continuation, and skips abandoned automation', () => {
+    const s = stub([run('failed')]);
+    expect(abandon('sa1').code).toBe(0);
     expect(loadLedger('sa1')).toMatchObject({ rejected: 'r' });
-    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
-      action: 'abandon',
-      reason: 'obsolete',
-      ok: true,
-    });
+    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({ action: 'abandon', reason: 'obsolete', ok: true, actor: s.ledger.controller });
     expect(captured(() => main(['recover', 'sa1'])).out).toContain('run was abandoned');
+    expect(captured(() => main(['decide', 'retry', '--all-held'])).code).toBe(0);
+    const paused = stub([humanWait()]), reminders = supervisor(paused.root, 'yes');
+    expect(abandon('sa1').code).toBe(0);
+    captured(() => main(['supervise-tick']));
+    expect(paused.calls().some(call => /^workflow (wake|resume|signal)/.test(call))).toBe(false);
+    expect(reminders().some(call => call.startsWith('ask '))).toBe(false);
     stub([run('running')]);
-    const active = captured(() => main(['abandon', 'sa1', '--reason', 'obsolete']));
-    expect(active.code).toBe(1);
-    expect(active.out).toContain('"type": "active"');
+    expect(abandon('sa1').out).toContain('"type": "active"');
   });
-  test('abandon refuses another controller and --mine selects only owned matching runs', () => {
+  // prettier-ignore
+  test('abandon isolates invalid runs, preserves decide rejection, and filters --mine', () => {
     const s = stub([run('failed')]);
     const other = { ...s.ledger.controller!, pid: s.ledger.controller!.pid + 1 };
     writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...s.ledger, controller: other }));
-    expect(captured(() => main(['abandon', 'sa1', '--reason', 'obsolete'])).out).toContain(
-      '"type": "not_controller"'
-    );
+    const mixed = abandon('missing', 'sa1').out;
+    expect(mixed).toContain('"type": "unknown_run"'); expect(mixed).toContain('"type": "not_controller"');
     const own = stub([run('failed')]);
     const started_at = '2026-01-01T00:00:00Z';
     writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...own.ledger, started_at }));
-    writeFileSync(
-      ledgerPath('sa2'),
-      JSON.stringify({ ...own.ledger, run_id: 'sa2', controller: other, started_at })
-    );
-    const selected = captured(() =>
-      main(['abandon', '--mine', '--status', 'failed,cancelled', '--reason', 'obsolete'])
-    );
+    writeFileSync(ledgerPath('sa2'), JSON.stringify({ ...own.ledger, run_id: 'sa2', controller: other, started_at }));
+    const selected = captured(() => main(['abandon', '--mine', '--status', 'failed,cancelled', '--reason', 'obsolete']));
     expect(selected.out).toContain('"runs": [\n    "sa1"');
     expect(selected.out).not.toContain('"sa2"');
     expect(loadLedger('sa1').rejected).toBe('r');
     expect(loadLedger('sa2').rejected).toBeUndefined();
+    stub([humanWait()]);
+    captured(() => main(['decide', 'sa1', 'reject']));
+    expect(captured(() => main(['recover', 'sa1'])).out).not.toContain('run was abandoned');
   });
   test('cancel records an operational reason on its append-only receipt', () => {
     stub([run('running')]);
