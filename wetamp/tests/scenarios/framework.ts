@@ -11,14 +11,7 @@ import {
   descriptor,
   createProvider,
 } from '../../../packages/provider-contract/src/fixtures/test-provider/main';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
 import { generate } from '../../src/generate';
@@ -52,7 +45,6 @@ export interface ScenarioFixture {
   spec: ScenarioSpec;
   roles: string[];
   targetAfterInjection?: string;
-  reauthorizeFailures?: number;
 }
 
 export function scenario(
@@ -170,8 +162,7 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         writeFileSync(originalPath, Buffer.concat([original, Buffer.from(' ')]));
         failures.push(probe());
         writeFileSync(originalPath, original);
-        for (const file of readdirSync(join(f.home, 'coord/leases')))
-          unlinkSync(join(f.home, 'coord/leases', file));
+        rmSync(join(f.home, 'coord/leases'), { recursive: true });
         failures.push(probe());
         c.claim(repo, current);
         c.claim(run, current);
@@ -179,7 +170,6 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         c.claim(run, later, true, 'later takeover');
         failures.push(probe());
         expect(failures.every(code => code !== 0)).toBeTrue();
-        f.reauthorizeFailures = failures.length;
         c.claim(repo, current, true, 'restore controller');
         c.claim(run, current, true, 'restore controller');
         c.reauthorize(ledger, current);

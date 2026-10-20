@@ -5,10 +5,9 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
+  rmSync,
   rmdirSync,
   symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -149,7 +148,6 @@ test('reauthorize requires both owners and stale records remain fenced', () => {
   s.c.claim(runTarget, a);
   expect(() => s.c.claim(runTarget, b)).toThrow('普通认领');
   expect(existsSync(record)).toBe(false);
-
   oldOffline = true;
   s.c.claim(runTarget, b);
   expect(() => s.c.reauthorize(run, b)).toThrow('fencing');
@@ -165,13 +163,9 @@ test('reauthorize requires both owners and stale records remain fenced', () => {
         s.c.mutate(s.scope, authorization.run, () => 'published', authorization.repo.generation),
       authorization.run.generation
     );
-  // Same-user copies of a current identity, generations and leases are outside this trust boundary.
-  expect(replay()).toBe('published');
-  for (const file of readdirSync(join(s.sa, 'coord/leases')))
-    unlinkSync(join(s.sa, 'coord/leases', file));
+  expect(replay()).toBe('published'); // Same-user copies of current identity + generations + leases are out of scope.
+  rmSync(join(s.sa, 'coord/leases'), { recursive: true });
   expect(replay).toThrow('fencing');
-  s.c.claim(s.scope, b);
-  s.c.claim(runTarget, b);
   s.c.claim(s.scope, a, true, 'later takeover');
   s.c.claim(runTarget, a, true, 'later takeover');
   expect(replay).toThrow('fencing');

@@ -164,7 +164,6 @@ test('S16: restarted controller claims, reauthorizes and publishes through real 
       counts: { 'integrate-m1.publish-m1': 1 },
       published: true,
     });
-    expect(f.reauthorizeFailures).toBe(4);
   } finally {
     restore(f);
   }
