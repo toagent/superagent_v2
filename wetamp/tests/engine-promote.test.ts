@@ -87,6 +87,7 @@ process.exit(7);
   expect(JSON.parse(readFileSync(failed.evidence_path, 'utf8'))).toMatchObject({ ok: false, reason: 'probe_process_failed' });
 });
 
+// prettier-ignore
 test('bootstrap, descendant promotion, rollback rejection, and a newer descendant', () => {
   const f = sourceFixture(),
     first = f.sha();
@@ -97,14 +98,7 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
     sha: second,
     results: [{ command: 'wetamp/scripts/engine-acceptance.sh' }, { run_id: 'probe-run' }],
   });
-  expect(
-    JSON.parse(
-      readFileSync(
-        join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`),
-        'utf8'
-      )
-    ).status
-  ).toBe('promoted');
+  expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`), 'utf8')).status).toBe('promoted');
   const installedAcceptance = join(
     process.env.SUPERAGENT_HOME!,
     'engine',
