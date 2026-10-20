@@ -20,14 +20,23 @@ import { milestones, type Plan } from '../src/plan';
 const root = join(import.meta.dir, '..');
 
 test('generated node contracts match their JSON schema owners', () => {
+  const acceptSchema = JSON.parse(
+    readFileSync(join(root, 'schemas/nodes/accept.schema.json'), 'utf8')
+  );
+  const planSchema = JSON.parse(readFileSync(join(root, 'schemas/plan.schema.json'), 'utf8'));
   expect(syncOutputFormat).toEqual(
     JSON.parse(readFileSync(join(root, 'schemas/nodes/sync.schema.json'), 'utf8'))
   );
   expect(publishOutputFormat).toEqual(
     JSON.parse(readFileSync(join(root, 'schemas/nodes/publish.schema.json'), 'utf8'))
   );
-  expect(acceptOutputFormat).toEqual(
-    JSON.parse(readFileSync(join(root, 'schemas/nodes/accept.schema.json'), 'utf8'))
+  expect(acceptSchema.$defs.Check).toEqual({ $ref: '../plan.schema.json#/$defs/check' });
+  expect(acceptSchema.$defs.RequirementContract.properties.requirements).toEqual({
+    $ref: '../plan.schema.json#/$defs/requirements',
+  });
+  expect(acceptOutputFormat.$defs.Check).toEqual(planSchema.$defs.check);
+  expect(acceptOutputFormat.$defs.RequirementContract.properties.requirements).toEqual(
+    planSchema.$defs.requirements
   );
   expect(deliveryOutputFormat).toEqual(
     JSON.parse(readFileSync(join(root, 'schemas/nodes/delivery.schema.json'), 'utf8'))

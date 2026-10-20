@@ -97,34 +97,7 @@
     }
   },
   "$defs": {
-    "Check": {
-      "type": "object",
-      "properties": {
-        "cmd": { "type": "string" },
-        "timeout_s": { "type": "number" },
-        "cache": { "type": "boolean" },
-        "report": {
-          "type": "object",
-          "properties": {
-            "junit": { "type": "string" },
-            "collect": { "type": "string" }
-          },
-          "required": ["junit"]
-        },
-        "known_failures": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": { "type": "string" },
-              "reason": { "type": "string" }
-            },
-            "required": ["id", "reason"]
-          }
-        }
-      },
-      "required": ["cmd", "timeout_s"]
-    },
+    "Check": { "$ref": "../plan.schema.json#/$defs/check" },
     "StructuredCases": {
       "type": "object",
       "properties": {
@@ -176,18 +149,7 @@
       "properties": {
         "id": { "type": "string" },
         "accept": { "type": "array", "items": { "$ref": "#/$defs/Check" } },
-        "requirements": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": { "type": "string" },
-              "text": { "type": "string" },
-              "verified_by": { "type": "array", "items": { "type": "integer" } }
-            },
-            "required": ["id", "text", "verified_by"]
-          }
-        }
+        "requirements": { "$ref": "../plan.schema.json#/$defs/requirements" }
       },
       "required": ["id", "accept"]
     },

@@ -236,15 +236,24 @@ export interface StructuredCases {
 export interface RequirementContract {
   id: string;
   accept: Check[];
+  /**
+   * @minItems 1
+   */
   requirements?: {
     id: string;
     text: string;
+    /**
+     * @minItems 1
+     */
     verified_by: number[];
   }[];
 }
 export interface Check {
   cmd: string;
   timeout_s: number;
+  /**
+   * Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.
+   */
   cache?: boolean;
   report?: {
     junit: string;
@@ -389,25 +398,40 @@ export const acceptOutputFormat = {
   $defs: {
     Check: {
       type: 'object',
+      additionalProperties: false,
+      required: ['cmd', 'timeout_s'],
       properties: {
-        cmd: { type: 'string' },
-        timeout_s: { type: 'number' },
-        cache: { type: 'boolean' },
+        cmd: { type: 'string', minLength: 1 },
+        timeout_s: { type: 'integer', minimum: 1 },
+        cache: {
+          type: 'boolean',
+          default: true,
+          description:
+            'Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.',
+        },
         report: {
           type: 'object',
-          properties: { junit: { type: 'string' }, collect: { type: 'string' } },
+          additionalProperties: false,
           required: ['junit'],
+          properties: {
+            junit: { type: 'string', minLength: 1, pattern: '^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+' },
+            collect: { type: 'string', minLength: 1 },
+          },
         },
         known_failures: {
           type: 'array',
+          uniqueItems: true,
           items: {
             type: 'object',
-            properties: { id: { type: 'string' }, reason: { type: 'string' } },
+            additionalProperties: false,
             required: ['id', 'reason'],
+            properties: {
+              id: { type: 'string', minLength: 1 },
+              reason: { type: 'string', minLength: 1 },
+            },
           },
         },
       },
-      required: ['cmd', 'timeout_s'],
     },
     StructuredCases: {
       type: 'object',
@@ -437,7 +461,7 @@ export const acceptOutputFormat = {
     CommandResult: {
       type: 'object',
       properties: {
-        check: { $ref: '#/$defs/Check' },
+        check: { $ref: '#/%24defs/Check' },
         pass: { type: ['boolean', 'null'] },
         evidence: { type: 'string' },
         exit: { type: ['number', 'string'] },
@@ -459,17 +483,24 @@ export const acceptOutputFormat = {
       type: 'object',
       properties: {
         id: { type: 'string' },
-        accept: { type: 'array', items: { $ref: '#/$defs/Check' } },
+        accept: { type: 'array', items: { $ref: '#/%24defs/Check' } },
         requirements: {
           type: 'array',
+          minItems: 1,
           items: {
             type: 'object',
-            properties: {
-              id: { type: 'string' },
-              text: { type: 'string' },
-              verified_by: { type: 'array', items: { type: 'integer' } },
-            },
+            additionalProperties: false,
             required: ['id', 'text', 'verified_by'],
+            properties: {
+              id: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$' },
+              text: { type: 'string', minLength: 1, pattern: '\\S' },
+              verified_by: {
+                type: 'array',
+                minItems: 1,
+                uniqueItems: true,
+                items: { type: 'integer', minimum: 0 },
+              },
+            },
           },
         },
       },

@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { $RefParser } from '@apidevtools/json-schema-ref-parser';
 import { compile } from 'json-schema-to-typescript';
 import { format, resolveConfig } from 'prettier';
 
@@ -19,9 +20,16 @@ const closeTypeObjects = (value: unknown): void => {
 for (const kind of kinds) {
   const source = new URL(`../schemas/nodes/${kind}.schema.json`, import.meta.url);
   const schema = JSON.parse(readFileSync(source, 'utf8')) as Record<string, unknown>;
-  const typeSchema = structuredClone(schema);
+  const bundledSchema =
+    kind === 'accept' ? await $RefParser.bundle(fileURLToPath(source), schema) : schema;
+  const typeSchema = structuredClone(bundledSchema);
   closeTypeObjects(typeSchema);
-  blocks.push(await compile(typeSchema, String(schema.title), { bannerComment: '' }));
+  blocks.push(
+    await compile(typeSchema, String(schema.title), {
+      bannerComment: '',
+      ignoreMinAndMaxItems: true,
+    })
+  );
   if (kind === 'sync')
     blocks.push(
       "export type SyncResult = SyncOutput extends infer S ? S extends { generation: number } ? Omit<S, 'generation'> : never : never;"
@@ -35,7 +43,7 @@ for (const kind of kinds) {
       "export type Disposition = Exclude<AcceptOutput['disposition'], 'suspend'>;",
       "export type Accept = Pick<AcceptOutput, 'ok' | 'diff_hash' | 'same'> & Partial<Omit<AcceptOutput, 'ok' | 'diff_hash' | 'same' | 'disposition'>> & { disposition?: Disposition };"
     );
-  blocks.push(`export const ${kind}OutputFormat = ${JSON.stringify(schema)} as const;`);
+  blocks.push(`export const ${kind}OutputFormat = ${JSON.stringify(bundledSchema)} as const;`);
 }
 const text = await format(blocks.join('\n'), {
   ...(await resolveConfig(target)),
