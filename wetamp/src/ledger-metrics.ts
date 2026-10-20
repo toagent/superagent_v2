@@ -134,7 +134,7 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
 
 export function firstPassOf(
   pair: Pair,
-  stats: Record<string, unknown> = summarize([pair])
+  stats: Record<string, unknown> = summarize([pair], false)
 ): boolean | 'unknown' {
   const { ledger, run } = pair;
   if (run instanceof Error) return 'unknown';
