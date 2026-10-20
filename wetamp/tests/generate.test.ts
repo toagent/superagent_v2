@@ -37,6 +37,7 @@ import {
 } from '../../packages/workflows/src/loader';
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 import { isInlineScript } from '../../packages/workflows/src/executor-shared';
+import type { CoderOutput } from '../src/contract';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
@@ -822,13 +823,13 @@ describe('buildWorkflow', () => {
     expect(code?.command).toBe('sa-code');
     expect(code?.when).toBe("$package-attempt-core.output.attempt != '0'");
     expect(verify?.trigger_rule).toBe('none_failed_min_one_success');
-    const binding = verify?.with?.coder as { from: string; if_skipped: string };
+    const binding = verify?.with?.coder as { from: string; if_skipped: CoderOutput };
     expect(binding.from).toBe('$code-core.output');
     expect(verify?.with?.carried_evidence).toBe('/GEN/carried-evidence/core.json');
     expect(verify?.with?.attempt).toBe('$package-attempt-core.output.attempt');
     expect(nodes.find(n => n.id === 'verify-api')?.with?.carried_evidence).toBeUndefined();
     expect(validateDagStructure(validNodes(nodes))).toBeNull();
-    expect(JSON.parse(binding.if_skipped)).toEqual({
+    expect(binding.if_skipped).toEqual({
       status: 'done',
       changed_files: [],
       quick_checks: [],
@@ -843,13 +844,11 @@ describe('buildWorkflow', () => {
     expect(code?.depends_on).toEqual(nodesOf(normal).find(n => n.id === 'code-core')?.depends_on);
     expect(nodesOf(make([], ['core'])).find(n => n.id === 'code-core')?.when).toBe(code?.when);
     expect(
-      JSON.parse(
-        (
-          nodesOf(make([], ['core'])).find(n => n.id === 'verify-core')?.with?.coder as {
-            if_skipped: string;
-          }
-        ).if_skipped
-      ).notes
+      (
+        nodesOf(make([], ['core'])).find(n => n.id === 'verify-core')?.with?.coder as {
+          if_skipped: CoderOutput;
+        }
+      ).if_skipped.notes
     ).toBe("coded from old'run");
   });
   test('engine-stale adoption carries terminal review checkpoint without restarting R1', () => {
@@ -2154,7 +2153,10 @@ test('role efficiency handoff resolves prior work without model calls or skipped
     '$handoff-m1-r2.output.handoff'
   );
   expect(nodes.find(n => n.id === 'repair-core')?.with?.prior_work).toBe('$code-core.output');
-  expect(nodes.find(n => n.id === 'handoff-m1-r3')?.with?.work_fix).toBe('$fix-m1-r2.output');
+  expect(nodes.find(n => n.id === 'handoff-m1-r3')?.with?.work_fix).toEqual({
+    from: '$fix-m1-r2.output',
+    if_skipped: null,
+  });
   ctx.nodeOutputs.set('repair-core', { state: 'failed', output: '', error: 'fixture failure' });
   expect(() =>
     resolveNodeBindings(

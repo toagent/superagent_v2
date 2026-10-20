@@ -13,8 +13,14 @@ export const conditionalOutput = <T>(id: string): OutputHandle<T, true> => ({
 type Present<T> = Exclude<T, undefined>;
 
 export const ref = {
-  value<T>(handle: OutputHandle<T, boolean>): string {
+  value<T>(handle: OutputHandle<T>): string {
     return `$${handle.id}.output`;
+  },
+  optionalValue<T, F extends T | null>(
+    handle: OutputHandle<T, true>,
+    fallback: F
+  ): { from: string; if_skipped: F } {
+    return { from: `$${handle.id}.output`, if_skipped: fallback };
   },
   required<T>(handle: OutputHandle<T>, field: keyof T): string {
     return `$${handle.id}.output.${String(field)}`;

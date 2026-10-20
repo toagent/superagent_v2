@@ -4,3 +4,5 @@ const conditional = conditionalOutput<SyncOutput>('conditional-sync');
 ref.required(conditional, 'status');
 ref.optional(conditional, 'generation', 'not-a-number');
 ref.required(output<SyncOutput>('sync'), 'missing_field');
+ref.value(conditional);
+ref.optionalValue(conditional, 'not-a-sync-output');

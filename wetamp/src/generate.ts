@@ -124,7 +124,6 @@ export function newRunId(now = new Date()): string {
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 const SOLDIER_IDLE_MS = 10 * 60 * 1000;
 
-const skippable = (from: string, if_skipped: unknown = null): Node => ({ from, if_skipped });
 export interface Carried {
   from: string;
   packages: string[];
@@ -587,9 +586,9 @@ export function buildWorkflow(
         : carried?.coded?.includes(p.id)
           ? 'coded'
           : undefined;
-      const carry =
+      const carry: CoderOutput | undefined =
         resumed && carried
-          ? JSON.stringify({
+          ? {
               status: 'done',
               changed_files: [],
               quick_checks: [],
@@ -598,7 +597,7 @@ export function buildWorkflow(
               error_class: null,
               deviations: [],
               needs: [],
-            })
+            }
           : undefined;
       const carriedEvidence = carried?.evidence?.[p.id]
         ? join(gen, 'carried-evidence', `${p.id}.json`)
@@ -664,7 +663,8 @@ export function buildWorkflow(
               soldier_ok: soldierOk ?? '',
             },
           };
-      const codeHandle = conditionalOutput<CoderOutput>(`code-${p.id}`);
+      const codeHandle = output<CoderOutput>(`code-${p.id}`);
+      const conditionalCodeHandle = conditionalOutput<CoderOutput>(`code-${p.id}`);
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
@@ -716,9 +716,7 @@ export function buildWorkflow(
           {
             ...accept,
             tag: verify,
-            coder: carry
-              ? { from: ref.value(codeHandle), if_skipped: carry }
-              : ref.value(codeHandle),
+            coder: carry ? ref.optionalValue(conditionalCodeHandle, carry) : ref.value(codeHandle),
             ...(carriedEvidence
               ? {
                   carried_evidence: carriedEvidence,
@@ -771,7 +769,7 @@ export function buildWorkflow(
                 hint: join(gen, 'hints', `${p.id}.md`),
                 context_node: repairContext,
                 prior_work: carry
-                  ? { from: ref.value(codeHandle), if_skipped: carry }
+                  ? ref.optionalValue(conditionalCodeHandle, carry)
                   : ref.value(codeHandle),
                 reason: ref.optional(verifyHandle, 'reason', null),
                 accept_log: ref.optional(verifyHandle, 'log', ''),
@@ -790,7 +788,7 @@ export function buildWorkflow(
             kind: 'settle',
             tag: `settle-${p.id}`,
             first: ref.optional(verifyHandle, 'disposition', 'fail'),
-            repaired: skippable(ref.value(repairHandle)),
+            repaired: ref.optionalValue(repairHandle, null),
           },
           {
             trigger_rule: 'none_failed_min_one_success',
@@ -832,16 +830,19 @@ export function buildWorkflow(
                     m.packages.flatMap(p => [
                       [
                         `work_code_${p.id}`,
-                        skippable(ref.value(conditionalOutput<CoderOutput>(`code-${p.id}`))),
+                        ref.optionalValue(conditionalOutput<CoderOutput>(`code-${p.id}`), null),
                       ],
                       [
                         `work_repair_${p.id}`,
-                        skippable(ref.value(conditionalOutput<CoderOutput>(`repair-${p.id}`))),
+                        ref.optionalValue(conditionalOutput<CoderOutput>(`repair-${p.id}`), null),
                       ],
                     ])
                   )
                 : {
-                    work_fix: ref.value(conditionalOutput<CoderOutput>(`fix-${before}`)),
+                    work_fix: ref.optionalValue(
+                      conditionalOutput<CoderOutput>(`fix-${before}`),
+                      null
+                    ),
                   }),
             },
             depends_on: [prev, attempt],
@@ -909,7 +910,7 @@ export function buildWorkflow(
                     'diff_hash',
                     ''
                   ),
-                  coder: ref.value(fixHandle),
+                  coder: ref.optionalValue(fixHandle, null),
                   delta_base: `$gate-${before}.output.reviewed_head`,
                   reviewed_diff_hash: `$gate-${before}.output.reviewed_diff_hash`,
                 }
@@ -999,7 +1000,7 @@ export function buildWorkflow(
         depends_on: [`diff-${t}`, fake ? reviewAttempt : reviewContext],
         output_format: reviewerOutputFormat,
       });
-      rounds[`R${String(r)}`] = skippable(ref.value(reviewHandle));
+      rounds[`R${String(r)}`] = ref.optionalValue(reviewHandle, null);
       rounds[`C${String(r)}`] = `$ARTIFACTS_DIR/diff-${t}.json`;
       rounds[`C${String(r)}_HEAD`] = ref.optional(diffHandle, 'head', '');
       rounds[`C${String(r)}_DIFF_HASH`] = ref.optional(diffHandle, 'diff_hash', '');

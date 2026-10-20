@@ -3,6 +3,7 @@
   "type": "object",
   "properties": {
     "status": {
+      "type": "string",
       "enum": ["PASS", "FAIL", "INCOMPLETE"]
     },
     "notes": {
@@ -17,6 +18,7 @@
             "type": "string"
           },
           "severity": {
+            "type": "string",
             "enum": ["blocker", "high", "medium", "low"]
           },
           "file": {
@@ -26,6 +28,7 @@
             "type": "integer"
           },
           "status": {
+            "type": "string",
             "enum": ["open", "closed"]
           },
           "evidence": {

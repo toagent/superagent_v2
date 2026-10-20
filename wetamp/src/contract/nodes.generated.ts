@@ -629,7 +629,7 @@ export const coderOutputFormat = {
   title: 'CoderOutput',
   type: 'object',
   properties: {
-    status: { enum: ['done', 'blocked', 'partial'] },
+    status: { type: 'string', enum: ['done', 'blocked', 'partial'] },
     changed_files: { type: 'array', items: { type: 'string' } },
     quick_checks: {
       type: 'array',
@@ -735,7 +735,7 @@ export const reviewerOutputFormat = {
   title: 'ReviewerOutput',
   type: 'object',
   properties: {
-    status: { enum: ['PASS', 'FAIL', 'INCOMPLETE'] },
+    status: { type: 'string', enum: ['PASS', 'FAIL', 'INCOMPLETE'] },
     notes: { type: 'string' },
     findings: {
       type: 'array',
@@ -743,10 +743,10 @@ export const reviewerOutputFormat = {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          severity: { enum: ['blocker', 'high', 'medium', 'low'] },
+          severity: { type: 'string', enum: ['blocker', 'high', 'medium', 'low'] },
           file: { type: 'string' },
           line: { type: 'integer' },
-          status: { enum: ['open', 'closed'] },
+          status: { type: 'string', enum: ['open', 'closed'] },
           evidence: { type: 'string' },
           failure_class: {
             type: 'string',

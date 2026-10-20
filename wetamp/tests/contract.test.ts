@@ -52,6 +52,22 @@ test('generated node contracts match their JSON schema owners', () => {
   expect(reviewerOutputFormat).toEqual(
     JSON.parse(readFileSync(join(root, 'schemas/nodes/reviewer.schema.json'), 'utf8'))
   );
+  expect(coderOutputFormat.properties.status).toEqual({
+    type: 'string',
+    enum: ['done', 'blocked', 'partial'],
+  });
+  expect(reviewerOutputFormat.properties.status).toEqual({
+    type: 'string',
+    enum: ['PASS', 'FAIL', 'INCOMPLETE'],
+  });
+  expect(reviewerOutputFormat.properties.findings.items.properties.severity).toEqual({
+    type: 'string',
+    enum: ['blocker', 'high', 'medium', 'low'],
+  });
+  expect(reviewerOutputFormat.properties.findings.items.properties.status).toEqual({
+    type: 'string',
+    enum: ['open', 'closed'],
+  });
   for (const kind of ['coder', 'attempt', 'reviewer'])
     expect(legacySchema.$defs).not.toHaveProperty(kind);
   expect(acceptSchema.$defs.Check).toEqual({ $ref: '../plan.schema.json#/$defs/check' });
@@ -80,6 +96,10 @@ test('typed refs render required and skipped bindings', () => {
   expect(ref.optional(optional, 'generation', 0)).toEqual({
     from: '$maybe-sync.output.generation',
     if_skipped: 0,
+  });
+  expect(ref.optionalValue(optional, null)).toEqual({
+    from: '$maybe-sync.output',
+    if_skipped: null,
   });
   expect(ref.required(output<DeliveryOutput>('settle'), 'diff_hash')).toBe(
     '$settle.output.diff_hash'
@@ -113,7 +133,7 @@ test('the three invalid reference forms all fail TypeScript compilation', () => 
   );
   const diagnostics = result.stdout.toString() + result.stderr.toString();
   expect(result.exitCode).not.toBe(0);
-  expect(diagnostics.match(/contract-negative\.ts\(\d+,\d+\): error TS/g)?.length).toBe(3);
+  expect(diagnostics.match(/contract-negative\.ts\(\d+,\d+\): error TS/g)?.length).toBe(5);
   expect(diagnostics).toContain('OutputHandle<SyncOutput, true>');
   expect(diagnostics).toContain("string' is not assignable to parameter of type 'number");
   expect(diagnostics).toContain('missing_field');

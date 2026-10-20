@@ -2,7 +2,7 @@
   "title": "CoderOutput",
   "type": "object",
   "properties": {
-    "status": { "enum": ["done", "blocked", "partial"] },
+    "status": { "type": "string", "enum": ["done", "blocked", "partial"] },
     "changed_files": { "type": "array", "items": { "type": "string" } },
     "quick_checks": {
       "type": "array",
