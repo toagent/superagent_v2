@@ -161,6 +161,7 @@ const base: Reason[] = [
   deterministic('engine_suspect', 'engine_suspect', 'engine', '验收与状态矛盾或原因未注册'),
   entry('coder_output_invalid', 'coder', 'transient', 'coder', '编码输出不是合法 JSON'),
   deterministic('coder_partial', 'coder', 'coder', '编码未完成且无改动或验收失败'),
+  deterministic('scope_violation', 'coder', 'coder', '交付包含 scope.write 之外的路径'),
   deterministic('acceptance_failed', 'gate', 'coder', '验收失败'),
   deterministic('review_failed', 'gate', 'coder', '评审未通过'),
   deterministic(
@@ -183,7 +184,7 @@ const base: Reason[] = [
   ),
 ];
 const repaired = base
-  .filter(r => r.code === 'acceptance_failed' || r.code === 'coder_partial')
+  .filter(r => ['acceptance_failed', 'coder_partial', 'scope_violation'].includes(r.code))
   .map(r => ({
     ...r,
     code: `repair_exhausted:${r.code}`,

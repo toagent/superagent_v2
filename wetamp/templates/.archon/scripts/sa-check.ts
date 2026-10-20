@@ -162,15 +162,10 @@ const policy = (): Policy & ReviewEffortPolicy =>
   JSON.parse(readFileSync(env('POLICY'), 'utf8')) as Policy & ReviewEffortPolicy;
 const emit = (o: unknown): void => {
   const code = (o as { reason?: unknown }).reason;
-  if (typeof code === 'string' && !registeredReason(code))
+  if (typeof code === 'string' && !reasons.some(r => r.code === code))
     throw new Error(`unregistered reason: ${code}`);
   console.log(JSON.stringify(o));
 };
-// The shared reason owner lands these alongside this package; keep this worktree independently runnable.
-const registeredReason = (code: string): boolean =>
-  reasons.some(r => r.code === code) ||
-  code === 'scope_violation' ||
-  code === 'repair_exhausted:scope_violation';
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 /** One raw-byte diff identity shared by acceptance and publication. */
 export const diffHash = (bytes: Uint8Array): string =>
@@ -961,7 +956,10 @@ function acceptOnce(
       reason: 'acceptance_failed+review_limit',
       decision: { ...result.decision, kind: 'block', reason: 'acceptance_failed+review_limit' },
     });
-  if (scope.out_of_scope.length)
+  if (
+    scope.out_of_scope.length &&
+    (result.disposition === 'advance' || result.disposition === 'repair')
+  )
     Object.assign(result, {
       disposition: 'repair',
       reason: 'scope_violation',
@@ -1126,7 +1124,9 @@ function settle(): void {
   const out = acceptOnce(tag, repaired);
   if (out.disposition === 'repair') {
     const exhausted = `repair_exhausted:${out.reason ?? ''}`;
-    const reason = registeredReason(exhausted) ? exhausted : 'acceptance_failed+review_limit';
+    const reason = reasons.some(r => r.code === exhausted)
+      ? exhausted
+      : 'acceptance_failed+review_limit';
     Object.assign(out, {
       disposition: 'fail',
       repair_reason: out.reason,

@@ -1511,6 +1511,9 @@ describe('single delivery decision', () => {
       },
     });
     const start = { event_type: 'node_started', step_name: 'code-a' };
+    const base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'outside.ts'), 'candidate');
+    sh('git add outside.ts && git -c user.name=t -c user.email=t@l commit -qm outside', repo);
     const counter = (step_name: string, attempt = '1') => ({
       event_type: 'node_completed',
       step_name,
@@ -1533,13 +1536,29 @@ describe('single delivery decision', () => {
           ? `printf '%s' '{"failure_class":"test_env","evidence":"environment unavailable"}'; exit 1`
           : 'true';
       const plan = fixturePlan(root, repo, p => {
-        p.packages = [{ id: 'a', accept: [{ cmd, timeout_s: 5 }] }];
+        p.packages = [
+          {
+            id: 'a',
+            accept: [{ cmd, timeout_s: 5 }],
+            scope: { write: reason === 'coder_redline' ? ['src/'] : ['**'] },
+          },
+        ];
       });
-      const result = runScript(repo, { ...inputs, plan }, SCRIPT, { WORKFLOW_ID: 'fixture' });
+      const result = runScript(
+        repo,
+        {
+          ...inputs,
+          plan,
+          ...(reason === 'coder_redline' ? { base, risk: 'G1' } : {}),
+        },
+        SCRIPT,
+        { WORKFLOW_ID: 'fixture' }
+      );
       expect(result.code, result.err).toBe(reason === 'coder_redline' ? 1 : 0);
       expect(result.out).toMatchObject({
         ok: reason !== 'environment',
         decision: { kind: reason ? 'block' : 'advance', reason },
+        ...(reason === 'coder_redline' ? { out_of_scope: ['outside.ts'] } : {}),
       });
     }
   }, 10_000);
@@ -2399,15 +2418,16 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
-  test('P2: complete JUnit failures require identity-bound adjudication before becoming debt', () => {
+  test('P2: identity-bound adjudication outranks scope until approval', () => {
     const root = tmp(),
       repo = gitRepo(root),
       path = planFile(root, 'false', ['true']);
     writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
     const base = sh('git rev-parse HEAD', repo).trim();
-    writeFileSync(join(repo, 'README.md'), 'candidate\n');
-    sh('git add README.md && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
+    writeFileSync(join(repo, 'outside.ts'), 'candidate\n');
+    sh('git add outside.ts && git -c user.name=t -c user.email=t@l commit -qm candidate', repo);
     const plan = JSON.parse(readFileSync(path, 'utf8'));
+    plan.packages[0].scope = { write: ['src/'] };
     const xml =
       '<testsuite tests="1"><testcase classname="suite" name="case"><failure type="AssertionError" message="expected">body</failure></testcase></testsuite>';
     plan.packages[0].accept = [
@@ -2419,7 +2439,14 @@ describe('sa-check script', () => {
       },
     ];
     writeFileSync(path, JSON.stringify(plan));
-    const inputs = { kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a', base };
+    const inputs = {
+      kind: 'accept',
+      plan: path,
+      pkgs: 'a',
+      tag: 'verify-a',
+      base,
+      risk: 'G1',
+    };
     const first = runScript(repo, inputs);
     expect(first.code, first.err).toBe(1);
     expect(first.out).toMatchObject({
@@ -2445,8 +2472,9 @@ describe('sa-check script', () => {
     expect(approved.code, approved.err).toBe(0);
     expect(approved.out).toMatchObject({
       ok: false,
-      disposition: 'advance',
-      decision: { kind: 'debt', reason: null },
+      disposition: 'repair',
+      reason: 'scope_violation',
+      out_of_scope: ['outside.ts'],
       failures: [{ failure_class: 'test_env', adjudicated: true }],
     });
   });
@@ -3960,11 +3988,11 @@ describe('sa-check script', () => {
     const mid = sh('git rev-parse HEAD', repo).trim();
     commit('src/b.md');
     const p = join(root, 'plan.json');
-    const write = (w: string[]) =>
+    const write = (w: string[], cmd = 'true') =>
       writeFileSync(
         p,
         JSON.stringify({
-          packages: [{ id: 'a', scope: { write: w }, accept: [{ cmd: 'true', timeout_s: 5 }] }],
+          packages: [{ id: 'a', scope: { write: w }, accept: [{ cmd, timeout_s: 5 }] }],
         })
       );
     const pol = join(root, 'policy.json');
@@ -4089,6 +4117,23 @@ describe('sa-check script', () => {
       disposition: 'fail',
       reason: 'repair_exhausted:scope_violation',
       repair_reason: 'scope_violation',
+      out_of_scope: ['src/b.md'],
+    });
+    write(['src/a.ts'], PRODUCT_FAILURE);
+    const limited = runScript(repo, {
+      kind: 'accept',
+      plan: p,
+      pkgs: 'a',
+      tag: `diff-m1-r${String(MAX_ROUNDS)}`,
+      milestone: 'm1',
+      base,
+      risk: 'G1',
+      policy: pol,
+    });
+    expect(limited.code).toBe(1);
+    expect(limited.out).toMatchObject({
+      disposition: 'fail',
+      reason: 'acceptance_failed+review_limit',
       out_of_scope: ['src/b.md'],
     });
     write(['src/']);
@@ -4315,7 +4360,10 @@ test.each(['scope_violation', 'plan_invalid'])(
   'adjudication %s stops verify, settle and gate repair',
   error_class => {
     const root = tmp(),
-      repo = gitRepo(root);
+      repo = gitRepo(root),
+      base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'outside.ts'), 'candidate');
+    sh('git add outside.ts && git -c user.name=t -c user.email=t@l commit -qm outside', repo);
     const needs = [
       { cap: 'scope_decision', why: '401 vs required 403', minimal_ask: 'resolve contract' },
     ];
@@ -4325,12 +4373,17 @@ test.each(['scope_violation', 'plan_invalid'])(
       needs,
       blockers: ['contract conflict'],
     });
-    const inputs = { plan: planFile(root, 'false'), pkgs: 'a', coder };
+    const plan = planFile(root, 'false');
+    const value = JSON.parse(readFileSync(plan, 'utf8'));
+    value.packages[0].scope = { write: ['src/'] };
+    writeFileSync(plan, JSON.stringify(value));
+    const inputs = { plan, pkgs: 'a', coder, base, risk: 'G1' };
     const verify = runScript(repo, { ...inputs, kind: 'accept', tag: 'verify-a' });
     expect(verify.code).toBe(1);
     expect(verify.out).toMatchObject({
       disposition: 'fail',
       reason: 'coder_needs',
+      out_of_scope: ['outside.ts'],
       decision: { needs },
     });
     const settled = runScript(repo, {
