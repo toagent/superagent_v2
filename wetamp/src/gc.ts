@@ -59,7 +59,7 @@ export function scratchClean(session?: string, dryRun = false): ScratchAction[] 
 
 export interface GcAction {
   run_id: string;
-  object: 'run' | 'worktree' | 'branch' | 'gen';
+  object: 'run' | 'worktree' | 'branch' | 'gen' | 'engine';
   action: 'removed' | 'skipped' | 'would_remove';
   reason: string;
   path?: string;
@@ -77,6 +77,103 @@ interface GcInput {
 
 const gcRuleVersion = (): string =>
   new Bun.CryptoHasher('sha256').update(readFileSync(import.meta.path)).digest('hex');
+
+export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
+  const engineRoot = resolve(home().sa, 'engine');
+  if (!existsSync(engineRoot)) return [];
+  let current: string | undefined;
+  try {
+    current = realpathSync(join(engineRoot, 'current'));
+  } catch {
+    // An unset current is not permission to collect a served snapshot.
+  }
+  const receiptRoot = join(engineRoot, 'receipts');
+  const receipts = (
+    existsSync(receiptRoot) ? readdirSync(receiptRoot).filter(file => file.endsWith('.json')) : []
+  )
+    .flatMap(file => {
+      try {
+        const value = JSON.parse(readFileSync(join(receiptRoot, file), 'utf8')) as {
+          sha?: unknown;
+          at?: unknown;
+        };
+        return typeof value.sha === 'string' && typeof value.at === 'string' ? [value] : [];
+      } catch {
+        return [];
+      }
+    })
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const currentSha = current?.startsWith(engineRoot + '/')
+    ? current.slice(engineRoot.length + 1)
+    : undefined;
+  const previous = receipts.filter(value => value.sha !== currentSha).at(-1)?.sha;
+  const ledgers = ledgerIds().flatMap(id => {
+    try {
+      return [loadLedger(id)];
+    } catch {
+      return [];
+    }
+  });
+  return readdirSync(engineRoot, { withFileTypes: true }).flatMap(entry => {
+    if (!entry.isDirectory() || !/^[0-9a-f]{7,40}$/i.test(entry.name)) return [];
+    const path = join(engineRoot, entry.name);
+    if (entry.name === currentSha || entry.name === previous) return [];
+    const references = ledgers.filter(ledger => {
+      const pinned = ledger.engine_snapshot;
+      return pinned !== undefined && resolve(pinned) === path;
+    });
+    if (!references.length) return [];
+    for (const ledger of references) {
+      if (ledger.rejected === ledger.archon_run_id) continue;
+      try {
+        if (getRun(ledger.archon_run_id, ledger.repo).status === 'completed') continue;
+      } catch {
+        return [];
+      }
+      return [];
+    }
+    const action: GcAction = {
+      run_id: references.map(ledger => ledger.run_id).join(','),
+      object: 'engine',
+      action: dryRun ? 'would_remove' : 'removed',
+      reason: 'completed or rejected run snapshots',
+      path,
+    };
+    if (dryRun) return [action];
+    try {
+      if (lstatSync(path).isSymbolicLink()) throw new Error('engine snapshot symlink retained');
+      const common = Bun.spawnSync(
+        ['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+        { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
+      );
+      if (common.exitCode === 0) {
+        const removed = Bun.spawnSync(
+          [
+            'git',
+            '--git-dir',
+            common.stdout.toString().trim(),
+            'worktree',
+            'remove',
+            '--force',
+            path,
+          ],
+          { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
+        );
+        if (removed.exitCode !== 0) throw new Error(removed.stderr.toString().trim());
+      }
+      rmSync(path, { recursive: true, force: true });
+      return [action];
+    } catch (error) {
+      return [
+        {
+          ...action,
+          action: 'skipped',
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      ];
+    }
+  });
+}
 
 // Only engine probe directories enter this path; run/user worktrees keep their existing guards.
 function collectProbe(path: string, id: string, dryRun: boolean, repo?: string): GcAction {
@@ -408,5 +505,5 @@ export function gc(
   } catch (e) {
     out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
   }
-  return [...out, ...collectGen(dryRun)];
+  return [...out, ...collectGen(dryRun), ...collectEngineSnapshots(dryRun)];
 }

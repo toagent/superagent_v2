@@ -12,7 +12,8 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { lock } from '../archon';
+import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
+import { getRun, lock } from '../archon';
 import { WETAMP, home, writeAtomic } from '../config';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
@@ -53,12 +54,15 @@ export function currentEngineSnapshot(): string | undefined {
   }
 }
 
-export function runEngineSnapshot(): { path: string; identity: 'current' | 'candidate' } {
+export type EngineSnapshotIdentity = 'current' | 'served' | 'candidate';
+
+export function runEngineSnapshot(): { path: string; identity: EngineSnapshotIdentity } {
   const current = currentEngineSnapshot();
   const running = runningEngineSnapshot();
+  const served = receipt(basename(running)) !== undefined;
   return {
     path: current && current === running ? current : running,
-    identity: current === running ? 'current' : 'candidate',
+    identity: current === running ? 'current' : served ? 'served' : 'candidate',
   };
 }
 
@@ -88,6 +92,32 @@ const receipts = (): EngineReceipt[] =>
       }
     })
     .sort((a, b) => a.at.localeCompare(b.at));
+
+interface EngineLedger {
+  run_id: string;
+  archon_run_id: string;
+  repo: string;
+  engine_snapshot?: string;
+  engine_snapshot_identity?: EngineSnapshotIdentity;
+  rejected?: string;
+  engine_adoptions?: { at: string; from: string | null; to: string }[];
+}
+
+const runLedgers = (): EngineLedger[] => {
+  const runs = join(home().sa, 'runs');
+  return (existsSync(runs) ? readdirSync(runs).filter(x => x.endsWith('.json')) : []).flatMap(
+    file => {
+      try {
+        const value = JSON.parse(readFileSync(join(runs, file), 'utf8')) as EngineLedger;
+        return typeof value.run_id === 'string' && typeof value.archon_run_id === 'string'
+          ? [value]
+          : [];
+      } catch {
+        return [];
+      }
+    }
+  );
+};
 
 export function bootstrapEngineSnapshot(): string | undefined {
   const first = receipts().at(0);
@@ -253,28 +283,100 @@ export function rollback(): { from: string; to: string } {
   }
 }
 
+export function adoptEngineSnapshot(
+  run: string,
+  value: string
+): {
+  run: string;
+  from: string | null;
+  to: string;
+} {
+  if (!/^[0-9a-f]{7,40}$/i.test(value)) throw new Error('engine adopt: invalid sha');
+  const sha = canonicalSha(value);
+  if (!receipt(sha)) throw new Error('engine adopt: snapshot was never served');
+  const snapshot = join(root(), sha);
+  if (!existsSync(snapshot)) throw new Error('engine adopt: snapshot is unavailable');
+  const path = join(home().sa, 'runs', `${run}.json`);
+  if (!existsSync(path)) throw new Error(`engine adopt: unknown run ${run}`);
+  const initial = JSON.parse(readFileSync(path, 'utf8')) as EngineLedger;
+  if (initial.run_id !== run || typeof initial.archon_run_id !== 'string')
+    throw new Error('engine adopt: invalid ledger identity');
+  if (initial.rejected === initial.archon_run_id)
+    throw new Error('engine adopt: rejected run cannot be adopted');
+  const held = executionAdmissionLock(home().archon, initial.archon_run_id);
+  if (!held.ok) throw new Error('engine adopt: locked');
+  try {
+    const ledger = JSON.parse(readFileSync(path, 'utf8')) as EngineLedger;
+    if (ledger.run_id !== run || ledger.archon_run_id !== initial.archon_run_id)
+      throw new Error('engine adopt: ledger identity changed');
+    const from = ledger.engine_snapshot ?? bootstrapEngineSnapshot() ?? null;
+    const to = realpathSync(snapshot);
+    if (from !== to) {
+      (ledger.engine_adoptions ??= []).push({ at: new Date().toISOString(), from, to });
+      ledger.engine_snapshot = to;
+      ledger.engine_snapshot_identity = currentEngineSnapshot() === to ? 'current' : 'served';
+      writeAtomic(path, JSON.stringify(ledger, null, 2) + '\n');
+    }
+    return { run, from, to };
+  } finally {
+    held.release();
+  }
+}
+
+export interface LegacyGateResult {
+  ok: boolean;
+  count: number;
+  runs: { run_id: string; status: string; reason?: string }[];
+}
+
+export function gateLegacyRuns(): LegacyGateResult {
+  const runs: LegacyGateResult['runs'] = [];
+  for (const ledger of runLedgers()) {
+    if (ledger.engine_snapshot || ledger.rejected === ledger.archon_run_id) continue;
+    try {
+      const run = getRun(ledger.archon_run_id, ledger.repo);
+      if (run.status !== 'completed') runs.push({ run_id: ledger.run_id, status: run.status });
+    } catch (error) {
+      runs.push({
+        run_id: ledger.run_id,
+        status: 'unknown',
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { ok: runs.length === 0, count: runs.length, runs };
+}
+
 export function engineStatus(): Record<string, unknown> {
   const current = currentEngineSnapshot();
   const counts: Record<string, Record<string, number>> = {};
-  const runs = join(home().sa, 'runs');
-  for (const file of existsSync(runs) ? readdirSync(runs).filter(x => x.endsWith('.json')) : []) {
+  for (const value of runLedgers()) {
+    const key = value.engine_snapshot ? basename(value.engine_snapshot) : 'bootstrap';
+    let state = 'unknown';
     try {
-      const value = JSON.parse(readFileSync(join(runs, file), 'utf8')) as {
-        engine_snapshot?: string;
-        state?: string;
-      };
-      const key = value.engine_snapshot ?? 'bootstrap';
-      const state = value.state ?? 'active';
-      counts[key] ??= {};
-      counts[key][state] = (counts[key][state] ?? 0) + 1;
+      state =
+        value.rejected === value.archon_run_id
+          ? 'rejected'
+          : getRun(value.archon_run_id, value.repo).status;
     } catch {
-      continue;
+      // Unknown is executable by policy and must remain visible.
     }
+    counts[key] ??= {};
+    counts[key][state] = (counts[key][state] ?? 0) + 1;
   }
+  const currentSha = current && basename(current);
+  const verified = receipts();
   return {
     current,
     protocol_version: ENGINE_PROTOCOL_VERSION,
-    receipts: receipts(),
+    snapshots: verified.map(item => ({
+      sha: item.sha,
+      identity: item.sha === currentSha ? 'current' : 'served',
+      receipt: item,
+      rejected: rejected().includes(item.sha),
+      runs: counts[item.sha] ?? {},
+    })),
+    receipts: verified,
     rejected: rejected(),
     runs: counts,
   };
@@ -287,8 +389,10 @@ export function engineCommand(args: string[]): unknown {
     return promote(sha ?? '', args[2] === '--bootstrap-evidence' ? args[3] : undefined);
   if (action === 'rollback') return rollback();
   if (action === 'status') return engineStatus();
+  if (action === 'adopt') return adoptEngineSnapshot(sha ?? '', args[2] ?? '');
+  if (action === 'gate-legacy') return gateLegacyRuns();
   throw new Error(
-    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | rollback | status'
+    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | rollback | status | adopt <run> <sha> | gate-legacy'
   );
 }
 
@@ -352,22 +456,51 @@ export function assertEngineAccess(argv: string[]): void {
   if (!current) return;
   const running = runningEngineSnapshot();
   const verb = argv[0] ?? 'help';
-  const mutating = !READ_ONLY.has(verb) && !(verb === 'land' && !argv.includes('--apply'));
-  if (running === current) return;
   const production = resolve(home().sa) === resolve(process.env.HOME ?? homedir(), '.superagent');
+  if (!production) return;
+  const mutatingRun = new Set(['resume', 'recover', 'decide', 'cancel', 'accept']);
+  if (verb === 'land' && argv.includes('--apply')) mutatingRun.add('land');
+  if (running === current) {
+    const run = argv[1],
+      path = run && join(home().sa, 'runs', `${run}.json`);
+    if (mutatingRun.has(verb) && path && existsSync(path)) {
+      const ledger = JSON.parse(readFileSync(path, 'utf8')) as { engine_snapshot?: string };
+      if (ledger.engine_snapshot && !existsSync(ledger.engine_snapshot))
+        throw new Error(`engine snapshot unavailable; run superagent engine adopt ${run} <sha>`);
+    }
+    return;
+  }
   const served = process.env.SA_SERVED_RUN;
   const isServedSnapshot = existsSync(receiptPath(basename(running)));
-  if (mutating && production && !isServedSnapshot)
-    throw new Error('engine identity: candidate checkout cannot write production state');
-  if (!mutating || (verb === 'supervise-tick' && argv.includes('--no-global'))) return;
+  if (!isServedSnapshot)
+    throw new Error('engine identity: candidate checkout cannot access production state');
   if (!served) throw new Error('engine identity: non-current snapshot requires SA_SERVED_RUN');
-  const runVerbs = new Set(['resume', 'recover', 'decide', 'land', 'cancel', 'accept']);
-  if (!runVerbs.has(verb) || argv[1] !== served)
+  const requested =
+    verb === 'supervise-tick' && argv.includes('--no-global')
+      ? argv.flatMap((arg, index) => (arg === '--runs' ? [argv[index + 1]] : [])).filter(Boolean)
+      : [argv[1]];
+  const runVerbs = new Set([
+    ...READ_ONLY,
+    'resume',
+    'recover',
+    'decide',
+    'land',
+    'cancel',
+    'accept',
+    'supervise-tick',
+  ]);
+  if (
+    !runVerbs.has(verb) ||
+    !requested.length ||
+    requested.some(id => id !== served && verb !== 'supervise-tick')
+  )
     throw new Error('engine identity: non-current snapshot cannot execute an unscoped write');
-  const ledger = JSON.parse(readFileSync(join(home().sa, 'runs', `${served}.json`), 'utf8')) as {
-    engine_snapshot?: string;
-  };
-  const pinned = ledger.engine_snapshot ?? bootstrapEngineSnapshot();
-  if (!pinned || resolve(pinned) !== running)
-    throw new Error('engine identity: SA_SERVED_RUN snapshot mismatch');
+  for (const id of requested) {
+    const ledger = JSON.parse(readFileSync(join(home().sa, 'runs', `${id}.json`), 'utf8')) as {
+      engine_snapshot?: string;
+    };
+    const pinned = ledger.engine_snapshot ?? bootstrapEngineSnapshot();
+    if (!pinned || resolve(pinned) !== running)
+      throw new Error('engine identity: SA_SERVED_RUN snapshot mismatch');
+  }
 }
