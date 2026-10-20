@@ -29,8 +29,8 @@ const mutations: Mutation[] = [
     name: 'S2',
     expectedError: 'integration: authorization/run mismatch',
     also: [
-      "import { control, coord, repoScope } from './coord';",
-      "import { caller, control, coord, repoScope } from './coord';",
+      "import { control, coord, repoScope, same } from './coord';",
+      "import { caller, control, coord, repoScope, same } from './coord';",
     ],
   },
   {
