@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+const fs = require('node:fs'),
+  path = require('node:path'),
+  os = require('node:os');
 const { spawnSync } = require('node:child_process');
 try {
   const payload = JSON.parse(fs.readFileSync(0, 'utf8')),
@@ -32,5 +34,8 @@ try {
   if (result.status !== 0) throw new Error('adapter unavailable');
   process.stdout.write(result.stdout);
 } catch {
-  process.stdout.write(JSON.stringify({ systemMessage: 'SUPERAGENT resume-card advisory: adapter unavailable.' }) + '\n');
+  process.stdout.write(
+    JSON.stringify({ systemMessage: 'SUPERAGENT resume-card advisory: adapter unavailable.' }) +
+      '\n'
+  );
 }
