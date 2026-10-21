@@ -202,7 +202,7 @@ export function diagnosis(
   e: TriageEvidence,
   contradiction = false
 ): { category: Category; signature: string } {
-  const reasons = e.reasons.map(reasonOf),
+  const reasons = e.reasons.filter(r => r !== 'unclassified').map(reasonOf),
     result = (
       category: Category,
       signature: string
@@ -220,6 +220,8 @@ export function diagnosis(
   // An operator cancellation is a recorded terminal cause; earlier coder errors don't explain it.
   if (e.status === 'cancelled' && e.reasons.includes('cancelled_source'))
     return result('transient', 'cancelled_source');
+  if (!reasons.length && e.reasons.includes('unclassified'))
+    return result('transient', 'unclassified');
   if (['failed', 'cancelled', 'lost'].includes(e.status ?? '') && !reasons.length)
     return result('engine', 'evidence_missing');
   if (
@@ -397,11 +399,7 @@ function evidenceRows(
     });
 }
 // Closed mapping is diagnostic only: unknown vendor prose is never a retry decision.
-export const failureReason = (text: string): string =>
-  reasonOf(text)?.code ??
-  (text.includes('No base branch could be detected')
-    ? 'base_branch_missing'
-    : 'unregistered_reason');
+export const failureReason = (text: string): string => reasonOf(text)?.code ?? 'unclassified';
 const holdCodes: Partial<Record<string, string>> = {
   redline: 'coder_redline',
   needs: 'coder_needs',
@@ -493,7 +491,7 @@ export function foldEpisode(
           disposed:
             l.dispositions?.some(
               d =>
-                d.ok &&
+                (d.ok || d.action === 'blocked') &&
                 Date.parse(d.at) >=
                   Date.parse(
                     run.metadata?.wait?.waitingSince ?? run.last_activity_at ?? l.started_at
@@ -519,7 +517,7 @@ export function foldEpisode(
     }
   signals.dup_ask = [...groups.values()].reduce((n, ids) => n + Math.max(0, ids.size - 1), 0);
   signals.engine_suspect = Number(
-    c.state === 'held:engine_suspect' ||
+    (c.state === 'held:engine_suspect' && !reasons.includes('unclassified')) ||
       reasons.some(r => reasonOf(r)?.hold === 'engine_suspect') ||
       existsSync(join(home().sa, 'incidents', l.run_id))
   );
@@ -528,7 +526,8 @@ export function foldEpisode(
       r.deterministic &&
       all.slice(0, i).some(old => old.reason === r.reason && old.engine_hash === r.engine_hash)
   );
-  if (c.state === 'held:engine_suspect' || repeated) reasons.push('engine_suspect');
+  if ((c.state === 'held:engine_suspect' && !reasons.includes('unclassified')) || repeated)
+    reasons.push('engine_suspect');
   const duration_ms = Math.max(
     0,
     Date.parse(run.completed_at ?? new Date(now).toISOString()) -
@@ -576,13 +575,16 @@ export function foldEpisode(
       p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null,
       coder_error:
         rows.some(r => !!r.data.error_class || r.data.self_report_conflict === true) ||
-        files(artifactsOf(run))
-          .filter(f => f.endsWith('.coder.json'))
-          .some(
-            f =>
-              !!memoryJson<{ error_class?: string | null }>(join(artifactsOf(run), f), {}, l)
-                .error_class
-          ),
+        ((run.status !== 'completed' ||
+          !acceptance.length ||
+          !acceptance.every(a => a.ok === true)) &&
+          files(artifactsOf(run))
+            .filter(f => f.endsWith('.coder.json'))
+            .some(
+              f =>
+                !!memoryJson<{ error_class?: string | null }>(join(artifactsOf(run), f), {}, l)
+                  .error_class
+            )),
     },
     repeated
   );
@@ -1199,21 +1201,18 @@ export function memoryTick(
                 hold: cache.hold,
                 since: cache.since,
                 disposed:
-                  l.dispositions?.some(d => d.ok && Date.parse(d.at) >= Date.parse(cache.since)) ??
-                  false,
+                  l.dispositions?.some(
+                    d =>
+                      (d.ok || d.action === 'blocked') &&
+                      Date.parse(d.at) >= Date.parse(cache.since)
+                  ) ?? false,
               },
             ],
             asks,
             now
           ).orphan_hold,
         };
-        Object.assign(
-          e,
-          diagnosis(
-            { ...e, overrun: etaMs > 0 && e.duration_ms > etaMs * 1.5 },
-            cache.episode.signature === 'evidence_conflict'
-          )
-        );
+        Object.assign(e, diagnosis({ ...e, overrun: etaMs > 0 && e.duration_ms > etaMs * 1.5 }));
         if (triggered(e, cache.hold ? cache.since : undefined, etaMs, now)) emit(e);
       } catch (e) {
         error(l.run_id, e);
@@ -1288,6 +1287,7 @@ export function memoryTick(
         const id = `job-${j.id}`,
           stamp = JSON.stringify([j.state, j.ended_at, j.exit_code, j.role, j.card]);
         if (
+          !j.role ||
           j.state === 'running' ||
           j.title.startsWith('memory-reflect:') ||
           index.terminal[id] === stamp
@@ -1312,7 +1312,7 @@ export function memoryTick(
                   ? ['coder_partial']
                   : [],
             decision =
-              j.state === 'failed' && j.role
+              j.state === 'failed'
                 ? { category: 'role' as const, signature: `${j.role}_job_failed` }
                 : diagnosis({
                     reasons,
