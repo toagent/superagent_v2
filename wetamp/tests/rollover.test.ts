@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Coordination, repoScope, runScope, type Identity, type RunRef } from '../src/coord';
@@ -232,4 +232,45 @@ test('accept reports a run whose owner changed after start as skipped', async ()
   expect(s.r.accept(String(started.token))).toMatchObject({
     runs: [{ run: 'run1', skipped: 'owner_changed' }],
   });
+});
+
+test('unavailable run repositories are excluded at start and skipped at accept', async () => {
+  const stale = fixture(),
+    staleRepo = gitRepo(join(stale.root, 'stale')),
+    staleRun: RunRef = { run_id: 'stale', archon_run_id: 'stale-engine', repo: staleRepo };
+  stale.runs.push(staleRun);
+  stale.c.claimRun(runScope(staleRun), a);
+  writeFileSync(join(stale.sa, 'runs/stale.json'), JSON.stringify(staleRun));
+  rmSync(staleRepo, { recursive: true, force: true });
+  const staleStarted = await stale.r.start();
+  expect(
+    JSON.parse(
+      readFileSync(join(stale.sa, `coord/rollovers/${String(staleStarted.token)}.json`), 'utf8')
+    ).runs
+  ).toEqual([]);
+
+  const s = fixture(),
+    disappearingRepo = gitRepo(join(s.root, 'disappearing')),
+    kept: RunRef = { run_id: 'kept', archon_run_id: 'kept-engine', repo: s.repo },
+    disappearing: RunRef = {
+      run_id: 'disappearing',
+      archon_run_id: 'gone-engine',
+      repo: disappearingRepo,
+    };
+  for (const run of [kept, disappearing]) {
+    s.runs.push(run);
+    s.c.claimRun(runScope(run), a);
+    writeFileSync(join(s.sa, `runs/${run.run_id}.json`), JSON.stringify(run));
+  }
+  const started = await s.r.start();
+  rmSync(disappearingRepo, { recursive: true, force: true });
+  s.setWho(b);
+  expect(s.r.accept(String(started.token))).toMatchObject({
+    state: 'accepted',
+    runs: [
+      { run: 'kept', skipped: undefined },
+      { run: 'disappearing', skipped: 'repository_unavailable' },
+    ],
+  });
+  expect(s.c.owner(runScope(kept)).owner?.session_id).toBe('new');
 });

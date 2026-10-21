@@ -113,7 +113,15 @@ export class Rollover {
     return this
       .jsonFiles(join(this.d.coord.d.sa, 'runs'))
       .map(value => value as unknown as RunRef)
-      .filter(run => same(this.d.coord.owner(runScope(run)).owner, who) && !terminal.has(this.runStatus(run)));
+      .flatMap(run => {
+        const scopes = this.scopes(run);
+        return scopes && same(this.d.coord.owner(scopes.run).owner, who) && !terminal.has(this.runStatus(run))
+          ? [run]
+          : [];
+      });
+  }
+  private scopes(run: RunRef): { run: ReturnType<typeof runScope>; repo: ReturnType<typeof repoScope> } | null {
+    try { const repo = repoScope(run.repo); return { run: runScope(run), repo }; } catch { return null; }
   }
   private runStatus(run: RunRef): string {
     try { return this.d.coord.d.status(run); } catch { return 'unknown'; }
@@ -211,12 +219,17 @@ export class Rollover {
           skipped[id] = 'run_missing';
           continue;
         }
-        const moved = this.d.coord.rolloverTransfer(runScope(run), r.from, to, token);
+        const scopes = this.scopes(run);
+        if (!scopes) {
+          skipped[id] = 'repository_unavailable';
+          continue;
+        }
+        const moved = this.d.coord.rolloverTransfer(scopes.run, r.from, to, token);
         if (moved.status === 'skipped') {
           skipped[id] = moved.reason ?? 'owner_changed';
           continue;
         }
-        this.d.coord.rolloverTransfer(repoScope(run.repo), r.from, to, token);
+        this.d.coord.rolloverTransfer(scopes.repo, r.from, to, token);
       }
       r.skipped = skipped;
       r.steps.transfer = 'done';
