@@ -309,13 +309,18 @@ function runtimeFixture() {
   return { root, artifacts, tiers, policyPath, plan };
 }
 async function inRuntime<T>(root: string, run: () => Promise<T>): Promise<T> {
-  const before = process.env.ARCHON_HOME;
+  const before = [process.env.ARCHON_HOME, process.env.SUPERAGENT_HOME];
   process.env.ARCHON_HOME = root;
+  process.env.SUPERAGENT_HOME = root;
   try {
     return await run();
   } finally {
-    if (before === undefined) delete process.env.ARCHON_HOME;
-    else process.env.ARCHON_HOME = before;
+    for (const [key, value] of [
+      ['ARCHON_HOME', before[0]],
+      ['SUPERAGENT_HOME', before[1]],
+    ] as const)
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
   }
 }
 
