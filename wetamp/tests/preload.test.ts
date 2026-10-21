@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { sep } from 'node:path';
 import { expect, test } from 'bun:test';
-import { inheritedTestHomes } from './preload';
+import { inheritedTestHomes, isolatedTestHomes } from './preload';
 
 // Capture during module loading: isolation must precede fixtures and test hooks.
 const identity = [
@@ -19,7 +19,7 @@ test('test preload clears inherited derived identities before module loading', (
 });
 
 test('test preload isolates inherited homes in this process and child test processes', () => {
-  const homes = [process.env.SUPERAGENT_HOME!, process.env.ARCHON_HOME!];
+  const homes = [isolatedTestHomes.superagent, isolatedTestHomes.archon];
   for (const home of homes) {
     expect(home.startsWith(`${tmpdir()}${sep}`)).toBe(true);
     expect(existsSync(home)).toBe(true);

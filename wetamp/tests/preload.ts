@@ -7,8 +7,12 @@ export const inheritedTestHomes = {
   archon: process.env.ARCHON_HOME,
 };
 const testHome = mkdtempSync(join(tmpdir(), 'sa-test-home-'));
-process.env.SUPERAGENT_HOME = testHome;
-process.env.ARCHON_HOME = join(testHome, 'archon');
+export const isolatedTestHomes = {
+  superagent: testHome,
+  archon: join(testHome, 'archon'),
+};
+process.env.SUPERAGENT_HOME = isolatedTestHomes.superagent;
+process.env.ARCHON_HOME = isolatedTestHomes.archon;
 mkdirSync(process.env.ARCHON_HOME);
 process.once('exit', () => {
   try {
