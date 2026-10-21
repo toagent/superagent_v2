@@ -22,8 +22,17 @@
     "generate:failure-class": "bun scripts/generate-failure-class.ts",
     "generate:node-contracts": "bun scripts/generate-node-contracts.ts",
     "check:node-contracts": "bun scripts/generate-node-contracts.ts --check",
+    "test": "bun run ../scripts/package-tests.ts",
     "type-check": "tsc --noEmit --incremental false -p tsconfig.json",
     "generate:plan-types": "bun scripts/generate-plan-schema.ts",
     "check:plan-types": "bun scripts/generate-plan-schema.ts --check"
-  }
+  },
+  "testGroups": [
+    [
+      "tests/"
+    ],
+    [
+      "scripts/"
+    ]
+  ]
 }

@@ -76,6 +76,7 @@
       "src/policy-dispatch.test.ts"
     ],
     [
+      "--max-concurrency=1",
       "src/dag-executor.test.ts"
     ],
     [
@@ -212,6 +213,10 @@
     ],
     [
       "src/structured-output.test.ts"
+    ],
+    [
+      "src/execution-lifecycle.test.ts",
+      "src/subprocess-output.test.ts"
     ],
     [
       "src/store-conformance.test.ts"

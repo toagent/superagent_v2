@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gitRepo, tmp } from './helpers';
+import { testTimeout } from '@archon/paths/test-utils';
 await (
   createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }
 ).init();
@@ -416,7 +417,7 @@ describe('两条底线', () => {
         }
       }
     },
-    20000
+    testTimeout(20000)
   );
 });
 

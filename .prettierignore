@@ -40,6 +40,8 @@ packages/providers/src/codex/protocol/
 .agents/
 .claude/
 .archon/
+.gstack/
+.opencode/
 
 # Website (Astro/Starlight - uses own formatting)
 packages/docs-web/

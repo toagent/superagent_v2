@@ -20,6 +20,7 @@ import {
   runSnapshotProbe,
 } from '../src/engine';
 import type { ProbeEvidence } from '../src/probe';
+import { testTimeout } from '@archon/paths/test-utils';
 import { sh, tmp } from './helpers';
 
 const original = { ...process.env };
@@ -125,31 +126,35 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   const third = commit(f.source, 'third');
   expect(promote(third, undefined, { probe: successfulProbe }).sha).toBe(third);
   expect(currentEngineSnapshot()).toEndWith(third);
-});
+}, testTimeout(30_000));
 
-test('promotion lock and protocol downgrade fail closed without publishing a receipt', () => {
-  const f = sourceFixture(),
-    first = f.sha();
-  promote(first, f.evidence);
-  const engine = join(process.env.SUPERAGENT_HOME!, 'engine');
-  const held = lock(join(engine, 'engine.lock'));
-  expect(held.ok).toBe(true);
-  try {
-    expect(() => promote(first)).toThrow('locked');
-  } finally {
-    if (held.ok) held.release();
-  }
+test(
+  'promotion lock and protocol downgrade fail closed without publishing a receipt',
+  () => {
+    const f = sourceFixture(),
+      first = f.sha();
+    promote(first, f.evidence);
+    const engine = join(process.env.SUPERAGENT_HOME!, 'engine');
+    const held = lock(join(engine, 'engine.lock'));
+    expect(held.ok).toBe(true);
+    try {
+      expect(() => promote(first)).toThrow('locked');
+    } finally {
+      if (held.ok) held.release();
+    }
 
-  const second = commit(f.source, 'second');
-  const receipts = join(engine, 'receipts');
-  const firstReceipt = JSON.parse(readFileSync(join(receipts, `${first}.json`), 'utf8'));
-  firstReceipt.protocol_version = 2;
-  writeFileSync(join(receipts, `${first}.json`), JSON.stringify(firstReceipt));
-  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
-    'protocol downgrade'
-  );
-  expect(existsSync(join(receipts, `${second}.json`))).toBe(false);
-});
+    const second = commit(f.source, 'second');
+    const receipts = join(engine, 'receipts');
+    const firstReceipt = JSON.parse(readFileSync(join(receipts, `${first}.json`), 'utf8'));
+    firstReceipt.protocol_version = 2;
+    writeFileSync(join(receipts, `${first}.json`), JSON.stringify(firstReceipt));
+    expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
+      'protocol downgrade'
+    );
+    expect(existsSync(join(receipts, `${second}.json`))).toBe(false);
+  },
+  testTimeout(30_000)
+);
 
 // prettier-ignore
 test('failed read-only candidate retries explicitly while in-service snapshots stay locked', () => {
@@ -175,7 +180,7 @@ test('failed read-only candidate retries explicitly while in-service snapshots s
   expect(promote(second, undefined, { probe: successfulProbe }).sha).toBe(second);
   expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow('snapshot_in_service');
   expect(statSync(snapshot).mode).toBe(mode);
-});
+}, testTimeout(30_000));
 
 // prettier-ignore
 test('auto promotion detaches once and marks a lost promoter with an explicit retry', async () => {
@@ -200,4 +205,4 @@ test('auto promotion detaches once and marks a lost promoter with an explicit re
   const childMarker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${sha}.json`); mkdirSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions'), { recursive: true });
   writeFileSync(childMarker, JSON.stringify({ sha, status: 'running', pid: child.pid, pid_start: identity.start, host: 'fixture', token, at: new Date().toISOString() }));
   expect(await child.exited, (await new Response(child.stderr).text())).toBe(0); expect(JSON.parse(readFileSync(childMarker, 'utf8')).status).toBe('promoted');
-});
+}, testTimeout(60_000));

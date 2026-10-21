@@ -25,6 +25,29 @@ mock.module('@archon/git', () => ({
   mkdirAsync: mock(async () => undefined),
 }));
 
+const streamedOutput = (text: string) => ({
+  preview: text,
+  tail: text,
+  bytes: Buffer.byteLength(text),
+  raw: text,
+});
+mock.module('./subprocess-output', () => ({
+  runStreamingSubprocess: async (options: {
+    cmd: string;
+    args: string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeout: number;
+  }) => {
+    const { stdout, stderr } = await mockExecFileAsync(options.cmd, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      timeout: options.timeout,
+    });
+    return { stdout: streamedOutput(stdout), stderr: streamedOutput(stderr) };
+  },
+}));
+
 // --- Mock logger (MUST come before module-under-test imports) ---
 
 const mockLogFn = mock(() => {});

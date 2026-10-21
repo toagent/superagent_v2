@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { testTimeout } from '@archon/paths/test-utils';
 import {
   chmodSync,
   cpSync,
@@ -1587,6 +1588,7 @@ describe('single delivery decision', () => {
       if (dirty) writeFileSync(join(repo, 'README.md'), 'hi\n');
     }
   );
+  // prettier-ignore
   test('permission evidence and retry boundaries survive the real acceptance node', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -1658,7 +1660,7 @@ describe('single delivery decision', () => {
         ...(reason === 'coder_redline' ? { out_of_scope: ['outside.ts'] } : {}),
       });
     }
-  }, 10_000);
+  }, testTimeout(10_000));
   test('other self-reports do not change control state, including malformed output', () => {
     for (const raw of [
       '{',
@@ -3672,6 +3674,7 @@ describe('sa-check script', () => {
     go('diff-m1-r2', evidence);
     expect(readFileSync(counter, 'utf8')).toBe('c\nu\nc\nu\n');
   });
+  // prettier-ignore
   test('delivery-truth: cache binds filtered command environment and private context, never legacy identity', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -3774,7 +3777,7 @@ describe('sa-check script', () => {
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
-  }, 10_000);
+  }, testTimeout(10_000));
   test('U5: hmac-v1 cache entries cannot satisfy the new identity version', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -3935,6 +3938,7 @@ describe('sa-check script', () => {
     go('tree-changed');
     expect(count()).toBe(11);
   });
+  // prettier-ignore
   test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -3976,7 +3980,7 @@ describe('sa-check script', () => {
     expect(readdirSync(cache).filter(f => f !== '.key')).toHaveLength(1);
     expect(readFileSync(join(cache, '.key')).length).toBe(32);
     expect(statSync(join(cache, '.key')).mode & 0o777).toBe(0o600);
-  }, 10_000);
+  }, testTimeout(10_000));
   test('FC legacy cache default product cannot hide an unclassified command', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -4072,6 +4076,7 @@ describe('sa-check script', () => {
     );
     expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).not.toContain('# reused');
   });
+  // prettier-ignore
   test('F-20/F-13: scope violations repair, recover, honor exemptions, and fail final acceptance', () => {
     const root = tmp();
     const repo = gitRepo(root);
@@ -4236,7 +4241,7 @@ describe('sa-check script', () => {
     write(['src/']);
     commit('src/auth/x.md');
     expect(go('G1')).toMatchObject({ risk: 'G2', out_of_scope: [] });
-  }, 15_000); // Six real accept invocations exercise patch and scope integration.
+  }, testTimeout(15_000)); // Six real accept invocations exercise patch and scope integration.
   test('unknown kind fails loudly', () => {
     const root = tmp();
     expect(runScript(gitRepo(root), { kind: 'bogus' }).code).not.toBe(0);

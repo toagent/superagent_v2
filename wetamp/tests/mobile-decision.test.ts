@@ -9,6 +9,7 @@ import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
+import { testTimeout } from '@archon/paths/test-utils';
 import {
   DeviceStore,
   digest,
@@ -577,72 +578,80 @@ test('operator saves COORD intent while supervise lock is held and next tick tra
     restoreEnv('ARCHON_HOME', previous[1]);
   }
 }, 30000);
-test('tick rejects revoked-device COORD intent without changing ask', async () => {
-  const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
-    f = coordDecisionFixture();
-  try {
-    const store = new DeviceStore(),
-      operator = pair(store, operatorGrant()),
-      decision = coordinationDecisions(f.c)[0];
-    expect(
-      (
-        await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
-          decisions: [decision],
+test(
+  'tick rejects revoked-device COORD intent without changing ask',
+  async () => {
+    const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
+      f = coordDecisionFixture();
+    try {
+      const store = new DeviceStore(),
+        operator = pair(store, operatorGrant()),
+        decision = coordinationDecisions(f.c)[0];
+      expect(
+        (
+          await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
+            decisions: [decision],
+            unknown: [],
+          }))
+        ).stage
+      ).toBe('intent');
+      const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
+      const asks = JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'));
+      asks[askKey].status = 'yes';
+      writeFileSync(join(f.sa, 'asks.json'), JSON.stringify(asks));
+      store.revoke(operator.device.id);
+      cliModule.superviseTick();
+      expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
+        status: 'yes',
+      });
+      expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
+    } finally {
+      f.presence.mockRestore();
+      restoreEnv('SUPERAGENT_HOME', previous[0]);
+      restoreEnv('ARCHON_HOME', previous[1]);
+    }
+  },
+  testTimeout(15000)
+);
+test(
+  'tick rejects stale COORD intent without changing ask',
+  async () => {
+    const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
+      f = coordDecisionFixture();
+    try {
+      const store = new DeviceStore(),
+        operator = pair(store, operatorGrant()),
+        decision = coordinationDecisions(f.c)[0],
+        replacement = { ...f.owner, session_id: 'replacement', pid: 1003, pid_start: 'new-start' };
+      expect(
+        (
+          await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
+            decisions: [decision],
+            unknown: [],
+          }))
+        ).stage
+      ).toBe('intent');
+      const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
+      f.c.claim(f.scope, replacement, true, 'generation changed');
+      cliModule.superviseTick();
+      expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
+        status: 'pending',
+      });
+      expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
+      expect(
+        await decisionState(operator.device, decision.id, store, {
+          decisions: coordinationDecisions(f.c),
           unknown: [],
-        }))
-      ).stage
-    ).toBe('intent');
-    const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
-    const asks = JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'));
-    asks[askKey].status = 'yes';
-    writeFileSync(join(f.sa, 'asks.json'), JSON.stringify(asks));
-    store.revoke(operator.device.id);
-    cliModule.superviseTick();
-    expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
-      status: 'yes',
-    });
-    expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
-  } finally {
-    f.presence.mockRestore();
-    restoreEnv('SUPERAGENT_HOME', previous[0]);
-    restoreEnv('ARCHON_HOME', previous[1]);
-  }
-}, 15000);
-test('tick rejects stale COORD intent without changing ask', async () => {
-  const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
-    f = coordDecisionFixture();
-  try {
-    const store = new DeviceStore(),
-      operator = pair(store, operatorGrant()),
-      decision = coordinationDecisions(f.c)[0],
-      replacement = { ...f.owner, session_id: 'replacement', pid: 1003, pid_start: 'new-start' };
-    expect(
-      (
-        await answerDecision(store, operator.device, decision.id, 'yes', async () => ({
-          decisions: [decision],
-          unknown: [],
-        }))
-      ).stage
-    ).toBe('intent');
-    const askKey = Object.keys(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8')))[0];
-    f.c.claim(f.scope, replacement, true, 'generation changed');
-    cliModule.superviseTick();
-    expect(JSON.parse(readFileSync(join(f.sa, 'asks.json'), 'utf8'))[askKey]).toEqual({
-      status: 'pending',
-    });
-    expect(store.transaction(s => s.receipts[0].stage)).toBe('rejected');
-    expect(
-      await decisionState(operator.device, decision.id, store, {
-        decisions: coordinationDecisions(f.c),
-        unknown: [],
-      })
-    ).toMatchObject({ receipt: { stage: 'rejected' }, status: 'completed' });
-  } finally {
-    f.presence.mockRestore();
-    restoreEnv('SUPERAGENT_HOME', previous[0]);
-    restoreEnv('ARCHON_HOME', previous[1]);
-  }
-}, 15000);
+        })
+      ).toMatchObject({ receipt: { stage: 'rejected' }, status: 'completed' });
+    } finally {
+      f.presence.mockRestore();
+      restoreEnv('SUPERAGENT_HOME', previous[0]);
+      restoreEnv('ARCHON_HOME', previous[1]);
+    }
+  },
+  testTimeout(15000)
+);
 test('Apple-only push rejects internal, redirect/credential-shaped targets and invalid keys', () => {
   for (const endpoint of [
     'http://web.push.apple.com/Qx',

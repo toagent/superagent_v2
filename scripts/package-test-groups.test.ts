@@ -99,6 +99,9 @@ test('inventory accepts independent additions and rejects invalid groups and sta
       new Map()
     )
   ).toBe(false);
+  expect(
+    isCollectedByRepositoryTest('wetamp/tests/ev2-boards.test.ts', [], ['wetamp'], true, new Map())
+  ).toBe(true);
 });
 
 test('discovery errors remain visible and explicit script chains still cover tests', () => {

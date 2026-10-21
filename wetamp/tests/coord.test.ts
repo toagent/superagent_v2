@@ -13,6 +13,7 @@ import {
 import { hostname } from 'node:os';
 import * as launchers from '../src/launcher';
 import { join } from 'node:path';
+import { testTimeout } from '@archon/paths/test-utils';
 import {
   Coordination,
   ACK_TIMEOUT_MS,
@@ -920,41 +921,45 @@ test('INT-R1-01: actual Claude/Codex hooks allow Git across claimed locations', 
     expect(out).not.toContain('deny');
   }
 });
-test('R2-01: redline shares directory transitions and subshells keep the parent cwd', async () => {
-  const s = setup();
-  const secret = join(s.root, '.ssh');
-  mkdirSync(secret);
-  writeFileSync(join(secret, 'id_ed25519'), 'synthetic fixture');
-  for (const role of ['', 'general'])
-    for (const command of [
-      'cd -LP -- "$HOME/.ssh" && cat id_ed25519',
-      'pushd -- "$HOME/.ssh" && cat id_ed25519',
-      'cd -P "$HOME/.ssh" && cat id_ed25519',
-      '(cd "$HOME/.ssh" && cat id_ed25519)',
-      'cd -L -- "$HOME/.ssh" && cat id_ed25519',
-      'pushd "$HOME/.ssh" && cat id_ed25519',
-      'cd "$HOME/.ssh" && pushd -- "$HOME" && popd && cat id_ed25519',
-    ]) {
-      const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
-        cwd: s.repo,
-        env: { ...process.env, HOME: s.root, SUPERAGENT_HOME: s.sa, SUPERAGENT_ROLE: role },
-        stdin: 'pipe',
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      p.stdin.write(
-        JSON.stringify({
+test(
+  'R2-01: redline shares directory transitions and subshells keep the parent cwd',
+  async () => {
+    const s = setup();
+    const secret = join(s.root, '.ssh');
+    mkdirSync(secret);
+    writeFileSync(join(secret, 'id_ed25519'), 'synthetic fixture');
+    for (const role of ['', 'general'])
+      for (const command of [
+        'cd -LP -- "$HOME/.ssh" && cat id_ed25519',
+        'pushd -- "$HOME/.ssh" && cat id_ed25519',
+        'cd -P "$HOME/.ssh" && cat id_ed25519',
+        '(cd "$HOME/.ssh" && cat id_ed25519)',
+        'cd -L -- "$HOME/.ssh" && cat id_ed25519',
+        'pushd "$HOME/.ssh" && cat id_ed25519',
+        'cd "$HOME/.ssh" && pushd -- "$HOME" && popd && cat id_ed25519',
+      ]) {
+        const p = Bun.spawn(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'claude'], {
           cwd: s.repo,
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Bash',
-          tool_input: { command },
-        })
-      );
-      p.stdin.end();
-      expect(await new Response(p.stdout).text()).toContain('deny');
-      expect(await p.exited).toBe(0);
-    }
-}, 20_000);
+          env: { ...process.env, HOME: s.root, SUPERAGENT_HOME: s.sa, SUPERAGENT_ROLE: role },
+          stdin: 'pipe',
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        p.stdin.write(
+          JSON.stringify({
+            cwd: s.repo,
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command },
+          })
+        );
+        p.stdin.end();
+        expect(await new Response(p.stdout).text()).toContain('deny');
+        expect(await p.exited).toBe(0);
+      }
+  },
+  testTimeout(20_000)
+);
 test('R2-02: ledger, Archon and short IDs reject before recovering a dead executor or other mutations', async () => {
   const s = setup();
   isolated(s);
@@ -997,103 +1002,119 @@ test('R2-02: ledger, Archon and short IDs reject before recovering a dead execut
     db.close();
   }
 });
-test('R2-04: shim keeps run scope despite same-named directories, across two repositories and both IDs', async () => {
-  const s = setup();
-  isolated(s);
-  const actor = caller(),
-    other = gitRepo(tmp());
-  const first = registered(s, s.c.claim(s.scope, actor).controller);
-  const second = { ...first, run_id: 'ledger-other', archon_run_id: 'archon-other', repo: other };
-  s.c.claim(repoScope(other), actor);
-  writeFileSync(join(s.sa, 'runs', second.run_id + '.json'), JSON.stringify(second));
-  for (const l of [first, second])
-    s.c.claim({ kind: 'run', id: l.run_id, repo: repoScope(l.repo).id }, b, true, 'taken over');
-  for (const l of [first, second]) mkdirSync(join(s.repo, l.run_id));
-  const shim = join(import.meta.dir, '../bin/archon');
-  for (const l of [first, second])
-    for (const id of [l.run_id, l.archon_run_id]) {
-      const p = Bun.spawn([shim, 'workflow', 'approve', id, '--json'], {
+test(
+  'R2-04: shim keeps run scope despite same-named directories, across two repositories and both IDs',
+  async () => {
+    const s = setup();
+    isolated(s);
+    const actor = caller(),
+      other = gitRepo(tmp());
+    const first = registered(s, s.c.claim(s.scope, actor).controller);
+    const second = { ...first, run_id: 'ledger-other', archon_run_id: 'archon-other', repo: other };
+    s.c.claim(repoScope(other), actor);
+    writeFileSync(join(s.sa, 'runs', second.run_id + '.json'), JSON.stringify(second));
+    for (const l of [first, second])
+      s.c.claim({ kind: 'run', id: l.run_id, repo: repoScope(l.repo).id }, b, true, 'taken over');
+    for (const l of [first, second]) mkdirSync(join(s.repo, l.run_id));
+    const shim = join(import.meta.dir, '../bin/archon');
+    for (const l of [first, second])
+      for (const id of [l.run_id, l.archon_run_id]) {
+        const p = Bun.spawn([shim, 'workflow', 'approve', id, '--json'], {
+          cwd: s.repo,
+          env: process.env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        expect(await new Response(p.stderr).text()).toContain('fencing');
+        expect(await p.exited).toBe(1);
+      }
+  },
+  testTimeout(15000)
+);
+test(
+  'R1-02/03/04: both IDs and direct shim reject a stale controller before any continuation',
+  async () => {
+    const s = setup();
+    isolated(s);
+    const actor = caller();
+    const l = registered(s, s.c.claim(s.scope, actor).controller);
+    const runScope = { kind: 'run' as const, id: l.run_id, repo: s.scope.id };
+    s.c.claim(runScope, b, true, 'run taken over');
+    expect(s.c.owner(s.scope).owner).toEqual(actor); // Repo fallback would wrongly admit this actual caller.
+    const calls = join(s.root, 'calls'),
+      stub = join(s.root, 'engine');
+    writeFileSync(stub, `#!/bin/sh\necho "$*" >> '${calls}'\nexit 1\n`);
+    chmodSync(stub, 0o755);
+    process.env.SA_ARCHON_BIN = stub;
+    for (const verb of ['cancel', 'resume', 'recover', 'decide', 'land'])
+      for (const id of [l.run_id, l.archon_run_id])
+        expect(() => main([verb, id, 'retry'])).toThrow(/fencing/);
+    const { spyOn } = await import('bun:test');
+    const output = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      main(['supervise-tick']);
+      expect(JSON.stringify(output.mock.calls)).toContain('fencing');
+    } finally {
+      output.mockRestore();
+    }
+    const observed = readFileSync(calls, 'utf8').trim().split('\n');
+    expect(observed.length).toBeGreaterThan(0);
+    expect(new Set(observed)).toEqual(
+      new Set([`workflow get ${l.archon_run_id} --verbose --json`])
+    );
+    const singleton = req('../src/coord/index.ts') as typeof import('../src/coord');
+    for (const args of [
+      ['workflow', 'abandon', l.archon_run_id],
+      ['--json', 'workflow', 'abandon', l.run_id],
+      ['workflow', 'run', 'fixture', `--adopt=${l.run_id}`, '--cwd', s.repo],
+      ['workflow', 'event', 'emit', `--run-id=${l.archon_run_id}`, '--type', 'fixture'],
+    ]) {
+      const admittedRepo = singleton
+        .coord()
+        .mutate(s.scope, actor, () => singleton.coord().admissionEnv());
+      const shim = Bun.spawn([join(import.meta.dir, '../bin/archon'), ...args], {
         cwd: s.repo,
-        env: process.env,
+        env: { ...process.env, ...admittedRepo },
         stdout: 'pipe',
         stderr: 'pipe',
       });
-      expect(await new Response(p.stderr).text()).toContain('fencing');
-      expect(await p.exited).toBe(1);
+      expect(await new Response(shim.stderr).text()).toContain('fencing');
+      expect(await shim.exited).toBe(1);
     }
-}, 15000);
-test('R1-02/03/04: both IDs and direct shim reject a stale controller before any continuation', async () => {
-  const s = setup();
-  isolated(s);
-  const actor = caller();
-  const l = registered(s, s.c.claim(s.scope, actor).controller);
-  const runScope = { kind: 'run' as const, id: l.run_id, repo: s.scope.id };
-  s.c.claim(runScope, b, true, 'run taken over');
-  expect(s.c.owner(s.scope).owner).toEqual(actor); // Repo fallback would wrongly admit this actual caller.
-  const calls = join(s.root, 'calls'),
-    stub = join(s.root, 'engine');
-  writeFileSync(stub, `#!/bin/sh\necho "$*" >> '${calls}'\nexit 1\n`);
-  chmodSync(stub, 0o755);
-  process.env.SA_ARCHON_BIN = stub;
-  for (const verb of ['cancel', 'resume', 'recover', 'decide', 'land'])
-    for (const id of [l.run_id, l.archon_run_id])
-      expect(() => main([verb, id, 'retry'])).toThrow(/fencing/);
-  const { spyOn } = await import('bun:test');
-  const output = spyOn(console, 'log').mockImplementation(() => undefined);
-  try {
-    main(['supervise-tick']);
-    expect(JSON.stringify(output.mock.calls)).toContain('fencing');
-  } finally {
-    output.mockRestore();
-  }
-  expect(existsSync(calls)).toBe(false);
-  const singleton = req('../src/coord/index.ts') as typeof import('../src/coord');
-  for (const args of [
-    ['workflow', 'abandon', l.archon_run_id],
-    ['--json', 'workflow', 'abandon', l.run_id],
-    ['workflow', 'run', 'fixture', `--adopt=${l.run_id}`, '--cwd', s.repo],
-    ['workflow', 'event', 'emit', `--run-id=${l.archon_run_id}`, '--type', 'fixture'],
-  ]) {
-    const admittedRepo = singleton
-      .coord()
-      .mutate(s.scope, actor, () => singleton.coord().admissionEnv());
-    const shim = Bun.spawn([join(import.meta.dir, '../bin/archon'), ...args], {
-      cwd: s.repo,
-      env: { ...process.env, ...admittedRepo },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    expect(await new Response(shim.stderr).text()).toContain('fencing');
-    expect(await shim.exited).toBe(1);
-  }
-  mkdirSync(join(s.sa, 'live'));
-  writeFileSync(join(s.sa, 'live/actor.json'), JSON.stringify(actor));
-  await req('../hooks/shell-ast.cjs').init();
-  // A random or replayed boolean/nonce is never an admission context.
-  process.env.SA_COORD_ADMISSION = '00000000-0000-0000-0000-000000000000';
-  const forged = Bun.spawn(
-    [join(import.meta.dir, '../bin/archon'), 'workflow', 'abandon', l.archon_run_id],
-    { cwd: s.repo, env: process.env, stdout: 'pipe', stderr: 'pipe' }
-  );
-  expect(await new Response(forged.stderr).text()).toContain('unknown admission token');
-  expect(await forged.exited).toBe(1);
-}, 15000);
-test('R1-04: admitted synchronous shim consumes verifiable context without deadlocking or changing generation', () => {
-  const s = setup();
-  isolated(s);
-  const l = registered(s);
-  process.env.SA_ARCHON_BIN = '';
-  const { archon } = req('../src/archon.ts') as typeof import('../src/archon');
-  const singleton = req('../src/coord/index.ts') as typeof import('../src/coord');
-  const r = singleton
-    .coord()
-    .mutate({ kind: 'run' as const, id: l.run_id, repo: s.scope.id }, a, () =>
-      archon(['workflow', 'abandon', l.archon_run_id], s.repo)
+    mkdirSync(join(s.sa, 'live'));
+    writeFileSync(join(s.sa, 'live/actor.json'), JSON.stringify(actor));
+    await req('../hooks/shell-ast.cjs').init();
+    // A random or replayed boolean/nonce is never an admission context.
+    process.env.SA_COORD_ADMISSION = '00000000-0000-0000-0000-000000000000';
+    const forged = Bun.spawn(
+      [join(import.meta.dir, '../bin/archon'), 'workflow', 'abandon', l.archon_run_id],
+      { cwd: s.repo, env: process.env, stdout: 'pipe', stderr: 'pipe' }
     );
-  expect(r.err).not.toContain('fencing');
-  expect(r.err).not.toContain('scope busy');
-  expect(s.c.owner(s.scope).generation).toBe(1);
-}, 15000);
+    expect(await new Response(forged.stderr).text()).toContain('unknown admission token');
+    expect(await forged.exited).toBe(1);
+  },
+  testTimeout(15000)
+);
+test(
+  'R1-04: admitted synchronous shim consumes verifiable context without deadlocking or changing generation',
+  () => {
+    const s = setup();
+    isolated(s);
+    const l = registered(s);
+    process.env.SA_ARCHON_BIN = '';
+    const { archon } = req('../src/archon.ts') as typeof import('../src/archon');
+    const singleton = req('../src/coord/index.ts') as typeof import('../src/coord');
+    const r = singleton
+      .coord()
+      .mutate({ kind: 'run' as const, id: l.run_id, repo: s.scope.id }, a, () =>
+        archon(['workflow', 'abandon', l.archon_run_id], s.repo)
+      );
+    expect(r.err).not.toContain('fencing');
+    expect(r.err).not.toContain('scope busy');
+    expect(s.c.owner(s.scope).generation).toBe(1);
+  },
+  testTimeout(15000)
+);
 test('R1-07: a real process holds long admission while unrelated repo claim/handoff remain available', async () => {
   const s = setup(),
     unrelated = gitRepo(tmp()),
@@ -1602,14 +1623,16 @@ for (const mode of [
 }
 
 // Keep both native launcher parents alive until both contenders have reported.
-test('two real same-session processes race to renew; only one acquires the lease', async () => {
-  const s = setup();
-  s.c.claim(s.scope, { ...a, client: 'claude', pid: 99999999, pid_start: 'exited' });
-  const parent = join(s.root, 'claude');
-  const child = join(s.root, 'renew.ts');
-  writeFileSync(
-    child,
-    `
+test(
+  'two real same-session processes race to renew; only one acquires the lease',
+  async () => {
+    const s = setup();
+    s.c.claim(s.scope, { ...a, client: 'claude', pid: 99999999, pid_start: 'exited' });
+    const parent = join(s.root, 'claude');
+    const child = join(s.root, 'renew.ts');
+    writeFileSync(
+      child,
+      `
 import {Coordination,caller} from ${JSON.stringify(join(import.meta.dir, '../src/coord/index.ts'))};
 import {existsSync,writeFileSync} from 'node:fs';
 const c=new Coordination({sa:process.env.SUPERAGENT_HOME,runs:()=>[]});
@@ -1618,10 +1641,10 @@ while(!existsSync(${JSON.stringify(join(s.root, 'go'))})) await Bun.sleep(10);
 let ok=false; try { c.mutate(${JSON.stringify(s.scope)},who,()=>{ok=true;},1); } catch {}
 writeFileSync(process.argv[2],JSON.stringify({ok,who}));
 `
-  );
-  writeFileSync(
-    parent,
-    `
+    );
+    writeFileSync(
+      parent,
+      `
 import {mkdirSync,writeFileSync,existsSync} from 'node:fs';
 import {hostname} from 'node:os';
 import {inspectProcess} from ${JSON.stringify(join(import.meta.dir, '../src/launcher.ts'))};
@@ -1632,30 +1655,35 @@ const p=Bun.spawn([process.execPath,${JSON.stringify(child)},root+'/'+id+'.json'
 await p.exited;
 while(!existsSync(root+'/release')) await Bun.sleep(10);
 `
-  );
-  const procs = ['one', 'two'].map(id =>
-    Bun.spawn([process.execPath, parent, id], {
-      env: { ...process.env, SUPERAGENT_HOME: s.sa, ARCHON_HOME: join(s.sa, 'archon') },
-      stdout: 'ignore',
-      stderr: 'pipe',
-    })
-  );
-  try {
-    writeFileSync(join(s.root, 'go'), '');
-    const deadline = Date.now() + 10000;
-    while (
-      !['one', 'two'].every(id => existsSync(join(s.root, id + '.json'))) &&
-      Date.now() < deadline
-    )
-      await Bun.sleep(20);
-    const results = ['one', 'two'].map(id =>
-      JSON.parse(readFileSync(join(s.root, id + '.json'), 'utf8'))
     );
-    expect(results.filter(r => r.ok)).toHaveLength(1);
-    expect(s.c.owner(s.scope)).toMatchObject({ owner: results.find(r => r.ok).who, generation: 2 });
-    expect(s.c.messages()).toEqual([]);
-  } finally {
-    writeFileSync(join(s.root, 'release'), '');
-    await Promise.all(procs.map(p => p.exited));
-  }
-}, 20000);
+    const procs = ['one', 'two'].map(id =>
+      Bun.spawn([process.execPath, parent, id], {
+        env: { ...process.env, SUPERAGENT_HOME: s.sa, ARCHON_HOME: join(s.sa, 'archon') },
+        stdout: 'ignore',
+        stderr: 'pipe',
+      })
+    );
+    try {
+      writeFileSync(join(s.root, 'go'), '');
+      const deadline = Date.now() + 10000;
+      while (
+        !['one', 'two'].every(id => existsSync(join(s.root, id + '.json'))) &&
+        Date.now() < deadline
+      )
+        await Bun.sleep(20);
+      const results = ['one', 'two'].map(id =>
+        JSON.parse(readFileSync(join(s.root, id + '.json'), 'utf8'))
+      );
+      expect(results.filter(r => r.ok)).toHaveLength(1);
+      expect(s.c.owner(s.scope)).toMatchObject({
+        owner: results.find(r => r.ok).who,
+        generation: 2,
+      });
+      expect(s.c.messages()).toEqual([]);
+    } finally {
+      writeFileSync(join(s.root, 'release'), '');
+      await Promise.all(procs.map(p => p.exited));
+    }
+  },
+  testTimeout(20000)
+);

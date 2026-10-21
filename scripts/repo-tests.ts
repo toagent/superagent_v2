@@ -33,8 +33,18 @@ export const ROOT_TEST_PLAN: readonly RootTestStep[] = [
   { kind: 'root', selectors: ['./.archon/scripts/'] },
 ];
 
-/** Each workspace runs its own `test` script, which owns that package's group splitting. */
-const WORKSPACE_TEST_COMMAND = ['bun', '--filter', '*', '--parallel', 'test'];
+/** Subprocess-heavy suites run alone; the other workspaces retain parallelism. */
+const WORKFLOW_TEST_COMMAND = ['bun', '--filter', '@archon/workflows', 'test'];
+const WETAMP_TEST_COMMAND = ['bun', '--filter', '@wetamp/superagent', 'test'];
+const WORKSPACE_TEST_COMMAND = [
+  'bun',
+  '--filter',
+  '!@archon/workflows',
+  '--filter',
+  '!@wetamp/superagent',
+  '--parallel',
+  'test',
+];
 
 const REPO_ROOT = join(import.meta.dir, '..');
 
@@ -113,10 +123,14 @@ async function run(command: string[], cwd: string): Promise<number> {
 
 async function runPlan(): Promise<number> {
   for (const step of ROOT_TEST_PLAN) {
-    const command =
-      step.kind === 'workspaces' ? WORKSPACE_TEST_COMMAND : bunTestCommand(step.selectors);
-    const code = await run(command, REPO_ROOT);
-    if (code !== 0) return code;
+    const commands =
+      step.kind === 'workspaces'
+        ? [WORKFLOW_TEST_COMMAND, WETAMP_TEST_COMMAND, WORKSPACE_TEST_COMMAND]
+        : [bunTestCommand(step.selectors)];
+    for (const command of commands) {
+      const code = await run(command, REPO_ROOT);
+      if (code !== 0) return code;
+    }
   }
   return 0;
 }

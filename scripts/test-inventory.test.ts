@@ -118,13 +118,18 @@ function packageTestSelectors(
   manifest: { testScript: string | undefined; testGroups: unknown },
   packageDirectory: string
 ): SelectorParseResult {
-  const runsSharedRunner = manifest.testScript?.trim() === PACKAGE_TEST_RUNNER;
+  const localRunner = `bun run ${normalizePath(relative(packageDirectory, join(REPO_ROOT, 'scripts/package-tests.ts')))}`;
+  const runsSharedRunner = [PACKAGE_TEST_RUNNER, localRunner].includes(
+    manifest.testScript?.trim() ?? ''
+  );
   if (runsSharedRunner) {
     try {
-      const selectors = resolvePackageTestGroups(packageDirectory, manifest).flat();
+      const selectors = resolvePackageTestGroups(packageDirectory, manifest)
+        .flat()
+        .filter(selector => !selector.startsWith('-'));
       return {
-        selectors: selectors.filter(selector => selector.startsWith('src/')),
-        unsupportedDeclarations: selectors.filter(selector => !selector.startsWith('src/')),
+        selectors,
+        unsupportedDeclarations: [],
       };
     } catch (error) {
       return { selectors: [], unsupportedDeclarations: [String(error)] };
@@ -188,15 +193,20 @@ function packageDirectoryForTest(
   testPath: string,
   workspacePatterns: string[]
 ): string | undefined {
-  const [directory, packageName] = testPath.split('/');
-  if (directory !== 'packages' || packageName === undefined) return undefined;
-
-  const workspaceDirectory = `${directory}/${packageName}`;
-  if (!workspacePatterns.some(pattern => matchesWorkspacePattern(workspaceDirectory, pattern))) {
-    return undefined;
-  }
-
-  const packageDirectory = join(PACKAGES_DIR, packageName);
+  const candidates = workspacePatterns.flatMap(pattern => {
+    if (pattern.endsWith('/*')) {
+      const [directory, packageName] = testPath.split('/');
+      return packageName === undefined ? [] : [`${directory}/${packageName}`];
+    }
+    return [pattern];
+  });
+  const workspaceDirectory = candidates.find(
+    directory =>
+      (testPath === directory || testPath.startsWith(`${directory}/`)) &&
+      workspacePatterns.some(pattern => matchesWorkspacePattern(directory, pattern))
+  );
+  if (workspaceDirectory === undefined) return undefined;
+  const packageDirectory = join(REPO_ROOT, workspaceDirectory);
   return existsSync(join(packageDirectory, 'package.json')) ? packageDirectory : undefined;
 }
 

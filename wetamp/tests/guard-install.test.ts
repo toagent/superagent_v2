@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { WETAMP } from '../src/config';
 import { installMode } from '../src/install-mode';
+import { testTimeout } from '@archon/paths/test-utils';
 import { mergeHooks, openCodeGuard } from '../src/install-hooks';
 import { tmp } from './helpers';
 const state = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
@@ -419,43 +420,47 @@ test('WP-1: plan parsing failures retain JSON launch-failure evidence', () => {
   expect(existsSync(join(sa, 'intents'))).toBe(false);
 });
 
-test('F-12: even an old live-owner lock is never stolen or released by a contender', async () => {
-  const root = tmp(),
-    file = join(root, 'state.json'),
-    lock = `${file}.lock`,
-    ready = join(root, 'ready');
-  const hook = join(WETAMP, 'hooks/hook-state.cjs');
-  const owner = Bun.spawn(
-    [
-      'node',
-      '-e',
-      `const fs=require('node:fs');
+test(
+  'F-12: even an old live-owner lock is never stolen or released by a contender',
+  async () => {
+    const root = tmp(),
+      file = join(root, 'state.json'),
+      lock = `${file}.lock`,
+      ready = join(root, 'ready');
+    const hook = join(WETAMP, 'hooks/hook-state.cjs');
+    const owner = Bun.spawn(
+      [
+        'node',
+        '-e',
+        `const fs=require('node:fs');
     require(${JSON.stringify(hook)}).withLock(${JSON.stringify(file)}, () => {
       fs.writeFileSync(${JSON.stringify(lock)}, String(process.pid));
       fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,60000);
     });`,
-    ],
-    { stdout: 'pipe', stderr: 'pipe' }
-  );
-  try {
-    const deadline = Date.now() + 5000;
-    while (!existsSync(ready) && Date.now() < deadline) await Bun.sleep(20);
-    expect(existsSync(ready)).toBe(true);
-    const inode = statSync(lock).ino,
-      contents = readFileSync(lock, 'utf8');
-    const oldTime = new Date(Date.now() - 60_000);
-    utimesSync(lock, oldTime, oldTime);
-    expect(() =>
-      state.withLock(file, () => {
-        throw new Error('stolen');
-      })
-    ).toThrow('状态锁忙');
-    expect(readFileSync(lock, 'utf8')).toBe(contents);
-    expect(statSync(lock).ino).toBe(inode);
-  } finally {
-    owner.kill('SIGKILL');
-    await owner.exited;
-  }
-  expect(state.withLock(file, () => 'released')).toBe('released');
-}, 15000);
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    try {
+      const deadline = Date.now() + 5000;
+      while (!existsSync(ready) && Date.now() < deadline) await Bun.sleep(20);
+      expect(existsSync(ready)).toBe(true);
+      const inode = statSync(lock).ino,
+        contents = readFileSync(lock, 'utf8');
+      const oldTime = new Date(Date.now() - 60_000);
+      utimesSync(lock, oldTime, oldTime);
+      expect(() =>
+        state.withLock(file, () => {
+          throw new Error('stolen');
+        })
+      ).toThrow('状态锁忙');
+      expect(readFileSync(lock, 'utf8')).toBe(contents);
+      expect(statSync(lock).ino).toBe(inode);
+    } finally {
+      owner.kill('SIGKILL');
+      await owner.exited;
+    }
+    expect(state.withLock(file, () => 'released')).toBe('released');
+  },
+  testTimeout(15000)
+);

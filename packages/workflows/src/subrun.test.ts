@@ -6376,7 +6376,9 @@ nodes:
     );
 
     expect(result.success).toBe(true);
-    const emitted = store.events.find(e => e.event_type === 'node_completed');
+    const emitted = store.events.find(
+      e => e.event_type === 'node_completed' && e.step_name === 'emit'
+    );
     expect(String(emitted?.data?.node_output)).toContain('style=terse');
   });
 

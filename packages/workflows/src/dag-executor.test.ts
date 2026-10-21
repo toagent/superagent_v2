@@ -644,6 +644,31 @@ function stubMissingContainer(): ReturnType<typeof spyOn<typeof git, 'execFileAs
   });
 }
 
+function restoreExecFileAsyncMock(): void {
+  const execFileAsync = git.execFileAsync as typeof git.execFileAsync & {
+    mockRestore?: () => void;
+  };
+  execFileAsync.mockRestore?.();
+}
+
+function restoreSharedMocks(): void {
+  restoreExecFileAsyncMock();
+  mockSendQueryDag.mockClear();
+  mockSendQueryDag.mockImplementation(async function* () {
+    yield { type: 'agent_message_chunk', text: 'DAG AI response' };
+    yield { type: 'result', sessionId: 'dag-session-id' };
+  });
+  mockGetAgentProviderDag.mockClear();
+  mockGetAgentProviderDag.mockImplementation(() => ({
+    sendQuery: mockSendQueryDag,
+    checkCredential: async () => ({ state: 'not_checked' as const, source: 'native' as const }),
+    getType: () => 'claude',
+    getCapabilities: mockClaudeCapabilities,
+  }));
+}
+
+beforeEach(restoreSharedMocks);
+
 /** The `docker` calls that dispatch node work, leaving out the checkout observation's probe. */
 function nodeDockerCalls(
   calls: Parameters<typeof git.execFileAsync>[]

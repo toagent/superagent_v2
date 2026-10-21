@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { removeTempTree } from '@archon/paths/test-utils';
+import { removeTempTree, testTimeout } from '@archon/paths/test-utils';
 import * as archon from '../src/archon';
 import * as memory from '../src/memory';
 import type { Ledger } from '../src/cli';
@@ -504,27 +504,33 @@ test('production plan root stays configured while temporary scratch is explicitl
   expect(loadPlan(fixturePlan(f.root, repo)).repo).toBe(realpathSync(repo));
 });
 
-test('cleanup excludes takeover until deletion finishes, including canonical path aliases', () => {
-  const f = setup();
-  f.exited();
-  let takeoverError: unknown;
-  const result = scratch.cleanOne(realpathSync(f.dir), false, () => {
-    try {
-      scratch.start({ session_id: f.session }, 'claude', {});
-    } catch (error) {
-      takeoverError = error;
-    }
-    return false;
-  });
-  expect(takeoverError).toBeInstanceOf(Error);
-  expect((takeoverError as Error).message).toBe('状态锁忙');
-  expect(result.action).toBe('removed');
-  expect(existsSync(f.dir)).toBe(false);
-  expect(scratch.start({ session_id: f.session }, 'claude', {})).toEqual(f.context);
-  writeFileSync(join(f.dir, 'keep'), 'resumed session');
-  expect(scratch.cleanOne(f.dir, false, () => false).reason).toBe('scratch owner alive or unknown');
-  expect(readFileSync(join(f.dir, 'keep'), 'utf8')).toBe('resumed session');
-}, 10000);
+test(
+  'cleanup excludes takeover until deletion finishes, including canonical path aliases',
+  () => {
+    const f = setup();
+    f.exited();
+    let takeoverError: unknown;
+    const result = scratch.cleanOne(realpathSync(f.dir), false, () => {
+      try {
+        scratch.start({ session_id: f.session }, 'claude', {});
+      } catch (error) {
+        takeoverError = error;
+      }
+      return false;
+    });
+    expect(takeoverError).toBeInstanceOf(Error);
+    expect((takeoverError as Error).message).toBe('状态锁忙');
+    expect(result.action).toBe('removed');
+    expect(existsSync(f.dir)).toBe(false);
+    expect(scratch.start({ session_id: f.session }, 'claude', {})).toEqual(f.context);
+    writeFileSync(join(f.dir, 'keep'), 'resumed session');
+    expect(scratch.cleanOne(f.dir, false, () => false).reason).toBe(
+      'scratch owner alive or unknown'
+    );
+    expect(readFileSync(join(f.dir, 'keep'), 'utf8')).toBe('resumed session');
+  },
+  testTimeout(10000)
+);
 
 test.each(['online', 'unknown'] as const)('different %s owner cannot be reclaimed', state => {
   const f = setup(),

@@ -13,6 +13,7 @@ import {
   symlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { testTimeout } from '@archon/paths/test-utils';
 import {
   diagnosis,
   deliverEngineDefects,
@@ -731,60 +732,64 @@ describe('EV1 lifecycle, privacy and priors', () => {
     seed(lesson('plan', { category: 'plan', do: '预算至少一个验收周期' }));
     expect(lintPlan(plan, undefined, NOW).warnings.join(' ')).not.toContain('预算至少一个验收周期');
   });
-  test('run admission warnings and override are recorded in the CLI ledgers with a stub engine', () => {
-    const repo = gitRepo(root);
-    sh('git switch -qc feature/fixture', repo);
-    process.env.SUPERAGENT_WRITE_ROOTS = root;
-    const next = {
-      ...plan,
-      repo,
-      deadline: new Date(Date.now() + 60000).toISOString(),
-      budget: { weighted_tokens: 1000000 },
-    };
-    const path = join(root, 'next.json');
-    writeFileSync(path, JSON.stringify(next));
-    mkdirSync(join(sa, 'memory'));
-    writeFileSync(
-      join(sa, 'memory/priors.json'),
-      JSON.stringify({
-        [priorKey(repo, next.packages[0], loadTiers().tiers.general.pools.chatgpt[0])]: {
-          n: 5,
-          duration: { p50: 600000, p90: 600000 },
-          tokens: { n: 5, p50: 5000000, p90: 5000000 },
-        },
-      })
-    );
-    install();
-    const stub = join(root, 'ack');
-    writeFileSync(stub, '#!/bin/sh\necho \'{"ok":true,"runId":"fixture"}\'\n', { mode: 0o755 });
-    process.env.SA_ARCHON_BIN = stub;
-    expect(main(['run', path, '--fake'])).toBe(0);
-    const first = readdirSync(join(sa, 'runs'))[0];
-    const lint = JSON.parse(readFileSync(join(sa, 'runs', first), 'utf8')).plan_lint;
-    expect(lint.rejected).toBe(false);
-    expect(lint.warnings).toHaveLength(2);
-    expect(lint.override).toBeUndefined();
-    expect(existsSync(join(sa, 'launch-failures'))).toBe(false);
-    const overlapReason = 'stub engine runs intentionally share the fixture scope';
-    expect(
-      main([
-        'run',
-        path,
-        '--fake',
-        '--lint-override',
-        '明确的小样本验收',
-        '--allow-overlap',
-        overlapReason,
-      ])
-    ).toBe(0);
-    const second = readdirSync(join(sa, 'runs')).find(file => file !== first)!;
-    const secondLedger = JSON.parse(readFileSync(join(sa, 'runs', second), 'utf8'));
-    expect(secondLedger.allow_overlap).toBe(overlapReason);
-    expect(secondLedger.plan_lint).toMatchObject({
-      override: '明确的小样本验收',
-      rejected: false,
-    });
-  }, 15_000);
+  test(
+    'run admission warnings and override are recorded in the CLI ledgers with a stub engine',
+    () => {
+      const repo = gitRepo(root);
+      sh('git switch -qc feature/fixture', repo);
+      process.env.SUPERAGENT_WRITE_ROOTS = root;
+      const next = {
+        ...plan,
+        repo,
+        deadline: new Date(Date.now() + 60000).toISOString(),
+        budget: { weighted_tokens: 1000000 },
+      };
+      const path = join(root, 'next.json');
+      writeFileSync(path, JSON.stringify(next));
+      mkdirSync(join(sa, 'memory'));
+      writeFileSync(
+        join(sa, 'memory/priors.json'),
+        JSON.stringify({
+          [priorKey(repo, next.packages[0], loadTiers().tiers.general.pools.chatgpt[0])]: {
+            n: 5,
+            duration: { p50: 600000, p90: 600000 },
+            tokens: { n: 5, p50: 5000000, p90: 5000000 },
+          },
+        })
+      );
+      install();
+      const stub = join(root, 'ack');
+      writeFileSync(stub, '#!/bin/sh\necho \'{"ok":true,"runId":"fixture"}\'\n', { mode: 0o755 });
+      process.env.SA_ARCHON_BIN = stub;
+      expect(main(['run', path, '--fake'])).toBe(0);
+      const first = readdirSync(join(sa, 'runs'))[0];
+      const lint = JSON.parse(readFileSync(join(sa, 'runs', first), 'utf8')).plan_lint;
+      expect(lint.rejected).toBe(false);
+      expect(lint.warnings).toHaveLength(2);
+      expect(lint.override).toBeUndefined();
+      expect(existsSync(join(sa, 'launch-failures'))).toBe(false);
+      const overlapReason = 'stub engine runs intentionally share the fixture scope';
+      expect(
+        main([
+          'run',
+          path,
+          '--fake',
+          '--lint-override',
+          '明确的小样本验收',
+          '--allow-overlap',
+          overlapReason,
+        ])
+      ).toBe(0);
+      const second = readdirSync(join(sa, 'runs')).find(file => file !== first)!;
+      const secondLedger = JSON.parse(readFileSync(join(sa, 'runs', second), 'utf8'));
+      expect(secondLedger.allow_overlap).toBe(overlapReason);
+      expect(secondLedger.plan_lint).toMatchObject({
+        override: '明确的小样本验收',
+        rejected: false,
+      });
+    },
+    testTimeout(15_000)
+  );
   test('read-only memory API reports ten recent episodes and changes no files', () => {
     for (let i = 0; i < 12; i++)
       saveEpisode(
@@ -1336,7 +1341,7 @@ describe('FIXD review regressions', () => {
       else
         expect(episodes()[0]).toMatchObject({ status: 'failed', acceptance: [{ cmd, ok: false }] });
     },
-    15_000
+    testTimeout(15_000)
   );
   test('EV-R1-01 nested finding evidence and command/log bodies never cross reflection boundary', async () => {
     writeFileSync(

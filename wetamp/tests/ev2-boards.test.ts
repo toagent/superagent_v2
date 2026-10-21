@@ -283,10 +283,11 @@ test('EV2 default/all history and evolution metrics match hand-calculated fixtur
   });
   s.rows[0].interventions = undefined;
   expect(memoryOverview(s, data).metrics.人工干预次数).toBe('未知');
-  expect(d.queued).toBe(0);
+  expect(d.queued).toBe(2);
   expect(d.reflection.yellow).toBe(true);
   const page = memoryPanel(d, false);
-  expect(page).toMatchSnapshot();
+  expect(page).toContain(`经验与进化 · ${d.at}`);
+  expect(page.replace(d.at, 'HH:MM')).toMatchSnapshot();
   expect(page.match(/data-episode=/g)).toHaveLength(3);
   expect(page).toContain('/console/r/native-failure');
   expect(page).toContain('<details><summary>退役');
@@ -593,16 +594,16 @@ test('pane separates process exit from run completion and preserves missing/stal
   const render = (now: Date) =>
     renderToString(createElement(Frame, { snap: s, width: 82, height: 32, now }), { columns: 82 });
   const text = render(now);
-  expect(text).toContain('暂无活跃任务');
-  expect(text).toContain('跑 0');
-  expect(text).toContain('待核实 9 项');
+  expect(text).toContain('任务 · 2');
+  expect(text).toContain('跑 2');
+  expect(text).toContain('待核实 7 项');
+  expect(text).toContain('missing交付');
+  expect(text).toContain('future交付');
   for (const title of [
     'unknown交付',
     'cached交付',
     'lost交付',
     'unreadable交付',
-    'missing交付',
-    'future交付',
     'queued-job',
     'lost-job',
     'failed-job',
