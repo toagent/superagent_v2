@@ -879,6 +879,62 @@ describe('FC failure classification', () => {
       }).verdict
     ).toBe('escalate');
   });
+  test('gate retry subtracts prior stuck rounds and stops rotating blockers at the review limit', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      plan = planFile(root, 'true'),
+      artifacts = join(repo, '..', 'art');
+    mkdirSync(artifacts, { recursive: true });
+    writeFileSync(
+      join(artifacts, 'gate-m1-r3.json'),
+      JSON.stringify({ decision: { kind: 'block', reason: 'finding_stuck' } })
+    );
+    writeFileSync(
+      join(artifacts, 'gate-m1-r3.ledger.json'),
+      JSON.stringify({
+        blocking: [],
+        debt: [],
+        closed: [],
+        review_rounds_used: { m1: 3 },
+      })
+    );
+    const reviews = [
+      R('FAIL', [f('blocker', { id: 'A' })]),
+      R('FAIL', [fixed('A', 'blocker'), f('blocker', { id: 'B' })]),
+      R('FAIL', [fixed('B', 'blocker'), f('blocker', { id: 'C' })]),
+    ];
+    const gate = (round: number) => {
+      const inputs: Record<string, string> = {
+        kind: 'gate',
+        plan,
+        pkgs: 'a',
+        risk: 'G1',
+        round: String(round),
+        milestone: 'm1',
+        tag: `retry-m1-r${String(round)}`,
+      };
+      for (let i = 0; i < round; i++) {
+        inputs[`r${String(i + 1)}`] = JSON.stringify(reviews[i]);
+        inputs[`c${String(i + 1)}`] = JSON.stringify(C(String(i + 1)));
+      }
+      return runScript(repo, inputs);
+    };
+    expect(gate(1)).toMatchObject({ code: 0, out: { verdict: 'fix' } });
+    expect(gate(2)).toMatchObject({ code: 0, out: { verdict: 'fix' } });
+    const exhausted = gate(3);
+    expect(exhausted).toMatchObject({
+      code: 1,
+      out: {
+        verdict: 'escalate',
+        reason: 'review_failed+review_limit',
+        rounds: 3,
+      },
+    });
+    const ledgerFile = (exhausted.out as { ledger_file: string }).ledger_file;
+    expect(JSON.parse(readFileSync(ledgerFile, 'utf8'))).toMatchObject({
+      blocking: [{ id: 'C' }],
+    });
+  });
   test('reviewer classifies exact failed commands; omitted classification fails closed', () => {
     const check = { ...C('a', false), failed: ['bun test'], disposition: 'repair' as const };
     const finding = f('high', {
@@ -1410,12 +1466,36 @@ describe('gate rules', () => {
     const r3 = R('FAIL', [f('blocker', { id: 'R2-1' })]);
     expect(ids([R('PASS'), r2, r3])).toEqual(['R2-1']);
     const initial = ledgerOf(
-      [R('FAIL', [f('high', { id: 'H', failure_class: 'test_env' })])],
+      [
+        null,
+        R('FAIL', [f('high', { id: 'H', failure_class: 'test_env' }), f('blocker', { id: 'A' })]),
+      ],
       'G2'
     );
+    expect(initial.debt).toMatchObject([{ id: 'H', round: 2, blocking_eligible: true }]);
     expect(
-      ledgerOf([R('FAIL', [f('high', { id: 'H' })])], 'G2', { initial, roundOffset: 3 }).blocking
-    ).toMatchObject([{ id: 'H', failure_class: 'product' }]);
+      ledgerOf([R('FAIL', [f('high', { id: 'H' }), fixed('A', 'blocker')])], 'G2', {
+        initial,
+        roundOffset: 2,
+      })
+    ).toMatchObject({
+      blocking: [{ id: 'H', failure_class: 'product' }],
+      closed: [{ id: 'A', closed_round: 3 }],
+    });
+
+    const promoted = ledgerOf([R('PASS'), R('FAIL', [f('blocker', { id: 'B' })])], 'G1');
+    const deferred = ledgerOf(
+      [R('FAIL', [f('blocker', { id: 'B', failure_class: 'test_env' })])],
+      'G1',
+      { initial: promoted, roundOffset: 2 }
+    );
+    expect(deferred.debt).toMatchObject([{ id: 'B', blocking_eligible: true }]);
+    expect(
+      ledgerOf([R('FAIL', [f('high', { id: 'B' })])], 'G1', {
+        initial: deferred,
+        roundOffset: 3,
+      }).blocking
+    ).toMatchObject([{ id: 'B', failure_class: 'product' }]);
   });
   test('F-20: a round whose review was skipped (acceptance not advanced) fixes without a review', () => {
     const red = { ...C('a', false), disposition: 'repair' as const, reason: 'acceptance_failed' };

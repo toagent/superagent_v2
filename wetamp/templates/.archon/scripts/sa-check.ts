@@ -1269,6 +1269,8 @@ export interface Entry {
   command?: string | null;
   repair_rounds?: number;
   debt_reason?: 'non_product' | 'repair_limit';
+  /** 非阻塞期间仍可在重新分类为 product 后恢复阻塞。 */
+  blocking_eligible?: true;
 }
 export interface Ledger {
   blocking: Entry[];
@@ -1300,7 +1302,7 @@ export function ledgerOf(
     open.set(entry.id, {
       ...entry,
       blocks: false,
-      eligible: entry.round === 1 && sev.includes(entry.severity),
+      eligible: entry.blocking_eligible === true,
     });
   const closed: Entry[] = [...(options.initial?.closed ?? [])];
   const roundOffset = options.roundOffset ?? 0;
@@ -1390,10 +1392,10 @@ export function ledgerOf(
   const strip = (b: boolean): Entry[] =>
     [...open.values()]
       .filter(e => e.blocks === b)
-      .map(({ blocks: _, eligible: __, ...e }) => {
+      .map(({ blocks: _, eligible, blocking_eligible: __, ...e }) => {
         void _;
         void __;
-        return e;
+        return !b && eligible ? { ...e, blocking_eligible: true } : e;
       });
   return {
     blocking: strip(true),
