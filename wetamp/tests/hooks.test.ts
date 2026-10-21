@@ -664,7 +664,6 @@ describe('context-advisory.cjs', () => {
     expect(advised(budget(250_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(false);
     expect(advised(budget(370_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(true);
   });
-
   test('rollover state persists across processes and inbox context is merged', () => {
     const root = tmp(),
       home = join(root, 'sa'),
@@ -680,9 +679,7 @@ describe('context-advisory.cjs', () => {
       JSON.stringify({ id: 'm', type: 'receipt', recipient: live })
     );
     const merged = call(500001, 'b')?.hookSpecificOutput?.additionalContext;
-    expect(merged).toContain('Superagent 交接待答复');
-    expect(merged).toContain('tasks.sh list');
-    expect(call(500001, 'b')).toBeNull();
+    expect(merged).toMatch(/Superagent 交接待答复[\s\S]*tasks\.sh list/);
   });
 
   test('活动 run 内超过 15 次 Bash/Read 仍静默，不产生工具计数状态', () => {

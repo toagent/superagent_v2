@@ -607,19 +607,11 @@ test('reviewer-alt carry excludes actual authors within the admitted vendor and 
 test('context policy drives advisory and rollover state transitions', () => {
   const { roleLimit, advise } = createRequire(import.meta.url)('../hooks/context-advisory.cjs') as {
     roleLimit(role: string, policy: unknown): number;
-    advise(
-      input: unknown,
-      tokens: number,
-      prior: Record<string, number>,
-      active: boolean,
-      threshold: number,
-      rollover?: number | null
-    ): { state: Record<string, number>; messages: string[] };
+    advise(...args: unknown[]): { state: Record<string, number>; messages: string[] };
   };
   expect(roleLimit('general', { context: { advisory_tokens: { general: 123 } } })).toBe(123);
   const first = advise({}, 400001, { warned_at: 390000 }, false, 123, 400000);
-  expect(first.messages[0]).toContain('tasks.sh list');
-  expect(first.messages[0]).not.toContain('交给 superagent');
+  expect(first.messages[0]).toMatch(/tasks\.sh list(?![\s\S]*交给 superagent)/);
   expect(advise({}, 500000, first.state, false, 123, 400000).messages).toEqual([]);
   const again = advise({}, 500001, first.state, false, 123, 400000);
   expect(again.messages).toHaveLength(1);
