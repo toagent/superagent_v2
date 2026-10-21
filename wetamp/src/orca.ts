@@ -104,9 +104,11 @@ export async function launchAgent(bin: string, args: string[], exec: (bin: strin
     const e = error as Error & { stdout?: string; stderr?: string };
     const evidence = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n');
     try {
-      const value = JSON.parse(e.stdout ?? e.stderr ?? '') as unknown;
+      const value = JSON.parse(e.stdout ?? '') as unknown;
       const id = operationId(value);
       if (id) return { kind: 'lost', operation_id: id };
+      if (record(value) && value.ok === false)
+        return { kind: 'failed', error: JSON.stringify(value) };
     } catch {
       // A dispatched launch without structured evidence is intentionally ambiguous.
     }

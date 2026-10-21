@@ -13,7 +13,7 @@ export interface RolloverRecord {
   token: string; state: 'pending' | 'accepted' | 'cancelled'; from: Identity; to: Identity | null;
   repo: string; cwd: string; task_session: string; transcript: string; parent: string | null;
   prior_status: string; runs: string[];
-  launch: { agent: string; model: string; operation_id: string | null; outcome: unknown };
+  launch: { agent: string; model: string; operation_id: string | null; outcome: unknown; args?: string[] };
   steps: Partial<Record<string, 'done'>>; created_at: string; accepted_at: string | null; cancelled_at: string | null;
   skipped?: Record<string, string>;
 }
@@ -46,9 +46,10 @@ export class Rollover {
     if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('rollover: invalid token');
     return join(this.root, `${token}.json`);
   }
-  private records(): RolloverRecord[] {
-    return this.d.files(this.root).filter(f => f.endsWith('.json')).map(f => JSON.parse(this.d.read(join(this.root, f))) as RolloverRecord);
-  }
+  // prettier-ignore
+  private records(): RolloverRecord[] { return this.jsonFiles(this.root) as unknown as RolloverRecord[]; }
+  // prettier-ignore
+  private jsonFiles(path: string, tolerateInvalid = false): Record<string, unknown>[] { return this.d.files(path).filter(f => f.endsWith('.json')).flatMap(file => { try { const value = JSON.parse(this.d.read(join(path, file))) as unknown; return object(value) ? [value] : []; } catch (error) { if (tolerateInvalid) return []; throw new Error(`rollover: 无法读取 ${join(path, file)}：${error instanceof Error ? error.message : String(error)}`); } }); }
   private save(r: RolloverRecord): void {
     this.d.coord.locked(() => {
       mkdirSync(this.root, { recursive: true });
@@ -62,10 +63,7 @@ export class Rollover {
   }
   private transcript(who: Identity): { path: string; model: string } {
     const live = join(this.d.coord.d.sa, 'live');
-    const beat = this.d
-      .files(live)
-      .map(f => JSON.parse(this.d.read(join(live, f))) as Record<string, unknown>)
-      .find(v => same(v as unknown as Identity, who));
+    const beat = this.jsonFiles(live, true).find(v => same(v as unknown as Identity, who));
     const path = typeof beat?.transcript_path === 'string' ? beat.transcript_path : '';
     if (!path || !this.d.exists(path)) throw new Error('rollover: 找不到当前会话 transcript');
     let attached = '', assistant = '', context = '';
@@ -108,28 +106,31 @@ export class Rollover {
     return { path, session: basename(dirname(path)), status: field('状态') };
   }
   private runs(who: Identity): RunRef[] {
-    return this.d
-      .files(join(this.d.coord.d.sa, 'runs'))
-      .filter(f => f.endsWith('.json'))
-      .map(f => JSON.parse(this.d.read(join(this.d.coord.d.sa, 'runs', f))) as RunRef)
+    return this
+      .jsonFiles(join(this.d.coord.d.sa, 'runs'))
+      .map(value => value as unknown as RunRef)
       .filter(run => same(this.d.coord.owner(runScope(run)).owner, who) && !terminal.has(this.runStatus(run)));
   }
   private runStatus(run: RunRef): string {
     try { return this.d.coord.d.status(run); } catch { return 'unknown'; }
   }
+  // prettier-ignore
   private async dispatch(r: RolloverRecord, retry = false, reason?: string): Promise<RolloverRecord> {
     const bin = orcaBin(this.d.env, this.d.exists), operation = r.launch.operation_id;
     if (!bin || (retry && !operation)) throw new Error('rollover: Orca launch state invalid');
-    const args = retry ? ['agent', 'launch', '--retry-launch', operation ?? '', '--json'] : ['agent', 'launch', '--agent', r.launch.agent, '--worktree', `path:${r.cwd}`, '--model', r.launch.model, '--prompt', this.prompt(r, reason), '--focus', '--json'];
+    if (!retry) { r.launch.args = ['agent', 'launch', '--agent', r.launch.agent, '--worktree', `path:${r.cwd}`, '--model', r.launch.model, '--prompt', this.prompt(r, reason), '--focus', '--json']; this.save(r); }
+    if (!r.launch.args) throw new Error('rollover: 缺少首次 launch 参数，无法安全重试；请 rollover cancel');
+    const lastArg = r.launch.args.at(-1); if (!lastArg) throw new Error('rollover: 首次 launch 参数为空，无法安全重试；请 rollover cancel'); const args = retry ? [...r.launch.args.slice(0, -1), '--retry-launch', operation ?? '', lastArg] : r.launch.args;
     const result = await this.d.launch(bin, args);
     if (result.kind === 'launched') r.launch.outcome = result.outcome;
     else if (result.kind === 'lost') r.launch.operation_id = result.operation_id;
     else if (result.kind === 'unknown') r.launch.outcome = 'unknown';
     else {
-      this.d.tasks(r.cwd, ['resume', r.task_session, r.prior_status]);
-      r.state = 'cancelled';
-      r.cancelled_at = this.d.now().toISOString();
-      this.save(r);
+      let resumeError: unknown;
+      try { this.d.tasks(r.cwd, ['resume', r.task_session, r.prior_status]); }
+      catch (error) { resumeError = error; }
+      finally { r.state = 'cancelled'; r.cancelled_at = this.d.now().toISOString(); this.save(r); }
+      if (resumeError) throw new Error(`rollover: launch 失败且恢复任务栈失败：${result.error}；${resumeError instanceof Error ? resumeError.message : JSON.stringify(resumeError)}`);
       throw new Error(`rollover: launch 失败：${result.error}`);
     }
     this.save(r);
@@ -148,6 +149,7 @@ export class Rollover {
     if (pending) {
       if (pending.launch.outcome === 'unknown') throw new Error(`rollover: launch 结果不明；请先 rollover cancel ${pending.token}`);
       if (pending.launch.operation_id && pending.launch.outcome === null) return this.result(await this.dispatch(pending, true));
+      if (pending.launch.outcome === null) throw new Error(`rollover: launch 未完成且无 operation id；请先 rollover cancel ${pending.token}`);
       return this.result(pending);
     }
     const task = this.task(),

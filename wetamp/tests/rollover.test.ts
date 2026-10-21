@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Coordination, repoScope, runScope, type Identity, type RunRef } from '../src/coord';
@@ -57,11 +57,18 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(s.launchCalls[0]).toContain('gpt-test');
   expect(s.launchCalls[0].join(' ')).toContain(`path:${s.repo}`);
   expect(s.launchCalls[0].join(' ')).toContain(`accept ${started.token}`);
+  expect(await s.r.start()).toEqual(started);
+  expect(s.launchCalls).toHaveLength(1);
+  const generation = s.c.owner(runScope(run)).generation,
+    repoGeneration = s.c.owner(repoScope(s.repo)).generation;
+  expect(() => s.r.accept(String(started.token))).toThrow('新会话');
   s.setWho(b);
   const accepted = s.r.accept(String(started.token));
   expect(accepted).toMatchObject({ state: 'accepted' });
   expect(s.c.owner(runScope(run)).owner?.session_id).toBe('new');
   expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
+  expect(s.c.owner(runScope(run)).generation).toBe(generation + 1);
+  expect(s.c.owner(repoScope(s.repo)).generation).toBe(repoGeneration + 1);
   expect(() => s.c.mutate(runScope(run), a, () => null, 1)).toThrow('fencing');
   expect(readFileSync(join(s.sa, 'coord/authorizations/run1.json'), 'utf8')).toContain('original_sha256');
   expect(s.c.messages().some(message => message.type === 'takeover')).toBe(false);
@@ -73,6 +80,13 @@ test('start rejects outside Orca before tasks and reports missing task sections 
   outside.r.d.env = {};
   await expect(outside.r.start()).rejects.toThrow('仅 Orca 内支持自动交接');
   expect(outside.taskCalls).toHaveLength(calls);
+  expect(existsSync(join(outside.sa, 'coord/rollovers'))).toBe(false);
+  const missingBin = fixture();
+  missingBin.r.d.env.SA_ORCA_BIN = '/missing';
+  missingBin.r.d.exists = () => false;
+  await expect(missingBin.r.start()).rejects.toThrow('仅 Orca 内支持自动交接');
+  expect(missingBin.taskCalls).toHaveLength(0);
+  expect(existsSync(join(missingBin.sa, 'coord/rollovers'))).toBe(false);
   const missing = fixture(false);
   await expect(missing.r.start()).rejects.toThrow('已核实与更正');
   expect(missing.taskCalls).toHaveLength(1);
@@ -90,11 +104,81 @@ test('lost launch retries the same operation, then cancel restores and wait obse
   await expect(s.r.start('manual')).rejects.toThrow('回包丢失');
   await s.r.start('manual');
   expect(s.launchCalls).toHaveLength(2);
-  expect(s.launchCalls[1]).toEqual(['agent', 'launch', '--retry-launch', 'op-1', '--json']);
+  expect(s.launchCalls[1]).toEqual([...s.launchCalls[0].slice(0, -1), '--retry-launch', 'op-1', '--json']);
   expect(s.taskCalls.filter(call => call[0] === 'handoff')).toHaveLength(1);
   s.r.cancel('a'.repeat(32));
   expect(s.taskCalls.at(-1)).toEqual(['resume', 'session', '执行中']);
   s.setWho(b);
   expect(() => s.r.accept('a'.repeat(32))).toThrow('cancelled');
   expect(await s.r.wait('a'.repeat(32), 0)).toEqual({ state: 'cancelled', exit: 0 });
+});
+
+test('failed and interrupted launches stay explicit while transient live files are ignored', async () => {
+  const failed = fixture();
+  writeFileSync(join(failed.sa, 'live/partial.json'), '{');
+  writeFileSync(join(failed.sa, 'live/a.json.99.tmp'), '{');
+  failed.launches[0] = { kind: 'failed', error: 'bad selector' };
+  await expect(failed.r.start()).rejects.toThrow('launch 失败');
+  expect(failed.taskCalls.at(-1)).toEqual(['resume', 'session', '执行中']);
+  expect(
+    JSON.parse(readFileSync(join(failed.sa, `coord/rollovers/${'a'.repeat(32)}.json`), 'utf8'))
+      .state
+  ).toBe('cancelled');
+
+  const interrupted = fixture();
+  interrupted.r.d.launch = async () => {
+    throw new Error('process crash');
+  };
+  await expect(interrupted.r.start()).rejects.toThrow('process crash');
+  await expect(interrupted.r.start()).rejects.toThrow('无 operation id');
+  expect(await interrupted.r.wait('a'.repeat(32), 1)).toEqual({ state: 'pending', exit: 2 });
+});
+
+test('accept resumes after an adopt failure without retransfer and fences another recipient', async () => {
+  const s = fixture(),
+    run: RunRef = { run_id: 'run1', archon_run_id: 'engine', repo: s.repo };
+  s.runs.push(run);
+  s.c.claimRun(runScope(run), a);
+  writeFileSync(join(s.sa, 'runs/run1.json'), JSON.stringify(run));
+  const started = await s.r.start();
+  s.setWho(b);
+  let failAdopt = true;
+  s.r.d.tasks = (_cwd, args) => {
+    s.taskCalls.push(args);
+    if (args[0] === 'adopt' && failAdopt) {
+      failAdopt = false;
+      throw new Error('adopt crash');
+    }
+    return '';
+  };
+  await expect(Promise.resolve().then(() => s.r.accept(String(started.token)))).rejects.toThrow(
+    'adopt crash'
+  );
+  const generation = s.c.owner(runScope(run)).generation;
+  expect(() => {
+    s.setWho(a);
+    s.r.cancel(String(started.token));
+  }).toThrow('不可取消');
+  s.setWho(b);
+  expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
+  expect(s.c.owner(runScope(run)).generation).toBe(generation);
+  expect(() => {
+    s.setWho({ ...b, session_id: 'third' });
+    s.r.accept(String(started.token));
+  }).toThrow('accepted');
+});
+
+test('accept reports a run whose owner changed after start as skipped', async () => {
+  const s = fixture(),
+    other = { ...b, session_id: 'other' };
+  const run: RunRef = { run_id: 'run1', archon_run_id: 'engine', repo: s.repo };
+  s.runs.push(run);
+  s.c.claimRun(runScope(run), a);
+  writeFileSync(join(s.sa, 'runs/run1.json'), JSON.stringify(run));
+  const started = await s.r.start();
+  s.c.rolloverTransfer(runScope(run), a, other, 'other');
+  s.setWho(b);
+  expect(s.r.accept(String(started.token))).toMatchObject({
+    runs: [{ run: 'run1', skipped: 'owner_changed' }],
+  });
 });

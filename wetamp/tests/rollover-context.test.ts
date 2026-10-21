@@ -30,10 +30,12 @@ test('Claude renders quotes, interruption, latest summary and report while exclu
 // prettier-ignore
 test('Codex renders messages and compaction, excludes injected context, and reports missing or malformed transcripts', async () => {
   const root = tmp(), file = join(root, 'codex.jsonl'), bad = join(root, 'bad.jsonl'), missing = join(root, 'missing.jsonl');
+  const compact = `HEAD${'x'.repeat(11993)}TAIL`;
   const item = (type: string, value: string, kind = 'text') => ({ type: 'event_msg', timestamp: '2026-10-21T02:03:04Z', payload: { type: 'item_completed', item: { type, content: [{ type: kind, text: value }] } } });
-  write(file, [item('UserMessage', '<environment_context>secret</environment_context>'), item('UserMessage', '# AGENTS.md instructions for /repo\nrules'), item('UserMessage', 'request'), { type: 'compacted', payload: { message: 'old compact' } }, { type: 'compacted', payload: { message: 'latest compact' } }, item('AgentMessage', 'old report', 'Text'), item('AgentMessage', 'last report', 'Text')]);
+  write(file, [item('UserMessage', '<environment_context>secret</environment_context>'), item('UserMessage', '# AGENTS.md instructions for /repo\nrules'), item('UserMessage', 'request'), { type: 'compacted', payload: { message: 'old compact' } }, { type: 'compacted', payload: { message: compact } }, item('AgentMessage', 'old report', 'Text'), item('AgentMessage', 'last report', 'Text')]);
   writeFileSync(bad, '{');
   const out = await renderHandoffContext([{ client: 'codex', transcript: file, label: 'codex' }, { client: 'codex', transcript: bad, label: 'bad' }, { client: 'codex', transcript: missing, label: 'missing' }]);
-  for (const value of ['request', 'latest compact', 'last report', '## bad\n\ntranscript 不可读：第 1 行 JSON 损坏', '## missing\n\ntranscript 不可读：']) expect(out).toContain(value);
+  for (const value of ['request', 'HEAD', 'TAIL', 'last report', '## bad\n\ntranscript 不可读：第 1 行 JSON 损坏', '## missing\n\ntranscript 不可读：']) expect(out).toContain(value);
+  expect(out.length).toBeGreaterThan(11000);
   for (const value of ['secret', 'AGENTS.md', 'old compact', 'old report']) expect(out).not.toContain(value);
 });

@@ -38,8 +38,18 @@ const chars = (value: string): string[] => Array.from(value);
 const shorten = (value: string, path: string, line: number, limit: number): string => {
   const parts = chars(value);
   if (parts.length <= limit) return value;
-  const omitted = parts.length - 3000;
-  return `${parts.slice(0, 1500).join('')}…[省略 ${String(omitted)} 字，见 ${path} 第 ${String(line)} 行]…${parts.slice(-1500).join('')}`;
+  if (limit <= 4000) {
+    const omitted = parts.length - 3000;
+    return `${parts.slice(0, 1500).join('')}…[省略 ${String(omitted)} 字，见 ${path} 第 ${String(line)} 行]…${parts.slice(-1500).join('')}`;
+  }
+  const retained = limit;
+  let omitted = parts.length - retained;
+  let marker = `…[省略 ${String(omitted)} 字，见 ${path} 第 ${String(line)} 行]…`;
+  const kept = Math.max(0, retained - chars(marker).length);
+  omitted = parts.length - kept;
+  marker = `…[省略 ${String(omitted)} 字，见 ${path} 第 ${String(line)} 行]…`;
+  const head = Math.ceil(kept / 2);
+  return `${parts.slice(0, head).join('')}${marker}${parts.slice(-(kept - head)).join('')}`;
 };
 const localTime = (value: unknown): string => {
   const time = typeof value === 'string' ? new Date(value) : new Date(NaN);
