@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { Coordination, type RunRef } from '../src/coord';
 import { resumeCard } from '../src/resume-card';
+process.env.TZ = 'Asia/Taipei';
 const trackTempRoot = trackTempRoots();
 const tmp = (): string => trackTempRoot(mkdtempSync(join(tmpdir(), 'resume-card-')));
 const lines = (path: string, rows: unknown[]): void =>
@@ -24,8 +25,8 @@ describe('resume card', () => {
     mkdirSync(dir, { recursive: true });
     process.env.CLAUDE_CONFIG_DIR = home;
     lines(file, [
-      { type: 'system', subtype: 'compact_boundary' },
-      { type: 'system', subtype: 'compact_boundary' },
+      { type: 'system', subtype: 'compact_boundary', timestamp: '2026-10-21T01:00:00Z' },
+      { type: 'system', subtype: 'compact_boundary', timestamp: '2026-10-21T01:01:30Z' },
       { type: 'user', timestamp: '2026-10-21T01:02:00Z', message: { content: 'first request' } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'previous proposal' }] } },
       { type: 'user', timestamp: '2026-10-21T01:03:00Z', message: { content: 'do it' } },
@@ -34,12 +35,13 @@ describe('resume card', () => {
       { type: 'user', message: { content: 'x'.repeat(400) } },
     ]);
     const ledgers = [ledger('mine', id), ledger('done', id), ledger('other', 'other')];
+    const now = new Date('2026-10-21T01:02:00Z').valueOf();
     const active = new Coordination({
       sa: home,
       runs: () => ledgers,
       status: l => (l.run_id === 'done' ? 'completed' : 'running'),
     }).unfinishedRuns(id);
-    const card = await resumeCard({ session_id: id, transcript_path: file }, 'claude', active);
+    const card = await resumeCard({ session_id: id, transcript_path: file }, 'claude', active, now);
     expect(card).toMatch(
       /【复位卡·第 2 次压缩】[\s\S]*建议换会话[\s\S]*mine running[\s\S]*↳ 回应：previous proposal/
     );
@@ -47,6 +49,24 @@ describe('resume card', () => {
       expect(card).not.toContain(text);
     expect(card!.indexOf('first request')).toBeLessThan(card!.indexOf('do it'));
     expect(card).not.toContain('x'.repeat(301));
+    expect(card).toContain('10-21 09:02 first request');
+  });
+  test('counts the in-flight compact only when no recent marker is on disk', async () => {
+    const home = tmp(),
+      dir = join(home, 'projects', 'repo'),
+      id = 'session-count',
+      file = join(dir, `${id}.jsonl`),
+      now = new Date('2026-10-21T01:05:00Z').valueOf();
+    mkdirSync(dir, { recursive: true });
+    process.env.CLAUDE_CONFIG_DIR = home;
+    const count = async (timestamp?: string): Promise<number> => {
+      lines(file, timestamp ? [{ type: 'system', subtype: 'compact_boundary', timestamp }] : []);
+      const card = await resumeCard({ session_id: id, transcript_path: file }, 'claude', [], now);
+      return Number(card!.match(/第 (\d+) 次压缩/)![1]);
+    };
+    expect(await count()).toBe(1);
+    expect(await count('2026-10-21T01:02:59Z')).toBe(2);
+    expect(await count('2026-10-21T01:03:00Z')).toBe(1);
   });
   test('Codex records keep earliest three and latest messages within the quote budget', async () => {
     const home = tmp(),

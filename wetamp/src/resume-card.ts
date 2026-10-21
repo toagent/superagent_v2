@@ -8,6 +8,11 @@ type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
 type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
 type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
+interface Facts {
+  count: number;
+  lastCompactAt: number | null;
+  quotes: Quote[];
+}
 const bytes = (s: string): number => Buffer.byteLength(s);
 const chars = (s: string): string[] =>
   Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s), x => x.segment);
@@ -34,9 +39,16 @@ const envOr = (key: string, fallback: string): string => {
   const value = process.env[key];
   return value !== undefined && value !== '' ? value : fallback;
 };
+const timestampOf = (v: unknown): number | null => {
+  const value = typeof v === 'string' ? new Date(v).valueOf() : NaN;
+  return Number.isNaN(value) ? null : value;
+};
 const timeOf = (v: unknown): string => {
-  const d = new Date(typeof v === 'string' ? v : 0);
-  return Number.isNaN(d.valueOf()) ? '-- --:--' : d.toISOString().slice(5, 16).replace('T', ' ');
+  const value = timestampOf(v);
+  if (value === null) return '-- --:--';
+  const d = new Date(value),
+    pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 function safePath(payload: Payload, client: Client): string | null {
   try {
@@ -56,10 +68,15 @@ function safePath(payload: Payload, client: Client): string | null {
     return null;
   }
 }
-async function facts(path: string, client: Client): Promise<{ count: number; quotes: Quote[] }> {
+async function facts(path: string, client: Client): Promise<Facts> {
   let count = 0,
+    lastCompactAt: number | null = null,
     assistant = '';
   const quotes: Quote[] = [];
+  const mark = (at: unknown): void => {
+    count++;
+    lastCompactAt = timestampOf(at);
+  };
   const add = (text: string, at: unknown): void => {
     quotes.push({
       at: timeOf(at),
@@ -81,7 +98,7 @@ async function facts(path: string, client: Client): Promise<{ count: number; quo
       content = '',
       allowed = true;
     if (client === 'claude') {
-      if (x.type === 'system' && x.subtype === 'compact_boundary') count++;
+      if (x.type === 'system' && x.subtype === 'compact_boundary') mark(x.timestamp);
       kind = x.type;
       content = textOf(objectOf(x.message).content);
       allowed =
@@ -90,7 +107,7 @@ async function facts(path: string, client: Client): Promise<{ count: number; quo
         x.isCompactSummary !== true &&
         !/^<[^>]+>/.test(content);
     } else {
-      if (x.type === 'compacted') count++;
+      if (x.type === 'compacted') mark(x.timestamp);
       const payload = objectOf(x.payload),
         item =
           x.type === 'event_msg' && payload.type === 'item_completed' ? objectOf(payload.item) : {};
@@ -101,7 +118,7 @@ async function facts(path: string, client: Client): Promise<{ count: number; quo
     if ((kind === 'user' || kind === 'UserMessage') && allowed && content)
       add(content, x.timestamp);
   }
-  return { count, quotes };
+  return { count, lastCompactAt, quotes };
 }
 function quoteLines(quotes: Quote[], path: string): string[] {
   const render = (q: Quote): string =>
@@ -118,10 +135,16 @@ function quoteLines(quotes: Quote[], path: string): string[] {
   while (latest.length && bytes(result().join('\n')) > 4096) latest.shift();
   return result();
 }
-export async function resumeCard(p: Payload, client: Client, runs?: Run[]): Promise<string | null> {
+export async function resumeCard(
+  p: Payload,
+  client: Client,
+  runs?: Run[],
+  now = Date.now()
+): Promise<string | null> {
   const path = safePath(p, client);
   if (!path || !p.session_id) return null;
-  const { count, quotes } = await facts(path, client),
+  const { count: onDisk, lastCompactAt, quotes } = await facts(path, client),
+    count = onDisk + Number(lastCompactAt === null || Math.abs(now - lastCompactAt) > 120_000),
     lines = [`【复位卡·第 ${String(count)} 次压缩】以下为磁盘事实，与压缩摘要冲突时以此为准`];
   if (count >= 2)
     lines.push('建议换会话：先更新任务栈断点，再新开会话 `tasks.sh adopt <slug>` 接手');
