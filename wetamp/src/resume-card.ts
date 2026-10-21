@@ -3,21 +3,10 @@ import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { basename, join, relative, sep } from 'node:path';
 import { coord } from './coord';
-
 type Client = 'claude' | 'codex';
-interface Payload {
-  session_id?: string;
-  transcript_path?: string;
-}
-interface Quote {
-  at: string;
-  text: string;
-  reply?: string;
-}
-interface Run {
-  run_id: string;
-  status: string;
-}
+type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
+type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
+type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
 const bytes = (s: string): number => Buffer.byteLength(s);
 const chars = (s: string): string[] =>
@@ -31,17 +20,16 @@ const head = (s: string, limit: number): string => chars(s).slice(0, limit).join
 const tail = (s: string, limit: number): string => chars(s).slice(-limit).join('');
 const objectOf = (v: unknown): Json =>
   typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Json) : {};
-const textOf = (v: unknown): string =>
-  typeof v === 'string'
-    ? v
-    : Array.isArray(v)
-      ? v
-          .flatMap(value => {
-            const x = objectOf(value);
-            return x.type === 'text' && typeof x.text === 'string' ? [x.text] : [];
-          })
-          .join('')
-      : '';
+const textOf = (v: unknown): string => {
+  if (typeof v === 'string') return v;
+  if (!Array.isArray(v)) return '';
+  return v
+    .flatMap(value => {
+      const x = objectOf(value);
+      return x.type === 'text' && typeof x.text === 'string' ? [x.text] : [];
+    })
+    .join('');
+};
 const envOr = (key: string, fallback: string): string => {
   const value = process.env[key];
   return value !== undefined && value !== '' ? value : fallback;
@@ -55,24 +43,20 @@ const timeOf = (v: unknown): string => {
 function safePath(payload: Payload, client: Client): string | null {
   try {
     if (!payload.session_id || !payload.transcript_path) return null;
-    const root = realpathSync(
-      client === 'claude'
-        ? join(envOr('CLAUDE_CONFIG_DIR', join(homedir(), '.claude')), 'projects')
-        : join(envOr('CODEX_HOME', join(homedir(), '.codex')), 'sessions')
-    );
+    const base = envOr(
+        client === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME',
+        join(homedir(), client === 'claude' ? '.claude' : '.codex')
+      ),
+      root = realpathSync(join(base, client === 'claude' ? 'projects' : 'sessions'));
     const file = realpathSync(payload.transcript_path),
       rel = relative(root, file),
       name = basename(file);
-    if (
-      !statSync(file).isFile() ||
-      rel === '..' ||
-      rel.startsWith(`..${sep}`) ||
-      (client === 'claude'
-        ? name !== `${payload.session_id}.jsonl`
-        : !name.endsWith(`-${payload.session_id}.jsonl`))
-    )
-      return null;
-    return file;
+    const inside = rel !== '..' && !rel.startsWith(`..${sep}`),
+      named =
+        client === 'claude'
+          ? name === `${payload.session_id}.jsonl`
+          : name.endsWith(`-${payload.session_id}.jsonl`);
+    return statSync(file).isFile() && inside && named ? file : null;
   } catch {
     return null;
   }
@@ -81,18 +65,18 @@ async function facts(path: string, client: Client): Promise<{ count: number; quo
   let count = 0,
     assistant = '';
   const quotes: Quote[] = [];
+  const add = (text: string, at: unknown): void => {
+    quotes.push({
+      at: timeOf(at),
+      text,
+      ...(chars(text).length < 20 && assistant ? { reply: tail(assistant, 200) } : {}),
+    });
+  };
   for await (const line of createInterface({
     input: createReadStream(path),
     crlfDelay: Infinity,
   })) {
-    if (
-      !line.includes('user') &&
-      !line.includes('assistant') &&
-      !line.includes('UserMessage') &&
-      !line.includes('AgentMessage') &&
-      !line.includes('compact')
-    )
-      continue;
+    if (!/(?:user|assistant|UserMessage|AgentMessage|compact)/.test(line)) continue;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line) as unknown;
@@ -100,60 +84,46 @@ async function facts(path: string, client: Client): Promise<{ count: number; quo
       continue;
     }
     const x = objectOf(parsed);
+    let kind: unknown,
+      content = '',
+      allowed = true;
     if (client === 'claude') {
       if (x.type === 'system' && x.subtype === 'compact_boundary') count++;
-      const content = textOf(objectOf(x.message).content);
-      if (x.type === 'assistant' && content) assistant = content;
-      if (
-        x.type === 'user' &&
+      kind = x.type;
+      content = textOf(objectOf(x.message).content);
+      allowed =
         !('toolUseResult' in x) &&
         x.isMeta !== true &&
         x.isCompactSummary !== true &&
-        content &&
-        !/^<[^>]+>/.test(content)
-      )
-        quotes.push({
-          at: timeOf(x.timestamp),
-          text: content,
-          ...(chars(content).length < 20 && assistant ? { reply: tail(assistant, 200) } : {}),
-        });
+        !/^<[^>]+>/.test(content);
     } else {
       if (x.type === 'compacted') count++;
       const payload = objectOf(x.payload),
         item =
-          x.type === 'event_msg' && payload.type === 'item_completed' ? objectOf(payload.item) : {},
-        content = textOf(item.content);
-      if (item.type === 'AgentMessage' && content) assistant = content;
-      if (item.type === 'UserMessage' && content)
-        quotes.push({
-          at: timeOf(x.timestamp),
-          text: content,
-          ...(chars(content).length < 20 && assistant ? { reply: tail(assistant, 200) } : {}),
-        });
+          x.type === 'event_msg' && payload.type === 'item_completed' ? objectOf(payload.item) : {};
+      kind = item.type;
+      content = textOf(item.content);
     }
+    if (kind === 'assistant' || kind === 'AgentMessage') assistant = content || assistant;
+    if ((kind === 'user' || kind === 'UserMessage') && allowed && content)
+      add(content, x.timestamp);
   }
   return { count, quotes };
 }
 function quoteLines(quotes: Quote[], path: string): string[] {
   const render = (q: Quote): string =>
     `${q.at} ${head(q.text, 300)}${q.reply ? `\n  ↳ 回应：${q.reply}` : ''}`;
-  if (bytes(quotes.map(render).join('\n')) <= 4096) return quotes.map(render);
-  const keep = quotes.slice(0, 3),
-    latest: Quote[] = [];
-  for (const q of quotes.slice(3).reverse()) {
-    const candidate = [
-      ...keep.map(render),
-      `省略 ${String(quotes.length - keep.length - latest.length - 1)} 条，见 ${path}`,
-      ...[q, ...latest].map(render),
-    ];
-    if (bytes(candidate.join('\n')) > 4096) break;
-    latest.unshift(q);
-  }
-  return [
-    ...keep.map(render),
-    `省略 ${String(quotes.length - keep.length - latest.length)} 条，见 ${path}`,
-    ...latest.map(render),
+  const all = quotes.map(render);
+  if (bytes(all.join('\n')) <= 4096) return all;
+  const first = all.slice(0, 3),
+    latest = all.slice(3);
+  const result = (): string[] => [
+    ...first,
+    `省略 ${String(all.length - first.length - latest.length)} 条，见 ${path}`,
+    ...latest,
   ];
+  while (latest.length && bytes(result().join('\n')) > 4096) latest.shift();
+  return result();
 }
 export async function resumeCard(
   payload: Payload,
@@ -178,10 +148,10 @@ export async function resumeCard(
 if (import.meta.main) {
   const payload = JSON.parse(await Bun.stdin.text()) as Payload,
     context = await resumeCard(payload, process.argv[2] as Client);
-  if (context)
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
-      }) + '\n'
-    );
+  if (context) {
+    const output = {
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
+    };
+    process.stdout.write(`${JSON.stringify(output)}\n`);
+  }
 }
