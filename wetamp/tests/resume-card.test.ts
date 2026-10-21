@@ -97,4 +97,35 @@ describe('resume card', () => {
     expect(run({ hook_event_name: 'SessionStart', source: 'startup' })).toBe('');
     expect(run({ hook_event_name: 'SessionStart', source: 'compact' }, 'general')).toBe('');
   });
+  test('hook supplies default homes when its environment omits them', () => {
+    const home = tmp(),
+      config = join(home, '.claude'),
+      dir = join(config, 'projects', 'repo'),
+      id = 'session-default-home',
+      file = join(dir, `${id}.jsonl`),
+      hook = join(import.meta.dir, '..', 'hooks', 'resume-card.cjs');
+    mkdirSync(dir, { recursive: true });
+    lines(file, [{ type: 'system', subtype: 'compact_boundary' }]);
+    const result = Bun.spawnSync(['node', hook, 'claude'], {
+      stdin: new Blob([
+        JSON.stringify({
+          hook_event_name: 'SessionStart',
+          source: 'compact',
+          session_id: id,
+          transcript_path: file,
+        }),
+      ]),
+      env: {
+        ...process.env,
+        HOME: home,
+        CLAUDE_CONFIG_DIR: config,
+        SUPERAGENT_HOME: '',
+        ARCHON_HOME: '',
+      },
+      stdout: 'pipe',
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain('【复位卡');
+    expect(result.stdout.toString()).not.toContain('advisory');
+  });
 });

@@ -17,11 +17,17 @@ try {
       path.join(os.homedir(), '.bun/bin/bun'),
       '/opt/homebrew/bin/bun',
     ].find(p => p && fs.existsSync(p)) || 'bun';
+  const saHome = process.env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
   const result = spawnSync(bun, [path.join(__dirname, '../src/resume-card.ts'), client], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      SUPERAGENT_HOME: saHome,
+      ARCHON_HOME: process.env.ARCHON_HOME || path.join(saHome, 'archon'),
+    },
     timeout: 10000,
-    maxBuffer: 8192,
+    maxBuffer: 65536,
   });
   if (result.status !== 0) throw new Error('adapter unavailable');
   process.stdout.write(result.stdout);
