@@ -1297,7 +1297,11 @@ export function ledgerOf(
   for (const entry of options.initial?.blocking ?? [])
     open.set(entry.id, { ...entry, blocks: true, eligible: true });
   for (const entry of options.initial?.debt ?? [])
-    open.set(entry.id, { ...entry, blocks: false, eligible: false });
+    open.set(entry.id, {
+      ...entry,
+      blocks: false,
+      eligible: entry.round === 1 && sev.includes(entry.severity),
+    });
   const closed: Entry[] = [...(options.initial?.closed ?? [])];
   const roundOffset = options.roundOffset ?? 0;
   let base = open.size === 0 && closed.length === 0;
@@ -2463,16 +2467,25 @@ function gate(): void {
   writeFileSync(reviewFile, JSON.stringify(reviews.at(-1), null, 2));
   const risk = effectiveRisk(env('RISK'), rechecks);
   const m = env('MILESTONE');
+  const gatePrefix = `gate-${m}-r`;
   const priorLedgers = readdirSync(artifacts)
-    .filter(file => file.startsWith(`gate-${m}-r`) && file.endsWith('.ledger.json'))
+    .filter(
+      file => file.startsWith(gatePrefix) && /^\d+\.json$/.test(file.slice(gatePrefix.length))
+    )
     .flatMap(file => {
-      const value = JSON.parse(readFileSync(join(artifacts, file), 'utf8')) as Ledger;
+      const gate = JSON.parse(readFileSync(join(artifacts, file), 'utf8')) as {
+        decision?: { reason?: unknown };
+      };
+      if (gate.decision?.reason !== 'finding_stuck') return [];
+      const ledgerFile = file.replace(/\.json$/, '.ledger.json');
+      if (!existsSync(join(artifacts, ledgerFile))) return [];
+      const value = JSON.parse(readFileSync(join(artifacts, ledgerFile), 'utf8')) as Ledger;
       const used = value.review_rounds_used?.[m];
       return typeof used === 'number' && Number.isSafeInteger(used) && used > 0
-        ? [{ value, used }]
+        ? [{ value, used, file }]
         : [];
     })
-    .sort((a, b) => b.used - a.used);
+    .sort((a, b) => b.used - a.used || b.file.localeCompare(a.file));
   const priorLedger = priorLedgers.length ? priorLedgers[0] : undefined;
   const reviewRounds = Math.max(0, maxRounds() - (priorLedger?.used ?? 0));
   const decision = {

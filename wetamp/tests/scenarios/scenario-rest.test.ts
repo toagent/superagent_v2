@@ -54,6 +54,10 @@ test.each([false, true])(
       expect(stuck.decision.evidence.filter((line: string) => line.startsWith('A r'))).toHaveLength(
         3
       );
+      writeFileSync(
+        join(first.artifactsDir, 'gate-m1-r1.ledger.json'),
+        JSON.stringify({ ...stuck.ledger, review_rounds_used: { m1: 4 } })
+      );
       expect(retryScenario(f, first)).toBe('held:gate');
       expect(readFileSync(join(f.home, 'gen', first.runId, 'hints/p.md'), 'utf8')).toBe(
         'close findings\n'

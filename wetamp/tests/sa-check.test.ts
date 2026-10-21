@@ -1409,6 +1409,13 @@ describe('gate rules', () => {
     const r2 = R('FAIL', [f('high', { id: 'R2-1' })]);
     const r3 = R('FAIL', [f('blocker', { id: 'R2-1' })]);
     expect(ids([R('PASS'), r2, r3])).toEqual(['R2-1']);
+    const initial = ledgerOf(
+      [R('FAIL', [f('high', { id: 'H', failure_class: 'test_env' })])],
+      'G2'
+    );
+    expect(
+      ledgerOf([R('FAIL', [f('high', { id: 'H' })])], 'G2', { initial, roundOffset: 3 }).blocking
+    ).toMatchObject([{ id: 'H', failure_class: 'product' }]);
   });
   test('F-20: a round whose review was skipped (acceptance not advanced) fixes without a review', () => {
     const red = { ...C('a', false), disposition: 'repair' as const, reason: 'acceptance_failed' };
