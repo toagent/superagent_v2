@@ -257,6 +257,10 @@ export function diagnosis(
 }
 export const triage = (e: TriageEvidence, contradiction = false): Category =>
   diagnosis(e, contradiction).category;
+const defectEligible = (e: Episode): boolean =>
+  e.status !== 'completed' ||
+  !e.acceptance.length ||
+  e.acceptance.some(acceptance => acceptance.ok !== true);
 function mechanize(signature: string, reasons: string[], episode: string): void {
   mkdirSync(join(root(), 'mechanize'), { recursive: true });
   const id = signature.replace(/[^a-zA-Z0-9_-]/g, '_'),
@@ -289,7 +293,9 @@ export function deliverEngineDefects(): void {
         signature = mechanism.signature ?? name.slice(0, -5),
         evidence = mechanism.episodes.flatMap(id => {
           const episode = episodeOf(id);
-          return episode?.signature === signature && !privateProject(episode.project)
+          return episode?.signature === signature &&
+            defectEligible(episode) &&
+            !privateProject(episode.project)
             ? [episode]
             : [];
         }),
@@ -343,7 +349,7 @@ export function saveEpisode(e: Episode): boolean {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${e.id}.json`);
   const first = !existsSync(path);
-  if (e.category === 'engine') mechanize(e.signature, e.reasons, e.id);
+  if (e.category === 'engine' && defectEligible(e)) mechanize(e.signature, e.reasons, e.id);
   // Drop whole optional rows, never truncate JSON or omit the failure identity.
   while (Buffer.byteLength(JSON.stringify(e)) > 8192) {
     const rows = [e.timeline, e.findings, e.acceptance, e.dispositions, e.asks, e.tokens].sort(
@@ -551,10 +557,8 @@ export function foldEpisode(
     }));
   });
   const findings = rows.flatMap(r =>
-      (r.data.findings ?? []).map(f => `| ${f.id} | ${f.severity} | ${f.status} |`)
-    ),
-    allAccepted =
-      run.status === 'completed' && acceptance.length > 0 && acceptance.every(a => a.ok === true);
+    (r.data.findings ?? []).map(f => `| ${f.id} | ${f.severity} | ${f.status} |`)
+  );
   let diff: Episode['diff'] = null;
   if (run.working_path && !privateProject(plan.repo)) {
     const d = Bun.spawnSync(
@@ -584,17 +588,14 @@ export function foldEpisode(
       dispositions: l.dispositions,
       p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null,
       coder_error:
-        rows.some(
-          r => !!r.data.error_class || (!allAccepted && r.data.self_report_conflict === true)
-        ) ||
-        (!allAccepted &&
-          files(artifactsOf(run))
-            .filter(f => f.endsWith('.coder.json'))
-            .some(
-              f =>
-                !!memoryJson<{ error_class?: string | null }>(join(artifactsOf(run), f), {}, l)
-                  .error_class
-            )),
+        rows.some(r => !!r.data.error_class || r.data.self_report_conflict === true) ||
+        files(artifactsOf(run))
+          .filter(f => f.endsWith('.coder.json'))
+          .some(
+            f =>
+              !!memoryJson<{ error_class?: string | null }>(join(artifactsOf(run), f), {}, l)
+                .error_class
+          ),
     },
     repeated
   );

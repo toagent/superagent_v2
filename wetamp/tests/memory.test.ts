@@ -294,6 +294,57 @@ describe('EV1 incident replay', () => {
     saveEpisode(e);
     expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
   });
+  test('only unsuccessful episodes enter defect mechanisms and handoff evidence', () => {
+    const successful = [
+      ['review_not_required'],
+      ['review_not_required', 'environment'],
+      ['review_not_required', 'environment', 'self_report_conflict'],
+    ].map((reasons, i) =>
+      episode({
+        id: `successful-${String(i)}`,
+        status: 'completed',
+        acceptance: [{ cmd: 'accept', ok: true }],
+        category: 'engine',
+        signature: 'review_not_required',
+        reasons,
+      })
+    );
+    for (const e of successful) saveEpisode(e);
+    expect(episodes().map(e => e.id)).toEqual(successful.map(e => e.id));
+    expect(existsSync(join(sa, 'memory/mechanize'))).toBe(false);
+
+    mkdirSync(join(sa, 'memory/mechanize'));
+    writeFileSync(
+      join(sa, 'memory/mechanize/review_not_required.json'),
+      JSON.stringify({
+        signature: 'review_not_required',
+        reasons: ['review_not_required'],
+        episodes: successful.map(e => e.id),
+      })
+    );
+    deliverEngineDefects();
+    expect(coordination.coord().messages()).toHaveLength(0);
+
+    for (const e of [
+      episode({
+        id: 'failed-defect',
+        status: 'failed',
+        acceptance: [{ cmd: 'accept', ok: false }],
+      }),
+      episode({ id: 'paused-defect', status: 'paused', acceptance: [{ cmd: 'accept', ok: true }] }),
+      episode({ id: 'missing-acceptance', status: 'completed', acceptance: [] }),
+    ])
+      saveEpisode({
+        ...e,
+        category: 'engine',
+        signature: 'review_not_required',
+        reasons: ['review_not_required'],
+      });
+    deliverEngineDefects();
+    const message = coordination.coord().messages()[0];
+    expect(message.body).toContain('occurrences: 3');
+    expect(message.body).not.toContain('successful-');
+  });
   test('engine mechanisms queue once, accumulate, and reopen after done', () => {
     const first = episode({ id: 'defect-a', category: 'engine', signature: 'engine_suspect' });
     saveEpisode(first);
@@ -1113,8 +1164,10 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
     expect(
       readdirSync(join(sa, 'memory/mechanize')).filter(f => f === 'evidence_missing.json')
     ).toHaveLength(1);
-    const retries = JSON.parse(readFileSync(join(sa, 'memory/mechanize/auto_retry.json'), 'utf8'));
-    expect(retries.episodes).toHaveLength(2);
+    expect(existsSync(join(sa, 'memory/mechanize/auto_retry.json'))).toBe(false);
+    expect(
+      episodes().filter(e => e.status === 'completed' && e.signature === 'auto_retry')
+    ).toHaveLength(2);
   });
   test('HF5 episode hashes separate new holds, count historical duplicate reminder identities', () => {
     raw.status = 'completed';
@@ -1272,7 +1325,7 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       db.close();
     }
   });
-  test('completed green acceptance treats self-report conflict as audit-only', () => {
+  test('completed green acceptance keeps audit evidence without creating a defect', () => {
     raw.status = 'completed';
     writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
     writeFileSync(
@@ -1280,13 +1333,16 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       JSON.stringify({ error_class: 'task', prompt: 'FORBIDDEN', transcript: 'FORBIDDEN' })
     );
     const completed = foldEpisode(ledger, plan, raw, [], {}, NOW);
-    expect(completed).toMatchObject({ category: 'engine', signature: 'evidence_missing' });
+    expect(completed).toMatchObject({ category: 'engine', signature: 'evidence_conflict' });
     expect(JSON.stringify(completed)).not.toContain('FORBIDDEN');
     writeFileSync(
       join(artifactsOf(raw), 'verify-core.json'),
       JSON.stringify({ ok: true, self_report_conflict: true })
     );
-    expect(foldEpisode(ledger, plan, raw, [], {}, NOW).signature).not.toBe('evidence_conflict');
+    const conflict = foldEpisode(ledger, plan, raw, [], {}, NOW);
+    expect(conflict).toMatchObject({ category: 'engine', signature: 'evidence_conflict' });
+    saveEpisode(conflict);
+    expect(existsSync(join(sa, 'memory/mechanize/evidence_conflict.json'))).toBe(false);
     writeFileSync(
       join(artifactsOf(raw), 'verify-core.json'),
       JSON.stringify({ ok: false, self_report_conflict: true })
@@ -1637,7 +1693,10 @@ describe('FIXD review regressions', () => {
       stub = join(root, 'normal-archon');
     writeFileSync(file, JSON.stringify({ ...raw, status: 'completed', nodes: undefined, events }));
     writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
-    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
+    writeFileSync(
+      join(artifactsOf(raw), 'verify-core.json'),
+      JSON.stringify({ ok: true, reason: 'review_not_required' })
+    );
     process.env.SA_ARCHON_BIN = stub;
     process.env.FAKE_EV1_RUN = file;
     mkdirSync(join(sa, 'runs'));
@@ -1648,7 +1707,9 @@ describe('FIXD review regressions', () => {
         JSON.stringify({ ...ledger, run_id: `quiet${i}` })
       );
     expect(memoryTick({}, NOW, false).errors).toEqual([]);
-    expect(episodes()).toHaveLength(0);
+    expect(episodes()).toHaveLength(5);
+    expect(existsSync(join(sa, 'memory/mechanize/review_not_required.json'))).toBe(false);
+    expect(coordination.coord().messages()).toHaveLength(0);
     const priors = JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8'));
     expect(priors[priorKey(root, plan.packages[0], model)]).toMatchObject({
       n: 5,
