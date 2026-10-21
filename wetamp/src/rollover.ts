@@ -9,7 +9,7 @@ import { launchAgent, orcaBin, type AgentLaunch } from './orca';
 import { readJobs, type Job } from './jobs';
 import { Intake, intakeRoot } from './intake';
 import { renderHandoffContext } from './rollover-context';
-import { supervisor } from './supervisor';
+import { supervisor } from './cli';
 
 // prettier-ignore
 export interface RolloverRecord {
