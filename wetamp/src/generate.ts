@@ -1,9 +1,6 @@
 import { executionTable, executionRoute, executionNode } from './execution';
-import { parseWorkflow } from '@archon/workflows/loader';
-import {
-  assertComposedGateDriveable,
-  assertInteractiveClassNotBackgrounded,
-} from '@archon/workflows/utils/workflow-requirements';
+import { assertBackgroundDispatchable, parseWorkflow } from '@archon/workflows/loader';
+import { assertComposedGateDriveable } from '@archon/workflows/utils/workflow-requirements';
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
 // 计划文本只进 brief 文件、经绝对路径传给节点：with:/command 正文是模板，`$` 无法转义。
 import {
@@ -1098,7 +1095,7 @@ export function assertGeneratedWorkflow(definition: Node, background = true): vo
   if (parsed.workflow === null)
     throw new Error(`generated workflow invalid: ${parsed.error.error}`);
   if (background) {
-    assertInteractiveClassNotBackgrounded(parsed.workflow);
+    assertBackgroundDispatchable(parsed.workflow);
     assertComposedGateDriveable(parsed.workflow.nodes as never);
   }
 }

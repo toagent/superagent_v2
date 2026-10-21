@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildWorkflow } from '../src/generate';
+import { assertGeneratedWorkflow, buildWorkflow } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
 import { budgetExceeded, netLinesFromNumstat } from '../templates/.archon/scripts/sa-check';
 
@@ -18,7 +18,8 @@ test('an exceeded budget has one native approval gate and no repair route', () =
   const plan = structuredClone(fixture);
   plan.packages = [plan.packages[0]];
   plan.packages[0].max_net_lines = 1;
-  const nodes = buildWorkflow(plan, milestones(plan), 'budget', '/GEN').nodes as {
+  const workflow = buildWorkflow(plan, milestones(plan), 'budget', '/GEN');
+  const nodes = workflow.nodes as {
     id: string;
     when?: string;
     approval?: unknown;
@@ -32,6 +33,7 @@ test('an exceeded budget has one native approval gate and no repair route', () =
     when: "$verify-core.output.reason == 'budget_exceeded'",
     approval: { decisions: [{ id: 'approve' }, { id: 'reject' }] },
   });
+  expect(() => assertGeneratedWorkflow(workflow, true)).not.toThrow();
 });
 
 test('net lines exclude tests, golden paths and generator-declared outputs', () => {

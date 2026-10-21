@@ -12,6 +12,7 @@ import {
 } from './workflow-requirements';
 import { WorkflowInputContractError } from '../workflow-inputs';
 import { expandWorkflowIncludes } from '../include-expander';
+import { assertBackgroundDispatchable } from '../loader';
 import { dagNodeSchema } from '../schemas';
 import type { WorkflowDefinition, DagNode } from '../schemas';
 
@@ -263,5 +264,56 @@ describe('assertInteractiveClassNotBackgrounded (#2707 step 2 / #1991)', () => {
     expect((thrown as InteractiveClassBackgroundError).workflowName).toBe('guided');
     expect((thrown as Error).message).toContain("Workflow 'guided'");
     expect((thrown as Error).message).toContain('interactive-class');
+  });
+});
+
+describe('assertBackgroundDispatchable', () => {
+  const workflow = (nodes: unknown[], interactive?: boolean): WorkflowDefinition => ({
+    name: 'background',
+    description: 'background',
+    nodes: nodes.map(node => dagNodeSchema.parse(node)),
+    ...(interactive === undefined ? {} : { interactive }),
+  });
+
+  test('allows a top-level conditional approval to park for external approval', () => {
+    const candidate = workflow(
+      [
+        { id: 'work', bash: 'echo work' },
+        {
+          id: 'approve',
+          approval: { message: 'Approve?' },
+          depends_on: ['work'],
+          when: "$work.output == 'ready'",
+        },
+      ],
+      true
+    );
+    expect(() => assertBackgroundDispatchable(candidate)).not.toThrow();
+  });
+
+  test('still rejects an explicit interactive loop alongside an approval', () => {
+    const candidate = workflow(
+      [
+        { id: 'approve', approval: { message: 'Approve?' } },
+        {
+          id: 'iterate',
+          loop: {
+            prompt: 'work',
+            until: 'DONE',
+            max_iterations: 2,
+            interactive: true,
+            gate_message: 'Continue?',
+          },
+        },
+      ],
+      true
+    );
+    expect(() => assertBackgroundDispatchable(candidate)).toThrow(InteractiveClassBackgroundError);
+  });
+
+  test('allows an ordinary workflow without an approval', () => {
+    expect(() =>
+      assertBackgroundDispatchable(workflow([{ id: 'work', bash: 'echo work' }]))
+    ).not.toThrow();
   });
 });

@@ -28,6 +28,7 @@ import {
 import { COMPOSE_FAN_OUT_STEP_MARKER } from './fan-out-identity';
 import { createLogger } from '@archon/paths';
 import { compileOutputSchema } from './structured-output';
+import { assertInteractiveClassNotBackgrounded } from './utils/workflow-requirements';
 
 import {
   dagNodeSchema,
@@ -1440,6 +1441,22 @@ export function validateWorkflowClassPlacement(
     }
   }
   return null;
+}
+
+interface BackgroundDispatchableWorkflow {
+  name: string;
+  interactive?: boolean;
+  nodes: readonly (DagNode | IncludeDirective)[];
+}
+
+export function assertBackgroundDispatchable(workflow: BackgroundDispatchableWorkflow): void {
+  const hasExternalApproval =
+    workflow.nodes.some(node => !isIncludeDirective(node) && isGateNode(node)) &&
+    validateWorkflowClassPlacement(
+      workflow.nodes.filter(node => isIncludeDirective(node) || !isGateNode(node)),
+      undefined
+    ) === null;
+  if (!hasExternalApproval) assertInteractiveClassNotBackgrounded(workflow);
 }
 
 /**

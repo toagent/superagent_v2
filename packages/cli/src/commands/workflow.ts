@@ -1,8 +1,8 @@
 import { RUN_AI_CONFIGURATION_METADATA_KEY } from '@archon/workflows/run-ai-configuration';
 import type { Conversation } from '@archon/core/schemas/conversation';
 import { providerRegistry } from '@archon/providers';
-import { getApprovalDecisions, isGateNode } from '@archon/workflows/schemas/dag-node';
-import { validateWorkflowClassPlacement } from '@archon/workflows/loader';
+import { getApprovalDecisions } from '@archon/workflows/schemas/dag-node';
+import { assertBackgroundDispatchable } from '@archon/workflows/loader';
 import { withBranchLaunchSource } from '@archon/core/workflows/branch-launch-source';
 import {
   prepareRunAiConfiguration,
@@ -114,7 +114,6 @@ import {
 } from '@archon/workflows/executor';
 import {
   assertComposedGateDriveable,
-  assertInteractiveClassNotBackgrounded,
   assertWorkflowRequirementsMet,
   resolveTopLevelInputs,
 } from '@archon/workflows/utils/workflow-requirements';
@@ -2309,13 +2308,7 @@ async function runWorkflowWithOwnedSource(
     // is durable and `workflow approve` owns continuation. Inline interaction and
     // hidden composed gates still require a foreground driver.
     if (!isContinuation) {
-      const externalApproval =
-        workflow.nodes.some(isGateNode) &&
-        validateWorkflowClassPlacement(
-          workflow.nodes.filter(n => !isGateNode(n)),
-          undefined
-        ) === null;
-      if (!externalApproval) assertInteractiveClassNotBackgrounded(workflow);
+      assertBackgroundDispatchable(workflow);
       assertComposedGateDriveable(workflow.nodes);
     }
 
