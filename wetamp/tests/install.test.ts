@@ -378,7 +378,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(existsSync(codex)).toBe(false);
     expect(sh('--hooks').code).toBe(0);
     expect(cmds(settings).map(([e, ...c]) => [e, c.length])).toEqual([
-      ['SessionStart', 2],
+      ['SessionStart', 3],
       ['PreToolUse', 2],
       ['PostToolUse', 1],
       ['SubagentStop', 1],
@@ -434,7 +434,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const state = (
       Bun.TOML.parse(once) as { hooks: { state: Record<string, { trusted_hash: string }> } }
     ).hooks.state;
-    // guard 五个事件各一组，追加在用户 PreToolUse 组之后
+    // managed hooks 各一组，追加在用户 PreToolUse 组之后
     expect(Object.keys(state).sort()).toEqual(
       [
         ...['post_tool_use', 'session_start', 'stop', 'subagent_stop'].map(
@@ -443,6 +443,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         `${hooks}:pre_tool_use:0:0`,
         `${hooks}:pre_tool_use:1:0`,
         `${hooks}:session_start:1:0`,
+        `${hooks}:session_start:2:0`,
         `${hooks}:user_prompt_submit:0:0`,
       ].sort()
     );

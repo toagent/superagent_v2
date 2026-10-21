@@ -153,6 +153,10 @@ with typed `apply`; status-only replies use `actions: []` to consume input witho
 creating a Task. Answer/amend the associated Task and continue original work unless
 explicitly cancelled. Use `intake show` / `input` for full local bodies.
 
+After a native compact, commander sessions also receive a bounded resume card built from
+the validated native transcript path. Derived sessions and other `SessionStart` sources
+produce no resume-card output.
+
 Codex deduplicates by native `turn_id`; identical text in a new turn remains distinct.
 Claude uses a random ID per hook invocation: retransmissions across invocations cannot
 be precisely deduplicated. Missing fields or persistence failure produce a bounded

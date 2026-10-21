@@ -382,6 +382,21 @@ export class Coordination {
           : 'superagent claim <path|run>',
     };
   }
+  unfinishedRuns(sessionId: string): { run_id: string; status: string }[] {
+    return this.d
+      .runs()
+      .filter(l => l.controller?.session_id === sessionId && l.state !== 'failed')
+      .flatMap(l => {
+        try {
+          const status = this.d.status(l);
+          return ['failed', 'completed', 'cancelled'].includes(status)
+            ? []
+            : [{ run_id: l.run_id, status }];
+        } catch {
+          return [{ run_id: l.run_id, status: 'unknown' }];
+        }
+      });
+  }
   private leaseKey(scope: Scope, who: Identity): string {
     return shared.hash([scope, identity.key(who)]);
   }

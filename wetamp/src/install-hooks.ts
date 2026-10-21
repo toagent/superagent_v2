@@ -57,10 +57,12 @@ export function wanted(client: Client): [string, string][] {
     e,
     cmd('intake.cjs', client),
   ]);
-  if (client === 'codex') return [...guard, ...intake];
+  const resume: [string, string] = ['SessionStart', cmd('resume-card.cjs', client)];
+  if (client === 'codex') return [...guard, ...intake, resume];
   return [
     ...guard,
     ...intake,
+    resume,
     ...['UserPromptSubmit', 'PreToolUse'].map((e): [string, string] => [
       e,
       cmd('context-advisory.cjs'),

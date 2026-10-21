@@ -11,6 +11,7 @@
 
 - Claude：`SessionStart/PreToolUse/PostToolUse/SubagentStop/Stop` → `guard.cjs claude`；`UserPromptSubmit/PreToolUse` → `context-advisory.cjs`。
 - Codex：前述五事件 → `guard.cjs codex`。Codex 只加载用户级 `hooks.json`；guard 信任检查仍确保两条底线有效。
+- Claude/Codex 的元帅会话在 `SessionStart source=compact` 时由 `resume-card.cjs` 注入压缩计数、会话所属未结束 run 与受限的用户原话；派生会话和越界 transcript 静默跳过。
 - OpenCode/Orca：`tool.execute.before` 对所有工具调用经 `git-guardrail.cjs --privacy` 复用 `redline.cjs`，命中或检查失败即拒绝；原有 Git 检查继续执行。
 - Claude 第二道防线：安装器幂等合并两类路径（自身及 `/**`）的 Read/Edit deny，保留用户条目。依据 [官方权限文档](https://code.claude.com/docs/en/permissions#read-and-edit)，Edit 覆盖 Write；`Write(path)` 不参与匹配，故不写入无效规则。CloudStorage 名称用 `[iI][cC][lL][oO][uU][dD]*`。
 - Codex 覆盖证据：`tests/hooks.test.ts` 将 Read/view_image、exec_command、apply_patch 与 MCP 的 PreToolUse payload 送入真实 guard 子进程验证拒绝。这是传输夹具，未采集真实 Codex 客户端事件；上述工具是否实际触发 PreToolUse 均为 NOT_RUN，不能据此声称端到端全覆盖。隐藏脚本 I/O、未触发 hook 的工具与外部进程不在本包证明范围。
