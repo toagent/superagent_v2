@@ -91,6 +91,7 @@ process.exit(7);
 });
 
 // prettier-ignore
+// Each promote runs a real bun install; under load, one install can take over 10 seconds.
 test('bootstrap, descendant promotion, rollback rejection, and a newer descendant', () => {
   const f = sourceFixture(),
     first = f.sha();
@@ -125,7 +126,7 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   const third = commit(f.source, 'third');
   expect(promote(third, undefined, { probe: successfulProbe }).sha).toBe(third);
   expect(currentEngineSnapshot()).toEndWith(third);
-}, testTimeout(30_000));
+}, testTimeout(120_000));
 
 test(
   'promotion lock and protocol downgrade fail closed without publishing a receipt',
@@ -152,7 +153,7 @@ test(
     );
     expect(existsSync(join(receipts, `${second}.json`))).toBe(false);
   },
-  testTimeout(30_000)
+  testTimeout(120_000)
 );
 
 // prettier-ignore
@@ -179,7 +180,7 @@ test('failed read-only candidate retries explicitly while in-service snapshots s
   expect(promote(second, undefined, { probe: successfulProbe }).sha).toBe(second);
   expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow('snapshot_in_service');
   expect(statSync(snapshot).mode).toBe(mode);
-}, testTimeout(30_000));
+}, testTimeout(120_000));
 
 // prettier-ignore
 test('auto promotion detaches once and marks a lost promoter with an explicit retry', () => {
