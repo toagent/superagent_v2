@@ -211,6 +211,24 @@ const reflectionHarness = (e: Episode, output: unknown = { operations: [], reaso
 };
 
 describe('EV1 incident replay', () => {
+  test('runtime prose stays unclassified while structured unknown reasons remain defects', () => {
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), '{}');
+    raw.metadata = { error: 'ordinary runtime failure' };
+    expect(episode()).toMatchObject({
+      reasons: ['unclassified'],
+      category: 'transient',
+      signature: 'unclassified',
+    });
+    writeFileSync(
+      join(artifactsOf(raw), 'verify-core.json'),
+      JSON.stringify({ ok: false, reason: 'unknown_protocol_reason' })
+    );
+    expect(episode()).toMatchObject({
+      reasons: ['unregistered_reason', 'unclassified'],
+      category: 'engine',
+      signature: 'unregistered_reason',
+    });
+  });
   test('EV2 confined memory reads preserve repository-owned artifact evidence outside the memory home', () => {
     raw.output_root = join(root, 'project-output');
     mkdirSync(artifactsOf(raw), { recursive: true });
@@ -1174,27 +1192,47 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       const aged = memoryTick({}, NOW + 610000, false);
       expect(aged.episodes[0]).toMatchObject({ category: 'engine', signature: 'orphan_hold' });
       expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(1);
+      writeFileSync(
+        join(sa, 'runs/incident.json'),
+        JSON.stringify({
+          ...ledger,
+          dispositions: [
+            {
+              at: new Date(NOW + 1).toISOString(),
+              reason: 'gate',
+              action: 'blocked',
+              ok: false,
+            },
+          ],
+        })
+      );
+      expect(memoryTick({}, NOW + 615000, false).episodes[0].signals.orphan_hold).toBe(0);
       db.query('INSERT INTO remote_agent_workflow_events VALUES (?)').run(raw.id);
       writeFileSync(file, JSON.stringify({ ...raw, events: [] }));
       memoryTick({}, NOW + 620000, false);
-      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(2);
+      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(3);
       memoryTick({}, NOW + 630000, false);
-      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(2);
+      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(3);
     } finally {
       db.close();
     }
   });
-  test('a completed run still detects coder error from structured self-report without persisting its body', () => {
+  test('completed green acceptance ignores historical coder error while real conflicts remain', () => {
     raw.status = 'completed';
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
     writeFileSync(
       join(artifactsOf(raw), 'verify-core.coder.json'),
       JSON.stringify({ error_class: 'task', prompt: 'FORBIDDEN', transcript: 'FORBIDDEN' })
     );
-    const e = foldEpisode(ledger, plan, raw, [], {}, NOW);
-    expect(e.category).toBe('engine');
-    expect(e.signature).toBe('evidence_conflict');
-    expect(triggered(e, undefined, undefined, NOW)).toBe(true);
-    expect(JSON.stringify(e)).not.toContain('FORBIDDEN');
+    const completed = foldEpisode(ledger, plan, raw, [], {}, NOW);
+    expect(completed).toMatchObject({ category: 'engine', signature: 'evidence_missing' });
+    expect(JSON.stringify(completed)).not.toContain('FORBIDDEN');
+    writeFileSync(
+      join(artifactsOf(raw), 'verify-core.json'),
+      JSON.stringify({ ok: true, self_report_conflict: true })
+    );
+    const conflict = foldEpisode(ledger, plan, raw, [], {}, NOW);
+    expect(conflict).toMatchObject({ category: 'engine', signature: 'evidence_conflict' });
   });
   test('real strategist job roles and cards replace other tag; done overrun is plan', () => {
     mkdirSync(join(sa, 'jobs'));
@@ -1212,9 +1250,29 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
           wrapper_pid: 0,
         })
       );
+    writeFileSync(
+      join(sa, 'jobs/unassigned.json'),
+      JSON.stringify({
+        id: 'unassigned',
+        title: 'legacy task',
+        card: null,
+        log: null,
+        cwd: root,
+        kind: 'other',
+        model: null,
+        role: null,
+        wrapper_pid: 0,
+        pid: 0,
+        started_at: new Date(NOW - 1000).toISOString(),
+        ended_at: new Date(NOW).toISOString(),
+        state: 'failed',
+        exit_code: 143,
+      })
+    );
     const d = memoryTick({}, NOW, false, true);
     expect(existsSync(join(sa, 'memory'))).toBe(false);
     expect(d.episodes.length).toBeGreaterThan(0);
+    expect(d.episodes.some(e => e.id === 'job-unassigned')).toBe(false);
     for (const e of d.episodes) {
       expect(e.tag).toStartWith('strategist:');
       expect(e.category).toBe(e.status === 'done' ? 'plan' : 'role');
