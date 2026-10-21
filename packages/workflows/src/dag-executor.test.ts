@@ -50,6 +50,7 @@ const mockLogger = {
  * this file leaves it on the unreachable default, where no pointer can validate.
  */
 let mockArtifactHome = '/nonexistent/home';
+let forceRealSubprocessOutput = false;
 // Captured before the module mock below replaces the re-export.
 const { isPathInside } = await import('@archon/paths/archon-paths');
 mock.module('@archon/paths', () => ({
@@ -82,7 +83,7 @@ mock.module('./subprocess-output', () => ({
     };
     // Legacy unit tests deliberately spy execFileAsync to synthesize Docker and errno
     // outcomes. All other tests, including the >2 MiB DAG integration, use the real runner.
-    if (!('mock' in git.execFileAsync)) {
+    if (forceRealSubprocessOutput || !('mock' in git.execFileAsync)) {
       return realSubprocessOutput.runStreamingSubprocess(isolatedOptions);
     }
     let result: { stdout: string; stderr: string };
@@ -37777,11 +37778,13 @@ describe('executeDagWorkflow -- composed fan-out (include + fan_out, #2512)', ()
     );
     await mkdir(testDir, { recursive: true });
 
+    forceRealSubprocessOutput = true;
     mockSendQueryDag.mockClear();
     mockGetAgentProviderDag.mockClear();
   });
 
   afterEach(async () => {
+    forceRealSubprocessOutput = false;
     try {
       await rm(testDir, { recursive: true, force: true });
     } catch {
