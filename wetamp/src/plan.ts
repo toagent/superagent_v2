@@ -64,11 +64,17 @@ const Ajv2020 = createRequire(join(WETAMP, '..', 'packages', 'workflows', 'packa
 ) as { default: AjvCtor };
 let validator: Validate | undefined;
 
+export const SCRATCH_ROOT = '/tmp/sa-scratch';
+
 /** 允许的目标 repo 根；SUPERAGENT_WRITE_ROOTS（冒号分隔）可覆盖，测试据此指向临时目录。 */
 export const writeRoots = (): string[] => [
   ...(process.env.SUPERAGENT_WRITE_ROOTS ?? join(homedir(), 'work')).split(':'),
-  '/tmp/sa-scratch',
+  SCRATCH_ROOT,
 ];
+export const isWithinWriteRoots = (path: string, roots = writeRoots()): boolean => {
+  const candidate = realpathSync(path);
+  return roots.some(root => existsSync(root) && candidate.startsWith(realpathSync(root) + sep));
+};
 
 export function loadPlan(path: string, roots = writeRoots()): Plan {
   const data = JSON.parse(readFileSync(path, 'utf8')) as unknown;
@@ -120,7 +126,7 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
     throw new Error('plan invalid: /deadline not date-time');
   if (!existsSync(plan.repo)) throw new Error(`plan invalid: repo ${plan.repo} does not exist`);
   const repo = realpathSync(plan.repo);
-  if (!roots.some(r => existsSync(r) && repo.startsWith(realpathSync(r) + sep))) {
+  if (!isWithinWriteRoots(repo, roots)) {
     throw new Error(`plan invalid: repo ${repo} outside allowed roots`);
   }
   if (!existsSync(join(repo, '.git')))

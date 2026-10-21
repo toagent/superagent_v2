@@ -16,6 +16,7 @@ import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import { getRun, lastJson, lock } from '../archon';
 import { WETAMP, home, writeAtomic } from '../config';
 import { inspectProcess } from '../launcher';
+import { SCRATCH_ROOT } from '../plan';
 import { runProbe, type ProbeEvidence } from '../probe';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
@@ -322,7 +323,7 @@ export interface PromotionDependencies {
 }
 
 export function runSnapshotProbe(snapshot: string): ProbeEvidence {
-  const scratch = join(tmpdir(), `sa-engine-probe-${crypto.randomUUID()}`),
+  const scratch = join(SCRATCH_ROOT, `sa-engine-probe-${crypto.randomUUID()}`),
     evidencePath = join(scratch, 'evidence.json'),
     started = Date.now();
   mkdirSync(scratch, { recursive: true });
