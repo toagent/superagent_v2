@@ -268,7 +268,7 @@ export class Rollover {
     }
     if (!r.steps.adopt) {
       this.d.tasks(r.cwd, ['adopt', r.task_session, '--owner', to.session_id]);
-      if (r.prior_status) this.d.tasks(r.cwd, ['resume', r.task_session, r.prior_status]);
+      this.d.tasks(r.cwd, ['resume', r.task_session, '执行中']);
       r.steps.adopt = 'done';
       this.save(r);
     }

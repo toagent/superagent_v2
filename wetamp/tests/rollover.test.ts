@@ -110,14 +110,31 @@ test('accept transfers the recorded repository without runs and reports owner ch
   });
 });
 
-test('accept skips resume when the task stack had no prior status', async () => {
+test('accept marks a task stack without prior status as running', async () => {
   const s = fixture();
   writeFileSync(s.task, readFileSync(s.task, 'utf8').replace('状态: 执行中\n', ''));
   const started = await s.r.start();
   s.setWho(b);
   expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
-  expect(s.taskCalls.filter(call => call[0] === 'resume')).toEqual([]);
-  expect(s.taskCalls.at(-1)).toEqual(['adopt', 'session', '--owner', 'new']);
+  expect(s.taskCalls.slice(-2)).toEqual([
+    ['adopt', 'session', '--owner', 'new'],
+    ['resume', 'session', '执行中'],
+  ]);
+});
+
+test('accept replaces an interrupted prior status with running', async () => {
+  const s = fixture();
+  writeFileSync(
+    s.task,
+    readFileSync(s.task, 'utf8').replace('状态: 执行中', '状态: 被中断（交接前手写）')
+  );
+  const started = await s.r.start();
+  s.setWho(b);
+  expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
+  expect(s.taskCalls.slice(-2)).toEqual([
+    ['adopt', 'session', '--owner', 'new'],
+    ['resume', 'session', '执行中'],
+  ]);
 });
 
 // prettier-ignore
