@@ -7,10 +7,11 @@ interface Entry {
   at: unknown;
   text: string;
   line: number;
-  aside?: boolean;
+  asideId?: string | null;
 }
 interface Facts {
   users: Entry[];
+  notificationIds: Set<string>;
   summary?: Entry;
   report?: Entry;
 }
@@ -65,16 +66,31 @@ const injectedCodexText = (value: string): boolean =>
   /^\s*(?:<environment_context>|# AGENTS\.md instructions for\b)/.test(value);
 
 function consumeClaude(row: Json, line: number, facts: Facts): void {
-  const content = text(object(row.message).content);
+  const content = text(object(row.message).content),
+    attachment = object(row.attachment);
+  if (
+    row.type === 'attachment' &&
+    attachment.type === 'queued_command' &&
+    typeof attachment.source_uuid === 'string' &&
+    (attachment.commandMode === 'task-notification' ||
+      object(attachment.origin).kind === 'task-notification')
+  )
+    facts.notificationIds.add(attachment.source_uuid);
   if (row.type === 'queue-operation') {
     if (
       row.operation === 'remove' &&
       row.reason === 'absorbed_mid_turn' &&
       typeof row.content === 'string'
     )
-      facts.users.push({ at: row.timestamp, text: row.content, line, aside: true });
+      facts.users.push({
+        at: row.timestamp,
+        text: row.content,
+        line,
+        asideId: typeof row.commandUuid === 'string' ? row.commandUuid : null,
+      });
     return;
   }
+  if (row.type === 'user' && object(row.origin).kind === 'task-notification') return;
   if (row.type === 'user' && row.isCompactSummary === true) {
     if (content) facts.summary = { at: row.timestamp, text: content, line };
     return;
@@ -104,7 +120,7 @@ function consumeCodex(row: Json, line: number, facts: Facts): void {
 }
 
 async function readFacts(session: HandoffSession): Promise<Facts> {
-  const facts: Facts = { users: [] },
+  const facts: Facts = { users: [], notificationIds: new Set() },
     input = createReadStream(session.transcript),
     lines = createInterface({ input, crlfDelay: Infinity });
   let line = 0;
@@ -120,6 +136,9 @@ async function readFacts(session: HandoffSession): Promise<Facts> {
     if (session.client === 'claude') consumeClaude(row, line, facts);
     else consumeCodex(row, line, facts);
   }
+  facts.users = facts.users.filter(
+    entry => typeof entry.asideId !== 'string' || !facts.notificationIds.has(entry.asideId)
+  );
   return facts;
 }
 
@@ -133,7 +152,7 @@ async function renderSession(session: HandoffSession): Promise<string> {
       ...(facts.users.length
         ? facts.users.map(
             entry =>
-              `- [${localTime(entry.at)}] ${entry.aside ? '「插话」' : ''}${shorten(entry.text, session.transcript, entry.line, 4000)}`
+              `- [${localTime(entry.at)}] ${entry.asideId !== undefined ? '「插话」' : ''}${shorten(entry.text, session.transcript, entry.line, 4000)}`
           )
         : ['- （无）'])
     );

@@ -28,6 +28,23 @@ test('Claude renders quotes, interruption, latest summary and report while exclu
 });
 
 // prettier-ignore
+test('Claude excludes task notifications using transcript metadata', async () => {
+  const file = join(tmp(), 'claude-notifications.jsonl');
+  const aside = (commandUuid: string, content: string) => ({ type: 'queue-operation', operation: 'remove', reason: 'absorbed_mid_turn', commandUuid, content });
+  const attachment = (source_uuid: string, commandMode?: string, origin?: object) => ({ type: 'attachment', attachment: { type: 'queued_command', source_uuid, commandMode, origin } });
+  write(file, [
+    msg('user', 'user request'), msg('user', 'background result', { origin: { kind: 'task-notification' } }),
+    aside('00000000-0000-0000-0000-000000000001', 'user aside'), attachment('00000000-0000-0000-0000-000000000001', 'prompt'),
+    attachment('00000000-0000-0000-0000-000000000002', 'task-notification'), aside('00000000-0000-0000-0000-000000000002', 'notification before'),
+    aside('00000000-0000-0000-0000-000000000003', 'notification after'), attachment('00000000-0000-0000-0000-000000000003', undefined, { kind: 'task-notification' }),
+    aside('00000000-0000-0000-0000-000000000004', 'unknown aside'),
+  ]);
+  const out = await renderHandoffContext([{ client: 'claude', transcript: file, label: 'old' }]);
+  for (const value of ['user request', 'user aside', 'unknown aside']) expect(out).toContain(value);
+  for (const value of ['background result', 'notification before', 'notification after']) expect(out).not.toContain(value);
+});
+
+// prettier-ignore
 test('Codex renders messages and compaction, excludes injected context, and reports missing or malformed transcripts', async () => {
   const root = tmp(), file = join(root, 'codex.jsonl'), bad = join(root, 'bad.jsonl'), missing = join(root, 'missing.jsonl');
   const compact = `HEAD${'x'.repeat(11993)}TAIL`;
