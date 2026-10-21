@@ -383,19 +383,24 @@ export class Coordination {
     };
   }
   unfinishedRuns(sessionId: string): { run_id: string; status: string }[] {
-    return this.d
-      .runs()
-      .filter(l => l.controller?.session_id === sessionId && l.state !== 'failed')
-      .flatMap(l => {
-        try {
-          const status = this.d.status(l);
-          return ['failed', 'completed', 'cancelled'].includes(status)
-            ? []
-            : [{ run_id: l.run_id, status }];
-        } catch {
-          return [{ run_id: l.run_id, status: 'unknown' }];
-        }
-      });
+    return this.d.runs().flatMap(l => {
+      if (l.state === 'failed') return [];
+      let owner: Identity | null = l.controller ?? l.launcher ?? null;
+      try {
+        owner = this.owner(runScope(l)).owner;
+      } catch {
+        // Shipped ledgers may outlive their repository; their recorded owner remains the only source.
+      }
+      if (owner?.session_id !== sessionId) return [];
+      try {
+        const status = this.d.status(l);
+        return ['failed', 'completed', 'cancelled'].includes(status)
+          ? []
+          : [{ run_id: l.run_id, status }];
+      } catch {
+        return [{ run_id: l.run_id, status: 'unknown' }];
+      }
+    });
   }
   private leaseKey(scope: Scope, who: Identity): string {
     return shared.hash([scope, identity.key(who)]);

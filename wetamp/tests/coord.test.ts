@@ -27,6 +27,7 @@ import {
   type Identity,
   type Message,
   type Presence,
+  type RunRef,
 } from '../src/coord';
 import { ownerLost } from '../src/archon';
 import * as native from '../src/archon';
@@ -334,24 +335,24 @@ test('8: dirty and uncommitted engine rejected; committed clean snapshot has exa
   expect(cleanEngine(repo)).not.toBe(sha);
 });
 test('9: old ledger controller falls back to launcher; linked worktrees share repository identity; Orca disabled', () => {
-  const s = setup();
-  const c = new Coordination({
-    sa: s.sa,
-    runs: () => [
+  const s = setup(),
+    runs: RunRef[] = [
       {
         run_id: 'old',
         archon_run_id: 'r',
         repo: s.repo,
         launcher: { ...a, client: 'codex', tty: null, cwd: s.repo },
       },
-      // A deleted repository's ledger must not break ownership queries for live repositories.
       {
         run_id: 'gone',
         archon_run_id: 'g',
         repo: join(s.root, 'deleted-repo'),
-        launcher: { ...b, client: 'codex', tty: null, cwd: s.root },
+        launcher: { ...b, client: 'codex', session_id: 'C', tty: null, cwd: s.root },
       },
-    ],
+    ];
+  const c = new Coordination({
+    sa: s.sa,
+    runs: () => runs,
     status: () => 'running',
     presence: () => online,
   });
@@ -359,6 +360,9 @@ test('9: old ledger controller falls back to launcher; linked worktrees share re
     owner: a,
     evidence: ['nonterminal run old legacy launcher'],
   });
+  c.rolloverTransfer(runScope(runs[0]), a, b, 'token');
+  expect(c.unfinishedRuns('A')).toEqual([]);
+  expect(c.unfinishedRuns('B')).toEqual([{ run_id: 'old', status: 'running' }]);
   const wt = join(s.root, 'linked');
   sh(`git worktree add -q -b linked '${wt}'`, s.repo);
   expect(repoScope(wt)).toEqual(s.scope);

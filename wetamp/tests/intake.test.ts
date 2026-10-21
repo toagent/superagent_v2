@@ -188,6 +188,35 @@ test('old question answers stay bound to old revision and engine gate', () => {
   ).toContain('run mismatch');
 });
 
+test('rollover rehomes only matching tasks and open questions idempotently', () => {
+  const dir = root(),
+    s = new Intake(dir),
+    owned = { ...input('owned'), owner: 'codex:old' },
+    other = { ...input('other'), owner: 'codex:other' },
+    a = s.apply(owned, [create()]).results![0]!.task!,
+    b = s.apply(other, [create()]).results![0]!.task!;
+  s.apply({ ...owned, message: 'run' }, [
+    launch(a),
+    bind(a),
+    {
+      kind: 'question',
+      task: a,
+      expected_revision: 1,
+      id: 'open',
+      run_id: 'run',
+      gate: 'gate',
+      prompt: '?',
+    },
+  ]);
+  expect(s.rehomeOwner('codex:old', 'codex:new', 'rollover:token')).toEqual([a]);
+  expect(s.rehomeOwner('codex:old', 'codex:new', 'rollover:token')).toEqual([]);
+  expect(s.show(a)).toMatchObject({ owner: 'codex:new', questions: [{ owner: 'codex:new' }] });
+  expect(s.show(b).owner).toBe('codex:other');
+  expect(new Intake(dir).show(a).transfers).toEqual([
+    { from: 'codex:old', to: 'codex:new', evidence: 'rollover:token' },
+  ]);
+});
+
 test('unknown dispatch is not retryable; explicit binding and cancel preserve history', () => {
   const dir = root(),
     s = new Intake(dir),

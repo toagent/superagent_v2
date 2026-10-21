@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Coordination, repoScope, runScope, type Identity, type RunRef } from '../src/coord';
-import { Rollover } from '../src/rollover';
+import { Rollover, type RolloverRecord } from '../src/rollover';
 import { gitRepo, tmp } from './helpers';
 
 // prettier-ignore
@@ -39,7 +39,7 @@ function fixture(section = true) {
     sleep: async ms => { now += ms; },
     jobs: () => [],
   });
-  return { root, repo, sa, task, runs, c, r, taskCalls, launchCalls, launches, setWho: (v: Identity) => { who = v; } };
+  return { root, repo, sa, task, transcript, runs, c, r, taskCalls, launchCalls, launches, setWho: (v: Identity) => { who = v; } };
 }
 
 // prettier-ignore
@@ -134,7 +134,7 @@ test('failed and interrupted launches stay explicit while transient live files a
   expect(await interrupted.r.wait('a'.repeat(32), 1)).toEqual({ state: 'pending', exit: 2 });
 });
 
-test('accept resumes after an adopt failure without retransfer and fences another recipient', async () => {
+test('accept resumes after supervisor and adopt failures without repeating completed steps', async () => {
   const s = fixture(),
     run: RunRef = { run_id: 'run1', archon_run_id: 'engine', repo: s.repo };
   s.runs.push(run);
@@ -142,6 +142,18 @@ test('accept resumes after an adopt failure without retransfer and fences anothe
   writeFileSync(join(s.sa, 'runs/run1.json'), JSON.stringify(run));
   const started = await s.r.start();
   s.setWho(b);
+  mkdirSync(join(s.root, 'supervisor/workers'), { recursive: true });
+  writeFileSync(
+    join(s.root, 'supervisor/workers/w.json'),
+    JSON.stringify({ id: 'w', cwd: s.repo, session_id: 'old' })
+  );
+  s.r.d.env.AGENT_SUPERVISOR_STATE = join(s.root, 'supervisor');
+  const supervisorCalls: string[][] = [];
+  s.r.d.supervise = args => {
+    supervisorCalls.push(args);
+    if (supervisorCalls.length === 1) throw new Error('supervisor crash');
+    return '';
+  };
   let failAdopt = true;
   s.r.d.tasks = (_cwd, args) => {
     s.taskCalls.push(args);
@@ -151,21 +163,60 @@ test('accept resumes after an adopt failure without retransfer and fences anothe
     }
     return '';
   };
-  await expect(Promise.resolve().then(() => s.r.accept(String(started.token)))).rejects.toThrow(
-    'adopt crash'
-  );
+  expect(() => s.r.accept(String(started.token))).toThrow('supervisor crash');
   const generation = s.c.owner(runScope(run)).generation;
   expect(() => {
     s.setWho(a);
     s.r.cancel(String(started.token));
   }).toThrow('不可取消');
   s.setWho(b);
+  expect(() => s.r.accept(String(started.token))).toThrow('adopt crash');
   expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
   expect(s.c.owner(runScope(run)).generation).toBe(generation);
+  expect(supervisorCalls).toHaveLength(2);
   expect(() => {
     s.setWho({ ...b, session_id: 'third' });
     s.r.accept(String(started.token));
   }).toThrow('accepted');
+});
+
+test('context renders a two-generation chain oldest first', async () => {
+  const s = fixture(),
+    token = 'b'.repeat(32),
+    old = join(s.root, 'old.jsonl');
+  writeFileSync(
+    old,
+    JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        item: { type: 'UserMessage', content: [{ type: 'text', text: 'older' }] },
+      },
+    }) + '\n'
+  );
+  const latest = JSON.parse(
+    readFileSync(join(s.sa, `coord/rollovers/${String((await s.r.start()).token)}.json`), 'utf8')
+  ) as RolloverRecord;
+  writeFileSync(
+    s.transcript,
+    JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        item: { type: 'UserMessage', content: [{ type: 'text', text: 'newer' }] },
+      },
+    }) + '\n'
+  );
+  mkdirSync(join(s.sa, 'coord/rollovers'), { recursive: true });
+  writeFileSync(
+    join(s.sa, `coord/rollovers/${token}.json`),
+    JSON.stringify({ ...latest, token, parent: null, transcript: old })
+  );
+  latest.parent = token;
+  writeFileSync(join(s.sa, `coord/rollovers/${latest.token}.json`), JSON.stringify(latest));
+  s.setWho(b);
+  const out = await s.r.context(latest.token);
+  expect(out.indexOf('older')).toBeLessThan(out.indexOf('newer'));
 });
 
 test('accept reports a run whose owner changed after start as skipped', async () => {

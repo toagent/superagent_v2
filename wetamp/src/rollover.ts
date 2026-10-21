@@ -7,6 +7,9 @@ import { writeAtomic } from './config';
 import { Coordination, caller, repoScope, runScope, same, type Identity, type RunRef } from './coord';
 import { launchAgent, orcaBin, type AgentLaunch } from './orca';
 import { readJobs, type Job } from './jobs';
+import { Intake, intakeRoot } from './intake';
+import { renderHandoffContext } from './rollover-context';
+import { supervisor } from './supervisor';
 
 // prettier-ignore
 export interface RolloverRecord {
@@ -25,12 +28,13 @@ interface Deps {
   write: (path: string, text: string) => void; files: (path: string) => string[];
   tasks: (cwd: string, args: string[]) => string; repo: (cwd: string) => string;
   launch: (bin: string, args: string[]) => Promise<AgentLaunch>;
+  supervise: (args: string[]) => string;
   now: () => Date; token: () => string; sleep: (ms: number) => Promise<void>; jobs: () => Job[];
 }
 
 const taskBin = join(process.env.HOME ?? '', '.wetamp/bin/tasks.sh');
 // prettier-ignore
-const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs });
+const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, supervise: supervisor, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs });
 
 // prettier-ignore
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v), terminal = new Set(['failed', 'completed', 'cancelled']);
@@ -113,6 +117,21 @@ export class Rollover {
   }
   private runStatus(run: RunRef): string {
     try { return this.d.coord.d.status(run); } catch { return 'unknown'; }
+  }
+  private owner(who: Identity): string {
+    if (!who.session_id) throw new Error('rollover: owner 缺少 session_id');
+    return `${who.client}:${who.session_id}`;
+  }
+  private workers(sessionId: string): { id: string; cwd: string }[] {
+    const root = join(
+      this.d.env.AGENT_SUPERVISOR_STATE ?? join(this.d.env.HOME ?? '', '.local/state/agent-supervisor'),
+      'workers'
+    );
+    return this.jsonFiles(root).flatMap(value =>
+      value.session_id === sessionId && typeof value.id === 'string' && typeof value.cwd === 'string'
+        ? [{ id: value.id, cwd: value.cwd }]
+        : []
+    );
   }
   // prettier-ignore
   private async dispatch(r: RolloverRecord, retry = false, reason?: string): Promise<RolloverRecord> {
@@ -211,6 +230,22 @@ export class Rollover {
       r.steps.reauthorize = 'done';
       this.save(r);
     }
+    if (!r.steps.intake) {
+      const root = intakeRoot(this.d.coord.d.sa, r.repo);
+      if (this.d.exists(join(root, 'state.json')))
+        new Intake(root).rehomeOwner(this.owner(r.from), this.owner(to), `rollover:${token}`);
+      r.steps.intake = 'done';
+      this.save(r);
+    }
+    if (!r.steps.supervisor) {
+      for (const worker of this.workers(r.from.session_id ?? ''))
+        this.d.supervise([
+          'register', '--id', worker.id, '--provider', to.client, '--cwd', worker.cwd,
+          '--session', to.session_id, '--pid', String(to.pid),
+        ]);
+      r.steps.supervisor = 'done';
+      this.save(r);
+    }
     if (!r.steps.adopt) {
       this.d.tasks(r.cwd, ['adopt', r.task_session, '--owner', to.session_id]);
       r.steps.adopt = 'done';
@@ -245,6 +280,29 @@ export class Rollover {
   status(): Record<string, unknown>[] {
     return this.records().map(r => ({ token: r.token.slice(0, 8), state: r.state, from: r.from.session_id?.slice(0, 8), to: r.to?.session_id?.slice(0, 8), at: r.accepted_at ?? r.cancelled_at ?? r.created_at }));
   }
+  async context(token: string): Promise<string> {
+    const who = this.d.who();
+    let current: RolloverRecord | null = this.load(token);
+    if (!who.host || !current.from.host || who.host !== current.from.host)
+      throw new Error('rollover: context 只允许同 host 会话读取');
+    const chain: RolloverRecord[] = [];
+    for (let depth = 0; current && depth < 5; depth++) {
+      chain.push(current);
+      current = current.parent ? this.load(current.parent) : null;
+    }
+    chain.reverse();
+    return renderHandoffContext(
+      chain.map((record, index) => {
+        if (record.from.client !== 'claude' && record.from.client !== 'codex')
+          throw new Error(`rollover: 不支持 context client ${record.from.client}`);
+        return {
+          client: record.from.client,
+          transcript: record.transcript,
+          label: `第 ${String(index + 1)} 代 ${record.from.client}:${record.from.session_id ?? 'unknown'}`,
+        };
+      })
+    );
+  }
 }
 
 export async function rolloverCommand(
@@ -261,6 +319,6 @@ export async function rolloverCommand(
   }
   if (command === 'cancel') return { exit: 0, value: r.cancel(token ?? '') };
   if (command === 'status') return { exit: 0, value: r.status() };
-  if (command === 'context') throw new Error('rollover context 未实现');
-  throw new Error('usage: superagent rollover <start|accept|wait|cancel|status>');
+  if (command === 'context') return { exit: 0, value: await r.context(token ?? '') };
+  throw new Error('usage: superagent rollover <start|accept|wait|cancel|status|context>');
 }

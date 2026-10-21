@@ -121,6 +121,8 @@ import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
 import { refreshBudgetQuota, relayQuota } from './relay-quota';
 import { capabilityDrift } from './capabilities';
+export { supervisor } from './supervisor';
+import { supervisor } from './supervisor';
 import {
   assertEngineAccess,
   autoPromote,
@@ -2402,24 +2404,6 @@ const ttlHours = (until: number): number =>
   Number.isFinite(until)
     ? Math.min(MAX_TTL_H, Math.max(1, Math.ceil((until - Date.now()) / 3600e3)))
     : MAX_TTL_H;
-const supervisorPy = (): string =>
-  process.env.SA_SUPERVISOR ??
-  join(homedir(), '.ai-agent-shared', 'skills', 'agent-supervisor', 'scripts', 'supervisor.py');
-
-export function supervisor(args: string[]): string {
-  const p = Bun.spawnSync(['python3', supervisorPy(), ...args], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: QUERY_TIMEOUT_MS,
-    env: { ...process.env },
-  });
-  if (p.exitCode !== 0)
-    throw new Error(
-      `supervisor ${args[0]} exit ${String(p.exitCode)}: ${tail(p.stderr.toString(), 200)}`
-    );
-  return p.stdout.toString().trim();
-}
-
 /** Publish the occurrence before any engine action; an interrupted decision is never replayed. */
 function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks: Asks): void {
   const run = getRun(l.archon_run_id, l.repo);
@@ -3695,7 +3679,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'job exec', positionals: '-- <cmd...>', flags: ['title', 'request-ref', 'card', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'worktree', 'base'] },
   { command: 'job clean', positionals: '<id>', flags: [] },
   { command: 'jobs', flags: ['all'] },
-  { command: 'rollover', positionals: '<start|accept|wait|cancel|status> [token]', flags: ['reason', 'timeout'] },
+  { command: 'rollover', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'timeout'] },
 ];
 
 const optionUsage = (name: OptionName): string => {
@@ -4265,7 +4249,7 @@ async function runCli(): Promise<void> {
       });
       if (parsed.flags.json) print(result.value);
       // prettier-ignore
-      else console.log(Array.isArray(result.value) ? result.value.map(v => JSON.stringify(v)).join('\n') : JSON.stringify(result.value));
+      else console.log(typeof result.value === 'string' ? result.value : Array.isArray(result.value) ? result.value.map(v => JSON.stringify(v)).join('\n') : JSON.stringify(result.value));
       process.exit(result.exit);
     }
     process.exit(main(argv));

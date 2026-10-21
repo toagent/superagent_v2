@@ -67,6 +67,7 @@ export interface Task {
   questions: Question[];
   runs: Binding[];
   cancellations: { revision: number; input: string }[];
+  transfers?: { from: string; to: string; evidence: string }[];
 }
 interface Target {
   task: string;
@@ -299,6 +300,24 @@ export class Intake {
   receive(raw: unknown): Received {
     const input = parseInput(raw);
     return this.change(state => this.receiveInto(state, input));
+  }
+  rehomeOwner(from: string, to: string, evidence: string): string[] {
+    if (!from || !to || !evidence) return fail('transfer requires owner and evidence');
+    return this.change(state => {
+      const moved: string[] = [];
+      for (const task of state.tasks) {
+        if (task.owner !== from) continue;
+        const transfers = (task.transfers ??= []);
+        if (transfers.some(x => x.from === from && x.to === to && x.evidence === evidence))
+          continue;
+        task.owner = to;
+        for (const question of task.questions)
+          if (question.owner === from && !question.answer) question.owner = to;
+        transfers.push({ from, to, evidence });
+        moved.push(task.id);
+      }
+      return moved;
+    });
   }
   apply(raw: unknown, actions: unknown): Received {
     const input = parseInput(raw);

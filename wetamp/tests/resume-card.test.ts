@@ -54,7 +54,10 @@ describe('resume card', () => {
       expect(card).not.toContain(text);
     expect(card!.indexOf('first request')).toBeLessThan(card!.indexOf('do it'));
     expect(card).not.toContain('x'.repeat(301));
-    expect(card).toContain('10-21 09:02 first request');
+    const date = new Date('2026-10-21T01:02:00Z'),
+      pad = (n: number): string => String(n).padStart(2, '0'),
+      local = `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    expect(card).toContain(`${local} first request`);
     const orca = await resumeCard(
       { session_id: id, transcript_path: file },
       'claude',
