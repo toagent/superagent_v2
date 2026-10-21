@@ -10,7 +10,7 @@ import {
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { hostname } from 'node:os';
-import { gitRepo, sh, tmp } from '../helpers';
+import { gitRepo, sh, tmp, trackTestChild } from '../helpers';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 import { superviseTick, loadLedger, ledgerPath } from '../../src/cli';
 import * as archonModule from '../../src/archon';
@@ -108,6 +108,7 @@ const interruptedScenario = async (
     stdout: 'ignore',
     stderr: 'pipe',
   });
+  trackTestChild(child);
   await waitFor(ready);
   for (const end = Date.now() + 60_000; !existsSync(marker) && Date.now() < end; ) {
     if (child.exitCode !== null) {
@@ -120,6 +121,7 @@ const interruptedScenario = async (
   }
   if (!existsSync(marker)) {
     child.kill('SIGKILL');
+    await child.exited;
     const error = await new Response(child.stderr).text();
     throw new Error(`scenario barrier timeout: ${error.slice(-2000)}`);
   }
@@ -206,9 +208,8 @@ test('S4: two detached runs sharing one target each publish exactly once', async
   Bun.spawnSync(['git', 'branch', '-m', 'scenario-target'], { cwd: target });
   const run = (suffix: string) => {
     const output = join(tmp(), `s4-${suffix}.json`);
-    const child = Bun.spawn(
-      [process.execPath, 'test', join(import.meta.dir, 'detached-runner.ts')],
-      {
+    const child = trackTestChild(
+      Bun.spawn([process.execPath, 'test', join(import.meta.dir, 'detached-runner.ts')], {
         detached: true,
         env: {
           ...process.env,
@@ -219,7 +220,8 @@ test('S4: two detached runs sharing one target each publish exactly once', async
         },
         stdout: 'ignore',
         stderr: 'pipe',
-      }
+      }),
+      true
     );
     return Promise.all([child.exited, new Response(child.stderr).text()]).then(([code, error]) => {
       expect(code, error).toBe(0);

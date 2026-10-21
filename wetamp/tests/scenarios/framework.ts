@@ -25,7 +25,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
-import { fixturePlan, gitRepo, sh, tmp } from '../helpers';
+import { fixturePlan, gitRepo, sh, tmp, trackTestChild } from '../helpers';
 import { generate, type Carried } from '../../src/generate';
 import { classifyRun, loadLedger, ledgerPath, main } from '../../src/cli';
 import type { RunView } from '../../src/archon';
@@ -631,6 +631,7 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
       stderr: 'pipe',
     }
   );
+  trackTestChild(child);
   for (const end = Date.now() + 60_000; !existsSync(marker) && Date.now() < end; ) {
     if (child.exitCode !== null)
       throw new Error(

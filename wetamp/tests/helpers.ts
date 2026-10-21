@@ -1,4 +1,4 @@
-import { afterAll } from 'bun:test';
+import { afterAll, afterEach } from 'bun:test';
 import {
   cpSync,
   mkdtempSync,
@@ -16,6 +16,27 @@ import { removeTempTree } from '@archon/paths/test-utils';
 import { loadTiers } from '../src/config';
 
 const roots: string[] = [];
+const children: Array<[ReturnType<typeof Bun.spawn>, boolean]> = [];
+
+export function trackTestChild<T extends ReturnType<typeof Bun.spawn>>(
+  proc: T,
+  processGroup = false
+): T {
+  children.push([proc, processGroup]);
+  return proc;
+}
+
+afterEach(async () => {
+  for (const [proc, processGroup] of children.splice(0)) {
+    try {
+      process.kill(processGroup ? -proc.pid : proc.pid, 'SIGKILL');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+    await proc.exited;
+  }
+});
+
 afterAll(async () => {
   for (const r of roots.splice(0)) await removeTempTree(r);
   repoTemplate = undefined;

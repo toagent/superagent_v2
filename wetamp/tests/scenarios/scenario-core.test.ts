@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmp } from '../helpers';
+import { tmp, trackTestChild } from '../helpers';
 import { expectOutcome, expectPublishedGate, restore, runInProcess, scenario } from './framework';
 
 const fixture = (id: 'S1' | 'S2', risk: 'G1' | 'G2') =>
@@ -22,6 +22,7 @@ test('S1: detached process persists engine terminal state, receipt, and target r
     stdout: 'ignore',
     stderr: 'pipe',
   });
+  trackTestChild(child, true);
   const [code, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   expect(code, error).toBe(0);
   const result = JSON.parse(readFileSync(output, 'utf8')) as {

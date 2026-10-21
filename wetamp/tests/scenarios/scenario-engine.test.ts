@@ -17,7 +17,7 @@ import {
   recoverCarriedScenario,
   scenario,
 } from './framework';
-import { gitRepo, sh, tmp } from '../helpers';
+import { gitRepo, sh, tmp, trackTestChild } from '../helpers';
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 import * as coordination from '../../src/coord';
@@ -66,6 +66,7 @@ if [ "$1 $2" = "workflow resume" ] || [ "$1 $2" = "workflow approve" ]; then
     *) exit 64 ;;
   esac
   (SCENARIO_ID=S12 SCENARIO_RISK=G2 SCENARIO_PASS_ROUND=2 SCENARIO_RESUME_STATE="$S12_STATE_DIR/$kind.json" SCENARIO_RESULT="$S12_STATE_DIR/$kind.result" "$S12_BUN" test "$S12_RUNNER") </dev/null >"$S12_STATE_DIR/$kind.log" 2>&1 &
+  printf '%s\n' "$!" >"$S12_STATE_DIR/$kind.pid"
   printf '{"ok":true,"runId":"%s"}\n' "$3"
   exit 0
 fi
@@ -75,7 +76,7 @@ exec "$S12_REAL_ARCHON" "$@"
     for (const [i, kind] of ['running', 'paused', 'crashed'].entries()) {
       const state = join(root, `${kind}.json`), marker = join(root, `${kind}.blocked`), release = join(root, `${kind}.release`), runId = `5ce0-0012-${String(i)}`, target = gitRepo(tmp());
       sh('git branch -m scenario-target && git config user.name t && git config user.email t@l', target);
-      children.push(Bun.spawn([process.execPath, 'test', runner], { env: { ...process.env, S12_PROBE: probe, SCENARIO_ID: 'S12', SCENARIO_RISK: 'G2', SCENARIO_PASS_ROUND: '2', SCENARIO_HOME: home, SCENARIO_TARGET: target, SCENARIO_RUN_ID: runId, SCENARIO_SUFFIX: kind, SCENARIO_READY: state, SCENARIO_RESULT: join(root, `${kind}.result`), SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'fix-m1-r2', SCENARIO_BLOCK_MARKER: marker, SCENARIO_BLOCK_RELEASE: release, SCENARIO_ENGINE_SNAPSHOT: aPath }, stdout: 'ignore', stderr: 'pipe' }));
+      children.push(trackTestChild(Bun.spawn([process.execPath, 'test', runner], { env: { ...process.env, S12_PROBE: probe, SCENARIO_ID: 'S12', SCENARIO_RISK: 'G2', SCENARIO_PASS_ROUND: '2', SCENARIO_HOME: home, SCENARIO_TARGET: target, SCENARIO_RUN_ID: runId, SCENARIO_SUFFIX: kind, SCENARIO_READY: state, SCENARIO_RESULT: join(root, `${kind}.result`), SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'fix-m1-r2', SCENARIO_BLOCK_MARKER: marker, SCENARIO_BLOCK_RELEASE: release, SCENARIO_ENGINE_SNAPSHOT: aPath }, stdout: 'ignore', stderr: 'pipe' })));
       for (const end = Date.now() + 60_000; !existsSync(marker) && Date.now() < end; ) await Bun.sleep(25);
       expect(existsSync(marker)).toBeTrue();
     }
@@ -142,7 +143,11 @@ exec "$S12_REAL_ARCHON" "$@"
     }
     expect(runIds.map(id => JSON.parse(readFileSync(join(home, 'runs', `${id}.json`), 'utf8')).engine_snapshot)).toEqual([aPath, aPath, aPath]);
   } finally {
-    for (const child of children) if (child.exitCode === null) child.kill('SIGKILL');
+    for (const kind of ['paused', 'crashed']) {
+      const pidFile = join(root, `${kind}.pid`);
+      try { if (existsSync(pidFile)) process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 'SIGKILL'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+    }
     if (existsSync(home)) sh('chmod -R u+w .', home);
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
