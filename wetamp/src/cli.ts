@@ -92,6 +92,7 @@ import {
 } from './archon';
 import {
   attemptPath,
+  reviewRoundLimit,
   type DeliveryDecision,
   type decide as decideGate,
   validateRecovery,
@@ -824,7 +825,9 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
       const decision = decisionOf(evidenceJson(l, art, `${node}.json`));
       return (
         decision?.kind === 'block' &&
-        ['coder_partial', 'coder_needs', 'acceptance_adjudication'].includes(decision.reason ?? '')
+        ['coder_partial', 'coder_needs', 'acceptance_adjudication', 'finding_stuck'].includes(
+          decision.reason ?? ''
+        )
       );
     });
     if (controlNode) return { ...c, node: controlNode, state: 'held:gate', exit: EXIT.held };
@@ -1901,11 +1904,31 @@ function retryGate(
   l: Ledger,
   node: string,
   prepare?: () => void,
-  onEffect?: (effect: DecisionEffect) => void
+  onEffect?: (effect: DecisionEffect) => void,
+  run?: RunView
 ): RecoverResult {
   const m = retryScope(l, node);
   if (!attemptable(l, m))
     throw new Error(`decide retry: ${node} escalated; fix on ${l.branch} or start a new run`);
+  if (run) {
+    const art = artifactsOf(run);
+    const gate = evidenceJson(l, art, `${node}.json`) as
+      | { decision?: DeliveryDecision }
+      | undefined;
+    if (gate?.decision?.reason === 'finding_stuck') {
+      const ledger = evidenceJson(l, art, `${node}.ledger.json`) as
+        | { review_rounds_used?: Record<string, unknown> }
+        | undefined;
+      const used = ledger?.review_rounds_used?.[m];
+      const frozen = JSON.parse(readFileSync(join(l.gen_dir, 'policy.json'), 'utf8')) as Parameters<
+        typeof reviewRoundLimit
+      >[0];
+      if (!Number.isSafeInteger(used) || (used as number) <= 0)
+        throw new Error('decide retry: finding_stuck review round evidence missing');
+      if ((used as number) >= reviewRoundLimit(frozen))
+        throw new Error('decide retry: finding_stuck exhausted review rounds; start a new run');
+    }
+  }
   return recoverRun(
     l,
     () => {
@@ -1939,10 +1962,11 @@ const retry = (
   l: Ledger,
   c: Classified,
   prepare?: () => void,
-  onEffect?: (effect: DecisionEffect) => void
+  onEffect?: (effect: DecisionEffect) => void,
+  run?: RunView
 ): RecoverResult =>
   scopedRetry(l, c, c.node ?? '')
-    ? retryGate(l, c.node ?? '', prepare, onEffect)
+    ? retryGate(l, c.node ?? '', prepare, onEffect, run)
     : recoverRun(l, prepare, onEffect);
 
 function advanceAttempts(paths: string[]): () => void {
@@ -1986,7 +2010,7 @@ function approveAdjudication(l: Ledger, run: RunView, c: Classified,
     command: a.command, failed_tests: a.failed_tests, failure_digest: a.failure_digest,
     at: new Date().toISOString() };
   writeFileSync(path, JSON.stringify({ ...approval, approvals: [...approvals, approval] }) + '\n');
-  return retry(l, c, undefined, onEffect);
+  return retry(l, c, undefined, onEffect, run);
 }
 
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
@@ -1995,13 +2019,14 @@ function retryAllHeld(): number {
     try {
       if ('error' in l) throw new Error(l.error);
       if (abandoned(l)) return [];
-      const c = classifyRun(l, getRun(l.archon_run_id, l.repo));
+      const run = getRun(l.archon_run_id, l.repo);
+      const c = classifyRun(l, run);
       if (!c.state.startsWith('held:') || c.state === 'held:human') return [];
       let started = false;
       const execute = () => ({
         run_id: l.run_id,
         state: c.state,
-        ...retry(l, c, () => (started = true)),
+        ...retry(l, c, () => (started = true), undefined, run),
       });
       return [control(l, () => intervention(l, 'decide', execute, undefined, () => started))];
     } catch (e) {
@@ -2111,7 +2136,7 @@ function decide(l: Ledger, a: Args): number {
   const res = intervention(
     l,
     'decide',
-    () => retry(l, c, () => (started = true)),
+    () => retry(l, c, () => (started = true), undefined, run),
     undefined,
     () => started
   );
@@ -2825,7 +2850,7 @@ function askHold(
                 )
               : p.yes === 'review'
                 ? retryGate(l, `review-${(c.node ?? '').slice(5)}`, undefined, onEffect)
-                : retry(l, c, undefined, onEffect);
+                : retry(l, c, undefined, onEffect, run);
       if (res.ok) {
         if (!effect) throw new Error('decision recovery succeeded without an execution receipt');
         consumeAnswer(l, c.node ?? '', key, r.a, 'yes', effect, asks);

@@ -164,6 +164,7 @@ const base: Reason[] = [
   deterministic('scope_violation', 'coder', 'coder', '交付包含 scope.write 之外的路径'),
   deterministic('acceptance_failed', 'gate', 'coder', '验收失败'),
   deterministic('review_failed', 'gate', 'coder', '评审未通过'),
+  deterministic('finding_stuck', 'gate', 'coder', '同一阻断发现连续三轮未关闭'),
   deterministic(
     'acceptance_evidence_mismatch',
     'gate',

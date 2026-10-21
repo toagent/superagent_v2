@@ -3574,10 +3574,28 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     }
   );
   test('terminal gate decisions refuse retry without changing attempts', () => {
-    const s = held('gate-m1-r6', { 'gate-m1-r6.json': gate('review_failed+review_limit') });
+    const terminal = held('gate-m1-r6', {
+      'gate-m1-r6.json': gate('review_failed+review_limit'),
+    });
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(1);
-    expect(existsSync(join(s.root, 'gen', 'attempts', 'm1'))).toBe(false);
-    expect(resumes(s.calls())).toBe(0);
+    expect(existsSync(join(terminal.root, 'gen', 'attempts', 'm1'))).toBe(false);
+    expect(resumes(terminal.calls())).toBe(0);
+    for (const sample of [
+      { files: { 'gate-m1-r3.json': gate('finding_stuck') }, error: 'evidence missing' },
+      {
+        files: {
+          'gate-m1-r3.json': gate('finding_stuck'),
+          'gate-m1-r3.ledger.json': { review_rounds_used: { m1: 6 } },
+        },
+        error: 'exhausted review rounds',
+      },
+    ]) {
+      const s = held('gate-m1-r3', sample.files);
+      writeFileSync(join(s.root, 'gen', 'policy.json'), JSON.stringify(loadTiers().policy));
+      expect(() => captured(() => main(['decide', 'sa1', 'retry']))).toThrow(sample.error);
+      expect(existsSync(join(s.root, 'gen', 'attempts', 'm1'))).toBe(false);
+      expect(resumes(s.calls())).toBe(0);
+    }
   });
 
   /** 每个挂起原因一个场景：类型 Record<Hold, …> 让 HOLD_POLICY 新增一行而没有场景时编译失败。 */

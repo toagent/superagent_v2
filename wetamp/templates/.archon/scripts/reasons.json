@@ -168,6 +168,13 @@
     "description": "评审未通过"
   },
   {
+    "code": "finding_stuck",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "同一阻断发现连续三轮未关闭"
+  },
+  {
     "code": "acceptance_evidence_mismatch",
     "hold": "gate",
     "determinism": "deterministic",
@@ -383,6 +390,13 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "评审未通过"
+  },
+  {
+    "code": "finding_stuck+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "同一阻断发现连续三轮未关闭"
   },
   {
     "code": "acceptance_evidence_mismatch+review_limit",
