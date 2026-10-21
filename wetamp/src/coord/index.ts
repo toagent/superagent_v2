@@ -400,7 +400,8 @@ export class Coordination {
   private leaseKey(scope: Scope, who: Identity): string {
     return shared.hash([scope, identity.key(who)]);
   }
-  private transfer(scope: Scope, who: Identity | null, reason: string, renewal = false): Claim {
+  // prettier-ignore
+  private transfer(scope: Scope, who: Identity | null, reason: string, renewal = false, notify = true): Claim {
     const old = this.claimOf(scope),
       view = this.owner(scope),
       at = new Date(this.d.now()).toISOString();
@@ -419,9 +420,21 @@ export class Coordination {
     this.save('claims', shared.hash(scope), c);
     if (who) this.save('leases', this.leaseKey(scope, who), { generation: c.generation });
     for (const previous of view.owner ? [view.owner] : view.conflicts)
-      if (!renewal && !same(previous, who))
+      if (notify && !renewal && !same(previous, who))
         this.notice('takeover', scope, who ?? previous, previous, c.generation, reason);
     return c;
+  }
+  // prettier-ignore
+  rolloverTransfer(scope: Scope, from: Identity, to: Identity, token: string): { status: 'transferred' | 'unchanged' | 'skipped'; generation?: number; reason?: string } {
+    return this.scoped(scope, () =>
+      this.locked(() => {
+        const owner = this.owner(scope).owner;
+        if (same(owner, to)) return { status: 'unchanged', generation: this.owner(scope).generation };
+        if (!same(owner, from)) return { status: 'skipped', reason: 'owner_changed' };
+        const claim = this.transfer(scope, to, `rollover:${token}`, false, false);
+        return { status: 'transferred', generation: claim.generation };
+      })
+    );
   }
   private claimState(scope: Scope, who: Identity, takeover: boolean) {
     const view = this.owner(scope);

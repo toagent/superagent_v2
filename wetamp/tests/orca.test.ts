@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { cockpit, type Cockpit, type CockpitRun } from '../src/board/cockpit';
 import { unreadableRow, type Snapshot } from '../src/board/data';
 import { unknownProgress } from '../src/board/eta';
-import { orcaView, syncOrca, type OrcaDeps } from '../src/orca';
+import { launchAgent, orcaView, syncOrca, type OrcaDeps } from '../src/orca';
 import type { Hold } from '../src/reasons';
 
 const item = (id: string, extra: Partial<CockpitRun> = {}): CockpitRun => ({
@@ -55,6 +55,15 @@ const frame = (active: string[] = [], needs: string[] = [], why = 'approval'): S
     },
   })),
   asks: Object.fromEntries(needs.map(id => [`${id}:${why}:episode`, { status: 'pending' }])),
+});
+
+// prettier-ignore
+test('agent launch classifies success, operation loss, explicit failure and ambiguity', async () => {
+  const run = (value: string | Error) => launchAgent('/orca', [], async () => { if (value instanceof Error) throw value; return value; });
+  expect(await run('{"ok":true,"result":{"id":"x"}}')).toEqual({ kind: 'launched', outcome: { id: 'x' } });
+  expect(await run('{"ok":false,"error":{"operationId":"op"}}')).toEqual({ kind: 'lost', operation_id: 'op' });
+  expect(await run('{"ok":false,"error":{"message":"bad"}}')).toMatchObject({ kind: 'failed' });
+  expect(await run(new Error('connection lost'))).toEqual({ kind: 'unknown', evidence: 'connection lost' });
 });
 
 function harness(s: Snapshot = frame()) {

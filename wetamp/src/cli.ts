@@ -3695,6 +3695,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'job exec', positionals: '-- <cmd...>', flags: ['title', 'request-ref', 'card', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'worktree', 'base'] },
   { command: 'job clean', positionals: '<id>', flags: [] },
   { command: 'jobs', flags: ['all'] },
+  { command: 'rollover', positionals: '<start|accept|wait|cancel|status> [token]', flags: ['reason', 'timeout'] },
 ];
 
 const optionUsage = (name: OptionName): string => {
@@ -4231,7 +4232,11 @@ async function runCli(): Promise<void> {
         return undefined;
       }
     })();
-    if (['board', 'usage', 'supervise-tick', 'console', 'web', 'job', 'jobs'].includes(verb ?? ''))
+    if (
+      ['board', 'usage', 'supervise-tick', 'console', 'web', 'job', 'jobs', 'rollover'].includes(
+        verb ?? ''
+      )
+    )
       assertEngineAccess(argv);
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
@@ -4248,6 +4253,21 @@ async function runCli(): Promise<void> {
     if (verb === 'console' || verb === 'web')
       process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs') process.exit(await jobCli(argv));
+    if (verb === 'rollover') {
+      const parsed = parseArgs(argv),
+        command = parsed._[1],
+        token = parsed._[2];
+      const result = await (
+        await import('./rollover')
+      ).rolloverCommand(command, token, {
+        reason: parsed.flags.reason,
+        timeout: parsed.flags.timeout ? Number(parsed.flags.timeout) : undefined,
+      });
+      if (parsed.flags.json) print(result.value);
+      // prettier-ignore
+      else console.log(Array.isArray(result.value) ? result.value.map(v => JSON.stringify(v)).join('\n') : JSON.stringify(result.value));
+      process.exit(result.exit);
+    }
     process.exit(main(argv));
   } catch (e) {
     console.error(`superagent: ${(e as Error).message}`);

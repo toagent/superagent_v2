@@ -72,6 +72,48 @@ export interface OrcaDeps {
   commandTimeoutMs: number;
 }
 
+// prettier-ignore
+export const orcaBin = (env: NodeJS.ProcessEnv = process.env, exists: (path: string) => boolean = existsSync): string | undefined =>
+  [env.SA_ORCA_BIN, '/usr/local/bin/orca', '/Applications/Orca.app/Contents/Resources/bin/orca'].find((path): path is string => !!path && exists(path));
+
+// prettier-ignore
+export type AgentLaunch = { kind: 'launched'; outcome: unknown } | { kind: 'lost'; operation_id: string } | { kind: 'unknown'; evidence: string } | { kind: 'failed'; error: string };
+
+const operationId = (value: unknown): string | undefined => {
+  if (!record(value)) return undefined;
+  for (const key of ['operation_id', 'operationId'])
+    if (typeof value[key] === 'string' && value[key]) return value[key];
+  for (const child of Object.values(value)) {
+    const found = operationId(child);
+    if (found) return found;
+  }
+  return undefined;
+};
+
+// prettier-ignore
+export async function launchAgent(bin: string, args: string[], exec: (bin: string, args: string[]) => Promise<string> = (command, argv) => new Promise((resolve, reject) => {
+  execFile(command, argv, (error, stdout, stderr) => { if (error) reject(Object.assign(new Error(error.message), { stdout, stderr })); else resolve(stdout); });
+})): Promise<AgentLaunch> {
+  try {
+    const value = JSON.parse(await exec(bin, args)) as unknown;
+    if (record(value) && value.ok === true) return { kind: 'launched', outcome: value.result ?? value };
+    const id = operationId(value);
+    if (id) return { kind: 'lost', operation_id: id };
+    return { kind: 'failed', error: JSON.stringify(value) };
+  } catch (error) {
+    const e = error as Error & { stdout?: string; stderr?: string };
+    const evidence = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n');
+    try {
+      const value = JSON.parse(e.stdout ?? e.stderr ?? '') as unknown;
+      const id = operationId(value);
+      if (id) return { kind: 'lost', operation_id: id };
+    } catch {
+      // A dispatched launch without structured evidence is intentionally ambiguous.
+    }
+    return { kind: 'unknown', evidence };
+  }
+}
+
 const abortError = (signal: AbortSignal): Error => {
   const reason: unknown = signal.reason;
   return reason instanceof Error ? reason : new Error(String(reason));
@@ -126,11 +168,7 @@ export async function syncOrca(
     const board = join(d.sa(), 'orca-board'),
       state = join(d.sa(), 'orca-board.json');
     if (!d.exists(board)) return { skipped: 'no-board' };
-    const bin = [
-      d.env.SA_ORCA_BIN,
-      '/usr/local/bin/orca',
-      '/Applications/Orca.app/Contents/Resources/bin/orca',
-    ].find((p): p is string => !!p && d.exists(p));
+    const bin = orcaBin(d.env, d.exists);
     if (!bin) return { skipped: 'no-orca' };
     held = d.lock(join(d.sa(), 'orca-board.lock'));
     if (!held.ok) return { skipped: 'locked' };
