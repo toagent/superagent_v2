@@ -65,6 +65,7 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   s.setWho(b);
   const accepted = s.r.accept(String(started.token));
   expect(accepted).toMatchObject({ state: 'accepted' });
+  expect(s.taskCalls.slice(-2)).toEqual([['adopt', 'session', '--owner', 'new'], ['resume', 'session', '执行中']]);
   expect(s.c.owner(runScope(run)).owner?.session_id).toBe('new');
   expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
   expect(s.c.owner(runScope(run)).generation).toBe(generation + 1);
@@ -72,6 +73,16 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(() => s.c.mutate(runScope(run), a, () => null, 1)).toThrow('fencing');
   expect(readFileSync(join(s.sa, 'coord/authorizations/run1.json'), 'utf8')).toContain('original_sha256');
   expect(s.c.messages().some(message => message.type === 'takeover')).toBe(false);
+});
+
+test('accept skips resume when the task stack had no prior status', async () => {
+  const s = fixture();
+  writeFileSync(s.task, readFileSync(s.task, 'utf8').replace('状态: 执行中\n', ''));
+  const started = await s.r.start();
+  s.setWho(b);
+  expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
+  expect(s.taskCalls.filter(call => call[0] === 'resume')).toEqual([]);
+  expect(s.taskCalls.at(-1)).toEqual(['adopt', 'session', '--owner', 'new']);
 });
 
 // prettier-ignore
