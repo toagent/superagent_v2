@@ -1,7 +1,7 @@
 import { createReadStream, realpathSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
-import { basename, join, relative, sep } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { coord } from './coord';
 type Client = 'claude' | 'codex';
 type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
@@ -36,9 +36,7 @@ const envOr = (key: string, fallback: string): string => {
 };
 const timeOf = (v: unknown): string => {
   const d = new Date(typeof v === 'string' ? v : 0);
-  return Number.isNaN(d.valueOf())
-    ? '-- --:--'
-    : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return Number.isNaN(d.valueOf()) ? '-- --:--' : d.toISOString().slice(5, 16).replace('T', ' ');
 };
 function safePath(payload: Payload, client: Client): string | null {
   try {
@@ -50,12 +48,9 @@ function safePath(payload: Payload, client: Client): string | null {
       root = realpathSync(join(base, client === 'claude' ? 'projects' : 'sessions'));
     const file = realpathSync(payload.transcript_path),
       rel = relative(root, file),
-      name = basename(file);
+      suffix = client === 'claude' ? `${payload.session_id}.jsonl` : `-${payload.session_id}.jsonl`;
     const inside = rel !== '..' && !rel.startsWith(`..${sep}`),
-      named =
-        client === 'claude'
-          ? name === `${payload.session_id}.jsonl`
-          : name.endsWith(`-${payload.session_id}.jsonl`);
+      named = file.endsWith(`${client === 'claude' ? sep : ''}${suffix}`);
     return statSync(file).isFile() && inside && named ? file : null;
   } catch {
     return null;
@@ -72,10 +67,8 @@ async function facts(path: string, client: Client): Promise<{ count: number; quo
       ...(chars(text).length < 20 && assistant ? { reply: tail(assistant, 200) } : {}),
     });
   };
-  for await (const line of createInterface({
-    input: createReadStream(path),
-    crlfDelay: Infinity,
-  })) {
+  const input = createReadStream(path);
+  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
     if (!/(?:user|assistant|UserMessage|AgentMessage|compact)/.test(line)) continue;
     let parsed: unknown;
     try {
@@ -125,18 +118,14 @@ function quoteLines(quotes: Quote[], path: string): string[] {
   while (latest.length && bytes(result().join('\n')) > 4096) latest.shift();
   return result();
 }
-export async function resumeCard(
-  payload: Payload,
-  client: Client,
-  runs?: Run[]
-): Promise<string | null> {
-  const path = safePath(payload, client);
-  if (!path || !payload.session_id) return null;
+export async function resumeCard(p: Payload, client: Client, runs?: Run[]): Promise<string | null> {
+  const path = safePath(p, client);
+  if (!path || !p.session_id) return null;
   const { count, quotes } = await facts(path, client),
     lines = [`【复位卡·第 ${String(count)} 次压缩】以下为磁盘事实，与压缩摘要冲突时以此为准`];
   if (count >= 2)
     lines.push('建议换会话：先更新任务栈断点，再新开会话 `tasks.sh adopt <slug>` 接手');
-  const active = runs ?? coord().unfinishedRuns(payload.session_id);
+  const active = runs ?? coord().unfinishedRuns(p.session_id);
   lines.push(
     '未结束 run：',
     ...(active.length ? active.map(r => `${r.run_id} ${r.status}`) : ['（无）']),

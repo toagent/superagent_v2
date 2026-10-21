@@ -40,13 +40,9 @@ describe('resume card', () => {
       status: l => (l.run_id === 'done' ? 'completed' : 'running'),
     }).unfinishedRuns(id);
     const card = await resumeCard({ session_id: id, transcript_path: file }, 'claude', active);
-    for (const text of [
-      '【复位卡·第 2 次压缩】',
-      '建议换会话',
-      'mine running',
-      '↳ 回应：previous proposal',
-    ])
-      expect(card).toContain(text);
+    expect(card).toMatch(
+      /【复位卡·第 2 次压缩】[\s\S]*建议换会话[\s\S]*mine running[\s\S]*↳ 回应：previous proposal/
+    );
     for (const text of ['done completed', 'other', 'system-reminder'])
       expect(card).not.toContain(text);
     expect(card!.indexOf('first request')).toBeLessThan(card!.indexOf('do it'));
