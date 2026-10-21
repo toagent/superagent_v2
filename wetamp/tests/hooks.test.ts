@@ -19,6 +19,7 @@ const ROLE_KEYS = [
   'SUPERAGENT_ALLOW_COMMANDER_WRITE',
   'SUPERAGENT_HOME',
   'ARCHON_HOME',
+  'ORCA_AGENT_SESSION_ID',
 ];
 const baseEnv = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !ROLE_KEYS.includes(k))
@@ -680,6 +681,30 @@ describe('context-advisory.cjs', () => {
     );
     const merged = call(500001, 'b')?.hookSpecificOutput?.additionalContext;
     expect(merged).toMatch(/Superagent 交接待答复[\s\S]*tasks\.sh list/);
+  });
+
+  test('accepted rollover repeatedly stops only its source session', () => {
+    const root = tmp(),
+      home = join(root, 'sa'),
+      dir = join(home, 'coord', 'rollovers'),
+      record = {
+        token: '1234567890abcdef1234567890abcdef',
+        state: 'accepted',
+        accepted_at: '2026-10-21T12:00:00Z',
+        from: { client: 'claude', session_id: 'old' },
+        to: { client: 'codex', session_id: 'new-session-id' },
+      };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'accepted.json'), JSON.stringify(record));
+    writeFileSync(join(dir, 'broken.json'), '{');
+    const call = (session: string): string =>
+      budget(1000, {}, {}, session, root)?.hookSpecificOutput?.additionalContext ?? '';
+    expect(call('old')).toMatch(/^本会话已于 .*立即停止写入/);
+    expect(call('old')).toContain('rollover 12345678');
+    expect(call('other')).not.toContain('立即停止写入');
+    record.state = 'pending';
+    writeFileSync(join(dir, 'accepted.json'), JSON.stringify(record));
+    expect(call('old')).not.toContain('立即停止写入');
   });
 
   test('活动 run 内超过 15 次 Bash/Read 仍静默，不产生工具计数状态', () => {

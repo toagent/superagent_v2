@@ -134,7 +134,8 @@ export async function resumeCard(
   p: Payload,
   client: Client,
   runs?: Run[],
-  now = Date.now()
+  now = Date.now(),
+  env = process.env
 ): Promise<string | null> {
   const path = safePath(p, client);
   if (!path || !p.session_id) return null;
@@ -143,7 +144,9 @@ export async function resumeCard(
     lines = [`【复位卡·第 ${String(count)} 次压缩】以下为磁盘事实，与压缩摘要冲突时以此为准`];
   if (count >= 1)
     lines.push(
-      '建议换会话：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。'
+      env.ORCA_AGENT_SESSION_ID
+        ? '建议换会话：在任务栈写好断点并补齐「接手必读」「在途」「已核实与更正」三节（无内容写「无」），然后执行 superagent rollover start，按输出在后台运行 superagent rollover wait 后结束本轮。'
+        : '建议换会话：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。'
     );
   const active = runs ?? coord().unfinishedRuns(p.session_id);
   lines.push(

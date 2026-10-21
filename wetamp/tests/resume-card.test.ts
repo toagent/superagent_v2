@@ -40,7 +40,13 @@ describe('resume card', () => {
       runs: () => ledgers,
       status: l => (l.run_id === 'done' ? 'completed' : 'running'),
     }).unfinishedRuns(id);
-    const card = await resumeCard({ session_id: id, transcript_path: file }, 'claude', active, now);
+    const card = await resumeCard(
+      { session_id: id, transcript_path: file },
+      'claude',
+      active,
+      now,
+      {}
+    );
     expect(card).toMatch(
       /【复位卡·第 1 次压缩】[\s\S]*tasks\.sh list[\s\S]*adopt[\s\S]*mine running[\s\S]*↳ 回应：previous proposal/
     );
@@ -49,6 +55,14 @@ describe('resume card', () => {
     expect(card!.indexOf('first request')).toBeLessThan(card!.indexOf('do it'));
     expect(card).not.toContain('x'.repeat(301));
     expect(card).toContain('10-21 09:02 first request');
+    const orca = await resumeCard(
+      { session_id: id, transcript_path: file },
+      'claude',
+      active,
+      now,
+      { ORCA_AGENT_SESSION_ID: 'o' }
+    );
+    expect(orca).toContain('superagent rollover start');
   });
   test('counts the in-flight compact only when no recent marker is on disk', async () => {
     const home = tmp(),

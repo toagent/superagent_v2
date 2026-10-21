@@ -610,8 +610,13 @@ test('context policy drives advisory and rollover state transitions', () => {
     advise(...args: unknown[]): { state: Record<string, number>; messages: string[] };
   };
   expect(roleLimit('general', { context: { advisory_tokens: { general: 123 } } })).toBe(123);
-  const first = advise({}, 400001, { warned_at: 390000 }, false, 123, 400000);
-  expect(first.messages[0]).toMatch(/tasks\.sh list(?![\s\S]*交给 superagent)/);
+  const first = advise({}, 400001, { warned_at: 390000 }, false, 123, 400000, {});
+  expect(first.messages[0]).toBe(
+    '上下文约 400001 token，已过换会话线 400000：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。'
+  );
+  expect(
+    advise({}, 400001, {}, false, 123, 400000, { ORCA_AGENT_SESSION_ID: 'o' }).messages[0]
+  ).toContain('superagent rollover start');
   expect(advise({}, 500000, first.state, false, 123, 400000).messages).toEqual([]);
   const again = advise({}, 500001, first.state, false, 123, 400000);
   expect(again.messages).toHaveLength(1);

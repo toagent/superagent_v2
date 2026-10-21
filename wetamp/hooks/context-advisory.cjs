@@ -63,7 +63,8 @@ function advise(
   prior = {},
   _active = false,
   threshold = roleLimit('commander'),
-  rollover = rolloverLimit('commander')
+  rollover = rolloverLimit('commander'),
+  env = process.env
 ) {
   if (tokens === null) return { state: prior, messages: [] };
   const state = { ...prior },
@@ -76,7 +77,9 @@ function advise(
     (!Number.isFinite(state.rollover_at) || tokens >= state.rollover_at + 100000)
   ) {
     messages.push(
-      `上下文约 ${tokens} token，已过换会话线 ${rollover}：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。`
+      env.ORCA_AGENT_SESSION_ID
+        ? `上下文约 ${tokens} token，已过换会话线 ${rollover}：在任务栈写好断点并补齐「接手必读」「在途」「已核实与更正」三节（无内容写「无」），然后执行 superagent rollover start，按输出在后台运行 superagent rollover wait 后结束本轮。`
+        : `上下文约 ${tokens} token，已过换会话线 ${rollover}：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。`
     );
     state.rollover_at = state.warned_at = tokens;
   } else if (rollover !== null && tokens > rollover) {
@@ -92,6 +95,28 @@ function advise(
   }
   return { state, messages };
 }
+function rolloverNotice(input, client, env = process.env) {
+  try {
+    const home = env.SUPERAGENT_HOME || path.join(require('node:os').homedir(), '.superagent'),
+      dir = path.join(home, 'coord', 'rollovers');
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith('.json')) continue;
+      let record;
+      try {
+        record = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+      } catch {
+        continue;
+      }
+      if (
+        record?.state === 'accepted' &&
+        record.from?.session_id === input?.session_id &&
+        record.from?.client === client
+      )
+        return `本会话已于 ${record.accepted_at} 交接给 ${record.to?.client} ${String(record.to?.session_id).slice(0, 8)}（rollover ${String(record.token).slice(0, 8)}）：立即停止写入，不再改文件、派单或提交；用户在此发言时请其到新标签继续。`;
+    }
+  } catch {}
+  return null;
+}
 function main(input, client = 'claude') {
   let inbox = [];
   try {
@@ -100,7 +125,10 @@ function main(input, client = 'claude') {
         require('./guard.cjs').sessionRole(input, client)
       ) || [];
   } catch {}
-  const context = require('./coord.cjs').notifications(inbox);
+  const context = require('./coord.cjs').notifications(inbox),
+    rollover = ['UserPromptSubmit', 'PreToolUse'].includes(input?.hook_event_name)
+      ? rolloverNotice(input, client)
+      : null;
   let advisory = null;
   if (['UserPromptSubmit', 'PreToolUse'].includes(input?.hook_event_name))
     try {
@@ -135,7 +163,7 @@ function main(input, client = 'claude') {
           )
         );
     } catch {} // Advisory cannot deny; failed transactions never reset usage state.
-  const additionalContext = [context, advisory].filter(Boolean).join('\n');
+  const additionalContext = [rollover, context, advisory].filter(Boolean).join('\n');
   return additionalContext
     ? { hookSpecificOutput: { hookEventName: input.hook_event_name, additionalContext } }
     : null;
@@ -147,4 +175,4 @@ if (require.main === module) {
   } catch {}
   // Never emit a denial or a nonzero status, even if state/transcript I/O fails.
 }
-module.exports = { recentUsage, advise, main, roleLimit, rolloverLimit, LIMIT };
+module.exports = { recentUsage, advise, main, roleLimit, rolloverLimit, rolloverNotice, LIMIT };
