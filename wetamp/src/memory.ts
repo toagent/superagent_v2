@@ -279,7 +279,7 @@ function mechanize(signature: string, reasons: string[], episode: string): void 
   );
 }
 type Mechanism = { episodes: string[]; reasons: string[]; signature?: string } & {
-  handoff?: { id: string; state: string; episodes: number };
+  handoff?: { id: string; state: string; episodes: number; seen?: string[] };
 };
 export function deliverEngineDefects(): void {
   for (const name of files(join(root(), 'mechanize'))) {
@@ -289,7 +289,9 @@ export function deliverEngineDefects(): void {
         signature = mechanism.signature ?? name.slice(0, -5),
         evidence = mechanism.episodes.flatMap(id => {
           const episode = episodeOf(id);
-          return episode && !privateProject(episode.project) ? [episode] : [];
+          return episode?.signature === signature && !privateProject(episode.project)
+            ? [episode]
+            : [];
         }),
         previous = mechanism.handoff,
         message = previous
@@ -297,11 +299,12 @@ export function deliverEngineDefects(): void {
               .messages()
               .find(m => m.id === previous.id)
           : undefined,
-        state = message?.state ?? previous?.state;
-      if (
-        !evidence.length ||
-        (previous && (state !== 'done' || evidence.length <= previous.episodes))
-      ) {
+        state = message?.state ?? previous?.state,
+        seen = new Set(
+          previous?.seen ?? (previous ? mechanism.episodes.slice(0, previous.episodes) : [])
+        ),
+        unseen = evidence.filter(episode => !seen.has(episode.id));
+      if (!evidence.length || (previous && (state !== 'done' || !unseen.length))) {
         if (previous && state !== previous.state)
           writeAtomic(file, JSON.stringify({ ...mechanism, handoff: { ...previous, state } }));
         continue;
@@ -322,7 +325,12 @@ export function deliverEngineDefects(): void {
         0,
         false
       );
-      mechanism.handoff = { id: String(sent.id), state: 'queued', episodes: evidence.length };
+      mechanism.handoff = {
+        id: String(sent.id),
+        state: 'queued',
+        episodes: evidence.length,
+        seen: evidence.map(episode => episode.id),
+      };
       writeAtomic(file, JSON.stringify(mechanism));
     } catch {
       memoryLog('engine_handoff_failed');
@@ -543,8 +551,10 @@ export function foldEpisode(
     }));
   });
   const findings = rows.flatMap(r =>
-    (r.data.findings ?? []).map(f => `| ${f.id} | ${f.severity} | ${f.status} |`)
-  );
+      (r.data.findings ?? []).map(f => `| ${f.id} | ${f.severity} | ${f.status} |`)
+    ),
+    allAccepted =
+      run.status === 'completed' && acceptance.length > 0 && acceptance.every(a => a.ok === true);
   let diff: Episode['diff'] = null;
   if (run.working_path && !privateProject(plan.repo)) {
     const d = Bun.spawnSync(
@@ -574,10 +584,10 @@ export function foldEpisode(
       dispositions: l.dispositions,
       p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null,
       coder_error:
-        rows.some(r => !!r.data.error_class || r.data.self_report_conflict === true) ||
-        ((run.status !== 'completed' ||
-          !acceptance.length ||
-          !acceptance.every(a => a.ok === true)) &&
+        rows.some(
+          r => !!r.data.error_class || (!allAccepted && r.data.self_report_conflict === true)
+        ) ||
+        (!allAccepted &&
           files(artifactsOf(run))
             .filter(f => f.endsWith('.coder.json'))
             .some(

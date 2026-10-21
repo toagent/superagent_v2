@@ -303,6 +303,11 @@ describe('EV1 incident replay', () => {
     expect(message).toMatchObject({ kind: 'bug', recipient: null });
     expect(message.body).not.toContain('SECRET');
     saveEpisode({ ...first, id: 'defect-b', project: '/another/project' });
+    mkdirSync(join(sa, 'memory/projections'), { recursive: true });
+    writeFileSync(
+      join(sa, 'memory/projections/defect-a.json'),
+      JSON.stringify({ ...first, signature: 'fixed' })
+    );
     deliverEngineDefects();
     expect(coordination.coord().messages()).toHaveLength(1);
     const owner = { ...message.sender, client: 'engine-owner' };
@@ -318,7 +323,57 @@ describe('EV1 incident replay', () => {
     expect(regression.title).toBe('engine defect regression: engine_suspect');
     expect(
       JSON.parse(readFileSync(join(sa, 'memory/mechanize/engine_suspect.json'), 'utf8'))
-    ).toMatchObject({ handoff: { id: regression.id, state: 'queued', episodes: 2 } });
+    ).toMatchObject({
+      handoff: { id: regression.id, state: 'queued', episodes: 1, seen: ['defect-b'] },
+    });
+    coordination.coord().ack(regression.id, owner, 'done', 'fixed again');
+    writeFileSync(
+      join(sa, 'memory/projections/defect-b.json'),
+      JSON.stringify({ ...first, id: 'defect-b', signature: 'fixed' })
+    );
+    deliverEngineDefects();
+    expect(
+      coordination
+        .coord()
+        .messages()
+        .filter(m => !m.type)
+    ).toHaveLength(2);
+    saveEpisode({ ...first, id: 'defect-c' });
+    deliverEngineDefects();
+    expect(
+      coordination
+        .coord()
+        .messages()
+        .filter(m => !m.type)
+    ).toHaveLength(3);
+  });
+  test('legacy handoff counts map to the original mechanism episode prefix', () => {
+    const first = episode({ id: 'legacy-a', category: 'engine', signature: 'engine_suspect' });
+    saveEpisode(first);
+    deliverEngineDefects();
+    const message = coordination.coord().messages()[0],
+      owner = { ...message.sender, client: 'engine-owner' },
+      file = join(sa, 'memory/mechanize/engine_suspect.json'),
+      mechanism = JSON.parse(readFileSync(file, 'utf8'));
+    delete mechanism.handoff.seen;
+    writeFileSync(file, JSON.stringify(mechanism));
+    coordination.coord().claim(message.scope, owner);
+    coordination.coord().ack(message.id, owner, 'done', 'fixed');
+    deliverEngineDefects();
+    expect(
+      coordination
+        .coord()
+        .messages()
+        .filter(m => !m.type)
+    ).toHaveLength(1);
+    saveEpisode({ ...first, id: 'legacy-b' });
+    deliverEngineDefects();
+    expect(
+      coordination
+        .coord()
+        .messages()
+        .filter(m => !m.type)
+    ).toHaveLength(2);
   });
   test('engine handoff caps evidence at the ten newest episodes while retaining total occurrences', () => {
     for (let i = 0; i < 12; i++)
@@ -1217,7 +1272,7 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       db.close();
     }
   });
-  test('completed green acceptance ignores historical coder error while real conflicts remain', () => {
+  test('completed green acceptance treats self-report conflict as audit-only', () => {
     raw.status = 'completed';
     writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
     writeFileSync(
@@ -1231,8 +1286,15 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       join(artifactsOf(raw), 'verify-core.json'),
       JSON.stringify({ ok: true, self_report_conflict: true })
     );
-    const conflict = foldEpisode(ledger, plan, raw, [], {}, NOW);
-    expect(conflict).toMatchObject({ category: 'engine', signature: 'evidence_conflict' });
+    expect(foldEpisode(ledger, plan, raw, [], {}, NOW).signature).not.toBe('evidence_conflict');
+    writeFileSync(
+      join(artifactsOf(raw), 'verify-core.json'),
+      JSON.stringify({ ok: false, self_report_conflict: true })
+    );
+    expect(foldEpisode(ledger, plan, raw, [], {}, NOW)).toMatchObject({
+      category: 'engine',
+      signature: 'evidence_conflict',
+    });
   });
   test('real strategist job roles and cards replace other tag; done overrun is plan', () => {
     mkdirSync(join(sa, 'jobs'));
