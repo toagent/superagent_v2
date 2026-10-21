@@ -64,7 +64,7 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(() => s.r.accept(String(started.token))).toThrow('新会话');
   s.setWho(b);
   const accepted = s.r.accept(String(started.token));
-  expect(accepted).toMatchObject({ state: 'accepted' });
+  expect(accepted).toMatchObject({ state: 'accepted', repo: 'unchanged' });
   expect(s.taskCalls.slice(-2)).toEqual([['adopt', 'session', '--owner', 'new'], ['resume', 'session', '执行中']]);
   expect(s.c.owner(runScope(run)).owner?.session_id).toBe('new');
   expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
@@ -73,6 +73,41 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(() => s.c.mutate(runScope(run), a, () => null, 1)).toThrow('fencing');
   expect(readFileSync(join(s.sa, 'coord/authorizations/run1.json'), 'utf8')).toContain('original_sha256');
   expect(s.c.messages().some(message => message.type === 'takeover')).toBe(false);
+});
+
+test('accept transfers the recorded repository without runs and reports owner changes', async () => {
+  const transferred = fixture();
+  transferred.c.claim(repoScope(transferred.repo), a);
+  const transferredStart = await transferred.r.start();
+  transferred.setWho(b);
+  expect(transferred.r.accept(String(transferredStart.token))).toMatchObject({
+    repo: 'transferred',
+  });
+  expect(transferred.c.owner(repoScope(transferred.repo)).owner?.session_id).toBe('new');
+  expect(
+    JSON.parse(
+      readFileSync(join(transferred.sa, `coord/rollovers/${transferredStart.token}.json`), 'utf8')
+    ).repo_transfer
+  ).toBe('transferred');
+
+  const skipped = fixture(),
+    other = { ...b, session_id: 'other' };
+  skipped.c.claim(repoScope(skipped.repo), a);
+  const skippedStart = await skipped.r.start();
+  skipped.c.rolloverTransfer(repoScope(skipped.repo), a, other, 'other');
+  skipped.setWho(b);
+  expect(skipped.r.accept(String(skippedStart.token))).toMatchObject({
+    repo: 'skipped:owner_changed',
+  });
+  expect(skipped.c.owner(repoScope(skipped.repo)).owner?.session_id).toBe('other');
+
+  const unavailable = fixture();
+  const unavailableStart = await unavailable.r.start();
+  rmSync(unavailable.repo, { recursive: true, force: true });
+  unavailable.setWho(b);
+  expect(unavailable.r.accept(String(unavailableStart.token))).toMatchObject({
+    repo: 'skipped:repository_unavailable',
+  });
 });
 
 test('accept skips resume when the task stack had no prior status', async () => {

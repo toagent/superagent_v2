@@ -19,6 +19,7 @@ export interface RolloverRecord {
   launch: { agent: string; model: string; operation_id: string | null; outcome: unknown; args?: string[] };
   steps: Partial<Record<string, 'done'>>; created_at: string; accepted_at: string | null; cancelled_at: string | null;
   skipped?: Record<string, string>;
+  repo_transfer?: 'transferred' | 'unchanged' | `skipped:${string}`;
 }
 
 // prettier-ignore
@@ -231,6 +232,12 @@ export class Rollover {
         }
         this.d.coord.rolloverTransfer(scopes.repo, r.from, to, token);
       }
+      let repo: ReturnType<typeof repoScope> | null = null;
+      try { repo = repoScope(r.repo); } catch { r.repo_transfer = 'skipped:repository_unavailable'; }
+      if (repo) {
+        const moved = this.d.coord.rolloverTransfer(repo, r.from, to, token);
+        r.repo_transfer = moved.status === 'skipped' ? `skipped:${moved.reason ?? 'owner_changed'}` : moved.status;
+      }
       r.skipped = skipped;
       r.steps.transfer = 'done';
       this.save(r);
@@ -273,7 +280,7 @@ export class Rollover {
       .jobs()
       .filter(j => j.launcher?.session_id === r.from.session_id && ['queued', 'running'].includes(j.state))
       .map(j => ({ id: j.id, title: j.title, log: j.log }));
-    return { state: r.state, task: join(r.cwd, '.context', 'sessions', r.task_session, 'task-stack.md'), runs, jobs };
+    return { state: r.state, repo: r.repo_transfer, task: join(r.cwd, '.context', 'sessions', r.task_session, 'task-stack.md'), runs, jobs };
   }
   cancel(token: string): Record<string, unknown> {
     const who = this.d.who(),
