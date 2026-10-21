@@ -8,11 +8,6 @@ type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
 type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
 type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
-interface Facts {
-  count: number;
-  lastCompactAt: number | null;
-  quotes: Quote[];
-}
 const bytes = (s: string): number => Buffer.byteLength(s);
 const chars = (s: string): string[] =>
   Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s), x => x.segment);
@@ -68,7 +63,7 @@ function safePath(payload: Payload, client: Client): string | null {
     return null;
   }
 }
-async function facts(path: string, client: Client): Promise<Facts> {
+async function facts(path: string, client: Client): Promise<[number, number | null, Quote[]]> {
   let count = 0,
     lastCompactAt: number | null = null,
     assistant = '';
@@ -118,7 +113,7 @@ async function facts(path: string, client: Client): Promise<Facts> {
     if ((kind === 'user' || kind === 'UserMessage') && allowed && content)
       add(content, x.timestamp);
   }
-  return { count, lastCompactAt, quotes };
+  return [count, lastCompactAt, quotes];
 }
 function quoteLines(quotes: Quote[], path: string): string[] {
   const render = (q: Quote): string =>
@@ -143,7 +138,7 @@ export async function resumeCard(
 ): Promise<string | null> {
   const path = safePath(p, client);
   if (!path || !p.session_id) return null;
-  const { count: onDisk, lastCompactAt, quotes } = await facts(path, client),
+  const [onDisk, lastCompactAt, quotes] = await facts(path, client),
     count = onDisk + Number(lastCompactAt === null || Math.abs(now - lastCompactAt) > 120_000),
     lines = [`【复位卡·第 ${String(count)} 次压缩】以下为磁盘事实，与压缩摘要冲突时以此为准`];
   if (count >= 2)
