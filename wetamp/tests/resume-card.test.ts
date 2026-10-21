@@ -25,7 +25,6 @@ describe('resume card', () => {
     mkdirSync(dir, { recursive: true });
     process.env.CLAUDE_CONFIG_DIR = home;
     lines(file, [
-      { type: 'system', subtype: 'compact_boundary', timestamp: '2026-10-21T01:00:00Z' },
       { type: 'system', subtype: 'compact_boundary', timestamp: '2026-10-21T01:01:30Z' },
       { type: 'user', timestamp: '2026-10-21T01:02:00Z', message: { content: 'first request' } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'previous proposal' }] } },
@@ -43,7 +42,7 @@ describe('resume card', () => {
     }).unfinishedRuns(id);
     const card = await resumeCard({ session_id: id, transcript_path: file }, 'claude', active, now);
     expect(card).toMatch(
-      /【复位卡·第 2 次压缩】[\s\S]*建议换会话[\s\S]*mine running[\s\S]*↳ 回应：previous proposal/
+      /【复位卡·第 1 次压缩】[\s\S]*tasks\.sh list[\s\S]*adopt[\s\S]*mine running[\s\S]*↳ 回应：previous proposal/
     );
     for (const text of ['done completed', 'other', 'system-reminder'])
       expect(card).not.toContain(text);

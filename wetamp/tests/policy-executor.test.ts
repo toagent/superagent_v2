@@ -599,22 +599,31 @@ test('reviewer-alt carry excludes actual authors within the admitted vendor and 
   expect(calls).toEqual([]);
 });
 
-test('advisory threshold key reaches its consumer and produces only an advisory', () => {
+test('context policy drives advisory and rollover state transitions', () => {
   const { roleLimit, advise } = createRequire(import.meta.url)('../hooks/context-advisory.cjs') as {
     roleLimit(role: string, policy: unknown): number;
     advise(
       input: unknown,
       tokens: number,
-      prior: unknown,
+      prior: Record<string, number>,
       active: boolean,
-      threshold: number
-    ): { messages: string[] };
+      threshold: number,
+      rollover?: number | null
+    ): { state: Record<string, number>; messages: string[] };
   };
   expect(roleLimit('general', { context: { advisory_tokens: { general: 123 } } })).toBe(123);
-  expect(
-    advise({ hook_event_name: 'UserPromptSubmit' }, 124, {}, false, 123).messages[0]
-  ).toContain('advisory');
+  const first = advise({}, 400001, { warned_at: 390000 }, false, 123, 400000);
+  expect(first.messages[0]).toContain('tasks.sh list');
+  expect(first.messages[0]).not.toContain('交给 superagent');
+  expect(advise({}, 500000, first.state, false, 123, 400000).messages).toEqual([]);
+  const again = advise({}, 500001, first.state, false, 123, 400000);
+  expect(again.messages).toHaveLength(1);
+  const reset = advise({}, 100000, again.state, false, 123, 400000);
+  expect(reset.state).toEqual({ warned_at: 100000 });
+  expect(advise({}, 400001, reset.state, false, 123, 400000).messages).toHaveLength(1);
+  expect(advise({}, 124, {}, false, 123, null).messages[0]).toContain('advisory');
   expect(loadTiers().policy.context.advisory_tokens.general).toBe(240000);
+  expect(loadTiers().policy.context.rollover_tokens?.commander).toBe(400000);
 });
 
 test('BYPASS_CAPACITY exhausted observation thresholds allow fallback and preserve receipts', async () => {

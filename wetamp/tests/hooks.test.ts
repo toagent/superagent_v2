@@ -633,9 +633,9 @@ describe('context-advisory.cjs', () => {
     tokens: number,
     env: Record<string, string>,
     extra: object = {},
-    session = 's'
+    session = 's',
+    root = tmp()
   ): Out {
-    const root = tmp();
     const transcript = join(root, 't.jsonl');
     writeFileSync(
       transcript,
@@ -663,6 +663,26 @@ describe('context-advisory.cjs', () => {
     expect(advised(budget(250_000, { SUPERAGENT_ROLE: 'worker' }))).toBe(true);
     expect(advised(budget(250_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(false);
     expect(advised(budget(370_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(true);
+  });
+
+  test('rollover state persists across processes and inbox context is merged', () => {
+    const root = tmp(),
+      home = join(root, 'sa'),
+      session = 'r';
+    const call = (tokens: number, prompt_id: string): Out =>
+      budget(tokens, {}, { prompt_id }, session, root);
+    expect(call(400001, 'a')?.hookSpecificOutput?.additionalContext).toContain('tasks.sh list');
+    const name = `claude-${createHash('sha256').update(session).digest('hex').slice(0, 16)}.json`;
+    const live = JSON.parse(readFileSync(join(home, 'live', name), 'utf8'));
+    mkdirSync(join(home, 'coord', 'inbox'), { recursive: true });
+    writeFileSync(
+      join(home, 'coord', 'inbox', 'm.json'),
+      JSON.stringify({ id: 'm', type: 'receipt', recipient: live })
+    );
+    const merged = call(500001, 'b')?.hookSpecificOutput?.additionalContext;
+    expect(merged).toContain('Superagent 交接待答复');
+    expect(merged).toContain('tasks.sh list');
+    expect(call(500001, 'b')).toBeNull();
   });
 
   test('活动 run 内超过 15 次 Bash/Read 仍静默，不产生工具计数状态', () => {

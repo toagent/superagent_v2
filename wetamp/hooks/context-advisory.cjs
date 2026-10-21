@@ -48,11 +48,40 @@ function roleLimit(role, policy) {
   const value = policy?.context?.advisory_tokens?.[role];
   return Number.isSafeInteger(value) && value > 0 ? value : 160000;
 }
-function advise(_input, tokens, prior = {}, _active = false, threshold = roleLimit('commander')) {
+function rolloverLimit(role, policy) {
+  if (policy === undefined) {
+    try {
+      policy = require('../tiers.json').policy;
+    } catch {}
+  }
+  const value = policy?.context?.rollover_tokens?.[role];
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+function advise(
+  _input,
+  tokens,
+  prior = {},
+  _active = false,
+  threshold = roleLimit('commander'),
+  rollover = rolloverLimit('commander')
+) {
   if (tokens === null) return { state: prior, messages: [] };
   const state = { ...prior },
     messages = [];
+  if (Number.isFinite(state.warned_at) && tokens < state.warned_at) delete state.warned_at;
+  if (Number.isFinite(state.rollover_at) && tokens < state.rollover_at) delete state.rollover_at;
   if (
+    rollover !== null &&
+    tokens > rollover &&
+    (!Number.isFinite(state.rollover_at) || tokens >= state.rollover_at + 100000)
+  ) {
+    messages.push(
+      `上下文约 ${tokens} token，已过换会话线 ${rollover}：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。`
+    );
+    state.rollover_at = state.warned_at = tokens;
+  } else if (rollover !== null && tokens > rollover) {
+    return { state, messages };
+  } else if (
     tokens > threshold &&
     (!Number.isFinite(state.warned_at) || tokens >= state.warned_at + 40000)
   ) {
@@ -72,45 +101,44 @@ function main(input, client = 'claude') {
       ) || [];
   } catch {}
   const context = require('./coord.cjs').notifications(inbox);
-  if (context)
-    return {
-      hookSpecificOutput: { hookEventName: input.hook_event_name, additionalContext: context },
-    };
-  if (!['UserPromptSubmit', 'PreToolUse'].includes(input?.hook_event_name)) return null;
-  const tokens = recentUsage(input.transcript_path);
-  if (tokens === null) return null;
-  const home =
-    process.env.SUPERAGENT_HOME || path.join(require('node:os').homedir(), '.superagent');
-  const key = crypto
-    .createHash('sha256')
-    .update(String(input.session_id || input.transcript_path))
-    .digest('hex');
-  const file = path.join(home, 'hooks', 'context-advisory', `${key}.json`);
-  const threshold = roleLimit(require('./guard.cjs').sessionRole(input, client));
-  try {
-    return require('./hook-state.cjs').withState(file, state =>
-      require('./hook-state.cjs').once(
-        state,
-        'context',
-        input,
-        () => {
-          const result = advise(input, tokens, state, false, threshold);
-          Object.assign(state, result.state);
-          return result.messages.length
-            ? {
-                hookSpecificOutput: {
-                  hookEventName: input.hook_event_name,
-                  additionalContext: result.messages.join('\n'),
-                },
-              }
-            : null;
-        },
-        false
-      )
-    );
-  } catch {
-    return null;
-  } // Advisory cannot deny; failed transactions never reset usage state.
+  let advisory = null;
+  if (['UserPromptSubmit', 'PreToolUse'].includes(input?.hook_event_name))
+    try {
+      const tokens = recentUsage(input.transcript_path),
+        home =
+          process.env.SUPERAGENT_HOME || path.join(require('node:os').homedir(), '.superagent'),
+        key = crypto
+          .createHash('sha256')
+          .update(String(input.session_id || input.transcript_path))
+          .digest('hex'),
+        file = path.join(home, 'hooks', 'context-advisory', `${key}.json`),
+        role = require('./guard.cjs').sessionRole(input, client);
+      if (tokens !== null)
+        advisory = require('./hook-state.cjs').withState(file, state =>
+          require('./hook-state.cjs').once(
+            state,
+            'context',
+            input,
+            () => {
+              const result = advise(
+                input,
+                tokens,
+                state,
+                false,
+                roleLimit(role),
+                rolloverLimit(role)
+              );
+              Object.assign(state, result.state);
+              return result.messages.join('\n') || null;
+            },
+            false
+          )
+        );
+    } catch {} // Advisory cannot deny; failed transactions never reset usage state.
+  const additionalContext = [context, advisory].filter(Boolean).join('\n');
+  return additionalContext
+    ? { hookSpecificOutput: { hookEventName: input.hook_event_name, additionalContext } }
+    : null;
 }
 if (require.main === module) {
   try {
@@ -119,4 +147,4 @@ if (require.main === module) {
   } catch {}
   // Never emit a denial or a nonzero status, even if state/transcript I/O fails.
 }
-module.exports = { recentUsage, advise, main, roleLimit, LIMIT };
+module.exports = { recentUsage, advise, main, roleLimit, rolloverLimit, LIMIT };

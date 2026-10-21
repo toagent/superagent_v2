@@ -138,7 +138,10 @@ export interface Tiers {
   policy: {
     coder_budget_usd: Partial<Record<Alias['provider'], number>> & { claude: number };
     /** Context advisory thresholds consumed by context-advisory.cjs. */
-    context: { advisory_tokens: Record<'commander' | 'general' | 'strategist', number> };
+    context: {
+      advisory_tokens: Record<'commander' | 'general' | 'strategist', number>;
+      rollover_tokens?: Partial<Record<'commander' | 'general' | 'strategist', number>>;
+    };
     sandbox: { network: boolean };
     /** Environment preparation retries; AI nodes use the engine defaults. */
     auto_retry: { environment: number };
