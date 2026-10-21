@@ -127,13 +127,25 @@ for (const scope of ['package', 'milestone'] as const)
         node.bash = `echo '${node.id}' >> '${trace}'\n${node.bash}`;
       }
       if (scope === 'milestone' && /^review-m1-r[2-6]$/.test(node.id)) {
+        const round = Number(node.id.at(-1));
         const fail = {
           status: 'FAIL',
           notes: 'fixture',
           findings: [
             {
-              id: 'R1-1',
-              severity: 'high',
+              id: `R${round - 1}-1`,
+              severity: round === 2 ? 'high' : 'blocker',
+              file: 'fake',
+              line: 1,
+              status: 'closed',
+              evidence: 'fixture fix verified',
+              carry_over: true,
+              failure_class: 'product',
+              command: null,
+            },
+            {
+              id: `R${round}-1`,
+              severity: 'blocker',
               file: 'fake',
               line: 1,
               status: 'open',

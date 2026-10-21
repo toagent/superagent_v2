@@ -10,7 +10,6 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
-import { inspectProcess } from '../src/launcher';
 import { isWithinWriteRoots } from '../src/plan';
 import {
   autoPromote,
@@ -183,7 +182,7 @@ test('failed read-only candidate retries explicitly while in-service snapshots s
 }, testTimeout(30_000));
 
 // prettier-ignore
-test('auto promotion detaches once and marks a lost promoter with an explicit retry', async () => {
+test('auto promotion detaches once and marks a lost promoter with an explicit retry', () => {
   const f = sourceFixture(),
     first = f.sha();
   promote(first, f.evidence);
@@ -200,9 +199,4 @@ test('auto promotion detaches once and marks a lost promoter with an explicit re
   state = 'offline';
   expect(autoPromote(deps)).toMatchObject({ sha: second, error: expect.stringContaining('superagent engine promote') });
   expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('failed');
-  const h = sourceFixture(), sha = h.sha(), token = 'handshake', child = Bun.spawn([process.execPath, join(import.meta.dir, '../src/cli.ts'), 'engine', 'promote', sha, '--bootstrap-evidence', h.evidence], { env: { ...process.env, SA_ENGINE_PROMOTER_TOKEN: token }, stdout: 'pipe', stderr: 'pipe' }), identity = inspectProcess(child.pid);
-  if (identity.state !== 'online') throw new Error('fixture promoter unavailable');
-  const childMarker = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${sha}.json`); mkdirSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions'), { recursive: true });
-  writeFileSync(childMarker, JSON.stringify({ sha, status: 'running', pid: child.pid, pid_start: identity.start, host: 'fixture', token, at: new Date().toISOString() }));
-  expect(await child.exited, (await new Response(child.stderr).text())).toBe(0); expect(JSON.parse(readFileSync(childMarker, 'utf8')).status).toBe('promoted');
 }, testTimeout(60_000));

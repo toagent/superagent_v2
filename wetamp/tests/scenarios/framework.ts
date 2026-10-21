@@ -14,6 +14,7 @@ import {
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -80,6 +81,13 @@ export interface GeneratedContinuation {
   workflow: string;
   engine_hash?: string;
   engine_commit?: string;
+}
+
+export function copyableFixtureEntry(source: string): boolean {
+  if (source.includes('/node_modules') || source.includes('/.git/') || source.endsWith('/.git'))
+    return false;
+  const stat = lstatSync(source);
+  return stat.isDirectory() || stat.isFile() || stat.isSymbolicLink();
 }
 
 export function scenario(
@@ -588,8 +596,7 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
     oldSnapshot = join(scratch, 'engine-a');
   cpSync(root, oldSnapshot, {
     recursive: true,
-    filter: source =>
-      !source.includes('/node_modules') && !source.includes('/.git/') && !source.endsWith('/.git'),
+    filter: copyableFixtureEntry,
   });
   sh(
     'git init -q -b 1.0.0 && git config user.name scenario && git config user.email scenario@local && printf "\\nA\\n" >> wetamp/templates/brief.md && git add packages wetamp && git commit -qm engine-A',

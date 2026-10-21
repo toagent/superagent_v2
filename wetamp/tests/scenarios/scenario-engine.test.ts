@@ -10,7 +10,13 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { promote, rollback } from '../../src/engine';
-import { completedOutput, expectOutcome, recoverCarriedScenario, scenario } from './framework';
+import {
+  completedOutput,
+  copyableFixtureEntry,
+  expectOutcome,
+  recoverCarriedScenario,
+  scenario,
+} from './framework';
 import { gitRepo, sh, tmp } from '../helpers';
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
@@ -32,7 +38,7 @@ test('S12: promotion and rollback keep old runs on their pinned engine', async (
     probe = join(root, 'engine-paths.jsonl'),
     repo = join(import.meta.dir, '../../..'),
     saved = { ...process.env }, children: ReturnType<typeof Bun.spawn>[] = [];
-  cpSync(repo, source, { recursive: true, filter: path => !path.includes('/node_modules') && !path.includes('/.git/') && !path.endsWith('/.git') });
+  cpSync(repo, source, { recursive: true, filter: copyableFixtureEntry });
   const cliPath = join(source, 'wetamp/src/cli.ts'), cli = readFileSync(cliPath, 'utf8');
   writeFileSync(cliPath, cli.replace('const argv = process.argv.slice(2);', `const argv = process.argv.slice(2);\n    if (process.env.S12_PROBE) require('node:fs').appendFileSync(process.env.S12_PROBE, JSON.stringify({ snapshot: require('node:fs').realpathSync(require('node:path').join(import.meta.dir, '../..')), args: argv }) + '\\n');`));
   const frameworkPath = join(source, 'wetamp/tests/scenarios/framework.ts'), framework = readFileSync(frameworkPath, 'utf8');
