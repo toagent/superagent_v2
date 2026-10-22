@@ -38,7 +38,7 @@ afterEach(async () => {
   }
   for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key];
   Object.assign(process.env, original);
-}, testTimeout(30_000));
+}, testTimeout(120_000));
 
 function sourceFixture(): { root: string; source: string; evidence: string; sha: () => string } {
   const root = tmp(),

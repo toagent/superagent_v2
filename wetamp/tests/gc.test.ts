@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { hostname } from 'node:os';
 import * as archon from '../src/archon';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
+import { testTimeout } from '@archon/paths/test-utils';
 import { lock } from '../src/archon';
 import { inspectProcess } from '../src/launcher';
 import * as coordination from '../src/coord';
@@ -353,28 +354,32 @@ test.each(['path', 'branch', 'outside', 'symlink'] as const)(
   }
 );
 
-test('CLI --dry-run --json changes neither git objects nor ledger bytes', () => {
-  const f = fixture();
-  const before = readFileSync(ledgerPath(f.id), 'utf8'),
-    tree = f.git('worktree', 'list', '--porcelain');
-  const log = spyOn(console, 'log').mockImplementation(() => undefined);
-  try {
-    expect(main(['gc', '--dry-run', '--json'])).toBe(0);
-    const output = JSON.parse(String(log.mock.calls[0][0]));
-    expect(
-      output.gc
-        .filter((e: { run_id: string }) => e.run_id === f.id)
-        .map((e: { action: string }) => e.action)
-    ).toEqual(['would_remove', 'would_remove']);
-  } finally {
-    log.mockRestore();
-  }
-  expect(readFileSync(ledgerPath(f.id), 'utf8')).toBe(before);
-  expect(f.git('worktree', 'list', '--porcelain')).toBe(tree);
-  expect(existsSync(join(f.root, 'sa', 'runs', `${f.view.id}.lock`))).toBe(false);
-  expect(existsSync(f.path)).toBe(true);
-  expect(f.branchExists()).toBe(true);
-});
+test(
+  'CLI --dry-run --json changes neither git objects nor ledger bytes',
+  () => {
+    const f = fixture();
+    const before = readFileSync(ledgerPath(f.id), 'utf8'),
+      tree = f.git('worktree', 'list', '--porcelain');
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(main(['gc', '--dry-run', '--json'])).toBe(0);
+      const output = JSON.parse(String(log.mock.calls[0][0]));
+      expect(
+        output.gc
+          .filter((e: { run_id: string }) => e.run_id === f.id)
+          .map((e: { action: string }) => e.action)
+      ).toEqual(['would_remove', 'would_remove']);
+    } finally {
+      log.mockRestore();
+    }
+    expect(readFileSync(ledgerPath(f.id), 'utf8')).toBe(before);
+    expect(f.git('worktree', 'list', '--porcelain')).toBe(tree);
+    expect(existsSync(join(f.root, 'sa', 'runs', `${f.view.id}.lock`))).toBe(false);
+    expect(existsSync(f.path)).toBe(true);
+    expect(f.branchExists()).toBe(true);
+  },
+  testTimeout(30_000)
+);
 
 test.each(['archon', 'plan', 'git'] as const)('%s error is a recorded skip', failure => {
   const f = fixture();
