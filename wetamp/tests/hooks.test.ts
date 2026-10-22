@@ -668,7 +668,10 @@ describe('context-advisory.cjs', () => {
     o?.hookSpecificOutput?.additionalContext?.includes('上下文约') ?? false;
 
   test('三档阈值：commander 300K / general 600K / strategist 900K', () => {
-    expect(advised(budget(310_000, {}))).toBe(true);
+    const commander = budget(310_000, {})?.hookSpecificOutput?.additionalContext ?? '';
+    expect(commander).toContain('310000 token（31%）');
+    expect(commander).toContain('换会话线 600000（60%）');
+    expect(commander).toContain('未收到换会话指令前不要换会话');
     expect(advised(budget(310_000, { SUPERAGENT_ROLE: 'worker' }))).toBe(false);
     expect(advised(budget(610_000, { SUPERAGENT_ROLE: 'worker' }))).toBe(true);
     expect(advised(budget(610_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(false);

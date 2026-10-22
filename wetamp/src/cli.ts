@@ -185,6 +185,7 @@ export function intakeEvidence(repo: string, query: typeof getRun = getRun): Evi
 export const OPTIONS = {
   ...COORD_OPTIONS,
   timeout: { type: 'string' },
+  user: { type: 'string' },
   pkg: { type: 'string' },
   hint: { type: 'string' },
   fake: { type: 'boolean' },
@@ -3695,7 +3696,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'job exec', positionals: '-- <cmd...>', flags: ['title', 'request-ref', 'card', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'worktree', 'base'] },
   { command: 'job clean', positionals: '<id>', flags: [] },
   { command: 'jobs', flags: ['all'] },
-  { command: 'rollover', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'timeout'] },
+  { command: 'rollover', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
 ];
 
 const optionUsage = (name: OptionName): string => {
@@ -4261,6 +4262,7 @@ async function runCli(): Promise<void> {
         await import('./rollover')
       ).rolloverCommand(command, token, {
         reason: parsed.flags.reason,
+        user: parsed.flags.user,
         timeout: parsed.flags.timeout ? Number(parsed.flags.timeout) : undefined,
       });
       if (parsed.flags.json) print(result.value);

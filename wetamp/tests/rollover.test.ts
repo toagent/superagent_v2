@@ -16,9 +16,14 @@ function fixture(section = true) {
   mkdirSync(join(sa, 'runs'), { recursive: true });
   const task = join(repo, '.context/sessions/session/task-stack.md'), transcript = join(root, 'rollout.jsonl');
   mkdirSync(join(sa, 'live'), { recursive: true });
+  mkdirSync(join(root, 'codex'), { recursive: true });
   mkdirSync(join(task, '..'), { recursive: true });
+  writeFileSync(join(root, 'codex/config.toml'), 'model_auto_compact_token_limit = 280000\n');
   writeFileSync(task, `主任务: rollover\n状态: 执行中\n断点: next\n# 接手必读\n无\n# 在途\n无\n${section ? '# 已核实与更正\n无\n' : ''}`);
-  writeFileSync(transcript, JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-test' } }) + '\n');
+  writeFileSync(transcript, [
+    { type: 'turn_context', payload: { model: 'gpt-test' } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { model_context_window: 380000, last_token_usage: { input_tokens: 300000 } } } },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n');
   writeFileSync(join(sa, 'live/a.json'), JSON.stringify({ ...a, transcript_path: transcript }));
   let who = a, now = 0;
   const runs: RunRef[] = [], c = new Coordination({ sa, runs: () => runs, status: () => 'running', presence: () => ({ state: 'online', activity: 'idle' }) });
@@ -26,7 +31,7 @@ function fixture(section = true) {
     launchCalls: string[][] = [],
     launches: ({ kind: 'launched'; outcome: unknown } | { kind: 'lost'; operation_id: string } | { kind: 'unknown'; evidence: string } | { kind: 'failed'; error: string })[] = [{ kind: 'launched', outcome: { session: 'new' } }];
   const r = new Rollover({
-    env: { ORCA_AGENT_SESSION_ID: 'orca', SA_ORCA_BIN: '/orca' },
+    env: { ORCA_AGENT_SESSION_ID: 'orca', SA_ORCA_BIN: '/orca', CODEX_HOME: join(root, 'codex') },
     cwd: repo,
     coord: c,
     who: () => who,
@@ -119,6 +124,47 @@ test('start rejects a missing or empty task status before recording, handoff, or
     expect(s.launchCalls).toHaveLength(0);
     expect(existsSync(join(s.sa, 'coord/rollovers'))).toBe(false);
   }
+});
+
+test('start gates low or unknown usage unless the user explicitly requests rollover', async () => {
+  const low = fixture();
+  writeFileSync(
+    low.transcript,
+    [
+      { type: 'turn_context', payload: { model: 'gpt-test' } },
+      {
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: { model_context_window: 380000, last_token_usage: { input_tokens: 100000 } },
+        },
+      },
+    ]
+      .map(row => JSON.stringify(row))
+      .join('\n') + '\n'
+  );
+  await expect(low.r.start()).rejects.toThrow(/当前用量 100000.*换会话线 242000.*--user/);
+  expect(low.taskCalls).toHaveLength(0);
+  expect(low.launchCalls).toHaveLength(0);
+  expect(existsSync(join(low.sa, 'coord/rollovers'))).toBe(false);
+
+  const unknown = fixture();
+  writeFileSync(
+    unknown.transcript,
+    JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-test' } }) + '\n'
+  );
+  await expect(unknown.r.start()).rejects.toThrow(/当前用量 unknown.*--user/);
+  expect(unknown.taskCalls).toHaveLength(0);
+
+  const manual = fixture();
+  writeFileSync(manual.transcript, readFileSync(low.transcript));
+  const started = await manual.r.start(undefined, '用户要求现在交接');
+  const record = JSON.parse(
+    readFileSync(join(manual.sa, `coord/rollovers/${started.token}.json`), 'utf8')
+  );
+  expect(record.user).toBe('用户要求现在交接');
+  expect(manual.launchCalls[0].join(' ')).toContain('原因：用户要求现在交接');
+  expect(manual.r.status()[0]).toMatchObject({ user: '用户要求现在交接' });
 });
 
 test('accept replaces an interrupted prior status with running', async () => {

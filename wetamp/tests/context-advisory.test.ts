@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmp } from './helpers';
 
 // prettier-ignore
-type Limits = { threshold: number; rollover: number | null; advisoryStep: number; rolloverStep: number };
+type Limits = { threshold: number; rollover: number | null; window: number | null; advisoryStep: number; rolloverStep: number };
 const advisory = createRequire(import.meta.url)('../hooks/context-advisory.cjs') as {
   recentUsage(file: string, client?: string): { tokens: number; window: number | null } | null;
   contextLimits(...args: unknown[]): Limits;
@@ -18,7 +18,7 @@ const advisory = createRequire(import.meta.url)('../hooks/context-advisory.cjs')
 const policy = {
   context: {
     advisory_ratio: { commander: 0.3 },
-    rollover_ratio: { commander: 0.6 },
+    rollover_ratio: { commander: 0.7 },
     advisory_tokens: { commander: 160000 },
     rollover_tokens: { commander: 400000 },
   },
@@ -71,17 +71,24 @@ test('derives client limits and falls back to absolute thresholds without a wind
   writeFileSync(join(root, 'config.toml'), 'model_auto_compact_token_limit = 280000\n');
   const limits = (client: string, window: number | null, env: Record<string, string> = {}) =>
       advisory.contextLimits('commander', client, window, env, policy),
-    values = (v: Limits) => [v.threshold, v.rollover, v.advisoryStep, v.rolloverStep];
+    values = (v: Limits) => [v.threshold, v.rollover, v.window, v.advisoryStep, v.rolloverStep];
   // prettier-ignore
-  expect(values(limits('claude', null, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' }))).toEqual([300000, 600000, 50000, 100000]);
-  expect(limits('claude', null)).toMatchObject({ threshold: 60000, rollover: 120000 });
+  expect(values(limits('claude', null, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' }))).toEqual([300000, 600000, 1000000, 50000, 100000]);
   // prettier-ignore
-  expect(values(limits('codex', 400000, { CODEX_HOME: root }))).toEqual([120000, 240000, 20000, 40000]);
+  expect(values(limits('claude', null, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '80' }))).toEqual([300000, 700000, 1000000, 50000, 100000]);
+  expect(limits('claude', null)).toMatchObject({ threshold: 60000, rollover: 140000 });
+  // prettier-ignore
+  expect(values(limits('codex', 380000, { CODEX_HOME: root }))).toEqual([114000, 242000, 380000, 19000, 38000]);
   expect(limits('codex', null, { CODEX_HOME: root })).toMatchObject({
     threshold: 160000,
     rollover: 400000,
+    window: null,
   });
-  const first = advisory.advise({}, 300001, {}, false, 300000, 600000, {}, 50000, 100000);
+  const first = advisory.advise({}, 300001, {}, false, 300000, 600000, {}, 50000, 100000, 1000000);
+  expect(first.messages[0]).toContain('300001 token（30%）');
+  expect(first.messages[0]).toContain('换会话线 600000（60%）');
+  expect(first.messages[0]).toContain('advisory 只是提醒，未收到换会话指令前不要换会话');
+  expect(advisory.advise({}, 300001, {}, false, 300000, 600000).messages[0]).not.toContain('%');
   expect(
     advisory.advise({}, 350000, first.state, false, 300000, 600000, {}, 50000, 100000).messages
   ).toEqual([]);

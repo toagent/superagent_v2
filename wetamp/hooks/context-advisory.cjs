@@ -66,7 +66,7 @@ function roleLimit(role, policy) {
 function contextLimits(role, client, reportedWindow, env = process.env, policy) {
   const context = contextPolicy(policy),
     oldRollover = context.rollover_tokens?.[role],
-    fallback = { threshold: roleLimit(role, policy), rollover: Number.isSafeInteger(oldRollover) && oldRollover > 0 ? oldRollover : null };
+    fallback = { threshold: roleLimit(role, policy), rollover: Number.isSafeInteger(oldRollover) && oldRollover > 0 ? oldRollover : null, window: null };
   let window = reportedWindow;
   if (client === 'claude') window = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 200000);
   if (!Number.isSafeInteger(window) || window <= 0)
@@ -91,6 +91,7 @@ function contextLimits(role, client, reportedWindow, env = process.env, policy) 
       Number.isFinite(rolloverRatio) && rolloverRatio > 0
         ? Math.max(1, Math.floor(Math.min(window * rolloverRatio, compact - window * 0.1)))
         : fallback.rollover,
+    window,
     advisoryStep: Math.floor(window * 0.05),
     rolloverStep: Math.floor(window * 0.1),
   };
@@ -104,13 +105,16 @@ function advise(
   rollover = contextLimits('commander', 'codex', null).rollover,
   env = process.env,
   advisoryStep = 40000,
-  rolloverStep = 100000
+  rolloverStep = 100000,
+  window = null
 ) {
   if (tokens === null) return { state: prior, messages: [] };
   const state = { ...prior },
     messages = [];
   if (Number.isFinite(state.warned_at) && tokens < state.warned_at) delete state.warned_at;
   if (Number.isFinite(state.rollover_at) && tokens < state.rollover_at) delete state.rollover_at;
+  const usage = Number.isSafeInteger(window) && window > 0 ? `（${Math.round(tokens / window * 100)}%）` : '',
+    line = Number.isSafeInteger(window) && window > 0 && rollover !== null ? `（${Math.round(rollover / window * 100)}%）` : '';
   if (
     rollover !== null &&
     tokens > rollover &&
@@ -118,8 +122,8 @@ function advise(
   ) {
     messages.push(
       env.ORCA_AGENT_SESSION_ID
-        ? `上下文约 ${tokens} token，已过换会话线 ${rollover}：在任务栈写好断点并补齐「接手必读」「在途」「已核实与更正」三节（无内容写「无」），然后执行 superagent rollover start，按输出在后台运行 superagent rollover wait 后结束本轮。`
-        : `上下文约 ${tokens} token，已过换会话线 ${rollover}：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。`
+        ? `上下文约 ${tokens} token${usage}，已过换会话线 ${rollover}${line}：在任务栈写好断点并补齐「接手必读」「在途」「已核实与更正」三节（无内容写「无」），然后执行 superagent rollover start，按输出在后台运行 superagent rollover wait 后结束本轮。`
+        : `上下文约 ${tokens} token${usage}，已过换会话线 ${rollover}${line}：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。`
     );
     state.rollover_at = state.warned_at = tokens;
   } else if (rollover !== null && tokens > rollover) {
@@ -129,7 +133,7 @@ function advise(
     (!Number.isFinite(state.warned_at) || tokens >= state.warned_at + advisoryStep)
   ) {
     messages.push(
-      `上下文约 ${tokens} token（advisory）：把读文件、跑测试、长输出交给 superagent 或将军，只读 ≤20 行结果。`
+      `上下文约 ${tokens} token${usage}（advisory），换会话线 ${rollover ?? 'unknown'}${line}；advisory 只是提醒，未收到换会话指令前不要换会话。把读文件、跑测试、长输出交给 superagent 或将军，只读 ≤20 行结果。`
     );
     state.warned_at = tokens;
   }
@@ -198,7 +202,8 @@ function main(input, client = 'claude') {
                 limits.rollover,
                 process.env,
                 limits.advisoryStep,
-                limits.rolloverStep
+                limits.rolloverStep,
+                limits.window
               );
               Object.assign(state, result.state);
               return result.messages.join('\n') || null;

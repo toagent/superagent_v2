@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { writeAtomic } from './config';
 // prettier-ignore
@@ -19,6 +20,7 @@ export interface RolloverRecord {
   launch: { agent: string; model: string; operation_id: string | null; outcome: unknown; args?: string[] };
   steps: Partial<Record<string, 'done'>>; created_at: string; accepted_at: string | null; cancelled_at: string | null;
   skipped?: Record<string, string>;
+  user?: string;
   repo_transfer?: 'transferred' | 'unchanged' | `skipped:${string}`;
 }
 
@@ -34,6 +36,15 @@ interface Deps {
 }
 
 const taskBin = join(process.env.HOME ?? '', '.wetamp/bin/tasks.sh');
+const context = createRequire(import.meta.url)('../hooks/context-advisory.cjs') as {
+  recentUsage: (file: string, client?: string) => { tokens: number; window: number | null } | null;
+  contextLimits: (
+    role: string,
+    client: string,
+    window: number | null,
+    env: NodeJS.ProcessEnv
+  ) => { rollover: number | null };
+};
 // prettier-ignore
 const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, supervise: supervisor, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs });
 
@@ -169,7 +180,7 @@ export class Rollover {
   private prompt(r: RolloverRecord, reason = '上下文过大自动交接'): string {
     return `接手元帅会话（${this.d.now().toLocaleString()}，原因：${reason}）。第 1 步：cd ${r.cwd} && superagent rollover accept ${r.token}，按输出接手。第 2 步：superagent rollover context ${r.token}，读完用户原话与压缩摘要。第 3 步：读输出给出的任务栈文件，按「接手必读」「在途」「已核实与更正」继续，并按 accept 输出重新挂起 run 等待。首条汇报先逐条列出你确认的用户决定与纠正、主任务、下一步；汇报首行贴 superagent 输出的 quota 行。`;
   }
-  async start(reason = '上下文过大自动交接'): Promise<Record<string, unknown>> {
+  async start(reason = '上下文过大自动交接', user?: string): Promise<Record<string, unknown>> {
     if (!this.d.env.ORCA_AGENT_SESSION_ID || !orcaBin(this.d.env, this.d.exists)) throw new Error('仅 Orca 内支持自动交接；其他客户端沿用：任务栈写断点并把状态改为被中断 → 新开会话 tasks.sh list → tasks.sh adopt <会话目录名>');
     const from = this.d.who();
     if (!from.session_id) throw new Error('rollover: caller 缺少 session_id');
@@ -180,8 +191,13 @@ export class Rollover {
       if (pending.launch.outcome === null) throw new Error(`rollover: launch 未完成且无 operation id；请先 rollover cancel ${pending.token}`);
       return this.result(pending);
     }
+    const transcript = this.transcript(from),
+      usage = context.recentUsage(transcript.path, from.client),
+      line = context.contextLimits('commander', from.client, usage?.window ?? null, this.d.env).rollover,
+      explicit = user?.trim();
+    if (!explicit && (usage === null || line === null || usage.tokens < line))
+      throw new Error(`rollover: 当前用量 ${usage ? String(usage.tokens) : 'unknown'}，换会话线 ${line === null ? 'unknown' : String(line)}；仅用户明确要求时可用 --user "<用户原话>" 放行`);
     const task = this.task(),
-      transcript = this.transcript(from),
       now = this.d.now().toISOString(),
       runs = this.runs(from);
     const r: RolloverRecord = {
@@ -189,13 +205,14 @@ export class Rollover {
       task_session: task.session, transcript: transcript.path,
       parent: this.records().find(x => x.state === 'accepted' && x.to?.session_id === from.session_id)?.token ?? null,
       prior_status: task.status, runs: runs.map(x => x.run_id),
+      user: explicit,
       launch: { agent: from.client, model: transcript.model, operation_id: null, outcome: null },
       steps: {}, created_at: now, accepted_at: null, cancelled_at: null,
     };
     this.save(r);
     try { this.d.tasks(this.d.cwd, ['handoff', task.session]); }
     catch (error) { try { this.d.tasks(r.cwd, ['resume', r.task_session, r.prior_status]); } finally { r.state = 'cancelled'; r.cancelled_at = this.d.now().toISOString(); this.save(r); } throw error; }
-    return this.result(await this.dispatch(r, false, reason));
+    return this.result(await this.dispatch(r, false, explicit ?? reason));
   }
   private result(r: RolloverRecord): Record<string, unknown> {
     return { token: r.token, state: r.state, wait: `superagent rollover wait ${r.token} --timeout 1800` };
@@ -299,7 +316,7 @@ export class Rollover {
     return { state, exit: state === 'pending' ? 2 : 0 };
   }
   status(): Record<string, unknown>[] {
-    return this.records().map(r => ({ token: r.token.slice(0, 8), state: r.state, from: r.from.session_id?.slice(0, 8), to: r.to?.session_id?.slice(0, 8), at: r.accepted_at ?? r.cancelled_at ?? r.created_at }));
+    return this.records().map(r => ({ token: r.token.slice(0, 8), state: r.state, from: r.from.session_id?.slice(0, 8), to: r.to?.session_id?.slice(0, 8), user: r.user, at: r.accepted_at ?? r.cancelled_at ?? r.created_at }));
   }
   async context(token: string): Promise<string> {
     const who = this.d.who();
@@ -329,10 +346,10 @@ export class Rollover {
 export async function rolloverCommand(
   command: string,
   token?: string,
-  options: { reason?: string; timeout?: number } = {}
+  options: { reason?: string; user?: string; timeout?: number } = {}
 ): Promise<{ exit: number; value: unknown }> {
   const r = new Rollover();
-  if (command === 'start') return { exit: 0, value: await r.start(options.reason) };
+  if (command === 'start') return { exit: 0, value: await r.start(options.reason, options.user) };
   if (command === 'accept') return { exit: 0, value: r.accept(token ?? '') };
   if (command === 'wait') {
     const value = await r.wait(token ?? '', options.timeout ?? 1800);
