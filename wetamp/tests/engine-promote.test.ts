@@ -139,6 +139,31 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   expect(currentEngineSnapshot()).toEndWith(third);
 }, testTimeout(120_000));
 
+// prettier-ignore
+test('promotion keeps its verified candidate when 1.0.0 advances during the probe', () => {
+  const f = sourceFixture(), first = f.sha();
+  promote(first, f.evidence);
+  const candidate = commit(f.source, 'candidate');
+  const receipt = promote(candidate, undefined, { probe: () => (commit(f.source, 'advanced'), successfulProbe()) });
+  expect(receipt.sha).toBe(candidate);
+  expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${candidate}.json`), 'utf8')).sha).toBe(candidate);
+  expect(currentEngineSnapshot()).toEndWith(candidate);
+}, testTimeout(120_000));
+
+// prettier-ignore
+test('promotion rejects a rewritten 1.0.0 and preserves current', () => {
+  const f = sourceFixture(), first = f.sha();
+  promote(first, f.evidence);
+  const candidate = commit(f.source, 'candidate');
+  expect(() => promote(candidate, undefined, { probe: () => {
+    sh(`git switch -q --detach '${first}'`, f.source);
+    sh(`git branch -f 1.0.0 '${commit(f.source, 'rewritten')}'`, f.source);
+    return successfulProbe();
+  } })).toThrow('1.0.0 was rewritten during acceptance');
+  expect(currentEngineSnapshot()).toEndWith(first);
+  expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${candidate}.json`))).toBe(false);
+}, testTimeout(120_000));
+
 test(
   'promotion lock and protocol downgrade fail closed without publishing a receipt',
   () => {
