@@ -446,8 +446,8 @@ export function promote(
     const currentReceipt = currentSha && receipt(currentSha);
     if (currentReceipt && next.protocol_version < currentReceipt.protocol_version)
       throw new Error('engine promote: protocol downgrade');
-    if (sha !== releaseHead())
-      throw new Error('engine promote: 1.0.0 HEAD changed during acceptance');
+    if (!isAncestor(sha, releaseHead()))
+      throw new Error('engine promote: 1.0.0 was rewritten during acceptance');
     writeAtomic(receiptPath(sha), JSON.stringify(next, null, 2) + '\n');
     switchCurrent(snapshot);
     writeMarker({ ...marker, status: 'promoted', at: new Date().toISOString() });
