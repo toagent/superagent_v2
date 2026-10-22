@@ -49,7 +49,9 @@ recover() {
     [ -z "$status" ] || { echo "verify-local: retained dirty orphan $old" >&2; return; }
     git -C "$REPO" worktree remove "$old/wt" || return
   fi
-  rmdir "$old" 2>/dev/null || true
+  chmod -R u+w "$old" 2>/dev/null || true
+  rm -rf "$old" 2>/dev/null || true
+  [ ! -e "$old" ] || echo "verify-local: retained $old" >&2
 }
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 until mkdir "$LOCK" 2>/dev/null; do
@@ -79,7 +81,10 @@ cleanup() {
     find "$WT" -maxdepth 3 -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
     git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
   fi
-  rm -rf "$TMP" "$LOCK"
+  chmod -R u+w "$TMP" 2>/dev/null || true
+  rm -rf "$TMP" 2>/dev/null || true
+  [ ! -e "$TMP" ] || echo "verify-local: retained $TMP" >&2
+  rm -rf "$LOCK"
 }
 trap cleanup EXIT
 cached || true

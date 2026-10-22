@@ -51,6 +51,11 @@ function fixture() {
     `#!/bin/sh
 ${writeState}
 echo "bun $* @ $PWD" >> "$CALLS"
+[ -z "$READONLY_CAPTURE" ] || [ -e "$READONLY_CAPTURE" ] || {
+  mkdir -p "$TMPDIR/readonly"; : > "$TMPDIR/readonly/snapshot"
+  chmod 444 "$TMPDIR/readonly/snapshot"; chmod 555 "$TMPDIR/readonly"
+  echo "$TMPDIR" > "$READONLY_CAPTURE"
+}
 case "$1" in
   install) [ -n "$INSTALL_FAILS" ] && exit 1; exit 0;;
   test) grep -q fail RESULT && { echo "1 fail"; exit 1; }; exit 0;;
@@ -104,6 +109,7 @@ exit 0
     return {
       code: p.exitCode,
       out: p.stdout.toString(),
+      err: p.stderr.toString(),
       v: existsSync(out) ? (JSON.parse(readFileSync(out, 'utf8')) as Verify) : null,
     };
   };
@@ -136,6 +142,13 @@ git config --global --get core.hooksPath && exit 9
     expect(readFileSync(config, 'utf8')).toBe('[core]\n\thooksPath = /host-hooks\n');
   });
 
+  test('exit removes temporary trees containing read-only snapshots', () => {
+    const f = fixture(),
+      capture = join(f.root, 'tmp-path');
+    expect(f.run(f.pass, { READONLY_CAPTURE: capture }).code).toBe(0);
+    expect(existsSync(readFileSync(capture, 'utf8').trim())).toBe(false);
+  });
+
   test.each(['dead', 'live', 'dirty'] as const)(
     'startup recovery respects %s lock ownership',
     async state => {
@@ -150,10 +163,17 @@ git config --global --get core.hooksPath && exit 9
       writeFileSync(join(lock, 'pid'), String(state === 'live' ? process.pid : child.pid));
       writeFileSync(join(lock, 'tmp'), old);
       if (state === 'dirty') writeFileSync(join(old, 'wt/keep'), 'keep');
+      if (state === 'dead') {
+        mkdirSync(join(old, 'readonly'));
+        writeFileSync(join(old, 'readonly/snapshot'), 'sealed');
+        chmodSync(join(old, 'readonly/snapshot'), 0o444);
+        chmodSync(join(old, 'readonly'), 0o555);
+      }
       const result = f.run(f.pass, {}, state === 'live' ? '0' : '60');
       expect(result.code).toBe(state === 'live' ? 1 : 0);
-      expect(existsSync(join(old, 'wt'))).toBe(state !== 'dead');
+      expect(existsSync(old)).toBe(state !== 'dead');
       expect(f.git('worktree list --porcelain').includes(`${old}/wt`)).toBe(state !== 'dead');
+      if (state === 'dirty') expect(result.err).toContain(`retained dirty orphan ${old}`);
     },
     60000
   );
