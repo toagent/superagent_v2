@@ -196,7 +196,6 @@ export const taskTag = (paths: string[]): string => {
 type TriageEvidence = Pick<Episode, 'reasons' | 'signals'> &
   Partial<Pick<Episode, 'status' | 'acceptance' | 'dispositions' | 'p50_ratio'>> & {
     overrun?: boolean;
-    coder_error?: boolean;
   };
 export function diagnosis(
   e: TriageEvidence,
@@ -220,20 +219,19 @@ export function diagnosis(
   // An operator cancellation is a recorded terminal cause; earlier coder errors don't explain it.
   if (e.status === 'cancelled' && e.reasons.includes('cancelled_source'))
     return result('transient', 'cancelled_source');
+  if (
+    contradiction ||
+    (e.status &&
+      ['failed', 'cancelled', 'lost'].includes(e.status) &&
+      e.acceptance?.length &&
+      e.acceptance.every(a => a.ok === true) &&
+      !reasons.some(Boolean))
+  )
+    return result('engine', 'evidence_conflict');
   if (!reasons.length && e.reasons.includes('unclassified'))
     return result('transient', 'unclassified');
   if (['failed', 'cancelled', 'lost'].includes(e.status ?? '') && !reasons.length)
     return result('engine', 'evidence_missing');
-  if (
-    contradiction ||
-    e.coder_error ||
-    e.reasons.some(r => r.includes('coder_error:')) ||
-    (e.status &&
-      ['failed', 'cancelled', 'lost', 'paused'].includes(e.status) &&
-      e.acceptance?.length &&
-      e.acceptance.every(a => a.ok === true))
-  )
-    return result('engine', 'evidence_conflict');
   if (reasons.some(r => !r)) return result('engine', 'unregistered_reason');
   if (reasons.some(r => r?.owner === 'engine' && r.determinism === 'deterministic'))
     return result(
@@ -257,10 +255,17 @@ export function diagnosis(
 }
 export const triage = (e: TriageEvidence, contradiction = false): Category =>
   diagnosis(e, contradiction).category;
-const defectEligible = (e: Episode): boolean =>
-  e.status !== 'completed' ||
-  !e.acceptance.length ||
-  e.acceptance.some(acceptance => acceptance.ok !== true);
+const defectEligible = (e: Episode): boolean => {
+  const unsuccessful =
+    e.status !== 'completed' ||
+    !e.acceptance.length ||
+    e.acceptance.some(acceptance => acceptance.ok !== true);
+  return (
+    unsuccessful &&
+    (['engine_suspect', 'dup_ask', 'orphan_hold'].includes(e.signature) ||
+      ['completed', 'failed', 'cancelled', 'lost'].includes(e.status))
+  );
+};
 function mechanize(signature: string, reasons: string[], episode: string): void {
   mkdirSync(join(root(), 'mechanize'), { recursive: true });
   const id = signature.replace(/[^a-zA-Z0-9_-]/g, '_'),
@@ -587,15 +592,6 @@ export function foldEpisode(
       acceptance,
       dispositions: l.dispositions,
       p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null,
-      coder_error:
-        rows.some(r => !!r.data.error_class || r.data.self_report_conflict === true) ||
-        files(artifactsOf(run))
-          .filter(f => f.endsWith('.coder.json'))
-          .some(
-            f =>
-              !!memoryJson<{ error_class?: string | null }>(join(artifactsOf(run), f), {}, l)
-                .error_class
-          ),
     },
     repeated
   );

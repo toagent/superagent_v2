@@ -235,13 +235,15 @@ describe('EV1 incident replay', () => {
     writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify(portEvidence));
     writeFileSync(
       join(artifactsOf(raw), 'verify-core.coder.json'),
-      JSON.stringify({ error_class: 'task' })
+      JSON.stringify({ error_class: 'task', prompt: 'FORBIDDEN', transcript: 'FORBIDDEN' })
     );
-    expect(episode()).toMatchObject({
+    const folded = episode();
+    expect(folded).toMatchObject({
       reasons: ['acceptance_failed'],
-      category: 'engine',
-      signature: 'evidence_conflict',
+      category: 'project',
+      signature: 'acceptance_failed',
     });
+    expect(JSON.stringify(folded)).not.toContain('FORBIDDEN');
     raw.output_root = tmp();
     mkdirSync(artifactsOf(raw), { recursive: true });
     writeFileSync(join(artifactsOf(raw), 'verify-core.json'), '{}');
@@ -294,7 +296,7 @@ describe('EV1 incident replay', () => {
     saveEpisode(e);
     expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
   });
-  test('only unsuccessful episodes enter defect mechanisms and handoff evidence', () => {
+  test('result defects wait for terminal failure while live signal defects remain eligible', () => {
     const successful = [
       ['review_not_required'],
       ['review_not_required', 'environment'],
@@ -325,25 +327,30 @@ describe('EV1 incident replay', () => {
     deliverEngineDefects();
     expect(coordination.coord().messages()).toHaveLength(0);
 
-    for (const e of [
-      episode({
-        id: 'failed-defect',
-        status: 'failed',
-        acceptance: [{ cmd: 'accept', ok: false }],
-      }),
-      episode({ id: 'paused-defect', status: 'paused', acceptance: [{ cmd: 'accept', ok: true }] }),
-      episode({ id: 'missing-acceptance', status: 'completed', acceptance: [] }),
-    ])
-      saveEpisode({
-        ...e,
-        category: 'engine',
-        signature: 'review_not_required',
-        reasons: ['review_not_required'],
-      });
+    const pending = episode({
+      id: 'result-defect',
+      status: 'running',
+      category: 'engine',
+      signature: 'evidence_conflict',
+      acceptance: [{ cmd: 'accept', ok: true }],
+    });
+    saveEpisode(pending);
+    saveEpisode({ ...pending, status: 'paused' });
+    expect(existsSync(join(sa, 'memory/mechanize/evidence_conflict.json'))).toBe(false);
     deliverEngineDefects();
-    const message = coordination.coord().messages()[0];
-    expect(message.body).toContain('occurrences: 3');
-    expect(message.body).not.toContain('successful-');
+    expect(coordination.coord().messages()).toHaveLength(0);
+    saveEpisode({ ...pending, status: 'failed' });
+    deliverEngineDefects();
+    expect(coordination.coord().messages()[0].body).toContain('occurrences: 1');
+
+    saveEpisode({ ...pending, id: 'live-defect', signature: 'orphan_hold', status: 'running' });
+    deliverEngineDefects();
+    expect(
+      coordination
+        .coord()
+        .messages()
+        .map(m => m.title)
+    ).toContain('engine defect: orphan_hold');
   });
   test('engine mechanisms queue once, accumulate, and reopen after done', () => {
     const first = episode({ id: 'defect-a', category: 'engine', signature: 'engine_suspect' });
@@ -1325,32 +1332,21 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       db.close();
     }
   });
-  test('completed green acceptance keeps audit evidence without creating a defect', () => {
-    raw.status = 'completed';
-    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
-    writeFileSync(
-      join(artifactsOf(raw), 'verify-core.coder.json'),
-      JSON.stringify({ error_class: 'task', prompt: 'FORBIDDEN', transcript: 'FORBIDDEN' })
-    );
-    const completed = foldEpisode(ledger, plan, raw, [], {}, NOW);
-    expect(completed).toMatchObject({ category: 'engine', signature: 'evidence_conflict' });
-    expect(JSON.stringify(completed)).not.toContain('FORBIDDEN');
-    writeFileSync(
-      join(artifactsOf(raw), 'verify-core.json'),
-      JSON.stringify({ ok: true, self_report_conflict: true })
-    );
-    const conflict = foldEpisode(ledger, plan, raw, [], {}, NOW);
-    expect(conflict).toMatchObject({ category: 'engine', signature: 'evidence_conflict' });
-    saveEpisode(conflict);
-    expect(existsSync(join(sa, 'memory/mechanize/evidence_conflict.json'))).toBe(false);
-    writeFileSync(
-      join(artifactsOf(raw), 'verify-core.json'),
-      JSON.stringify({ ok: false, self_report_conflict: true })
-    );
-    expect(foldEpisode(ledger, plan, raw, [], {}, NOW)).toMatchObject({
-      category: 'engine',
-      signature: 'evidence_conflict',
+  test('green terminal failures conflict only without a registered reason', () => {
+    const greenFailure = {
+      status: 'failed',
+      acceptance: [{ cmd: 'accept', ok: true }],
+      signals: zeros,
+    };
+    expect(diagnosis({ ...greenFailure, reasons: ['review_failed'] })).toEqual({
+      category: 'role',
+      signature: 'review_failed',
     });
+    for (const reasons of [[], ['unclassified']])
+      expect(diagnosis({ ...greenFailure, reasons })).toEqual({
+        category: 'engine',
+        signature: 'evidence_conflict',
+      });
   });
   test('real strategist job roles and cards replace other tag; done overrun is plan', () => {
     mkdirSync(join(sa, 'jobs'));
