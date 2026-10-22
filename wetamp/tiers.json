@@ -30,6 +30,8 @@
     },
     "stop_gate": "off",
     "context": {
+      "advisory_ratio": { "commander": 0.3, "general": 0.6, "strategist": 0.9 },
+      "rollover_ratio": { "commander": 0.6 },
       "advisory_tokens": { "commander": 160000, "general": 240000, "strategist": 360000 },
       "rollover_tokens": { "commander": 400000 }
     },

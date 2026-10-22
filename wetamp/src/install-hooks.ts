@@ -48,7 +48,7 @@ const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
 const cmd = (file: string, client?: Client): string =>
   `node ${quote(V2_HOOKS + file)}${client ? ` ${client}` : ''}`;
 
-/** 延续 V1 事件清单与顺序：guard 五个事件；Claude 另有 advisory 两个。 */
+/** 延续 V1 事件清单与顺序：guard 五个事件；两端另有 advisory 两个。 */
 export function wanted(client: Client): [string, string][] {
   const guard = ['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop'].map(
     (e): [string, string] => [e, cmd('guard.cjs', client)]
@@ -58,14 +58,13 @@ export function wanted(client: Client): [string, string][] {
     cmd('intake.cjs', client),
   ]);
   const resume: [string, string] = ['SessionStart', cmd('resume-card.cjs', client)];
-  if (client === 'codex') return [...guard, ...intake, resume];
   return [
     ...guard,
     ...intake,
     resume,
     ...['UserPromptSubmit', 'PreToolUse'].map((e): [string, string] => [
       e,
-      cmd('context-advisory.cjs'),
+      cmd('context-advisory.cjs', client === 'codex' ? client : undefined),
     ]),
   ];
 }
