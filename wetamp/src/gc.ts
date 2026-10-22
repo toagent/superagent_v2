@@ -7,13 +7,15 @@ import {
   rmSync,
   statSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { isPathInside } from '@archon/paths';
-import { getRun, QUERY_TIMEOUT_MS, reportRunRevisions } from './archon';
+import { getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions } from './archon';
 import { home, writeAtomic } from './config';
 import { artifactsOf, ledgerIds, ledgerPath, loadLedger, updateLedger, type Ledger } from './cli';
 import type { Plan } from './plan';
+import { makeWritable } from './engine';
+import { inspectProcess } from './launcher';
 import { createRequire } from 'node:module';
 export interface ScratchAction {
   path: string;
@@ -145,7 +147,7 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
   return readdirSync(engineRoot, { withFileTypes: true }).flatMap(entry => {
     if (!entry.isDirectory() || !/^[0-9a-f]{7,40}$/i.test(entry.name)) return [];
     const path = join(engineRoot, entry.name);
-    if (entry.name === currentSha || entry.name === previous) return [];
+    if (entry.name === currentSha || entry.name === previous || entry.name === bootstrap) return [];
     const references = ledgers.filter(ledger => {
       const pinned = ledger.engine_snapshot ?? (bootstrap && join(engineRoot, bootstrap));
       if (!pinned) return false;
@@ -155,7 +157,21 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
         return resolve(pinned) === path;
       }
     });
-    if (!references.length) return [];
+    let reason = 'completed or rejected run snapshots';
+    // prettier-ignore
+    if (!references.length) {
+      let marker: { status?: string; pid?: number; pid_start?: string; host?: string };
+      try {
+        marker = JSON.parse(readFileSync(join(engineRoot, 'promotions', `${entry.name}.json`), 'utf8')) as typeof marker;
+      } catch {
+        return [{ run_id: '*', object: 'engine', action: 'skipped', reason: 'unreferenced snapshot has no promotion record', path }];
+      }
+      if (marker.status === 'running') {
+        const identity = marker.host === hostname() && typeof marker.pid === 'number' ? inspectProcess(marker.pid) : undefined;
+        if (!identity || identity.state === 'unknown' || identity.state === 'online' && identity.start === marker.pid_start) return [];
+      }
+      reason = 'unreferenced promotion candidate';
+    }
     for (const ledger of references) {
       if (ledger.rejected === ledger.archon_run_id) continue;
       try {
@@ -166,15 +182,16 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
       return [];
     }
     const action: GcAction = {
-      run_id: references.map(ledger => ledger.run_id).join(','),
+      run_id: references.map(ledger => ledger.run_id).join(',') || '*',
       object: 'engine',
       action: dryRun ? 'would_remove' : 'removed',
-      reason: 'completed or rejected run snapshots',
+      reason,
       path,
     };
     if (dryRun) return [action];
     try {
       if (lstatSync(path).isSymbolicLink()) throw new Error('engine snapshot symlink retained');
+      makeWritable(path);
       const common = Bun.spawnSync(
         ['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
         { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
@@ -209,10 +226,11 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
 }
 
 // Only engine probe directories enter this path; run/user worktrees keep their existing guards.
-function collectProbe(path: string, id: string, dryRun: boolean, repo?: string): GcAction {
+// prettier-ignore
+function collectProbe(path: string, id: string, dryRun: boolean, repo?: string, engine = false): GcAction {
   try {
     if (lstatSync(path).isSymbolicLink()) throw new Error('probe symlink retained');
-    if (!repo) {
+    if (!repo && !engine) {
       const status = Bun.spawnSync(
         ['git', '-C', path, 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
         { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
@@ -229,6 +247,7 @@ function collectProbe(path: string, id: string, dryRun: boolean, repo?: string):
         throw new Error('legacy probe is not clean or tracked-deletions-only');
     }
     if (!dryRun) {
+      makeWritable(path);
       const options = { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS } as const;
       const common = Bun.spawnSync(
         ['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
@@ -252,7 +271,7 @@ function collectProbe(path: string, id: string, dryRun: boolean, repo?: string):
       run_id: id,
       object: 'worktree',
       action: dryRun ? 'would_remove' : 'removed',
-      reason: 'terminal probe',
+      reason: engine ? 'stale engine probe' : 'terminal probe',
       path,
     };
   } catch (e) {
@@ -527,12 +546,18 @@ export function gc(
     for (const root of new Set(probeRoots.filter(existsSync).map(p => realpathSync(p)))) {
       for (const entry of readdirSync(root, { withFileTypes: true })) {
         const path = join(root, entry.name);
-        if (
-          entry.isDirectory() &&
-          entry.name.startsWith('sa-probe-') &&
-          Date.now() - statSync(path).mtimeMs > 24 * 60 * 60_000
-        )
-          out.push(collectProbe(path, '*', dryRun));
+        if (!entry.isDirectory() || Date.now() - statSync(path).mtimeMs <= 24 * 60 * 60_000)
+          continue;
+        if (entry.name.startsWith('sa-probe-')) out.push(collectProbe(path, '*', dryRun));
+        else if (entry.name.startsWith('sa-engine-probe-')) {
+          const engineRoot = resolve(home().sa, 'engine'),
+            held = existsSync(engineRoot) ? lock(join(engineRoot, 'engine.lock')) : undefined;
+          try {
+            if (held?.ok !== false) out.push(collectProbe(path, '*', dryRun, undefined, true));
+          } finally {
+            if (held?.ok) held.release();
+          }
+        }
       }
     }
   } catch (e) {

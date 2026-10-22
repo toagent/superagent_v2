@@ -7,6 +7,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmSync,
   symlinkSync,
 } from 'node:fs';
 import { homedir, hostname, tmpdir } from 'node:os';
@@ -181,7 +182,7 @@ const makeReadonly = (path: string): void => {
   chmodSync(path, 0o555);
 };
 
-const makeWritable = (path: string): void => {
+export const makeWritable = (path: string): void => {
   chmodSync(path, lstatSync(path).mode | 0o200);
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     const child = join(path, entry.name);
@@ -322,8 +323,8 @@ export interface PromotionDependencies {
   probe?: (snapshot: string) => ProbeEvidence;
 }
 
-export function runSnapshotProbe(snapshot: string): ProbeEvidence {
-  const scratch = join(SCRATCH_ROOT, `sa-engine-probe-${crypto.randomUUID()}`),
+export function runSnapshotProbe(snapshot: string, scratchRoot = SCRATCH_ROOT): ProbeEvidence {
+  const scratch = join(scratchRoot, `sa-engine-probe-${crypto.randomUUID()}`),
     evidencePath = join(scratch, 'evidence.json'),
     started = Date.now();
   mkdirSync(scratch, { recursive: true });
@@ -354,8 +355,13 @@ export function runSnapshotProbe(snapshot: string): ProbeEvidence {
     value.level === 'G1' &&
     typeof value.duration_ms === 'number' &&
     typeof value.evidence_path === 'string'
-  )
+  ) {
+    if (value.ok) {
+      makeWritable(scratch);
+      rmSync(scratch, { recursive: true, force: true });
+    }
     return value as unknown as ProbeEvidence;
+  }
   const elapsed = Date.now() - started,
     evidence: ProbeEvidence = {
       ok: false,

@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -19,14 +20,25 @@ import {
   runSnapshotProbe,
 } from '../src/engine';
 import type { ProbeEvidence } from '../src/probe';
-import { testTimeout } from '@archon/paths/test-utils';
+import { removeTempTree, testTimeout } from '@archon/paths/test-utils';
 import { sh, tmp } from './helpers';
 
+const makeWritable = (path: string): void => {
+  chmodSync(path, statSync(path).mode | 0o200);
+  for (const entry of readdirSync(path, { withFileTypes: true }))
+    if (entry.isDirectory()) makeWritable(join(path, entry.name));
+};
+
 const original = { ...process.env };
-afterEach(() => {
+afterEach(async () => {
+  const engine = process.env.SUPERAGENT_HOME && join(process.env.SUPERAGENT_HOME, 'engine');
+  if (engine && existsSync(engine)) {
+    makeWritable(engine);
+    await removeTempTree(engine);
+  }
   for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key];
   Object.assign(process.env, original);
-});
+}, testTimeout(120_000));
 
 function sourceFixture(): { root: string; source: string; evidence: string; sha: () => string } {
   const root = tmp(),
@@ -64,30 +76,29 @@ const commit = (source: string, name: string): string => {
 const successfulProbe = (): ProbeEvidence => JSON.parse('{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}');
 
 // prettier-ignore
-test('snapshot probe executes the candidate with isolated homes and preserves failed output', () => {
+test('snapshot probe removes successful scratch and preserves failed output', () => {
   const root = tmp(),
     snapshot = join(root, 'candidate'),
     cli = join(snapshot, 'wetamp', 'src', 'cli.ts'),
     trace = join(root, 'trace.json');
   mkdirSync(join(snapshot, 'wetamp', 'src'), { recursive: true });
   process.env.TMPDIR = '/var/folders/launchd-not-allowed';
+  process.env.SUPERAGENT_WRITE_ROOTS = root;
   process.env.SA_ENGINE_PROBE_TRACE = trace;
   process.env.SA_ENGINE_PROMOTER_TOKEN = 'leaked';
   writeFileSync(cli, `import { mkdirSync, writeFileSync } from 'node:fs'; const home = process.env.SUPERAGENT_HOME!; mkdirSync(home, { recursive: true }); const evidence = home + '/candidate-evidence.json'; writeFileSync(evidence, '{}'); writeFileSync(process.env.SA_ENGINE_PROBE_TRACE!, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), home, archon: process.env.ARCHON_HOME, token: process.env.SA_ENGINE_PROMOTER_TOKEN })); console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: evidence }));`);
-  const evidence = runSnapshotProbe(snapshot),
+  const scratch = join(root, 'scratch'),
+    evidence = runSnapshotProbe(snapshot, scratch),
     invoked = JSON.parse(readFileSync(trace, 'utf8'));
   expect(evidence.ok).toBe(true); expect(invoked.argv).toEqual(['engine', 'probe', 'G1']); expect(invoked.cwd).toBe(join(snapshot, 'wetamp'));
   expect(invoked.home).not.toBe(process.env.SUPERAGENT_HOME);
-  expect(isWithinWriteRoots(invoked.home)).toBe(true);
+  expect(isWithinWriteRoots(scratch)).toBe(true); expect(invoked.home.startsWith(scratch)).toBe(true);
   expect(invoked.archon).toBe(join(invoked.home, 'archon')); expect(invoked.token).toBe('');
-  writeFileSync(cli, `console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: '/forged' }));
-console.error('candidate probe stderr');
-process.exit(7);
-`);
-  const failed = runSnapshotProbe(snapshot);
-  expect(failed).toMatchObject({ ok: false, reason: 'probe_process_failed' });
-  expect(failed.error).toContain('candidate probe stderr');
-  expect(JSON.parse(readFileSync(failed.evidence_path, 'utf8'))).toMatchObject({ ok: false, reason: 'probe_process_failed' });
+  expect(existsSync(join(invoked.home, '..'))).toBe(false);
+  writeFileSync(cli, `import { mkdirSync, writeFileSync } from 'node:fs'; const home = process.env.SUPERAGENT_HOME!; mkdirSync(home, { recursive: true }); const evidence = home + '/failed.json'; writeFileSync(evidence, '{}'); console.log(JSON.stringify({ ok: false, level: 'G1', duration_ms: 1, reason: 'not_published', evidence_path: evidence }));`);
+  const failed = runSnapshotProbe(snapshot, scratch);
+  expect(failed).toMatchObject({ ok: false, reason: 'not_published' });
+  expect(existsSync(failed.evidence_path)).toBe(true);
 });
 
 // prettier-ignore
