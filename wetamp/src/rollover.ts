@@ -97,8 +97,8 @@ export class Rollover {
     if (!this.d.exists(path)) throw new Error(`rollover: 任务栈不存在 ${path}`);
     const text = this.d.read(path),
       missing: string[] = [];
-    const field = (name: string): string => (new RegExp(`^${name}[:：]\\s*(.+)$`, 'm').exec(text))?.[1]?.trim() ?? '';
-    for (const name of ['主任务', '断点']) if (!field(name)) missing.push(name);
+    const field = (name: string): string => (new RegExp(`^${name}[:：][ \\t]*([^\\r\\n]+)$`, 'm').exec(text))?.[1]?.trim() ?? '';
+    for (const name of ['主任务', '状态', '断点']) if (!field(name)) missing.push(name);
     const lines = text.split(/\r?\n/),
       sections = ['接手必读', '在途', '已核实与更正'];
     for (const name of sections) {

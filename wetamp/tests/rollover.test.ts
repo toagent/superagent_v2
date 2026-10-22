@@ -110,16 +110,15 @@ test('accept transfers the recorded repository without runs and reports owner ch
   });
 });
 
-test('accept marks a task stack without prior status as running', async () => {
-  const s = fixture();
-  writeFileSync(s.task, readFileSync(s.task, 'utf8').replace('状态: 执行中\n', ''));
-  const started = await s.r.start();
-  s.setWho(b);
-  expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
-  expect(s.taskCalls.slice(-2)).toEqual([
-    ['adopt', 'session', '--owner', 'new'],
-    ['resume', 'session', '执行中'],
-  ]);
+test('start rejects a missing or empty task status before recording, handoff, or launch', async () => {
+  for (const replacement of ['', '状态:   \n']) {
+    const s = fixture();
+    writeFileSync(s.task, readFileSync(s.task, 'utf8').replace('状态: 执行中\n', replacement));
+    await expect(s.r.start()).rejects.toThrow('状态');
+    expect(s.taskCalls).toEqual([['path']]);
+    expect(s.launchCalls).toHaveLength(0);
+    expect(existsSync(join(s.sa, 'coord/rollovers'))).toBe(false);
+  }
 });
 
 test('accept replaces an interrupted prior status with running', async () => {
