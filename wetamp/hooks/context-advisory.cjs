@@ -23,7 +23,7 @@ function recentUsage(file, client = 'claude') {
         continue;
       }
       if (client === 'codex') {
-        const info = event.type === 'token_count' ? event.payload?.info : null,
+        const info = event.payload?.type === 'token_count' ? event.payload.info : null,
           u = info?.last_token_usage;
         // Codex input_tokens already includes cached_input_tokens.
         if (Number.isSafeInteger(u?.input_tokens) && u.input_tokens >= 0)

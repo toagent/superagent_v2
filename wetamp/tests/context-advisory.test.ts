@@ -34,10 +34,35 @@ test('parses Claude and Codex usage without double-counting Codex cached input',
   );
   writeFileSync(
     codex,
-    `${JSON.stringify({ type: 'token_count', payload: { info: { model_context_window: 400000, last_token_usage: { input_tokens: 240001, cached_input_tokens: 90000 } } } })}\n`
+    `${JSON.stringify({ timestamp: '2026-10-22T00:00:00Z', ordinal: 1, type: 'event_msg', payload: { type: 'token_count', info: { model_context_window: 400000, last_token_usage: { input_tokens: 240001, cached_input_tokens: 90000 } } } })}\n`
   );
   expect(advisory.recentUsage(claude)).toEqual({ tokens: 60, window: null });
   expect(advisory.recentUsage(codex, 'codex')).toEqual({ tokens: 240001, window: 400000 });
+});
+
+test('finds the latest Codex token count before trailing rollout events', () => {
+  const file = join(tmp(), 'codex.jsonl'),
+    usage = (ordinal: number, input_tokens: number) => ({
+      timestamp: '2026-10-22T00:00:00Z',
+      ordinal,
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: { model_context_window: 380000, last_token_usage: { input_tokens } },
+      },
+    });
+  writeFileSync(
+    file,
+    [
+      usage(1, 100),
+      usage(2, 200),
+      { type: 'event_msg', payload: { type: 'task_complete' } },
+      { type: 'response_item', payload: {} },
+    ]
+      .map(JSON.stringify)
+      .join('\n') + '\n'
+  );
+  expect(advisory.recentUsage(file, 'codex')).toEqual({ tokens: 200, window: 380000 });
 });
 
 test('derives client limits and falls back to absolute thresholds without a window', () => {
@@ -74,7 +99,7 @@ test('Codex main emits rollover instructions once per dynamic step', () => {
   const writeUsage = (tokens: number) =>
     writeFileSync(
       transcript,
-      `${JSON.stringify({ type: 'token_count', payload: { info: { model_context_window: 400000, last_token_usage: { input_tokens: tokens, cached_input_tokens: 100000 } } } })}\n`
+      `${JSON.stringify({ timestamp: '2026-10-22T00:00:00Z', ordinal: 1, type: 'event_msg', payload: { type: 'token_count', info: { model_context_window: 400000, last_token_usage: { input_tokens: tokens, cached_input_tokens: 100000 } } } })}\n`
     );
   Object.assign(process.env, {
     SUPERAGENT_HOME: join(root, 'sa'),
