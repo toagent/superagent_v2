@@ -147,7 +147,7 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
   return readdirSync(engineRoot, { withFileTypes: true }).flatMap(entry => {
     if (!entry.isDirectory() || !/^[0-9a-f]{7,40}$/i.test(entry.name)) return [];
     const path = join(engineRoot, entry.name);
-    if (entry.name === currentSha || entry.name === previous || entry.name === bootstrap) return [];
+    if (entry.name === currentSha || entry.name === previous) return [];
     const references = ledgers.filter(ledger => {
       const pinned = ledger.engine_snapshot ?? (bootstrap && join(engineRoot, bootstrap));
       if (!pinned) return false;

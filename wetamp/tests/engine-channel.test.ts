@@ -243,7 +243,14 @@ test('snapshot gc resolves symlinked homes and fails closed on an unreadable led
   const alias = join(root, 'sa-alias');
   symlinkSync(sa, alias);
   process.env.SUPERAGENT_HOME = alias;
-  expect(collectEngineSnapshots(true)).toEqual([]);
+  expect(collectEngineSnapshots(true)).toEqual([
+    expect.objectContaining({
+      object: 'engine',
+      action: 'skipped',
+      reason: 'unreferenced snapshot has no promotion record',
+      path: join(engine, second),
+    }),
+  ]);
 
   unlinkSync(join(engine, 'current'));
   symlinkSync(join(engine, third), join(engine, 'current'));
