@@ -20,6 +20,9 @@ const ROLE_KEYS = [
   'SUPERAGENT_HOME',
   'ARCHON_HOME',
   'ORCA_AGENT_SESSION_ID',
+  'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
+  'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
+  'CODEX_HOME',
 ];
 const baseEnv = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !ROLE_KEYS.includes(k))
@@ -652,18 +655,24 @@ describe('context-advisory.cjs', () => {
         cwd: root,
         ...extra,
       },
-      { SUPERAGENT_HOME: join(root, 'sa'), ...env }
+      {
+        SUPERAGENT_HOME: join(root, 'sa'),
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70',
+        CODEX_HOME: join(root, 'codex'),
+        ...env,
+      }
     );
   }
   const advised = (o: Out): boolean =>
     o?.hookSpecificOutput?.additionalContext?.includes('上下文约') ?? false;
 
-  test('三档阈值：commander 160K / general 240K / strategist 360K', () => {
-    expect(advised(budget(170_000, {}))).toBe(true);
-    expect(advised(budget(170_000, { SUPERAGENT_ROLE: 'worker' }))).toBe(false);
-    expect(advised(budget(250_000, { SUPERAGENT_ROLE: 'worker' }))).toBe(true);
-    expect(advised(budget(250_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(false);
-    expect(advised(budget(370_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(true);
+  test('三档阈值：commander 300K / general 600K / strategist 900K', () => {
+    expect(advised(budget(310_000, {}))).toBe(true);
+    expect(advised(budget(310_000, { SUPERAGENT_ROLE: 'worker' }))).toBe(false);
+    expect(advised(budget(610_000, { SUPERAGENT_ROLE: 'worker' }))).toBe(true);
+    expect(advised(budget(610_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(false);
+    expect(advised(budget(910_000, { SUPERAGENT_ROLE: 'reviewer' }))).toBe(true);
   });
   test('rollover state persists across processes and inbox context is merged', () => {
     const root = tmp(),
@@ -671,7 +680,7 @@ describe('context-advisory.cjs', () => {
       session = 'r';
     const call = (tokens: number, prompt_id: string): Out =>
       budget(tokens, {}, { prompt_id }, session, root);
-    expect(call(400001, 'a')?.hookSpecificOutput?.additionalContext).toContain('tasks.sh list');
+    expect(call(600001, 'a')?.hookSpecificOutput?.additionalContext).toContain('tasks.sh list');
     const name = `claude-${createHash('sha256').update(session).digest('hex').slice(0, 16)}.json`;
     const live = JSON.parse(readFileSync(join(home, 'live', name), 'utf8'));
     mkdirSync(join(home, 'coord', 'inbox'), { recursive: true });
@@ -679,7 +688,7 @@ describe('context-advisory.cjs', () => {
       join(home, 'coord', 'inbox', 'm.json'),
       JSON.stringify({ id: 'm', type: 'receipt', recipient: live })
     );
-    const merged = call(500001, 'b')?.hookSpecificOutput?.additionalContext;
+    const merged = call(700001, 'b')?.hookSpecificOutput?.additionalContext;
     expect(merged).toMatch(/Superagent 交接待答复[\s\S]*tasks\.sh list/);
   });
 
@@ -750,7 +759,7 @@ describe('context-advisory.cjs', () => {
     const root = tmp(),
       home = join(root, 'sa'),
       transcript = join(root, 't.jsonl');
-    writeFileSync(transcript, JSON.stringify({ usage: { input_tokens: 170000 } }));
+    writeFileSync(transcript, JSON.stringify({ usage: { input_tokens: 310000 } }));
     const outs = await Promise.all(
       Array.from({ length: 24 }, async (_, i) => {
         const p = Bun.spawn(['node', join(HOOKS, 'context-budget.cjs')], {
@@ -763,7 +772,13 @@ describe('context-advisory.cjs', () => {
               tool_use_id: `e${i % 20}`,
             })
           ),
-          env: { ...baseEnv, SUPERAGENT_HOME: home },
+          env: {
+            ...baseEnv,
+            SUPERAGENT_HOME: home,
+            CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+            CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70',
+            CODEX_HOME: join(root, 'codex'),
+          },
           stdout: 'pipe',
           stderr: 'pipe',
         });
@@ -778,7 +793,7 @@ describe('context-advisory.cjs', () => {
       `${createHash('sha256').update('race').digest('hex')}.json`
     );
     const state = JSON.parse(readFileSync(file, 'utf8'));
-    expect(state.warned_at).toBe(170000);
+    expect(state.warned_at).toBe(310000);
     expect(Object.keys(state.events)).toHaveLength(20);
     expect(outs.filter(Boolean)).toHaveLength(1);
   });

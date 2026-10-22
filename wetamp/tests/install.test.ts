@@ -442,9 +442,11 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         ),
         `${hooks}:pre_tool_use:0:0`,
         `${hooks}:pre_tool_use:1:0`,
+        `${hooks}:pre_tool_use:2:0`,
         `${hooks}:session_start:1:0`,
         `${hooks}:session_start:2:0`,
         `${hooks}:user_prompt_submit:0:0`,
+        `${hooks}:user_prompt_submit:1:0`,
       ].sort()
     );
     expect(state[`${hooks}:pre_tool_use:0:0`].trusted_hash).toBe('sha256:user');

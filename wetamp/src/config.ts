@@ -139,6 +139,8 @@ export interface Tiers {
     coder_budget_usd: Partial<Record<Alias['provider'], number>> & { claude: number };
     /** Context advisory thresholds consumed by context-advisory.cjs. */
     context: {
+      advisory_ratio?: Record<'commander' | 'general' | 'strategist', number>;
+      rollover_ratio?: Partial<Record<'commander' | 'general' | 'strategist', number>>;
       advisory_tokens: Record<'commander' | 'general' | 'strategist', number>;
       rollover_tokens?: Partial<Record<'commander' | 'general' | 'strategist', number>>;
     };
