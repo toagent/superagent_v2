@@ -1,5 +1,6 @@
 import { afterAll, afterEach, expect, spyOn, test } from 'bun:test';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -10,8 +11,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
 import * as archon from '../src/archon';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
+import { lock } from '../src/archon';
+import { inspectProcess } from '../src/launcher';
 import * as coordination from '../src/coord';
 import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
 import { gc as collect } from '../src/gc';
@@ -524,6 +528,84 @@ test('probe dry-run lists artifacts and stale legacy worktrees without deleting 
   expect(existsSync(stale)).toBe(false);
   expect(existsSync(fresh)).toBe(true);
   expect(f.git('worktree', 'list', '--porcelain')).not.toContain(stale);
+});
+
+test('engine gc removes read-only failed candidates and preserves protected or live snapshots', () => {
+  const f = fixture('running', false),
+    root = join(f.root, 'sa', 'engine');
+  const shas = {
+    current: 'aaaaaaa',
+    bootstrap: 'bbbbbbb',
+    previous: 'ccccccc',
+    failed: 'ddddddd',
+    running: 'eeeeeee',
+    unknown: 'fffffff',
+  };
+  for (const sha of Object.values(shas)) {
+    mkdirSync(join(root, sha), { recursive: true });
+    writeFileSync(join(root, sha, 'file'), sha);
+  }
+  symlinkSync(join(root, shas.current), join(root, 'current'));
+  mkdirSync(join(root, 'receipts'));
+  mkdirSync(join(root, 'promotions'));
+  for (const [sha, at] of [
+    [shas.bootstrap, '2026-01-01'],
+    [shas.previous, '2026-01-02'],
+    [shas.current, '2026-01-03'],
+  ])
+    writeFileSync(join(root, 'receipts', `${sha}.json`), JSON.stringify({ sha, at }));
+  writeFileSync(
+    join(root, 'promotions', `${shas.failed}.json`),
+    JSON.stringify({ status: 'failed' })
+  );
+  const identity = inspectProcess(process.pid);
+  expect(identity.state).toBe('online');
+  writeFileSync(
+    join(root, 'promotions', `${shas.running}.json`),
+    JSON.stringify({
+      status: 'running',
+      host: hostname(),
+      pid: process.pid,
+      pid_start: identity.state === 'online' ? identity.start : '',
+    })
+  );
+  chmodSync(join(root, shas.failed, 'file'), 0o444);
+  chmodSync(join(root, shas.failed), 0o555);
+  const dry = gc(true).filter(e => e.object === 'engine');
+  expect(dry.find(e => e.path === join(root, shas.failed))?.action).toBe('would_remove');
+  expect(dry.find(e => e.path === join(root, shas.unknown))?.action).toBe('skipped');
+  gc();
+  expect(existsSync(join(root, shas.failed))).toBe(false);
+  for (const sha of [shas.current, shas.bootstrap, shas.previous, shas.running, shas.unknown])
+    expect(existsSync(join(root, sha))).toBe(true);
+});
+
+test('engine gc removes only stale engine probes while the promotion lock is free', () => {
+  const f = fixture('running', false),
+    root = process.env.TMPDIR!,
+    engine = join(f.root, 'sa', 'engine'),
+    old = join(root, 'sa-engine-probe-old'),
+    fresh = join(root, 'sa-engine-probe-fresh'),
+    other = join(root, 'other-probe-old');
+  for (const path of [old, fresh, other]) {
+    mkdirSync(join(path, 'sa'), { recursive: true });
+    writeFileSync(join(path, 'sa', 'file'), 'x');
+  }
+  const stale = new Date(Date.now() - 25 * 60 * 60_000);
+  utimesSync(old, stale, stale);
+  utimesSync(other, stale, stale);
+  chmodSync(join(old, 'sa'), 0o555);
+  chmodSync(old, 0o555);
+  mkdirSync(engine, { recursive: true });
+  const held = lock(join(engine, 'engine.lock'));
+  expect(held.ok).toBe(true);
+  expect(gc().some(e => e.reason === 'stale engine probe')).toBe(false);
+  expect(existsSync(old)).toBe(true);
+  if (held.ok) held.release();
+  expect(gc().find(e => e.path === old)?.action).toBe('removed');
+  expect(existsSync(old)).toBe(false);
+  expect(existsSync(fresh)).toBe(true);
+  expect(existsSync(other)).toBe(true);
 });
 
 test.each(['clean', 'deleted', 'modified', 'untracked', 'staged', 'symlink'])(
