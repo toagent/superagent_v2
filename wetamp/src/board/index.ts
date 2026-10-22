@@ -18,6 +18,8 @@ const positive = (v: string | undefined, dflt: number, name: string): number => 
   return n;
 };
 
+export const boardInterval = (value?: string): number => positive(value, 30, 'interval');
+
 const detailFor = (row: BoardRow): Detail | null => {
   const l = readLedger(row.run_id);
   return typeof l === 'string' ? null : detailOf(l, row);
@@ -39,7 +41,7 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
   try {
     a = parseArgs(argv);
     target = a._[1];
-    interval = positive(a.flags.interval, 5, 'interval');
+    interval = boardInterval(a.flags.interval);
     limit = Math.floor(positive(a.flags.limit, Number.MAX_SAFE_INTEGER, 'limit'));
     const base = createLoader(signal);
     let url: string | undefined;

@@ -4,7 +4,7 @@ import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { getRunsAsync, RunQueryError, tail, type RunView } from '../archon';
+import { getRunAsync, getRunsAsync, RunQueryError, tail, type RunView } from '../archon';
 import { home } from '../config';
 import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
 import { loadActivity, type Activity } from './activity';
@@ -376,8 +376,9 @@ const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
 export const QUERY_TIMEOUT_MS = 10_000;
 
 /**
- * 带缓存的加载器（一个 board 进程一个）。一次批查刷新所有非缓存 run；completed/cancelled 在 ledger mtime 不变时不再查。
- * 批查超过 SA_BOARD_QUERY_TIMEOUT_MS（默认 10s）即杀掉；查询失败沿用上一次的 run 并标 stale，从未查到过则为
+ * 带缓存的加载器（一个 board 进程一个）。首轮批查，之后只单查非终态或 ledger 已变化的 run；
+ * completed/cancelled 在 ledger mtime 不变时不再查。查询超过 SA_BOARD_QUERY_TIMEOUT_MS（默认 10s）即杀掉；
+ * 查询失败沿用上一次的 run 并标 stale，从未查到过则为
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 export function createLoader(signal?: AbortSignal): (limit: number) => Promise<Snapshot> {
@@ -387,6 +388,7 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
     throw new Error(`SA_BOARD_QUERY_TIMEOUT_MS must be a positive number of ms, got ${env ?? ''}`);
   const cache = new Map<string, { run: RunView; mtimeMs: number }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
+  let first = true;
   return async limit => {
     const now = Date.now();
     const ids = ledgerIds()
@@ -422,16 +424,38 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       const hit = cache.get(id);
       return !(hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status));
     });
-    let batch = new Map<string, RunView>();
-    let batchError: Error | undefined;
+    const queried = new Map<string, RunView | Error>();
     const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
     if (uncached.length && firstLedger) {
-      try {
-        batch = await getRunsAsync(cwdOf(firstLedger), { timeoutMs, signal });
-      } catch (e) {
-        batchError = e as Error;
+      if (first) {
+        try {
+          const batch = await getRunsAsync(cwdOf(firstLedger), { timeoutMs, signal });
+          for (const { id } of uncached) {
+            const l = ledgers.get(id);
+            if (typeof l !== 'string' && l !== undefined)
+              queried.set(
+                id,
+                batch.get(l.archon_run_id) ?? new RunQueryError('not_found', l.archon_run_id)
+              );
+          }
+        } catch (e) {
+          for (const { id } of uncached) queried.set(id, e as Error);
+        }
+      } else {
+        await Promise.all(
+          uncached.map(async ({ id }) => {
+            const l = ledgers.get(id);
+            if (typeof l === 'string' || l === undefined) return;
+            try {
+              queried.set(id, await getRunAsync(l.archon_run_id, l.repo, { timeoutMs, signal }));
+            } catch (e) {
+              queried.set(id, e as Error);
+            }
+          })
+        );
       }
     }
+    first = false;
     const results = ids.map(({ id, mtimeMs }) => {
       const l = ledgers.get(id);
       if (l === undefined) throw new Error(`ledger ${id}: missing from snapshot`);
@@ -440,8 +464,8 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       if (hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status))
         return { l, run: hit.run, stale: false };
       try {
-        if (batchError) throw batchError;
-        const run = batch.get(l.archon_run_id);
+        const run = queried.get(id);
+        if (run instanceof Error) throw run;
         if (!run) throw new RunQueryError('not_found', l.archon_run_id);
         cache.set(id, { run, mtimeMs });
         return { l, run, stale: false };

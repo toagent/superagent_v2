@@ -28,6 +28,7 @@ import {
 import { detailOf, detailLines, redact } from '../src/board/detail';
 import { Frame } from '../src/board/App';
 import { cockpit } from '../src/board/cockpit';
+import { boardInterval } from '../src/board/index';
 import { metricsOf } from '../src/ledger-metrics';
 import { gitRepo, sh, tmp } from './helpers';
 import { caller, coord, Coordination, repoScope, runScope } from '../src/coord';
@@ -88,6 +89,10 @@ const calls = (): number =>
   existsSync(join(stubDir, 'calls'))
     ? readFileSync(join(stubDir, 'calls'), 'utf8').trim().split('\n').length
     : 0;
+const callLines = (): string[] =>
+  existsSync(join(stubDir, 'calls'))
+    ? readFileSync(join(stubDir, 'calls'), 'utf8').trim().split('\n')
+    : [];
 const ledgerFile = (id: string): string => join(root, 'home', 'runs', `${id}.json`);
 
 function ledger(
@@ -284,13 +289,21 @@ describe('data rows', () => {
     });
     const load = createLoader();
     await load(50);
-    expect(calls()).toBe(1);
+    expect(callLines()).toEqual(['workflow runs --all --limit 2147483647 --verbose --json']);
     await load(50);
-    expect(calls()).toBe(2); // 只有 live 触发一次批查
+    expect(callLines().slice(1)).toEqual(['workflow get a-live --verbose --json']);
     const later = new Date(Date.now() + 5000);
     utimesSync(ledgerFile('done'), later, later); // recover/decide 写 ledger → 缓存失效
     await load(50);
-    expect(calls()).toBe(3);
+    expect(callLines().slice(2).sort()).toEqual([
+      'workflow get a-done --verbose --json',
+      'workflow get a-live --verbose --json',
+    ]);
+  });
+
+  test('board refresh defaults to 30 seconds and accepts an explicit interval', () => {
+    expect(boardInterval()).toBe(30);
+    expect(boardInterval('7.5')).toBe(7.5);
   });
 
   test('one refresh batches run projection and scans inbox once regardless of run count', async () => {
