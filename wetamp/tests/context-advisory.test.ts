@@ -4,15 +4,11 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmp } from './helpers';
 
+// prettier-ignore
+type Limits = { threshold: number; rollover: number | null; advisoryStep: number; rolloverStep: number };
 const advisory = createRequire(import.meta.url)('../hooks/context-advisory.cjs') as {
   recentUsage(file: string, client?: string): { tokens: number; window: number | null } | null;
-  contextLimits(
-    role: string,
-    client: string,
-    window: number | null,
-    env?: Record<string, string>,
-    policy?: unknown
-  ): { threshold: number; rollover: number | null; advisoryStep: number; rolloverStep: number };
+  contextLimits(...args: unknown[]): Limits;
   advise(...args: unknown[]): { state: Record<string, number>; messages: string[] };
   main(
     input: unknown,
@@ -48,35 +44,18 @@ test('derives client limits and falls back to absolute thresholds without a wind
   const root = tmp();
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, 'config.toml'), 'model_auto_compact_token_limit = 280000\n');
-  expect(
-    advisory.contextLimits(
-      'commander',
-      'claude',
-      null,
-      { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' },
-      policy
-    )
-  ).toMatchObject({
-    threshold: 300000,
-    rollover: 600000,
-    advisoryStep: 50000,
-    rolloverStep: 100000,
+  const limits = (client: string, window: number | null, env: Record<string, string> = {}) =>
+      advisory.contextLimits('commander', client, window, env, policy),
+    values = (v: Limits) => [v.threshold, v.rollover, v.advisoryStep, v.rolloverStep];
+  // prettier-ignore
+  expect(values(limits('claude', null, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' }))).toEqual([300000, 600000, 50000, 100000]);
+  expect(limits('claude', null)).toMatchObject({ threshold: 60000, rollover: 120000 });
+  // prettier-ignore
+  expect(values(limits('codex', 400000, { CODEX_HOME: root }))).toEqual([120000, 240000, 20000, 40000]);
+  expect(limits('codex', null, { CODEX_HOME: root })).toMatchObject({
+    threshold: 160000,
+    rollover: 400000,
   });
-  expect(advisory.contextLimits('commander', 'claude', null, {}, policy)).toMatchObject({
-    threshold: 60000,
-    rollover: 120000,
-  });
-  expect(
-    advisory.contextLimits('commander', 'codex', 400000, { CODEX_HOME: root }, policy)
-  ).toMatchObject({
-    threshold: 120000,
-    rollover: 240000,
-    advisoryStep: 20000,
-    rolloverStep: 40000,
-  });
-  expect(
-    advisory.contextLimits('commander', 'codex', null, { CODEX_HOME: root }, policy)
-  ).toMatchObject({ threshold: 160000, rollover: 400000 });
   const first = advisory.advise({}, 300001, {}, false, 300000, 600000, {}, 50000, 100000);
   expect(
     advisory.advise({}, 350000, first.state, false, 300000, 600000, {}, 50000, 100000).messages
@@ -106,12 +85,8 @@ test('Codex main emits rollover instructions once per dynamic step', () => {
   });
   try {
     writeUsage(240001);
-    const input = {
-      hook_event_name: 'UserPromptSubmit',
-      session_id: 'codex-main',
-      transcript_path: transcript,
-      cwd: root,
-    };
+    // prettier-ignore
+    const input = { hook_event_name: 'UserPromptSubmit', session_id: 'codex-main', transcript_path: transcript, cwd: root };
     expect(advisory.main(input, 'codex')?.hookSpecificOutput.additionalContext).toContain(
       '已过换会话线 240000'
     );
