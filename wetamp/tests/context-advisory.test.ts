@@ -59,7 +59,7 @@ test('finds the latest Codex token count before trailing rollout events', () => 
       { type: 'event_msg', payload: { type: 'task_complete' } },
       { type: 'response_item', payload: {} },
     ]
-      .map(JSON.stringify)
+      .map(line => JSON.stringify(line))
       .join('\n') + '\n'
   );
   expect(advisory.recentUsage(file, 'codex')).toEqual({ tokens: 200, window: 380000 });
