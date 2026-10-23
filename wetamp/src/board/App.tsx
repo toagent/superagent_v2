@@ -1,7 +1,7 @@
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { fmtClock, fmtElapsed, type Snapshot } from './data';
-import { cockpit, decisionHeader, fit } from './cockpit';
+import { cockpit, decisionHeader, fit, type Cockpit } from './cockpit';
 import { residentHash } from '../generate';
 
 export const ENGINE_CHANGED = 75;
@@ -12,11 +12,12 @@ export interface FrameProps {
   width: number;
   height: number;
   now: Date;
+  view?: Cockpit;
 }
-export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
+export function Frame({ snap, width, height, now, view }: FrameProps): ReactElement {
   width = Math.max(1, Math.floor(width));
   height = Math.max(1, Math.floor(height));
-  const c = cockpit(snap, now.getTime()),
+  const c = view ?? cockpit(snap, now.getTime()),
     lines: ReactElement[] = [];
   // Strip vendor styling before fit: ANSI escapes must never be split or leak into the pane.
   const clean = (s: string): string => Bun.stripANSI(s).replace(/[\r\n\t]+/g, ' ');
@@ -146,6 +147,11 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
     </Box>
   );
 }
+export function BucketedFrame(props: FrameProps): ReactElement {
+  const bucket = Math.floor(props.now.getTime() / 10_000);
+  const view = useMemo(() => cockpit(props.snap, bucket * 10_000), [props.snap, bucket]);
+  return <Frame {...props} view={view} />;
+}
 
 export interface AppProps {
   load: () => Promise<Snapshot>;
@@ -201,5 +207,5 @@ export function App(p: AppProps): ReactElement {
       void child.exited;
     }
   });
-  return <Frame snap={snap} width={size.w} height={size.h} now={now} />;
+  return <BucketedFrame snap={snap} width={size.w} height={size.h} now={now} />;
 }

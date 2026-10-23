@@ -10,8 +10,9 @@ import {
 } from 'node:fs';
 import { basename, join } from 'node:path';
 import { hostname } from 'node:os';
+import { PassThrough } from 'node:stream';
 import { createElement } from 'react';
-import { renderToString } from 'ink';
+import { render, renderToString } from 'ink';
 import type { RunView } from '../src/archon';
 import { report, summarize, intervention, loadLedger, type Ledger } from '../src/cli';
 import {
@@ -26,8 +27,9 @@ import {
   workflowRoles,
 } from '../src/board/data';
 import { detailOf, detailLines, redact } from '../src/board/detail';
-import { Frame } from '../src/board/App';
+import { BucketedFrame, Frame } from '../src/board/App';
 import { cockpit } from '../src/board/cockpit';
+import * as cockpitModule from '../src/board/cockpit';
 import { boardInterval } from '../src/board/index';
 import { metricsOf } from '../src/ledger-metrics';
 import { gitRepo, sh, tmp } from './helpers';
@@ -1205,6 +1207,28 @@ test('P1 deleted repository uses the same report and board fallback', async () =
   expect(snapshot.summary['state:completed']).toBe(summary['state:completed']);
   expect(snapshot.summary['node_s:code']).toBe(summary['node_s:code']);
   expect(snapshot.summary['node_s:code']).toBe(19387);
+});
+
+test('cockpit view changes by snapshot or ten-second bucket while freshness ticks', async () => {
+  const snap = { at: '2026-10-23T00:00:00Z', summary: {}, rows: [] };
+  const first = new Date('2026-10-23T00:00:01Z');
+  const project = spyOn(cockpitModule, 'cockpit');
+  const node = (snapshot: typeof snap, now: Date) =>
+    createElement(BucketedFrame, { snap: snapshot, width: 80, height: 20, now });
+  const app = render(node(snap, first), { stdout: new PassThrough(), interactive: false });
+  await app.waitUntilRenderFlush();
+  app.rerender(node(snap, new Date(first.getTime() + 1000)));
+  await app.waitUntilRenderFlush();
+  expect(project).toHaveBeenCalledTimes(1);
+  app.rerender(node({ ...snap }, new Date(first.getTime() + 2000)));
+  await app.waitUntilRenderFlush();
+  app.rerender(node(snap, new Date(first.getTime() + 10_000)));
+  await app.waitUntilRenderFlush();
+  expect(project).toHaveBeenCalledTimes(3);
+  expect(renderToString(node(snap, first))).toContain('1s前');
+  expect(renderToString(node(snap, new Date(first.getTime() + 1000)))).toContain('2s前');
+  app.unmount();
+  project.mockRestore();
 });
 
 test('R1-1 loader and report retain unknown human needs and malformed asks, without duplicates', async () => {
