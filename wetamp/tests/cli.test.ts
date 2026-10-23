@@ -2018,6 +2018,18 @@ describe('health upstream reporting', () => {
   });
   const check = (files: string[], exitCode = 0, verbose = false) => {
     stub([]);
+    const home = tmp();
+    const capabilities = JSON.parse(readFileSync(join(WETAMP, 'capabilities.json'), 'utf8')) as {
+      use: Record<string, string>;
+    }[];
+    for (const capability of capabilities)
+      for (const [provider, skill] of Object.entries(capability.use)) {
+        const dir = join(home, `.${provider}`, 'skills', skill);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'SKILL.md'), 'fixture');
+      }
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
     const checkSpawn = <
       const In extends Bun.SpawnOptions.Writable = 'ignore',
       const Out extends Bun.SpawnOptions.Readable = 'pipe',
@@ -2044,6 +2056,8 @@ describe('health upstream reporting', () => {
       return { code: result.code, json: JSON.parse(result.out) };
     } finally {
       spy.mockRestore();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
     }
   };
   test('dirty upstream gives a reason and count, expanding files only with --verbose', () => {

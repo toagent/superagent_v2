@@ -989,6 +989,7 @@ test('summarize, report and the board share one summary', async () => {
     decisions,
     requirements,
     cancellations,
+    token_value,
     demands,
     critical_path,
     measurement,
@@ -1013,6 +1014,7 @@ test('summarize, report and the board share one summary', async () => {
   expect(delivery).toEqual({ legacy: 2 });
   expect(undelivered).toMatchObject([{ run: 'g', status: 'legacy' }]);
   expect(cancellations).toEqual({});
+  expect(token_value).toEqual({ anomalies: [], packages: [] });
   expect(demands).toMatchObject({
     denominator: 0,
     completed: 0,
