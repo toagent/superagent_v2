@@ -120,6 +120,32 @@ exit 0
 
 // 每个用例建临时仓库并多次 git worktree add/remove，满载（如嵌在 verify-local 里跑）时超过 bun 默认 5s。
 describe('scripts/verify-local.sh', () => {
+  test('exit reaps only detached processes carrying its exact temporary path', () => {
+    const f = fixture(),
+      capture = join(f.root, 'orphan-pids');
+    const bun = join(f.root, 'bun/bin/bun');
+    writeFileSync(
+      bun,
+      readFileSync(bun, 'utf8').replace(
+        'case "$1" in',
+        `if [ -n "$ORPHAN_CAPTURE" ] && [ ! -e "$ORPHAN_CAPTURE" ]; then
+python3 -c 'import subprocess,sys; ps=[subprocess.Popen(["python3","-c","import time; time.sleep(60)",p],start_new_session=True) for p in (sys.argv[1]+"/orphan",sys.argv[1]+"x/orphan")]; open(sys.argv[2],"w").write(" ".join(str(p.pid) for p in ps))' "$TMPDIR" "$ORPHAN_CAPTURE"
+fi
+case "$1" in`
+      )
+    );
+    let similar = 0;
+    try {
+      expect(f.run(f.pass, { ORPHAN_CAPTURE: capture }).code).toBe(0);
+      const [owned, other] = readFileSync(capture, 'utf8').split(' ').map(Number);
+      similar = other!;
+      expect(() => process.kill(owned!, 0)).toThrow();
+      expect(() => process.kill(similar, 0)).not.toThrow();
+    } finally {
+      if (similar) process.kill(similar, 'SIGKILL');
+    }
+  }, 60000);
+
   test('steps isolate global Git config and avoid production scratch TMPDIR', () => {
     const f = fixture(),
       config = join(f.root, 'host.gitconfig');
@@ -169,11 +195,25 @@ git config --global --get core.hooksPath && exit 9
         chmodSync(join(old, 'readonly/snapshot'), 0o444);
         chmodSync(join(old, 'readonly'), 0o555);
       }
+      const orphan =
+        state === 'live'
+          ? null
+          : Bun.spawn(['python3', '-c', 'import time; time.sleep(60)', join(old, 'orphan')], {
+              detached: true,
+            });
       const result = f.run(f.pass, {}, state === 'live' ? '0' : '60');
       expect(result.code).toBe(state === 'live' ? 1 : 0);
       expect(existsSync(old)).toBe(state !== 'dead');
       expect(f.git('worktree list --porcelain').includes(`${old}/wt`)).toBe(state !== 'dead');
       if (state === 'dirty') expect(result.err).toContain(`retained dirty orphan ${old}`);
+      if (orphan) {
+        if (state === 'dirty') {
+          expect(() => process.kill(orphan.pid, 0)).not.toThrow();
+          orphan.kill();
+        }
+        await orphan.exited;
+        expect(() => process.kill(orphan.pid, 0)).toThrow();
+      }
     },
     60000
   );

@@ -36,6 +36,14 @@ done
 
 # 每个提交只跑一次：mkdir 锁；持锁进程已不在时视为陈旧锁。拿到锁后再查一次缓存（可能刚被别人跑完）。
 LOCK="$SA_HOME/verify/lock"
+reap_path() {
+  local marker="$1/" self=$$ ancestors=" $$ " pid ppid state cmd targets="" live="" end
+  while [ "$self" -gt 1 ]; do self="$(ps -o ppid= -p "$self" 2>/dev/null | tr -d ' ')" || self=1; [ -n "$self" ] || self=1; ancestors="$ancestors$self "; done
+  while read -r pid ppid cmd; do case "$ancestors" in *" $pid "*) ;; *) [[ "$cmd" == *"$marker"* ]] && targets="$targets $pid";; esac; done < <(ps -axo pid=,ppid=,command=)
+  [ -z "$targets" ] || kill -TERM $targets 2>/dev/null || echo "verify-local: failed to terminate$targets" >&2
+  end=$((SECONDS + 5)); while [ "$SECONDS" -lt "$end" ]; do live=""; for pid in $targets; do read -r state cmd <<< "$(ps -o state=,command= -p "$pid" 2>/dev/null)" || { state=""; cmd=""; }; [[ "$state" != Z* && "$cmd" == *"$marker"* ]] && live="$live $pid"; done; [ -n "$live" ] || return 0; sleep 1; done
+  [ -z "$live" ] || { echo "verify-local: killing residual$live" >&2; kill -KILL $live 2>/dev/null || echo "verify-local: failed to kill$live" >&2; }
+}
 recover() {
   local old common status
   old="$(cat "$LOCK/tmp" 2>/dev/null || true)"
@@ -49,6 +57,7 @@ recover() {
     [ -z "$status" ] || { echo "verify-local: retained dirty orphan $old" >&2; return; }
     git -C "$REPO" worktree remove "$old/wt" || return
   fi
+  reap_path "$old"
   chmod -R u+w "$old" 2>/dev/null || true
   rm -rf "$old" 2>/dev/null || true
   [ ! -e "$old" ] || echo "verify-local: retained $old" >&2
@@ -76,6 +85,7 @@ TMP="$(cd -P "$TMP" && pwd)"
 echo "$TMP" > "$LOCK/tmp"
 WT="$TMP/wt"
 cleanup() {
+  reap_path "$TMP"
   if [ -d "$WT" ]; then
     # 软链的 node_modules 先摘掉，删除 worktree 时不会碰到主仓的依赖。
     find "$WT" -maxdepth 3 -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
