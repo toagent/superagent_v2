@@ -394,6 +394,7 @@ const evidenceSchema = z
             id: z.string(),
             severity: z.enum(['blocker', 'high', 'medium', 'low']),
             status: z.string(),
+            evidence: z.unknown().optional(),
           })
           .loose()
       )
@@ -562,7 +563,10 @@ export function foldEpisode(
     }));
   });
   const findings = rows.flatMap(r =>
-    (r.data.findings ?? []).map(f => `| ${f.id} | ${f.severity} | ${f.status} |`)
+    (r.data.findings ?? []).map(
+      f =>
+        `| ${f.id} | ${f.severity} | ${f.status} | ${typeof f.evidence === 'string' ? redact(f.evidence) : ''} |`
+    )
   );
   let diff: Episode['diff'] = null;
   if (run.working_path && !privateProject(plan.repo)) {
@@ -806,6 +810,8 @@ export function maintainLessons(
         helpful: l.helpful + (used && run?.accepted === true && !run.failed && !harmful ? 1 : 0),
         harmful: l.harmful + (harmful ? 1 : 0),
       };
+      if (next.harmful >= 2) next.status = 'retired';
+      else if (next.helpful >= 2 && next.harmful === 0) next.status = 'stable';
       if (next.harmful >= 2 || next.mechanizable)
         mechanize('lesson_' + next.id, next.reasons, next.id);
       return next;

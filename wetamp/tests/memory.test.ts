@@ -553,7 +553,7 @@ describe('EV1 incident replay', () => {
       { id: 'third', reasons: ['acceptance_failed'], failed: true, ids: [learned.id] },
       NOW
     );
-    expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'trial' });
+    expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'retired' });
     expect(existsSync(join(sa, 'memory/mechanize', `lesson_${learned.id}.json`))).toBe(true);
     expect(selectLessons(root, 'ts-cli')).toHaveLength(0);
   });
@@ -603,7 +603,34 @@ describe('EV1 budgets and deterministic matching', () => {
     exhausted.terminal('failed');
     expect(reflectOne(NOW, exhausted.query)).toBe(true);
     expect(memoryState().entries.filter(e => e.reflected === failed.id)).toHaveLength(1);
-    expect(memoryState().entries.at(-1)).toMatchObject({ reflection: { state: 'degraded' } });
+    expect(memoryState().entries.at(-1)).toMatchObject({
+      lessons: [{ status: 'trial', evidence: [failed.id] }],
+      reflection: { state: 'degraded' },
+    });
+  });
+  test.each([
+    ['invalid', { unexpected: true }],
+    ['empty', { operations: [], reason: 'no evidence' }],
+  ])('invalid or empty reflection output gets an injectable fallback (%s)', (_, output) => {
+    fakeValidation();
+    const e = episode();
+    saveEpisode(e);
+    const harness = reflectionHarness(e, output);
+    expect(reflectOne(NOW, harness.query)).toBe(true);
+    harness.terminal('completed');
+    expect(reflectOne(NOW, harness.query)).toBe(true);
+    const learned = memoryState().lessons[0];
+    expect(learned).toMatchObject({
+      tier: 'project',
+      scope: root,
+      tag: 'ts-cli',
+      status: 'trial',
+      evidence: [e.id],
+    });
+    const generated = generate(plan, `fallback-${String(_)}`, true);
+    expect(
+      JSON.parse(readFileSync(join(generated.dir, 'learning.json'), 'utf8')).selections.core.entries
+    ).toContainEqual(expect.objectContaining({ id: learned.id, source: 'reflection' }));
   });
   test('daily ceiling leaves work queued and starts it next day', () => {
     mkdirSync(join(sa, 'memory'));
@@ -768,7 +795,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(triage({ reasons: ['acceptance_failed'], signals: zeros })).toBe('project');
     expect(taskTag(['docs/a.md', 'src/b.ts', 'a.vue', 'c.ts'])).toBe('docs+ts-cli');
   });
-  test('feedback ranks candidates without granting or rewriting lifecycle status', () => {
+  test('feedback promotes helpful trials and retires harmful trials', () => {
     seed(
       lesson('winner'),
       lesson('old', { last_hit: new Date(NOW - 31 * 86400000).toISOString() })
@@ -777,7 +804,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
       maintainLessons({ id, reasons: [], failed: false, accepted: true, ids: ['winner'] }, NOW);
     expect(memoryState().lessons.find(l => l.id === 'winner')).toMatchObject({
       helpful: 2,
-      status: 'trial',
+      status: 'stable',
     });
     for (const [id, failed] of [
       ['cancelled', false],
@@ -792,7 +819,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(memoryState().lessons.find(l => l.id === 'legacy')?.status).toBe('stable');
     expect(selectLessons(root, 'ts-cli')).toEqual([]);
   });
-  test('curator rejects oversize and foreign edits, deduplicates ADD, UPVOTE does not fake outcome success', () => {
+  test('curator falls back after rejected edits, deduplicates ADD, and preserves feedback', () => {
     const e = episode(),
       valid = {
         tier: 'project',
@@ -825,12 +852,14 @@ describe('EV1 lifecycle, privacy and priors', () => {
         e,
         { operations: [{ op: 'EDIT', id: 'existing', lesson: { ...valid, scope: '/foreign' } }] },
         NOW
-      ).lessons
-    ).toHaveLength(0);
+      ).lessons[0]
+    ).toMatchObject({ id: `l-reflect-${e.id}`, status: 'trial' });
     expect(
       curate(e, { operations: [{ op: 'UPVOTE', id: 'existing' }] }, NOW).lessons[0]
     ).toMatchObject({ helpful: 0, votes: 1 });
-    expect(curate(e, { operations: [], reason: '无可复用经验' }, NOW).result).toContain('未提炼');
+    expect(curate(e, { operations: [], reason: '无可复用经验' }, NOW).result).toContain(
+      '确定性保底'
+    );
   });
   test('plan admission priors only warn with enough samples and retain a reasoned override', () => {
     const key = priorKey(root, plan.packages[0], loadTiers().tiers.general.pools.chatgpt[0]);
@@ -1515,7 +1544,7 @@ describe('FIXD review regressions', () => {
     },
     testTimeout(15_000)
   );
-  test('EV-R1-01 nested finding evidence and command/log bodies never cross reflection boundary', async () => {
+  test('EV-R1-01 reflection includes redacted minimal failure evidence, never nested bodies', async () => {
     writeFileSync(
       join(artifactsOf(raw), 'gate-m1-r1.review.json'),
       JSON.stringify({
@@ -1554,12 +1583,12 @@ describe('FIXD review regressions', () => {
       'CUSTOMER-SECRET',
       'LOG-SECRET',
       'UNLABELLED-SECRET',
-      'COMMAND-SECRET',
       'DISPOSITION-SECRET',
-      'LEGACY-SECRET',
     ])
       expect(input).not.toContain(secret);
     expect(input).toContain('acceptance_failed');
+    expect(input).toContain('COMMAND-SECRET');
+    expect(input).toContain('LEGACY-SECRET');
     expect(input).toContain('"findings":{"total":2}');
   });
   test('EV-R1-03 real gate null review folds end to end; null decision is invalid', () => {

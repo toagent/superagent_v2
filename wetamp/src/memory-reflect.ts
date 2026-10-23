@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonJson } from './archon';
 import { reasonOf } from './reasons';
+import { redact } from './redact';
 import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
 import {
   z,
@@ -33,7 +34,23 @@ const reflectionResultSchema = () =>
     })
     .strict();
 export function reflectionInput(e: Episode): string {
-  // Only metadata crosses the model boundary, including for legacy episodes containing evidence.
+  const evidence = {
+    reasons: e.reasons.flatMap(r => {
+      const reason = reasonOf(r);
+      return reason ? [`${r}: ${reason.description}`] : [];
+    }),
+    failed_acceptance: e.acceptance
+      .filter(a => a.ok === false)
+      .map(a => redact(a.cmd).slice(0, 240)),
+    findings: e.findings.map(f => redact(f).slice(0, 240)),
+  };
+  while (Buffer.byteLength(JSON.stringify(evidence)) > 2048) {
+    const rows = [evidence.findings, evidence.failed_acceptance, evidence.reasons].sort(
+      (a, b) => b.length - a.length
+    );
+    if (!rows[0].length) break;
+    rows[0].pop();
+  }
   const episode = {
       id: e.id,
       project: e.project,
@@ -56,6 +73,7 @@ export function reflectionInput(e: Episode): string {
         passed: e.acceptance.filter(a => a.ok === true).length,
       },
       findings: { total: e.findings.length },
+      evidence,
       tokens: e.tokens.map(t => ({
         role: ['general', 'strategist', 'commander'].includes(t.role ?? '') ? t.role : null,
         total: t.total,
@@ -85,7 +103,7 @@ export function curate(
   const decoded = reflectionResultSchema().safeParse(output);
   if (!decoded.success) {
     memoryLog('丢弃反思：输出 schema 不合格');
-    return { lessons: [], result: '未提炼：输出 schema 不合格' };
+    return fallback(e, now, '输出 schema 不合格');
   }
   const all = new Map(memoryState().lessons.map(l => [l.id, l])),
     changed = new Map<string, Lesson>(),
@@ -167,13 +185,38 @@ export function curate(
     changed.set(next.id, next);
   }
   for (const why of rejected) memoryLog(`丢弃经验：${why}`);
-  return {
-    lessons: [...changed.values()],
-    result: changed.size
-      ? `提炼 ${String(changed.size)} 条`
-      : `未提炼：${decoded.data.reason ?? rejected.at(0) ?? '无可复用经验'}`,
-  };
+  return changed.size
+    ? { lessons: [...changed.values()], result: `提炼 ${String(changed.size)} 条` }
+    : fallback(e, now, decoded.data.reason ?? rejected.at(0) ?? '无可复用经验');
 }
+const fallback = (e: Episode, now: number, why: string): { lessons: Lesson[]; result: string } => {
+  const reason = e.reasons.find(r => reasonOf(r)) ?? e.signature,
+    finding = e.findings.at(0) ?? e.acceptance.find(a => a.ok === false)?.cmd,
+    at = new Date(now).toISOString(),
+    lesson: Lesson = {
+      id: `l-reflect-${e.id}`,
+      tier: 'project',
+      scope: e.project,
+      tag: e.tag,
+      category: e.category,
+      reasons: e.reasons,
+      when: `${e.tag}: ${reason}`.slice(0, 240),
+      do: redact(`遇到该原因先检查${finding ? `：${finding}` : `结构化原因 ${reason}`}`).slice(
+        0,
+        240
+      ),
+      dont: '不要在缺少证据时重复同一修复',
+      why: redact(why).slice(0, 240),
+      evidence: [e.id],
+      mechanizable: false,
+      status: 'trial',
+      helpful: 0,
+      harmful: 0,
+      created_at: at,
+      last_hit: at,
+    };
+  return { lessons: [lesson], result: '提炼 1 条（确定性保底）' };
+};
 type Query = (args: string[], cwd?: string) => Record<string, unknown>;
 interface ReflectionRun {
   id: string;
@@ -231,9 +274,7 @@ export function reflectOne(now = Date.now(), query: Query = archonJson): boolean
       if (!complete) throw new Error(`memory-reflect ${run.id}: missing reflect output`);
       decoded = curate(e, complete.data?.structured_output, now);
       usage = usageOf(events);
-    } else {
-      decoded.result = `未提炼：Archon ${run.status} (${e.category}:${e.signature})`;
-    }
+    } else decoded = fallback(e, now, `Archon ${run.status}`);
     memoryWrite(() => ({
       ...decoded,
       reflected: e.id,
