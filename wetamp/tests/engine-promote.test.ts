@@ -17,6 +17,7 @@ import {
   currentEngineSnapshot,
   promote,
   rollback,
+  runAcceptance,
   runSnapshotProbe,
 } from '../src/engine';
 import type { ProbeEvidence } from '../src/probe';
@@ -74,6 +75,35 @@ const commit = (source: string, name: string): string => {
 
 // prettier-ignore
 const successfulProbe = (): ProbeEvidence => JSON.parse('{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}');
+
+test('engine acceptance removes success, failure, and timeout scratch but refuses a symlink', () => {
+  const root = tmp(),
+    snapshot = join(root, 'snapshot'),
+    script = join(snapshot, 'wetamp/scripts/engine-acceptance.sh'),
+    trace = join(root, 'trace');
+  mkdirSync(join(snapshot, 'wetamp/scripts'), { recursive: true });
+  process.env.TMPDIR = root;
+  process.env.TRACE = trace;
+  for (const body of ['exit 0', 'exit 7', 'sleep 2']) {
+    writeFileSync(
+      script,
+      `mkdir -p "$SUPERAGENT_HOME"\nprintf '%s' "${'$'}{SUPERAGENT_HOME%/sa}" > "$TRACE"\n${body}\n`
+    );
+    const invoke = () => runAcceptance(snapshot, body === 'sleep 2' ? 100 : 1_000);
+    if (body === 'exit 0') expect(invoke().exit).toBe(0);
+    else expect(invoke).toThrow();
+    expect(existsSync(readFileSync(trace, 'utf8'))).toBe(false);
+  }
+  const target = join(root, 'target');
+  mkdirSync(target);
+  process.env.TARGET = target;
+  writeFileSync(
+    script,
+    `mkdir -p "$SUPERAGENT_HOME"\nscratch="${'$'}{SUPERAGENT_HOME%/sa}"\nrmdir "$SUPERAGENT_HOME" "$scratch"\nln -s "$TARGET" "$scratch"\n`
+  );
+  expect(() => runAcceptance(snapshot, 1_000)).toThrow('scratch symlink retained');
+  expect(existsSync(target)).toBe(true);
+});
 
 // prettier-ignore
 test('snapshot probe removes successful scratch and preserves failed output', () => {

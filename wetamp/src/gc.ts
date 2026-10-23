@@ -4,6 +4,7 @@ import {
   realpathSync,
   lstatSync,
   readdirSync,
+  rmdirSync,
   rmSync,
   statSync,
 } from 'node:fs';
@@ -175,7 +176,8 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
     for (const ledger of references) {
       if (ledger.rejected === ledger.archon_run_id) continue;
       try {
-        if (getRun(ledger.archon_run_id, ledger.repo).status === 'completed') continue;
+        if (['completed', 'cancelled'].includes(getRun(ledger.archon_run_id, ledger.repo).status))
+          continue;
       } catch {
         return [];
       }
@@ -448,7 +450,25 @@ export function gc(
           const removed = l.gc?.some(
             e => e.object === 'worktree' && e.action === 'removed' && e.path === path
           );
-          if (tree ? !tree.includes(`branch ${ref}`) : !removed || existsSync(path))
+          let halfDeleted = false;
+          if (!tree && !removed && existsSync(path)) {
+            if (!sha) throw new GcSkip('half-deleted worktree branch ref missing');
+            if (lstatSync(path).isSymbolicLink())
+              throw new GcSkip('half-deleted worktree path is a symlink');
+            if (existsSync(join(path, '.git')))
+              throw new GcSkip('half-deleted worktree still contains .git');
+            const entries = readdirSync(path);
+            if (entries.length)
+              throw new GcSkip(
+                `half-deleted worktree contains unknown entries: ${entries.slice(0, 3).join(',')}`
+              );
+            if (!dryRun) rmdirSync(path);
+            event(dryRun ? 'would_remove' : 'removed', 'terminal half-deleted worktree', path);
+            halfDeleted = true;
+          }
+          if (
+            tree ? !tree.includes(`branch ${ref}`) : !halfDeleted && (!removed || existsSync(path))
+          )
             throw new GcSkip('worktree path/branch registration mismatch');
           if (!sha) {
             if (!tree && removed) return;

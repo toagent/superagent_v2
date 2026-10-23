@@ -231,32 +231,50 @@ function prepareSnapshot(sha: string, retryingFailedCandidate: boolean): string 
   return snapshot;
 }
 
-function runAcceptance(snapshot: string): EngineReceipt['results'][number] {
+function removeAcceptanceScratch(scratch: string): void {
+  try {
+    if (lstatSync(scratch).isSymbolicLink())
+      throw new Error('engine acceptance scratch symlink retained');
+    makeWritable(scratch);
+    rmSync(scratch, { recursive: true, force: true });
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+}
+
+export function runAcceptance(
+  snapshot: string,
+  timeoutMs = 40 * 60_000
+): EngineReceipt['results'][number] {
   const script = join(snapshot, 'wetamp', 'scripts', 'engine-acceptance.sh');
   const scratch = join(tmpdir(), `sa-engine-${crypto.randomUUID()}`);
   const started = Date.now();
-  const result = Bun.spawnSync(['bash', script], {
-    cwd: join(snapshot, 'wetamp'),
-    env: {
-      ...process.env,
-      SA_ENGINE_PROMOTER_TOKEN: '',
-      SUPERAGENT_HOME: join(scratch, 'sa'),
-      ARCHON_HOME: join(scratch, 'sa', 'archon'),
-    },
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: 40 * 60_000,
-    killSignal: 'SIGKILL',
-  });
-  if (result.exitCode !== 0)
-    throw new Error(
-      `engine acceptance failed (${String(result.exitCode)}): ${result.stderr.toString().trim().slice(-500)}`
-    );
-  return {
-    command: 'wetamp/scripts/engine-acceptance.sh',
-    exit: 0,
-    duration_ms: Date.now() - started,
-  };
+  try {
+    const result = Bun.spawnSync(['bash', script], {
+      cwd: join(snapshot, 'wetamp'),
+      env: {
+        ...process.env,
+        SA_ENGINE_PROMOTER_TOKEN: '',
+        SUPERAGENT_HOME: join(scratch, 'sa'),
+        ARCHON_HOME: join(scratch, 'sa', 'archon'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+    });
+    if (result.exitCode !== 0)
+      throw new Error(
+        `engine acceptance failed (${String(result.exitCode)}): ${result.stderr.toString().trim().slice(-500)}`
+      );
+    return {
+      command: 'wetamp/scripts/engine-acceptance.sh',
+      exit: 0,
+      duration_ms: Date.now() - started,
+    };
+  } finally {
+    removeAcceptanceScratch(scratch);
+  }
 }
 
 interface PromotionMarker {
