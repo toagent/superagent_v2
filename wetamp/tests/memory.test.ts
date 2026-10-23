@@ -932,13 +932,9 @@ describe('EV1 lifecycle, privacy and priors', () => {
     );
   });
   test('reflection output schema is recursively strict and typed', () => {
-    const workflow = Bun.YAML.parse(
-        readFileSync(
-          join(import.meta.dir, '../templates/.archon/workflows/memory-reflect.yaml'),
-          'utf8'
-        )
-      ) as { nodes: { output_format: Record<string, unknown> }[] },
-      queue = [workflow.nodes[0].output_format];
+    // prettier-ignore
+    const schema = (Bun.YAML.parse(readFileSync(join(import.meta.dir, '../templates/.archon/workflows/memory-reflect.yaml'), 'utf8')) as { nodes: { output_format: Record<string, unknown> }[] }).nodes[0].output_format,
+      queue = [schema];
     while (queue.length) {
       const node = queue.pop() as Record<string, unknown>,
         properties = node.properties as Record<string, Record<string, unknown>> | undefined;
@@ -952,30 +948,11 @@ describe('EV1 lifecycle, privacy and priors', () => {
     }
   });
   test('strict reflection ADD, EDIT, and UPVOTE operations remain parseable', () => {
-    const e = episode(),
-      candidate = {
-        tier: 'project',
-        scope: root,
-        when: 'strict',
-        do: 'add',
-        dont: '',
-        why: '',
-        evidence: [e.id],
-        mechanizable: false,
-      };
+    // prettier-ignore
+    const e = episode(), candidate = { tier: 'project', scope: root, when: 'strict', do: 'add', dont: '', why: '', evidence: [e.id], mechanizable: false };
     seed(lesson('existing'));
-    const result = curate(
-      e,
-      {
-        operations: [
-          { op: 'ADD', id: null, lesson: candidate },
-          { op: 'EDIT', id: 'existing', lesson: { ...candidate, do: 'edit' } },
-          { op: 'UPVOTE', id: 'existing', lesson: null },
-        ],
-        reason: null,
-      },
-      NOW
-    );
+    // prettier-ignore
+    const result = curate(e, { operations: [{ op: 'ADD', id: null, lesson: candidate }, { op: 'EDIT', id: 'existing', lesson: { ...candidate, do: 'edit' } }, { op: 'UPVOTE', id: 'existing', lesson: null }], reason: null }, NOW);
     expect(result.result).toBe('提炼 2 条');
     expect(result.lessons).toContainEqual(expect.objectContaining({ do: 'add' }));
     expect(result.lessons).toContainEqual(
