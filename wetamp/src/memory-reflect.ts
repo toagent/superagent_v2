@@ -10,6 +10,7 @@ import {
   episodes,
   lessonSchema,
   memoryData,
+  memoryErrors,
   memoryLog,
   maintainLessons,
   memoryOn,
@@ -339,11 +340,10 @@ export function reflectOne(now = Date.now(), query: Query = archonJson): boolean
   } catch (error) {
     const reason = redact(error instanceof Error ? error.message : String(error)),
       errors = join(home().sa, 'memory', 'errors.jsonl');
-    appendFileSync(errors, JSON.stringify({ id: e.id, reason }) + '\n');
-    const attempts = readFileSync(errors, 'utf8')
-      .trim()
-      .split('\n')
-      .filter(line => (JSON.parse(line) as { id?: unknown }).id === e.id).length;
+    appendFileSync(errors, JSON.stringify({ id: e.id, reason, stage: 'reflect' }) + '\n');
+    const attempts = memoryErrors().filter(
+      record => record.id === e.id && record.stage === 'reflect'
+    ).length;
     if (attempts < 3) return false;
     memoryWrite(() => ({
       ...fallback(e, now, `reflect error: ${reason}`),

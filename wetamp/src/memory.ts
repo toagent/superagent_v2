@@ -128,6 +128,27 @@ export const privateProject = (p: string): boolean =>
 export const memoryLog = (why: string): void => {
   console.error(`memory: ${why}`);
 };
+interface MemoryError {
+  id: string;
+  reason: string;
+  stage?: 'reflect';
+}
+export const memoryErrors = (): MemoryError[] => {
+  const file = join(root(), 'errors.jsonl');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .flatMap(line => {
+      try {
+        const value = Object(JSON.parse(line)) as Partial<MemoryError>;
+        return typeof value.id === 'string' && typeof value.reason === 'string'
+          ? [value as MemoryError]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+};
 export const memoryPath = (path: string): string | null =>
   confined({ repo: home().sa } as Ledger, path);
 // Collection may read repository evidence; Web memory reads have no Ledger scope.
@@ -1021,6 +1042,7 @@ export interface Delivery {
 interface FoldIndex {
   version?: number;
   deliveries?: Record<string, Delivery>;
+  errors?: Record<string, string[]>;
   live?: Partial<Record<string, LiveFold>>;
   day: string;
   terminal: Record<string, string>;
@@ -1057,8 +1079,12 @@ export function memoryTick(
   }
   const deliveries = (index.deliveries ??= {});
   const live = (index.live ??= {});
+  const seedErrors = !index.errors,
+    foldErrors = (index.errors ??= {});
+  if (seedErrors)
+    for (const record of memoryErrors()) (foldErrors[record.id] ??= []).push(record.reason);
   const reused: { l: Ledger; cache: LiveFold }[] = [];
-  let changed = index.day !== day;
+  let changed = index.day !== day || seedErrors;
   const error = (id: string, e: unknown): void => {
     const reason =
       e instanceof SyntaxError
@@ -1067,7 +1093,9 @@ export function memoryTick(
           ? 'path_outside'
           : ((e instanceof Error ? (e as NodeJS.ErrnoException).code : undefined) ?? 'fold_failed');
     result.errors.push({ id, reason });
-    if (!dryRun) {
+    if (!dryRun && !(foldErrors[id] ?? []).includes(reason)) {
+      (foldErrors[id] ??= []).push(reason);
+      changed = true;
       mkdirSync(root(), { recursive: true });
       appendFileSync(join(root(), 'errors.jsonl'), JSON.stringify({ id, reason }) + '\n');
     }

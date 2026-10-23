@@ -604,7 +604,7 @@ describe('EV1 budgets and deterministic matching', () => {
     const e = episode();
     saveEpisode(e);
     const errors = join(sa, 'memory/errors.jsonl');
-    writeFileSync(errors, JSON.stringify({ id: 'other', reason: 'old' }) + '\n');
+    writeFileSync(errors, `${JSON.stringify({ id: e.id, reason: 'fold_failed' })}\nbad json\n`);
     const fail = (): boolean =>
       reconcileReflection(NOW, at =>
         reflectOne(at, () => {
@@ -614,11 +614,7 @@ describe('EV1 budgets and deterministic matching', () => {
     expect([fail(), fail()]).toEqual([false, false]);
     expect(memoryState()).toEqual({ lessons: [], entries: [] });
     expect(fail()).toBe(true);
-    const records = readFileSync(errors, 'utf8')
-      .trim()
-      .split('\n')
-      .map(line => JSON.parse(line) as { id: string });
-    expect(records.filter(record => record.id === e.id)).toHaveLength(3);
+    expect(readFileSync(errors, 'utf8').match(/"stage":"reflect"/g)).toHaveLength(3);
     expect(memoryState().entries.at(-1)).toMatchObject({
       lessons: [{ evidence: [e.id], why: 'reflect error: workflow runs exit 17: raw stderr' }],
       reflected: e.id,
@@ -1301,7 +1297,8 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
     const good = { ...raw, id: 'good-native', events: [] },
       quiet = { ...raw, id: 'quiet-native', status: 'completed', events: [] };
     const queries = join(root, 'queries'),
-      responses = join(root, 'responses');
+      responses = join(root, 'responses'),
+      errors = join(sa, 'memory/errors.jsonl');
     mkdirSync(responses);
     mkdirSync(join(sa, 'runs'));
     for (const [id, run] of [
@@ -1340,7 +1337,12 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
     writeFileSync(queries, '');
     memoryTick({}, NOW + 60000, false);
     expect(readFileSync(queries, 'utf8').trim()).toBe('bad-native');
+    expect(readFileSync(errors, 'utf8').trim().split('\n')).toHaveLength(1);
     expect(statSync(join(sa, 'memory/priors.json')).mtimeMs).toBe(priorsAt);
+    writeFileSync(join(responses, 'bad-native.json'), JSON.stringify(bad));
+    memoryTick({}, NOW + 120000, false);
+    expect(readFileSync(errors, 'utf8').trim().split('\n')).toHaveLength(2);
+    expect(readFileSync(errors, 'utf8')).toContain('"reason":"fold_failed"');
     memoryTick({}, NOW + 86400000, false);
     expect(statSync(join(sa, 'memory/priors.json')).mtimeMs).toBeGreaterThanOrEqual(priorsAt);
   });
