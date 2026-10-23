@@ -4,7 +4,14 @@ import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { getRunAsync, getRunsAsync, RunQueryError, tail, type RunView } from '../archon';
+import {
+  getRunAsync,
+  getRunsAsync,
+  reportRunRevisions,
+  RunQueryError,
+  tail,
+  type RunView,
+} from '../archon';
 import { home } from '../config';
 import {
   runScope,
@@ -379,23 +386,24 @@ function safeRowOf(
   }
 }
 
-/** 不可逆的终态：resume 只接受 failed/paused，failed（含 held:gate/environment）可经 decide/cancel 再变，每轮都查。 */
+/** 不可逆的终态：failed（含 held:gate/environment）仍可 resume/decide/cancel，不能仅按状态缓存。 */
 const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
 export const QUERY_TIMEOUT_MS = 10_000;
 
 /**
  * 带缓存的加载器（一个 board 进程一个）。首轮批查，之后只单查非终态或 ledger 已变化的 run；
- * completed/cancelled 在 ledger mtime 不变时不再查。查询超过 SA_BOARD_QUERY_TIMEOUT_MS（默认 10s）即杀掉；
+ * completed/cancelled 在 ledger mtime 不变时不再查；failed 还需引擎 revision 不变。
+ * 查询超过 SA_BOARD_QUERY_TIMEOUT_MS（默认 10s）即杀掉；
  * 查询失败沿用上一次的 run 并标 stale，从未查到过则为
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 // prettier-ignore
-export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa)): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: () => Map<string, string> | null = reportRunRevisions): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
     throw new Error(`SA_BOARD_QUERY_TIMEOUT_MS must be a positive number of ms, got ${env ?? ''}`);
-  const cache = new Map<string, { run: RunView; mtimeMs: number }>();
+  const cache = new Map<string, { run: RunView; mtimeMs: number; revision?: string }>();
   const rowCache = new Map<string, BoardRow>();
   const ledgerCache = new Map<string, Ledger>();
   const coordCache = new Map<string, { scope?: ReturnType<typeof runScope>; value: Omit<NonNullable<BoardRow['coordination']>, 'pending'> }>();
@@ -404,6 +412,8 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   let first = true;
   return async limit => {
     const now = Date.now();
+    let revisions: Map<string, string> | null = null;
+    try { revisions = revisionsOf(); } catch { /* Revision cache unavailable: keep failed runs live. */ }
     const ids = ledgerIds()
       // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
       .map(id => ({
@@ -413,7 +423,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, limit);
     // prettier-ignore
-    const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id); return hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status) ? [[id, hit] as const] : []; }));
+    const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id), archonId = ledgerCache.get(id)?.archon_run_id; return hit?.mtimeMs === mtimeMs && (FINAL.has(hit.run.status) || (hit.run.status === 'failed' && !!hit.revision && hit.revision === revisions?.get(archonId ?? ''))) ? [[id, hit] as const] : []; }));
     // prettier-ignore
     const ledgers = new Map(ids.map(({ id }) => [id, reusable.has(id) ? (ledgerCache.get(id) ?? readLedger(id)) : readLedger(id)] as const));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
@@ -487,13 +497,13 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       if (l === undefined) throw new Error(`ledger ${id}: missing from snapshot`);
       if (typeof l === 'string') return { row: unreadableRow(id, l) };
       const hit = cache.get(id);
-      if (hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status))
+      if (reusable.has(id) && hit)
         return { l, run: hit.run, stale: false };
       try {
         const run = queried.get(id);
         if (run instanceof Error) throw run;
         if (!run) throw new RunQueryError('not_found', l.archon_run_id);
-        cache.set(id, { run, mtimeMs });
+        cache.set(id, { run, mtimeMs, revision: revisions?.get(l.archon_run_id) });
         ledgerCache.set(id, l);
         const value = owners.get(id);
         if (!value) throw new Error(`coordination ${id}: missing projection`);

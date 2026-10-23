@@ -368,6 +368,24 @@ describe('data rows', () => {
     }
   });
 
+  test('stable failed runs reuse their revision and refresh when it changes', async () => {
+    ledger('failed', { status: 'failed' });
+    let revision = 'r1';
+    const load = createLoader(
+      undefined,
+      undefined,
+      undefined,
+      () => new Map([['a-failed', revision]])
+    );
+    await load(50);
+    expect(calls()).toBe(1);
+    await load(50);
+    expect(calls()).toBe(1);
+    revision = 'r2';
+    await load(50);
+    expect(callLines().at(-1)).toBe('workflow get a-failed --verbose --json');
+  });
+
   test('one refresh probes a shared process identity once', async () => {
     const repo = gitRepo(tmp());
     const controller = {
@@ -578,6 +596,7 @@ describe('loader robustness', () => {
     const states = async (): Promise<string[]> =>
       (await load(50)).rows.map(r => `${r.run_id}:${r.state}`).sort();
     expect(await states()).toEqual(['f:held:engine_suspect', 'g:held:engine_suspect']);
+    expect(calls()).toBe(1);
     // cancel/reject 只改 archon，不写 ledger（mtime 不变）
     for (const id of ['f', 'g'])
       writeFileSync(
@@ -585,6 +604,7 @@ describe('loader robustness', () => {
         JSON.stringify({ id: `a-${id}`, status: 'cancelled' })
       );
     expect(await states()).toEqual(['f:cancelled', 'g:cancelled']);
+    expect(calls()).toBe(3); // revision 不可用时 failed 仍实时查询
     const n = calls();
     await load(50);
     expect(calls()).toBe(n); // cancelled 不可逆，此后走缓存
