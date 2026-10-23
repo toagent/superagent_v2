@@ -327,6 +327,66 @@ describe('data rows', () => {
     expect(owners).toBe(5);
   });
 
+  test('stable terminal rows and summaries are reused while active elapsed time is rebuilt', async () => {
+    const done = ledger('done', { status: 'completed' });
+    ledger('live', { status: 'running' });
+    const unchanged = new Date(100_000);
+    for (const id of ['done', 'live']) utimesSync(ledgerFile(id), unchanged, unchanged);
+    const now = spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(Date.parse('2026-10-10T00:01:00Z'));
+      const load = createLoader();
+      const first = await load(50);
+      writeFileSync(
+        join(done.gen_dir, 'plan.json'),
+        JSON.stringify({ packages: [{ id: 'done', title: 'updated title' }] })
+      );
+      now.mockReturnValue(Date.parse('2026-10-10T00:02:00Z'));
+      const second = await load(50);
+      const firstDone = first.rows.find(r => r.run_id === 'done');
+      const firstLive = first.rows.find(r => r.run_id === 'live');
+      expect(second.rows.find(r => r.run_id === 'done')).toBe(firstDone);
+      expect(second.rows.find(r => r.run_id === 'done')?.engine?.title).toBe('任务标题未知');
+      expect(second.rows.find(r => r.run_id === 'live')).not.toBe(firstLive);
+      expect(second.rows.find(r => r.run_id === 'live')?.elapsed_s).toBe(120);
+      expect(second.summary).not.toBe(first.summary); // active rows prevent summary reuse
+
+      writeFileSync(
+        join(stubDir, 'get-a-live.json'),
+        JSON.stringify({ id: 'a-live', status: 'completed' })
+      );
+      for (const id of ['done', 'live'])
+        utimesSync(ledgerFile(id), new Date(200_000), new Date(200_000));
+      const settled = await load(50);
+      expect(settled.rows.find(r => r.run_id === 'done')?.engine?.title).toBe('updated title');
+      const stable = await load(50);
+      expect(stable.summary).toBe(settled.summary);
+      ledger('new', { status: 'completed' });
+      expect((await load(50)).summary).not.toBe(stable.summary);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  test('one refresh probes a shared process identity once', async () => {
+    const repo = gitRepo(tmp());
+    const controller = {
+      client: 'codex',
+      host: hostname(),
+      pid: process.pid,
+      pid_start: 'fixture-start',
+      generation: 1,
+    };
+    for (const id of ['one', 'two']) ledger(id, { status: 'running' }, { controller, repo });
+    let probes = 0;
+    const snap = await createLoader(undefined, undefined, () => {
+      probes++;
+      return { state: 'online', activity: 'active' };
+    })(50);
+    expect(snap.rows.map(r => r.coordination?.presence.state)).toEqual(['online', 'online']);
+    expect(probes).toBe(1);
+  });
+
   test('board refresh defaults to 30 seconds and accepts an explicit interval', () => {
     expect(boardInterval()).toBe(30);
     expect(boardInterval('7.5')).toBe(7.5);

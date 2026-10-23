@@ -6,7 +6,15 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { getRunAsync, getRunsAsync, RunQueryError, tail, type RunView } from '../archon';
 import { home } from '../config';
-import { runScope, coord, type Identity, type Presence, type Message } from '../coord';
+import {
+  runScope,
+  coord,
+  Coordination,
+  presence,
+  type Identity,
+  type Presence,
+  type Message,
+} from '../coord';
 import { loadActivity, type Activity } from './activity';
 import { landEvidence, publishProjection } from '../land';
 import { milestones } from '../plan';
@@ -382,15 +390,17 @@ export const QUERY_TIMEOUT_MS = 10_000;
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 // prettier-ignore
-export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coord().owner(runScope(l))): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa)): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
     throw new Error(`SA_BOARD_QUERY_TIMEOUT_MS must be a positive number of ms, got ${env ?? ''}`);
   const cache = new Map<string, { run: RunView; mtimeMs: number }>();
+  const rowCache = new Map<string, BoardRow>();
   const ledgerCache = new Map<string, Ledger>();
   const coordCache = new Map<string, { scope?: ReturnType<typeof runScope>; value: Omit<NonNullable<BoardRow['coordination']>, 'pending'> }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
+  let summaryCache: { ids: string; value: Record<string, unknown> } | undefined;
   let first = true;
   return async limit => {
     const now = Date.now();
@@ -408,6 +418,16 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
     const ledgers = new Map(ids.map(({ id }) => [id, reusable.has(id) ? (ledgerCache.get(id) ?? readLedger(id)) : readLedger(id)] as const));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
     const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
+    const presenceCache = new Map<string, Presence>();
+    const coordinator = new Coordination({ presence: who => {
+      const key = JSON.stringify([who.host ?? null, who.pid, who.pid_start ?? null]);
+      const hit = presenceCache.get(key);
+      if (hit) return hit;
+      const value = probe(who);
+      presenceCache.set(key, value);
+      return value;
+    } });
+    const findOwner = ownerOf ?? (l => coordinator.owner(runScope(l)));
     for (const [id, l] of ledgers) {
       if (typeof l === 'string') continue;
       const saved = coordCache.get(id);
@@ -418,7 +438,7 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
       }
       try {
         const scope = runScope(l),
-          view = ownerOf(l);
+          view = findOwner(l);
         scopes.set(l.run_id, scope);
         owners.set(l.run_id, { owner: view.owner, presence: view.presence });
       } catch (e) {
@@ -484,7 +504,6 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
         return hit ? { l, run: hit.run, stale: true, err } : { l, err };
       }
     });
-    const coordinator = coord();
     const coordMessages = coordinator.messages();
     const pending = new Map<string, number>();
     for (const message of coordMessages)
@@ -498,6 +517,7 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
     const rows: BoardRow[] = [];
     const pairs: Pair[] = [];
     const bad: string[] = [];
+    let reusedRows = 0;
     for (const r of results) {
       if (r.row) {
         rows.push(r.row);
@@ -518,8 +538,17 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
       if (scope)
         pendingCount =
           (pending.get(`run:${scope.id}`) ?? 0) + (pending.get(`repo:${scope.repo}`) ?? 0);
-      rows.push(
-        safeRowOf(
+      const saved = reusable.has(l.run_id) ? rowCache.get(l.run_id) : undefined;
+      if (saved) {
+        const row = saved.coordination && saved.coordination.pending !== pendingCount
+          ? { ...saved, coordination: { ...saved.coordination, pending: pendingCount } }
+          : saved;
+        rowCache.set(l.run_id, row);
+        rows.push(row);
+        reusedRows++;
+        continue;
+      }
+      const row = safeRowOf(
           l,
           r.run,
           {
@@ -530,15 +559,21 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
             coordination: owners.get(l.run_id),
           },
           bad
-        )
-      );
+        );
+      rows.push(row);
+      if (FINAL.has(r.run.status) && !r.stale && row.state !== 'unreadable')
+        rowCache.set(l.run_id, row);
     }
-    const s = summarize(pairs);
+    const pairIds = pairs.map(p => p.ledger.run_id).sort().join('\0');
+    const s = reusedRows === pairs.length && rows.length === pairs.length && summaryCache?.ids === pairIds
+      ? summaryCache.value
+      : summarize(pairs);
     // prettier-ignore
     const activity = loadActivity(now, signal, results.flatMap(r => 'l' in r && r.run && !FINAL.has(r.run.status) ? [{ run_id: r.l.run_id, cwd: r.l.repo, controller: owners.get(r.l.run_id)?.owner ?? null }] : []));
     // 读不出的 ledger 不进 summarize（没有可计的 ledger），但计入 runs 与 unreadable，口径与 report 的“单列不吞错”一致
     s.runs = results.length;
     s.unreadable = [...new Set([...bad, ...(s.unreadable as string[])])];
+    summaryCache = { ids: pairIds, value: s };
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
     let asks: Snapshot['asks'];
     try {
