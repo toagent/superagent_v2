@@ -3447,19 +3447,16 @@ function dispose(
       existsSync(join(home().sa, 'console/decision-origin'))
     ) {
       const decision = describeDecision(l, run);
-      return {
-        run_id: l.run_id,
-        action: 'none',
-        ok: false,
-        held: true,
-        transport: 'mobile',
-        decision: decision?.id,
-        reason:
-          decision?.disabled ??
-          (decision
-            ? '请在手机查看；未配对/未订阅不等于已通知，查看 console mobile-health'
-            : '当前门不能在手机处理，请在 Mac 查看原始 blocker'),
-      };
+      if (decision && !decision.disabled)
+        return {
+          run_id: l.run_id,
+          action: 'none',
+          ok: false,
+          held: true,
+          transport: 'mobile',
+          decision: decision.id,
+          reason: '请在手机查看；未配对/未订阅不等于已通知，查看 console mobile-health',
+        };
     }
 
     if (

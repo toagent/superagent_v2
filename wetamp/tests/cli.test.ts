@@ -1,6 +1,7 @@
 import { admitExecution, resumeExecution } from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
+import * as decisionsModule from '../src/decisions';
 import * as launcherModule from '../src/launcher';
 import * as relay from '../src/relay-quota';
 import * as saCheck from '../templates/.archon/scripts/sa-check';
@@ -2489,13 +2490,36 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toHaveProperty('sa1:fixture');
     db.close();
   });
-  test('configured mobile transport leaves existing Reminders untouched and exposes unsupported gates', () => {
+  test('configured mobile transport falls back to Reminders for a disabled decision', () => {
     const s = stub([humanWait()]);
     mkdirSync(join(s.root, 'home/console'), { recursive: true });
     writeFileSync(join(s.root, 'home/console/decision-origin'), 'https://private.example.test');
-    const calls = supervisor(s.root, 'yes');
+    const calls = supervisor(s.root, 'pending');
     expect(cliMod.superviseTick()).toMatchObject({
-      actions: [{ transport: 'mobile', held: true, ok: false }],
+      actions: [{ action: 'ask', ask: 'ask-1', ok: true }],
+    });
+    expect(calls().filter(call => call.startsWith('ask '))).toHaveLength(1);
+  });
+  test('configured mobile transport keeps actionable decisions off Reminders', () => {
+    const s = stub([humanWait()]);
+    fixtureSpies.push(
+      spyOn(decisionsModule, 'describeDecision').mockReturnValue({
+        id: 'mobile-1',
+        run: 'sa1',
+        engine: 'r',
+        node: 'human-m1',
+        pause: 'p1',
+        question: '批准？',
+        reason: '人工签收',
+        context: 'fixture',
+        options: [{ id: 'approve', label: '批准', consequence: '继续运行' }],
+      })
+    );
+    mkdirSync(join(s.root, 'home/console'), { recursive: true });
+    writeFileSync(join(s.root, 'home/console/decision-origin'), 'https://private.example.test');
+    const calls = supervisor(s.root, 'pending');
+    expect(cliMod.superviseTick()).toMatchObject({
+      actions: [{ transport: 'mobile', decision: expect.any(String), held: true, ok: false }],
     });
     expect(calls()).toEqual([]);
   });
