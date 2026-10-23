@@ -166,6 +166,12 @@ test('merged completed run removes only its worktree and branch; second GC is id
   expect(readFileSync(path, 'utf8')).toBe(bytes);
   expect(statSync(path).mtimeMs).toBe(old.getTime());
   expect(loadLedger(f.id).gc).toHaveLength(2);
+  writeFileSync(join(f.repo, 'main.txt'), 'main');
+  f.git('add', 'main.txt');
+  f.git('-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'main');
+  query?.mockClear();
+  expect(gc()).toEqual([]);
+  expect(query).not.toHaveBeenCalled();
 });
 
 test('unchanged skipped ledger uses cache and branch SHA changes invalidate it', () => {
@@ -208,10 +214,11 @@ test('another sa worktree advancing does not invalidate a cached ledger', () => 
   expect(query).not.toHaveBeenCalled();
 });
 
-test('a non-sa branch advancing invalidates a cached ledger', () => {
+test('a non-sa branch advancing invalidates a cached ledger while its sa branch exists', () => {
   const f = fixture('failed', false);
   revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
   expect(gc()[0].reason).toContain('not merged');
+  expect(f.branchExists()).toBe(true);
   writeFileSync(join(f.repo, 'main.txt'), 'main');
   f.git('add', 'main.txt');
   f.git('-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'main');

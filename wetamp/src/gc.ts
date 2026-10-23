@@ -395,9 +395,9 @@ export function gc(
       refs = state[2].trim().split('\n'),
       tree = state[1].find(t => t.includes(`worktree ${path}`) || t.includes(`branch ${ref}`)),
       sha = refs.find(r => r.startsWith(`${ref} `)),
-      landed = refs
-        .filter(r => r.startsWith('refs/heads/') && !r.startsWith('refs/heads/sa/'))
-        .sort();
+      landed = sha
+        ? refs.filter(r => r.startsWith('refs/heads/') && !r.startsWith('refs/heads/sa/')).sort()
+        : [];
     return JSON.stringify([l.archon_run_id, mtimeMs, size, revision, tree, sha, landed]);
   };
   try {
