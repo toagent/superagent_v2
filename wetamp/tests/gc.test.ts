@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -19,7 +21,7 @@ import { lock } from '../src/archon';
 import { inspectProcess } from '../src/launcher';
 import * as coordination from '../src/coord';
 import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
-import { gc as collect } from '../src/gc';
+import { collectEngineSnapshots, gc as collect } from '../src/gc';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const keys = [
@@ -354,6 +356,23 @@ test.each(['path', 'branch', 'outside', 'symlink'] as const)(
   }
 );
 
+test('terminal half-deleted worktree removes an empty directory but retains unknown content', () => {
+  for (const unknown of [false, true]) {
+    const f = fixture(),
+      parked = `${f.path}-parked`;
+    renameSync(f.path, parked);
+    f.git('worktree', 'prune', '--expire', 'now');
+    renameSync(parked, f.path);
+    for (const entry of readdirSync(f.path))
+      rmSync(join(f.path, entry), { recursive: true, force: true });
+    if (unknown) writeFileSync(join(f.path, 'unknown'), 'keep');
+    const result = gc().find(e => e.object === 'worktree');
+    expect(result?.action).toBe(unknown ? 'skipped' : 'removed');
+    expect(result?.reason).toContain(unknown ? 'unknown entries' : 'half-deleted');
+    expect(existsSync(f.path)).toBe(unknown);
+  }
+});
+
 test(
   'CLI --dry-run --json changes neither git objects nor ledger bytes',
   () => {
@@ -543,6 +562,8 @@ test('engine gc removes read-only failed candidates and preserves protected or l
     bootstrap: 'bbbbbbb',
     previous: 'ccccccc',
     failed: 'ddddddd',
+    failedRef: '1111111',
+    cancelledRef: '2222222',
     running: 'eeeeeee',
     unknown: 'fffffff',
   };
@@ -576,12 +597,37 @@ test('engine gc removes read-only failed candidates and preserves protected or l
   );
   chmodSync(join(root, shas.failed, 'file'), 0o444);
   chmodSync(join(root, shas.failed), 0o555);
-  const dry = gc(true).filter(e => e.object === 'engine');
+  f.ledger.engine_snapshot = join(root, shas.failedRef);
+  f.save();
+  f.view.status = 'failed';
+  const cancelled = {
+    ...f.ledger,
+    run_id: 'cancelled-ref',
+    archon_run_id: 'cancelled-ref',
+    engine_snapshot: join(root, shas.cancelledRef),
+  };
+  writeFileSync(ledgerPath(cancelled.run_id), JSON.stringify(cancelled));
+  views.set(cancelled.archon_run_id, {
+    ...f.view,
+    id: cancelled.archon_run_id,
+    status: 'cancelled',
+  });
+  const dry = collectEngineSnapshots(true);
   expect(dry.find(e => e.path === join(root, shas.failed))?.action).toBe('would_remove');
+  expect(dry.find(e => e.path === join(root, shas.cancelledRef))?.action).toBe('would_remove');
+  expect(dry.find(e => e.path === join(root, shas.failedRef))).toBeUndefined();
   expect(dry.find(e => e.path === join(root, shas.unknown))?.action).toBe('skipped');
-  gc();
+  collectEngineSnapshots(false);
   expect(existsSync(join(root, shas.failed))).toBe(false);
-  for (const sha of [shas.current, shas.bootstrap, shas.previous, shas.running, shas.unknown])
+  expect(existsSync(join(root, shas.cancelledRef))).toBe(false);
+  for (const sha of [
+    shas.current,
+    shas.bootstrap,
+    shas.previous,
+    shas.failedRef,
+    shas.running,
+    shas.unknown,
+  ])
     expect(existsSync(join(root, sha))).toBe(true);
 });
 
