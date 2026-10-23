@@ -24,6 +24,7 @@ import {
   lintPlan,
   maintainLessons,
   memoryData,
+  memoryErrors,
   memoryState,
   memoryTick,
   memoryWrite,
@@ -623,7 +624,12 @@ describe('EV1 budgets and deterministic matching', () => {
     const e = episode();
     saveEpisode(e);
     const errors = join(sa, 'memory/errors.jsonl');
-    writeFileSync(errors, `${JSON.stringify({ id: e.id, reason: 'fold_failed' })}\nbad json\n`);
+    writeFileSync(
+      errors,
+      Array.from({ length: 5001 }, () =>
+        JSON.stringify({ id: 'other', reason: 'fold_failed' })
+      ).join('\n') + `\n${JSON.stringify({ id: e.id, reason: 'fold_failed' })}\nbad json\n`
+    );
     const fail = (): boolean =>
       reconcileReflection(NOW, at =>
         reflectOne(at, () => {
@@ -633,7 +639,14 @@ describe('EV1 budgets and deterministic matching', () => {
     expect([fail(), fail()]).toEqual([false, false]);
     expect(memoryState()).toEqual({ lessons: [], entries: [] });
     expect(fail()).toBe(true);
-    expect(readFileSync(errors, 'utf8').match(/"stage":"reflect"/g)).toHaveLength(3);
+    expect(
+      memoryErrors().filter(record => record.id === e.id && record.stage === 'reflect')
+    ).toHaveLength(3);
+    expect(readFileSync(errors, 'utf8').trim().split('\n')).toHaveLength(3);
+    expect(JSON.parse(readFileSync(errors, 'utf8').split('\n')[0])).toMatchObject({
+      id: 'other',
+      count: 5001,
+    });
     expect(memoryState().entries.at(-1)).toMatchObject({
       lessons: [{ evidence: [e.id], why: 'reflect error: workflow runs exit 17: raw stderr' }],
       reflected: e.id,

@@ -57,9 +57,11 @@ import {
 } from '@archon/workflows/execution-lifecycle';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statfsSync,
   statSync,
@@ -2903,6 +2905,17 @@ interface TickMode {
   noGlobal?: boolean;
 }
 
+const rotateTickLog = (sa: string): void => {
+  const file = join(sa, 'supervise-tick.log');
+  const stat = lstatSync(file, { throwIfNoEntry: false });
+  if (!stat || stat.isSymbolicLink() || !stat.isFile() || stat.size <= 10 * 1024 * 1024) return;
+  for (let generation = 3; generation > 1; generation--) {
+    const source = `${file}.${String(generation - 1)}`;
+    if (existsSync(source)) renameSync(source, `${file}.${String(generation)}`);
+  }
+  renameSync(file, `${file}.1`);
+};
+
 /** Activated engines separate the global scheduler from snapshot-scoped executors. */
 export function superviseTick(mode: TickMode = {}):
   | ReturnType<typeof tick>
@@ -2919,6 +2932,7 @@ export function superviseTick(mode: TickMode = {}):
     const l = lock(join(sa, 'supervise.lock'));
     if (!l.ok) return { skipped: 'locked' };
     try {
+      rotateTickLog(sa);
       return tick(sa);
     } finally {
       l.release();
@@ -2942,6 +2956,7 @@ export function superviseTick(mode: TickMode = {}):
     global: ReturnType<typeof tick>;
   };
   try {
+    rotateTickLog(sa);
     const grouped = new Map<string, string[]>();
     for (const ledger of ledgers()) {
       if ('error' in ledger) continue;
@@ -3711,29 +3726,26 @@ export const USAGE = [
   '  global: [--help] [--json] (--task-kind is rejected)',
 ].join('\n');
 
-function tickOutput(consoleError?: string, mode: TickMode = {}): number {
+function tickOutput(
+  mode: TickMode = {},
+  emit: (value: Record<string, unknown>) => void = value => {
+    console.log(JSON.stringify(value));
+  }
+): number {
   const actions = superviseTick(mode);
   if (!('actions' in actions)) {
-    console.log(
-      JSON.stringify({
-        ...actions,
-        ...(consoleError !== undefined ? { console_error: consoleError } : {}),
-      })
-    );
+    emit(actions);
     return 0;
   }
   const gc = actions.gc.filter(item => item.action !== 'skipped'),
     scratch = actions.scratch.filter(item => item.action !== 'skipped');
-  console.log(
-    JSON.stringify({
-      ...actions,
-      gc,
-      scratch,
-      gc_skipped: actions.gc.length - gc.length,
-      scratch_skipped: actions.scratch.length - scratch.length,
-      ...(consoleError !== undefined ? { console_error: consoleError } : {}),
-    })
-  );
+  emit({
+    ...actions,
+    gc,
+    scratch,
+    gc_skipped: actions.gc.length - gc.length,
+    scratch_skipped: actions.scratch.length - scratch.length,
+  });
   return actions.actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
 }
 
@@ -3743,22 +3755,35 @@ export async function superviseTickCli(
   sync = async (): Promise<unknown> => (await import('./orca')).syncOrca(),
   mode: TickMode = {}
 ): Promise<number> {
-  let error: string | undefined;
+  const errors: string[] = [];
   try {
     await refresh();
   } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-    console.error(`supervise-tick: console refresh failed: ${error.replace(/[\r\n]+/g, ' ')}`);
+    errors.push(`console refresh failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  const exit = tickOutput(error, mode);
+  let output: Record<string, unknown> = {};
+  const exit = tickOutput(mode, value => (output = value));
   try {
     const result = await sync();
     if (result && typeof result === 'object' && 'error' in result)
       throw new Error(String(result.error));
   } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    console.error(`supervise-tick: orca sync failed: ${reason.replace(/[\r\n]+/g, ' ')}`);
+    errors.push(`orca sync failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+  const details = ['actions', 'gc', 'scratch'].flatMap(key =>
+    Array.isArray(output[key])
+      ? (output[key] as Record<string, unknown>[]).filter(item => item.action !== 'none')
+      : []
+  );
+  console.log(
+    JSON.stringify({
+      heartbeat: new Date().toISOString(),
+      action_count: details.length,
+      error_count: details.filter(item => item.ok === false).length + errors.length,
+      ...(details.length ? { details } : {}),
+      ...(errors.length ? { errors } : {}),
+    })
+  );
   return exit;
 }
 
@@ -4139,7 +4164,7 @@ export function main(argv: string[]): number {
       print({ scratch: scratchClean(a.flags.session, a.flags['dry-run']) });
       return 0;
     case 'supervise-tick':
-      return tickOutput(undefined, {
+      return tickOutput({
         schedule: a.flags.schedule,
         runs: a.flags.runs,
         noGlobal: a.flags['no-global'],

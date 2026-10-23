@@ -2565,7 +2565,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
           const exit = await superviseTickCli(
             async () => undefined,
             async () => {
-              expect(out.mock.calls.length).toBe(printed + 1);
+              expect(out.mock.calls.length).toBe(printed);
               if (!failed)
                 expect(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')).toContain(
                   'pending'
@@ -2575,9 +2575,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
             }
           );
           expect(exit).toBe(0);
-          expect(String(err.mock.calls.at(-1)?.[0])).toBe(
-            'supervise-tick: orca sync failed: injected reason'
-          );
+          expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({ error_count: 1 });
+          expect(err).not.toHaveBeenCalled();
         }
         expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
       } finally {
@@ -2601,11 +2600,10 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
           })
         ).toBe(failed ? 1 : 0);
         const result = JSON.parse(String(out.mock.calls[0]?.[0]));
-        expect(result.console_error).toBe(message);
-        expect(result.actions[0]).toMatchObject({ action: failed ? 'error' : 'ask', ok: !failed });
-        expect(String(err.mock.calls[0]?.[0])).toBe(
-          'supervise-tick: console refresh failed: refresh injected original error'
-        );
+        expect(result).toMatchObject({ action_count: 1, error_count: failed ? 2 : 1 });
+        expect(result.errors).toEqual([`console refresh failed: ${message}`]);
+        expect(result.details[0]).toMatchObject({ action: failed ? 'error' : 'ask', ok: !failed });
+        expect(err).not.toHaveBeenCalled();
         expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
       } finally {
         out.mockRestore();
@@ -2614,6 +2612,31 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       expect(s.calls()).not.toContain('workflow wake --json');
     });
   }
+  test('supervise tick rotates three generations and refuses a symlink log', async () => {
+    const s = stub([humanWait()]),
+      log = join(s.root, 'home/supervise-tick.log'),
+      target = join(s.root, 'large.log');
+    writeFileSync(`${log}.1`, 'one');
+    writeFileSync(`${log}.2`, 'two');
+    writeFileSync(`${log}.3`, 'old');
+    writeFileSync(log, '');
+    fs.truncateSync(log, 10 * 1024 * 1024 + 1);
+    await superviseTickCli(
+      async () => undefined,
+      async () => undefined
+    );
+    expect(statSync(`${log}.1`).size).toBe(10 * 1024 * 1024 + 1);
+    expect(readFileSync(`${log}.2`, 'utf8')).toBe('one');
+    expect(readFileSync(`${log}.3`, 'utf8')).toBe('two');
+    writeFileSync(target, '');
+    fs.truncateSync(target, 10 * 1024 * 1024 + 1);
+    symlinkSync(target, log);
+    await superviseTickCli(
+      async () => undefined,
+      async () => undefined
+    );
+    expect(fs.lstatSync(log).isSymbolicLink()).toBe(true);
+  });
   test('HF8 CLI still ticks when refreshConsole rejects an ambiguous legacy owner', async () => {
     const s = stub([humanWait()]);
     // Parent spies do not cross the CLI process boundary. Keep real cleanup confined
@@ -2645,11 +2668,12 @@ Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scra
     const err = await new Response(p.stderr).text();
     expect(await p.exited).toBe(0);
     const result = JSON.parse(out);
-    expect(result.console_error).toBe(
-      'console owner ambiguous; legacy PID migration refused: argv'
-    );
-    expect(err.trim()).toBe(`supervise-tick: console refresh failed: ${result.console_error}`);
-    expect(result.actions[0]).toMatchObject({ action: 'ask', ok: true });
+    expect(result.errors).toEqual([
+      'console refresh failed: console owner ambiguous; legacy PID migration refused: argv',
+    ]);
+    expect(result).toMatchObject({ action_count: 1, error_count: 1 });
+    expect(result.details[0]).toMatchObject({ action: 'ask', ok: true });
+    expect(err).toBe('');
     expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
     expect(s.calls()).not.toContain('workflow wake --json');
   });

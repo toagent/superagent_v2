@@ -132,22 +132,46 @@ interface MemoryError {
   id: string;
   reason: string;
   stage?: 'reflect';
+  count?: number;
 }
+type CountedMemoryError = MemoryError & { count: number };
 export const memoryErrors = (): MemoryError[] => {
   const file = join(root(), 'errors.jsonl');
   if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8')
-    .split('\n')
-    .flatMap(line => {
+  const parse = (text: string): CountedMemoryError[] =>
+    text.split('\n').flatMap(line => {
       try {
         const value = Object(JSON.parse(line)) as Partial<MemoryError>;
+        const count =
+          typeof value.count === 'number' && Number.isSafeInteger(value.count) && value.count > 0
+            ? value.count
+            : 1;
         return typeof value.id === 'string' && typeof value.reason === 'string'
-          ? [value as MemoryError]
+          ? [{ ...value, count } as CountedMemoryError]
           : [];
       } catch {
         return [];
       }
     });
+  let records = parse(readFileSync(file, 'utf8'));
+  if (records.length > 5000 || records.some(record => record.count > 1)) {
+    const held = lock(join(root(), 'store.lock'));
+    if (held.ok)
+      try {
+        const compacted = new Map<string, CountedMemoryError>();
+        for (const record of parse(readFileSync(file, 'utf8'))) {
+          const key = JSON.stringify([record.id, record.stage, record.reason]),
+            previous = compacted.get(key);
+          if (previous) previous.count += record.count;
+          else compacted.set(key, { ...record });
+        }
+        records = [...compacted.values()];
+        writeAtomic(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+      } finally {
+        held.release();
+      }
+  }
+  return records.flatMap(({ count = 1, ...record }) => Array.from({ length: count }, () => record));
 };
 export const memoryPath = (path: string): string | null =>
   confined({ repo: home().sa } as Ledger, path);
