@@ -2497,6 +2497,29 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     });
     expect(s.calls().some(call => call.startsWith('workflow get'))).toBe(false);
   });
+  test('heartbeat exposes scheduler groups only for an activated engine', async () => {
+    const s = stub([run('completed')]),
+      out = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined,
+        { schedule: true }
+      );
+      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).not.toHaveProperty('groups');
+      const snapshot = activateEngineFixture(s);
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined,
+        { schedule: true }
+      );
+      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({
+        groups: [{ snapshot, runs: ['sa1'] }],
+      });
+    } finally {
+      out.mockRestore();
+    }
+  });
   test('an unresolved ask prevents terminal skipping and remains live', () => {
     const s = stub([run('cancelled')]),
       db = revisionDb();

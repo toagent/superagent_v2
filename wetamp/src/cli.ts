@@ -3780,6 +3780,7 @@ export async function superviseTickCli(
       heartbeat: new Date().toISOString(),
       action_count: details.length,
       error_count: details.filter(item => item.ok === false).length + errors.length,
+      ...(Array.isArray(output.groups) ? { groups: output.groups } : {}),
       ...(details.length ? { details } : {}),
       ...(errors.length ? { errors } : {}),
     })
