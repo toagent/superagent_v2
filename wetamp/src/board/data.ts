@@ -194,14 +194,17 @@ export function rowOf(
     /* Missing outcome provides no reason. */
   }
   return {
-    humanDecision: (() => {
-      try {
-        return describeDecision(l, run);
-      } catch {
-        return undefined;
-      }
-    })(),
-    askReason: holdOf(l, run, c),
+    humanDecision:
+      c.state === 'abandoned'
+        ? undefined
+        : (() => {
+            try {
+              return describeDecision(l, run);
+            } catch {
+              return undefined;
+            }
+          })(),
+    askReason: c.state === 'abandoned' ? undefined : holdOf(l, run, c),
     ...(opts.includeCoordination === false
       ? {}
       : {

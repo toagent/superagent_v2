@@ -280,8 +280,14 @@ describe('data rows', () => {
       createElement(Frame, { snap, width: 80, height: 20, now: new Date() })
     );
 
-    expect(abandoned).toMatchObject({ state: 'abandoned', exit: 2, held: null });
-    expect(cockpit(snap).unfinished).toBe(1);
+    expect(abandoned).toMatchObject({
+      state: 'abandoned',
+      exit: 2,
+      held: null,
+      humanDecision: undefined,
+      askReason: undefined,
+    });
+    expect(cockpit(snap)).toMatchObject({ active: [], needs: [] });
     expect(frame).toContain('待核实 1 项');
   });
 

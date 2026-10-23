@@ -184,7 +184,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       tokens: runTokens(r.run_id),
       stage: stages(r),
       node: r.nodes.current ?? undefined,
-      role: ['completed', 'failed', 'cancelled', 'abandoned'].includes(r.state)
+      role: ['completed', 'failed', 'cancelled'].includes(r.state)
         ? roleTag(
             'coder',
             r.coderModel ??
@@ -379,9 +379,8 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     unfinished:
       s.rows.filter(
         r =>
-          !['completed', 'failed', 'cancelled', 'abandoned'].includes(r.state) ||
-          (r.state !== 'abandoned' &&
-            r.nativeState !== undefined &&
+          !['completed', 'failed', 'cancelled'].includes(r.state) ||
+          (r.nativeState !== undefined &&
             !['completed', 'failed', 'cancelled'].includes(r.nativeState))
       ).length +
       (s.activity?.jobs.filter(j => !['done', 'failed', 'cancelled', 'lost'].includes(j.state))
