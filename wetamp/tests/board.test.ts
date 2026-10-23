@@ -394,7 +394,7 @@ describe('data rows', () => {
     }
   });
 
-  test('stable failed runs reuse their revision and refresh when it changes', async () => {
+  test('stable failed rows and summaries are reused, excluded from activity, and refresh on revision change', async () => {
     ledger('failed', { status: 'failed' });
     let revision = 'r1';
     const load = createLoader(
@@ -403,13 +403,19 @@ describe('data rows', () => {
       undefined,
       () => new Map([['a-failed', revision]])
     );
-    await load(50);
+    const first = await load(50);
     expect(calls()).toBe(1);
-    await load(50);
+    expect(first.activity?.runs).toEqual([]);
+    const stable = await load(50);
     expect(calls()).toBe(1);
+    expect(stable.rows[0]).toBe(first.rows[0]);
+    expect(stable.summary).toBe(first.summary);
     revision = 'r2';
-    await load(50);
+    const changed = await load(50);
     expect(callLines().at(-1)).toBe('workflow get a-failed --verbose --json');
+    expect(changed.rows[0]).not.toBe(stable.rows[0]);
+    expect(changed.summary).not.toBe(stable.summary);
+    expect(changed.activity?.runs).toEqual([]);
   });
 
   test('one refresh probes a shared process identity once', async () => {

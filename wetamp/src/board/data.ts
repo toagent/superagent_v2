@@ -392,6 +392,7 @@ function safeRowOf(
 
 /** 不可逆的终态：failed（含 held:gate/environment）仍可 resume/decide/cancel，不能仅按状态缓存。 */
 const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
+const ACTIVITY = new Set<RunView['status']>(['running', 'paused']);
 export const QUERY_TIMEOUT_MS = 10_000;
 
 /**
@@ -575,7 +576,11 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
           bad
         );
       rows.push(row);
-      if (FINAL.has(r.run.status) && !r.stale && row.state !== 'unreadable')
+      if (
+        (FINAL.has(r.run.status) || r.run.status === 'failed') &&
+        !r.stale &&
+        row.state !== 'unreadable'
+      )
         rowCache.set(l.run_id, row);
     }
     const pairIds = pairs.map(p => p.ledger.run_id).sort().join('\0');
@@ -583,7 +588,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       ? summaryCache.value
       : summarize(pairs);
     // prettier-ignore
-    const activity = loadActivity(now, signal, results.flatMap(r => 'l' in r && r.run && !FINAL.has(r.run.status) ? [{ run_id: r.l.run_id, cwd: r.l.repo, controller: owners.get(r.l.run_id)?.owner ?? null }] : []));
+    const activity = loadActivity(now, signal, results.flatMap(r => 'l' in r && r.run && ACTIVITY.has(r.run.status) ? [{ run_id: r.l.run_id, cwd: r.l.repo, controller: owners.get(r.l.run_id)?.owner ?? null }] : []));
     // 读不出的 ledger 不进 summarize（没有可计的 ledger），但计入 runs 与 unreadable，口径与 report 的“单列不吞错”一致
     s.runs = results.length;
     s.unreadable = [...new Set([...bad, ...(s.unreadable as string[])])];
