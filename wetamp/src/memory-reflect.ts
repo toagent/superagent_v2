@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonJson } from './archon';
 import { reasonOf } from './reasons';
@@ -244,14 +245,26 @@ const configPath = (dir: string): string => {
   writeAtomic(path, JSON.stringify({ aliases: runAliases('codex', loadTiers()) }));
   return path;
 };
-
-/** Reconcile one durable Archon run. Queries precede launch, so crash replay is idempotent. */
-export function reflectOne(now = Date.now(), query: Query = archonJson): boolean {
-  if (!memoryOn()) return false;
-  const e = reflectionQueue(episodes(), memoryState().entries, now).at(0);
-  if (!e) return false;
+const reflectWorkspace = (): string => {
   const dir = join(home().sa, 'memory', 'reflect-workspace');
   mkdirSync(dir, { recursive: true });
+  const git = (...args: string[]): void => void execFileSync('git', args, { cwd: dir });
+  if (!existsSync(join(dir, '.git'))) {
+    git('init', '-q');
+    git('config', 'user.name', 'superagent');
+    git('config', 'user.email', 'superagent@localhost');
+  }
+  const head = Bun.spawnSync(['git', 'rev-parse', '--verify', 'HEAD'], {
+    cwd: dir,
+    stderr: 'ignore',
+  });
+  if (head.exitCode !== 0) git('commit', '--allow-empty', '-qm', 'Initialize reflection workspace');
+  return dir;
+};
+
+/** Reconcile one durable Archon run. Queries precede launch, so crash replay is idempotent. */
+function reflectAttempt(e: Episode, now: number, query: Query): boolean {
+  const dir = reflectWorkspace();
   const listed = query(
     ['workflow', 'runs', '--all', '--limit', String(2 ** 31 - 1), '--verbose'],
     dir
@@ -315,6 +328,23 @@ export function reflectOne(now = Date.now(), query: Query = archonJson): boolean
     dir
   );
   return true;
+}
+
+export function reflectOne(now = Date.now(), query: Query = archonJson): boolean {
+  if (!memoryOn()) return false;
+  const e = reflectionQueue(episodes(), memoryState().entries, now).at(0);
+  if (!e) return false;
+  try {
+    return reflectAttempt(e, now, query);
+  } catch (error) {
+    const reason = redact(error instanceof Error ? error.message : String(error));
+    appendFileSync(
+      join(home().sa, 'memory', 'errors.jsonl'),
+      JSON.stringify({ id: e.id, reason }) + '\n'
+    );
+    memoryWrite(() => ({ lessons: [], reflected: e.id }));
+    return true;
+  }
 }
 
 export function reconcileReflection(

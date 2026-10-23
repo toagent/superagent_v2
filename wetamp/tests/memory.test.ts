@@ -556,8 +556,10 @@ describe('EV1 incident replay', () => {
       ],
     });
     expect(reflectOne(NOW, harness.query)).toBe(true);
+    expect(sh('git rev-list --count HEAD', join(sa, 'memory/reflect-workspace')).trim()).toBe('1');
     harness.terminal('completed');
     expect(reflectOne(NOW, harness.query)).toBe(true);
+    expect(sh('git rev-list --count HEAD', join(sa, 'memory/reflect-workspace')).trim()).toBe('1');
     const learned = memoryState().lessons[0];
     expect(learned.scope).toBe(root);
     expect(learned.status).toBe('trial');
@@ -598,17 +600,22 @@ describe('EV1 incident replay', () => {
 });
 
 describe('EV1 budgets and deterministic matching', () => {
-  test('durable run is unique across repeated ticks and launch failure retries', () => {
+  test('reflection failure records the original error and advances the queue', () => {
     const e = episode();
     saveEpisode(e);
-    const harness = reflectionHarness(e);
-    harness.rejectLaunch(true);
-    expect(reconcileReflection(NOW, at => reflectOne(at, harness.query))).toBe(false);
-    expect(memoryState().entries).toHaveLength(0);
-    harness.rejectLaunch(false);
-    expect(reflectOne(NOW, harness.query)).toBe(true);
-    expect(reflectOne(NOW, harness.query)).toBe(false);
-    expect(harness.launches()).toBe(1);
+    expect(
+      reconcileReflection(NOW, at =>
+        reflectOne(at, () => {
+          throw new Error('workflow runs exit 17: raw stderr');
+        })
+      )
+    ).toBe(true);
+    expect(JSON.parse(readFileSync(join(sa, 'memory/errors.jsonl'), 'utf8'))).toEqual({
+      id: e.id,
+      reason: 'workflow runs exit 17: raw stderr',
+    });
+    expect(memoryState().entries.at(-1)).toMatchObject({ reflected: e.id });
+    expect(reflectionQueue([e], memoryState().entries, NOW)).toEqual([]);
   });
   test('completed and exhausted runs write exactly one distilled or degraded terminal', () => {
     const success = episode({ id: 'success' });
