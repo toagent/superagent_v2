@@ -388,8 +388,9 @@ test('completed review context replay keeps stale refs fail-closed only for unfi
   expect(runAttempt(node, repo, artifacts).exitCode).toBe(1);
 });
 
-test('approval resume preserves review attempts while failed reviews refresh context', () => {
-  const run = (retry: boolean) => {
+test.each([false, true])(
+  'approval resume preserves review attempts while failed reviews refresh context (retry=%s)',
+  retry => {
     const root = tmp(),
       repo = gitRepo(join(root, 'repo')),
       source = join(root, 'source'),
@@ -463,10 +464,9 @@ test('approval resume preserves review attempts while failed reviews refresh con
     expect(count(attemptCalls)).toBe(1);
     expect(count(setupCalls)).toBe(2);
     expect(count(reviewCalls)).toBe(retry ? 2 : 1);
-  };
-  run(false);
-  run(true);
-}, 30_000);
+  },
+  30_000
+);
 
 test('RECOVERY_CONTINUATION generates acceptance and gate without AI nodes', () => {
   const p = structuredClone(fixture);

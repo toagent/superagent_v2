@@ -73,6 +73,20 @@ fi
 exec "$S12_REAL_ARCHON" "$@"
 `);
     chmodSync(archon, 0o755);
+    const waitForDetachedResult = async (kind: 'paused' | 'crashed'): Promise<string> => {
+      const result = join(root, `${kind}.result`), log = join(root, `${kind}.log`), pidFile = join(root, `${kind}.pid`);
+      for (const end = Date.now() + 90_000; !existsSync(result) && Date.now() < end; ) {
+        if (existsSync(pidFile)) try { process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          if (existsSync(result)) break;
+          throw new Error(`${kind} resume exited before result: ${existsSync(log) ? readFileSync(log, 'utf8').slice(-4000) : 'missing log'}`);
+        }
+        await Bun.sleep(25);
+      }
+      expect(existsSync(result), existsSync(log) ? readFileSync(log, 'utf8').slice(-4000) : 'missing log').toBeTrue();
+      return result;
+    };
     for (const [i, kind] of ['running', 'paused', 'crashed'].entries()) {
       const state = join(root, `${kind}.json`), marker = join(root, `${kind}.blocked`), release = join(root, `${kind}.release`), runId = `5ce0-0012-${String(i)}`, target = gitRepo(tmp());
       sh('git branch -m scenario-target && git config user.name t && git config user.email t@l', target);
@@ -109,13 +123,10 @@ exec "$S12_REAL_ARCHON" "$@"
     expect(children[0].exitCode).toBeNull();
     const promotedCalls = readFileSync(probe, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(promotedCalls.some(call => Array.isArray(call.args) && call.args.includes('--no-global') && call.args.some((arg: string, i: number) => arg === '5ce0-0012-0' && call.args[i - 1] === '--runs'))).toBeTrue();
-    for (const end = Date.now() + 30_000; Date.now() < end; ) {
-      if ((await store.getWorkflowRunStatus('5ce0-0012-2')) === 'completed') break;
-      await Bun.sleep(25);
-    }
+    const crashedResult = await waitForDetachedResult('crashed');
     expect(
       await store.getWorkflowRunStatus('5ce0-0012-2'),
-      promotedTick.stdout.toString() + (existsSync(join(root, 'crashed.result')) ? readFileSync(join(root, 'crashed.result'), 'utf8') : '')
+      promotedTick.stdout.toString() + readFileSync(crashedResult, 'utf8')
     ).toBe('completed');
     writeFileSync(join(root, 'running.release'), 'continue');
     await children[0].exited;
@@ -123,11 +134,7 @@ exec "$S12_REAL_ARCHON" "$@"
     expect(rollback()).toEqual({ from: b, to: a });
     const rolledBackTick = invoke('supervise-tick');
     expect(rolledBackTick.exitCode, rolledBackTick.stdout.toString() + rolledBackTick.stderr.toString()).toBe(0);
-    for (const end = Date.now() + 30_000; Date.now() < end; ) {
-      const statuses = await Promise.all(['5ce0-0012-1'].map(id => store.getWorkflowRunStatus(id)));
-      if (statuses.every(status => status === 'completed')) break;
-      await Bun.sleep(25);
-    }
+    await waitForDetachedResult('paused');
     const calls = readFileSync(probe, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     const ticks = calls.filter(call => Array.isArray(call.args) && call.args[0] === 'supervise-tick');
     expect(ticks.filter(call => call.args.includes('--schedule')).map(call => call.snapshot)).toEqual([join(home, 'engine', b), aPath]);

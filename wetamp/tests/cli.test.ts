@@ -57,6 +57,7 @@ import { detailOf, redact as boardRedact } from '../src/board/detail';
 import { rowOf } from '../src/board/data';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
+import { nativeSpawnSync } from './preload';
 
 const engineRecoverLock = () => {
   const root = join(process.env.ARCHON_HOME ?? '', 'execution-admissions');
@@ -76,10 +77,19 @@ const fixtureDecision = (
 });
 let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
 const cleanEngine = coordModule.cleanEngine;
-const originalBunOptions = process.env.BUN_OPTIONS;
-const originalMemory = process.env.SUPERAGENT_MEMORY;
-const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
-const originalArchonBin = process.env.SA_ARCHON_BIN;
+const isolatedEnvKeys = [
+  'BUN_OPTIONS',
+  'SUPERAGENT_MEMORY',
+  'GIT_CONFIG_GLOBAL',
+  'SA_ARCHON_BIN',
+  'SA_ENGINE_AUTO_PROMOTE',
+  'SA_SUPERVISOR',
+  'SUPERAGENT_WRITE_ROOTS',
+  'AGENT_SUPERVISOR_STATE',
+  'SUPERAGENT_HOME',
+  'ARCHON_HOME',
+] as const;
+const originalEnv = Object.fromEntries(isolatedEnvKeys.map(key => [key, process.env[key]]));
 beforeEach(() => {
   // Scratch commits must not execute the operator's unrelated global Git hooks
   // or signing setup. Repository-local configuration still applies.
@@ -92,14 +102,10 @@ const restoreFixtures = (): void => {
 };
 afterEach(() => {
   restoreFixtures();
-  if (originalBunOptions === undefined) delete process.env.BUN_OPTIONS;
-  else process.env.BUN_OPTIONS = originalBunOptions;
-  if (originalMemory === undefined) delete process.env.SUPERAGENT_MEMORY;
-  else process.env.SUPERAGENT_MEMORY = originalMemory;
-  if (originalGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
-  else process.env.GIT_CONFIG_GLOBAL = originalGitConfig;
-  if (originalArchonBin === undefined) delete process.env.SA_ARCHON_BIN;
-  else process.env.SA_ARCHON_BIN = originalArchonBin;
+  for (const key of isolatedEnvKeys) {
+    if (originalEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = originalEnv[key];
+  }
   engineBoundary?.mockRestore();
   engineBoundary = undefined;
 });
@@ -2012,7 +2018,6 @@ describe('health upstream reporting', () => {
   });
   const check = (files: string[], exitCode = 0, verbose = false) => {
     stub([]);
-    const spawnSync = Bun.spawnSync;
     const checkSpawn = <
       const In extends Bun.SpawnOptions.Writable = 'ignore',
       const Out extends Bun.SpawnOptions.Readable = 'pipe',
@@ -2022,7 +2027,7 @@ describe('health upstream reporting', () => {
       options?: Bun.SpawnOptions.SpawnSyncOptions<In, Out, Err>
     ): Bun.SyncSubprocess<Out, Err> => {
       const command = Array.isArray(cmd) ? cmd : cmd.cmd;
-      return spawnSync(
+      return nativeSpawnSync(
         command[0] === join(WETAMP, 'scripts', 'check-upstream-clean.sh')
           ? [
               process.execPath,

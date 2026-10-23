@@ -1,7 +1,40 @@
+import { afterAll, afterEach } from 'bun:test';
 // prettier-ignore
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTempTree } from '@archon/paths/test-utils';
+
+export const nativeSpawnSync = Bun.spawnSync;
+const roots: string[] = [];
+const children: Array<[ReturnType<typeof Bun.spawn>, boolean]> = [];
+
+export function trackTestRoot(path: string): void {
+  roots.push(path);
+}
+
+export function trackTestChild<T extends ReturnType<typeof Bun.spawn>>(
+  proc: T,
+  processGroup = false
+): T {
+  children.push([proc, processGroup]);
+  return proc;
+}
+
+afterEach(async () => {
+  for (const [proc, processGroup] of children.splice(0)) {
+    try {
+      process.kill(processGroup ? -proc.pid : proc.pid, 'SIGKILL');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+    await proc.exited;
+  }
+});
+
+afterAll(async () => {
+  for (const root of roots.splice(0)) await removeTempTree(root);
+}, 240_000);
 
 const STALE_MS = 6 * 60 * 60 * 1000;
 function makeWritable(path: string): void {

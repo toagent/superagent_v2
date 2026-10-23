@@ -723,6 +723,11 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
 
 /** Continue a killed scenario from the real store snapshot; completed nodes stay rehydrated. */
 export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvidence> {
+  Object.assign(process.env, {
+    HOME: f.home,
+    SUPERAGENT_HOME: f.home,
+    ARCHON_HOME: f.archonHome,
+  });
   const id = f.runId ?? `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`,
     generatedDir = join(f.home, 'gen', id),
     workflowName = `sa-${id}`,
