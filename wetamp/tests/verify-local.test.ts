@@ -43,6 +43,22 @@ function fixture() {
   writeFileSync(join(repo, 'bun.lock'), 'root-lock\n');
   writeFileSync(join(repo, 'wetamp', 'bun.lock'), 'wetamp-lock\n');
   writeFileSync(join(repo, 'wetamp', 'RESULT'), 'pass\n');
+  const testFiles = [
+    'tests/scenarios/scenario-rest.test.ts',
+    'tests/scenarios/scenario-engine.test.ts',
+    'tests/scenarios/mutations.test.ts',
+    'tests/engine-promote.test.ts',
+    'tests/alpha.test.ts',
+    'tests/bravo.test.ts',
+    'tests/charlie.test.ts',
+    'tests/delta.test.ts',
+    'tests/echo_test.js',
+    'tests/foxtrot.spec.tsx',
+  ];
+  for (const file of testFiles) {
+    mkdirSync(join(repo, 'wetamp', file, '..'), { recursive: true });
+    writeFileSync(join(repo, 'wetamp', file), '');
+  }
   writeFileSync(join(repo, '.gitignore'), 'node_modules\n');
   const bunDir = join(root, 'bun', 'bin');
   mkdirSync(bunDir, { recursive: true });
@@ -58,7 +74,15 @@ echo "bun $* @ $PWD" >> "$CALLS"
 }
 case "$1" in
   install) [ -n "$INSTALL_FAILS" ] && exit 1; exit 0;;
-  test) grep -q fail RESULT && { echo "1 fail"; exit 1; }; exit 0;;
+  test)
+    if [ -n "$SHARD_SYNC" ]; then
+      mkdir -p "$SHARD_SYNC"; : > "$SHARD_SYNC/$$"; tries=0
+      while [ "$(find "$SHARD_SYNC" -type f | wc -l | tr -d ' ')" -lt 4 ] && [ "$tries" -lt 100 ]; do sleep 0.05; tries=$((tries + 1)); done
+      [ "$(find "$SHARD_SYNC" -type f | wc -l | tr -d ' ')" = 4 ] || exit 12
+    fi
+    case "$*" in *"$SHARD_FAIL"*) [ -z "$SHARD_FAIL" ] || { echo "1 fail"; exit 1; };; esac
+    case "$*" in *"$SHARD_SLEEP"*) [ -z "$SHARD_SLEEP" ] || sleep 10;; esac
+    grep -q fail RESULT && { echo "1 fail"; exit 1; }; exit 0;;
 esac
 exit 0
 `
@@ -115,11 +139,44 @@ exit 0
   };
   const callCount = (): number =>
     existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').length : 0;
-  return { root, repo, home, pass, fail, run, callCount, git };
+  return { root, repo, home, pass, fail, run, callCount, git, testFiles };
 }
 
 // 每个用例建临时仓库并多次 git worktree add/remove，满载（如嵌在 verify-local 里跑）时超过 bun 默认 5s。
 describe('scripts/verify-local.sh', () => {
+  test('runs four parallel shards with complete, unique and balanced heavy-test assignment', () => {
+    const f = fixture(),
+      sync = join(f.root, 'shard-sync');
+    const result = f.run(f.pass, { SHARD_SYNC: sync });
+    expect(result.code).toBe(0);
+    const calls = readFileSync(join(f.root, 'calls.log'), 'utf8')
+      .split('\n')
+      .filter(line => line.startsWith('bun test '));
+    expect(calls).toHaveLength(4);
+    const assigned = calls.flatMap(line => f.testFiles.filter(file => line.includes(file)));
+    expect([...assigned].sort()).toEqual([...f.testFiles].sort());
+    expect(new Set(assigned).size).toBe(f.testFiles.length);
+    for (const heavy of f.testFiles.slice(0, 4))
+      expect(calls.filter(line => line.includes(heavy))).toHaveLength(1);
+    expect(
+      new Set(f.testFiles.slice(0, 4).map(file => calls.findIndex(line => line.includes(file))))
+    ).toHaveLength(4);
+    expect(result.v?.steps.find(step => step.name === 'test')).toMatchObject({ exit: 0 });
+  }, 60000);
+
+  test('one failed shard fails test, while one timed-out shard is inconclusive and uncached', () => {
+    const failed = fixture();
+    const a = failed.run(failed.pass, { SHARD_FAIL: 'scenario-rest.test.ts' });
+    expect(a.code).toBe(1);
+    expect(a.v?.steps.at(-1)).toMatchObject({ name: 'test', exit: 1 });
+
+    const timed = fixture();
+    const b = timed.run(timed.pass, { SHARD_SLEEP: 'scenario-rest.test.ts' }, '2');
+    expect(b.code).toBe(1);
+    expect(b.out).toContain('inconclusive');
+    expect(b.v).toBeNull();
+  }, 60000);
+
   test('exit reaps only detached processes carrying its exact temporary path', () => {
     const f = fixture(),
       capture = join(f.root, 'orphan-pids');

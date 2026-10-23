@@ -144,8 +144,31 @@ install() { # <rel dir> <step name>
 install . install
 step tsc "$WT/wetamp" "$BUN" x tsc --noEmit
 # 显式单测时限：Bun 1.4.3 不读 bunfig 的 [test] timeout，负载下 hook 子进程用例会撞默认 5s。
+# 四个进程共享 test 步骤的剩余预算；重文件固定分开，其余按文件名轮转。
+test_step() {
+  local dir="$WT/wetamp" left rc=0 shard_rc=0 t0 i pid pids="" n=0 file
+  [ "$OK" = 1 ] || return 0
+  left=$(( DEADLINE - $(date +%s) )); [ "$left" -gt 0 ] || left=1
+  for i in 1 2 3 4; do : > "$TMP/test-shard.$i"; done
+  printf '%s\n' tests/scenarios/scenario-rest.test.ts > "$TMP/test-shard.1"
+  printf '%s\n' tests/scenarios/scenario-engine.test.ts > "$TMP/test-shard.2"
+  printf '%s\n' tests/scenarios/mutations.test.ts > "$TMP/test-shard.3"
+  printf '%s\n' tests/engine-promote.test.ts > "$TMP/test-shard.4"
+  while IFS= read -r file; do
+    case "$file" in *.test.js|*.test.jsx|*.test.ts|*.test.tsx|*_test.js|*_test.jsx|*_test.ts|*_test.tsx|*.spec.js|*.spec.jsx|*.spec.ts|*.spec.tsx|*_spec.js|*_spec.jsx|*_spec.ts|*_spec.tsx) ;; *) continue;; esac
+    case "$file" in tests/scenarios/scenario-rest.test.ts|tests/scenarios/scenario-engine.test.ts|tests/scenarios/mutations.test.ts|tests/engine-promote.test.ts) continue;; esac
+    i=$(( n % 4 + 1 )); printf '%s\n' "$file" >> "$TMP/test-shard.$i"; n=$(( n + 1 ))
+  done < <(cd "$dir" && find tests -type f | LC_ALL=C sort)
+  echo "== test ($dir: 4 shards)" >>"$LOG"; t0="$(ms)"
+  for i in 1 2 3 4; do
+    ( cd "$dir"; set --; while IFS= read -r file; do set -- "$@" "$dir/$file"; done < "$TMP/test-shard.$i"
+      perl -e 'alarm shift; exec @ARGV or exit 127' "$left" env SA_VERIFY_LOCAL=1 "$BUN" test --timeout 30000 "$@" 2>&1 | sed "s/^/[test:shard$i] /" >>"$LOG" ) & pids="$pids $!"
+  done
+  set +e; for pid in $pids; do wait "$pid"; shard_rc=$?; [ "$shard_rc" -le "$rc" ] || rc="$shard_rc"; done; set -e
+  STEPS+=(test "$rc" "$(( $(ms) - t0 ))"); [ "$rc" -lt 128 ] || INCONCLUSIVE=1; [ "$rc" = 0 ] || OK=0
+}
 # SA_VERIFY_LOCAL=1：单测里内嵌整轮 selftest 的 REC-R1-01 跳过，下一步 selftest 已覆盖。
-step test "$WT/wetamp" env SA_VERIFY_LOCAL=1 "$BUN" test --timeout 30000
+test_step
 step selftest "$WT/wetamp" bash scripts/selftest.sh --fake
 
 if [ "$INCONCLUSIVE" = 1 ]; then
