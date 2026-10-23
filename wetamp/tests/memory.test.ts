@@ -931,6 +931,57 @@ describe('EV1 lifecycle, privacy and priors', () => {
       '确定性保底'
     );
   });
+  test('reflection output schema is recursively strict and typed', () => {
+    const workflow = Bun.YAML.parse(
+        readFileSync(
+          join(import.meta.dir, '../templates/.archon/workflows/memory-reflect.yaml'),
+          'utf8'
+        )
+      ) as { nodes: { output_format: Record<string, unknown> }[] },
+      queue = [workflow.nodes[0].output_format];
+    while (queue.length) {
+      const node = queue.pop() as Record<string, unknown>,
+        properties = node.properties as Record<string, Record<string, unknown>> | undefined;
+      expect(node.type).toBeDefined();
+      if (properties) {
+        expect(node.additionalProperties).toBe(false);
+        expect(new Set(node.required as string[])).toEqual(new Set(Object.keys(properties)));
+        queue.push(...Object.values(properties));
+      }
+      if (node.items) queue.push(node.items as Record<string, unknown>);
+    }
+  });
+  test('strict reflection ADD, EDIT, and UPVOTE operations remain parseable', () => {
+    const e = episode(),
+      candidate = {
+        tier: 'project',
+        scope: root,
+        when: 'strict',
+        do: 'add',
+        dont: '',
+        why: '',
+        evidence: [e.id],
+        mechanizable: false,
+      };
+    seed(lesson('existing'));
+    const result = curate(
+      e,
+      {
+        operations: [
+          { op: 'ADD', id: null, lesson: candidate },
+          { op: 'EDIT', id: 'existing', lesson: { ...candidate, do: 'edit' } },
+          { op: 'UPVOTE', id: 'existing', lesson: null },
+        ],
+        reason: null,
+      },
+      NOW
+    );
+    expect(result.result).toBe('提炼 2 条');
+    expect(result.lessons).toContainEqual(expect.objectContaining({ do: 'add' }));
+    expect(result.lessons).toContainEqual(
+      expect.objectContaining({ id: 'existing', do: 'edit', votes: 1 })
+    );
+  });
   test('plan admission priors only warn with enough samples and retain a reasoned override', () => {
     const key = priorKey(root, plan.packages[0], loadTiers().tiers.general.pools.chatgpt[0]);
     mkdirSync(join(sa, 'memory'));

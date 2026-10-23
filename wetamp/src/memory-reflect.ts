@@ -112,7 +112,11 @@ export function curate(
     changed = new Map<string, Lesson>(),
     rejected: string[] = [];
   for (const raw of decoded.data.operations) {
-    const parsed = operationSchema().safeParse(raw);
+    const normalized =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null))
+          : raw,
+      parsed = operationSchema().safeParse(normalized);
     if (!parsed.success) {
       rejected.push('字段或操作不合格');
       continue;

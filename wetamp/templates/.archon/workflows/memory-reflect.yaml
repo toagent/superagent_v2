@@ -17,7 +17,32 @@ nodes:
         operations:
           type: array
           maxItems: 3
-          items: {}
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              op: { type: string, enum: [ADD, EDIT, UPVOTE] }
+              id: { type: [string, 'null'], maxLength: 240 }
+              lesson:
+                type: [object, 'null']
+                additionalProperties: false
+                properties:
+                  tier: { type: string, enum: [project, type, role] }
+                  scope: { type: string, minLength: 1, maxLength: 240 }
+                  when: { type: string, minLength: 1, maxLength: 240 }
+                  do: { type: string, minLength: 1, maxLength: 240 }
+                  dont: { type: string, maxLength: 240 }
+                  why: { type: string, maxLength: 240 }
+                  evidence:
+                    {
+                      type: array,
+                      minItems: 1,
+                      maxItems: 5,
+                      items: { type: string, maxLength: 240 },
+                    }
+                  mechanizable: { type: boolean }
+                required: [tier, scope, when, do, dont, why, evidence, mechanizable]
+            required: [op, id, lesson]
         reason:
           type: [string, 'null']
           maxLength: 240
