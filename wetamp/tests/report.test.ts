@@ -62,6 +62,27 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
 });
 
 describe('F-22 report', () => {
+  // prettier-ignore
+  test('accepted package token value reports normal, anomaly, and missing prior', () => {
+    const root = tmp(), bin = join(root, 'archon-stub'), saved = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME, process.env.SA_ARCHON_BIN];
+    Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, SA_ARCHON_BIN: bin });
+    try {
+      const packages = ['normal', 'hot', 'new'].map((id, i) => ({ id, title: id, goal: id, milestone: id, scope: { write: [`${id}.ts`] }, accept: [{ cmd: 'true', timeout_s: 1 }], risk: 'G1', size: i === 2 ? 'M' : 'S' }));
+      const valuePlan = { repo: root, base_ref: 'main', budget: { weighted_tokens: 1 }, packages } as Plan;
+      writeFileSync(join(root, 'plan.json'), JSON.stringify(valuePlan));
+      const events = [['normal', 150], ['hot', 500], ['new', 50]].map(([id, input]) => ev('node_completed', `code-${id}`, provider('m', { input: Number(input), output: 0 })));
+      const run = { id: 'engine', status: 'completed', output_root: root, nodes: [], events };
+      writeFileSync(bin, '#!/usr/bin/env bun\nconsole.log(' + JSON.stringify(JSON.stringify(run)) + ');\n', { mode: 0o755 });
+      const art = join(root, 'artifacts/runs/engine'); mkdirSync(art, { recursive: true });
+      for (const id of ['normal', 'hot', 'new']) writeFileSync(join(art, `gate-${id}-r1.json`), JSON.stringify({ decision: { kind: 'advance', reason: null, evidence: [], debt: [] } }));
+      mkdirSync(join(root, 'memory'));
+      writeFileSync(join(root, 'memory/priors.json'), JSON.stringify({ [JSON.stringify([root, 'ts-cli', 'S', 'G1', 'm'])]: { tokens: { p50: 100, p90: 200 } } }));
+      const ledger = { run_id: 'r', archon_run_id: 'engine', repo: root, gen_dir: root, plan: join(root, 'plan.json'), workflow: 'fixture', recoveries: [] } as unknown as Ledger;
+      const value = buildReport([ledger]).token_value as { packages: { package: string; p90: unknown }[]; anomalies: { package: string; main_node: string }[] };
+      expect(value.packages.map(p => [p.package, p.p90])).toEqual([['normal', 200], ['hot', 200], ['new', 'unknown']]);
+      expect(value.anomalies).toMatchObject([{ package: 'hot', main_node: 'code-hot' }]);
+    } finally { ['SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_ARCHON_BIN'].forEach((k, i) => saved[i] === undefined ? delete process.env[k] : process.env[k] = saved[i]); }
+  });
   test('delivery separates legacy, missing and blocked without mutating ledger evidence', () => {
     const root = tmp(),
       output = join(root, 'artifacts/runs/published');

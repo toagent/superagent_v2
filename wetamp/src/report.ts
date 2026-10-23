@@ -130,7 +130,7 @@ export function reportSummary(report: Record<string, unknown>): Record<string, u
     ...Object.fromEntries(Object.entries(report).filter(([, v]) => typeof v === 'number' || typeof v === 'string')),
     delivery: report.delivery, undelivered: report.undelivered,
     metrics: report.metrics, cancellations: report.cancellations, interventions,
-    consolidation: report.consolidation,
+    consolidation: report.consolidation, token_value: report.token_value,
     demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length, by_request: demands.by_request, unattributed: demands.unattributed },
     usage: Object.fromEntries(['total', 'investment', 'supplemental', 'learning', 'window'].map(k => [k, usage[k]])),
     jobs: { phase_coverage: jobs.phase_coverage }, repo_missing: (report.repo_missing as unknown[]).length,
@@ -304,6 +304,35 @@ const group = (calls: Call[], key: (c: Call) => string): Record<string, unknown>
     [...by].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, rollup(v)])
   );
 };
+
+// prettier-ignore
+function tokenValue(pairs: Pair[], calls: Call[]): Record<string, unknown> {
+  let priors: Record<string, { tokens?: { p50?: number; p90?: number } }> = {};
+  try { priors = JSON.parse(readFileSync(join(home().sa, 'memory/priors.json'), 'utf8')) as typeof priors; } catch { /* Missing priors stay unknown. */ }
+  const packages = pairs.flatMap(({ ledger, run }) => {
+    if (run instanceof Error) return [];
+    const plan = planOf(ledger); if (!plan) return [];
+    const art = artifactsOf(run), gates = evidenceGates(ledger, art);
+    return plan.packages.flatMap(p => {
+      const gate = gates.filter(f => f.startsWith(`gate-${p.milestone ?? 'm1'}-r`)).at(-1);
+      const decision = decisionOf(gate ? evidenceJson(ledger, art, gate) : evidenceJson(ledger, art, `settle-${p.id}.json`) ?? evidenceJson(ledger, art, `verify-${p.id}.json`));
+      if (!decision || !['advance', 'debt'].includes(decision.kind)) return [];
+      const own = calls.filter(c => c.run === ledger.run_id && (c.node === `code-${p.id}` || c.node === `repair-${p.id}`));
+      const weights = own.map(c => typeof c.tokens?.input === 'number' && typeof c.tokens.output === 'number' ? c.tokens.input - (c.tokens.cacheRead ?? 0) + c.tokens.output : null);
+      const known = own.length > 0 && weights.every(v => v !== null);
+      const tokens = known ? weights.reduce<number>((n, v) => n + v, 0) : 'unknown';
+      const model = own.at(0)?.model.replace(/\(pinned\)$/, '') ?? null;
+      const matches = Object.entries(priors).filter(([key]) => { try { const [repo, , size, risk, priorModel] = JSON.parse(key) as unknown[]; return repo === plan.repo && size === p.size && risk === p.risk && priorModel === model; } catch { return false; } });
+      const [priorKey, prior] = matches.length === 1 ? matches[0] : ['unknown', undefined];
+      const p50 = typeof prior?.tokens?.p50 === 'number' ? prior.tokens.p50 : 'unknown', p90 = typeof prior?.tokens?.p90 === 'number' ? prior.tokens.p90 : 'unknown';
+      const main = known ? own[weights.indexOf(Math.max(...weights))]?.node ?? 'unknown' : 'unknown';
+      return [{ run_id: ledger.run_id, package: p.id, tokens, prior_key: priorKey, p50, p90,
+        p50_ratio: typeof tokens === 'number' && typeof p50 === 'number' && p50 > 0 ? tokens / p50 : 'unknown',
+        p90_ratio: typeof tokens === 'number' && typeof p90 === 'number' && p90 > 0 ? tokens / p90 : 'unknown', main_node: main }];
+    });
+  });
+  return { packages, anomalies: packages.filter(p => typeof p.tokens === 'number' && typeof p.p90 === 'number' && p.tokens > p.p90 * 2).map(p => ({ run_id: p.run_id, package: p.package, tokens: p.tokens, p90: p.p90, main_node: p.main_node })) };
+}
 
 function capturedGraph(run: RunView, workflow: string): Parameters<typeof criticalPath>[2] {
   const source = workflowSourceMetadataSchema.safeParse(
@@ -700,6 +729,7 @@ export function buildReport(
     metrics: metricsOf(snapshot.rows, snapshot.summary, Date.now()),
     cancellations,
     interventions: interventionStats(ls),
+    token_value: tokenValue(pairs, calls),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations, evidenceFor), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
     measurement,
