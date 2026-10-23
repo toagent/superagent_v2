@@ -677,6 +677,9 @@ export function autoPromote(
         error: `${prior.error ?? 'promotion failed'}; retry: superagent engine promote ${sha}`,
       };
     }
+    const promotionLock = lock(join(root(), 'engine.lock'));
+    if (!promotionLock.ok) return { sha, promoted: false };
+    promotionLock.release();
     const token = crypto.randomUUID(),
       command = [
         process.execPath,

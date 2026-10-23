@@ -237,3 +237,25 @@ test('auto promotion detaches once and marks a lost promoter with an explicit re
   expect(autoPromote(deps)).toMatchObject({ sha: second, error: expect.stringContaining('superagent engine promote') });
   expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('failed');
 }, testTimeout(60_000));
+
+// prettier-ignore
+test('auto promotion waits for the promotion lock before spawning', () => {
+  const f = sourceFixture(), first = f.sha();
+  promote(first, f.evidence);
+  delete process.env.SA_ENGINE_AUTO_PROMOTE;
+  const second = commit(f.source, 'second'),
+    engine = join(process.env.SUPERAGENT_HOME!, 'engine'),
+    marker = join(engine, 'promotions', `${second}.json`),
+    held = lock(join(engine, 'engine.lock'));
+  expect(held.ok).toBe(true);
+  let spawned = 0;
+  const deps = { spawn: () => (spawned++, { pid: 424242, unref: () => {} }), inspect: () => ({ state: 'online', start: 'Mon Oct 20 00:00:00 2026' } as const) };
+  try {
+    expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
+    expect(spawned).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+  } finally { if (held.ok) held.release(); }
+  expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
+  expect(spawned).toBe(1);
+  expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('running');
+}, testTimeout(60_000));
