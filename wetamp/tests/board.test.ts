@@ -265,6 +265,26 @@ describe('data rows', () => {
     });
   });
 
+  test('abandoned paused runs are terminal while an ordinary held gate stays unverified', () => {
+    const run: RunView = { id: 'a-abandoned', status: 'paused' };
+    const l = ledger('abandoned', run, {
+      rejected: run.id,
+      intervention_events: [
+        { at: '2026-10-20T00:00:00Z', action: 'abandon', source: 'cli', ok: true },
+      ],
+    });
+    const abandoned = rowOf(l, run, { now: Date.now() });
+    const held = { ...abandoned, run_id: 'held', state: 'held:gate', exit: 3 };
+    const snap = { at: new Date().toISOString(), summary: {}, rows: [abandoned, held] };
+    const frame = renderToString(
+      createElement(Frame, { snap, width: 80, height: 20, now: new Date() })
+    );
+
+    expect(abandoned).toMatchObject({ state: 'abandoned', exit: 2, held: null });
+    expect(cockpit(snap).unfinished).toBe(1);
+    expect(frame).toContain('待核实 1 项');
+  });
+
   test('bad JSON and missing fields become unreadable rows; the good run still renders', async () => {
     ledger('ok', { status: 'completed' });
     writeFileSync(ledgerFile('broken'), '{not json');

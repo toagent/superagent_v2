@@ -1,5 +1,5 @@
 import { describeDecision, type Decision } from '../decisions';
-import { clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-metrics';
+import { abandoned, clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-metrics';
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
@@ -150,7 +150,8 @@ export function rowOf(
     coordination?: Omit<NonNullable<BoardRow['coordination']>, 'pending'>;
   }
 ): BoardRow {
-  const c = classifyRun(l, run);
+  const classified = classifyRun(l, run);
+  const c = abandoned(l) ? { ...classified, state: 'abandoned', exit: EXIT.cancelled } : classified;
   const nodes = run.nodes ?? [];
   const current = nodes.find(n => n.state === 'running')?.nodeId ?? c.node ?? null;
   const started = Number.isFinite(clock(l.started_at))

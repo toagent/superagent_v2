@@ -116,6 +116,7 @@ import { loadPlan, milestones, type Plan } from './plan';
 import { planPrecheck } from './plan-precheck';
 import { redact } from './redact';
 import { buildReport, consolidationMetrics, reportSummary } from './report';
+import { abandoned } from './ledger-metrics';
 import { jobCli } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
@@ -1793,8 +1794,6 @@ function resumeRun(
   return res.ok ? 0 : res.held ? EXIT.held : 1;
 }
 
-// prettier-ignore
-const abandoned = (l: Ledger): boolean => l.rejected === l.archon_run_id && !!l.intervention_events?.some(event => event.action === 'abandon' && event.ok);
 // prettier-ignore
 const refuseAbandoned = (l: Ledger): boolean => abandoned(l) ? (print({ run_id: l.run_id, ok: false, type: 'abandoned', reason: 'run was abandoned' }), true) : false;
 // prettier-ignore

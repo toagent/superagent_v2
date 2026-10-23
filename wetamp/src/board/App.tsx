@@ -34,7 +34,7 @@ export function Frame({ snap, width, height, now }: FrameProps): ReactElement {
       r =>
         !active.some(x => x.id === r.run_id) &&
         !c.needs.some(x => x.id === r.run_id) &&
-        !['completed', 'failed', 'cancelled'].includes(r.state)
+        !['completed', 'failed', 'cancelled', 'abandoned'].includes(r.state)
     ).length +
     jobs.filter(j => !active.some(r => r.id === j.id) && !['done', 'failed'].includes(j.state))
       .length;

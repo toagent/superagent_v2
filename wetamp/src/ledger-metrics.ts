@@ -33,6 +33,10 @@ export const ms = (a?: string, b?: string): number | null => {
 export const interventionCount = (l: Ledger): number | undefined =>
   l.intervention_events?.filter(e => !(e.action === 'land' && e.origin === 'engine')).length;
 
+export const abandoned = (l: Ledger): boolean =>
+  l.rejected === l.archon_run_id &&
+  !!l.intervention_events?.some(event => event.action === 'abandon' && event.ok);
+
 export const cwdOf = (l: Ledger): string => (existsSync(l.repo) ? l.repo : WETAMP);
 const precisionOf = (value?: string): number => (value?.includes(' ') ? 1000 : 0);
 
@@ -236,7 +240,7 @@ export function metricsOf(rows: readonly BoardRow[], summary: Record<string, unk
   unreadable ||= rows.some(r => r.state === 'unreadable' || r.stale);
   const start = new Date(now); start.setHours(0, 0, 0, 0);
   const today = (at: number) => at >= start.getTime() && at <= now;
-  const terminal = (r: BoardRow) => ['completed', 'failed', 'cancelled'].includes(r.nativeState ?? r.state) || r.state.startsWith('failed:');
+  const terminal = (r: BoardRow) => r.state === 'abandoned' || ['completed', 'failed', 'cancelled'].includes(r.nativeState ?? r.state) || r.state.startsWith('failed:');
   const end = (r: BoardRow) => r.completed_at ? clock(r.completed_at) : r.span?.ended_ms ?? NaN;
   const ended = rows.filter(r => terminal(r) && today(end(r)));
   const intervened = (r: BoardRow) => r.intervened === true || (r.interventions ?? 0) > 0;
