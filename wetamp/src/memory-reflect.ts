@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { archonJson } from './archon';
+import { caller, coord, repoScope, same } from './coord';
 import { reasonOf } from './reasons';
 import { redact } from './redact';
 import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
@@ -312,23 +313,33 @@ function reflectAttempt(e: Episode, now: number, query: Query): boolean {
   if (run) return false;
   const budget = memoryData(now).reflection;
   if (budget.tokens + 9216 > budget.limit) return false;
-  query(
-    [
-      'workflow',
-      'run',
-      'memory-reflect',
-      prefix(e.id) + reflectionInput(e),
-      '--workflow-source',
-      join(WETAMP, 'templates'),
-      '--folder',
-      '--no-worktree',
-      '--detach',
-      '--config',
-      configPath(dir),
-    ],
-    dir
-  );
-  return true;
+  const c = coord(),
+    scope = repoScope(dir),
+    who = caller();
+  return c.scoped(scope, () => {
+    const owner = c.owner(scope);
+    if (owner.owner && !same(owner.owner, who) && owner.presence.state !== 'offline') return false;
+    const controller = c.claim(scope, who).controller,
+      launch = (): Record<string, unknown> =>
+        query(
+          [
+            'workflow',
+            'run',
+            'memory-reflect',
+            prefix(e.id) + reflectionInput(e),
+            '--workflow-source',
+            join(WETAMP, 'templates'),
+            '--folder',
+            '--no-worktree',
+            '--detach',
+            '--config',
+            configPath(dir),
+          ],
+          dir
+        );
+    c.mutate(scope, controller, launch, controller.generation);
+    return true;
+  });
 }
 
 export function reflectOne(now = Date.now(), query: Query = archonJson): boolean {

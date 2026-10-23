@@ -82,6 +82,7 @@ const keys = [
 ];
 beforeEach(() => {
   for (const k of keys) saved.set(k, process.env[k]);
+  delete process.env.SUPERAGENT_ROLE;
   root = tmp();
   sa = join(root, 'home');
   mkdirSync(sa);
@@ -189,6 +190,7 @@ const reflectionHarness = (e: Episode, output: unknown = { operations: [], reaso
       };
     if (args[1] === 'run') {
       if (failLaunch) throw new Error('launch failed');
+      expect(coordination.coord().admissionEnv().SA_COORD_ADMISSION).toBeString();
       launched++;
       return { id: 'reflect-run' };
     }
@@ -596,6 +598,23 @@ describe('EV1 incident replay', () => {
     expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'retired' });
     expect(existsSync(join(sa, 'memory/mechanize', `lesson_${learned.id}.json`))).toBe(true);
     expect(selectLessons(root, 'ts-cli')).toHaveLength(0);
+  });
+  test('derived roles and online owners cannot launch reflection; offline ownership recovers', () => {
+    const e = episode(),
+      harness = reflectionHarness(e);
+    saveEpisode(e);
+    process.env.SUPERAGENT_ROLE = 'worker';
+    expect(reflectOne(NOW, harness.query)).toBe(false);
+    delete process.env.SUPERAGENT_ROLE;
+    const dir = join(sa, 'memory/reflect-workspace'),
+      c = coordination.coord(),
+      scope = coordination.repoScope(dir),
+      actor = coordination.caller(),
+      foreign = { ...actor, client: 'foreign', session_id: 'foreign' };
+    c.claim(scope, foreign);
+    expect(reflectOne(NOW, harness.query)).toBe(false);
+    c.claim(scope, { ...foreign, pid: 99999999 }, true, 'offline fixture');
+    expect(reflectOne(NOW, harness.query)).toBe(true);
   });
 });
 
