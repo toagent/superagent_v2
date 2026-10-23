@@ -113,6 +113,7 @@ import {
 } from './config';
 import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
+import { planPrecheck } from './plan-precheck';
 import { redact } from './redact';
 import { buildReport, consolidationMetrics, reportSummary } from './report';
 import { jobCli } from './jobs';
@@ -1428,6 +1429,7 @@ function startRun(planPath: string, a: Args): number {
       const controller = coord().claim(scope, who).controller;
       return coord().mutate(scope, who, () => {
         plan_lint = lintPlan(plan, a.flags['lint-override']);
+        plan_lint.warnings.push(...planPrecheck(plan, plan.repo));
         if (plan_lint.rejected)
           throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
         // Report unreadable scope evidence before capacity inspection can fail on the same DB.
@@ -3936,6 +3938,7 @@ export function main(argv: string[]): number {
         throw new Error('usage: superagent plan check <file>');
       const plan = loadPlan(a._[2]);
       const plan_lint = lintPlan(plan, a.flags['lint-override']);
+      plan_lint.warnings.push(...planPrecheck(plan, plan.repo));
       if (plan_lint.rejected)
         throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
       print({ ok: true, plan_lint });
