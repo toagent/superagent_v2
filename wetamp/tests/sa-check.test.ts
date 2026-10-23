@@ -30,6 +30,7 @@ import {
   deliveryDecision as rawDeliveryDecision,
   readAttempt,
   CHECK_AUX_TIMEOUT_MS,
+  CHECK_EVENT_QUERY_TIMEOUT_MS,
   projectEnvironment,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
@@ -1893,7 +1894,9 @@ function auxiliaryFixture(
   scaled = false,
   stubborn = false,
   hook = false,
-  budget?: number
+  budget?: number,
+  hangOnce = false,
+  termEperm = false
 ) {
   const root = tmp(),
     repo = gitRepo(root),
@@ -1935,6 +1938,7 @@ function auxiliaryFixture(
   const instrument = `
 process.env.WORKFLOW_ID = 'fixture';
 const rawSpawnSync = Bun.spawnSync;
+let hangs = 0;
 Bun.spawnSync = (actual, opts) => {
   const wrapped = actual[0] === 'python3' && actual[1] === '-c';
   const cmd = wrapped ? actual.slice(4) : actual;
@@ -1942,7 +1946,7 @@ Bun.spawnSync = (actual, opts) => {
     trace
   )}, JSON.stringify({cmd, timeout: opts?.timeout, watchdog: wrapped}) + '\\n');
   const key = cmd[0] === 'git' ? cmd.slice(1, 3).join(' ') : cmd[0] === 'bash' ? 'command' : 'events';
-  if (key === ${JSON.stringify(hang)})
+  if (key === ${JSON.stringify(hang)} && (!${JSON.stringify(hangOnce)} || hangs++ === 0))
     return rawSpawnSync([...(wrapped ? actual.slice(0, 4) : []), 'bash', '-c', ${JSON.stringify(
       stubborn
         ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done`
@@ -1960,8 +1964,18 @@ Bun.spawnSync = (actual, opts) => {
   let source = readFileSync(SCRIPT, 'utf8').replace('const env =', `${instrument}\nconst env =`);
   if (scaled)
     source = source.replace('CHECK_AUX_TIMEOUT_MS = 10_000', 'CHECK_AUX_TIMEOUT_MS = 2000');
+  if (scaled)
+    source = source.replace(
+      'CHECK_EVENT_QUERY_TIMEOUT_MS = 60_000',
+      'CHECK_EVENT_QUERY_TIMEOUT_MS = 2000'
+    );
   if (budget !== undefined)
     source = source.replace('CHECK_AUX_BUDGET_MS = 130_000', `CHECK_AUX_BUDGET_MS = ${budget}`);
+  if (termEperm)
+    source = source.replace(
+      '    try: os.killpg(p.pid, sig)',
+      "    try:\n        if sig == signal.SIGTERM: raise PermissionError(1, 'Operation not permitted')\n        os.killpg(p.pid, sig)"
+    );
   writeFileSync(script, source);
   const r = runScript(
     repo,
@@ -2015,7 +2029,9 @@ for (const kind of ['accept', 'settle', 'env'])
             : call.cmd.slice(0, 2).join(' ')
           : call.cmd.slice(1, 3).join(' ');
       expect(allowed.has(category), category).toBe(true);
-      expect(call.timeout).toBe(CHECK_AUX_TIMEOUT_MS);
+      expect(call.timeout).toBe(
+        call.cmd.includes('--events') ? CHECK_EVENT_QUERY_TIMEOUT_MS : CHECK_AUX_TIMEOUT_MS
+      );
     }
     if (kind === 'env') expect(r.code).toBe(0);
     else {
@@ -2046,7 +2062,7 @@ for (const [kind, step, evidence] of [
     expect(r.code).toBe(1);
     expect(r.err).toContain(evidence);
     expect(r.err).toContain('auxiliary-stalled');
-    expect(r.err).toContain('TERM -> SIGKILL');
+    expect(r.err).toContain('TERM; process exited');
     expect(
       r.calls.find(c =>
         c.cmd[0] === 'git'
@@ -2054,7 +2070,18 @@ for (const [kind, step, evidence] of [
           : c.cmd[0] !== 'bash' && step === 'events'
       )?.timeout
     ).toBe(2000);
+    if (step === 'events')
+      expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(
+        2
+      );
   });
+
+test('ACCT: event query retries one timeout and keeps its evidence', () => {
+  const r = auxiliaryFixture('env', 'events', true, false, false, undefined, true);
+  expect(r.code, r.err).toBe(0);
+  expect(r.err).toContain('auxiliary-stalled');
+  expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(2);
+});
 
 test('probe: bounded prune timeout cannot override baseline results', () => {
   const r = auxiliaryFixture('accept', 'worktree prune', true);
@@ -2064,7 +2091,7 @@ test('probe: bounded prune timeout cannot override baseline results', () => {
     base_results: [{ cmd: PRODUCT_FAILURE, pass: false }],
   });
   expect(r.err).toContain(`probe: kept worktree ${r.art}/.trash/probe-acct-`);
-  expect(r.err).toContain('TERM -> SIGKILL');
+  expect(r.err).toContain('TERM; process exited');
   expect(readFileSync(join(r.art, 'acct.probe.log'), 'utf8')).toContain('auxiliary-stalled');
 });
 
@@ -2081,6 +2108,14 @@ test('ACCT: TERM-ignoring auxiliary is killed within the shared budget with evid
   expect(r.code).toBe(1);
   expect(r.err).toContain('auxiliary-stalled');
   expect(r.err).toContain('TERM -> SIGKILL; output pipes reclaimed');
+  expectAuxiliaryDead(r.trackedPid);
+});
+
+test('ACCT: TERM EPERM is recorded and does not suppress SIGKILL', () => {
+  const r = auxiliaryFixture('env', 'rev-parse HEAD', true, true, false, undefined, false, true);
+  expect(r.code).toBe(1);
+  expect(r.err).toContain('Operation not permitted');
+  expect(r.err).toContain('TERM -> SIGKILL');
   expectAuxiliaryDead(r.trackedPid);
 });
 

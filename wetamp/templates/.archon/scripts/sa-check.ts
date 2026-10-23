@@ -79,6 +79,7 @@ export function reviewRoundLimit(policy: ReviewEffortPolicy): number {
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
+export const CHECK_EVENT_QUERY_TIMEOUT_MS = 60_000;
 // Elapsed auxiliary time has one shared cap, independent of subprocess count.
 export const CHECK_AUX_BUDGET_MS = 130_000;
 let auxiliaryElapsed = 0;
@@ -99,23 +100,25 @@ try:
     code = p.returncode if p.returncode >= 0 else 128 - p.returncode
 except subprocess.TimeoutExpired:
     terminate(signal.SIGTERM)
-    time.sleep(grace)
-    terminate(signal.SIGKILL)
-    try: out, err = p.communicate(timeout=grace)
-    except subprocess.TimeoutExpired as e:
-        out, err = e.output or b'', e.stderr or b''
-        p.stdout.close(); p.stderr.close()
-    err += b'\\nauxiliary timed out: TERM -> SIGKILL; output pipes reclaimed'
+    try:
+        out, err = p.communicate(timeout=grace)
+        termination = 'TERM; process exited'
+    except subprocess.TimeoutExpired:
+        terminate(signal.SIGKILL)
+        termination = 'TERM -> SIGKILL'
+        try: out, err = p.communicate(timeout=grace)
+        except subprocess.TimeoutExpired as e:
+            out, err = e.output or b'', e.stderr or b''
+            p.stdout.close(); p.stderr.close()
+    err += ('\\nauxiliary timed out: ' + termination + '; output pipes reclaimed').encode()
     if errors: err += ('; termination errors: ' + '; '.join(errors)).encode()
     code = 124
 sys.stdout.buffer.write(out); sys.stderr.buffer.write(err)
 sys.exit(code)
 `;
-function auxiliary(cmd: string[]) {
+function auxiliary(cmd: string[], limit = CHECK_AUX_TIMEOUT_MS) {
   const bounded = ['accept', 'settle', 'env'].includes(env('KIND'));
-  const timeout = Math.floor(
-    Math.min(CHECK_AUX_TIMEOUT_MS, CHECK_AUX_BUDGET_MS - auxiliaryElapsed)
-  );
+  const timeout = Math.floor(Math.min(limit, CHECK_AUX_BUDGET_MS - auxiliaryElapsed));
   if (bounded && timeout <= 0) throw new Error('auxiliary time budget exhausted');
   const started = performance.now();
   const result = Bun.spawnSync(
@@ -1900,12 +1903,22 @@ function runEvidence(id = process.env.WORKFLOW_ID): AuthorRun {
       throw new Error('sa-check: invalid authoritative events');
     return (evidence = saved);
   }
-  const p = auxiliary([env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json']);
+  const command = [env('ARCHON'), 'workflow', 'get', id, '--verbose', '--events', '--json'];
+  let p = auxiliary(command, CHECK_EVENT_QUERY_TIMEOUT_MS);
+  const attempts = [p];
+  if (p.exitCode === 124) {
+    process.stderr.write(p.stderr);
+    p = auxiliary(command, CHECK_EVENT_QUERY_TIMEOUT_MS);
+    attempts.push(p);
+  }
   if (p.exitCode !== 0 || p.signalCode)
     throw new Error(
-      `archon workflow get ${id}: ${p.stderr.toString().slice(-300)}${
-        p.signalCode ? ` (signal ${p.signalCode})` : ''
-      }`
+      `archon workflow get ${id}: ${attempts
+        .map(
+          (attempt, index) =>
+            `attempt ${String(index + 1)}: ${attempt.stderr.toString().slice(-300)}`
+        )
+        .join('\n')}${p.signalCode ? ` (signal ${p.signalCode})` : ''}`
     );
   const lines = p.stdout.toString().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
