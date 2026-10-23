@@ -177,6 +177,19 @@ export function reportRunRevisions(): Map<string, string> | null {
   }
 }
 
+export function runStatuses(): Map<string, RunView['status']> | null {
+  const path = join(home().archon, 'archon.db');
+  if (process.env.DATABASE_URL || !existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
+  try {
+    // prettier-ignore
+    const rows = db.query<{ id: string; status: RunView['status'] }, []>('SELECT id, status FROM remote_agent_workflow_runs').all();
+    return new Map(rows.map(row => [row.id, row.status]));
+  } finally {
+    db.close();
+  }
+}
+
 /** Report snapshot: read-only SQLite, complete histories of runs selected by started_at.
  * No provider/CLI processes, and no truncation of attempts crossing the window boundary. */
 // prettier-ignore

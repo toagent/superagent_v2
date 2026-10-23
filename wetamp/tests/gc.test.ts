@@ -42,16 +42,33 @@ afterAll(() => expect(realTrees()).toBe(initialTrees));
 const views = new Map<string, archon.RunView>();
 let query: ReturnType<typeof spyOn<typeof archon, 'getRun'>> | undefined;
 let revisions: ReturnType<typeof spyOn<typeof archon, 'reportRunRevisions'>> | undefined;
+let statuses: ReturnType<typeof spyOn<typeof archon, 'runStatuses'>> | undefined;
 afterEach(() => {
   query?.mockRestore();
   revisions?.mockRestore();
+  statuses?.mockRestore();
   query = undefined;
   revisions = undefined;
+  statuses = undefined;
   views.clear();
   keys.forEach((k, i) => {
     if (originalEnv[i] === undefined) delete process.env[k];
     else process.env[k] = originalEnv[i];
   });
+});
+
+test('batch status avoids getRun and null or missing entries fall back', () => {
+  const f = fixture('running');
+  revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+  statuses = spyOn(archon, 'runStatuses').mockReturnValue(new Map([[f.view.id, 'running']]));
+  gc(false, 'mapped');
+  expect(query).not.toHaveBeenCalled();
+  statuses.mockReturnValue(null);
+  gc(false, 'null');
+  expect(query).toHaveBeenCalledTimes(1);
+  statuses.mockReturnValue(new Map());
+  gc(false, 'missing');
+  expect(query).toHaveBeenCalledTimes(2);
 });
 
 function fixture(

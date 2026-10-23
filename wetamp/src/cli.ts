@@ -2998,6 +2998,7 @@ function tick(
 ): {
   actions: Action[];
   gc: GcAction[];
+  gc_ms?: number;
   scratch: ScratchAction[];
   skipped_terminal: number;
   repeated_errors: number;
@@ -3178,12 +3179,15 @@ function tick(
   const gcStamp = join(sa, 'gc-tick'),
     due = global && (!existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000);
   if (due) writeAtomic(gcStamp, String(Date.now()));
+  const gcStarted = due ? Date.now() : undefined,
+    gcActions = due ? gc() : [];
   return {
     actions: out,
     skipped_terminal: skippedTerminal,
     repeated_errors: repeatedErrors,
     ...cockpitSignals(observed, asks instanceof Error ? {} : asks),
-    gc: due ? gc() : [],
+    gc: gcActions,
+    ...(gcStarted === undefined ? {} : { gc_ms: Date.now() - gcStarted }),
     scratch: global ? scratchClean() : [],
   };
 }
@@ -3775,11 +3779,19 @@ export async function superviseTickCli(
       ? (output[key] as Record<string, unknown>[]).filter(item => item.action !== 'none')
       : []
   );
+  const global = output.global as { gc_ms?: unknown } | undefined;
+  const gcMs =
+    typeof output.gc_ms === 'number'
+      ? output.gc_ms
+      : typeof global?.gc_ms === 'number'
+        ? global.gc_ms
+        : undefined;
   console.log(
     JSON.stringify({
       heartbeat: new Date().toISOString(),
       action_count: details.length,
       error_count: details.filter(item => item.ok === false).length + errors.length,
+      ...(gcMs === undefined ? {} : { gc_ms: gcMs }),
       ...(Array.isArray(output.groups) ? { groups: output.groups } : {}),
       ...(details.length ? { details } : {}),
       ...(errors.length ? { errors } : {}),

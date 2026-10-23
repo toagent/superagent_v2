@@ -2520,6 +2520,24 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       out.mockRestore();
     }
   });
+  test('heartbeat exposes gc_ms only when the tick runs GC', async () => {
+    stub([run('completed')]);
+    const out = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined
+      );
+      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toHaveProperty('gc_ms');
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined
+      );
+      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).not.toHaveProperty('gc_ms');
+    } finally {
+      out.mockRestore();
+    }
+  });
   test('an unresolved ask prevents terminal skipping and remains live', () => {
     const s = stub([run('cancelled')]),
       db = revisionDb();

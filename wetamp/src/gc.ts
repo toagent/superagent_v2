@@ -11,7 +11,8 @@ import {
 import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { isPathInside } from '@archon/paths';
-import { getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions } from './archon';
+// prettier-ignore
+import { getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions, runStatuses, type RunView } from './archon';
 import { home, writeAtomic } from './config';
 import { artifactsOf, ledgerIds, ledgerPath, loadLedger, updateLedger, type Ledger } from './cli';
 import type { Plan } from './plan';
@@ -33,6 +34,12 @@ const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as {
 export function scratchClean(session?: string, dryRun = false): ScratchAction[] {
   let ledgers: Ledger[] | undefined;
   const cachedPlans = new Map<string, string[]>();
+  let statuses: Map<string, RunView['status']> | null = null;
+  try {
+    statuses = runStatuses();
+  } catch {
+    statuses = null;
+  }
   return scratch.clean(session, dryRun, path =>
     (ledgers ??= ledgerIds().map(loadLedger)).some(l => {
       // l.plan keeps the launch argument verbatim; a relative one only resolves in the launch
@@ -53,9 +60,8 @@ export function scratchClean(session?: string, dryRun = false): ScratchAction[] 
         cachedPlans.set(l.run_id, texts);
       }
       if (texts.length && !texts.some(text => text.includes(path))) return false;
-      const run = getRun(l.archon_run_id, l.repo);
-      if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
-      return !['completed', 'failed', 'cancelled'].includes(run.status);
+      const status = statuses?.get(l.archon_run_id) ?? getRun(l.archon_run_id, l.repo).status;
+      return !['completed', 'failed', 'cancelled'].includes(status);
     })
   );
 }
@@ -81,7 +87,8 @@ interface GcInput {
 const gcRuleVersion = (): string =>
   new Bun.CryptoHasher('sha256').update(readFileSync(import.meta.path)).digest('hex');
 
-export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
+// prettier-ignore
+export function collectEngineSnapshots(dryRun: boolean, statuses: Map<string, RunView['status']> | null = null): GcAction[] {
   const configuredRoot = resolve(home().sa, 'engine');
   if (!existsSync(configuredRoot)) return [];
   let engineRoot: string, current: string;
@@ -176,8 +183,9 @@ export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
     for (const ledger of references) {
       if (ledger.rejected === ledger.archon_run_id) continue;
       try {
-        if (['completed', 'cancelled'].includes(getRun(ledger.archon_run_id, ledger.repo).status))
-          continue;
+        const status =
+          statuses?.get(ledger.archon_run_id) ?? getRun(ledger.archon_run_id, ledger.repo).status;
+        if (['completed', 'cancelled'].includes(status)) continue;
       } catch {
         return [];
       }
@@ -334,9 +342,13 @@ export function gc(
   ruleVersion = gcRuleVersion()
 ): GcAction[] {
   const out: GcAction[] = [];
+  let statuses: Map<string, RunView['status']> | null = null;
   let revisions: Map<string, string> | null = null;
   try {
-    if (!dryRun) revisions = reportRunRevisions();
+    if (!dryRun) {
+      statuses = runStatuses();
+      revisions = reportRunRevisions();
+    }
   } catch (e) {
     console.error(`gc revision cache unavailable: ${(e as Error).message}`);
   }
@@ -420,6 +432,9 @@ export function gc(
           const listed = state[1];
           const refs = state[2].trim().split('\n');
           const sha = refs.find(r => r.startsWith(`${ref} `))?.slice(ref.length + 1);
+          const knownStatus = statuses?.get(l.archon_run_id);
+          if (knownStatus && !['completed', 'failed', 'cancelled'].includes(knownStatus))
+            throw new GcSkip(`run ${knownStatus} remains recoverable`);
           const run = getRun(l.archon_run_id, plan.repo);
           if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
           workingPath = run.working_path;
@@ -583,5 +598,5 @@ export function gc(
   } catch (e) {
     out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
   }
-  return [...out, ...collectGen(dryRun), ...collectEngineSnapshots(dryRun)];
+  return [...out, ...collectGen(dryRun), ...collectEngineSnapshots(dryRun, statuses)];
 }
