@@ -282,23 +282,49 @@ describe('data rows', () => {
   });
 
   test('terminal runs are cached until the ledger changes; active runs are queried every refresh', async () => {
-    ledger('done', { status: 'completed' });
-    ledger('live', {
-      status: 'running',
-      metadata: { execution_owner: { host: hostname(), pid: process.pid } },
-    });
-    const load = createLoader();
-    await load(50);
+    const repo = gitRepo(tmp());
+    ledger('done', { status: 'completed' }, { repo });
+    ledger(
+      'live',
+      {
+        status: 'running',
+        metadata: { execution_owner: { host: hostname(), pid: process.pid } },
+      },
+      { repo }
+    );
+    const unchanged = new Date(100_000);
+    for (const id of ['done', 'live']) utimesSync(ledgerFile(id), unchanged, unchanged);
+    let owners = 0;
+    const ownerOf = (l: Ledger) => {
+      owners++;
+      return coord().owner(runScope(l));
+    };
+    const load = createLoader(undefined, ownerOf);
+    const first = await load(50);
+    expect(first.rows.find(r => r.run_id === 'done')?.branch).toBe('sa/done');
     expect(callLines()).toEqual(['workflow runs --all --limit 2147483647 --verbose --json']);
-    await load(50);
+    expect(owners).toBe(2);
+
+    for (const id of ['done', 'live']) {
+      const file = ledgerFile(id);
+      writeFileSync(file, readFileSync(file, 'utf8').replace(`sa/${id}`, `sa/${id.toUpperCase()}`));
+      utimesSync(file, unchanged, unchanged);
+    }
+    const second = await load(50);
+    expect(second.rows.find(r => r.run_id === 'done')?.branch).toBe('sa/done');
+    expect(second.rows.find(r => r.run_id === 'live')?.branch).toBe('sa/LIVE');
     expect(callLines().slice(1)).toEqual(['workflow get a-live --verbose --json']);
+    expect(owners).toBe(3);
+
     const later = new Date(Date.now() + 5000);
     utimesSync(ledgerFile('done'), later, later); // recover/decide 写 ledger → 缓存失效
-    await load(50);
+    const third = await load(50);
+    expect(third.rows.find(r => r.run_id === 'done')?.branch).toBe('sa/DONE');
     expect(callLines().slice(2).sort()).toEqual([
       'workflow get a-done --verbose --json',
       'workflow get a-live --verbose --json',
     ]);
+    expect(owners).toBe(5);
   });
 
   test('board refresh defaults to 30 seconds and accepts an explicit interval', () => {

@@ -381,12 +381,15 @@ export const QUERY_TIMEOUT_MS = 10_000;
  * 查询失败沿用上一次的 run 并标 stale，从未查到过则为
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
-export function createLoader(signal?: AbortSignal): (limit: number) => Promise<Snapshot> {
+// prettier-ignore
+export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coord().owner(runScope(l))): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
     throw new Error(`SA_BOARD_QUERY_TIMEOUT_MS must be a positive number of ms, got ${env ?? ''}`);
   const cache = new Map<string, { run: RunView; mtimeMs: number }>();
+  const ledgerCache = new Map<string, Ledger>();
+  const coordCache = new Map<string, { scope?: ReturnType<typeof runScope>; value: Omit<NonNullable<BoardRow['coordination']>, 'pending'> }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
   let first = true;
   return async limit => {
@@ -399,27 +402,33 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, limit);
-    const ledgers = new Map(ids.map(({ id }) => [id, readLedger(id)]));
+    const mtimes = new Map(ids.map(({ id, mtimeMs }) => [id, mtimeMs]));
+    // prettier-ignore
+    const ledgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id); return [id, hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status) ? (ledgerCache.get(id) ?? readLedger(id)) : readLedger(id)] as const; }));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
     const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
-    const refs = [...ledgers.values()].flatMap(l => {
-      if (typeof l === 'string') return [];
+    for (const [id, l] of ledgers) {
+      if (typeof l === 'string') continue;
+      const hit = cache.get(id),
+        saved = coordCache.get(id);
+      if (hit && hit.mtimeMs === mtimes.get(id) && FINAL.has(hit.run.status) && saved) {
+        if (saved.scope) scopes.set(id, saved.scope);
+        owners.set(id, saved.value);
+        continue;
+      }
       try {
         const scope = runScope(l),
-          view = coord().owner(scope);
+          view = ownerOf(l);
         scopes.set(l.run_id, scope);
         owners.set(l.run_id, { owner: view.owner, presence: view.presence });
-        return [{ run_id: l.run_id, cwd: l.repo, controller: view.owner }];
       } catch (e) {
         owners.set(l.run_id, {
           owner: null,
           presence: { state: 'unknown' },
           error: (e as Error).message,
         });
-        return [{ run_id: l.run_id, cwd: l.repo, controller: null }];
       }
-    });
-    const activity = loadActivity(now, signal, refs);
+    }
     const uncached = ids.filter(({ id, mtimeMs }) => {
       const hit = cache.get(id);
       return !(hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status));
@@ -468,6 +477,10 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
         if (run instanceof Error) throw run;
         if (!run) throw new RunQueryError('not_found', l.archon_run_id);
         cache.set(id, { run, mtimeMs });
+        ledgerCache.set(id, l);
+        const value = owners.get(id);
+        if (!value) throw new Error(`coordination ${id}: missing projection`);
+        coordCache.set(id, { scope: scopes.get(id), value });
         return { l, run, stale: false };
       } catch (e) {
         const err = e as Error;
@@ -524,6 +537,8 @@ export function createLoader(signal?: AbortSignal): (limit: number) => Promise<S
       );
     }
     const s = summarize(pairs);
+    // prettier-ignore
+    const activity = loadActivity(now, signal, results.flatMap(r => 'l' in r && r.run && !FINAL.has(r.run.status) ? [{ run_id: r.l.run_id, cwd: r.l.repo, controller: owners.get(r.l.run_id)?.owner ?? null }] : []));
     // 读不出的 ledger 不进 summarize（没有可计的 ledger），但计入 runs 与 unreadable，口径与 report 的“单列不吞错”一致
     s.runs = results.length;
     s.unreadable = [...new Set([...bad, ...(s.unreadable as string[])])];

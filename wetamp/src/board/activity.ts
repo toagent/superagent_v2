@@ -1,11 +1,11 @@
 // board 活动区：登记作业（jobs.ts）、未登记的无头 AI 进程与终端会话（ps，见 terminals.ts）、twin-agent 远端队列。三个来源
 // 并发、各自 ≤3s，互不拖累：失败只记一行 notes（远端队列不可用时静默省略）。进程绝不留 prompt 或 --model 外的 argv。
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { tail } from '../archon';
 import { home, loadTiers, type Tiers } from '../config';
-import { modelOf, readJobs, recent, type Job, type Kind, type Tier } from '../jobs';
+import { alive, modelOf, recent, type Job, type Kind, type Tier } from '../jobs';
 import type { Launcher } from '../launcher';
 import { presence, type Identity } from '../coord';
 import * as term from './terminals';
@@ -56,6 +56,37 @@ export const SOURCE_TIMEOUT_MS = 3000;
 const CWD_MAX = 24;
 // twin-agent-remote 的 state_of：其余（finished/failed/cancelled/abandoned/unknown）不算活动
 const REMOTE_ACTIVE = new Set(['running', 'queued', 'preparing', 'cancelling']);
+const jobCache = new Map<string, { mtimeMs: number; size: number; value: Job | string }>();
+
+// prettier-ignore
+function cachedJobs(): { jobs: Job[]; bad: string[] } {
+  const root = join(home().sa, 'jobs'), jobs: Job[] = [], bad: string[] = [];
+  let files: string[];
+  try { files = readdirSync(root).filter(f => f.endsWith('.json')); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { jobs, bad };
+    throw e;
+  }
+  for (const file of jobCache.keys()) if (file.startsWith(root + sep) && !files.includes(basename(file))) jobCache.delete(file);
+  for (const name of files) {
+    const file = join(root, name);
+    const { mtimeMs, size } = statSync(file);
+    let entry = jobCache.get(file);
+    if (entry?.mtimeMs !== mtimeMs || entry.size !== size) {
+      try {
+        const value = JSON.parse(readFileSync(file, 'utf8')) as Job;
+        if (typeof value.state !== 'string' || typeof value.started_at !== 'string') throw new Error('not a job record');
+        entry = { mtimeMs, size, value };
+      } catch (e) { entry = { mtimeMs, size, value: `${name}: ${(e as Error).message}` }; }
+      jobCache.set(file, entry);
+    }
+    if (typeof entry.value === 'string') bad.push(entry.value);
+    else {
+      const j = entry.value;
+      jobs.push(['queued', 'running'].includes(j.state) && !alive(j.wrapper_pid) && (j.pid === 0 || !alive(j.pid)) ? { ...j, state: 'lost' } : j);
+    }
+  }
+  return { jobs: jobs.sort((a, b) => b.started_at.localeCompare(a.started_at)), bad };
+}
 
 /** 跑一个短命令取 stdout；超时或 abort 杀整个进程组（ssh 之类可能有孙进程握着管道）。非零退出由调用方判断。 */
 async function capture(
@@ -291,6 +322,8 @@ export const visible = (ended: string | number | null | undefined, now: number):
   ended === null ||
   (ended !== undefined &&
     now - (typeof ended === 'number' ? ended : Date.parse(ended)) <= 30 * 60_000);
+export const processJobs = (jobs: Job[]): Job[] =>
+  jobs.filter(j => ['queued', 'running'].includes(j.state));
 
 type Procs = Pick<Activity, 'jobs' | 'procs' | 'terms' | 'runs'>;
 async function scan(
@@ -304,13 +337,12 @@ async function scan(
   const ps = await capture(['ps', '-axo', PS_FIELDS], SOURCE_TIMEOUT_MS, signal);
   if (ps.code !== 0) throw new Error(`ps exited ${String(ps.code)}`);
   const rows = psRows(ps.out);
-  const wrappers = new Set(
-    jobs.filter(j => ['queued', 'running'].includes(j.state)).map(j => j.wrapper_pid)
-  );
+  const active = processJobs(jobs);
+  const wrappers = new Set(active.map(j => j.wrapper_pid));
   const procs = parsePs(rows, now, wrappers);
   const sessions = term.findSessions(rows);
   const lives = term.readLive(join(home().sa, 'live'), now, true);
-  const own = attach(rows, sessions, jobs, procs, lives, pools);
+  const own = attach(rows, sessions, active, procs, lives, pools);
   // 一次 lsof 取全部 fd：cwd，以及 codex 握着的 rollout（只在回合中写入时打开）。
   // 已退出的 pid 让 lsof 返回 1，其余照常输出：只看输出；与 ps 共用 3s 额度
   const pids = [...procs.map(p => p.pid), ...sessions.flatMap(s => s.pids)].slice(0, CWD_MAX);
@@ -320,15 +352,25 @@ async function scan(
     : '';
   const cwd = parseLsof(out);
   const terms = term.settle(sessions, own.bound, cwd, term.parseRollouts(out), now);
+  const passive = new Map(
+    attach(
+      new Map(),
+      [],
+      jobs.filter(j => !active.includes(j)),
+      [],
+      [],
+      pools
+    ).jobs.map(j => [j.id, j])
+  );
+  // prettier-ignore
+  const activeOwned = new Map(own.jobs.map(j => [j.id, { ...j, ...ownership({ run_id: j.id, cwd: j.cwd, launcher: j.launcher }, rows, sessions, terms, [j.wrapper_pid, j.pid]) }]));
   return {
     runs: runs.map(r => ({ ...r, ...ownership(r, rows, sessions, terms) })),
-    jobs: own.jobs.map(j => ({
-      ...j,
-      ...ownership({ run_id: j.id, cwd: j.cwd, launcher: j.launcher }, rows, sessions, terms, [
-        j.wrapper_pid,
-        j.pid,
-      ]),
-    })),
+    jobs: jobs.map(j => {
+      const projected = activeOwned.get(j.id) ?? passive.get(j.id);
+      if (!projected) throw new Error(`job ${j.id}: missing activity projection`);
+      return projected;
+    }),
     procs: own.procs.map(p => ({ ...p, cwd: cwd.get(p.pid) ?? null })),
     terms,
   };
@@ -355,7 +397,7 @@ export async function loadActivity(
   let jobs: Job[] = [],
     jobHistory: Job[] = [];
   try {
-    const r = readJobs();
+    const r = cachedJobs();
     jobHistory = r.jobs;
     jobs = r.jobs.filter(j => recent(j, now));
     for (const b of r.bad) note('jobs', new Error(b));
