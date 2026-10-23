@@ -600,21 +600,31 @@ describe('EV1 incident replay', () => {
 });
 
 describe('EV1 budgets and deterministic matching', () => {
-  test('reflection failure records the original error and advances the queue', () => {
+  test('reflection failure retries twice then degrades without counting other episodes', () => {
     const e = episode();
     saveEpisode(e);
-    expect(
+    const errors = join(sa, 'memory/errors.jsonl');
+    writeFileSync(errors, JSON.stringify({ id: 'other', reason: 'old' }) + '\n');
+    const fail = (): boolean =>
       reconcileReflection(NOW, at =>
         reflectOne(at, () => {
           throw new Error('workflow runs exit 17: raw stderr');
         })
-      )
-    ).toBe(true);
-    expect(JSON.parse(readFileSync(join(sa, 'memory/errors.jsonl'), 'utf8'))).toEqual({
-      id: e.id,
-      reason: 'workflow runs exit 17: raw stderr',
+      );
+    expect([fail(), fail()]).toEqual([false, false]);
+    expect(memoryState()).toEqual({ lessons: [], entries: [] });
+    expect(fail()).toBe(true);
+    const records = readFileSync(errors, 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line) as { id: string });
+    expect(records.filter(record => record.id === e.id)).toHaveLength(3);
+    expect(memoryState().entries.at(-1)).toMatchObject({
+      lessons: [{ evidence: [e.id], why: 'reflect error: workflow runs exit 17: raw stderr' }],
+      reflected: e.id,
+      reflection: { episode: e.id, state: 'degraded', usage: null },
+      tokens: 0,
     });
-    expect(memoryState().entries.at(-1)).toMatchObject({ reflected: e.id });
     expect(reflectionQueue([e], memoryState().entries, NOW)).toEqual([]);
   });
   test('completed and exhausted runs write exactly one distilled or degraded terminal', () => {

@@ -337,12 +337,27 @@ export function reflectOne(now = Date.now(), query: Query = archonJson): boolean
   try {
     return reflectAttempt(e, now, query);
   } catch (error) {
-    const reason = redact(error instanceof Error ? error.message : String(error));
-    appendFileSync(
-      join(home().sa, 'memory', 'errors.jsonl'),
-      JSON.stringify({ id: e.id, reason }) + '\n'
-    );
-    memoryWrite(() => ({ lessons: [], reflected: e.id }));
+    const reason = redact(error instanceof Error ? error.message : String(error)),
+      errors = join(home().sa, 'memory', 'errors.jsonl');
+    appendFileSync(errors, JSON.stringify({ id: e.id, reason }) + '\n');
+    const attempts = readFileSync(errors, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(line => (JSON.parse(line) as { id?: unknown }).id === e.id).length;
+    if (attempts < 3) return false;
+    memoryWrite(() => ({
+      ...fallback(e, now, `reflect error: ${reason}`),
+      reflected: e.id,
+      reflection: {
+        episode: e.id,
+        state: 'degraded',
+        usage: null,
+        at: new Date(now).toISOString(),
+      },
+      day: memoryData(now).reflection.day,
+      tokens: 0,
+    }));
+    maintainLessons(undefined, now);
     return true;
   }
 }
