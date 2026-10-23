@@ -287,8 +287,22 @@ function mechanize(signature: string, reasons: string[], episode: string): void 
     })
   );
 }
+interface Outcome {
+  id: string;
+  state: 'done' | 'rejected';
+  at: string;
+}
 type Mechanism = { episodes: string[]; reasons: string[]; signature?: string } & {
-  handoff?: { id: string; state: string; episodes: number; seen?: string[] };
+  handoff?: { id: string; state: string; episodes: number; seen?: string[]; outcomes?: Outcome[] };
+};
+const mechanismAccuracy = (signature: string): string => {
+  const outcomes =
+      memoryJson<Mechanism>(
+        join(root(), 'mechanize', `${signature.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`),
+        { episodes: [], reasons: [] }
+      ).handoff?.outcomes ?? [],
+    done = outcomes.filter(outcome => outcome.state === 'done').length;
+  return outcomes.length ? `${String(Math.round((done / outcomes.length) * 100))}%` : '';
 };
 export function deliverEngineDefects(): void {
   for (const name of files(join(root(), 'mechanize'))) {
@@ -311,13 +325,28 @@ export function deliverEngineDefects(): void {
               .find(m => m.id === previous.id)
           : undefined,
         state = message?.state ?? previous?.state,
+        outcomes = previous?.outcomes ?? [],
+        settled =
+          (message?.state === 'done' || message?.state === 'rejected') &&
+          !outcomes.some(outcome => outcome.id === message.id)
+            ? [...outcomes, { id: message.id, state: message.state, at: new Date().toISOString() }]
+            : outcomes,
         seen = new Set(
           previous?.seen ?? (previous ? mechanism.episodes.slice(0, previous.episodes) : [])
         ),
-        unseen = evidence.filter(episode => !seen.has(episode.id));
-      if (!evidence.length || (previous && (state !== 'done' || !unseen.length))) {
-        if (previous && state !== previous.state)
-          writeAtomic(file, JSON.stringify({ ...mechanism, handoff: { ...previous, state } }));
+        unseen = evidence.filter(episode => !seen.has(episode.id)),
+        silenced =
+          settled.length >= 2 && settled.slice(-2).every(outcome => outcome.state === 'rejected');
+      if (
+        !evidence.length ||
+        (previous && (!['done', 'rejected'].includes(state ?? '') || !unseen.length || silenced))
+      ) {
+        if (previous && (state !== previous.state || settled !== outcomes))
+          writeAtomic(
+            file,
+            JSON.stringify({ ...mechanism, handoff: { ...previous, state, outcomes: settled } })
+          );
+        if (silenced && unseen.length) memoryLog(`engine_handoff_silenced:${signature}`);
         continue;
       }
       const recent = evidence.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10),
@@ -341,6 +370,7 @@ export function deliverEngineDefects(): void {
         state: 'queued',
         episodes: evidence.length,
         seen: evidence.map(episode => episode.id),
+        outcomes: settled,
       };
       writeAtomic(file, JSON.stringify(mechanism));
     } catch {
@@ -926,7 +956,7 @@ export function memoryData(now = Date.now()): {
         (privateProject(e.project)
           ? '仅分诊：私有项目'
           : e.category === 'engine'
-            ? '机制化需求'
+            ? `机制化需求 · 准确率 ${mechanismAccuracy(e.signature) || '—'}`
             : e.category === 'transient'
               ? '仅计数'
               : '排队'),

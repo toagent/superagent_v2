@@ -405,6 +405,44 @@ describe('EV1 incident replay', () => {
         .filter(m => !m.type)
     ).toHaveLength(3);
   });
+  test('two rejected outcomes silence a signature until a done outcome restores it', () => {
+    const first = episode({ id: 'false-a', category: 'engine', signature: 'engine_suspect' });
+    saveEpisode(first);
+    deliverEngineDefects();
+    const initial = coordination.coord().messages()[0],
+      owner = { ...initial.sender, client: 'engine-owner' },
+      file = join(sa, 'memory/mechanize/engine_suspect.json'),
+      defects = () =>
+        coordination
+          .coord()
+          .messages()
+          .filter(m => !m.type);
+    coordination.coord().claim(initial.scope, owner);
+    coordination.coord().ack(initial.id, owner, 'rejected', 'false positive');
+    saveEpisode({ ...first, id: 'false-b' });
+    deliverEngineDefects();
+    const retry = defects().find(message => message.id !== initial.id)!;
+    coordination.coord().ack(retry.id, owner, 'rejected', 'false positive again');
+    saveEpisode({ ...first, id: 'false-c' });
+    const log = spyOn(console, 'error').mockImplementation(() => undefined);
+    deliverEngineDefects();
+    expect(defects()).toHaveLength(2);
+    expect(log).toHaveBeenCalledWith('memory: engine_handoff_silenced:engine_suspect');
+    log.mockRestore();
+    const mechanism = JSON.parse(readFileSync(file, 'utf8'));
+    expect(mechanism.handoff.outcomes).toHaveLength(2);
+    expect(memoryData(NOW).all.find(e => e.id === 'false-c')?.result).toContain('准确率 0%');
+    mechanism.handoff.id = 'settled-elsewhere';
+    mechanism.handoff.state = 'done';
+    mechanism.handoff.outcomes.push({
+      id: 'settled-elsewhere',
+      state: 'done',
+      at: new Date(NOW).toISOString(),
+    });
+    writeFileSync(file, JSON.stringify(mechanism));
+    deliverEngineDefects();
+    expect(defects()).toHaveLength(3);
+  });
   test('legacy handoff counts map to the original mechanism episode prefix', () => {
     const first = episode({ id: 'legacy-a', category: 'engine', signature: 'engine_suspect' });
     saveEpisode(first);
