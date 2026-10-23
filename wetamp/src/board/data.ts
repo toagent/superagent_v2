@@ -402,16 +402,16 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
       }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, limit);
-    const mtimes = new Map(ids.map(({ id, mtimeMs }) => [id, mtimeMs]));
     // prettier-ignore
-    const ledgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id); return [id, hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status) ? (ledgerCache.get(id) ?? readLedger(id)) : readLedger(id)] as const; }));
+    const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id); return hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status) ? [[id, hit] as const] : []; }));
+    // prettier-ignore
+    const ledgers = new Map(ids.map(({ id }) => [id, reusable.has(id) ? (ledgerCache.get(id) ?? readLedger(id)) : readLedger(id)] as const));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
     const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
     for (const [id, l] of ledgers) {
       if (typeof l === 'string') continue;
-      const hit = cache.get(id),
-        saved = coordCache.get(id);
-      if (hit && hit.mtimeMs === mtimes.get(id) && FINAL.has(hit.run.status) && saved) {
+      const saved = coordCache.get(id);
+      if (reusable.has(id) && saved) {
         if (saved.scope) scopes.set(id, saved.scope);
         owners.set(id, saved.value);
         continue;
@@ -429,10 +429,7 @@ export function createLoader(signal?: AbortSignal, ownerOf = (l: Ledger) => coor
         });
       }
     }
-    const uncached = ids.filter(({ id, mtimeMs }) => {
-      const hit = cache.get(id);
-      return !(hit?.mtimeMs === mtimeMs && FINAL.has(hit.run.status));
-    });
+    const uncached = ids.filter(({ id }) => !reusable.has(id));
     const queried = new Map<string, RunView | Error>();
     const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
     if (uncached.length && firstLedger) {

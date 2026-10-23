@@ -352,16 +352,8 @@ async function scan(
     : '';
   const cwd = parseLsof(out);
   const terms = term.settle(sessions, own.bound, cwd, term.parseRollouts(out), now);
-  const passive = new Map(
-    attach(
-      new Map(),
-      [],
-      jobs.filter(j => !active.includes(j)),
-      [],
-      [],
-      pools
-    ).jobs.map(j => [j.id, j])
-  );
+  // prettier-ignore
+  const passive = new Map(attach(new Map(), [], jobs.filter(j => !active.includes(j)), [], [], pools).jobs.map(j => [j.id, j]));
   // prettier-ignore
   const activeOwned = new Map(own.jobs.map(j => [j.id, { ...j, ...ownership({ run_id: j.id, cwd: j.cwd, launcher: j.launcher }, rows, sessions, terms, [j.wrapper_pid, j.pid]) }]));
   return {
