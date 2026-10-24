@@ -1497,6 +1497,43 @@ test('Archon launch consumes the new run admission instead of the foreign reposi
   }
 });
 
+test('Archon adopt admits only the same controller and repository', async () => {
+  for (const mismatch of ['none', 'owner', 'repo']) {
+    const s = setup();
+    isolated(s);
+    const old = registered(s),
+      c = (await import('../src/coord')).coord();
+    if (mismatch === 'owner') c.claim(runScope(old), b, true, 'fixture takeover');
+    else if (mismatch === 'repo') {
+      old.repo = gitRepo(tmp());
+      writeFileSync(join(s.sa, 'runs', old.run_id + '.json'), JSON.stringify(old));
+    }
+    const next = runScope({ run_id: 'replacement-' + mismatch, repo: s.repo });
+    c.claim(next, a);
+    Object.assign(
+      process.env,
+      c.mutate(next, a, () => c.admissionEnv())
+    );
+    const spawned = { exitCode: 0 } as ReturnType<typeof Bun.spawnSync>;
+    const live = spyOn(c.d, 'presence').mockReturnValue(online),
+      invoke = spyOn(Bun, 'spawnSync').mockReturnValue(spawned);
+    try {
+      const args = ['workflow', 'run', 'fixture', '--adopt', old.run_id, '--cwd', s.repo];
+      const action = (await import('../src/coord/archon-entry')).archonEntry(args);
+      if (mismatch === 'none') {
+        expect(await action).toBe(0);
+        expect(invoke).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(action).rejects.toThrow('coord: admission scope mismatch');
+        expect(invoke).not.toHaveBeenCalled();
+      }
+    } finally {
+      invoke.mockRestore();
+      live.mockRestore();
+    }
+  }
+});
+
 function renewalFixture() {
   const s = setup();
   const old = { ...a, pid: 99999999, pid_start: 'exited-lifetime' };

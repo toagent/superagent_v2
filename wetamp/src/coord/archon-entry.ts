@@ -2,7 +2,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { caller, coord, repoScope, runScope, type Scope } from './index';
+import { caller, coord, repoScope, runScope, same, type Scope } from './index';
 import { getRun } from '../archon';
 import { WETAMP } from '../config';
 import { cliArgOptions } from '../../../packages/cli/src/args';
@@ -113,6 +113,15 @@ export async function archonEntry(args: string[]): Promise<number> {
     !target &&
     scope.kind === 'repo' &&
     scope.id === context.scope.repo
+  )
+    scope = context.scope;
+  if (
+    context?.scope.kind === 'run' &&
+    verb === 'run' &&
+    target &&
+    scope.kind === 'run' &&
+    scope.repo === context.scope.repo &&
+    same(c.owner(scope).owner, context.controller)
   )
     scope = context.scope;
   if (
