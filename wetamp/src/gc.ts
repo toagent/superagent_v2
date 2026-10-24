@@ -391,7 +391,7 @@ export function gc(
     const revision = revisions?.get(l.archon_run_id);
     if (!revision || !path) return undefined;
     const { mtimeMs, size } = statSync(ledgerPath(id));
-    const ref = `refs/heads/${l.branch}`,
+    const ref = `refs/heads/sa/${id}`,
       refs = state[2].trim().split('\n'),
       tree = state[1].find(t => t.includes(`worktree ${path}`) || t.includes(`branch ${ref}`)),
       sha = refs.find(r => r.startsWith(`${ref} `)),
@@ -420,12 +420,9 @@ export function gc(
           } catch (e) {
             if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) throw e;
           }
-          if (
-            plan.repo !== l.repo ||
-            (l.branch !== `sa/${id}` && l.adoptions?.at(-1)?.to !== l.archon_run_id)
-          )
+          if (plan.repo !== l.repo || l.branch !== `sa/${id}`)
             throw new Error('ledger/plan identity mismatch');
-          const ref = `refs/heads/${l.branch}`;
+          const ref = `refs/heads/sa/${id}`;
           const state = repoState(plan.repo),
             git = state[0];
           const trees = (): string[][] =>
