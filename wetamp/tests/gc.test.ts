@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
+import { Database } from 'bun:sqlite';
 import * as archon from '../src/archon';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import { testTimeout } from '@archon/paths/test-utils';
@@ -144,6 +145,42 @@ function fixture(
     git('for-each-ref', '--format=%(refname)', `refs/heads/sa/${id}`) !== '';
   return { root, repo, id, path, gen, git, ledger, save, view, branchExists };
 }
+
+function adoptingRun(f: ReturnType<typeof fixture>, id: string, status: archon.RunView['status']) {
+  const db = new Database(join(f.root, 'archon', 'archon.db'));
+  db.run(
+    'CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, adopted_from_run_id TEXT)'
+  );
+  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?)', [id, status, f.view.id]);
+  db.close();
+}
+
+test('rejected source is retained until its live adopter completes', () => {
+  const f = fixture('cancelled');
+  f.ledger.rejected = f.view.id;
+  f.save();
+  revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+  adoptingRun(f, 'live-adopter', 'running');
+  expect(gc()[0]).toMatchObject({ action: 'skipped', reason: 'adopted by live run live-adopter' });
+  expect(existsSync(f.path)).toBe(true);
+  expect(f.branchExists()).toBe(true);
+  const db = new Database(join(f.root, 'archon', 'archon.db'));
+  db.run("UPDATE remote_agent_workflow_runs SET status = 'completed'");
+  db.close();
+  expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
+});
+
+test.each(['completed', 'failed', 'cancelled'] as const)(
+  'terminal %s adopter does not retain a rejected source',
+  status => {
+    const f = fixture('cancelled');
+    f.ledger.rejected = f.view.id;
+    f.save();
+    revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+    adoptingRun(f, `${status}-adopter`, status);
+    expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
+  }
+);
 
 test('merged completed run removes only its worktree and branch; second GC is idempotent', () => {
   const f = fixture();

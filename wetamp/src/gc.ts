@@ -19,6 +19,7 @@ import type { Plan } from './plan';
 import { makeWritable } from './engine';
 import { inspectProcess } from './launcher';
 import { createRequire } from 'node:module';
+import { Database } from 'bun:sqlite';
 export interface ScratchAction {
   path: string;
   action: 'removed' | 'skipped' | 'would_remove';
@@ -77,6 +78,14 @@ export interface GcAction {
 }
 
 class GcSkip extends Error {}
+// prettier-ignore
+function liveAdoptions(): Map<string, string> {
+  const path = join(home().archon, 'archon.db'); if (process.env.DATABASE_URL || !existsSync(path)) return new Map(ledgerIds().flatMap(id => { const l = loadLedger(id); return (l.adoptions ?? []).flatMap(a => ['completed', 'failed', 'cancelled'].includes(getRun(a.to, l.repo).status) ? [] : [[a.from, a.to] as const]); }));
+  const db = new Database(path, { readonly: true }); try {
+    const rows = db.query<{ id: string; adopted_from_run_id: string }, []>("SELECT id, adopted_from_run_id FROM remote_agent_workflow_runs WHERE adopted_from_run_id IS NOT NULL AND status NOT IN ('completed','failed','cancelled')").all();
+    return new Map(rows.map(r => [r.adopted_from_run_id, r.id]));
+  } finally { db.close(); }
+}
 type RepoState = [git: (...args: string[]) => string, trees: string[][], refs: string];
 interface GcInput {
   fingerprint: string;
@@ -344,7 +353,9 @@ export function gc(
   const out: GcAction[] = [];
   let statuses: Map<string, RunView['status']> | null = null;
   let revisions: Map<string, string> | null = null;
+  let adoptions: Map<string, string> | null = null;
   try {
+    adoptions = liveAdoptions();
     if (!dryRun) {
       statuses = runStatuses();
       revisions = reportRunRevisions();
@@ -455,6 +466,9 @@ export function gc(
           const path = run.working_path,
             root = join(home().archon, 'workspaces');
           object = 'worktree';
+          const adoptedBy = adoptions?.get(l.archon_run_id);
+          // prettier-ignore
+          if (!adoptions || adoptedBy) throw new GcSkip(adoptedBy ? `adopted by live run ${adoptedBy}` : 'live adoption state unavailable');
           if (
             !path ||
             !isPathInside(root, path) ||
@@ -564,7 +578,8 @@ export function gc(
         else {
           updateLedger(l, collect);
           const after = state && fingerprint(id, l, state, workingPath);
-          if (!failures.length && after && workingPath && events.every(e => e.action === 'skipped'))
+          // prettier-ignore
+          if (!failures.length && after && workingPath && !adoptions?.has(l.archon_run_id) && events.every(e => e.action === 'skipped'))
             next[id] = { fingerprint: after, rule_version: ruleVersion, working_path: workingPath };
         }
       } catch (e) {
