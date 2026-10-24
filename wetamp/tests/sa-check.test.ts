@@ -280,6 +280,7 @@ test('R1-1 author reservation persists tracking before provider execution and su
       [],
       ['core'],
       'm1',
+      MAX_ROUNDS,
       () => ({
         id: 'prior',
         codebase_id: 'repo',
@@ -363,7 +364,8 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
     status: 'started' as const,
   };
   writePolicyAttempts(art, [attempt]);
-  const read = () => readAuthorEvidence(runs.current!, [], ['core'], 'm1', id => runs[id]!);
+  const read = () =>
+    readAuthorEvidence(runs.current!, [], ['core'], 'm1', MAX_ROUNDS, id => runs[id]!);
   expect(read()).toEqual([
     { model: 'repair', strength: 'pinned' },
     { model: 'author', strength: 'pinned' },
@@ -378,12 +380,13 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
     [{ ...attempt, node: 'fix-m0-r2', model: 'fix-author' }],
     ['core'],
     ['m0', 'm1'],
+    MAX_ROUNDS,
     id => runs[id]!
   );
   expect(independence(cumulative, { model: 'fix-author', strength: 'pinned' })).toBe('same_model');
   expect(
     independence(
-      readAuthorEvidence(runs.current!, [], ['core', 'missing'], 'm1', id => runs[id]!),
+      readAuthorEvidence(runs.current!, [], ['core', 'missing'], 'm1', MAX_ROUNDS, id => runs[id]!),
       { model: 'reviewer', strength: 'pinned' }
     )
   ).toBe('author_unknown');
@@ -424,10 +427,25 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   runs.old.events[0]!.data!.binding = undefined;
   expect(independence(read(), { model: 'reviewer', strength: 'pinned' })).toBe('author_unknown');
   expect(
-    readAuthorEvidence({ ...old, events: [event('local')] }, [], ['core'], 'm1', () => {
+    readAuthorEvidence({ ...old, events: [event('local')] }, [], ['core'], 'm1', MAX_ROUNDS, () => {
       throw new Error('unexpected ancestry');
     })
   ).toEqual([{ model: 'local', strength: 'pinned' }]);
+});
+
+test('author evidence uses the frozen review ladder for late fix rounds', () => {
+  const run = { id: 'current', codebase_id: 'repo', events: [] };
+  const attempt = {
+    id: 'late-fix',
+    node: 'fix-m1-r5',
+    provider: 'codex' as const,
+    model: 'late-author',
+    status: 'started' as const,
+    rerouted_models: [] as string[],
+  };
+  expect(readAuthorEvidence(run, [attempt], [], 'm1', 6, () => run)).toEqual([
+    { model: 'late-author', strength: 'pinned' },
+  ]);
 });
 
 test('author evidence carries every canonical fix round from adopted runs', () => {
@@ -454,6 +472,7 @@ test('author evidence carries every canonical fix round from adopted runs', () =
     [],
     [],
     'm1',
+    currentReviewRounds,
     () => prior
   );
   expect(authors).toEqual([{ model: 'author-b', strength: 'pinned' }]);

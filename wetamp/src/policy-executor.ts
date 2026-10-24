@@ -15,6 +15,7 @@ import { readExecutionTable, executionForNode, executionRoute, executionNode } f
 import { type Plan } from './plan';
 import {
   readAuthorEvidence,
+  reviewRoundLimit,
   budgetUsage,
   effectiveRisk,
 } from '../templates/.archon/scripts/sa-check';
@@ -140,6 +141,7 @@ function runtimeExecution(
         readPolicyAttempts(join(run.output_root, 'artifacts', 'runs', run.id)),
         route.packages,
         plan.packages.filter(p => route.packages.includes(p.id)).map(p => p.milestone ?? 'm1'),
+        reviewRoundLimit(policy),
         id => {
           const prior = db
             .query<

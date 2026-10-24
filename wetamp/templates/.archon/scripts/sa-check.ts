@@ -2060,6 +2060,7 @@ export function readAuthorEvidence(
   attempts: PolicyAttempt[],
   pkgs: string[],
   milestone: string | string[],
+  _reviewRounds: number,
   load: (id: string) => AuthorRun
 ): Ident[] {
   const authors: Ident[] = [],
@@ -2270,6 +2271,7 @@ export function validateRecovery(
     readPolicyAttempts(join(original.output_root, 'artifacts', 'runs', engineId)),
     e.packages,
     milestones,
+    reviewRounds,
     load
   );
   const permissions = [
@@ -2566,7 +2568,14 @@ function gate(): void {
       reused?.identity ??
       (env('ARCHON')
         ? {
-            authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
+            authors: readAuthorEvidence(
+              runEvidence(),
+              attempts,
+              pkgs,
+              milestones,
+              reviewRounds,
+              runEvidence
+            ),
             reviewer: attemptIdentity(
               attempts,
               reviewer,
