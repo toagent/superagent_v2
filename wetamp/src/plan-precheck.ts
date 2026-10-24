@@ -15,6 +15,32 @@ const covered = (path: string, write: string[]): boolean =>
 const parents = (text: string): string[] =>
   [...text.matchAll(/['"`](\.\.\/[^'"`]+)['"`]/g)].map(match => match[1]);
 
+export function checkSyntaxErrors(plan: Plan): string[] {
+  const groups = [
+    { id: 'plan.environment', checks: plan.environment ?? [] },
+    ...plan.packages.flatMap(pkg => [
+      { id: pkg.id, checks: pkg.accept },
+      { id: `${pkg.id}.environment`, checks: pkg.environment ?? [] },
+    ]),
+  ];
+  return groups.flatMap(({ id, checks }) =>
+    checks.flatMap((check, index) =>
+      [check.cmd, ...(check.report?.collect ? [check.report.collect] : [])].flatMap((cmd, part) => {
+        const result = Bun.spawnSync(['bash', '-n', '-c', cmd], {
+          stdout: 'ignore',
+          stderr: 'pipe',
+          timeout: 1_000,
+        });
+        if (result.exitCode === 0 && !result.signalCode) return [];
+        const detail =
+          result.stderr.toString().trim().split(/\r?\n/, 1)[0] ||
+          `bash exit ${String(result.exitCode)}`;
+        return [`${id}#${String(index + 1)}${part ? '.collect' : ''}: ${detail}`];
+      })
+    )
+  );
+}
+
 // Keep the four checks together: they intentionally mirror the dispatch-time scope precheck.
 // prettier-ignore
 export function planPrecheck(plan: Plan, repo: string): string[] {

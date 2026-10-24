@@ -115,7 +115,7 @@ import {
 } from './config';
 import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
-import { planPrecheck } from './plan-precheck';
+import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { redact } from './redact';
 import { buildReport, consolidationMetrics, reportSummary } from './report';
 import { abandoned } from './ledger-metrics';
@@ -1433,6 +1433,9 @@ function startRun(planPath: string, a: Args): number {
       return coord().mutate(scope, who, () => {
         plan_lint = lintPlan(plan, a.flags['lint-override']);
         plan_lint.warnings.push(...planPrecheck(plan, plan.repo));
+        const syntaxErrors = checkSyntaxErrors(plan);
+        if (syntaxErrors.length)
+          throw new Error(`preflight: check syntax: ${syntaxErrors.join('; ')}`);
         if (plan_lint.rejected)
           throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
         // Report unreadable scope evidence before capacity inspection can fail on the same DB.

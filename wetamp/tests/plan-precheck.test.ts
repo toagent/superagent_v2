@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { planPrecheck } from '../src/plan-precheck';
+import { checkSyntaxErrors, planPrecheck } from '../src/plan-precheck';
 import type { Plan } from '../src/plan';
 import { tmp } from './helpers';
 
@@ -74,4 +74,25 @@ test('generator inputs require registered outputs; non-engine repos are skipped'
   expect(planPrecheck(subject, root)).toEqual([]);
   const foreign = tmp();
   expect(planPrecheck(plan(foreign, ['wetamp/src/foo.ts'], ['bun test']), foreign)).toEqual([]);
+});
+
+test('shell syntax errors are reported with their package and command number in any repo', () => {
+  const subject = plan(tmp(), ['src/foo.ts'], [`test -s 'unfinished`]);
+  subject.packages[0].accept[0].report = { junit: 'report.xml', collect: 'for x in' };
+  subject.environment = [{ cmd: 'echo ok', timeout_s: 1 }];
+  subject.packages[0].environment = [{ cmd: 'case x in', timeout_s: 1 }];
+  expect(checkSyntaxErrors(subject)).toEqual([
+    expect.stringMatching(/^core#1: bash:/),
+    expect.stringMatching(/^core#1\.collect: bash:/),
+    expect.stringMatching(/^core\.environment#1: bash:/),
+  ]);
+});
+
+test('valid shell quoting, heredocs, and nested zsh source remain parse-only', () => {
+  const commands = [
+    `printf '%s\\n' 'quoted text'`,
+    "cat <<'EOF' >/dev/null\ntext with 'quotes'\nEOF",
+    `zsh -c 'print "unterminated for zsh'`,
+  ];
+  expect(checkSyntaxErrors(plan(tmp(), ['src/foo.ts'], commands))).toEqual([]);
 });
