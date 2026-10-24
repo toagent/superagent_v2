@@ -146,12 +146,12 @@ function fixture(
   return { root, repo, id, path, gen, git, ledger, save, view, branchExists };
 }
 
-function adoptingRun(f: ReturnType<typeof fixture>, id: string, status: archon.RunView['status']) {
+// prettier-ignore
+function adoptingRun(f: ReturnType<typeof fixture>, id: string, status: archon.RunView['status'], from = f.view.id) {
   const db = new Database(join(f.root, 'archon', 'archon.db'));
-  db.run(
-    'CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT, adopted_from_run_id TEXT)'
-  );
-  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?)', [id, status, f.view.id]);
+  // prettier-ignore
+  db.run('CREATE TABLE IF NOT EXISTS remote_agent_workflow_runs (id TEXT, status TEXT, adopted_from_run_id TEXT)');
+  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?)', [id, status, from]);
   db.close();
 }
 
@@ -160,10 +160,10 @@ test('rejected source is retained until its live adopter completes', () => {
   f.ledger.rejected = f.view.id;
   f.save();
   revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
-  adoptingRun(f, 'live-adopter', 'running');
+  adoptingRun(f, 'terminal-adopter', 'failed');
+  adoptingRun(f, 'live-adopter', 'running', 'terminal-adopter');
   expect(gc()[0]).toMatchObject({ action: 'skipped', reason: 'adopted by live run live-adopter' });
-  expect(existsSync(f.path)).toBe(true);
-  expect(f.branchExists()).toBe(true);
+  expect([existsSync(f.path), f.branchExists()]).toEqual([true, true]);
   const db = new Database(join(f.root, 'archon', 'archon.db'));
   db.run("UPDATE remote_agent_workflow_runs SET status = 'completed'");
   db.close();
@@ -177,8 +177,11 @@ test.each(['completed', 'failed', 'cancelled'] as const)(
     f.ledger.rejected = f.view.id;
     f.save();
     revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
-    adoptingRun(f, `${status}-adopter`, status);
-    expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
+    // prettier-ignore
+    const batch = spyOn(archon, 'archonJson').mockReturnValue({ runs: [{ id: `${status}-adopter`, status, adopted_from_run_id: f.view.id }] });
+    const result = gc().map(e => e.action);
+    expect([result, batch.mock.calls.length]).toEqual([['removed', 'removed'], 1]);
+    batch.mockRestore();
   }
 );
 

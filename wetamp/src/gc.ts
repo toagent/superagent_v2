@@ -12,14 +12,13 @@ import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { isPathInside } from '@archon/paths';
 // prettier-ignore
-import { getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions, runStatuses, type RunView } from './archon';
+import { archonJson, getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions, runStatuses, type RunView } from './archon';
 import { home, writeAtomic } from './config';
 import { artifactsOf, ledgerIds, ledgerPath, loadLedger, updateLedger, type Ledger } from './cli';
 import type { Plan } from './plan';
 import { makeWritable } from './engine';
 import { inspectProcess } from './launcher';
 import { createRequire } from 'node:module';
-import { Database } from 'bun:sqlite';
 export interface ScratchAction {
   path: string;
   action: 'removed' | 'skipped' | 'would_remove';
@@ -80,11 +79,12 @@ export interface GcAction {
 class GcSkip extends Error {}
 // prettier-ignore
 function liveAdoptions(): Map<string, string> {
-  const path = join(home().archon, 'archon.db'); if (process.env.DATABASE_URL || !existsSync(path)) return new Map(ledgerIds().flatMap(id => { const l = loadLedger(id); return (l.adoptions ?? []).flatMap(a => ['completed', 'failed', 'cancelled'].includes(getRun(a.to, l.repo).status) ? [] : [[a.from, a.to] as const]); }));
-  const db = new Database(path, { readonly: true }); try {
-    const rows = db.query<{ id: string; adopted_from_run_id: string }, []>("SELECT id, adopted_from_run_id FROM remote_agent_workflow_runs WHERE adopted_from_run_id IS NOT NULL AND status NOT IN ('completed','failed','cancelled')").all();
-    return new Map(rows.map(r => [r.adopted_from_run_id, r.id]));
-  } finally { db.close(); }
+  const path = join(home().archon, 'archon.db'); let rows: { id: string; status: RunView['status']; adopted_from_run_id: string | null }[];
+  if (!existsSync(path)) { const result = archonJson(['workflow', 'runs', '--all', '--limit', String(2 ** 31 - 1), '--verbose']); if (!Array.isArray(result.runs)) throw new Error('archon workflow runs: invalid runs payload'); rows = result.runs as typeof rows; }
+  else { const { Database } = createRequire(import.meta.url)('bun:sqlite') as typeof import('bun:sqlite'), db = new Database(path, { readonly: true }); try { rows = db.query<typeof rows[number], []>('SELECT id, status, adopted_from_run_id FROM remote_agent_workflow_runs').all(); } finally { db.close(); } }
+  const parent = new Map(rows.flatMap(r => r.adopted_from_run_id ? [[r.id, r.adopted_from_run_id]] : [])), live = new Map<string, string>();
+  for (const run of rows) if (!['completed', 'failed', 'cancelled'].includes(run.status)) for (let id = run.id, left = rows.length; left-- && (id = parent.get(id) ?? ''); ) live.set(id, run.id);
+  return live;
 }
 type RepoState = [git: (...args: string[]) => string, trees: string[][], refs: string];
 interface GcInput {
