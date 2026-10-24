@@ -2060,7 +2060,6 @@ export function readAuthorEvidence(
   attempts: PolicyAttempt[],
   pkgs: string[],
   milestone: string | string[],
-  reviewRounds: number,
   load: (id: string) => AuthorRun
 ): Ident[] {
   const authors: Ident[] = [],
@@ -2069,15 +2068,21 @@ export function readAuthorEvidence(
     repo = run.codebase_id;
   const unknown: Ident = { model: null, strength: 'unknown' };
   const authored = (node: string): string => node.split('.').at(-1) ?? node;
-  const owns = (node: string) =>
-    pkgs.some(p => authored(node) === `code-${p}` || authored(node) === `repair-${p}`) ||
-    [milestone]
-      .flat()
-      .some(m =>
-        Array.from({ length: reviewRounds }, (_, i) => `fix-${m}-r${String(i + 1)}`).includes(
-          authored(node)
-        )
-      );
+  const owns = (node: string) => {
+    const name = authored(node);
+    return (
+      pkgs.some(p => name === `code-${p}` || name === `repair-${p}`) ||
+      [milestone].flat().some(m => {
+        const prefix = `fix-${m}-r`,
+          round = name.startsWith(prefix) ? name.slice(prefix.length) : '';
+        return (
+          round.length > 0 &&
+          !round.startsWith('0') &&
+          Array.from(round).every(c => c >= '0' && c <= '9')
+        );
+      })
+    );
+  };
   for (;;) {
     if (seen.has(run.id) || !Array.isArray(run.events)) return [...authors, unknown];
     seen.add(run.id);
@@ -2265,7 +2270,6 @@ export function validateRecovery(
     readPolicyAttempts(join(original.output_root, 'artifacts', 'runs', engineId)),
     e.packages,
     milestones,
-    reviewRounds,
     load
   );
   const permissions = [
@@ -2562,14 +2566,7 @@ function gate(): void {
       reused?.identity ??
       (env('ARCHON')
         ? {
-            authors: readAuthorEvidence(
-              runEvidence(),
-              attempts,
-              pkgs,
-              milestones,
-              reviewRounds,
-              runEvidence
-            ),
+            authors: readAuthorEvidence(runEvidence(), attempts, pkgs, milestones, runEvidence),
             reviewer: attemptIdentity(
               attempts,
               reviewer,
