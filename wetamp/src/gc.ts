@@ -79,8 +79,8 @@ export interface GcAction {
 class GcSkip extends Error {}
 // prettier-ignore
 function liveAdoptions(): Map<string, string> {
-  const path = join(home().archon, 'archon.db'); let rows: { id: string; status: RunView['status']; adopted_from_run_id: string | null }[];
-  if (!existsSync(path)) { const result = archonJson(['workflow', 'runs', '--all', '--limit', String(2 ** 31 - 1), '--verbose']); if (!Array.isArray(result.runs)) throw new Error('archon workflow runs: invalid runs payload'); rows = result.runs as typeof rows; }
+  const postgres = !!process.env.DATABASE_URL, path = postgres ? '' : join(home().archon, 'archon.db'); let rows: { id: string; status: RunView['status']; adopted_from_run_id: string | null }[];
+  if (postgres || !existsSync(path)) { const result = archonJson(['workflow', 'runs', '--all', '--limit', String(2 ** 31 - 1), '--verbose']); if (!Array.isArray(result.runs)) throw new Error('archon workflow runs: invalid runs payload'); rows = result.runs as typeof rows; }
   else { const { Database } = createRequire(import.meta.url)('bun:sqlite') as typeof import('bun:sqlite'), db = new Database(path, { readonly: true }); try { rows = db.query<typeof rows[number], []>('SELECT id, status, adopted_from_run_id FROM remote_agent_workflow_runs').all(); } finally { db.close(); } }
   const parent = new Map(rows.flatMap(r => r.adopted_from_run_id ? [[r.id, r.adopted_from_run_id]] : [])), live = new Map<string, string>();
   for (const run of rows) if (!['completed', 'failed', 'cancelled'].includes(run.status)) for (let id = run.id, left = rows.length; left-- && (id = parent.get(id) ?? ''); ) live.set(id, run.id);

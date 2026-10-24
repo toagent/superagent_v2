@@ -50,7 +50,7 @@ afterEach(() => {
   statuses?.mockRestore();
   query = undefined;
   revisions = undefined;
-  statuses = undefined;
+  statuses = (delete process.env.DATABASE_URL, undefined);
   views.clear();
   keys.forEach((k, i) => {
     if (originalEnv[i] === undefined) delete process.env[k];
@@ -154,7 +154,6 @@ function adoptingRun(f: ReturnType<typeof fixture>, id: string, status: archon.R
   db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?)', [id, status, from]);
   db.close();
 }
-
 test('rejected source is retained until its live adopter completes', () => {
   const f = fixture('cancelled');
   f.ledger.rejected = f.view.id;
@@ -164,23 +163,24 @@ test('rejected source is retained until its live adopter completes', () => {
   adoptingRun(f, 'live-adopter', 'running', 'terminal-adopter');
   expect(gc()[0]).toMatchObject({ action: 'skipped', reason: 'adopted by live run live-adopter' });
   expect([existsSync(f.path), f.branchExists()]).toEqual([true, true]);
+  // prettier-ignore
   const db = new Database(join(f.root, 'archon', 'archon.db'));
   db.run("UPDATE remote_agent_workflow_runs SET status = 'completed'");
   db.close();
   expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
 });
-
-test.each(['completed', 'failed', 'cancelled'] as const)(
-  'terminal %s adopter does not retain a rejected source',
+test.each(['running', 'completed', 'failed', 'cancelled'] as const)(
+  '%s adopter uses batch state over stale SQLite',
   status => {
     const f = fixture('cancelled');
     f.ledger.rejected = f.view.id;
     f.save();
-    revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+    adoptingRun(f, 'stale-adopter', 'completed');
+    process.env.DATABASE_URL = 'postgres://fixture';
     // prettier-ignore
-    const batch = spyOn(archon, 'archonJson').mockReturnValue({ runs: [{ id: `${status}-adopter`, status, adopted_from_run_id: f.view.id }] });
-    const result = gc().map(e => e.action);
-    expect([result, batch.mock.calls.length]).toEqual([['removed', 'removed'], 1]);
+    const batch = spyOn(archon, 'archonJson').mockImplementation(() => { delete process.env.DATABASE_URL; return { runs: [{ id: `${status}-adopter`, status, adopted_from_run_id: f.view.id }] }; });
+    // prettier-ignore
+    expect([gc().map(e => e.action), batch.mock.calls.length]).toEqual([status === 'running' ? ['skipped'] : ['removed', 'removed'], 1]);
     batch.mockRestore();
   }
 );
