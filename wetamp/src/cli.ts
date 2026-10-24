@@ -196,6 +196,7 @@ export const OPTIONS = {
   apply: { type: 'boolean' },
   'lint-override': { type: 'string' },
   'allow-overlap': { type: 'string' },
+  adopt: { type: 'string' },
   goal: { type: 'string' },
   'accept-timeout': { type: 'string' },
   environment: { type: 'string', multiple: true },
@@ -1419,7 +1420,10 @@ function startRun(planPath: string, a: Args): number {
   try {
     mode = installMode();
     preflight();
-    const plan = loadPlan(planPath);
+    const plan = loadPlan(planPath),
+      adoptId = a.flags.adopt?.trim();
+    if (a.flags.adopt !== undefined && !adoptId)
+      throw new Error('--adopt requires a non-empty run id');
     const repo = repoScope(plan.repo),
       scope = runScope({ run_id: run, repo: plan.repo });
     const who = caller();
@@ -1525,6 +1529,35 @@ function startRun(planPath: string, a: Args): number {
           });
           return EXIT_USAGE;
         }
+        let adopted: { ledger: Ledger; run: RunView } | undefined;
+        if (adoptId) {
+          const oldLedger = loadLedger(coord().resolveRun(adoptId)?.run_id ?? adoptId);
+          if (!same(coord().owner(runScope(oldLedger)).owner, who))
+            throw new Error(
+              `adopt: run ${oldLedger.run_id} is not controlled by the current caller`
+            );
+          if (repoScope(oldLedger.repo).id !== repo.id)
+            throw new Error(`adopt: run ${oldLedger.run_id} belongs to a different repo`);
+          const oldRun = getRun(oldLedger.archon_run_id, oldLedger.repo),
+            oldPlan = planOf(oldLedger),
+            oldPkg = oldPlan.packages[0],
+            nextPkg = plan.packages[0];
+          if (!['failed', 'cancelled', 'completed'].includes(oldRun.status))
+            throw new Error(`adopt: archon run ${oldRun.id} is not terminal (${oldRun.status})`);
+          if (oldPlan.packages.length !== 1 || plan.packages.length !== 1)
+            throw new Error('adopt: old and new plans must each contain exactly one package');
+          if (
+            oldPkg.id !== nextPkg.id ||
+            (oldPkg.milestone ?? 'm1') !== (nextPkg.milestone ?? 'm1')
+          )
+            throw new Error('adopt: package id and milestone must match the old plan');
+          if (
+            (oldPlan.console ?? 'claude') !== (plan.console ?? 'claude') ||
+            (oldPlan.mode ?? 'auto') !== (plan.mode ?? 'auto')
+          )
+            throw new Error('adopt: new plan AI configuration conflicts with the adopted run');
+          adopted = { ledger: oldLedger, run: oldRun };
+        }
         phase = 'engine';
         const budget = budgetState(loadTiers(), plan.mode);
         const engine = runEngineSnapshot();
@@ -1537,7 +1570,37 @@ function startRun(planPath: string, a: Args): number {
           delivery,
           engine.path
         );
-        const branch = `sa/${run}`;
+        const branch = adopted?.ledger.branch ?? `sa/${run}`;
+        if (adopted) {
+          const art = artifactsOf(adopted.run),
+            pkg = plan.packages[0].id;
+          const handoff = existsSync(art)
+            ? readdirSync(art)
+                .filter(f => f.endsWith('.coder.json'))
+                .map(f => ({ f, mtime: statSync(join(art, f)).mtimeMs }))
+                .sort((x, y) => y.mtime - x.mtime)
+                .flatMap(({ f }) => {
+                  try {
+                    const value = JSON.parse(readFileSync(join(art, f), 'utf8')) as Record<
+                      string,
+                      unknown
+                    >;
+                    return typeof value.status === 'string' ? [value] : [];
+                  } catch {
+                    return [];
+                  }
+                })[0]
+            : undefined;
+          if (handoff) {
+            const fields: Record<string, unknown> = {};
+            for (const key of ['status', 'needs', 'blockers', 'changed_files'])
+              if (handoff[key] !== undefined) fields[key] = handoff[key];
+            writeFileSync(
+              join(gen.dir, 'hints', `${pkg}.md`),
+              `# Prior structured handoff\n\n\`\`\`json\n${JSON.stringify(fields, null, 2)}\n\`\`\`\n`
+            );
+          }
+        }
         const args = [
           'workflow',
           'run',
@@ -1547,7 +1610,33 @@ function startRun(planPath: string, a: Args): number {
           '--cwd',
           plan.repo,
         ];
-        args.push('--branch', branch, '--from', plan.base_ref, '--detach', '--config', gen.config);
+        if (adopted) args.push('--adopt', adopted.run.id, '--detach');
+        else
+          args.push(
+            '--branch',
+            branch,
+            '--from',
+            plan.base_ref,
+            '--detach',
+            '--config',
+            gen.config
+          );
+        const adoptions = adopted
+          ? [
+              ...(adopted.ledger.adoptions ?? []),
+              {
+                at: new Date().toISOString(),
+                from: adopted.run.id,
+                to: '',
+                engine_from: adopted.ledger.engine_hash ?? null,
+                engine_to: gen.engine_hash,
+                reason: 'plan_replacement',
+                engine_commit: gen.engine_commit,
+                carried: [],
+                coded: [],
+              },
+            ]
+          : undefined;
         const l: Ledger = {
           allow_overlap,
           plan_lint,
@@ -1562,7 +1651,12 @@ function startRun(planPath: string, a: Args): number {
           gen_dir: gen.dir,
           repo: plan.repo,
           branch,
-          launch_branch: typeof launchBranch === 'string' ? launchBranch : undefined,
+          launch_branch: adopted
+            ? branch
+            : typeof launchBranch === 'string'
+              ? launchBranch
+              : undefined,
+          adoptions,
           delivery,
           workflow: gen.workflow,
           console: plan.console ?? 'claude',
@@ -1585,6 +1679,7 @@ function startRun(planPath: string, a: Args): number {
           transcript: String(ack.transcriptPath),
           log: String(ack.logPath),
         });
+        if (l.adoptions?.at(-1)?.to === '') l.adoptions[l.adoptions.length - 1].to = ack.runId;
         mkdirSync(join(home().sa, 'runs'), { recursive: true });
         saveLedger(l);
         rmSync(intentPath(run), { force: true });
@@ -1683,9 +1778,11 @@ function reconcileIntents(): Action[] {
       if (rows.length > 1)
         throw new Error(`${String(rows.length)} archon runs named ${it.ledger.workflow}`);
       if (rows.length === 1) {
+        const adoptions = it.ledger.adoptions?.map(a => (a.to ? a : { ...a, to: rows[0].id }));
         saveLedger({
           ...it.ledger,
           archon_run_id: rows[0].id,
+          adoptions,
           reconciled_at: new Date().toISOString(),
         });
         rmSync(join(dir, f), { force: true });
@@ -3689,7 +3786,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'handoff', flags: ['to', 'kind', 'title', 'body-file', 'evidence', 'severity'] },
   { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note'] },
   { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
-  { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap'] },
+  { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap', 'adopt'] },
   { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'wait', positionals: '<run>', flags: ['timeout'] },
   { command: 'status', flags: [] },
