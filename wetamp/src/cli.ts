@@ -621,8 +621,8 @@ export const ledgerIds = (): string[] => {
     : [];
 };
 /** 逐条读取：坏 ledger 变成 {run_id, error}，不拖垮其他 run。 */
-const ledgers = (): (Ledger | { run_id: string; error: string })[] =>
-  ledgerIds().map(id => {
+const ledgers = (ids = ledgerIds()): (Ledger | { run_id: string; error: string })[] =>
+  ids.map(id => {
     try {
       return loadLedger(id);
     } catch (e) {
@@ -1254,6 +1254,7 @@ export const waitClock = {
 /** Observe engine state and inbox; continuation is an explicit engine action. */
 export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
   const deadline = waitClock.now() + timeoutS * 1000;
+  let attention = false;
   for (;;) {
     const inbox = coord()
       .surfaced(who)
@@ -1263,9 +1264,10 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     const c = classifyRun(l, run);
     if (c.state === 'owner_lost')
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
+    if (attention && c.exit === EXIT.running) waitClock.sleep(1000);
     const left = (deadline - waitClock.now()) / 1000;
     if (c.exit !== EXIT.running || left <= 0) return summary(l, run, c);
-    waitNotification(l.archon_run_id, l.repo, left);
+    attention = waitNotification(l.archon_run_id, l.repo, left) === 'attention';
   }
 }
 
@@ -3128,9 +3130,12 @@ function tick(
       return dueContinuations;
     }
   };
+  const inputs = ledgers(selected ? [...selected] : undefined);
   let revisions: Map<string, string> | null = null;
   try {
-    revisions = reportRunRevisions();
+    revisions = reportRunRevisions(
+      global ? undefined : inputs.flatMap(l => ('error' in l ? [] : [l.archon_run_id]))
+    );
   } catch (e) {
     console.error(`supervise-tick revision cache unavailable: ${(e as Error).message}`);
   }
@@ -3140,7 +3145,7 @@ function tick(
   let skippedTerminal = 0,
     repeatedErrors = 0,
     errorCached = false;
-  for (const l of ledgers().filter(item => selected === undefined || selected.has(item.run_id))) {
+  for (const l of inputs) {
     live.add(l.run_id);
     let errorInput = l.run_id;
     try {

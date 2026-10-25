@@ -1298,6 +1298,22 @@ describe('waitRun (archon stub)', () => {
       expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
     }
   });
+  test('wait backs off after attention while still running but not after terminal refresh', () => {
+    const wait = spyOn(archonMod, 'waitNotification').mockReturnValue('attention');
+    try {
+      const running = stub([run('running')]);
+      expect(waitRun(running.ledger, 3)).toMatchObject({ state: 'running', exit: EXIT.running });
+      expect(wait).toHaveBeenCalledTimes(3);
+      expect(cliMod.waitClock.sleep).toHaveBeenCalledTimes(3);
+      wait.mockClear();
+      const terminal = stub([run('running'), run('completed')]);
+      expect(waitRun(terminal.ledger, 3).state).toBe('completed');
+      expect(wait).toHaveBeenCalledTimes(1);
+      expect(cliMod.waitClock.sleep).not.toHaveBeenCalled();
+    } finally {
+      wait.mockRestore();
+    }
+  });
   test('brief --json obtains the structured receipt summary with one state query', () => {
     const s = stub([run('completed', { nodes: [] })]);
     s.ledger.delivery_result = { status: 'integrated' } as NonNullable<Ledger['delivery_result']>;
@@ -2487,6 +2503,28 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
         JSON.parse(readFileSync(join(s.root, 'home/supervise-terminal.json'), 'utf8'))
       ).sort()
     ).toEqual(['sa1', 'sa2']);
+  });
+  test('snapshot executor reads and queries revisions only for selected ledgers', () => {
+    const s = stub([run('completed')]),
+      snapshot = activateEngineFixture(s),
+      db = revisionDb();
+    writeFileSync(
+      ledgerPath('sa2'),
+      JSON.stringify({ ...s.ledger, run_id: 'sa2', archon_run_id: 'r2', engine_snapshot: snapshot })
+    );
+    db.run("insert into remote_agent_workflow_runs values ('r2', 'completed', 'a', 'b', '{}')");
+    const read = spyOn(fs, 'readFileSync'),
+      revisions = spyOn(archonMod, 'reportRunRevisions');
+    fixtureSpies.push(read, revisions);
+    cliMod.superviseTick({ runs: ['sa1'], noGlobal: true });
+    expect(
+      read.mock.calls.filter(([path]) => String(path).endsWith('/runs/sa1.json'))
+    ).not.toHaveLength(0);
+    expect(
+      read.mock.calls.filter(([path]) => String(path).endsWith('/runs/sa2.json'))
+    ).toHaveLength(0);
+    expect(revisions).toHaveBeenCalledWith(['r']);
+    db.close();
   });
   test('activated scheduler groups real ledgers without entering an executor', () => {
     const s = stub([run('completed')]),
