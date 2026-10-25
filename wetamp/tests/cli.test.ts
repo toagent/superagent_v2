@@ -2579,7 +2579,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       runs: ['failed'],
     });
   });
-  test('heartbeat exposes scheduler groups only for an activated engine', async () => {
+  test('heartbeat exposes non-empty scheduler groups and unavailable runs', async () => {
     const s = stub([run('completed')]),
       out = spyOn(console, 'log').mockImplementation(() => undefined);
     try {
@@ -2597,6 +2597,26 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       );
       expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({
         groups: [{ snapshot, runs: ['sa1'] }],
+      });
+      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).not.toHaveProperty('unavailable');
+      for (const run_id of ['sa1', 'sa2'])
+        writeFileSync(
+          ledgerPath(run_id),
+          JSON.stringify({
+            ...s.ledger,
+            run_id,
+            archon_run_id: run_id,
+            engine_snapshot: join(s.root, 'missing'),
+          })
+        );
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined,
+        { schedule: true }
+      );
+      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0])).unavailable).toEqual({
+        count: 2,
+        runs: ['sa1', 'sa2'],
       });
     } finally {
       out.mockRestore();

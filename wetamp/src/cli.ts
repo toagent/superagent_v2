@@ -3954,6 +3954,7 @@ export async function superviseTickCli(
       : []
   );
   const global = output.global as { gc_ms?: unknown } | undefined;
+  const unavailable = output.unavailable as { count?: number } | undefined;
   const gcMs =
     typeof output.gc_ms === 'number'
       ? output.gc_ms
@@ -3967,6 +3968,7 @@ export async function superviseTickCli(
       error_count: details.filter(item => item.ok === false).length + errors.length,
       ...(gcMs === undefined ? {} : { gc_ms: gcMs }),
       ...(Array.isArray(output.groups) ? { groups: output.groups } : {}),
+      ...(typeof unavailable?.count === 'number' && unavailable.count > 0 ? { unavailable } : {}),
       ...(details.length ? { details } : {}),
       ...(errors.length ? { errors } : {}),
     })
