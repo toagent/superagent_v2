@@ -2462,6 +2462,21 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(gets()).toBe(3);
     db.close();
   });
+  test('failed runs settle only without a future deadline', () => {
+    const s = stub([run('failed')]),
+      db = revisionDb();
+    s.due.mockReturnValue([]);
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 1 });
+    writeFileSync(
+      join(s.ledger.gen_dir, 'plan.json'),
+      JSON.stringify({ packages: [], deadline: '2099-01-01T00:00:00.000Z' })
+    );
+    writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...s.ledger, transcript: 'changed' }));
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
+    expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
+    db.close();
+  });
   test('unchanged permanent errors are counted until their ledger input changes', () => {
     const s = stub([run('completed')]),
       path = ledgerPath('sa1');
@@ -2534,6 +2549,35 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       global: { actions: [] },
     });
     expect(s.calls().some(call => call.startsWith('workflow get'))).toBe(false);
+  });
+  test('scheduler grouping keeps actionable changes and classifies unavailable snapshots', () => {
+    const s = stub([run('completed')]),
+      stat = { mtimeMs: 1, size: 2 },
+      revision = 'revision',
+      cache = { sa1: JSON.stringify(['r', 1, 2, revision]) },
+      input: Parameters<typeof cliMod.scheduleTickGroups>[0] = [[s.ledger, stat, s.root]],
+      revisions = new Map([['r', revision]]);
+    expect(cliMod.scheduleTickGroups(input, cache, revisions, {}, new Set()).groups).toEqual([]);
+    for (const [asks, due, changed] of [
+      [{ 'sa1:hold': { status: 'pending' } }, new Set<string>(), stat],
+      [{}, new Set(['r']), stat],
+      [{}, new Set<string>(), { mtimeMs: 2, size: 2 }],
+    ] as const)
+      expect(
+        cliMod.scheduleTickGroups([[s.ledger, changed, s.root]], cache, revisions, asks, due).groups
+      ).toEqual([{ snapshot: s.root, runs: ['sa1'] }]);
+    const missing: Parameters<typeof cliMod.scheduleTickGroups>[0] = ['done', 'failed'].map(
+      run_id => [
+        { ...s.ledger, run_id, archon_run_id: run_id },
+        stat,
+        undefined,
+        run_id === 'done' ? 'completed' : 'failed',
+      ]
+    );
+    expect(cliMod.scheduleTickGroups(missing, {}, null, {}, new Set()).unavailable).toEqual({
+      count: 1,
+      runs: ['failed'],
+    });
   });
   test('heartbeat exposes scheduler groups only for an activated engine', async () => {
     const s = stub([run('completed')]),

@@ -14,7 +14,7 @@ import { homedir, hostname, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
-import { getRun, lastJson, lock } from '../archon';
+import { getRun, lastJson, lock, runStatuses } from '../archon';
 import { WETAMP, home, writeAtomic } from '../config';
 import { inspectProcess } from '../launcher';
 import { SCRATCH_ROOT } from '../plan';
@@ -156,6 +156,9 @@ export function bootstrapEngineSnapshot(): string | undefined {
   const snapshot = join(root(), first.sha);
   return existsSync(snapshot) ? realpathSync(snapshot) : undefined;
 }
+
+export const fixedEngineSnapshot = (ledger: { engine_snapshot?: string }): string | undefined =>
+  ledger.engine_snapshot ?? bootstrapEngineSnapshot();
 
 const rejected = (): string[] => {
   try {
@@ -558,7 +561,7 @@ export function adoptEngineSnapshot(
     const ledger = JSON.parse(readFileSync(path, 'utf8')) as EngineLedger;
     if (ledger.run_id !== run || ledger.archon_run_id !== initial.archon_run_id)
       throw new Error('engine adopt: ledger identity changed');
-    const from = ledger.engine_snapshot ?? bootstrapEngineSnapshot() ?? null;
+    const from = fixedEngineSnapshot(ledger) ?? null;
     const to = realpathSync(snapshot);
     if (from !== to) {
       (ledger.engine_adoptions ??= []).push({ at: new Date().toISOString(), from, to });
@@ -611,6 +614,7 @@ export function gateLegacyRuns(): LegacyGateResult {
 export function engineStatus(): Record<string, unknown> {
   const current = currentEngineSnapshot();
   const counts: Record<string, Record<string, number>> = {};
+  const statuses = runStatuses();
   for (const value of runLedgers()) {
     const key = value.engine_snapshot ? basename(value.engine_snapshot) : 'bootstrap';
     let state = 'unknown';
@@ -618,7 +622,9 @@ export function engineStatus(): Record<string, unknown> {
       state =
         value.rejected === value.archon_run_id
           ? 'rejected'
-          : getRun(value.archon_run_id, value.repo).status;
+          : statuses
+            ? (statuses.get(value.archon_run_id) ?? 'unknown')
+            : getRun(value.archon_run_id, value.repo).status;
     } catch {
       // Unknown is executable by policy and must remain visible.
     }
@@ -831,7 +837,7 @@ export function assertEngineAccess(argv: string[]): void {
       path = run && join(home().sa, 'runs', `${run}.json`);
     if (mutatingRun.has(verb) && path && existsSync(path)) {
       const ledger = JSON.parse(readFileSync(path, 'utf8')) as { engine_snapshot?: string };
-      const pinned = ledger.engine_snapshot ?? bootstrapEngineSnapshot();
+      const pinned = fixedEngineSnapshot(ledger);
       if (!pinned || resolve(pinned) !== running)
         throw new Error(`engine snapshot unavailable; run superagent engine adopt ${run} <sha>`);
     }
@@ -868,7 +874,7 @@ export function assertEngineAccess(argv: string[]): void {
     const ledger = JSON.parse(readFileSync(join(home().sa, 'runs', `${id}.json`), 'utf8')) as {
       engine_snapshot?: string;
     };
-    const pinned = ledger.engine_snapshot ?? bootstrapEngineSnapshot();
+    const pinned = fixedEngineSnapshot(ledger);
     if (!pinned || resolve(pinned) !== running)
       throw new Error('engine identity: SA_SERVED_RUN snapshot mismatch');
   }

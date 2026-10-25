@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
+import { Database } from 'bun:sqlite';
 import * as archon from '../src/archon';
 import {
   adoptEngineSnapshot,
@@ -105,6 +106,24 @@ test('status exposes current and served identities with live run-state groups', 
     expect.objectContaining({ sha: first, identity: 'served', runs: { failed: 1 } }),
     expect.objectContaining({ sha: second, identity: 'current', runs: { completed: 1 } }),
   ]);
+});
+
+test('status batches local run states and treats missing rows as unknown', () => {
+  const { root, sa } = engineHome();
+  mkdirSync(join(root, 'archon'));
+  const db = new Database(join(root, 'archon', 'archon.db'));
+  db.run('create table remote_agent_workflow_runs (id text, status text)');
+  db.run("insert into remote_agent_workflow_runs values ('archon-done', 'completed')");
+  ledger(sa, 'done');
+  ledger(sa, 'missing');
+  query = spyOn(archon, 'getRun').mockImplementation(() => {
+    throw new Error('getRun must not be called');
+  });
+  expect(engineStatus()).toMatchObject({
+    runs: { bootstrap: { completed: 1, unknown: 1 } },
+  });
+  expect(query).not.toHaveBeenCalled();
+  db.close();
 });
 
 test('explicit adopt is the only operation that changes a run snapshot', () => {

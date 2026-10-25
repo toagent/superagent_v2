@@ -65,6 +65,7 @@ import {
   rmSync,
   statfsSync,
   statSync,
+  type Stats,
   writeFileSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
@@ -85,6 +86,7 @@ import {
   QUERY_TIMEOUT_MS,
   recover,
   reportRunRevisions,
+  runStatuses,
   signalHuman,
   waitNotification,
   tail,
@@ -128,9 +130,9 @@ import { capabilityDrift } from './capabilities';
 import {
   assertEngineAccess,
   autoPromote,
-  bootstrapEngineSnapshot,
   currentEngineSnapshot,
   engineCommand,
+  fixedEngineSnapshot,
   runEngineSnapshot,
   runningEngineSnapshot,
 } from './engine';
@@ -982,7 +984,7 @@ function recoverRun(
   admit?: (run: RunView) => string | undefined
 ): RecoverResult {
   const currentSnapshot = currentEngineSnapshot(),
-    pinnedSnapshot = l.engine_snapshot ?? bootstrapEngineSnapshot();
+    pinnedSnapshot = fixedEngineSnapshot(l);
   if (currentSnapshot && pinnedSnapshot && resolve(pinnedSnapshot) !== runningEngineSnapshot())
     throw new Error(
       `engine identity: run ${l.run_id} is pinned to another snapshot; use engine adopt first`
@@ -2450,9 +2452,9 @@ const loadAsks = (): Asks => {
     throw new Error(`asks ${p}: ${(e as Error).message}`);
   }
 };
-const withAsksLock = <T>(operation: () => T): T => {
+const withFileLock = <T>(path: string, label: string, operation: () => T): T => {
   for (let attempt = 0; attempt < 1000; attempt++) {
-    const held = lock(join(home().sa, 'asks.lock'));
+    const held = lock(path);
     if (!held.ok) {
       Bun.sleepSync(5);
       continue;
@@ -2463,8 +2465,10 @@ const withAsksLock = <T>(operation: () => T): T => {
       held.release();
     }
   }
-  throw new Error('asks: lock busy');
+  throw new Error(`${label}: lock busy`);
 };
+const withAsksLock = <T>(operation: () => T): T =>
+  withFileLock(join(home().sa, 'asks.lock'), 'asks', operation);
 const writeAsks = (asks: Asks): void => {
   writeAtomic(asksPath(), JSON.stringify(asks, null, 2) + '\n');
 };
@@ -2477,19 +2481,28 @@ const saveAsk = (asks: Asks, key: string): void => {
     writeAsks(latest);
   });
 };
+const saveDelta = <T extends Record<string, unknown>>(
+  before: T,
+  after: T,
+  latest: () => T,
+  write: (value: T) => void,
+  lockPath: string,
+  label: string
+): void => {
+  withFileLock(lockPath, label, () => {
+    const merged = latest();
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      const old = JSON.stringify(before[key]);
+      if (old === JSON.stringify(after[key]) || old !== JSON.stringify(merged[key])) continue;
+      if (after[key] === undefined) Reflect.deleteProperty(merged, key);
+      else Reflect.set(merged, key, after[key]);
+    }
+    write(merged);
+  });
+};
 /** Apply only changes made by the global scheduler, without overwriting concurrent run updates. */
 const saveAsksDelta = (before: Asks, after: Asks): void => {
-  withAsksLock(() => {
-    const latest = loadAsks();
-    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-      const oldValue = JSON.stringify(before[key]);
-      if (oldValue === JSON.stringify(after[key]) || oldValue !== JSON.stringify(latest[key]))
-        continue;
-      if (after[key] === undefined) Reflect.deleteProperty(latest, key);
-      else latest[key] = after[key];
-    }
-    writeAsks(latest);
-  });
+  saveDelta(before, after, loadAsks, writeAsks, join(home().sa, 'asks.lock'), 'asks');
 };
 
 /** 某个 run 的提问；键 `<run>:<挂起类别>`：resumeAt 变了也不重投。 */
@@ -3022,11 +3035,10 @@ const rotateTickLog = (sa: string): void => {
 export function superviseTick(mode: TickMode = {}):
   | ReturnType<typeof tick>
   | { skipped: 'locked' }
-  | {
-      groups: { snapshot: string; runs: string[] }[];
+  | (ReturnType<typeof scheduleTickGroups> & {
       global: ReturnType<typeof tick>;
       promotion?: ReturnType<typeof autoPromote>;
-    } {
+    }) {
   const { sa } = home();
   mkdirSync(sa, { recursive: true });
   const current = currentEngineSnapshot();
@@ -3053,20 +3065,27 @@ export function superviseTick(mode: TickMode = {}):
   }
   const l = lock(join(sa, 'supervise.lock'));
   if (!l.ok) return { skipped: 'locked' };
-  let scheduled: {
-    groups: { snapshot: string; runs: string[] }[];
-    global: ReturnType<typeof tick>;
-  };
+  let scheduled: ReturnType<typeof scheduleTickGroups> & { global: ReturnType<typeof tick> };
   try {
     rotateTickLog(sa);
-    const grouped = new Map<string, string[]>();
-    for (const ledger of ledgers()) {
-      if ('error' in ledger) continue;
-      const snapshot = ledger.engine_snapshot ?? bootstrapEngineSnapshot() ?? current;
-      grouped.set(snapshot, [...(grouped.get(snapshot) ?? []), ledger.run_id]);
-    }
+    const revisions = optional(reportRunRevisions) ?? null,
+      asks = optional(loadAsks),
+      statuses = optional(runStatuses) ?? null,
+      inputs = ledgers().flatMap(ledger => {
+        if ('error' in ledger) return [];
+        const fixed = fixedEngineSnapshot(ledger),
+          snapshot = fixed && existsSync(fixed) ? fixed : undefined,
+          stat = statSync(ledgerPath(ledger.run_id)),
+          status = statuses?.get(ledger.archon_run_id);
+        return [[ledger, stat, snapshot, status] satisfies TickInput];
+      });
+    const cached = readTickCache(sa),
+      candidates = inputs.some(input =>
+        settledInTick(input, revisions?.get(input[0].archon_run_id), cached, asks, new Set())
+      );
+    const due = candidates ? optional(() => new Set(dueWorkflowContinuations())) : undefined;
     scheduled = {
-      groups: [...grouped].map(([snapshot, runs]) => ({ snapshot, runs })),
+      ...scheduleTickGroups(inputs, cached, revisions, asks, due),
       global: tick(sa, new Set(), true),
     };
   } finally {
@@ -3075,21 +3094,62 @@ export function superviseTick(mode: TickMode = {}):
   return { ...scheduled, promotion: autoPromote() };
 }
 
-const readTickCache = (sa: string): Record<string, string> => {
+const optional = <T>(read: () => T): T | undefined => {
   try {
-    const value = JSON.parse(readFileSync(join(sa, 'supervise-terminal.json'), 'utf8')) as unknown;
-    if (
-      value === null ||
-      typeof value !== 'object' ||
-      Array.isArray(value) ||
-      !Object.values(value).every(item => typeof item === 'string')
-    )
-      return {};
-    return value as Record<string, string>;
+    return read();
   } catch {
-    return {};
+    return undefined;
   }
 };
+const readTickCache = (sa: string): Record<string, string> => {
+  const value = optional(() => readJson(join(sa, 'supervise-terminal.json')));
+  return value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.values(value).every(item => typeof item === 'string')
+    ? (value as Record<string, string>)
+    : {};
+};
+type TickStat = Pick<Stats, 'mtimeMs' | 'size'>;
+type TickInput = [Ledger, TickStat, string?, RunView['status']?];
+const tickFingerprint = (l: Ledger, stat: TickStat, revision?: string): string | undefined =>
+  revision ? JSON.stringify([l.archon_run_id, stat.mtimeMs, stat.size, revision]) : undefined;
+export const settledInTick = (
+  [l, stat]: TickInput,
+  revision: string | undefined,
+  cache: Record<string, string>,
+  asks: Asks | undefined,
+  due?: Set<string>
+): boolean =>
+  !!tickFingerprint(l, stat, revision) &&
+  cache[l.run_id] === tickFingerprint(l, stat, revision) &&
+  asks !== undefined &&
+  !Object.entries(asks).some(
+    ([key, ask]) => key.startsWith(`${l.run_id}:`) && (ask ? unresolved(ask) : false)
+  ) &&
+  due !== undefined &&
+  !due.has(l.archon_run_id);
+export function scheduleTickGroups(
+  inputs: TickInput[],
+  cache: Record<string, string>,
+  revisions: Map<string, string> | null,
+  asks: Asks | undefined,
+  due: Set<string> | undefined
+) {
+  const grouped = new Map<string, string[]>(),
+    unavailable: string[] = [];
+  for (const input of inputs) {
+    const [ledger, , snapshot, status] = input;
+    if (settledInTick(input, revisions?.get(ledger.archon_run_id), cache, asks, due)) continue;
+    if (snapshot) grouped.set(snapshot, [...(grouped.get(snapshot) ?? []), ledger.run_id]);
+    else if (!['completed', 'cancelled'].includes(status ?? 'unknown'))
+      unavailable.push(ledger.run_id);
+  }
+  return {
+    groups: [...grouped].map(([snapshot, runs]) => ({ snapshot, runs })),
+    unavailable: { count: unavailable.length, runs: unavailable.slice(0, 5) },
+  };
+}
 
 /** 逐 run 隔离：坏 ledger、读不出的 asks.json 只让受影响的 run 报 action:error，其余照常处置；asks 读坏时不回写。
  *  没有 ledger 的 run 的 asks 条目随回写丢弃（坏 ledger 仍算有）。 */
@@ -3134,7 +3194,7 @@ function tick(
   let revisions: Map<string, string> | null = null;
   try {
     revisions = reportRunRevisions(
-      global ? undefined : inputs.flatMap(l => ('error' in l ? [] : [l.archon_run_id]))
+      selected ? inputs.flatMap(l => ('error' in l ? [] : [l.archon_run_id])) : undefined
     );
   } catch (e) {
     console.error(`supervise-tick revision cache unavailable: ${(e as Error).message}`);
@@ -3157,10 +3217,7 @@ function tick(
         'error' in l ? null : (revisions?.get(l.archon_run_id) ?? null),
       ]);
       if ('error' in l) throw new Error(l.error);
-      if (
-        !global &&
-        resolve(l.engine_snapshot ?? bootstrapEngineSnapshot() ?? '') !== runningEngineSnapshot()
-      )
+      if (!global && resolve(fixedEngineSnapshot(l) ?? '') !== runningEngineSnapshot())
         throw new Error('engine identity: executor run snapshot mismatch');
       const actor = l.controller ?? l.launcher;
       if (!actor)
@@ -3168,9 +3225,7 @@ function tick(
           'coord: run 没有可验证 controller/launcher；请先 claim 并显式 resume/decide'
         );
       const revision = revisions?.get(l.archon_run_id),
-        fingerprint = revision
-          ? JSON.stringify([l.archon_run_id, stamp.mtimeMs, stamp.size, revision])
-          : undefined,
+        fingerprint = tickFingerprint(l, stamp, revision),
         hasAsk =
           !(asks instanceof Error) &&
           Object.entries(asks).some(([key, ask]) =>
@@ -3191,8 +3246,13 @@ function tick(
           const run = getRun(l.archon_run_id, l.repo);
           // prettier-ignore
           if (abandoned(l)) { if (!(asks instanceof Error)) supersedeAsks(asks, l.run_id); return { run_id: l.run_id, action: 'none', ok: true, state: 'abandoned' }; }
-          if (fingerprint && ['completed', 'cancelled'].includes(run.status))
-            confirmedTerminal = fingerprint;
+          const settledStatus =
+            ['completed', 'cancelled'].includes(run.status) ||
+            (run.status === 'failed' &&
+              due instanceof Set &&
+              !due.has(l.archon_run_id) &&
+              (planOf(l).deadline === undefined || pastDeadline(l)));
+          if (fingerprint && settledStatus) confirmedTerminal = fingerprint;
           if (
             due instanceof Set &&
             due.has(l.archon_run_id) &&
@@ -3237,7 +3297,16 @@ function tick(
       if (!live.has(run)) Reflect.deleteProperty(terminal, run);
   if (revisions || errorCached)
     try {
-      writeAtomic(join(sa, 'supervise-terminal.json'), JSON.stringify(terminal));
+      saveDelta(
+        cached,
+        terminal,
+        () => readTickCache(sa),
+        value => {
+          writeAtomic(join(sa, 'supervise-terminal.json'), JSON.stringify(value));
+        },
+        join(sa, 'supervise-terminal.lock'),
+        'supervise-terminal'
+      );
     } catch (e) {
       console.error(`supervise-tick cache write failed: ${(e as Error).message}`);
     }
