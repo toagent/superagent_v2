@@ -20,6 +20,7 @@ export interface RolloverRecord {
   launch: { agent: string; model: string; operation_id: string | null; outcome: unknown; args?: string[] };
   steps: Partial<Record<string, 'done'>>; created_at: string; accepted_at: string | null; cancelled_at: string | null;
   skipped?: Record<string, string>;
+  scratch?: Record<string, string>;
   user?: string;
   repo_transfer?: 'transferred' | 'unchanged' | `skipped:${string}`;
 }
@@ -32,6 +33,7 @@ interface Deps {
   tasks: (cwd: string, args: string[]) => string; repo: (cwd: string) => string;
   launch: (bin: string, args: string[]) => Promise<AgentLaunch>;
   supervise: (args: string[]) => string;
+  scratch: { ROOT: string; directory: (client: string, session: string) => string; transfer: (client: string, session: string, to: Pick<Identity, 'pid' | 'pid_start'>) => Record<string, string> };
   now: () => Date; token: () => string; sleep: (ms: number) => Promise<void>; jobs: () => Job[];
 }
 
@@ -45,8 +47,9 @@ const context = createRequire(import.meta.url)('../hooks/context-advisory.cjs') 
     env: NodeJS.ProcessEnv
   ) => { rollover: number | null };
 };
+const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as Deps['scratch'];
 // prettier-ignore
-const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, supervise: supervisor, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs });
+const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, supervise: supervisor, scratch, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs });
 
 // prettier-ignore
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v), terminal = new Set(['failed', 'completed', 'cancelled']);
@@ -223,7 +226,7 @@ export class Rollover {
     let r = this.load(token);
     this.d.coord.locked(() => {
       r = this.load(token);
-      if (r.state !== 'pending' || (r.to && !same(r.to, to))) throw new Error(`rollover: ${r.state === 'pending' ? '已被其他会话接手' : `记录已${r.state}`}`);
+      if (!['pending', 'accepted'].includes(r.state) || (r.to && !same(r.to, to))) throw new Error(`rollover: ${r.state === 'pending' ? '已被其他会话接手' : `记录已${r.state}`}`);
       if (same(r.from, to) || !r.from.host || !to.host || r.from.host !== to.host) throw new Error('rollover: 必须由同 host 的新会话接手');
       r.to = to;
       r.steps.lock_to = 'done';
@@ -231,6 +234,9 @@ export class Rollover {
     });
     const skipped: Record<string, string> = r.skipped ?? {};
     if (!r.steps.transfer) {
+      const path = r.from.session_id ? this.d.scratch.directory(r.from.client, r.from.session_id) : this.d.scratch.ROOT;
+      try { r.scratch = r.from.session_id && to.pid_start ? this.d.scratch.transfer(r.from.client, r.from.session_id, to) : { path, action: 'skipped', reason: 'scratch identity unavailable' }; }
+      catch (error) { r.scratch = { path, action: 'skipped', reason: error instanceof Error ? error.message : String(error) }; }
       for (const id of r.runs) {
         const run = this.d.coord.resolveRun(id);
         if (!run) {
@@ -297,7 +303,7 @@ export class Rollover {
       .jobs()
       .filter(j => j.launcher?.session_id === r.from.session_id && ['queued', 'running'].includes(j.state))
       .map(j => ({ id: j.id, title: j.title, log: j.log }));
-    return { state: r.state, repo: r.repo_transfer, task: join(r.cwd, '.context', 'sessions', r.task_session, 'task-stack.md'), runs, jobs };
+    return { state: r.state, repo: r.repo_transfer, scratch: r.scratch, task: join(r.cwd, '.context', 'sessions', r.task_session, 'task-stack.md'), runs, jobs };
   }
   cancel(token: string): Record<string, unknown> {
     const who = this.d.who(),
@@ -329,7 +335,7 @@ export class Rollover {
       current = current.parent ? this.load(current.parent) : null;
     }
     chain.reverse();
-    return renderHandoffContext(
+    const rendered = await renderHandoffContext(
       chain.map((record, index) => {
         if (record.from.client !== 'claude' && record.from.client !== 'codex')
           throw new Error(`rollover: 不支持 context client ${record.from.client}`);
@@ -340,6 +346,9 @@ export class Rollover {
         };
       })
     );
+    const prior = chain.at(-1)?.from,
+      path = prior?.session_id ? this.d.scratch.directory(prior.client, prior.session_id) : null;
+    return path && this.d.exists(path) ? `${rendered}\n\n上一会话 scratch：${path}/\n请取用所需文件或转存到稳定目录。` : rendered;
   }
 }
 

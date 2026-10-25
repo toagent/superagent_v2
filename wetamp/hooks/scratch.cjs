@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 const identity = require('./identity.cjs'),
   live = require('./live.cjs');
 const { resolvePath, within } = require('./redline.cjs');
-const { withLock } = require('./hook-state.cjs');
+const { withLock, atomicWrite } = require('./hook-state.cjs');
 function createScratch(ROOT) {
   if (
     typeof ROOT !== 'string' ||
@@ -43,10 +43,7 @@ function createScratch(ROOT) {
       typeof o.session !== 'string' ||
       !o.session ||
       path.basename(dir) !== `${o.client}-${o.session}` ||
-      !Number.isSafeInteger(o.pid) ||
-      o.pid <= 1 ||
-      typeof o.pid_start !== 'string' ||
-      !o.pid_start
+      !validProcess(o)
     )
       throw new Error('scratch owner identity invalid');
     return o;
@@ -55,16 +52,18 @@ function createScratch(ROOT) {
     const probe = identity.inspect(o.pid);
     return probe.state === 'offline' || (probe.state === 'online' && probe.start !== o.pid_start);
   }
-  function start(payload, client, env = process.env) {
-    if (!clients.includes(client) || typeof payload.session_id !== 'string' || !payload.session_id)
-      return null;
-    if (
-      path.basename(payload.session_id) !== payload.session_id ||
-      ['.', '..'].includes(payload.session_id)
-    )
+  const validProcess = o =>
+    Number.isSafeInteger(o?.pid) && o.pid > 1 && typeof o.pid_start === 'string' && o.pid_start;
+  function directory(client, session) {
+    if (!clients.includes(client) || typeof session !== 'string' || !session)
       throw new Error('scratch session path invalid');
-    const dir = path.join(ROOT, `${client}-${payload.session_id}`);
-    if (path.dirname(dir) !== ROOT) throw new Error('scratch session path invalid');
+    if (path.basename(session) !== session || ['.', '..'].includes(session))
+      throw new Error('scratch session path invalid');
+    return path.join(ROOT, `${client}-${session}`);
+  }
+  function start(payload, client, env = process.env) {
+    if (typeof payload.session_id !== 'string' || !payload.session_id) return null;
+    const dir = directory(client, payload.session_id);
     const who = live.owner(),
       probe = who && identity.inspect(who.pid);
     if (!who || probe.state !== 'online')
@@ -111,6 +110,30 @@ function createScratch(ROOT) {
           additionalContext: `scratch: ${dir}/`,
         },
       };
+    });
+  }
+  function transfer(client, session, to) {
+    const dir = directory(client, session),
+      result = { path: dir, action: 'skipped', reason: 'scratch missing' };
+    if (!fs.existsSync(dir)) return result;
+    if (!validProcess(to)) throw new Error('scratch target identity invalid');
+    return withLock(sessionLock(dir), () => {
+      validate(dir);
+      const file = path.join(dir, '.owner.json'),
+        prior = readOwner(dir);
+      if (prior.pid === to.pid && prior.pid_start === to.pid_start)
+        return { ...result, reason: 'scratch owner unchanged' };
+      atomicWrite(
+        file,
+        JSON.stringify({
+          ...prior,
+          pid: to.pid,
+          pid_start: to.pid_start,
+          transferred_from: { pid: prior.pid, pid_start: prior.pid_start },
+          transferred_at: new Date().toISOString(),
+        })
+      );
+      return { path: dir, action: 'transferred', reason: 'scratch owner transferred' };
     });
   }
   function cleanOne(dir, dryRun, referenced) {
@@ -214,6 +237,6 @@ function createScratch(ROOT) {
     }
     return out;
   }
-  return { ROOT, start, clean, cleanOne };
+  return { ROOT, directory, start, transfer, clean, cleanOne };
 }
 module.exports = { ...createScratch('/tmp/sa-scratch'), createScratch };

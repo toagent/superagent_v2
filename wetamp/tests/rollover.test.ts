@@ -29,6 +29,7 @@ function fixture(section = true) {
   const runs: RunRef[] = [], c = new Coordination({ sa, runs: () => runs, status: () => 'running', presence: () => ({ state: 'online', activity: 'idle' }) });
   const taskCalls: string[][] = [],
     launchCalls: string[][] = [],
+    scratchCalls: unknown[][] = [],
     launches: ({ kind: 'launched'; outcome: unknown } | { kind: 'lost'; operation_id: string } | { kind: 'unknown'; evidence: string } | { kind: 'failed'; error: string })[] = [{ kind: 'launched', outcome: { session: 'new' } }];
   const r = new Rollover({
     env: { ORCA_AGENT_SESSION_ID: 'orca', SA_ORCA_BIN: '/orca', CODEX_HOME: join(root, 'codex') },
@@ -38,13 +39,14 @@ function fixture(section = true) {
     exists: path => path === '/orca' || Bun.file(path).size > 0,
     tasks: (_cwd, args) => { taskCalls.push(args); return args[0] === 'path' ? task : ''; },
     launch: async (_bin, args) => { launchCalls.push(args); return launches.shift()!; },
+    scratch: { ROOT: join(root, 'scratch'), directory: (client, session) => join(root, 'scratch', `${client}-${session}`), transfer: (...args) => { scratchCalls.push(args); return { path: join(root, 'scratch/codex-old'), action: 'transferred', reason: 'owner transferred' }; } },
     repo: () => repo,
     token: () => 'a'.repeat(32),
     now: () => new Date(now),
     sleep: async ms => { now += ms; },
     jobs: () => [],
   });
-  return { root, repo, sa, task, transcript, runs, c, r, taskCalls, launchCalls, launches, setWho: (v: Identity) => { who = v; } };
+  return { root, repo, sa, task, transcript, runs, c, r, taskCalls, launchCalls, scratchCalls, launches, setWho: (v: Identity) => { who = v; } };
 }
 
 // prettier-ignore
@@ -69,7 +71,9 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(() => s.r.accept(String(started.token))).toThrow('新会话');
   s.setWho(b);
   const accepted = s.r.accept(String(started.token));
-  expect(accepted).toMatchObject({ state: 'accepted', repo: 'unchanged' });
+  expect(accepted).toMatchObject({ state: 'accepted', repo: 'unchanged', scratch: { action: 'transferred' } });
+  expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
+  expect(s.scratchCalls).toHaveLength(1);
   expect(s.taskCalls.slice(-2)).toEqual([['adopt', 'session', '--owner', 'new'], ['resume', 'session', '执行中']]);
   expect(s.c.owner(runScope(run)).owner?.session_id).toBe('new');
   expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
@@ -262,6 +266,9 @@ test('accept resumes after supervisor and adopt failures without repeating compl
     if (supervisorCalls.length === 1) throw new Error('supervisor crash');
     return '';
   };
+  s.r.d.scratch.transfer = () => {
+    throw new Error('scratch transfer failed');
+  };
   let failAdopt = true;
   s.r.d.tasks = (_cwd, args) => {
     s.taskCalls.push(args);
@@ -279,7 +286,10 @@ test('accept resumes after supervisor and adopt failures without repeating compl
   }).toThrow('不可取消');
   s.setWho(b);
   expect(() => s.r.accept(String(started.token))).toThrow('adopt crash');
-  expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
+  expect(s.r.accept(String(started.token))).toMatchObject({
+    state: 'accepted',
+    scratch: { action: 'skipped', reason: 'scratch transfer failed' },
+  });
   expect(s.c.owner(runScope(run)).generation).toBe(generation);
   expect(supervisorCalls).toHaveLength(2);
   expect(() => {
@@ -323,8 +333,12 @@ test('context renders a two-generation chain oldest first', async () => {
   latest.parent = token;
   writeFileSync(join(s.sa, `coord/rollovers/${latest.token}.json`), JSON.stringify(latest));
   s.setWho(b);
+  const scratchPath = s.r.d.scratch.directory(a.client, a.session_id!);
+  const exists = s.r.d.exists;
+  s.r.d.exists = path => path === scratchPath || exists(path);
   const out = await s.r.context(latest.token);
   expect(out.indexOf('older')).toBeLessThan(out.indexOf('newer'));
+  expect(out).toContain(`上一会话 scratch：${scratchPath}/`);
 });
 
 test('accept reports a run whose owner changed after start as skipped', async () => {

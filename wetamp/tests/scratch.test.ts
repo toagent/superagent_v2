@@ -85,6 +85,11 @@ const scratch = require('../hooks/scratch.cjs') as {
   ROOT: string;
   createScratch: (root: string) => typeof scratch;
   start: (payload: { session_id: string }, client: string, env?: NodeJS.ProcessEnv) => Context;
+  transfer: (
+    client: string,
+    session: string,
+    to: Pick<Owner, 'pid' | 'pid_start'>
+  ) => { path: string; action: string; reason: string };
   clean: (
     session: string | undefined,
     dry: boolean,
@@ -546,6 +551,24 @@ test.each(['online', 'unknown'] as const)('different %s owner cannot be reclaime
     probe.mockRestore();
   }
   expect(JSON.parse(readFileSync(f.file, 'utf8'))).toEqual(prior);
+});
+
+test('transfer preserves scratch while the new owner lives and remains validated', () => {
+  const f = setup();
+  f.exited();
+  expect(scratch.transfer('claude', f.session, f.owner).action).toBe('transferred');
+  const transferred = JSON.parse(readFileSync(f.file, 'utf8'));
+  expect(transferred.transferred_from.pid).not.toBe(f.owner.pid);
+  expect(scratch.cleanOne(f.dir, false, () => false).reason).toBe('scratch owner alive or unknown');
+  expect(scratch.transfer('claude', `${f.session}-missing`, f.owner).reason).toBe(
+    'scratch missing'
+  );
+  writeFileSync(f.file, JSON.stringify({ ...transferred, session: 'wrong' }));
+  expect(() => scratch.transfer('claude', f.session, f.owner)).toThrow('owner identity invalid');
+  writeFileSync(f.file, JSON.stringify(transferred));
+  const probe = spyOn(identity, 'inspect').mockReturnValue({ state: 'offline' });
+  expect(scratch.cleanOne(f.dir, false, () => false).action).toBe('removed');
+  probe.mockRestore();
 });
 
 test.each(['claude', 'codex'])(
