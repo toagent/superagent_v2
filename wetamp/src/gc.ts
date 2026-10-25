@@ -356,6 +356,10 @@ export function gc(
   let adoptions: Map<string, string> | null = null;
   try {
     adoptions = liveAdoptions();
+  } catch (e) {
+    console.error(`gc live adoption state unavailable: ${(e as Error).message}`);
+  }
+  try {
     if (!dryRun) {
       statuses = runStatuses();
       revisions = reportRunRevisions();

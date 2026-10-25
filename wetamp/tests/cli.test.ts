@@ -579,7 +579,7 @@ function stub(responses: RunView[]): {
   const bin = join(dir, 'archon');
   writeFileSync(
     bin,
-    `#!/usr/bin/env bash\nexec '${process.execPath}' '${join(import.meta.dir, 'fixtures/archon-stub.ts')}' '${dir}' "$@"\n`
+    `#!/usr/bin/env bash\nif [[ "$1 $2" == "workflow runs" ]]; then printf '%s\\n' '{"runs":[]}'; exit 0; fi\nexec '${process.execPath}' '${join(import.meta.dir, 'fixtures/archon-stub.ts')}' '${dir}' "$@"\n`
   );
   chmodSync(bin, 0o755);
   const home = join(root, 'home');

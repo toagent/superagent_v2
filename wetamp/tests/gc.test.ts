@@ -185,6 +185,30 @@ test.each(['running', 'completed', 'failed', 'cancelled'] as const)(
   }
 );
 
+test('adoption query failure retains the run without disabling revision cache', () => {
+  const f = fixture();
+  revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
+  statuses = spyOn(archon, 'runStatuses').mockReturnValue(new Map([[f.view.id, 'completed']]));
+  const batch = spyOn(archon, 'archonJson').mockImplementation(() => {
+    throw new Error('adoptions offline');
+  });
+  const error = spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    expect(gc(false, 'isolated')[0]).toMatchObject({
+      action: 'skipped',
+      reason: 'live adoption state unavailable',
+    });
+    expect([statuses.mock.calls.length, revisions.mock.calls.length]).toEqual([1, 1]);
+    expect(
+      JSON.parse(readFileSync(join(f.root, 'sa', 'gc-inputs.json'), 'utf8'))[f.id].rule_version
+    ).toBe('isolated');
+    expect(error).toHaveBeenCalledWith('gc live adoption state unavailable: adoptions offline');
+  } finally {
+    batch.mockRestore();
+    error.mockRestore();
+  }
+});
+
 test('merged completed run removes only its worktree and branch; second GC is idempotent', () => {
   const f = fixture();
   revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
