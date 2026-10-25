@@ -140,6 +140,13 @@ const episode = (patch: Partial<Episode> = {}): Episode => ({
   ...foldEpisode(ledger, plan, raw, [], {}, NOW),
   ...patch,
 });
+const engineEpisode = (patch: Partial<Episode> = {}): Episode =>
+  episode({
+    category: 'engine',
+    signature: 'engine_suspect',
+    signals: { ...zeros, engine_suspect: 1 },
+    ...patch,
+  });
 const lesson = (id: string, patch: Partial<Lesson> = {}): Lesson => ({
   id,
   tier: 'project',
@@ -330,11 +337,9 @@ describe('EV1 incident replay', () => {
     deliverEngineDefects();
     expect(coordination.coord().messages()).toHaveLength(0);
 
-    const pending = episode({
+    const pending = engineEpisode({
       id: 'result-defect',
       status: 'running',
-      category: 'engine',
-      signature: 'engine_suspect',
       acceptance: [{ cmd: 'accept', ok: true }],
     });
     saveEpisode(pending);
@@ -347,7 +352,13 @@ describe('EV1 incident replay', () => {
     deliverEngineDefects();
     expect(coordination.coord().messages()[0].body).toContain('occurrences: 1');
 
-    saveEpisode({ ...pending, id: 'live-defect', signature: 'orphan_hold', status: 'running' });
+    saveEpisode({
+      ...pending,
+      id: 'live-defect',
+      signature: 'orphan_hold',
+      status: 'running',
+      signals: { ...zeros, orphan_hold: 1 },
+    });
     deliverEngineDefects();
     expect(
       coordination
@@ -356,8 +367,23 @@ describe('EV1 incident replay', () => {
         .map(m => m.title)
     ).toContain('engine defect: orphan_hold');
   });
+  test('engine handoff rejects stale persisted diagnosis', () => {
+    saveEpisode(
+      episode({
+        id: 'stale-review-diagnosis',
+        status: 'failed',
+        category: 'engine',
+        signature: 'review_not_required',
+        reasons: ['review_not_required', 'acceptance_failed'],
+        acceptance: [{ cmd: 'accept', ok: false }],
+        signals: zeros,
+      })
+    );
+    deliverEngineDefects();
+    expect(coordination.coord().messages()).toHaveLength(0);
+  });
   test('engine mechanisms queue once, accumulate, and reopen after done', () => {
-    const first = episode({ id: 'defect-a', category: 'engine', signature: 'engine_suspect' });
+    const first = engineEpisode({ id: 'defect-a' });
     saveEpisode(first);
     deliverEngineDefects();
     expect(coordination.coord().messages()).toHaveLength(1);
@@ -410,7 +436,7 @@ describe('EV1 incident replay', () => {
     ).toHaveLength(3);
   });
   test('two rejected outcomes silence a signature until a done outcome restores it', () => {
-    const first = episode({ id: 'false-a', category: 'engine', signature: 'engine_suspect' });
+    const first = engineEpisode({ id: 'false-a' });
     saveEpisode(first);
     deliverEngineDefects();
     const initial = coordination.coord().messages()[0],
@@ -448,7 +474,7 @@ describe('EV1 incident replay', () => {
     expect(defects()).toHaveLength(3);
   });
   test('legacy handoff counts map to the original mechanism episode prefix', () => {
-    const first = episode({ id: 'legacy-a', category: 'engine', signature: 'engine_suspect' });
+    const first = engineEpisode({ id: 'legacy-a' });
     saveEpisode(first);
     deliverEngineDefects();
     const message = coordination.coord().messages()[0],
@@ -478,11 +504,9 @@ describe('EV1 incident replay', () => {
   test('engine handoff caps evidence at the ten newest episodes while retaining total occurrences', () => {
     for (let i = 0; i < 12; i++)
       saveEpisode(
-        episode({
+        engineEpisode({
           id: `capped-${String(i).padStart(2, '0')}`,
           at: new Date(NOW + i).toISOString(),
-          category: 'engine',
-          signature: 'evidence_conflict',
         })
       );
     deliverEngineDefects();
@@ -493,7 +517,7 @@ describe('EV1 incident replay', () => {
     expect(message.body).not.toContain('capped-01');
   });
   test('a corrupt mechanism does not block another engine signature', () => {
-    const valid = episode({ id: 'valid-defect', category: 'engine', signature: 'zz-valid' });
+    const valid = engineEpisode({ id: 'valid-defect' });
     saveEpisode(valid);
     writeFileSync(join(sa, 'memory/mechanize/00-bad.json'), '{');
     const log = spyOn(console, 'error').mockImplementation(() => undefined);
@@ -503,7 +527,7 @@ describe('EV1 incident replay', () => {
         .coord()
         .messages()
         .map(m => m.title)
-    ).toContain('engine defect: zz-valid');
+    ).toContain('engine defect: engine_suspect');
     expect(log).toHaveBeenCalledWith('memory: engine_handoff_failed');
     log.mockRestore();
   });

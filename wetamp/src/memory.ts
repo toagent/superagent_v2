@@ -360,7 +360,11 @@ export function deliverEngineDefects(): void {
         signature = mechanism.signature ?? name.slice(0, -5),
         evidence = mechanism.episodes.flatMap(id => {
           const episode = episodeOf(id);
-          return episode?.signature === signature &&
+          if (!episode) return [];
+          const current = diagnosis(episode);
+          return episode.signature === signature &&
+            current.category === 'engine' &&
+            current.signature === signature &&
             defectEligible(episode) &&
             !privateProject(episode.project)
             ? [episode]
