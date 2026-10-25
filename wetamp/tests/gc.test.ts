@@ -189,9 +189,11 @@ test('adoption query failure retains the run without disabling revision cache', 
   const f = fixture();
   revisions = spyOn(archon, 'reportRunRevisions').mockReturnValue(new Map([[f.view.id, 'r1']]));
   statuses = spyOn(archon, 'runStatuses').mockReturnValue(new Map([[f.view.id, 'completed']]));
-  const batch = spyOn(archon, 'archonJson').mockImplementation(() => {
-    throw new Error('adoptions offline');
-  });
+  const batch = spyOn(archon, 'archonJson')
+    .mockImplementationOnce(() => {
+      throw new Error('adoptions offline');
+    })
+    .mockReturnValue({ runs: [] });
   const error = spyOn(console, 'error').mockImplementation(() => {});
   try {
     expect(gc(false, 'isolated')[0]).toMatchObject({
@@ -200,9 +202,10 @@ test('adoption query failure retains the run without disabling revision cache', 
     });
     expect([statuses.mock.calls.length, revisions.mock.calls.length]).toEqual([1, 1]);
     expect(
-      JSON.parse(readFileSync(join(f.root, 'sa', 'gc-inputs.json'), 'utf8'))[f.id].rule_version
-    ).toBe('isolated');
+      JSON.parse(readFileSync(join(f.root, 'sa', 'gc-inputs.json'), 'utf8'))[f.id]
+    ).toBeUndefined();
     expect(error).toHaveBeenCalledWith('gc live adoption state unavailable: adoptions offline');
+    expect(gc(false, 'isolated').map(event => event.action)).toEqual(['removed', 'removed']);
   } finally {
     batch.mockRestore();
     error.mockRestore();

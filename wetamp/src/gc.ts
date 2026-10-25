@@ -583,7 +583,7 @@ export function gc(
           updateLedger(l, collect);
           const after = state && fingerprint(id, l, state, workingPath);
           // prettier-ignore
-          if (!failures.length && after && workingPath && !adoptions?.has(l.archon_run_id) && events.every(e => e.action === 'skipped'))
+          if (!failures.length && after && workingPath && adoptions && !adoptions.has(l.archon_run_id) && events.every(e => e.action === 'skipped'))
             next[id] = { fingerprint: after, rule_version: ruleVersion, working_path: workingPath };
         }
       } catch (e) {
