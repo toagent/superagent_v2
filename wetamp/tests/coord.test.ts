@@ -164,6 +164,42 @@ test('reauthorize requires both owners and stale records remain fenced', () => {
   s.c.claim(runTarget, a, true, 'later takeover');
   expect(replay).toThrow('fencing');
 });
+test('claimRun takeover preserves an online repository owner atomically', () => {
+  let repoOffline = false;
+  const runOwner = { ...a, session_id: 'run-owner' },
+    s = setup(who =>
+      same(who, a) ? (repoOffline ? { state: 'offline' } : online) : { state: 'offline' }
+    ),
+    target = runScope({ run_id: 'target', repo: s.repo });
+  s.c.claim(s.scope, a);
+  s.c.claim(target, runOwner);
+  const before = [s.c.owner(target), s.c.owner(s.scope)];
+  let message = '';
+  try {
+    s.c.claimRun(target, b, true, '用户授权接管 run');
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  expect(message).toContain('codex A 负责（在线）');
+  expect(message).toContain(`superagent handoff --to ${target.repo}`);
+  expect(message).toContain(`superagent claim ${target.repo} --takeover --reason "<原话>"`);
+  expect([s.c.owner(target), s.c.owner(s.scope)]).toEqual(before);
+  repoOffline = true;
+  expect(s.c.claimRun(target, b, true, '用户授权接管 run')).toMatchObject({
+    controller: b,
+    repository: b,
+  });
+});
+test('claimRun takeover succeeds when the caller owns the repository', () => {
+  const s = setup(who => (same(who, a) ? { state: 'offline' } : online)),
+    target = runScope({ run_id: 'target', repo: s.repo });
+  s.c.claim(s.scope, b);
+  s.c.claim(target, a);
+  expect(s.c.claimRun(target, b, true, '用户授权接管 run')).toMatchObject({
+    controller: b,
+    repository: b,
+  });
+});
 test('2: PID reuse is offline and old identity/generation cannot mutate (three human-readable lines)', () => {
   const s = setup();
   const old = { ...a, pid_start: 'old-lifetime' };

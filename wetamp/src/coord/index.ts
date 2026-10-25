@@ -494,6 +494,18 @@ export class Coordination {
         const repo = { kind: 'repo' as const, id: scope.repo };
         const runState = this.claimState(scope, who, takeover),
           repoState = this.claimState(repo, who, takeover);
+        if (
+          takeover &&
+          repoState.view.owner &&
+          !same(repoState.view.owner, who) &&
+          repoState.view.presence.state !== 'offline'
+        )
+          throw new Error(
+            shared
+              .refusal('run 级接管', repoState.view.owner, repoState.view.presence.state, repo)
+              .replace('<path|run>', scope.repo)
+              .replace('claim --takeover', `claim ${scope.repo} --takeover`)
+          );
         const controller = this.applyClaim(scope, who, reason, runState),
           repository = this.applyClaim(repo, who, reason, repoState);
         return { controller, repository, inbox: this.inbox(who) };
