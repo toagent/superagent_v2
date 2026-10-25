@@ -1083,9 +1083,13 @@ test(
     expect(s.c.owner(s.scope).owner).toEqual(actor); // Repo fallback would wrongly admit this actual caller.
     const calls = join(s.root, 'calls'),
       stub = join(s.root, 'engine');
-    writeFileSync(stub, `#!/bin/sh\necho "$*" >> '${calls}'\nexit 1\n`);
+    writeFileSync(
+      stub,
+      `#!/bin/sh\n[ "$*" = "workflow runs --all --limit 2147483647 --verbose --json" ] && { echo '{"runs":[]}'; exit 0; }\necho "$*" >> '${calls}'\nexit 1\n`
+    );
     chmodSync(stub, 0o755);
     process.env.SA_ARCHON_BIN = stub;
+    writeFileSync(join(s.sa, 'gc-tick'), String(Date.now()));
     for (const verb of ['cancel', 'resume', 'recover', 'decide', 'land'])
       for (const id of [l.run_id, l.archon_run_id])
         expect(() => main([verb, id, 'retry'])).toThrow(/fencing/);
