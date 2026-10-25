@@ -35,6 +35,21 @@ const root = (): string => join(home().sa, 'engine');
 const receiptsDir = (): string => join(root(), 'receipts');
 const currentLink = (): string => join(root(), 'current');
 const promotionDir = (): string => join(root(), 'promotions');
+const holdPath = (): string => join(root(), 'hold.json');
+interface EngineHold {
+  by: string;
+  at: string;
+}
+const engineHold = (): EngineHold | null => {
+  if (!existsSync(holdPath())) return null;
+  try {
+    const value = JSON.parse(readFileSync(holdPath(), 'utf8')) as EngineHold;
+    if (typeof value.by === 'string' && typeof value.at === 'string') return value;
+  } catch {
+    // A damaged marker must keep automatic promotion paused.
+  }
+  return { by: 'unknown', at: 'unknown' };
+};
 const sourceRoot = (): string =>
   resolve(
     process.env.SA_ENGINE_SOURCE !== undefined && process.env.SA_ENGINE_SOURCE !== ''
@@ -614,6 +629,7 @@ export function engineStatus(): Record<string, unknown> {
   const verified = receipts();
   return {
     current,
+    hold: engineHold(),
     protocol_version: ENGINE_PROTOCOL_VERSION,
     snapshots: verified.map(item => ({
       sha: item.sha,
@@ -635,6 +651,23 @@ export function engineCommand(args: string[]): unknown {
     return promote(sha ?? '', args[2] === '--bootstrap-evidence' ? args[3] : undefined);
   if (action === 'rollback') return rollback();
   if (action === 'status') return engineStatus();
+  if (action === 'hold') {
+    if (sha === 'status') return { hold: engineHold() };
+    if (sha === 'off') {
+      rmSync(holdPath(), { force: true });
+      return { hold: null };
+    }
+    if (sha === 'on') {
+      mkdirSync(root(), { recursive: true });
+      const hold = {
+        by: `${process.env.USER ?? process.env.LOGNAME ?? 'unknown'}@${hostname()}`,
+        at: new Date().toISOString(),
+      };
+      writeAtomic(holdPath(), JSON.stringify(hold, null, 2) + '\n');
+      return { hold };
+    }
+    throw new Error('usage: superagent engine hold <on|off|status>');
+  }
   if (action === 'adopt') return adoptEngineSnapshot(sha ?? '', args[2] ?? '');
   if (action === 'gate-legacy') return gateLegacyRuns();
   if (action === 'probe') {
@@ -643,7 +676,7 @@ export function engineCommand(args: string[]): unknown {
     return runProbe(level);
   }
   throw new Error(
-    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy'
+    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | probe [G1|G2] | rollback | status | hold <on|off|status> | adopt <run> <sha> | gate-legacy'
   );
 }
 
@@ -657,9 +690,11 @@ export interface AutoPromoteDependencies {
 
 export function autoPromote(
   dependencies: AutoPromoteDependencies = {}
-): { sha: string; promoted: boolean; error?: string } | undefined {
+): { sha: string; promoted: boolean; held?: boolean; error?: string } | undefined {
   const current = currentEngineSnapshot();
   if (process.env.SA_ENGINE_AUTO_PROMOTE === '0' || current === undefined) return undefined;
+  const hold = engineHold();
+  if (hold) return { sha: releaseHead(), promoted: false, held: true };
   mkdirSync(promotionDir(), { recursive: true });
   try {
     const sha = releaseHead();

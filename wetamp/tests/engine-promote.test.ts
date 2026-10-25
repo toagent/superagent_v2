@@ -15,6 +15,8 @@ import { isWithinWriteRoots } from '../src/plan';
 import {
   autoPromote,
   currentEngineSnapshot,
+  engineCommand,
+  engineStatus,
   promote,
   rollback,
   runAcceptance,
@@ -139,6 +141,7 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   expect(promote(first, f.evidence).bootstrap_evidence).toBe(f.evidence);
   expect(() => promote(first, f.evidence)).toThrow('first-use only');
   const second = commit(f.source, 'second');
+  engineCommand(['hold', 'on']);
   expect(promote(second, undefined, { probe: successfulProbe })).toMatchObject({
     sha: second,
     results: [{ command: 'wetamp/scripts/engine-acceptance.sh' }, { run_id: 'probe-run' }],
@@ -266,6 +269,25 @@ test('auto promotion detaches once and marks a lost promoter with an explicit re
   state = 'offline';
   expect(autoPromote(deps)).toMatchObject({ sha: second, error: expect.stringContaining('superagent engine promote') });
   expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('failed');
+}, testTimeout(60_000));
+
+// prettier-ignore
+test('engine hold is visible, idempotent, and pauses only automatic promotion', () => {
+  const f = sourceFixture(), first = f.sha();
+  promote(first, f.evidence);
+  delete process.env.SA_ENGINE_AUTO_PROMOTE;
+  const second = commit(f.source, 'second'), engine = join(process.env.SUPERAGENT_HOME!, 'engine'), marker = join(engine, 'promotions', `${second}.json`);
+  let spawned = 0;
+  const deps = { spawn: () => (spawned++, { pid: 424242, unref: () => {} }), inspect: () => ({ state: 'online', start: 'Mon Oct 20 00:00:00 2026' } as const) };
+  expect(engineCommand(['hold', 'on'])).toMatchObject({ hold: { by: expect.any(String), at: expect.any(String) } });
+  expect(engineCommand(['hold', 'on'])).toMatchObject({ hold: { by: expect.any(String), at: expect.any(String) } });
+  expect(engineCommand(['hold', 'status'])).toEqual({ hold: (engineStatus() as { hold: unknown }).hold });
+  expect(autoPromote(deps)).toEqual({ sha: second, promoted: false, held: true });
+  expect(spawned).toBe(0); expect(existsSync(marker)).toBe(false);
+  expect(engineCommand(['hold', 'off'])).toEqual({ hold: null });
+  expect(engineCommand(['hold', 'off'])).toEqual({ hold: null });
+  expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
+  expect(spawned).toBe(1); expect(existsSync(marker)).toBe(true);
 }, testTimeout(60_000));
 
 // prettier-ignore
