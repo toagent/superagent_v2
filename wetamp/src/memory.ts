@@ -246,7 +246,8 @@ export function diagnosis(
   e: TriageEvidence,
   contradiction = false
 ): { category: Category; signature: string } {
-  const reasons = e.reasons.filter(r => r !== 'unclassified').map(reasonOf),
+  const failureReasons = e.reasons.filter(r => r !== 'review_not_required'),
+    reasons = failureReasons.filter(r => r !== 'unclassified').map(reasonOf),
     result = (
       category: Category,
       signature: string
@@ -291,11 +292,11 @@ export function diagnosis(
         'evidence_missing'
     );
   if (reasons.length && reasons.every(r => r?.determinism === 'transient'))
-    return result('transient', e.reasons.slice().sort().join('+'));
+    return result('transient', failureReasons.slice().sort().join('+'));
   if (reasons.some(r => r?.owner === 'human') || e.overrun || (e.p50_ratio ?? 0) > 2)
     return result('plan', reasons.find(r => r?.owner === 'human')?.code ?? 'duration_overrun');
   if (reasons.some(r => r?.owner === 'coder'))
-    return result('project', e.reasons.slice().sort().join('+'));
+    return result('project', failureReasons.slice().sort().join('+'));
   return result('engine', 'evidence_missing');
 }
 export const triage = (e: TriageEvidence, contradiction = false): Category =>
@@ -305,9 +306,11 @@ const defectEligible = (e: Episode): boolean => {
     e.status !== 'completed' ||
     !e.acceptance.length ||
     e.acceptance.some(acceptance => acceptance.ok !== true);
+  const terminalFailure = ['failed', 'cancelled', 'lost'].includes(e.status);
   return (
     unsuccessful &&
-    (['engine_suspect', 'dup_ask', 'orphan_hold'].includes(e.signature) ||
+    ((e.signature === 'engine_suspect' && terminalFailure) ||
+      ['dup_ask', 'orphan_hold'].includes(e.signature) ||
       ['completed', 'failed', 'cancelled', 'lost'].includes(e.status))
   );
 };

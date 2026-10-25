@@ -299,7 +299,7 @@ describe('EV1 incident replay', () => {
     saveEpisode(e);
     expect(existsSync(join(sa, 'memory/mechanize', `${e.signature}.json`))).toBe(true);
   });
-  test('result defects wait for terminal failure while live signal defects remain eligible', () => {
+  test('result and engine suspect defects wait for terminal failure', () => {
     const successful = [
       ['review_not_required'],
       ['review_not_required', 'environment'],
@@ -334,12 +334,13 @@ describe('EV1 incident replay', () => {
       id: 'result-defect',
       status: 'running',
       category: 'engine',
-      signature: 'evidence_conflict',
+      signature: 'engine_suspect',
       acceptance: [{ cmd: 'accept', ok: true }],
     });
     saveEpisode(pending);
     saveEpisode({ ...pending, status: 'paused' });
-    expect(existsSync(join(sa, 'memory/mechanize/evidence_conflict.json'))).toBe(false);
+    saveEpisode({ ...pending, status: 'completed' });
+    expect(existsSync(join(sa, 'memory/mechanize/engine_suspect.json'))).toBe(false);
     deliverEngineDefects();
     expect(coordination.coord().messages()).toHaveLength(0);
     saveEpisode({ ...pending, status: 'failed' });
@@ -876,6 +877,18 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(triage({ reasons: ['coder_error:env'], signals: zeros })).toBe('engine');
     expect(triage({ reasons: ['environment'], signals: zeros })).toBe('transient');
     expect(triage({ reasons: ['acceptance_failed'], signals: zeros })).toBe('project');
+    const acceptanceFailure = diagnosis({
+      reasons: ['repair_exhausted:acceptance_failed'],
+      signals: zeros,
+      status: 'failed',
+    });
+    expect(
+      diagnosis({
+        reasons: ['review_not_required', 'repair_exhausted:acceptance_failed'],
+        signals: zeros,
+        status: 'failed',
+      })
+    ).toEqual(acceptanceFailure);
     expect(taskTag(['docs/a.md', 'src/b.ts', 'a.vue', 'c.ts'])).toBe('docs+ts-cli');
   });
   test('feedback promotes helpful trials and retires harmful trials', () => {
@@ -1849,7 +1862,7 @@ describe('FIXD review regressions', () => {
         JSON.stringify({ ...ledger, run_id: `quiet${i}` })
       );
     expect(memoryTick({}, NOW, false).errors).toEqual([]);
-    expect(episodes()).toHaveLength(5);
+    expect(episodes()).toHaveLength(0);
     expect(existsSync(join(sa, 'memory/mechanize/review_not_required.json'))).toBe(false);
     expect(coordination.coord().messages()).toHaveLength(0);
     const priors = JSON.parse(readFileSync(join(sa, 'memory/priors.json'), 'utf8'));
