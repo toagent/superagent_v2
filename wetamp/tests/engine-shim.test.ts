@@ -24,7 +24,7 @@ function fakeEngine(
     join(engine, 'wetamp', 'src', 'cli.ts'),
     `import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ engine: ${JSON.stringify(name)}, args, served: process.env.SA_SERVED_RUN, historical: process.env.SA_HISTORICAL_RUN }) + '\\n');
+appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ engine: ${JSON.stringify(name)}, args, served: process.env.SA_SERVED_RUN || undefined, historical: process.env.SA_HISTORICAL_RUN || undefined }) + '\\n');
 if (args.includes('--schedule')) console.log(JSON.stringify(${JSON.stringify(schedule ?? {})}));
 else console.log(JSON.stringify({ ok: true }));
 if (${String(failExecutor)} && args.includes('--no-global')) process.exit(1);
@@ -63,7 +63,12 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
   );
   const invoke = (...args: string[]) =>
     Bun.spawnSync([SHIM, ...args], {
-      env: { ...process.env, SUPERAGENT_HOME: home },
+      env: {
+        ...process.env,
+        SUPERAGENT_HOME: home,
+        SA_SERVED_RUN: '',
+        SA_HISTORICAL_RUN: '',
+      },
       stdout: 'pipe',
       stderr: 'pipe',
     });

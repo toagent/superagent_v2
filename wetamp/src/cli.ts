@@ -3114,6 +3114,11 @@ type TickStat = Pick<Stats, 'mtimeMs' | 'size'>;
 type TickInput = [Ledger, TickStat, string?, RunView['status']?];
 const tickFingerprint = (l: Ledger, stat: TickStat, revision?: string): string | undefined =>
   revision ? JSON.stringify([l.archon_run_id, stat.mtimeMs, stat.size, revision]) : undefined;
+const hasUnresolvedAsk = (l: Ledger, asks: Asks | undefined): boolean =>
+  asks === undefined ||
+  Object.entries(asks).some(
+    ([key, ask]) => key.startsWith(`${l.run_id}:`) && (ask ? unresolved(ask) : false)
+  );
 export const settledInTick = (
   [l, stat]: TickInput,
   revision: string | undefined,
@@ -3123,10 +3128,7 @@ export const settledInTick = (
 ): boolean =>
   !!tickFingerprint(l, stat, revision) &&
   cache[l.run_id] === tickFingerprint(l, stat, revision) &&
-  asks !== undefined &&
-  !Object.entries(asks).some(
-    ([key, ask]) => key.startsWith(`${l.run_id}:`) && (ask ? unresolved(ask) : false)
-  ) &&
+  !hasUnresolvedAsk(l, asks) &&
   due !== undefined &&
   !due.has(l.archon_run_id);
 export function scheduleTickGroups(
@@ -3140,6 +3142,7 @@ export function scheduleTickGroups(
     unavailable: string[] = [];
   for (const input of inputs) {
     const [ledger, , snapshot, status] = input;
+    if (ledger.rejected === ledger.archon_run_id && !hasUnresolvedAsk(ledger, asks)) continue;
     if (settledInTick(input, revisions?.get(ledger.archon_run_id), cache, asks, due)) continue;
     if (snapshot) grouped.set(snapshot, [...(grouped.get(snapshot) ?? []), ledger.run_id]);
     else if (!['completed', 'cancelled'].includes(status ?? 'unknown'))
@@ -3935,16 +3938,18 @@ export async function superviseTickCli(
 ): Promise<number> {
   const errors: string[] = [];
   try {
-    await refresh();
+    if (!mode.noGlobal) await refresh();
   } catch (e) {
     errors.push(`console refresh failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   let output: Record<string, unknown> = {};
   const exit = tickOutput(mode, value => (output = value));
   try {
-    const result = await sync();
-    if (result && typeof result === 'object' && 'error' in result)
-      throw new Error(String(result.error));
+    if (!mode.noGlobal) {
+      const result = await sync();
+      if (result && typeof result === 'object' && 'error' in result)
+        throw new Error(String(result.error));
+    }
   } catch (e) {
     errors.push(`orca sync failed: ${e instanceof Error ? e.message : String(e)}`);
   }

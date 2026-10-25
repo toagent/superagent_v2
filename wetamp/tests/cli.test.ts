@@ -2579,6 +2579,32 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       runs: ['failed'],
     });
   });
+  test('scheduler skips rejected runs only after pending asks are resolved', () => {
+    const s = stub([run('cancelled')]),
+      input: Parameters<typeof cliMod.scheduleTickGroups>[0] = [
+        [{ ...s.ledger, rejected: s.ledger.archon_run_id }, { mtimeMs: 1, size: 2 }, s.root],
+      ];
+    expect(cliMod.scheduleTickGroups(input, {}, null, {}, undefined).groups).toEqual([]);
+    expect(
+      cliMod.scheduleTickGroups(input, {}, null, { 'sa1:hold': { status: 'pending' } }, undefined)
+        .groups
+    ).toEqual([{ snapshot: s.root, runs: ['sa1'] }]);
+  });
+  test('snapshot tick CLI leaves global console and Orca work to the scheduler', async () => {
+    const s = stub([run('completed')]),
+      calls = { refresh: 0, sync: 0 },
+      out = spyOn(console, 'log').mockImplementation(() => undefined),
+      refresh = async () => void calls.refresh++,
+      sync = async () => void calls.sync++;
+    try {
+      await superviseTickCli(refresh, sync);
+      activateEngineFixture(s);
+      await superviseTickCli(refresh, sync, { runs: ['sa1'], noGlobal: true });
+      expect(calls).toEqual({ refresh: 1, sync: 1 });
+    } finally {
+      out.mockRestore();
+    }
+  });
   test('heartbeat exposes non-empty scheduler groups and unavailable runs', async () => {
     const s = stub([run('completed')]),
       out = spyOn(console, 'log').mockImplementation(() => undefined);
