@@ -26,12 +26,11 @@ import {
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { fixturePlan, gitRepo, sh, tmp, trackTestChild } from '../helpers';
-import { generate, type Carried } from '../../src/generate';
+import { engineHash, generate, type Carried } from '../../src/generate';
 import { classifyRun, loadLedger, ledgerPath, main } from '../../src/cli';
 import type { RunView } from '../../src/archon';
 import * as coordination from '../../src/coord';
 import * as archonModule from '../../src/archon';
-import { adoptEngineSnapshot } from '../../src/engine';
 import type { Plan } from '../../src/plan';
 import { liveSourceRoots } from '../../../packages/workflows/src/workflow-source';
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
@@ -682,10 +681,15 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
       .claim(coordination.repoScope(state.target), who, true, 'scenario recovery');
     expect(old.engine_snapshot).toBe(oldSnapshot);
     expect(oldEngineHash).not.toBeUndefined();
+    old.engine_hash = engineHash();
+    old.workflow_hash = old.engine_hash;
+    writeFileSync(join(old.gen_dir, 'hints', 'p.md'), 'retry hint\n');
+    mkdirSync(join(old.gen_dir, 'attempts'), { recursive: true });
+    writeFileSync(join(old.gen_dir, 'attempts', 'm1'), '0\n');
     coordination.coord().reauthorize(old, who);
     writeFileSync(ledgerPath(state.runId), JSON.stringify(old));
-    const engineAdoption = adoptEngineSnapshot(state.runId, sha),
-      adoptedId = `adopted-${state.runId}`,
+    rmSync(oldSnapshot, { recursive: true, force: true });
+    const adoptedId = `adopted-${state.runId}`,
       original = archonModule.archon;
     const clean = spyOn(coordination, 'cleanEngine').mockReturnValue(sha),
       launch = spyOn(archonModule, 'archon').mockImplementation((args, cwd, intent, timeout) =>
@@ -713,7 +717,15 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
       dir: adopted.gen_dir,
       workflow: adopted.workflow,
     });
-    return { f, result, adopted, engineAdoption, oldSnapshot, root, originalRunId: state.runId };
+    return {
+      f,
+      result,
+      adopted,
+      oldSnapshot,
+      root,
+      oldGenDir: old.gen_dir,
+      originalRunId: state.runId,
+    };
   } finally {
     resetDatabase();
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

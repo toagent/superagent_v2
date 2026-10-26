@@ -44,6 +44,19 @@ if [[ "$verb" == supervise-tick ]]; then
   exit "$tick_status"
 fi
 
+run=${2:-}
+continuation=0
+if [[ "$verb" == resume || "$verb" == recover || ( "$verb" == decide && "${3:-}" == retry ) ]]; then
+  continuation=1
+fi
+if [[ "$continuation" == 1 && -n "$run" && "$run" != --* && -f "$sa_home/runs/$run.json" ]]; then
+  if route=$(bun "$current/wetamp/src/cli.ts" engine continuation "$run" 2>/dev/null) &&
+    bun -e 'const lines=(await Bun.stdin.text()).trim().split("\n"); process.exit(JSON.parse(lines.at(-1) || "{}").current === true ? 0 : 1)' <<< "$route"
+  then
+    run_cli "$current" "$@"
+  fi
+fi
+
 case "$verb" in
   wait|resume|recover|decide|land|cancel|brief|accept|status)
     run=${2:-}

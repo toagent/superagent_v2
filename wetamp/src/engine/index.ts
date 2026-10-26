@@ -162,6 +162,21 @@ export function bootstrapEngineSnapshot(): string | undefined {
 export const fixedEngineSnapshot = (ledger: { engine_snapshot?: string }): string | undefined =>
   ledger.engine_snapshot ?? bootstrapEngineSnapshot();
 
+const canonicalSnapshot = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+};
+
+export const staleEngineSnapshot = (ledger: { engine_snapshot?: string }): boolean => {
+  const pinned = fixedEngineSnapshot(ledger);
+  return (
+    pinned !== undefined && canonicalSnapshot(pinned) !== canonicalSnapshot(runningEngineSnapshot())
+  );
+};
+
 const rejected = (): string[] => {
   try {
     const value = JSON.parse(readFileSync(join(root(), 'rejected.json'), 'utf8')) as unknown;
@@ -672,6 +687,18 @@ export function engineStatus(): Record<string, unknown> {
   };
 }
 
+export function continuationOnCurrent(run: string): { current: boolean } {
+  const path = join(home().sa, 'runs', `${run}.json`);
+  if (!existsSync(path) || currentEngineSnapshot() !== runningEngineSnapshot())
+    return { current: false };
+  const ledger = readEngineLedger(path);
+  if (ledger.rejected === ledger.archon_run_id || !staleEngineSnapshot(ledger))
+    return { current: false };
+  return {
+    current: ['failed', 'cancelled'].includes(getRun(ledger.archon_run_id, ledger.repo).status),
+  };
+}
+
 export function engineCommand(args: string[]): unknown {
   const action = args[0],
     sha = args.at(1);
@@ -679,6 +706,7 @@ export function engineCommand(args: string[]): unknown {
     return promote(sha ?? '', args[2] === '--bootstrap-evidence' ? args[3] : undefined);
   if (action === 'rollback') return rollback();
   if (action === 'status') return engineStatus();
+  if (action === 'continuation') return continuationOnCurrent(sha ?? '');
   if (action === 'hold') {
     if (sha === 'status') return { hold: engineHold() };
     if (sha === 'off') {
@@ -704,7 +732,7 @@ export function engineCommand(args: string[]): unknown {
     return runProbe(level);
   }
   throw new Error(
-    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | probe [G1|G2] | rollback | status | hold <on|off|status> | adopt <run> <sha> | gate-legacy'
+    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | probe [G1|G2] | rollback | status | continuation <run> | hold <on|off|status> | adopt <run> <sha> | gate-legacy'
   );
 }
 
@@ -859,8 +887,10 @@ export function assertEngineAccess(argv: string[]): void {
       path = run && join(home().sa, 'runs', `${run}.json`);
     if (mutatingRun.has(verb) && path && existsSync(path)) {
       const ledger = JSON.parse(readFileSync(path, 'utf8')) as { engine_snapshot?: string };
-      const pinned = fixedEngineSnapshot(ledger);
-      if (!pinned || resolve(pinned) !== running)
+      const pinned = fixedEngineSnapshot(ledger),
+        continuation =
+          ['resume', 'recover'].includes(verb) || (verb === 'decide' && argv[2] === 'retry');
+      if (!pinned || (resolve(pinned) !== running && !continuation))
         throw new Error(`engine snapshot unavailable; run superagent engine adopt ${run} <sha>`);
     }
     return;

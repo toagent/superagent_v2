@@ -5,6 +5,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -164,9 +165,11 @@ exec "$S12_REAL_ARCHON" "$@"
 // prettier-ignore
 test('S15: recover adopts accepted work and hashes the carried persisted bytes', async () => {
   const spec = { ...fixture('S15').spec, risk: 'G2' as const, passRound: 2 as const },
-    { f, result, adopted, engineAdoption, oldSnapshot, root, originalRunId } = await recoverCarriedScenario(spec);
-    expect(engineAdoption).toMatchObject({ from: oldSnapshot, to: root });
+    { f, result, adopted, oldSnapshot, root, oldGenDir, originalRunId } = await recoverCarriedScenario(spec);
     expect(adopted.engine_adoptions?.at(-1)).toMatchObject({ from: oldSnapshot, to: root });
+    expect(realpathSync(join(adopted.gen_dir, 'archon'))).toBe(join(root, 'wetamp/bin/archon'));
+    expect(readFileSync(join(adopted.gen_dir, 'hints', 'p.md'), 'utf8')).toBe('retry hint\n');
+    expect(readFileSync(join(adopted.gen_dir, 'attempts', 'm1'), 'utf8')).toBe(readFileSync(join(oldGenDir, 'attempts', 'm1'), 'utf8'));
     expect(adopted.adoptions?.at(-1)).toMatchObject({
       from: originalRunId,
       to: result.runId,

@@ -1240,7 +1240,7 @@ export function generate(
   } catch (cause) {
     throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
   }
-  const suffix = carried?.recovery ? `continuations/${crypto.randomUUID()}` : '.';
+  const suffix = carried ? `continuations/${crypto.randomUUID()}` : '.';
   const dir = join(home().sa, 'gen', run, suffix);
   if (carried?.recovery) {
     mkdirSync(dir, { recursive: true });

@@ -13,6 +13,7 @@ import * as archon from '../src/archon';
 import {
   adoptEngineSnapshot,
   assertEngineAccess,
+  continuationOnCurrent,
   engineStatus,
   gateLegacyRuns,
   runningEngineSnapshot,
@@ -148,7 +149,24 @@ test('explicit adopt is the only operation that changes a run snapshot', () => {
   });
   unlinkSync(join(engine, 'current'));
   symlinkSync(runningEngineSnapshot(), join(engine, 'current'));
-  expect(() => assertEngineAccess(['recover', 'run'])).toThrow('engine adopt run');
+  expect(() => assertEngineAccess(['recover', 'run'])).not.toThrow();
+  expect(() => assertEngineAccess(['decide', 'run', 'approve'])).toThrow('engine adopt run');
+});
+
+test('current continuation query admits only stale terminal non-rejected runs', () => {
+  const { sa, engine } = engineHome(),
+    running = runningEngineSnapshot(),
+    old = join(engine, 'old');
+  symlinkSync(running, join(engine, 'current'));
+  for (const run of ['failed', 'cancelled', 'paused', 'rejected'])
+    ledger(sa, run, { snapshot: old, rejected: run === 'rejected' });
+  query = spyOn(archon, 'getRun').mockImplementation(id => ({
+    id,
+    status: id.slice(7) as 'failed' | 'cancelled' | 'paused',
+  }));
+  expect(
+    ['failed', 'cancelled', 'paused', 'rejected'].map(run => continuationOnCurrent(run).current)
+  ).toEqual([true, true, false, false]);
 });
 
 test('served runs remain scoped across promotion rejection and rollback', () => {

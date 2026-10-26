@@ -56,6 +56,7 @@ import {
   executionAdmissionLock,
 } from '@archon/workflows/execution-lifecycle';
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -135,6 +136,7 @@ import {
   fixedEngineSnapshot,
   runEngineSnapshot,
   runningEngineSnapshot,
+  staleEngineSnapshot,
 } from './engine';
 
 const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
@@ -798,8 +800,9 @@ function failure(l: Ledger, run: RunView, node: string | undefined): Record<stri
 }
 
 const workflowIdentity = (l: Ledger): string | undefined => l.workflow_hash ?? l.engine_hash;
-const adoptsRun = (l: Ledger, run: RunView): boolean =>
-  ['failed', 'cancelled'].includes(run.status) && workflowIdentity(l) !== engineHash();
+const adoptsRun = (l: Ledger, run: RunView, staleSnapshot = false): boolean =>
+  ['failed', 'cancelled'].includes(run.status) &&
+  (staleSnapshot || workflowIdentity(l) !== engineHash());
 
 /** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
 export function classifyRun(l: Ledger, run: RunView): Classified {
@@ -983,12 +986,7 @@ function recoverRun(
   evidenceFile?: string,
   admit?: (run: RunView) => string | undefined
 ): RecoverResult {
-  const currentSnapshot = currentEngineSnapshot(),
-    pinnedSnapshot = fixedEngineSnapshot(l);
-  if (currentSnapshot && pinnedSnapshot && resolve(pinnedSnapshot) !== runningEngineSnapshot())
-    throw new Error(
-      `engine identity: run ${l.run_id} is pinned to another snapshot; use engine adopt first`
-    );
+  let staleSnapshot = false;
   let adopted:
     | {
         from: string;
@@ -998,14 +996,29 @@ function recoverRun(
         carried: string[];
         coded: string[];
         dir: string;
+        snapshot_from?: string;
+        snapshot_to?: string;
       }
     | undefined;
   let restarted = false;
+  const prepareContinuation = (): void => {
+    prepare?.();
+    if (!adopted || resolve(adopted.dir) === resolve(l.gen_dir)) return;
+    for (const name of ['attempts', 'hints']) {
+      const source = join(l.gen_dir, name);
+      if (existsSync(source))
+        cpSync(source, join(adopted.dir, name), { recursive: true, force: true });
+    }
+  };
   return recover(
     l.archon_run_id,
     l.repo,
     run => {
       Object.assign(l, loadLedger(l.run_id));
+      staleSnapshot = staleEngineSnapshot(l);
+      if (l.rejected === run.id) return 'rejected run is not resumable';
+      if (staleSnapshot && !['failed', 'cancelled'].includes(run.status))
+        return `engine identity: run ${l.run_id} is pinned to another snapshot`;
       if (run.status === 'completed') return 'status completed is not resumable';
       return undefined;
     },
@@ -1032,6 +1045,15 @@ function recoverRun(
         l.engine_commit = adopted.commit;
         l.workflow_hash = adopted.hash;
         l.gen_dir = adopted.dir;
+        if (adopted.snapshot_to) {
+          (l.engine_adoptions ??= []).push({
+            at: new Date().toISOString(),
+            from: adopted.snapshot_from ?? null,
+            to: adopted.snapshot_to,
+          });
+          l.engine_snapshot = adopted.snapshot_to;
+          l.engine_snapshot_identity = 'current';
+        }
         l.transcript = typeof ack.transcriptPath === 'string' ? ack.transcriptPath : '';
         l.log = typeof ack.logPath === 'string' ? ack.logPath : '';
       }
@@ -1041,7 +1063,7 @@ function recoverRun(
         engine_run: l.archon_run_id,
       });
     },
-    prepare,
+    prepareContinuation,
     {
       lockId: l.adoptions?.[0]?.from ?? l.archon_run_id,
       operatorId: l.run_id,
@@ -1051,7 +1073,10 @@ function recoverRun(
       },
       adopt: run => {
         // Live and paused owners retain their snapshot; terminal recovery may change source.
-        if (!adoptsRun(l, run) && !(evidenceFile && ['failed', 'cancelled'].includes(run.status))) {
+        if (
+          !adoptsRun(l, run, staleSnapshot) &&
+          !(evidenceFile && ['failed', 'cancelled'].includes(run.status))
+        ) {
           if (evidenceFile) throw new Error('recovery: evidence requires terminal execution');
           // A terminal run with no completed nodes cannot resume; retain its frozen workflow.
           if (
@@ -1178,7 +1203,7 @@ function recoverRun(
               : {}),
           },
           l.delivery,
-          l.engine_snapshot
+          runningEngineSnapshot()
         );
         adopted = {
           from: run.id,
@@ -1188,6 +1213,9 @@ function recoverRun(
           carried,
           coded,
           dir: gen.dir,
+          ...(staleSnapshot
+            ? { snapshot_from: fixedEngineSnapshot(l), snapshot_to: runningEngineSnapshot() }
+            : {}),
         };
         return [
           'workflow',
