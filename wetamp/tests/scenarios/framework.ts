@@ -761,6 +761,15 @@ exec ${join(currentSnapshot, 'wetamp/bin/archon')} "$@"
         failed: persisted?.status === 'failed' ? [adoptedId] : [],
       },
     };
+    if (process.env.SCENARIO_EXPECT_CARRIED_MUTATION === '1')
+      console.error(
+        JSON.stringify(
+          result.events.map(event => ({
+            nodeId: event.step_name,
+            ...(event.data?.reason === 'when_condition' ? { when: event.data.cause } : {}),
+          }))
+        )
+      );
     return {
       f,
       result,

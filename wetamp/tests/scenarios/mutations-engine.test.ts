@@ -1,19 +1,25 @@
 import { expect, test } from 'bun:test';
-import { cpSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from '../helpers';
 
 test('S15: carried evidence without its persisted-byte hash fails the real scenario', () => {
   const repo = join(import.meta.dir, '../../..'),
-    root = tmp(),
+    root = join(tmp(), 'repo'),
     wetamp = join(root, 'wetamp');
-  cpSync(join(repo, 'wetamp'), wetamp, {
+  cpSync(repo, root, {
     recursive: true,
-    filter: source => !source.includes('/node_modules') && !source.includes('/.git/'),
+    filter: source =>
+      !source.includes('/node_modules') && !source.includes('/.git/') && !source.endsWith('/.git'),
   });
-  symlinkSync(join(repo, 'packages'), join(root, 'packages'));
   symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
   symlinkSync(join(repo, 'wetamp/node_modules'), join(wetamp, 'node_modules'));
+  for (const name of readdirSync(join(repo, 'packages')))
+    if (existsSync(join(repo, 'packages', name, 'node_modules')))
+      symlinkSync(
+        join(repo, 'packages', name, 'node_modules'),
+        join(root, 'packages', name, 'node_modules')
+      );
   const path = join(wetamp, 'templates/.archon/scripts/sa-check.ts'),
     source = readFileSync(path, 'utf8'),
     from = 'emit({ ...out, artifact_sha256: sha(serialized) });',
@@ -23,7 +29,8 @@ test('S15: carried evidence without its persisted-byte hash fails the real scena
   writeFileSync(path, `${source.slice(0, carried)}${to}${source.slice(carried + from.length)}`);
   for (const args of [
     ['init', '-q'],
-    ['add', 'wetamp', 'packages', 'node_modules'],
+    ['config', 'core.hooksPath', '/dev/null'],
+    ['add', 'wetamp', 'packages', 'package.json', 'bun.lock'],
     [
       '-c',
       'user.name=scenario',
