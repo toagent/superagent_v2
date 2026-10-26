@@ -1,9 +1,48 @@
 import { Database } from 'bun:sqlite';
-import { writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
 import { expect, spyOn, test } from 'bun:test';
 import * as transport from '../src/archon';
+
+test('worker launches clear CLI routing identity while queries preserve it', async () => {
+  const root = tmp(),
+    bin = join(root, 'wetamp', 'bin', 'archon'),
+    launch = join(root, 'launch'),
+    query = join(root, 'query'),
+    detached = join(root, 'detached'),
+    saved = { ...process.env };
+  mkdirSync(join(root, 'wetamp', 'bin'), { recursive: true });
+  writeFileSync(
+    bin,
+    `#!/bin/sh\nprintf '%s|%s' "\${SA_SERVED_RUN-x}" "\${SA_HISTORICAL_RUN-x}" > "$3"\n`,
+    { mode: 0o755 }
+  );
+  Object.assign(process.env, {
+    SA_ARCHON_BIN: bin,
+    SA_SERVED_RUN: 'served',
+    SA_HISTORICAL_RUN: 'historical',
+    SUPERAGENT_HOME: join(root, 'sa'),
+  });
+  try {
+    transport.archon(['workflow', 'run', launch, '--detach']);
+    transport.archon(['workflow', 'status', query]);
+    transport.archonDetached(
+      ['workflow', 'wake', detached],
+      join(root, 'detached.log'),
+      undefined,
+      false,
+      root
+    );
+    for (let i = 0; i < 100 && !existsSync(detached); i++) await Bun.sleep(20);
+    expect(readFileSync(launch, 'utf8')).toBe('|');
+    expect(readFileSync(detached, 'utf8')).toBe('|');
+    expect(readFileSync(query, 'utf8')).toBe('served|historical');
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+});
 
 test('error excerpts preserve the first line and stack tail within the limit', () => {
   const first =
