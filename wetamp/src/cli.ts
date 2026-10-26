@@ -1004,7 +1004,7 @@ function recoverRun(
   const prepareContinuation = (): void => {
     prepare?.();
     if (!adopted || resolve(adopted.dir) === resolve(l.gen_dir)) return;
-    for (const name of ['attempts', 'hints']) {
+    for (const name of ['attempts', 'hints', 'approvals']) {
       const source = join(l.gen_dir, name);
       if (existsSync(source))
         cpSync(source, join(adopted.dir, name), { recursive: true, force: true });

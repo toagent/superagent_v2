@@ -51,7 +51,7 @@ if [[ "$verb" == resume || "$verb" == recover || ( "$verb" == decide && "${3:-}"
 fi
 if [[ "$continuation" == 1 && -n "$run" && "$run" != --* && -f "$sa_home/runs/$run.json" ]]; then
   if route=$(bun "$current/wetamp/src/cli.ts" engine continuation "$run" 2>/dev/null) &&
-    bun -e 'const lines=(await Bun.stdin.text()).trim().split("\n"); process.exit(JSON.parse(lines.at(-1) || "{}").current === true ? 0 : 1)' <<< "$route"
+    bun -e 'const value=JSON.parse(await Bun.stdin.text()); process.exit(value.current === true ? 0 : 1)' <<< "$route"
   then
     run_cli "$current" "$@"
   fi

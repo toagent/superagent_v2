@@ -170,16 +170,20 @@ test('S15: recover adopts accepted work and hashes the carried persisted bytes',
     expect(realpathSync(join(adopted.gen_dir, 'archon'))).toBe(join(root, 'wetamp/bin/archon'));
     expect(readFileSync(join(adopted.gen_dir, 'hints', 'p.md'), 'utf8')).toBe('retry hint\n');
     expect(readFileSync(join(adopted.gen_dir, 'attempts', 'm1'), 'utf8')).toBe(readFileSync(join(oldGenDir, 'attempts', 'm1'), 'utf8'));
+    expect(readFileSync(join(adopted.gen_dir, 'approvals', 'verify-p.json'), 'utf8')).toBe('{"approved":true}\n');
     expect(adopted.adoptions?.at(-1)).toMatchObject({
       from: originalRunId,
       to: result.runId,
       carried: ['p'],
     });
     expectOutcome(f, result, { terminal: 'completed', counts: { 'code-p': 0, 'verify-p': 1, 'integrate-m1.publish-m1': 1 }, published: true });
-    const gate = completedOutput(result, 'gate-m1-r2') as { identity: { authors: { model: string }[]; reviewer: { model: string } } };
+    const gate = completedOutput(result, 'gate-m1-r1') as { identity: { authors: { model: string }[]; reviewer: { model: string } } };
     expect(gate).toMatchObject({ risk: 'G2', grade: 'PASS', identity: { reviewer: { model: 'fixture/reviewer' } } });
     expect(gate.identity.authors.every(author => author.model === 'fixture/coder')).toBeTrue();
     const output = completedOutput(result, 'verify-p'),
       artifact = readFileSync(join(result.artifactsDir, 'verify-p.json'));
     expect(output.artifact_sha256).toBe(new Bun.CryptoHasher('sha256').update(artifact).digest('hex'));
+    const cancelled = await recoverCarriedScenario(spec, 'cancelled');
+    expect(cancelled.adopted.adoptions?.at(-1)).toMatchObject({ from: cancelled.originalRunId, to: cancelled.result.runId });
+    expect(cancelled.result.terminal.completed).toEqual([cancelled.result.runId]);
 }, 240_000);

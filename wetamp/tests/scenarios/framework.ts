@@ -35,7 +35,7 @@ import type { Plan } from '../../src/plan';
 import { liveSourceRoots } from '../../../packages/workflows/src/workflow-source';
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
-import { failWorkflowRun } from '../../../packages/core/src/db/workflows';
+import { cancelWorkflowRun, failWorkflowRun } from '../../../packages/core/src/db/workflows';
 import { createCodebase } from '../../../packages/core/src/db/codebases';
 
 // prettier-ignore
@@ -587,31 +587,41 @@ export type ScenarioEvidence = Pick<
   'runId' | 'artifactsDir' | 'events' | 'terminal'
 >;
 
-export async function recoverCarriedScenario(spec: ScenarioSpec) {
+export async function recoverCarriedScenario(
+  spec: ScenarioSpec,
+  terminal: 'failed' | 'cancelled' = 'failed'
+) {
   const scratch = tmp(),
     ready = join(scratch, 'ready.json'),
     marker = join(scratch, 'blocked'),
     root = realpathSync(join(import.meta.dir, '../../..')),
+    currentSnapshot = join(scratch, 'engine-current'),
     oldSnapshot = join(scratch, 'engine-a');
-  cpSync(root, oldSnapshot, {
+  cpSync(root, currentSnapshot, {
     recursive: true,
     filter: copyableFixtureEntry,
   });
   sh(
-    'git init -q -b 1.0.0 && git config user.name scenario && git config user.email scenario@local && printf "\\nA\\n" >> wetamp/templates/brief.md && git add packages wetamp && git commit -qm engine-A',
+    'git init -q -b 2.0.0 && git config user.name scenario && git config user.email scenario@local && git add packages wetamp package.json bun.lock && git commit -qm engine-current',
+    currentSnapshot
+  );
+  writeFileSync(join(currentSnapshot, '.git/info/exclude'), '*\n');
+  cpSync(currentSnapshot, oldSnapshot, { recursive: true, filter: copyableFixtureEntry });
+  sh(
+    'git init -q -b 1.0.0 && git config user.name scenario && git config user.email scenario@local && printf "\\nA\\n" >> wetamp/templates/brief.md && git add packages wetamp package.json bun.lock && git commit -qm engine-A',
     oldSnapshot
   );
-  symlinkSync(join(root, 'node_modules'), join(oldSnapshot, 'node_modules'));
-  symlinkSync(join(root, 'wetamp/node_modules'), join(oldSnapshot, 'wetamp/node_modules'));
-  for (const name of readdirSync(join(root, 'packages')))
-    if (
-      existsSync(join(root, 'packages', name, 'node_modules')) &&
-      !existsSync(join(oldSnapshot, 'packages', name, 'node_modules'))
-    )
-      symlinkSync(
-        join(root, 'packages', name, 'node_modules'),
-        join(oldSnapshot, 'packages', name, 'node_modules')
-      );
+  writeFileSync(join(oldSnapshot, '.git/info/exclude'), '*\n');
+  for (const snapshot of [currentSnapshot, oldSnapshot]) {
+    symlinkSync(join(root, 'node_modules'), join(snapshot, 'node_modules'));
+    symlinkSync(join(root, 'wetamp/node_modules'), join(snapshot, 'wetamp/node_modules'));
+    for (const name of readdirSync(join(root, 'packages')))
+      if (existsSync(join(root, 'packages', name, 'node_modules')))
+        symlinkSync(
+          join(root, 'packages', name, 'node_modules'),
+          join(snapshot, 'packages', name, 'node_modules')
+        );
+  }
   const child = Bun.spawn(
     [process.execPath, 'test', join(oldSnapshot, 'wetamp/tests/scenarios/detached-runner.ts')],
     {
@@ -656,11 +666,12 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
     await failWorkflowRun(state.runId, 'scenario executor crashed', {
       exitReason: 'unhandled_error',
     });
-    const sha = sh('git rev-parse HEAD', root).trim(),
+    if (terminal === 'cancelled') await cancelWorkflowRun(state.runId);
+    const sha = sh('git rev-parse HEAD', currentSnapshot).trim(),
       engine = join(state.home, 'engine'),
       oldEngineHash = loadLedger(state.runId).workflow_hash;
     mkdirSync(join(engine, 'receipts'), { recursive: true });
-    symlinkSync(root, join(engine, sha));
+    symlinkSync(currentSnapshot, join(engine, sha));
     symlinkSync(join(engine, sha), join(engine, 'current'));
     writeFileSync(
       join(engine, 'receipts', `${sha}.json`),
@@ -686,23 +697,43 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
     writeFileSync(join(old.gen_dir, 'hints', 'p.md'), 'retry hint\n');
     mkdirSync(join(old.gen_dir, 'attempts'), { recursive: true });
     writeFileSync(join(old.gen_dir, 'attempts', 'm1'), '0\n');
+    mkdirSync(join(old.gen_dir, 'approvals'), { recursive: true });
+    writeFileSync(join(old.gen_dir, 'approvals', 'verify-p.json'), '{"approved":true}\n');
     coordination.coord().reauthorize(old, who);
     writeFileSync(ledgerPath(state.runId), JSON.stringify(old));
     rmSync(oldSnapshot, { recursive: true, force: true });
-    const adoptedId = `adopted-${state.runId}`,
-      original = archonModule.archon;
-    const clean = spyOn(coordination, 'cleanEngine').mockReturnValue(sha),
-      launch = spyOn(archonModule, 'archon').mockImplementation((args, cwd, intent, timeout) =>
-        args[0] === 'workflow' && args[1] === 'run' && args.includes('--adopt')
-          ? { code: 0, out: JSON.stringify({ ok: true, runId: adoptedId }), err: '' }
-          : original(args, cwd, intent, timeout)
-      );
-    try {
-      expect(main(['recover', state.runId])).toBe(0);
-    } finally {
-      launch.mockRestore();
-      clean.mockRestore();
-    }
+    const adoptedId = `adopted-${terminal}-${state.runId}`,
+      wrapper = join(scratch, 'archon-adopt'),
+      resultPath = join(scratch, `${terminal}.json`),
+      runnerLog = join(scratch, `${terminal}.log`);
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh
+set -eu
+if [ "$1 $2" = "workflow run" ]; then
+  workflow=$3; from=$5; source=$7
+  (sleep 1; SCENARIO_ADOPTED_ID=${adoptedId} SCENARIO_ADOPT_FROM="$from" SCENARIO_WORKFLOW_SOURCE="$source" SCENARIO_WORKFLOW="$workflow" SCENARIO_RESUME_STATE=${ready} SCENARIO_RESULT=${resultPath} ${process.execPath} test ${join(currentSnapshot, 'wetamp/tests/scenarios/detached-runner.ts')}) >${runnerLog} 2>&1 &
+  printf '{"ok":true,"runId":"%s"}\n' '${adoptedId}'
+  exit 0
+fi
+exec ${join(currentSnapshot, 'wetamp/bin/archon')} "$@"
+`
+    );
+    sh(`chmod +x '${wrapper}'`, scratch);
+    process.env.SA_ARCHON_BIN = wrapper;
+    const resumed = Bun.spawnSync(
+      [join(currentSnapshot, 'wetamp/bin/superagent-shim'), 'resume', state.runId],
+      {
+        env: process.env,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 240_000,
+      }
+    );
+    expect(resumed.exitCode, resumed.stdout.toString() + resumed.stderr.toString()).toBe(0);
+    for (const end = Date.now() + 240_000; !existsSync(resultPath) && Date.now() < end; )
+      await Bun.sleep(25);
+    expect(existsSync(resultPath), readFileSync(runnerLog, 'utf8').slice(-4000)).toBeTrue();
     const adopted = loadLedger(state.runId),
       f: ScenarioFixture = {
         ...state,
@@ -711,18 +742,23 @@ export async function recoverCarriedScenario(spec: ScenarioSpec) {
         roles: [],
         spec,
       };
-    const result = await runInProcess(f, {
+    const store = createWorkflowStore(),
+      persisted = await store.getWorkflowRun(adoptedId);
+    const result: ScenarioEvidence = {
       runId: adoptedId,
-      from: state.runId,
-      dir: adopted.gen_dir,
-      workflow: adopted.workflow,
-    });
+      artifactsDir: join(state.archonHome, 'artifacts', 'runs', adoptedId),
+      events: await store.listWorkflowEvents(adoptedId),
+      terminal: {
+        completed: persisted?.status === 'completed' ? [adoptedId] : [],
+        failed: persisted?.status === 'failed' ? [adoptedId] : [],
+      },
+    };
     return {
       f,
       result,
       adopted,
       oldSnapshot,
-      root,
+      root: currentSnapshot,
       oldGenDir: old.gen_dir,
       originalRunId: state.runId,
     };

@@ -82,7 +82,23 @@ try {
         blockMarker: f.blockMarker,
       })
     );
-  const result = resumeState ? await resumeInProcess(f) : await runInProcess(f);
+  const adoptedId = process.env.SCENARIO_ADOPTED_ID;
+  if (adoptedId)
+    Object.assign(process.env, {
+      HOME: f.home,
+      SUPERAGENT_HOME: f.home,
+      ARCHON_HOME: f.archonHome,
+    });
+  const result = adoptedId
+    ? await runInProcess(f, {
+        runId: adoptedId,
+        from: process.env.SCENARIO_ADOPT_FROM!,
+        dir: process.env.SCENARIO_WORKFLOW_SOURCE!,
+        workflow: process.env.SCENARIO_WORKFLOW!,
+      })
+    : resumeState
+      ? await resumeInProcess(f)
+      : await runInProcess(f);
   writeFileSync(
     output,
     JSON.stringify({
@@ -90,7 +106,9 @@ try {
       failures: result.events
         .filter(event => event.event_type === 'node_failed')
         .map(event => ({ step: event.step_name, data: event.data })),
-      ledger: JSON.parse(readFileSync(ledgerPath(result.runId), 'utf8')),
+      ledger: JSON.parse(
+        readFileSync(ledgerPath(process.env.SCENARIO_ADOPT_FROM ?? result.runId), 'utf8')
+      ),
       receipt: existsSync(join(result.artifactsDir, 'publish-m1.json'))
         ? JSON.parse(readFileSync(join(result.artifactsDir, 'publish-m1.json'), 'utf8'))
         : null,
@@ -98,6 +116,7 @@ try {
       worker: sh('git rev-parse HEAD', f.worker).trim(),
     })
   );
+  if (adoptedId) console.log(JSON.stringify({ ok: true, runId: result.runId }));
 } finally {
   restore(f);
 }

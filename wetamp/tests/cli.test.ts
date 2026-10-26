@@ -58,6 +58,7 @@ import { rowOf } from '../src/board/data';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 import { nativeSpawnSync } from './preload';
+import { continuationOnCurrent } from '../src/engine';
 
 const engineRecoverLock = () => {
   const root = join(process.env.ARCHON_HOME ?? '', 'execution-admissions');
@@ -3525,6 +3526,64 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     milestone: 'm1',
     debt: [],
     decision: { kind: 'block', reason, evidence: ['events:code-core:0'], debt: [] },
+  });
+
+  test('stale continuation guards reject non-owner, status races, and rejected runs without ledger writes', () => {
+    const stale = (responses: RunView[], edit: (ledger: Ledger) => void = () => {}) => {
+      const s = stub(responses),
+        engine = join(s.root, 'home/engine');
+      mkdirSync(engine, { recursive: true });
+      symlinkSync(realpathSync(join(WETAMP, '..')), join(engine, 'current'));
+      s.ledger.engine_snapshot = join(s.root, 'missing-engine');
+      edit(s.ledger);
+      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    };
+    const unchanged = (args: string[], throws = false) => {
+      const before = readFileSync(ledgerPath('sa1'), 'utf8');
+      if (throws) expect(() => main(args)).toThrow();
+      else expect(captured(() => main(args)).code).toBe(1);
+      expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(before);
+    };
+    stale([run('failed')], ledger => ledger.controller!.pid++);
+    unchanged(['resume', 'sa1'], true);
+
+    stale([run('failed'), run('paused')]);
+    expect(continuationOnCurrent('sa1').current).toBe(true);
+    unchanged(['resume', 'sa1']);
+
+    stale([run('failed')], ledger => (ledger.rejected = 'r'));
+    unchanged(['recover', 'sa1']);
+  });
+
+  test('stale held-gate retry carries attempts, hints, and approvals but rejects stale review checkpoints', () => {
+    const s = held('verify-core', {
+        'verify-core.json': { decision: gate('coder_needs').decision },
+      }),
+      plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
+    const gen = generate(plan, 'sa1', true);
+    mkdirSync(join(gen.dir, 'approvals'), { recursive: true });
+    writeFileSync(join(gen.dir, 'approvals/verify-core.json'), '{"approved":true}\n');
+    mkdirSync(join(gen.dir, 'review-checkpoints'), { recursive: true });
+    writeFileSync(join(gen.dir, 'review-checkpoints/m1.json'), '{"stale":true}\n');
+    activateEngineFixture(s);
+    s.ledger.gen_dir = gen.dir;
+    s.ledger.engine_snapshot = join(s.root, 'missing-engine');
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    expect(
+      captured(() => main(['decide', 'sa1', 'retry', '--pkg', 'core', '--hint', 'retry hint'])).code
+    ).toBe(0);
+    const adopted = loadLedger('sa1');
+    expect(adopted).toMatchObject({
+      archon_run_id: 'r2',
+      adoptions: [expect.objectContaining({ from: 'r', to: 'r2' })],
+    });
+    for (const [path, value] of [
+      ['attempts/.packages/core', '1'],
+      ['hints/core.md', 'retry hint\n'],
+      ['approvals/verify-core.json', '{"approved":true}\n'],
+    ])
+      expect(readFileSync(join(adopted.gen_dir, path), 'utf8')).toBe(value);
+    expect(existsSync(join(adopted.gen_dir, 'review-checkpoints/m1.json'))).toBe(false);
   });
 
   test('empty unfinished delivery stays held with original blockers and needs in status and wait', () => {
