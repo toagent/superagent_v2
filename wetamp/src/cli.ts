@@ -1191,6 +1191,7 @@ function recoverRun(
           {
             from: run.id,
             packages: carried,
+            freshDirectory: staleSnapshot,
             evidence: carriedEvidence,
             coded,
             reviews,

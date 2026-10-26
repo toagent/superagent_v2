@@ -125,6 +125,7 @@ const SOLDIER_IDLE_MS = 10 * 60 * 1000;
 export interface Carried {
   from: string;
   packages: string[];
+  freshDirectory?: boolean;
   evidence?: Record<string, string>;
   coded?: string[];
   reviews?: Partial<Record<string, ReviewCheckpoint>>;
@@ -1240,7 +1241,8 @@ export function generate(
   } catch (cause) {
     throw new Error(`cannot read required core principles: ${principlesPath}`, { cause });
   }
-  const suffix = carried ? `continuations/${crypto.randomUUID()}` : '.';
+  const suffix =
+    carried?.freshDirectory || carried?.recovery ? `continuations/${crypto.randomUUID()}` : '.';
   const dir = join(home().sa, 'gen', run, suffix);
   if (carried?.recovery) {
     mkdirSync(dir, { recursive: true });
