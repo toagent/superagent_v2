@@ -44,6 +44,9 @@ const archonBin = (): string => {
  */
 const workerEnv = (): Record<string, string | undefined> => ({
   ...process.env,
+  // Routing identity belongs to the CLI entrypoint; child CLIs derive their own via the shim.
+  SA_SERVED_RUN: '',
+  SA_HISTORICAL_RUN: '',
   SUPERAGENT_ROLE: ['general', 'reviewer'].includes(process.env.SUPERAGENT_ROLE ?? '')
     ? process.env.SUPERAGENT_ROLE
     : 'worker',
