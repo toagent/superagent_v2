@@ -1,8 +1,10 @@
 import {
   chmodSync,
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -260,12 +262,24 @@ function removeAcceptanceScratch(scratch: string): void {
   }
 }
 
+class AcceptanceFailed extends Error {
+  constructor(
+    readonly evidencePath: string,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 export function runAcceptance(
   snapshot: string,
   timeoutMs = 40 * 60_000
 ): EngineReceipt['results'][number] {
   const script = join(snapshot, 'wetamp', 'scripts', 'engine-acceptance.sh');
   const scratch = join(tmpdir(), `sa-engine-${crypto.randomUUID()}`);
+  mkdirSync(promotionDir(), { recursive: true });
+  const evidencePath = join(promotionDir(), `${basename(snapshot)}.acceptance.log`);
+  const output = openSync(evidencePath, 'w');
   const started = Date.now();
   try {
     const result = Bun.spawnSync(['bash', script], {
@@ -273,17 +287,20 @@ export function runAcceptance(
       env: {
         ...process.env,
         SA_ENGINE_PROMOTER_TOKEN: '',
+        SA_SERVED_RUN: '',
+        SA_HISTORICAL_RUN: '',
         SUPERAGENT_HOME: join(scratch, 'sa'),
         ARCHON_HOME: join(scratch, 'sa', 'archon'),
       },
-      stdout: 'pipe',
-      stderr: 'pipe',
+      stdout: output,
+      stderr: output,
       timeout: timeoutMs,
       killSignal: 'SIGKILL',
     });
     if (result.exitCode !== 0)
-      throw new Error(
-        `engine acceptance failed (${String(result.exitCode)}): ${result.stderr.toString().trim().slice(-500)}`
+      throw new AcceptanceFailed(
+        evidencePath,
+        `engine acceptance failed (${String(result.exitCode)}), see ${evidencePath}: ${readFileSync(evidencePath, 'utf8').trim().slice(-500)}`
       );
     return {
       command: 'wetamp/scripts/engine-acceptance.sh',
@@ -291,6 +308,7 @@ export function runAcceptance(
       duration_ms: Date.now() - started,
     };
   } finally {
+    closeSync(output);
     removeAcceptanceScratch(scratch);
   }
 }
@@ -494,7 +512,11 @@ export function promote(
         ...marker,
         status: 'failed',
         error: error instanceof ProbeFailed ? 'probe_failed' : (error as Error).message,
-        ...(error instanceof ProbeFailed ? { evidence_path: error.evidence.evidence_path } : {}),
+        ...(error instanceof ProbeFailed
+          ? { evidence_path: error.evidence.evidence_path }
+          : error instanceof AcceptanceFailed
+            ? { evidence_path: error.evidencePath }
+            : {}),
         at: new Date().toISOString(),
       });
     }

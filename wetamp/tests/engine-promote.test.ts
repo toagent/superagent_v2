@@ -85,15 +85,20 @@ test('engine acceptance removes success, failure, and timeout scratch but refuse
     trace = join(root, 'trace');
   mkdirSync(join(snapshot, 'wetamp/scripts'), { recursive: true });
   process.env.TMPDIR = root;
+  process.env.SUPERAGENT_HOME = join(root, 'home');
   process.env.TRACE = trace;
+  process.env.SA_SERVED_RUN = 'served';
+  process.env.SA_HISTORICAL_RUN = 'historical';
+  const log = join(root, 'home/engine/promotions/snapshot.acceptance.log');
   for (const body of ['exit 0', 'exit 7', 'sleep 2']) {
     writeFileSync(
       script,
-      `mkdir -p "$SUPERAGENT_HOME"\nprintf '%s' "${'$'}{SUPERAGENT_HOME%/sa}" > "$TRACE"\n${body}\n`
+      `mkdir -p "$SUPERAGENT_HOME"\nprintf '%s' "${'$'}{SUPERAGENT_HOME%/sa}" > "$TRACE"\nprintf 'body=${body} served=%s historical=%s\\n' "$SA_SERVED_RUN" "$SA_HISTORICAL_RUN"\nprintf 'stderr=${body}\\n' >&2\n${body}\n`
     );
     const invoke = () => runAcceptance(snapshot, body === 'sleep 2' ? 100 : 1_000);
     if (body === 'exit 0') expect(invoke().exit).toBe(0);
-    else expect(invoke).toThrow();
+    else expect(invoke).toThrow(log);
+    expect(readFileSync(log, 'utf8')).toBe(`body=${body} served= historical=\nstderr=${body}\n`);
     expect(existsSync(readFileSync(trace, 'utf8'))).toBe(false);
   }
   const target = join(root, 'target');
@@ -105,6 +110,42 @@ test('engine acceptance removes success, failure, and timeout scratch but refuse
   );
   expect(() => runAcceptance(snapshot, 1_000)).toThrow('scratch symlink retained');
   expect(existsSync(target)).toBe(true);
+});
+
+test('engine acceptance script isolates files and stops at the first failure', () => {
+  const root = tmp(),
+    wetamp = join(root, 'wetamp'),
+    bin = join(root, 'bin'),
+    trace = join(root, 'trace');
+  mkdirSync(join(wetamp, 'scripts'), { recursive: true });
+  mkdirSync(join(wetamp, 'tests/scenarios'), { recursive: true });
+  mkdirSync(bin);
+  writeFileSync(
+    join(wetamp, 'scripts/engine-acceptance.sh'),
+    readFileSync(join(import.meta.dir, '../scripts/engine-acceptance.sh'))
+  );
+  for (const file of [
+    'tests/scenarios/a.test.ts',
+    'tests/scenarios/b.test.ts',
+    'tests/engine-c.test.ts',
+  ])
+    writeFileSync(join(wetamp, file), '');
+  const bun = join(bin, 'bun');
+  writeFileSync(
+    bun,
+    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TRACE"\n[ "$4" != tests/scenarios/b.test.ts ]\n'
+  );
+  chmodSync(bun, 0o755);
+  const result = Bun.spawnSync(['bash', 'scripts/engine-acceptance.sh'], {
+    cwd: wetamp,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TRACE: trace },
+  });
+  expect(result.exitCode).not.toBe(0);
+  expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
+    'run type-check',
+    'test --timeout 900000 tests/scenarios/a.test.ts',
+    'test --timeout 900000 tests/scenarios/b.test.ts',
+  ]);
 });
 
 // prettier-ignore
@@ -230,6 +271,13 @@ test('failed read-only candidate retries explicitly while in-service snapshots s
   const f = sourceFixture(),
     first = f.sha();
   promote(first, f.evidence);
+  const acceptance = join(f.source, 'wetamp/scripts/engine-acceptance.sh');
+  writeFileSync(acceptance, '#!/bin/sh\necho full-failure-output\nexit 7\n');
+  sh('git add wetamp/scripts/engine-acceptance.sh && git commit -qm failed-acceptance', f.source);
+  const failed = f.sha(), failedLog = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${failed}.acceptance.log`);
+  expect(() => promote(failed, undefined, { probe: successfulProbe })).toThrow(failedLog);
+  expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${failed}.json`), 'utf8'))).toMatchObject({ status: 'failed', evidence_path: failedLog });
+  writeFileSync(acceptance, '#!/bin/sh\nexit 0\n'); sh('git add wetamp/scripts/engine-acceptance.sh && git commit -qm restored-acceptance', f.source);
   const second = commit(f.source, 'second');
   expect(() => promote(second, undefined, { probe: path => { expect(statSync(path).mode & 0o222).toBe(0); return { ...successfulProbe(), ok: false, reason: 'not_published' }; } })).toThrow('probe_failed');
   const snapshot = join(process.env.SUPERAGENT_HOME!, 'engine', second),
