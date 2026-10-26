@@ -705,7 +705,12 @@ export async function recoverCarriedScenario(
     const adoptedId = `adopted-${terminal}-${state.runId}`,
       wrapper = join(scratch, 'archon-adopt'),
       resultPath = join(scratch, `${terminal}.json`),
-      runnerLog = join(scratch, `${terminal}.log`);
+      runnerLog = join(scratch, `${terminal}.log`),
+      launcherPreload = join(scratch, 'launcher.cjs');
+    writeFileSync(
+      launcherPreload,
+      `require(${JSON.stringify(join(currentSnapshot, 'wetamp/hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`
+    );
     writeFileSync(
       wrapper,
       `#!/bin/sh
@@ -724,7 +729,10 @@ exec ${join(currentSnapshot, 'wetamp/bin/archon')} "$@"
     const resumed = Bun.spawnSync(
       [join(currentSnapshot, 'wetamp/bin/superagent-shim'), 'resume', state.runId],
       {
-        env: process.env,
+        env: {
+          ...process.env,
+          BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(),
+        },
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: 240_000,
