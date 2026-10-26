@@ -19,6 +19,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -3537,6 +3538,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       s.ledger.engine_snapshot = join(s.root, 'missing-engine');
       edit(s.ledger);
       writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      return s;
     };
     const unchanged = (args: string[], throws = false) => {
       const before = readFileSync(ledgerPath('sa1'), 'utf8');
@@ -3553,6 +3555,13 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
 
     stale([run('failed')], ledger => (ledger.rejected = 'r'));
     unchanged(['recover', 'sa1']);
+
+    const served = stale([run('failed')]),
+      current = join(served.root, 'home/engine/current');
+    unlinkSync(current);
+    mkdirSync(join(served.root, 'other-engine'));
+    symlinkSync(join(served.root, 'other-engine'), current);
+    unchanged(['resume', 'sa1']);
   });
 
   test('stale held-gate retry carries attempts, hints, and approvals but rejects stale review checkpoints', () => {

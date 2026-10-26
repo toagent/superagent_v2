@@ -126,6 +126,26 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
   ]);
 });
 
+test('real continuation CLI emits the JSON contract consumed by the shim', () => {
+  const root = tmp(),
+    result = Bun.spawnSync(
+      [
+        process.execPath,
+        join(import.meta.dir, '..', 'src', 'cli.ts'),
+        'engine',
+        'continuation',
+        'missing',
+      ],
+      {
+        env: { ...process.env, HOME: root, SUPERAGENT_HOME: join(root, '.superagent') },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  expect(JSON.parse(result.stdout.toString())).toEqual({ current: false });
+});
+
 test('candidate access checks the real path of Archon state independently', () => {
   const root = tmp(),
     sa = join(root, 'isolated-sa'),

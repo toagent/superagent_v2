@@ -1017,6 +1017,8 @@ function recoverRun(
       Object.assign(l, loadLedger(l.run_id));
       staleSnapshot = staleEngineSnapshot(l);
       if (l.rejected === run.id) return 'rejected run is not resumable';
+      if (staleSnapshot && currentEngineSnapshot() !== runningEngineSnapshot())
+        return `engine identity: run ${l.run_id} continuation requires current engine`;
       if (staleSnapshot && !['failed', 'cancelled'].includes(run.status))
         return `engine identity: run ${l.run_id} is pinned to another snapshot`;
       if (run.status === 'completed') return 'status completed is not resumable';
