@@ -4043,38 +4043,51 @@ export async function claudeCommanderFailover(
   if (!held.ok) return { skipped: 'locked' };
   try {
     const state = health();
-    if (state.state !== 'down' || !state.changed_at) return { skipped: 'claude_up' };
+    const existing = Object.entries(loadAsks())
+      .filter(
+        ([key, ask]) =>
+          key.startsWith('coord:claude-failover:') && ['yes', 'no'].includes(ask?.status ?? '')
+      )
+      .sort(([a], [b]) => b.localeCompare(a))
+      .at(0);
+    const changedAt =
+      existing?.[0].slice('coord:claude-failover:'.length) ??
+      (state.state === 'down' ? state.changed_at : undefined);
+    if (!changedAt) return { skipped: 'claude_up' };
     const owned = runs();
     if (!owned.length) return { skipped: 'no_claude_commander_runs' };
-    const key = `coord:claude-failover:${state.changed_at}`,
+    const key = existing?.[0] ?? `coord:claude-failover:${changedAt}`,
       asks = loadAsks(),
       projects = [...new Set(owned.map(run => basename(run.repo)))],
       ids = owned.map(run => run.run_id).join('、'),
-      since = localHealthTime(state.changed_at),
+      since = localHealthTime(changedAt),
       reason = `${String(state.cause?.class)} 连续重试 ${String(state.cause?.retries)} 次`,
       question = `${projects.join('、')}：Claude 不可用（自 ${since}，${reason}）。是否由 Codex 元帅接手 ${ids}？勾选=启动接手；删除=保持现状`;
-    const polled = pollAsk(
-      key,
-      () => question,
-      MAX_TTL_H,
-      asks,
-      title => ({
-        request_key: key,
-        source: 'supervise-tick',
-        task_id: ids,
-        initiator: 'superagent',
-        action: '启动 Codex 元帅复核并接手',
-        target: projects.join('、'),
-        reason: title,
-        recommendation: { choice: 'yes', reason: '恢复在途 run 的元帅决策能力' },
-        consequences: { yes: '启动 Codex 元帅；复核后显式接管', no: 'ownership 不变' },
-      })
-    );
+    const context = (title: string): DecisionContext => ({
+      request_key: key,
+      source: 'supervise-tick',
+      task_id: ids,
+      initiator: 'superagent',
+      action: '启动 Codex 元帅复核并接手',
+      target: projects.join('、'),
+      reason: title,
+      recommendation: { choice: 'yes', reason: '恢复在途 run 的元帅决策能力' },
+      consequences: { yes: '启动 Codex 元帅；复核后显式接管', no: 'ownership 不变' },
+    });
+    const mobile = existsSync(join(home().sa, 'console/decision-origin'));
+    let polled;
+    if (mobile) {
+      const a = asks[key] ?? { status: 'pending', context: context(question) };
+      asks[key] ??= a;
+      saveAsk(asks, key);
+      polled = { a };
+    } else polled = pollAsk(key, () => question, MAX_TTL_H, asks, context);
     if ('conflict' in polled) throw new Error(polled.conflict);
     const a = polled.a;
     const receipt = (stage: AnswerReceipt['stage'], body: string): void => {
       a.receipt ??= { key: `${key}:result`, stage, body, at: now().toISOString() };
-      deliverReceipt(undefined, key, a, asks);
+      if (mobile) saveAsk(asks, key);
+      else deliverReceipt(undefined, key, a, asks);
     };
     if (['approved', 'rejected'].includes(a.status)) return { skipped: 'answered' };
     if (!['yes', 'no'].includes(a.status)) return { status: a.status, asked: polled.asked };

@@ -2,7 +2,10 @@ import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { claudeCommanderFailover } from '../src/cli';
+import * as cliModule from '../src/cli';
 import { type Controller, type RunRef } from '../src/coord';
+import { answerDecision, failoverDecisions } from '../src/decisions';
+import { DeviceStore, operatorGrant } from '../src/web/device-store';
 import { tmp } from './helpers';
 
 const original = { ...process.env };
@@ -63,6 +66,11 @@ function fixture(answer: 'pending' | 'yes' | 'no', runs = [run('run-a', '/repo/a
 const execute = (f: ReturnType<typeof fixture>, patch = {}) => {
   const d = { ...f.deps, ...patch };
   return claudeCommanderFailover(d.health, d.runs, d.bin, d.launch, d.now);
+};
+const operator = (store: DeviceStore) => {
+  const pairing = store.pairing(operatorGrant()),
+    code = /<p>([^<]+)<\/p>/.exec(readFileSync(pairing, 'utf8'))![1];
+  return store.authenticate(store.pair(code));
 };
 
 test('no eligible Claude-owned nonterminal run does not ask', async () => {
@@ -131,4 +139,62 @@ test('yes launches once per repo with fenced brief-claim-reauthorize prompt; mis
           JSON.parse(c[c.indexOf('--receipt-json') + 1]).body.includes('人工执行')
       )
   ).toBeTrue();
+});
+
+test('PWA inbox answers yes/no and rejects takeover when Claude recovered', async () => {
+  for (const outcome of ['yes', 'no', 'recovered'] as const) {
+    const f = fixture('pending');
+    mkdirSync(join(process.env.SUPERAGENT_HOME!, 'console'), { recursive: true });
+    writeFileSync(
+      join(process.env.SUPERAGENT_HOME!, 'console/decision-origin'),
+      'https://pwa.test'
+    );
+    await execute(f);
+    expect(existsSync(f.calls)).toBeFalse();
+    const decision = failoverDecisions()[0];
+    expect(decision.options.map(option => option.label)).toEqual([
+      '启动 Codex 元帅接手',
+      '保持现状',
+    ]);
+    const store = new DeviceStore(),
+      device = operator(store);
+    expect(
+      (await answerDecision(store, device, decision.id, outcome === 'no' ? 'no' : 'yes')).stage
+    ).toBe('intent');
+    cliModule.superviseTick();
+    expect(store.transaction(state => state.receipts[0].stage)).toBe('accepted');
+    await execute(
+      f,
+      outcome === 'recovered'
+        ? {
+            health: () => ({
+              state: 'up' as const,
+              observed_at: '2026-10-27T02:46:00Z',
+              probe_failures: 0,
+            }),
+          }
+        : {}
+    );
+    expect(f.launches).toHaveLength(outcome === 'yes' ? 1 : 0);
+    const ask = Object.values(
+      JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'asks.json'), 'utf8')) as Record<
+        string,
+        { receipt?: { body?: string } }
+      >
+    )[0];
+    if (outcome === 'recovered') expect(ask.receipt?.body).toContain('恢复，未接管');
+  }
+});
+
+test('PWA rejects an answer from an older failover episode', async () => {
+  const f = fixture('pending');
+  mkdirSync(join(process.env.SUPERAGENT_HOME!, 'console'), { recursive: true });
+  writeFileSync(join(process.env.SUPERAGENT_HOME!, 'console/decision-origin'), 'https://pwa.test');
+  await execute(f);
+  const stale = failoverDecisions()[0];
+  await execute(f, { health: () => health('2026-10-27T02:02:00.000Z') });
+  const store = new DeviceStore();
+  await expect(answerDecision(store, operator(store), stale.id, 'yes')).rejects.toThrow(
+    '决定已变化'
+  );
 });

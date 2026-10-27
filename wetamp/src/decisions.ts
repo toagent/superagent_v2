@@ -38,6 +38,7 @@ export interface Decision {
   disabled?: string;
   controller?: Controller;
   coordination?: { message: string; generation: number };
+  failover?: { key: string };
 }
 /** Engine metadata and the current wetamp hold are the shared owner, never asks history. */
 export function describeDecision(
@@ -131,7 +132,7 @@ function readDecisionCache(): DecisionCache {
   }
 }
 export function currentDecisions(query = getRun): { decisions: Decision[]; unknown: string[] } {
-  const decisions: Decision[] = [],
+  const decisions: Decision[] = failoverDecisions(),
     unknown: string[] = [];
   const cache = readDecisionCache(),
     revisions = reportRunRevisions();
@@ -221,6 +222,46 @@ export function coordinationDecisions(c = coord()): Decision[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+export function failoverDecisions(): Decision[] {
+  try {
+    const asks = JSON.parse(readFileSync(join(home().sa, 'asks.json'), 'utf8')) as Record<
+      string,
+      { status?: string; context?: { reason?: string } }
+    >;
+    const pending = Object.entries(asks)
+      .filter(
+        ([key, ask]) =>
+          key.startsWith('coord:claude-failover:') &&
+          ['pending', 'unknown'].includes(ask.status ?? '')
+      )
+      .sort(([a], [b]) => b.localeCompare(a));
+    return pending.slice(0, 1).map(([key, ask]) => {
+      const reason = ask.context?.reason ?? 'Claude 不可用，是否由 Codex 元帅接手？';
+      return {
+        id: digest(JSON.stringify(['failover', key, ask.context])),
+        run: `failover:${key.slice('coord:claude-failover:'.length)}`,
+        engine: 'failover',
+        node: key,
+        pause: key.slice('coord:claude-failover:'.length),
+        question: reason.replace('勾选=启动接手；删除=保持现状', '请选择处理方式'),
+        reason: 'Claude 熔断：在途 run 的元帅接续需要操作者决定',
+        context: reason,
+        options: [
+          {
+            id: 'yes',
+            label: '启动 Codex 元帅接手',
+            consequence:
+              '按仓库启动 Codex 元帅，复核 owner/generation 后显式接管；Claude 已恢复则不接管',
+          },
+          { id: 'no', label: '保持现状', consequence: 'ownership 不变' },
+        ],
+        failover: { key },
+      };
+    });
+  } catch {
+    return [];
+  }
+}
 interface CoordIntentAction extends Record<string, unknown> {
   run_id: 'coord';
   action: 'error';
@@ -228,7 +269,7 @@ interface CoordIntentAction extends Record<string, unknown> {
   error: string;
 }
 export function applyCoordIntents(
-  asks: Partial<Record<string, { status: string }>>,
+  asks: Partial<Record<string, { status: string; context?: unknown }>>,
   answer = (id: string, generation: number, persist: (key: string) => void): boolean =>
     coord().answerEscalation(id, generation, persist),
   store = new DeviceStore()
@@ -237,7 +278,7 @@ export function applyCoordIntents(
   try {
     intents = store.transaction(state =>
       state.receipts
-        .filter(r => r.stage === 'intent' && r.run.startsWith('coord:'))
+        .filter(r => r.stage === 'intent' && /^(coord|failover):/.test(r.run))
         .map(receipt => ({
           receipt: { ...receipt },
           authorized: state.devices.some(
@@ -261,6 +302,25 @@ export function applyCoordIntents(
           )
         );
       const choice = intent.receipt.decision;
+      if (intent.receipt.run.startsWith('failover:')) {
+        const ask = asks[intent.receipt.node],
+          latest = Object.keys(asks)
+            .filter(key => key.startsWith('coord:claude-failover:'))
+            .sort()
+            .at(-1),
+          accepted =
+            authorized &&
+            (choice === 'yes' || choice === 'no') &&
+            latest === intent.receipt.node &&
+            ['pending', 'unknown', choice].includes(ask?.status ?? '') &&
+            intent.receipt.id === digest(JSON.stringify(['failover', latest, ask?.context]));
+        if (accepted && ask) ask.status = choice;
+        store.transaction(state => {
+          const current = state.receipts.find(r => r.id === intent.receipt.id);
+          if (current?.stage === 'intent') current.stage = accepted ? 'accepted' : 'rejected';
+        });
+        continue;
+      }
       const staleAsk = new Error('stale coord ask');
       const keyPrefix = `${intent.receipt.run}:${intent.receipt.pause}:`,
         validChoice = choice === 'yes' || choice === 'no';
@@ -304,7 +364,7 @@ export async function loadCurrentDecisions(): Promise<DecisionInbox> {
     const { createLoader } = await import('./board/data');
     inboxLoader ??= createLoader();
     const inbox = decisionsFromSnapshot(await inboxLoader(DECISION_SCAN_LIMIT));
-    inbox.decisions.push(...coordinationDecisions());
+    inbox.decisions.push(...coordinationDecisions(), ...failoverDecisions());
     inbox.decisions.sort((a, b) => a.id.localeCompare(b.id));
     return inbox;
   })().finally(() => {
@@ -324,19 +384,20 @@ export async function answerDecision(
   choice: string,
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions
 ): Promise<Receipt> {
-  const coordCandidate = isOperatorDevice(device)
-    ? coordinationDecisions().find(d => d.id === id)
+  const deferredCandidate = isOperatorDevice(device)
+    ? [...coordinationDecisions(), ...failoverDecisions()].find(d => d.id === id)
     : undefined;
   const candidate = isOperatorDevice(device)
-    ? (coordCandidate ?? (await loadInbox()).decisions.find(d => d.id === id))
+    ? (deferredCandidate ?? (await loadInbox()).decisions.find(d => d.id === id))
     : undefined;
   if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
-  if (candidate?.coordination) {
+  if (candidate?.coordination ?? candidate?.failover) {
     requireThat(['yes', 'no'].includes(choice), 400, '不支持此选项');
     const deviceGuard = store.deviceLock(device.id);
     try {
-      const current = coordinationDecisions().find(d => d.id === id);
-      requireThat(current?.coordination, 409, '决定已变化，请重读');
+      const current = [...coordinationDecisions(), ...failoverDecisions()].find(d => d.id === id);
+      requireThat(current, 409, '决定已变化，请重读');
+      requireThat(current.coordination ?? current.failover, 409, '决定已变化，请重读');
       return store.transaction(s => {
         requireThat(
           s.devices.some(d => d.id === device.id && isAuthorizedDevice(d)),
@@ -507,11 +568,15 @@ export async function decisionState(
   const receipt = store.transaction(s =>
     s.receipts.filter(r => (!id || r.id === id) && r.device === device.id).at(-1)
   );
-  const coordDecisions = isOperatorDevice(device) && id ? coordinationDecisions() : undefined;
+  const deferredDecisions =
+    isOperatorDevice(device) && id
+      ? [...coordinationDecisions(), ...failoverDecisions()]
+      : undefined;
   const inbox = isOperatorDevice(device)
     ? (operatorInbox ??
-      (id && (coordDecisions?.some(d => d.id === id) || receipt?.run.startsWith('coord:'))
-        ? { decisions: coordDecisions ?? [], unknown: [] }
+      (id &&
+      (deferredDecisions?.some(d => d.id === id) || /^(coord|failover):/.test(receipt?.run ?? ''))
+        ? { decisions: deferredDecisions ?? [], unknown: [] }
         : await loadCurrentDecisions()))
     : (() => {
         try {
@@ -522,19 +587,20 @@ export async function decisionState(
           return { decisions: [], unknown: [device.grant.run] };
         }
       })();
-  const selectedCoord = id
-    ? inbox.decisions.find(d => d.id === id && d.coordination)
-    : inbox.decisions.find(d => d.coordination && !d.disabled);
-  const coordReceipt =
-    receipt?.run.startsWith('coord:') &&
+  const selectedDeferred = id
+    ? inbox.decisions.find(d => d.id === id && (d.coordination ?? d.failover))
+    : inbox.decisions.find(d => (d.coordination ?? d.failover) && !d.disabled);
+  const deferredReceipt =
+    receipt &&
+    /^(coord|failover):/.test(receipt.run) &&
     (id
       ? receipt.id === id
-      : selectedCoord
-        ? receipt.id === selectedCoord.id
+      : selectedDeferred
+        ? receipt.id === selectedDeferred.id
         : inbox.decisions.length === 0)
       ? receipt
       : undefined;
-  if (selectedCoord || coordReceipt) {
+  if (selectedDeferred || deferredReceipt) {
     const lastRead = new Date().toISOString();
     store.transaction(s => {
       const current = s.devices.find(d => d.id === device.id);
@@ -542,19 +608,19 @@ export async function decisionState(
       current.lastRead = lastRead;
     });
     return {
-      decision: selectedCoord,
+      decision: selectedDeferred,
       decisions: inbox.decisions,
       unknown: inbox.unknown.length,
-      receipt: coordReceipt,
-      status: selectedCoord ? 'paused' : 'completed',
+      receipt: deferredReceipt,
+      status: selectedDeferred ? 'paused' : 'completed',
       lastRead,
       events: [],
       stale: false,
-      note: selectedCoord
+      note: selectedDeferred
         ? '等待操作者决定'
-        : coordReceipt?.stage === 'rejected'
-          ? 'COORD 决定已变化，答复未执行'
-          : 'COORD 已接收答复，后续由监督 tick 执行',
+        : deferredReceipt?.stage === 'rejected'
+          ? '决定已变化，答复未执行'
+          : '决定已接收，后续由监督 tick 执行',
     };
   }
   if (isOperatorDevice(device) && !id && !receipt && !inbox.decisions.length) {
