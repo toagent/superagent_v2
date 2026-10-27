@@ -1161,14 +1161,17 @@ describe('ClaudeProvider', () => {
           error_status: null,
           error: 'unknown',
         };
+        throw Object.assign(new Error('Claude Code process exited'), {
+          errorClass: 'process_exited_nonzero',
+        });
       });
 
-      const chunks = [];
+      const chunks: MessageChunk[] = [];
       for await (const chunk of client.sendQuery('test', '/workspace')) {
-        if (!isTurnEnd(chunk)) chunks.push(chunk);
+        chunks.push(chunk);
       }
 
-      expect(chunks).toEqual([
+      expect(chunks.filter(chunk => chunk.type === 'warning')).toEqual([
         {
           type: 'warning',
           code: 'claude.api_retry',
@@ -1181,6 +1184,7 @@ describe('ClaudeProvider', () => {
           message: 'Claude is retrying the model call (attempt 1 of 1, waiting 450ms, unknown)',
         },
       ]);
+      expect(chunks.find(chunk => chunk.type === 'result')?.failure?.retries).toBe(2);
     });
 
     test('yields hook_started chunk from SDK system message', async () => {

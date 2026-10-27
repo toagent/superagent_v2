@@ -44,6 +44,7 @@ import {
   type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKHookResponseMessage,
+  type SDKMessage,
   type SyncHookJSONOutput,
   type SDKStartupFailureReason,
   type SDKStatusMessage,
@@ -92,6 +93,7 @@ import { closeOpenToolCalls } from '../shared/tool-calls';
 import { ClassifiedProviderError } from '../shared/failure';
 import { diagnoseBinary } from '../shared/binary-diagnostics';
 import { clampEffort, type AssertNever } from '@archon/provider-contract';
+import { foldClaudeOutcome, withClaudeRetries } from './outcome';
 import {
   claudeSkillSearchRoots,
   findInstalledSkillNames,
@@ -376,6 +378,37 @@ export function classifyClaudeErrorResult(
     return failureOf(classOfStartupFailure(startupFailureReason), evidence);
   }
   return failureOf(classOfHttpStatus(httpStatus), evidence);
+}
+
+export function classifyClaudeResultMessage(
+  result: SDKResultMessage,
+  synthetic?: { code: SDKAssistantMessageError; text: string },
+  rateLimit?: SDKRateLimitInfo
+): ProviderFailure | undefined {
+  if (result.subtype === 'success') {
+    if (!result.is_error || (!synthetic && result.terminal_reason !== 'api_error'))
+      return undefined;
+    return classifyClaudeApiError(
+      synthetic?.code ?? 'unknown',
+      result.api_error_status,
+      rateLimit,
+      synthetic?.text ||
+        ('result' in result && result.result) ||
+        'API error result with no error text'
+    );
+  }
+  if (!result.is_error) return undefined;
+  if (synthetic)
+    return classifyClaudeApiError(synthetic.code, undefined, rateLimit, synthetic.text);
+  const label = result.startup_failure_reason
+    ? `${result.subtype} (${result.startup_failure_reason})`
+    : result.subtype;
+  return classifyClaudeErrorResult(
+    result.subtype,
+    undefined,
+    result.startup_failure_reason,
+    result.errors?.length ? `${label}: ${result.errors.join('; ')}` : label
+  );
 }
 
 /**
@@ -1058,10 +1091,11 @@ function claudeStopReason(resultMsg: SDKResultMessage): ProviderStopReason | und
  * Drains the tool result queue between events (populated by SDK hooks).
  */
 async function* streamClaudeMessages(
-  events: AsyncGenerator,
+  events: AsyncGenerator<SDKMessage>,
   toolResultQueue: ToolResultEntry[],
   spendBaseline: SpendBaseline,
-  closeInput: () => void
+  closeInput: () => void,
+  retryState: { value: number }
 ): AsyncGenerator<MessageChunk> {
   // Synthetic error message recorded while waiting for the terminal result to
   // confirm it (#1797). Detection is two-signal: the typed wrapper `error`
@@ -1097,6 +1131,7 @@ async function* streamClaudeMessages(
   }
 
   for await (const msg of events) {
+    retryState.value = foldClaudeOutcome([msg], undefined, retryState.value).retries;
     // Drain tool results captured by hooks before processing the next event
     yield* drainHookResults();
 
@@ -1420,29 +1455,13 @@ async function* streamClaudeMessages(
         spendBaseline = { kind: 'known', spend: cumulative };
       }
       const resolvedModelId = selectResolvedModelId(spend.modelUsage);
-      // The terminal result resolves any recorded synthetic error message.
       const syntheticError = pendingSdkError;
       pendingSdkError = undefined;
       const tokens = normalizeClaudeUsage(resultMsg.usage);
       const sdkErrors = 'errors' in resultMsg ? resultMsg.errors : undefined;
 
-      // `is_error: true` + `subtype: 'success'` is ambiguous: it is BOTH the
-      // SDK's stop-sequence termination encoding (#1425, a legitimate success)
-      // AND its API-failure-as-text encoding (#1797 — auth/billing/rate-limit
-      // errors that even set stop_reason: 'stop_sequence').
       const isSuccessWithErrorFlag = resultMsg.is_error && resultMsg.subtype === 'success';
 
-      // Disambiguate structurally: a preceding synthetic error message
-      // (primary, typed signal), or the typed terminal_reason 'api_error'
-      // (secondary — catches an error result with no preceding synthetic
-      // message), marks a real failure. The error prose never becomes output.
-      const isApiFailure =
-        isSuccessWithErrorFlag &&
-        (syntheticError !== undefined || resultMsg.terminal_reason === 'api_error');
-
-      // Fail-safe (never observed in practice): a synthetic error message
-      // followed by a non-error result. Yield the withheld text late rather
-      // than silently swallowing content.
       if (syntheticError !== undefined && !resultMsg.is_error) {
         getLog().warn(
           {
@@ -1454,47 +1473,14 @@ async function* streamClaudeMessages(
         if (syntheticError.text) yield { type: 'agent_message_chunk', text: syntheticError.text };
       }
 
-      // SDKResultSuccess declares `is_error: boolean` (not literal false). When a
-      // model terminates via a configured stop sequence (stop_reason ===
-      // 'stop_sequence') the SDK can set is_error: true while keeping
-      // subtype: 'success' — its encoding of "non-default termination, not a
-      // failure". Treat that pair as a clean success.
       const isRealError = resultMsg.is_error && !isSuccessWithErrorFlag;
-      // Only the success-shaped result carries the HTTP status and result text; an API
-      // failure the SDK encoded as `success` is where they matter.
       const apiErrorStatus =
         'api_error_status' in resultMsg ? resultMsg.api_error_status : undefined;
       const resultText = 'result' in resultMsg ? resultMsg.result : undefined;
-      let failure: ProviderFailure | undefined;
-      if (isApiFailure || (isRealError && syntheticError !== undefined)) {
-        const evidence =
-          syntheticError?.text ||
-          resultText ||
-          sdkErrors?.join('; ') ||
-          'API error result with no error text';
-        failure = classifyClaudeApiError(
-          syntheticError?.code ?? 'unknown',
-          apiErrorStatus,
-          lastRateLimit,
-          evidence
-        );
-      } else if (isRealError) {
-        // Set when Claude Code refused to start (see CLAUDE_CODE_STARTUP_FAILURE_RESULTS).
-        const startupFailureReason =
-          'startup_failure_reason' in resultMsg ? resultMsg.startup_failure_reason : undefined;
-        const label = startupFailureReason
-          ? `${resultMsg.subtype} (${startupFailureReason})`
-          : resultMsg.subtype;
-        const evidence = sdkErrors?.length ? `${label}: ${sdkErrors.join('; ')}` : label;
-        failure = classifyClaudeErrorResult(
-          resultMsg.subtype,
-          apiErrorStatus,
-          startupFailureReason,
-          evidence
-        );
-      }
+      let failure = classifyClaudeResultMessage(resultMsg, syntheticError, lastRateLimit);
 
       if (failure !== undefined) {
+        failure = withClaudeRetries(failure, retryState.value);
         getLog().error(
           {
             sessionIdPreview: sessionPreview(resultMsg.session_id),
@@ -1518,7 +1504,6 @@ async function* streamClaudeMessages(
         );
       }
 
-      // Built by assignment on a typed value so a misspelled key fails to compile.
       const result: ResultChunk = { type: 'result', sessionId: resultMsg.session_id };
       if (failure === undefined && resultText !== undefined) result.text = resultText;
       if (tokens) result.tokens = tokens;
@@ -1562,17 +1547,23 @@ async function* streamClaudeMessages(
       'claude.synthetic_error_stream_ended'
     );
     yield failureResultChunk(
-      classifyClaudeApiError(
-        pendingSdkError.code,
-        undefined,
-        lastRateLimit,
-        pendingSdkError.text || 'API error with no error text'
+      withClaudeRetries(
+        classifyClaudeApiError(
+          pendingSdkError.code,
+          undefined,
+          lastRateLimit,
+          pendingSdkError.text || 'API error with no error text'
+        ),
+        retryState.value
       )
     );
   } else if (!resultReported) {
     getLog().error('claude.stream_ended_without_result');
     const noResult = failureResultChunk(
-      failureOf('unknown', 'Claude Code ended the turn without a result')
+      withClaudeRetries(
+        failureOf('unknown', 'Claude Code ended the turn without a result'),
+        retryState.value
+      )
     );
     noResult.errorSubtype = 'stream_ended_without_result';
     yield noResult;
@@ -1645,6 +1636,7 @@ export class ClaudeProvider implements IAgentProvider {
     let resultReported = false;
     let closeInput: (() => void) | undefined;
     const openSubtaskIds = new Set<string>();
+    const retryState = { value: 0 };
 
     try {
       if (requestOptions?.abortSignal?.aborted) {
@@ -1763,7 +1755,8 @@ export class ClaudeProvider implements IAgentProvider {
             events,
             toolResultQueue,
             sessionSpend.baselineFor(resumeSessionId),
-            closeInput
+            closeInput,
+            retryState
           ),
           // A result can arrive while background agents still run their tools.
           { resultEndsTurn: false }
@@ -1789,7 +1782,10 @@ export class ClaudeProvider implements IAgentProvider {
         throw new Error('Query aborted');
       }
       const stderr = stderrLines.join('\n');
-      const failure = classifyClaudeThrownError(err, stderr, isContainerRun ? undefined : cwd);
+      const failure = withClaudeRetries(
+        classifyClaudeThrownError(err, stderr, isContainerRun ? undefined : cwd),
+        retryState.value
+      );
       getLog().error(
         { err, stderrContext: stderr, failureClass: failure.class, resultReported },
         'query_error'

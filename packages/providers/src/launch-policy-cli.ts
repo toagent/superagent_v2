@@ -2,12 +2,16 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { constants } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { classifyClaudeResultMessage } from './claude/provider';
+import { foldClaudeOutcome, withClaudeRetries, type ClaudeOutcome } from './claude/outcome';
 
 export async function runScopedClaude(
   command: string[],
   format: 'text' | 'json' | 'stream-json',
-  input?: Uint8Array
+  input?: Uint8Array,
+  outcomePath?: string
 ): Promise<number> {
   const child = spawn(command[0], command.slice(1), {
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'inherit'],
@@ -40,6 +44,8 @@ export async function runScopedClaude(
     }
   };
   let resultSeen = false;
+  let retries = 0;
+  let outcome: ClaudeOutcome = { ok: true };
   try {
     if (input !== undefined) {
       const stdin = child.stdin;
@@ -51,17 +57,29 @@ export async function runScopedClaude(
       });
     }
     for await (const event of events()) {
+      retries = foldClaudeOutcome([event], undefined, retries).retries;
       if (format === 'stream-json') process.stdout.write(JSON.stringify(event) + '\n');
       if (event.type === 'result') {
         resultSeen = true;
+        const failure = classifyClaudeResultMessage(event);
+        outcome = failure ? { failure: withClaudeRetries(failure, retries) } : { ok: true };
         if (format === 'json') process.stdout.write(JSON.stringify(event) + '\n');
         if (format === 'text' && 'result' in event) process.stdout.write(event.result + '\n');
       }
     }
     const code = await exited;
     if (!code && !resultSeen) throw new Error('execution: Claude CLI ended without a result');
+    if (outcomePath) await writeFile(outcomePath, JSON.stringify(outcome) + '\n');
     return code;
   } catch (error) {
+    if (outcomePath) {
+      const evidence = error instanceof Error ? error.message : 'Claude CLI failed';
+      await writeFile(
+        outcomePath,
+        JSON.stringify({ failure: withClaudeRetries({ class: 'unknown', evidence }, retries) }) +
+          '\n'
+      );
+    }
     child.kill('SIGTERM');
     await exited.catch(() => undefined);
     throw error;
@@ -80,7 +98,12 @@ if (import.meta.main) {
     if (inputFlag && process.stdin.isTTY)
       throw new Error('execution: registered job input must not be a terminal');
     const input = inputFlag ? new Uint8Array(await Bun.stdin.arrayBuffer()) : undefined;
-    process.exitCode = await runScopedClaude(JSON.parse(command) as string[], format, input);
+    process.exitCode = await runScopedClaude(
+      JSON.parse(command) as string[],
+      format,
+      input,
+      process.env.ARCHON_PROVIDER_OUTCOME
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'execution: Claude CLI failed');
     process.exitCode = 1;

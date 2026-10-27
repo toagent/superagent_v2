@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test';
+import { readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   claudeLaunchPolicy,
   codexCliConfig,
@@ -103,6 +106,7 @@ test('Codex CLI rejects unsupported values and ambiguous CLI paths instead of fa
 test('native CLI keeps ambient plugins and forwards model output', async () => {
   const result = { type: 'result', is_error: false, result: 'model-output' };
   for (const plugins of [[], [{ name: 'ambient', source: 'ambient@fixture' }], null]) {
+    const outcomePath = join(tmpdir(), `archon-claude-outcome-${process.pid}-${String(plugins)}`);
     const events =
       plugins === null ? [result] : [{ type: 'system', subtype: 'init', plugins }, result];
     const command = [
@@ -118,7 +122,12 @@ test('native CLI keeps ambient plugins and forwards model output', async () => {
         JSON.stringify(command),
         '--job-input',
       ],
-      { stdin: new Blob(['registered input']), stdout: 'pipe', stderr: 'pipe' }
+      {
+        stdin: new Blob(['registered input']),
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: { ...process.env, ARCHON_PROVIDER_OUTCOME: outcomePath },
+      }
     );
     const [stdout, stderr, exit] = await Promise.all([
       new Response(child.stdout).text(),
@@ -128,6 +137,8 @@ test('native CLI keeps ambient plugins and forwards model output', async () => {
     expect(exit).toBe(0);
     expect(stdout).toBe('model-output\n');
     expect(stderr).toBe('');
+    expect(JSON.parse(readFileSync(outcomePath, 'utf8'))).toEqual({ ok: true });
+    rmSync(outcomePath);
   }
 });
 

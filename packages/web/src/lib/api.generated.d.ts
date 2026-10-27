@@ -3730,6 +3730,7 @@ export interface components {
                   | 'transient'
                   | 'unknown';
                 retryAfterMs?: number;
+                retries?: number;
                 /** Format: date-time */
                 resetAt?: string;
                 evidence: string;
@@ -4968,6 +4969,7 @@ export interface components {
                     | 'transient'
                     | 'unknown';
                   retryAfterMs?: number;
+                  retries?: number;
                   /** Format: date-time */
                   resetAt?: string;
                   evidence: string;

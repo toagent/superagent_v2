@@ -62,3 +62,4 @@ export type {
 
 export { claudeLaunchPolicy, workflowLaunchPolicy, prepareRoleCommand } from './launch-policy';
 export type { LaunchPolicy } from './launch-policy';
+export { probeClaudeAvailability } from './claude/probe';

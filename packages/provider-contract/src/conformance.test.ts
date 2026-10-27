@@ -95,7 +95,10 @@ describe('failure-class conformance', () => {
     ],
     [
       'malformed failure',
-      { ...conforming, run: turn({ type: 'result', failure: { class: 'auth', evidence: '' } }) },
+      {
+        ...conforming,
+        run: turn({ type: 'result', failure: { class: 'auth', evidence: 'x', retries: -1 } }),
+      },
       'expired key: failure is malformed',
     ],
     [

@@ -30,6 +30,8 @@ export const providerFailureSchema = z.object({
   class: providerFailureClassSchema,
   /** Vendor-advised wait before the next attempt, in milliseconds. */
   retryAfterMs: z.number().int().nonnegative().optional(),
+  /** Consecutive SDK API retries immediately preceding this failure. */
+  retries: z.number().int().nonnegative().optional(),
   /** When an exhausted quota window reopens. */
   resetAt: z.iso.datetime({ offset: true }).optional(),
   /**
