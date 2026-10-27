@@ -1,10 +1,10 @@
 import { expect, test } from 'bun:test';
+import { removeTempTree } from '@archon/paths/test-utils';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sweepStaleTestDirs } from './preload';
-test('sweeps only stale test directories without following symlinks', () => {
+test('sweeps only stale test directories without following symlinks', async () => {
   const root = mkdtempSync(join(tmpdir(), 'preload-sweep-')),
     now = Date.now(),
     old = new Date(now - 7 * 60 * 60 * 1000),
@@ -35,6 +35,6 @@ test('sweeps only stale test directories without following symlinks', () => {
     expect(existsSync(staleHome)).toBe(false);
     for (const path of [fresh, other, target, link]) expect(existsSync(path)).toBe(true);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    await removeTempTree(root);
   }
 });
