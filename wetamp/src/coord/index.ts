@@ -402,6 +402,36 @@ export class Coordination {
       }
     });
   }
+  ownedNonterminalRuns(client: string): {
+    run_id: string;
+    repo: string;
+    status: string;
+    owner: Identity;
+    generation: number;
+  }[] {
+    return this.d.runs().flatMap(l => {
+      if (l.state === 'failed') return [];
+      let status = 'unknown';
+      try {
+        status = this.d.status(l);
+      } catch {
+        /* Unknown engine state is non-terminal ownership evidence. */
+      }
+      if (['failed', 'completed', 'cancelled'].includes(status)) return [];
+      const view = this.owner(runScope(l));
+      return view.owner?.client === client && !view.conflicts.length
+        ? [
+            {
+              run_id: l.run_id,
+              repo: l.repo,
+              status,
+              owner: view.owner,
+              generation: view.generation,
+            },
+          ]
+        : [];
+    });
+  }
   private leaseKey(scope: Scope, who: Identity): string {
     return shared.hash([scope, identity.key(who)]);
   }
