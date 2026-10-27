@@ -38,7 +38,6 @@ export interface Decision {
   disabled?: string;
   controller?: Controller;
   coordination?: { message: string; generation: number };
-  failover?: { key: string };
 }
 /** Engine metadata and the current wetamp hold are the shared owner, never asks history. */
 export function describeDecision(
@@ -222,27 +221,36 @@ export function coordinationDecisions(c = coord()): Decision[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+const FAILOVER_PREFIX = 'coord:claude-failover:';
+const latestFailover = <T extends { status?: string }>(
+  asks: Partial<Record<string, T>>,
+  statuses?: string[]
+) =>
+  Object.entries(asks)
+    .filter(
+      ([key, ask]) =>
+        key.startsWith(FAILOVER_PREFIX) && (!statuses || statuses.includes(ask?.status ?? ''))
+    )
+    .sort(([a], [b]) => b.localeCompare(a))
+    .at(0);
 export function failoverDecisions(): Decision[] {
   try {
     const asks = JSON.parse(readFileSync(join(home().sa, 'asks.json'), 'utf8')) as Record<
       string,
       { status?: string; context?: { reason?: string } }
     >;
-    const pending = Object.entries(asks)
-      .filter(
-        ([key, ask]) =>
-          key.startsWith('coord:claude-failover:') &&
-          ['pending', 'unknown'].includes(ask.status ?? '')
-      )
-      .sort(([a], [b]) => b.localeCompare(a));
-    return pending.slice(0, 1).map(([key, ask]) => {
-      const reason = ask.context?.reason ?? 'Claude 不可用，是否由 Codex 元帅接手？';
-      return {
+    const entry = latestFailover(asks, ['pending', 'unknown']);
+    if (!entry) return [];
+    const [key] = entry,
+      ask = asks[key];
+    const reason = ask.context?.reason ?? 'Claude 不可用，是否由 Codex 元帅接手？';
+    return [
+      {
         id: digest(JSON.stringify(['failover', key, ask.context])),
-        run: `failover:${key.slice('coord:claude-failover:'.length)}`,
+        run: `failover:${key.slice(FAILOVER_PREFIX.length)}`,
         engine: 'failover',
         node: key,
-        pause: key.slice('coord:claude-failover:'.length),
+        pause: key.slice(FAILOVER_PREFIX.length),
         question: reason.replace('勾选=启动接手；删除=保持现状', '请选择处理方式'),
         reason: 'Claude 熔断：在途 run 的元帅接续需要操作者决定',
         context: reason,
@@ -255,25 +263,18 @@ export function failoverDecisions(): Decision[] {
           },
           { id: 'no', label: '保持现状', consequence: 'ownership 不变' },
         ],
-        failover: { key },
-      };
-    });
+      },
+    ];
   } catch {
     return [];
   }
-}
-interface CoordIntentAction extends Record<string, unknown> {
-  run_id: 'coord';
-  action: 'error';
-  ok: false;
-  error: string;
 }
 export function applyCoordIntents(
   asks: Partial<Record<string, { status: string; context?: unknown }>>,
   answer = (id: string, generation: number, persist: (key: string) => void): boolean =>
     coord().answerEscalation(id, generation, persist),
   store = new DeviceStore()
-): CoordIntentAction[] {
+) {
   let intents: { receipt: Receipt; authorized: boolean }[];
   try {
     intents = store.transaction(state =>
@@ -289,7 +290,7 @@ export function applyCoordIntents(
   } catch {
     return [{ run_id: 'coord', action: 'error', ok: false, error: 'coord intent read failed' }];
   }
-  const actions: CoordIntentAction[] = [];
+  const actions: { run_id: string; action: string; ok: boolean; error: string }[] = [];
   for (const intent of intents) {
     let guard: ReturnType<DeviceStore['deviceLock']> | undefined;
     try {
@@ -302,44 +303,38 @@ export function applyCoordIntents(
           )
         );
       const choice = intent.receipt.decision;
+      let accepted: boolean;
       if (intent.receipt.run.startsWith('failover:')) {
         const ask = asks[intent.receipt.node],
-          latest = Object.keys(asks)
-            .filter(key => key.startsWith('coord:claude-failover:'))
-            .sort()
-            .at(-1),
-          accepted =
-            authorized &&
-            (choice === 'yes' || choice === 'no') &&
-            latest === intent.receipt.node &&
-            ['pending', 'unknown', choice].includes(ask?.status ?? '') &&
-            intent.receipt.id === digest(JSON.stringify(['failover', latest, ask?.context]));
+          latest = latestFailover(asks)?.[0];
+        accepted =
+          authorized &&
+          (choice === 'yes' || choice === 'no') &&
+          latest === intent.receipt.node &&
+          ['pending', 'unknown', choice].includes(ask?.status ?? '') &&
+          intent.receipt.id === digest(JSON.stringify(['failover', latest, ask?.context]));
         if (accepted && ask) ask.status = choice;
-        store.transaction(state => {
-          const current = state.receipts.find(r => r.id === intent.receipt.id);
-          if (current?.stage === 'intent') current.stage = accepted ? 'accepted' : 'rejected';
-        });
-        continue;
+      } else {
+        const staleAsk = new Error('stale coord ask');
+        const keyPrefix = `${intent.receipt.run}:${intent.receipt.pause}:`,
+          validChoice = choice === 'yes' || choice === 'no';
+        accepted =
+          authorized &&
+          validChoice &&
+          Object.entries(asks).some(
+            ([key, ask]) => key.startsWith(keyPrefix) && ask?.status === choice
+          );
+        if (!accepted && authorized && validChoice)
+          try {
+            accepted = answer(intent.receipt.run.slice(6), Number(intent.receipt.pause), key => {
+              const ask = asks[key];
+              if (!ask || !['pending', 'unknown'].includes(ask.status)) throw staleAsk;
+              ask.status = choice;
+            });
+          } catch (error) {
+            if (error !== staleAsk) throw error;
+          }
       }
-      const staleAsk = new Error('stale coord ask');
-      const keyPrefix = `${intent.receipt.run}:${intent.receipt.pause}:`,
-        validChoice = choice === 'yes' || choice === 'no';
-      let accepted =
-        authorized &&
-        validChoice &&
-        Object.entries(asks).some(
-          ([key, ask]) => key.startsWith(keyPrefix) && ask?.status === choice
-        );
-      if (!accepted && authorized && validChoice)
-        try {
-          accepted = answer(intent.receipt.run.slice(6), Number(intent.receipt.pause), key => {
-            const ask = asks[key];
-            if (!ask || !['pending', 'unknown'].includes(ask.status)) throw staleAsk;
-            ask.status = choice;
-          });
-        } catch (error) {
-          if (error !== staleAsk) throw error;
-        }
       store.transaction(state => {
         const current = state.receipts.find(r => r.id === intent.receipt.id);
         if (current?.stage === 'intent') current.stage = accepted ? 'accepted' : 'rejected';
@@ -391,13 +386,13 @@ export async function answerDecision(
     ? (deferredCandidate ?? (await loadInbox()).decisions.find(d => d.id === id))
     : undefined;
   if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
-  if (candidate?.coordination ?? candidate?.failover) {
+  if (candidate?.coordination ?? candidate?.engine === 'failover') {
     requireThat(['yes', 'no'].includes(choice), 400, '不支持此选项');
     const deviceGuard = store.deviceLock(device.id);
     try {
       const current = [...coordinationDecisions(), ...failoverDecisions()].find(d => d.id === id);
-      requireThat(current, 409, '决定已变化，请重读');
-      requireThat(current.coordination ?? current.failover, 409, '决定已变化，请重读');
+      if (!current) throw new BoundaryError(409, '决定已变化，请重读');
+      requireThat(current.coordination ?? current.engine === 'failover', 409, '决定已变化，请重读');
       return store.transaction(s => {
         requireThat(
           s.devices.some(d => d.id === device.id && isAuthorizedDevice(d)),
@@ -588,8 +583,8 @@ export async function decisionState(
         }
       })();
   const selectedDeferred = id
-    ? inbox.decisions.find(d => d.id === id && (d.coordination ?? d.failover))
-    : inbox.decisions.find(d => (d.coordination ?? d.failover) && !d.disabled);
+    ? inbox.decisions.find(d => d.id === id && (d.coordination ?? d.engine === 'failover'))
+    : inbox.decisions.find(d => (d.coordination ?? d.engine === 'failover') && !d.disabled);
   const deferredReceipt =
     receipt &&
     /^(coord|failover):/.test(receipt.run) &&

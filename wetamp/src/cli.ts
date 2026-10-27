@@ -4042,25 +4042,23 @@ export async function claudeCommanderFailover(
   const held = lock(join(home().sa, 'supervise.lock'));
   if (!held.ok) return { skipped: 'locked' };
   try {
-    const state = health();
-    const existing = Object.entries(loadAsks())
-      .filter(
-        ([key, ask]) =>
-          key.startsWith('coord:claude-failover:') && ['yes', 'no'].includes(ask?.status ?? '')
-      )
-      .sort(([a], [b]) => b.localeCompare(a))
-      .at(0);
-    const changedAt =
-      existing?.[0].slice('coord:claude-failover:'.length) ??
-      (state.state === 'down' ? state.changed_at : undefined);
-    if (!changedAt) return { skipped: 'claude_up' };
+    const state = health(),
+      asks = loadAsks(),
+      prefix = 'coord:claude-failover:',
+      key =
+        state.state === 'down' && state.changed_at
+          ? `${prefix}${state.changed_at}`
+          : Object.keys(asks)
+              .sort((a, b) => b.localeCompare(a))
+              .find(
+                key => key.startsWith(prefix) && ['yes', 'no'].includes(asks[key]?.status ?? '')
+              );
+    if (!key) return { skipped: 'claude_up' };
     const owned = runs();
     if (!owned.length) return { skipped: 'no_claude_commander_runs' };
-    const key = existing?.[0] ?? `coord:claude-failover:${changedAt}`,
-      asks = loadAsks(),
-      projects = [...new Set(owned.map(run => basename(run.repo)))],
+    const projects = [...new Set(owned.map(run => basename(run.repo)))],
       ids = owned.map(run => run.run_id).join('、'),
-      since = localHealthTime(changedAt),
+      since = localHealthTime(key.slice(prefix.length)),
       reason = `${String(state.cause?.class)} 连续重试 ${String(state.cause?.retries)} 次`,
       question = `${projects.join('、')}：Claude 不可用（自 ${since}，${reason}）。是否由 Codex 元帅接手 ${ids}？勾选=启动接手；删除=保持现状`;
     const context = (title: string): DecisionContext => ({
