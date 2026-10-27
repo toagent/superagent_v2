@@ -1,7 +1,7 @@
+// generate.ts copies this file verbatim into run directories; only node: built-ins and type imports are allowed.
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { providerFailureClassSchema, type ProviderFailureClass } from '@archon/provider-contract';
-import type { TokenUsage } from '@archon/provider-contract';
+import type { ProviderFailureClass, TokenUsage } from '@archon/provider-contract';
 
 /** One run has one engine owner; its provider wrapper writes before dispatch and after settlement. */
 export interface PolicyAttempt {
@@ -63,7 +63,8 @@ function validAttempt(value: unknown): boolean {
         ['codex', 'claude'].includes(String(reassignment.to)) &&
         (reassignment.reason === 'vendor_unavailable' ||
           ((reassignment.reason === undefined || reassignment.reason === 'vendor_failure') &&
-            providerFailureClassSchema.safeParse(reassignment.failure).success))))
+            typeof reassignment.failure === 'string' &&
+            reassignment.failure.length > 0))))
   );
 }
 export function readPolicyAttempts(artifacts: string): PolicyAttempt[] {
