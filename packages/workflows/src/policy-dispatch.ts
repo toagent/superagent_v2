@@ -1,6 +1,8 @@
 import type {
   IAgentProvider,
   MessageChunk,
+  ProviderFailure,
+  ProviderWarning,
   ResultChunk,
   SendQueryOptions,
 } from '@archon/provider-contract';
@@ -18,6 +20,8 @@ export const MODEL_FAILURE_COOLDOWN_MS = {
   overloaded: 120_000,
   quota_exhausted: 3600_000,
 } as const;
+const vendorFailure = (failure?: ProviderFailure['class']): boolean =>
+  failure === 'overloaded' || failure === 'quota_exhausted' || failure === 'transient';
 interface BudgetUsage {
   launches: number;
   weighted_tokens: number;
@@ -37,6 +41,11 @@ export interface DispatchExecution<Candidate extends DispatchCandidate> {
   provider: 'codex' | 'claude';
   sendQuery: IAgentProvider['sendQuery'];
   sendQueryFor?(candidate: Candidate): IAgentProvider['sendQuery'];
+  available?(candidate: Candidate): boolean;
+  onSettled?(
+    attempt: PolicyAttempt,
+    failure?: ProviderFailure
+  ): Promise<ProviderWarning | undefined>;
   options(candidate: Candidate): SendQueryOptions;
   now?: () => number;
   requestedModel?: string;
@@ -87,21 +96,41 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       cooling(a) - cooling(b)
   );
   let vendorFailed = true;
+  let reassignmentBlocked = false;
   let previousProvider = execution.provider;
+  const isAvailable = (candidate: Candidate): boolean => execution.available?.(candidate) ?? true;
   for (const candidate of candidates) {
     const priorFailure = last?.failure?.class;
-    if (
-      candidate.provider !== execution.provider &&
-      (!priorFailure || !vendorFailed || !execution.sendQueryFor)
-    )
-      break;
+    if (!isAvailable(candidate)) {
+      yield {
+        type: 'warning',
+        code: 'superagent.vendor_skipped',
+        message: JSON.stringify({
+          node: execution.node,
+          provider: candidate.provider,
+          model: candidate.model,
+          reason: 'vendor_unavailable',
+        }),
+      };
+      continue;
+    }
+    const nativeUnavailable =
+      execution.available !== undefined &&
+      !candidates.some(c => c.provider === execution.provider && isAvailable(c));
+    const canReassign =
+      execution.sendQueryFor &&
+      !reassignmentBlocked &&
+      ((priorFailure !== undefined && vendorFailed) || nativeUnavailable);
+    if (candidate.provider !== execution.provider && !canReassign) break;
     const reassignment =
-      candidate.provider !== previousProvider && priorFailure
+      candidate.provider !== previousProvider
         ? {
             node: execution.node,
             from: previousProvider,
             to: candidate.provider,
-            failure: priorFailure,
+            ...(priorFailure && vendorFailure(priorFailure)
+              ? { reason: 'vendor_failure' as const, failure: priorFailure }
+              : { reason: 'vendor_unavailable' as const }),
           }
         : undefined;
     const options = execution.options(candidate);
@@ -171,18 +200,22 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     attempt.tokens = mergeTokenUsage(turnUsage);
     attempt.resolved = result?.resolvedModel?.id;
     attempt.failure = result?.failure?.class;
-    const failure = result?.failure?.class;
-    const vendorFailure =
-      failure === 'overloaded' || failure === 'quota_exhausted' || failure === 'transient';
-    vendorFailed &&= vendorFailure;
+    const failure = result?.failure;
+    const failureClass = failure?.class;
+    const failedByVendor = vendorFailure(failureClass);
+    reassignmentBlocked ||= failureClass === 'auth' || failureClass === 'misconfigured';
     const cooldown =
-      failure && Object.hasOwn(MODEL_FAILURE_COOLDOWN_MS, failure)
-        ? MODEL_FAILURE_COOLDOWN_MS[failure as keyof typeof MODEL_FAILURE_COOLDOWN_MS]
+      failureClass && Object.hasOwn(MODEL_FAILURE_COOLDOWN_MS, failureClass)
+        ? MODEL_FAILURE_COOLDOWN_MS[failureClass as keyof typeof MODEL_FAILURE_COOLDOWN_MS]
         : undefined;
     if (cooldown !== undefined) attempt.cooldown_until = now() + cooldown;
     writePolicyAttempts(execution.artifacts, attempts);
+    const settledWarning = await execution.onSettled?.(attempt, failure);
+    if (settledWarning) yield { type: 'warning', ...settledWarning };
     if (!settled || !result)
       throw new Error('policy provider stream ended without result and settled');
+    const stillAvailable = isAvailable(candidate);
+    vendorFailed &&= failedByVendor || (!stillAvailable && !reassignmentBlocked);
     const observed = budgetObservation(false);
     if (observed)
       yield {
@@ -190,7 +223,10 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
         code: 'superagent.budget_observed',
         message: observed,
       };
-    if ((!vendorFailure && cooldown === undefined) || options.abortSignal?.aborted) {
+    if (
+      (!failedByVendor && stillAvailable && cooldown === undefined) ||
+      options.abortSignal?.aborted
+    ) {
       yield accounted(result, candidate.model);
       yield { type: 'settled' };
       return;
@@ -202,7 +238,7 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       message: JSON.stringify({
         node: execution.node,
         model: candidate.model,
-        failure,
+        failure: failureClass,
         cooldown_until: attempt.cooldown_until,
       }),
     };

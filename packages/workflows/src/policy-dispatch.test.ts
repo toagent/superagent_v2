@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
@@ -64,13 +64,14 @@ for (const failure of ['overloaded', 'quota_exhausted', 'transient'] as const)
       node: 'code-core',
       from: 'codex',
       to: 'claude',
+      reason: 'vendor_failure',
       failure,
     });
     expect(chunks.at(-2)).not.toHaveProperty('sessionId');
     expect(readPolicyAttempts(s.artifacts).at(-1)).toMatchObject({
       provider: 'claude',
       status: 'completed',
-      reassignment: { from: 'codex', to: 'claude', failure },
+      reassignment: { from: 'codex', to: 'claude', reason: 'vendor_failure', failure },
     });
   });
 
@@ -90,6 +91,45 @@ test('VENDOR_FAILOVER misconfigured candidate prevents vendor reassignment', asy
   const s = setup('misconfigured');
   await collect(executePolicy(s.execution, 'p', '/scratch'));
   expect(s.calls.map(c => c.provider)).toEqual(['codex', 'codex']);
+});
+
+test('VENDOR_FAILOVER awaits settlement, skips a newly unavailable vendor, and emits warnings', async () => {
+  const s = setup('rate_limited');
+  let available = true;
+  s.execution.available = candidate => candidate.provider !== 'codex' || available;
+  s.execution.onSettled = async () => {
+    await Promise.resolve();
+    available = false;
+    return { code: 'superagent.health_persist_failed', message: 'fixture' };
+  };
+  const chunks = await collect(executePolicy(s.execution, 'p', '/scratch'));
+  expect(s.calls.map(c => c.model)).toEqual(['codex-a', 'claude-a']);
+  expect(chunks.filter(c => c.type === 'warning').map(c => c.code)).toEqual(
+    expect.arrayContaining(['superagent.health_persist_failed', 'superagent.vendor_skipped'])
+  );
+  expect(readPolicyAttempts(s.artifacts).at(-1)?.reassignment).toMatchObject({
+    reason: 'vendor_unavailable',
+  });
+});
+
+test('VENDOR_FAILOVER routes without a native candidate and normalizes legacy reassignment', async () => {
+  const s = setup();
+  s.execution.provider = 'claude';
+  s.execution.candidates = pool.filter(c => c.provider === 'codex');
+  s.execution.available = () => true;
+  await collect(executePolicy(s.execution, 'p', '/scratch'));
+  expect(s.calls[0]).toMatchObject({ provider: 'codex', model: 'codex-a' });
+  expect(readPolicyAttempts(s.artifacts)[0]?.reassignment).toMatchObject({
+    reason: 'vendor_unavailable',
+  });
+  writeFileSync(
+    join(s.artifacts, 'policy-attempts.json'),
+    '[{"id":"old","node":"n","provider":"codex","model":"m","status":"failed","reassignment":{"node":"n","from":"claude","to":"codex","failure":"overloaded"}}]'
+  );
+  expect(readPolicyAttempts(s.artifacts)[0]?.reassignment).toMatchObject({
+    reason: 'vendor_failure',
+    failure: 'overloaded',
+  });
 });
 
 test('VENDOR_FAILOVER all cooled candidates are still attempted; warm sorts first', async () => {

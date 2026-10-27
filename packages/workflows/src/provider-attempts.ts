@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ProviderFailureClass } from '@archon/provider-contract';
+import { providerFailureClassSchema, type ProviderFailureClass } from '@archon/provider-contract';
 import type { TokenUsage } from '@archon/provider-contract';
 
 /** One run has one engine owner; its provider wrapper writes before dispatch and after settlement. */
@@ -19,15 +19,17 @@ export interface PolicyAttempt {
     node: string;
     from: 'codex' | 'claude';
     to: 'codex' | 'claude';
-    failure: ProviderFailureClass;
-  };
+  } & (
+    | { reason: 'vendor_failure'; failure: ProviderFailureClass }
+    | { reason: 'vendor_unavailable' }
+  );
 }
 const attemptFile = (artifacts: string): string => join(artifacts, 'policy-attempts.json');
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const amount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0;
-function validAttempt(value: unknown): value is PolicyAttempt {
+function validAttempt(value: unknown): boolean {
   if (
     !record(value) ||
     typeof value.id !== 'string' ||
@@ -45,14 +47,23 @@ function validAttempt(value: unknown): value is PolicyAttempt {
     (value.cooldown_until !== undefined && !amount(value.cooldown_until))
   )
     return false;
-  const tokens = value.tokens;
+  const tokens = value.tokens,
+    reassignment = value.reassignment;
   return (
-    tokens === undefined ||
-    (record(tokens) &&
-      amount(tokens.input) &&
-      amount(tokens.output) &&
-      (tokens.cacheRead === undefined ||
-        (amount(tokens.cacheRead) && tokens.cacheRead <= tokens.input)))
+    (tokens === undefined ||
+      (record(tokens) &&
+        amount(tokens.input) &&
+        amount(tokens.output) &&
+        (tokens.cacheRead === undefined ||
+          (amount(tokens.cacheRead) && tokens.cacheRead <= tokens.input)))) &&
+    (reassignment === undefined ||
+      (record(reassignment) &&
+        typeof reassignment.node === 'string' &&
+        ['codex', 'claude'].includes(String(reassignment.from)) &&
+        ['codex', 'claude'].includes(String(reassignment.to)) &&
+        (reassignment.reason === 'vendor_unavailable' ||
+          ((reassignment.reason === undefined || reassignment.reason === 'vendor_failure') &&
+            providerFailureClassSchema.safeParse(reassignment.failure).success))))
   );
 }
 export function readPolicyAttempts(artifacts: string): PolicyAttempt[] {
@@ -61,7 +72,20 @@ export function readPolicyAttempts(artifacts: string): PolicyAttempt[] {
   const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
   if (!Array.isArray(value)) throw new Error('policy-attempts: expected an array');
   if (!value.every(validAttempt)) throw new Error('policy-attempts: invalid attempt record');
-  return value;
+  return value.map(attempt => {
+    const typed = attempt as PolicyAttempt;
+    if (record(attempt) && record(attempt.reassignment) && !attempt.reassignment.reason) {
+      const legacy = attempt.reassignment;
+      typed.reassignment = {
+        node: legacy.node as string,
+        from: legacy.from as 'codex' | 'claude',
+        to: legacy.to as 'codex' | 'claude',
+        reason: 'vendor_failure',
+        failure: legacy.failure as ProviderFailureClass,
+      };
+    }
+    return typed;
+  });
 }
 export function writePolicyAttempts(artifacts: string, attempts: PolicyAttempt[]): void {
   const file = attemptFile(artifacts),
