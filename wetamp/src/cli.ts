@@ -1,4 +1,5 @@
 import { applyCoordIntents, describeDecision, type DecisionInbox } from './decisions';
+import { FAILOVER_PREFIX, latestFailover } from './decisions';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { runAttention } from '../../packages/workflows/src/schemas/workflow-run';
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
@@ -4044,21 +4045,16 @@ export async function claudeCommanderFailover(
   try {
     const state = health(),
       asks = loadAsks(),
-      prefix = 'coord:claude-failover:',
       key =
         state.state === 'down' && state.changed_at
-          ? `${prefix}${state.changed_at}`
-          : Object.keys(asks)
-              .sort((a, b) => b.localeCompare(a))
-              .find(
-                key => key.startsWith(prefix) && ['yes', 'no'].includes(asks[key]?.status ?? '')
-              );
+          ? `${FAILOVER_PREFIX}${state.changed_at}`
+          : latestFailover(asks, ['yes', 'no'])?.[0];
     if (!key) return { skipped: 'claude_up' };
     const owned = runs();
     if (!owned.length) return { skipped: 'no_claude_commander_runs' };
     const projects = [...new Set(owned.map(run => basename(run.repo)))],
       ids = owned.map(run => run.run_id).join('、'),
-      since = localHealthTime(key.slice(prefix.length)),
+      since = localHealthTime(key.slice(FAILOVER_PREFIX.length)),
       reason = `${String(state.cause?.class)} 连续重试 ${String(state.cause?.retries)} 次`,
       question = `${projects.join('、')}：Claude 不可用（自 ${since}，${reason}）。是否由 Codex 元帅接手 ${ids}？勾选=启动接手；删除=保持现状`;
     const context = (title: string): DecisionContext => ({

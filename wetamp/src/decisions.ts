@@ -221,8 +221,8 @@ export function coordinationDecisions(c = coord()): Decision[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-const FAILOVER_PREFIX = 'coord:claude-failover:';
-const latestFailover = <T extends { status?: string }>(
+export const FAILOVER_PREFIX = 'coord:claude-failover:';
+export const latestFailover = <T extends { status?: string }>(
   asks: Partial<Record<string, T>>,
   statuses?: string[]
 ) =>
