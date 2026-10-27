@@ -871,6 +871,9 @@ else if (process.argv[1].endsWith('/claude')) {
     }
     const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
+    const jobsBefore = readJobs().jobs.length, now = new Date();
+    writeFileSync(join(process.env.SUPERAGENT_HOME!, 'claude-health.json'), JSON.stringify({ state: 'down', observed_at: now.toISOString(), changed_at: now.toISOString(), cause: { source: 'dispatch', class: 'overloaded', retries: 10 }, next_probe_at: new Date(now.getTime() + 300_000).toISOString(), probe_failures: 0 }));
+    const unavailable = run(['job', 'exec', '--title', 'down', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']); expect(await unavailable.exited).not.toBe(0); expect(await new Response(unavailable.stderr as ReadableStream).text()).toContain('claude_unavailable'); expect(readJobs().jobs).toHaveLength(jobsBefore);
     writeFileSync(join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'), JSON.stringify({ at: Date.now(), claude_daily_usd: loadTiers().routing.budget.claude_daily_usd }));
     const downgraded = run(['job', 'exec', '--title', 'budget', '--role', 'strategist', '--', claude, '-p']);
     expect(await downgraded.exited).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('candidates:');

@@ -10,7 +10,7 @@ import type {
 import { isEffortRung } from '../../packages/provider-contract/src/effort';
 import { getRegistration } from '@archon/providers';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
-import { type Alias, type Tiers } from './config';
+import { routeState, type Alias, type Tiers } from './config';
 import { readExecutionTable, executionForNode, executionRoute, executionNode } from './execution';
 import { type Plan } from './plan';
 import {
@@ -188,7 +188,8 @@ function runtimeExecution(
     plan.mode,
     route,
     authors,
-    true
+    true,
+    routeState(tiers, plan.mode)
   ).candidates;
   return {
     node,

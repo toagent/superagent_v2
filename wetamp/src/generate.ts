@@ -37,6 +37,8 @@ import {
   loadTiers,
   runAliases,
   resolveRoute,
+  routeState,
+  type RouteState,
   snapshotPolicy,
   type Tiers,
 } from './config';
@@ -105,7 +107,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 // prettier-ignore
 export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
   '../packages/workflows/src/provider-attempts.ts',
-  'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/plan.ts',
+  'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/claude-health.ts', 'src/plan.ts',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   'schemas/nodes', 'src/contract',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
@@ -185,13 +187,14 @@ export function buildWorkflow(
   tiers: Tiers = loadTiers(),
   carried?: Carried,
   delivery?: import('./land').DeliveryTarget,
-  engineSnapshot?: string
+  engineSnapshot?: string,
+  state: RouteState = routeState(tiers, plan.mode, now)
 ): Node {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   // 只拒绝显式 deadline 已过的 plan；缺省没有交付期限。
   if (plan.deadline !== undefined && Date.parse(plan.deadline) <= now)
     throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
-  const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
+  const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
   const executions = executionTable(plan, tiers);
   const maxRounds = reviewRoundLimit(tiers.policy);
   const execution = (id: string): Node => {
@@ -202,7 +205,9 @@ export function buildWorkflow(
       plan.console ?? 'claude',
       plan.mode,
       descriptor,
-      descriptor.role === 'review' ? [aliases['@sa-coder'].model] : []
+      descriptor.role === 'review' ? [aliases['@sa-coder'].model] : [],
+      false,
+      state
     ).candidates[0];
     return {
       ...executionNode(descriptor, candidate),
@@ -1227,12 +1232,14 @@ export function generate(
   previousHash?: string,
   carried?: Carried,
   delivery?: import('./land').DeliveryTarget,
-  engineSnapshot?: string
+  engineSnapshot?: string,
+  routingState?: RouteState
 ): Gen {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   const engine_commit = cleanEngine();
   assertSQLite(plan.repo);
   const tiers = loadTiers();
+  const state = routingState ?? routeState(tiers, plan.mode);
   const policy = snapshotPolicy(tiers);
   const principlesPath = join(WETAMP, 'templates', '.archon', 'principles.md');
   let principles: string;
@@ -1266,7 +1273,8 @@ export function generate(
     tiers,
     carried,
     delivery,
-    engineSnapshot
+    engineSnapshot,
+    state
   );
   assertGeneratedWorkflow(definition, !ms.some(m => m.human));
   const wfDir = join(dir, '.archon', 'workflows', workflow);
@@ -1343,12 +1351,14 @@ export function generate(
   }
   if (!fake) {
     const executions = executionTable(plan, tiers);
+    const candidateFor = (descriptor: (typeof executions)[string]) =>
+      executionRoute(tiers, plan.console ?? 'claude', plan.mode, descriptor, [], false, state)
+        .candidates[0];
     for (const p of plan.packages) {
       if (draftFor(p) !== 'soldier' || !tiers.routing.soldier?.models.length) continue;
       const id = `soldier-${p.id}`;
       const descriptor = executions[id];
-      const candidate = executionRoute(tiers, plan.console ?? 'claude', plan.mode, descriptor)
-        .candidates[0];
+      const candidate = candidateFor(descriptor);
       const launch = {
         ...executionNode(descriptor, candidate),
         ...(candidate.provider === 'claude'
@@ -1416,18 +1426,21 @@ export function generate(
   );
   writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
-  const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode);
+  const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
+  const reviewer = (risk: Pkg['risk']) =>
+    resolveRoute(
+      tiers,
+      plan.console ?? 'claude',
+      plan.mode,
+      'review',
+      risk,
+      1,
+      [aliases['@sa-coder'].model],
+      false,
+      state
+    ).candidates[0];
   for (const risk of ['G0', 'G1', 'G2'] as const) {
-    if (tiers.routing.reviewer.by_risk?.[risk])
-      aliases[`@sa-reviewer-${risk}`] = resolveRoute(
-        tiers,
-        plan.console ?? 'claude',
-        plan.mode,
-        'review',
-        risk,
-        1,
-        [aliases['@sa-coder'].model]
-      ).candidates[0];
+    if (tiers.routing.reviewer.by_risk?.[risk]) aliases[`@sa-reviewer-${risk}`] = reviewer(risk);
   }
   const worker = join(dir, 'codex-worker');
   const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";

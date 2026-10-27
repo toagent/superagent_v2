@@ -4,9 +4,9 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import {
   assertSQLite,
-  budgetState,
   loadTiers,
   resolveRoute,
+  routeState,
   runAliases,
   snapshotPolicy,
   WETAMP,
@@ -29,6 +29,8 @@ describe('B1-POLICY frozen routing', () => {
   // prettier-ignore
   test('budget cache only downgrades auto: all roles, unknown observations and explicit modes', () => {
     const previous = process.env.SUPERAGENT_HOME, quota = process.env.SUPERAGENT_RELAY_QUOTA, dir = tmp(), tiers = fixtureTiers(), now = Date.now();
+    const unavailable = routeState(tiers, 'strict', now, { state: 'down', observed_at: new Date(now).toISOString(), changed_at: new Date(now).toISOString(), cause: { source: 'dispatch', class: 'overloaded', retries: 10 }, next_probe_at: new Date(now + 300_000).toISOString(), probe_failures: 0 });
+    for (const mode of ['auto', 'strict']) for (const role of ['command', 'code', 'review'] as const) expect(resolveRoute(tiers, 'claude', mode, role, 'G1', 1, [], false, unavailable).candidates.every(a => a.provider === 'codex')).toBeTrue();
     process.env.SUPERAGENT_HOME = dir;
     process.env.SUPERAGENT_RELAY_QUOTA = 'off';
     const cache = (value: unknown) => writeFileSync(join(dir, 'relay-quota.json'), typeof value === 'string' ? value : JSON.stringify(value));
@@ -36,21 +38,21 @@ describe('B1-POLICY frozen routing', () => {
     try {
       expect(models().budget.notice).toBe('预算状态未知');
       for (const value of ['{', { at: now - 3600e3 - 1, claude_daily_usd: 300 }, { at: now, claude_daily_usd: '300' }]) {
-        cache(value); expect(budgetState(tiers, 'auto', now).notice).toBe('预算状态未知');
+        cache(value); expect(routeState(tiers, 'auto', now).budget.notice).toBe('预算状态未知');
         expect(resolveRoute(tiers, 'claude', 'auto', 'command').candidates.map(a => a.model)).toEqual(tiers.routing.commander.by_console.claude);
       }
-      cache({ at: now, claude_daily_usd: 299 }); expect(budgetState(tiers).notice).toBe('');
+      cache({ at: now, claude_daily_usd: 299 }); expect(routeState(tiers).budget.notice).toBe('');
       expect(resolveRoute(tiers, 'claude', 'auto', 'command').candidates.map(a => a.model)).toEqual(tiers.routing.commander.by_console.claude);
       cache({ at: now, claude_daily_usd: 300 }); expect(models().budget.notice).toBe('已降级到 Codex');
       for (const c of ['claude', 'codex'] as const) for (const role of ['command', 'code', 'repair', 'review'] as const) {
         const authors = role === 'review' ? [tiers.routing.coder.models[0]] : [];
-        const candidates = resolveRoute(tiers, c, 'auto', role, 'G1', 1, authors).candidates;
+        const candidates = resolveRoute(tiers, c, 'auto', role, 'G1', 1, authors, false, routeState(tiers, 'auto', now)).candidates;
         expect(candidates.every(a => a.provider === 'codex' && !authors.includes(a.model))).toBe(true);
         if (role === 'command') expect(candidates.map(a => a.model)).toEqual(tiers.routing.commander.by_console.codex);
       }
-      for (const mode of ['strict', 'single:claude', 'single:chatgpt']) expect(budgetState(tiers, mode).degraded).toBe(false);
+      for (const mode of ['strict', 'single:claude', 'single:chatgpt']) expect(routeState(tiers, mode).budget.degraded).toBe(false);
       expect(resolveRoute(tiers, 'claude', 'single:claude', 'code').candidates.every(a => a.provider === 'claude')).toBe(true);
-      tiers.routing.budget.claude_daily_usd = 301; expect(budgetState(tiers).degraded).toBe(false);
+      tiers.routing.budget.claude_daily_usd = 301; expect(routeState(tiers).budget.degraded).toBe(false);
     } finally { if (quota === undefined) delete process.env.SUPERAGENT_RELAY_QUOTA; else process.env.SUPERAGENT_RELAY_QUOTA = quota; if (previous === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = previous; }
   });
   // prettier-ignore
@@ -58,7 +60,7 @@ describe('B1-POLICY frozen routing', () => {
     const t = fixtureTiers(), path = join(tmp(), 'tiers.json');
     for (const c of ['claude', 'codex'] as const)
       for (const mode of ['auto', 'strict', 'single:claude', 'single:chatgpt'])
-        expect(resolveRoute(t, c, mode, 'command').candidates.map(a => a.model)).toEqual(t.routing.commander.by_console[c]);
+        expect(resolveRoute(t, c, mode, 'command').candidates.map(a => a.model)).toEqual(t.routing.commander.by_console[mode === 'single:chatgpt' ? 'codex' : c]);
     t.routing.commander.by_console.codex = t.routing.commander.by_console.claude;
     writeFileSync(path, JSON.stringify(t));
     expect(() => loadTiers(path)).toThrow('commander.by_console.codex');

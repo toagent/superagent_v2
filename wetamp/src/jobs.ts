@@ -14,7 +14,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
-import { home, loadTiers } from './config';
+import { home, loadTiers, routeState } from './config';
+import { claudeAdmission, refreshClaudeHealth } from './claude-health';
 import {
   describeExecution,
   executionRoute,
@@ -468,6 +469,9 @@ export async function jobCli(
   let execution: Job['execution'];
   if (isTier(role) && ['codex', 'claude'].includes(kindOf(cmd[0]))) {
     const tiers = loadTiers(), provider = kindOf(cmd[0]) as 'codex' | 'claude';
+    const health = refreshClaudeHealth().health, admission = claudeAdmission(a.flags.mode, health);
+    if (!admission.ok) throw new Error(`${admission.reason}: ${admission.detail}`);
+    const state = routeState(tiers, a.flags.mode, Date.now(), health);
     const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
     const risk = a.flags.risk ?? 'G1';
     if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2') throw new Error('job: invalid risk');
@@ -475,7 +479,7 @@ export async function jobCli(
     if (role === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
       throw new Error('job: independent review requires --author-model');
     const descriptor = describeExecution(tiers, ROUTE_ROLE[role], risk, Number(a.flags.round ?? 1));
-    const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors).candidates;
+    const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, false, state).candidates;
     const model = modelOf(cmd.slice(1));
     const candidate = candidates.find(a => a.provider === provider && (model === null || a.model === model));
     if (!candidate)
