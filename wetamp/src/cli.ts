@@ -2685,11 +2685,12 @@ function consumeAnswer(
 
 const terminalFact = (run: RunView): string =>
   `${run.id}:${run.status}:${run.completed_at ?? run.last_activity_at ?? ''}`;
-function deliverReceipt(l: Ledger, key: string, a: Ask, asks: Asks): void {
+function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks): void {
   const r = a.receipt;
   if (!r?.stage || !a.id) return; // Legacy receipts have no execution binding.
   try {
     if (r.effect && r.stage === 'executing') {
+      if (!l) throw new Error('receipt effect requires a run');
       const run = getRun(r.effect.engine_run, l.repo);
       if (run.id !== r.effect.engine_run) throw new Error('receipt execution identity mismatch');
       const stage =
@@ -3988,13 +3989,7 @@ export async function superviseTickCli(
   }
   let output: Record<string, unknown> = {};
   const exit = tickOutput(mode, value => (output = value));
-  if (!mode.noGlobal) {
-    try {
-      output.commander_failover = await claudeCommanderFailover();
-    } catch (e) {
-      errors.push(`commander failover failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
+  if (!mode.noGlobal) await claudeCommanderFailover();
   try {
     if (!mode.noGlobal) {
       const result = await sync();
@@ -4032,72 +4027,26 @@ export async function superviseTickCli(
   return exit;
 }
 
-type CommanderRun = ReturnType<ReturnType<typeof coord>['ownedNonterminalRuns']>[number];
-interface CommanderFailoverDeps {
-  health: () => ReturnType<typeof readClaudeHealth>;
-  runs: () => CommanderRun[];
-  bin: () => string | undefined;
-  model: () => string;
-  launch: (bin: string, args: string[]) => Promise<AgentLaunch>;
-  now: () => Date;
-}
-const failoverReceipt = (
-  key: string,
-  a: Ask,
-  stage: AnswerReceipt['stage'],
-  body: string
-): void => {
-  if (!a.id) return;
-  a.receipt ??= { key: `${key}:result`, stage, body, at: new Date().toISOString() };
-  try {
-    supervisor([
-      'ask-ack',
-      a.id,
-      '--receipt-json',
-      JSON.stringify({
-        key: a.receipt.key,
-        request_key: key,
-        stage: a.receipt.stage,
-        body: a.receipt.body,
-      }),
-    ]);
-    a.receipt.delivery = 'sent';
-  } catch (e) {
-    a.receipt.delivery = 'failed';
-    a.receipt.error = tail((e as Error).message, 200);
-  }
-  saveAsk({ [key]: a }, key);
-};
-
 export async function claudeCommanderFailover(
-  overrides: Partial<CommanderFailoverDeps> = {}
+  health = () => readClaudeHealth(Date.now()),
+  runs = () => coord().ownedNonterminalRuns('claude'),
+  bin = orcaBin,
+  launch = launchAgent,
+  now = () => new Date()
 ): Promise<Record<string, unknown>> {
-  const d: CommanderFailoverDeps = {
-    health: () => readClaudeHealth(Date.now()),
-    runs: () => coord().ownedNonterminalRuns('claude'),
-    bin: () => orcaBin(),
-    model: () =>
-      resolveRoute(loadTiers(), 'codex', 'single:chatgpt', 'command').candidates[0].model,
-    launch: launchAgent,
-    now: () => new Date(),
-    ...overrides,
-  };
   const held = lock(join(home().sa, 'supervise.lock'));
   if (!held.ok) return { skipped: 'locked' };
   try {
-    const health = d.health();
-    if (health.state !== 'down' || !health.changed_at) return { skipped: 'claude_up' };
-    const runs = d.runs();
-    if (!runs.length) return { skipped: 'no_claude_commander_runs' };
-    const key = `coord:claude-failover:${health.changed_at}`,
+    const state = health();
+    if (state.state !== 'down' || !state.changed_at) return { skipped: 'claude_up' };
+    const owned = runs();
+    if (!owned.length) return { skipped: 'no_claude_commander_runs' };
+    const key = `coord:claude-failover:${state.changed_at}`,
       asks = loadAsks(),
-      projects = [...new Set(runs.map(run => basename(run.repo)))],
-      ids = runs.map(run => run.run_id).join('、'),
-      since = new Date(health.changed_at).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
-      reason = `${String(health.cause?.class)} 连续重试 ${String(health.cause?.retries)} 次`,
+      projects = [...new Set(owned.map(run => basename(run.repo)))],
+      ids = owned.map(run => run.run_id).join('、'),
+      since = state.changed_at.slice(11, 16),
+      reason = `${String(state.cause?.class)} 连续重试 ${String(state.cause?.retries)} 次`,
       question = `${projects.join('、')}：Claude 不可用（自 ${since}，${reason}）。是否由 Codex 元帅接手 ${ids}？勾选=启动接手；删除=保持现状`;
     const polled = pollAsk(
       key,
@@ -4112,72 +4061,52 @@ export async function claudeCommanderFailover(
         action: '启动 Codex 元帅复核并接手',
         target: projects.join('、'),
         reason: title,
-        recommendation: { choice: 'yes', reason: 'Claude 熔断时恢复在途 run 的元帅决策能力' },
-        consequences: {
-          yes: '按仓库启动 Codex 元帅，复核 owner/generation 后显式接管',
-          no: '保持当前 ownership，run 继续等待人工接手',
-        },
+        recommendation: { choice: 'yes', reason: '恢复在途 run 的元帅决策能力' },
+        consequences: { yes: '启动 Codex 元帅；复核后显式接管', no: 'ownership 不变' },
       })
     );
     if ('conflict' in polled) throw new Error(polled.conflict);
     const a = polled.a;
-    if (['approved', 'rejected'].includes(a.status)) {
-      if (a.receipt?.delivery !== 'sent')
-        failoverReceipt(
-          key,
-          a,
-          a.receipt?.stage ?? 'unknown',
-          a.receipt?.body ?? '上次答复已消费；执行结果未确认，未重放接管动作'
-        );
-      return { skipped: 'answered' };
-    }
+    const receipt = (stage: AnswerReceipt['stage'], body: string): void => {
+      a.receipt ??= { key: `${key}:result`, stage, body, at: now().toISOString() };
+      deliverReceipt(undefined, key, a, asks);
+    };
+    if (['approved', 'rejected'].includes(a.status)) return { skipped: 'answered' };
     if (!['yes', 'no'].includes(a.status)) return { status: a.status, asked: polled.asked };
     a.status = a.status === 'yes' ? 'approved' : 'rejected';
     saveAsk(asks, key);
     if (a.status === 'rejected') {
-      failoverReceipt(key, a, 'succeeded', '已保持现状；ownership 未变');
+      receipt('succeeded', '已保持现状；ownership 未变');
       return { status: 'rejected' };
     }
-    const model = d.model(),
-      checked = d.now().toISOString(),
-      bin = d.bin(),
+    const model = resolveRoute(loadTiers(), 'codex', 'single:chatgpt', 'command').candidates[0]
+        .model,
+      checked = now().toISOString(),
+      executable = bin(),
       results: AgentLaunch[] = [];
-    const manual = runs
+    const manual = owned
       .map(
         run =>
           `superagent brief ${run.run_id}；复核 owner/generation=${String(run.generation)}；superagent claim ${run.run_id} --takeover --reason ${JSON.stringify(`${question}；用户于 ${checked} 勾选`)}；superagent reauthorize ${run.run_id}`
       )
       .join('；');
-    if (bin)
-      for (const repo of [...new Set(runs.map(run => run.repo))]) {
-        const owned = runs.filter(run => run.repo === repo),
-          prompt = `Claude 熔断接手。逐 run 执行：${owned.map(run => `先 superagent brief ${run.run_id}；再用 superagent owner ${run.run_id} --json 复核 owner 仍为 ${JSON.stringify(run.owner)} 且 generation=${String(run.generation)}，不一致立即停止；然后 superagent claim ${run.run_id} --takeover --reason ${JSON.stringify(`${question}；用户于 ${checked} 勾选`)}；再 superagent reauthorize ${run.run_id} 并继续该 run`).join('\n')}`;
-        results.push(
-          await d.launch(bin, [
-            'agent',
-            'launch',
-            '--agent',
-            'codex',
-            '--worktree',
-            `path:${repo}`,
-            '--model',
-            model,
-            '--prompt',
-            prompt,
-            '--focus',
-            '--json',
-          ])
-        );
+    if (executable)
+      for (const repo of [...new Set(owned.map(run => run.repo))]) {
+        const selected = owned.filter(run => run.repo === repo),
+          prompt = `Claude 熔断接手。逐 run 执行：${selected.map(run => `先 superagent brief ${run.run_id}；再用 superagent owner ${run.run_id} --json 复核 owner 仍为 ${JSON.stringify(run.owner)} 且 generation=${String(run.generation)}，不一致立即停止；然后 superagent claim ${run.run_id} --takeover --reason ${JSON.stringify(`${question}；用户于 ${checked} 勾选`)}；再 superagent reauthorize ${run.run_id} 并继续该 run`).join('\n')}`;
+        const args = ['agent', 'launch', '--agent', 'codex', '--focus', '--json'];
+        args.push('--worktree', `path:${repo}`);
+        args.push('--model', model);
+        args.push('--prompt', prompt);
+        results.push(await launch(executable, args));
       }
     const stage: AnswerReceipt['stage'] =
-      !bin || results.some(r => r.kind === 'failed')
+      !executable || results.some(r => r.kind === 'failed')
         ? 'failed'
         : results.some(r => r.kind !== 'launched')
           ? 'unknown'
           : 'succeeded';
-    failoverReceipt(
-      key,
-      a,
+    receipt(
       stage,
       stage === 'succeeded'
         ? `已按 ${String(results.length)} 个仓库启动 Codex 元帅；ownership 由新元帅复核后显式变更`

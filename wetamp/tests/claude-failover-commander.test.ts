@@ -1,26 +1,18 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { claudeCommanderFailover } from '../src/cli';
-import { Coordination, type Controller, type RunRef } from '../src/coord';
-import { gitRepo, tmp } from './helpers';
+import { type Controller, type RunRef } from '../src/coord';
+import { tmp } from './helpers';
 
 const original = { ...process.env };
 afterEach(() => {
   process.env = { ...original };
 });
-const owner: Controller = {
-  client: 'claude',
-  session_id: 'claude-1',
-  host: 'test',
-  pid: 7,
-  generation: 3,
-};
+const owner: Controller = { client: 'claude', pid: 7, generation: 3 };
 const health = (changed_at = '2026-10-27T01:02:00.000Z') => ({
   state: 'down' as const,
   changed_at,
-  observed_at: changed_at,
-  next_probe_at: '2099-01-01T00:00:00.000Z',
   cause: { source: 'dispatch' as const, class: 'overloaded', retries: 10 },
   probe_failures: 0,
 });
@@ -50,7 +42,6 @@ function fixture(answer: 'pending' | 'yes' | 'no', runs = [run('run-a', '/repo/a
     health,
     runs: () => runs.map(r => ({ ...r, status: 'running', owner, generation: owner.generation })),
     bin: () => '/orca',
-    model: () => 'gpt-test',
     now: () => new Date('2026-10-27T03:00:00Z'),
     launch: async (_bin: string, args: string[]) => {
       launches.push(args);
@@ -69,29 +60,22 @@ function fixture(answer: 'pending' | 'yes' | 'no', runs = [run('run-a', '/repo/a
         .map(line => JSON.parse(line) as string[]),
   };
 }
+const execute = (f: ReturnType<typeof fixture>, patch = {}) => {
+  const d = { ...f.deps, ...patch };
+  return claudeCommanderFailover(d.health, d.runs, d.bin, d.launch, d.now);
+};
 
-test('coord query keeps only nonterminal runs owned by the requested client', () => {
-  const root = tmp(),
-    repos = [gitRepo(root), gitRepo(tmp()), gitRepo(tmp())];
-  const refs = [
-    run('live', repos[0]),
-    run('done', repos[1]),
-    { ...run('codex', repos[2]), controller: { ...owner, client: 'codex' } },
-  ];
-  const c = new Coordination({
-    sa: tmp(),
-    runs: () => refs,
-    status: r => (r.run_id === 'done' ? 'completed' : 'running'),
-    presence: () => ({ state: 'unknown' }),
-  });
-  expect(c.ownedNonterminalRuns('claude').map(r => r.run_id)).toEqual(['live']);
+test('no eligible Claude-owned nonterminal run does not ask', async () => {
+  const f = fixture('pending', []);
+  expect(await execute(f)).toEqual({ skipped: 'no_claude_commander_runs' });
+  expect(existsSync(f.calls)).toBeFalse();
 });
 
 test('down episode asks once, stays pending, and a new changed_at asks again', async () => {
   const f = fixture('pending');
-  await claudeCommanderFailover(f.deps);
-  await claudeCommanderFailover(f.deps);
-  await claudeCommanderFailover({ ...f.deps, health: () => health('2026-10-27T02:02:00.000Z') });
+  await execute(f);
+  await execute(f);
+  await execute(f, { health: () => health('2026-10-27T02:02:00.000Z') });
   expect(f.readCalls().filter(c => c[0] === 'ask')).toHaveLength(2);
   expect(f.launches).toHaveLength(0);
 });
@@ -99,8 +83,8 @@ test('down episode asks once, stays pending, and a new changed_at asks again', a
 test('no consumes the answer without launch or ownership mutation', async () => {
   const ref = run('run-a', '/repo/a'),
     f = fixture('no', [ref]);
-  await claudeCommanderFailover(f.deps);
-  await claudeCommanderFailover(f.deps);
+  await execute(f);
+  await execute(f);
   expect(f.launches).toHaveLength(0);
   expect(ref.controller).toEqual(owner);
   expect(
@@ -110,8 +94,8 @@ test('no consumes the answer without launch or ownership mutation', async () => 
 
 test('yes launches once per repo with fenced brief-claim-reauthorize prompt; missing Orca returns manual commands', async () => {
   const f = fixture('yes', [run('a1', '/repo/a'), run('a2', '/repo/a'), run('b1', '/repo/b')]);
-  await claudeCommanderFailover(f.deps);
-  await claudeCommanderFailover(f.deps);
+  await execute(f);
+  await execute(f);
   expect(f.launches).toHaveLength(2);
   for (const args of f.launches) {
     const p = args[args.indexOf('--prompt') + 1];
@@ -121,10 +105,9 @@ test('yes launches once per repo with fenced brief-claim-reauthorize prompt; mis
     expect(p).toContain('--takeover --reason');
     expect(p).toContain('reauthorize');
   }
-  const missing = fixture('yes'),
-    unavailable = { ...missing.deps, bin: () => undefined };
-  await claudeCommanderFailover(unavailable);
-  await claudeCommanderFailover(unavailable);
+  const missing = fixture('yes');
+  await execute(missing, { bin: () => undefined });
+  await execute(missing, { bin: () => undefined });
   expect(
     missing
       .readCalls()
