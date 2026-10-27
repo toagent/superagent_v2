@@ -387,10 +387,16 @@ async function exec(
           ARCHON_PROVIDER_OUTCOME: outcomePath ?? '',
         },
         stdin: input ?? 'ignore',
-        stdout: 'inherit',
+        stdout: f.output && f.execution?.provider === 'claude' ? 'pipe' : 'inherit',
         stderr: 'inherit',
       });
       if (child) {
+      const output = child.stdout instanceof ReadableStream
+        ? new Response(child.stdout).text().then(text => {
+            process.stdout.write(text);
+            if (f.output) writeFileSync(resolve(f.output), text);
+          })
+        : undefined;
       job.pid = child.pid;
       job.state = 'running';
       delete job.reason;
@@ -404,6 +410,7 @@ async function exec(
         }
       }, 5000);
       code = await child.exited;
+      await output;
       if (outcomePath) {
         try {
           const value = JSON.parse(readFileSync(outcomePath, 'utf8')) as Record<string, unknown>;

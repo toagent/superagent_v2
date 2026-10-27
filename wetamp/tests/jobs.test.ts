@@ -945,6 +945,7 @@ const input = await Bun.stdin.text(); console.log(JSON.stringify({ args: process
       claude = join(root, 'claude'),
       prompt = join(root, 'prompt.md'),
       capture = join(root, 'capture.json'),
+      output = join(root, 'claude.out'),
       preload = join(root, 'launcher.cjs');
     writeFileSync(prompt, 'claude prompt');
     writeFileSync(
@@ -965,12 +966,18 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true,
       PATH: `${root}:${process.env.PATH!}`,
       CAPTURE: capture,
     };
-    const failed = run(promptArgs('auto-claude', 'commander', prompt), '', WETAMP, env);
+    const failed = run(
+      promptArgs('auto-claude', 'commander', prompt, '--output', output),
+      '',
+      WETAMP,
+      env
+    );
     const failedError = await new Response(failed.stderr as ReadableStream).text();
     expect(await failed.exited, failedError).toBe(1);
     const captured = JSON.parse(readFileSync(capture, 'utf8'));
     expect(captured.input).toBe('claude prompt');
     expect(JSON.stringify(captured.args)).not.toContain('claude prompt');
+    expect(readFileSync(output, 'utf8')).toBe('overloaded\n');
     const healthPath = join(process.env.SUPERAGENT_HOME!, 'claude-health.json'),
       health = JSON.parse(readFileSync(healthPath, 'utf8'));
     expect(health).toMatchObject({

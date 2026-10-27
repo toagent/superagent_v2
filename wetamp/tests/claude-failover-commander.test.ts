@@ -73,10 +73,12 @@ test('no eligible Claude-owned nonterminal run does not ask', async () => {
 
 test('down episode asks once, stays pending, and a new changed_at asks again', async () => {
   const f = fixture('pending');
+  process.env.TZ = 'Asia/Shanghai';
   await execute(f);
   await execute(f);
   await execute(f, { health: () => health('2026-10-27T02:02:00.000Z') });
   expect(f.readCalls().filter(c => c[0] === 'ask')).toHaveLength(2);
+  expect(f.readCalls()[0].join(' ')).toContain('自 09:02');
   expect(f.launches).toHaveLength(0);
 });
 
@@ -105,6 +107,18 @@ test('yes launches once per repo with fenced brief-claim-reauthorize prompt; mis
     expect(p).toContain('--takeover --reason');
     expect(p).toContain('reauthorize');
   }
+  const recovered = fixture('yes');
+  let checks = 0;
+  const recovery = {
+    health: () =>
+      ++checks <= 2
+        ? health()
+        : { state: 'up' as const, observed_at: '2026-10-27T02:46:00Z', probe_failures: 0 },
+  };
+  await execute(recovered, recovery);
+  await execute(recovered, recovery);
+  expect(recovered.launches).toHaveLength(0);
+  expect(recovered.readCalls().some(c => c.join(' ').includes('恢复，未接管'))).toBeTrue();
   const missing = fixture('yes');
   await execute(missing, { bin: () => undefined });
   await execute(missing, { bin: () => undefined });

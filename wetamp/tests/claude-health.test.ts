@@ -8,14 +8,18 @@ import {
   readClaudeHealth,
   recordClaudeOutcome,
   refreshClaudeHealth,
+  claudeHealthNotice,
 } from '../src/claude-health';
 import { loadTiers } from '../src/config';
 import { tmp } from './helpers';
 
-const saved = process.env.SUPERAGENT_HOME;
+const saved = process.env.SUPERAGENT_HOME,
+  savedTz = process.env.TZ;
 afterEach(() => {
   if (saved === undefined) delete process.env.SUPERAGENT_HOME;
   else process.env.SUPERAGENT_HOME = saved;
+  if (savedTz === undefined) delete process.env.TZ;
+  else process.env.TZ = savedTz;
 });
 const useHome = (): string => {
   const home = tmp();
@@ -63,10 +67,20 @@ test('corruption becomes unknown and a due injected probe self-heals with bounde
     'up'
   );
   writeFileSync(path, '{');
-  const failed = refreshClaudeHealth(now + 1, () => ({ ok: false, class: 'overloaded' })).health;
-  expect(failed).toMatchObject({ state: 'down', probe_failures: 1 });
+  const failed = refreshClaudeHealth(now + 1, () => ({
+    ok: false,
+    class: 'overloaded',
+    evidence: `token=secret ${'x'.repeat(310)}`,
+  })).health;
+  expect(failed).toMatchObject({
+    state: 'down',
+    probe_failures: 1,
+    cause: { class: 'overloaded', evidence: 'x'.repeat(300) },
+  });
   if (failed.state === 'down')
     expect(Date.parse(failed.next_probe_at!)).toBe(now + 1 + PROBE_BACKOFF_MS[0]);
+  process.env.TZ = 'Asia/Shanghai';
+  expect(claudeHealthNotice(failed)).toContain('自 10:00');
 });
 
 test('newer observations beat stale probes, probe is single-flight, and persistence failures do not throw', () => {

@@ -2,12 +2,13 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, type Lock } from './archon';
 import { loadTiers, resolveRoute, type Tiers } from './config';
+import { redact } from './redact';
 export const TRIP_RETRIES = 10,
   PROBE_BACKOFF_MS = [5, 10, 20, 30].map(n => n * 60_000),
   CLAUDE_PROBE_TIMEOUT_MS = 45_000,
   CLAUDE_PROBE_BUDGET_USD = 0.05;
 type Cause = { source: 'dispatch' | 'job' | 'probe'; class: string; retries: number } & Partial<
-  Record<'model' | 'run' | 'node', string>
+  Record<'model' | 'run' | 'node' | 'evidence', string>
 >;
 type Times = Partial<Record<'observed_at' | 'changed_at' | 'next_probe_at', string>>;
 export type ClaudeHealth = Times & {
@@ -21,7 +22,7 @@ export type ClaudeOutcome = Partial<Omit<Cause, 'source'>> & {
   resetAt?: string;
   source: Cause['source'];
 };
-type Probe = () => { ok: boolean; class?: string; model?: string };
+type Probe = () => { ok: boolean; class?: string; model?: string; evidence?: string };
 const path = (suffix = ''): string =>
   join(process.env.SUPERAGENT_HOME ?? '', `claude-health.json${suffix}`);
 const date = (v: unknown): v is string => typeof v === 'string' && !isNaN(Date.parse(v));
@@ -85,6 +86,7 @@ function health(h: ClaudeHealth, o: ClaudeOutcome, n: number, p = h.probe_failur
       model: o.model,
       run: o.run,
       node: o.node,
+      evidence: o.evidence,
     };
   return {
     state,
@@ -120,16 +122,30 @@ function probeClaude(): ReturnType<Probe> {
   const script = `import { probeClaudeAvailability } from '@archon/providers';
 const model = process.env.ARCHON_CLAUDE_PROBE_MODEL!;
 const result = await probeClaudeAvailability({ model, timeoutMs: ${String(CLAUDE_PROBE_TIMEOUT_MS)}, budgetUsd: ${String(CLAUDE_PROBE_BUDGET_USD)} });
-console.log(JSON.stringify({ ok: result.ok, class: result.failure?.class, model }));`;
+console.log(JSON.stringify({ ok: result.ok, class: result.failure?.class, evidence: result.failure?.evidence, model }));`;
   const child = Bun.spawnSync([process.execPath, '-e', script], {
     cwd: import.meta.dir,
     env: { ...process.env, ARCHON_CLAUDE_PROBE_MODEL: model },
     stdout: 'pipe',
-    stderr: 'ignore',
+    stderr: 'pipe',
     timeout: CLAUDE_PROBE_TIMEOUT_MS + 5_000,
   });
-  if (child.exitCode !== 0) return { ok: false, class: 'probe_failed', model };
-  return JSON.parse(child.stdout.toString()) as ReturnType<Probe>;
+  if (child.exitCode !== 0)
+    return { ok: false, class: 'probe_failed', model, evidence: child.stderr.toString() };
+  try {
+    const result = JSON.parse(child.stdout.toString()) as ReturnType<Probe>;
+    return {
+      ...result,
+      evidence: [result.evidence, child.stderr.toString()].filter(Boolean).join('\n'),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      class: 'probe_failed',
+      model,
+      evidence: `${String(error)}\n${child.stderr.toString()}`,
+    };
+  }
 }
 export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
   const h = readClaudeHealth(now);
@@ -139,6 +155,7 @@ export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
   if (lease instanceof Error) return { health: h, persisted: false, error: lease.message };
   try {
     const result = (probe ?? probeClaude)(),
+      evidence = result.evidence ? redact(result.evidence).trim().slice(-300) : undefined,
       outcome: ClaudeOutcome = {
         provider: 'claude',
         ok: result.ok,
@@ -146,6 +163,7 @@ export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
         class: result.class,
         retries: 0,
         model: result.model,
+        evidence,
       };
     if (result.ok) return recordClaudeOutcome(outcome, now);
     const failures = Math.min(h.probe_failures + 1, PROBE_BACKOFF_MS.length);
@@ -161,10 +179,14 @@ export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
 export function claudeHealthNotice(h: ClaudeHealth): string {
   if (h.state === 'up') return '';
   if (h.state === 'unknown') return '全 Codex 模式：Claude 状态未知（invalid_state）；下次探测立即';
-  const time = (v?: string): string =>
-    new Date(v ?? '').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  return `全 Codex 模式：Claude 不可用，自 ${time(h.changed_at)}（${String(h.cause?.class)}，连续重试 ${String(h.cause?.retries)} 次）；下次探测 ${time(h.next_probe_at)}`;
+  return `全 Codex 模式：Claude 不可用，自 ${localHealthTime(h.changed_at)}（${String(h.cause?.class)}，连续重试 ${String(h.cause?.retries)} 次）；下次探测 ${localHealthTime(h.next_probe_at)}`;
 }
+export const localHealthTime = (value?: string): string =>
+  new Date(value ?? '').toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: process.env.TZ,
+  });
 export function claudeAdmission(mode: string | undefined, h: ClaudeHealth) {
   if (mode !== 'single:claude' || h.state === 'up') return { ok: true } as const;
   return { ok: false, reason: 'claude_unavailable', detail: claudeHealthNotice(h) } as const;

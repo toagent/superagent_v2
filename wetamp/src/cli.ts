@@ -117,7 +117,12 @@ import {
   runAliases,
   writeAtomic,
 } from './config';
-import { claudeAdmission, readClaudeHealth, refreshClaudeHealth } from './claude-health';
+import {
+  claudeAdmission,
+  localHealthTime,
+  readClaudeHealth,
+  refreshClaudeHealth,
+} from './claude-health';
 import { launchAgent, orcaBin, type AgentLaunch } from './orca';
 import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
@@ -4045,7 +4050,7 @@ export async function claudeCommanderFailover(
       asks = loadAsks(),
       projects = [...new Set(owned.map(run => basename(run.repo)))],
       ids = owned.map(run => run.run_id).join('、'),
-      since = state.changed_at.slice(11, 16),
+      since = localHealthTime(state.changed_at),
       reason = `${String(state.cause?.class)} 连续重试 ${String(state.cause?.retries)} 次`,
       question = `${projects.join('、')}：Claude 不可用（自 ${since}，${reason}）。是否由 Codex 元帅接手 ${ids}？勾选=启动接手；删除=保持现状`;
     const polled = pollAsk(
@@ -4078,6 +4083,14 @@ export async function claudeCommanderFailover(
     if (a.status === 'rejected') {
       receipt('succeeded', '已保持现状；ownership 未变');
       return { status: 'rejected' };
+    }
+    const recovered = health();
+    if (recovered.state === 'up') {
+      receipt(
+        'succeeded',
+        `Claude 已于 ${localHealthTime(recovered.observed_at ?? now().toISOString())} 恢复，未接管；ownership 未变`
+      );
+      return { status: 'recovered' };
     }
     const model = resolveRoute(loadTiers(), 'codex', 'single:chatgpt', 'command').candidates[0]
         .model,
