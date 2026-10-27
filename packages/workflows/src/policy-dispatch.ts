@@ -195,6 +195,17 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       writePolicyAttempts(execution.artifacts, attempts);
       throw error; // An untyped throw cannot justify switching models.
     }
+    if (!result || !settled) {
+      const missing = [!result && 'result', !settled && 'settled'].filter(Boolean).join(' and ');
+      result = {
+        type: 'result',
+        isError: true,
+        failure: {
+          class: 'transient',
+          evidence: `policy provider stream ended without ${missing}`,
+        },
+      };
+    }
     attempt.status =
       settled && result && !result.failure && !result.isError ? 'completed' : 'failed';
     attempt.tokens = mergeTokenUsage(turnUsage);
@@ -212,8 +223,6 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     writePolicyAttempts(execution.artifacts, attempts);
     const settledWarning = await execution.onSettled?.(attempt, failure);
     if (settledWarning) yield { type: 'warning', ...settledWarning };
-    if (!settled || !result)
-      throw new Error('policy provider stream ended without result and settled');
     const stillAvailable = isAvailable(candidate);
     vendorFailed &&= failedByVendor || (!stillAvailable && !reassignmentBlocked);
     const observed = budgetObservation(false);

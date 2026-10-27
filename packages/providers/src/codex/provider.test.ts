@@ -1331,7 +1331,7 @@ describe('CodexProvider', () => {
           await new Promise<void>(resolve => setImmediate(resolve));
       }
       const chunks = await running;
-      expect(resultOf(chunks).failure).toMatchObject({ class: 'unknown' });
+      expect(resultOf(chunks).failure).toMatchObject({ class: 'transient' });
       expect(resultOf(chunks).failure?.evidence).toContain('structured_output_runaway');
       expect(server.processes[0].methods.filter(m => m === 'turn/start')).toHaveLength(2);
       expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(2);

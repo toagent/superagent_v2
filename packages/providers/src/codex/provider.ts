@@ -27,7 +27,7 @@ import {
   truncateToolOutput,
   type ProviderFailureClass,
 } from '@archon/provider-contract';
-import { failureClassOfThrown, failureResult } from '../shared/failure';
+import { ClassifiedProviderError, failureClassOfThrown, failureResult } from '../shared/failure';
 import { diagnoseBinary } from '../shared/binary-diagnostics';
 import { readCodexSetupEnv, formatCodexSetupDeprecation } from './setup-env';
 import { clampEffort } from '@archon/provider-contract';
@@ -853,7 +853,8 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
         lastProgressAt = Date.now();
         if (interrupting !== undefined && turn.status === 'interrupted') {
           if (interrupting === 'structured_output_runaway' && retriedStructuredOutput)
-            throw new Error(
+            throw new ClassifiedProviderError(
+              'transient',
               'Codex structured_output_runaway repeated after one compact JSON retry'
             );
           const retryStructuredOutput = interrupting === 'structured_output_runaway';

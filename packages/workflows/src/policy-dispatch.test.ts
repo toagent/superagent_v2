@@ -87,6 +87,35 @@ test('VENDOR_FAILOVER unclassified throw preserves failure without reassignment'
   expect(readPolicyAttempts(s.artifacts)).toHaveLength(1);
 });
 
+for (const missing of ['result', 'settled'] as const)
+  test(`VENDOR_FAILOVER missing ${missing} is transient, falls back, and exhausts typed`, async () => {
+    const incomplete = (s: ReturnType<typeof setup>) =>
+      (s.execution.sendQuery = async function* (_prompt, _cwd, session, options) {
+        s.calls.push({ model: options?.model, session, provider: 'codex' });
+        if (missing === 'result') yield { type: 'settled' };
+        else yield { type: 'result', text: 'orphaned result' };
+      });
+    const s = setup();
+    incomplete(s);
+    const chunks = await collect(executePolicy(s.execution, 'p', '/scratch', 'original'));
+    expect(s.calls.map(c => c.model)).toEqual(['codex-a', 'codex-b', 'claude-a']);
+    expect(readPolicyAttempts(s.artifacts)[0]).toMatchObject({
+      status: 'failed',
+      failure: 'transient',
+    });
+    const exhausted = setup();
+    exhausted.execution.candidates = [pool[0]];
+    incomplete(exhausted);
+    const exhaustedChunks = await collect(executePolicy(exhausted.execution, 'p', '/scratch'));
+    expect(exhaustedChunks.at(-2)).toMatchObject({
+      type: 'result',
+      isError: true,
+      failure: { class: 'transient', evidence: expect.stringContaining(missing) },
+    });
+    expect(exhaustedChunks.at(-1)).toEqual({ type: 'settled' });
+    expect(chunks.at(-1)).toEqual({ type: 'settled' });
+  });
+
 test('VENDOR_FAILOVER misconfigured candidate prevents vendor reassignment', async () => {
   const s = setup('misconfigured');
   await collect(executePolicy(s.execution, 'p', '/scratch'));
