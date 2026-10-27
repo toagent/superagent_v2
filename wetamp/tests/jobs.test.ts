@@ -493,6 +493,32 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     expect(files).toHaveLength(1);
     return JSON.parse(readFileSync(join(jobsDir, files[0]), 'utf8')) as Job;
   };
+  const promptArgs = (title: string, role: string, prompt: string, ...extra: string[]) => [
+    'job',
+    'exec',
+    '--title',
+    title,
+    '--role',
+    role,
+    '--prompt-file',
+    prompt,
+    ...extra,
+  ];
+  const setClaudeDown = (): void => {
+    const now = new Date();
+    mkdirSync(process.env.SUPERAGENT_HOME!, { recursive: true });
+    writeFileSync(
+      join(process.env.SUPERAGENT_HOME!, 'claude-health.json'),
+      JSON.stringify({
+        state: 'down',
+        observed_at: now.toISOString(),
+        changed_at: now.toISOString(),
+        cause: { source: 'dispatch', class: 'overloaded', retries: 10 },
+        next_probe_at: new Date(now.getTime() + 300_000).toISOString(),
+        probe_failures: 0,
+      })
+    );
+  };
   test.each([
     [undefined, '', 'plan-external'],
     [undefined, '   ', 'plan-external'],
@@ -871,12 +897,100 @@ else if (process.argv[1].endsWith('/claude')) {
     }
     const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
-    const jobsBefore = readJobs().jobs.length, now = new Date();
-    writeFileSync(join(process.env.SUPERAGENT_HOME!, 'claude-health.json'), JSON.stringify({ state: 'down', observed_at: now.toISOString(), changed_at: now.toISOString(), cause: { source: 'dispatch', class: 'overloaded', retries: 10 }, next_probe_at: new Date(now.getTime() + 300_000).toISOString(), probe_failures: 0 }));
-    const unavailable = run(['job', 'exec', '--title', 'down', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']); expect(await unavailable.exited).not.toBe(0); expect(await new Response(unavailable.stderr as ReadableStream).text()).toContain('claude_unavailable'); expect(readJobs().jobs).toHaveLength(jobsBefore);
+    const jobsBefore = readJobs().jobs.length; setClaudeDown();
+    const unavailable = run(['job', 'exec', '--title', 'down', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']); expect(await unavailable.exited).not.toBe(0); const unavailableError = await new Response(unavailable.stderr as ReadableStream).text(); expect(unavailableError).toContain('claude_unavailable'); expect(unavailableError).toContain('--prompt-file'); expect(readJobs().jobs).toHaveLength(jobsBefore);
     writeFileSync(join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'), JSON.stringify({ at: Date.now(), claude_daily_usd: loadTiers().routing.budget.claude_daily_usd }));
     const downgraded = run(['job', 'exec', '--title', 'budget', '--role', 'strategist', '--', claude, '-p']);
-    expect(await downgraded.exited).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('candidates:');
+    expect(await downgraded.exited).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('claude_unavailable');
+  });
+  test('automatic roles route to Codex while down and keep prompt bytes out of argv', async () => {
+    const root = tmp(),
+      codex = join(root, 'codex'),
+      prompt = join(root, 'prompt.md');
+    const contents = 'PROMPT-SECRET auto route\nlast byte';
+    writeFileSync(prompt, contents);
+    writeFileSync(
+      codex,
+      `#!/usr/bin/env bun
+const input = await Bun.stdin.text(); console.log(JSON.stringify({ args: process.argv.slice(2), input }));
+`
+    );
+    chmodSync(codex, 0o755);
+    setClaudeDown();
+    for (const role of ['strategist', 'general', 'commander']) {
+      const output = join(root, `${role}.out`),
+        p = run(promptArgs(`auto-${role}`, role, prompt, '--output', output), '', WETAMP, {
+          PATH: `${root}:${process.env.PATH!}`,
+        });
+      const [stdout, stderr, exit] = await Promise.all([
+        new Response(p.stdout as ReadableStream).text(),
+        new Response(p.stderr as ReadableStream).text(),
+        p.exited,
+      ]);
+      expect(exit, stderr).toBe(0);
+      const received = JSON.parse(stdout);
+      expect(received.input).toBe(contents);
+      expect(received.args).toContain('-');
+      expect(received.args).toContain(output);
+      expect(JSON.stringify(received.args)).not.toContain(contents);
+      expect(stderr).toContain('selected codex/');
+      expect(stderr).toContain('全 Codex 模式');
+      expect(readJobs().jobs.find(j => j.title === `auto-${role}`)?.execution?.provider).toBe(
+        'codex'
+      );
+    }
+  });
+  test('automatic Claude records typed failure while a missing outcome preserves health and exit', async () => {
+    const root = tmp(),
+      claude = join(root, 'claude'),
+      prompt = join(root, 'prompt.md'),
+      capture = join(root, 'capture.json'),
+      preload = join(root, 'launcher.cjs');
+    writeFileSync(prompt, 'claude prompt');
+    writeFileSync(
+      preload,
+      `require(${JSON.stringify(join(WETAMP, 'hooks/live.cjs'))}).launcher = () => ({ client: 'claude', pid: process.pid, tty: null, cwd: process.cwd() });\n`
+    );
+    writeFileSync(
+      claude,
+      `#!/usr/bin/env bun
+import { writeFileSync } from 'node:fs'; const input = await Bun.stdin.text(); writeFileSync(process.env.CAPTURE, JSON.stringify({ args: process.argv.slice(2), input }));
+for (let i = 1; i <= 10; i++) console.log(JSON.stringify({ type: 'system', subtype: 'api_retry', attempt: i, max_retries: 10, retry_delay_ms: 1, error_status: 529, error: 'overloaded' }));
+console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 529, terminal_reason: 'api_error', stop_reason: 'stop_sequence', result: 'overloaded' })); process.exitCode = 1;
+`
+    );
+    chmodSync(claude, 0o755);
+    const env = {
+      BUN_OPTIONS: `--preload=${preload}`,
+      PATH: `${root}:${process.env.PATH!}`,
+      CAPTURE: capture,
+    };
+    const failed = run(promptArgs('auto-claude', 'commander', prompt), '', WETAMP, env);
+    const failedError = await new Response(failed.stderr as ReadableStream).text();
+    expect(await failed.exited, failedError).toBe(1);
+    const captured = JSON.parse(readFileSync(capture, 'utf8'));
+    expect(captured.input).toBe('claude prompt');
+    expect(JSON.stringify(captured.args)).not.toContain('claude prompt');
+    const healthPath = join(process.env.SUPERAGENT_HOME!, 'claude-health.json'),
+      health = JSON.parse(readFileSync(healthPath, 'utf8'));
+    expect(health).toMatchObject({
+      state: 'down',
+      cause: { source: 'job', class: 'transient', retries: 10 },
+    });
+    unlinkSync(healthPath);
+    writeFileSync(
+      claude,
+      `#!/usr/bin/env bun\nprocess.kill(process.ppid, 'SIGKILL'); await Bun.sleep(20);\n`
+    );
+    chmodSync(claude, 0o755);
+    const missingArgs =
+      'job exec --title missing-outcome --role general --mode single:claude --'.split(' ');
+    const missing = run([...missingArgs, claude, '-p'], '', WETAMP, env);
+    const missingError = await new Response(missing.stderr as ReadableStream).text(),
+      missingExit = await missing.exited;
+    expect(missingExit).not.toBe(0);
+    expect(missingError).toContain('Claude outcome unavailable');
+    expect(existsSync(healthPath)).toBe(false);
   });
   // prettier-ignore
   test('explicit role rejects unsupported providers before registration or spawn', async () => {

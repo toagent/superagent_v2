@@ -14,8 +14,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { freemem, totalmem } from 'node:os';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
-import { home, loadTiers, routeState } from './config';
-import { claudeAdmission, refreshClaudeHealth } from './claude-health';
+import { home, loadTiers, routeNotice, routeState } from './config';
+import { claudeAdmission, recordClaudeOutcome, refreshClaudeHealth } from './claude-health';
 import {
   describeExecution,
   executionRoute,
@@ -80,7 +80,7 @@ export interface Job {
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] -- <cmd...> | job clean <id> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
 export const RECENT_MS = 3_600_000;
 export interface MemoryReading {
   pressure: number | null;
@@ -233,14 +233,18 @@ export function cleanJob(id: string): void {
 // prettier-ignore
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; log?: string; role: Tier | null; execution?: Job['execution']; worktree?: string; base?: string; request_ref?: string },
+  f: { title: string; card?: string; input?: string; output?: string; log?: string; role: Tier | null; execution?: Job['execution']; automatic?: boolean; worktree?: string; base?: string; request_ref?: string },
   probe: () => MemoryReading
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
   const launched = launcher(home().sa);
   const requestRef = f.request_ref ?? process.env.SA_JOB_REQUEST_REF?.trim();
+  const id = newRunId();
+  if (f.automatic && f.execution) cmd = f.execution.provider === 'codex'
+    ? ['codex', 'exec', '--json', '-o', resolve(f.output ?? join(dir(), `${id}.output`)), '-']
+    : ['claude', '-p'];
   const job: Job = {
-    id: newRunId(),
+    id,
     title: f.title,
     card: f.card ? resolve(f.card) : null,
     log: f.log ? resolve(f.log) : null,
@@ -307,11 +311,14 @@ async function exec(
     save(job);
     // Resolve the input before creating a checkout or spending an agent invocation.
     if (job.card && !statSync(job.card).isFile()) throw new Error('job: card must be a file');
+    if (f.input && !statSync(f.input).isFile()) throw new Error('job: prompt-file must be a file');
     // Snapshot registered input before checkout/admission; never depend on native shell env visibility.
-    const input = f.execution && job.card ? new Blob([
+    const input = f.input ? new Blob([readFileSync(f.input)]) : f.execution && job.card ? new Blob([
       `Registered job input: ${JSON.stringify({ id: job.id, card: job.card, request_ref: job.request_ref ?? null })}\n\n`,
       readFileSync(job.card),
     ]) : undefined;
+    const outcomePath = f.execution?.provider === 'claude'
+      ? join(dir(), `${job.id}.provider-outcome`) : undefined;
     if (f.worktree) {
       const repo = git(job.cwd, 'rev-parse', '--show-toplevel'), branch = f.worktree;
       let base = f.base ?? git(repo, 'symbolic-ref', '--short', 'HEAD');
@@ -377,6 +384,7 @@ async function exec(
           SA_JOB_ID: job.id,
           SA_JOB_CARD: job.card ?? '',
           SA_JOB_REQUEST_REF: job.request_ref ?? '',
+          ARCHON_PROVIDER_OUTCOME: outcomePath ?? '',
         },
         stdin: input ?? 'ignore',
         stdout: 'inherit',
@@ -396,6 +404,23 @@ async function exec(
         }
       }, 5000);
       code = await child.exited;
+      if (outcomePath) {
+        try {
+          const value = JSON.parse(readFileSync(outcomePath, 'utf8')) as Record<string, unknown>;
+          const failure = value.failure as Record<string, unknown> | undefined;
+          if (value.ok !== true && (!failure || typeof failure.class !== 'string' ||
+            typeof failure.evidence !== 'string' ||
+            (failure.retries !== undefined && (!Number.isInteger(failure.retries) || Number(failure.retries) < 0)) ||
+            (failure.resetAt !== undefined && typeof failure.resetAt !== 'string')))
+            throw new Error('invalid typed outcome');
+          const recorded = recordClaudeOutcome({ provider: 'claude', source: 'job', model: job.model ?? undefined,
+            run: job.id, ok: value.ok === true, class: failure?.class as string | undefined,
+            retries: failure?.retries as number | undefined, resetAt: failure?.resetAt as string | undefined });
+          if (!recorded.persisted) console.error(`job: Claude outcome was not persisted: ${String(recorded.error)}`);
+        } catch (error) {
+          console.error(`job: Claude outcome unavailable: ${(error as Error).message}`);
+        }
+      }
       if (reviewBefore !== undefined && reviewTree() !== reviewBefore) {
         job.reason = 'review_modified_checkout';
         code = 1;
@@ -456,21 +481,25 @@ export async function jobCli(
     cleanJob(a._[2]);
     return 0;
   }
-  const { title, card, log, role } = a.flags;
+  const { title, card, log, role, output } = a.flags;
+  const input = a.flags['prompt-file'];
   const badRole = role !== undefined && !isTier(role);
-  if (a._[1] !== 'exec' || a._.length !== 2 || !title || !cmd.length || badRole) {
+  const automatic = !cmd.length && isTier(role) && !!input;
+  if (a._[1] !== 'exec' || a._.length !== 2 || !title || badRole ||
+    (!cmd.length && !automatic) || (cmd.length > 0 && (input !== undefined || output !== undefined))) {
     console.error(USAGE);
     return EXIT_USAGE;
   }
-  if (isTier(role) && !['codex', 'claude'].includes(kindOf(cmd[0])))
+  if (!automatic && isTier(role) && !['codex', 'claude'].includes(kindOf(cmd[0])))
     throw new Error('job: unsupported role provider; expected codex or claude');
   if (a.flags['request-ref'] !== undefined && !a.flags['request-ref'].trim()) throw new Error('job: empty request-ref');
   refreshBudgetQuota();
   let execution: Job['execution'];
-  if (isTier(role) && ['codex', 'claude'].includes(kindOf(cmd[0]))) {
-    const tiers = loadTiers(), provider = kindOf(cmd[0]) as 'codex' | 'claude';
+  if (isTier(role)) {
+    const tiers = loadTiers();
     const health = refreshClaudeHealth().health, admission = claudeAdmission(a.flags.mode, health);
-    if (!admission.ok) throw new Error(`${admission.reason}: ${admission.detail}`);
+    if (!admission.ok) throw new Error(`${admission.reason}: ${admission.detail}${
+      !automatic && kindOf(cmd[0]) === 'claude' ? '; remove -- <cmd> and use --prompt-file for automatic routing' : ''}`);
     const state = routeState(tiers, a.flags.mode, Date.now(), health);
     const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
     const risk = a.flags.risk ?? 'G1';
@@ -480,15 +509,21 @@ export async function jobCli(
       throw new Error('job: independent review requires --author-model');
     const descriptor = describeExecution(tiers, ROUTE_ROLE[role], risk, Number(a.flags.round ?? 1));
     const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, false, state).candidates;
-    const model = modelOf(cmd.slice(1));
-    const candidate = candidates.find(a => a.provider === provider && (model === null || a.model === model));
+    const provider = automatic ? candidates[0].provider : kindOf(cmd[0]) as 'codex' | 'claude';
+    if (!automatic && provider === 'claude' && health.state !== 'up')
+      throw new Error(`claude_unavailable: ${routeNotice(state)}; remove -- <cmd> and use --prompt-file for automatic routing`);
+    const model = automatic ? null : modelOf(cmd.slice(1));
+    const candidate = automatic ? candidates[0] : candidates.find(a => a.provider === provider && (model === null || a.model === model));
     if (!candidate)
       throw new Error(`job ${role}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
     const policy = executionLaunch(descriptor, candidate);
-    roleCommandArgs(cmd, provider, candidate.model); // Validate before registering or creating a worktree.
+    roleCommandArgs(automatic
+      ? provider === 'codex' ? ['codex', 'exec', '--json', '-o', 'output', '-'] : ['claude', '-p']
+      : cmd, provider, candidate.model); // Validate before registering or creating a worktree.
     execution = { role: descriptor.role, risk: descriptor.risk, round: descriptor.round,
       model: candidate.model, provider, policy };
+    if (automatic) console.error(`job: selected ${provider}/${candidate.model}; first routed candidate${routeNotice(state) ? `; ${routeNotice(state)}` : ''}`);
   }
 
-  return exec(cmd, { title, card, log, role: roleOf(role), execution, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'] }, probe);
+  return exec(cmd, { title, card, input, output, log, role: roleOf(role), execution, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'] }, probe);
 }

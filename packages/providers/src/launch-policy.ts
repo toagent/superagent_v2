@@ -63,6 +63,10 @@ export function roleCommandArgs(
   let models = 0;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (provider === 'codex' && arg === '-') {
+      out.push(arg);
+      continue;
+    }
     if (!arg.startsWith('-')) {
       out.push(arg);
       continue;

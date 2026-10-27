@@ -70,6 +70,7 @@ test('policy overrides and unsupported commands fail before native inventory or 
   expect(
     roleCommandArgs(['codex', 'exec', '--json', '-o', '/tmp/result', 'prompt'], 'codex', 'fixture')
   ).toEqual(['exec', '--model', 'fixture', '--json', '-o', '/tmp/result', 'prompt']);
+  expect(roleCommandArgs(['codex', 'exec', '--json', '-'], 'codex', 'fixture').at(-1)).toBe('-');
 });
 
 test('Codex CLI uses bare policy paths and inline tables for literal capability identifiers', () => {
