@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, type Lock } from './archon';
-import { loadTiers, resolveRoute } from './config';
+import { loadTiers, resolveRoute, type Tiers } from './config';
 export const TRIP_RETRIES = 10,
   PROBE_BACKOFF_MS = [5, 10, 20, 30].map(n => n * 60_000),
   CLAUDE_PROBE_TIMEOUT_MS = 45_000,
@@ -109,8 +109,14 @@ export const claudeOutcomeTrips = (o: ClaudeOutcome): boolean =>
   (!o.ok &&
     (o.retries ?? 0) >= TRIP_RETRIES &&
     !['auth', 'misconfigured', 'budget_exceeded'].includes(o.class ?? ''));
+export const claudeProbeModel = (tiers: Tiers): string | undefined =>
+  resolveRoute(tiers, 'claude', 'auto', 'review', 'G1', 1, [], false, {
+    budget: { degraded: false, notice: '' },
+    claude: { state: 'up', probe_failures: 0 },
+  }).candidates.find(candidate => candidate.provider === 'claude')?.model;
 function probeClaude(): ReturnType<Probe> {
-  const model = resolveRoute(loadTiers(), 'claude', 'auto', 'command').candidates[0].model;
+  const model = claudeProbeModel(loadTiers());
+  if (!model) return { ok: false, class: 'probe_failed' };
   const script = `import { probeClaudeAvailability } from '@archon/providers';
 const model = process.env.ARCHON_CLAUDE_PROBE_MODEL!;
 const result = await probeClaudeAvailability({ model, timeoutMs: ${String(CLAUDE_PROBE_TIMEOUT_MS)}, budgetUsd: ${String(CLAUDE_PROBE_BUDGET_USD)} });

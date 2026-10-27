@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { lock } from '../src/archon';
 import {
   PROBE_BACKOFF_MS,
+  claudeProbeModel,
   readClaudeHealth,
   recordClaudeOutcome,
   refreshClaudeHealth,
 } from '../src/claude-health';
+import { loadTiers } from '../src/config';
 import { tmp } from './helpers';
 
 const saved = process.env.SUPERAGENT_HOME;
@@ -49,6 +51,12 @@ test('corruption becomes unknown and a due injected probe self-heals with bounde
   const home = useHome(),
     now = Date.parse('2026-10-27T02:00:00Z'),
     path = join(home, 'claude-health.json');
+  const tiers = loadTiers('./tests/fixtures/tiers.json');
+  tiers.routing.commander.by_console.claude = ['claude-commander-only'];
+  expect(claudeProbeModel(tiers)).toBe('claude-opus-5-5');
+  expect(claudeProbeModel(tiers)).not.toBe(tiers.routing.commander.by_console.claude[0]);
+  tiers.routing.reviewer.by_console.claude = ['gpt-6-astra'];
+  expect(claudeProbeModel(tiers)).toBeUndefined();
   writeFileSync(path, '{');
   expect(readClaudeHealth(now).state).toBe('unknown');
   expect(refreshClaudeHealth(now, () => ({ ok: true, model: 'claude-test' })).health.state).toBe(
