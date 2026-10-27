@@ -3274,6 +3274,12 @@ describe('typed failures (#1797, #3524)', () => {
     const result = onlyResult(await collect(client.sendQuery('test', '/workspace')));
     expect(result.failure).toEqual({ class: 'unknown', evidence: 'Something went wrong upstream' });
   });
+  test('an empty synthetic error falls back to result evidence', () => {
+    const result = { subtype: 'error_during_execution', is_error: true, result: 'fallback' };
+    expect(
+      claudeModule.classifyClaudeResultMessage(result as never, { code: 'server_error', text: '' })
+    ).toEqual({ class: 'transient', evidence: 'fallback' });
+  });
 
   test('a spend-limit result reports budget_exceeded and keeps its cost and subtype', async () => {
     mockQuery.mockImplementation(async function* () {

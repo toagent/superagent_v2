@@ -11,6 +11,7 @@ import { isEffortRung } from '../../packages/provider-contract/src/effort';
 import { getRegistration } from '@archon/providers';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
 import { routeState, type Alias, type Tiers } from './config';
+import { claudeOutcomeTrips, recordClaudeOutcome, type ClaudeOutcome } from './claude-health';
 import { readExecutionTable, executionForNode, executionRoute, executionNode } from './execution';
 import { type Plan } from './plan';
 import {
@@ -182,15 +183,17 @@ function runtimeExecution(
       )
     );
   }
-  const candidates = executionRoute(
-    tiers,
-    plan.console ?? 'claude',
-    plan.mode,
-    route,
-    authors,
-    true,
-    routeState(tiers, plan.mode)
-  ).candidates;
+  const state = routeState(tiers, plan.mode),
+    candidates = executionRoute(
+      tiers,
+      plan.console ?? 'claude',
+      plan.mode,
+      route,
+      authors,
+      true,
+      state
+    ).candidates;
+  let claudeAvailable = plan.mode === 'single:claude' || state.claude.state === 'up';
   return {
     node,
     role: route.role,
@@ -203,6 +206,32 @@ function runtimeExecution(
     provider,
     sendQuery,
     sendQueryFor,
+    ...(state.claude.state !== 'up' || candidates.some(candidate => candidate.provider === 'claude')
+      ? { available: (candidate: Alias) => candidate.provider !== 'claude' || claudeAvailable }
+      : {}),
+    onSettled: (attempt, failure) => {
+      if (attempt.provider !== 'claude') return Promise.resolve(undefined);
+      const outcome: ClaudeOutcome = {
+        provider: 'claude',
+        ok: attempt.status === 'completed',
+        source: 'dispatch',
+        class: failure?.class,
+        retries: failure?.retries,
+        resetAt: failure?.resetAt,
+        model: attempt.model,
+        run: run.id,
+        node,
+      };
+      if (outcome.ok) claudeAvailable = true;
+      else if (claudeOutcomeTrips(outcome)) claudeAvailable = false;
+      const saved = recordClaudeOutcome(outcome);
+      if (!saved.persisted)
+        return Promise.resolve({
+          code: 'superagent.health_persist_failed',
+          message: JSON.stringify({ run: run.id, node, error: saved.error }),
+        });
+      return Promise.resolve(undefined);
+    },
     options: candidate => {
       if (!isEffortRung(candidate.effort)) throw new Error('policy: unsupported effort');
       return {

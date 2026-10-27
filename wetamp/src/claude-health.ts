@@ -1,8 +1,11 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, type Lock } from './archon';
+import { loadTiers, resolveRoute } from './config';
 export const TRIP_RETRIES = 10,
-  PROBE_BACKOFF_MS = [5, 10, 20, 30].map(n => n * 60_000);
+  PROBE_BACKOFF_MS = [5, 10, 20, 30].map(n => n * 60_000),
+  CLAUDE_PROBE_TIMEOUT_MS = 45_000,
+  CLAUDE_PROBE_BUDGET_USD = 0.05;
 type Cause = { source: 'dispatch' | 'job' | 'probe'; class: string; retries: number } & Partial<
   Record<'model' | 'run' | 'node', string>
 >;
@@ -96,23 +99,40 @@ export function recordClaudeOutcome(o: ClaudeOutcome, now = Date.now()) {
   const h = readClaudeHealth(now),
     retries = o.retries ?? 0;
   if (o.provider !== 'claude') return { health: h, persisted: true };
-  const trip =
-    o.class === 'quota_exhausted' ||
-    (!o.ok &&
-      retries >= TRIP_RETRIES &&
-      !['auth', 'misconfigured', 'budget_exceeded'].includes(o.class ?? ''));
+  const trip = claudeOutcomeTrips(o);
   if (!o.ok && !trip) return { health: h, persisted: true }; // SDK ceilings below TRIP_RETRIES stay node-local.
   const next = Math.max(now + PROBE_BACKOFF_MS[0], Date.parse(o.resetAt ?? '') || 0);
   return persist(health(h, { ...o, retries, resetAt: new Date(next).toISOString() }, now), now);
 }
+export const claudeOutcomeTrips = (o: ClaudeOutcome): boolean =>
+  o.class === 'quota_exhausted' ||
+  (!o.ok &&
+    (o.retries ?? 0) >= TRIP_RETRIES &&
+    !['auth', 'misconfigured', 'budget_exceeded'].includes(o.class ?? ''));
+function probeClaude(): ReturnType<Probe> {
+  const model = resolveRoute(loadTiers(), 'claude', 'auto', 'command').candidates[0].model;
+  const script = `import { probeClaudeAvailability } from '@archon/providers';
+const model = process.env.ARCHON_CLAUDE_PROBE_MODEL!;
+const result = await probeClaudeAvailability({ model, timeoutMs: ${String(CLAUDE_PROBE_TIMEOUT_MS)}, budgetUsd: ${String(CLAUDE_PROBE_BUDGET_USD)} });
+console.log(JSON.stringify({ ok: result.ok, class: result.failure?.class, model }));`;
+  const child = Bun.spawnSync([process.execPath, '-e', script], {
+    cwd: import.meta.dir,
+    env: { ...process.env, ARCHON_CLAUDE_PROBE_MODEL: model },
+    stdout: 'pipe',
+    stderr: 'ignore',
+    timeout: CLAUDE_PROBE_TIMEOUT_MS + 5_000,
+  });
+  if (child.exitCode !== 0) return { ok: false, class: 'probe_failed', model };
+  return JSON.parse(child.stdout.toString()) as ReturnType<Probe>;
+}
 export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
   const h = readClaudeHealth(now);
-  if (!probe || h.state === 'up' || (h.state === 'down' && Date.parse(h.next_probe_at ?? '') > now))
+  if (h.state === 'up' || (h.state === 'down' && Date.parse(h.next_probe_at ?? '') > now))
     return { health: h, persisted: true };
   const lease = acquire('.probe.lock', 0);
   if (lease instanceof Error) return { health: h, persisted: false, error: lease.message };
   try {
-    const result = probe(),
+    const result = (probe ?? probeClaude)(),
       outcome: ClaudeOutcome = {
         provider: 'claude',
         ok: result.ok,

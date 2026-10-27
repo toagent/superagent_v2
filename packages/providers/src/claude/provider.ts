@@ -385,6 +385,8 @@ export function classifyClaudeResultMessage(
   synthetic?: { code: SDKAssistantMessageError; text: string },
   rateLimit?: SDKRateLimitInfo
 ): ProviderFailure | undefined {
+  // `is_error: true` + `success` encodes both stop-sequence completion (#1425) and
+  // textified API failure (#1797); only synthetic errors or terminal_reason disambiguate it.
   if (result.subtype === 'success') {
     if (!result.is_error || (!synthetic && result.terminal_reason !== 'api_error'))
       return undefined;
@@ -399,7 +401,15 @@ export function classifyClaudeResultMessage(
   }
   if (!result.is_error) return undefined;
   if (synthetic)
-    return classifyClaudeApiError(synthetic.code, undefined, rateLimit, synthetic.text);
+    return classifyClaudeApiError(
+      synthetic.code,
+      undefined,
+      rateLimit,
+      synthetic.text ||
+        ('result' in result && typeof result.result === 'string' && result.result) ||
+        result.errors?.join('; ') ||
+        'API error result with no error text'
+    );
   const label = result.startup_failure_reason
     ? `${result.subtype} (${result.startup_failure_reason})`
     : result.subtype;
