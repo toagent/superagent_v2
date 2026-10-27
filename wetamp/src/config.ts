@@ -14,6 +14,7 @@ import { basename, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import type { Pkg } from './plan';
 import { QUERY_TIMEOUT_MS } from './archon';
+import { claudeHealthNotice, readClaudeHealth, type ClaudeHealth } from './claude-health';
 
 export type Console = 'claude' | 'codex';
 export interface Alias {
@@ -220,9 +221,13 @@ export interface Route {
   candidates: Alias[];
   effort: string;
 }
+export interface RouteState {
+  budget: ReturnType<typeof readBudgetState>;
+  claude: ClaudeHealth;
+}
 /** Only fresh, same-day local observations affect auto routing; never fetch during resolution. */
 // prettier-ignore
-export function budgetState(t: Tiers, mode = 'auto', now = Date.now()): { degraded: boolean; notice: string; unknown?: true } {
+function readBudgetState(t: Tiers, mode = 'auto', now = Date.now()): { degraded: boolean; notice: string; unknown?: true } {
   if (mode !== 'auto') return { degraded: false, notice: '' };
   try {
     if (!process.env.SUPERAGENT_HOME) throw new Error('no cache home');
@@ -232,6 +237,18 @@ export function budgetState(t: Tiers, mode = 'auto', now = Date.now()): { degrad
     return { degraded, notice: degraded ? '已降级到 Codex' : '' };
   } catch { return { degraded: false, notice: '预算状态未知', unknown: true }; }
 }
+export const routeState = (
+  t: Tiers,
+  mode = 'auto',
+  now = Date.now(),
+  claude = readClaudeHealth(now)
+): RouteState => ({ budget: readBudgetState(t, mode, now), claude });
+export const routeNotice = (s: RouteState): string =>
+  [s.budget.notice, claudeHealthNotice(s.claude)].filter(Boolean).join(' · ');
+const HEALTHY_ROUTE: RouteState = {
+  budget: { degraded: false, notice: '' },
+  claude: { state: 'up', probe_failures: 0 },
+};
 /** One resolver owns role/risk/round and mode filtering; no vendor inference at execution time. */
 // prettier-ignore
 export function resolveRoute(
@@ -242,11 +259,13 @@ export function resolveRoute(
   risk: Pkg['risk'] = 'G1',
   round = 1,
   authors: string[] = [],
-  vendorFailover = false
+  vendorFailover = false,
+  state: RouteState = HEALTHY_ROUTE
 ): Route {
   if (!['auto', 'strict', 'single:claude', 'single:chatgpt'].includes(mode))
     throw new Error(`unsupported routing mode: ${mode}`);
-  if (budgetState(t, mode).degraded) { mode = 'single:chatgpt'; console = 'codex'; }
+  if ((mode === 'auto' && state.budget.degraded) || (['auto', 'strict'].includes(mode) && state.claude.state !== 'up')) mode = 'single:chatgpt';
+  if (mode === 'single:chatgpt') console = 'codex';
   const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
   // single:chatgpt keeps reviews on Codex; only single:claude opens the configured review pool.
   const reviewIgnoresVendor = role === 'review' && mode === 'single:claude';
@@ -320,21 +339,23 @@ const obj = (v: unknown): Obj =>
  * 钉进 run 的别名（Archon run-config 层，优先级高于全局/repo/用户层，resume 继承快照）：
  * 运行中改 config.yaml 或 tiers.json 不影响已启动的 run。不用 `--model`：字面 spec 不带 effort。
  */
-export function runAliases(c: Console, t = loadTiers(), mode = 'auto'): Record<string, Alias> {
-  const coder = resolveRoute(t, c, mode).candidates[0];
-  const reviewers = resolveRoute(t, c, mode, 'review', 'G1', 1, [coder.model]).candidates;
+export function runAliases(c: Console, t = loadTiers(), mode = 'auto', state = HEALTHY_ROUTE) {
+  const route = (role: Parameters<typeof resolveRoute>[3], authors: string[] = []) =>
+    resolveRoute(t, c, mode, role, 'G1', 1, authors, false, state).candidates;
+  const coder = route('code')[0],
+    reviewers = route('review', [coder.model]);
   const reviewer = reviewers[0];
   return {
     '@sa-coder': { ...coder, effort: 'high' },
     ...(t.routing.soldier?.models.length
-      ? { '@sa-soldier': { ...resolveRoute(t, c, mode, 'soldier').candidates[0], effort: 'high' } }
+      ? { '@sa-soldier': { ...route('soldier')[0], effort: 'high' } }
       : {}),
     '@sa-reviewer': { ...reviewer, effort: 'high' },
     '@sa-reviewer-alt': {
       ...reviewerAlt(reviewers, reviewer),
       effort: 'high',
     },
-  };
+  } as Record<string, Alias>;
 }
 
 /** 全局与目标 repo 的 config.yaml 里定义的 @sa-* 别名须等于 tiers 渲染值；返回不一致项（run/health 拒绝）。 */

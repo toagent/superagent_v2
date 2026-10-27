@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { resolveRoute, type Alias, type Console, type Tiers } from './config';
+import { resolveRoute, type Alias, type Console, type RouteState, type Tiers } from './config';
 import { capsOf, draftFor, milestones, type Caps, type Plan, type Pkg } from './plan';
 import { workflowLaunchPolicy, type LaunchPolicy } from '@archon/providers/launch-policy';
 import { reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
@@ -142,7 +142,8 @@ export function executionRoute(
   mode: string | undefined,
   descriptor: ExecutionDescriptor,
   authors: string[] = [],
-  vendorFailover = false
+  vendorFailover = false,
+  state?: RouteState
 ) {
   return resolveRoute(
     tiers,
@@ -152,7 +153,8 @@ export function executionRoute(
     descriptor.risk,
     descriptor.round,
     authors,
-    vendorFailover
+    vendorFailover,
+    state
   );
 }
 

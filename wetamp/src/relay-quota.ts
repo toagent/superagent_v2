@@ -1,12 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { budgetState, loadTiers, writeAtomic } from './config';
+import { loadTiers, routeState, writeAtomic } from './config';
 export function refreshBudgetQuota(): void {
   const tiers = loadTiers();
-  if (!budgetState(tiers).unknown) return;
+  const budget = () =>
+    routeState(tiers, 'auto', Date.now(), { state: 'up', probe_failures: 0 }).budget;
+  if (!budget().unknown) return;
   relayQuota();
-  if (budgetState(tiers).unknown) console.error('预算状态未知');
+  if (budget().unknown) console.error('预算状态未知');
 }
 // prettier-ignore
 interface Pool { today?: { cost?: number }; level?: string; accounts_available?: number; accounts_total?: number; five_hour?: { remaining_pct?: number }; seven_day?: { remaining_pct?: number } }

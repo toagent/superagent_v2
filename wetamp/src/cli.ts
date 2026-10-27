@@ -106,16 +106,18 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import {
   WETAMP,
-  budgetState,
   aliasDrift,
   codexWorkerProblem,
   gitHead,
   home,
   loadTiers,
   resolveRoute,
+  routeNotice,
+  routeState,
   runAliases,
   writeAtomic,
 } from './config';
+import { claudeAdmission, refreshClaudeHealth } from './claude-health';
 import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
@@ -1457,6 +1459,13 @@ function startRun(planPath: string, a: Args): number {
     preflight();
     const plan = loadPlan(planPath),
       adoptId = a.flags.adopt?.trim();
+    const health = refreshClaudeHealth().health,
+      admissionHealth = claudeAdmission(plan.mode, health);
+    if (!admissionHealth.ok) {
+      print({ ...admissionHealth, status: 'rejected' });
+      return EXIT_USAGE;
+    }
+    const routing = routeState(loadTiers(), plan.mode, Date.now(), health);
     if (a.flags.adopt !== undefined && !adoptId)
       throw new Error('--adopt requires a non-empty run id');
     const repo = repoScope(plan.repo),
@@ -1594,7 +1603,6 @@ function startRun(planPath: string, a: Args): number {
           adopted = { ledger: oldLedger, run: oldRun };
         }
         phase = 'engine';
-        const budget = budgetState(loadTiers(), plan.mode);
         const engine = runEngineSnapshot();
         const gen = generate(
           plan,
@@ -1603,7 +1611,8 @@ function startRun(planPath: string, a: Args): number {
           undefined,
           undefined,
           delivery,
-          engine.path
+          engine.path,
+          routing
         );
         const branch = adopted?.ledger.branch ?? `sa/${run}`;
         if (adopted) {
@@ -1739,7 +1748,8 @@ function startRun(planPath: string, a: Args): number {
           return matches.length >= 2 ? [{ reason, count: matches.length, last_run: matches[0].run, action: matches[0].action }] : [];
         });
         const quota = relayQuota(gen.dir, 'start');
-        if (budget.degraded) quota.quota = [quota.quota, budget.notice].filter(Boolean).join(' · ');
+        const notice = routeNotice(routing);
+        if (notice) quota.quota = [quota.quota, notice].filter(Boolean).join(' · ');
         print({
           run_id: run,
           archon_run_id: l.archon_run_id,
@@ -4147,17 +4157,18 @@ export function main(argv: string[]): number {
     case 'models': {
       refreshBudgetQuota();
       const tiers = loadTiers(),
-        mode = a.flags.mode ?? 'auto';
+        mode = a.flags.mode ?? 'auto',
+        health = refreshClaudeHealth().health,
+        state = routeState(tiers, mode, Date.now(), health);
       // prettier-ignore
       const models = Object.fromEntries((['claude', 'codex'] as const).map(c => [c,
-        Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r]).candidates.map(a => a.model)]))]));
-      const budget = budgetState(tiers, mode);
-      if (a.flags.json) print({ ...models, budget });
+        Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r], 'G1', 1, [], false, state).candidates.map(a => a.model)]))]));
+      if (a.flags.json) print({ ...models, budget: state.budget, route_state: state });
       else
         for (const [c, roles] of Object.entries(models))
           for (const [r, candidates] of Object.entries(roles))
             console.log(`${c} ${r}: ${candidates.join(', ')}`);
-      if (!a.flags.json && budget.notice) console.log(budget.notice);
+      if (!a.flags.json && routeNotice(state)) console.log(routeNotice(state));
       return 0;
     }
     case 'owner':
