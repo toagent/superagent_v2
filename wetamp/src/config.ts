@@ -243,8 +243,10 @@ export const routeState = (
   now = Date.now(),
   claude = readClaudeHealth(now)
 ): RouteState => ({ budget: readBudgetState(t, mode, now), claude });
-export const routeNotice = (s: RouteState): string =>
-  [s.budget.notice, claudeHealthNotice(s.claude)].filter(Boolean).join(' · ');
+export const routeNotice = (s: RouteState, includeUnknownBudget = true): string =>
+  [includeUnknownBudget || s.budget.degraded ? s.budget.notice : '', claudeHealthNotice(s.claude)]
+    .filter(Boolean)
+    .join(' · ');
 const HEALTHY_ROUTE: RouteState = {
   budget: { degraded: false, notice: '' },
   claude: { state: 'up', probe_failures: 0 },

@@ -1751,7 +1751,7 @@ function startRun(planPath: string, a: Args): number {
           return matches.length >= 2 ? [{ reason, count: matches.length, last_run: matches[0].run, action: matches[0].action }] : [];
         });
         const quota = relayQuota(gen.dir, 'start');
-        const notice = routeNotice(routing);
+        const notice = routeNotice(routing, false);
         if (notice) quota.quota = [quota.quota, notice].filter(Boolean).join(' · ');
         print({
           run_id: run,

@@ -10,7 +10,10 @@ test('S15: carried evidence without its persisted-byte hash fails the real scena
   cpSync(repo, root, {
     recursive: true,
     filter: source =>
-      !source.includes('/node_modules') && !source.includes('/.git/') && !source.endsWith('/.git'),
+      !source.includes('/node_modules') &&
+      !source.includes('/.codegraph') &&
+      !source.includes('/.git/') &&
+      !source.endsWith('/.git'),
   });
   symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
   symlinkSync(join(repo, 'wetamp/node_modules'), join(wetamp, 'node_modules'));
