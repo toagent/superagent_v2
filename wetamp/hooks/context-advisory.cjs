@@ -29,8 +29,10 @@ function recentUsage(file, client = 'claude') {
         if (Number.isSafeInteger(u?.input_tokens) && u.input_tokens >= 0)
           return {
             tokens: u.input_tokens,
-            window: Number.isSafeInteger(info.model_context_window) && info.model_context_window > 0
-              ? info.model_context_window : null,
+            window:
+              Number.isSafeInteger(info.model_context_window) && info.model_context_window > 0
+                ? info.model_context_window
+                : null,
           };
         continue;
       }
@@ -66,7 +68,11 @@ function roleLimit(role, policy) {
 function contextLimits(role, client, reportedWindow, env = process.env, policy) {
   const context = contextPolicy(policy),
     oldRollover = context.rollover_tokens?.[role],
-    fallback = { threshold: roleLimit(role, policy), rollover: Number.isSafeInteger(oldRollover) && oldRollover > 0 ? oldRollover : null, window: null };
+    fallback = {
+      threshold: roleLimit(role, policy),
+      rollover: Number.isSafeInteger(oldRollover) && oldRollover > 0 ? oldRollover : null,
+      window: null,
+    };
   let window = reportedWindow;
   if (client === 'claude') window = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 200000);
   if (!Number.isSafeInteger(window) || window <= 0)
@@ -75,8 +81,7 @@ function contextLimits(role, client, reportedWindow, env = process.env, policy) 
   if (client === 'claude') {
     const percent = Number(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE || 95);
     compact = window * (Number.isFinite(percent) && percent > 0 ? percent / 100 : 0.95);
-  }
-  else
+  } else
     try {
       const home = env.CODEX_HOME || path.join(require('node:os').homedir(), '.codex'),
         root = fs.readFileSync(path.join(home, 'config.toml'), 'utf8').split(/^\s*\[/m, 1)[0],
@@ -86,7 +91,8 @@ function contextLimits(role, client, reportedWindow, env = process.env, policy) 
   const ratio = context.advisory_ratio?.[role],
     rolloverRatio = context.rollover_ratio?.[role];
   return {
-    threshold: Number.isFinite(ratio) && ratio > 0 ? Math.floor(window * ratio) : fallback.threshold,
+    threshold:
+      Number.isFinite(ratio) && ratio > 0 ? Math.floor(window * ratio) : fallback.threshold,
     rollover:
       Number.isFinite(rolloverRatio) && rolloverRatio > 0
         ? Math.max(1, Math.floor(Math.min(window * rolloverRatio, compact - window * 0.1)))
@@ -113,8 +119,14 @@ function advise(
     messages = [];
   if (Number.isFinite(state.warned_at) && tokens < state.warned_at) delete state.warned_at;
   if (Number.isFinite(state.rollover_at) && tokens < state.rollover_at) delete state.rollover_at;
-  const usage = Number.isSafeInteger(window) && window > 0 ? `（${Math.round(tokens / window * 100)}%）` : '',
-    line = Number.isSafeInteger(window) && window > 0 && rollover !== null ? `（${Math.round(rollover / window * 100)}%）` : '';
+  const usage =
+      Number.isSafeInteger(window) && window > 0
+        ? `（${Math.round((tokens / window) * 100)}%）`
+        : '',
+    line =
+      Number.isSafeInteger(window) && window > 0 && rollover !== null
+        ? `（${Math.round((rollover / window) * 100)}%）`
+        : '';
   if (
     rollover !== null &&
     tokens > rollover &&
@@ -194,17 +206,17 @@ function main(input, client = 'claude') {
             () => {
               const limits = contextLimits(role, client, usage.window),
                 result = advise(
-                input,
-                usage.tokens,
-                state,
-                false,
-                limits.threshold,
-                limits.rollover,
-                process.env,
-                limits.advisoryStep,
-                limits.rolloverStep,
-                limits.window
-              );
+                  input,
+                  usage.tokens,
+                  state,
+                  false,
+                  limits.threshold,
+                  limits.rollover,
+                  process.env,
+                  limits.advisoryStep,
+                  limits.rolloverStep,
+                  limits.window
+                );
               Object.assign(state, result.state);
               return result.messages.join('\n') || null;
             },

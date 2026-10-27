@@ -48,7 +48,7 @@ function sourceFixture(): { root: string; source: string; evidence: string; sha:
     source = join(root, 'source');
   sh(`git clone -q --no-hardlinks '${join(import.meta.dir, '..', '..')}' '${source}'`, root);
   sh('git config user.name test && git config user.email test@example.com', source);
-  sh('git branch -M 1.0.0', source);
+  sh('git checkout -q -B 1.0.0', source);
   const acceptance = join(source, 'wetamp', 'scripts', 'engine-acceptance.sh');
   writeFileSync(
     acceptance,
