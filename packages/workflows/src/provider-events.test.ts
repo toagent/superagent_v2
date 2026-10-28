@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, mock, setSystemTime, test } from 'bun:test';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -80,10 +80,19 @@ describe('createProviderEventHandler', () => {
   test('tracks a subtask from its start until a terminal status', async () => {
     const { handler } = await makeHandler();
 
-    await handler.handle({ type: 'subtask', taskId: 't-1', status: 'started' });
+    await handler.handle({
+      type: 'subtask',
+      taskId: 't-1',
+      status: 'started',
+      description: 'work',
+    });
     await handler.handle({ type: 'subtask', taskId: 't-2', status: 'started' });
     await handler.handle({ type: 'subtask', taskId: 't-1', status: 'running' });
     expect(handler.liveSubtaskIds()).toEqual(['t-1', 't-2']);
+    setSystemTime(new Date(Date.now() + 1_000));
+    expect(handler.liveSubtaskIds(1_000)).toEqual([]);
+    expect(handler.liveSubtaskLabels()).toEqual(['t-1 (work)', 't-2']);
+    setSystemTime();
 
     await handler.handle({ type: 'subtask', taskId: 't-1', status: 'completed' });
     await handler.handle({ type: 'subtask', taskId: 't-2', status: 'stopped' });

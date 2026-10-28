@@ -79,7 +79,8 @@ export interface ProviderEventHandlerDeps {
 export interface ProviderEventHandler {
   handle(event: ProviderEvent): Promise<void>;
   /** Subtasks that started and have not ended: the work a stream cut short would lose. */
-  liveSubtaskIds(): string[];
+  liveSubtaskIds(maxAgeMs?: number): string[];
+  liveSubtaskLabels(): string[];
   hasOpenTools(): boolean;
   observeProgress(): Promise<void>;
   refreshAttention(): Promise<void>;
@@ -89,7 +90,7 @@ export interface ProviderEventHandler {
 /** One handler per provider stream pass: its subtask state belongs to that pass. */
 export function createProviderEventHandler(deps: ProviderEventHandlerDeps): ProviderEventHandler {
   const { store, platform, conversationId, messageContext, logDir, runId, nodeId, stepName } = deps;
-  const liveSubtasks = new Set<string>();
+  const liveSubtasks = new Map<string, { startedAt: number; description?: string }>();
 
   const record = async (event: ProviderEvent): Promise<void> => {
     const envelope: ProviderEventEnvelope = {
@@ -125,6 +126,7 @@ export function createProviderEventHandler(deps: ProviderEventHandlerDeps): Prov
 
   return {
     async handle(event): Promise<void> {
+      const observedAt = Date.now();
       await deps.toolAttention.observe(event);
       await record(event);
       const streaming = platform.getStreamingMode() === 'stream';
@@ -176,7 +178,13 @@ export function createProviderEventHandler(deps: ProviderEventHandlerDeps): Prov
           return;
         case 'subtask':
           if (terminalSubtaskStatuses.has(event.status)) liveSubtasks.delete(event.taskId);
-          else liveSubtasks.add(event.taskId);
+          else {
+            const prior = liveSubtasks.get(event.taskId);
+            liveSubtasks.set(event.taskId, {
+              startedAt: prior?.startedAt ?? observedAt,
+              description: event.description ?? prior?.description,
+            });
+          }
           return;
         case 'hook':
         case 'agent_thought_chunk':
@@ -198,8 +206,16 @@ export function createProviderEventHandler(deps: ProviderEventHandlerDeps): Prov
     clearAttention: async (): Promise<void> => {
       await deps.toolAttention.clear();
     },
-    liveSubtaskIds(): string[] {
-      return [...liveSubtasks];
+    liveSubtaskIds(maxAgeMs = Number.POSITIVE_INFINITY): string[] {
+      const now = Date.now();
+      return [...liveSubtasks]
+        .filter(([, task]) => now - task.startedAt < maxAgeMs)
+        .map(([taskId]) => taskId);
+    },
+    liveSubtaskLabels(): string[] {
+      return [...liveSubtasks].map(([taskId, task]) =>
+        task.description ? `${taskId} (${task.description})` : taskId
+      );
     },
   };
 }

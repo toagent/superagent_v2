@@ -574,6 +574,18 @@ function formatWatchdogResetDiagnostic(lastReset: WatchdogReset | undefined): st
     : ' No provider chunk reset the watchdog after the stream opened.';
 }
 
+function streamHasActiveWork(
+  events: ProviderEventHandler,
+  reportsBackgroundWork: boolean,
+  idleTimeoutMs: number
+): boolean {
+  // A reported subtask may pause the watchdog only for this node's own idle window.
+  return (
+    events.hasOpenTools() ||
+    (reportsBackgroundWork && events.liveSubtaskIds(idleTimeoutMs).length > 0)
+  );
+}
+
 function applyPresetOptions(
   providers: ProviderRegistry,
   provider: string,
@@ -2348,6 +2360,7 @@ async function executeNodeInternal(
   // subprocess death) — recorded on the node_completed event so an incomplete
   // node never masquerades as a clean success (#2083).
   let backgroundTasksIncomplete: string[] = [];
+  let backgroundTaskDiagnostics: string[] = [];
   // Whether the last stream pass ended on the provider's `settled`. Output without it
   // means the turn was cut off, not finished.
   let streamSettled = false;
@@ -2386,6 +2399,7 @@ async function executeNodeInternal(
     lastWatchdogReset = undefined;
     watchdogResets = createWatchdogResetRecorder(logDir, workflowRun.id, node.id);
     backgroundTasksIncomplete = [];
+    backgroundTaskDiagnostics = [];
     const providerEvents = createProviderEventHandler({
       toolAttention: ctx.toolAttention.createStream({
         nodeId: stepName,
@@ -2478,9 +2492,11 @@ async function executeNodeInternal(
           watchdogResets.observe(type, resetAt);
         },
         () =>
-          providerEvents.hasOpenTools() ||
-          (aiClient.getCapabilities().backgroundWork === 'reported' &&
-            providerEvents.liveSubtaskIds().length > 0),
+          streamHasActiveWork(
+            providerEvents,
+            aiClient.getCapabilities().backgroundWork === 'reported',
+            effectiveIdleTimeout
+          ),
         shouldStopStream
       )) {
         const tickNow = Date.now();
@@ -2589,6 +2605,7 @@ async function executeNodeInternal(
     // and names these tasks (see unsettledTurnError).
     if (providerEvents.liveSubtaskIds().length > 0) {
       backgroundTasksIncomplete = providerEvents.liveSubtaskIds();
+      backgroundTaskDiagnostics = providerEvents.liveSubtaskLabels();
       getLog().warn(
         {
           nodeId: node.id,
@@ -2767,7 +2784,7 @@ async function executeNodeInternal(
         `Node '${node.id}' failed: ${unsettledTurnError(
           nodeIdleTimedOut ? effectiveIdleTimeout : undefined,
           lastWatchdogReset,
-          backgroundTasksIncomplete
+          backgroundTaskDiagnostics
         )}`
       );
     }
@@ -3232,7 +3249,11 @@ function unsettledTurnError(
       ? `timed out after ${String(idleTimeoutMs / 60000)} min without an event, before the provider signalled that its turn settled.${formatWatchdogResetDiagnostic(lastWatchdogReset)}`
       : 'the provider stream ended without signalling that its turn settled.';
   const tasks =
-    liveTaskIds.length > 0 ? ` Subtask(s) still running: ${liveTaskIds.join(', ')}.` : '';
+    liveTaskIds.length === 0
+      ? ''
+      : idleTimeoutMs === undefined
+        ? ` Subtask(s) still running: ${liveTaskIds.join(', ')}.`
+        : ` Stale subtask(s) no longer counted as active: ${liveTaskIds.join(', ')}.`;
   return `${cause}${tasks} Its work may be incomplete.`;
 }
 
@@ -6064,9 +6085,11 @@ async function executeLoopNode(
                 watchdogResets.observe(type, resetAt);
               },
               () =>
-                providerEvents.hasOpenTools() ||
-                (aiClient.getCapabilities().backgroundWork === 'reported' &&
-                  providerEvents.liveSubtaskIds().length > 0),
+                streamHasActiveWork(
+                  providerEvents,
+                  aiClient.getCapabilities().backgroundWork === 'reported',
+                  effectiveIdleTimeout
+                ),
               shouldStopStream
             )) {
               if (await shouldStopStream()) break;
@@ -6329,7 +6352,7 @@ async function executeLoopNode(
           const unsettledError = unsettledTurnError(
             iterationIdleTimedOut ? (node.idle_timeout ?? STEP_IDLE_TIMEOUT_MS) : undefined,
             lastWatchdogReset,
-            providerEvents.liveSubtaskIds()
+            providerEvents.liveSubtaskLabels()
           );
           getLog().error({ nodeId: node.id, iteration: i }, 'loop_node.iteration_unsettled');
           getWorkflowEventEmitter().emit({

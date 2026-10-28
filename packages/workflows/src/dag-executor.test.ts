@@ -8122,7 +8122,7 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       mockSendQueryDag.mockImplementation(async function* () {
         yield { type: 'subtask', taskId: 'quiet', status: 'started', description: 'quiet bash' };
         yield { type: 'result', sessionId: 's', text: 'waiting' };
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 20));
         yield { type: 'subtask', taskId: 'quiet', status: 'completed' };
         yield { type: 'result', sessionId: 's', text: 'finished' };
         yield { type: 'settled' };
@@ -8158,11 +8158,16 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       expect(persistedEvents(store).some(event => event.event_type === 'node_failed')).toBe(false);
     });
 
-    // Only a provider that declares `reported` can vouch that a silent subtask is
-    // still alive; for any other provider a silent stream is a hung turn.
-    for (const kind of ['agent', 'loop'] as const) {
+    // Reported work pauses the watchdog only until it reaches the node's idle bound;
+    // unobserved work never pauses it.
+    for (const [kind, backgroundWork] of [
+      ['agent', 'unobserved'],
+      ['loop', 'unobserved'],
+      ['agent', 'reported'],
+      ['loop', 'reported'],
+    ] as const) {
       it(
-        `times out a silent ${kind} node whose unobserved provider left a subtask live`,
+        `times out a silent ${kind} node whose ${backgroundWork} provider left a subtask live`,
         async () => {
           let calls = 0;
           let firstAttemptAborted = false;
@@ -8176,6 +8181,7 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
               return;
             }
             yield { type: 'subtask', taskId: 'hung', status: 'started', description: 'hung' };
+            yield { type: 'agent_message_chunk', text: 'blocked pending operator input' };
             await new Promise<void>(resolve => {
               // Bounds the test if the watchdog never fires.
               const bound = setTimeout(resolve, 1_000);
@@ -8194,7 +8200,7 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
           const deps = createMockDeps(store);
           deps.getAgentProvider = () => ({
             ...mockGetAgentProviderDag('claude'),
-            getCapabilities: () => ({ ...mockClaudeCapabilities(), backgroundWork: 'unobserved' }),
+            getCapabilities: () => ({ ...mockClaudeCapabilities(), backgroundWork }),
           });
           await executeDagWorkflow(
             dagOptions({
@@ -8225,12 +8231,15 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
                       },
                 ],
               },
-              workflowRun: makeWorkflowRun(`unobserved-silent-${kind}`),
+              workflowRun: makeWorkflowRun(`${backgroundWork}-silent-${kind}`),
             })
           );
           expect(firstAttemptAborted).toBe(true);
-          if (kind === 'agent') expect(findCompletedEvent(store)).toBeUndefined();
-          else expect(calls).toBe(2);
+          if (kind === 'agent') {
+            const failed = persistedEvents(store).find(event => event.event_type === 'node_failed');
+            expect(failed?.data?.failure_kind).toBe('timeout');
+            expect(failed?.data?.error).toContain('hung (hung)');
+          } else expect(calls).toBe(2);
         },
         testTimeout(10_000)
       );
@@ -8306,7 +8315,7 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       const failed = persistedEvents(store).find(
         event => event.event_type === 'node_failed' && event.step_name === 'step1'
       );
-      expect(failed?.data?.error).toContain('Subtask(s) still running: t-orphan.');
+      expect(failed?.data?.error).toContain('Subtask(s) still running: t-orphan (never drains).');
       const sent = (platform.sendMessage as ReturnType<typeof mock>).mock.calls.map(c =>
         String(c[1])
       );
@@ -14603,19 +14612,20 @@ describe('executeDagWorkflow -- terminal node output selection', () => {
         toolCallAttentionMs: thresholdMs,
       },
     };
+    const idleTimeout = taskType ? 2_000 : 100;
     const node =
       kind === 'agent'
         ? {
             id: 'implement',
             kind: 'agent' as const,
             source: { kind: 'command' as const, name: 'my-cmd' },
-            idle_timeout: 10,
+            idle_timeout: idleTimeout,
             retry: { max_attempts: 0 },
           }
         : {
             id: 'implement',
             kind: 'loop' as const,
-            idle_timeout: 10,
+            idle_timeout: idleTimeout,
             output_format: {
               type: 'object',
               properties: { done: { type: 'boolean' } },
@@ -14646,7 +14656,10 @@ describe('executeDagWorkflow -- terminal node output selection', () => {
             ? workOpen.then(() => new Promise(resolve => setTimeout(resolve, 80)))
             : publication,
           new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => reject(new Error('Tool attention was never published')), 1000);
+            timer = setTimeout(
+              () => reject(new Error('Tool attention was never published')),
+              taskType ? 1_500 : 1_000
+            );
           }),
         ]);
       } finally {

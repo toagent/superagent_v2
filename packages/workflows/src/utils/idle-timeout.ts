@@ -67,7 +67,8 @@ export async function* withIdleTimeout<T>(
 
       let result: IteratorResult<T> | undefined;
       while (result === undefined) {
-        const tickMs = Math.max(0, Math.min(WATCHDOG_TICK_MS, timeoutMs - idleMs));
+        const remainingMs = timeoutMs - idleMs;
+        const tickMs = remainingMs > 0 ? Math.min(WATCHDOG_TICK_MS, remainingMs) : WATCHDOG_TICK_MS;
         const tickStartedAt = Date.now();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const tick = new Promise<typeof TICK>(resolve => {
@@ -79,8 +80,7 @@ export async function* withIdleTimeout<T>(
         const settled = await Promise.race([nextPromise, tick]);
         clearTimeout(timer);
         // Wall-clock time beyond the scheduled delay was spent suspended.
-        if (isWorkLive?.()) idleMs = 0;
-        else idleMs += Math.max(0, Math.min(Date.now() - tickStartedAt, tickMs));
+        idleMs += Math.max(0, Math.min(Date.now() - tickStartedAt, tickMs));
 
         if (settled !== TICK) {
           result = settled;
@@ -89,7 +89,7 @@ export async function* withIdleTimeout<T>(
           // The caller aborts the producer; do not await return behind its pending next.
           nextPromise.catch(() => undefined);
           return;
-        } else if (idleMs >= timeoutMs) {
+        } else if (!isWorkLive?.() && idleMs >= timeoutMs) {
           nextAbandoned = true;
           // Prevent unhandled rejection when the subprocess is aborted via onTimeout
           nextPromise.catch((_err: unknown) => {

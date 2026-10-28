@@ -263,20 +263,24 @@ describe('withIdleTimeout', () => {
   });
 });
 
-test('quiet live work suspends the watchdog, then silence times out after it ends', async () => {
-  let live = false;
+test('quiet live work stops suspending the watchdog when its idle window expires', async () => {
+  let startedAt = Number.POSITIVE_INFINITY;
   const timedOut = mock(() => {});
   async function* work(): AsyncGenerator<string> {
     yield 'started';
-    await new Promise(resolve => setTimeout(resolve, 100));
-    yield 'completed';
     await new Promise<void>(() => {});
   }
   const values: string[] = [];
-  for await (const value of withIdleTimeout(work(), 30, timedOut, undefined, () => live)) {
+  for await (const value of withIdleTimeout(
+    work(),
+    30,
+    timedOut,
+    undefined,
+    () => Date.now() - startedAt < 30
+  )) {
     values.push(value);
-    live = value === 'started';
+    startedAt = Date.now();
   }
-  expect(values).toEqual(['started', 'completed']);
+  expect(values).toEqual(['started']);
   expect(timedOut).toHaveBeenCalledTimes(1);
 });
