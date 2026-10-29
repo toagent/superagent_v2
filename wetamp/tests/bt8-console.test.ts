@@ -45,7 +45,7 @@ test('web dist rebuild restores owner write access to copied read-only files', a
   await ensureWebDist('second');
   expect(readFileSync(join(dist, '.superagent-engine'), 'utf8')).toBe('second');
   expect(existsSync(copied)).toBe(true);
-});
+}, 30_000); // Two real Vite builds exceed Bun's 5s default under load.
 const request = (path: string, method = 'GET', headers: Record<string, string> = {}): Request =>
   new Request(`http://127.0.0.1:39890${path}`, {
     method,
