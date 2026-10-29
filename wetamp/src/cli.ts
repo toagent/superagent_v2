@@ -39,25 +39,12 @@ import {
   recoveryAdmissionUnknown,
   recoverySnapshot,
 } from './recovery';
-import {
-  caller,
-  control,
-  coord,
-  repoScope,
-  runScope,
-  same,
-  presence,
-  type Controller,
-} from './coord';
+// prettier-ignore
+import { caller, control, coord, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
-import {
-  heartbeat,
-  shouldWriteHeartbeat,
-  tickHealth,
-  type Heartbeat,
-  type TickRecord,
-} from './heartbeat';
+// prettier-ignore
+import { heartbeat, shouldWriteHeartbeat, tickHealth, type Heartbeat, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import {
   askQuestion,
@@ -4046,24 +4033,14 @@ function tickOutput(
 }
 
 /** Console availability must not gate the unattended heartbeat. */
-export async function superviseTickCli(
-  refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(),
-  sync = async (snapshot: Snapshot): Promise<unknown> =>
-    (await import('./orca')).syncOrca(snapshot),
-  mode: TickMode = {},
-  load = async (): Promise<Snapshot> => createLoader()(20)
-): Promise<number> {
+// prettier-ignore
+export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20)): Promise<number> {
   const errors: string[] = [];
   const stages = {} as Omit<TickRecord, 'at'>;
   const result = async (stage: keyof typeof stages, run: () => unknown): Promise<unknown> => {
     try {
       const value = await run();
-      stages[stage] = {
-        ok: true,
-        ...(value && typeof value === 'object' && 'skipped' in value
-          ? { skipped: String(value.skipped) }
-          : {}),
-      };
+      stages[stage] = { ok: true, ...(value && typeof value === 'object' && 'skipped' in value ? { skipped: String(value.skipped) } : {}) };
       return value;
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
@@ -4077,17 +4054,10 @@ export async function superviseTickCli(
   else stages.collect = { ok: true, skipped: 'no-global' };
   if (snapshot)
     await result('publish', () => {
-      const path = join(home().sa, 'heartbeat.json'),
-        now = Date.now();
-      const next = heartbeat(snapshot, cockpit(snapshot, now), now, who =>
-        presence(who, home().sa)
-      );
+      const path = join(home().sa, 'heartbeat.json'), now = Date.now();
+      const next = heartbeat(snapshot, cockpit(snapshot, now), now, who => presence(who, home().sa));
       let previous: Heartbeat | undefined;
-      try {
-        previous = readJson(path) as Heartbeat | undefined;
-      } catch {
-        /* corrupt cache is replaced */
-      }
+      try { previous = readJson(path) as Heartbeat | undefined; } catch { /* corrupt cache is replaced */ }
       const changed = shouldWriteHeartbeat(previous, next, now);
       if (changed) writeAtomic(path, JSON.stringify(next, null, 2) + '\n');
       return changed ? undefined : { skipped: 'unchanged' };
@@ -4097,8 +4067,8 @@ export async function superviseTickCli(
     if (!mode.noGlobal) await refresh();
     stages.console = { ok: true };
   } catch (e) {
-    stages.console = { ok: false, error: e instanceof Error ? e.message : String(e) };
-    errors.push(`console refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+    const error = e instanceof Error ? e.message : String(e);
+    stages.console = { ok: false, error }; errors.push(`console refresh failed: ${error}`);
   }
   let output: Record<string, unknown> = {};
   const exit = tickOutput(mode, value => (output = value));
@@ -4107,24 +4077,18 @@ export async function superviseTickCli(
     if (!mode.noGlobal) await claudeCommanderFailover();
     stages.failover = { ok: true };
   } catch (e) {
-    stages.failover = { ok: false, error: e instanceof Error ? e.message : String(e) };
-    errors.push(`commander failover failed: ${e instanceof Error ? e.message : String(e)}`);
+    const error = e instanceof Error ? e.message : String(e);
+    stages.failover = { ok: false, error }; errors.push(`commander failover failed: ${error}`);
   }
   try {
     if (!mode.noGlobal) {
       const synced = snapshot ? await sync(snapshot) : { skipped: 'collect-failed' };
-      if (synced && typeof synced === 'object' && 'error' in synced)
-        throw new Error(String(synced.error));
-      stages.orca = {
-        ok: true,
-        ...(synced && typeof synced === 'object' && 'skipped' in synced
-          ? { skipped: String(synced.skipped) }
-          : {}),
-      };
+      if (synced && typeof synced === 'object' && 'error' in synced) throw new Error(String(synced.error));
+      stages.orca = { ok: true, ...(synced && typeof synced === 'object' && 'skipped' in synced ? { skipped: String(synced.skipped) } : {}) };
     } else stages.orca = { ok: true, skipped: 'no-global' };
   } catch (e) {
-    stages.orca = { ok: false, error: e instanceof Error ? e.message : String(e) };
-    errors.push(`orca sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    const error = e instanceof Error ? e.message : String(e);
+    stages.orca = { ok: false, error }; errors.push(`orca sync failed: ${error}`);
   }
   const details = ['actions', 'gc', 'scratch'].flatMap(key =>
     Array.isArray(output[key])
@@ -4133,16 +4097,8 @@ export async function superviseTickCli(
   );
   const global = output.global as { gc_ms?: unknown } | undefined;
   const unavailable = output.unavailable as { count?: number } | undefined;
-  const gcMs =
-    typeof output.gc_ms === 'number'
-      ? output.gc_ms
-      : typeof global?.gc_ms === 'number'
-        ? global.gc_ms
-        : undefined;
-  writeAtomic(
-    join(home().sa, 'tick.json'),
-    JSON.stringify({ at: new Date().toISOString(), ...stages }, null, 2) + '\n'
-  );
+  const gcMs = typeof output.gc_ms === 'number' ? output.gc_ms : typeof global?.gc_ms === 'number' ? global.gc_ms : undefined;
+  writeAtomic(join(home().sa, 'tick.json'), JSON.stringify({ at: new Date().toISOString(), ...stages }, null, 2) + '\n');
   console.log(
     JSON.stringify({
       heartbeat: new Date().toISOString(),

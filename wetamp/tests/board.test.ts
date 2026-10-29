@@ -483,12 +483,8 @@ describe('data rows', () => {
       const t = new Date(Date.now() + i * 1000);
       utimesSync(ledgerFile(id), t, t);
     }
-    expect((await createLoader()(2)).rows.map(r => r.run_id).sort()).toEqual([
-      'bad',
-      'done-19',
-      'done-20',
-      'live',
-    ]);
+    // prettier-ignore
+    expect((await createLoader()(2)).rows.map(r => r.run_id).sort()).toEqual(['bad', 'done-19', 'done-20', 'live']);
   });
 });
 

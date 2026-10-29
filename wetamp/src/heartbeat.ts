@@ -4,34 +4,12 @@ import { elapsedAt, type Snapshot } from './board/data';
 import { roleTag, type Cockpit } from './board/cockpit';
 import { unknownProgress, type Progress } from './board/eta';
 
-interface Item {
-  id: string;
-  kind: 'run' | 'job';
-  title: string;
-  stage: string;
-  node?: string;
-  role: string;
-  model?: string | null;
-  state: string;
-  elapsed_s: number | null;
-  last_activity_s: number | null;
-  estimate: Progress;
-  attention?: string;
-}
-interface Marshal {
-  owner: Identity | 'unknown';
-  owner_key: (string | number | null)[] | 'unknown';
-  cwd: string;
-  project: string;
-  running: Item[];
-  waiting: { id: string; what: string; waiting_for: string; waited_s: number }[];
-  line: string;
-}
-export interface Heartbeat {
-  at: string;
-  reclaim_pending: number;
-  marshals: Marshal[];
-}
+// prettier-ignore
+interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; node?: string; role: string; model?: string | null; state: string; elapsed_s: number | null; last_activity_s: number | null; estimate: Progress; attention?: string }
+// prettier-ignore
+interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; waiting_for: string; waited_s: number }[]; line: string }
+// prettier-ignore
+export interface Heartbeat { at: string; reclaim_pending: number; marshals: Marshal[] }
 const age = (at: string | null | undefined, now: number): number | null => {
   const value = Date.parse(at ?? '');
   return Number.isFinite(value) ? Math.max(0, Math.floor((now - value) / 1000)) : null;
@@ -40,31 +18,15 @@ const ownerId = (owner: Identity | null): string =>
   owner ? JSON.stringify(identityKey(owner)) : 'unknown';
 
 /** Pure projection: the caller supplies presence so collection owns all I/O. */
-export function heartbeat(
-  snapshot: Snapshot,
-  cockpit: Cockpit,
-  now: number,
-  presenceOf: (owner: Identity) => Presence
-): Heartbeat {
+// prettier-ignore
+export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence): Heartbeat {
   const groups = new Map<string, Marshal>();
   let reclaim = 0;
   const group = (owner: Identity | null, cwd: string): Marshal | undefined => {
-    if (owner && presenceOf(owner).state !== 'online') {
-      reclaim++;
-      return;
-    }
-    const key = `${ownerId(owner)}\0${cwd}`,
-      found = groups.get(key);
+    if (owner && presenceOf(owner).state !== 'online') { reclaim++; return; }
+    const key = `${ownerId(owner)}\0${cwd}`, found = groups.get(key);
     if (found) return found;
-    const value: Marshal = {
-      owner: owner ?? 'unknown',
-      owner_key: owner ? identityKey(owner) : 'unknown',
-      cwd,
-      project: basename(cwd),
-      running: [],
-      waiting: [],
-      line: '',
-    };
+    const value: Marshal = { owner: owner ?? 'unknown', owner_key: owner ? identityKey(owner) : 'unknown', cwd, project: basename(cwd), running: [], waiting: [], line: '' };
     groups.set(key, value);
     return value;
   };
@@ -73,107 +35,44 @@ export function heartbeat(
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;
     const marshal = group(row.coordination?.owner ?? null, row.repo);
     if (!marshal) continue;
-    const run = projected.get(row.run_id),
-      nodes = row.activeNodes?.length
-        ? row.activeNodes
-        : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
-    for (const node of nodes)
-      marshal.running.push({
-        id: row.run_id,
-        kind: 'run',
-        title: row.engine?.title ?? '任务标题未知',
-        stage: run?.stage ?? row.state,
-        ...(node.id ? { node: node.id } : {}),
-        role: roleTag(node.role, node.model),
-        model: node.model,
-        state: row.state,
-        elapsed_s: elapsedAt(row, now),
-        last_activity_s: age(row.lastEvent, now),
-        estimate:
-          snapshot.eta?.[row.run_id]?.nodes?.[node.id] ??
-          snapshot.eta?.[row.run_id]?.progress ??
-          unknownProgress(),
-        ...(run?.reason ? { attention: run.reason } : {}),
-      });
-    if (run && (cockpit.needs.includes(run) || row.coordination?.pending))
-      marshal.waiting.push({
-        id: row.run_id,
-        what: run.stage,
-        waiting_for: run.question || `${String(row.coordination?.pending ?? 0)} 条协调消息`,
-        waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0,
-      });
-  }
-  for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ??
-    []) {
-    const marshal = group(job.launcher ?? null, job.cwd),
-      run = cockpit.active.find(item => item.id === job.id);
-    if (!marshal) continue;
-    marshal.running.push({
-      id: job.id,
-      kind: 'job',
-      title: job.title,
-      stage: run?.stage ?? job.state,
-      role: roleTag(job.tier, job.model),
-      model: job.model,
-      state: job.state,
-      elapsed_s: age(job.started_at, now),
-      last_activity_s: null,
-      estimate: run?.progress ?? unknownProgress(),
+    const run = projected.get(row.run_id), nodes = row.activeNodes?.length ? row.activeNodes : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
+    for (const node of nodes) marshal.running.push({
+      id: row.run_id, kind: 'run', title: row.engine?.title ?? '任务标题未知', stage: run?.stage ?? row.state,
+      ...(node.id ? { node: node.id } : {}), role: roleTag(node.role, node.model), model: node.model, state: row.state,
+      elapsed_s: elapsedAt(row, now), last_activity_s: age(row.lastEvent, now),
+      estimate: snapshot.eta?.[row.run_id]?.nodes?.[node.id] ?? snapshot.eta?.[row.run_id]?.progress ?? unknownProgress(),
+      ...(run?.reason ? { attention: run.reason } : {}),
     });
-    if (job.state === 'queued')
-      marshal.waiting.push({
-        id: job.id,
-        what: '作业排队',
-        waiting_for: '执行槽位',
-        waited_s: age(job.started_at, now) ?? 0,
-      });
+    if (run && (cockpit.needs.includes(run) || row.coordination?.pending)) marshal.waiting.push({
+      id: row.run_id, what: run.stage, waiting_for: run.question || `${String(row.coordination?.pending ?? 0)} 条协调消息`, waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0,
+    });
+  }
+  for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ?? []) {
+    const marshal = group(job.launcher ?? null, job.cwd), run = cockpit.active.find(item => item.id === job.id);
+    if (!marshal) continue;
+    marshal.running.push({ id: job.id, kind: 'job', title: job.title, stage: run?.stage ?? job.state, role: roleTag(job.tier, job.model), model: job.model, state: job.state, elapsed_s: age(job.started_at, now), last_activity_s: null, estimate: run?.progress ?? unknownProgress() });
+    if (job.state === 'queued') marshal.waiting.push({ id: job.id, what: '作业排队', waiting_for: '执行槽位', waited_s: age(job.started_at, now) ?? 0 });
   }
   for (const marshal of groups.values()) {
-    const roles = marshal.running.map(
-      item =>
-        `${item.role} ${item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`
-    );
+    const roles = marshal.running.map(item => `${item.role} ${item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
     marshal.line = `${marshal.project} 元帅｜${roles.join('｜') || '无执行'}${marshal.waiting.length ? `｜等待${String(marshal.waiting.length)}` : ''}`;
   }
-  return {
-    at: new Date(now).toISOString(),
-    reclaim_pending: reclaim,
-    marshals: [...groups.values()],
-  };
+  return { at: new Date(now).toISOString(), reclaim_pending: reclaim, marshals: [...groups.values()] };
 }
-const semantic = (value: Heartbeat): unknown =>
-  JSON.parse(
-    JSON.stringify(value, (key: string, item: unknown): unknown =>
-      ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line'].includes(key) ? undefined : item
-    )
-  ) as unknown;
-export const shouldWriteHeartbeat = (
-  previous: Heartbeat | undefined,
-  next: Heartbeat,
-  now: number
-): boolean =>
-  !previous ||
-  JSON.stringify(semantic(previous)) !== JSON.stringify(semantic(next)) ||
-  now - Date.parse(previous.at) >= 900_000;
+// prettier-ignore
+const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line'].includes(key) ? undefined : item)) as unknown;
+// prettier-ignore
+export const shouldWriteHeartbeat = (previous: Heartbeat | undefined, next: Heartbeat, now: number): boolean => !previous || JSON.stringify(semantic(previous)) !== JSON.stringify(semantic(next)) || now - Date.parse(previous.at) >= 900_000;
 
-export interface TickStage {
-  ok: boolean;
-  error?: string;
-  skipped?: string;
-}
+// prettier-ignore
+export interface TickStage { ok: boolean; error?: string; skipped?: string }
 type Stage = 'collect' | 'publish' | 'orca' | 'console' | 'failover' | 'actions';
 export type TickRecord = { at: string } & Record<Stage, TickStage>;
-export function tickHealth(
-  tick: TickRecord | undefined,
-  now: number
-): { ok: boolean; messages: string[] } {
-  const parsed = Date.parse(tick?.at ?? ''),
-    minutes = Number.isFinite(parsed) ? Math.floor((now - parsed) / 60_000) : Infinity;
-  const messages =
-    minutes > 3 ? [`未收到巡检心跳${Number.isFinite(minutes) ? ` ${String(minutes)}m` : ''}`] : [];
+// prettier-ignore
+export function tickHealth(tick: TickRecord | undefined, now: number): { ok: boolean; messages: string[] } {
+  const parsed = Date.parse(tick?.at ?? ''), minutes = Number.isFinite(parsed) ? Math.floor((now - parsed) / 60_000) : Infinity;
+  const messages = minutes > 3 ? [`未收到巡检心跳${Number.isFinite(minutes) ? ` ${String(minutes)}m` : ''}`] : [];
   if (tick && !tick.collect.ok) messages.push(`巡检采集失败：${tick.collect.error ?? 'unknown'}`);
-  if (tick)
-    for (const stage of ['publish', 'orca', 'console', 'failover', 'actions'] as const)
-      if (!tick[stage].ok) messages.push(`${stage}异常：${tick[stage].error ?? 'unknown'}`);
+  if (tick) for (const stage of ['publish', 'orca', 'console', 'failover', 'actions'] as const) if (!tick[stage].ok) messages.push(`${stage}异常：${tick[stage].error ?? 'unknown'}`);
   return { ok: messages.length === 0, messages };
 }

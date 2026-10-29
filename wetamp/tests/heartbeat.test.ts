@@ -4,12 +4,8 @@ import type { BoardRow, Snapshot } from '../src/board/data';
 import { heartbeat, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import type { Identity, Presence } from '../src/coord';
 const now = Date.parse('2026-10-29T10:00:00Z');
-const owner = (pid: number): Identity => ({
-  client: 'codex',
-  host: 'host',
-  pid,
-  pid_start: `start-${String(pid)}`,
-});
+// prettier-ignore
+const owner = (pid: number): Identity => ({ client: 'codex', host: 'host', pid, pid_start: `start-${String(pid)}` });
 const row = (id: string, who: Identity | null, state = 'running'): BoardRow => ({
   run_id: id,
   repo: `/repo/${id}`,
