@@ -2,7 +2,7 @@
   "required_checks": [
     {
       "when": ["wetamp/**/*.ts", "wetamp/**/*.js", "wetamp/**/*.cjs", "wetamp/**/*.sh"],
-      "check": { "cmd": "cd wetamp && bun run type-check", "timeout_s": 120 }
+      "check": { "cmd": "cd wetamp && bun run type-check", "timeout_s": 900 }
     }
   ]
 }

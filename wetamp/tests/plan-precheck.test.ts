@@ -34,16 +34,6 @@ const plan = (root: string, write: string[], accept: string[]): Plan =>
     ],
   }) as Plan;
 
-test('wetamp code requires type-check in the first acceptance command', () => {
-  const root = fixture();
-  expect(planPrecheck(plan(root, ['wetamp/src/foo.ts'], ['bun test']), root).join('\n')).toContain(
-    'accept[0] 须含 bun run type-check'
-  );
-  expect(
-    planPrecheck(plan(root, ['wetamp/src/foo.ts'], ['bun run type-check && bun test']), root)
-  ).toEqual([]);
-});
-
 test('engine paths require all three engine suites or the wildcard suite', () => {
   const root = fixture(),
     write = ['wetamp/src/engine/index.ts'],

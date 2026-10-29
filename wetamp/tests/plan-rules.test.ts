@@ -8,7 +8,7 @@ import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 const setup = () => {
   const root = tmp(),
     repo = gitRepo(root);
-  const source = join(repo, 'wetamp/src/frozen.ts');
+  const source = join(repo, 'tools/qa/gate.py');
   mkdirSync(dirname(source), { recursive: true });
   writeFileSync(source, 'export {}\n');
   sh('git add . && git -c user.name=t -c user.email=t@l commit -qm source', repo);
@@ -16,7 +16,7 @@ const setup = () => {
     const pkg = (value.packages as Record<string, unknown>[])[0];
     value.packages = [pkg];
     value.base_ref = 'HEAD';
-    pkg.scope = { write: ['wetamp/src/frozen.ts'] };
+    pkg.scope = { write: ['tools/qa/gate.py'] };
   });
   const rules = (value: unknown) => {
     mkdirSync(join(repo, '.superagent'), { recursive: true });
@@ -25,18 +25,22 @@ const setup = () => {
   return { root, repo, path, plan: () => loadPlan(path, [root]), rules };
 };
 
-test('missing rules preserve the plan; invalid rules fail with the field path', () => {
+test('missing and invalid rules preserve context in their results', () => {
   const s = setup(),
     plan = s.plan();
   expect(applyPlanRules(plan)).toEqual({ plan, warnings: [], rejected: false, added: 0 });
   s.rules({ required_checks: [{ when: ['**'], check: { cmd: 'true' } }] });
   expect(() => applyPlanRules(s.plan())).toThrow(/required_checks\/0\/check.*timeout_s/);
+  const rulesPath = join(s.repo, '.superagent/rules.json');
+  writeFileSync(rulesPath, '{');
+  expect(() => applyPlanRules(s.plan())).toThrow(rulesPath);
+  expect(() => applyPlanRules(s.plan())).toThrow(/JSON/);
 });
 
 test('frozen exact, directory and glob scopes plus size limits reject unless overridden', () => {
   const s = setup();
-  s.rules({ frozen: ['wetamp/src/**'], limits: { max_size: 'M' } });
-  for (const write of ['wetamp/src/frozen.ts', 'wetamp/src/', 'wetamp/**/*.ts']) {
+  s.rules({ frozen: ['tools/qa'], limits: { max_size: 'M' } });
+  for (const write of ['tools/qa/gate.py', 'tools/qa/', 'tools/**/*.py']) {
     const plan = s.plan();
     plan.packages[0].scope.write = [write];
     expect(applyPlanRules(plan).rejected).toBe(true);
@@ -53,7 +57,7 @@ test('frozen exact, directory and glob scopes plus size limits reject unless ove
 test('required checks append once without changing requirement indexes or obeying override', () => {
   const s = setup(),
     check = { cmd: 'required-check', timeout_s: 9 };
-  s.rules({ required_checks: [{ when: ['wetamp/src/**'], check }] });
+  s.rules({ required_checks: [{ when: ['tools/qa'], check }] });
   const plan = s.plan();
   plan.packages[0].requirements = [{ id: 'r', text: 'kept', verified_by: [0] }];
   const applied = applyPlanRules(plan, 'does not skip checks');

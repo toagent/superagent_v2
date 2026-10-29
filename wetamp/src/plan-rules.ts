@@ -21,7 +21,6 @@ type AjvCtor = new (opts: Record<string, unknown>) => {
 const snapshots = new WeakMap<Plan, string>();
 let validate: Validator | undefined;
 const sizeRank = { S: 0, M: 1, L: 2 } as const;
-const matches = (p: string, globs: string[]): boolean => globs.some(g => new Bun.Glob(g).match(p));
 const schema = (name: string): unknown =>
   JSON.parse(readFileSync(join(WETAMP, `schemas/${name}.schema.json`), 'utf8'));
 function rulesValidator(): Validator {
@@ -37,7 +36,13 @@ function loadRules(repo: string): { rules: ProjectRules; raw: string } | undefin
   const path = join(repo, '.superagent', 'rules.json');
   if (!existsSync(path)) return undefined;
   const raw = readFileSync(path, 'utf8');
-  const data: unknown = JSON.parse(raw);
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`project rules invalid: ${path}: ${detail}`);
+  }
   const validator = rulesValidator();
   if (!validator(data)) {
     const detail = (validator.errors ?? [])
@@ -62,8 +67,8 @@ export function applyPlanRules(plan: Plan, override?: string) {
     );
   const tracked = listed.stdout.toString().split(/\r?\n/).filter(Boolean);
   const intersects = (write: string[], patterns: string[]): boolean =>
-    write.some(path => matches(path, patterns)) ||
-    tracked.some(path => covered(path, write) && matches(path, patterns));
+    write.some(path => covered(path, patterns)) ||
+    tracked.some(path => covered(path, write) && covered(path, patterns));
   const warnings: string[] = [];
   let added = 0;
   const packages = plan.packages.map(pkg => {
