@@ -50,7 +50,8 @@
     "./dag-resume-snapshot": "./src/dag-resume-snapshot.ts",
     "./store-conformance": "./src/store-conformance.ts",
     "./execution-lifecycle": "./src/execution-lifecycle.ts",
-    "./policy-dispatch": "./src/policy-dispatch.ts"
+    "./policy-dispatch": "./src/policy-dispatch.ts",
+    "./subprocess-output": "./src/subprocess-output.ts"
   },
   "scripts": {
     "test": "bun run ../../scripts/package-tests.ts",
