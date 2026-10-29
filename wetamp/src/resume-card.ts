@@ -8,6 +8,8 @@ type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
 type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
 type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
+export const waitingRuns = (sessionId: string, runs = coord().unfinishedRuns(sessionId)): Run[] =>
+  runs.filter(run => run.status === 'running' || run.status === 'pending');
 const bytes = (s: string): number => Buffer.byteLength(s);
 const chars = (s: string): string[] =>
   Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s), x => x.segment);
@@ -159,7 +161,12 @@ export async function resumeCard(
 }
 if (import.meta.main) {
   const payload = JSON.parse(await Bun.stdin.text()) as Payload,
-    context = await resumeCard(payload, process.argv[2] as Client);
+    mode = process.argv[2];
+  if (mode === 'waiting-runs') {
+    process.stdout.write(`${JSON.stringify(waitingRuns(payload.session_id ?? ''))}\n`);
+    process.exit(0);
+  }
+  const context = await resumeCard(payload, mode as Client);
   if (context) {
     const output = {
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
