@@ -5380,6 +5380,7 @@ test('reclaim command prints the structured one-shot result', () => {
     transferred: [],
     unclaimed: [],
     skipped: [],
+    skip_reasons: {},
     pending: [],
     historical: [],
   });

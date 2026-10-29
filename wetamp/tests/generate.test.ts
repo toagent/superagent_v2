@@ -40,6 +40,7 @@ import { isInlineScript } from '../../packages/workflows/src/executor-shared';
 import type { CoderOutput } from '../src/contract';
 import { REASONS } from '../src/reasons';
 import reasonMirror from '../templates/.archon/scripts/reasons.json';
+import { integrationLockTimeout, integrationNodeTimeout } from '../src/integration';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
@@ -259,6 +260,14 @@ const allNodesOf = (w: unknown): N[] => {
 };
 const validNodes = (nodes: N[]) =>
   nodes.map(n => (n.command ? dagNodeSchema.parse(n) : (n as DagNode)));
+test('integration nodes reserve non-lock work beyond the lock wait budget', () => {
+  const integration = allNodesOf(
+    buildWorkflow(fixture, milestones(fixture), 'deadline', '/GEN', false, NOW)
+  );
+  for (const id of ['resync-m1', 'publish-m1'])
+    expect(integration.find(node => node.id === id)?.timeout).toBe(integrationNodeTimeout());
+  expect(integrationNodeTimeout()).toBeGreaterThan(integrationLockTimeout());
+});
 test('Claude coder nodes use the policy cost cap while Codex and review nodes stay uncapped', () => {
   for (const console of ['codex', 'claude'] as const) {
     const mode = console === 'claude' ? 'single:claude' : 'single:chatgpt';

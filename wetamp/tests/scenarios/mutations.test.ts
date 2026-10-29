@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
-import { cpSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tmp } from '../helpers';
 
@@ -35,8 +36,8 @@ const mutations: Mutation[] = [
   },
   {
     file: 'src/land.ts',
-    from: 'const result = reclaimAdmission(run, action, d), deadline = d.now() + 600_000;',
-    to: 'const result = action(), deadline = d.now() + 600_000;',
+    from: 'const result = reclaimAdmission(run, action, d), deadline = d.now() + INTEGRATION_RECLAIM_TIMEOUT_MS;',
+    to: 'const result = action(), deadline = d.now() + INTEGRATION_RECLAIM_TIMEOUT_MS;',
     test: 'tests/land.test.ts',
     name: 'post-publish reclaim',
     expectedError: 'expected',
@@ -89,6 +90,26 @@ test('project rules run mutation scenarios for every mutation target', () => {
 
 test('known accident mutations each fail a real generated scenario', () => {
   const repo = join(import.meta.dir, '../../..');
+  const critical = (text: string) =>
+    text
+      .split('\n')
+      .filter(line => {
+        try {
+          const event = JSON.parse(line) as { level?: number; msg?: string };
+          return (event.level ?? 0) >= 40 || event.msg === 'dag_node_failed';
+        } catch {
+          return /^(?:\(fail\)|error:|\s+at )/.test(line);
+        }
+      })
+      .slice(-100)
+      .join('\n');
+  const diagnostic = (label: string, result: { stdout: Uint8Array; stderr: Uint8Array }) => {
+    const artifacts = mkdtempSync(join(tmpdir(), 'sa-mutation-evidence-')),
+      stdout = result.stdout.toString(),
+      stderr = result.stderr.toString();
+    writeFileSync(join(artifacts, 'output.log'), `stdout:\n${stdout}\nstderr:\n${stderr}`);
+    return `${label}; artifacts=${artifacts}\nstdout critical:\n${critical(stdout).slice(-4000)}\nstderr critical:\n${critical(stderr).slice(-4000)}`;
+  };
   const selected = process.env.SCENARIO_MUTATION_ONLY
     ? mutations.filter(value => value.file === process.env.SCENARIO_MUTATION_ONLY)
     : mutations;
@@ -97,7 +118,8 @@ test('known accident mutations each fail a real generated scenario', () => {
       [process.execPath, 'test', '--timeout', '180000', mutation.test, '-t', mutation.name],
       { cwd: join(repo, 'wetamp'), stdout: 'pipe', stderr: 'pipe', timeout: 240_000 }
     );
-    expect(baseline.exitCode, baseline.stderr.toString()).toBe(0);
+    if (baseline.exitCode !== 0)
+      expect(baseline.exitCode, diagnostic('baseline failed', baseline)).toBe(0);
     const root = tmp(),
       wetamp = join(root, 'wetamp');
     cpSync(join(repo, 'wetamp'), wetamp, {
@@ -143,7 +165,10 @@ test('known accident mutations each fail a real generated scenario', () => {
       }
     );
     const failure = `${run.stdout.toString()}\n${run.stderr.toString()}`;
-    expect(run.exitCode, `${mutation.file} did not break ${mutation.name}`).not.toBe(0);
-    expect(failure).toContain(mutation.expectedError);
+    if (run.exitCode === 0 || !failure.includes(mutation.expectedError)) {
+      const evidence = diagnostic(`${mutation.file} did not break ${mutation.name}`, run);
+      expect(run.exitCode, evidence).not.toBe(0);
+      expect(failure, evidence).toContain(mutation.expectedError);
+    }
   }
 }, 720_000);

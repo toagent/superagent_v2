@@ -66,12 +66,14 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 echo "$*" >> "${stubDir}/calls"
 [ "$2" = runs ] && {
-  fail=$(find "${stubDir}" -name 'fail-*' -print -quit); [ -n "$fail" ] && { echo "archon down" >&2; exit 1; }
+  [ -f "${stubDir}/fail-batch" ] && { echo "archon down" >&2; exit 1; }
   hang=$(find "${stubDir}" -name 'hang-*' -print -quit); [ -n "$hang" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
-  bun -e 'import {readdirSync,readFileSync} from "node:fs"; const d=process.argv[1]; console.log(JSON.stringify({runs:readdirSync(d).filter(x=>x.startsWith("get-")).map(x=>JSON.parse(readFileSync(d+"/"+x,"utf8")))}))' "${stubDir}"; exit;
+  ids="$4"
+  bun -e 'import {readFileSync} from "node:fs"; const [d,raw]=process.argv.slice(1); console.log(JSON.stringify({runs:raw.split(",").map(id=>JSON.parse(readFileSync(d+"/get-"+id+".json","utf8")))}))' "${stubDir}" "$ids"; exit;
 }
 [ -f "${stubDir}/fail-$3" ] && { echo "archon down" >&2; exit 1; }
 [ -f "${stubDir}/hang-$3" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
+[ -f "${stubDir}/slow-$3" ] && { echo "start $3" >> "${stubDir}/parallel"; sleep 0.05; echo "end $3" >> "${stubDir}/parallel"; }
 cat "${stubDir}/get-$3.json"
 `
   );
@@ -330,7 +332,7 @@ describe('data rows', () => {
     const load = createLoader(undefined, ownerOf);
     const first = await load(50);
     expect(first.rows.find(r => r.run_id === 'done')?.branch).toBe('sa/done');
-    expect(callLines()).toEqual(['workflow runs --all --limit 2147483647 --verbose --json']);
+    expect(callLines()).toEqual(['workflow runs --ids a-live,a-done --verbose --json']);
     expect(owners).toBe(2);
 
     for (const id of ['done', 'live']) {
@@ -457,6 +459,54 @@ describe('data rows', () => {
     }
   });
 
+  test('targets ledger run ids and skips subprocesses when mtimes and revisions are stable', async () => {
+    for (let i = 0; i < 2000; i++) ledger(`scale-${String(i)}`, { status: 'completed' });
+    writeFileSync(join(stubDir, 'get-extra.json'), '{"id":"extra","status":"completed"}');
+    const revisions = new Map(
+      Array.from({ length: 2000 }, (_, i) => [`a-scale-${String(i)}`, 'same'])
+    );
+    const load = createLoader(undefined, undefined, undefined, ids => {
+      expect(ids).toHaveLength(2000);
+      return revisions;
+    });
+    const started = performance.now();
+    expect((await load(2000)).rows).toHaveLength(2000);
+    const firstMs = performance.now() - started;
+    expect(firstMs).toBeLessThan(2000);
+    const batch = callLines()[0] ?? '';
+    expect(batch).toContain('workflow runs --ids ');
+    expect(batch).not.toContain('extra-');
+    const stable: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const at = performance.now();
+      await load(2000);
+      stable.push(performance.now() - at);
+    }
+    expect(stable.sort((a, b) => a - b)[18]).toBeLessThan(300);
+    expect(calls()).toBe(1);
+  }, 60_000);
+
+  test('batch failure falls back per run with bounded concurrency and isolates one failure', async () => {
+    for (let i = 0; i < 12; i++) {
+      ledger(`fallback-${String(i)}`, { status: 'running' });
+      writeFileSync(join(stubDir, `slow-a-fallback-${String(i)}`), '');
+    }
+    writeFileSync(join(stubDir, 'fail-a-fallback-3'), '');
+    writeFileSync(join(stubDir, 'fail-batch'), '');
+    const rows = (await createLoader()(50)).rows;
+    expect(rows.filter(row => row.state === 'unreadable').map(row => row.run_id)).toEqual([
+      'fallback-3',
+    ]);
+    let active = 0,
+      peak = 0;
+    for (const line of readFileSync(join(stubDir, 'parallel'), 'utf8').trim().split('\n')) {
+      active += line.startsWith('start ') ? 1 : -1;
+      peak = Math.max(peak, active);
+    }
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+  });
+
   test('a failed query keeps the previous run and marks the row stale; never-seen runs are unreadable', async () => {
     ledger('live', {
       status: 'running',
@@ -468,6 +518,7 @@ describe('data rows', () => {
     const row = (await load(50)).rows[0];
     expect(row?.stale).toBe(true);
     expect(row?.state).toBe('running');
+    writeFileSync(join(stubDir, 'fail-batch'), '');
     const fresh = await createLoader()(50);
     expect(fresh.rows[0]?.state).toBe('unreadable');
     expect(fresh.rows[0]?.error).toContain('archon down');

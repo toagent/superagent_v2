@@ -199,6 +199,7 @@ export const REASONS: Reason[] = [
   deterministic('land_target_unknown', 'needs', 'human', '合入缺少可验证的本地目标分支'),
   deterministic('budget_exceeded', 'signoff', 'human', '净增行数超过工作包上限'),
   entry('reclaim_pending', 'auto_recover', 'transient', 'engine', '回收续授权尚未完成'),
+  entry('lock_timeout', 'environment', 'transient', 'env', '等待集成锁超时'),
   entry(
     'git_lock_held',
     'environment',

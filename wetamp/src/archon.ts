@@ -344,21 +344,56 @@ export async function getRunAsync(
   return runOf(id, result);
 }
 
-/** One CLI/database query supplies the full node projection for every board ledger. */
+/** One targeted database query plus one event query supplies every requested board projection. */
 export async function getRunsAsync(
+  ids: string[],
   cwd: string | undefined,
   opts: { timeoutMs: number; signal?: AbortSignal }
 ): Promise<Map<string, RunView>> {
-  const result = await archonJsonAsync(
-    ['workflow', 'runs', '--all', '--limit', String(2 ** 31 - 1), '--verbose', '--json'],
-    cwd,
-    opts
+  const requested = [...new Set(ids)];
+  if (requested.length === 0) return new Map();
+  if (process.env.SA_ARCHON_BIN) {
+    const result = await archonJsonAsync(
+      ['workflow', 'runs', '--ids', requested.join(','), '--verbose', '--json'],
+      cwd,
+      opts
+    );
+    if (!Array.isArray(result.runs)) throw new Error('archon workflow runs: invalid runs payload');
+    return new Map(
+      result.runs.map(value => {
+        const run = runOf('batch', value as Json);
+        return [run.id, run];
+      })
+    );
+  }
+  const path = join(home().archon, 'archon.db');
+  if (!process.env.DATABASE_URL && !existsSync(path))
+    throw new Error(`archon database not found: ${path}`);
+  opts.signal?.throwIfAborted();
+  const [{ pool }, { normalizeWorkflowRun }, { listEventsForRuns }, projection] = await Promise.all(
+    [
+      import('../../packages/core/src/db/connection'),
+      import('../../packages/core/src/db/workflow-run-normalization'),
+      import('../../packages/core/src/db/workflow-events'),
+      import('../../packages/cli/src/commands/workflow'),
+    ]
   );
-  if (!Array.isArray(result.runs)) throw new Error('archon workflow runs: invalid runs payload');
+  const placeholders = requested.map((_, index) => `$${String(index + 1)}`);
+  const result = await pool.query<
+    import('../../packages/core/src/db/workflow-run-normalization').WorkflowRunRow
+  >(
+    `SELECT *, CAST(origin AS TEXT) AS origin FROM remote_agent_workflow_runs WHERE id IN (${placeholders.join(',')})`,
+    requested
+  );
+  const runs = result.rows.map(normalizeWorkflowRun);
+  const events = await listEventsForRuns(requested, projection.NODE_SUMMARY_EVENT_TYPES);
+  opts.signal?.throwIfAborted();
   return new Map(
-    result.runs.map(value => {
-      const run = runOf('batch', value as Json);
-      return [run.id, run];
+    runs.map(run => {
+      const value = JSON.parse(
+        JSON.stringify({ ...run, nodes: projection.buildRunNodes(run, events.get(run.id) ?? []) })
+      ) as Json;
+      return [run.id, runOf(run.id, value)];
     })
   );
 }

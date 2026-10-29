@@ -4,6 +4,7 @@ export {
   excludeCodegraph,
   integrationLockPath,
   integrationLockTimeout,
+  integrationNodeTimeout,
   IntegrationError,
   LandError,
   protectedTarget,
@@ -27,7 +28,7 @@ import { join } from 'node:path';
 import { control, coord, repoScope, runScope, same } from './coord';
 import type { Controller, DeliveryReauthorization, Identity } from './coord';
 import { home } from './config';
-import { IntegrationError, publish, sync } from './integration';
+import { INTEGRATION_RECLAIM_TIMEOUT_MS, IntegrationError, publish, sync } from './integration';
 import type { DeliveryReceipt } from './integration';
 import { gateHashInput, type PublishReceipt, type SyncOutput } from './contract';
 import type { RunView } from './archon';
@@ -45,7 +46,7 @@ interface ReclaimWait { read: () => unknown; now: () => number; sleep: (ms: numb
 // prettier-ignore
 const reclaimJournal = (): unknown => { const path = join(home().sa, 'reclaim', 'journal.json'); return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : []; }, reclaimWait = (): ReclaimWait => ({ read: reclaimJournal, now: Date.now, sleep: ms => { Bun.sleepSync(ms); } }), reclaimPending = (run: string, value: unknown): boolean => ['transferring', 'transferred'].includes((Object.values(value ?? {}) as { run?: string; state?: string }[]).filter(entry => entry.run === run).at(-1)?.state ?? '');
 // prettier-ignore
-export function waitForReclaim(run: string, d = reclaimWait(), deadline = d.now() + 600_000): void {
+export function waitForReclaim(run: string, d = reclaimWait(), deadline = d.now() + INTEGRATION_RECLAIM_TIMEOUT_MS): void {
   for (;;) {
     if (!reclaimPending(run, d.read())) return;
     if (d.now() >= deadline)
@@ -61,13 +62,13 @@ export function retryAdvancedFence(retry: boolean, captured: readonly number[], 
 
 // prettier-ignore
 export function reclaimAdmission<T>(run: string, action: () => T, d = reclaimWait()): T {
-  const deadline = d.now() + 600_000, wait = (): void => { waitForReclaim(run, d, deadline); }; wait();
+  const deadline = d.now() + INTEGRATION_RECLAIM_TIMEOUT_MS, wait = (): void => { waitForReclaim(run, d, deadline); }; wait();
   try { return action(); } catch (error) { if (!(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error; wait(); return action(); }
 }
 
 // prettier-ignore
 export function reclaimPublish<T>(run: string, action: () => T, fence: (result: T) => void, d = reclaimWait()): T {
-  const result = reclaimAdmission(run, action, d), deadline = d.now() + 600_000;
+  const result = reclaimAdmission(run, action, d), deadline = d.now() + INTEGRATION_RECLAIM_TIMEOUT_MS;
   try { fence(result); } catch (error) { if (!(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error; waitForReclaim(run, d, deadline); fence(result); }
   return result;
 }
@@ -120,7 +121,7 @@ export function runDeliveryEntry(action: () => void, env = process.env): boolean
     const failure = error instanceof Error ? error : new Error(String(error));
     if (
       error instanceof IntegrationError &&
-      (error.code === 'git_lock_held' || error.code === 'reclaim_pending') &&
+      ['git_lock_held', 'lock_timeout', 'reclaim_pending'].includes(error.code) &&
       env.ARTIFACTS_DIR &&
       env.INPUTS_OUTPUT
     )

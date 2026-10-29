@@ -207,7 +207,10 @@ test('S4: two detached runs sharing one target each publish exactly once', async
     target = gitRepo(root);
   Bun.spawnSync(['git', 'branch', '-m', 'scenario-target'], { cwd: target });
   const run = (suffix: string) => {
-    const output = join(tmp(), `s4-${suffix}.json`);
+    const barrier = tmp(),
+      output = join(barrier, `s4-${suffix}.json`),
+      marker = join(barrier, 'ready'),
+      release = join(barrier, 'release');
     const child = trackTestChild(
       Bun.spawn([process.execPath, 'test', join(import.meta.dir, 'detached-runner.ts')], {
         detached: true,
@@ -217,22 +220,31 @@ test('S4: two detached runs sharing one target each publish exactly once', async
           SCENARIO_TARGET: target,
           SCENARIO_SUFFIX: suffix,
           SCENARIO_RESULT: output,
+          SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'integrate-m1.final-accept-m1',
+          SCENARIO_BLOCK_MARKER: marker,
+          SCENARIO_BLOCK_RELEASE: release,
         },
         stdout: 'ignore',
         stderr: 'pipe',
       }),
       true
     );
-    return Promise.all([child.exited, new Response(child.stderr).text()]).then(([code, error]) => {
-      expect(code, error).toBe(0);
-      return JSON.parse(readFileSync(output, 'utf8')) as {
-        failures: Array<{ step: string | null; data: unknown }>;
-        receipt: { status: string };
-        terminal: { completed: string[]; failed: string[] };
-      };
-    });
+    const result = Promise.all([child.exited, new Response(child.stderr).text()]).then(
+      ([code, error]) => {
+        expect(code, error).toBe(0);
+        return JSON.parse(readFileSync(output, 'utf8')) as {
+          failures: Array<{ step: string | null; data: unknown }>;
+          receipt: { status: string };
+          terminal: { completed: string[]; failed: string[] };
+        };
+      }
+    );
+    return { marker, release, result };
   };
-  const results = await Promise.all([run('a'), run('b')]);
+  const runs = [run('a'), run('b')];
+  await Promise.all(runs.map(value => waitFor(value.marker)));
+  for (const value of runs) writeFileSync(value.release, 'release');
+  const results = await Promise.all(runs.map(value => value.result));
   for (const result of results) {
     expect(result.terminal, JSON.stringify(result.failures)).toEqual({
       completed: ['5ce0-0004'],

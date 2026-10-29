@@ -108,6 +108,11 @@ export const integrationLockTimeout = (): number =>
   (process.env.NODE_ENV === 'test' && Number(process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS)) ||
   20 * 60_000;
 
+export const INTEGRATION_RECLAIM_TIMEOUT_MS = 10 * 60_000;
+// Covers both reclaim waits and two bounded Git passes when reauthorization retries publish.
+export const integrationNodeTimeout = (): number =>
+  integrationLockTimeout() + 2 * INTEGRATION_RECLAIM_TIMEOUT_MS + 30 * QUERY_TIMEOUT_MS;
+
 export const integrationLockPath = (commonDir: string, branch: string): string =>
   join(commonDir, `sa-land-${createHash('sha256').update(branch).digest('hex')}.lock`);
 

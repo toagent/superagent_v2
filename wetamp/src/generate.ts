@@ -29,7 +29,7 @@ import {
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
 import { caller, cleanEngine, coord, repoScope, runScope } from './coord';
-import { integrationLockTimeout } from './integration';
+import { integrationNodeTimeout } from './integration';
 import {
   WETAMP,
   assertSQLite,
@@ -461,7 +461,7 @@ export function buildWorkflow(
                 'base=$(git merge-base HEAD "$tip") || exit $?',
                 `printf '{"status":"noop","target_tip":"%s","merge_base":"%s","head":"%s","generation":1}' "$tip" "$base" "$(git rev-parse HEAD)"`,
               ].join('\n'),
-        timeout: integrationLockTimeout(),
+        timeout: integrationNodeTimeout(),
         output_format: syncOutputFormat,
       },
       check(
@@ -502,7 +502,7 @@ export function buildWorkflow(
               runtime: 'bun',
               with: { target_tip: ref.required(syncHandle, 'target_tip') },
             }),
-        timeout: integrationLockTimeout(),
+        timeout: integrationNodeTimeout(),
         output_format: publishOutputFormat,
       },
     ];
