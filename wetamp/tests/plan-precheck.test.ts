@@ -3,10 +3,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkSyntaxErrors, planPrecheck } from '../src/plan-precheck';
 import type { Plan } from '../src/plan';
-import { tmp } from './helpers';
+import { gitRepo, sh, tmp } from './helpers';
 
 const fixture = (): string => {
-  const root = tmp();
+  const root = gitRepo(tmp());
   for (const dir of ['wetamp/tests/scenarios', 'wetamp/scripts', 'wetamp/schemas', 'wetamp/src'])
     mkdirSync(join(root, dir), { recursive: true });
   writeFileSync(
@@ -14,12 +14,13 @@ const fixture = (): string => {
     "export const GENERATED_OUTPUT_PATHS = ['wetamp/src/plan-types.generated.ts'];\nconst input = '../schemas/plan.schema.json';\nconst output = '../src/plan-types.generated.ts';\n"
   );
   writeFileSync(join(root, 'wetamp/schemas/plan.schema.json'), '{}');
+  sh('git add . && git -c user.name=t -c user.email=t@l commit -qm fixture', root);
   return root;
 };
 const plan = (root: string, write: string[], accept: string[]): Plan =>
   ({
     repo: root,
-    base_ref: 'main',
+    base_ref: 'HEAD',
     budget: { weighted_tokens: 1 },
     packages: [
       {
@@ -38,32 +39,69 @@ test('engine paths require all three engine suites or the wildcard suite', () =>
   const root = fixture(),
     write = ['wetamp/src/engine/index.ts'],
     partial = 'bun run type-check && bun test tests/engine-channel.test.ts';
-  expect(planPrecheck(plan(root, write, [partial]), root).join('\n')).toContain('三组测试');
+  expect(planPrecheck(plan(root, write, [partial]), root).blocking.join('\n')).toContain(
+    '三组测试'
+  );
   expect(
     planPrecheck(plan(root, write, ['bun run type-check && bun test tests/engine-*.test.ts']), root)
-  ).toEqual([]);
+  ).toEqual({ blocking: [], info: [] });
 });
 
 test('scenario callers missing from scope warn, with hubs downgraded to a hint', () => {
   const root = fixture(),
     subject = plan(root, ['wetamp/src/foo.ts'], ['bun run type-check']);
   writeFileSync(join(root, 'wetamp/tests/scenarios/one.ts'), "import '../../src/foo';\n");
-  expect(planPrecheck(subject, root).join('\n')).toContain('scope 缺场景调用方');
+  expect(planPrecheck(subject, root).blocking.join('\n')).toContain('scope 缺场景调用方');
   for (const name of ['two.ts', 'three.ts'])
     writeFileSync(join(root, `wetamp/tests/scenarios/${name}`), "import '../../src/foo';\n");
-  expect(planPrecheck(subject, root).join('\n')).toContain('枢纽模块提示');
+  expect(planPrecheck(subject, root).info.join('\n')).toContain('枢纽模块提示');
   subject.packages[0].scope.write.push('wetamp/tests/scenarios/');
-  expect(planPrecheck(subject, root)).toEqual([]);
+  expect(planPrecheck(subject, root)).toEqual({ blocking: [], info: [] });
 });
 
 test('generator inputs require registered outputs; non-engine repos are skipped', () => {
   const root = fixture(),
     subject = plan(root, ['wetamp/schemas/plan.schema.json'], ['bun run type-check']);
-  expect(planPrecheck(subject, root).join('\n')).toContain('wetamp/src/plan-types.generated.ts');
+  expect(planPrecheck(subject, root).blocking.join('\n')).toContain(
+    'wetamp/src/plan-types.generated.ts'
+  );
   subject.packages[0].scope.write.push('wetamp/src/plan-types.generated.ts');
-  expect(planPrecheck(subject, root)).toEqual([]);
+  expect(planPrecheck(subject, root)).toEqual({ blocking: [], info: [] });
   const foreign = tmp();
-  expect(planPrecheck(plan(foreign, ['wetamp/src/foo.ts'], ['bun test']), foreign)).toEqual([]);
+  expect(planPrecheck(plan(foreign, ['wetamp/src/foo.ts'], ['bun test']), foreign)).toEqual({
+    blocking: [],
+    info: [],
+  });
+});
+
+test('missing acceptance test paths block unless the new test is in scope', () => {
+  const root = fixture(),
+    subject = plan(
+      root,
+      ['packages/paths/src/plugin-process.ts'],
+      ['cd packages/paths && bun run test src/plugin-process.test.ts']
+    );
+  expect(planPrecheck(subject, root).blocking.join('\n')).toContain(
+    'base_ref 不存在 packages/paths/src/plugin-process.test.ts'
+  );
+  subject.packages[0].scope.write.push('packages/paths/src/plugin-process.test.ts');
+  expect(planPrecheck(subject, root).blocking).toEqual([]);
+});
+
+test('source scope includes a directly importing test changed by its latest commit', () => {
+  const root = fixture();
+  writeFileSync(join(root, 'wetamp/src/rollover.ts'), 'export const rollover = true;\n');
+  writeFileSync(
+    join(root, 'wetamp/tests/rollover.test.ts'),
+    "import { rollover } from '../src/rollover';\n"
+  );
+  sh('git add . && git -c user.name=t -c user.email=t@l commit -qm rollover', root);
+  const subject = plan(root, ['wetamp/src/rollover.ts'], ['bun run type-check']);
+  expect(planPrecheck(subject, root).blocking.join('\n')).toContain(
+    'wetamp/tests/rollover.test.ts'
+  );
+  subject.packages[0].scope.write.push('wetamp/tests/rollover.test.ts');
+  expect(planPrecheck(subject, root).blocking).toEqual([]);
 });
 
 test('shell syntax errors are reported with their package and command number in any repo', () => {

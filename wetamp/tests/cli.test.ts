@@ -255,6 +255,30 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   expect(s.calls()).toEqual([]);
 });
 
+test('plan precheck blocking ignores lint override', () => {
+  const s = stub([]),
+    repo = gitRepo(s.root),
+    path = fixturePlan(s.root, repo);
+  const plan = JSON.parse(readFileSync(path, 'utf8'));
+  plan.packages[0].accept = [{ cmd: 'bun test missing.test.ts', timeout_s: 1 }];
+  writeFileSync(path, JSON.stringify(plan));
+  const result = Bun.spawnSync(
+    [
+      process.execPath,
+      join(import.meta.dir, '../src/cli.ts'),
+      'plan',
+      'check',
+      path,
+      '--lint-override',
+      'cannot bypass precheck',
+    ],
+    { env: { ...process.env, SUPERAGENT_WRITE_ROOTS: s.root }, stdout: 'pipe', stderr: 'pipe' }
+  );
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr.toString()).toContain('base_ref 不存在 missing.test.ts');
+  expect(s.calls()).toEqual([]);
+});
+
 describe('quick', () => {
   test('delivery defaults: validated quick plan resolves git defaults without an implicit deadline', () => {
     const root = tmp(),
