@@ -34,7 +34,7 @@ test('reclaim observes confirmed death, journals three states, transfers, reauth
   expect(out.transferred).toEqual(['r1']); expect(s.c.owner(runScope(s.run)).owner).toEqual(b);
   expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/journal.json'), 'utf8')).map((x: { state: string }) => x.state)).toEqual(['transferring', 'transferred', 'reauthorized']);
   expect(existsSync(join(s.sa, 'coord/authorizations/r1.json'))).toBe(true); expect(s.c.inbox(b).some(m => m.title === 'existing')).toBe(true);
-  const ledger = JSON.parse(readFileSync(join(s.sa, 'runs/r1.json'), 'utf8')); expect(ledger.intervention_events.at(-1)).toMatchObject({ action: 'reclaim:owner_offline', ok: true, evidence: { from: a } });
+  const ledger = JSON.parse(readFileSync(join(s.sa, 'runs/r1.json'), 'utf8')); expect(ledger.intervention_events.at(-1)).toMatchObject({ action: 'reclaim:owner_offline', ok: true, evidence: { from: a, observation: { first_offline_at: 0, last_offline_at: 120_000, count: 2 } } });
   expect(s.c.messages().some(m => m.type === 'takeover' && same(m.recipient, a))).toBe(false);
 });
 
@@ -48,6 +48,16 @@ test('reclaim resets changed evidence, ignores unknown, leaves unclaimed and cri
   running.nodes = [{ nodeId: 'publish-m1', state: 'running' }]; expect(r.reclaim([observation]).skipped).toEqual(['r1']); running.nodes = [];
   const scopeLock = join(s.sa, 'coord/locks', hooks.hash({ kind: 'repo', id: runScope(s.run).repo }) + '.lock'), held = lock(scopeLock); if (!held.ok) throw new Error('fixture lock'); expect(r.reclaim([observation]).skipped).toEqual(['r1']); held.release();
   const fail = spyOn(s.c, 'reauthorize').mockImplementation(() => { throw new Error('fixture'); }); expect(r.reclaim([observation]).pending).toEqual(['r1']); fail.mockRestore();
+  const failed = JSON.parse(readFileSync(join(s.sa, 'runs/r1.json'), 'utf8')).intervention_events.at(-1); expect(failed).toMatchObject({ action: 'reclaim:reauthorize_failed', evidence: { observation: { first_offline_at: 0, last_offline_at: 120_000, count: 2 } } });
   expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/journal.json'), 'utf8')).at(-1).state).toBe('transferred'); expect(r.complete().transferred).toEqual(['r1']);
   expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/journal.json'), 'utf8')).at(-1).state).toBe('reauthorized'); expect(s.c.inbox(b).some(m => m.title === '回收续授权失败')).toBe(true);
+});
+
+// prettier-ignore
+test('reclaim fails closed on a corrupt journal and isolates run probe failures', () => {
+  const corrupt = setup(), journal = join(corrupt.sa, 'reclaim/journal.json'); mkdirSync(join(corrupt.sa, 'reclaim')); writeFileSync(journal, '{');
+  expect(() => new Reclaimer(corrupt.c).reclaim([])).toThrow(); expect(readFileSync(journal, 'utf8')).toBe('{');
+  const bad = setup(), view = bad.c.owner(runScope(bad.run)), observation = { run: 'r1', repo: bad.run.repo, owner: a, generation: view.generation, first_offline_at: 0, last_offline_at: 120_000, count: 2 };
+  const result = new Reclaimer(bad.c, Date.now, () => { throw new Error('archon workflow get failed'); }).reclaim([observation]);
+  expect(result.skipped).toEqual(['r1']); expect(bad.c.owner(runScope(bad.run)).owner).toEqual(a);
 });

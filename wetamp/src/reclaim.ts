@@ -9,12 +9,12 @@ import { writeAtomic } from './config';
 // prettier-ignore
 interface Observation { run: string; repo: string; first_offline_at: number; last_offline_at: number; count: number; owner: Identity; generation: number }
 // prettier-ignore
-interface Entry { id: string; run: string; from: Identity; to: Identity; expected_generation: number; state: 'transferring' | 'transferred' | 'reauthorized' | 'abandoned_attempt'; at: string }
+interface Entry { id: string; run: string; from: Identity; to: Identity; expected_generation: number; observation?: Pick<Observation, 'first_offline_at' | 'last_offline_at' | 'count'>; state: 'transferring' | 'transferred' | 'reauthorized' | 'abandoned_attempt'; at: string }
 // prettier-ignore
 export interface ReclaimResult { transferred: string[]; unclaimed: string[]; skipped: string[]; pending: string[] }
 const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
 // prettier-ignore
-const values = <T>(path: string): T[] => { try { const value = JSON.parse(readFileSync(path, 'utf8')) as unknown; return (Array.isArray(value) ? value : Object.values(value ?? {})) as T[]; } catch { return []; } };
+const values = <T>(path: string): T[] => { try { const value = JSON.parse(readFileSync(path, 'utf8')) as unknown; return (Array.isArray(value) ? value : Object.values(value ?? {})) as T[]; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
 
 // prettier-ignore
 export class Reclaimer {
@@ -50,9 +50,9 @@ export class Reclaimer {
       } else if (entry.state === 'transferring') this.append({ ...entry, state: 'transferred', at: new Date(this.now()).toISOString() });
       if (run.gen_dir && existsSync(join(run.gen_dir, 'delivery-authorization.json'))) {
         try { this.c.reauthorize(run, entry.to); }
-        catch { this.event(run, 'reclaim:reauthorize_failed', false, { from: entry.from, observation: entry.expected_generation }); this.c.handoff(runScope(run), entry.from, { kind: 'task', title: '回收续授权失败', body: `run ${run.run_id} 需要重试 reauthorize`, evidence: [], severity: 'normal' }, 0, false); return 'pending'; }
+        catch { this.event(run, 'reclaim:reauthorize_failed', false, { from: entry.from, observation: entry.observation }); this.c.handoff(runScope(run), entry.from, { kind: 'task', title: '回收续授权失败', body: `run ${run.run_id} 需要重试 reauthorize`, evidence: [], severity: 'normal' }, 0, false); return 'pending'; }
       }
-      this.event(run, 'reclaim:owner_offline', true, { from: entry.from, observation: entry.expected_generation, generation: view.generation });
+      this.event(run, 'reclaim:owner_offline', true, { from: entry.from, observation: entry.observation, generation: view.generation });
       this.append({ ...entry, state: 'reauthorized', at: new Date(this.now()).toISOString() }); return 'transferred';
     }, 0);
   }
@@ -72,8 +72,9 @@ export class Reclaimer {
       const run = this.c.resolveRun(o.run); if (!run) { out.skipped.push(o.run); continue; }
       const scope = runScope(run), target = this.c.owner({ kind: 'repo', id: scope.repo });
       if (!target.owner || target.presence.state !== 'online' || same(target.owner, o.owner)) { out.unclaimed.push(o.run); continue; }
-      if (this.run(run.archon_run_id, run.repo).nodes?.some(n => n.state === 'running' && /^(?:resync|sync|integrate|publish)-/.test(n.nodeId))) { out.skipped.push(o.run); continue; }
-      const entry: Entry = { id: crypto.randomUUID(), run: o.run, from: o.owner, to: target.owner, expected_generation: o.generation, state: 'transferring', at: new Date(this.now()).toISOString() };
+      let current; try { current = this.run(run.archon_run_id, run.repo); } catch { out.skipped.push(o.run); continue; }
+      if (current.nodes?.some(n => n.state === 'running' && /^(?:resync|sync|integrate|publish)-/.test(n.nodeId))) { out.skipped.push(o.run); continue; }
+      const entry: Entry = { id: crypto.randomUUID(), run: o.run, from: o.owner, to: target.owner, expected_generation: o.generation, observation: { first_offline_at: o.first_offline_at, last_offline_at: o.last_offline_at, count: o.count }, state: 'transferring', at: new Date(this.now()).toISOString() };
       try { this.c.scoped(scope, () => { this.append(entry); const state = this.finish(run, entry); out[state === 'transferred' ? 'transferred' : state === 'pending' ? 'pending' : 'skipped'].push(o.run); }, 0); } catch { out.skipped.push(o.run); }
     }
     return out;
