@@ -506,6 +506,78 @@ test('operator push shares one inbox and notifies each run once', async () => {
   expect(sends).toBe(2);
   expect(store.transaction(s => Object.keys(s.notices))).toHaveLength(2);
 });
+test('operator heartbeat push is periodic, semantic, work-gated and stale-aware', async () => {
+  const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
+  const sa = tmp(),
+    store = new DeviceStore(join(sa, 'mobile')),
+    operator = pair(store, operatorGrant());
+  process.env.SUPERAGENT_HOME = sa;
+  process.env.ARCHON_HOME = join(sa, 'archon');
+  store.transaction(s => {
+    s.devices.find(d => d.id === operator.device.id)!.subscription = {
+      endpoint: 'https://web.push.apple.com/Qheartbeat',
+      keys: {
+        p256dh: Buffer.alloc(65).toString('base64url'),
+        auth: Buffer.alloc(16).toString('base64url'),
+      },
+    };
+  });
+  let clock = Date.parse('2026-10-29T10:00:00Z');
+  const sent: Record<string, string>[] = [],
+    write = (running: object[], at = clock) =>
+      writeFileSync(
+        join(sa, 'heartbeat.json'),
+        JSON.stringify({
+          at: new Date(at).toISOString(),
+          reclaim_pending: 0,
+          marshals: [
+            {
+              owner: { client: 'codex', host: 'host', pid: 1, pid_start: 'start' },
+              owner_key: [],
+              cwd: '/repo',
+              project: 'repo',
+              running,
+              waiting: [],
+              line: running.length
+                ? `repo ${String((running[0] as { id?: string }).id)}`
+                : 'repo idle',
+            },
+          ],
+        })
+      );
+  const push = createPush(
+    store,
+    origin,
+    async (_target, payload) => {
+      sent.push(JSON.parse(payload));
+    },
+    async () => ({ decisions: [], unknown: [] }),
+    () => clock
+  );
+  write([{ id: 'a', state: 'running' }]);
+  expect(await push.tick()).toMatchObject({ heartbeat: 'current' });
+  clock += 899_999;
+  write([{ id: 'a', state: 'running' }]);
+  await push.tick();
+  expect(sent).toHaveLength(1);
+  clock++;
+  write([{ id: 'a', state: 'running' }]);
+  await push.tick();
+  write([{ id: 'b', state: 'running' }]);
+  await push.tick();
+  expect(sent).toHaveLength(3);
+  expect(sent[0]).toEqual({ title: '引擎心跳', body: 'repo a', url: '/?heartbeat' });
+  expect(
+    store.transaction(s => Object.keys(s.notices).filter(k => k.includes(':heartbeat:')))
+  ).toHaveLength(1);
+  write([]);
+  await push.tick();
+  write([{ id: 'c', state: 'running' }], clock - 1_080_001);
+  expect(await push.tick()).toMatchObject({ heartbeat: 'stale' });
+  expect(sent).toHaveLength(3);
+  restoreEnv('SUPERAGENT_HOME', previous[0]);
+  restoreEnv('ARCHON_HOME', previous[1]);
+});
 test('operator saves COORD intent while supervise lock is held and next tick transfers ownership', async () => {
   const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME],
     f = coordDecisionFixture();

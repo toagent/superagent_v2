@@ -1421,7 +1421,7 @@ describe('waitRun (archon stub)', () => {
   });
   // prettier-ignore
   test('timeout while running returns 4 without blocking past deadline', () => {
-    const s = stub([run('running')]), who = { client: 'codex', host: 'host', pid: 7, pid_start: 'start-7' };
+    const s = stub([run('running')]), who = coordModule.caller();
     writeFileSync(join(s.root, 'home/heartbeat.json'), JSON.stringify({
       at: new Date(Date.now() - 19 * 60_000).toISOString(), reclaim_pending: 0,
       marshals: [
@@ -1432,11 +1432,19 @@ describe('waitRun (archon stub)', () => {
     writeFileSync(join(s.root, 'home/tick.json'), JSON.stringify({
       at: new Date(Date.now() - 4 * 60_000).toISOString(), collect: { ok: true }, publish: { ok: true }, orca: { ok: true }, console: { ok: true }, failover: { ok: true }, actions: { ok: true },
     }));
-    expect(waitRun(s.ledger, 0, who)).toMatchObject({ state: 'running', exit: EXIT.running,
+    const capped = captured(() => main(['wait', 'sa1', '--timeout', '3000']));
+    expect(capped.code).toBe(EXIT.running);
+    expect(JSON.parse(capped.out)).toMatchObject({ state: 'running', exit: EXIT.running,
       heartbeat: { available: true, line: 'mine', running: [{ id: 'mine' }], waiting: [{ id: 'wait' }], warnings: ['心跳过期 19m', '未收到巡检心跳 4m'] },
+      timeout_capped: { requested: 3000, effective: 900 },
     });
-    const missing = stub([run('running')]);
-    expect(waitRun(missing.ledger, 0, who)).toMatchObject({ state: 'running', exit: EXIT.running, heartbeat: { available: false } });
+    const cappedWait = Number(s.calls().filter(c => c.startsWith('workflow wait')).at(-1)!.split('--timeout ')[1]);
+    expect(cappedWait).toBeGreaterThan(899);
+    expect(cappedWait).toBeLessThanOrEqual(900);
+    stub([run('running')]);
+    const short = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '60'])).out);
+    expect(short).toMatchObject({ state: 'running', exit: EXIT.running, heartbeat: { available: false } });
+    expect(short).not.toHaveProperty('timeout_capped');
     expect(waitRun(stub([run('completed')]).ledger, 0, who).heartbeat).toBeUndefined();
   });
   test('wait transport failure is reported without changing the run or retrying execution', () => {
