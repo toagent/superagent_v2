@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
-import { lock } from '../archon';
+import { lock, runStatuses } from '../archon';
 import { home, writeAtomic, WETAMP } from '../config';
 import { launcher, inspectProcess, type Launcher } from '../launcher';
 
@@ -162,6 +162,7 @@ interface Deps {
   sa: string;
   runs: (id?: string) => RunRef[];
   status: (l: RunRef) => string;
+  statuses: () => Map<string, string> | null | undefined;
   now: () => number;
   presence: (who: Identity) => Presence;
 }
@@ -206,6 +207,15 @@ export class Coordination {
           db.close();
         }
       },
+      statuses: overrides.status
+        ? () => undefined
+        : () => {
+            try {
+              return runStatuses();
+            } catch {
+              return null;
+            }
+          },
       ...overrides,
     };
   }
@@ -339,15 +349,26 @@ export class Coordination {
       throw new Error('coord: corrupt claim');
     return c;
   }
-  isRunOwnershipEvidence(run: RunRef): boolean {
+  isRunOwnershipEvidence(
+    run: RunRef,
+    statuses: ReturnType<Deps['statuses']> | false = false
+  ): boolean {
     if (run.state === 'failed') return false;
     try {
-      return !['completed', 'cancelled'].includes(this.d.status(run));
+      const status = statuses
+        ? statuses.get(run.archon_run_id)
+        : statuses === null
+          ? undefined
+          : this.d.status(run);
+      return !['completed', 'cancelled'].includes(status ?? 'unknown');
     } catch {
       return true; // Unverifiable ownership remains evidence.
     }
   }
-  owner(scope: Scope): {
+  private ownerWithStatuses(
+    scope: Scope,
+    statuses: ReturnType<Deps['statuses']> | false = false
+  ): {
     scope: Scope;
     owner: Identity | null;
     generation: number;
@@ -358,6 +379,8 @@ export class Coordination {
   } {
     const repo: Scope = scope.kind === 'run' ? { kind: 'repo', id: scope.repo } : scope;
     const claims = [this.claimOf(scope)].filter((c): c is Claim => !!c);
+    const snapshot =
+      claims.length || scope.kind === 'run' || statuses !== false ? statuses : this.d.statuses();
     const runs = claims.length
       ? []
       : this.d
@@ -365,7 +388,9 @@ export class Coordination {
           .filter(l => {
             if (scope.kind === 'run') return l.run_id === scope.id;
             // A ledger whose repository no longer resolves cannot share a live repository's scope.
-            return this.isRunOwnershipEvidence(l) && shared.repoScope(l.repo)?.id === repo.id;
+            return (
+              this.isRunOwnershipEvidence(l, snapshot) && shared.repoScope(l.repo)?.id === repo.id
+            );
           })
           .map(l => ({
             scope: runScope(l),
@@ -386,12 +411,16 @@ export class Coordination {
           : 'superagent claim <path|run>',
     };
   }
+  owner(scope: Scope): ReturnType<Coordination['ownerWithStatuses']> {
+    return this.ownerWithStatuses(scope);
+  }
   unfinishedRuns(sessionId: string): { run_id: string; status: string }[] {
+    const statuses = this.d.statuses();
     return this.d.runs().flatMap(l => {
-      if (!this.isRunOwnershipEvidence(l)) return [];
+      if (!this.isRunOwnershipEvidence(l, statuses)) return [];
       let owner: Identity | null = l.controller ?? l.launcher ?? null;
       try {
-        owner = this.owner(runScope(l)).owner;
+        owner = this.ownerWithStatuses(runScope(l), statuses).owner;
       } catch {
         // Shipped ledgers may outlive their repository; their recorded owner remains the only source.
       }
@@ -405,9 +434,10 @@ export class Coordination {
     });
   }
   ownedNonterminalRuns(client: string) {
+    const statuses = this.d.statuses();
     return this.d.runs().flatMap(l => {
-      if (!this.isRunOwnershipEvidence(l)) return [];
-      const view = this.owner(runScope(l));
+      if (!this.isRunOwnershipEvidence(l, statuses)) return [];
+      const view = this.ownerWithStatuses(runScope(l), statuses);
       return view.owner?.client === client && !view.conflicts.length
         ? [{ run_id: l.run_id, repo: l.repo, owner: view.owner, generation: view.generation }]
         : [];
@@ -648,12 +678,32 @@ export class Coordination {
   messages(): Message[] {
     return shared.files(this.d.sa, 'inbox');
   }
+  private routedMessages(
+    who: Identity,
+    all: boolean
+  ): { message: Message; owner?: ReturnType<Coordination['ownerWithStatuses']> }[] {
+    let statuses: ReturnType<Deps['statuses']> | false = false;
+    const owners = new Map<string, ReturnType<Coordination['ownerWithStatuses']>>(),
+      routed: { message: Message; owner?: ReturnType<Coordination['ownerWithStatuses']> }[] = [];
+    for (const message of this.messages()) {
+      if (!all && ['done', 'rejected'].includes(message.state)) continue;
+      if (message.type) {
+        if (same(message.recipient, who)) routed.push({ message });
+      } else {
+        const key = shared.hash(message.scope);
+        let owner = owners.get(key);
+        if (!owner) {
+          if (statuses === false) statuses = this.d.statuses();
+          owner = this.ownerWithStatuses(message.scope, statuses);
+          owners.set(key, owner);
+        }
+        if (same(owner.owner ?? message.recipient, who)) routed.push({ message, owner });
+      }
+    }
+    return routed;
+  }
   inbox(who: Identity, all = false): Message[] {
-    return this.messages().filter(
-      m =>
-        (all || !['done', 'rejected'].includes(m.state)) &&
-        (m.type ? same(m.recipient, who) : same(this.owner(m.scope).owner ?? m.recipient, who))
-    );
+    return this.routedMessages(who, all).map(({ message }) => message);
   }
   private notice(
     type: 'receipt' | 'takeover',
@@ -730,18 +780,24 @@ export class Coordination {
     return this.scoped(scope, deliver, waitMs);
   }
   surfaced(who: Identity): Message[] {
+    const candidates = this.routedMessages(who, false).flatMap(({ message, owner }) => {
+      if (!['queued', 'escalated'].includes(message.state) && same(message.recipient, who))
+        return [];
+      const next = { ...message };
+      if (next.state === 'queued') next.state = 'surfaced';
+      if (!next.type) {
+        next.recipient = who;
+        next.generation = owner?.generation ?? next.generation;
+      }
+      return [{ before: JSON.stringify(message), next }];
+    });
     return this.locked(() =>
-      this.inbox(who)
-        .filter(m => ['queued', 'escalated'].includes(m.state) || !same(m.recipient, who))
-        .map(m => {
-          if (m.state === 'queued') m.state = 'surfaced';
-          if (!m.type) {
-            m.recipient = who;
-            m.generation = this.owner(m.scope).generation;
-          }
-          this.save('inbox', m.id, m);
-          return m;
-        })
+      candidates.flatMap(({ before, next }) => {
+        const current = this.read('inbox', next.id);
+        if (!current || JSON.stringify(current) !== before) return [];
+        this.save('inbox', next.id, next);
+        return [next];
+      })
     );
   }
   ack(id: string, who: Identity, state: 'accepted' | 'rejected' | 'done', note: string): void {

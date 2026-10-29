@@ -93,7 +93,7 @@ describe('install.sh', () => {
 
   test('launchd plist: rendered with escaped paths, left alone when identical, backed up when different', () => {
     const home = join(tmp(), 'a&b');
-    const la = join(home, '..', 'LA');
+    const la = join(home, 'Library', 'LaunchAgents');
     const plist = join(la, 'com.wetamp.superagent.supervise-tick.plist');
     const bin = join(home, 'bin'),
       log = join(home, 'launchctl.log');
@@ -106,7 +106,11 @@ describe('install.sh', () => {
     const bunDir = dirname(Bun.which('bun') ?? ''),
       nodeDir = dirname(Bun.which('node') ?? ''),
       callerPath = `${bin}:${bunDir}:${nodeDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`,
-      reload = { SA_SKIP_LAUNCHD_RELOAD: '', SA_LAUNCHCTL_LOG: log };
+      reload = {
+        SA_SKIP_LAUNCHD_RELOAD: '',
+        SA_TEST_REAL_HOME: home,
+        SA_LAUNCHCTL_LOG: log,
+      };
     mkdirSync(join(home, '.nvm/current/bin'), { recursive: true });
     runInstall(home, la, undefined, callerPath, reload);
     const xml = readFileSync(plist, 'utf8');
@@ -143,6 +147,23 @@ describe('install.sh', () => {
     expect(
       runInstall(home, la, undefined, callerPath, { ...reload, SA_LAUNCHCTL_FAIL: '1' }, 1)
     ).toContain('launchd bootstrap failed');
+  });
+
+  test('launchd reload skips a plist outside the real user directory', () => {
+    const home = tmp(),
+      bin = join(home, 'bin'),
+      log = join(home, 'launchctl.log');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'launchctl'), '#!/bin/sh\necho called >> "$SA_LAUNCHCTL_LOG"\n', {
+      mode: 0o755,
+    });
+    const out = runInstall(home, undefined, undefined, `${bin}:${process.env.PATH}`, {
+      SA_SKIP_LAUNCHD_RELOAD: '',
+      SA_TEST_REAL_HOME: join(home, 'real-user'),
+      SA_LAUNCHCTL_LOG: log,
+    });
+    expect(out).toContain('跳过 launchd 重载（非真实用户目录）');
+    expect(existsSync(log)).toBe(false);
   });
 
   test('launchd plist: ARCHON_HOME is rendered only when set explicitly at install', () => {
