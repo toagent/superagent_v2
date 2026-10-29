@@ -88,12 +88,48 @@ test('reclaim leaves historically offline owners untouched and batch statuses pr
 
 test('reclaim observation isolates deleted repositories in saved and current evidence', () => {
   const s = setup(),
-    missing = { ...s.run, run_id: 'missing', repo: join(s.root, 'deleted') };
+    missing = { ...s.run, run_id: 'missing', repo: join(s.root, 'deleted') },
+    stale = { ...missing, run_id: 'stale' };
   mkdirSync(join(s.sa, 'reclaim'));
   writeFileSync(
     join(s.sa, 'reclaim/observations.json'),
     JSON.stringify([{ run: missing.run_id, repo: missing.repo, owner: a, generation: 1, count: 1 }])
   );
   s.c.d.runs = () => [missing, s.run];
-  expect(new Reclaimer(s.c).observe().map(item => item.run)).toEqual(['r1']);
+  const r = new Reclaimer(s.c, Date.now, () => ({ id: 'engine', status: 'running' }));
+  expect(r.observe().map(item => item.run)).toEqual(['r1']);
+  writeFileSync(
+    join(s.sa, 'runs/stale.json'),
+    JSON.stringify({
+      ...stale,
+      plan: 'p',
+      branch: 'feature',
+      workflow: 'w',
+      console: '',
+      started_at: '',
+      transcript: '',
+      log: '',
+    })
+  );
+  s.c.d.runs = () => [missing, stale, s.run];
+  const generation = s.c.owner(runScope(s.run)).generation,
+    observation = (run: string, repo: string) => ({
+      run,
+      repo,
+      owner: a,
+      generation,
+      last_online_at: 0,
+      first_offline_at: 0,
+      last_offline_at: 120_000,
+      count: 2,
+    }),
+    result = r.reclaim([
+      observation(stale.run_id, stale.repo),
+      observation(s.run.run_id, s.run.repo),
+    ]);
+  expect(result).toMatchObject({
+    transferred: ['r1'],
+    skipped: ['missing', 'stale'],
+    skip_reasons: { missing: 'repository_unavailable', stale: 'repository_unavailable' },
+  });
 });
