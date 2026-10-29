@@ -83,6 +83,8 @@ describe('runStreamingSubprocess', () => {
 
   it('keeps detached-owner jobs cancellable while recording foreground nodes', async () => {
     if (process.platform !== 'win32') {
+      // Detached workflow owners deliberately do not install the node-tree recorder. Their
+      // completed nodes and background jobs must remain in the owner's cancellable group.
       const ownerRoot = await mkdtemp(join(tmpdir(), 'archon-detached-owner-'));
       roots.push(ownerRoot);
       const moduleUrl = pathToFileURL(join(import.meta.dir, 'subprocess-output.ts')).href;
