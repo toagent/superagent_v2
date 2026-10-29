@@ -73,7 +73,16 @@ test('required checks append once without changing requirement indexes or obeyin
   self.repo = repo;
   self.base_ref = sh('git rev-parse HEAD', repo).trim();
   self.packages[0].scope.write = ['wetamp/src/plan-rules.ts'];
+  const wetampChecks = applyPlanRules(self).plan.packages[0].accept;
+  expect(wetampChecks.slice(-2).map(check => check.cmd)).toEqual([
+    'cd wetamp && bun run type-check',
+    'cd wetamp && bun run test',
+  ]);
+  expect(wetampChecks.at(-1)?.requires_prior_pass).toBe(true);
+  expect(wetampChecks.some(check => check.cmd.includes('mutations.test.ts'))).toBe(false);
+
+  self.packages[0].scope.write = ['packages/paths/src/index.ts'];
   expect(applyPlanRules(self).plan.packages[0].accept.at(-1)?.cmd).toBe(
-    'cd wetamp && bun run type-check'
+    'cd wetamp && bun run test'
   );
 });

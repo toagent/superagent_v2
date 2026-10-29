@@ -498,6 +498,17 @@ function run(
   const environment =
     tree && checks.some(c => c.cache !== false) ? environmentIdentity(commandEnv) : '';
   for (const c of checks) {
+    if (c.requires_prior_pass && failed.length) {
+      appendFileSync(log, `$ ${c.cmd}\n# 前置检查失败，未运行\n\n`);
+      results.push({
+        check: c,
+        pass: false,
+        evidence: log,
+        exit: 'skipped',
+        duration_ms: 0,
+      });
+      continue;
+    }
     const hit = tree && c.cache !== false ? acceptanceCachePath(tree, c, envKey, environment) : '';
     if (hit && existsSync(hit)) {
       const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
