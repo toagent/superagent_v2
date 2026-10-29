@@ -244,6 +244,8 @@ git config --global --get core.hooksPath && exit 9
       const child = Bun.spawn(['true']);
       await child.exited;
       writeFileSync(join(lock, 'pid'), String(state === 'live' ? process.pid : child.pid));
+      if (state === 'live')
+        writeFileSync(join(lock, 'start'), sh(`LC_ALL=C ps -o lstart= -p ${process.pid}`, f.repo));
       writeFileSync(join(lock, 'tmp'), old);
       if (state === 'dirty') writeFileSync(join(old, 'wt/keep'), 'keep');
       if (state === 'dead') {
@@ -270,6 +272,27 @@ git config --global --get core.hooksPath && exit 9
         }
         await orphan.exited;
         expect(() => process.kill(orphan.pid, 0)).toThrow();
+      }
+    },
+    60000
+  );
+
+  test.each(['mismatched start', 'legacy lock'] as const)(
+    'reclaims %s owned by an unrelated live process',
+    async state => {
+      const f = fixture(),
+        lock = join(f.home, 'verify/lock'),
+        unrelated = Bun.spawn(['python3', '-c', 'import time; time.sleep(60)']);
+      mkdirSync(lock, { recursive: true });
+      writeFileSync(join(lock, 'pid'), String(unrelated.pid));
+      if (state === 'mismatched start') writeFileSync(join(lock, 'start'), 'not its start\n');
+      try {
+        expect(f.run(f.pass).code).toBe(0);
+        expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
+        expect(existsSync(lock)).toBe(false);
+      } finally {
+        unrelated.kill();
+        await unrelated.exited;
       }
     },
     60000

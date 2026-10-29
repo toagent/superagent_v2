@@ -62,18 +62,28 @@ recover() {
   rm -rf "$old" 2>/dev/null || true
   [ ! -e "$old" ] || echo "verify-local: retained $old" >&2
 }
+lock_owner_alive() {
+  local pid="$1" actual expected command
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  actual="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [ -n "$actual" ] || return 1
+  if [ -f "$LOCK/start" ]; then
+    expected="$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$LOCK/start")"
+    [ -n "$expected" ] && [ "$actual" = "$expected" ]
+  else
+    command="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    [[ "$command" == *verify-local* ]]
+  fi
+}
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 until mkdir "$LOCK" 2>/dev/null; do
   pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && python3 -I -c 'import os, sys
-try: os.kill(int(sys.argv[1]), 0)
-except ProcessLookupError: sys.exit(0)
-except OSError: pass
-sys.exit(1)' "$pid"; then recover; rm -rf "$LOCK"; continue; fi
+  if ! lock_owner_alive "$pid"; then recover; rm -rf "$LOCK"; continue; fi
   [ "$(date +%s)" -lt "$DEADLINE" ] || { echo "verify-local: lock $LOCK held by ${pid:-?}" >&2; exit 1; }
   sleep 2
 done
 echo $$ > "$LOCK/pid"
+LC_ALL=C ps -o lstart= -p $$ | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$LOCK/start"
 # 等锁另计：步骤预算从拿到锁起算，并发排队不吃掉后续 bun test 的时间。
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 TMP_BASE="$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${TMPDIR:-/tmp}")"
