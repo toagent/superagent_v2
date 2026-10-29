@@ -837,9 +837,11 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     const art = artifactsOf(run);
     if (run.status === 'failed') {
       const authored = authoredNodeId(c.node);
-      const publish = /^publish-.+$/.test(authored)
+      const publish = /^(?:re)?sync-.+$|^publish-.+$/.test(authored)
         ? (evidenceJson(l, art, `${authored}.json`) as { reason?: unknown } | undefined)
         : undefined;
+      if (publish?.reason === 'reclaim_pending')
+        return { ...c, state: 'held:gate', exit: EXIT.held };
       if (publish?.reason === 'target_dirty') return { ...c, state: 'target_dirty' };
       if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
       if (publish?.reason === 'review_stale') return { ...c, state: 'review_stale' };

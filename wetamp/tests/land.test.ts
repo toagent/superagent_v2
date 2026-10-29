@@ -5,7 +5,9 @@ import {
   gateHashes,
   IntegrationError,
   landEvidence,
+  generationAdvanced,
   runDeliveryEntry,
+  waitForReclaim,
   type DeliveryReceipt,
 } from '../src/land';
 import type { Ledger } from '../src/cli';
@@ -33,6 +35,36 @@ test('1.0.0 gate hash bindings remain readable by publish', () => {
   );
   expect(gateHashes('1', env)).toEqual(['legacy-sha', 'carried-sha']);
   expect(gateHashes('2', env)).toEqual([]);
+});
+
+// prettier-ignore
+test('reclaim admission waits through transfer, passes without a journal, and times out bounded', async () => {
+  let now = 0, reads = 0;
+  const states = ['transferring', 'transferred', 'reauthorized'];
+  const deps = {
+    read: () => [{ run: 'r', state: states[Math.min(reads++, states.length - 1)] }],
+    now: () => now,
+    sleep: (ms: number) => { now += ms; },
+  };
+  expect(() => waitForReclaim('r', deps)).not.toThrow();
+  expect([now, reads]).toEqual([30_000, 3]);
+  expect(() => waitForReclaim('r', { ...deps, read: () => [] })).not.toThrow();
+  now = 0;
+  const artifacts = tmp();
+  expect(() => waitForReclaim('r', {
+    ...deps, read: () => [{ run: 'r', state: 'transferred' }],
+  })).toThrow('reclaim authorization is still pending');
+  expect(now).toBe(600_000);
+  runDeliveryEntry(() => { throw new IntegrationError('reclaim_pending', 'pending'); },
+    fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'publish-m1' }));
+  expect(await Bun.file(join(artifacts, 'publish-m1.json')).json())
+    .toMatchObject({ reason: 'reclaim_pending' });
+});
+
+test('generation fencing refreshes only for a newer owner and retries once', () => {
+  expect(generationAdvanced([1, 1], [1, 1])).toBeFalse();
+  expect(generationAdvanced([1, 1], [2, 1])).toBeTrue();
+  expect(generationAdvanced([2, 2], [1, 3])).toBeTrue();
 });
 
 test('completed legacy land evidence remains readable', () => {

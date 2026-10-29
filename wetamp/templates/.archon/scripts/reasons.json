@@ -21,6 +21,13 @@
     "description": "净增行数超过工作包上限"
   },
   {
+    "code": "reclaim_pending",
+    "hold": "auto_recover",
+    "determinism": "transient",
+    "owner": "engine",
+    "description": "回收续授权尚未完成"
+  },
+  {
     "code": "git_lock_held",
     "hold": "environment",
     "determinism": "transient",

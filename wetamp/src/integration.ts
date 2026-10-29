@@ -142,6 +142,7 @@ export class IntegrationError extends Error {
     public readonly code:
       | 'git_failed'
       | 'git_lock_held'
+      | 'reclaim_pending'
       | 'lock_timeout'
       | 'publish_outcome_unknown',
     message: string

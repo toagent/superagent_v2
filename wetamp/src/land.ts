@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { control, coord, repoScope, same } from './coord';
+import { control, coord, repoScope, runScope, same } from './coord';
 import type { Controller, DeliveryReauthorization, Identity } from './coord';
 import { home } from './config';
 import { IntegrationError, publish, sync } from './integration';
@@ -44,6 +44,29 @@ export interface DeliveryAuthorization {
   run: Controller;
   repo: Controller;
 }
+
+// prettier-ignore
+interface ReclaimWait { read: () => unknown; now: () => number; sleep: (ms: number) => void }
+// prettier-ignore
+export function waitForReclaim(run: string, d?: ReclaimWait): void {
+  if (!d) {
+    const journal = join(home().sa, 'reclaim', 'journal.json'); d = {
+      read: (): unknown => (existsSync(journal) ? JSON.parse(readFileSync(journal, 'utf8')) : []),
+      now: Date.now,
+      sleep: ms => { Bun.sleepSync(ms); },
+    };
+  }
+  const deadline = d.now() + 600_000; for (;;) {
+    const entries = Object.values(d.read() ?? {}) as { run?: string; state?: string }[], state = entries.filter(entry => entry.run === run).at(-1)?.state;
+    if (state !== 'transferring' && state !== 'transferred') return;
+    if (d.now() >= deadline)
+      throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
+    d.sleep(Math.min(15_000, deadline - d.now()));
+  }
+}
+
+// prettier-ignore
+export const generationAdvanced = (captured: readonly number[], current: readonly number[]): boolean => current.some((generation, index) => generation > (captured[index] ?? 0));
 
 export function deliveryAuthorized(
   who: Identity,
@@ -93,7 +116,7 @@ export function runDeliveryEntry(action: () => void, env = process.env): boolean
     const failure = error instanceof Error ? error : new Error(String(error));
     if (
       error instanceof IntegrationError &&
-      error.code === 'git_lock_held' &&
+      (error.code === 'git_lock_held' || error.code === 'reclaim_pending') &&
       env.ARTIFACTS_DIR &&
       env.INPUTS_OUTPUT
     )
@@ -189,9 +212,10 @@ const emit = (name: string, value: unknown, write = true): void => {
   process.stdout.write(JSON.stringify(value));
 };
 
-const authorized = () => {
+const authorized = (retry = true) => {
   const runId = process.env.INPUTS_RUN;
   if (!runId) throw new Error('integration: missing run id');
+  waitForReclaim(runId);
   const { loadLedger, readJson } = operator();
   const ledger = loadLedger(runId);
   const originalPath = join(ledger.gen_dir, 'delivery-authorization.json');
@@ -210,15 +234,20 @@ const authorized = () => {
   const who = authorization.run;
   if (!deliveryAuthorized(who, authorization, ledger.archon_run_id))
     throw new Error('integration: authorization/run mismatch');
+  // prettier-ignore
   const fence = (): void => {
-    coord().mutate(
-      repoScope(ledger.repo),
-      who,
-      () => {
+    try {
+      coord().mutate(repoScope(ledger.repo), who, () => {
         control(ledger, () => undefined, who, authorization.run.generation);
-      },
-      authorization.repo.generation
-    );
+      }, authorization.repo.generation);
+    } catch (error) {
+      const advanced = generationAdvanced(
+        [authorization.run.generation, authorization.repo.generation],
+        [coord().owner(runScope(ledger)).generation, coord().owner(repoScope(ledger.repo)).generation]
+      );
+      if (!retry || !advanced) throw error;
+      authorized(false).fence();
+    }
   };
   return { ledger, fence };
 };

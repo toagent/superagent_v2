@@ -38,6 +38,8 @@ import {
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 import { isInlineScript } from '../../packages/workflows/src/executor-shared';
 import type { CoderOutput } from '../src/contract';
+import { REASONS } from '../src/reasons';
+import reasonMirror from '../templates/.archon/scripts/reasons.json';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
@@ -583,7 +585,9 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
   ).toBeTrue();
 });
 
-test('review guidance uses the node schema for failure classes', () => {
+test('review guidance and generated reason registry use their typed owners', () => {
+  expect(reasonMirror).toEqual(REASONS);
+  expect(REASONS).toContainEqual(expect.objectContaining({ code: 'reclaim_pending' }));
   for (const name of ['sa-review.md', 'sa-review-delta.md']) {
     const guidance = readFileSync(
       join(import.meta.dir, '../templates/.archon/commands', name),
