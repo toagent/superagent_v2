@@ -408,6 +408,27 @@ test('9: old ledger controller falls back to launcher; linked worktrees share re
   c.claim(s.scope, a);
   expect(c.handoff(s.scope, b, input).delivery).toBe('queued');
 });
+// prettier-ignore
+test('held and unreadable runs remain ownership evidence while ledger failures and engine terminals do not', () => {
+  const s = setup(),
+    run = (run_id: string, state?: string): RunRef => ({ run_id, archon_run_id: run_id, repo: s.repo, controller: { ...a, generation: 1 }, state }),
+    runs = [run('held'), run('ledger-failed', 'failed'), run('completed'), run('cancelled'), run('unknown')],
+    c = new Coordination({
+      sa: s.sa,
+      runs: () => runs,
+      status: l => {
+        if (l.run_id === 'unknown') throw new Error('unreadable');
+        return l.run_id === 'held' ? 'failed' : l.run_id;
+      },
+      presence: () => online,
+    });
+  expect(runs.map(l => c.owner(runScope(l)).owner?.session_id ?? null)).toEqual(['A', null, null, null, 'A']);
+  expect(c.ownedNonterminalRuns('codex').map(l => l.run_id)).toEqual(['held', 'unknown']);
+  expect(c.unfinishedRuns('A')).toEqual([
+    { run_id: 'held', status: 'failed' },
+    { run_id: 'unknown', status: 'unknown' },
+  ]);
+});
 test('presence active/idle/offline/unknown comes from one verifier, not heartbeat expiry', () => {
   const s = setup();
   expect(presence(a, s.sa)).toEqual({ state: 'online', activity: 'idle' });

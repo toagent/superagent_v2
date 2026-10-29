@@ -338,6 +338,14 @@ export class Coordination {
       throw new Error('coord: corrupt claim');
     return c;
   }
+  isRunOwnershipEvidence(run: RunRef): boolean {
+    if (run.state === 'failed') return false;
+    try {
+      return !['completed', 'cancelled'].includes(this.d.status(run));
+    } catch {
+      return true; // Unverifiable ownership remains evidence.
+    }
+  }
   owner(scope: Scope): {
     scope: Scope;
     owner: Identity | null;
@@ -355,13 +363,10 @@ export class Coordination {
           .runs(scope.kind === 'run' ? scope.id : undefined)
           .filter(l => {
             // A ledger whose repository no longer resolves cannot share a live repository's scope.
-            if (scope.kind === 'run') return l.run_id === scope.id;
-            if (shared.repoScope(l.repo)?.id !== repo.id || l.state === 'failed') return false;
-            try {
-              return !['completed', 'cancelled'].includes(this.d.status(l));
-            } catch {
-              return true;
-            } // Unverifiable ownership remains evidence.
+            if (!this.isRunOwnershipEvidence(l)) return false;
+            return scope.kind === 'run'
+              ? l.run_id === scope.id
+              : shared.repoScope(l.repo)?.id === repo.id;
           })
           .map(l => ({
             scope: runScope(l),
@@ -384,7 +389,7 @@ export class Coordination {
   }
   unfinishedRuns(sessionId: string): { run_id: string; status: string }[] {
     return this.d.runs().flatMap(l => {
-      if (l.state === 'failed') return [];
+      if (!this.isRunOwnershipEvidence(l)) return [];
       let owner: Identity | null = l.controller ?? l.launcher ?? null;
       try {
         owner = this.owner(runScope(l)).owner;
@@ -394,9 +399,7 @@ export class Coordination {
       if (owner?.session_id !== sessionId) return [];
       try {
         const status = this.d.status(l);
-        return ['failed', 'completed', 'cancelled'].includes(status)
-          ? []
-          : [{ run_id: l.run_id, status }];
+        return [{ run_id: l.run_id, status }];
       } catch {
         return [{ run_id: l.run_id, status: 'unknown' }];
       }
@@ -404,14 +407,7 @@ export class Coordination {
   }
   ownedNonterminalRuns(client: string) {
     return this.d.runs().flatMap(l => {
-      if (l.state === 'failed') return [];
-      let status = 'unknown';
-      try {
-        status = this.d.status(l);
-      } catch {
-        /* Unknown engine state is non-terminal ownership evidence. */
-      }
-      if (['failed', 'completed', 'cancelled'].includes(status)) return [];
+      if (!this.isRunOwnershipEvidence(l)) return [];
       const view = this.owner(runScope(l));
       return view.owner?.client === client && !view.conflicts.length
         ? [{ run_id: l.run_id, repo: l.repo, owner: view.owner, generation: view.generation }]

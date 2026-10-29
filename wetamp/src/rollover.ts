@@ -52,7 +52,7 @@ const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as Deps['
 const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, supervise: supervisor, scratch, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs });
 
 // prettier-ignore
-const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v), terminal = new Set(['failed', 'completed', 'cancelled']);
+const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 // prettier-ignore
 export class Rollover {
@@ -130,7 +130,7 @@ export class Rollover {
       .map(value => value as unknown as RunRef)
       .flatMap(run => {
         const scopes = this.scopes(run);
-        return scopes && same(this.d.coord.owner(scopes.run).owner, who) && !terminal.has(this.runStatus(run))
+        return scopes && this.d.coord.isRunOwnershipEvidence(run) && same(this.d.coord.owner(scopes.run).owner, who)
           ? [run]
           : [];
       });
@@ -268,7 +268,7 @@ export class Rollover {
     if (!r.steps.reauthorize) {
       for (const id of r.runs) {
         const run = this.d.coord.resolveRun(id);
-        if (run && !skipped[id] && !terminal.has(this.runStatus(run)) && run.gen_dir && this.d.exists(join(run.gen_dir, 'delivery-authorization.json'))) this.d.coord.reauthorize(run, to);
+        if (run && !skipped[id] && this.d.coord.isRunOwnershipEvidence(run) && run.gen_dir && this.d.exists(join(run.gen_dir, 'delivery-authorization.json'))) this.d.coord.reauthorize(run, to);
       }
       r.steps.reauthorize = 'done';
       this.save(r);
