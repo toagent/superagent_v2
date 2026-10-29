@@ -111,6 +111,10 @@ describe('runStreamingSubprocess', () => {
         );
         jobPid = Number(await readFile(join(ownerRoot, 'job-pid'), 'utf8'));
         expect(processExists(jobPid)).toBe(true);
+        const jobPgid = childProcess
+          .execFileSync('ps', ['-o', 'pgid=', '-p', String(jobPid)], { encoding: 'utf8' })
+          .trim();
+        expect(jobPgid).toBe(String(owner.pid));
         process.kill(-owner.pid!, 'SIGTERM');
         await waitUntil('detached owner job cancellation', async () => !processExists(jobPid!));
       } finally {
