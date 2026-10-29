@@ -8,7 +8,7 @@ const files = (dir: string): string[] =>
     const path = join(dir, name);
     return statSync(path).isDirectory() ? files(path) : [path];
   });
-const covered = (path: string, write: string[]): boolean =>
+export const covered = (path: string, write: string[]): boolean =>
   write.some(
     w => path === w || path.startsWith(w.replace(/\/*$/, '/')) || new Bun.Glob(w).match(path)
   );
@@ -67,9 +67,6 @@ export function planPrecheck(plan: Plan, repo: string): string[] {
   for (const pkg of plan.packages) {
     const write = pkg.scope.write, commands = pkg.accept.map(check => check.cmd);
     const joined = commands.join(' '), prefix = `[${pkg.id}] `;
-    if (write.some(path => path.startsWith('wetamp/') && /\.(ts|cjs|js|sh)$/.test(path)) &&
-        !commands[0]?.includes('bun run type-check'))
-      warnings.push(prefix + 'accept[0] 须含 bun run type-check');
     const engine = ['wetamp/src/engine/', 'wetamp/src/gc.ts', 'wetamp/scripts/engine-', 'wetamp/bin/'];
     if (write.some(path => engine.some(owner => path.startsWith(owner))) && !joined.includes('engine-*') &&
         !['engine-channel', 'engine-promote', 'engine-shim'].every(test => joined.includes(test)))

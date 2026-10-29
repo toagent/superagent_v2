@@ -32,9 +32,29 @@ import type {
 import { applyWorkflowRunConfigLayer, readWorkflowRunConfigMetadata } from './run-config';
 import type { WorkflowRunConfigInput, WorkflowRunConfigMetadata } from './schemas/run-config';
 import { createLogger } from '@archon/paths';
+import { EXEC_NODE_ENVIRONMENT_NAMES } from './exec-environment';
 
 const log = createLogger('workflow.run-preflight');
 type UserAiPrefsLayer = Awaited<ReturnType<NonNullable<WorkflowDeps['getUserAiPrefs']>>>;
+
+// These namespaces carry engine identity, admission policy, or resolved node inputs.
+const RESERVED_CODEBASE_ENV_PREFIXES = ['INPUTS_', 'ARCHON_', 'SUPERAGENT_', 'SA_'] as const;
+
+function assertCodebaseEnvVarsAllowed(envVars: Record<string, string>): void {
+  const reserved = Object.keys(envVars)
+    .filter(
+      key =>
+        key === 'NODE_CONTRACT_ENV' ||
+        EXEC_NODE_ENVIRONMENT_NAMES.has(key) ||
+        RESERVED_CODEBASE_ENV_PREFIXES.some(prefix => key.startsWith(prefix))
+    )
+    .sort();
+  if (reserved.length > 0) {
+    throw new Error(
+      `Codebase environment variables use reserved engine keys: ${reserved.join(', ')}`
+    );
+  }
+}
 
 export interface RunAiConfigurationOptions {
   codebaseId?: string;
@@ -90,6 +110,7 @@ export async function prepareRunAiConfiguration(
   }
   const fileConfig = await deps.loadConfig(cwd);
   const dbEnvVars = codebaseId ? await deps.store.getCodebaseEnvVars(codebaseId) : {};
+  assertCodebaseEnvVarsAllowed(dbEnvVars);
   const config = applyWorkflowRunConfigLayer(
     { ...fileConfig, envVars: { ...fileConfig.envVars, ...dbEnvVars } },
     effectiveRunConfig?.layer

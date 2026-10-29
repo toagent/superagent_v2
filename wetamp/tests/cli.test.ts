@@ -206,9 +206,9 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   const failures = join(s.root, 'home', 'launch-failures');
   mkdirSync(failures, { recursive: true });
   writeFileSync(join(failures, 'existing.json'), '{}');
-  const invoke = () =>
+  const invoke = (args: string[] = []) =>
     Bun.spawnSync(
-      [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'plan', 'check', path],
+      [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'plan', 'check', path, ...args],
       {
         env: { ...process.env, SUPERAGENT_WRITE_ROOTS: s.root },
         stdout: 'pipe',
@@ -220,6 +220,21 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   expect(JSON.parse(valid.stdout.toString())).toMatchObject({
     ok: true,
     plan_lint: { rejected: false },
+  });
+  mkdirSync(join(repo, '.superagent'));
+  writeFileSync(
+    join(repo, '.superagent/rules.json'),
+    JSON.stringify({
+      frozen: ['core.txt'],
+      required_checks: [{ when: ['core.txt'], check: { cmd: 'required', timeout_s: 1 } }],
+    })
+  );
+  expect(invoke().stderr.toString()).toContain('intersects frozen path');
+  const overridden = invoke(['--lint-override', 'approved exception']);
+  expect(overridden.exitCode).toBe(0);
+  expect(JSON.parse(overridden.stdout.toString())).toMatchObject({
+    rules_added: 1,
+    plan_lint: { rejected: false, override: 'approved exception' },
   });
   const plan = JSON.parse(readFileSync(path, 'utf8'));
   plan.packages[0].goal = 'x'.repeat(2001);
@@ -1863,6 +1878,20 @@ describe('run (archon stub)', () => {
       const s = stub([]),
         repo = gitRepo(s.root);
       process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+      if (!detached) {
+        mkdirSync(join(repo, '.superagent'));
+        writeFileSync(
+          join(repo, '.superagent/rules.json'),
+          JSON.stringify({
+            frozen: ['core.txt'],
+            required_checks: [{ when: ['core.txt'], check: { cmd: 'required', timeout_s: 1 } }],
+          })
+        );
+        sh(
+          'git add .superagent/rules.json && git -c user.name=t -c user.email=t@l commit -qm rules',
+          repo
+        );
+      }
       const sha = sh('git rev-parse HEAD', repo).trim();
       engineBoundary!.mockImplementation(() => cleanEngine(repo));
       sh(detached ? 'git switch -q --detach HEAD' : 'git switch -qc feature/launch', repo);
@@ -1870,7 +1899,14 @@ describe('run (archon stub)', () => {
         p.base_ref = sha;
       });
       const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
-      const result = captured(() => main(['run', plan, '--fake']));
+      const result = captured(() =>
+        main([
+          'run',
+          plan,
+          '--fake',
+          ...(!detached ? ['--lint-override', 'approved exception'] : []),
+        ])
+      );
       expect(JSON.parse(result.out).quota).toBe('relay fixture');
       quota.mockRestore();
       expect(result.code, result.out).toBe(0);
@@ -1886,6 +1922,41 @@ describe('run (archon stub)', () => {
         sha
       );
       expect(s.calls().find(c => c.startsWith('workflow run'))).toContain(`--from ${sha}`);
+      if (!detached) {
+        expect(ledger.plan_lint?.override).toBe('approved exception');
+        expect(
+          JSON.parse(readFileSync(join(ledger.gen_dir, 'plan.json'), 'utf8')).packages[0].accept.at(
+            -1
+          ).cmd
+        ).toBe('required');
+        const frozenRules = readFileSync(join(ledger.gen_dir, 'project-rules.json'), 'utf8');
+        engineBoundary!.mockReturnValue(sha);
+        writeFileSync(
+          join(repo, '.superagent/rules.json'),
+          JSON.stringify({
+            required_checks: [{ when: ['core.txt'], check: { cmd: 'changed', timeout_s: 1 } }],
+          })
+        );
+        Object.assign(ledger, { engine_hash: 'old', workflow_hash: 'old' });
+        writeFileSync(ledgerPath(id), JSON.stringify(ledger));
+        writeFileSync(
+          join(s.dir, 'get-000.json'),
+          JSON.stringify(run('failed', { nodes: [{ nodeId: 'code-core', state: 'completed' }] }))
+        );
+        expect(captured(() => main(['resume', id])).code).toBe(0);
+        const resumed = loadLedger(id);
+        expect(s.calls().some(call => call.includes('--adopt'))).toBe(true);
+        expect(
+          JSON.parse(
+            readFileSync(join(resumed.gen_dir, 'plan.json'), 'utf8')
+          ).packages[0].accept.at(-1).cmd
+        ).toBe('required');
+        expect(
+          JSON.parse(readFileSync(join(resumed.gen_dir, 'project-rules.json'), 'utf8')).rules
+            .required_checks[0].check.cmd
+        ).toBe('required');
+        expect(readFileSync(join(resumed.gen_dir, 'project-rules.json'), 'utf8')).toBe(frozenRules);
+      }
     });
   test('E5 run preflight refuses before engine launch and failure ledger records the phase', () => {
     const s = stub([]);

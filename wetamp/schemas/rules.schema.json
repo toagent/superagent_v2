@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "frozen": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "required_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["when", "check"],
+        "properties": {
+          "when": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "check": { "$ref": "plan.schema.json#/$defs/check" }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "max_size": { "enum": ["S", "M", "L"] } }
+    }
+  }
+}
