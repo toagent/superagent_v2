@@ -3855,7 +3855,7 @@ describe('executeWorkflow', () => {
       const store = makeStore({
         getCodebaseEnvVars: mock(async () => ({
           DATABASE_URL: 'db_val',
-          BASE_BRANCH: 'reserved-db-secret',
+          TOOLCHAIN_ROOT: '/tools',
           SHARED_KEY: 'db',
         })),
       });
@@ -3882,14 +3882,14 @@ describe('executeWorkflow', () => {
       const configArg = mockExecuteDagWorkflow.mock.calls[0]?.[0].config;
       expect(configArg?.envVars).toMatchObject({
         DATABASE_URL: 'db_val',
-        BASE_BRANCH: 'reserved-db-secret',
+        TOOLCHAIN_ROOT: '/tools',
         SHARED_KEY: 'user_wins',
         USER_KEY: 'u_val',
       });
       expect(configArg?.protectedEnvKeys).toEqual(['SHARED_KEY', 'USER_KEY']);
       expect(configArg?.protectedCredentialValues).toEqual([
         'db_val',
-        'reserved-db-secret',
+        '/tools',
         'user_wins',
         'u_val',
       ]);

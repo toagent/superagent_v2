@@ -65,7 +65,11 @@ function fixture(status: CredentialStatus = { state: 'not_checked', source: 'nat
     deps: {
       providers: providerRegistry,
       loadConfig: mock(async () => structuredClone(config)),
-      store: { getCodebaseEnvVars: mock(async () => ({ DB_SETTING: 'db' })) },
+      store: {
+        getCodebaseEnvVars: mock(
+          async (): Promise<Record<string, string>> => ({ DB_SETTING: 'db' })
+        ),
+      },
       getAgentProvider: mock(() => provider),
       isPerUserProviderKeysEnabled: () => true,
       getUserProviderCredentialStatus,
@@ -250,6 +254,41 @@ describe('run credential preflight', () => {
       assistantConfig: {},
       env: { SETTING: 'file', DB_SETTING: 'db' },
     });
+  });
+
+  test('rejects every reserved codebase environment key without exposing values', async () => {
+    const { deps } = fixture();
+    deps.store.getCodebaseEnvVars.mockResolvedValue({
+      SA_POLICY_PATH: 'secret-1',
+      SUPERAGENT_ROLE: 'secret-2',
+      ARCHON_X: 'secret-3',
+      INPUTS_Y: 'secret-4',
+      WORKFLOW_ID: 'secret-5',
+    });
+    const result = prepareRunAiConfiguration(deps, makeTestResolvedWorkflow({ name: 'ai' }), '/p', {
+      codebaseId: 'cb',
+    });
+    await expect(result).rejects.toThrow(
+      'ARCHON_X, INPUTS_Y, SA_POLICY_PATH, SUPERAGENT_ROLE, WORKFLOW_ID'
+    );
+    await expect(result).rejects.not.toThrow(/secret-/);
+  });
+
+  test('allows toolchain keys while run config keeps final precedence', async () => {
+    const { deps } = fixture();
+    deps.store.getCodebaseEnvVars.mockResolvedValue({ JAVA_HOME: '/jdk8', PATH: '/db/bin' });
+    const source = { kind: 'cli' as const, label: 'test' };
+    const depsWithRunConfig = {
+      ...deps,
+      sealRunConfig: mock(() => ({ version: 1 as const, ciphertext: 'sealed', source, keys: [] })),
+    };
+    const prepared = await prepareRunAiConfiguration(
+      depsWithRunConfig,
+      makeTestResolvedWorkflow({ name: 'ai' }),
+      '/p',
+      { codebaseId: 'cb', runConfig: { layer: { envVars: { PATH: '/run/bin' } }, source } }
+    );
+    expect(prepared.config.envVars).toMatchObject({ JAVA_HOME: '/jdk8', PATH: '/run/bin' });
   });
 
   test('provider native default is frozen before stored vendor selection', async () => {
