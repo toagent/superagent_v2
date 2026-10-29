@@ -116,6 +116,9 @@ const commandHelp: HelpEntry[] = [
     subcommand: 'env',
     spec: 'codebase env <list|set|unset>',
     description: 'Manage environment variables for a registered codebase',
+    scopedFlags: [
+      { spec: '--cwd <path>', description: 'Resolve the registered codebase from this path' },
+    ],
   },
   {
     command: 'trigger',
