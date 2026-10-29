@@ -202,6 +202,7 @@ export interface AcceptOutput {
   reason: string | null;
   risk: string | null;
   out_of_scope: string[];
+  scope_base?: string;
   baseline?: 'comparable' | 'incomparable';
   baseline_reason?: string;
   base_results?: BaseResult[];
@@ -383,6 +384,7 @@ export const acceptOutputFormat = {
     reason: { type: ['string', 'null'] },
     risk: { type: ['string', 'null'] },
     out_of_scope: { type: 'array', items: { type: 'string' } },
+    scope_base: { type: 'string', pattern: '^[0-9a-f]{40,64}$' },
     baseline: { enum: ['comparable', 'incomparable'] },
     baseline_reason: { type: 'string' },
     base_results: { type: 'array', items: { $ref: '#/$defs/BaseResult' } },

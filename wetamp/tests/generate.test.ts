@@ -498,6 +498,31 @@ test('RECOVERY_CONTINUATION generates acceptance and gate without AI nodes', () 
   expect(nodes.at(-1)?.id).toBe('integrate-m1');
 });
 
+test('SCOPE_BASE is fixed across dependencies and restored from carried acceptance', () => {
+  const p = structuredClone(fixture);
+  p.packages[1].deps = [p.packages[0].id];
+  const fresh = nodesOf(buildWorkflow(p, milestones(p), 'fresh', '/GEN', false, NOW));
+  const verifies = fresh.filter(n => n.id.startsWith('verify-'));
+  expect(verifies.map(n => n.with?.scope_base)).toEqual([
+    '$sync-m1-ready.output.head',
+    '$sync-m1-ready.output.head',
+  ]);
+  const root = tmp(),
+    evidence = join(root, 'accepted.json'),
+    start = 'b'.repeat(40);
+  fs.writeFileSync(evidence, JSON.stringify({ scope_base: start }));
+  const adopted = nodesOf(
+    buildWorkflow(p, milestones(p), 'adopted', '/GEN', false, NOW, loadTiers(), {
+      from: 'old',
+      packages: [p.packages[0].id],
+      evidence: { [p.packages[0].id]: evidence },
+    })
+  );
+  expect(
+    adopted.filter(n => n.with?.kind === 'accept').every(n => n.with?.scope_base === start)
+  ).toBeTrue();
+});
+
 test('review guidance uses the node schema for failure classes', () => {
   for (const name of ['sa-review.md', 'sa-review-delta.md']) {
     const guidance = readFileSync(
@@ -1181,6 +1206,7 @@ describe('buildWorkflow', () => {
         ...generated.with,
         plan: planPath,
         base,
+        scope_base: base,
         delta_base: base,
         target_tip: base,
         sync_generation: '1',

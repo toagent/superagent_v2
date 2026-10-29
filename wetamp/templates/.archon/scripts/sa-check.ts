@@ -671,6 +671,17 @@ function changes(base: string): { modes: string[]; paths: string[] }[] {
   return out;
 }
 
+/** Compare authored work with the newer combined tree, without turning history into scope. */
+export function scopeBase(runStart: string, base: string): string {
+  if (!runStart) return base;
+  if (!/^[0-9a-f]{40,64}$/.test(runStart)) throw new Error('scope base must be a git object id');
+  const common = git('merge-base', runStart, base).trim();
+  if (common === runStart) return base;
+  if (common === base) return runStart;
+  const merged = auxiliary(['git', 'merge-tree', '--write-tree', runStart, base]);
+  return merged.exitCode === 0 && !merged.signalCode ? merged.stdout.toString().trim() : base;
+}
+
 /** Count only authored source growth; exclusions are structural or generator-declared. */
 export function netLinesFromNumstat(raw: string, generated: readonly string[]): number {
   const excluded = (path: string): boolean => {
@@ -831,10 +842,11 @@ function acceptOnce(
     commandResults.push(...prior.command_results);
     appendFileSync(log, `# reused stable acceptance from ${env('ACCEPTANCE_EVIDENCE')}\n`);
   }
+  const scopeStart = env('SCOPE_BASE');
   const scope =
     base && env('RISK')
       ? scopeRisk(
-          changes(base),
+          changes(scopeBase(scopeStart, base)),
           covered.flatMap(k => k.scope.write),
           policy(),
           env('RISK')
@@ -1006,6 +1018,7 @@ function acceptOnce(
     base_results: baseResults,
     ...baseline,
     ...scope,
+    scope_base: scopeStart,
     ...(lines ? { net_lines: lines } : {}),
     head,
     checkout_fingerprint: fingerprint,
@@ -1044,6 +1057,7 @@ function finish(
         base: env('BASE'),
         head: out.head ?? '',
         deltaBase: env('DELTA_BASE'),
+        scopeBase: env('SCOPE_BASE'),
         acceptance: out,
         patch: out.patch ?? '',
         delta: out.delta ?? '',

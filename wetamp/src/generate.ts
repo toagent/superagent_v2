@@ -197,6 +197,26 @@ export function buildWorkflow(
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
   const executions = executionTable(plan, tiers);
   const maxRounds = reviewRoundLimit(tiers.policy);
+  const evidenceScopeBase = (path: string | undefined): string | undefined => {
+    if (!path) return undefined;
+    try {
+      const value = JSON.parse(readFileSync(path, 'utf8')) as { scope_base?: unknown };
+      return typeof value.scope_base === 'string' && /^[0-9a-f]{40,64}$/.test(value.scope_base)
+        ? value.scope_base
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const carriedScopeBase = [
+    ...Object.values(carried?.evidence ?? {}),
+    ...(carried?.recovery?.rounds.flatMap(round => {
+      const legacy = round as Partial<typeof round>;
+      return [legacy.source?.path, legacy.freeze?.path];
+    }) ?? []),
+  ]
+    .map(evidenceScopeBase)
+    .find(Boolean);
   const execution = (id: string): Node => {
     if (fake) return {};
     const descriptor = executions[id];
@@ -270,7 +290,8 @@ export function buildWorkflow(
     ].join('\n');
   if (delivery && (!run || /[^0-9a-f-]/.test(run))) throw new Error('delivery: invalid run id');
   let after: Node = { depends_on: ['environment'] };
-  let runBase = '';
+  let runBase = '',
+    scopeBase = carriedScopeBase ?? '';
   const signoff = (
     m: Milestone,
     gates: Node,
@@ -493,6 +514,7 @@ export function buildWorkflow(
     );
     const syncReadyHandle = output<SyncOutput>(syncReady);
     runBase ||= ref.required(syncReadyHandle, 'merge_base');
+    scopeBase ||= ref.required(syncReadyHandle, 'head');
     let base = ref.required(syncReadyHandle, 'merge_base');
     // Milestone retries invalidate only cumulative acceptance and review/fix rounds.
     const attempt = `attempt-${m.id}`;
@@ -527,6 +549,7 @@ export function buildWorkflow(
         policy: e.policy.path,
         pkgs: ids,
         scope_pkgs,
+        scope_base: scopeBase,
         risk: m.risk,
         milestone: m.id,
         target_tip: ref.required(syncReadyHandle, 'target_tip'),
@@ -698,6 +721,7 @@ export function buildWorkflow(
         pkgs: p.id,
         scope_pkgs,
         base,
+        scope_base: scopeBase,
         delta_base: ref.required(previousHandle, 'head'),
         ...(p.max_net_lines === undefined
           ? {}
@@ -899,6 +923,7 @@ export function buildWorkflow(
             pkgs: ids,
             scope_pkgs,
             base,
+            scope_base: scopeBase,
             target_tip: ref.required(syncReadyHandle, 'target_tip'),
             sync_generation: ref.required(syncReadyHandle, 'generation'),
             risk: m.risk,
@@ -1057,6 +1082,7 @@ export function buildWorkflow(
           policy: policyPath,
           pkgs: ids,
           scope_pkgs,
+          scope_base: scopeBase,
           risk: m.risk,
           milestone: m.id,
           ...ledger,
