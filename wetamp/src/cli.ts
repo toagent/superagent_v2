@@ -128,7 +128,7 @@ import { launchAgent, orcaBin, type AgentLaunch } from './orca';
 import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
-import { applyPlanRules } from './plan-rules';
+import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
 import { buildReport, consolidationMetrics, reportSummary } from './report';
 import { abandoned } from './ledger-metrics';
@@ -1220,6 +1220,7 @@ function recoverRun(
           l.delivery,
           runningEngineSnapshot()
         );
+        freezePlanRules(plan, gen.dir, l.gen_dir);
         adopted = {
           from: run.id,
           hash: gen.engine_hash,
@@ -1633,6 +1634,7 @@ function startRun(planPath: string, a: Args): number {
           engine.path,
           routing
         );
+        freezePlanRules(plan, gen.dir);
         const branch = adopted?.ledger.branch ?? `sa/${run}`;
         if (adopted) {
           const art = artifactsOf(adopted.run),
