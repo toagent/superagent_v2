@@ -114,16 +114,18 @@ export class Rollover {
     const field = (name: string): string => (new RegExp(`^${name}[:：][ \\t]*([^\\r\\n]+)$`, 'm').exec(text))?.[1]?.trim() ?? '';
     for (const name of ['主任务', '状态', '断点']) if (!field(name)) missing.push(name);
     const lines = text.split(/\r?\n/),
-      sections = ['接手必读', '在途', '已核实与更正'];
+      sections = ['接手必读', '在途', '已核实与更正'],
+      sectionEnd = (line: string): boolean => /^#{1,6}\s+/.test(line.trim()) || /^(?![-*])[^:：]+[:：]/.test(line.trim());
     for (const name of sections) {
       const index = lines.findIndex(line => new RegExp(`^(?:#{1,6}\\s*)?${name}(?:[:：]\\s*.*)?$`).test(line.trim()));
       const inline = index < 0 ? '' : lines[index].replace(new RegExp(`^(?:#{1,6}\\s*)?${name}[:：]?\\s*`), '');
-      const body = index < 0 ? [] : lines.slice(index + 1, lines.findIndex((line, i) => i > index && (/^#{1,6}\s+/.test(line.trim()) || sections.some(section => new RegExp(`^${section}[:：]`).test(line.trim())))) < 0 ? undefined : lines.findIndex((line, i) => i > index && (/^#{1,6}\s+/.test(line.trim()) || sections.some(section => new RegExp(`^${section}[:：]`).test(line.trim())))));
+      const end = lines.findIndex((line, i) => i > index && sectionEnd(line));
+      const body = index < 0 ? [] : lines.slice(index + 1, end < 0 ? undefined : end);
       if (index < 0 || ![inline, ...body].some(line => line.trim())) missing.push(name);
     }
     if (missing.length) throw new Error(`rollover: 任务栈缺少：${missing.join('、')}`);
     const verified = lines.findIndex(line => /^(?:#{1,6}\s*)?已核实与更正(?:[:：]\s*.*)?$/.test(line.trim())),
-      end = lines.findIndex((line, i) => i > verified && /^#{1,6}\s+/.test(line.trim())),
+      end = lines.findIndex((line, i) => i > verified && sectionEnd(line)),
       entries: string[][] = [];
     for (const line of lines.slice(verified + 1, end < 0 ? undefined : end)) {
       if (/^\s*[-*]\s+/.test(line)) entries.push([line]);

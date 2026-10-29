@@ -163,6 +163,28 @@ test('start rejects every verified item without evidence, including continued it
   expect(s.launchCalls).toHaveLength(0);
 });
 
+test('field sections stop verified evidence checks at the next field', async () => {
+  const accepted = fixture();
+  writeFileSync(
+    accepted.task,
+    readFileSync(accepted.task, 'utf8').replace(
+      '# 接手必读\n无\n# 在途\n无\n# 已核实与更正\n无\n',
+      '接手必读:\n无\n在途:\n无\n已核实与更正:\n- command `bun test`\n待验证假设:\n- 尚未复测\n'
+    )
+  );
+  await accepted.r.start();
+
+  const rejected = fixture();
+  writeFileSync(
+    rejected.task,
+    readFileSync(rejected.task, 'utf8').replace(
+      '# 已核实与更正\n无\n',
+      '已核实与更正:\n- 尚未复测\n'
+    )
+  );
+  await expect(rejected.r.start()).rejects.toThrow(/- 尚未复测.*补证据/);
+});
+
 test('start gates low or unknown usage unless the user explicitly requests rollover', async () => {
   const low = fixture();
   writeFileSync(
