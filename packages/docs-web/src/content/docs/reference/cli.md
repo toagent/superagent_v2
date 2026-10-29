@@ -70,6 +70,18 @@ archon workflow run investigate --cwd /path/to/repo --no-worktree "Why does the 
 
 ## Commands
 
+### `codebase env`
+
+Manage environment variables stored for a registered codebase. `--cwd` selects the codebase
+using the same exact-or-containing-path lookup as workflow runs. Values are accepted by `set`
+but are never printed; `list` prints sorted key names only. Engine-reserved names are rejected.
+
+```bash
+archon codebase env list --cwd /path/to/repo
+archon codebase env set --cwd /path/to/repo JAVA_HOME /path/to/jdk
+archon codebase env unset --cwd /path/to/repo JAVA_HOME
+```
+
 ### `trigger`
 
 Start workflows from deployment bindings and inspect durable resource admission. A server with `ARCHON_TRIGGER_HOST` set hosts the same bindings without these commands. See [workflow triggers](/guides/workflow-triggers/) for configuration, capacity, overlap policy, and recovery requirements.

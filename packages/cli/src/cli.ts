@@ -1218,6 +1218,17 @@ async function main(): Promise<number> {
         break;
       }
 
+      case 'codebase': {
+        if (subcommand !== 'env') {
+          return await fail(jsonFlag, 'Usage: archon codebase env <list|set KEY VALUE|unset KEY>');
+        }
+        const { codebaseEnvCommand } = await loadRoute(() => import('./commands/codebase-env'), {
+          database: true,
+        });
+        await codebaseEnvCommand(positionals[2], positionals.slice(3), effectiveCwd);
+        break;
+      }
+
       case 'isolation': {
         const { isolationListCommand, isolationCleanupCommand, isolationCleanupMergedCommand } =
           await loadRoute(() => import('./commands/isolation'), { database: true });

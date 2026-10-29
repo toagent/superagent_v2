@@ -40,11 +40,10 @@ type UserAiPrefsLayer = Awaited<ReturnType<NonNullable<WorkflowDeps['getUserAiPr
 // These namespaces carry engine identity, admission policy, or resolved node inputs.
 const RESERVED_CODEBASE_ENV_PREFIXES = ['INPUTS_', 'ARCHON_', 'SUPERAGENT_', 'SA_'] as const;
 
-function assertCodebaseEnvVarsAllowed(envVars: Record<string, string>): void {
+export function assertCodebaseEnvVarsAllowed(envVars: Record<string, string>): void {
   const reserved = Object.keys(envVars)
     .filter(
       key =>
-        key === 'NODE_CONTRACT_ENV' ||
         EXEC_NODE_ENVIRONMENT_NAMES.has(key) ||
         RESERVED_CODEBASE_ENV_PREFIXES.some(prefix => key.startsWith(prefix))
     )

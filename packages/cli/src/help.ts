@@ -112,6 +112,12 @@ const commandHelp: HelpEntry[] = [
     description: 'List users and manage roles as the operator',
   },
   {
+    command: 'codebase',
+    subcommand: 'env',
+    spec: 'codebase env <list|set|unset>',
+    description: 'Manage environment variables for a registered codebase',
+  },
+  {
     command: 'trigger',
     spec: 'trigger <fire|drain|list|inspect|withdraw|recover-preparation|schedule>',
     description: 'Start configured workflows and inspect durable resource admission',
