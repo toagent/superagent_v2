@@ -55,7 +55,7 @@ import { redact } from '../src/redact';
 import { buildWorkflow, engineHash, generate, renderBrief } from '../src/generate';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { detailOf, redact as boardRedact } from '../src/board/detail';
-import { rowOf } from '../src/board/data';
+import { rowOf, type Snapshot } from '../src/board/data';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 import { nativeSpawnSync } from './preload';
@@ -2107,6 +2107,18 @@ describe('health upstream reporting', () => {
   });
   const check = (files: string[], exitCode = 0, verbose = false, consoleError?: string) => {
     const fixture = stub([]);
+    writeFileSync(
+      join(fixture.root, 'home/tick.json'),
+      JSON.stringify({
+        at: new Date().toISOString(),
+        collect: { ok: true },
+        publish: { ok: true },
+        orca: { ok: true },
+        console: { ok: true },
+        failover: { ok: true },
+        actions: { ok: true },
+      })
+    );
     if (consoleError) {
       mkdirSync(join(fixture.root, 'home/console'), { recursive: true });
       writeFileSync(join(fixture.root, 'home/console/decision-origin'), 'https://console.test');
@@ -2685,9 +2697,16 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       calls = { refresh: 0, sync: 0 },
       out = spyOn(console, 'log').mockImplementation(() => undefined),
       refresh = async () => void calls.refresh++,
-      sync = async () => void calls.sync++;
+      sync = async () => void calls.sync++,
+      snapshot = { at: new Date().toISOString(), summary: {}, rows: [] } as Snapshot;
     try {
-      await superviseTickCli(refresh, sync);
+      await superviseTickCli(refresh, sync, {}, async () => snapshot);
+      expect(existsSync(join(s.root, 'home/heartbeat.json'))).toBe(true);
+      expect(JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8'))).toMatchObject({
+        collect: { ok: true },
+        publish: { ok: true },
+        orca: { ok: true },
+      });
       activateEngineFixture(s);
       await superviseTickCli(refresh, sync, { runs: ['sa1'], noGlobal: true });
       expect(calls).toEqual({ refresh: 1, sync: 1 });

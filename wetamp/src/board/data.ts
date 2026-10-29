@@ -425,8 +425,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         id,
         mtimeMs: statSync(ledgerPath(id), { throwIfNoEntry: false })?.mtimeMs ?? 0,
       }))
-      .sort((a, b) => b.mtimeMs - a.mtimeMs)
-      .slice(0, limit);
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
     // prettier-ignore
     const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id), archonId = ledgerCache.get(id)?.archon_run_id; return hit?.mtimeMs === mtimeMs && (FINAL.has(hit.run.status) || (hit.run.status === 'failed' && !!hit.revision && hit.revision === revisions?.get(archonId ?? ''))) ? [[id, hit] as const] : []; }));
     // prettier-ignore
@@ -497,6 +496,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       }
     }
     first = false;
+    let terminal = 0;
     const results = ids.map(({ id, mtimeMs }) => {
       const l = ledgers.get(id);
       if (l === undefined) throw new Error(`ledger ${id}: missing from snapshot`);
@@ -518,7 +518,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         const err = e as Error;
         return hit ? { l, run: hit.run, stale: true, err } : { l, err };
       }
-    });
+    }).filter(r => !r.run || !FINAL.has(r.run.status) || terminal++ < limit);
     const coordMessages = coordinator.messages();
     const pending = new Map<string, number>();
     for (const message of coordMessages)

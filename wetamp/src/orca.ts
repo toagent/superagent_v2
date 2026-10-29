@@ -161,9 +161,11 @@ async function bounded<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T
 }
 
 export async function syncOrca(
+  snapshotOrOverrides: Snapshot | Partial<OrcaDeps> = {},
   overrides: Partial<OrcaDeps> = {}
 ): Promise<{ synced: true } | { skipped: string } | { error: string }> {
-  const d = { ...defaults, ...overrides };
+  const snapshot = 'rows' in snapshotOrOverrides ? snapshotOrOverrides : undefined;
+  const d = { ...defaults, ...(snapshot ? overrides : snapshotOrOverrides) };
   let held: ReturnType<typeof lock> | undefined;
   try {
     if (d.env.SA_ORCA === '0') return { skipped: 'disabled' };
@@ -196,7 +198,9 @@ export async function syncOrca(
       probe.result.runtime.reachable !== true
     )
       return { skipped: 'unavailable' };
-    const next = orcaView(cockpit(await bounded(signal, () => d.load(signal)), d.now()));
+    const next = orcaView(
+      cockpit(snapshot ?? (await bounded(signal, () => d.load(signal))), d.now())
+    );
     signal.throwIfAborted();
     const saved = d.read(state);
     let previous: OrcaView | undefined;

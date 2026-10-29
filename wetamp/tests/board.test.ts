@@ -473,13 +473,22 @@ describe('data rows', () => {
     expect(fresh.rows[0]?.error).toContain('archon down');
   });
 
-  test('--limit keeps the newest ledgers by mtime', async () => {
-    for (const [i, id] of ['a', 'b', 'c'].entries()) {
+  test('--limit keeps every nonterminal and unreadable ledger plus the newest terminal history', async () => {
+    ledger('live', { status: 'running' });
+    utimesSync(ledgerFile('live'), new Date(1), new Date(1));
+    writeFileSync(ledgerFile('bad'), '{');
+    for (const i of Array.from({ length: 21 }, (_, n) => n)) {
+      const id = `done-${String(i).padStart(2, '0')}`;
       ledger(id, { status: 'completed' });
       const t = new Date(Date.now() + i * 1000);
       utimesSync(ledgerFile(id), t, t);
     }
-    expect((await createLoader()(2)).rows.map(r => r.run_id).sort()).toEqual(['b', 'c']);
+    expect((await createLoader()(2)).rows.map(r => r.run_id).sort()).toEqual([
+      'bad',
+      'done-19',
+      'done-20',
+      'live',
+    ]);
   });
 });
 
