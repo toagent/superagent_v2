@@ -14,6 +14,7 @@ import {
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
+import type { CommandResult } from '../src/contract';
 import {
   budgetUsage,
   reviewRoundLimit,
@@ -699,23 +700,28 @@ describe('NONCONVERGENCE delivery gate', () => {
       diff_hash: string;
       artifact_sha256: string;
     };
-    expect(
-      runScript(repo, {
-        kind: 'gate',
-        plan,
-        pkgs: 'a',
-        risk: 'G1',
-        review: '0',
-        round: '1',
-        milestone: 'm1',
-        tag: 'gate-m1-r1',
-        r1: 'null',
-        c1: join(accepted.art, 'diff-m1-r1.json'),
-        c1_head: check.head,
-        c1_diff_hash: check.diff_hash,
-        c1_sha256: check.artifact_sha256,
-      })
-    ).toMatchObject({ code: 0, out: { verdict: 'pass', reason: 'review_not_required' } });
+    const gated = runScript(repo, {
+      kind: 'gate',
+      plan,
+      pkgs: 'a',
+      risk: 'G1',
+      review: '0',
+      round: '1',
+      milestone: 'm1',
+      tag: 'gate-m1-r1',
+      r1: 'null',
+      c1: join(accepted.art, 'diff-m1-r1.json'),
+      c1_head: check.head,
+      c1_diff_hash: check.diff_hash,
+      c1_sha256: check.artifact_sha256,
+    });
+    expect(gated).toMatchObject({
+      code: 0,
+      out: { verdict: 'pass', reason: 'review_not_required' },
+    });
+    expect(readFileSync(join(accepted.art, 'accepted-m1.json'))).toEqual(
+      readFileSync(join(accepted.art, 'diff-m1-r1.json'))
+    );
   });
   test.each(['G1', 'G2'])('%s low unknown self-report finding remains debt', risk => {
     for (const status of ['PASS', 'FAIL'] as const) {
@@ -809,7 +815,7 @@ describe('NONCONVERGENCE delivery gate', () => {
           requirements: [{ id: 'verified', text: 'W5 verified', verified_by: [0] }],
         },
       ],
-      command_results: [{ check: command, pass: true, evidence: 'accept.log' }],
+      command_results: [{ check: command, pass: true, evidence: 'accept.log', duration_ms: 0 }],
     };
     expect(
       decide({
@@ -3809,7 +3815,7 @@ describe('sa-check script', () => {
       decision: { kind: 'block' },
     });
   });
-  test('F-21: node evidence reuses cache:false checks on the same head; a new head reruns', () => {
+  test('F-21: node evidence survives noop generation changes; target or head changes rerun', () => {
     const root = tmp();
     const repo = gitRepo(root);
     const p = join(root, 'plan.json');
@@ -3828,21 +3834,56 @@ describe('sa-check script', () => {
         ],
       })
     );
-    const go = (tag: string, acceptance_evidence = '') =>
-      runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag, acceptance_evidence }).out;
+    const go = (tag: string, acceptance_evidence = '', extra: Record<string, string> = {}) =>
+      runScript(repo, {
+        kind: 'accept',
+        plan: p,
+        pkgs: 'a',
+        tag,
+        acceptance_evidence,
+        target_tip: 'tip-1',
+        sync_generation: '1',
+        ...extra,
+      }).out as { ok: boolean; command_results: CommandResult[] };
     expect(go('verify-a')).toMatchObject({ ok: true });
     const evidence = join(root, 'art', 'verify-a.json');
-    expect(go('diff-m1-r1', evidence)).toMatchObject({ ok: true });
+    const reused = go('final-accept-m1', evidence, { sync_generation: '2' });
+    expect(reused).toMatchObject({ ok: true });
+    expect(reused.command_results.every(result => Number.isInteger(result.duration_ms))).toBeTrue();
     expect(readFileSync(counter, 'utf8')).toBe('c\nu\n');
-    expect(readFileSync(join(root, 'art', 'diff-m1-r1.log'), 'utf8')).toContain(
+    expect(readFileSync(join(root, 'art', 'final-accept-m1.log'), 'utf8')).toContain(
       'reused stable acceptance from'
     );
+    go('final-accept-moved-tip', evidence, { target_tip: 'tip-2', sync_generation: '2' });
+    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\n');
     sh(
       'echo z > z.txt && git add z.txt && git -c user.name=t -c user.email=t@l commit -qm z',
       repo
     );
-    go('diff-m1-r2', evidence);
-    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nc\nu\n');
+    go('final-accept-moved-head', evidence, { sync_generation: '2' });
+    expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\nc\nu\n');
+  });
+  test('F-21: flaky node evidence reruns instead of being reused', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      counter = join(root, 'n'),
+      p = planFile(root, `echo x >> ${counter}`);
+    const plan = JSON.parse(readFileSync(p, 'utf8'));
+    plan.packages[0].accept[0].cache = false;
+    writeFileSync(p, JSON.stringify(plan));
+    const first = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a' });
+    const evidence = join(first.art, 'verify-a.json');
+    const prior = JSON.parse(readFileSync(evidence, 'utf8'));
+    prior.command_results[0].flaky = true;
+    writeFileSync(evidence, JSON.stringify(prior));
+    runScript(repo, {
+      kind: 'accept',
+      plan: p,
+      pkgs: 'a',
+      tag: 'final-accept-m1',
+      acceptance_evidence: evidence,
+    });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
   });
   // prettier-ignore
   test('delivery-truth: cache binds filtered command environment and private context, never legacy identity', () => {
@@ -4748,7 +4789,7 @@ test('unresolved completeness blocker prevents verified requirement summary', ()
         requirements: [{ id: 'r', text: 'complete delivery', verified_by: [0] }],
       },
     ],
-    command_results: [{ check, pass: true, evidence: 'check.log' }],
+    command_results: [{ check, pass: true, evidence: 'check.log', duration_ms: 0 }],
   };
   const review = {
     status: 'FAIL' as const,

@@ -473,6 +473,7 @@ export function buildWorkflow(
           base: ref.required(syncHandle, 'merge_base'),
           target_tip: ref.required(syncHandle, 'target_tip'),
           sync_generation: ref.required(syncHandle, 'generation'),
+          acceptance_evidence: `$ARTIFACTS_DIR/accepted-${m.id}.json`,
           tag: finalAccept,
           terminal: '1',
         },
