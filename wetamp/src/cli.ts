@@ -4005,6 +4005,7 @@ interface CommandUsage {
 export const CLI_GLOBAL_OPTIONS = ['help', 'json', 'task-kind'] as const satisfies readonly OptionName[];
 // prettier-ignore
 export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
+  { command: 'reclaim', flags: ['json'] },
   { command: 'owner', positionals: '[path|run]', flags: [] },
   { command: 'claim', positionals: '[path|run]', flags: ['takeover', 'reason'] },
   { command: 'reauthorize', positionals: '<run>', flags: [] },
@@ -4049,7 +4050,6 @@ const optionUsage = (name: OptionName): string => {
 };
 export const USAGE = [
   'usage: superagent <command> [options]',
-  '  reclaim [--json]',
   ...CLI_COMMAND_USAGE.map(
     ({ command, positionals, flags }) =>
       `  ${command}${positionals ? ` ${positionals}` : ''}${flags.map(optionUsage).join('')}`
