@@ -44,7 +44,7 @@ import { caller, control, coord, repoScope, runScope, same, presence, type Contr
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
+import { HEARTBEAT_INTERVAL_MS, heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { reclaimOnce, reclaimTick } from './reclaim';
 import {
@@ -1339,8 +1339,8 @@ const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
 
 /** Observe engine state and inbox; continuation is an explicit engine action. */
 export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
-  const deadline = waitClock.now() + timeoutS * 1000;
-  let attention = false;
+  const effective = Math.min(timeoutS, HEARTBEAT_INTERVAL_MS / 1000);
+  const deadline = waitClock.now() + effective * 1000;
   for (;;) {
     const inbox = coord()
       .surfaced(who)
@@ -1350,11 +1350,23 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     const c = classifyRun(l, run);
     if (c.state === 'owner_lost')
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
-    if (attention && c.exit === EXIT.running) waitClock.sleep(1000);
     const left = (deadline - waitClock.now()) / 1000;
     if (c.exit !== EXIT.running) return summary(l, run, c);
-    if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who) };
-    attention = waitNotification(l.archon_run_id, l.repo, left) === 'attention';
+    // prettier-ignore
+    if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who), ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}) };
+    const notification = waitNotification(l.archon_run_id, l.repo, left);
+    if (notification.kind !== 'attention') continue;
+    const refreshed = getRun(l.archon_run_id, l.repo);
+    const refreshedClass = classifyRun(l, refreshed);
+    if (refreshedClass.state === 'owner_lost')
+      return { ...summary(l, refreshed, refreshedClass), action: `superagent recover ${l.run_id}` };
+    if (refreshedClass.exit !== EXIT.running) return summary(l, refreshed, refreshedClass);
+    return {
+      ...summary(l, refreshed, refreshedClass),
+      attention: notification.attention,
+      heartbeat: waitHeartbeat(who),
+      ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}),
+    };
   }
 }
 

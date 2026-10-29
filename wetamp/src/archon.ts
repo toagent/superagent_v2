@@ -242,7 +242,7 @@ export function getRun(id: string, cwd?: string): RunView {
 /** Native attention is a notification, not a verbose RunView: classification still needs one get.
  * Native wait owns the remaining business deadline; the existing query budget separately
  * bounds CLI startup/shutdown overhead so a cold start cannot consume the wait's margin. */
-export function waitNotification(id: string, cwd: string, seconds: number): RunWaitResult['kind'] {
+export function waitNotification(id: string, cwd: string, seconds: number): RunWaitResult {
   const timeoutMs = Math.ceil(seconds * 1000) + QUERY_TIMEOUT_MS;
   if (!Number.isFinite(seconds) || seconds <= 0 || !Number.isFinite(timeoutMs))
     throw new Error('workflow wait timeout must be a positive finite number of seconds');
@@ -257,10 +257,23 @@ export function waitNotification(id: string, cwd: string, seconds: number): RunW
     'not_found',
   ];
   const kind = kinds.find(k => k === j.result);
-  if (![0, 3].includes(r.code) || j.ok !== true || j.action !== 'wait' || j.runId !== id || !kind)
+  if (
+    ![0, 3].includes(r.code) ||
+    j.ok !== true ||
+    j.action !== 'wait' ||
+    j.runId !== id ||
+    !kind ||
+    (kind === 'attention' && (typeof j.attention !== 'object' || j.attention === null)) ||
+    (['deadline', 'owner_lost'].includes(kind) && typeof j.observedStatus !== 'string')
+  )
     throw new Error(`workflow wait ${id}: ${errorExcerpt(r.err || r.out)}`);
   if (kind === 'aborted' || kind === 'not_found') throw new Error(`workflow wait ${id}: ${kind}`);
-  return kind;
+  return {
+    kind,
+    ...(kind === 'attention'
+      ? { attention: j.attention }
+      : { runId: id, observedStatus: j.observedStatus }),
+  } as RunWaitResult;
 }
 
 function runOf(id: string, j: Json): RunView {

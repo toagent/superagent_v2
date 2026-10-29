@@ -78,12 +78,12 @@ test('native wait enforces bounded transport and rejects broken notifications', 
     stderr: Buffer.from('attached'),
   } as ReturnType<typeof Bun.spawnSync>);
   try {
-    expect(transport.waitNotification('r', '/tmp', 60)).toBe('deadline');
+    expect(transport.waitNotification('r', '/tmp', 60)).toMatchObject({ kind: 'deadline' });
     expect(spawn.mock.calls[0]?.[1]).toMatchObject({
       timeout: 60_000 + transport.QUERY_TIMEOUT_MS,
     });
     expect(spawn.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(['wait', '--timeout', '60']));
-    expect(transport.waitNotification('r', '/tmp', 0.1251)).toBe('deadline');
+    expect(transport.waitNotification('r', '/tmp', 0.1251)).toMatchObject({ kind: 'deadline' });
     expect(spawn.mock.calls[1]?.[1]).toMatchObject({ timeout: 126 + transport.QUERY_TIMEOUT_MS });
     expect(spawn.mock.calls[1]?.[0]).toEqual(expect.arrayContaining(['--timeout', '0.1251']));
     for (const seconds of [0, -1, NaN, Infinity, Number.MAX_VALUE])
@@ -98,13 +98,23 @@ test('native wait enforces bounded transport and rejects broken notifications', 
             action: 'wait',
             runId: 'r',
             result,
+            ...(result === 'attention'
+              ? {
+                  attention: {
+                    kind: 'stalled_tool_calls',
+                    runId: 'r',
+                    status: 'running',
+                    calls: [],
+                  },
+                }
+              : { observedStatus: 'running' }),
           })
         ),
         stderr: Buffer.alloc(0),
       } as ReturnType<typeof Bun.spawnSync>);
       if (result === 'aborted' || result === 'not_found')
         expect(() => transport.waitNotification('r', '/tmp', 60)).toThrow(result);
-      else expect(transport.waitNotification('r', '/tmp', 60)).toBe(result);
+      else expect(transport.waitNotification('r', '/tmp', 60)).toMatchObject({ kind: result });
     }
     spawn.mockReturnValue({
       exitCode: -1,
@@ -157,7 +167,7 @@ test('wait transport allows cold startup and shutdown beyond the former one-seco
     } as Bun.SyncSubprocess<Out, Err>;
   });
   try {
-    expect(transport.waitNotification('r', '/tmp', 60)).toBe('deadline');
+    expect(transport.waitNotification('r', '/tmp', 60)).toMatchObject({ kind: 'deadline' });
     expect(spawn).toHaveBeenCalledTimes(1);
   } finally {
     spawn.mockRestore();
