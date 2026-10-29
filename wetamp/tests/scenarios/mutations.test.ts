@@ -29,8 +29,8 @@ const mutations: Mutation[] = [
     name: 'S2',
     expectedError: 'integration: authorization/run mismatch',
     also: [
-      "import { control, coord, repoScope, same } from './coord';",
-      "import { caller, control, coord, repoScope, same } from './coord';",
+      "import { control, coord, repoScope, runScope, same } from './coord';",
+      "import { caller, control, coord, repoScope, runScope, same } from './coord';",
     ],
   },
   {
@@ -66,6 +66,18 @@ const mutations: Mutation[] = [
     expectedError: 'context: stale review refs',
   },
 ];
+
+test('project rules run mutation scenarios for every mutation target', () => {
+  const repo = join(import.meta.dir, '../../..');
+  const rules = JSON.parse(readFileSync(join(repo, '.superagent/rules.json'), 'utf8')) as {
+    required_checks?: { when: string[]; check: { cmd: string } }[];
+  };
+  const required = rules.required_checks?.find(rule =>
+    rule.check.cmd.includes('tests/scenarios/mutations.test.ts')
+  );
+  for (const file of new Set(mutations.map(mutation => `wetamp/${mutation.file}`)))
+    expect(required?.when).toContain(file);
+});
 
 test('known accident mutations each fail a real generated scenario', () => {
   const repo = join(import.meta.dir, '../../..');
