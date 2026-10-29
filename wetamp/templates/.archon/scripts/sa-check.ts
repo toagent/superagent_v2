@@ -1018,7 +1018,6 @@ function acceptOnce(
     base_results: baseResults,
     ...baseline,
     ...scope,
-    scope_base: scopeStart,
     ...(lines ? { net_lines: lines } : {}),
     head,
     checkout_fingerprint: fingerprint,
@@ -1032,6 +1031,8 @@ function finish(
     Accept &
     Partial<Pick<ReturnType<typeof acceptOnce>, 'patch' | 'delta'>>
 ): void {
+  const scopeStart = env('SCOPE_BASE');
+  if (scopeStart) writeFileSync(join(artifacts, `${tag}.scope-base`), scopeStart);
   const over = out.disposition === 'fail' ? null : budget();
   if (over) Object.assign(out, { budget_advisory: over });
   const gen = dirname(env('PLAN'));

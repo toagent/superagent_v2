@@ -78,7 +78,6 @@
     "reason": { "type": ["string", "null"] },
     "risk": { "type": ["string", "null"] },
     "out_of_scope": { "type": "array", "items": { "type": "string" } },
-    "scope_base": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
     "baseline": { "enum": ["comparable", "incomparable"] },
     "baseline_reason": { "type": "string" },
     "base_results": { "type": "array", "items": { "$ref": "#/$defs/BaseResult" } },

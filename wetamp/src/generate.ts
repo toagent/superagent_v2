@@ -199,14 +199,19 @@ export function buildWorkflow(
   const maxRounds = reviewRoundLimit(tiers.policy);
   const evidenceScopeBase = (path: string | undefined): string | undefined => {
     if (!path) return undefined;
-    try {
-      const value = JSON.parse(readFileSync(path, 'utf8')) as { scope_base?: unknown };
-      return typeof value.scope_base === 'string' && /^[0-9a-f]{40,64}$/.test(value.scope_base)
-        ? value.scope_base
-        : undefined;
-    } catch {
-      return undefined;
+    for (const [candidate, json] of [
+      [path, true],
+      [path.replace(/\.json$/, '.scope-base'), false],
+    ] as const) {
+      try {
+        const raw = readFileSync(candidate, 'utf8');
+        const value = json ? (JSON.parse(raw) as { scope_base?: unknown }).scope_base : raw.trim();
+        if (typeof value === 'string' && /^[0-9a-f]{40,64}$/.test(value)) return value;
+      } catch {
+        // Missing or legacy evidence falls through to the next representation.
+      }
     }
+    return undefined;
   };
   const carriedScopeBase = [
     ...Object.values(carried?.evidence ?? {}),

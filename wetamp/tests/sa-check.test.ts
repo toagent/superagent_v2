@@ -4159,10 +4159,11 @@ describe('sa-check script', () => {
     const check = (base: string, deltaBase = '') => runScript(repo, {
       kind: 'accept', plan, policy, pkgs: 'a', scope_pkgs: 'a', tag: 'verify-a', base,
       scope_base: runStart, delta_base: deltaBase, risk: 'G0',
-    }).out as { out_of_scope: string[]; disposition: string; scope_base: string };
+    }).out as { out_of_scope: string[]; disposition: string };
 
     const outside = commit('outside.ts');
-    expect(check(initial, outside)).toMatchObject({ out_of_scope: ['outside.ts'], disposition: 'repair', scope_base: runStart });
+    expect(check(initial, outside)).toMatchObject({ out_of_scope: ['outside.ts'], disposition: 'repair' });
+    expect(readFileSync(join(root, 'art', 'verify-a.scope-base'), 'utf8')).toBe(runStart);
     sh('git revert --no-edit HEAD', repo);
     expect(check(initial)).toMatchObject({ out_of_scope: [], disposition: 'advance' });
 

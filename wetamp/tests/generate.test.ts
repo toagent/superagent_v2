@@ -510,7 +510,8 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
   const root = tmp(),
     evidence = join(root, 'accepted.json'),
     start = 'b'.repeat(40);
-  fs.writeFileSync(evidence, JSON.stringify({ scope_base: start }));
+  fs.writeFileSync(evidence, '{}');
+  fs.writeFileSync(evidence.replace(/\.json$/, '.scope-base'), start);
   const adopted = nodesOf(
     buildWorkflow(p, milestones(p), 'adopted', '/GEN', false, NOW, loadTiers(), {
       from: 'old',
