@@ -72,9 +72,10 @@ archon workflow run investigate --cwd /path/to/repo --no-worktree "Why does the 
 
 ### `codebase env`
 
-Manage environment variables stored for a registered codebase. `--cwd` selects the codebase
-using the same exact-or-containing-path lookup as workflow runs. Values are accepted by `set`
-but are never printed; `list` prints sorted key names only. Engine-reserved names are rejected.
+Manage environment variables stored for a registered codebase. `--cwd` resolves Git checkouts by
+the same checkout identity as workflow runs; non-Git folder projects use exact-or-containing-path
+lookup. Values are accepted by `set` but are never printed; `list` prints sorted key names only.
+Engine-reserved names are rejected.
 
 ```bash
 archon codebase env list --cwd /path/to/repo

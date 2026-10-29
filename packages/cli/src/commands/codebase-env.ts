@@ -1,4 +1,10 @@
-import { findCodebaseByDefaultCwd, findCodebaseByPathPrefix } from '@archon/core/db/codebases';
+import {
+  findCodebaseByDefaultCwd,
+  findCodebaseByPathPrefix,
+  listCodebases,
+} from '@archon/core/db/codebases';
+import { findCodebaseForCheckoutPath } from '@archon/core/services/codebase-checkout-resolver';
+import { findRepoRoot } from '@archon/git';
 import {
   deleteCodebaseEnvVar,
   getCodebaseEnvVars,
@@ -11,7 +17,13 @@ export async function codebaseEnvCommand(
   args: string[],
   cwd: string
 ): Promise<void> {
-  const codebase = (await findCodebaseByDefaultCwd(cwd)) ?? (await findCodebaseByPathPrefix(cwd));
+  const repoRoot = await findRepoRoot(cwd);
+  const codebase = repoRoot
+    ? await findCodebaseForCheckoutPath(repoRoot, {
+        findCodebaseByDefaultCwd,
+        listCodebases,
+      })
+    : ((await findCodebaseByDefaultCwd(cwd)) ?? (await findCodebaseByPathPrefix(cwd)));
   if (!codebase) throw new Error(`No registered codebase found for: ${cwd}`);
 
   if (action === 'list' && args.length === 0) {

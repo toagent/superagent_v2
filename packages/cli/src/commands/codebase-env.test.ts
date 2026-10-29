@@ -1,6 +1,6 @@
 // @archon-test-isolated
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
@@ -10,6 +10,7 @@ import { getCodebaseEnvVars } from '@archon/core/db/env-vars';
 import { codebaseEnvCommand } from './codebase-env';
 
 const root = mkdtempSync(join(tmpdir(), 'archon-codebase-env-'));
+const unknownRoot = mkdtempSync(join(tmpdir(), 'archon-codebase-env-unknown-'));
 const previousHome = process.env.ARCHON_HOME;
 const previousUrl = process.env.DATABASE_URL;
 let output: string[] = [];
@@ -29,6 +30,7 @@ afterAll(async () => {
   if (previousUrl === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = previousUrl;
   await removeTempTree(root);
+  await removeTempTree(unknownRoot);
 });
 
 describe('codebase env command', () => {
@@ -42,9 +44,23 @@ describe('codebase env command', () => {
     expect(output.join('\n')).not.toContain('/jdk8');
     await codebaseEnvCommand('unset', ['JAVA_HOME'], root);
     expect(await getCodebaseEnvVars((await findCodebaseByDefaultCwd(root))!.id)).toEqual({});
-    await expect(codebaseEnvCommand('list', [], `${root}-missing`)).rejects.toThrow(
+    await expect(codebaseEnvCommand('list', [], unknownRoot)).rejects.toThrow(
       'No registered codebase'
     );
+
+    const folder = join(root, 'folder');
+    const nestedRepo = join(folder, 'nested');
+    mkdirSync(nestedRepo, { recursive: true });
+    expect(Bun.spawnSync(['git', 'init', '-q'], { cwd: nestedRepo }).exitCode).toBe(0);
+    const folderCodebase = await createCodebase({
+      name: 'folder',
+      default_cwd: folder,
+      kind: 'folder',
+    });
+    await expect(
+      codebaseEnvCommand('set', ['JAVA_HOME', '/wrong-target'], nestedRepo)
+    ).rejects.toThrow('No registered codebase');
+    expect(await getCodebaseEnvVars(folderCodebase.id)).toEqual({});
   });
 
   test('rejects every reserved key without storing or exposing values', async () => {
