@@ -199,7 +199,7 @@ function decide(payload, client, env = process.env) {
     if (derived || !['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event))
       return null;
     if (event === 'SessionStart') return require('./scratch.cjs').start(payload, client, env);
-    return stopGate.gate(payload);
+    return stopGate.gate(payload, client);
   }
   const text = shellText(name, input);
   const notices = new Set();
