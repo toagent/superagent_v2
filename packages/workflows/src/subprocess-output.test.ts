@@ -73,6 +73,17 @@ describe('runStreamingSubprocess', () => {
   });
 
   it('captures every short-lived subprocess while recorded nodes start concurrently', async () => {
+    if (process.platform !== 'win32') {
+      const ownerPgid = childProcess
+        .execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' })
+        .trim();
+      const unrecorded = await run(
+        `const { execFileSync } = require('node:child_process'); ` +
+          `process.stdout.write(execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim())`
+      );
+      expect(unrecorded.result.stdout.preview).toBe(ownerPgid);
+    }
+
     const trees = recordNodeProcessTrees();
     try {
       const results: Awaited<ReturnType<typeof run>>[] = [];

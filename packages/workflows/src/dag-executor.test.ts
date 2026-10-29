@@ -52,6 +52,7 @@ const mockLogger = {
  */
 let mockArtifactHome = '/nonexistent/home';
 let forceRealSubprocessOutput = false;
+const streamingSubprocessCalls: StreamingOptions[] = [];
 // Captured before the module mock below replaces the re-export.
 const { isPathInside } = await import('@archon/paths/archon-paths');
 mock.module('@archon/paths', () => ({
@@ -78,6 +79,7 @@ mock.module('@archon/paths', () => ({
 mock.module('./subprocess-output', () => ({
   ...realSubprocessOutput,
   runStreamingSubprocess: async (options: StreamingOptions) => {
+    streamingSubprocessCalls.push(options);
     const isolatedOptions = {
       ...options,
       env: { ...options.env, HOME: options.cwd, BASH_ENV: '/dev/null' },
@@ -655,6 +657,7 @@ function restoreExecFileAsyncMock(): void {
 
 function restoreSharedMocks(): void {
   restoreExecFileAsyncMock();
+  streamingSubprocessCalls.length = 0;
   mockSendQueryDag.mockClear();
   mockSendQueryDag.mockImplementation(async function* () {
     yield { type: 'agent_message_chunk', text: 'DAG AI response' };
@@ -20373,6 +20376,7 @@ describe('executeDagWorkflow -- script nodes', () => {
     'preserves Docker %s spawn attribution for a container %s script',
     async (code, runtime, script) => {
       const mockDeps = createMockDeps();
+      const streamingCallStart = streamingSubprocessCalls.length;
       const execSpy = spyOn(git, 'execFileAsync').mockImplementation(async (_command, args) => {
         if (args.at(-1) === CONTAINER_MARKER_PROBE) return { stdout: 'none\n', stderr: '' };
         throw Object.assign(new Error(`spawn docker ${code}`), { code });
@@ -20401,6 +20405,8 @@ describe('executeDagWorkflow -- script nodes', () => {
       expect(failed?.data?.error).toContain(`spawn docker ${code}`);
       expect(failed?.data?.error).not.toContain(`'${runtime}' executable not found in PATH`);
       expect(failed?.data?.error).not.toContain('permission denied (check cwd permissions)');
+      expect(streamingSubprocessCalls.slice(streamingCallStart)).toHaveLength(1);
+      expect(streamingSubprocessCalls[streamingCallStart]?.endTreeOnTimeout).toBe(false);
     }
   );
 
@@ -31654,6 +31660,7 @@ describe('subprocess credential redaction', () => {
   });
 
   it('removes exact injected credentials from every rejection field before persistence', async () => {
+    const streamingCallStart = streamingSubprocessCalls.length;
     const openAiSecret = 'sk-openai-not-shaped';
     const otherInjectedSecret = 'credential-with-no-known-shape';
     const projectSecret = 'project-secret-with-no-known-shape';
@@ -31736,6 +31743,8 @@ describe('subprocess credential redaction', () => {
 
       const nodeCalls = nodeDockerCalls(execSpy.mock.calls);
       expect(nodeCalls).toHaveLength(1);
+      expect(streamingSubprocessCalls.slice(streamingCallStart)).toHaveLength(1);
+      expect(streamingSubprocessCalls[streamingCallStart]?.endTreeOnTimeout).toBe(false);
       const dockerArgs = nodeCalls[0]?.[1] ?? [];
       expect(dockerArgs.join(' ')).toContain(openAiSecret);
       expect(dockerArgs.join(' ')).toContain(otherInjectedSecret);
@@ -40908,6 +40917,7 @@ describe('executeDagWorkflow -- until_bash honors the node timeout', () => {
   }
 
   it('applies the node timeout to a loop until_bash subprocess', async () => {
+    const streamingCallStart = streamingSubprocessCalls.length;
     const node = dagNodeSchema.parse({
       id: 'my-loop',
       timeout: 600_000,
@@ -40932,6 +40942,8 @@ describe('executeDagWorkflow -- until_bash honors the node timeout', () => {
       );
 
       expect(untilBashTimeout(execSpy)).toBe(600_000);
+      expect(streamingSubprocessCalls.slice(streamingCallStart)).toHaveLength(1);
+      expect(streamingSubprocessCalls[streamingCallStart]?.endTreeOnTimeout).toBe(false);
     } finally {
       execSpy.mockRestore();
     }
