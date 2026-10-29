@@ -187,22 +187,46 @@ interface RunEvidence {
 const compactEta = ({ ledger: l, run: r, samples }: EtaInput): EtaInput => ({ ledger: { run_id: l.run_id, gen_dir: l.gen_dir, repo: l.repo, workflow: l.workflow, started_at: l.started_at } as EtaInput['ledger'], run: { id: r.id, status: r.status, last_activity_at: r.last_activity_at, nodes: r.nodes?.map(n => ({ nodeId: n.nodeId, state: n.state, ...(n.startedAt ?? n.execution?.timing.startedAt ? { startedAt: n.startedAt ?? n.execution?.timing.startedAt } : {}), ...(n.durationMs !== undefined ? { durationMs: n.durationMs } : {}) })) }, samples });
 // prettier-ignore
 const compactEvidence = (e: RunEvidence): RunEvidence => ({ fingerprint: e.fingerprint, status: e.status, claims: e.claims, eta: compactEta(e.eta) });
+const eventsKey = Buffer.from('"events"');
+/** Legacy events are already reduced into nodes/samples; skip their payload before JSON.parse allocates it. */
+// prettier-ignore
+function stripEvents(raw: Buffer): [string, boolean] {
+  const parts: Buffer[] = []; let start = 0, quoted = false, escaped = false;
+  for (let i = 0; i <= raw.length - eventsKey.length; i++) {
+    const c = raw[i];
+    if (quoted) { if (escaped) escaped = false; else if (c === 92) escaped = true; else if (c === 34) quoted = false; continue; }
+    if (c !== 34) continue;
+    if (!raw.subarray(i, i + eventsKey.length).equals(eventsKey)) { quoted = true; continue; }
+    let j = i + eventsKey.length; while ([9, 10, 13, 32].includes(raw[j])) j++;
+    if (raw[j++] !== 58) { i += eventsKey.length - 1; continue; } while ([9, 10, 13, 32].includes(raw[j])) j++;
+    if (raw[j] !== 91) { i += eventsKey.length - 1; continue; }
+    let depth = 1, nestedQuoted = false, nestedEscaped = false, k = j + 1;
+    for (; k < raw.length && depth; k++) { const c = raw[k]; if (nestedQuoted) { if (nestedEscaped) nestedEscaped = false; else if (c === 92) nestedEscaped = true; else if (c === 34) nestedQuoted = false; } else if (c === 34) nestedQuoted = true; else if (c === 91) depth++; else if (c === 93) depth--; }
+    if (depth) break;
+    parts.push(raw.subarray(start, j + 1), raw.subarray(k - 1, k)); start = k; i = k - 1;
+  }
+  if (!parts.length) return [raw.toString('utf8'), false];
+  parts.push(raw.subarray(start)); return [Buffer.concat(parts).toString('utf8'), true];
+}
 /** Stream top-level entries so a legacy multi-GB cache never exists as one parsed object. */
 // prettier-ignore
 function priorEvidence(file: string): Partial<Record<string, RunEvidence>> {
-  let fd: number | undefined, entry = '', depth = 0, quoted = false, escaped = false;
-  const out: Record<string, RunEvidence> = {}, decoder = new TextDecoder(), b = Buffer.alloc(65536);
-  const accept = (): void => { try { for (const [k, v] of Object.entries(JSON.parse(`{${entry}}`) as Record<string, RunEvidence>)) out[k] = compactEvidence(v); } catch { /* Ignore a malformed cache entry. */ } entry = ''; };
+  let fd: number | undefined, depth = 0, quoted = false, escaped = false, start = 0, migrated = 0;
+  const out: Record<string, RunEvidence> = {}, parts: Buffer[] = [], b = Buffer.alloc(65536);
+  const accept = (): boolean => { try { const [entry, legacy] = stripEvents(Buffer.concat(parts)); for (const [k, v] of Object.entries(JSON.parse(`{${entry}}`) as Record<string, RunEvidence>)) out[k] = compactEvidence(v); return legacy; } catch { return false; /* Ignore a malformed cache entry. */ } finally { parts.length = 0; } };
   try {
     fd = openSync(file, 'r'); let size = 0;
-    while ((size = readSync(fd, b, 0, b.length, null)) > 0) for (const c of decoder.decode(b.subarray(0, size), { stream: true })) {
-      if (!depth) { if (c === '{') depth = 1; continue; }
-      if (!quoted && depth === 1 && (c === ',' || c === '}')) { if (entry.trim()) accept(); if (c === '}') depth = 0; continue; }
-      entry += c;
-      if (quoted) { if (escaped) escaped = false; else if (c === '\\') escaped = true; else if (c === '"') quoted = false; }
-      else if (c === '"') quoted = true; else if (c === '{' || c === '[') depth++; else if (c === '}' || c === ']') depth--;
+    while ((size = readSync(fd, b, 0, b.length, null)) > 0) {
+      for (let i = 0; i < size; i++) {
+        const c = b[i];
+        if (!depth) { if (c === 123) { depth = 1; start = i + 1; } continue; }
+        if (!quoted && depth === 1 && (c === 44 || c === 125)) { if (i > start || parts.length) { parts.push(Buffer.from(b.subarray(start, i))); if (accept() && ++migrated % 16 === 0) Bun.gc(true); } start = i + 1; if (c === 125) depth = 0; continue; }
+        if (quoted) { if (escaped) escaped = false; else if (c === 92) escaped = true; else if (c === 34) quoted = false; }
+        else if (c === 34) quoted = true; else if (c === 123 || c === 91) depth++; else if (c === 125 || c === 93) depth--;
+      }
+      if (depth && start < size) parts.push(Buffer.from(b.subarray(start, size)));
+      start = 0;
     }
-    decoder.decode();
   } catch { return {}; } finally { if (fd !== undefined) closeSync(fd); }
   return out;
 }
