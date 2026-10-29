@@ -211,7 +211,7 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
     results: [{ command: 'wetamp/scripts/engine-acceptance.sh' }, { run_id: 'probe-run' }],
   });
   expect(follows).toBe(1);
-  expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`), 'utf8')).status).toBe('promoted');
+  expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`), 'utf8'))).toMatchObject({ status: 'promoted', console_follow_error: 'Error: restart failed' });
   const installedAcceptance = join(
     process.env.SUPERAGENT_HOME!,
     'engine',

@@ -338,6 +338,7 @@ interface PromotionMarker {
   token?: string;
   error?: string;
   evidence_path?: string;
+  console_follow_error?: string;
 }
 
 const markerPath = (sha: string): string => join(promotionDir(), `${sha}.json`);
@@ -546,11 +547,24 @@ export function promote(
       throw new Error('engine promote: 1.0.0 was rewritten during acceptance');
     writeAtomic(receiptPath(sha), JSON.stringify(next, null, 2) + '\n');
     switchCurrent(snapshot);
-    writeMarker({ ...marker, status: 'promoted', at: new Date().toISOString() });
+    const promoted: PromotionMarker = {
+      ...marker,
+      status: 'promoted',
+      at: new Date().toISOString(),
+    };
+    writeMarker(promoted);
     try {
       (dependencies.followConsole ?? followCurrentConsole)(snapshot);
     } catch (error) {
-      console.warn(`engine promote: console follow failed: ${String(error)}`);
+      const message = String(error);
+      console.warn(`engine promote: console follow failed: ${message}`);
+      try {
+        writeMarker({ ...promoted, console_follow_error: message });
+      } catch (markerError) {
+        console.warn(
+          `engine promote: console follow warning persistence failed: ${String(markerError)}`
+        );
+      }
     }
     return next;
   } catch (error) {
