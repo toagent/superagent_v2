@@ -44,7 +44,7 @@ import { caller, control, coord, repoScope, runScope, same, presence, type Contr
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
 // prettier-ignore
-import { heartbeat, shouldWriteHeartbeat, tickHealth, type Heartbeat, type TickRecord } from './heartbeat';
+import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import {
   askQuestion,
@@ -1312,6 +1312,29 @@ export const waitClock = {
   },
 };
 
+const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
+  const now = Date.now();
+  try {
+    const value = readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined;
+    if (!value) return { available: false, reason: 'heartbeat.json missing' };
+    const summary = heartbeatSummary(value, who, now);
+    if (!summary.available) return summary;
+    let tick: TickRecord | undefined;
+    try {
+      tick = readJson(join(home().sa, 'tick.json')) as TickRecord | undefined;
+    } catch {
+      /* reported as a missing tick */
+    }
+    const warnings = [...(summary.warnings ?? []), ...tickHealth(tick, now).messages];
+    return { ...summary, ...(warnings.length ? { warnings } : {}) };
+  } catch (error) {
+    return {
+      available: false,
+      reason: `heartbeat.json: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+};
+
 /** Observe engine state and inbox; continuation is an explicit engine action. */
 export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
   const deadline = waitClock.now() + timeoutS * 1000;
@@ -1327,7 +1350,8 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
     if (attention && c.exit === EXIT.running) waitClock.sleep(1000);
     const left = (deadline - waitClock.now()) / 1000;
-    if (c.exit !== EXIT.running || left <= 0) return summary(l, run, c);
+    if (c.exit !== EXIT.running) return summary(l, run, c);
+    if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who) };
     attention = waitNotification(l.archon_run_id, l.repo, left) === 'attention';
   }
 }
