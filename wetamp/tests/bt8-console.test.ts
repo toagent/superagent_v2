@@ -11,6 +11,7 @@ import {
   needsRestart,
   refreshConsole,
   stopWeb,
+  WEB_BUILD_FLAGS,
   type WebState,
 } from '../src/web/server';
 import { WETAMP } from '../src/config';
@@ -114,6 +115,7 @@ test('whitelisted child environment rejects unsupported DSN, keeps native home a
   expect(() => consoleEnv()).toThrow('SQLite-only');
   process.env.DATABASE_URL = '';
   const env = consoleEnv();
+  expect(WEB_BUILD_FLAGS).toEqual(['--bun', 'x', 'vite', 'build', '--configLoader', 'native']);
   expect(env.HOST).toBe('127.0.0.1');
   expect(env.ARCHON_HOME).toBe(join(root, 'archon'));
   for (const key of ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'NODE_OPTIONS'])

@@ -149,6 +149,14 @@ import {
   staleEngineSnapshot,
 } from './engine';
 
+export const consoleLaunchdLabel = (): string =>
+  process.env.SA_CONSOLE_LABEL ?? 'com.wetamp.superagent-console';
+export const consoleLaunchdPlist = (): string =>
+  join(
+    process.env.SA_LAUNCHD_DIR ?? join(homedir(), 'Library/LaunchAgents'),
+    `${consoleLaunchdLabel()}.plist`
+  );
+
 const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
 if (
   inheritedTmp &&
@@ -1915,7 +1923,26 @@ function health(cwd?: string, verbose = false): number {
   const upstreamFiles = upstreamDiff ? upstreamDiff.split('\n') : [];
   const upstreamClean = clean.exitCode === 0 && upstreamFiles.length === 0;
   const worker = codexWorkerProblem();
-  const ok = doctor.code === 0 && upstreamClean && !drift.length && !capabilities.length && !worker;
+  const consoleDir = join(home().sa, 'console'),
+    consoleError = join(consoleDir, 'error');
+  let consoleProblem: string | undefined;
+  if (existsSync(join(consoleDir, 'decision-origin'))) {
+    let error = existsSync(consoleError) ? readFileSync(consoleError, 'utf8').trim() : '';
+    try {
+      const state = readJson(join(home().sa, 'web.json')) as { pid?: unknown } | undefined;
+      if (!pidAlive(Number(state?.pid))) error ||= 'console not running';
+    } catch {
+      error ||= 'console not running';
+    }
+    if (error) consoleProblem = `${error}; inspect ${join(home().sa, 'console.log')}`;
+  }
+  const ok =
+    doctor.code === 0 &&
+    upstreamClean &&
+    !drift.length &&
+    !capabilities.length &&
+    !worker &&
+    !consoleProblem;
   print({
     ok,
     mode,
@@ -1930,6 +1957,7 @@ function health(cwd?: string, verbose = false): number {
       : {}),
     ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
+    ...(consoleProblem ? { console: { ok: false, reason: consoleProblem } } : {}),
   });
   return ok ? 0 : drift.length || capabilities.length ? EXIT_ALIAS_DRIFT : 1;
 }
@@ -4007,7 +4035,7 @@ export async function superviseTickCli(
   }
   let output: Record<string, unknown> = {};
   const exit = tickOutput(mode, value => (output = value));
-  if (!mode.noGlobal) await claudeCommanderFailover();
+  if (!mode.noGlobal && exit === 0) await claudeCommanderFailover();
   try {
     if (!mode.noGlobal) {
       const result = await sync();

@@ -33,6 +33,7 @@ const keys = [
   'SA_ARCHON_BIN',
   'SUPERAGENT_ROLE',
   'SA_JOB_ID',
+  'SA_LAUNCHD_DIR',
 ] as const;
 const originalEnv = keys.map(k => process.env[k]);
 const gc = (dryRun = false, ruleVersion?: string) =>
@@ -657,6 +658,7 @@ test('engine gc removes read-only failed candidates and preserves protected or l
     cancelledRef: '2222222',
     running: 'eeeeeee',
     unknown: 'fffffff',
+    console: '3333333',
   };
   for (const sha of Object.values(shas)) {
     mkdirSync(join(root, sha), { recursive: true });
@@ -673,6 +675,10 @@ test('engine gc removes read-only failed candidates and preserves protected or l
     writeFileSync(join(root, 'receipts', `${sha}.json`), JSON.stringify({ sha, at }));
   writeFileSync(
     join(root, 'promotions', `${shas.failed}.json`),
+    JSON.stringify({ status: 'failed' })
+  );
+  writeFileSync(
+    join(root, 'promotions', `${shas.console}.json`),
     JSON.stringify({ status: 'failed' })
   );
   const identity = inspectProcess(process.pid);
@@ -708,6 +714,19 @@ test('engine gc removes read-only failed candidates and preserves protected or l
   expect(dry.find(e => e.path === join(root, shas.cancelledRef))?.action).toBe('would_remove');
   expect(dry.find(e => e.path === join(root, shas.failedRef))).toBeUndefined();
   expect(dry.find(e => e.path === join(root, shas.unknown))?.action).toBe('skipped');
+  process.env.SA_LAUNCHD_DIR = join(f.root, 'LaunchAgents');
+  mkdirSync(process.env.SA_LAUNCHD_DIR);
+  const plist = join(process.env.SA_LAUNCHD_DIR, 'com.wetamp.superagent-console.plist');
+  const consolePlist = `<plist><dict><key>ProgramArguments</key><array><string>${join(root, shas.console, 'wetamp/src/cli.ts')}</string></array></dict></plist>`;
+  writeFileSync(plist, consolePlist);
+  expect(collectEngineSnapshots(true).find(e => e.path === join(root, shas.console))).toMatchObject(
+    { action: 'skipped', reason: 'console snapshot retained' }
+  );
+  writeFileSync(plist, 'invalid');
+  expect(collectEngineSnapshots(true)[0]?.reason).toContain(
+    'console plist unreadable; all engine snapshots retained'
+  );
+  writeFileSync(plist, consolePlist);
   collectEngineSnapshots(false);
   expect(existsSync(join(root, shas.failed))).toBe(false);
   expect(existsSync(join(root, shas.cancelledRef))).toBe(false);
@@ -718,6 +737,7 @@ test('engine gc removes read-only failed candidates and preserves protected or l
     shas.failedRef,
     shas.running,
     shas.unknown,
+    shas.console,
   ])
     expect(existsSync(join(root, sha))).toBe(true);
 });

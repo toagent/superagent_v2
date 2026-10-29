@@ -5,7 +5,7 @@ import { caller, coord, runScope } from '../coord';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, chmodSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { home, WETAMP, writeAtomic } from '../config';
 import { residentHash } from '../generate';
 import { ownerLabel } from '../coord';
@@ -14,8 +14,7 @@ import { alive } from '../jobs';
 import { createLoader, type Snapshot } from '../board/data';
 import { fmtTokens, requestUsageRefresh } from '../usage';
 import { cockpit } from '../board/cockpit';
-import { parseArgs } from '../cli';
-import { homedir } from 'node:os';
+import { consoleLaunchdLabel, consoleLaunchdPlist, parseArgs } from '../cli';
 import { episodeOf } from '../memory';
 import { memoryOverview, memoryPanel } from './memory';
 
@@ -44,7 +43,7 @@ export function webState(): ConsoleState | null {
 }
 export const webUrl = (s: ConsoleState): string =>
   `http://127.0.0.1:${String(s.port)}/console?t=${s.token}`;
-const label = (): string => process.env.SA_CONSOLE_LABEL ?? 'com.wetamp.superagent-console';
+const label = consoleLaunchdLabel;
 const domain = (): string => `gui/${String(process.getuid?.())}`;
 const job = (): string => `${domain()}/${label()}`;
 const launch = (...args: string[]): ReturnType<typeof spawnSync> =>
@@ -346,6 +345,7 @@ export function handler(
     }
   };
 }
+export const WEB_BUILD_FLAGS = ['--bun', 'x', 'vite', 'build', '--configLoader', 'native'];
 export async function ensureWebDist(hash = residentHash()): Promise<void> {
   const { observerDist } = await import('./archon');
   const dist = observerDist(),
@@ -356,7 +356,7 @@ export async function ensureWebDist(hash = residentHash()): Promise<void> {
     readFileSync(stamp, 'utf8') === hash
   )
     return;
-  const p = Bun.spawn([process.execPath, 'x', 'vite', 'build', '--outDir', dist], {
+  const p = Bun.spawn([process.execPath, ...WEB_BUILD_FLAGS, '--outDir', dist], {
     cwd: join(WETAMP, '../packages/web'),
     env: consoleEnv(),
     stdout: 'ignore',
@@ -494,8 +494,8 @@ export async function startWeb(): Promise<WebState> {
         /[&<>"']/g,
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c] ?? c
       );
-    const dir = process.env.SA_LAUNCHD_DIR ?? join(homedir(), 'Library/LaunchAgents'),
-      file = join(dir, `${label()}.plist`);
+    const file = consoleLaunchdPlist(),
+      dir = dirname(file);
     mkdirSync(dir, { recursive: true });
     const text = `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${xml(label())}</string><key>ProgramArguments</key><array>${[process.execPath, '--no-env-file', '--preload', join(WETAMP, 'src/web/archon.ts'), join(WETAMP, 'src/cli.ts'), 'console', 'serve'].map(x => `<string>${xml(x)}</string>`).join('')}</array><key>EnvironmentVariables</key><dict>${Object.entries(
       consoleEnv()

@@ -2105,8 +2105,13 @@ describe('health upstream reporting', () => {
       warn.mockRestore();
     }
   });
-  const check = (files: string[], exitCode = 0, verbose = false) => {
-    stub([]);
+  const check = (files: string[], exitCode = 0, verbose = false, consoleError?: string) => {
+    const fixture = stub([]);
+    if (consoleError) {
+      mkdirSync(join(fixture.root, 'home/console'), { recursive: true });
+      writeFileSync(join(fixture.root, 'home/console/decision-origin'), 'https://console.test');
+      writeFileSync(join(fixture.root, 'home/console/error'), consoleError);
+    }
     const home = tmp();
     const capabilities = JSON.parse(readFileSync(join(WETAMP, 'capabilities.json'), 'utf8')) as {
       use: Record<string, string>;
@@ -2177,6 +2182,18 @@ describe('health upstream reporting', () => {
       ok: false,
       upstream_clean: false,
       reason: 'upstream_check_failed',
+    });
+  });
+  test('configured broken console fails health while an unconfigured console is omitted', () => {
+    expect(check([]).json).not.toHaveProperty('console');
+    const result = check([], 0, false, 'build:web failed');
+    expect(result.code).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      console: {
+        ok: false,
+        reason: expect.stringMatching(/build:web failed.*console\.log/),
+      },
     });
   });
 });
