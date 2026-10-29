@@ -1499,9 +1499,10 @@ export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; er
 
 function checkedPlan(planPath: string, override?: string) {
   const rules = applyPlanRules(loadPlan(planPath), override);
-  const plan_lint = lintPlan(rules.plan, override);
-  plan_lint.warnings.push(...rules.warnings, ...planPrecheck(rules.plan, rules.plan.repo));
-  plan_lint.rejected ||= rules.rejected;
+  const plan_lint = lintPlan(rules.plan, override),
+    precheck = planPrecheck(rules.plan, rules.plan.repo, override);
+  plan_lint.warnings.push(...rules.warnings, ...precheck.blocking, ...precheck.info);
+  plan_lint.rejected ||= rules.rejected || precheck.blocking.length > 0;
   if (override?.trim()) plan_lint.override = redact(override).slice(0, 240);
   return { plan: rules.plan, plan_lint, rules_added: rules.added };
 }

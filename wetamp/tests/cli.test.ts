@@ -231,6 +231,14 @@ test('plan check validates without dispatch or launch-failure writes', () => {
     })
   );
   expect(invoke().stderr.toString()).toContain('intersects frozen path');
+  process.env.SUPERAGENT_MEMORY = 'on';
+  const episodes = join(s.root, 'home/memory/episodes');
+  mkdirSync(episodes, { recursive: true });
+  // prettier-ignore
+  for (let i = 0; i < 3; i++)
+    writeFileSync(join(episodes, `repeat-${i}.json`), JSON.stringify({ id: `repeat-${i}`,
+      project: repo, reasons: ['ruler_invalid'], at: new Date().toISOString() }));
+  expect(invoke().stderr.toString()).toContain('acceptance 3 次');
   const overridden = invoke(['--lint-override', 'approved exception']);
   expect(overridden.exitCode).toBe(0);
   expect(JSON.parse(overridden.stdout.toString())).toMatchObject({
@@ -252,6 +260,30 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   expect(invalid.stderr.toString()).toContain(schemaError);
   expect(readdirSync(failures)).toEqual(['existing.json']);
   expect(readFileSync(join(failures, 'existing.json'), 'utf8')).toBe('{}');
+  expect(s.calls()).toEqual([]);
+});
+
+test('plan precheck blocking ignores lint override', () => {
+  const s = stub([]),
+    repo = gitRepo(s.root),
+    path = fixturePlan(s.root, repo);
+  const plan = JSON.parse(readFileSync(path, 'utf8'));
+  plan.packages[0].accept = [{ cmd: 'bun test missing.test.ts', timeout_s: 1 }];
+  writeFileSync(path, JSON.stringify(plan));
+  const result = Bun.spawnSync(
+    [
+      process.execPath,
+      join(import.meta.dir, '../src/cli.ts'),
+      'plan',
+      'check',
+      path,
+      '--lint-override',
+      'cannot bypass precheck',
+    ],
+    { env: { ...process.env, SUPERAGENT_WRITE_ROOTS: s.root }, stdout: 'pipe', stderr: 'pipe' }
+  );
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr.toString()).toContain('base_ref 不存在 missing.test.ts');
   expect(s.calls()).toEqual([]);
 });
 
