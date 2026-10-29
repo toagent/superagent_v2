@@ -80,7 +80,7 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(s.scratchCalls).toHaveLength(1);
   expect(s.taskCalls.slice(-2)).toEqual([['adopt', 'session', '--owner', 'new'], ['resume', 'session', '执行中']]);
   expect(s.c.owner(runScope(run)).owner?.session_id).toBe('new');
-  expect(s.c.owner(runScope(completed)).owner).toBeNull();
+  expect(s.c.owner(runScope(completed)).owner?.session_id).toBe('old');
   expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
   expect(s.c.owner(runScope(run)).generation).toBe(generation + 1);
   expect(s.c.owner(repoScope(s.repo)).generation).toBe(repoGeneration + 1);
