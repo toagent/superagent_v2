@@ -17,6 +17,7 @@ import { cockpit } from '../board/cockpit';
 import { consoleLaunchdLabel, consoleLaunchdPlist, parseArgs } from '../cli';
 import { episodeOf } from '../memory';
 import { memoryOverview, memoryPanel } from './memory';
+import { makeWritable } from '../engine';
 
 interface LegacyWebState {
   port: number;
@@ -356,6 +357,7 @@ export async function ensureWebDist(hash = residentHash()): Promise<void> {
     readFileSync(stamp, 'utf8') === hash
   )
     return;
+  if (existsSync(dist)) makeWritable(dist);
   const p = Bun.spawn([process.execPath, ...WEB_BUILD_FLAGS, '--outDir', dist], {
     cwd: join(WETAMP, '../packages/web'),
     env: consoleEnv(),

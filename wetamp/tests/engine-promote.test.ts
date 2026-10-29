@@ -17,6 +17,7 @@ import {
   currentEngineSnapshot,
   engineCommand,
   engineStatus,
+  followCurrentConsole,
   promote,
   rollback,
   runAcceptance,
@@ -112,6 +113,27 @@ test('engine acceptance removes success, failure, and timeout scratch but refuse
   expect(existsSync(target)).toBe(true);
 });
 
+test('current console follows only a loaded launchd job', () => {
+  const root = tmp(),
+    snapshot = join(root, 'snapshot'),
+    restarted: string[] = [];
+  process.env.SUPERAGENT_HOME = root;
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'web.json'), JSON.stringify({ label: 'fixture' }));
+  followCurrentConsole(
+    snapshot,
+    () => ({ exitCode: 1, stderr: '' }),
+    path => restarted.push(path)
+  );
+  expect(restarted).toEqual([]);
+  followCurrentConsole(
+    snapshot,
+    () => ({ exitCode: 0, stderr: '' }),
+    path => restarted.push(path)
+  );
+  expect(restarted).toEqual([snapshot]);
+});
+
 test('engine acceptance script isolates files and stops at the first failure', () => {
   const root = tmp(),
     wetamp = join(root, 'wetamp'),
@@ -183,10 +205,12 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   expect(() => promote(first, f.evidence)).toThrow('first-use only');
   const second = commit(f.source, 'second');
   engineCommand(['hold', 'on']);
-  expect(promote(second, undefined, { probe: successfulProbe })).toMatchObject({
+  let follows = 0;
+  expect(promote(second, undefined, { probe: successfulProbe, followConsole: () => { follows++; throw new Error('restart failed'); } })).toMatchObject({
     sha: second,
     results: [{ command: 'wetamp/scripts/engine-acceptance.sh' }, { run_id: 'probe-run' }],
   });
+  expect(follows).toBe(1);
   expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${second}.json`), 'utf8')).status).toBe('promoted');
   const installedAcceptance = join(
     process.env.SUPERAGENT_HOME!,

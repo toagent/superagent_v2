@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createDemandSnapshot,
   consoleEnv,
   consoleStatus,
   handler,
+  ensureWebDist,
   legacyPids,
   migrate,
   needsRestart,
@@ -26,10 +27,24 @@ afterEach(() => {
     'TELEGRAM_BOT_TOKEN',
     'SLACK_BOT_TOKEN',
     'NODE_OPTIONS',
+    'SA_CONSOLE_WEB_DIST',
   ]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
+});
+test('web dist rebuild restores owner write access to copied read-only files', async () => {
+  const root = tmp(),
+    dist = join(root, 'dist'),
+    copied = join(dist, 'favicon.png');
+  process.env.SUPERAGENT_HOME = root;
+  process.env.ARCHON_HOME = join(root, 'archon');
+  process.env.SA_CONSOLE_WEB_DIST = dist;
+  await ensureWebDist('first');
+  chmodSync(copied, 0o444);
+  await ensureWebDist('second');
+  expect(readFileSync(join(dist, '.superagent-engine'), 'utf8')).toBe('second');
+  expect(existsSync(copied)).toBe(true);
 });
 const request = (path: string, method = 'GET', headers: Record<string, string> = {}): Request =>
   new Request(`http://127.0.0.1:39890${path}`, {

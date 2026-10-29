@@ -390,6 +390,33 @@ class ProbeFailed extends Error {
 
 export interface PromotionDependencies {
   probe?: (snapshot: string) => ProbeEvidence;
+  followConsole?: (snapshot: string) => void;
+}
+
+type ConsoleLaunch = (...args: string[]) => { exitCode: number | null; stderr: unknown };
+
+export function followCurrentConsole(
+  snapshot: string,
+  launch: ConsoleLaunch = (...args) =>
+    Bun.spawnSync(['launchctl', ...args], { stdout: 'ignore', stderr: 'pipe' }),
+  restart = (path: string): void => {
+    const result = Bun.spawnSync(
+      [process.execPath, join(path, 'wetamp', 'src', 'cli.ts'), 'console', 'start'],
+      { cwd: join(path, 'wetamp'), stdout: 'ignore', stderr: 'pipe' }
+    );
+    if (result.exitCode !== 0)
+      throw new Error(result.stderr.toString().trim() || `exit ${String(result.exitCode)}`);
+  }
+): void {
+  let state: { label?: unknown };
+  try {
+    state = JSON.parse(readFileSync(join(home().sa, 'web.json'), 'utf8')) as typeof state;
+  } catch {
+    return;
+  }
+  if (typeof state.label !== 'string' || process.getuid === undefined) return;
+  if (launch('print', `gui/${String(process.getuid())}/${state.label}`).exitCode !== 0) return;
+  restart(snapshot);
 }
 
 export function runSnapshotProbe(snapshot: string, scratchRoot = SCRATCH_ROOT): ProbeEvidence {
@@ -520,6 +547,11 @@ export function promote(
     writeAtomic(receiptPath(sha), JSON.stringify(next, null, 2) + '\n');
     switchCurrent(snapshot);
     writeMarker({ ...marker, status: 'promoted', at: new Date().toISOString() });
+    try {
+      (dependencies.followConsole ?? followCurrentConsole)(snapshot);
+    } catch (error) {
+      console.warn(`engine promote: console follow failed: ${String(error)}`);
+    }
     return next;
   } catch (error) {
     if (marker) {
