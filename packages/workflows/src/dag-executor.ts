@@ -3004,7 +3004,7 @@ export function buildSubprocessDockerArgs(
 type RawSubprocessRejection = StreamedSubprocessError;
 
 function isSubprocessTimeout(error: RawSubprocessRejection): boolean {
-  return error.killed === true && error.code === null;
+  return error.treeSurvived !== true && error.killed === true && error.code === null;
 }
 
 /**
@@ -3044,6 +3044,7 @@ async function runSubprocess(
     artifactsDir: string;
     artifactKey: string;
     retainRawStdout?: boolean;
+    endTreeOnTimeout?: true;
     retention: SubprocessRetention;
   }
 ): Promise<{ stdout: string; stderr: string; credentialValues: readonly string[] }> {
@@ -3088,6 +3089,7 @@ async function runSubprocess(
       stdoutPath,
       stderrPath,
       retainRawStdout: options.retainRawStdout,
+      endTreeOnTimeout: execContext.kind === 'host' && options.endTreeOnTimeout === true,
     });
     await logExecOutput(logDir, workflowRunId, nodeId, label, {
       stdoutTail: retainStreamTail(result.stdout.tail),
@@ -3535,6 +3537,7 @@ async function executeBashNode(
         artifactsDir,
         artifactKey: stepName,
         retainRawStdout: true,
+        endTreeOnTimeout: true,
         retention: {
           logDir,
           workflowRunId: workflowRun.id,
@@ -3582,6 +3585,8 @@ async function executeBashNode(
       errorMsg = err.message;
     } else if (isTimeout) {
       errorMsg = `${label} timed out after ${String(timeout)}ms`;
+    } else if (err.treeSurvived) {
+      errorMsg = `${label} failed: ${err.message}`;
     } else if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
       errorMsg =
         `${label} failed: bash executable not found at '${bashPath}'. ` +
@@ -3894,6 +3899,7 @@ async function executeScriptNode(
       artifactsDir,
       artifactKey: stepName,
       retainRawStdout: true,
+      endTreeOnTimeout: true,
       retention: {
         logDir,
         workflowRunId: workflowRun.id,
@@ -3937,6 +3943,8 @@ async function executeScriptNode(
       errorMsg = err.message;
     } else if (isTimeout) {
       errorMsg = `${label} timed out after ${String(timeout)}ms`;
+    } else if (err.treeSurvived) {
+      errorMsg = `${label} failed: ${err.message}`;
     } else if (execContext.kind === 'host' && err.code === 'ENOENT') {
       errorMsg = `${label} failed: '${cmd}' executable not found in PATH`;
     } else if (execContext.kind === 'host' && err.code === 'EACCES') {

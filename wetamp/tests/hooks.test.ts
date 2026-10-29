@@ -29,6 +29,8 @@ const baseEnv = Object.fromEntries(
 ) as Record<string, string>;
 
 type Out = {
+  decision?: string;
+  reason?: string;
   superagentPermissionCategory?: string;
   hookSpecificOutput?: {
     permissionDecision?: string;
@@ -495,7 +497,36 @@ describe('guard.cjs', () => {
 
   test('Stop 在 stop_gate=off 时静默', () => {
     const { guard } = setup();
-    expect(guard('claude', { hook_event_name: 'Stop' })).toBeNull();
+    expect(guard('claude', { hook_event_name: 'Stop', session_id: 'idle' })).toBeNull();
+  });
+
+  test('HB5: commander Stop requires waits once and fails open when evidence is unavailable', () => {
+    const gate = (createRequire(import.meta.url)('../hooks/stop-gate.cjs') as any).waiterGate;
+    const payload = { hook_event_name: 'Stop', session_id: 's' };
+    const runs = () => [
+      { run_id: 'run-a', status: 'running' },
+      { run_id: 'run-b', status: 'pending' },
+    ];
+    const processes = () => '10 1 claude\n11 10 superagent wait run-a --timeout 900';
+    const check = (deps = {}, p: object = payload) =>
+      gate(p, 'claude', { runs, processes, rootPid: 10, ...deps });
+    const blocked = check();
+    expect(blocked.decision).toBe('block');
+    expect(blocked.reason).toContain('superagent wait run-b --timeout 900');
+    expect(blocked.reason).not.toContain('wait run-a');
+    expect(check({}, { ...payload, stop_hook_active: true }).decision).toBeUndefined();
+    expect(check({ processes: () => `${processes()}\n12 10 bun cli.ts wait run-b` })).toBeNull();
+    expect(check({ derived: true })).toBeNull();
+    expect(check({ runs: () => [{ run_id: 'held', status: 'held' }] })).toBeNull();
+    for (const broken of [
+      {
+        runs: () => {
+          throw new Error('bridge failed');
+        },
+      },
+      { runs, processes: () => '' },
+    ])
+      expect(check(broken).systemMessage).toContain('无法确认等待进程');
   });
 
   test('G-1：并发写入全部放行，在锁内累计且只提示首次超限', async () => {

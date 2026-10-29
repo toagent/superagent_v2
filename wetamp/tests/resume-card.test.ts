@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { Coordination, type RunRef } from '../src/coord';
-import { resumeCard } from '../src/resume-card';
+import { resumeCard, waitingRuns } from '../src/resume-card';
 process.env.TZ = 'Asia/Taipei';
 const trackTempRoot = trackTempRoots();
 const tmp = (): string => trackTempRoot(mkdtempSync(join(tmpdir(), 'resume-card-')));
@@ -17,6 +17,14 @@ const ledger = (run_id: string, session_id: string): RunRef => ({
   controller: { client: 'codex', pid: 1, generation: 1, session_id },
 });
 describe('resume card', () => {
+  test('wait bridge returns only running and pending runs', () => {
+    expect(
+      waitingRuns(
+        's',
+        ['running', 'pending', 'held', 'completed'].map(status => ({ run_id: status, status }))
+      ).map(run => run.status)
+    ).toEqual(['running', 'pending']);
+  });
   test('Claude facts preserve quotes, replies, compression count, and owned unfinished runs', async () => {
     const home = tmp(),
       dir = join(home, 'projects', 'repo'),
