@@ -76,6 +76,57 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
   });
 });
 
+test('heartbeat separates active runs from typed waits and reports coordination once', () => {
+  const who = owner(1),
+    repo = '/repo/project';
+  const failed = {
+    ...row('failed', who, 'failed'),
+    repo,
+    engine: {
+      title: 'failed',
+      milestones: [],
+      currentMilestone: null,
+      states: [],
+      firstPass: false as const,
+      reason: 'repair_exhausted:scope_violation',
+      dispositions: [],
+    },
+  };
+  const held = {
+    ...row('held', who, 'held:gate'),
+    repo,
+    engine: {
+      title: 'held',
+      milestones: [],
+      currentMilestone: null,
+      states: [],
+      firstPass: false as const,
+      reason: 'review_limit',
+      dispositions: [],
+    },
+  };
+  const running = row('running', who);
+  running.repo = repo;
+  running.coordination!.pending = 2;
+  const snap: Snapshot = {
+    at: new Date(now).toISOString(),
+    summary: {},
+    rows: [failed, held, running],
+  };
+  const result = heartbeat(snap, cockpit(snap, now), now, () => ({
+    state: 'online',
+    activity: 'active',
+  }));
+  const marshal = result.marshals[0]!;
+  expect([...new Set(marshal.running.map(item => item.id))]).toEqual(['running']);
+  expect(marshal.waiting.map(item => [item.id, item.waiting_for])).toEqual([
+    ['failed', '交付包含 scope.write 之外的路径'],
+    ['held', '评审轮次用尽'],
+    ['running', '2 条协调消息'],
+  ]);
+  expect(marshal.line).toContain('等待3：交付包含 scope.write 之外的路径、评审轮次用尽');
+});
+
 test('heartbeat persistence ignores clocks, refreshes at 900s, and health classifies stages', () => {
   const snap: Snapshot = {
     at: new Date(now).toISOString(),
