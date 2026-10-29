@@ -505,6 +505,7 @@ function run(
         failure: CheckFailure | null;
         pass?: boolean;
         exit?: number | string;
+        duration_ms?: number;
         stdout?: string;
         stderr?: string;
         structured?: StructuredCases;
@@ -526,6 +527,7 @@ function run(
           pass: saved.pass ?? (saved.exit === undefined ? null : true),
           exit: saved.exit,
           evidence: log,
+          duration_ms: saved.duration_ms ?? 0,
           ...(saved.structured ? { structured: saved.structured } : {}),
         });
         continue;
@@ -559,7 +561,7 @@ function run(
     const execute = () => {
       if (reportPath) rmSync(reportPath, { force: true });
       const remaining = deadline - Date.now();
-      if (remaining <= 0) return [undefined, 'timeout', undefined, false] as const;
+      if (remaining <= 0) return [undefined, 'timeout', undefined, false, Date.now() - t0] as const;
       const p = Bun.spawnSync(['bash', '-c', c.cmd], {
         cwd,
         env: commandEnv,
@@ -575,15 +577,17 @@ function run(
           (code === 0) === (structured.failures.length === 0) &&
           (code === 0 || structured.failures.length > 0));
       if (structured && !consistent) structured.complete = false;
+      const duration = Date.now() - t0;
       appendFileSync(
         log,
-        `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
+        `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(duration)}\n\n`
       );
       return [
         p,
         code,
         structured,
         code === 0 && (!c.report || structured?.complete === true),
+        duration,
       ] as const;
     };
     const first = execute();
@@ -596,13 +600,14 @@ function run(
       deadline > Date.now()
         ? execute()
         : first;
-    const [p, code, structured, passed] = attempt;
+    const [p, code, structured, passed, duration] = attempt;
     const flaky = !first[3] && passed;
     results.push({
       check: c,
       pass: passed,
       evidence: log,
       exit: code,
+      duration_ms: duration,
       ...(flaky ? { flaky: true } : {}),
       ...(structured ? { structured } : {}),
     });
@@ -648,6 +653,7 @@ function run(
           failure: null,
           pass: passed,
           exit: code,
+          duration_ms: duration,
           stdout: p.stdout.toString(),
           stderr: p.stderr.toString(),
           structured,
@@ -838,7 +844,7 @@ export function scopeRisk(
 
 // prettier-ignore
 export function acceptanceContractHash(): string {
-  return sha(JSON.stringify([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('TARGET_TIP'), env('SYNC_GENERATION'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
+  return sha(JSON.stringify([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('TARGET_TIP'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
 }
 // prettier-ignore
 export function reusableAcceptance(prior: Accept | undefined, head: string): boolean {
@@ -2807,6 +2813,14 @@ function gate(): void {
       d.reason !== 'review_modified_checkout' && d.reason !== 'acceptance_evidence_mismatch',
   };
   const serialized = JSON.stringify(out, null, 2);
+  if (out.verdict === 'pass') {
+    const accepted = artifactJsonPath(env(`C${String(round)}`));
+    if (accepted) {
+      const stable = join(artifacts, `accepted-${m}.json`);
+      rmSync(stable, { force: true });
+      linkSync(accepted, stable);
+    }
+  }
   writeFileSync(join(artifacts, `${tag}.json`), serialized);
   emit({ ...out, artifact_sha256: sha(serialized) });
   if (out.verdict === 'escalate') {

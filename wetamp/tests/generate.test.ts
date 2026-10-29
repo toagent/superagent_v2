@@ -2384,7 +2384,10 @@ test('DURABLE_DELIVERY generated sync receives run id through real Archon execut
   expect(nodesOf(workflow).find(n => n.id === 'sync-review-m1')?.bash).toContain(
     'INPUTS_OUTPUT=sync-review-m1'
   );
-  expect(allNodesOf(workflow).find(n => n.id === 'final-accept-m1')?.with?.terminal).toBe('1');
+  expect(allNodesOf(workflow).find(n => n.id === 'final-accept-m1')?.with).toMatchObject({
+    terminal: '1',
+    acceptance_evidence: '$ARTIFACTS_DIR/accepted-m1.json',
+  });
   const observed = join(root, 'received-run.json');
   const preload = join(root, 'delivery-probe.ts');
   // Observe the stable integration entry before authorization can run.
