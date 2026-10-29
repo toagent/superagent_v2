@@ -22,12 +22,14 @@ afterEach(() => {
   for (const k of [
     'SUPERAGENT_HOME',
     'ARCHON_HOME',
+    'HOME',
     'HOST',
     'DATABASE_URL',
     'TELEGRAM_BOT_TOKEN',
     'SLACK_BOT_TOKEN',
     'NODE_OPTIONS',
     'SA_CONSOLE_WEB_DIST',
+    'PATH',
   ]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -118,6 +120,7 @@ test('SSE stays streamed and forwarding drops proxy token, cookies and arbitrary
 });
 test('whitelisted child environment rejects unsupported DSN, keeps native home and discards adapters/runtime injection', () => {
   const root = tmp();
+  process.env.HOME = root;
   process.env.SUPERAGENT_HOME = root;
   process.env.ARCHON_HOME = join(root, 'archon');
   Object.assign(process.env, {
@@ -129,10 +132,15 @@ test('whitelisted child environment rejects unsupported DSN, keeps native home a
   });
   expect(() => consoleEnv()).toThrow('SQLite-only');
   process.env.DATABASE_URL = '';
+  mkdirSync(join(root, '.nvm/current/bin'), { recursive: true });
+  process.env.PATH = `${root}/.nvm/versions/node/v20/bin:/usr/bin:${root}/.codex/tmp/one`;
+  const firstPath = consoleEnv().PATH;
+  process.env.PATH = `${root}/.nvm/versions/node/v22/bin:/usr/bin:/x/node_modules/@openai/codex/y/codex-path`;
   const env = consoleEnv();
   expect(WEB_BUILD_FLAGS).toEqual(['--bun', 'x', 'vite', 'build', '--configLoader', 'native']);
   expect(env.HOST).toBe('127.0.0.1');
   expect(env.ARCHON_HOME).toBe(join(root, 'archon'));
+  expect(env.PATH).toBe(firstPath);
   for (const key of ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'NODE_OPTIONS'])
     expect(key in env).toBe(false);
 });

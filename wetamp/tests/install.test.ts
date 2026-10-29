@@ -31,7 +31,8 @@ const tmp = (): string => trackTempRoot(mkdtempSync(join(tmpdir(), 'sa-test-')))
 function runInstall(
   home: string,
   launchd = join(home, 'LaunchAgents'),
-  archonHome = join(home, 'archon')
+  archonHome = join(home, 'archon'),
+  path = process.env.PATH
 ): string {
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
@@ -43,6 +44,7 @@ function runInstall(
       SA_LAUNCHD_DIR: launchd,
       SA_SKIP_DOCTOR: '1',
       XDG_STATE_HOME: join(home, 'state'),
+      PATH: path,
     },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -89,7 +91,11 @@ describe('install.sh', () => {
     const home = join(tmp(), 'a&b');
     const la = join(home, '..', 'LA');
     const plist = join(la, 'com.wetamp.superagent.supervise-tick.plist');
-    const first = runInstall(home, la);
+    const bunDir = dirname(Bun.which('bun') ?? ''),
+      nodeDir = dirname(Bun.which('node') ?? ''),
+      callerPath = `${bunDir}:${nodeDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`;
+    mkdirSync(join(home, '.nvm/current/bin'), { recursive: true });
+    const first = runInstall(home, la, undefined, callerPath);
     expect(first).toContain('launchctl bootstrap gui/');
     const xml = readFileSync(plist, 'utf8');
     for (const s of [
@@ -102,9 +108,12 @@ describe('install.sh', () => {
     ])
       expect(xml).toContain(s);
     expect(xml).not.toContain('__');
-    expect(runInstall(home, la).trim()).toBe('install: mode=controller');
+    expect(xml).toContain(`${home.replace('&', '&amp;')}/.nvm/current/bin`);
+    expect(xml).not.toContain('.nvm/versions/');
+    expect(xml).not.toContain('.codex/tmp/');
+    expect(runInstall(home, la, undefined, callerPath).trim()).toBe('install: mode=controller');
     writeFileSync(plist, 'stale');
-    expect(runInstall(home, la)).toContain('launchctl bootstrap');
+    expect(runInstall(home, la, undefined, callerPath)).toContain('launchctl bootstrap');
     expect(readFileSync(plist, 'utf8')).toBe(xml);
     const baks = readdirSync(la).filter(f => f.includes('.plist.bak-'));
     expect(baks.map(f => readFileSync(join(la, f), 'utf8'))).toEqual(['stale']);

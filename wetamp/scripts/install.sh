@@ -93,10 +93,11 @@ plist="$dir/$label.plist"
 new="$(SA_ARCHON="$SA_ARCHON" SA_REPO="${WETAMP%/wetamp}" SA_PATH="$(dirname "$(command -v bun)"):$PATH" bun -e '
 const x = (s: string) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const e = process.env as Record<string, string>;
+const { normalizeLaunchdPath } = await import(process.argv[2]);
 let t = await Bun.file(process.argv[1]).text();
 t = e.SA_ARCHON ? t.replaceAll("__ARCHON_HOME__", x(e.SA_ARCHON)) : t.replace(/ *<key>ARCHON_HOME<\/key>\n *<string>__ARCHON_HOME__<\/string>\n/, "");
-console.log(t.replaceAll("__HOME__", x(e.SUPERAGENT_HOME)).replaceAll("__REPO__", x(e.SA_REPO)).replaceAll("__PATH__", x(e.SA_PATH)).trimEnd());
-' "$WETAMP/launchd/$label.plist.tmpl")"
+console.log(t.replaceAll("__HOME__", x(e.SUPERAGENT_HOME)).replaceAll("__REPO__", x(e.SA_REPO)).replaceAll("__PATH__", x(normalizeLaunchdPath(e.SA_PATH))).trimEnd());
+' "$WETAMP/launchd/$label.plist.tmpl" "$WETAMP/src/launchd-path.ts")"
 if ! { [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ]; }; then
   mkdir -p "$dir"
   [ -f "$plist" ] && cp "$plist" "$plist.bak-$(date +%Y%m%d%H%M%S)"

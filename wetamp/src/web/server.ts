@@ -18,6 +18,7 @@ import { consoleLaunchdLabel, consoleLaunchdPlist, parseArgs } from '../cli';
 import { episodeOf } from '../memory';
 import { memoryOverview, memoryPanel } from './memory';
 import { makeWritable } from '../engine';
+import { normalizeLaunchdPath } from '../launchd-path';
 
 interface LegacyWebState {
   port: number;
@@ -155,6 +156,7 @@ export function consoleEnv(): Record<string, string> {
     'SA_CONSOLE_WEB_DIST',
   ])
     if (process.env[key]) env[key] = process.env[key];
+  if (env.PATH) env.PATH = normalizeLaunchdPath(env.PATH);
   return {
     ...env,
     SUPERAGENT_HOME: home().sa,
