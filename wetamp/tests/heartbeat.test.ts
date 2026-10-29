@@ -91,12 +91,8 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     actions: { ok: true },
   } satisfies TickRecord;
   expect(tickHealth(tick, now).messages).toEqual(['未收到巡检心跳 4m', 'orca异常：down']);
-  expect(
-    tickHealth(
-      { at: new Date(now).toISOString(), collect: { ok: true }, publish: { ok: true } },
-      now
-    )
-  ).toEqual({ ok: true, messages: [] });
+  // prettier-ignore
+  expect(tickHealth({ at: new Date(now).toISOString(), collect: { ok: true }, publish: { ok: true } }, now)).toEqual({ ok: true, messages: [] });
   expect(
     tickHealth(
       {

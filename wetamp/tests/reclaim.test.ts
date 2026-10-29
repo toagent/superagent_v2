@@ -98,38 +98,13 @@ test('reclaim observation isolates deleted repositories in saved and current evi
   s.c.d.runs = () => [missing, s.run];
   const r = new Reclaimer(s.c, Date.now, () => ({ id: 'engine', status: 'running' }));
   expect(r.observe().map(item => item.run)).toEqual(['r1']);
-  writeFileSync(
-    join(s.sa, 'runs/stale.json'),
-    JSON.stringify({
-      ...stale,
-      plan: 'p',
-      branch: 'feature',
-      workflow: 'w',
-      console: '',
-      started_at: '',
-      transcript: '',
-      log: '',
-    })
-  );
+  // prettier-ignore
+  writeFileSync(join(s.sa, 'runs/stale.json'), JSON.stringify({ ...stale, plan: 'p', branch: 'feature', workflow: 'w', console: '', started_at: '', transcript: '', log: '' }));
   s.c.d.runs = () => [missing, stale, s.run];
+  // prettier-ignore
   const generation = s.c.owner(runScope(s.run)).generation,
-    observation = (run: string, repo: string) => ({
-      run,
-      repo,
-      owner: a,
-      generation,
-      last_online_at: 0,
-      first_offline_at: 0,
-      last_offline_at: 120_000,
-      count: 2,
-    }),
-    result = r.reclaim([
-      observation(stale.run_id, stale.repo),
-      observation(s.run.run_id, s.run.repo),
-    ]);
-  expect(result).toMatchObject({
-    transferred: ['r1'],
-    skipped: ['missing', 'stale'],
-    skip_reasons: { missing: 'repository_unavailable', stale: 'repository_unavailable' },
-  });
+    observation = (run: string, repo: string) => ({ run, repo, owner: a, generation, last_online_at: 0, first_offline_at: 0, last_offline_at: 120_000, count: 2 }),
+    result = r.reclaim([observation(stale.run_id, stale.repo), observation(s.run.run_id, s.run.repo)]);
+  // prettier-ignore
+  expect(result).toMatchObject({ transferred: ['r1'], skipped: ['missing', 'stale'], skip_reasons: { missing: 'repository_unavailable', stale: 'repository_unavailable' } });
 });
