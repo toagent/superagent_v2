@@ -1,0 +1,167 @@
+import { expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import {
+  Coordination,
+  runScope,
+  same,
+  type Identity,
+  type Presence,
+  type RunRef,
+} from '../src/coord';
+import { lock } from '../src/archon';
+import { Reclaimer } from '../src/reclaim';
+import { gitRepo, tmp } from './helpers';
+
+const a: Identity = {
+  client: 'codex',
+  session_id: 'dead',
+  host: hostname(),
+  pid: 111,
+  pid_start: 'old',
+};
+const b: Identity = {
+  client: 'claude',
+  session_id: 'live',
+  host: hostname(),
+  pid: 222,
+  pid_start: 'new',
+};
+const hooks = createRequire(import.meta.url)('../hooks/coord.cjs') as {
+  hash(value: unknown): string;
+};
+function setup(
+  probe: (who: Identity) => Presence = who =>
+    same(who, a) ? { state: 'offline' } : { state: 'online', activity: 'idle' }
+) {
+  const root = tmp(),
+    repo = gitRepo(root),
+    sa = join(root, 'sa'),
+    gen = join(root, 'gen');
+  mkdirSync(join(sa, 'runs'), { recursive: true });
+  mkdirSync(join(root, 'archon'), { recursive: true });
+  mkdirSync(gen);
+  process.env.SUPERAGENT_HOME = sa;
+  process.env.ARCHON_HOME = join(root, 'archon');
+  const run: RunRef = { run_id: 'r1', archon_run_id: 'engine', repo, gen_dir: gen },
+    ledger = {
+      ...run,
+      plan: 'p',
+      branch: 'feature',
+      workflow: 'w',
+      console: '',
+      started_at: '',
+      transcript: '',
+      log: '',
+    };
+  writeFileSync(join(sa, 'runs/r1.json'), JSON.stringify(ledger));
+  writeFileSync(join(gen, 'delivery-authorization.json'), '{}');
+  const c = new Coordination({ sa, runs: () => [run], status: () => 'running', presence: probe });
+  c.claim({ kind: 'repo', id: runScope(run).repo }, b);
+  c.claim(runScope(run), a);
+  return { root, sa, run, c };
+}
+
+test('reclaim observes confirmed death, journals three states, transfers, reauthorizes, records evidence and reroutes inbox', () => {
+  const s = setup();
+  let now = 0;
+  const r = new Reclaimer(
+    s.c,
+    () => now,
+    () => ({ id: 'engine', status: 'running' })
+  );
+  s.c.handoff(runScope(s.run), b, {
+    kind: 'task',
+    title: 'existing',
+    body: 'body',
+    evidence: [],
+    severity: 'normal',
+  });
+  r.observe();
+  now = 120_000;
+  const out = r.reclaim(r.observe());
+  expect(out.transferred).toEqual(['r1']);
+  expect(s.c.owner(runScope(s.run)).owner).toEqual(b);
+  expect(
+    JSON.parse(readFileSync(join(s.sa, 'reclaim/journal.json'), 'utf8')).map(
+      (x: { state: string }) => x.state
+    )
+  ).toEqual(['transferring', 'transferred', 'reauthorized']);
+  expect(existsSync(join(s.sa, 'coord/authorizations/r1.json'))).toBe(true);
+  expect(s.c.inbox(b).some(m => m.title === 'existing')).toBe(true);
+  const ledger = JSON.parse(readFileSync(join(s.sa, 'runs/r1.json'), 'utf8'));
+  expect(ledger.intervention_events.at(-1)).toMatchObject({
+    action: 'reclaim:owner_offline',
+    ok: true,
+    evidence: { from: a },
+  });
+  expect(s.c.messages().some(m => m.type === 'takeover' && same(m.recipient, a))).toBe(false);
+});
+
+test('reclaim resets changed evidence, ignores unknown, leaves unclaimed and critical runs, then completes reauthorization failure', () => {
+  let state: Presence['state'] = 'offline',
+    target: Presence['state'] = 'online',
+    now = 0;
+  const probe = (who: Identity): Presence => {
+      const value = who.client === a.client ? state : target;
+      return value === 'online' ? { state: value, activity: 'idle' } : { state: value };
+    },
+    s = setup(probe),
+    running = {
+      id: 'engine',
+      status: 'running' as const,
+      nodes: [] as { nodeId: string; state: string }[],
+    },
+    r = new Reclaimer(
+      s.c,
+      () => now,
+      () => running
+    );
+  r.observe();
+  s.c.rolloverTransfer(runScope(s.run), a, { ...a, session_id: 'changed' }, 'token');
+  now = 120_000;
+  expect(r.observe()[0]?.count).toBe(1);
+  state = 'unknown';
+  expect(r.observe()).toEqual([]);
+  state = 'offline';
+  s.c.rolloverTransfer(runScope(s.run), { ...a, session_id: 'changed' }, a, 'back');
+  const observation = {
+    run: 'r1',
+    repo: s.run.repo,
+    owner: a,
+    generation: s.c.owner(runScope(s.run)).generation,
+    first_offline_at: 0,
+    last_offline_at: 120_000,
+    count: 2,
+  };
+  target = 'offline';
+  expect(r.reclaim([observation]).unclaimed).toEqual(['r1']);
+  target = 'online';
+  running.nodes = [{ nodeId: 'publish-m1', state: 'running' }];
+  expect(r.reclaim([observation]).skipped).toEqual(['r1']);
+  running.nodes = [];
+  const scopeLock = join(
+      s.sa,
+      'coord/locks',
+      hooks.hash({ kind: 'repo', id: runScope(s.run).repo }) + '.lock'
+    ),
+    held = lock(scopeLock);
+  if (!held.ok) throw new Error('fixture lock');
+  expect(r.reclaim([observation]).skipped).toEqual(['r1']);
+  held.release();
+  const fail = spyOn(s.c, 'reauthorize').mockImplementation(() => {
+    throw new Error('fixture');
+  });
+  expect(r.reclaim([observation]).pending).toEqual(['r1']);
+  fail.mockRestore();
+  expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/journal.json'), 'utf8')).at(-1).state).toBe(
+    'transferred'
+  );
+  expect(r.complete().transferred).toEqual(['r1']);
+  expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/journal.json'), 'utf8')).at(-1).state).toBe(
+    'reauthorized'
+  );
+  expect(s.c.inbox(b).some(m => m.title === '回收续授权失败')).toBe(true);
+});

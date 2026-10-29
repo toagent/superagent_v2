@@ -109,7 +109,8 @@ const identity = createRequire(import.meta.url)('../../hooks/identity.cjs') as {
   presence: (who: Identity, home: string) => Presence;
 };
 export const presence = identity.presence,
-  same = identity.same;
+  same = identity.same,
+  identityKey = identity.key;
 export const archonMutation = shared.archonMutation;
 export const ownerLabel = (who: Identity | null): string =>
   who ? `${who.client} ${who.session_id?.slice(0, 8) ?? `pid:${String(who.pid)}`}` : '无主';
@@ -447,6 +448,31 @@ export class Coordination {
         if (same(owner, to)) return { status: 'unchanged', generation: this.owner(scope).generation };
         if (!same(owner, from)) return { status: 'skipped', reason: 'owner_changed' };
         const claim = this.transfer(scope, to, `rollover:${token}`, false, false);
+        return { status: 'transferred', generation: claim.generation };
+      })
+    );
+  }
+  reclaimRun(
+    scope: Extract<Scope, { kind: 'run' }>,
+    expected: { key: ReturnType<typeof identity.key>; generation: number },
+    to: Identity
+  ): { status: 'transferred' | 'skipped'; generation?: number; reason?: string } {
+    return this.scoped(scope, () =>
+      this.locked(() => {
+        const view = this.owner(scope),
+          repo = this.owner({ kind: 'repo', id: scope.repo });
+        if (
+          !view.owner ||
+          JSON.stringify(identity.key(view.owner)) !== JSON.stringify(expected.key) ||
+          view.generation !== expected.generation
+        )
+          return { status: 'skipped', reason: 'owner_changed' };
+        if (same(view.owner, to)) return { status: 'skipped', reason: 'same_owner' };
+        if (view.presence.state !== 'offline')
+          return { status: 'skipped', reason: 'owner_not_offline' };
+        if (!repo.owner || !same(repo.owner, to) || repo.presence.state !== 'online')
+          return { status: 'skipped', reason: 'target_not_online_repo_owner' };
+        const claim = this.transfer(scope, to, 'reclaim:owner_offline', false, false);
         return { status: 'transferred', generation: claim.generation };
       })
     );
