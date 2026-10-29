@@ -575,7 +575,7 @@ test('batch status projection preserves per-ledger owner resolution', () => {
       presence: () => online,
     });
   expect(batch.owner(s.scope)).toEqual(individual.owner(s.scope));
-  expect(batchCalls).toBe(1);
+  expect([batch.isRunOwnershipEvidence(runs[0]), batchCalls]).toEqual([true, 1]);
   expect(individualCalls).toBe(4);
   batchCalls = 0;
   expect(batch.unfinishedRuns('A')).toHaveLength(2);

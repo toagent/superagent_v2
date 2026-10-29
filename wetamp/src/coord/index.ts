@@ -355,8 +355,11 @@ export class Coordination {
   ): boolean {
     if (run.state === 'failed') return false;
     try {
-      const snapshot = statuses === false ? this.d.statuses() : statuses,
-        status = snapshot === undefined ? this.d.status(run) : snapshot?.get(run.archon_run_id);
+      const status = statuses
+        ? statuses.get(run.archon_run_id)
+        : statuses === null
+          ? undefined
+          : this.d.status(run);
       return !['completed', 'cancelled'].includes(status ?? 'unknown');
     } catch {
       return true; // Unverifiable ownership remains evidence.
