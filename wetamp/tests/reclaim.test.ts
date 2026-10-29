@@ -85,3 +85,15 @@ test('reclaim leaves historically offline owners untouched and batch statuses pr
     true,
   ]);
 });
+
+test('reclaim observation isolates deleted repositories in saved and current evidence', () => {
+  const s = setup(),
+    missing = { ...s.run, run_id: 'missing', repo: join(s.root, 'deleted') };
+  mkdirSync(join(s.sa, 'reclaim'));
+  writeFileSync(
+    join(s.sa, 'reclaim/observations.json'),
+    JSON.stringify([{ run: missing.run_id, repo: missing.repo, owner: a, generation: 1, count: 1 }])
+  );
+  s.c.d.runs = () => [missing, s.run];
+  expect(new Reclaimer(s.c).observe().map(item => item.run)).toEqual(['r1']);
+});

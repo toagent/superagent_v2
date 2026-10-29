@@ -28,11 +28,16 @@ export class Reclaimer {
     operator().updateLedger(ledger, cur => (cur.intervention_events ??= []).push({ at: new Date(this.now()).toISOString(), action, reason: action, origin: 'engine', source: 'superagent', ok, ...(!ok ? { error: 'Error' } : {}), evidence }));
   }
   observe(): Observation[] {
-    const prior = new Map(values<Observation>(this.observations).map(o => [this.key(runScope({ run_id: o.run, repo: o.repo }), o.owner, o.generation), o]));
+    const prior = new Map(values<Observation>(this.observations).flatMap(o => {
+      try { return [[this.key(runScope({ run_id: o.run, repo: o.repo }), o.owner, o.generation), o] as const]; }
+      catch { return []; }
+    }));
     const next: Observation[] = [], at = this.now();
     for (const run of this.c.d.runs()) {
       if (!this.c.isRunOwnershipEvidence(run)) continue;
-      const scope = runScope(run), view = this.c.owner(scope);
+      let scope: ReturnType<typeof runScope>;
+      try { scope = runScope(run); } catch { continue; }
+      const view = this.c.owner(scope);
       if (!view.owner) continue;
       const key = this.key(scope, view.owner, view.generation), old = prior.get(key);
       if (view.presence.state === 'online') next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, last_online_at: at, count: 0 });
