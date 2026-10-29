@@ -58,6 +58,8 @@ test('reclaim admission waits through transfer, passes without a journal, and ti
   expect(now).toBe(600_000);
   runDeliveryEntry(() => { throw new IntegrationError('reclaim_pending', 'pending'); }, fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'publish-m1' }));
   expect(await Bun.file(join(artifacts, 'publish-m1.json')).json()).toMatchObject({ reason: 'reclaim_pending' });
+  runDeliveryEntry(() => { throw new IntegrationError('lock_timeout', 'locked'); }, fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'publish-lock' }));
+  expect(await Bun.file(join(artifacts, 'publish-lock.json')).json()).toMatchObject({ status: 'rejected', reason: 'lock_timeout' });
 });
 // prettier-ignore
 test('generation fencing refreshes only for a newer owner and retries once', () => {
