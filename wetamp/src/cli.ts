@@ -4035,7 +4035,11 @@ export async function superviseTickCli(
   }
   let output: Record<string, unknown> = {};
   const exit = tickOutput(mode, value => (output = value));
-  if (!mode.noGlobal && exit === 0) await claudeCommanderFailover();
+  try {
+    if (!mode.noGlobal) await claudeCommanderFailover();
+  } catch (e) {
+    errors.push(`commander failover failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
   try {
     if (!mode.noGlobal) {
       const result = await sync();

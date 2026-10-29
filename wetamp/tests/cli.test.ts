@@ -2834,7 +2834,15 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
             }
           );
           expect(exit).toBe(0);
-          expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({ error_count: 1 });
+          expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({
+            error_count: failed ? 2 : 1,
+            errors: failed
+              ? [
+                  expect.stringContaining('commander failover failed: asks '),
+                  expect.stringContaining('orca sync failed: injected'),
+                ]
+              : [expect.stringContaining('orca sync failed: injected')],
+          });
           expect(err).not.toHaveBeenCalled();
         }
         expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
@@ -2859,8 +2867,11 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
           })
         ).toBe(failed ? 1 : 0);
         const result = JSON.parse(String(out.mock.calls[0]?.[0]));
-        expect(result).toMatchObject({ action_count: 1, error_count: failed ? 2 : 1 });
-        expect(result.errors).toEqual([`console refresh failed: ${message}`]);
+        expect(result).toMatchObject({ action_count: 1, error_count: failed ? 3 : 1 });
+        expect(result.errors).toEqual([
+          `console refresh failed: ${message}`,
+          ...(failed ? [expect.stringContaining('commander failover failed: asks ')] : []),
+        ]);
         expect(result.details[0]).toMatchObject({ action: failed ? 'error' : 'ask', ok: !failed });
         expect(err).not.toHaveBeenCalled();
         expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
