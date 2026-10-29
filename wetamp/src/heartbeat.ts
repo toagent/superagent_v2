@@ -11,7 +11,7 @@ interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; 
 // prettier-ignore
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; waiting_for: string; waited_s: number }[]; line: string }
 // prettier-ignore
-export interface Heartbeat { at: string; reclaim_pending: number; marshals: Marshal[] }
+export interface Heartbeat { at: string; reclaim_pending: number; unowned: number; unreadable: number; marshals: Marshal[] }
 export const HEARTBEAT_INTERVAL_MS = 900_000;
 // prettier-ignore
 export type HeartbeatSummary = { available: true; line: string; running: Item[]; waiting: Marshal['waiting']; warnings?: string[] } | { available: false; reason: string };
@@ -29,19 +29,22 @@ const ownerId = (owner: Identity | null): string =>
 // prettier-ignore
 export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence): Heartbeat {
   const groups = new Map<string, Marshal>();
-  let reclaim = 0;
-  const group = (owner: Identity | null, cwd: string): Marshal | undefined => {
-    if (owner && presenceOf(owner).state !== 'online') { reclaim++; return; }
+  let reclaim = 0, unowned = 0, unreadable = 0;
+  const group = (owner: Identity, cwd: string): Marshal | undefined => {
+    if (presenceOf(owner).state !== 'online') { reclaim++; return; }
     const key = `${ownerId(owner)}\0${cwd}`, found = groups.get(key);
     if (found) return found;
-    const value: Marshal = { owner: owner ?? 'unknown', owner_key: owner ? ownerKey(owner) : 'unknown', cwd, project: basename(cwd), running: [], waiting: [], line: '' };
+    const value: Marshal = { owner, owner_key: ownerKey(owner), cwd, project: basename(cwd), running: [], waiting: [], line: '' };
     groups.set(key, value);
     return value;
   };
   const projected = new Map(cockpit.runs.map(run => [run.id, run]));
   for (const row of snapshot.rows) {
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;
-    const marshal = group(row.coordination?.owner ?? null, row.repo);
+    if (row.state === 'unreadable') { unreadable++; continue; }
+    const owner = row.coordination?.owner;
+    if (!owner) { unowned++; continue; }
+    const marshal = group(owner, row.repo);
     if (!marshal) continue;
     const run = projected.get(row.run_id), nodes = row.activeNodes?.length ? row.activeNodes : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
     for (const node of nodes) marshal.running.push({
@@ -56,7 +59,8 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     });
   }
   for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ?? []) {
-    const marshal = group(job.launcher ?? null, job.cwd), run = cockpit.active.find(item => item.id === job.id);
+    if (!job.launcher) { unowned++; continue; }
+    const marshal = group(job.launcher, job.cwd), run = cockpit.active.find(item => item.id === job.id);
     if (!marshal) continue;
     marshal.running.push({ id: job.id, kind: 'job', title: job.title, stage: run?.stage ?? job.state, role: roleTag(job.tier, job.model), model: job.model, state: job.state, elapsed_s: age(job.started_at, now), last_activity_s: null, estimate: run?.progress ?? unknownProgress() });
     if (job.state === 'queued') marshal.waiting.push({ id: job.id, what: '作业排队', waiting_for: '执行槽位', waited_s: age(job.started_at, now) ?? 0 });
@@ -65,7 +69,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const roles = marshal.running.map(item => `${item.role} ${item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
     marshal.line = `${marshal.project} 元帅｜${roles.join('｜') || '无执行'}${marshal.waiting.length ? `｜等待${String(marshal.waiting.length)}` : ''}`;
   }
-  return { at: new Date(now).toISOString(), reclaim_pending: reclaim, marshals: [...groups.values()] };
+  return { at: new Date(now).toISOString(), reclaim_pending: reclaim, unowned, unreadable, marshals: [...groups.values()] };
 }
 // prettier-ignore
 const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line'].includes(key) ? undefined : item)) as unknown;

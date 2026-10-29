@@ -37,14 +37,20 @@ const row = (id: string, who: Identity | null, state = 'running'): BoardRow => (
   stale: false,
 });
 
-test('heartbeat groups complete identities, isolates pid-only sessions, and excludes offline owners', () => {
+test('heartbeat groups only online owners and counts unreadable and unowned rows', () => {
   const a = owner(1),
     b = owner(2),
     dead = owner(3);
   const snap: Snapshot = {
     at: new Date(now).toISOString(),
     summary: {},
-    rows: [row('a', a), row('b', b), row('dead', dead), row('unknown', null)],
+    rows: [
+      row('a', a),
+      row('b', b),
+      row('dead', dead),
+      ...Array.from({ length: 100 }, (_, i) => row(`unowned-${String(i)}`, null)),
+      ...Array.from({ length: 100 }, (_, i) => row(`unreadable-${String(i)}`, a, 'unreadable')),
+    ],
   };
   const presence = (who: Identity): Presence =>
     who.pid === 3 ? { state: 'offline' } : { state: 'online', activity: 'active' };
@@ -52,8 +58,9 @@ test('heartbeat groups complete identities, isolates pid-only sessions, and excl
   expect(result.marshals.map(m => m.owner_key)).toEqual([
     ['codex', null, 'host', 1, 'start-1'],
     ['codex', null, 'host', 2, 'start-2'],
-    'unknown',
   ]);
+  expect(result).toMatchObject({ unowned: 100, unreadable: 100, reclaim_pending: 1 });
+  expect(JSON.stringify(result).length).toBeLessThan(3000);
   expect(result.marshals[0]?.running.map(item => item.role)).toEqual(['将军·gpt', '军师·opus']);
   expect(result.reclaim_pending).toBe(1);
   expect(JSON.stringify(result)).not.toContain('dead');
@@ -79,6 +86,7 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
   const first = heartbeat(snap, cockpit(snap, now), now, online);
   const later = heartbeat(snap, cockpit(snap, now + 60_000), now + 60_000, online);
   expect(shouldWriteHeartbeat(first, later, now + 60_000)).toBe(false);
+  expect(shouldWriteHeartbeat(first, { ...later, unowned: 1 }, now + 60_000)).toBe(true);
   expect(shouldWriteHeartbeat(first, later, now + 900_000)).toBe(true);
   const tick = {
     at: new Date(now - 4 * 60_000).toISOString(),

@@ -2784,13 +2784,11 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
         publish: { ok: true },
         orca: { ok: true },
       });
+      const globalTick = readFileSync(join(s.root, 'home/tick.json'), 'utf8');
       activateEngineFixture(s);
       await superviseTickCli(refresh, sync, { runs: ['sa1'], noGlobal: true });
       expect(calls).toEqual({ refresh: 1, sync: 1 });
-      expect(JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8')).reclaim).toEqual({
-        ok: true,
-        skipped: 'no-global',
-      });
+      expect(readFileSync(join(s.root, 'home/tick.json'), 'utf8')).toBe(globalTick);
     } finally {
       out.mockRestore();
     }
