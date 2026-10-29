@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
+import { estimate } from '../src/board/eta';
 import {
   attribute,
   usageCli,
   usageForRepo,
+  usageEvidence,
   usageSummary,
   type Owner,
   type UsageCache,
@@ -118,4 +120,31 @@ describe('usage --repo', () => {
         .by_role_model
     ).toMatchObject({ 'general·opus5.5': { sessions: 1 }, '?·opus5.5': { sessions: 1 } });
   });
+});
+
+// prettier-ignore
+test('run evidence compacts events and reuses legacy cache without changing ETA input', () => {
+  const root = tmp();
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root });
+  mkdirSync(join(root, 'runs'), { recursive: true });
+  mkdirSync(join(root, 'usage'));
+  writeFileSync(join(root, 'runs/run.json'), JSON.stringify({ run_id: 'run', archon_run_id: 'archon', gen_dir: root, repo: root, branch: 'task', workflow: 'fixture', started_at: '2026-10-17T00:00:00Z' }));
+  const events = Array.from({ length: 2000 }, (_, i) => ({ step_name: `code-${String(i)}`, event_type: 'node_completed', created_at: '2026-10-17T00:00:01Z', data: { duration_ms: 1000, payload: 'x'.repeat(1000) } }));
+  let calls = 0;
+  const first = usageEvidence(() => { calls++; return { id: 'archon', status: 'completed', events }; });
+  expect(first.eta[0].samples).toHaveLength(events.length);
+  const beforeEta = estimate(first.eta[0].run.nodes!, first.eta[0].samples, 2000, Date.now());
+  expect(beforeEta).toMatchObject({ weight: 2000, progress: { pct: 100, basis: 'history' } });
+  const file = join(root, 'usage/runs.json'), compact = JSON.stringify(first.runs);
+  expect(compact).not.toContain('events');
+  expect(compact.length).toBeLessThan(200_000);
+  const legacy = structuredClone(first.runs) as unknown as Record<string, { eta: { run: Record<string, unknown> } }>;
+  Object.values(legacy)[0].eta.run.events = events;
+  writeFileSync(file, JSON.stringify(legacy));
+  const second = usageEvidence(() => { throw new Error('terminal cache should be reused'); });
+  expect(calls).toBe(1);
+  expect(second.eta).toEqual(first.eta);
+  expect(estimate(second.eta[0].run.nodes!, second.eta[0].samples, 2000, Date.now())).toEqual(beforeEta);
+  writeFileSync(file, JSON.stringify(second.runs));
+  expect(readFileSync(file, 'utf8')).not.toContain('events');
 });

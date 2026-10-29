@@ -183,10 +183,33 @@ interface RunEvidence {
   claims: { id: string; owner: Owner }[];
   eta: EtaInput;
 }
+// prettier-ignore
+const compactEta = ({ ledger: l, run: r, samples }: EtaInput): EtaInput => ({ ledger: { run_id: l.run_id, gen_dir: l.gen_dir, repo: l.repo, workflow: l.workflow, started_at: l.started_at } as EtaInput['ledger'], run: { id: r.id, status: r.status, last_activity_at: r.last_activity_at, nodes: r.nodes?.map(n => ({ nodeId: n.nodeId, state: n.state, ...(n.startedAt ?? n.execution?.timing.startedAt ? { startedAt: n.startedAt ?? n.execution?.timing.startedAt } : {}), ...(n.durationMs !== undefined ? { durationMs: n.durationMs } : {}) })) }, samples });
+// prettier-ignore
+const compactEvidence = (e: RunEvidence): RunEvidence => ({ fingerprint: e.fingerprint, status: e.status, claims: e.claims, eta: compactEta(e.eta) });
+/** Stream top-level entries so a legacy multi-GB cache never exists as one parsed object. */
+// prettier-ignore
+function priorEvidence(file: string): Partial<Record<string, RunEvidence>> {
+  let fd: number | undefined, entry = '', depth = 0, quoted = false, escaped = false;
+  const out: Record<string, RunEvidence> = {}, decoder = new TextDecoder(), b = Buffer.alloc(65536);
+  const accept = (): void => { try { for (const [k, v] of Object.entries(JSON.parse(`{${entry}}`) as Record<string, RunEvidence>)) out[k] = compactEvidence(v); } catch { /* Ignore a malformed cache entry. */ } entry = ''; };
+  try {
+    fd = openSync(file, 'r'); let size = 0;
+    while ((size = readSync(fd, b, 0, b.length, null)) > 0) for (const c of decoder.decode(b.subarray(0, size), { stream: true })) {
+      if (!depth) { if (c === '{') depth = 1; continue; }
+      if (!quoted && depth === 1 && (c === ',' || c === '}')) { if (entry.trim()) accept(); if (c === '}') depth = 0; continue; }
+      entry += c;
+      if (quoted) { if (escaped) escaped = false; else if (c === '\\') escaped = true; else if (c === '"') quoted = false; }
+      else if (c === '"') quoted = true; else if (c === '{' || c === '[') depth++; else if (c === '}' || c === ']') depth--;
+    }
+    decoder.decode();
+  } catch { return {}; } finally { if (fd !== undefined) closeSync(fd); }
+  return out;
+}
 /** Read-only evidence collection; cache writes belong to refreshUsage. */
 // prettier-ignore
 export function usageEvidence(query = archonJson): { claims: { id: string; owner: Owner }[]; eta: EtaInput[]; runs: Record<string, RunEvidence> } {
-  const prior = obj(json(join(root(), 'runs.json'))) as Partial<Record<string, RunEvidence>>;
+  const prior = priorEvidence(join(root(), 'runs.json'));
   const runs: Record<string, RunEvidence> = {};
   const claims: { id: string; owner: Owner }[] = [];
   const eta: EtaInput[] = [];
@@ -207,7 +230,7 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
         try {
           const run = query(['workflow', 'get', runId, '--verbose', '--events'], l.repo);
           const events = arr(run.events) as WorkflowEventRow[];
-          const input = etaInput(l, run as unknown as RunView, events);
+          const input = compactEta(etaInput(l, run as unknown as RunView, events));
           const runClaims: RunEvidence['claims'] = [];
           for (const raw of arr(run.events)) {
             const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
