@@ -257,16 +257,19 @@ nodes:
 
 ### Bash and script node timeouts
 
-When a host `bash:` or `script:` node reaches its `timeout`, Archon signals the node's
-whole process tree before it reports the timeout, so work behind a wrapper such as
-`bun run` or `uv run` stops too. On Windows it runs `taskkill /T /F`. On macOS and Linux
-the node leads its own process group, and Archon sends `SIGTERM` to that group.
+When a `bash:` or `script:` node on the host reaches its `timeout`, Archon signals the
+node's whole process tree before it reports the timeout, so work behind a wrapper such as
+`bun run` or `uv run` stops too. On Windows it runs `taskkill /T /F`. On macOS and Linux,
+a foreground `workflow run`, `workflow resume`, or `trigger execute` starts the node in
+its own process group and sends `SIGTERM` to that group. A node under `archon serve` or a
+detached run shares its owner's process group, so its timeout ends only the root process;
+owner cancellation still ends that shared group. `until_bash` and container timeouts also
+end only their local root process.
 
 Archon cannot end a process that left the node's group, for example with `setsid`. If
 process-tree termination itself fails, Archon kills the root process and fails the node
 with the termination error instead of treating it as a timeout. `on_timeout: skip` does
-not apply to that failure. Container nodes still time out the local `docker exec` client;
-the command inside the container may keep running.
+not apply to that failure.
 
 ### Addressable session ancestry
 

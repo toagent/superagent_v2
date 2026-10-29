@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
+import type { ChildProcessByStdio } from 'node:child_process';
 import { mkdir, open } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Readable } from 'node:stream';
 import { redactCredentialValues } from '@archon/paths/credential-redaction';
@@ -9,6 +11,52 @@ const PREVIEW_BYTES = 32 * 1024;
 const TAIL_BYTES = 8 * 1024;
 const REDACTION = Buffer.from('[REDACTED]');
 const OWNER_LIFELINE = 'IFS= read -r line || kill -s KILL -- "-$1"';
+
+interface NodeProcessRecorder {
+  roots: Map<number, () => void>;
+  ended: boolean;
+}
+let nodeProcessRecorder: NodeProcessRecorder | undefined;
+
+/**
+ * Give foreground CLI nodes their own process groups. Detached owners must not record:
+ * cancellation ends their shared owner group, which a separately grouped node would escape.
+ */
+export function recordNodeProcessTrees(): { end(): Promise<void>; release(): void } {
+  const recorder: NodeProcessRecorder = { roots: new Map(), ended: false };
+  nodeProcessRecorder = recorder;
+  return {
+    end: async (): Promise<void> => {
+      recorder.ended = true;
+      const failed: string[] = [];
+      await Promise.all(
+        [...recorder.roots].map(([pid, disarm]) =>
+          pluginProcess.terminateTree(pid).then(disarm, (error: unknown) => {
+            failed.push(
+              `${String(pid)} (${error instanceof Error ? error.message : String(error)})`
+            );
+          })
+        )
+      );
+      if (failed.length > 0)
+        throw new Error(`could not end node process trees: ${failed.join(', ')}`);
+    },
+    release: (): void => {
+      if (nodeProcessRecorder === recorder) nodeProcessRecorder = undefined;
+    },
+  };
+}
+
+function armNodeLifeline(pgid: number, onError: (error: Error) => void): () => void {
+  const watcher = spawn('/bin/sh', ['-c', OWNER_LIFELINE, 'archon-node-lifeline', String(pgid)], {
+    detached: true,
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  watcher.unref();
+  watcher.once('error', onError);
+  watcher.stdin?.on('error', () => undefined);
+  return () => watcher.stdin?.end('\n');
+}
 export interface StreamedOutput {
   preview: string;
   tail: string;
@@ -68,12 +116,10 @@ class ByteRedactor {
 }
 async function capture(
   stream: Readable,
-  path: string,
+  file: FileHandle,
   secrets: readonly string[],
   retainRaw = false
 ): Promise<StreamedOutput> {
-  await mkdir(dirname(path), { recursive: true });
-  const file = await open(path, 'w');
   const redactor = new ByteRedactor(secrets);
   let head = Buffer.alloc(0);
   let tail = Buffer.alloc(0),
@@ -128,39 +174,47 @@ export async function runStreamingSubprocess(options: {
   endTreeOnTimeout?: boolean;
 }): Promise<{ stdout: StreamedOutput; stderr: StreamedOutput }> {
   const endTreeOnTimeout = options.endTreeOnTimeout !== false;
-  const child = spawn(options.cmd, options.args, {
-    cwd: options.cwd,
-    env: options.env,
-    detached: endTreeOnTimeout && process.platform !== 'win32',
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const recorder = nodeProcessRecorder;
+  if (recorder?.ended) throw new Error('The run owner is terminating; node subprocess not started');
+  await Promise.all([
+    mkdir(dirname(options.stdoutPath), { recursive: true }),
+    mkdir(dirname(options.stderrPath), { recursive: true }),
+  ]);
+  const [stdoutFile, stderrFile] = await Promise.all([
+    open(options.stdoutPath, 'w'),
+    open(options.stderrPath, 'w'),
+  ]);
+  let child: ChildProcessByStdio<null, Readable, Readable>;
+  try {
+    child = spawn(options.cmd, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      detached: recorder !== undefined && process.platform !== 'win32',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    await Promise.all([stdoutFile.close(), stderrFile.close()]);
+    throw error;
+  }
   let lifelineError: StreamedSubprocessError | undefined;
-  // A detached node group would otherwise escape Ctrl-C, detached-run cancellation, or
-  // an owner crash. This watcher lives outside both groups and kills the node on pipe EOF.
-  const lifeline =
-    endTreeOnTimeout && process.platform !== 'win32' && child.pid !== undefined
-      ? spawn('/bin/sh', ['-c', OWNER_LIFELINE, 'archon-node-lifeline', String(child.pid)], {
-          detached: true,
-          stdio: ['pipe', 'ignore', 'ignore'],
+  const rootPid = child.pid;
+  const disarmLifeline =
+    recorder && process.platform !== 'win32' && rootPid !== undefined
+      ? armNodeLifeline(rootPid, error => {
+          lifelineError = new Error(`Could not start node owner-death watcher: ${error.message}`);
+          child.kill('SIGKILL');
         })
-      : undefined;
-  lifeline?.once('error', error => {
-    lifelineError = new Error(`Could not start node owner-death watcher: ${error.message}`);
-    child.kill('SIGKILL');
-  });
-  const disarmLifeline = (): void => {
-    lifeline?.stdin?.end('\n');
-    lifeline?.unref();
-  };
+      : (): void => undefined;
+  if (recorder && rootPid !== undefined) recorder.roots.set(rootPid, disarmLifeline);
   let spawnError: StreamedSubprocessError | undefined;
   let timedOut = false;
   let exited = false;
   let termination: Promise<void> | undefined;
   let terminationError: Error | undefined;
   const streams = Promise.all([
-    capture(child.stdout, options.stdoutPath, options.credentialValues, options.retainRawStdout),
-    capture(child.stderr, options.stderrPath, options.credentialValues),
+    capture(child.stdout, stdoutFile, options.credentialValues, options.retainRawStdout),
+    capture(child.stderr, stderrFile, options.credentialValues),
   ]).catch(error => {
     if (spawnError || terminationError)
       return [
@@ -172,7 +226,9 @@ export async function runStreamingSubprocess(options: {
   const timer = setTimeout(() => {
     timedOut = true;
     if (child.pid === undefined || exited) return;
-    if (!endTreeOnTimeout) {
+    const endWholeTree =
+      endTreeOnTimeout && (recorder !== undefined || process.platform === 'win32');
+    if (!endWholeTree) {
       child.kill('SIGTERM');
       return;
     }
@@ -192,6 +248,7 @@ export async function runStreamingSubprocess(options: {
       });
       child.once('close', (code, signal) => {
         exited = true;
+        if (rootPid !== undefined) recorder?.roots.delete(rootPid);
         disarmLifeline();
         resolve({ code, signal });
       });
