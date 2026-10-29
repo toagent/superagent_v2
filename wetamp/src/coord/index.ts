@@ -452,6 +452,7 @@ export class Coordination {
       })
     );
   }
+  // prettier-ignore
   reclaimRun(
     scope: Extract<Scope, { kind: 'run' }>,
     expected: { key: ReturnType<typeof identity.key>; generation: number },

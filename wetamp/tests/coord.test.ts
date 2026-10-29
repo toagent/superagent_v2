@@ -64,6 +64,7 @@ const input = {
 };
 const oldEnv = { ...process.env };
 
+// prettier-ignore
 test('reclaimRun rejects every stale or unsafe CAS state and transfers without takeover notice', () => {
   let aState: Presence['state'] = 'offline',
     bState: Presence['state'] = 'online';

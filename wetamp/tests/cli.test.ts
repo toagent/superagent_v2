@@ -5268,6 +5268,7 @@ test('E2BIG preflight gate failure is engine evidence, never a review verdict', 
   expect(classifyRun(s.ledger, failed).state).toBe('held:engine_suspect');
 });
 
+// prettier-ignore
 test('reclaim command prints the structured one-shot result', () => {
   stub([]);
   const result = captured(() => main(['reclaim', '--json']));
