@@ -73,4 +73,9 @@ describe('codebase env command', () => {
     await codebaseEnvCommand('list', [], root);
     expect(output).toEqual([]);
   });
+
+  test('rejects empty and overlong keys', async () => {
+    await expect(codebaseEnvCommand('set', ['', 'value'], root)).rejects.toThrow();
+    await expect(codebaseEnvCommand('set', ['K'.repeat(256), 'value'], root)).rejects.toThrow();
+  });
 });

@@ -8,6 +8,7 @@ import {
   codebaseSourceError,
   projectBaseBranchInspectionSchema,
 } from '@archon/core/schemas/codebase';
+import { codebaseEnvVarKeySchema } from '@archon/core/schemas/env-var';
 
 /** A codebase record (wire shape with ISO string dates). */
 export const codebaseSchema = codebaseRowSchema
@@ -50,7 +51,7 @@ export const codebaseEnvVarsResponseSchema = z
 /** Body for PUT /api/codebases/:id/env — upsert one key-value pair */
 export const setEnvVarBodySchema = z
   .object({
-    key: z.string().min(1).max(255),
+    key: codebaseEnvVarKeySchema,
     value: z.string(),
   })
   .openapi('SetEnvVarBody');
