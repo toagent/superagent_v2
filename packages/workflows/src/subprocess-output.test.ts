@@ -131,14 +131,14 @@ describe('runStreamingSubprocess', () => {
     const trees = recordNodeProcessTrees();
     try {
       const results: Awaited<ReturnType<typeof run>>[] = [];
-      for (let index = 0; index < 200; index += 8) {
+      for (let index = 0; index < 400; index += 8) {
         results.push(
           ...(await Promise.all(Array.from({ length: 8 }, () => run(`process.stdout.write('ok')`))))
         );
       }
       expect(results.every(({ result }) => result.stdout.raw === undefined)).toBe(true);
       expect(results.map(({ result }) => result.stdout.preview)).toEqual(
-        Array.from({ length: 200 }, () => 'ok')
+        Array.from({ length: 400 }, () => 'ok')
       );
     } finally {
       trees.release();
