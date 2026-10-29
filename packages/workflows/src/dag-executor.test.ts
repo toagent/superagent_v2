@@ -14750,12 +14750,12 @@ describe('executeDagWorkflow -- terminal node output selection', () => {
               id: 'first',
               kind,
               source: { kind: 'command' as const, name: 'my-cmd' },
-              idle_timeout: 10,
+              idle_timeout: 100,
             }
           : {
               id: 'first',
               kind,
-              idle_timeout: 10,
+              idle_timeout: 100,
               output_format: {
                 type: 'object',
                 properties: { done: { type: 'boolean' } },
@@ -14791,7 +14791,7 @@ describe('executeDagWorkflow -- terminal node output selection', () => {
                 kind: 'agent',
                 source: { kind: 'command', name: 'my-cmd' },
                 depends_on: ['first'],
-                idle_timeout: 10,
+                idle_timeout: 100,
               },
             ],
           },
