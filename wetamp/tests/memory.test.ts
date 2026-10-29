@@ -1090,7 +1090,8 @@ describe('EV1 lifecycle, privacy and priors', () => {
       const first = readdirSync(join(sa, 'runs'))[0];
       const lint = JSON.parse(readFileSync(join(sa, 'runs', first), 'utf8')).plan_lint;
       expect(lint.rejected).toBe(false);
-      expect(lint.warnings).toHaveLength(2);
+      expect(lint.warnings).toHaveLength(3);
+      expect(lint.warnings).toContain('重复失败检查已跳过：episodes 目录不存在');
       expect(lint.override).toBeUndefined();
       expect(existsSync(join(sa, 'launch-failures'))).toBe(false);
       const overlapReason = 'stub engine runs intentionally share the fixture scope';

@@ -201,6 +201,7 @@ test('every S3 reason translates, unknown reason survives unchanged, needs requi
       ...Object.keys(HOLD_POLICY),
       'auto_retry_exhausted',
       'no_attempt_node',
+      'reclaim_pending',
       'recover_no_progress',
     ].sort()
   );
