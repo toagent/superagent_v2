@@ -10,8 +10,9 @@ import {
 } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import type { infer as Infer } from '../../packages/workflows/node_modules/zod';
-import { archonJson, lock, runRevision, type RunView } from './archon';
+import { archonJson, getRun, lock, runRevision, type RunView } from './archon';
 import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
 import { artifactsOf, classifyRun, ledgerIds, loadLedger, type Ledger } from './cli';
 import { cockpitSignals, type Asks } from './cockpit-signals';
@@ -352,31 +353,67 @@ const mechanismAccuracy = (signature: string): string => {
     done = outcomes.filter(outcome => outcome.state === 'done').length;
   return outcomes.length ? `${String(Math.round((done / outcomes.length) * 100))}%` : '';
 };
-export function deliverEngineDefects(): void {
+const liveDefect = (
+  episode: Episode,
+  asks: Asks,
+  jobs: ReturnType<typeof readJobs>['jobs']
+): string | null => {
+  const hash = createHash('sha256').update(JSON.stringify(episode)).digest('hex');
+  if (episode.source === 'job') {
+    const job = jobs.find(current => `job-${current.id}` === episode.id);
+    return job?.state === episode.status ? `sha256=${hash} live=job:${job.state}` : null;
+  }
+  const ledger = loadLedger(episode.id),
+    run = getRun(ledger.archon_run_id, ledger.repo),
+    current = classifyRun(ledger, run);
+  if (episode.signature === 'orphan_hold') {
+    const hold = current.state.startsWith('held:') ? current.state.slice(5) : undefined,
+      since = run.metadata?.wait?.waitingSince ?? run.last_activity_at ?? ledger.started_at,
+      disposed =
+        ledger.dispositions?.some(
+          d => (d.ok || d.action === 'blocked') && Date.parse(d.at) >= Date.parse(since)
+        ) ?? false;
+    if (!cockpitSignals([{ run_id: ledger.run_id, hold, since, disposed }], asks).orphan_hold)
+      return null;
+  } else if (run.status !== episode.status) return null;
+  return `sha256=${hash} live=run:${run.status}/${current.state}`;
+};
+export function deliverEngineDefects(asks?: Asks): void {
+  const jobs = asks ? readJobs().jobs : [];
   for (const name of files(join(root(), 'mechanize'))) {
     try {
       const file = join(root(), 'mechanize', name),
         mechanism = memoryJson<Mechanism>(file, { episodes: [], reasons: [] }),
         signature = mechanism.signature ?? name.slice(0, -5),
-        evidence = mechanism.episodes.flatMap(id => {
-          const episode = episodeOf(id);
-          if (!episode) return [];
-          const current = diagnosis(episode);
-          return episode.signature === signature &&
-            current.category === 'engine' &&
-            current.signature === signature &&
-            defectEligible(episode) &&
-            !privateProject(episode.project)
-            ? [episode]
-            : [];
-        }),
         previous = mechanism.handoff,
         message = previous
           ? coord()
               .messages()
               .find(m => m.id === previous.id)
           : undefined,
-        state = message?.state ?? previous?.state,
+        state = message?.state ?? previous?.state;
+      if (previous && !['done', 'rejected'].includes(state ?? '')) {
+        if (state !== previous.state)
+          writeAtomic(file, JSON.stringify({ ...mechanism, handoff: { ...previous, state } }));
+        continue;
+      }
+      const evidence = mechanism.episodes.flatMap(id => {
+          const episode = episodeOf(id),
+            current = episode && diagnosis(episode);
+          if (
+            episode?.signature !== signature ||
+            current?.category !== 'engine' ||
+            current.signature !== signature ||
+            !defectEligible(episode) ||
+            privateProject(episode.project)
+          )
+            return [];
+          const diagnostic =
+            asks === undefined
+              ? `sha256=${createHash('sha256').update(JSON.stringify(episode)).digest('hex')} live=unchecked`
+              : liveDefect(episode, asks, jobs);
+          return diagnostic ? [{ episode, diagnostic }] : [];
+        }),
         outcomes = previous?.outcomes ?? [],
         settled =
           (message?.state === 'done' || message?.state === 'rejected') &&
@@ -386,7 +423,7 @@ export function deliverEngineDefects(): void {
         seen = new Set(
           previous?.seen ?? (previous ? mechanism.episodes.slice(0, previous.episodes) : [])
         ),
-        unseen = evidence.filter(episode => !seen.has(episode.id)),
+        unseen = evidence.filter(({ episode }) => !seen.has(episode.id)),
         silenced =
           settled.length >= 2 && settled.slice(-2).every(outcome => outcome.state === 'rejected');
       if (
@@ -401,8 +438,8 @@ export function deliverEngineDefects(): void {
         if (silenced && unseen.length) memoryLog(`engine_handoff_silenced:${signature}`);
         continue;
       }
-      const recent = evidence.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10),
-        paths = recent.map(e => join(root(), 'episodes', `${e.id}.json`)),
+      const recent = evidence.sort((a, b) => b.episode.at.localeCompare(a.episode.at)).slice(0, 10),
+        paths = recent.map(({ episode }) => join(root(), 'episodes', `${episode.id}.json`)),
         regression = state === 'done';
       const sent = coord().handoff(
         repoScope(WETAMP),
@@ -410,7 +447,7 @@ export function deliverEngineDefects(): void {
         {
           kind: 'bug',
           title: `engine defect${regression ? ' regression' : ''}: ${signature}`,
-          body: `signature: ${signature}\nreason_codes: ${mechanism.reasons.join(',')}\noccurrences: ${String(evidence.length)}\nprojects: ${[...new Set(recent.map(e => e.project))].join(',')}\nrun_ids: ${recent.map(e => e.id).join(',')}\nepisode_evidence:\n${paths.join('\n')}`,
+          body: `signature: ${signature}\nreason_codes: ${mechanism.reasons.join(',')}\noccurrences: ${String(evidence.length)}\nprojects: ${[...new Set(recent.map(({ episode }) => episode.project))].join(',')}\nrun_ids: ${recent.map(({ episode }) => episode.id).join(',')}\ndiagnostics:\n${recent.map(({ episode, diagnostic }) => `${episode.id} ${diagnostic}`).join('\n')}\nepisode_evidence:\n${paths.join('\n')}`,
           evidence: paths,
           severity: 'normal',
         },
@@ -421,7 +458,7 @@ export function deliverEngineDefects(): void {
         id: String(sent.id),
         state: 'queued',
         episodes: evidence.length,
-        seen: evidence.map(episode => episode.id),
+        seen: evidence.map(({ episode }) => episode.id),
         outcomes: settled,
       };
       writeAtomic(file, JSON.stringify(mechanism));
@@ -1458,7 +1495,7 @@ export function memoryTick(
       }
     if (!dryRun) {
       try {
-        deliverEngineDefects();
+        deliverEngineDefects(asks);
       } catch {
         memoryLog('engine handoff skipped; next tick retries');
       }
