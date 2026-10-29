@@ -73,4 +73,20 @@ describe('codebase env command', () => {
     await codebaseEnvCommand('list', [], root);
     expect(output).toEqual([]);
   });
+
+  test('rejects missing, empty and overlong keys, then accepts boundary keys and empty values', async () => {
+    const codebase = (await findCodebaseByDefaultCwd(root))!;
+    for (const args of [[], ['', 'value'], ['K'.repeat(256), 'value']]) {
+      await expect(codebaseEnvCommand('set', args, root)).rejects.toThrow();
+      expect(await getCodebaseEnvVars(codebase.id)).toEqual({});
+    }
+    for (const key of ['K', 'K'.repeat(255)]) {
+      await codebaseEnvCommand('set', [key, ''], root);
+      expect(await getCodebaseEnvVars(codebase.id)).toEqual({ [key]: '' });
+      await codebaseEnvCommand('set', [key, 'updated'], root);
+      expect(await getCodebaseEnvVars(codebase.id)).toEqual({ [key]: 'updated' });
+      await codebaseEnvCommand('unset', [key], root);
+    }
+    expect(output).toEqual([]);
+  });
 });

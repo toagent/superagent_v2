@@ -190,6 +190,7 @@ Commands:
   forge resolve              Resolve an explicit remote through optional forge plugins
   forge checks               Observe checks for an explicit qualified pull request
   user <list|role>           List users and manage roles as the operator
+  codebase env <action>      List, set, or unset environment variables for a registered codebase
   trigger <fire|drain|list|inspect|withdraw|recover-preparation|schedule>
                              Start configured workflows and inspect durable resource admission
   chat <message>             Send a message to the orchestrator
@@ -371,6 +372,14 @@ Examples:
 
   it('renders --full in workflow list --help', () => {
     expect(scopedHelpOptions(['workflow', 'list'])).toContain('--full');
+  });
+
+  it('aligns codebase env descriptions in global and scoped help', () => {
+    const line =
+      '  codebase env <action>      List, set, or unset environment variables for a registered codebase';
+    expect(renderHelp()).toContain(line);
+    expect(renderHelp('codebase', 'env')).toContain(line);
+    expect(scopedHelpOptions(['codebase', 'env'])).toContain('--cwd <path>');
   });
 });
 

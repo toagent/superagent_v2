@@ -11,6 +11,7 @@ import {
   setCodebaseEnvVar,
 } from '@archon/core/db/env-vars';
 import { assertCodebaseEnvVarsAllowed } from '@archon/workflows/run-preflight';
+import { codebaseEnvVarKeySchema } from '@archon/core/schemas/env-var';
 
 export async function codebaseEnvCommand(
   action: string | undefined,
@@ -32,6 +33,7 @@ export async function codebaseEnvCommand(
   }
   if (action === 'set' && args.length === 2) {
     const [key, value] = args as [string, string];
+    codebaseEnvVarKeySchema.parse(key);
     assertCodebaseEnvVarsAllowed({ [key]: value });
     await setCodebaseEnvVar(codebase.id, key, value);
     return;

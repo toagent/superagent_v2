@@ -16,4 +16,6 @@ export const codebaseEnvVarSchema = z.object({
   updated_at: z.string(),
 });
 
+export const codebaseEnvVarKeySchema = z.string().min(1).max(255);
+
 export type CodebaseEnvVar = z.infer<typeof codebaseEnvVarSchema>;
