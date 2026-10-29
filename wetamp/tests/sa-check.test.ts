@@ -2183,6 +2183,68 @@ function planFile(
 }
 
 describe('sa-check script', () => {
+  test('BASE_RULER classifies only declared target outcomes', () => {
+    for (const [cases, ids, reason] of [
+      [
+        '<testcase classname="suite" name="a"><failure>a</failure></testcase><testcase classname="suite" name="b"><failure>b</failure></testcase>',
+        'suite::a,suite::b',
+        null,
+      ],
+      [
+        '<testcase classname="suite" name="a"/><testcase classname="other" name="x"><failure>x</failure></testcase>',
+        'suite::a',
+        'vacuous_test',
+      ],
+      [
+        '<testcase classname="suite" name="other"><failure>x</failure></testcase>',
+        'suite::missing',
+        'ruler_invalid',
+      ],
+      [
+        '<testcase classname="suite" name="a"><error>boom</error></testcase>',
+        'suite::a',
+        'ruler_invalid',
+      ],
+    ] as const) {
+      const root = tmp(),
+        repo = gitRepo(root),
+        path = planFile(root, 'false');
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+      const p = JSON.parse(readFileSync(path, 'utf8'));
+      p.packages[0].accept[0] = {
+        cmd: `printf '%s' '<testsuite tests="2">${cases}</testsuite>' > junit.xml; exit 1`,
+        timeout_s: 5,
+        report: { junit: 'junit.xml' },
+        base_expect_fail: ids.split(','),
+      };
+      writeFileSync(path, JSON.stringify(p));
+      const r = runScript(repo, { kind: 'ruler', plan: path, pkgs: 'a', tag: 'baseline-ruler-a' });
+      expect(r.code, `${r.err}\n${JSON.stringify(r.out)}`).toBe(reason ? 1 : 0);
+      expect(r.out).toMatchObject({ ok: reason === null, reason });
+    }
+  });
+
+  test('BASE_RULER carried candidate skips without running the declared check', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      marker = join(root, 'ran'),
+      path = planFile(root, `touch '${marker}'; false`);
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    p.packages[0].accept[0].report = { junit: 'junit.xml' };
+    p.packages[0].accept[0].base_expect_fail = ['suite::a'];
+    writeFileSync(path, JSON.stringify(p));
+    const r = runScript(repo, {
+      kind: 'ruler',
+      plan: path,
+      pkgs: 'a',
+      tag: 'baseline-ruler-a',
+      skip: 'candidate_carried',
+    });
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toMatchObject({ ok: true, skipped: 'candidate_carried' });
+    expect(existsSync(marker)).toBe(false);
+  });
+
   // prettier-ignore
   test('carried acceptance replays accepted ancestor evidence without running checks', () => {
     const root = tmp(), repo = gitRepo(root), counter = join(root, 'ran');

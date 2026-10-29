@@ -274,6 +274,13 @@
             "collect": { "type": "string", "minLength": 1 }
           }
         },
+        "base_expect_fail": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "JUnit testcase ids that must exist and report assertion failures before coding starts",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "known_failures": {
           "type": "array",
           "uniqueItems": true,
@@ -287,7 +294,16 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["base_expect_fail"] },
+          "then": {
+            "required": ["report"],
+            "properties": { "cache": { "not": { "const": false } } }
+          }
+        }
+      ]
     },
     "caps": {
       "type": "object",

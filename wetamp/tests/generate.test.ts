@@ -271,6 +271,39 @@ test('Claude coder nodes use the policy cost cap while Codex and review nodes st
     for (const node of nodes.filter(node => node.bash)) expect(node.retry).toBeUndefined();
   }
 });
+test('BASE_RULER is opt-in before coding and skips carried candidates', () => {
+  const p = structuredClone(fixture);
+  p.packages[0].accept[0] = {
+    ...p.packages[0].accept[0],
+    report: { junit: 'junit.xml' },
+    base_expect_fail: ['suite::target'],
+  };
+  const fresh = nodesOf(buildWorkflow(p, milestones(p), 'ruler', '/GEN', false, NOW));
+  expect(fresh.find(n => n.id === 'baseline-ruler-core')).toMatchObject({
+    depends_on: ['sync-m1-ready'],
+    with: { kind: 'ruler', pkgs: 'core', skip: '' },
+  });
+  expect(fresh.find(n => n.id === 'code-core')?.depends_on).toContain('baseline-ruler-core');
+  expect(fresh.some(n => n.id === 'baseline-ruler-api')).toBe(false);
+  const carried = nodesOf(
+    buildWorkflow(p, milestones(p), 'ruler', '/GEN', false, NOW, fixtureTiers(), {
+      from: 'old',
+      packages: ['core'],
+    })
+  );
+  expect(carried.find(n => n.id === 'baseline-ruler-core')?.with?.skip).toBe('candidate_carried');
+});
+
+test('BASE_RULER declaration requires a cached JUnit report', () => {
+  for (const patch of [{ report: undefined }, { report: { junit: 'junit.xml' }, cache: false }]) {
+    const root = tmp(),
+      path = fixturePlan(root, gitRepo(root), value => {
+        const pkg = (value as { packages: Plan['packages'] }).packages[0];
+        Object.assign(pkg.accept[0], patch, { base_expect_fail: ['suite::target'] });
+      });
+    expect(() => loadPlan(path, [root])).toThrow('plan invalid');
+  }
+});
 
 test('NO_QUOTA bash nodes ignore inherited BASH_ENV startup failures', () => {
   const root = tmp();

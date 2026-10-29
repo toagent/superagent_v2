@@ -612,12 +612,30 @@ export function buildWorkflow(
       checkpointDrift = checkpointCondition('!=', ' || ');
     const last = ms.at(-1) === m;
     for (const p of m.packages) {
+      const rulerChecks = p.accept.filter(c => c.base_expect_fail?.length);
+      const ruler = rulerChecks.length ? `baseline-ruler-${p.id}` : undefined;
+      if (ruler)
+        nodes.push(
+          check(
+            ruler,
+            [prev],
+            {
+              kind: 'ruler',
+              plan: planPath,
+              pkgs: p.id,
+              tag: ruler,
+              skip: carried ? 'candidate_carried' : '',
+            },
+            commandTimeout(rulerChecks, 1)
+          )
+        );
+      const packageStart = ruler ?? prev;
       const pkgAttempt = `package-attempt-${p.id}`;
       const pkgAttemptHandle = output<ContextOutput>(pkgAttempt);
       nodes.push({
         id: pkgAttempt,
         ...attemptInputs(attemptPath(gen, `pkg/${p.id}`), p.id),
-        depends_on: [prev],
+        depends_on: [packageStart],
         always_run: true,
         output_format: contextOutputFormat,
       });
@@ -653,7 +671,7 @@ export function buildWorkflow(
         nodes.push(
           {
             id: `soldier-items-${p.id}`,
-            depends_on: [prev, pkgAttempt],
+            depends_on: [packageStart, pkgAttempt],
             bash: `printf '%s' '[{"pkg":"${p.id}"}]'`,
           },
           {
@@ -711,7 +729,7 @@ export function buildWorkflow(
         ...coder,
         ...(fake ? { with: { soldier_ok: '' } } : {}),
         depends_on: [
-          prev,
+          packageStart,
           pkgAttempt,
           ...(soldier && soldierOk && soldierReset ? [soldier, soldierOk, soldierReset] : []),
         ],

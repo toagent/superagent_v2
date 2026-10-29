@@ -214,24 +214,26 @@ function validXml(xml: string): boolean {
   return roots === 1 && !stack.length && !xml.slice(end).trim() && !bad.test(xml.slice(end));
 }
 // prettier-ignore
-function junitCases(path: string, expected: string[], started: number): StructuredCases | undefined {
+type ParsedCases = StructuredCases & { errors: string[]; report_error: boolean };
+// prettier-ignore
+function junitCases(path: string, expected: string[], started: number): ParsedCases | undefined {
   try {
     if (!existsSync(path) || statSync(path).mtimeMs < started) return;
     const xml = readFileSync(path, 'utf8');
     if (!validXml(xml)) return;
     const elements = xml.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, '');
-    if (/<error\b/.test(elements)) return;
     if (![...elements.matchAll(/<testsuite\b([^>]*)>/g)].some(m => Number(attrs(m[1]).tests) > 0))
       return;
-    const cases = [...elements.matchAll(/<testcase\b([^>]*)(?:\/>|>([\s\S]*?)<\/testcase>)/g)];
-    const ids: string[] = [], skipped: string[] = [], failures: StructuredCases['failures'] = [];
+    const cases = [...elements.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)];
+    const ids: string[] = [], skipped: string[] = [], errors: string[] = [], failures: StructuredCases['failures'] = [];
     for (const match of cases) {
       const a = attrs(match[1]),
         id = `${a.classname ?? ''}::${a.name ?? ''}`,
         body = match[2] || '';
-      if (!a.classname || !a.name || ids.includes(id) || /<error\b/.test(body)) return;
+      if (!a.classname || !a.name || ids.includes(id)) return;
       ids.push(id);
       if (/<skipped\b/.test(body)) skipped.push(id);
+      if (/<error\b/.test(body)) errors.push(id);
       const f = /<failure\b([^>]*)>([\s\S]*?)<\/failure>|<failure\b([^>]*)\/>/.exec(body);
       if (f) {
         const fa = attrs(f[1] || f[3] || ''), text = xmlText(f[2] || '');
@@ -239,13 +241,16 @@ function junitCases(path: string, expected: string[], started: number): Structur
       }
     }
     const sorted = [...failures].sort((a, b) => a.id.localeCompare(b.id));
-    const complete = ids.length > 0 && new Set(ids).size === ids.length &&
+    const report_error = [...elements.matchAll(/<error\b/g)].length > errors.length;
+    const complete = !report_error && errors.length === 0 && ids.length > 0 && new Set(ids).size === ids.length &&
       JSON.stringify([...ids].sort()) === JSON.stringify([...expected].sort());
     return {
       complete,
       tests: ids.length,
       ids,
       skipped,
+      errors,
+      report_error,
       failures: sorted,
       failure_digest: sha(JSON.stringify(sorted.map(f => [f.id, f.type, f.message, f.body_hash]))),
       report: path,
@@ -478,7 +483,8 @@ function run(
   cwd?: string,
   envKey = '',
   failures: CheckFailure[] = [],
-  results: CommandResult[] = []
+  results: CommandResult[] = [],
+  retryFailure = true
 ): string[] {
   const failed: string[] = [];
   const commandEnv = env('KIND') === 'env' ? process.env : projectEnvironment(process.env);
@@ -586,6 +592,7 @@ function run(
       !first[0]?.signalCode &&
       c.cache !== false &&
       env('KIND') !== 'env' &&
+      retryFailure &&
       deadline > Date.now()
         ? execute()
         : first;
@@ -1311,6 +1318,48 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
 
 export const environmentChecks = (p: Pick<Plan, 'environment' | 'packages'>): Check[] =>
   (p.environment ?? []).concat(p.packages.flatMap(k => k.environment ?? []));
+
+function ruler(): void {
+  const tag = env('TAG'),
+    log = join(artifacts, `${tag}.log`);
+  writeFileSync(log, '');
+  if (env('SKIP')) {
+    const out = { ok: true, skipped: env('SKIP'), log };
+    writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out));
+    emit(out);
+    return;
+  }
+  const ids = env('PKGS').split(',').filter(Boolean);
+  const checks = plan()
+    .packages.filter(p => ids.includes(p.id))
+    .flatMap(p => p.accept)
+    .filter(c => c.base_expect_fail?.length);
+  const results: CommandResult[] = [];
+  run(checks, log, undefined, '', [], results, false);
+  let invalid = false,
+    vacuous = false;
+  for (const result of results) {
+    const targets = result.check.base_expect_fail ?? [];
+    const cases = result.structured as ParsedCases | undefined;
+    if (
+      !cases ||
+      cases.report_error ||
+      result.exit !== 1 ||
+      targets.some(
+        id => !cases.ids.includes(id) || cases.skipped.includes(id) || cases.errors.includes(id)
+      )
+    ) {
+      invalid = true;
+      continue;
+    }
+    if (targets.some(id => !cases.failures.some(f => f.id === id))) vacuous = true;
+  }
+  const reason = invalid ? 'ruler_invalid' : vacuous ? 'vacuous_test' : null;
+  const out = { ok: reason === null, reason, log, command_results: results };
+  writeFileSync(join(artifacts, `${tag}.json`), JSON.stringify(out));
+  emit(out);
+  if (reason) process.exit(1);
+}
 
 // prettier-ignore
 async function environment(): Promise<void> {
@@ -2859,6 +2908,7 @@ export type Land = ReturnType<typeof land>;
 if (import.meta.main) {
   const kinds: Partial<Record<string, () => unknown>> = {
     env: environment,
+    ruler,
     accept,
     settle,
     gate,

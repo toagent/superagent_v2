@@ -150,6 +150,29 @@ export const publishOutputFormat = {
     },
   },
 } as const;
+export type Check = {
+  cmd: string;
+  timeout_s: number;
+  /**
+   * Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.
+   */
+  cache?: boolean;
+  report?: {
+    junit: string;
+    collect?: string;
+  };
+  /**
+   * JUnit testcase ids that must exist and report assertion failures before coding starts
+   *
+   * @minItems 1
+   */
+  base_expect_fail?: string[];
+  known_failures?: {
+    id: string;
+    reason: string;
+  }[];
+};
+
 export interface AcceptOutput {
   decision: {
     kind: 'advance' | 'debt' | 'repair' | 'block';
@@ -246,22 +269,6 @@ export interface RequirementContract {
      * @minItems 1
      */
     verified_by: number[];
-  }[];
-}
-export interface Check {
-  cmd: string;
-  timeout_s: number;
-  /**
-   * Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.
-   */
-  cache?: boolean;
-  report?: {
-    junit: string;
-    collect?: string;
-  };
-  known_failures?: {
-    id: string;
-    reason: string;
   }[];
 }
 export interface CommandResult {
@@ -419,6 +426,14 @@ export const acceptOutputFormat = {
             collect: { type: 'string', minLength: 1 },
           },
         },
+        base_expect_fail: {
+          type: 'array',
+          minItems: 1,
+          uniqueItems: true,
+          description:
+            'JUnit testcase ids that must exist and report assertion failures before coding starts',
+          items: { type: 'string', minLength: 1 },
+        },
         known_failures: {
           type: 'array',
           uniqueItems: true,
@@ -433,6 +448,12 @@ export const acceptOutputFormat = {
           },
         },
       },
+      allOf: [
+        {
+          if: { required: ['base_expect_fail'] },
+          then: { required: ['report'], properties: { cache: { not: { const: false } } } },
+        },
+      ],
     },
     StructuredCases: {
       type: 'object',

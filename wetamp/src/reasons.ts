@@ -163,6 +163,8 @@ const base: Reason[] = [
   deterministic('coder_partial', 'coder', 'coder', '编码未完成且无改动或验收失败'),
   deterministic('scope_violation', 'coder', 'coder', '交付包含 scope.write 之外的路径'),
   deterministic('acceptance_failed', 'gate', 'coder', '验收失败'),
+  deterministic('ruler_invalid', 'gate', 'human', '基线尺子缺失目标断言失败或无法执行'),
+  deterministic('vacuous_test', 'gate', 'human', '基线尺子的目标测试已通过'),
   deterministic('review_failed', 'gate', 'coder', '评审未通过'),
   deterministic('finding_stuck', 'gate', 'coder', '同一阻断发现连续三轮未关闭'),
   deterministic(

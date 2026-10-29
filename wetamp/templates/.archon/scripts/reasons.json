@@ -161,6 +161,20 @@
     "description": "验收失败"
   },
   {
+    "code": "ruler_invalid",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "基线尺子缺失目标断言失败或无法执行"
+  },
+  {
+    "code": "vacuous_test",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "基线尺子的目标测试已通过"
+  },
+  {
     "code": "review_failed",
     "hold": "gate",
     "determinism": "deterministic",
@@ -383,6 +397,20 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "验收失败"
+  },
+  {
+    "code": "ruler_invalid+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "基线尺子缺失目标断言失败或无法执行"
+  },
+  {
+    "code": "vacuous_test+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "基线尺子的目标测试已通过"
   },
   {
     "code": "review_failed+review_limit",
