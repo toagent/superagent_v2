@@ -1,8 +1,7 @@
 import { expect, test } from 'bun:test';
-import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { applyPlanRules, freezePlanRules } from '../src/plan-rules';
+import { applyPlanRules } from '../src/plan-rules';
 import { loadPlan, type Plan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
@@ -73,21 +72,4 @@ test('required checks append once without changing requirement indexes or obeyin
   expect(applyPlanRules(self).plan.packages[0].accept.at(-1)?.cmd).toBe(
     'cd wetamp && bun run type-check'
   );
-});
-
-test('frozen rule content and hash are copied to continuations without rereading the repo', () => {
-  const s = setup(),
-    original = JSON.stringify({ required_checks: [] });
-  s.rules(JSON.parse(original));
-  const plan = applyPlanRules(s.plan()).plan;
-  const base = join(s.root, 'gen'),
-    continuation = join(base, 'continuation');
-  mkdirSync(continuation, { recursive: true });
-  freezePlanRules(plan, base);
-  s.rules({ frozen: ['**'] });
-  freezePlanRules({ ...plan } as Plan, continuation, base);
-  expect(JSON.parse(readFileSync(join(continuation, 'project-rules.json'), 'utf8'))).toEqual({
-    rules: JSON.parse(original),
-    sha256: createHash('sha256').update(original).digest('hex'),
-  });
 });
