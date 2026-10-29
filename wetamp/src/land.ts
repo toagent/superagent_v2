@@ -48,11 +48,10 @@ export interface DeliveryAuthorization {
 // prettier-ignore
 interface ReclaimWait { read: () => unknown; now: () => number; sleep: (ms: number) => void }
 // prettier-ignore
-const reclaimJournal = (): unknown => { const path = join(home().sa, 'reclaim', 'journal.json'); return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : []; }, reclaimPending = (run: string, value: unknown): boolean => ['transferring', 'transferred'].includes((Object.values(value ?? {}) as { run?: string; state?: string }[]).filter(entry => entry.run === run).at(-1)?.state ?? '');
+const reclaimJournal = (): unknown => { const path = join(home().sa, 'reclaim', 'journal.json'); return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : []; }, reclaimWait = (): ReclaimWait => ({ read: reclaimJournal, now: Date.now, sleep: ms => { Bun.sleepSync(ms); } }), reclaimPending = (run: string, value: unknown): boolean => ['transferring', 'transferred'].includes((Object.values(value ?? {}) as { run?: string; state?: string }[]).filter(entry => entry.run === run).at(-1)?.state ?? '');
 // prettier-ignore
-export function waitForReclaim(run: string, d?: ReclaimWait): void {
-  d ??= { read: reclaimJournal, now: Date.now, sleep: ms => { Bun.sleepSync(ms); } };
-  const deadline = d.now() + 600_000; for (;;) {
+export function waitForReclaim(run: string, d = reclaimWait(), deadline = d.now() + 600_000): void {
+  for (;;) {
     if (!reclaimPending(run, d.read())) return;
     if (d.now() >= deadline)
       throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
@@ -62,7 +61,13 @@ export function waitForReclaim(run: string, d?: ReclaimWait): void {
 
 // prettier-ignore
 export function retryAdvancedFence(retry: boolean, captured: readonly number[], current: () => readonly number[], attempt: () => void, refresh: () => void): void {
-  try { attempt(); } catch (error) { if (!retry || !current().some((generation, index) => generation > (captured[index] ?? 0))) throw error; refresh(); }
+  try { attempt(); } catch (error) { if (error instanceof IntegrationError && error.code === 'reclaim_pending') throw error; if (!retry || !current().some((generation, index) => generation > (captured[index] ?? 0))) throw error; refresh(); }
+}
+
+// prettier-ignore
+export function reclaimAdmission<T>(run: string, action: () => T, d = reclaimWait()): T {
+  const deadline = d.now() + 600_000, wait = (): void => { waitForReclaim(run, d, deadline); }; wait();
+  try { return action(); } catch (error) { if (!(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error; wait(); return action(); }
 }
 
 export function deliveryAuthorized(
@@ -212,7 +217,6 @@ const emit = (name: string, value: unknown, write = true): void => {
 const authorized = (retry = true) => {
   const runId = process.env.INPUTS_RUN;
   if (!runId) throw new Error('integration: missing run id');
-  waitForReclaim(runId);
   const { loadLedger, readJson } = operator();
   const ledger = loadLedger(runId);
   const originalPath = join(ledger.gen_dir, 'delivery-authorization.json');
@@ -233,19 +237,13 @@ const authorized = (retry = true) => {
     throw new Error('integration: authorization/run mismatch');
   // prettier-ignore
   const fence = (): void => {
-    try {
-      retryAdvancedFence(retry, [authorization.run.generation, authorization.repo.generation],
-        () => [coord().owner(runScope(ledger)).generation, coord().owner(repoScope(ledger.repo)).generation],
-        () => { coord().mutate(repoScope(ledger.repo), who, () => {
-          if (reclaimPending(runId, reclaimJournal())) throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
-          control(ledger, () => undefined, who, authorization.run.generation);
-        }, authorization.repo.generation); },
-        () => { authorized(false).fence(); });
-    } catch (error) {
-      if (!retry || !(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error;
-      waitForReclaim(runId);
-      authorized(false).fence();
-    }
+    retryAdvancedFence(retry, [authorization.run.generation, authorization.repo.generation],
+      () => [coord().owner(runScope(ledger)).generation, coord().owner(repoScope(ledger.repo)).generation],
+      () => { coord().mutate(repoScope(ledger.repo), who, () => {
+        if (reclaimPending(runId, reclaimJournal())) throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
+        control(ledger, () => undefined, who, authorization.run.generation);
+      }, authorization.repo.generation); },
+      () => { authorized(false).fence(); });
   };
   return { ledger, fence };
 };
@@ -264,22 +262,24 @@ export const gateHashes = (round: string, env: NodeJS.ProcessEnv = process.env):
     .filter((value): value is string => Boolean(value));
 
 const integrationSync = (): void => {
-  const { ledger, fence } = authorized();
-  if (!ledger.delivery) throw new Error('integration: missing delivery target');
-  fence();
-  const generation = nextCounter(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}`);
-  const result: SyncOutput = {
-    ...sync(process.cwd(), ledger.delivery),
-    generation,
-  };
-  fence();
-  writeEvidence(
-    process.env.INPUTS_OUTPUT ?? `sync-${process.env.INPUTS_MILESTONE ?? 'run'}`,
-    result
-  );
-  emit(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}-${String(generation)}`, result);
-  if (process.env.INPUTS_FAIL_CONFLICT === '1' && result.status === 'conflict')
-    process.exitCode = 1;
+  reclaimAdmission(process.env.INPUTS_RUN ?? '', () => {
+    const { ledger, fence } = authorized();
+    if (!ledger.delivery) throw new Error('integration: missing delivery target');
+    fence();
+    const generation = nextCounter(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}`);
+    const result: SyncOutput = {
+      ...sync(process.cwd(), ledger.delivery),
+      generation,
+    };
+    fence();
+    writeEvidence(
+      process.env.INPUTS_OUTPUT ?? `sync-${process.env.INPUTS_MILESTONE ?? 'run'}`,
+      result
+    );
+    emit(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}-${String(generation)}`, result);
+    if (process.env.INPUTS_FAIL_CONFLICT === '1' && result.status === 'conflict')
+      process.exitCode = 1;
+  });
 };
 
 const lastGate = (milestone: string): Record<string, unknown> => {
@@ -312,53 +312,55 @@ const lastGate = (milestone: string): Record<string, unknown> => {
 };
 
 const integrationPublish = (): void => {
-  const { ledger, fence } = authorized();
-  if (!ledger.delivery) throw new Error('integration: missing delivery target');
-  const milestone = process.env.INPUTS_MILESTONE ?? 'run';
-  const tag = process.env.INPUTS_OUTPUT ?? `publish-${milestone}`;
-  const gate = lastGate(milestone);
-  const stringField = (value: Record<string, unknown>, key: string): string =>
-    typeof value[key] === 'string' ? value[key] : '';
-  const reviewRequired = process.env.INPUTS_REVIEW_REQUIRED === '1';
-  const receipt = evidencePath(tag);
-  const result: PublishResult = publish(
-    {
-      worktree: process.cwd(),
-      target: ledger.delivery,
-      task: ledger.run_id,
-      contract: createHash('sha256')
-        .update(readFileSync(join(ledger.gen_dir, 'accept-inputs.json')))
-        .digest('hex'),
-      evidence: process.env.ARTIFACTS_DIR ?? '',
-      receipt,
-      review: reviewRequired
-        ? {
-            required: true,
-            reviewed_head: stringField(gate, 'reviewed_head'),
-            reviewed_diff_hash: stringField(gate, 'reviewed_diff_hash'),
-          }
-        : { required: false },
-      fence,
-    },
-    { target_tip: process.env.INPUTS_TARGET_TIP ?? '' }
-  );
-  if (result.status === 'advanced' && nextCounter(`advanced-${milestone}`) >= 3) {
-    const exhausted = {
-      status: 'rejected',
-      reason: 'target_advanced',
-      target_tip: result.target_tip,
-    };
-    emit(tag, exhausted);
-    process.exitCode = 1;
-    return;
-  }
-  if (result.status === 'dirty') {
-    emit(tag, { ...result, reason: 'target_dirty' });
-    process.exitCode = 1;
-    return;
-  }
-  emit(tag, result, result.status !== 'published');
-  if (result.status === 'rejected') process.exitCode = 1;
+  reclaimAdmission(process.env.INPUTS_RUN ?? '', () => {
+    const { ledger, fence } = authorized();
+    if (!ledger.delivery) throw new Error('integration: missing delivery target');
+    const milestone = process.env.INPUTS_MILESTONE ?? 'run';
+    const tag = process.env.INPUTS_OUTPUT ?? `publish-${milestone}`;
+    const gate = lastGate(milestone);
+    const stringField = (value: Record<string, unknown>, key: string): string =>
+      typeof value[key] === 'string' ? value[key] : '';
+    const reviewRequired = process.env.INPUTS_REVIEW_REQUIRED === '1';
+    const receipt = evidencePath(tag);
+    const result: PublishResult = publish(
+      {
+        worktree: process.cwd(),
+        target: ledger.delivery,
+        task: ledger.run_id,
+        contract: createHash('sha256')
+          .update(readFileSync(join(ledger.gen_dir, 'accept-inputs.json')))
+          .digest('hex'),
+        evidence: process.env.ARTIFACTS_DIR ?? '',
+        receipt,
+        review: reviewRequired
+          ? {
+              required: true,
+              reviewed_head: stringField(gate, 'reviewed_head'),
+              reviewed_diff_hash: stringField(gate, 'reviewed_diff_hash'),
+            }
+          : { required: false },
+        fence,
+      },
+      { target_tip: process.env.INPUTS_TARGET_TIP ?? '' }
+    );
+    if (result.status === 'advanced' && nextCounter(`advanced-${milestone}`) >= 3) {
+      const exhausted = {
+        status: 'rejected',
+        reason: 'target_advanced',
+        target_tip: result.target_tip,
+      };
+      emit(tag, exhausted);
+      process.exitCode = 1;
+      return;
+    }
+    if (result.status === 'dirty') {
+      emit(tag, { ...result, reason: 'target_dirty' });
+      process.exitCode = 1;
+      return;
+    }
+    emit(tag, result, result.status !== 'published');
+    if (result.status === 'rejected') process.exitCode = 1;
+  });
 };
 
 export function runIntegrationMain(action: string): void {

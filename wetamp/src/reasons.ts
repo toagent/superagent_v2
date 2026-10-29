@@ -56,7 +56,7 @@ export const HOLD_POLICY = {
   auto_recover: {
     do: 'ask',
     yes: 'resume',
-    text: '自动恢复被准入拦截',
+    text: '恢复等待处理',
     yesText: '显式重试恢复',
   },
   acceptance_adjudication: {

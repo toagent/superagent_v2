@@ -1,16 +1,18 @@
 import { expect, spyOn, test } from 'bun:test';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   deliveryProjection,
   gateHashes,
   IntegrationError,
   landEvidence,
+  reclaimAdmission,
   retryAdvancedFence,
   runDeliveryEntry,
   waitForReclaim,
   type DeliveryReceipt,
 } from '../src/land';
-import type { Ledger } from '../src/cli';
+import { classifyRun, decisionQuestion, holdOf, type Ledger } from '../src/cli';
 import { inputEnvVars, type ShellInputContext } from '../../packages/workflows/src/dag-executor';
 import { fixtureEnv, tmp } from './helpers';
 
@@ -39,36 +41,34 @@ test('1.0.0 gate hash bindings remain readable by publish', () => {
 
 // prettier-ignore
 test('reclaim admission waits through transfer, passes without a journal, and times out bounded', async () => {
-  let now = 0, reads = 0;
-  const states = ['transferring', 'transferred', 'reauthorized'];
-  const deps = {
-    read: () => [{ run: 'r', state: states[Math.min(reads++, states.length - 1)] }],
-    now: () => now,
-    sleep: (ms: number) => { now += ms; },
-  };
-  expect(() => waitForReclaim('r', deps)).not.toThrow();
-  expect([now, reads]).toEqual([30_000, 3]);
-  expect(() => waitForReclaim('r', { ...deps, read: () => [] })).not.toThrow();
-  now = 0;
-  const artifacts = tmp();
-  expect(() => waitForReclaim('r', {
-    ...deps, read: () => [{ run: 'r', state: 'transferred' }],
-  })).toThrow('reclaim authorization is still pending');
+  let now = 0, reads = 0, attempts = 0;
+  const states = ['transferring', 'transferred', 'reauthorized'], read = () => [{ run: 'r', state: states[Math.min(reads++, states.length - 1)] }];
+  const deps = { read, now: () => now, sleep: (ms: number) => { now += ms; } };
+  expect(reclaimAdmission('r', () => ++attempts, deps)).toBe(1);
+  expect([now, reads, attempts]).toEqual([30_000, 3, 1]);
+  now = reads = attempts = 0;
+  expect(reclaimAdmission('r', () => { if (!attempts++) throw new IntegrationError('reclaim_pending', 'race'); return 'renewed'; },
+    { ...deps, read: () => reads++ ? [{ run: 'r', state: reads === 2 ? 'transferred' : 'reauthorized' }] : [] })).toBe('renewed');
+  expect([now, attempts]).toEqual([15_000, 2]);
+  now = 0; const artifacts = tmp();
+  expect(() => waitForReclaim('r', { ...deps, read: () => [{ run: 'r', state: 'transferred' }] })).toThrow('reclaim authorization is still pending');
   expect(now).toBe(600_000);
-  runDeliveryEntry(() => { throw new IntegrationError('reclaim_pending', 'pending'); },
-    fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'publish-m1' }));
-  expect(await Bun.file(join(artifacts, 'publish-m1.json')).json())
-    .toMatchObject({ reason: 'reclaim_pending' });
+  runDeliveryEntry(() => { throw new IntegrationError('reclaim_pending', 'pending'); }, fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'publish-m1' }));
+  expect(await Bun.file(join(artifacts, 'publish-m1.json')).json()).toMatchObject({ reason: 'reclaim_pending' });
 });
 // prettier-ignore
 test('generation fencing refreshes only for a newer owner and retries once', () => {
   let attempts = 0, refreshes = 0;
   const reject = () => { attempts++; throw new Error('stale'); };
-  expect(() => retryAdvancedFence(true, [1, 1], () => [1, 1], reject, () => refreshes++)).toThrow('stale');
   retryAdvancedFence(true, [1, 1], () => [2, 1], reject, () => refreshes++);
-  expect([attempts, refreshes]).toEqual([2, 1]);
-  expect(() => retryAdvancedFence(false, [1, 1], () => [2, 2], reject, () => refreshes++)).toThrow('stale');
+  expect([attempts, refreshes]).toEqual([1, 1]);
+  expect(() => retryAdvancedFence(true, [1], () => [2], () => { throw new IntegrationError('reclaim_pending', 'pending'); }, () => refreshes++)).toThrow('pending');
   expect(refreshes).toBe(1);
+  const root = tmp(), art = join(root, 'artifacts/runs/r'); mkdirSync(art, { recursive: true });
+  writeFileSync(join(root, 'plan.json'), JSON.stringify({ deadline: '2099-01-01T00:00:00Z' })); writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'reclaim_pending' }));
+  const ledger = { repo: root, gen_dir: root, run_id: 'r', started_at: '2026-01-01T00:00:00Z' } as Ledger, run = { id: 'r', status: 'failed' as const, output_root: root, nodes: [{ nodeId: 'publish-m1', state: 'failed' }] };
+  const classified = classifyRun(ledger, run); expect(classified.state).toBe('held:reclaim_pending');
+  expect(holdOf(ledger, run, classified)).toBe('auto_recover'); expect(decisionQuestion(ledger, run, classified, 'auto_recover')).toContain('回收续授权尚未完成');
 });
 
 test('completed legacy land evidence remains readable', () => {

@@ -3588,7 +3588,10 @@ export function decisionQuestion(
   const blocked = blocker(l, hold);
   if (blocked) return `${blocked.reason}；${blocked.next}`;
   if (hold === 'auto_recover') {
-    const reason = l.auto_recover_paused ?? 'recovery_admission_unknown';
+    const reason =
+      c.state === 'held:reclaim_pending'
+        ? (reasonOf('reclaim_pending')?.description ?? 'reclaim_pending')
+        : (l.auto_recover_paused ?? 'recovery_admission_unknown');
     return askQuestion(
       hold,
       [basename(l.repo), l.run_id],
