@@ -498,6 +498,43 @@ test('RECOVERY_CONTINUATION generates acceptance and gate without AI nodes', () 
   expect(nodes.at(-1)?.id).toBe('integrate-m1');
 });
 
+test('SCOPE_BASE is fixed across dependencies and restored from carried acceptance', () => {
+  const p = structuredClone(fixture);
+  p.packages[1].deps = [p.packages[0].id];
+  const fresh = nodesOf(buildWorkflow(p, milestones(p), 'fresh', '/GEN', false, NOW));
+  const verifies = fresh.filter(n => n.id.startsWith('verify-'));
+  expect(verifies.map(n => n.with?.scope_base)).toEqual([
+    '$sync-m1-ready.output.head',
+    '$sync-m1-ready.output.head',
+  ]);
+  const root = tmp(),
+    evidence = join(root, 'accepted.json'),
+    start = 'b'.repeat(40);
+  fs.writeFileSync(evidence, '{}');
+  fs.writeFileSync(evidence.replace(/\.json$/, '.scope-base'), start);
+  const adopted = nodesOf(
+    buildWorkflow(p, milestones(p), 'adopted', '/GEN', false, NOW, loadTiers(), {
+      from: 'old',
+      packages: [p.packages[0].id],
+      evidence: { [p.packages[0].id]: evidence },
+    })
+  );
+  expect(
+    adopted.filter(n => n.with?.kind === 'accept').every(n => n.with?.scope_base === start)
+  ).toBeTrue();
+  const coded = nodesOf(
+    buildWorkflow(p, milestones(p), 'coded', '/GEN', false, NOW, loadTiers(), {
+      from: 'old',
+      packages: [],
+      coded: [p.packages[0].id],
+      evidence: {},
+    })
+  );
+  expect(
+    coded.filter(n => n.with?.kind === 'accept').every(n => n.with?.scope_base === '')
+  ).toBeTrue();
+});
+
 test('review guidance uses the node schema for failure classes', () => {
   for (const name of ['sa-review.md', 'sa-review-delta.md']) {
     const guidance = readFileSync(
@@ -798,7 +835,7 @@ describe('buildWorkflow', () => {
     for (const nodes of [carry, fake, soldier])
       expect(nodes.filter(n => /^(repair|fix)-/.test(n.id)).every(n => !n.context)).toBeTrue();
   });
-  test('P2: carry changes only code/verify wiring; an empty carry preserves every byte', () => {
+  test('P2: carry changes code/verify and scope wiring; an empty carry preserves every byte', () => {
     const make = (packages: string[], coded?: string[]) =>
       buildWorkflow(
         fixture,
@@ -839,8 +876,13 @@ describe('buildWorkflow', () => {
       deviations: [],
       needs: [],
     });
-    const unchanged = (n: N): boolean => !/^(code-core|verify-core|repair-core|fix-m1-)/.test(n.id);
-    expect(nodes.filter(unchanged)).toEqual(nodesOf(normal).filter(unchanged));
+    const unchanged = (n: N): boolean =>
+      !/^(code-core|verify-core|repair-core|fix-m1-|integrate-)/.test(n.id);
+    const stable = (n: N): N =>
+      n.with?.scope_base === undefined ? n : { ...n, with: { ...n.with, scope_base: '<carried>' } };
+    expect(nodes.filter(unchanged).map(stable)).toEqual(
+      nodesOf(normal).filter(unchanged).map(stable)
+    );
     expect(code?.depends_on).toEqual(nodesOf(normal).find(n => n.id === 'code-core')?.depends_on);
     expect(nodesOf(make([], ['core'])).find(n => n.id === 'code-core')?.when).toBe(code?.when);
     expect(
@@ -1181,6 +1223,7 @@ describe('buildWorkflow', () => {
         ...generated.with,
         plan: planPath,
         base,
+        scope_base: base,
         delta_base: base,
         target_tip: base,
         sync_generation: '1',

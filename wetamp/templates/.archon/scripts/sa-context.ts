@@ -41,6 +41,7 @@ export function roleContext(input: {
   base: string;
   head: string;
   deltaBase?: string;
+  scopeBase?: string;
   acceptance?: Accept;
   patch?: string;
   delta?: string;
@@ -119,6 +120,7 @@ export function roleContext(input: {
       base: input.base,
       head: input.head,
       delta_base: input.deltaBase?.length ? input.deltaBase : input.base,
+      scope_base: input.scopeBase?.length ? input.scopeBase : input.base,
     },
     environment: input.environment,
     environment_check: read(join(artifacts, 'environment.json')),

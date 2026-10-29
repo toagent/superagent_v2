@@ -4145,6 +4145,39 @@ describe('sa-check script', () => {
     expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).not.toContain('# reused');
   });
   // prettier-ignore
+  test('F-13 scope starts at run work, survives adopt, resync, and a real revert', () => {
+    const root = tmp(), repo = gitRepo(root), plan = join(root, 'plan.json'), policy = join(root, 'policy.json');
+    const commit = (path: string) => {
+      writeFileSync(join(repo, path), path);
+      sh(`git add '${path}' && git -c user.name=t -c user.email=t@l commit -qm '${path}'`, repo);
+      return sh('git rev-parse HEAD', repo).trim();
+    };
+    const initial = sh('git rev-parse HEAD', repo).trim();
+    const runStart = commit('prerequisite.ts');
+    writeFileSync(plan, JSON.stringify({ packages: [{ id: 'a', scope: { write: ['allowed/'] }, accept: [{ cmd: 'true', timeout_s: 5 }] }] }));
+    writeFileSync(policy, JSON.stringify({ effort: snapshotPolicy(loadTiers()).effort, risk_paths: [], code_extensions: ['.ts'], exempt_paths: [], budget_floor: {} }));
+    const check = (base: string, deltaBase = '') => runScript(repo, {
+      kind: 'accept', plan, policy, pkgs: 'a', scope_pkgs: 'a', tag: 'verify-a', base,
+      scope_base: runStart, delta_base: deltaBase, risk: 'G0',
+    }).out as { out_of_scope: string[]; disposition: string };
+
+    const outside = commit('outside.ts');
+    expect(check(initial, outside)).toMatchObject({ out_of_scope: ['outside.ts'], disposition: 'repair' });
+    expect(readFileSync(join(root, 'art', 'verify-a.scope-base'), 'utf8')).toBe(runStart);
+    sh('git revert --no-edit HEAD', repo);
+    expect(check(initial)).toMatchObject({ out_of_scope: [], disposition: 'advance' });
+
+    sh(`git branch target '${initial}' && git checkout -q target`, repo);
+    const target = commit('external.ts');
+    sh('git checkout -q main', repo);
+    sh("git -c user.name=t -c user.email=t@l merge -qm resync target", repo);
+    commit('outside.ts');
+    expect(check(target)).toMatchObject({ out_of_scope: ['outside.ts'], disposition: 'repair' });
+    sh('git revert --no-edit HEAD', repo);
+    expect(check(target)).toMatchObject({ out_of_scope: [], disposition: 'advance' });
+  });
+
+  // prettier-ignore
   test('F-20/F-13: scope violations repair, recover, honor exemptions, and fail final acceptance', () => {
     const root = tmp();
     const repo = gitRepo(root);

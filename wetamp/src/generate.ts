@@ -197,6 +197,40 @@ export function buildWorkflow(
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
   const executions = executionTable(plan, tiers);
   const maxRounds = reviewRoundLimit(tiers.policy);
+  const evidenceScopeBase = (path: string | undefined): string | undefined => {
+    if (!path) return undefined;
+    for (const [candidate, json] of [
+      [path, true],
+      [path.replace(/\.json$/, '.scope-base'), false],
+    ] as const) {
+      try {
+        const raw = readFileSync(candidate, 'utf8');
+        const value = json ? (JSON.parse(raw) as { scope_base?: unknown }).scope_base : raw.trim();
+        if (typeof value === 'string' && /^[0-9a-f]{40,64}$/.test(value)) return value;
+      } catch {
+        // Missing or legacy evidence falls through to the next representation.
+      }
+    }
+    return undefined;
+  };
+  const carriedScopeBase = [
+    ...Object.values(carried?.evidence ?? {}),
+    ...(carried?.recovery?.rounds.flatMap(round => {
+      const legacy = round as Partial<typeof round>;
+      return [legacy.source?.path, legacy.freeze?.path];
+    }) ?? []),
+  ]
+    .map(evidenceScopeBase)
+    .find(Boolean);
+  const resuming = Boolean(
+    carried &&
+    (carried.freshDirectory === true ||
+      carried.packages.length > 0 ||
+      (carried.coded?.length ?? 0) > 0 ||
+      Object.keys(carried.evidence ?? {}).length > 0 ||
+      carried.recovery !== undefined ||
+      Object.keys(carried.reviews ?? {}).length > 0)
+  );
   const execution = (id: string): Node => {
     if (fake) return {};
     const descriptor = executions[id];
@@ -270,7 +304,8 @@ export function buildWorkflow(
     ].join('\n');
   if (delivery && (!run || /[^0-9a-f-]/.test(run))) throw new Error('delivery: invalid run id');
   let after: Node = { depends_on: ['environment'] };
-  let runBase = '';
+  let runBase = '',
+    scopeBase = carriedScopeBase ?? '';
   const signoff = (
     m: Milestone,
     gates: Node,
@@ -493,6 +528,7 @@ export function buildWorkflow(
     );
     const syncReadyHandle = output<SyncOutput>(syncReady);
     runBase ||= ref.required(syncReadyHandle, 'merge_base');
+    if (!resuming) scopeBase ||= ref.required(syncReadyHandle, 'head');
     let base = ref.required(syncReadyHandle, 'merge_base');
     // Milestone retries invalidate only cumulative acceptance and review/fix rounds.
     const attempt = `attempt-${m.id}`;
@@ -527,6 +563,7 @@ export function buildWorkflow(
         policy: e.policy.path,
         pkgs: ids,
         scope_pkgs,
+        scope_base: scopeBase,
         risk: m.risk,
         milestone: m.id,
         target_tip: ref.required(syncReadyHandle, 'target_tip'),
@@ -698,6 +735,7 @@ export function buildWorkflow(
         pkgs: p.id,
         scope_pkgs,
         base,
+        scope_base: scopeBase,
         delta_base: ref.required(previousHandle, 'head'),
         ...(p.max_net_lines === undefined
           ? {}
@@ -899,6 +937,7 @@ export function buildWorkflow(
             pkgs: ids,
             scope_pkgs,
             base,
+            scope_base: scopeBase,
             target_tip: ref.required(syncReadyHandle, 'target_tip'),
             sync_generation: ref.required(syncReadyHandle, 'generation'),
             risk: m.risk,
@@ -1057,6 +1096,7 @@ export function buildWorkflow(
           policy: policyPath,
           pkgs: ids,
           scope_pkgs,
+          scope_base: scopeBase,
           risk: m.risk,
           milestone: m.id,
           ...ledger,
