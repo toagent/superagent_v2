@@ -78,35 +78,14 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
 
 test('heartbeat separates active runs from typed waits and reports coordination once', () => {
   const who = owner(1),
-    repo = '/repo/project';
-  const failed = {
-    ...row('failed', who, 'failed'),
-    repo,
-    engine: {
-      title: 'failed',
-      milestones: [],
-      currentMilestone: null,
-      states: [],
-      firstPass: false as const,
-      reason: 'repair_exhausted:scope_violation',
-      dispositions: [],
-    },
-  };
-  const held = {
-    ...row('held', who, 'held:gate'),
-    repo,
-    engine: {
-      title: 'held',
-      milestones: [],
-      currentMilestone: null,
-      states: [],
-      firstPass: false as const,
-      reason: 'review_limit',
-      dispositions: [],
-    },
-  };
-  const running = row('running', who);
-  running.repo = repo;
+    failed = row('failed', who, 'failed'),
+    held = row('held', who, 'held:gate'),
+    running = row('running', who);
+  for (const item of [failed, held, running]) item.repo = '/repo/project';
+  // prettier-ignore
+  failed.engine = { title: 'failed', milestones: [], currentMilestone: null, states: [], firstPass: false, reason: 'repair_exhausted:scope_violation', dispositions: [] };
+  // prettier-ignore
+  held.engine = { title: 'held', milestones: [], currentMilestone: null, states: [], firstPass: false, reason: 'review_limit', dispositions: [] };
   running.coordination!.pending = 2;
   const snap: Snapshot = {
     at: new Date(now).toISOString(),
