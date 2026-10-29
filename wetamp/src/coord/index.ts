@@ -109,8 +109,7 @@ const identity = createRequire(import.meta.url)('../../hooks/identity.cjs') as {
   presence: (who: Identity, home: string) => Presence;
 };
 export const presence = identity.presence,
-  same = identity.same,
-  identityKey = identity.key;
+  same = identity.same;
 export const archonMutation = shared.archonMutation;
 export const ownerLabel = (who: Identity | null): string =>
   who ? `${who.client} ${who.session_id?.slice(0, 8) ?? `pid:${String(who.pid)}`}` : '无主';

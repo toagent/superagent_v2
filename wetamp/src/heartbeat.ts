@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
-import { identityKey, type Identity, type Presence } from './coord';
+import { createRequire } from 'node:module';
+import type { Identity, Presence } from './coord';
 import { elapsedAt, type Snapshot } from './board/data';
 import { roleTag, type Cockpit } from './board/cockpit';
 import { unknownProgress, type Progress } from './board/eta';
@@ -14,8 +15,11 @@ const age = (at: string | null | undefined, now: number): number | null => {
   const value = Date.parse(at ?? '');
   return Number.isFinite(value) ? Math.max(0, Math.floor((now - value) / 1000)) : null;
 };
+const { key: ownerKey } = createRequire(import.meta.url)('../hooks/identity.cjs') as {
+  key: (owner: Identity) => (string | number | null)[];
+};
 const ownerId = (owner: Identity | null): string =>
-  owner ? JSON.stringify(identityKey(owner)) : 'unknown';
+  owner ? JSON.stringify(ownerKey(owner)) : 'unknown';
 
 /** Pure projection: the caller supplies presence so collection owns all I/O. */
 // prettier-ignore
@@ -26,7 +30,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     if (owner && presenceOf(owner).state !== 'online') { reclaim++; return; }
     const key = `${ownerId(owner)}\0${cwd}`, found = groups.get(key);
     if (found) return found;
-    const value: Marshal = { owner: owner ?? 'unknown', owner_key: owner ? identityKey(owner) : 'unknown', cwd, project: basename(cwd), running: [], waiting: [], line: '' };
+    const value: Marshal = { owner: owner ?? 'unknown', owner_key: owner ? ownerKey(owner) : 'unknown', cwd, project: basename(cwd), running: [], waiting: [], line: '' };
     groups.set(key, value);
     return value;
   };
