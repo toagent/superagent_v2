@@ -420,7 +420,6 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
       status: 'published',
     };
     writeReceipt(run.receipt, receipt);
-    run.fence();
     return { status: 'published', receipt };
   } finally {
     lease.release();

@@ -135,6 +135,34 @@ test('start rejects a missing or empty task status before recording, handoff, or
   }
 });
 
+test('start accepts verified evidence and leaves hypotheses unvalidated', async () => {
+  const s = fixture();
+  writeFileSync(
+    s.task,
+    readFileSync(s.task, 'utf8').replace(
+      '# 已核实与更正\n无\n',
+      '# 已核实与更正\n- path wetamp/src/rollover.ts\n* commit abc1234\n- command `bun test`\n# 待验证假设\n- 负载导致失败\n'
+    )
+  );
+  await s.r.start();
+  expect(s.launchCalls[0].join(' ')).toContain('「待验证假设」须复测后才能当作事实');
+});
+
+test('start rejects every verified item without evidence, including continued items', async () => {
+  const s = fixture();
+  writeFileSync(
+    s.task,
+    readFileSync(s.task, 'utf8').replace(
+      '# 已核实与更正\n无\n',
+      '# 已核实与更正\n- 负载导致失败\n  尚未复测\n* 性能足够\n'
+    )
+  );
+  await expect(s.r.start()).rejects.toThrow(
+    /- 负载导致失败.*\* 性能足够.*补证据或移到「待验证假设」节/
+  );
+  expect(s.launchCalls).toHaveLength(0);
+});
+
 test('start gates low or unknown usage unless the user explicitly requests rollover', async () => {
   const low = fixture();
   writeFileSync(

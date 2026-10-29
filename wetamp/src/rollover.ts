@@ -122,6 +122,19 @@ export class Rollover {
       if (index < 0 || ![inline, ...body].some(line => line.trim())) missing.push(name);
     }
     if (missing.length) throw new Error(`rollover: 任务栈缺少：${missing.join('、')}`);
+    const verified = lines.findIndex(line => /^(?:#{1,6}\s*)?已核实与更正(?:[:：]\s*.*)?$/.test(line.trim())),
+      end = lines.findIndex((line, i) => i > verified && /^#{1,6}\s+/.test(line.trim())),
+      entries: string[][] = [];
+    for (const line of lines.slice(verified + 1, end < 0 ? undefined : end)) {
+      if (/^\s*[-*]\s+/.test(line)) entries.push([line]);
+      else entries.at(-1)?.push(line);
+    }
+    const unsupported = entries.filter(entry => {
+      const item = entry.join('\n');
+      return !(/\S+\/\S+/.test(item) || /\b[0-9a-f]{7,40}\b/i.test(item) || /`[^`]+`/.test(item));
+    });
+    if (unsupported.length)
+      throw new Error(`rollover: 「已核实与更正」条目缺少证据：${unsupported.map(entry => entry[0]?.trim()).join('；')}；补证据或移到「待验证假设」节`);
     return { path, session: basename(dirname(path)), status: field('状态') };
   }
   private runs(who: Identity): RunRef[] {
@@ -181,7 +194,7 @@ export class Rollover {
     return r;
   }
   private prompt(r: RolloverRecord, reason = '上下文过大自动交接'): string {
-    return `接手元帅会话（${this.d.now().toLocaleString()}，原因：${reason}）。第 1 步：cd ${r.cwd} && superagent rollover accept ${r.token}，按输出接手。第 2 步：superagent rollover context ${r.token}，读完用户原话与压缩摘要。第 3 步：读输出给出的任务栈文件，按「接手必读」「在途」「已核实与更正」继续，并按 accept 输出重新挂起 run 等待。首条汇报先逐条列出你确认的用户决定与纠正、主任务、下一步；汇报首行贴 superagent 输出的 quota 行。`;
+    return `接手元帅会话（${this.d.now().toLocaleString()}，原因：${reason}）。第 1 步：cd ${r.cwd} && superagent rollover accept ${r.token}，按输出接手。第 2 步：superagent rollover context ${r.token}，读完用户原话与压缩摘要。第 3 步：读输出给出的任务栈文件，按「接手必读」「在途」「已核实与更正」继续；「待验证假设」须复测后才能当作事实。并按 accept 输出重新挂起 run 等待。首条汇报先逐条列出你确认的用户决定与纠正、主任务、下一步；汇报首行贴 superagent 输出的 quota 行。`;
   }
   async start(reason = '上下文过大自动交接', user?: string): Promise<Record<string, unknown>> {
     if (!this.d.env.ORCA_AGENT_SESSION_ID || !orcaBin(this.d.env, this.d.exists)) throw new Error('仅 Orca 内支持自动交接；其他客户端沿用：任务栈写断点并把状态改为被中断 → 新开会话 tasks.sh list → tasks.sh adopt <会话目录名>');
