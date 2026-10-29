@@ -5273,37 +5273,11 @@ export async function workflowRunsCommand(
     json?: boolean;
     all?: boolean;
     status?: string;
-    ids?: string;
     limit?: number;
     open?: boolean;
     verbose?: boolean;
   } = {}
 ): Promise<void> {
-  if (opts.ids !== undefined) {
-    const ids = [
-      ...new Set(
-        opts.ids
-          .split(',')
-          .map(id => id.trim())
-          .filter(Boolean)
-      ),
-    ];
-    if (!opts.json || !opts.verbose || ids.length === 0) {
-      throw new Error('--ids requires a non-empty comma-separated list with --json --verbose.');
-    }
-    if (opts.open || opts.status || opts.limit !== undefined) {
-      throw new Error('--ids cannot be combined with --open, --status, or --limit.');
-    }
-    const runs = (await Promise.all(ids.map(id => host.deps.store.getWorkflowRun(id)))).filter(
-      (run): run is WorkflowRun => run !== null
-    );
-    await writeJsonLine({
-      runs: await withRunDetail(host, runs),
-      total: runs.length,
-      scopeFallback: false,
-    });
-    return;
-  }
   // Open-work inbox (#2747): terminal failed runs nothing has adopted or
   // superseded — the operator's "what ended with work on the table" query.
   // Status-derived v1 semantics; --status/--open are mutually exclusive shapes.

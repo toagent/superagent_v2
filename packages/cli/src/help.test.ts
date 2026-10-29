@@ -285,7 +285,6 @@ Options:
   --all                      For 'workflow status/runs': list across all projects (ignore cwd scope)
   --status <status>          For 'workflow runs': filter to one status (running, completed, failed, ...)
   --open                     For 'workflow runs': the open-work inbox — failed runs nothing has adopted or superseded
-  --ids <id,...>             For 'workflow runs --json --verbose': fetch exact run ids
   --limit <n>                For 'workflow runs': max rows (default 20)
   --timeout <seconds>        For 'workflow wait': give up after N seconds (default: wait indefinitely)
   --follow                   For 'workflow logs': stream appended rows until the run ends

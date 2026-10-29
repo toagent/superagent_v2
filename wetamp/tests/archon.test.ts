@@ -5,24 +5,43 @@ import { tmp } from './helpers';
 import { expect, spyOn, test } from 'bun:test';
 import * as transport from '../src/archon';
 
-test('targeted batch query passes exact ids and parses only returned runs', async () => {
+test('targeted batch query reads only requested database runs', async () => {
   const root = tmp(),
-    bin = join(root, 'archon'),
-    calls = join(root, 'calls'),
-    saved = process.env.SA_ARCHON_BIN;
-  writeFileSync(
-    bin,
-    `#!/bin/sh\nprintf '%s\\n' "$*" > '${calls}'\nprintf '%s\\n' '{"runs":[{"id":"r-2","status":"completed"}]}'\n`,
-    { mode: 0o755 }
-  );
-  process.env.SA_ARCHON_BIN = bin;
+    savedBin = process.env.SA_ARCHON_BIN,
+    savedHome = process.env.ARCHON_HOME;
+  delete process.env.SA_ARCHON_BIN;
+  process.env.ARCHON_HOME = root;
+  const db = new Database(join(root, 'archon.db'));
+  db.exec(`
+    CREATE TABLE remote_agent_workflow_runs (
+      id TEXT PRIMARY KEY, workflow_name TEXT, conversation_id TEXT, codebase_id TEXT,
+      status TEXT, outcome TEXT, user_message TEXT, metadata TEXT, parent_conversation_id TEXT,
+      parent_run_id TEXT, adopted_from_run_id TEXT, started_at TEXT, completed_at TEXT,
+      last_activity_at TEXT, working_path TEXT, user_id TEXT, output_root TEXT,
+      checkout_baseline TEXT, origin TEXT
+    );
+    CREATE TABLE remote_agent_workflow_events (
+      id TEXT PRIMARY KEY, workflow_run_id TEXT, event_type TEXT, step_index INTEGER,
+      step_name TEXT, data TEXT, created_at TEXT, event_order INTEGER
+    );
+  `);
+  const insert = db.query(`INSERT INTO remote_agent_workflow_runs VALUES
+    (?, 'targeted', NULL, NULL, 'completed', NULL, '', '{}', NULL, NULL, NULL,
+     '2026-10-30T00:00:00.000Z', '2026-10-30T00:00:01.000Z',
+     '2026-10-30T00:00:01.000Z', NULL, NULL, NULL, NULL, '{}')`);
+  for (const id of ['r-1', 'r-2', 'extra']) insert.run(id);
+  db.close();
   try {
-    const runs = await transport.getRunsAsync(['r-1', 'r-2'], root, { timeoutMs: 1000 });
-    expect(readFileSync(calls, 'utf8')).toContain('workflow runs --ids r-1,r-2 --verbose --json');
-    expect([...runs]).toEqual([['r-2', { id: 'r-2', status: 'completed' }]]);
+    const runs = await transport.getRunsAsync(['r-2', 'missing'], root, { timeoutMs: 1000 });
+    expect([...runs.keys()]).toEqual(['r-2']);
+    expect(runs.get('r-2')).toMatchObject({ id: 'r-2', status: 'completed', nodes: [] });
   } finally {
-    if (saved === undefined) delete process.env.SA_ARCHON_BIN;
-    else process.env.SA_ARCHON_BIN = saved;
+    const { closeDatabase } = await import('../../packages/core/src/db/connection');
+    await closeDatabase();
+    if (savedBin === undefined) delete process.env.SA_ARCHON_BIN;
+    else process.env.SA_ARCHON_BIN = savedBin;
+    if (savedHome === undefined) delete process.env.ARCHON_HOME;
+    else process.env.ARCHON_HOME = savedHome;
   }
 });
 
