@@ -1851,7 +1851,6 @@ describe('F-14 model identity', () => {
   });
 });
 
-// These checks exercise delivery/classification/cache semantics. Process-group
 // supervision has separate ACCT/probe tests below; avoid starting Python for
 // each ordinary Git query here while retaining the real commands and deadlines.
 const directAuxiliary = directAuxiliaryPreload();
@@ -2070,7 +2069,7 @@ for (const kind of ['accept', 'settle', 'env'])
     else {
       expect(r.out).toMatchObject({ ok: false, base_pass: false });
       expect(r.code).toBe(kind === 'settle' ? 1 : 0);
-      expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(3);
+      expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(5);
     }
   });
 
@@ -2168,14 +2167,16 @@ function planFile(
   root: string,
   accept: string,
   environment: string[] = [],
-  cache?: boolean
+  cache?: boolean,
+  timeout_s = 5
 ): string {
   const p = join(root, 'plan.json');
   writeFileSync(
     p,
     JSON.stringify({
+      repo: join(root, 'repo'),
       environment: environment.map(cmd => ({ cmd, timeout_s: 5 })),
-      packages: [{ id: 'a', accept: [{ cmd: accept, timeout_s: 5, cache }] }],
+      packages: [{ id: 'a', accept: [{ cmd: accept, timeout_s, cache }] }],
     })
   );
   return p;
@@ -2584,6 +2585,45 @@ describe('sa-check script', () => {
     });
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
+  });
+  test('accept: flaky rerun policy records and notifies without widening eligibility', () => {
+    const r = tmp();
+    const [repo, m, h] = [gitRepo(r), join(r, 'runs'), join(r, 'home')];
+    const cmd = `n=$(wc -l < '${m}' 2>/dev/null || echo 0); echo x >> '${m}'; if [ $((n%2)) = 0 ]; then printf '<testsuite tests="1"><testcase classname="suite" name="case"%s></testcase></testsuite>' '><failure>bad</failure' > junit.xml; exit 1; else printf '<testsuite tests="1"><testcase classname="suite" name="case"%s></testcase></testsuite>' '' > junit.xml; fi`;
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const plan = planFile(r, cmd),
+      p = JSON.parse(readFileSync(plan, 'utf8'));
+    p.packages[0].accept[0].report = { junit: 'junit.xml', collect: `printf 'suite::case\n'` };
+    writeFileSync(plan, JSON.stringify(p));
+    const extra = { SUPERAGENT_HOME: h, ARCHON_HOME: join(h, 'archon') };
+    const run = (tag: string) =>
+      runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag }, SCRIPT, extra);
+    const results = ['first', 'second'].map(run);
+    for (const x of results)
+      expect(x.out).toMatchObject({ ok: true, command_results: [{ pass: true, flaky: true }] });
+    expect(readdirSync(join(results[1].art, 'accept-cache'))).toEqual(['.key']);
+    const ledger = readFileSync(join(h, 'flaky-acceptance.jsonl'), 'utf8').trim().split('\n');
+    expect(ledger).toHaveLength(2);
+    const inbox = join(h, 'coord/inbox'),
+      notice = readFileSync(join(inbox, readdirSync(inbox)[0]), 'utf8');
+    expect(notice).toContain('验收偶发x2: suite::case');
+    const cases = JSON.parse(
+      '[["accept",true,"false",2],["accept",false,"false",1],["env",true,"false",1],["accept",true,"kill -TERM $$",1],["accept",true,"sleep 2; false",1]]'
+    ) as ['accept' | 'env', boolean, string, number][];
+    for (const [kind, cache, command, runs] of cases) {
+      const r = tmp(),
+        m = join(r, 'runs'),
+        trace = `echo x >> '${m}'; ${command}`;
+      const plan = planFile(
+        r,
+        kind === 'env' ? 'true' : trace,
+        kind === 'env' ? [trace] : [],
+        cache,
+        command.startsWith('sleep') ? 1 : 5
+      );
+      runScript(gitRepo(r), { kind, plan, pkgs: 'a', tag: 'verify-a' });
+      expect(readFileSync(m, 'utf8').trim().split('\n')).toHaveLength(runs);
+    }
   });
   test('P2: identity-bound adjudication outranks scope until approval', () => {
     const root = tmp(),
@@ -3301,7 +3341,7 @@ describe('sa-check script', () => {
         base_results: [],
         disposition: 'repair',
       });
-      expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([repo]);
+      expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([repo, repo]);
       const log = readFileSync(join(r.art, 'unknown.probe.log'), 'utf8');
       expect(log).toContain(
         setup.length ? 'environment preparation failed' : 'no environment commands declared'
@@ -3817,13 +3857,13 @@ describe('sa-check script', () => {
         CONTEXT: 'changed',
       }).out
     ).toMatchObject({ ok: true });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
     expect(go('path-changed', 'good', { PATH: `${process.env.PATH}:/changed` }).out).toMatchObject({
       ok: true,
     });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
-    expect(go('changed', 'worse').out).toMatchObject({ ok: false });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
+    expect(go('changed', 'worse').out).toMatchObject({ ok: false });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
     const keyPath = join(cache, '.key'),
       key = readFileSync(keyPath);
     expect(key.length).toBe(32);
@@ -3841,10 +3881,10 @@ describe('sa-check script', () => {
     unlinkSync(keyPath);
     expect(go('lost-context').out).toMatchObject({ ok: true });
     expect(readFileSync(keyPath).equals(key)).toBe(false);
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\n');
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
   }, testTimeout(10_000));
   test('U5: hmac-v1 cache entries cannot satisfy the new identity version', () => {
     const root = tmp(),
@@ -4079,7 +4119,7 @@ describe('sa-check script', () => {
       disposition: 'repair',
       failures: [{ failure_class: 'unknown' }],
     });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
   });
   test('P2: failures never enter the acceptance cache', () => {
     const root = tmp(),
@@ -4104,19 +4144,19 @@ describe('sa-check script', () => {
     };
     go('verify-a');
     const cumulative = go('diff-m1-r1', 'a,b');
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
     expect(cumulative.out).toMatchObject({
       failed: [check.cmd, check.cmd],
       failures: [{ failure_class: 'fixture' }, { failure_class: 'fixture' }],
     });
     expect(readFileSync(join(cumulative.art, 'diff-m1-r1.log'), 'utf8')).not.toContain('# reused');
     go('verify-a');
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
     plan.environment = [{ cmd: 'true', timeout_s: 5 }];
     go('environment-change');
     check.timeout_s++;
     go('contract-change');
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\n');
   });
   test('P2: structured probe failures rerun each check in the execution cwd tree', () => {
     const root = tmp(),
@@ -4140,7 +4180,7 @@ describe('sa-check script', () => {
     writeFileSync(p, JSON.stringify(plan));
     runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a', base });
     expect(readFileSync(trees, 'utf8')).toBe(
-      `${candidateTree}\n${candidateTree}\n${baseTree}\n${baseTree}\n`
+      `${candidateTree}\n${candidateTree}\n${candidateTree}\n${candidateTree}\n${baseTree}\n${baseTree}\n${baseTree}\n${baseTree}\n`
     );
     expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).not.toContain('# reused');
   });

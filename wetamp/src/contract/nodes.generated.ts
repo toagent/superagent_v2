@@ -269,6 +269,7 @@ export interface CommandResult {
   pass: boolean | null;
   evidence: string;
   exit?: number | string;
+  flaky?: boolean;
   structured?: StructuredCases;
 }
 export interface Adjudication {
@@ -465,6 +466,7 @@ export const acceptOutputFormat = {
         pass: { type: ['boolean', 'null'] },
         evidence: { type: 'string' },
         exit: { type: ['number', 'string'] },
+        flaky: { type: 'boolean' },
         structured: { $ref: '#/$defs/StructuredCases' },
       },
       required: ['check', 'pass', 'evidence'],
