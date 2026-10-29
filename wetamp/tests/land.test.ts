@@ -1,20 +1,23 @@
 import { expect, spyOn, test } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  authorized,
   deliveryProjection,
   gateHashes,
   IntegrationError,
   landEvidence,
   reclaimAdmission,
+  reclaimPublish,
   retryAdvancedFence,
   runDeliveryEntry,
   waitForReclaim,
   type DeliveryReceipt,
 } from '../src/land';
+import { coord, repoScope, runScope, type Identity, type RunRef } from '../src/coord';
 import { classifyRun, decisionQuestion, holdOf, type Ledger } from '../src/cli';
 import { inputEnvVars, type ShellInputContext } from '../../packages/workflows/src/dag-executor';
-import { fixtureEnv, tmp } from './helpers';
+import { fixtureEnv, gitRepo, tmp } from './helpers';
 
 test('1.0.0 gate hash bindings remain readable by publish', () => {
   const ctx: ShellInputContext = {
@@ -69,6 +72,26 @@ test('generation fencing refreshes only for a newer owner and retries once', () 
   const ledger = { repo: root, gen_dir: root, run_id: 'r', started_at: '2026-01-01T00:00:00Z' } as Ledger, run = { id: 'r', status: 'failed' as const, output_root: root, nodes: [{ nodeId: 'publish-m1', state: 'failed' }] };
   const classified = classifyRun(ledger, run); expect(classified.state).toBe('held:reclaim_pending');
   expect(holdOf(ledger, run, classified)).toBe('auto_recover'); expect(decisionQuestion(ledger, run, classified, 'auto_recover')).toContain('回收续授权尚未完成');
+});
+
+// prettier-ignore
+test('real authorization reload admits reauthorization and a newer generation', () => {
+  const saved = { ...process.env }, root = tmp(), home = join(root, 'home'), repo = gitRepo(root), gen = join(root, 'gen'), run = { run_id: 'r', archon_run_id: 'engine', repo, gen_dir: gen } as RunRef;
+  try {
+    Object.assign(process.env, fixtureEnv({ SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon'), SUPERAGENT_ROLE: '', INPUTS_RUN: 'r', WORKFLOW_ID: 'engine' })); mkdirSync(join(home, 'runs'), { recursive: true }); mkdirSync(gen);
+    const a: Identity = { client: 'codex', session_id: 'a', host: 'local', pid: 1, pid_start: '1' }, c = coord(), repoA = c.claim(repoScope(repo), a).controller, runA = c.claim(runScope(run), a).controller;
+    writeFileSync(join(home, 'runs/r.json'), JSON.stringify({ ...run, plan: 'p', branch: 'b', workflow: 'w', console: 'c', started_at: 'now', transcript: 't', log: 'l' })); writeFileSync(join(gen, 'delivery-authorization.json'), JSON.stringify({ run: runA, repo: repoA }));
+    const staleFence = authorized().fence, b = { ...a, session_id: 'b' }; c.claim(repoScope(repo), b, true, 'test takeover'); c.claim(runScope(run), b, true, 'test takeover'); c.reauthorize(run, b); staleFence();
+    mkdirSync(join(home, 'reclaim'), { recursive: true }); const journal = join(home, 'reclaim/journal.json'); writeFileSync(journal, JSON.stringify([{ run: 'r', state: 'transferred' }])); let now = 0;
+    expect(reclaimPublish('r', () => 'published', () => authorized().fence(), { read: () => JSON.parse(readFileSync(journal, 'utf8')), now: () => now, sleep: ms => { now += ms; writeFileSync(journal, JSON.stringify([{ run: 'r', state: 'reauthorized' }])); } })).toBe('published'); expect(now).toBe(15_000);
+  } finally { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); }
+});
+
+// prettier-ignore
+test('post-publish reclaim retries only the fence and preserves published result', () => {
+  let now = 0, actions = 0, fences = 0, reads = 0; const d = { now: () => now, sleep: (ms: number) => { now += ms; }, read: () => reads++ === 0 ? [] : [{ run: 'r', state: reads === 2 ? 'transferred' : 'reauthorized' }] };
+  const result = reclaimPublish('r', () => { actions++; return { status: 'published' as const }; }, () => { if (fences++ === 0) throw new IntegrationError('reclaim_pending', 'race'); }, d);
+  expect(result.status).toBe('published'); expect({ actions, fences, now }).toEqual({ actions: 1, fences: 2, now: 15_000 });
 });
 
 test('completed legacy land evidence remains readable', () => {
