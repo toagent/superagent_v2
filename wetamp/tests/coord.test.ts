@@ -462,6 +462,121 @@ test('run scope keeps terminal ledger ownership while repo scope excludes termin
     { run_id: 'unknown', status: 'unknown' },
   ]);
 });
+test('surfaced resolves owners outside the registry lock and caches batch status by scope', () => {
+  const s = setup(),
+    runs = Array.from(
+      { length: 80 },
+      (_, i): RunRef => ({
+        run_id: `run-${i}`,
+        archon_run_id: `engine-${i}`,
+        repo: s.repo,
+        controller: { ...a, generation: 3 },
+      })
+    );
+  let inside = 0,
+    checking = false,
+    runCalls = 0,
+    batchCalls = 0;
+  const c = new Coordination({
+    sa: s.sa,
+    runs: () => {
+      runCalls++;
+      if (checking) expect(inside).toBe(0);
+      return runs;
+    },
+    status: () => {
+      throw new Error('per-ledger status query must not run');
+    },
+    statuses: () => {
+      batchCalls++;
+      if (checking) expect(inside).toBe(0);
+      return new Map(runs.map(run => [run.archon_run_id, 'running']));
+    },
+    presence: () => online,
+  });
+  for (let i = 0; i < 30; i++) c.handoff(s.scope, b, { ...input, title: `message-${i}` });
+  runCalls = batchCalls = 0;
+  const locked = c.locked.bind(c);
+  c.locked = (<T>(f: () => T, waitMs?: number): T =>
+    locked(() => {
+      inside++;
+      try {
+        return f();
+      } finally {
+        inside--;
+      }
+    }, waitMs)) as typeof c.locked;
+  checking = true;
+  expect(c.surfaced(a)).toHaveLength(30);
+  expect([runCalls, batchCalls]).toEqual([1, 1]);
+  runCalls = batchCalls = 0;
+  expect(c.inbox(a).every(message => message.state === 'surfaced')).toBe(true);
+  expect([runCalls, batchCalls]).toEqual([1, 1]);
+});
+test('surfaced skips a message changed after its lock-free projection', () => {
+  const s = setup();
+  s.c.claim(s.scope, a);
+  const result = s.c.handoff(s.scope, b, input),
+    id = String(result.id),
+    file = join(s.sa, 'coord/inbox', `${id}.json`),
+    locked = s.c.locked.bind(s.c);
+  let raced = false;
+  s.c.locked = (<T>(f: () => T, waitMs?: number): T => {
+    if (!raced) {
+      raced = true;
+      const message = JSON.parse(readFileSync(file, 'utf8')) as Message;
+      writeFileSync(file, JSON.stringify({ ...message, state: 'accepted' }) + '\n');
+    }
+    return locked(f, waitMs);
+  }) as typeof s.c.locked;
+  expect(s.c.surfaced(a)).toEqual([]);
+  expect(JSON.parse(readFileSync(file, 'utf8')).state).toBe('accepted');
+});
+test('batch status projection preserves per-ledger owner resolution', () => {
+  const s = setup(),
+    run = (id: string, owner: Identity, state?: string): RunRef => ({
+      run_id: id,
+      archon_run_id: id,
+      repo: s.repo,
+      controller: { ...owner, generation: 2 },
+      state,
+    }),
+    runs = [
+      run('running', a),
+      run('completed', b),
+      run('cancelled', b),
+      run('unknown', a),
+      run('failed', b, 'failed'),
+    ],
+    status = new Map([
+      ['running', 'running'],
+      ['completed', 'completed'],
+      ['cancelled', 'cancelled'],
+    ]);
+  let batchCalls = 0,
+    individualCalls = 0;
+  const batch = new Coordination({
+      sa: s.sa,
+      runs: () => runs,
+      statuses: () => {
+        batchCalls++;
+        return status;
+      },
+      presence: () => online,
+    }),
+    individual = new Coordination({
+      sa: s.sa,
+      runs: () => runs,
+      status: l => {
+        individualCalls++;
+        return status.get(l.archon_run_id) ?? 'unknown';
+      },
+      presence: () => online,
+    });
+  expect(batch.owner(s.scope)).toEqual(individual.owner(s.scope));
+  expect(batchCalls).toBe(1);
+  expect(individualCalls).toBe(4);
+});
 test('presence active/idle/offline/unknown comes from one verifier, not heartbeat expiry', () => {
   const s = setup();
   expect(presence(a, s.sa)).toEqual({ state: 'online', activity: 'idle' });
