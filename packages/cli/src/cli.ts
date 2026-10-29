@@ -981,6 +981,7 @@ async function main(): Promise<number> {
               json: jsonFlag,
               all: values.all as boolean | undefined,
               status: values.status as string | undefined,
+              ids: values.ids as string | undefined,
               limit,
               open: values.open as boolean | undefined,
               verbose: values.verbose as boolean | undefined,

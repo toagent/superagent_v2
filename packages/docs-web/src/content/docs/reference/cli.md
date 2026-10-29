@@ -563,11 +563,15 @@ archon workflow runs
 archon workflow runs --json
 archon workflow runs --json --verbose  # add per-node state and attention to each run
 archon workflow runs --status failed   # filter to one status
+archon workflow runs --ids <id>,<id> --json --verbose  # fetch exact runs
 archon workflow runs --limit 50        # cap rows (default 20)
 archon workflow runs --all             # list across all projects (ignore cwd scope)
 ```
 
 If `cwd` is not a registered project, the command falls back to a global list and says so — `--json` carries this as a `scopeFallback: true` field so a consuming agent never mistakes a global result for a project-scoped one.
+
+`--ids` bypasses project and history scans and returns only exact IDs. It requires `--json --verbose`
+and cannot be combined with `--open`, `--status`, or `--limit`.
 
 The run-list JSON uses the same `active_nodes` contract as `workflow status`. The retained singular
 fields are compatibility fields: `current_step_name` and `current_step_status` are populated only

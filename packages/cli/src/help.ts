@@ -802,6 +802,11 @@ const orderedFlags: FlagHelp[] = [
     owners: [{ command: 'workflow', subcommand: 'runs' }],
   },
   {
+    spec: '--ids <id,...>',
+    description: "For 'workflow runs --json --verbose': fetch exact run ids",
+    owners: [{ command: 'workflow', subcommand: 'runs' }],
+  },
+  {
     spec: '--limit <n>',
     description: "For 'workflow runs': max rows (default 20)",
     owners: [{ command: 'workflow', subcommand: 'runs' }],

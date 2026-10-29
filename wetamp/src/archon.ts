@@ -346,11 +346,12 @@ export async function getRunAsync(
 
 /** One CLI/database query supplies the full node projection for every board ledger. */
 export async function getRunsAsync(
+  ids: string[],
   cwd: string | undefined,
   opts: { timeoutMs: number; signal?: AbortSignal }
 ): Promise<Map<string, RunView>> {
   const result = await archonJsonAsync(
-    ['workflow', 'runs', '--all', '--limit', String(2 ** 31 - 1), '--verbose', '--json'],
+    ['workflow', 'runs', '--ids', ids.join(','), '--verbose', '--json'],
     cwd,
     opts
   );

@@ -394,6 +394,34 @@ function safeRowOf(
 const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
 const ACTIVITY = new Set<RunView['status']>(['running', 'paused']);
 export const QUERY_TIMEOUT_MS = 10_000;
+const QUERY_CONCURRENCY = 8;
+
+async function queryRuns(
+  entries: { id: string; ledger: Ledger }[],
+  timeoutMs: number,
+  signal: AbortSignal | undefined
+): Promise<Map<string, RunView | Error>> {
+  const queried = new Map<string, RunView | Error>();
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(QUERY_CONCURRENCY, entries.length) }, async () => {
+      for (;;) {
+        const index = next++;
+        if (index >= entries.length) return;
+        const entry = entries[index];
+        try {
+          queried.set(
+            entry.id,
+            await getRunAsync(entry.ledger.archon_run_id, entry.ledger.repo, { timeoutMs, signal })
+          );
+        } catch (e) {
+          queried.set(entry.id, e as Error);
+        }
+      }
+    })
+  );
+  return queried;
+}
 
 /**
  * 带缓存的加载器（一个 board 进程一个）。首轮批查，之后只单查非终态或 ledger 已变化的 run；
@@ -403,7 +431,7 @@ export const QUERY_TIMEOUT_MS = 10_000;
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 // prettier-ignore
-export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: () => Map<string, string> | null = reportRunRevisions): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
@@ -417,8 +445,6 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   let first = true;
   return async limit => {
     const now = Date.now();
-    let revisions: Map<string, string> | null = null;
-    try { revisions = revisionsOf(); } catch { /* Revision cache unavailable: keep failed runs live. */ }
     const ids = ledgerIds()
       // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
       .map(id => ({
@@ -427,13 +453,19 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
     // prettier-ignore
-    const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id), archonId = ledgerCache.get(id)?.archon_run_id; return hit?.mtimeMs === mtimeMs && (FINAL.has(hit.run.status) || (hit.run.status === 'failed' && !!hit.revision && hit.revision === revisions?.get(archonId ?? ''))) ? [[id, hit] as const] : []; }));
+    const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : readLedger(id)] as const; }));
+    const archonIds = [...initialLedgers.values()].flatMap(l => typeof l === 'string' ? [] : [l.archon_run_id]);
+    let revisions: Map<string, string> | null = null;
+    try { revisions = revisionsOf(archonIds); } catch { /* Revision cache unavailable: keep mutable runs live. */ }
     // prettier-ignore
-    const ledgers = new Map(ids.map(({ id }) => [id, reusable.has(id) ? (ledgerCache.get(id) ?? readLedger(id)) : readLedger(id)] as const));
+    const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id), archonId = ledgerCache.get(id)?.archon_run_id, revision = archonId ? revisions?.get(archonId) : undefined; return hit?.mtimeMs === mtimeMs && (FINAL.has(hit.run.status) || (!!hit.revision && hit.revision === revision)) ? [[id, hit] as const] : []; }));
+    // A mutable run may rewrite its ledger while preserving mtime, so only reusable rows keep the saved parse.
+    const ledgers = new Map(ids.map(({ id }) => [id, reusable.has(id) ? (initialLedgers.get(id) ?? readLedger(id)) : readLedger(id)] as const));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
     const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
     const presenceCache = new Map<string, Presence>();
-    const coordinator = new Coordination({ presence: who => {
+    const validLedgers = [...ledgers.values()].filter((l): l is Ledger => typeof l !== 'string');
+    const coordinator = new Coordination({ runs: id => id ? validLedgers.filter(l => l.run_id === id) : validLedgers, presence: who => {
       const key = JSON.stringify([who.host ?? null, who.pid, who.pid_start ?? null]);
       const hit = presenceCache.get(key);
       if (hit) return hit;
@@ -464,12 +496,13 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       }
     }
     const uncached = ids.filter(({ id }) => !reusable.has(id));
-    const queried = new Map<string, RunView | Error>();
+    let queried = new Map<string, RunView | Error>();
+    const queryEntries = uncached.flatMap(({ id }) => { const ledger = ledgers.get(id); return typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
     const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
     if (uncached.length && firstLedger) {
       if (first) {
         try {
-          const batch = await getRunsAsync(cwdOf(firstLedger), { timeoutMs, signal });
+          const batch = await getRunsAsync(queryEntries.map(entry => entry.ledger.archon_run_id), cwdOf(firstLedger), { timeoutMs, signal });
           for (const { id } of uncached) {
             const l = ledgers.get(id);
             if (typeof l !== 'string' && l !== undefined)
@@ -478,21 +511,11 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
                 batch.get(l.archon_run_id) ?? new RunQueryError('not_found', l.archon_run_id)
               );
           }
-        } catch (e) {
-          for (const { id } of uncached) queried.set(id, e as Error);
+        } catch {
+          queried = await queryRuns(queryEntries, timeoutMs, signal);
         }
       } else {
-        await Promise.all(
-          uncached.map(async ({ id }) => {
-            const l = ledgers.get(id);
-            if (typeof l === 'string' || l === undefined) return;
-            try {
-              queried.set(id, await getRunAsync(l.archon_run_id, l.repo, { timeoutMs, signal }));
-            } catch (e) {
-              queried.set(id, e as Error);
-            }
-          })
-        );
+        queried = await queryRuns(queryEntries, timeoutMs, signal);
       }
     }
     first = false;

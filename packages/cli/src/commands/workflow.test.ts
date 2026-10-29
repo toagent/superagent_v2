@@ -7891,6 +7891,51 @@ describe('workflowRunsCommand', () => {
     expect(arg.limit).toBe(5);
   });
 
+  it('fetches exact --ids without scanning the dashboard and batches verbose events', async () => {
+    const workflowDb = await import('@archon/core/db/workflows');
+    const eventsDb = await import('@archon/core/db/workflow-events');
+    const run = (id: string) => ({
+      id,
+      workflow_name: 'targeted',
+      conversation_id: null,
+      parent_conversation_id: null,
+      codebase_id: null,
+      status: 'running' as const,
+      outcome: null,
+      user_message: '',
+      metadata: {},
+      started_at: new Date(),
+      completed_at: null,
+      last_activity_at: null,
+      working_path: null,
+      user_id: null,
+      parent_run_id: null,
+      adopted_from_run_id: null,
+      output_root: null,
+      checkout_baseline: null,
+      origin: null,
+    });
+    mockLookupWorkflowRun
+      .mockResolvedValueOnce(run('r-1'))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(run('r-2'));
+    const eventsSpy = eventsDb.listEventsForRuns as ReturnType<typeof mock>;
+    eventsSpy.mockResolvedValueOnce(new Map());
+    const listSpy = workflowDb.listDashboardRuns as ReturnType<typeof mock>;
+    listSpy.mockClear();
+
+    await workflowRunsCommand(createTestWorkflowHost(), '/ignored', {
+      ids: 'r-1, missing, r-2,r-1',
+      json: true,
+      verbose: true,
+    });
+
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(eventsSpy).toHaveBeenCalledWith(['r-1', 'r-2'], NODE_SUMMARY_EVENT_TYPES);
+    const parsed = JSON.parse(firstJsonPayload(stdoutSpy)) as { runs: { id: string }[] };
+    expect(parsed.runs.map(item => item.id)).toEqual(['r-1', 'r-2']);
+  });
+
   it('throws on an invalid --status', async () => {
     await expect(
       workflowRunsCommand(createTestWorkflowHost(), '/test/path', { status: 'bogus' })

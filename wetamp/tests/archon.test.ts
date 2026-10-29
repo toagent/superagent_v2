@@ -5,6 +5,27 @@ import { tmp } from './helpers';
 import { expect, spyOn, test } from 'bun:test';
 import * as transport from '../src/archon';
 
+test('targeted batch query passes exact ids and parses only returned runs', async () => {
+  const root = tmp(),
+    bin = join(root, 'archon'),
+    calls = join(root, 'calls'),
+    saved = process.env.SA_ARCHON_BIN;
+  writeFileSync(
+    bin,
+    `#!/bin/sh\nprintf '%s\\n' "$*" > '${calls}'\nprintf '%s\\n' '{"runs":[{"id":"r-2","status":"completed"}]}'\n`,
+    { mode: 0o755 }
+  );
+  process.env.SA_ARCHON_BIN = bin;
+  try {
+    const runs = await transport.getRunsAsync(['r-1', 'r-2'], root, { timeoutMs: 1000 });
+    expect(readFileSync(calls, 'utf8')).toContain('workflow runs --ids r-1,r-2 --verbose --json');
+    expect([...runs]).toEqual([['r-2', { id: 'r-2', status: 'completed' }]]);
+  } finally {
+    if (saved === undefined) delete process.env.SA_ARCHON_BIN;
+    else process.env.SA_ARCHON_BIN = saved;
+  }
+});
+
 test('worker launches clear CLI routing identity while queries preserve it', async () => {
   const root = tmp(),
     bin = join(root, 'wetamp', 'bin', 'archon'),

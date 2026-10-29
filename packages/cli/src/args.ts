@@ -49,6 +49,7 @@ export const cliArgOptions: CliArgOptions = {
   detach: { type: 'boolean' },
   all: { type: 'boolean' },
   status: { type: 'string' },
+  ids: { type: 'string' },
   limit: { type: 'string' },
   timeout: { type: 'string' },
   follow: { type: 'boolean' },
