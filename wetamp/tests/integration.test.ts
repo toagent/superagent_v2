@@ -2,7 +2,7 @@ import { expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readdirSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { publish, sync, type PublishRun } from '../src/integration';
+import { integrationLockPath, publish, sync, type PublishRun } from '../src/integration';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
 import { gitRepo, sh, tmp } from './helpers';
 
@@ -53,6 +53,24 @@ const withArtifacts = <T>(value: string | undefined, action: () => T): T => {
     if (previous === undefined) delete process.env.ARTIFACTS_DIR;
   }
 };
+const holdIntegrationLock = (path: string, marker: string, milliseconds: number) =>
+  Bun.spawn(
+    [
+      process.execPath,
+      '-e',
+      `import { writeFileSync } from 'node:fs'; import { executionLock } from ${JSON.stringify(join(import.meta.dir, '../../packages/workflows/src/execution-lifecycle.ts'))}; const lease = executionLock(process.env.LOCK_PATH!); if (!lease.ok) throw new Error('lock unavailable'); writeFileSync(process.env.LOCK_MARKER!, 'held'); Bun.sleepSync(Number(process.env.LOCK_MS)); lease.release();`,
+    ],
+    {
+      env: {
+        ...process.env,
+        LOCK_PATH: path,
+        LOCK_MARKER: marker,
+        LOCK_MS: String(milliseconds),
+      },
+      stdout: 'ignore',
+      stderr: 'pipe',
+    }
+  );
 test('sync reports noop when the target tip is already present', () => {
   const f = fixture();
   const result = sync(f.worktree, f.targetSpec);
@@ -157,6 +175,45 @@ test('publish advances the target with CAS and writes its receipt', () => {
   expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(result.receipt);
   expect(sh('git rev-parse wetamp', f.target).trim()).toBe(head);
   expect(sh('git status --porcelain', f.target)).toBe('');
+});
+
+test('publish outlives a released integration lock and times out structurally when it stays held', async () => {
+  const saved = { ...process.env };
+  try {
+    Object.assign(process.env, { NODE_ENV: 'test', SA_INTEGRATION_LOCK_TIMEOUT_MS: '1000' });
+    const released = fixture(),
+      marker = join(released.root, 'held');
+    commit(released.worktree, 'feature.txt', 'feature\n');
+    const lockPath = integrationLockPath(
+      sh('git rev-parse --path-format=absolute --git-common-dir', released.target).trim(),
+      'wetamp'
+    );
+    const holder = holdIntegrationLock(lockPath, marker, 300);
+    for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(10);
+    expect(publish(released.run(), released.expected()).status).toBe('published');
+    expect(await holder.exited, await new Response(holder.stderr).text()).toBe(0);
+
+    const timedOut = fixture(),
+      held = join(timedOut.root, 'held');
+    process.env.SA_INTEGRATION_LOCK_TIMEOUT_MS = '100';
+    const stuck = holdIntegrationLock(
+      integrationLockPath(
+        sh('git rev-parse --path-format=absolute --git-common-dir', timedOut.target).trim(),
+        'wetamp'
+      ),
+      held,
+      2000
+    );
+    for (let i = 0; i < 100 && !existsSync(held); i++) await Bun.sleep(10);
+    expect(() => publish(timedOut.run(), timedOut.expected())).toThrow(
+      'timed out waiting for integration lock'
+    );
+    stuck.kill();
+    await stuck.exited;
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
 });
 
 test('publish accepts reviewed changes after sync changes the full diff', () => {

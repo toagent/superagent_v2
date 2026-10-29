@@ -464,7 +464,7 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
     WORKFLOW_ID: id,
     SUPERAGENT_MEMORY: 'off',
     NODE_ENV: 'test',
-    SA_INTEGRATION_LOCK_TIMEOUT_MS: '10000',
+    SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
   });
   const shell = coordination.caller();
   const who = { ...shell, client: `${shell.client}-scenario-authorized` };

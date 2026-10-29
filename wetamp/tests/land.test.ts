@@ -147,13 +147,13 @@ test('delivery entry reports failures without a stack trace', async () => {
   try {
     runDeliveryEntry(
       () => {
-        throw new IntegrationError('git_lock_held', 'holder unknown');
+        throw new IntegrationError('lock_timeout', 'holder unknown');
       },
       fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'sync-m1' })
     );
-    expect(error).toHaveBeenCalledWith('integration_git_lock_held: holder unknown');
+    expect(error).toHaveBeenCalledWith('integration_lock_timeout: holder unknown');
     expect(await Bun.file(join(artifacts, 'sync-m1.json')).text()).toContain(
-      '"reason": "git_lock_held"'
+      '"reason": "lock_timeout"'
     );
   } finally {
     error.mockRestore();
