@@ -60,6 +60,7 @@ import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 import { fixtureArchon, fixtureOptions } from './fixtures/archon-stub';
 import { nativeSpawnSync } from './preload';
 import { continuationOnCurrent } from '../src/engine';
+import { Reclaimer, reclaimTick } from '../src/reclaim';
 
 const engineRecoverLock = () => {
   const root = join(process.env.ARCHON_HOME ?? '', 'execution-admissions');
@@ -2728,6 +2729,52 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       activateEngineFixture(s);
       await superviseTickCli(refresh, sync, { runs: ['sa1'], noGlobal: true });
       expect(calls).toEqual({ refresh: 1, sync: 1 });
+      expect(JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8')).reclaim).toEqual({
+        ok: true,
+        skipped: 'no-global',
+      });
+    } finally {
+      out.mockRestore();
+    }
+  });
+  test('tick completes and observes each minute, reclaims every 300 seconds, and isolates reclaim failure', async () => {
+    const s = stub([run('completed')]),
+      c = new coordModule.Coordination({ sa: join(s.root, 'home'), runs: () => [] });
+    let now = 0;
+    const r = new Reclaimer(c, () => now),
+      complete = spyOn(r, 'complete'),
+      observe = spyOn(r, 'observe'),
+      reclaim = spyOn(r, 'reclaim');
+    const out = spyOn(console, 'log').mockImplementation(() => undefined),
+      snapshot = { at: new Date().toISOString(), summary: {}, rows: [] } as Snapshot;
+    try {
+      const tick = () =>
+        superviseTickCli(
+          async () => undefined,
+          async () => undefined,
+          {},
+          async () => snapshot,
+          () => reclaimTick(now, r)
+        );
+      await tick();
+      now = 299_999;
+      await tick();
+      now = 300_000;
+      await tick();
+      expect([
+        complete.mock.calls.length,
+        observe.mock.calls.length,
+        reclaim.mock.calls.length,
+      ]).toEqual([3, 3, 2]);
+      rmSync(join(s.root, 'home/heartbeat.json'));
+      reclaim.mockImplementation(() => {
+        throw new Error('fixture reclaim');
+      });
+      now = 600_000;
+      await tick();
+      const record = JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8'));
+      expect(record.reclaim).toEqual({ ok: false, error: 'fixture reclaim' });
+      expect(existsSync(join(s.root, 'home/heartbeat.json'))).toBe(true);
     } finally {
       out.mockRestore();
     }
@@ -5278,5 +5325,6 @@ test('reclaim command prints the structured one-shot result', () => {
     unclaimed: [],
     skipped: [],
     pending: [],
+    historical: [],
   });
 });

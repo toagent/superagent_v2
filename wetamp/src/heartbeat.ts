@@ -80,13 +80,13 @@ export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): 
 
 // prettier-ignore
 export interface TickStage { ok: boolean; error?: string; skipped?: string }
-type Stage = 'collect' | 'publish' | 'orca' | 'console' | 'failover' | 'actions';
+type Stage = 'collect' | 'publish' | 'reclaim' | 'orca' | 'console' | 'failover' | 'actions';
 export type TickRecord = { at: string } & Record<Stage, TickStage>;
 // prettier-ignore
 export function tickHealth(tick: TickRecord | undefined, now: number): { ok: boolean; messages: string[] } {
   const parsed = Date.parse(tick?.at ?? ''), minutes = Number.isFinite(parsed) ? Math.floor((now - parsed) / 60_000) : Infinity;
   const messages = minutes > 3 ? [`未收到巡检心跳${Number.isFinite(minutes) ? ` ${String(minutes)}m` : ''}`] : [];
   if (tick && !tick.collect.ok) messages.push(`巡检采集失败：${tick.collect.error ?? 'unknown'}`);
-  if (tick) for (const stage of ['publish', 'orca', 'console', 'failover', 'actions'] as const) if (!tick[stage].ok) messages.push(`${stage}异常：${tick[stage].error ?? 'unknown'}`);
+  if (tick) for (const stage of ['publish', 'reclaim', 'orca', 'console', 'failover', 'actions'] as const) if (!tick[stage].ok) messages.push(`${stage}异常：${tick[stage].error ?? 'unknown'}`);
   return { ok: messages.length === 0, messages };
 }

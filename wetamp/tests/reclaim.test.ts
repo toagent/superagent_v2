@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 // prettier-ignore
 import { Coordination, runScope, same, type Identity, type Presence, type RunRef } from '../src/coord';
 import { lock } from '../src/archon';
-import { Reclaimer } from '../src/reclaim';
+import { Reclaimer, reclaimCoord } from '../src/reclaim';
 import { gitRepo, tmp } from './helpers';
 
 // prettier-ignore
@@ -28,9 +28,9 @@ function setup(probe: (who: Identity) => Presence = who => same(who, a) ? { stat
 
 // prettier-ignore
 test('reclaim observes confirmed death, journals three states, transfers, reauthorizes, records evidence and reroutes inbox', () => {
-  const s = setup(); let now = 0; const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' }));
+  let state: Presence['state'] = 'online'; const s = setup(who => same(who, a) ? state === 'online' ? { state, activity: 'idle' } : { state } : { state: 'online', activity: 'idle' }); let now = 0; const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' }));
   s.c.handoff(runScope(s.run), b, { kind: 'task', title: 'existing', body: 'body', evidence: [], severity: 'normal' });
-  r.observe(); now = 120_000; const out = r.reclaim(r.observe());
+  r.observe(); state = 'offline'; r.observe(); now = 120_000; const out = r.reclaim(r.observe());
   expect(out.transferred).toEqual(['r1']); expect(s.c.owner(runScope(s.run)).owner).toEqual(b);
   expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/journal.json'), 'utf8')).map((x: { state: string }) => x.state)).toEqual(['transferring', 'transferred', 'reauthorized']);
   expect(existsSync(join(s.sa, 'coord/authorizations/r1.json'))).toBe(true); expect(s.c.inbox(b).some(m => m.title === 'existing')).toBe(true);
@@ -40,10 +40,10 @@ test('reclaim observes confirmed death, journals three states, transfers, reauth
 
 // prettier-ignore
 test('reclaim resets changed evidence, ignores unknown, leaves unclaimed and critical runs, then completes reauthorization failure', () => {
-  let state: Presence['state'] = 'offline', target: Presence['state'] = 'online', now = 0; const probe = (who: Identity): Presence => { const value = who.client === a.client ? state : target; return value === 'online' ? { state: value, activity: 'idle' } : { state: value }; }, s = setup(probe), running = { id: 'engine', status: 'running' as const, nodes: [] as { nodeId: string; state: string }[] }, r = new Reclaimer(s.c, () => now, () => running);
-  r.observe(); s.c.rolloverTransfer(runScope(s.run), a, { ...a, session_id: 'changed' }, 'token'); now = 120_000; expect(r.observe()[0]?.count).toBe(1);
+  let state: Presence['state'] = 'online', target: Presence['state'] = 'online', now = 0; const probe = (who: Identity): Presence => { const value = who.client === a.client ? state : target; return value === 'online' ? { state: value, activity: 'idle' } : { state: value }; }, s = setup(probe), running = { id: 'engine', status: 'running' as const, nodes: [] as { nodeId: string; state: string }[] }, r = new Reclaimer(s.c, () => now, () => running);
+  r.observe(); s.c.rolloverTransfer(runScope(s.run), a, { ...a, session_id: 'changed' }, 'token'); state = 'offline'; now = 120_000; expect(r.observe()[0]).toMatchObject({ count: 1, last_online_at: undefined });
   state = 'unknown'; expect(r.observe()).toEqual([]); state = 'offline'; s.c.rolloverTransfer(runScope(s.run), { ...a, session_id: 'changed' }, a, 'back');
-  const observation = { run: 'r1', repo: s.run.repo, owner: a, generation: s.c.owner(runScope(s.run)).generation, first_offline_at: 0, last_offline_at: 120_000, count: 2 };
+  const observation = { run: 'r1', repo: s.run.repo, owner: a, generation: s.c.owner(runScope(s.run)).generation, last_online_at: 0, first_offline_at: 0, last_offline_at: 120_000, count: 2 };
   target = 'offline'; expect(r.reclaim([observation]).unclaimed).toEqual(['r1']); target = 'online';
   running.nodes = [{ nodeId: 'publish-m1', state: 'running' }]; expect(r.reclaim([observation]).skipped).toEqual(['r1']); running.nodes = [];
   const scopeLock = join(s.sa, 'coord/locks', hooks.hash({ kind: 'repo', id: runScope(s.run).repo }) + '.lock'), held = lock(scopeLock); if (!held.ok) throw new Error('fixture lock'); expect(r.reclaim([observation]).skipped).toEqual(['r1']); held.release();
@@ -57,7 +57,43 @@ test('reclaim resets changed evidence, ignores unknown, leaves unclaimed and cri
 test('reclaim fails closed on a corrupt journal and isolates run probe failures', () => {
   const corrupt = setup(), journal = join(corrupt.sa, 'reclaim/journal.json'); mkdirSync(join(corrupt.sa, 'reclaim')); writeFileSync(journal, '{');
   expect(() => new Reclaimer(corrupt.c).reclaim([])).toThrow(); expect(readFileSync(journal, 'utf8')).toBe('{');
-  const bad = setup(), view = bad.c.owner(runScope(bad.run)), observation = { run: 'r1', repo: bad.run.repo, owner: a, generation: view.generation, first_offline_at: 0, last_offline_at: 120_000, count: 2 };
+  const bad = setup(), view = bad.c.owner(runScope(bad.run)), observation = { run: 'r1', repo: bad.run.repo, owner: a, generation: view.generation, last_online_at: 0, first_offline_at: 0, last_offline_at: 120_000, count: 2 };
   const result = new Reclaimer(bad.c, Date.now, () => { throw new Error('archon workflow get failed'); }).reclaim([observation]);
   expect(result.skipped).toEqual(['r1']); expect(bad.c.owner(runScope(bad.run)).owner).toEqual(a);
+});
+
+test('reclaim leaves historically offline owners untouched and batch statuses preserve ownership evidence', () => {
+  const s = setup();
+  let now = 0;
+  const r = new Reclaimer(s.c, () => now);
+  r.observe();
+  now = 120_000;
+  expect(r.reclaim(r.observe()).historical).toEqual(['r1']);
+  expect(s.c.owner(runScope(s.run)).owner).toEqual(a);
+  const statuses = new Map([
+      ['failed', 'failed'],
+      ['done', 'completed'],
+      ['cancelled', 'cancelled'],
+    ] as const),
+    c = reclaimCoord(statuses, s.c);
+  const evidence = (id: string): boolean =>
+    c.isRunOwnershipEvidence({ ...s.run, run_id: id, archon_run_id: id });
+  expect(['failed', 'done', 'cancelled', 'missing'].map(evidence)).toEqual([
+    true,
+    false,
+    false,
+    true,
+  ]);
+});
+
+test('reclaim observation isolates deleted repositories in saved and current evidence', () => {
+  const s = setup(),
+    missing = { ...s.run, run_id: 'missing', repo: join(s.root, 'deleted') };
+  mkdirSync(join(s.sa, 'reclaim'));
+  writeFileSync(
+    join(s.sa, 'reclaim/observations.json'),
+    JSON.stringify([{ run: missing.run_id, repo: missing.repo, owner: a, generation: 1, count: 1 }])
+  );
+  s.c.d.runs = () => [missing, s.run];
+  expect(new Reclaimer(s.c).observe().map(item => item.run)).toEqual(['r1']);
 });

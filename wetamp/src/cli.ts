@@ -46,7 +46,7 @@ import { cockpit } from './board/cockpit';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
-import { reclaimOnce } from './reclaim';
+import { reclaimOnce, reclaimTick } from './reclaim';
 import {
   askQuestion,
   askName,
@@ -4064,7 +4064,7 @@ function tickOutput(
 
 /** Console availability must not gate the unattended heartbeat. */
 // prettier-ignore
-export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20)): Promise<number> {
+export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick): Promise<number> {
   const errors: string[] = [];
   const stages = {} as Omit<TickRecord, 'at'>;
   const result = async (stage: keyof typeof stages, run: () => unknown): Promise<unknown> => {
@@ -4079,6 +4079,8 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
       return undefined;
     }
   };
+  if (!mode.noGlobal) await result('reclaim', reclaimTask);
+  else stages.reclaim = { ok: true, skipped: 'no-global' };
   let snapshot: Snapshot | undefined;
   if (!mode.noGlobal) snapshot = (await result('collect', load)) as Snapshot | undefined;
   else stages.collect = { ok: true, skipped: 'no-global' };
