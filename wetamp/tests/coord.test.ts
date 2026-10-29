@@ -562,6 +562,7 @@ test('batch status projection preserves per-ledger owner resolution', () => {
         batchCalls++;
         return status;
       },
+      status: l => status.get(l.archon_run_id) ?? 'unknown',
       presence: () => online,
     }),
     individual = new Coordination({
@@ -576,6 +577,10 @@ test('batch status projection preserves per-ledger owner resolution', () => {
   expect(batch.owner(s.scope)).toEqual(individual.owner(s.scope));
   expect(batchCalls).toBe(1);
   expect(individualCalls).toBe(4);
+  batchCalls = 0;
+  expect(batch.unfinishedRuns('A')).toHaveLength(2);
+  expect(batch.ownedNonterminalRuns('codex')).toHaveLength(2);
+  expect(batchCalls).toBe(2);
 });
 test('presence active/idle/offline/unknown comes from one verifier, not heartbeat expiry', () => {
   const s = setup();
