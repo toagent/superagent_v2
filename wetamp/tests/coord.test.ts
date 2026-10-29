@@ -28,6 +28,7 @@ import {
   type Message,
   type Presence,
   type RunRef,
+  identityKey,
 } from '../src/coord';
 import { ownerLost } from '../src/archon';
 import * as native from '../src/archon';
@@ -62,6 +63,37 @@ const input = {
   severity: 'normal' as const,
 };
 const oldEnv = { ...process.env };
+
+// prettier-ignore
+test('reclaimRun rejects every stale or unsafe CAS state and transfers without takeover notice', () => {
+  let aState: Presence['state'] = 'offline',
+    bState: Presence['state'] = 'online';
+  const probe = (who: Identity): Presence => {
+    const state = same(who, a) ? aState : bState;
+    return state === 'online' ? { state, activity: 'idle' } : { state };
+  };
+  const s = setup(probe),
+    target = runScope({ run_id: 'reclaim', repo: s.repo });
+  s.c.claim(s.scope, b);
+  s.c.claim(target, a);
+  const generation = s.c.owner(target).generation,
+    expected = { key: identityKey(a), generation };
+  expect(s.c.reclaimRun(target, { ...expected, generation: generation + 1 }, b).reason).toBe(
+    'owner_changed'
+  );
+  aState = 'online';
+  expect(s.c.reclaimRun(target, expected, b).reason).toBe('owner_not_offline');
+  aState = 'offline';
+  bState = 'offline';
+  expect(s.c.reclaimRun(target, expected, b).reason).toBe('target_not_online_repo_owner');
+  bState = 'online';
+  expect(s.c.reclaimRun(target, expected, b).status).toBe('transferred');
+  expect(s.c.messages().filter(m => m.type === 'takeover')).toHaveLength(0);
+  expect(
+    s.c.reclaimRun(target, { key: identityKey(b), generation: s.c.owner(target).generation }, b)
+      .reason
+  ).toBe('same_owner');
+});
 afterEach(() => {
   process.env = { ...oldEnv };
 });

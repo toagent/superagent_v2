@@ -46,6 +46,7 @@ import { cockpit } from './board/cockpit';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
+import { reclaimOnce } from './reclaim';
 import {
   askQuestion,
   askName,
@@ -362,6 +363,7 @@ export interface Ledger {
     key?: string;
     reason?: string;
     actor?: Controller;
+    evidence?: Record<string, unknown>;
   })[];
   /** A held automatic recovery stays paused until an explicit recovery decision clears it. */
   auto_recover_paused?: string;
@@ -4029,6 +4031,7 @@ const optionUsage = (name: OptionName): string => {
 };
 export const USAGE = [
   'usage: superagent <command> [options]',
+  '  reclaim [--json]',
   ...CLI_COMMAND_USAGE.map(
     ({ command, positionals, flags }) =>
       `  ${command}${positionals ? ` ${positionals}` : ''}${flags.map(optionUsage).join('')}`
@@ -4306,6 +4309,9 @@ export function main(argv: string[]): number {
       return code;
     });
   switch (verb) {
+    case 'reclaim':
+      print(reclaimOnce());
+      return 0;
     case 'intake': {
       const command = need(target, INTAKE_USAGE);
       const argument = a._.at(2);
