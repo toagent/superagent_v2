@@ -34,9 +34,8 @@ export function orcaView(c: Cockpit, pulse: Heartbeat): OrcaView {
     .map(m => m.line.replace(/[\r\n]+/g, ' '));
   const suffix = [
     ...(pulse.reclaim_pending ? [`待回收 ${String(pulse.reclaim_pending)}`] : []),
-    ...(pulse.marshals.some(m => m.owner === 'unknown')
-      ? [`归属未知 ${String(pulse.marshals.filter(m => m.owner === 'unknown').length)}`]
-      : []),
+    ...(pulse.unowned ? [`归属未知 ${String(pulse.unowned)}`] : []),
+    ...(pulse.unreadable ? [`不可读 ${String(pulse.unreadable)}`] : []),
   ];
   let kept = parts.length;
   const comment = (): string =>
@@ -230,6 +229,8 @@ export async function syncOrca(
         record(p.heartbeat) &&
         typeof p.heartbeat.at === 'string' &&
         typeof p.heartbeat.reclaim_pending === 'number' &&
+        typeof p.heartbeat.unowned === 'number' &&
+        typeof p.heartbeat.unreadable === 'number' &&
         Array.isArray(p.heartbeat.marshals)
       )
         previous = {

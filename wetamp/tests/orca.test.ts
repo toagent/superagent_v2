@@ -35,10 +35,8 @@ const view = (active: CockpitRun[] = [], needs: CockpitRun[] = []): Cockpit => (
   metrics: { completed: 0, decided: 0, firstPass: 0, firstPass_unknown: 0, asks: 0, debt: 0 },
 });
 // prettier-ignore
-const pulse = (lines: string[] = [], reclaim = 0, unknown = 0): Heartbeat => ({ at: '2026-10-11T00:00:00Z', reclaim_pending: reclaim, marshals: [
-  ...lines.map((line, i) => ({ owner: { client: 'codex', pid: i + 1 }, owner_key: ['codex', null, null, i + 1, null], cwd: `/repo/${String(i)}`, project: `p${String(i)}`, running: [], waiting: [], line })),
-  ...Array.from({ length: unknown }, (_, i) => ({ owner: 'unknown' as const, owner_key: 'unknown' as const, cwd: `/unknown/${String(i)}`, project: 'unknown', running: [], waiting: [], line: 'must not appear' })),
-] });
+const pulse = (lines: string[] = [], reclaim = 0, unowned = 0, unreadable = 0): Heartbeat => ({ at: '2026-10-11T00:00:00Z', reclaim_pending: reclaim, unowned, unreadable, marshals:
+  lines.map((line, i) => ({ owner: { client: 'codex', pid: i + 1 }, owner_key: ['codex', null, null, i + 1, null], cwd: `/repo/${String(i)}`, project: `p${String(i)}`, running: [], waiting: [], line })) });
 const frame = (active: string[] = [], needs: string[] = [], why = 'approval'): Snapshot => ({
   at: '2026-10-11T00:00:00Z',
   summary: {},
@@ -145,11 +143,11 @@ describe('orcaView', () => {
         [item('BestIFA'), item('wt-hf10', { stage: '评审' })],
         [item('xiaopan-translator', { reason: '评审轮次用尽' })]
       ),
-      pulse(['BestIFA 元帅｜将军 编码 m1/1', 'wt-hf10 元帅｜军师 评审'], 2, 1)
+      pulse(['BestIFA 元帅｜将军 编码 m1/1', 'wt-hf10 元帅｜军师 评审'], 2, 1, 3)
     );
     expect(v.status).toBe('in-review');
     expect(v.comment).toBe(
-      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜BestIFA 元帅｜将军 编码 m1/1｜wt-hf10 元帅｜军师 评审｜待回收 2｜归属未知 1'
+      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜BestIFA 元帅｜将军 编码 m1/1｜wt-hf10 元帅｜军师 评审｜待回收 2｜归属未知 1｜不可读 3'
     );
     expect(v.comment).not.toMatch(/%|12m05s|99K|private question|3h/);
   });
@@ -266,21 +264,20 @@ describe('syncOrca (injected only)', () => {
     await syncOrca(s.deps);
     expect(s.sets().at(-1)?.args).toContain('--read');
   });
-  test('active-only changes and removal of some needs preserve manual read status', async () => {
+  test('unowned identity changes are compacted while removed needs preserve manual read status', async () => {
     const s = harness(frame(['one'], ['held', 'other']));
     await syncOrca(s.deps);
-    for (const snapshot of [frame(['two'], ['held', 'other']), frame(['two'], ['held'])]) {
-      s.h.snapshot = snapshot;
-      expect(await syncOrca(s.deps)).toEqual({ synced: true });
-      const args = s.sets().at(-1)?.args;
-      expect(args).not.toContain('--unread');
-      expect(args).not.toContain('--read');
-    }
+    s.h.snapshot = frame(['two'], ['held', 'other']);
+    expect(await syncOrca(s.deps)).toEqual({ skipped: 'unchanged' });
+    s.h.snapshot = frame(['two'], ['held']);
+    expect(await syncOrca(s.deps)).toEqual({ synced: true });
+    expect(s.sets().at(-1)?.args).not.toContain('--unread');
+    expect(s.sets().at(-1)?.args).not.toContain('--read');
     const active = harness(frame(['one']));
     await syncOrca(active.deps);
     expect(active.sets()[0]?.args).not.toContain('--unread');
     active.h.snapshot = frame(['two']);
-    await syncOrca(active.deps);
+    expect(await syncOrca(active.deps)).toEqual({ skipped: 'unchanged' });
     expect(active.sets().at(-1)?.args).not.toContain('--read');
   });
   test('EV-R1-02 liveness expiry never completes nonterminal Orca work', async () => {

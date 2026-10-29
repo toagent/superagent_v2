@@ -4148,7 +4148,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   const global = output.global as { gc_ms?: unknown } | undefined;
   const unavailable = output.unavailable as { count?: number } | undefined;
   const gcMs = typeof output.gc_ms === 'number' ? output.gc_ms : typeof global?.gc_ms === 'number' ? global.gc_ms : undefined;
-  writeAtomic(join(home().sa, 'tick.json'), JSON.stringify({ at: new Date().toISOString(), ...stages }, null, 2) + '\n');
+  if (!mode.noGlobal) writeAtomic(join(home().sa, 'tick.json'), JSON.stringify({ at: new Date().toISOString(), ...stages }, null, 2) + '\n');
   console.log(
     JSON.stringify({
       heartbeat: new Date().toISOString(),
