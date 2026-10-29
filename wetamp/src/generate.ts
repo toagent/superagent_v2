@@ -222,6 +222,15 @@ export function buildWorkflow(
   ]
     .map(evidenceScopeBase)
     .find(Boolean);
+  const resuming = Boolean(
+    carried &&
+    (carried.freshDirectory === true ||
+      carried.packages.length > 0 ||
+      (carried.coded?.length ?? 0) > 0 ||
+      Object.keys(carried.evidence ?? {}).length > 0 ||
+      carried.recovery !== undefined ||
+      Object.keys(carried.reviews ?? {}).length > 0)
+  );
   const execution = (id: string): Node => {
     if (fake) return {};
     const descriptor = executions[id];
@@ -519,7 +528,7 @@ export function buildWorkflow(
     );
     const syncReadyHandle = output<SyncOutput>(syncReady);
     runBase ||= ref.required(syncReadyHandle, 'merge_base');
-    scopeBase ||= ref.required(syncReadyHandle, 'head');
+    if (!resuming) scopeBase ||= ref.required(syncReadyHandle, 'head');
     let base = ref.required(syncReadyHandle, 'merge_base');
     // Milestone retries invalidate only cumulative acceptance and review/fix rounds.
     const attempt = `attempt-${m.id}`;
